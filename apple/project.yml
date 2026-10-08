@@ -1,0 +1,56 @@
+name: Axo
+options:
+  bundleIdPrefix: dev.leostera.axo
+  deploymentTarget:
+    macOS: '14.0'
+    iOS: '17.0'
+settings:
+  base:
+    SWIFT_VERSION: '5.0'
+    GENERATE_INFOPLIST_FILE: YES
+    CODE_SIGN_STYLE: Automatic
+packages:
+  AxoCore:
+    path: AxoCore
+targets:
+  AxoMac:
+    type: application
+    platform: macOS
+    sources: [AxoMac]
+    dependencies:
+      - framework: ../vendor/ghostty/macos/GhosttyKit.xcframework
+        embed: false
+      - sdk: Metal.framework
+      - sdk: MetalKit.framework
+      - sdk: QuartzCore.framework
+      - sdk: CoreText.framework
+      - sdk: Carbon.framework
+      - sdk: libc++.tbd
+    settings:
+      base:
+        PRODUCT_BUNDLE_IDENTIFIER: dev.leostera.axo.mac
+        ENABLE_APP_SANDBOX: NO
+        INFOPLIST_KEY_LSApplicationCategoryType: public.app-category.developer-tools
+        INFOPLIST_KEY_CFBundleDisplayName: Axo
+  AxoPhone:
+    type: application
+    platform: iOS
+    sources: [AxoPhone]
+    dependencies:
+      - package: AxoCore
+    settings:
+      base:
+        PRODUCT_BUNDLE_IDENTIFIER: dev.leostera.axo.phone
+        TARGETED_DEVICE_FAMILY: '1'
+        INFOPLIST_KEY_CFBundleDisplayName: Axo
+        INFOPLIST_KEY_UILaunchScreen_Generation: YES
+        INFOPLIST_KEY_UIApplicationSceneManifest_Generation: YES
+schemes:
+  AxoMac:
+    build:
+      targets:
+        AxoMac: all
+  AxoPhone:
+    build:
+      targets:
+        AxoPhone: all

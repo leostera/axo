@@ -1,0 +1,27 @@
+{
+  "name": "axo",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "test": "tsx --test tests/*.test.ts",
+    "typecheck": "tsc --noEmit && npm --prefix service run typecheck",
+    "build:bridge": "esbuild bridge/extension.ts --bundle --platform=node --format=esm --packages=external --outfile=bridge/dist/extension.mjs",
+    "build:service": "npm --prefix service run build"
+  },
+  "dependencies": {
+    "typebox": "^1.0.0",
+    "ws": "^8.18.0",
+    "zod": "^4.5.0"
+  },
+  "devDependencies": {
+    "@cloudflare/workers-types": "^5.20261008.1",
+    "@earendil-works/pi-coding-agent": "1.1.0",
+    "@types/node": "^24.0.0",
+    "@types/ws": "^8.18.0",
+    "esbuild": "^0.25.0",
+    "jose": "^6.2.12",
+    "miniflare": "5.20261006.1-alpha",
+    "tsx": "^4.20.0",
+    "typescript": "^7.0.2"
+  }
+}
