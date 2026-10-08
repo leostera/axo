@@ -67,8 +67,8 @@ const assistantFixture: AssistantMessage = {
   stopReason: "toolUse", usage: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, totalTokens: 0,
     cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, total: 0 } },
   content: [
-    { type: "thinking", thinking: "PRIVATE REASONING", thinkingSignature: "PRIVATE SIGNATURE" },
-    { type: "thinking", thinking: "MORE PRIVATE REASONING" },
+    { type: "thinking", thinking: "Synthetic provider display text.", thinkingSignature: "OPAQUE SIGNATURE" },
+    { type: "thinking", thinking: "A second synthetic block." },
     { type: "text", text: "Checking now." },
     { type: "toolCall", id: "tool-ok", name: "bash", arguments: { command: "ls" } },
     { type: "toolCall", id: "tool-error", name: "read", arguments: { path: "missing" } },
@@ -85,14 +85,15 @@ function transcriptFixture(): SessionEntry[] {
   ];
 }
 
-test("transcript restores thinking markers and correlated colored tool blocks from session history", () => {
+test("transcript restores provider thinking text and correlated tool blocks from session history", () => {
   const projected = projectMessages(transcriptFixture());
   assert.deepEqual(projected.map(block => block.role), ["user", "thinking", "assistant", "tool", "tool"]);
   assert.equal(projected[3]?.status, "completed");
   assert.equal(projected[3]?.output, "README.md");
   assert.equal(projected[4]?.status, "failed");
   assert.equal(projected[4]?.output, "File not found");
-  assert.ok(!JSON.stringify(projected).includes("PRIVATE"));
+  assert.equal(projected[1]?.text, "Synthetic provider display text.\n\nA second synthetic block.");
+  assert.ok(!JSON.stringify(projected).includes("OPAQUE SIGNATURE"));
   assert.deepEqual(projectMessages(transcriptFixture()), projected); // Reconnect uses the same stable row IDs.
   hostFrameSchema.parse({ type: "snapshot", sessionId: "s", state: "idle", messages: projected, hasEarlierMessages: false, question: null });
 });
@@ -102,9 +103,20 @@ test("streaming blocks use the same IDs as persisted blocks and are not duplicat
   const partial = { ...assistantFixture, stopReason: "pending" as const };
   const streaming = projectMessages(entries.slice(0, 1), partial);
   assert.deepEqual(streaming.map(block => block.id), projectMessages(entries).map(block => block.id));
-  assert.equal(streaming[1]?.text, "Pi is thinking…");
+  assert.equal(streaming[1]?.text, "Synthetic provider display text.\n\nA second synthetic block.");
   assert.equal(streaming[3]?.status, "running");
   assert.deepEqual(projectMessages(entries, partial), projectMessages(entries));
+});
+
+test("empty streaming and redacted thinking blocks do not expose opaque data", () => {
+  const empty = { ...assistantFixture, stopReason: "pending" as const, content: [
+    { type: "thinking" as const, thinking: "", thinkingSignature: "OPAQUE SIGNATURE" },
+  ] };
+  assert.equal(projectMessages([], empty)[0]?.text, "Pi is thinking…");
+  assert.deepEqual(projectMessages([], { ...empty, stopReason: "stop" }), []);
+  const redacted = { ...empty, content: [{ ...empty.content[0]!, thinking: "REDACTED PAYLOAD", redacted: true }] };
+  assert.deepEqual(projectMessages([], redacted), []);
+  assert.deepEqual(projectMessages([], { ...redacted, stopReason: "stop" }), []);
 });
 
 test("projection follows Pi's assistant/tool ordering and shows terminal response errors", () => {

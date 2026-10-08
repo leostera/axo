@@ -28,7 +28,7 @@ enum ChatPreviewData {
     static let messages: [ConversationMessage] = {
         let records: [[String: Any]] = [
             ["id": "preview-user", "role": "user", "text": "Can we make this feel a little more calm and focused?"],
-            ["id": "preview-thinking", "role": "thinking", "text": "Thinking block · content not shared"],
+            ["id": "preview-thinking", "role": "thinking", "text": "Synthetic provider thinking text for the chat preview."],
             ["id": "preview-success", "role": "tool", "text": "npm test", "toolName": "bash",
              "toolCallId": "preview-tool-1", "status": "completed", "output": "All protocol and bridge tests passed.",
              "toolPresentation": ["kind": "shell", "title": "Bash"]],

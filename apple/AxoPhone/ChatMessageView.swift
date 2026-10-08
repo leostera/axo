@@ -15,6 +15,7 @@ struct ChatMessageView: View {
             Text(message.text)
                 .font(.callout.italic())
                 .foregroundStyle(.secondary)
+                .textSelection(.enabled)
                 .frame(maxWidth: .infinity, alignment: .leading)
                 .accessibilityIdentifier("thinkingBlock")
         } else if message.role == "tool" {

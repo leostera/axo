@@ -39,7 +39,7 @@ final class ChatLayoutUITests: XCTestCase {
         app.launchArguments = ["--axo-chat-preview-working"]
         app.launch()
         XCTAssertTrue(app.staticTexts["Pi is calling tools…"].waitForExistence(timeout: 10))
-        XCTAssertTrue(app.staticTexts["Thinking block · content not shared"].exists)
+        XCTAssertTrue(app.staticTexts["Synthetic provider thinking text for the chat preview."].exists)
         XCTAssertTrue(app.staticTexts["Bash"].exists)
         XCTAssertTrue(app.staticTexts["$ npm test"].exists)
         XCTAssertFalse(app.staticTexts["completed"].exists)

@@ -43,10 +43,13 @@ function projectTranscript(entries: SessionEntry[], streaming?: AssistantMessage
             if (block.text) blocks.push({ id, role: "assistant", text: block.text });
             break;
           case "thinking":
-            // Like Pi, group adjacent thinking blocks; never serialize reasoning or signatures.
+            // Match Pi's adjacent-block grouping; transport only provider-returned display text.
             if (index === 0 || message.content[index - 1]?.type !== "thinking") {
-              blocks.push({ id, role: "thinking", text: message.stopReason === "pending"
-                ? "Pi is thinking…" : "Thinking block · content not shared" });
+              const text = thinkingRunText(message, index);
+              if (text) blocks.push({ id, role: "thinking", text });
+              else if (message.stopReason === "pending" && !block.redacted) {
+                blocks.push({ id, role: "thinking", text: "Pi is thinking…" });
+              }
             }
             break;
           case "toolCall": {
@@ -67,8 +70,8 @@ function projectTranscript(entries: SessionEntry[], streaming?: AssistantMessage
       blocks.push(...toolBlocks);
       const errorText = message.stopReason === "length" ? "Response was truncated before completion."
         : toolBlocks.length === 0 && message.stopReason === "aborted" ? message.errorMessage ?? "Operation aborted"
-        : toolBlocks.length === 0 && message.stopReason === "error" ? `Error: ${message.errorMessage ?? "Unknown error"}`
-        : undefined;
+          : toolBlocks.length === 0 && message.stopReason === "error" ? `Error: ${message.errorMessage ?? "Unknown error"}`
+            : undefined;
       if (errorText) blocks.push({ id: `assistant-${message.timestamp}:error`, role: "assistant", text: errorText, status: "failed" });
     } else if (message.role === "toolResult") {
       const tool = tools.get(message.toolCallId);
@@ -80,18 +83,30 @@ function projectTranscript(entries: SessionEntry[], streaming?: AssistantMessage
         tool.status = status;
         tool.output = output;
       } else {
-        blocks.push({ id: message.toolCallId, role: "tool", text: "", toolName: message.toolName,
-          toolCallId: message.toolCallId, status, output });
+        blocks.push({
+          id: message.toolCallId, role: "tool", text: "", toolName: message.toolName,
+          toolCallId: message.toolCallId, status, output
+        });
       }
     }
   }
   return blocks;
 }
 
+function thinkingRunText(message: AssistantMessage, start: number): string {
+  const parts: string[] = [];
+  for (let index = start; index < message.content.length; index++) {
+    const block = message.content[index]!;
+    if (block.type !== "thinking") break;
+    if (!block.redacted && block.thinking.trim()) parts.push(block.thinking);
+  }
+  return parts.join("\n\n");
+}
+
 export function toolResultText(message: { toolName: string; content: { type: string; text?: string }[]; details?: unknown; isError: boolean }): string {
   const details = message.details;
   if (message.toolName === "edit" && !message.isError && details && typeof details === "object"
-      && "diff" in details && typeof details.diff === "string") return details.diff;
+    && "diff" in details && typeof details.diff === "string") return details.diff;
   return textContent(message.content);
 }
 
