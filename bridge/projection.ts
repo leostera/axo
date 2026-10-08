@@ -95,11 +95,11 @@ function projectTranscript(entries: SessionEntry[], streaming?: AssistantMessage
 
 function thinkingRunText(message: AssistantMessage, start: number): string {
   const parts: string[] = [];
-  for (let index = start; index < message.content.length; index++) {
-    const block = message.content[index]!;
-    if (block.type !== "thinking") break;
-    if (!block.redacted && block.thinking.trim()) parts.push(block.thinking);
-  }
+  message.content.forEach((block) => {
+    if (block.type === "thinking" && !block.redacted) {
+      parts.push(block.thinking);
+    }
+  });
   return parts.join("\n\n");
 }
 
