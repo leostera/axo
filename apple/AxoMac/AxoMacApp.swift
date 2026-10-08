@@ -16,8 +16,17 @@ final class AxoMacApp: NSObject, NSApplicationDelegate, NSWindowDelegate {
 
     func applicationDidFinishLaunching(_ notification: Notification) {
         do {
-            guard let root = ProcessInfo.processInfo.environment["AXO_REPO"] else {
+            let environment = ProcessInfo.processInfo.environment
+            guard let root = environment["AXO_REPO"]
+                ?? Bundle.main.object(forInfoDictionaryKey: "AxoRepositoryPath") as? String else {
                 throw LaunchError.missingRepository
+            }
+            // Finder launches do not inherit the development shell's resource paths.
+            if environment["GHOSTTY_RESOURCES_DIR"] == nil {
+                setenv("GHOSTTY_RESOURCES_DIR", root + "/vendor/ghostty/zig-out/share/ghostty", 1)
+            }
+            if environment["TERMINFO"] == nil {
+                setenv("TERMINFO", root + "/vendor/ghostty/zig-out/share/terminfo", 1)
             }
             let runtime = try GhosttyRuntime()
             self.runtime = runtime

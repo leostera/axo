@@ -3,6 +3,16 @@ import assert from "node:assert/strict";
 import { hostFrameSchema, phoneFrameSchema, parseFrame, MAX_FRAME_BYTES } from "../shared/protocol";
 import { projectMessages, submittedCommandIds } from "../bridge/projection";
 import type { SessionEntry } from "@earendil-works/pi-coding-agent";
+import type { AssistantMessage } from "@earendil-works/pi-ai";
+
+test("cancellation commands target a specific active run", () => {
+  const command = { type: "cancel", id: "cancel-1", sessionId: "s1", runId: "run-1" };
+  assert.deepEqual(phoneFrameSchema.parse(command), command);
+  assert.throws(() => phoneFrameSchema.parse({ ...command, runId: undefined }));
+  assert.deepEqual(hostFrameSchema.parse({ type: "ack", id: command.id, disposition: "cancelled" }), {
+    type: "ack", id: command.id, disposition: "cancelled",
+  });
+});
 
 test("phone commands require a destination and reject empty/oversized prompts", () => {
   const command = { type: "prompt", id: "c", sessionId: "s", text: "hello" };
@@ -11,6 +21,26 @@ test("phone commands require a destination and reject empty/oversized prompts", 
     assert.throws(() => phoneFrameSchema.parse({ ...command, ...change }));
   }
   assert.throws(() => parseFrame(" ".repeat(MAX_FRAME_BYTES + 1), phoneFrameSchema));
+});
+
+test("running snapshots carry bounded tool activity and accept older hosts", () => {
+  const snapshot = {
+    type: "snapshot", sessionId: "s1", state: "running", messages: [], question: null,
+    activities: [{ id: "tool-1", toolName: "bash", summary: "{ command: ls }", status: "running", output: "README.md" }],
+    events: [{ id: "event-1", sequence: 1, timestamp: 1000, category: "tool", name: "tool_execution_start", summary: "bash started", detail: "{ command: ls }" }],
+    droppedEvents: 0,
+  };
+  assert.deepEqual(hostFrameSchema.parse(snapshot), snapshot);
+  const oldHost = hostFrameSchema.parse({ ...snapshot, activities: undefined, events: undefined, droppedEvents: undefined });
+  assert.equal(oldHost.type, "snapshot");
+  if (oldHost.type === "snapshot") {
+    assert.equal(oldHost.activities, undefined);
+    assert.equal(oldHost.events, undefined);
+  }
+  assert.throws(() => hostFrameSchema.parse({ ...snapshot, activities: Array(11).fill(snapshot.activities[0]) }));
+  assert.throws(() => hostFrameSchema.parse({ ...snapshot, events: Array(51).fill(snapshot.events[0]) }));
+  assert.throws(() => hostFrameSchema.parse({ ...snapshot, events: [{ ...snapshot.events[0], detail: "x".repeat(501) }] }));
+  assert.throws(() => hostFrameSchema.parse({ ...snapshot, activities: [{ ...snapshot.activities[0], output: "x".repeat(301) }] }));
 });
 
 test("roles cannot send each other's messages", () => {
@@ -29,6 +59,78 @@ test("projection is bounded and does not expose custom metadata", () => {
   assert.equal(messages.length, 28);
   assert.equal(messages[0].id, "72");
   assert.ok(!JSON.stringify(messages).includes("never send"));
+});
+
+const assistantFixture: AssistantMessage = {
+  role: "assistant", api: "openai-completions", provider: "test", model: "test", timestamp: 100,
+  stopReason: "toolUse", usage: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, totalTokens: 0,
+    cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, total: 0 } },
+  content: [
+    { type: "thinking", thinking: "PRIVATE REASONING", thinkingSignature: "PRIVATE SIGNATURE" },
+    { type: "thinking", thinking: "MORE PRIVATE REASONING" },
+    { type: "text", text: "Checking now." },
+    { type: "toolCall", id: "tool-ok", name: "bash", arguments: { command: "ls" } },
+    { type: "toolCall", id: "tool-error", name: "read", arguments: { path: "missing" } },
+  ],
+};
+function transcriptFixture(): SessionEntry[] {
+  const base = { parentId: null, timestamp: "2026-01-01T00:00:00Z" };
+  return [
+    { ...base, type: "message", id: "u", message: { role: "user", content: "Check files", timestamp: 1 } },
+    { ...base, type: "message", id: "a", message: assistantFixture },
+    ...[false, true].map((isError): SessionEntry => ({ ...base, type: "message", id: isError ? "e" : "r",
+      message: { role: "toolResult", toolCallId: isError ? "tool-error" : "tool-ok", toolName: isError ? "read" : "bash",
+        timestamp: 200, isError, content: [{ type: "text", text: isError ? "File not found" : "README.md" }] } })),
+  ];
+}
+
+test("transcript restores thinking markers and correlated colored tool blocks from session history", () => {
+  const projected = projectMessages(transcriptFixture());
+  assert.deepEqual(projected.map(block => block.role), ["user", "thinking", "assistant", "tool", "tool"]);
+  assert.equal(projected[3]?.status, "completed");
+  assert.equal(projected[3]?.output, "README.md");
+  assert.equal(projected[4]?.status, "failed");
+  assert.equal(projected[4]?.output, "File not found");
+  assert.ok(!JSON.stringify(projected).includes("PRIVATE"));
+  assert.deepEqual(projectMessages(transcriptFixture()), projected); // Reconnect uses the same stable row IDs.
+  hostFrameSchema.parse({ type: "snapshot", sessionId: "s", state: "idle", messages: projected, question: null });
+});
+
+test("streaming blocks use the same IDs as persisted blocks and are not duplicated", () => {
+  const entries = transcriptFixture();
+  const partial = { ...assistantFixture, stopReason: "pending" as const };
+  const streaming = projectMessages(entries.slice(0, 1), partial);
+  assert.deepEqual(streaming.map(block => block.id), projectMessages(entries).map(block => block.id));
+  assert.equal(streaming[1]?.text, "Pi is thinking…");
+  assert.equal(streaming[3]?.status, "running");
+  assert.deepEqual(projectMessages(entries, partial), projectMessages(entries));
+});
+
+test("projection follows Pi's assistant/tool ordering and shows terminal response errors", () => {
+  const content = [...assistantFixture.content, { type: "text" as const, text: "After call arguments." }];
+  const blocks = projectMessages([], { ...assistantFixture, content });
+  assert.deepEqual(blocks.map(block => block.role), ["thinking", "assistant", "assistant", "tool", "tool"]);
+  assert.equal(blocks[3]?.id, "tool-ok");
+  const failed = projectMessages([], { ...assistantFixture, content: [], stopReason: "error", errorMessage: "Provider unavailable" });
+  assert.equal(failed[0]?.text, "Error: Provider unavailable");
+  assert.equal(failed[0]?.status, "failed");
+});
+
+test("tool output shares the frame budget and aborted tool calls are failed", () => {
+  const entries = transcriptFixture();
+  const assistant = { ...assistantFixture, stopReason: "aborted" as const, errorMessage: "Operation aborted" };
+  const aborted = projectMessages(entries.slice(0, 1), assistant);
+  assert.equal(aborted[3]?.status, "failed");
+  assert.equal(aborted[3]?.output, "Operation aborted");
+  const manyEntries = Array.from({ length: 100 }, (_, index) => ({
+    ...entries[2]!, id: `result-${index}`,
+    message: { role: "toolResult" as const, toolCallId: `tool-${index}`, toolName: "bash", isError: false,
+      timestamp: index, content: [{ type: "text" as const, text: "\\u0000".repeat(4_000) }] },
+  })) as SessionEntry[];
+  const bounded = projectMessages(manyEntries);
+  assert.ok(bounded.reduce((size, block) => size + block.text.length + (block.output?.length ?? 0), 0) <= 28_000);
+  const frame = { type: "snapshot", sessionId: "s", state: "idle", messages: bounded, question: null };
+  parseFrame(JSON.stringify(frame), hostFrameSchema);
 });
 
 test("submitted command IDs are recovered independently of active branch", () => {

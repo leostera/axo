@@ -16,7 +16,9 @@ final class TerminalView: NSView, NSTextInputClient {
         self.runtime = runtime
         super.init(frame: NSRect(x: 0, y: 0, width: 1100, height: 750))
         wantsLayer = true
-        let command = "exec /bin/bash " + Self.shellQuote(repository + "/scripts/run-pi.sh")
+        registerForDraggedTypes([.string, .fileURL])
+        // Ghostty wraps this command in `exec -l`; it must begin with an executable, not a shell builtin.
+        let command = "/bin/bash " + Self.shellQuote(repository + "/scripts/run-pi.sh")
         var config = ghostty_surface_config_new()
         config.platform_tag = GHOSTTY_PLATFORM_MACOS
         config.platform.macos = ghostty_platform_macos_s(nsview: Unmanaged.passUnretained(self).toOpaque())
@@ -117,6 +119,31 @@ final class TerminalView: NSView, NSTextInputClient {
     override func scrollWheel(with event: NSEvent) {
         if let surface { ghostty_surface_mouse_scroll(surface, event.scrollingDeltaX, event.scrollingDeltaY, event.hasPreciseScrollingDeltas ? 1 : 0) }
     }
+    override func draggingEntered(_ sender: NSDraggingInfo) -> NSDragOperation {
+        guard surface != nil, let types = sender.draggingPasteboard.types,
+              !Set(types).isDisjoint(with: Self.dropTypes) else { return [] }
+        return .copy
+    }
+    override func performDragOperation(_ sender: NSDraggingInfo) -> Bool {
+        guard let surface,
+              let content = opinionatedDropText(from: sender.draggingPasteboard) else { return false }
+        window?.makeFirstResponder(self)
+        content.withCString { ghostty_surface_text(surface, $0, UInt(content.utf8.count)) }
+        return true
+    }
+    private func opinionatedDropText(from pasteboard: NSPasteboard) -> String? {
+        let items = pasteboard.pasteboardItems ?? []
+        let contents = items.compactMap { item -> String? in
+            if let propertyList = item.propertyList(forType: .fileURL),
+               let fileURL = NSURL(pasteboardPropertyList: propertyList, ofType: .fileURL) as URL?,
+               fileURL.isFileURL {
+                return Self.escapeTerminalPath(fileURL.path)
+            }
+            return item.string(forType: .string)
+        }
+        guard !contents.isEmpty else { return nil }
+        return contents.joined(separator: " ")
+    }
     private func mousePosition(_ event: NSEvent) {
         guard let surface else { return }
         let point = convert(event.locationInWindow, from: nil)
@@ -173,5 +200,15 @@ final class TerminalView: NSView, NSTextInputClient {
         if flags.contains(.capsLock) { raw |= GHOSTTY_MODS_CAPS.rawValue }
         return ghostty_input_mods_e(rawValue: raw)
     }
+    private static let dropTypes: Set<NSPasteboard.PasteboardType> = [.string, .fileURL]
+    private static let shellEscapeCharacters = "\\ ()[]{}<>\"'`!#$&;|*?\t"
+
+    private static func escapeTerminalPath(_ path: String) -> String {
+        shellEscapeCharacters.reduce(path) { escapedPath, character in
+            let escapedCharacter = "\\" + String(character)
+            return escapedPath.replacingOccurrences(of: String(character), with: escapedCharacter)
+        }
+    }
+
     private static func shellQuote(_ text: String) -> String { "'" + text.replacingOccurrences(of: "'", with: "'\\''") + "'" }
 }

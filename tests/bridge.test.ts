@@ -10,6 +10,12 @@ import { once } from "node:events";
 import { WebSocketServer, type WebSocket } from "ws";
 import type { AddressInfo } from "node:net";
 import { hostFrameSchema, type HostFrame } from "../shared/protocol";
+import { promptDelivery } from "../bridge/delivery";
+
+test("phone prompts interrupt active work instead of becoming follow-ups", () => {
+  assert.equal(promptDelivery(true), undefined);
+  assert.deepEqual(promptDelivery(false), { deliverAs: "steer" });
+});
 
 // Exercises the actual interactive Pi runtime, not RPC or a mocked ExtensionAPI.
 test("real Pi TUI accepts a phone prompt and shares a question/result", { timeout: 30_000 }, async () => {
@@ -35,12 +41,16 @@ test("real Pi TUI accepts a phone prompt and shares a question/result", { timeou
     const payload = JSON.parse(body);
     modelRequests++;
     const hasAnswer = payload.messages.some((message: { role: string }) => message.role === "tool");
-    const delta = hasAnswer ? { content: "Phone answer received. Prototype loop works." } : {
-      tool_calls: [{ index: 0, id: "tool-1", type: "function", function: { name: "axo_ask", arguments: JSON.stringify({ title: "Choose output", options: ["JSON", "Markdown"] }) } }],
+    const lastUser = [...payload.messages].reverse().find((message: { role: string }) => message.role === "user");
+    const lastUserText = typeof lastUser?.content === "string" ? lastUser.content : JSON.stringify(lastUser?.content ?? "");
+    const askingBeforeCancel = lastUserText.includes("Hold while I decide");
+    const delta = hasAnswer && !askingBeforeCancel ? { content: "Phone answer received. Prototype loop works." } : {
+      tool_calls: [{ index: 0, id: `tool-${modelRequests}`, type: "function", function: { name: "axo_ask", arguments: JSON.stringify({ title: "Choose output", options: ["JSON", "Markdown"] }) } }],
     };
     response.writeHead(200, { "Content-Type": "text/event-stream" });
-    for (const [value, finish] of [[{ role: "assistant" }, null], [delta, null], [{}, hasAnswer ? "stop" : "tool_calls"]]) {
+    for (const [value, finish] of [[{ role: "assistant" }, null], [delta, null], [{}, hasAnswer && !askingBeforeCancel ? "stop" : "tool_calls"]]) {
       response.write(`data: ${JSON.stringify({ id: "completion", object: "chat.completion.chunk", created: 1, model: "fixture", choices: [{ index: 0, delta: value, finish_reason: finish }] })}\n\n`);
+      if (hasAnswer && !askingBeforeCancel && value === delta) await new Promise(resolve => setTimeout(resolve, 150));
     }
     response.end("data: [DONE]\n\n");
   });
@@ -81,14 +91,43 @@ test("real Pi TUI accepts a phone prompt and shares a question/result", { timeou
     await waitFor(frame => frame.type === "ack" && frame.id === prompt.id);
     const waiting = await waitFor(frame => frame.type === "snapshot" && frame.question !== null);
     if (waiting.type !== "snapshot" || !waiting.question) throw new Error("Expected question");
+    assert.ok(waiting.activities?.some(activity => activity.toolName === "axo_ask" && activity.status === "running"));
+    assert.ok(waiting.messages.some(message => message.role === "tool" && message.toolName === "axo_ask" && message.status === "running"));
+    const userMessage = waiting.messages.find(message => message.role === "user" && message.text.includes(prompt.text));
+    const toolStarted = waiting.events?.find(event => event.name === "tool_execution_start");
+    assert.ok(toolStarted);
+    assert.equal(toolStarted.anchorMessageId, userMessage?.id);
     host!.send(JSON.stringify({ type: "answer", id: "phone-answer", sessionId: initial.sessionId, questionId: waiting.question.id, value: "JSON" }));
+    const liveTextFrame = await waitFor(frame => frame.type === "snapshot" && (frame.liveText?.includes("Phone answer received.") ?? false));
+    assert.ok(liveTextFrame.type === "snapshot" && liveTextFrame.events?.some(event => event.name === "assistant.text_delta"));
     const completed = await waitFor(frame => frame.type === "snapshot" && frame.state === "idle" && frame.messages.some(message => message.text.includes("Prototype loop works")));
     assert.equal(completed.type, "snapshot");
+    if (completed.type === "snapshot") {
+      assert.ok(completed.activities?.some(activity => activity.toolName === "axo_ask" && activity.status === "completed"));
+      assert.ok(completed.messages.some(message => message.role === "tool" && message.toolName === "axo_ask" && message.status === "completed"));
+      const beforeSync = frames.length;
+      host!.send(JSON.stringify({ type: "sync" }));
+      const deadline = Date.now() + 3_000;
+      while (frames.length === beforeSync && Date.now() < deadline) await new Promise(resolve => setTimeout(resolve, 30));
+      const restored = frames.slice(beforeSync).find(frame => frame.type === "snapshot");
+      assert.ok(restored?.type === "snapshot" && restored.messages.some(message => message.role === "tool" && message.status === "completed"));
+    }
+    const cancelPrompt = { type: "prompt", id: "cancel-test-prompt", sessionId: initial.sessionId, text: "Hold while I decide." };
+    host!.send(JSON.stringify(cancelPrompt));
+    await waitFor(frame => frame.type === "ack" && frame.id === cancelPrompt.id);
+    const cancelQuestion = await waitFor(frame => frame.type === "snapshot" && frame.state === "waiting"
+      && frame.question !== null && frame.question.id !== waiting.question!.id);
+    if (cancelQuestion.type !== "snapshot" || !cancelQuestion.runId) throw new Error("Expected an active run id");
+    host!.send(JSON.stringify({ type: "cancel", id: "cancel-run", sessionId: initial.sessionId, runId: cancelQuestion.runId }));
+    await waitFor(frame => frame.type === "ack" && frame.id === "cancel-run" && frame.disposition === "cancelled");
+    const cancelled = await waitFor(frame => frame.type === "snapshot" && frame.state === "idle" && frame.runId === null
+      && frame.messages.some(message => message.role === "user" && message.text.includes("Hold while I decide")));
+    assert.equal(cancelled.type, "snapshot");
     host!.send(JSON.stringify(prompt));
     await waitFor(frame => frame.type === "error" && frame.id === prompt.id && frame.message.includes("Already submitted"));
     host!.send(JSON.stringify({ ...prompt, id: "stale", sessionId: "wrong-session" }));
     await waitFor(frame => frame.type === "error" && frame.id === "stale");
-    assert.equal(modelRequests, 2);
+    assert.equal(modelRequests, 3);
   } finally {
     child.kill("SIGTERM");
     await exited;

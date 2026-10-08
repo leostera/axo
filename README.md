@@ -16,9 +16,9 @@ Mac: libghostty → interactive Pi + Axo extension
 
 - The real Pi **interactive TUI** has been exercised on a PTY with a local deterministic model: a remote prompt arrives, Pi asks a question, a remote answer resolves its local dialog, and its result returns to the phone-side connection. No paid model is used in tests.
 - The relay builds with `cf`; Workers-runtime tests cover bidirectional forwarding, offline rejection, duplicate host rejection, and unauthenticated access. JWT tests cover signature, issuer, audience, expiry, and identity restrictions.
-- The shared Swift library builds. Mac application sources type-check against the pinned Ghostty C headers.
-- **The complete Mac/iPhone UI demo is not yet verified.** This development machine has Command Line Tools but no full Xcode, iOS SDK, or Metal toolchain. Ghostty linking, iPhone builds/signing, and real Access login must be tested with those installed.
-- **Nothing has been deployed.** Access values deliberately default to an unconfigured, fail-closed state. The actual hostname/account has not been selected.
+- **Native builds pass with Xcode 27:** the Mac app links the pinned full Ghostty framework; the iPhone app builds for both simulator architectures and as an unsigned device app. All nine shared Swift package tests pass. A signed device build is installed on Leandro's iPhone.
+- **The complete Mac/iPhone UI demo is not yet verified.** The Mac launches Pi and the signed iPhone app launches. The iOS 27 simulator runtime is installed. Complete phone login and the cross-device conversation loop still need user validation.
+- **The relay is deployed** at `https://bridge.axo.leostera.dev` in the `leostera` Cloudflare account. HTTPS is verified and unauthenticated requests redirect to Access. User access allows only `leandro@abstractmachines.dev`, and the Worker's email check matches. A separate Mac Service Auth policy is configured; a live host WebSocket upgrade succeeded, and that token is correctly rejected for phone login.
 
 ## Layout
 
@@ -27,6 +27,7 @@ Mac: libghostty → interactive Pi + Axo extension
 | `apple/AxoMac/` | AppKit application hosting one full libghostty surface |
 | `apple/AxoPhone/` | SwiftUI conversation and WebKit Access login |
 | `apple/AxoCore/` | Shared wire types and native WebSocket client |
+| `apple/AxoVoice/` | Apple on-device speech recognition and voice workflow |
 | `bridge/` | Pi extension; keeps the stock interactive TUI |
 | `service/` | TypeScript Worker, Access verification, one relay Durable Object |
 | `shared/protocol.ts` | Validated message contract |
@@ -67,6 +68,10 @@ Prerequisites:
 ./scripts/run-mac.sh
 ```
 
+If Xcode is installed but `xcode-select` still points to Command Line Tools, set `export DEVELOPER_DIR=/Applications/Xcode.app/Contents/Developer` for these commands. The development machine has a repository-local Zig at `vendor/toolchains/zig-aarch64-macos-0.16.0/zig`; select it with `export ZIG="$PWD/vendor/toolchains/zig-aarch64-macos-0.16.0/zig"` from the repository root. Neither setting changes the global toolchain.
+
+The first Ghostty build encountered Zig's `TlsInitializationFailed` while downloading dependencies. Those archives were downloaded using certificate-verified `curl`, imported with `zig fetch` from the Ghostty checkout, and checked against their pinned package hashes. No upstream source changes or TLS-verification bypass were needed.
+
 The build script fetches Ghostty commit `7ec9e26a29399b30ef78f06985fc75045b3cecb6` into ignored `vendor/ghostty/` and builds its full `GhosttyKit.xcframework`, not the VT-only library. Retain upstream and dependency licenses when distributing a built application.
 
 `run-mac.sh` generates the Xcode project, builds an unsigned local Mac app, and launches it with the repository/resource paths it needs. This is a development launch, not a distributable app bundle.
@@ -88,17 +93,17 @@ This fallback runs in your current terminal; it is not presented as the native A
 
 There is no Axo account database or GitHub OAuth implementation in this slice. Cloudflare Access owns login and policy.
 
-Before deployment, select the account and the actual hostname (the discussed `api.axo.leostera.dev` remains a candidate). Configure a self-hosted Access application covering **every path on that hostname**:
+`service/cloudflare.config.ts` targets the `leostera` account and custom domain `bridge.axo.leostera.dev`. The self-hosted Access application **Axo bridge** (`5306c388-9b71-4f5b-91bf-2cf4d61bb1a8`) covers **every path on that hostname**. Its reusable **Axo — Leandro** Allow policy (`2df463f3-921a-4360-849e-fa5a3d123658`) permits only `leandro@abstractmachines.dev`; email one-time PIN is available in the account. The reusable **Axo — Mac service** policy (`d0739559-2db5-46da-8252-743611222219`) permits only the prototype Mac token. Its credentials are stored in ignored `local/relay.json` with mode `0600`; the token expires on **2026-11-07** and must be renewed or replaced before then. Restart the Mac app after initially creating credentials so Pi loads the bridge configuration.
 
-1. A narrowly scoped Allow policy for your user identity, using your chosen Access login method.
-2. A Service Auth policy for one Mac service token, without an Everyone bypass.
-3. Set these **non-secret** fields in `service/cloudflare.config.ts`:
+1. Keep the user Allow policy narrowly scoped; do not add an Everyone bypass.
+2. Keep the Service Auth policy restricted to the Mac token, not all service tokens.
+3. Keep these **non-secret** fields in `service/cloudflare.config.ts` aligned with Access:
    - `ACCESS_TEAM_URL`: the HTTPS team origin, no trailing slash.
    - `ACCESS_AUD`: this Access application's audience tag.
    - `ACCESS_USER_EMAIL`: the allowed user's verified email claim.
    - `ACCESS_HOST_CLIENT_ID`: the Mac service token's client ID. Access puts this in `common_name`; service-token JWTs have an empty `sub`.
-4. Attach the protected custom hostname to the Worker. `workers.dev` and preview URLs are disabled in configuration so they do not become alternate entrypoints.
-5. Build/deploy using the project-pinned `cf` CLI:
+4. Keep `workers.dev` and preview URLs disabled so they do not become alternate entrypoints. The custom domain is attached automatically by `cf deploy` from the `domains` configuration.
+5. Redeploy updated identity bindings using the project-pinned `cf` CLI:
 
 ```sh
 cd service
@@ -107,13 +112,13 @@ npm run build
 npm run deploy
 ```
 
-No domain is created automatically by this repository. Keep the Access guard in place before enabling the custom hostname. The Worker independently verifies JWT signature, issuer, audience, expiry, and the appropriate user/service identity before upgrading a connection. Unconfigured values must not be relaxed into a development bypass.
+Keep the existing Access guard in place when redeploying. The Access application and policies are managed separately from `cf deploy`. The Worker independently verifies JWT signature, issuer, audience, expiry, and the appropriate user/service identity before upgrading a connection. Unconfigured values must not be relaxed into a development bypass.
 
 Create an ignored credentials file `local/relay.json` on the Mac:
 
 ```json
 {
-  "relayURL": "https://YOUR-PROTECTED-HOSTNAME",
+  "relayURL": "https://bridge.axo.leostera.dev",
   "accessClientId": "YOUR-ACCESS-SERVICE-TOKEN-CLIENT-ID",
   "accessClientSecret": "YOUR-ACCESS-SERVICE-TOKEN-SECRET"
 }
@@ -133,13 +138,32 @@ xcodegen generate
 open Axo.xcodeproj
 ```
 
-Select the **AxoPhone** scheme, set your signing team, and run on an iPhone or simulator. The project currently includes the Mac framework reference, so build Ghostty first when generating the whole project.
+Select the **AxoPhone** scheme, set your signing team, and run on an iPhone or simulator. The phone target builds independently of Ghostty; only the Mac target needs that framework. Running the simulator also requires an installed iOS simulator runtime.
 
-Enter the protected HTTPS origin, choose **Sign in**, and complete Cloudflare Access in the WebKit sheet. The app reads that sheet's `CF_Authorization` cookie into the device-only Keychain and includes it on its native WebSocket handshake. It does not assume Safari's cookie jar is shared with `URLSession`.
+To reproduce the unsigned builds from the repository root:
+
+```sh
+export DEVELOPER_DIR=/Applications/Xcode.app/Contents/Developer
+(cd apple && xcodegen generate)
+xcodebuild -project apple/Axo.xcodeproj -scheme AxoMac -configuration Debug \
+  -destination 'platform=macOS,arch=arm64' -derivedDataPath apple/DerivedData \
+  CODE_SIGNING_ALLOWED=NO build
+xcodebuild -project apple/Axo.xcodeproj -scheme AxoPhone -configuration Debug \
+  -sdk iphonesimulator -destination 'generic/platform=iOS Simulator' \
+  -derivedDataPath apple/DerivedData CODE_SIGNING_ALLOWED=NO build
+```
+
+For the unsigned device build, replace `iphonesimulator` with `iphoneos` and the destination with `generic/platform=iOS`. An unsigned device app cannot be installed on an iPhone until signing is configured.
+
+The app defaults to `https://bridge.axo.leostera.dev` and migrates the original `.invalid` placeholder without overwriting custom endpoints. Choose **Sign in** and complete Cloudflare Access in the WebKit sheet. The app reads that sheet's `CF_Authorization` cookie into the device-only Keychain and includes it on its native WebSocket handshake. It does not assume Safari's cookie jar is shared with `URLSession`.
 
 Access email one-time PIN is a reasonable initial login method. An identity provider that disallows embedded browser authentication may require a different native login handoff; this has **not** been verified on a real device. An expired/revoked login requires reconnect/sign-in. Do not work around it by opening the relay publicly.
 
-Keyboard dictation supplies voice input; there is no Axo audio-upload service. Backgrounding the phone disconnects its socket; returning reconnects and obtains a fresh snapshot. No push notifications yet.
+The chat uses a dark, conversation-first layout with formatted Markdown, user bubbles, copy/share actions, and a two-row composer with text above its controls. While Pi runs, the phone shows a thinking indicator and recent tool calls/results; messages sent during an active run use Pi's steering delivery. This shows tool activity, not private model reasoning. Relay configuration and sign-in are behind the **top-left connection button**, not a form above the transcript. The composer's **+** menu includes paste and voice information.
+
+**Voice prompts:** on a supported **iOS 26+** device, tap the **waveform button**, confirm Apple on-device speech setup, and allow the microphone. Apple may download English language assets; progress shows **received / total bytes** when the OS reports them, otherwise a percentage. Record, tap **stop and send**, and Axo transcribes locally and sends the prompt automatically when connected; if sending is unavailable, the transcript stays in the draft. Recognition uses Apple's SpeechAnalyzer/SpeechTranscriber locally, with no server fallback or audio upload. Recording continues until stopped, interrupted, or backgrounded. FluidAudio and the Parakeet download are removed; opening this version clears Axo's old model cache. See [voice prompting](docs/voice-prompts.md) for setup, privacy, and tests.
+
+A native WebSocket ping runs every 20 seconds. If the connection fails while Axo is active, it retries with exponential backoff (up to 30 seconds); backgrounding intentionally disconnects, and returning reconnects with saved credentials and obtains a fresh snapshot. No push notifications yet.
 
 ## Try the loop
 
@@ -156,7 +180,7 @@ Keyboard dictation supplies voice input; there is no Axo audio-upload service. B
 - Access + TLS is **not end-to-end encryption**. The relay can read forwarded content. Use a non-sensitive playground until the E2EE and work-policy questions are resolved.
 - No transcript, prompt queue, or model credentials are stored by the relay. It briefly holds live payloads and connection attachments; its storage is used for credential-expiry alarms.
 - Only `axo_ask` questions are mirrored. Other Pi extensions' custom dialogs stay local.
-- Phone history is a bounded user/assistant-text projection. It omits tool output, thinking, images, abandoned branches, and old content beyond the size limit. Pi retains the actual history locally. Dedicated RFD/file viewing is not implemented yet.
-- A submitted acknowledgment means the bridge called Pi's message API, **not** that execution succeeded. Prompts during a run use follow-up semantics.
+- Phone history is a bounded projection of Pi's active branch: user/assistant text, private-thinking markers (not reasoning text), and tool calls with success/failure and output. Tool results update their original call row by `toolCallId`; live assistant blocks overlay persisted history with stable IDs. Reconnects reconstruct these blocks from Pi's session, independently of the diagnostic event buffer. Up to 80 blocks share a 28,000-character text/output budget; each tool output is capped at 3,000 characters. Images, abandoned branches, and older content are omitted. Pi retains the actual history locally. Dedicated RFD/file viewing is not implemented yet.
+- A submitted acknowledgment means the bridge called Pi's message API, **not** that execution succeeded. Prompts during a run use steering semantics.
 - Remote prompts are not permission-sandboxed: Pi retains its normal host capabilities. Do not expose billing-capable credentials if spending must be technically prevented.
 - Terminal input/rendering and Access authentication still need physical-device testing. This is not yet a replacement for Ghostty's complete keyboard, clipboard, accessibility, and windowing behavior.

@@ -37,6 +37,24 @@ struct AccessLogin: UIViewRepresentable {
         }
 
         func webView(_ webView: WKWebView, didFailProvisionalNavigation navigation: WKNavigation!, withError error: Error) {
+            reportNavigationFailure(error)
+        }
+
+        func webView(_ webView: WKWebView, didFail navigation: WKNavigation!, withError error: Error) {
+            reportNavigationFailure(error)
+        }
+
+        private func reportNavigationFailure(_ error: Error) {
+            let error = error as NSError
+            if error.domain == NSURLErrorDomain {
+                if error.code == NSURLErrorCancelled { return }
+                if error.code == NSURLErrorCannotFindHost {
+                    let host = (error.userInfo[NSURLErrorFailingURLErrorKey] as? URL)?.host
+                        ?? parent.endpoint.baseURL.host ?? "the login server"
+                    parent.onFailure("Cannot resolve \(host). Check the relay hostname and network.")
+                    return
+                }
+            }
             parent.onFailure("Could not load Access login. Check the endpoint and network.")
         }
     }

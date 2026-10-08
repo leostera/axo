@@ -1,9 +1,11 @@
 import type { ExtensionAPI, ExtensionContext } from "@earendil-works/pi-coding-agent";
 import { Type } from "typebox";
+import type { AssistantMessage } from "@earendil-works/pi-ai";
 import { loadConfig } from "./config";
 import { RelayConnection } from "./connection";
+import { promptDelivery } from "./delivery";
 import { projectMessages, submittedCommandIds } from "./projection";
-import type { PhoneFrame, Question } from "../shared/protocol";
+import type { AgentActivity, AgentEvent, PhoneFrame, Question } from "../shared/protocol";
 
 interface PendingQuestion { question: Question; finish: (answer: string | undefined) => void }
 
@@ -12,27 +14,86 @@ export default function axoBridge(pi: ExtensionAPI): void {
   let connection: RelayConnection | undefined;
   let pending: PendingQuestion | undefined;
   let submitted = new Set<string>();
+  let activities: AgentActivity[] = [];
+  let recentEvents: AgentEvent[] = [];
+  let pendingEvents: AgentEvent[] = [];
+  let eventSequence = 0;
+  let droppedEvents = 0;
+  let activeRunID: string | undefined;
+  let activeRunMessageID: string | undefined;
+  let liveText: string | undefined;
+  let streamingMessage: AssistantMessage | undefined;
   let refresh: ReturnType<typeof setTimeout> | undefined;
 
-  function snapshot(): void {
+  function snapshot(replayRecentEvents = false): void {
     if (!context) return;
+    const events = replayRecentEvents ? recentEvents.slice(-50) : pendingEvents.splice(0, 50);
     connection?.send({
       type: "snapshot", sessionId: context.sessionManager.getSessionId(),
       state: pending ? "waiting" : context.isIdle() ? "idle" : "running",
-      messages: projectMessages(context.sessionManager.getBranch()), question: pending?.question ?? null,
+      messages: projectMessages(context.sessionManager.getBranch(), streamingMessage), activities, events, droppedEvents,
+      liveText, runId: activeRunID ?? null, question: pending?.question ?? null,
     });
+    if (!replayRecentEvents && pendingEvents.length > 0) scheduleSnapshot(context);
+  }
+
+  function recordEvent(
+    ctx: ExtensionContext, category: AgentEvent["category"], name: string, summary: string,
+    detail?: string, correlationId?: string,
+  ): void {
+    if (activeRunID && !activeRunMessageID) {
+      activeRunMessageID = projectMessages(ctx.sessionManager.getBranch()).filter(message => message.role === "user").at(-1)?.id;
+    }
+    const event: AgentEvent = {
+      id: crypto.randomUUID(), sequence: ++eventSequence, timestamp: Date.now(), category, name,
+      ...(activeRunMessageID ? { anchorMessageId: activeRunMessageID } : {}),
+      ...(correlationId ? { correlationId } : {}),
+      summary: summary.slice(0, 200), ...(detail ? { detail: detail.slice(0, 500) } : {}),
+    };
+    recentEvents.push(event);
+    if (recentEvents.length > 50) recentEvents.shift();
+    pendingEvents.push(event);
+    if (pendingEvents.length > 5_000) { pendingEvents.shift(); droppedEvents += 1; }
+    scheduleSnapshot(ctx);
   }
 
   function scheduleSnapshot(ctx: ExtensionContext): void {
     context = ctx;
-    clearTimeout(refresh);
-    // message_end can arrive before the session manager persists the message.
-    refresh = setTimeout(snapshot, 50);
+    if (refresh) return;
+    // Flush in bounded batches even during continuous token/event traffic.
+    refresh = setTimeout(() => {
+      refresh = undefined;
+      snapshot();
+    }, 50);
+  }
+
+  function shortText(value: unknown, maxLength: number): string {
+    let text: string;
+    try { text = typeof value === "string" ? value : JSON.stringify(value) ?? String(value); }
+    catch { text = String(value); }
+    return text.replace(/\s+/g, " ").slice(0, maxLength);
+  }
+
+  function toolOutput(value: unknown): string | undefined {
+    if (!value || typeof value !== "object" || !("content" in value) || !Array.isArray(value.content)) return undefined;
+    const text = value.content
+      .filter((block): block is { type: "text"; text: string } => !!block && typeof block === "object" && block.type === "text" && typeof block.text === "string")
+      .map(block => block.text)
+      .join("\n");
+    return text ? shortText(text, 300) : undefined;
+  }
+
+  function updateActivity(activity: AgentActivity): void {
+    const index = activities.findIndex(item => item.id === activity.id);
+    if (index === -1) activities.push(activity);
+    else activities[index] = activity;
+    // Keep the live snapshot comfortably below the relay's 256 KiB frame limit.
+    if (activities.length > 10) activities.shift();
   }
 
   function receive(frame: PhoneFrame): void {
     if (!context) return;
-    if (frame.type === "sync") { snapshot(); return; }
+    if (frame.type === "sync") { snapshot(true); return; }
     const fail = (message: string) => connection?.send({ type: "error", id: frame.id, message });
     if (frame.sessionId !== context.sessionManager.getSessionId()) { fail("The desktop conversation changed. Refresh before sending."); return; }
     if (submitted.has(frame.id)) { fail("Already submitted; not replayed. Check the conversation."); return; }
@@ -41,39 +102,178 @@ export default function axoBridge(pi: ExtensionAPI): void {
       if (!pending.question.options.includes(frame.value)) { fail("Choose one of the offered answers."); return; }
       submitted.add(frame.id);
       pending.finish(frame.value);
+    } else if (frame.type === "cancel") {
+      if (context.isIdle() || frame.runId !== activeRunID) { fail("That Pi run is no longer active."); return; }
+      submitted.add(frame.id);
+      context.abort();
+      connection?.send({ type: "ack", id: frame.id, disposition: "cancelled" });
+      return;
     } else {
       if (pending) { fail("Answer the pending question before sending another prompt."); return; }
       // Record before dispatch: ambiguous crashes must never blindly replay side effects.
       pi.appendEntry("axo.submitted", { id: frame.id });
       submitted.add(frame.id);
-      pi.sendUserMessage(frame.text, { deliverAs: "followUp" });
+      const isIdle = context.isIdle();
+      if (isIdle) activities = [];
+      pi.sendUserMessage(frame.text, promptDelivery(isIdle));
     }
     // The extension API is fire-and-forget; submitted is NOT proof of execution.
     connection?.send({ type: "ack", id: frame.id, disposition: "submitted" });
   }
 
-  pi.on("session_start", (_event, ctx) => {
+  pi.on("session_start", (event, ctx) => {
     connection?.stop();
     pending?.finish(undefined);
     context = ctx;
+    activities = [];
+    recentEvents = [];
+    pendingEvents = [];
+    eventSequence = 0;
+    droppedEvents = 0;
+    activeRunID = undefined;
+    activeRunMessageID = undefined;
+    liveText = undefined;
+    streamingMessage = undefined;
     submitted = submittedCommandIds(ctx.sessionManager.getEntries());
     const configPath = process.env.AXO_CONFIG;
     if (!configPath) { ctx.ui.setStatus("axo", "Axo: local only (AXO_CONFIG not set)"); return; }
     try {
       connection = new RelayConnection(loadConfig(configPath), receive,
-        status => context?.ui.setStatus("axo", `Axo: ${status}`), snapshot);
+        status => context?.ui.setStatus("axo", `Axo: ${status} · transcript blocks`), () => snapshot(true));
       connection.connect();
     } catch {
       ctx.ui.notify("Axo could not load its relay credentials. Check AXO_CONFIG and file permissions (0600).", "error");
     }
+    recordEvent(ctx, "session", event.type, `Pi session ${event.reason}`);
   });
-  pi.on("message_end", (_event, ctx) => scheduleSnapshot(ctx));
-  pi.on("agent_start", (_event, ctx) => scheduleSnapshot(ctx));
-  pi.on("agent_settled", (_event, ctx) => scheduleSnapshot(ctx));
-  pi.on("session_shutdown", () => {
+  pi.on("resources_discover", (event, ctx) => recordEvent(ctx, "session", event.type, `Resources discovered during ${event.reason}`));
+  pi.on("mcp_servers_change", (event, ctx) => recordEvent(ctx, "session", event.type, `${event.servers.length} MCP servers configured`));
+  pi.on("session_info_changed", (event, ctx) => recordEvent(ctx, "session", event.type, event.name ? `Session named ${event.name}` : "Session name cleared"));
+  pi.on("session_before_switch", (event, ctx) => recordEvent(ctx, "session", event.type, `Session ${event.reason} requested`));
+  pi.on("session_before_fork", (event, ctx) => recordEvent(ctx, "session", event.type, `Session fork requested (${event.position})`));
+  pi.on("session_before_compact", (event, ctx) => recordEvent(ctx, "session", event.type, `Context compaction starting (${event.reason})`));
+  pi.on("session_compact", (event, ctx) => recordEvent(ctx, "session", event.type, `Context compacted (${event.reason})`));
+  pi.on("session_compact_failed", (event, ctx) => recordEvent(ctx, "session", event.type, `Context compaction ${event.aborted ? "aborted" : "failed"}`,
+    event.errorMessage ? shortText(event.errorMessage, 500) : undefined));
+  pi.on("session_before_tree", (event, ctx) => recordEvent(ctx, "session", event.type, "Session tree navigation requested"));
+  pi.on("session_tree", (event, ctx) => recordEvent(ctx, "session", event.type, "Session tree navigation completed"));
+  pi.on("context", (event, ctx) => recordEvent(ctx, "provider", event.type, `${event.messages.length} context messages prepared`));
+  pi.on("context_with_system", (event, ctx) => recordEvent(ctx, "provider", event.type, `${event.messages.length} model-context messages prepared; prompt content withheld`));
+  pi.on("cache_warming_decision", (_event, ctx) => recordEvent(ctx, "provider", "cache_warming_decision", "Prompt cache decision made"));
+  pi.on("before_provider_request", (_event, ctx) => recordEvent(ctx, "provider", "before_provider_request", "Provider request prepared; prompt payload withheld"));
+  pi.on("before_provider_headers", (event, ctx) => recordEvent(ctx, "provider", event.type, "Provider request headers prepared", `Header names: ${Object.keys(event.headers).join(", ")}`));
+  pi.on("after_provider_response", (event, ctx) => recordEvent(ctx, "provider", event.type, `Provider responded with HTTP ${event.status}`));
+  pi.on("provider_stream_event", (event, ctx) => {
+    const dataType = event.data && typeof event.data === "object" && "type" in event.data ? String(event.data.type) : "provider data";
+    recordEvent(ctx, "provider", event.type, `${event.provider}/${event.model} stream event`, dataType);
+  });
+  pi.on("before_agent_start", (event, ctx) => recordEvent(ctx, "lifecycle", event.type,
+    `Agent input prepared (${event.prompt.length} characters, ${event.images?.length ?? 0} images); prompt text in conversation`));
+  pi.on("agent_start", (_event, ctx) => {
+    activeRunID ??= crypto.randomUUID();
+    activeRunMessageID = projectMessages(ctx.sessionManager.getBranch()).filter(message => message.role === "user").at(-1)?.id;
+    recordEvent(ctx, "lifecycle", "agent_start", "Pi run started");
+  });
+  pi.on("agent_end", (event, ctx) => recordEvent(ctx, "lifecycle", event.type, `Pi run produced ${event.messages.length} messages`));
+  pi.on("agent_before_settle", (event, ctx) => recordEvent(ctx, "lifecycle", event.type,
+    `Pi is settling (${event.outcome}${event.continue ? ", continuing" : ""})`));
+  pi.on("agent_settled", (event, ctx) => {
+    recordEvent(ctx, "lifecycle", event.type, event.aborted ? "Pi run aborted" : "Pi run settled");
+    activeRunID = undefined;
+    activeRunMessageID = undefined;
+    liveText = undefined;
+    streamingMessage = undefined;
+  });
+  pi.on("ui_prompt_start", (event, ctx) => recordEvent(ctx, "input", event.type, `${event.kind} prompt opened`, event.title));
+  pi.on("ui_prompt_end", (event, ctx) => recordEvent(ctx, "input", event.type, `${event.kind} prompt closed`, event.title));
+  pi.on("turn_start", (event, ctx) => recordEvent(ctx, "turn", event.type, `Turn ${event.turnIndex} started`));
+  pi.on("turn_end", (event, ctx) => recordEvent(ctx, "turn", event.type, `Turn ${event.turnIndex} ended (${event.toolResults.length} tool results)`));
+  pi.on("message_start", (event, ctx) => {
+    if (event.message.role === "user" && ctx.isIdle()) {
+      activities = [];
+      liveText = undefined;
+    }
+    if (event.message.role === "assistant") { liveText = undefined; streamingMessage = event.message; }
+    recordEvent(ctx, "assistant", event.type, `${event.message.role} message started`);
+  });
+  pi.on("message_update", (event, ctx) => {
+    if (event.message.role === "assistant") streamingMessage = event.message;
+    const update = event.assistantMessageEvent;
+    switch (update.type) {
+      case "text_delta":
+        liveText = `${liveText ?? ""}${update.delta}`.slice(-4_000);
+        recordEvent(ctx, "assistant", "assistant.text_delta", "Assistant text streamed", update.delta);
+        break;
+      case "thinking_start":
+        recordEvent(ctx, "assistant", "assistant.thinking_start", "Private reasoning block started; content withheld");
+        break;
+      case "thinking_delta":
+        recordEvent(ctx, "assistant", "assistant.thinking_delta", `Private reasoning updated (${update.delta.length} characters; content withheld)`);
+        break;
+      case "thinking_end":
+        recordEvent(ctx, "assistant", "assistant.thinking_end", `Private reasoning block ended (${update.content.length} characters; content withheld)`);
+        break;
+      case "toolcall_start":
+      case "toolcall_delta":
+        recordEvent(ctx, "assistant", `assistant.${update.type}`, "Assistant is composing a tool call; argument content omitted");
+        break;
+      case "toolcall_end":
+        recordEvent(ctx, "assistant", update.type, `Assistant requested tool ${update.toolCall.name}`);
+        break;
+      case "done":
+        recordEvent(ctx, "assistant", update.type, `Assistant response finished (${update.reason})`);
+        break;
+      case "error":
+        recordEvent(ctx, "assistant", update.type, `Assistant response ended (${update.reason})`);
+        break;
+      default:
+        recordEvent(ctx, "assistant", update.type, `Assistant message event: ${update.type}`);
+    }
+  });
+  pi.on("message_end", (event, ctx) => {
+    if (event.message.role === "assistant") { liveText = undefined; streamingMessage = undefined; }
+    recordEvent(ctx, "assistant", event.type, `${event.message.role} message ended`);
+  });
+  pi.on("tool_execution_start", (event, ctx) => {
+    const summary = shortText(event.args, 250);
+    updateActivity({ id: event.toolCallId, toolName: event.toolName, summary, status: "running" });
+    recordEvent(ctx, "tool", event.type, `${event.toolName} started`, summary, event.toolCallId);
+  });
+  pi.on("tool_execution_update", (event, ctx) => {
+    const summary = shortText(event.args, 250);
+    const output = toolOutput(event.partialResult);
+    updateActivity({ id: event.toolCallId, toolName: event.toolName, summary, status: "running", output });
+    recordEvent(ctx, "tool", event.type, `${event.toolName} updated`, output, event.toolCallId);
+  });
+  pi.on("tool_execution_end", (event, ctx) => {
+    const summary = activities.find(activity => activity.id === event.toolCallId)?.summary ?? "";
+    const output = toolOutput(event.result);
+    updateActivity({ id: event.toolCallId, toolName: event.toolName, summary,
+      status: event.isError ? "failed" : "completed", output });
+    recordEvent(ctx, "tool", event.type, `${event.toolName} ${event.isError ? "failed" : "finished"}`,
+      output ?? (event.durationMs === undefined ? undefined : `Duration: ${event.durationMs} ms`), event.toolCallId);
+  });
+  pi.on("model_select", (event, ctx) => recordEvent(ctx, "model", event.type,
+    `Model selected: ${event.model.provider}/${event.model.id} (${event.source})`));
+  pi.on("thinking_level_select", (event, ctx) => recordEvent(ctx, "model", event.type, `Thinking level set to ${event.level}`));
+  pi.on("input", (event, ctx) => recordEvent(ctx, "input", event.type,
+    `Input received from ${event.source}${event.streamingBehavior ? ` (${event.streamingBehavior})` : ""}`,
+    `${event.text.length} characters`));
+  pi.on("user_bash", (event, ctx) => recordEvent(ctx, "input", event.type, "User shell command", shortText(event.command, 300)));
+  pi.on("tool_call", (event, ctx) => recordEvent(ctx, "tool", event.type,
+    `${event.toolName} call prepared`, shortText(event.input, 300), event.toolCallId));
+  pi.on("tool_result", (event, ctx) => recordEvent(ctx, "tool", event.type,
+    `${event.toolName} result ${event.isError ? "failed" : "returned"}`, toolOutput({ content: event.content }), event.toolCallId));
+  pi.on("session_shutdown", (event, ctx) => {
+    recordEvent(ctx, "session", event.type, `Pi session shutting down (${event.reason})`);
     clearTimeout(refresh);
+    snapshot();
     pending?.finish(undefined);
     connection?.stop();
+    activeRunID = undefined;
+    activeRunMessageID = undefined;
+    liveText = undefined;
+    streamingMessage = undefined;
     context = undefined;
   });
 

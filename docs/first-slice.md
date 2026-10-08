@@ -6,7 +6,7 @@ This is the deliberately smaller implementation selected after reviewing [RFD000
 
 - One native macOS window, one libghostty terminal, Pi started automatically.
 - One fixed playground and one persistent Pi conversation.
-- One native iPhone conversation screen with text/keyboard dictation and choice buttons.
+- One native iPhone conversation screen with text, Apple's on-device English speech recognition on supported iOS 26+ devices, keyboard dictation, and choice buttons. See [voice prompting](voice-prompts.md) for Apple language-asset setup and the automatic-send flow with draft fallback.
 - One Cloudflare relay channel, protected by Cloudflare Access rather than Axo-owned accounts.
 - No session/workspace navigation, GitHub login implementation, offline command queue, E2EE, independent background host, push notifications, or additional machines.
 
@@ -49,10 +49,13 @@ The TypeScript boundary validates frames. The native client decodes the same sha
 
 ## Remaining gates to a usable device demo
 
-1. Install/select full Xcode and its Metal toolchain; provide Zig 0.16.0 and XcodeGen.
-2. Link/run the pinned full Ghostty framework; validate terminal input, IME, rendering, clipboard, and window hiding.
-3. Build/sign/run the iPhone app and verify the configured Access identity provider works in its login sheet.
-4. Confirm the Cloudflare account and hostname, create the Access guard and Mac service identity, configure the relay, and deploy.
-5. Perform the phone → actual Mac terminal loop outside the local network.
+Xcode 27, Metal, Zig 0.16.0, and XcodeGen are available. The pinned full Ghostty framework and Mac app link successfully; iPhone simulator and signed device builds pass, as do the nine shared Swift package tests. The Mac launches Pi, and the corrected iPhone app has been installed and launched on Leandro's phone. The relay is deployed at `bridge.axo.leostera.dev`, with Access and Worker checks allowing `leandro@abstractmachines.dev`.
 
-The repository's automated tests do not claim those physical-device/deployment gates have passed. See the root [README](../README.md) for commands and current validation status.
+The Mac service identity and narrowly scoped Access policy are configured, the relay is redeployed, and credentials are saved locally with mode `0600`. A live authenticated host WebSocket upgrade succeeded; the same token is rejected for phone login.
+
+1. Validate terminal input, IME, rendering, clipboard, and window hiding beyond basic startup.
+2. Complete phone login and verify the configured Access identity provider works in its WebKit sheet.
+3. Restart Axo on the Mac so Pi loads its newly created credentials; verify the phone sees the Mac online.
+4. Perform the phone → actual Mac terminal loop outside the local network.
+
+Successful builds and automated tests do not claim those runtime/device gates have passed. See the root [README](../README.md) for commands and current validation status.

@@ -13,4 +13,4 @@ npm --prefix "$ROOT" run build:bridge
 (cd "$ROOT/apple" && xcodegen generate)
 xcodebuild -project "$ROOT/apple/Axo.xcodeproj" -scheme AxoMac -configuration Debug \
   -derivedDataPath "$ROOT/apple/DerivedData" CODE_SIGNING_ALLOWED=NO build
-exec "$ROOT/apple/DerivedData/Build/Products/Debug/AxoMac.app/Contents/MacOS/AxoMac"
+exec "$ROOT/apple/DerivedData/Build/Products/Debug/Axo.app/Contents/MacOS/Axo"
