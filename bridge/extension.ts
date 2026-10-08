@@ -4,8 +4,9 @@ import type { AssistantMessage } from "@earendil-works/pi-ai";
 import { loadConfig } from "./config";
 import { RelayConnection } from "./connection";
 import { promptDelivery } from "./delivery";
-import { projectMessages, submittedCommandIds } from "./projection";
-import type { AgentActivity, AgentEvent, PhoneFrame, Question } from "../shared/protocol";
+import { projectHistory, projectMessages, submittedCommandIds } from "./projection";
+import { readToolOutput } from "./tool-output";
+import { MAX_FRAME_BYTES, type AgentActivity, type AgentEvent, type PhoneFrame, type HostFrame, type Question } from "../shared/protocol";
 
 interface PendingQuestion { question: Question; finish: (answer: string | undefined) => void }
 
@@ -28,12 +29,17 @@ export default function axoBridge(pi: ExtensionAPI): void {
   function snapshot(replayRecentEvents = false): void {
     if (!context) return;
     const events = replayRecentEvents ? recentEvents.slice(-50) : pendingEvents.splice(0, 50);
-    connection?.send({
+    const frame: Extract<HostFrame, { type: "snapshot" }> = {
       type: "snapshot", sessionId: context.sessionManager.getSessionId(),
       state: pending ? "waiting" : context.isIdle() ? "idle" : "running",
-      messages: projectMessages(context.sessionManager.getBranch(), streamingMessage), activities, events, droppedEvents,
+      ...projectHistory(context.sessionManager.getBranch(), streamingMessage), activities, events, droppedEvents,
       liveText, runId: activeRunID ?? null, question: pending?.question ?? null,
-    });
+    };
+    while (events.length > 0 && Buffer.byteLength(JSON.stringify(frame)) > MAX_FRAME_BYTES) {
+      const deferred = events.pop()!;
+      if (!replayRecentEvents) pendingEvents.unshift(deferred);
+    }
+    connection?.send(frame);
     if (!replayRecentEvents && pendingEvents.length > 0) scheduleSnapshot(context);
   }
 
@@ -96,6 +102,20 @@ export default function axoBridge(pi: ExtensionAPI): void {
     if (frame.type === "sync") { snapshot(true); return; }
     const fail = (message: string) => connection?.send({ type: "error", id: frame.id, message });
     if (frame.sessionId !== context.sessionManager.getSessionId()) { fail("The desktop conversation changed. Refresh before sending."); return; }
+    if (frame.type === "history") {
+      try {
+        connection?.send({ type: "history", id: frame.id, sessionId: frame.sessionId, beforeId: frame.beforeId,
+          ...projectHistory(context.sessionManager.getBranch(), streamingMessage, frame.beforeId) });
+      } catch (error) { fail(error instanceof Error ? error.message : "Could not load history."); }
+      return;
+    }
+    if (frame.type === "tool_output") {
+      void readToolOutput(context.sessionManager.getBranch(), frame.toolCallId, frame.offset).then(page => {
+        connection?.send({ type: "tool_output", id: frame.id, sessionId: frame.sessionId,
+          toolCallId: frame.toolCallId, offset: frame.offset, ...page });
+      }).catch(error => fail(error instanceof Error ? error.message : "Could not load tool output."));
+      return;
+    }
     if (submitted.has(frame.id)) { fail("Already submitted; not replayed. Check the conversation."); return; }
     if (frame.type === "answer") {
       if (!pending || pending.question.id !== frame.questionId) { fail("That question is no longer pending."); return; }
@@ -139,7 +159,7 @@ export default function axoBridge(pi: ExtensionAPI): void {
     if (!configPath) { ctx.ui.setStatus("axo", "Axo: local only (AXO_CONFIG not set)"); return; }
     try {
       connection = new RelayConnection(loadConfig(configPath), receive,
-        status => context?.ui.setStatus("axo", `Axo: ${status} · transcript blocks`), () => snapshot(true));
+        status => context?.ui.setStatus("axo", `Axo: ${status} · transcript blocks · paged history`), () => snapshot(true));
       connection.connect();
     } catch {
       ctx.ui.notify("Axo could not load its relay credentials. Check AXO_CONFIG and file permissions (0600).", "error");

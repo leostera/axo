@@ -33,7 +33,7 @@ struct ConversationView: View {
         #if DEBUG
         if isPreview { return ChatPreviewData.messages }
         #endif
-        return client.snapshot?.messages ?? []
+        return client.messages
     }
     private var agentState: AgentState? {
         #if DEBUG
@@ -112,8 +112,17 @@ struct ConversationView: View {
                     if messages.isEmpty {
                         ChatEmptyState(status: status, connect: { sheet = .connection }).disabled(voice.isBusy)
                     }
+                    if client.hasEarlierMessages {
+                        Button(client.isLoadingHistory ? "Loading earlier messages…" : "Load earlier messages") {
+                            client.loadEarlierMessages()
+                        }
+                        .font(.caption).foregroundStyle(.secondary)
+                        .disabled(client.isLoadingHistory || client.link != .online)
+                    }
                     ForEach(messages) { message in
-                        ChatMessageView(message: message, activity: agentActivities.first { $0.id == message.toolCallId })
+                        ChatMessageView(message: message, activity: agentActivities.first { $0.id == message.toolCallId },
+                                        outputState: message.toolCallId.flatMap { client.toolOutputs[$0] },
+                                        loadOutput: { if let id = message.toolCallId { client.loadToolOutput(toolCallId: id) } })
                     }
                     AgentActivityView(state: agentState, runId: agentRunId, activities: agentActivities,
                                        canCancel: canCancelAgent,

@@ -29,6 +29,10 @@ JSON text frames, maximum 256 KiB, over authenticated WebSockets:
 | Phone → Mac | `sync` | Request current projection |
 | Phone → Mac | `prompt` | Command ID, explicit Pi session ID, bounded text |
 | Phone → Mac | `answer` | Command ID, session ID, question ID, offered choice |
+| Phone → Mac | `cancel` | Command ID, session ID, active run ID |
+| Phone → Mac | `history` | Read-only page before a transcript block ID |
+| Phone → Mac | `tool_output` | Read-only output page for a saved tool call, using a byte offset |
+| Mac → phone | `history` / `tool_output` | Correlated bounded pages; never execute or queue a prompt |
 | Mac → phone | `snapshot` | Session identity, agent state, bounded messages, pending question |
 | Mac → phone | `ack` | Command was submitted to Pi; not proof of execution |
 | Either bridge/relay → phone | `error` | Rejection or failure; correlated by command ID where possible |
@@ -49,7 +53,7 @@ The TypeScript boundary validates frames. The native client decodes the same sha
 
 ## Remaining gates to a usable device demo
 
-Xcode 27, Metal, Zig 0.16.0, and XcodeGen are available. The pinned full Ghostty framework and Mac app link successfully; iPhone simulator and signed device builds pass, as do the nine shared Swift package tests. The Mac launches Pi, and the corrected iPhone app has been installed and launched on Leandro's phone. The relay is deployed at `bridge.axo.leostera.dev`, with Access and Worker checks allowing `leandro@abstractmachines.dev`.
+Xcode 27, Metal, Zig 0.16.0, and XcodeGen are available. The pinned full Ghostty framework and Mac app link successfully; iPhone simulator and signed device builds pass, as do the fourteen shared Swift package tests. The Mac launches Pi, and the corrected iPhone app has been installed and launched on Leandro's phone. The relay is deployed at `bridge.axo.leostera.dev`, with Access and Worker checks allowing `leandro@abstractmachines.dev`.
 
 The Mac service identity and narrowly scoped Access policy are configured, the relay is redeployed, and credentials are saved locally with mode `0600`. A live authenticated host WebSocket upgrade succeeded; the same token is rejected for phone login.
 

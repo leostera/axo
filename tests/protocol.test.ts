@@ -1,7 +1,8 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
 import { hostFrameSchema, phoneFrameSchema, parseFrame, MAX_FRAME_BYTES } from "../shared/protocol";
-import { projectMessages, submittedCommandIds } from "../bridge/projection";
+import { projectHistory, projectMessages, submittedCommandIds } from "../bridge/projection";
+import { presentTool } from "../bridge/tool-presentation";
 import type { SessionEntry } from "@earendil-works/pi-coding-agent";
 import type { AssistantMessage } from "@earendil-works/pi-ai";
 
@@ -25,7 +26,7 @@ test("phone commands require a destination and reject empty/oversized prompts", 
 
 test("running snapshots carry bounded tool activity and accept older hosts", () => {
   const snapshot = {
-    type: "snapshot", sessionId: "s1", state: "running", messages: [], question: null,
+    type: "snapshot", sessionId: "s1", state: "running", messages: [], hasEarlierMessages: false, question: null,
     activities: [{ id: "tool-1", toolName: "bash", summary: "{ command: ls }", status: "running", output: "README.md" }],
     events: [{ id: "event-1", sequence: 1, timestamp: 1000, category: "tool", name: "tool_execution_start", summary: "bash started", detail: "{ command: ls }" }],
     droppedEvents: 0,
@@ -93,7 +94,7 @@ test("transcript restores thinking markers and correlated colored tool blocks fr
   assert.equal(projected[4]?.output, "File not found");
   assert.ok(!JSON.stringify(projected).includes("PRIVATE"));
   assert.deepEqual(projectMessages(transcriptFixture()), projected); // Reconnect uses the same stable row IDs.
-  hostFrameSchema.parse({ type: "snapshot", sessionId: "s", state: "idle", messages: projected, question: null });
+  hostFrameSchema.parse({ type: "snapshot", sessionId: "s", state: "idle", messages: projected, hasEarlierMessages: false, question: null });
 });
 
 test("streaming blocks use the same IDs as persisted blocks and are not duplicated", () => {
@@ -129,8 +130,46 @@ test("tool output shares the frame budget and aborted tool calls are failed", ()
   })) as SessionEntry[];
   const bounded = projectMessages(manyEntries);
   assert.ok(bounded.reduce((size, block) => size + block.text.length + (block.output?.length ?? 0), 0) <= 28_000);
-  const frame = { type: "snapshot", sessionId: "s", state: "idle", messages: bounded, question: null };
+  const frame = { type: "snapshot", sessionId: "s", state: "idle", messages: bounded, hasEarlierMessages: false, question: null };
   parseFrame(JSON.stringify(frame), hostFrameSchema);
+});
+
+test("history pages reconstruct the same tools after reconnect, without output consuming the transcript", () => {
+  const entries: SessionEntry[] = [];
+  const base = { parentId: null, timestamp: "2026-01-01T00:00:00Z" };
+  for (let index = 0; index < 180; index++) {
+    entries.push({ ...base, type: "message", id: `a-${index}`, message: { ...assistantFixture, timestamp: index,
+      content: [{ type: "toolCall", id: `tool-${index}`, name: "bash", arguments: { command: "npm test" } }] } });
+    entries.push({ ...base, type: "message", id: `r-${index}`, message: { role: "toolResult", toolName: "bash",
+      toolCallId: `tool-${index}`, timestamp: index, isError: false, content: [{ type: "text", text: "x".repeat(20_000) }] } });
+  }
+  const latest = projectHistory(entries);
+  assert.deepEqual(projectHistory(JSON.parse(JSON.stringify(entries))), latest);
+  assert.equal(latest.hasEarlierMessages, true);
+  let restored = latest.messages;
+  let hasEarlier: boolean = latest.hasEarlierMessages;
+  while (hasEarlier) {
+    const page = projectHistory(entries, undefined, restored[0]!.id);
+    assert.ok(page.messages.length > 0);
+    restored = [...page.messages, ...restored];
+    hasEarlier = page.hasEarlierMessages;
+  }
+  assert.equal(restored.length, 180);
+  assert.equal(new Set(restored.map(message => message.id)).size, 180);
+  assert.ok(restored.every(message => message.status === "completed" && message.output?.length === 500));
+  assert.throws(() => projectHistory(entries, undefined, "other-branch"));
+});
+
+test("tools have shell, edit, file, and search presentations instead of raw JSON", () => {
+  assert.deepEqual(presentTool("bash", { command: "npm test", timeout: 10 }), {
+    text: "npm test", toolPresentation: { kind: "shell", title: "Bash", subtitle: "Timeout: 10s" },
+  });
+  const edit = presentTool("edit", { path: "a.swift", edits: [{ oldText: "before", newText: "after" }] });
+  assert.equal(edit.toolPresentation?.kind, "edit");
+  assert.equal(edit.toolPresentation?.subtitle, "a.swift");
+  assert.equal(edit.text, "- before\n+ after");
+  assert.equal(presentTool("read", { path: "a.swift", offset: 2, limit: 10 }).text, "From line 2 · 10 lines");
+  assert.equal(presentTool("grep", { pattern: "TODO" }).toolPresentation?.kind, "search");
 });
 
 test("submitted command IDs are recovered independently of active branch", () => {

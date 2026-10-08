@@ -5,6 +5,8 @@ import SwiftUI
 struct ChatMessageView: View {
     let message: ConversationMessage
     var activity: AgentActivity? = nil
+    var outputState: ToolOutputState? = nil
+    var loadOutput: () -> Void = {}
     @State private var copied = false
     @ScaledMetric(relativeTo: .body) private var bodySize = 18.0
 
@@ -16,7 +18,7 @@ struct ChatMessageView: View {
                 .frame(maxWidth: .infinity, alignment: .leading)
                 .accessibilityIdentifier("thinkingBlock")
         } else if message.role == "tool" {
-            ToolTranscriptView(message: message, activity: activity)
+            ToolTranscriptView(message: message, activity: activity, outputState: outputState, loadOutput: loadOutput)
         } else if message.status == .failed {
             Text(message.text)
                 .foregroundStyle(.red)
@@ -101,59 +103,6 @@ struct ChatMessageView: View {
                 ScrollView(.horizontal) { configuration.label }
                     .markdownMargin(top: 4, bottom: 18)
             }
-    }
-}
-
-struct ToolTranscriptView: View {
-    let message: ConversationMessage
-    let activity: AgentActivity?
-    @State private var expanded = false
-
-    private var status: AgentActivityStatus {
-        if let status = message.status, status != .running { return status }
-        return activity?.status ?? message.status ?? .running
-    }
-    private var output: String { message.output ?? activity?.output ?? "" }
-    private var tint: Color {
-        switch status {
-        case .running: .gray
-        case .completed: .green
-        case .failed: .red
-        }
-    }
-
-    var body: some View {
-        VStack(alignment: .leading, spacing: 10) {
-            HStack {
-                Label(message.toolName ?? "Tool", systemImage: "terminal")
-                    .font(.callout.monospaced().weight(.semibold))
-                Spacer()
-                if status == .running { ProgressView().controlSize(.small) }
-                Text(status.rawValue).font(.caption).foregroundStyle(tint)
-            }
-            if !message.text.isEmpty {
-                Text(message.text)
-                    .font(.caption.monospaced())
-                    .textSelection(.enabled)
-                    .lineLimit(expanded ? nil : 4)
-            }
-            if !output.isEmpty {
-                Text(output)
-                    .font(.caption.monospaced())
-                    .foregroundStyle(.secondary)
-                    .textSelection(.enabled)
-                    .lineLimit(expanded ? nil : 6)
-            }
-            if message.text.count > 160 || output.count > 240 {
-                Button(expanded ? "Collapse tool output" : "Expand tool output") { expanded.toggle() }
-                    .font(.caption).foregroundStyle(.secondary)
-            }
-        }
-        .padding(14)
-        .frame(maxWidth: .infinity, alignment: .leading)
-        .background(tint.opacity(0.17), in: RoundedRectangle(cornerRadius: 10))
-        .overlay(RoundedRectangle(cornerRadius: 10).stroke(tint.opacity(0.32), lineWidth: 0.5))
-        .accessibilityIdentifier("toolBlock-\(status.rawValue)")
     }
 }
 

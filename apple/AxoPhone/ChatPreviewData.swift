@@ -26,13 +26,15 @@ enum ChatPreviewData {
         AgentActivity(id: "preview-tool-2", toolName: "read", summary: "{ path: bridge/extension.ts }", status: .completed, output: "Added live tool activity and steering delivery."),
     ]
     static let messages: [ConversationMessage] = {
-        let records = [
+        let records: [[String: Any]] = [
             ["id": "preview-user", "role": "user", "text": "Can we make this feel a little more calm and focused?"],
             ["id": "preview-thinking", "role": "thinking", "text": "Thinking block · content not shared"],
-            ["id": "preview-success", "role": "tool", "text": "{ command: npm test }", "toolName": "bash",
-             "toolCallId": "preview-tool-1", "status": "completed", "output": "All protocol and bridge tests passed."],
-            ["id": "preview-failure", "role": "tool", "text": "{ path: missing.txt }", "toolName": "read",
-             "toolCallId": "preview-tool-3", "status": "failed", "output": "File not found"],
+            ["id": "preview-success", "role": "tool", "text": "npm test", "toolName": "bash",
+             "toolCallId": "preview-tool-1", "status": "completed", "output": "All protocol and bridge tests passed.",
+             "toolPresentation": ["kind": "shell", "title": "Bash"]],
+            ["id": "preview-failure", "role": "tool", "text": "", "toolName": "read",
+             "toolCallId": "preview-tool-3", "status": "failed", "output": "File not found",
+             "toolPresentation": ["kind": "file", "title": "Read", "subtitle": "missing.txt"]],
             ["id": "preview-assistant", "role": "assistant", "text": """
             Absolutely. Let’s give the conversation some room to breathe.
 

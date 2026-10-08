@@ -111,6 +111,13 @@ test("real Pi TUI accepts a phone prompt and shares a question/result", { timeou
       while (frames.length === beforeSync && Date.now() < deadline) await new Promise(resolve => setTimeout(resolve, 30));
       const restored = frames.slice(beforeSync).find(frame => frame.type === "snapshot");
       assert.ok(restored?.type === "snapshot" && restored.messages.some(message => message.role === "tool" && message.status === "completed"));
+      const tool = completed.messages.find(message => message.role === "tool")!;
+      host!.send(JSON.stringify({ type: "tool_output", id: "expand-tool", sessionId: initial.sessionId, toolCallId: tool.toolCallId, offset: 0 }));
+      const output = await waitFor(frame => frame.type === "tool_output" && frame.id === "expand-tool");
+      assert.ok(output.type === "tool_output" && output.text.includes("JSON") && output.nextOffset === null);
+      host!.send(JSON.stringify({ type: "history", id: "earlier", sessionId: initial.sessionId, beforeId: completed.messages.at(-1)!.id }));
+      const history = await waitFor(frame => frame.type === "history" && frame.id === "earlier");
+      assert.ok(history.type === "history" && history.messages.some(message => message.role === "tool"));
     }
     const cancelPrompt = { type: "prompt", id: "cancel-test-prompt", sessionId: initial.sessionId, text: "Hold while I decide." };
     host!.send(JSON.stringify(cancelPrompt));

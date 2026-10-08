@@ -8,6 +8,11 @@ export const questionSchema = z.object({
   title: z.string().min(1).max(2_000),
   options: z.array(z.string().min(1).max(500)).min(2).max(8),
 });
+export const toolPresentationSchema = z.object({
+  kind: z.enum(["shell", "edit", "file", "search", "generic"]),
+  title: z.string().max(128),
+  subtitle: z.string().max(500).optional(),
+});
 export const messageSchema = z.object({
   id,
   role: z.enum(["user", "assistant", "thinking", "tool"]),
@@ -15,7 +20,8 @@ export const messageSchema = z.object({
   toolName: z.string().min(1).max(128).optional(),
   toolCallId: id.optional(),
   status: z.enum(["running", "completed", "failed"]).optional(),
-  output: z.string().max(3_000).optional(),
+  output: z.string().max(500).optional(),
+  toolPresentation: toolPresentationSchema.optional(),
 });
 export const activitySchema = z.object({
   id,
@@ -40,12 +46,15 @@ export const phoneFrameSchema = z.discriminatedUnion("type", [
   z.object({ type: z.literal("prompt"), id, sessionId: id, text: z.string().trim().min(1).max(MAX_PROMPT_LENGTH) }),
   z.object({ type: z.literal("answer"), id, sessionId: id, questionId: id, value: z.string().max(500) }),
   z.object({ type: z.literal("cancel"), id, sessionId: id, runId: id }),
+  z.object({ type: z.literal("history"), id, sessionId: id, beforeId: id }),
+  z.object({ type: z.literal("tool_output"), id, sessionId: id, toolCallId: id, offset: z.number().int().nonnegative() }),
 ]);
 export const hostFrameSchema = z.discriminatedUnion("type", [
   z.object({
     type: z.literal("snapshot"), sessionId: id,
     state: z.enum(["idle", "running", "waiting"]),
     messages: z.array(messageSchema).max(80),
+    hasEarlierMessages: z.boolean(),
     activities: z.array(activitySchema).max(10).optional(),
     events: z.array(agentEventSchema).max(50).optional(),
     droppedEvents: z.number().int().nonnegative().optional(),
@@ -53,6 +62,10 @@ export const hostFrameSchema = z.discriminatedUnion("type", [
     runId: id.nullable().optional(),
     question: questionSchema.nullable(),
   }),
+  z.object({ type: z.literal("history"), id, sessionId: id, beforeId: id,
+    messages: z.array(messageSchema).max(80), hasEarlierMessages: z.boolean() }),
+  z.object({ type: z.literal("tool_output"), id, sessionId: id, toolCallId: id,
+    offset: z.number().int().nonnegative(), nextOffset: z.number().int().nonnegative().nullable(), text: z.string().max(12_000) }),
   z.object({ type: z.literal("ack"), id, disposition: z.enum(["submitted", "cancelled"]) }),
   z.object({ type: z.literal("error"), id: id.optional(), message: z.string().max(2_000) }),
 ]);

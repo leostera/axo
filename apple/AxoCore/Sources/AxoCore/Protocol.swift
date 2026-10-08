@@ -8,6 +8,14 @@ public struct ConversationMessage: Codable, Identifiable, Equatable, Sendable {
     public let toolCallId: String?
     public let status: AgentActivityStatus?
     public let output: String?
+    public let toolPresentation: ToolPresentation?
+}
+
+public struct ToolPresentation: Codable, Equatable, Sendable {
+    public enum Kind: String, Codable, Sendable { case shell, edit, file, search, generic }
+    public let kind: Kind
+    public let title: String
+    public let subtitle: String?
 }
 
 public struct Question: Codable, Identifiable, Equatable, Sendable {
@@ -66,6 +74,7 @@ public struct Snapshot: Codable, Sendable {
     public let sessionId: String
     public let state: AgentState
     public let messages: [ConversationMessage]
+    public let hasEarlierMessages: Bool
     public let activities: [AgentActivity]?
     public let events: [AgentEvent]?
     public let droppedEvents: Int?
@@ -74,8 +83,27 @@ public struct Snapshot: Codable, Sendable {
     public let question: Question?
 }
 
+public struct HistoryPage: Decodable, Sendable {
+    public let id: String
+    public let sessionId: String
+    public let beforeId: String
+    public let messages: [ConversationMessage]
+    public let hasEarlierMessages: Bool
+}
+
+public struct ToolOutputPage: Decodable, Sendable {
+    public let id: String
+    public let sessionId: String
+    public let toolCallId: String
+    public let offset: Int
+    public let nextOffset: Int?
+    public let text: String
+}
+
 public enum RelayEvent: Sendable {
     case snapshot(Snapshot)
+    case history(HistoryPage)
+    case toolOutput(ToolOutputPage)
     case presence(Bool)
     case acknowledged(String, cancelled: Bool)
     case error(id: String?, message: String)
@@ -86,6 +114,8 @@ public enum RelayEvent: Sendable {
         let envelope = try decoder.decode(Envelope.self, from: data)
         switch envelope.type {
         case "snapshot": return .snapshot(try decoder.decode(Snapshot.self, from: data))
+        case "history": return .history(try decoder.decode(HistoryPage.self, from: data))
+        case "tool_output": return .toolOutput(try decoder.decode(ToolOutputPage.self, from: data))
         case "presence":
             guard let online = envelope.online else { throw ProtocolError.malformed }
             return .presence(online)
@@ -120,6 +150,21 @@ public struct PhoneCommand: Encodable, Sendable {
     public let questionId: String?
     public let value: String?
     public let runId: String?
+    public var beforeId: String? = nil
+    public var toolCallId: String? = nil
+    public var offset: Int? = nil
+
+    public static func history(id: String, session: String, beforeId: String) -> Self {
+        var command = Self(type: "history", id: id, sessionId: session, text: nil, questionId: nil, value: nil, runId: nil)
+        command.beforeId = beforeId
+        return command
+    }
+    public static func toolOutput(id: String, session: String, toolCallId: String, offset: Int) -> Self {
+        var command = Self(type: "tool_output", id: id, sessionId: session, text: nil, questionId: nil, value: nil, runId: nil)
+        command.toolCallId = toolCallId
+        command.offset = offset
+        return command
+    }
 
     public static func sync() -> Self {
         Self(type: "sync", id: nil, sessionId: nil, text: nil, questionId: nil, value: nil, runId: nil)

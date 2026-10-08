@@ -1,6 +1,14 @@
 import Foundation
 import Observation
 
+public struct ToolOutputState: Equatable, Sendable {
+    public var text = ""
+    public var nextOffset: Int? = 0
+    public var isLoading = false
+    public var error: String?
+    public init() {}
+}
+
 @MainActor @Observable
 public final class ConversationClient {
     public enum LinkState: Equatable { case disconnected, connecting, online, macOffline, failed(String) }
@@ -10,6 +18,15 @@ public final class ConversationClient {
     public private(set) var pendingCancellationID: String?
     public private(set) var activityEvents: [AgentEvent] = []
     public private(set) var droppedEventCount = 0
+    public private(set) var messages: [ConversationMessage] = []
+    public private(set) var hasEarlierMessages = false
+    public private(set) var isLoadingHistory = false
+    public private(set) var toolOutputs: [String: ToolOutputState] = [:]
+    private var readRequests: [String: PhoneCommand] = [:]
+    private var readTimeouts: [String: Task<Void, Never>] = [:]
+    private var historyRestore: Task<Void, Never>?
+    private var historyRestoreID = UUID()
+    private var historyRestorationPaused = false
     public private(set) var lastAcknowledgedID: String?
     public private(set) var notice: String?
     private var socket: URLSessionWebSocketTask?
@@ -36,6 +53,7 @@ public final class ConversationClient {
         self.authorizationCookie = authorizationCookie
         shouldReconnect = true
         reconnectAttempt = 0
+        historyRestorationPaused = false
         openSocket()
     }
 
@@ -72,7 +90,8 @@ public final class ConversationClient {
                     @unknown default: throw ProtocolError.malformed
                     }
                     guard self?.socket === socket else { return }
-                    self?.apply(try RelayEvent.decode(data))
+                    do { self?.apply(try RelayEvent.decode(data)) }
+                    catch { self?.protocolFailed(for: socket, error: error); return }
                 }
             } catch {
                 guard !Task.isCancelled else { return }
@@ -98,12 +117,83 @@ public final class ConversationClient {
     }
 
     private func stopActiveSocket() {
+        historyRestore?.cancel()
+        historyRestore = nil
+        for id in Array(readRequests.keys) { failReadRequest(id: id, message: "Connection lost. Try again when connected.") }
         receiver?.cancel()
         receiver = nil
         heartbeat?.cancel()
         heartbeat = nil
         socket?.cancel(with: .goingAway, reason: nil)
         socket = nil
+    }
+
+    private func restoreHistory() {
+        guard historyRestore == nil, !historyRestorationPaused, hasEarlierMessages else { return }
+        let restoreID = UUID()
+        historyRestoreID = restoreID
+        historyRestore = Task { [weak self] in
+            while !Task.isCancelled {
+                guard let self, self.link == .online, self.hasEarlierMessages else { break }
+                self.loadEarlierMessages()
+                // Pace read-only pages below the relay's per-connection rate limit.
+                do { try await Task.sleep(for: .milliseconds(400)) } catch { break }
+            }
+            if self?.historyRestoreID == restoreID { self?.historyRestore = nil }
+        }
+    }
+
+    public func loadEarlierMessages() {
+        guard link == .online, socket != nil, !isLoadingHistory, hasEarlierMessages,
+              let session = snapshot?.sessionId, let beforeId = messages.first?.id else { return }
+        historyRestorationPaused = false
+        isLoadingHistory = true
+        sendReadRequest(.history(id: UUID().uuidString, session: session, beforeId: beforeId))
+    }
+
+    public func loadToolOutput(toolCallId: String) {
+        guard link == .online, socket != nil, let session = snapshot?.sessionId else { return }
+        var output = toolOutputs[toolCallId] ?? ToolOutputState()
+        guard !output.isLoading, let offset = output.nextOffset else { return }
+        output.isLoading = true
+        output.error = nil
+        toolOutputs[toolCallId] = output
+        sendReadRequest(.toolOutput(id: UUID().uuidString, session: session, toolCallId: toolCallId, offset: offset))
+    }
+
+    private func sendReadRequest(_ command: PhoneCommand) {
+        guard let id = command.id, let socket else { return }
+        readRequests[id] = command
+        readTimeouts[id] = Task { [weak self] in
+            do { try await Task.sleep(for: .seconds(15)) } catch { return }
+            self?.failReadRequest(id: id, message: "The Mac did not answer. Try again.")
+        }
+        Task { [weak self] in
+            do {
+                let data = try JSONEncoder().encode(command)
+                try await socket.send(.string(String(decoding: data, as: UTF8.self)))
+            } catch { self?.failReadRequest(id: id, message: "Could not request data from the Mac.") }
+        }
+    }
+
+    private func finishReadRequest(id: String) -> PhoneCommand? {
+        readTimeouts.removeValue(forKey: id)?.cancel()
+        return readRequests.removeValue(forKey: id)
+    }
+
+    private func failReadRequest(id: String, message: String) {
+        guard let command = finishReadRequest(id: id) else { return }
+        if command.type == "history" {
+            isLoadingHistory = false
+            historyRestorationPaused = true
+            notice = message
+            historyRestore?.cancel()
+            historyRestore = nil
+        }
+        if let toolCallId = command.toolCallId {
+            toolOutputs[toolCallId]?.isLoading = false
+            toolOutputs[toolCallId]?.error = message
+        }
     }
 
     public func cancelAgent(runId: String) {
@@ -125,15 +215,30 @@ public final class ConversationClient {
         }
     }
 
-    private func apply(_ event: RelayEvent) {
+    func apply(_ event: RelayEvent) {
         switch event {
         case .snapshot(let value):
             reconnectAttempt = 0
             if eventSessionID != value.sessionId {
+                for id in Array(readRequests.keys) { _ = finishReadRequest(id: id) }
                 eventSessionID = value.sessionId
                 activityEvents = []
                 seenEventIDs = []
+                messages = []
+                toolOutputs = [:]
+                hasEarlierMessages = value.hasEarlierMessages
+                historyRestorationPaused = false
+                isLoadingHistory = false
             }
+            let incomingIds = Set(value.messages.map(\.id))
+            if let previous = snapshot?.messages, !previous.isEmpty, incomingIds.isDisjoint(with: previous.map(\.id)) {
+                // A different branch or a large jump replaces the visible history.
+                messages = []
+                hasEarlierMessages = value.hasEarlierMessages
+                historyRestorationPaused = false
+            }
+            let previousMessages = messages.filter { !incomingIds.contains($0.id) }
+            messages = previousMessages + value.messages
             for event in value.events ?? [] where seenEventIDs.insert(event.id).inserted {
                 activityEvents.append(event)
                 if activityEvents.count > 500 {
@@ -143,8 +248,29 @@ public final class ConversationClient {
             droppedEventCount = value.droppedEvents ?? 0
             snapshot = value
             link = .online
+            restoreHistory()
+        case .history(let page):
+            guard let request = readRequests[page.id], request.type == "history",
+                  request.sessionId == snapshot?.sessionId, page.sessionId == snapshot?.sessionId,
+                  request.beforeId == page.beforeId else { return }
+            _ = finishReadRequest(id: page.id)
+            isLoadingHistory = false
+            let ids = Set(messages.map(\.id))
+            messages = page.messages.filter { !ids.contains($0.id) } + messages
+            hasEarlierMessages = page.hasEarlierMessages
+        case .toolOutput(let page):
+            guard let request = readRequests[page.id], request.type == "tool_output",
+                  request.sessionId == snapshot?.sessionId, page.sessionId == snapshot?.sessionId,
+                  request.toolCallId == page.toolCallId, request.offset == page.offset else { return }
+            _ = finishReadRequest(id: page.id)
+            guard var output = toolOutputs[page.toolCallId], output.nextOffset == page.offset else { return }
+            output.text += page.text
+            output.nextOffset = page.nextOffset
+            output.isLoading = false
+            output.error = nil
+            toolOutputs[page.toolCallId] = output
         case .presence(let online):
-            reconnectAttempt = 0
+            // A handshake/presence event is not proof that a usable snapshot arrived.
             link = online ? .online : .macOffline
             if !online { snapshot = nil }
         case .acknowledged(let id, let cancelled):
@@ -154,12 +280,34 @@ public final class ConversationClient {
             pendingCancellationID = nil
             notice = cancelled ? "Cancellation requested." : "Submitted to Pi."
         case .error(let id, let message):
+            if let id, readRequests[id] != nil { failReadRequest(id: id, message: message); return }
             if id == nil || id == pendingID {
                 pendingID = nil
                 pendingCancellationID = nil
                 notice = message
             }
         }
+    }
+
+    private func protocolFailed(for failedSocket: URLSessionWebSocketTask, error: Error) {
+        guard socket === failedSocket else { return }
+        stopActiveSocket()
+        shouldReconnect = false
+        reconnectTask?.cancel()
+        reconnectTask = nil
+        let hadPromptInFlight = pendingID != nil
+        pendingID = nil
+        pendingCancellationID = nil
+        let detail: String
+        if case DecodingError.keyNotFound(let key, _) = error {
+            detail = "Missing \(key.stringValue)."
+        } else {
+            detail = "The relay sent an unsupported message."
+        }
+        let message = "Protocol mismatch. \(detail) Update the relay and reload the Mac bridge, then reconnect."
+            + (hadPromptInFlight ? " Delivery of the last prompt is uncertain; check Pi before resending." : "")
+        notice = message
+        link = .failed(message)
     }
 
     private func connectionFailed(for failedSocket: URLSessionWebSocketTask) {
