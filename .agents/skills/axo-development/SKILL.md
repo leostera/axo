@@ -7,7 +7,7 @@ description: Apply Axo's project-specific development workflow and vanilla Pi in
 
 ## Durable project guidance
 
-Keep Axo-specific workflows and operational knowledge in `.agents/skills/axo-*`. Improve an existing relevant skill or add a focused skill as repeatable practices emerge. Do not put these project notes in the personal memory repository. Skills should describe how to work, not accumulate transient test logs, process IDs, backup paths, or a second conversation history.
+Keep Axo-specific workflows and operational knowledge in `.agents/skills/axo-*`. Improve an existing relevant skill or add a focused skill as repeatable practices emerge. Do not put these project notes in the personal memory repository. Skills should describe how to work, not accumulate transient test logs, process IDs, backup paths, or a second conversation history. For native Mac scenes, windows, sidebar/detail UI, settings, and AppKit boundaries, follow [axo-macos-native-apps](../axo-macos-native-apps/SKILL.md); for delivery, also follow the sibling packaging skill.
 
 Resolve paths relative to the Axo root, three parents above this skill's directory. Inspect git status before editing and preserve unrelated local work, including draft RFDs.
 
