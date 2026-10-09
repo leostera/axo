@@ -42,7 +42,7 @@ final class MacSessionObserver {
     deinit { timer.cancel() }
 }
 
-/// macOS local notifications carry opaque destinations and generic text, never prompt/result previews.
+/// macOS local notifications carry opaque destinations; response previews are explicitly opt-in.
 final class MacSessionNotifications: NSObject, UNUserNotificationCenterDelegate {
     struct Destination {
         let sessionID: AxoSessionID
@@ -56,16 +56,22 @@ final class MacSessionNotifications: NSObject, UNUserNotificationCenterDelegate 
     private var settings: NSWindowController?
     init(isViewing: @escaping (AxoSessionID) -> Bool, activate: @escaping (Destination) -> Void) {
         self.isViewing = isViewing; self.activate = activate; super.init()
-        UserDefaults.standard.register(defaults: ["axoAttentionNotifications": true])
+        UserDefaults.standard.register(defaults: ["axoAttentionNotifications": true, "axoNotificationPreviews": false])
         center.delegate = self
         if UserDefaults.standard.bool(forKey: "axoAttentionNotifications") { requestPermission() }
     }
-    func notify(_ snapshot: MacSessionState, binding: MacSessionBinding) {
-        guard UserDefaults.standard.bool(forKey: "axoAttentionNotifications"), let conversation = snapshot.conversationID else { return }
+    func notify(_ snapshot: MacSessionState, binding: MacSessionBinding, session: WorkSession) {
+        guard UserDefaults.standard.bool(forKey: "axoAttentionNotifications"),
+              let conversation = snapshot.conversationID, let reason = snapshot.attentionReason else { return }
+        let includePreview = UserDefaults.standard.bool(forKey: "axoNotificationPreviews")
+        let preview = includePreview && reason == .result
+            ? MacNotificationPreview.read(from: session.piSessionFile, conversationID: conversation) : nil
+        let copy = MacNotificationCopy.make(sessionName: session.name, reason: reason,
+                                            preview: preview, includePreview: includePreview)
         let content = UNMutableNotificationContent()
-        content.title = "Axo"
-        content.body = snapshot.attentionReason == .question ? "An agent is waiting for your input." :
-            snapshot.attentionReason == .failure ? "An agent needs your attention after an error." : "An agent's reply is ready for review."
+        content.title = copy.title
+        content.subtitle = copy.subtitle
+        content.body = copy.body
         content.sound = .default
         content.threadIdentifier = binding.sessionID.rawValue.uuidString
         content.userInfo = ["sessionID": binding.sessionID.rawValue.uuidString, "paneID": binding.paneID.rawValue.uuidString,

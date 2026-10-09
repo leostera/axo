@@ -6,6 +6,7 @@ import SwiftUI
 /// Owns surfaces independently of selected views. Switching never releases a process.
 final class WorkspaceController: NSObject, NSOutlineViewDataSource, NSOutlineViewDelegate, NSSplitViewDelegate, NSMenuItemValidation {
     typealias SurfaceTree = SplitTree<PaneHostView>
+    private static let minimumContentWidth: CGFloat = 200
     private enum NavigationDirection: Equatable { case previous, next }
     private enum NavigationScope { case pane, session, workspace }
 
@@ -15,7 +16,8 @@ final class WorkspaceController: NSObject, NSOutlineViewDataSource, NSOutlineVie
     private let sidebarContainer = NSVisualEffectView()
     private let reopenSidebar = NSButton()
     private var sidebarMinimumWidth: NSLayoutConstraint?
-    private var sidebarWidth: CGFloat = 210
+    private var sidebarWidth: CGFloat = CGFloat(WorkspaceWindowState.defaultSidebarWidth)
+    private var sidebarStateSaveWork: DispatchWorkItem?
     private var positionedSidebar = false
     private(set) var sidebarCollapsed = false
     private let titleQueue = DispatchQueue(label: "dev.leostera.axo.session-titles", qos: .utility)
@@ -25,6 +27,7 @@ final class WorkspaceController: NSObject, NSOutlineViewDataSource, NSOutlineVie
     private let store: WorkspaceStore
     private let repository: String
     private let scratchRoot: URL
+    private let sidebarStateURL: URL
     private let stateRoot: URL
     private let bridgeDirectory: URL
     private let bindingDirectory: URL
@@ -36,10 +39,11 @@ final class WorkspaceController: NSObject, NSOutlineViewDataSource, NSOutlineVie
     private var stateObserver: MacSessionObserver?
     private var notifications: MacSessionNotifications?
     private var voiceCoordinator: MacVoiceCoordinator?
-    private var voiceOptionMonitor: Any?
+    private var voiceKeyMonitor: Any?
     private var voiceApplicationResignObserver: NSObjectProtocol?
-    private var voiceOptionGesture = MacVoiceOptionGesture()
-    private var voiceOptionHoldOwnsCapture = false
+    private var voiceKeyGesture = MacVoiceKeyGesture()
+    private var voiceKeyOwnsCapture = false
+    private var voiceGestureTimeoutTask: Task<Void, Never>?
     private let runtime: GhosttyRuntime
     private var livePanes: [PaneID: TerminalView] = [:]
     private var launchFailures: [PaneID: String] = [:]
@@ -71,10 +75,12 @@ final class WorkspaceController: NSObject, NSOutlineViewDataSource, NSOutlineVie
     }
     func stopBridgeHost() { bridgeHost?.stop(); bridgeHost = nil }
     @MainActor func shutdownVoice() {
-        voiceOptionHoldOwnsCapture = false
-        voiceOptionGesture.reset()
-        if let voiceOptionMonitor { NSEvent.removeMonitor(voiceOptionMonitor) }
-        voiceOptionMonitor = nil
+        voiceKeyOwnsCapture = false
+        voiceKeyGesture.clear()
+        voiceGestureTimeoutTask?.cancel()
+        voiceGestureTimeoutTask = nil
+        if let voiceKeyMonitor { NSEvent.removeMonitor(voiceKeyMonitor) }
+        voiceKeyMonitor = nil
         if let voiceApplicationResignObserver {
             NotificationCenter.default.removeObserver(voiceApplicationResignObserver)
         }
@@ -179,6 +185,10 @@ final class WorkspaceController: NSObject, NSOutlineViewDataSource, NSOutlineVie
         let support = storageRoot ?? FileManager.default.urls(for: .applicationSupportDirectory, in: .userDomainMask)[0]
             .appendingPathComponent("Axo")
         scratchRoot = support.appendingPathComponent("Workspaces")
+        sidebarStateURL = support.appendingPathComponent("window-layout.json")
+        let savedWindowState = WorkspaceWindowState.load(from: sidebarStateURL)
+        sidebarWidth = CGFloat(savedWindowState.sidebarWidth)
+        sidebarCollapsed = savedWindowState.sidebarCollapsed
         stateRoot = support.appendingPathComponent("RuntimeStates")
         bridgeDirectory = support.appendingPathComponent("Bridge")
         bindingDirectory = bridgeDirectory.appendingPathComponent("Bindings")
@@ -191,7 +201,7 @@ final class WorkspaceController: NSObject, NSOutlineViewDataSource, NSOutlineVie
             self?.insertVoiceTranscript(for: target, text: text) ?? false
         }
         voice.onError = { NSSound.beep() }
-        installVoiceOptionMonitor()
+        installVoiceKeyMonitor()
         configureSidebar()
         if launchOverride == nil {
             let config = URL(fileURLWithPath: repository).appendingPathComponent("local/relay.json")
@@ -416,13 +426,13 @@ final class WorkspaceController: NSObject, NSOutlineViewDataSource, NSOutlineVie
         toggleVoiceLock()
     }
 
-    @MainActor private func installVoiceOptionMonitor() {
+    @MainActor private func installVoiceKeyMonitor() {
         let controller = WeakWorkspaceController(self)
-        voiceOptionMonitor = NSEvent.addLocalMonitorForEvents(matching: .flagsChanged) { event in
+        voiceKeyMonitor = NSEvent.addLocalMonitorForEvents(matching: [.flagsChanged, .keyDown, .keyUp]) { event in
             let eventReference = MainActorEventReference(event)
             let result = MainActor.assumeIsolated {
                 guard let controller = controller.value else { return MainActorEventResult(eventReference.event) }
-                return MainActorEventResult(controller.handleVoiceOptionEvent(eventReference.event))
+                return MainActorEventResult(controller.handleVoiceKeyEvent(eventReference.event))
             }
             return result.event
         }
@@ -433,65 +443,113 @@ final class WorkspaceController: NSObject, NSOutlineViewDataSource, NSOutlineVie
         }
     }
 
-    @MainActor private func handleVoiceOptionEvent(_ event: NSEvent) -> NSEvent? {
-        guard event.keyCode == 58 || event.keyCode == 61 else { return event }
-        let isDown = !voiceOptionGesture.isTrackingPress
+    @MainActor private func handleVoiceKeyEvent(_ event: NSEvent) -> NSEvent? {
+        let binding = MacVoiceKeyBinding(
+            rawValue: UserDefaults.standard.string(forKey: MacVoiceKeyBinding.settingsKey) ?? ""
+        ) ?? .defaultValue
+        let isTracked = voiceKeyGesture.isTracking(keyCode: event.keyCode)
+        let isDown: Bool
+
+        switch event.type {
+        case .flagsChanged:
+            guard binding.isModifierKey, binding.matches(keyCode: event.keyCode) else { return event }
+            isDown = !isTracked
+        case .keyDown:
+            guard !binding.isModifierKey, binding.matches(keyCode: event.keyCode),
+                  binding.matchesModifiers(event.modifierFlags) else { return event }
+            isDown = true
+        case .keyUp:
+            guard isTracked else { return event }
+            isDown = false
+        default:
+            return event
+        }
+
         if isDown {
-            let otherModifiers = event.modifierFlags.intersection([.shift, .control, .command, .function])
-            guard event.modifierFlags.contains(.option), otherModifiers.isEmpty,
+            guard binding.matches(keyCode: event.keyCode), binding.matchesModifiers(event.modifierFlags),
                   NSApp.isActive, let terminal = focusedTerminal,
                   terminal.window === NSApp.keyWindow, terminal.window?.firstResponder === terminal else {
                 return event
             }
         }
 
-        let trigger = MacVoiceTrigger(rawValue: UserDefaults.standard.string(forKey: MacVoiceTrigger.settingsKey) ?? "")
-            ?? .defaultValue
-        let result = voiceOptionGesture.handle(keyCode: event.keyCode, isDown: isDown, trigger: trigger, at: Date())
-        guard result.consumeEvent else { return event }
-        if let action = result.action { performVoiceGesture(action) }
-        return nil
+        let result = voiceKeyGesture.handle(keyCode: event.keyCode, isDown: isDown, at: Date())
+        scheduleVoiceGestureTimeout()
+        performVoiceGestures(result.actions)
+        return result.consumeEvent ? nil : event
+    }
+
+    @MainActor private func scheduleVoiceGestureTimeout() {
+        voiceGestureTimeoutTask?.cancel()
+        guard let deadline = voiceKeyGesture.timeoutDeadline else {
+            voiceGestureTimeoutTask = nil
+            return
+        }
+        let delay = max(0, deadline.timeIntervalSinceNow)
+        voiceGestureTimeoutTask = Task { @MainActor [weak self] in
+            do { try await Task.sleep(for: .seconds(delay)) }
+            catch { return }
+            guard let self, !Task.isCancelled else { return }
+            let result = self.voiceKeyGesture.expire(at: Date())
+            self.performVoiceGestures(result.actions)
+            self.scheduleVoiceGestureTimeout()
+        }
+    }
+
+    @MainActor private func performVoiceGestures(_ actions: [MacVoiceGestureAction]) {
+        for action in actions { performVoiceGesture(action) }
     }
 
     @MainActor private func performVoiceGesture(_ action: MacVoiceGestureAction) {
         switch action {
         case .beginHold:
-            beginVoiceOptionHold()
-        case .endHold:
-            finishVoiceOptionHold()
-        case .toggleLock:
-            toggleVoiceLock()
+            beginVoiceKeyCapture()
+        case .endHold, .unlockRecording:
+            finishVoiceKeyCapture()
+        case .lockRecording:
+            break // Keep the voice-key capture alive after release until it is explicitly unlocked.
         }
     }
 
-    @MainActor private func beginVoiceOptionHold() {
+    @MainActor private func beginVoiceKeyCapture() {
         guard let voiceCoordinator, !voiceCoordinator.isStarting, !voiceCoordinator.isRecording else { return }
         guard let target = focusedVoiceTarget() else {
             voiceCoordinator.report("Focus an open terminal pane before starting voice dictation.")
             return
         }
-        voiceOptionHoldOwnsCapture = true
+        voiceKeyOwnsCapture = true
         voiceCoordinator.startCapture(for: target)
     }
 
-    @MainActor private func finishVoiceOptionHold() {
-        guard voiceOptionHoldOwnsCapture else { return }
-        voiceOptionHoldOwnsCapture = false
+    @MainActor private func finishVoiceKeyCapture() {
+        guard voiceKeyOwnsCapture else { return }
+        voiceKeyOwnsCapture = false
         if voiceCoordinator?.isStarting == true { voiceCoordinator?.cancelCapture() }
         else if voiceCoordinator?.isRecording == true { voiceCoordinator?.stopCapture() }
     }
 
     @MainActor private func toggleVoiceLock() {
         guard let voiceCoordinator else { return }
-        if voiceCoordinator.isStarting { voiceCoordinator.cancelCapture() }
-        else if voiceCoordinator.isRecording { voiceCoordinator.stopCapture() }
-        else if let target = focusedVoiceTarget() { voiceCoordinator.startCapture(for: target) }
-        else { voiceCoordinator.report("Focus an open terminal pane before starting voice dictation.") }
+        if voiceCoordinator.isStarting || voiceCoordinator.isRecording {
+            voiceGestureTimeoutTask?.cancel()
+            voiceGestureTimeoutTask = nil
+            voiceKeyGesture.clear()
+            voiceKeyOwnsCapture = false
+            if voiceCoordinator.isStarting { voiceCoordinator.cancelCapture() }
+            else { voiceCoordinator.stopCapture() }
+        } else if let target = focusedVoiceTarget() {
+            voiceKeyGesture.clear()
+            voiceCoordinator.startCapture(for: target)
+        } else {
+            voiceCoordinator.report("Focus an open terminal pane before starting voice dictation.")
+        }
     }
 
     @MainActor private func applicationResignedDuringVoiceGesture() {
-        finishVoiceOptionHold()
-        voiceOptionGesture.reset()
+        voiceGestureTimeoutTask?.cancel()
+        voiceGestureTimeoutTask = nil
+        let result = voiceKeyGesture.reset()
+        performVoiceGestures(result.actions)
     }
 
     private func focusedVoiceTarget() -> MacVoiceTarget? {
@@ -614,13 +672,14 @@ final class WorkspaceController: NSObject, NSOutlineViewDataSource, NSOutlineVie
         }
     }
     @objc func toggleSidebar(_ sender: Any?) {
-        if !sidebarCollapsed { sidebarWidth = max(180, sidebarContainer.frame.width) }
+        if !sidebarCollapsed { sidebarWidth = max(CGFloat(WorkspaceWindowState.minimumSidebarWidth), sidebarContainer.frame.width) }
         sidebarCollapsed.toggle()
         sidebarMinimumWidth?.isActive = !sidebarCollapsed
         sidebarContainer.isHidden = sidebarCollapsed
         reopenSidebar.isHidden = !sidebarCollapsed
         view.adjustSubviews()
-        if !sidebarCollapsed { view.setPosition(sidebarWidth, ofDividerAt: 0) }
+        view.setPosition(sidebarCollapsed ? 0 : sidebarWidth, ofDividerAt: 0)
+        scheduleSidebarStateSave()
         restoreFocus()
     }
     private func navigate(_ direction: NavigationDirection, scope: NavigationScope) {
@@ -750,12 +809,16 @@ final class WorkspaceController: NSObject, NSOutlineViewDataSource, NSOutlineVie
     }
     private func requestClose(_ paneID: PaneID, sessionID: AxoSessionID, needsConfirmation: Bool) {
         guard needsConfirmation else { finishClose(paneID, sessionID: sessionID); return }
+        guard let session = store.registry.sessions.first(where: { $0.id == sessionID }),
+              closeConfirmation == nil, let window = view.window else { return }
         // Ghostty uses one asynchronous NSAlert sheet, not a fragile SwiftUI confirmation binding.
-        guard closeConfirmation == nil, let window = view.window else { return }
+        let closesSession = session.panes.count == 1
         let alert = NSAlert()
-        alert.messageText = "Close terminal and stop its process?"
-        alert.informativeText = "Other sessions and splits keep running. The Pi conversation stays saved locally."
-        alert.addButton(withTitle: "Stop and close"); alert.addButton(withTitle: "Cancel")
+        alert.messageText = closesSession ? "Close session and stop its process?" : "Close terminal and stop its process?"
+        alert.informativeText = closesSession
+            ? "This is the session’s last pane. Closing it removes the session from the sidebar. Saved Pi history and shared files are retained."
+            : "Other sessions and splits keep running. The Pi conversation stays saved locally."
+        alert.addButton(withTitle: closesSession ? "Close Session" : "Stop and close"); alert.addButton(withTitle: "Cancel")
         closeConfirmation = alert
         alert.beginSheetModal(for: window) { [weak self] response in
             guard let self else { return }
@@ -767,14 +830,24 @@ final class WorkspaceController: NSObject, NSOutlineViewDataSource, NSOutlineVie
     private func finishClose(_ paneID: PaneID, sessionID: AxoSessionID) {
         guard let session = store.registry.sessions.first(where: { $0.id == sessionID }),
               let node = surfaceTree(in: session).find(id: paneID.rawValue) else { return }
+        let closesSession = session.panes.count == 1
         let tree = surfaceTree(in: session)
-        let next = tree.root?.leftmostLeaf() === node.leftmostLeaf()
+        let nextPane = tree.root?.leftmostLeaf() === node.leftmostLeaf()
             ? tree.focusTarget(for: .next, from: node) : tree.focusTarget(for: .previous, from: node)
+        let replacementSession = closesSession && store.registry.selectedSession == sessionID
+            ? nextVisibleSession(excluding: sessionID, in: session.workspaceID) : nil
         perform {
-            try store.updateSession(sessionID) { value in
-                value.panes.removeAll { $0.id == paneID }
-                value.layout = tree.removing(node).savedLayout()
-                if value.focusedPane == paneID { value.focusedPane = next.map { PaneID($0.id) }.flatMap { $0 == paneID ? nil : $0 } }
+            if closesSession {
+                try store.archiveSession(sessionID)
+                if let replacementSession { try store.select(replacementSession) }
+            } else {
+                try store.updateSession(sessionID) { value in
+                    value.panes.removeAll { $0.id == paneID }
+                    value.layout = tree.removing(node).savedLayout()
+                    if value.focusedPane == paneID {
+                        value.focusedPane = nextPane.map { PaneID($0.id) }.flatMap { $0 == paneID ? nil : $0 }
+                    }
+                }
             }
             livePanes.removeValue(forKey: paneID)?.removeFromSuperview()
             Task { @MainActor [weak self] in self?.voiceCoordinator?.destinationStateChanged() }
@@ -783,6 +856,11 @@ final class WorkspaceController: NSObject, NSOutlineViewDataSource, NSOutlineVie
             launchFailures.removeValue(forKey: paneID)
             refreshSidebar(); showSelectedSession()
         }
+    }
+
+    private func nextVisibleSession(excluding sessionID: AxoSessionID, in workspaceID: WorkspaceID) -> AxoSessionID? {
+        let sessions = store.registry.sessions.filter { $0.id != sessionID && $0.isArchived != true }
+        return sessions.first(where: { $0.workspaceID == workspaceID })?.id ?? sessions.first?.id
     }
 
     private func configureSidebar() {
@@ -841,15 +919,72 @@ final class WorkspaceController: NSObject, NSOutlineViewDataSource, NSOutlineVie
         reopenSidebar.toolTip = "Show sidebar"; reopenSidebar.setAccessibilityLabel("Show sidebar")
         reopenSidebar.isHidden = true
         view.addArrangedSubview(sidebarContainer); view.addArrangedSubview(content)
-        sidebarMinimumWidth = sidebarContainer.widthAnchor.constraint(greaterThanOrEqualToConstant: 180)
-        sidebarMinimumWidth?.isActive = true
-        view.setPosition(sidebarWidth, ofDividerAt: 0)
+        sidebarMinimumWidth = sidebarContainer.widthAnchor.constraint(greaterThanOrEqualToConstant: CGFloat(WorkspaceWindowState.minimumSidebarWidth))
+        sidebarMinimumWidth?.isActive = !sidebarCollapsed
+        sidebarContainer.widthAnchor.constraint(lessThanOrEqualToConstant: CGFloat(WorkspaceWindowState.maximumSidebarWidth)).isActive = true
+        sidebarContainer.isHidden = sidebarCollapsed
+        reopenSidebar.isHidden = !sidebarCollapsed
+        view.setPosition(sidebarCollapsed ? 0 : sidebarWidth, ofDividerAt: 0)
     }
+    func splitView(_ splitView: NSSplitView, constrainSplitPosition proposedPosition: CGFloat, ofSubviewAt dividerIndex: Int) -> CGFloat {
+        guard splitView === view, dividerIndex == 0 else { return proposedPosition }
+        guard !sidebarCollapsed else { return 0 }
+        let available = splitView.bounds.width - splitView.dividerThickness - Self.minimumContentWidth
+        let maximum = min(CGFloat(WorkspaceWindowState.maximumSidebarWidth), max(CGFloat(WorkspaceWindowState.minimumSidebarWidth), available))
+        return min(max(CGFloat(WorkspaceWindowState.minimumSidebarWidth), proposedPosition), maximum)
+    }
+
+    func splitView(_ splitView: NSSplitView, resizeSubviewsWithOldSize oldSize: NSSize) {
+        guard splitView === view, splitView.arrangedSubviews.count == 2 else {
+            splitView.adjustSubviews()
+            return
+        }
+        let bounds = splitView.bounds
+        let divider = splitView.dividerThickness
+        let width: CGFloat
+        if sidebarCollapsed {
+            width = 0
+        } else {
+            width = min(sidebarWidth, max(0, bounds.width - divider - Self.minimumContentWidth))
+        }
+        let sidebarFrame = NSRect(x: bounds.minX, y: bounds.minY, width: width, height: bounds.height)
+        let contentFrame = NSRect(x: sidebarFrame.maxX + divider, y: bounds.minY,
+                                  width: max(0, bounds.width - width - divider), height: bounds.height)
+        sidebarContainer.frame = sidebarFrame
+        content.frame = contentFrame
+    }
+
     func splitViewDidResizeSubviews(_ notification: Notification) {
-        // NSSplitView has zero bounds during construction; position only after the window lays it out.
-        guard !positionedSidebar, view.bounds.width >= 400, view.arrangedSubviews.count == 2 else { return }
-        positionedSidebar = true
-        view.setPosition(sidebarWidth, ofDividerAt: 0)
+        guard view.bounds.width >= 400, view.arrangedSubviews.count == 2 else { return }
+        if !positionedSidebar {
+            positionedSidebar = true
+            view.setPosition(sidebarCollapsed ? 0 : sidebarWidth, ofDividerAt: 0)
+            return
+        }
+        guard !sidebarCollapsed else { return }
+        let width = sidebarContainer.frame.width
+        guard width.isFinite, width >= CGFloat(WorkspaceWindowState.minimumSidebarWidth), abs(width - sidebarWidth) > 0.5 else { return }
+        sidebarWidth = min(width, CGFloat(WorkspaceWindowState.maximumSidebarWidth))
+        scheduleSidebarStateSave()
+    }
+
+    func saveWindowLayout() {
+        sidebarStateSaveWork?.cancel()
+        sidebarStateSaveWork = nil
+        let state = WorkspaceWindowState(sidebarWidth: Double(sidebarWidth), sidebarCollapsed: sidebarCollapsed)
+        do { try state.save(to: sidebarStateURL) }
+        catch { fputs("Axo could not save window layout: \(error.localizedDescription)\n", stderr) }
+    }
+
+    private func scheduleSidebarStateSave() {
+        sidebarStateSaveWork?.cancel()
+        let work = DispatchWorkItem { [weak self] in
+            guard let self else { return }
+            self.sidebarStateSaveWork = nil
+            self.saveWindowLayout()
+        }
+        sidebarStateSaveWork = work
+        DispatchQueue.main.asyncAfter(deadline: .now() + 0.25, execute: work)
     }
     private func sidebarButton(symbol: String, label: String, action: Selector) -> NSButton {
         let button = NSButton(image: NSImage(systemSymbolName: symbol, accessibilityDescription: label)!, target: self, action: action)
@@ -1143,7 +1278,7 @@ final class WorkspaceController: NSObject, NSOutlineViewDataSource, NSOutlineVie
         agentSnapshots[binding.paneID] = snapshot
         let finishedLoading = initialObservationDeadlines.removeValue(forKey: binding.paneID) != nil
         if finishedLoading || oldPresentation != receipt.presentation(snapshot) { refreshSidebar() }
-        if notify { notifications?.notify(snapshot, binding: binding) }
+        if notify { notifications?.notify(snapshot, binding: binding, session: session) }
         if isViewing(session.id) { notifications?.dismiss(session.id) }
     }
     private func discardObservation(_ pane: PaneID, sessionID: AxoSessionID) {
@@ -1254,7 +1389,7 @@ final class WorkspaceController: NSObject, NSOutlineViewDataSource, NSOutlineVie
             }
         }
     }
-    func outlineView(_ outlineView: NSOutlineView, rowViewForItem item: Any) -> NSTableRowView? { NSTableRowView() }
+    func outlineView(_ outlineView: NSOutlineView, rowViewForItem item: Any) -> NSTableRowView? { WorkspaceSidebarRowView() }
     func outlineView(_ outlineView: NSOutlineView, shouldSelectItem item: Any) -> Bool { (item as? SidebarItem)?.isDecoration != true }
     func outlineView(_ outlineView: NSOutlineView, isGroupItem item: Any) -> Bool { (item as? SidebarItem)?.sectionTitle != nil }
     func outlineView(_ outlineView: NSOutlineView, heightOfRowByItem item: Any) -> CGFloat { (item as? SidebarItem)?.isSeparator == true ? 20 : 28 }

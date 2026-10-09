@@ -10,7 +10,7 @@ struct MacSettingsView: View {
         var id: Self { self }
         var title: String {
             switch self {
-            case .keyboardShortcuts: "Keyboard Shortcuts"
+            case .keyboardShortcuts: "Keybindings"
             case .voice: "Voice & Transcripts"
             case .notifications: "Notifications"
             }
@@ -26,7 +26,9 @@ struct MacSettingsView: View {
 
     @Bindable var voice: MacVoiceCoordinator
     @AppStorage("axoAttentionNotifications") private var attentionNotifications = true
-    @AppStorage(MacVoiceTrigger.settingsKey) private var voiceTriggerRaw = MacVoiceTrigger.defaultValue.rawValue
+    @AppStorage("axoNotificationPreviews") private var notificationPreviews = false
+    @AppStorage(MacVoiceKeyBinding.settingsKey) private var voiceKeyBindingRaw = MacVoiceKeyBinding.defaultValue.rawValue
+    @State private var isCapturingVoiceKey = false
     @State private var selectedSection: SettingsPage? = .keyboardShortcuts
     @State private var notificationPermission = "Checking notification permission…"
 
@@ -54,6 +56,7 @@ struct MacSettingsView: View {
                 ContentUnavailableView("Choose a Settings Section", systemImage: "gear")
             }
         }
+        .toolbar(removing: .sidebarToggle)
         .frame(minWidth: 720, minHeight: 480)
         .onChange(of: attentionNotifications) { _, enabled in
             onNotificationSettingChanged(enabled)
@@ -64,7 +67,7 @@ struct MacSettingsView: View {
     private var keyboardShortcuts: some View {
         ScrollView {
             VStack(alignment: .leading, spacing: 28) {
-                pageHeading("Keyboard Shortcuts", subtitle: "Navigate Axo without taking focus away from your terminal work.")
+                pageHeading("Keybindings", subtitle: "Review Axo shortcuts and choose the key used for voice dictation.")
                 shortcutGroup("Panes", rows: [
                     ("Previous pane", "⌘["),
                     ("Next pane", "⌘]"),
@@ -84,10 +87,10 @@ struct MacSettingsView: View {
                 ])
                 shortcutGroup("Window", rows: [
                     ("Command palette", "⇧⌘P"),
-                    ("Voice dictation", voiceTrigger.title),
                     ("Toggle sidebar", "⌃⌘S"),
                     ("Open Settings", "⌘,"),
                 ])
+                voiceKeybindingGroup
             }
             .padding(32)
             .frame(maxWidth: 660, alignment: .leading)
@@ -99,18 +102,10 @@ struct MacSettingsView: View {
         Form {
             pageHeading("Voice & Transcripts", subtitle: "Configure local dictation and review transcripts captured from your terminal sessions.")
             Section("Activation") {
-                Picker("Option-key voice trigger", selection: Binding(
-                    get: { voiceTrigger.rawValue },
-                    set: { voiceTriggerRaw = $0 }
-                )) {
-                    ForEach(MacVoiceTrigger.allCases) { trigger in
-                        Text(trigger.title).tag(trigger.rawValue)
-                    }
-                }
-                .pickerStyle(.radioGroup)
-                Text(voiceTrigger.explanation)
+                Label("Voice key: \(voiceKeyBinding.title)", systemImage: "keyboard")
+                Text("Hold the key to talk. Double-press it to lock recording; double-press again to unlock and transcribe.")
                     .font(.callout).foregroundStyle(.secondary)
-                Text("The Option gesture is active only while a terminal pane is focused, and reserves a bare Option press for voice. Voice Dictation is also available from the Workspace menu and Command Palette.")
+                Text("The voice keybinding is active only while a terminal pane is focused. Voice Dictation is also available from the Workspace menu and Command Palette.")
                     .font(.callout).foregroundStyle(.secondary)
                 if let target = voice.recordingTarget {
                     Label("Recording for \(target.label)", systemImage: "record.circle.fill")
@@ -175,8 +170,33 @@ struct MacSettingsView: View {
         .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
     }
 
-    private var voiceTrigger: MacVoiceTrigger {
-        MacVoiceTrigger(rawValue: voiceTriggerRaw) ?? .defaultValue
+    private var voiceKeyBinding: MacVoiceKeyBinding {
+        MacVoiceKeyBinding(rawValue: voiceKeyBindingRaw) ?? .defaultValue
+    }
+
+    private var voiceKeybindingGroup: some View {
+        VStack(alignment: .leading, spacing: 12) {
+            Text("Voice Dictation").font(.title3.weight(.semibold))
+            HStack(alignment: .center) {
+                VStack(alignment: .leading, spacing: 4) {
+                    Text("Voice key")
+                    Text("Default: Right Option. Hold to talk; double-press to lock or unlock.")
+                        .font(.callout).foregroundStyle(.secondary)
+                }
+                Spacer()
+                MacVoiceKeyBindingRecorder(
+                    binding: Binding(
+                        get: { voiceKeyBinding },
+                        set: { voiceKeyBindingRaw = $0.rawValue }
+                    ),
+                    isCapturing: $isCapturingVoiceKey
+                )
+                .frame(width: 170, height: 30)
+            }
+            Text("Click the key field and press a modifier or key combination. Escape cancels. The chosen key is reserved while a terminal pane is focused.")
+                .font(.callout).foregroundStyle(.secondary)
+            Divider()
+        }
     }
 
     private var notifications: some View {
@@ -184,7 +204,8 @@ struct MacSettingsView: View {
             pageHeading("Notifications", subtitle: "Choose when Axo may notify you about local session activity.")
             Section {
                 Toggle("Notify when sessions need attention", isOn: $attentionNotifications)
-                Text("Notifications use generic text and are suppressed while you are viewing that session. Prompts and replies are never included.")
+                Toggle("Include recent reply previews", isOn: $notificationPreviews)
+                Text("Notifications identify the session and attention reason. Reply previews are off by default; when enabled, up to 180 characters of the latest reply may appear on your Lock Screen. Notifications are suppressed while you are viewing that session.")
                     .font(.callout)
                     .foregroundStyle(.secondary)
                 Text(notificationPermission)

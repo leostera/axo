@@ -173,16 +173,22 @@ final class TerminalView: NSView, NSTextInputClient {
 
     override func updateTrackingAreas() {
         if let tracking { removeTrackingArea(tracking) }
-        let area = NSTrackingArea(rect: bounds, options: [.mouseMoved, .activeInKeyWindow, .inVisibleRect], owner: self)
+        let area = NSTrackingArea(rect: bounds, options: [.mouseMoved, .mouseEnteredAndExited, .activeInKeyWindow, .inVisibleRect], owner: self)
         addTrackingArea(area)
         tracking = area
         super.updateTrackingAreas()
     }
     override func mouseMoved(with event: NSEvent) { mousePosition(event) }
     override func mouseDragged(with event: NSEvent) { mousePosition(event) }
+    override func mouseExited(with event: NSEvent) { updateHoveredURL(nil) }
     override func mouseDown(with event: NSEvent) {
         window?.makeFirstResponder(self)
         mousePosition(event)
+        if let url = hoveredURL,
+           event.modifierFlags.intersection([.command, .control, .option, .shift]).isEmpty {
+            if event.clickCount == 1, !NSWorkspace.shared.open(url) { NSSound.beep() }
+            return
+        }
         if let surface { _ = ghostty_surface_mouse_button(surface, GHOSTTY_MOUSE_PRESS, GHOSTTY_MOUSE_LEFT, modifiers(event.modifierFlags)) }
     }
     override func mouseUp(with event: NSEvent) {

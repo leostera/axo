@@ -1,6 +1,25 @@
 import AppKit
 import AxoCore
 
+/// Draws source-list selection behind the whole row, including the icon gutter.
+final class WorkspaceSidebarRowView: NSTableRowView {
+    override func drawSelection(in dirtyRect: NSRect) {
+        guard selectionHighlightStyle != .none else { return }
+        let selection = bounds.insetBy(dx: 0, dy: 1)
+        NSColor.unemphasizedSelectedContentBackgroundColor.setFill()
+        NSBezierPath(roundedRect: selection, xRadius: 5, yRadius: 5).fill()
+    }
+
+    override var interiorBackgroundStyle: NSView.BackgroundStyle {
+        guard isSelected else { return super.interiorBackgroundStyle }
+        switch effectiveAppearance.bestMatch(from: [.darkAqua, .aqua]) {
+        case .darkAqua: return .emphasized
+        case .aqua: return .normal
+        default: return super.interiorBackgroundStyle
+        }
+    }
+}
+
 /// Native source-list row. Single-click activation belongs to the outline; rename is an inline editor.
 final class WorkspaceSidebarRow: NSTableCellView, NSTextFieldDelegate {
     private let originalName: String
@@ -85,7 +104,7 @@ final class WorkspaceOutlineView: NSOutlineView {
     override func frameOfCell(atColumn column: Int, row: Int) -> NSRect {
         var frame = super.frameOfCell(atColumn: column, row: row)
         if let item = item(atRow: row), isStandaloneSession?(item) == true {
-            // Root leaves have no disclosure control; reclaim only its reserved gutter.
+            // Root leaves have no disclosure control; reclaim only the reserved gutter.
             let gutter = min(indentationPerLevel, frame.minX)
             frame.origin.x -= gutter; frame.size.width += gutter
         }

@@ -2,6 +2,8 @@ import AppKit
 
 @main
 final class AxoMacApp: NSObject, NSApplicationDelegate, NSWindowDelegate {
+    private static let mainWindowFrameAutosaveName = "Axo.MainWindow"
+
     private var window: NSWindow?
     private var workspaces: WorkspaceController?
     private var runtime: GhosttyRuntime?
@@ -63,7 +65,9 @@ final class AxoMacApp: NSObject, NSApplicationDelegate, NSWindowDelegate {
             window.delegate = self
             window.contentView = workspaces.view
             workspaces.onTitle = { [weak window] title in window?.title = title }
-            window.center()
+            let restoredFrame = window.setFrameUsingName(Self.mainWindowFrameAutosaveName)
+            window.setFrameAutosaveName(Self.mainWindowFrameAutosaveName)
+            if !restoredFrame { window.center() }
             self.window = window
             installMenu()
             window.makeKeyAndOrderFront(nil)
@@ -84,6 +88,8 @@ final class AxoMacApp: NSObject, NSApplicationDelegate, NSWindowDelegate {
     }
 
     func applicationWillTerminate(_ notification: Notification) {
+        window?.saveFrame(usingName: Self.mainWindowFrameAutosaveName)
+        workspaces?.saveWindowLayout()
         workspaces?.shutdownVoice()
         workspaces?.stopBridgeHost()
     }

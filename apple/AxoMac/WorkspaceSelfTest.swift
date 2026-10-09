@@ -13,8 +13,11 @@ enum WorkspaceSelfTest {
               TerminalView.validatedWebURL("javascript:alert(1)") == nil,
               TerminalView.validatedWebURL("file:///etc/passwd") == nil,
               TerminalView.validatedWebURL("https://user:password@example.com") == nil else { throw Failure.unsafeURL }
-        try testVoiceOptionGestures()
+        try testVoiceKeyGestures()
         try testVoiceOperations()
+        try testNotificationPreview()
+        try testWindowStatePersistence()
+        try testClosingLastPane(runtime: runtime, repository: repository)
         let root = FileManager.default.temporaryDirectory.appendingPathComponent("axo-workspaces-" + UUID().uuidString)
         defer { try? FileManager.default.removeItem(at: root) }
         var launches: [PaneID: Int] = [:]
@@ -67,6 +70,15 @@ enum WorkspaceSelfTest {
         controller.toggleSidebar(nil); window.contentView?.layoutSubtreeIfNeeded()
         print("AXO_SIDEBAR_GEOMETRY: restored \(controller.view.arrangedSubviews[0].frame.width)")
         guard !controller.sidebarCollapsed, abs(controller.view.arrangedSubviews[0].frame.width - expandedWidth) < 2 else { throw Failure.sidebar }
+        guard controller.splitView(controller.view, constrainSplitPosition: 500, ofSubviewAt: 0) == 300 else {
+            throw Failure.sidebar
+        }
+        let originalWindowSize = window.contentView?.frame.size ?? .zero
+        window.setContentSize(NSSize(width: originalWindowSize.width + 200, height: originalWindowSize.height))
+        window.contentView?.layoutSubtreeIfNeeded(); pumpEvents()
+        guard abs(controller.view.arrangedSubviews[0].frame.width - expandedWidth) < 2 else { throw Failure.sidebar }
+        window.setContentSize(originalWindowSize)
+        window.contentView?.layoutSubtreeIfNeeded(); pumpEvents()
         try controller.activateSession(original.id)
         guard controller.terminal(for: firstPane) === firstTerminal, firstTerminal.surface == surface else { throw Failure.recreatedSurface }
         try shortcut("d", keyCode: 2, window: window)
@@ -121,7 +133,8 @@ enum WorkspaceSelfTest {
                 headings.insert(title)
             }
         }
-        guard headings == ["Workspaces", "Sessions"] else { throw Failure.sidebar }
+        guard headings == ["Workspaces", "Sessions"], navigation.selectedRow >= 0,
+              navigation.rowView(atRow: navigation.selectedRow, makeIfNecessary: true) is WorkspaceSidebarRowView else { throw Failure.sidebar }
         let rootLeft = standaloneText.convert(standaloneText.bounds, to: navigation).minX
         let childLeft = childText.convert(childText.bounds, to: navigation).minX
         print("AXO_SIDEBAR_ROW_GEOMETRY: standalone text \(rootLeft), project child text \(childLeft)")
@@ -155,6 +168,7 @@ enum WorkspaceSelfTest {
               restored.hasLiveProcesses, original.panes.allSatisfy({ restored.terminal(for: $0.id) != nil }),
               splitSession.panes.allSatisfy({ restored.terminal(for: $0.id)?.workingDirectory == ($0.directory ?? original.directory) }),
               splitSession.panes.allSatisfy({ launches[$0.id] == (countsBeforeRestore[$0.id] ?? 0) + 1 }),
+              restored.registry.sessions.first(where: { $0.id == original.id })?.layout == controller.registry.sessions.first(where: { $0.id == original.id })?.layout,
               restored.registry.sessions.filter({ $0.id != original.id }).flatMap(\.panes).allSatisfy({ restored.terminal(for: $0.id) == nil }) else { throw Failure.automaticRestart }
         let restoredCounts = launches
         try restored.activateSession(original.id)
@@ -225,7 +239,7 @@ enum WorkspaceSelfTest {
               findSpinner(in: loading)?.style == .spinning,
               unavailable.imageView?.contentTintColor == .tertiaryLabelColor,
               unavailable.imageView?.toolTip == "Agent status unavailable", findSpinner(in: unavailable) == nil else { throw Failure.sidebar }
-        print("AXO_WORKSPACE_SELF_TEST_PASSED: configurable Option voice gestures, automatic target-bound transcript insertion, sidebar recording indicator, native selection, safe URL policy, navigation, lifecycle, split navigation/resize")
+        print("AXO_WORKSPACE_SELF_TEST_PASSED: configurable voice-key push-to-talk and lock/unlock gestures, automatic target-bound transcript insertion, sidebar recording indicator, native selection, safe URL policy, navigation, lifecycle, split navigation/resize")
     }
     private static func findSpinner(in view: NSView) -> NSProgressIndicator? {
         if let spinner = view as? NSProgressIndicator { return spinner }
@@ -252,25 +266,44 @@ enum WorkspaceSelfTest {
     private static func XCTPane(_ pane: PaneID?) throws -> PaneID {
         guard let pane else { throw Failure.missingSurface }; return pane
     }
-    private static func testVoiceOptionGestures() throws {
-        var gesture = MacVoiceOptionGesture()
+    private static func testVoiceKeyGestures() throws {
+        var gesture = MacVoiceKeyGesture()
         let start = Date(timeIntervalSince1970: 10)
-        let held = gesture.handle(keyCode: 58, isDown: true, trigger: .holdOption, at: start)
-        let released = gesture.handle(keyCode: 58, isDown: false, trigger: .holdOption, at: start.addingTimeInterval(1))
-        guard held == .consume(.beginHold), released == .consume(.endHold) else { throw Failure.voiceGesture }
-
-        let firstTap = start.addingTimeInterval(2)
-        guard gesture.handle(keyCode: 61, isDown: true, trigger: .doublePressOption, at: firstTap) == .consume(),
-              gesture.handle(keyCode: 61, isDown: false, trigger: .doublePressOption, at: firstTap.addingTimeInterval(0.05)) == .consume(),
-              gesture.handle(keyCode: 61, isDown: true, trigger: .doublePressOption, at: firstTap.addingTimeInterval(0.2)) == .consume(),
-              gesture.handle(keyCode: 61, isDown: false, trigger: .doublePressOption, at: firstTap.addingTimeInterval(0.25)) == .consume(.toggleLock) else {
+        guard gesture.handle(keyCode: 61, isDown: true, at: start) == .consume(.beginHold),
+              gesture.handle(keyCode: 61, isDown: false, at: start.addingTimeInterval(0.6)) == .consume(.endHold) else {
             throw Failure.voiceGesture
         }
-        let slowTap = start.addingTimeInterval(4)
-        _ = gesture.handle(keyCode: 58, isDown: true, trigger: .doublePressOption, at: slowTap)
-        _ = gesture.handle(keyCode: 58, isDown: false, trigger: .doublePressOption, at: slowTap.addingTimeInterval(0.05))
-        let tooLate = gesture.handle(keyCode: 58, isDown: true, trigger: .doublePressOption, at: slowTap.addingTimeInterval(0.6))
-        guard tooLate == .consume() else { throw Failure.voiceGesture }
+
+        let firstTap = start.addingTimeInterval(2)
+        guard gesture.handle(keyCode: 61, isDown: true, at: firstTap) == .consume(.beginHold),
+              gesture.handle(keyCode: 61, isDown: false, at: firstTap.addingTimeInterval(0.05)) == .consume(),
+              gesture.handle(keyCode: 61, isDown: true, at: firstTap.addingTimeInterval(0.2)) == .consume(),
+              gesture.handle(keyCode: 61, isDown: false, at: firstTap.addingTimeInterval(0.25)) == .consume(.lockRecording) else {
+            throw Failure.voiceGesture
+        }
+
+        let unlock = firstTap.addingTimeInterval(1)
+        guard gesture.handle(keyCode: 61, isDown: true, at: unlock) == .consume(),
+              gesture.handle(keyCode: 61, isDown: false, at: unlock.addingTimeInterval(0.05)) == .consume(),
+              gesture.handle(keyCode: 61, isDown: true, at: unlock.addingTimeInterval(0.2)) == .consume(),
+              gesture.handle(keyCode: 61, isDown: false, at: unlock.addingTimeInterval(0.25)) == .consume(.unlockRecording) else {
+            throw Failure.voiceGesture
+        }
+
+        let tap = unlock.addingTimeInterval(1)
+        _ = gesture.handle(keyCode: 61, isDown: true, at: tap)
+        _ = gesture.handle(keyCode: 61, isDown: false, at: tap.addingTimeInterval(0.05))
+        let timeout = gesture.expire(at: tap.addingTimeInterval(MacVoiceKeyBinding.gestureInterval + 0.1))
+        guard timeout == .consume(.endHold) else { throw Failure.voiceGesture }
+
+        let defaultKey = MacVoiceKeyBinding(rawValue: MacVoiceKeyBinding.defaultValue.rawValue)
+        let shortcut = MacVoiceKeyBinding.capture(keyCode: 49, modifiers: [.command], name: "Space")
+        guard defaultKey == .defaultValue, defaultKey?.title == "Right Option",
+              defaultKey?.matches(keyCode: 61) == true, defaultKey?.matches(keyCode: 58) == false,
+              MacVoiceKeyBinding.capture(keyCode: 58, modifiers: .option, name: "Option") == nil,
+              shortcut?.title == "⌘Space", shortcut?.matches(keyCode: 49) == true,
+              shortcut?.matchesModifiers(.command) == true,
+              MacVoiceKeyBinding(rawValue: "key:999:0:QQ==") == nil else { throw Failure.voiceGesture }
     }
 
     @MainActor private static func testVoiceOperations() throws {
@@ -296,6 +329,77 @@ enum WorkspaceSelfTest {
               insertions.contains(where: { $0.0 == second && $0.1 == "transcript two" }),
               voice.transcripts.allSatisfy({ $0.insertion == .inserted }) else { throw Failure.voiceTarget }
         voice.shutdown()
+    }
+
+    private static func testNotificationPreview() throws {
+        let root = FileManager.default.temporaryDirectory.appendingPathComponent("axo-notification-preview-" + UUID().uuidString)
+        defer { try? FileManager.default.removeItem(at: root) }
+        try FileManager.default.createDirectory(at: root, withIntermediateDirectories: true)
+        let conversation = UUID().uuidString
+        let entries: [[String: Any]] = [
+            ["type": "session", "id": conversation],
+            ["type": "message", "message": ["role": "assistant", "stopReason": "toolUse",
+                "content": [["type": "text", "text": "Intermediate tool setup"]]]],
+            ["type": "message", "message": ["role": "assistant", "stopReason": "stop",
+                "content": [["type": "thinking", "text": "Private reasoning"],
+                            ["type": "text", "text": String(repeating: "R", count: 200)]]]],
+        ]
+        let data = try entries.map { try JSONSerialization.data(withJSONObject: $0) }
+            .map { String(decoding: $0, as: UTF8.self) }.joined(separator: "\n") + "\n"
+        let path = root.appendingPathComponent("session.jsonl")
+        try Data(data.utf8).write(to: path)
+        guard let preview = MacNotificationPreview.read(from: path.path, conversationID: conversation),
+              preview == String(repeating: "R", count: 180),
+              MacNotificationPreview.read(from: path.path, conversationID: UUID().uuidString) == nil else {
+            throw Failure.notificationPreview
+        }
+        let privateCopy = MacNotificationCopy.make(sessionName: "Research", reason: .result,
+                                                   preview: preview, includePreview: false)
+        let previewCopy = MacNotificationCopy.make(sessionName: "Research", reason: .result,
+                                                   preview: preview, includePreview: true)
+        guard privateCopy.title == "Research", privateCopy.body != preview,
+              previewCopy.title == "Research", previewCopy.body == preview,
+              MacNotificationCopy.make(sessionName: "Research", reason: .question,
+                                       preview: preview, includePreview: true).body != preview else {
+            throw Failure.notificationPreview
+        }
+    }
+
+    private static func testWindowStatePersistence() throws {
+        let root = FileManager.default.temporaryDirectory.appendingPathComponent("axo-window-state-" + UUID().uuidString)
+        defer { try? FileManager.default.removeItem(at: root) }
+        let url = root.appendingPathComponent("window-layout.json")
+        let state = WorkspaceWindowState(sidebarWidth: 287.5, sidebarCollapsed: true)
+        guard WorkspaceWindowState(sidebarWidth: 500).sidebarWidth == WorkspaceWindowState.maximumSidebarWidth else {
+            throw Failure.windowLayout
+        }
+        try state.save(to: url)
+        let permissions = try FileManager.default.attributesOfItem(atPath: url.path)[.posixPermissions] as? Int
+        guard WorkspaceWindowState.load(from: url) == state, permissions == 0o600 else { throw Failure.windowLayout }
+        try Data("invalid state".utf8).write(to: url)
+        guard WorkspaceWindowState.load(from: url) == WorkspaceWindowState() else { throw Failure.windowLayout }
+    }
+
+    private static func testClosingLastPane(runtime: GhosttyRuntime, repository: String) throws {
+        let root = FileManager.default.temporaryDirectory.appendingPathComponent("axo-close-last-pane-" + UUID().uuidString)
+        defer { try? FileManager.default.removeItem(at: root) }
+        let scratch = root.appendingPathComponent("Workspaces")
+        let store = try WorkspaceStore(url: root.appendingPathComponent("workspaces.json"), scratchRoot: scratch)
+        let workspace = try store.createWorkspace(name: "Close test")
+        let closing = try store.createSession(workspaceID: workspace.workspaceID, name: "Last pane")
+        let controller = try WorkspaceController(runtime: runtime, repository: repository, storageRoot: root) { pane, session in
+            TerminalLaunch(directory: pane.directory ?? session.directory, command: "/bin/sh -c 'sleep 30'")
+        }
+        defer { controller.shutdownVoice() }
+        guard let paneID = controller.registry.sessions.first(where: { $0.id == closing.sessionID })?.focusedPane,
+              let survivorPane = controller.registry.sessions.first(where: { $0.id == workspace.sessionID })?.focusedPane,
+              let terminal = controller.terminal(for: paneID) else { throw Failure.lastPaneClose }
+        terminal.childExited = true
+        controller.closePane(nil)
+        guard controller.registry.sessions.first(where: { $0.id == closing.sessionID })?.isArchived == true,
+              controller.registry.selectedSession == workspace.sessionID,
+              controller.terminal(for: paneID) == nil,
+              controller.terminal(for: survivorPane) == nil else { throw Failure.lastPaneClose }
     }
 
     private static func waitUntil(_ predicate: () -> Bool) throws {
@@ -331,7 +435,7 @@ enum WorkspaceSelfTest {
         guard let bytes = text.text else { return "" }
         return String(decoding: UnsafeRawBufferPointer(start: bytes, count: Int(text.text_len)), as: UTF8.self)
     }
-    enum Failure: Error { case inlineRename, contextActions, launchRecovery, sidebar, rename, missingSurface, sessionCreation, sessionNavigation, workspaceNavigation, paneNavigation, unsafeURL, palette, voiceGesture, voiceTarget, voiceConcurrency, voiceTimeout, recreatedSurface, splitCreation, workspaceCreation, missingOutput, automaticRestart, unhandledShortcut, spatialFocus, resize, closeConfirmation, cancelledClose }
+    enum Failure: Error { case inlineRename, contextActions, launchRecovery, sidebar, rename, missingSurface, sessionCreation, sessionNavigation, workspaceNavigation, paneNavigation, unsafeURL, palette, voiceGesture, voiceTarget, voiceConcurrency, voiceTimeout, recreatedSurface, splitCreation, workspaceCreation, missingOutput, automaticRestart, unhandledShortcut, spatialFocus, resize, closeConfirmation, cancelledClose, lastPaneClose, windowLayout, notificationPreview }
 }
 
 #if DEBUG
