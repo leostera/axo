@@ -1,11 +1,15 @@
 // Test-only entrypoint: never bundled into or exported by the production service.
 import { Relay as ProductionRelay } from "../../service/src/index";
-import { handleFiles } from "../../service/src/files";
+import { handleFiles, uploadContent } from "../../service/src/files";
+import { fileErrorResponse } from "../../shared/files";
 export class Relay extends ProductionRelay {
   async writeOutstandingForTest(id: string, content: string) {
-    const row = this.ctx.storage.sql.exec<{ object_key: string; metadata: string }>("SELECT object_key,metadata FROM shared_files WHERE id=?", id).one();
+    const row = this.ctx.storage.sql.exec<{ object_key: string; metadata: string; signed_upload: number }>("SELECT object_key,metadata,signed_upload FROM shared_files WHERE id=?", id).one();
     if (!row.object_key) throw new Error("Attempt key was released prematurely");
-    await this.env.FILES.put(row.object_key, content, { sha256: JSON.parse(row.metadata).sha256 });
+    const object = await this.env.FILES.put(row.object_key, content, { sha256: JSON.parse(row.metadata).sha256,
+      ...(row.signed_upload === 1 ? { onlyIf: { etagDoesNotMatch: "*" } } : {}),
+    });
+    return object !== null;
   }
   async expireAttemptForTest(id: string) {
     this.ctx.storage.sql.exec("UPDATE shared_files SET lease_until=? WHERE id=?", Date.now() - 61_000, id);
@@ -23,8 +27,7 @@ export default {
     }
     if (path === "/late-write") {
       const { id, content } = await request.json<{ id: string; content: string }>();
-      await relay.writeOutstandingForTest(id, content);
-      return Response.json({ written: true });
+      return Response.json({ written: await relay.writeOutstandingForTest(id, content) });
     }
     if (path === "/stage-without-commit") {
       const { id, content } = await request.json<{ id: string; content: string }>();
@@ -41,6 +44,15 @@ export default {
     if (path === "/host") return relay.fetch(new Request("https://internal/", { headers: {
       Upgrade: "websocket", "X-Axo-Role": "host", "X-Axo-Expiry": String(Date.now() + 60_000),
     } }));
-    return handleFiles(request, { role: "phone", expiresAt: Date.now() + 60_000 }, relay, env.FILES, { writesEnabled: request.headers.get("X-Test-Writes") !== "off" });
+    const principal = { role: "phone" as const, expiresAt: Date.now() + 60_000 };
+    // Retain managed-writer race fixtures; this body route does not exist in production.
+    const managed = /^\/files\/sessions\/([^/]+)\/uploads\/([^/]+)\/content$/.exec(path);
+    if (request.method === "PUT" && managed) {
+      try { await relay.admitFileRequest(); return await uploadContent(request, principal, { sessionId: managed[1], fileId: managed[2] }, relay, env.FILES); }
+      catch (error) { return fileErrorResponse(error); }
+    }
+    return handleFiles(request, principal, relay, env.FILES, { writesEnabled: request.headers.get("X-Test-Writes") !== "off" }, {
+      R2_ACCOUNT_ID: "a".repeat(32), R2_BUCKET_NAME: "test-files", R2_ACCESS_KEY_ID: "synthetic-key", R2_SECRET_ACCESS_KEY: "synthetic-secret",
+    });
   },
 };

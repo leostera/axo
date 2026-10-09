@@ -5,7 +5,7 @@ import { homedir, tmpdir } from "node:os";
 import { createHash } from "node:crypto";
 import type { ImageContent, TextContent } from "@earendil-works/pi-ai";
 import type { BridgeConfig } from "./config";
-import { MAX_FILE_BYTES, MAX_PROMPT_FILE_BYTES, MAX_WORKBENCH_BYTES, sharedFileSchema, type SharedFile } from "../shared/files";
+import { MAX_FILE_BYTES, MAX_PROMPT_FILE_BYTES, MAX_WORKBENCH_BYTES, sharedFileSchema, uploadAuthorizationSchema, type SharedFile } from "../shared/files";
 
 export interface StagedFile { path: string; source: string; filename: string; mediaType: SharedFile["mediaType"]; byteLength: number; sha256: string; dispose(): Promise<void> }
 const mediaTypes: Record<string, SharedFile["mediaType"]> = { ".png": "image/png", ".jpg": "image/jpeg", ".jpeg": "image/jpeg", ".pdf": "application/pdf", ".md": "text/markdown", ".txt": "text/plain" };
@@ -71,6 +71,16 @@ export class SessionFiles {
     const { filename, mediaType, byteLength, sha256 } = staged;
     const reserved = await this.metadata(sessionId, "uploads", { method: "POST", body: JSON.stringify({ requestId, filename, mediaType, byteLength, sha256 }) }, signal);
     const file = sharedFileSchema.parse(reserved);
+    if (file.sessionId !== sessionId || file.filename !== filename || file.mediaType !== mediaType || file.byteLength !== byteLength
+      || file.sha256 !== sha256 || file.origin !== "host") throw new Error("Publication reservation did not match the staged snapshot.");
+    if (file.state === "ready") return file;
+    if (file.state !== "pending") throw new Error("This publication was cancelled or deleted.");
+    const authorization = uploadAuthorizationSchema.parse(await this.metadata(sessionId, `uploads/${file.id}/authorize`, { method: "POST" }, signal));
+    if (authorization.file.id !== file.id || authorization.file.sessionId !== sessionId || authorization.file.sha256 !== sha256
+      || authorization.file.byteLength !== byteLength) throw new Error("Direct upload authorization did not match the snapshot.");
+    if (!authorization.upload) return authorization.file;
+    const upload = authorization.upload;
+    if (upload.expiresAt <= Date.now() || upload.expiresAt > Date.now() + 301_000) throw new Error("Direct upload authorization expired.");
     const source = await open(staged.path, constants.O_RDONLY | constants.O_NOFOLLOW);
     try {
       const body = new ReadableStream<Uint8Array>({
@@ -80,8 +90,14 @@ export class SessionFiles {
           if (bytesRead) controller.enqueue(buffer.subarray(0, bytesRead)); else controller.close();
         },
       });
-      const result = await this.request(sessionId, `uploads/${file.id}/content`, { method: "PUT", body, ...{ duplex: "half" } }, signal);
-      return sharedFileSchema.parse(await this.smallJSON(result));
+      // No Access credentials or cookies are forwarded to the R2 capability endpoint.
+      const result = await fetch(upload.url, { method: "PUT", body, headers: upload.headers, redirect: "error",
+        signal: signal ? AbortSignal.any([signal, AbortSignal.timeout(300_000)]) : AbortSignal.timeout(300_000), ...{ duplex: "half" } });
+      await result.body?.cancel();
+      if (!result.ok && result.status !== 412) throw new Error("Direct upload failed. Check file status before retrying.");
+      const ready = sharedFileSchema.parse(await this.metadata(sessionId, `uploads/${file.id}/complete`, { method: "POST" }, signal));
+      if (ready.id !== file.id || ready.sessionId !== sessionId || ready.state !== "ready" || ready.sha256 !== sha256 || ready.byteLength !== byteLength) throw new Error("Publication completion did not match the snapshot.");
+      return ready;
     } catch (error) {
       if (!signal?.aborted) {
         const recovered = await this.metadata(sessionId, `files/${file.id}`, {}, signal).catch(() => null);

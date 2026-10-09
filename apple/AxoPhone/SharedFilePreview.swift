@@ -30,13 +30,22 @@ private actor PreviewFileServer {
     private var revision = 1
     func respond(_ request: URLRequest) throws -> Reply {
         let path = request.url!.path
-        if request.httpMethod == "PUT" { state = "ready"; revision += 1 }
+        if request.httpMethod == "PUT" || path.hasSuffix("/complete") { state = "ready"; revision += 1 }
         if request.httpMethod == "DELETE" { state = "deleted"; revision += 1 }
         if path.hasSuffix("/content") && request.httpMethod == "GET" { return Reply(body: FilePreviewProtocol.content, mediaType: "text/markdown") }
         let file: [String: Any] = ["id": "00000000-0000-4000-8000-000000000002", "sessionId": "preview-session", "filename": "draft-report.md",
             "mediaType": "text/markdown", "byteLength": FilePreviewProtocol.content.count,
             "sha256": SHA256.hash(data: FilePreviewProtocol.content).map { String(format: "%02x", $0) }.joined(),
             "origin": "phone", "createdAt": 0, "state": state]
+        if path.hasSuffix("/authorize") {
+            let id = "00000000-0000-4000-8000-000000000002"
+            let checksum = Data(SHA256.hash(data: FilePreviewProtocol.content)).base64EncodedString()
+            return Reply(body: try JSONSerialization.data(withJSONObject: ["file": file, "upload": [
+                "url": "https://\(String(repeating: "a", count: 32)).r2.cloudflarestorage.com/test-files/files/\(id)/synthetic?X-Amz-Algorithm=AWS4-HMAC-SHA256",
+                "expiresAt": Int64(Date().timeIntervalSince1970 * 1000) + 60_000,
+                "headers": ["Content-Type": "text/markdown", "Content-Length": String(FilePreviewProtocol.content.count), "If-None-Match": "*", "x-amz-checksum-sha256": checksum],
+            ]]), mediaType: "application/json")
+        }
         let body: [String: Any] = path.hasSuffix("/files") ? ["files": state == "pending" ? [] : [file], "nextCursor": NSNull(), "revision": revision] : file
         return Reply(body: try JSONSerialization.data(withJSONObject: body), mediaType: "application/json")
     }
@@ -45,7 +54,7 @@ private actor PreviewFileServer {
 private final class FilePreviewProtocol: URLProtocol, @unchecked Sendable {
     static let content = Data("# Synthetic shared report\n\nThis document exists only in the simulator fixture.\n".utf8)
     private static let server = PreviewFileServer()
-    override class func canInit(with request: URLRequest) -> Bool { request.url?.host == "files-preview.invalid" }
+    override class func canInit(with request: URLRequest) -> Bool { request.url?.host == "files-preview.invalid" || request.url?.host == String(repeating: "a", count: 32) + ".r2.cloudflarestorage.com" }
     override class func canonicalRequest(for request: URLRequest) -> URLRequest { request }
     override func startLoading() {
         Task {

@@ -200,15 +200,25 @@ public final class SessionFilesClient {
     }
 
     private func uploadContent(draft: DraftFile, reservation: SharedFile) async throws -> SharedFile {
-        let request = try request(session: draft.sessionId, path: "uploads/\(reservation.id)/content", method: "PUT")
+        let authorization: FileUploadAuthorization = try await metadata(request(session: draft.sessionId, path: "uploads/\(reservation.id)/authorize", method: "POST"))
+        try authorization.validate(reservation: reservation)
+        guard let upload = authorization.upload else { return authorization.file }
+        let request = try upload.request(for: reservation)
         let delegate = PrivateTransferDelegate { [weak self] sent, expected in
             Task { @MainActor in self?.updateDraft(draft.id) { $0.reportProgress(expected > 0 ? Double(sent) / Double(expected) : 0) } }
         }
-        let transfer = URLSession(configuration: configuration, delegate: delegate, delegateQueue: nil)
+        guard let directConfiguration = configuration.copy() as? URLSessionConfiguration else {
+            throw FileTransferError.message("Could not prepare a private direct transfer.")
+        }
+        directConfiguration.httpAdditionalHeaders = nil
+        directConfiguration.httpCookieStorage = nil
+        directConfiguration.httpShouldSetCookies = false
+        let transfer = URLSession(configuration: directConfiguration, delegate: delegate, delegateQueue: nil)
         defer { transfer.finishTasksAndInvalidate() }
         let (data, response) = try await transfer.upload(for: request, fromFile: draft.source)
-        try check(response, data: data)
-        return try JSONDecoder().decode(SharedFile.self, from: data)
+        // A repeated immutable PUT may be a lost success; only the relay can confirm readiness.
+        if (response as? HTTPURLResponse)?.statusCode != 412 { try check(response, data: data) }
+        return try await metadata(self.request(session: draft.sessionId, path: "uploads/\(reservation.id)/complete", method: "POST"))
     }
 
     public func removeDraft(_ id: UUID) {

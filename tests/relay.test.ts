@@ -92,7 +92,7 @@ test("relay carries prompts and snapshots bidirectionally and rejects a second h
   const duplicate = await stub.fetch("https://internal/", { headers: { "X-Axo-Role": "host", "X-Axo-Expiry": String(Date.now() + 60_000) } });
   assert.equal(duplicate.status, 409);
   phone.send(snapshot);
-  assert.deepEqual(await phone.next(), { type: "error", message: "Invalid or oversized message" });
+  assert.deepEqual(await phone.next(), { type: "error", message: "Phone protocol mismatch. Update the iOS app, then reconnect." });
   host.socket.close();
   assert.deepEqual(await phone.next(), { type: "presence", online: false });
   phone.socket.close();

@@ -7,11 +7,13 @@ private actor FileReplies {
     struct Reply: Sendable { let status: Int; let body: Data }
     private var replies: [String: Reply] = [:]
     private var requests: [String: [URLRequest]] = [:]
+    private var paths: [String: Reply] = [:]
+    func registerPath(_ host: String, _ path: String, body: Data) { paths[host + path] = Reply(status: 200, body: body) }
     func register(_ host: String, status: Int, body: Data) { replies[host] = Reply(status: status, body: body); requests[host] = [] }
     func receive(_ request: URLRequest) -> Reply {
         let host = request.url!.host!
         requests[host, default: []].append(request)
-        return replies[host] ?? Reply(status: 503, body: Data())
+        return paths[host + request.url!.path] ?? replies[host] ?? Reply(status: 503, body: Data())
     }
     func received(_ host: String) -> [URLRequest] { requests[host] ?? [] }
 }
@@ -39,6 +41,51 @@ final class SessionFilesTests: XCTestCase {
         let config = URLSessionConfiguration.ephemeral
         config.protocolClasses = [FilesURLProtocol.self]
         return config
+    }
+
+    @MainActor
+    func testPublicationUploadsDirectlyToR2WithoutForwardingAccessCredentials() async throws {
+        let host = "\(UUID().uuidString.lowercased()).test"
+        let r2Host = String(repeating: "a", count: 32) + ".r2.cloudflarestorage.com"
+        let content = Data("Shared bytes".utf8)
+        let sha = SHA256.hash(data: content).map { String(format: "%02x", $0) }.joined()
+        let pending = fileRecord.merging(["origin": "phone", "state": "pending", "byteLength": content.count, "sha256": sha]) { _, new in new }
+        let id = try XCTUnwrap(pending["id"] as? String)
+        let ready = pending.merging(["state": "ready"]) { _, new in new }
+        await FilesURLProtocol.replies.register(host, status: 200, body: try JSONSerialization.data(withJSONObject: pending))
+        await FilesURLProtocol.replies.register(r2Host, status: 200, body: Data())
+        let grant: [String: Any] = ["file": pending, "upload": [
+            "url": "https://\(r2Host)/test-files/files/\(id)/attempt?X-Amz-Algorithm=AWS4-HMAC-SHA256",
+            "expiresAt": Int64(Date().timeIntervalSince1970 * 1000) + 60_000,
+            "headers": ["Content-Type": "text/markdown", "Content-Length": String(content.count), "If-None-Match": "*", "x-amz-checksum-sha256": Data(SHA256.hash(data: content)).base64EncodedString()]]]
+        await FilesURLProtocol.replies.registerPath(host, "/files/sessions/session/uploads/\(id)/authorize", body: try JSONSerialization.data(withJSONObject: grant))
+        await FilesURLProtocol.replies.registerPath(host, "/files/sessions/session/uploads/\(id)/complete", body: try JSONSerialization.data(withJSONObject: ready))
+        let config = configuration()
+        config.httpAdditionalHeaders = ["Authorization": "must-not-reach-r2"]
+        let client = SessionFilesClient(endpoint: try RelayEndpoint("https://\(host)"), cookie: "private-access-cookie", configuration: config)
+        client.selectSession("session")
+        let directory = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
+        try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: directory) }
+        let source = directory.appendingPathComponent("report.md")
+        try content.write(to: source)
+        let staged = await client.addFile(source)
+        let draftID = try XCTUnwrap(staged)
+        defer { client.removeDraft(draftID) }
+        client.retryUpload(draftID)
+        let deadline = Date().addingTimeInterval(5)
+        while client.currentDrafts.first?.isUploading == true && Date() < deadline { try await Task.sleep(for: .milliseconds(20)) }
+        XCTAssertNil(client.currentDrafts.first?.error)
+        XCTAssertEqual(client.readyDrafts.first?.id, id)
+        let direct = await FilesURLProtocol.replies.received(r2Host)
+        XCTAssertEqual(direct.count, 1)
+        XCTAssertEqual(direct.first?.httpMethod, "PUT")
+        XCTAssertNil(direct.first?.value(forHTTPHeaderField: "Cookie"))
+        XCTAssertNil(direct.first?.value(forHTTPHeaderField: "Authorization"))
+        XCTAssertEqual(direct.first?.value(forHTTPHeaderField: "If-None-Match"), "*")
+        let metadata = await FilesURLProtocol.replies.received(host)
+        XCTAssertEqual(metadata.count, 3)
+        XCTAssertFalse(metadata.contains { $0.httpMethod == "PUT" })
     }
 
     func testAttachmentWireMetadataAndOnlyFileIDsInPrompts() throws {

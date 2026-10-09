@@ -16,7 +16,7 @@ export default {
         catch { return new Response("Cloudflare Access authentication required", { status: 401 }); }
       }
       if (!fileStorageEnabled(env)) return Response.json({ message: "Shared files are not enabled on this relay." }, { status: 503, headers: { "Cache-Control": "private, no-store" } });
-      return handleFiles(request, principal, ctx.exports.Relay.getByName("single-workbench"), env.FILES, { writesEnabled: fileWritesEnabled(env) });
+      return handleFiles(request, principal, ctx.exports.Relay.getByName("single-workbench"), env.FILES, { writesEnabled: fileWritesEnabled(env) }, env);
     }
     if (request.method !== "GET") return new Response("Method not allowed", { status: 405 });
     if (!["/login", "/connect/phone", "/connect/host"].includes(path)) return new Response("Not found", { status: 404 });
@@ -65,6 +65,12 @@ export class Relay extends DurableObject<Env> {
     await this.scheduleExpiry();
     return lease;
   }
+  async beginSignedFileUpload(sessionId: string, id: string) {
+    const lease = this.files.beginUpload(sessionId, id, true);
+    await this.scheduleExpiry();
+    return lease;
+  }
+  completeSignedFileUpload(sessionId: string, id: string) { return this.files.completeSignedUpload(sessionId, id); }
   commitFile(sessionId: string, id: string, key: string) { return this.files.commit(sessionId, id, key); }
   finishFileAttempt(sessionId: string, id: string, key: string) {
     this.files.finishAttempt(sessionId, id, key);
@@ -132,7 +138,12 @@ export class Relay extends DurableObject<Env> {
         this.broadcast("host", JSON.stringify(frame));
       }
     } catch {
-      socket.send(JSON.stringify({ type: "error", message: "Invalid or oversized message" }));
+      const message = identity.role === "host"
+        ? "Mac bridge protocol mismatch. Run /reload in Pi, then reconnect the phone."
+        : "Phone protocol mismatch. Update the iOS app, then reconnect.";
+      const frame = JSON.stringify({ type: "error", message });
+      socket.send(frame);
+      if (identity.role === "host") this.broadcast("phone", frame);
     }
   }
 

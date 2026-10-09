@@ -1,5 +1,6 @@
 import type { Relay } from "./index";
 import type { Principal } from "./access";
+import { signFileUpload, type FileSigningConfig } from "./file-signing";
 import { FileFault, fileErrorResponse, sessionFileId, sharedFileIdSchema, uploadRequestSchema } from "../../shared/files";
 
 const PRIVATE_HEADERS = { "Cache-Control": "private, no-store", "X-Content-Type-Options": "nosniff" };
@@ -9,10 +10,10 @@ interface FilePolicy { writesEnabled: boolean }
 type FileOperation =
   | { kind: "reserve"; sessionId: string }
   | { kind: "list"; sessionId: string; cursor?: string }
-  | { kind: "upload" | "metadata" | "delete" | "download"; file: FileLocator };
+  | { kind: "authorize" | "complete" | "metadata" | "delete" | "download"; file: FileLocator };
 
 /** Called only after public Access authorization. Keys never leave this server boundary. */
-export async function handleFiles(request: Request, principal: Principal, relay: FileRelay, bucket: R2Bucket, policy: FilePolicy): Promise<Response> {
+export async function handleFiles(request: Request, principal: Principal, relay: FileRelay, bucket: R2Bucket, policy: FilePolicy, signing: FileSigningConfig): Promise<Response> {
   try {
     const operation = parseFileOperation(request);
     await relay.admitFileRequest();
@@ -22,7 +23,11 @@ export async function handleFiles(request: Request, principal: Principal, relay:
       case "list": return json(await relay.listFiles(operation.sessionId, operation.cursor));
       case "metadata": return json(await relay.getFile(operation.file.sessionId, operation.file.fileId));
       case "delete": return json(await relay.deleteFile(operation.file.sessionId, operation.file.fileId));
-      case "upload": return await uploadContent(request, principal, operation.file, relay, bucket);
+      case "authorize": {
+        const lease = await relay.beginSignedFileUpload(operation.file.sessionId, operation.file.fileId);
+        return json("key" in lease ? await signFileUpload(lease, principal.expiresAt, signing) : lease);
+      }
+      case "complete": return json(await relay.completeSignedFileUpload(operation.file.sessionId, operation.file.fileId));
       case "download": return await downloadContent(operation.file, relay, bucket);
     }
   } catch (error) {
@@ -33,7 +38,7 @@ export async function handleFiles(request: Request, principal: Principal, relay:
 
 function parseFileOperation(request: Request): FileOperation {
   const url = new URL(request.url);
-  const match = /^\/files\/sessions\/([^/]+)\/(uploads|files)(?:\/([^/]+))?(\/content)?$/.exec(url.pathname);
+  const match = /^\/files\/sessions\/([^/]+)\/(uploads|files)(?:\/([^/]+))?(\/content|\/authorize|\/complete)?$/.exec(url.pathname);
   if (!match) throw new FileFault(404, "Unknown file operation.");
   const sessionId = sessionFileId.parse(decodeURIComponent(match[1]));
   const [, , collection, id, content] = match;
@@ -41,8 +46,9 @@ function parseFileOperation(request: Request): FileOperation {
   if (!id && collection === "files" && request.method === "GET") return { kind: "list", sessionId, cursor: url.searchParams.get("cursor") ?? undefined };
   if (id) {
     const file = { sessionId, fileId: sharedFileIdSchema.parse(id) };
-    if (collection === "uploads" && content && request.method === "PUT") return { kind: "upload", file };
-    if (collection === "files" && content && request.method === "GET") return { kind: "download", file };
+    if (collection === "uploads" && content === "/authorize" && request.method === "POST") return { kind: "authorize", file };
+    if (collection === "uploads" && content === "/complete" && request.method === "POST") return { kind: "complete", file };
+    if (collection === "files" && content === "/content" && request.method === "GET") return { kind: "download", file };
     if (collection === "files" && !content && request.method === "GET") return { kind: "metadata", file };
     if (collection === "files" && !content && request.method === "DELETE") return { kind: "delete", file };
   }
@@ -50,12 +56,13 @@ function parseFileOperation(request: Request): FileOperation {
 }
 
 function requireWritableOperation(operation: FileOperation, policy: FilePolicy): void {
-  if ((operation.kind === "reserve" || operation.kind === "upload") && !policy.writesEnabled) {
+  if ((operation.kind === "reserve" || operation.kind === "authorize" || operation.kind === "complete") && !policy.writesEnabled) {
     throw new FileFault(503, "New file uploads are temporarily disabled; existing files remain readable and deletable.");
   }
 }
 
-async function uploadContent(request: Request, principal: Principal, file: FileLocator, relay: FileRelay, bucket: R2Bucket): Promise<Response> {
+/** Internal managed-writer fixture only. No production HTTP route accepts file bodies. */
+export async function uploadContent(request: Request, principal: Principal, file: FileLocator, relay: FileRelay, bucket: R2Bucket): Promise<Response> {
   const lease = await relay.beginFileUpload(file.sessionId, file.fileId);
   if (!("key" in lease)) return json(lease.file);
   const fixed = new FixedLengthStream(lease.file.byteLength);

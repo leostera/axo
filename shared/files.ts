@@ -19,6 +19,26 @@ export const sharedFileSchema = fileAttributesSchema.extend({
   createdAt: z.number().int().nonnegative(), state: z.enum(["pending", "ready", "deleting", "deleted"]),
 });
 export const filePageSchema = z.object({ files: z.array(sharedFileSchema).max(FILE_PAGE_SIZE), nextCursor: z.string().nullable(), revision: z.number().int().nonnegative() });
+export const uploadAuthorizationSchema = z.object({
+  file: sharedFileSchema,
+  upload: z.object({
+    url: z.url().refine(value => {
+      const url = new URL(value);
+      return url.protocol === "https:" && /^[a-f0-9]{32}\.r2\.cloudflarestorage\.com$/.test(url.hostname)
+        && !url.username && !url.password && !url.port && !url.hash
+        && url.searchParams.get("X-Amz-Algorithm") === "AWS4-HMAC-SHA256";
+    }),
+    expiresAt: z.number().int().positive(),
+    headers: z.object({ "Content-Type": z.string(), "Content-Length": z.string(), "If-None-Match": z.literal("*"), "x-amz-checksum-sha256": z.string() }).strict(),
+  }).optional(),
+}).superRefine(({ file, upload }, ctx) => {
+  if (file.state === "ready" && !upload) return;
+  const checksum = btoa(String.fromCharCode(...Array.from({ length: 32 }, (_, index) => Number.parseInt(file.sha256.slice(index * 2, index * 2 + 2), 16))));
+  if (file.state !== "pending" || !upload || upload.headers["Content-Type"] !== file.mediaType
+      || upload.headers["Content-Length"] !== String(file.byteLength) || upload.headers["x-amz-checksum-sha256"] !== checksum) {
+    ctx.addIssue({ code: "custom", message: "Invalid upload authorization" });
+  }
+});
 export type SharedFile = z.infer<typeof sharedFileSchema>;
 export type UploadRequest = z.infer<typeof uploadRequestSchema>;
 
