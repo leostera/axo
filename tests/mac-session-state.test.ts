@@ -1,6 +1,6 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { mkdtempSync, readFileSync, rmSync, statSync } from "node:fs";
+import { existsSync, mkdtempSync, readFileSync, rmSync, statSync } from "node:fs";
 import { join } from "node:path";
 import { tmpdir } from "node:os";
 import type { ExtensionAPI, ExtensionContext } from "@earendil-works/pi-coding-agent";
@@ -21,6 +21,7 @@ test("local state observes real lifecycle meanings, stable attention episodes, a
   const read = () => JSON.parse(readFileSync(file, "utf8"));
   try {
     const reporter = registerMacSessionState(pi);
+    assert.equal(existsSync(file), false, "Discovery alone must not publish session state");
     emit("session_start"); assert.equal(read().state, "idle");
     emit("agent_start"); assert.equal(read().state, "working");
     const resume = reporter.waiting();
@@ -40,10 +41,14 @@ test("local state observes real lifecycle meanings, stable attention episodes, a
     emit("session_before_switch"); currentFile = join(root, "different.jsonl"); emit("session_start");
     staleResume(); assert.equal(read().state, "detached"); assert.equal(read().conversationID, null);
     emit("agent_start"); emit("agent_settled", { aborted: false }); assert.equal(read().state, "detached");
+    currentFile = expected; emit("session_start");
+    const preTreeResume = reporter.waiting(); emit("session_before_tree");
+    preTreeResume(); assert.equal(read().state, "detached");
     emit("session_shutdown");
     rmSync(root, { recursive: true });
     assert.doesNotThrow(() => reporter.waiting());
   } finally {
+    emit("session_shutdown");
     keys.forEach((key, index) => { if (before[index] === undefined) delete process.env[key]; else process.env[key] = before[index]; });
     rmSync(root, { recursive: true, force: true });
   }
