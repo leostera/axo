@@ -8,7 +8,13 @@
 
 ## Summary
 
-Extend the single-workbench prototype into a native Mac workspace manager and a matching iPhone navigation menu. A workspace groups named Axo sessions; a session owns a persistent Pi conversation binding and a tree of real Ghostty terminal panes. Command-N creates a workspace, Command-T creates a session, Command-D and Command-Shift-E add ordinary terminal splits, and Command-K or Command-P opens a searchable command palette. The Mac owns work records, terminal lifetimes, conversation bindings, and a private FFF-backed search index. The relay distributes a bounded metadata catalog and routes commands to explicit conversations instead of broadcasting them to every Pi process. The phone can create and switch workspaces/sessions and search conversations through the online Mac. Pi remains vanilla with an installable Axo extension: no source patches, replacement CLI, private runtime APIs, cloud transcript archive, or new automatic prompt replay. This is the next product priority before executor-style service/tool integrations, not a claim that multi-session operation is already implemented.
+Extend the single-workbench prototype into a native Mac workspace manager and a matching iPhone navigation menu. A workspace groups named Axo sessions; a session owns a persistent Pi conversation binding and a tree of real Ghostty terminal panes. Command-N creates a workspace, Command-T creates a session, and Command-D and Command-Shift-E add ordinary terminal splits. The Mac owns work records, terminal lifetimes, and conversation bindings. The relay distributes a bounded metadata catalog and routes commands to explicit conversations instead of broadcasting them to every Pi process. The phone can create and switch workspaces/sessions. Complete and validate this foundation first; only then revisit search, FFF, and the Command-K/Command-P palette. Pi remains vanilla with an installable Axo extension: no source patches, replacement CLI, private runtime APIs, cloud transcript archive, or new automatic prompt replay. This is the next product priority before executor-style service/tool integrations, not a claim that multi-session operation is already implemented.
+
+### Confirmed delivery priority
+
+The user confirmed **workspaces → sessions → splits first, search afterward**. The first delivery includes the complete foundation across Mac, relay, and phone, not only a local sidebar. Its completion gate is validated independent live sessions/shells, persistent navigation, explicit routing, phone creation/selection, and preservation of scoped drafts/files/history through switching and recovery.
+
+Search design below is retained as deferred research, not a dependency or acceptance requirement for this first delivery. Do not start FFF integration, a search corpus, search protocol endpoints, around-search-anchor history, or palette/name-search work before the foundation is complete. Do not ship nonfunctional search buttons or intercept Command-K/Command-P for an unimplemented palette.
 
 ## Motivation
 
@@ -52,7 +58,7 @@ The phone-versus-terminal steering parity issue remains open. This RFD does not 
 - Implement the requested shortcuts without sending application commands into the shell or Pi editor.
 - Preserve processes when switching workspaces, sessions, and panes.
 - Create and select workspaces/sessions from either device with explicit, stable destinations.
-- Use FFF for searchable names and text, including ordinary terminals on the Mac and conversations from the phone.
+- **Deferred until the foundation is complete:** investigate FFF-backed searchable names/text, including ordinary terminals on the Mac and conversations from the phone.
 - Preserve drafts, reading positions, history bounds, and attachment ownership across selection changes.
 - Recover saved work identity and Pi history without pretending that arbitrary processes survived a restart.
 - Continue to support unmodified Pi plus the Axo extension.
@@ -110,7 +116,7 @@ The left sidebar remains visible while a session is selected. It lists workspace
 | Command-T | Create and select a new session in the selected workspace |
 | Command-D | Add an ordinary shell to the right of the focused pane |
 | Command-Shift-E | Add an ordinary shell below the focused pane |
-| Command-K / Command-P | Open the same command/search palette |
+| Command-K / Command-P | Deferred: open the same command/search palette after the foundation is complete |
 
 These are Axo bindings. In the pinned Ghostty source, macOS's default downward split is Command-Shift-D, not Command-Shift-E. Axo must deliberately install the requested binding; do not assume it is inherited. Command-N means a workspace, not an additional OS window. Additional windows are deferred.
 
@@ -120,7 +126,7 @@ The palette mixes explicit actions with search results. Merely opening it, typin
 
 ### Phone navigation
 
-The top-left button opens a native navigation drawer/menu headed **Axo**. It contains search, workspace rows, each workspace's sessions, and explicit New Workspace/New Session actions. Connection settings move into a settings entry; they are not removed.
+The top-left button opens a native navigation drawer/menu headed **Axo**. The first delivery contains workspace rows, each workspace's sessions, and explicit New Workspace/New Session actions. Connection settings move into a settings entry; they are not removed. Add the search entry only in the later search phase.
 
 Selecting a session opens its managed Pi conversation. Running, waiting, stopped, and host-offline are distinct facts; opening a session does not answer a question, start a stopped agent, or create a new conversation.
 
@@ -128,7 +134,7 @@ A pending create operation is not a real session row until the Mac confirms dura
 
 Composer text, selected/uploading attachments, voice transcripts, pending submissions, and reading state belong to their original conversation, not the globally selected row. During recording/transcription, switching requires an explicit decision: stay, stop into the original draft, or cancel recording while preserving its existing draft. A late photo/file/voice callback cannot publish or send into the newly selected session.
 
-### Search experience
+### Search experience (deferred)
 
 The Mac palette searches workspace/session/pane names and the text of open terminals and Pi conversations. A Conversations/Open Work/All Saved scope can make coverage explicit. The phone's search searches names and conversations; ordinary terminal content remains Mac-only.
 
@@ -238,7 +244,7 @@ File clients, upload destinations, preview caches, draft sources, questions, pen
 
 Copying/forking a Pi conversation does not automatically grant its new ID ownership of old files. Explicit reassociation/copy policy remains deferred. An attachment prompt resolves every input in its captured conversation and rejects the entire prompt on stale/disabled/unavailable input, retaining its original draft.
 
-### FFF-backed local search
+### FFF-backed local search (deferred)
 
 The investigated project is [dmtrKovalenko/fff](https://github.com/dmtrKovalenko/fff), reached through its `fff.nvim` repository alias. Confirm this is the user's intended FFF before dependency acceptance. Research inspected commit `65119f965d39a657020daf9198a657f6d1f718fd`.
 
@@ -322,18 +328,19 @@ The new catalog and addressed protocol are coordinated changes, not a long-term 
 ### Implementation sequence
 
 1. **Ghostty/local model spike:** ordinary-shell creation, both split axes, resize/focus/close, retained surfaces across sidebar switches, and safe adoption of the current workbench.
-2. **Registry and Mac navigation:** durable workspaces/sessions, exact shortcuts, palette actions/name search, independent launch specs and per-session Pi files. Confirm no native Pi source modification.
+2. **Registry and Mac navigation:** durable workspaces/sessions, Command-N/T/D/Shift-E, independent launch specs and per-session Pi files. Confirm no native Pi source modification.
 3. **Broker/plugin routing:** two real vanilla Pi runtimes in parallel, local registration/capability checks, single-writer enforcement, explicit generations, and verified steering semantics.
 4. **Relay/catalog:** durable metadata replication, addressed commands/replies/subscriptions, hibernation recovery, concurrent phone selections, and offline creation rejection.
 5. **Phone navigation/state:** menu, creation/selection, per-conversation drafts/uploads/voice/history, global cache bounds, and stale-response tests.
-6. **FFF/search spike and release:** C/Swift integration, projected corpus, name/content ranking, ordinary-terminal coverage, remote conversation search, around-anchor history, privacy controls, and resource/latency benchmarks.
+6. **Foundation completion gate:** finish and validate phases 1–5 together, including parallel execution, surface retention, durable recovery, addressed relay traffic, and destination-scoped phone drafts/files/history. Search is not required to pass this gate.
+7. **Later search decision/spike:** only after the foundation is complete, revisit palette/name search and FFF integration, projected corpus, ranking, terminal coverage, remote conversation search, around-anchor history, privacy controls, and resource/latency benchmarks. Prior research does not authorize beginning this phase early.
 
-Palette/name-search research and the FFF spike can inform earlier phases; terminal/conversation full-text search is not claimed complete merely because a catalog filter ships. Do not deploy or relaunch applications just because this proposal is written.
+Do not deploy or relaunch applications just because this proposal is written.
 
-### Acceptance scenarios
+### Foundation acceptance scenarios
 
 - Create two workspaces and at least three sessions; the sidebar/menu retains names, ordering, and selection across normal app restart.
-- Command-N/T/D/Shift-E/K/P perform exactly the requested action; none inserts text/newlines into Pi or ordinary shells, including under IME input.
+- Command-N/T/D/Shift-E perform exactly the requested action; none inserts text/newlines into Pi or ordinary shells, including under IME input. No unimplemented search/palette control is exposed.
 - Keep a test server and two Pi runs alive while rapidly switching sessions/workspaces and resizing splits.
 - New split launches an ordinary shell in the validated directory, not another copy of the hardcoded prototype Pi session.
 - Restart one Pi runtime and retain its conversation ID/history while invalidating old generation-bound answers/cancels.
@@ -342,15 +349,24 @@ Palette/name-search research and the FFF spike can inform earlier phases; termin
 - Create from the phone during another session's long-running tool; creation does not depend on interrupting that Pi.
 - Lose/repeat a create acknowledgement, crash around launch, and submit conflicting IDs: create one durable session or a truthful failure, never duplicate work.
 - Switch during voice capture, transcription, paste, photo staging/upload, or attachment preparation; original drafts survive and callbacks never retarget.
-- Demonstrate bounded history caches and direct latest/around-anchor navigation without full-session hydration.
+- Demonstrate globally bounded history caches, preserved per-conversation reading positions, and direct latest navigation without full-session hydration.
+- With Mac offline, show truthful catalog availability, allow existing file reads/deletes, and create/execute nothing implicitly.
+- Hibernate/restart the relay and expire authentication without losing catalog/tombstones, misrouting subscriptions, or breaking file-maintenance alarms.
+- Benchmark 1/10/20 live sessions; record resource/lifecycle/routing results rather than assuming hidden surfaces are inexpensive.
+- Validate Mac behavior locally and phone navigation on simulator before explicitly approved physical installation. No Access/Accessibility bypasses or surprise Mac/Pi restarts.
+
+### Deferred search acceptance scenarios
+
+These are not foundation completion requirements and are revisited only after that delivery passes its acceptance gate.
+
+- Command-K/P open the palette without inserting text/newlines into Pi or ordinary shells, including under IME input.
 - Find titles with typos and content phrases across Pi sessions and ordinary terminals; results identify their exact source and open the correct destination.
 - Search public thinking/tool text without indexing opaque signatures, redacted payloads, image base64, or config credentials.
 - Reorder, rename, change branches, clear a terminal, evict the index, and close a pane during search; stale results are rejected or labeled, not misattributed.
 - Cancel/replace queries and verify older replies cannot overwrite newer results; exercise Unicode highlight bounds and FFF handle/result lifetime failures.
-- With Mac offline, show metadata/cached-search limitations, allow existing file reads/deletes, and create/execute nothing implicitly.
-- Hibernate/restart the relay and expire authentication without losing catalog/tombstones, misrouting subscriptions, or breaking file-maintenance alarms.
-- Benchmark 1/10/20 live sessions and a large synthetic corpus; record resource/latency/coverage results rather than claiming upstream benchmarks apply to Axo.
-- Validate Mac behavior locally and phone navigation on simulator before explicitly approved physical installation. No Access/Accessibility bypasses or surprise Mac/Pi restarts.
+- Open bounded around-anchor search context without full-session hydration.
+- With Mac offline, label limited cached-search coverage instead of promising full uncached conversation search.
+- Benchmark a large synthetic corpus; record resource/latency/coverage results rather than claiming upstream FFF benchmarks apply to Axo.
 
 ## Drawbacks
 

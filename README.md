@@ -6,7 +6,7 @@ This is the **single-workbench prototype**, not the complete [RFD](docs/rfds/RFD
 
 [RFD0002: shared session files](docs/rfds/RFD0002-shared-session-files.md) defines explicit Mac/iPhone attachments, private R2 storage, and demand-driven history. Storage is now enabled for approved non-sensitive prototype use with direct signed uploads; the RFD's original checkpoint/deployment descriptions are historical and still need reconciliation. Physical phone paste/upload/send/Mac-read has been verified; deletion and other acceptance drills remain open.
 
-[RFD0003: workspaces, sessions, splits, and search](docs/rfds/RFD0003-workspaces-sessions-and-search.md) proposes the next priority: parallel workbenches, Mac vertical navigation and Ghostty splits, iPhone workspace/session navigation, explicit relay routing, and FFF-backed search. This takes precedence over executor-style service/tool integrations. It is a draft, not an implemented multi-session feature.
+[RFD0003: workspaces, sessions, splits, and search](docs/rfds/RFD0003-workspaces-sessions-and-search.md) records the next priority: complete and validate parallel workbenches, Mac vertical navigation and Ghostty splits, iPhone workspace/session navigation, and explicit relay routing **before** revisiting search, FFF, or the command palette. This takes precedence over executor-style service/tool integrations. The design remains a draft, not an implemented multi-session feature.
 
 ```text
 Mac: libghostty → interactive Pi + Axo extension
