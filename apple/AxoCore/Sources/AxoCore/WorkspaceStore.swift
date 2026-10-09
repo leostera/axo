@@ -23,7 +23,10 @@ public enum PaneKind: String, Codable, Sendable { case pi, shell }
 public struct PaneRecord: Codable, Equatable, Identifiable, Sendable {
     public let id: PaneID
     public let kind: PaneKind
-    public init(id: PaneID = PaneID(), kind: PaneKind) { self.id = id; self.kind = kind }
+    public var directory: String?
+    public init(id: PaneID = PaneID(), kind: PaneKind, directory: String? = nil) {
+        self.id = id; self.kind = kind; self.directory = directory
+    }
 }
 
 public indirect enum PaneLayout: Codable, Equatable, Sendable {
@@ -81,6 +84,7 @@ public indirect enum PaneLayout: Codable, Equatable, Sendable {
 public struct WorkspaceRecord: Codable, Equatable, Identifiable, Sendable {
     public let id: WorkspaceID
     public var name: String
+    public var directory: String? = nil
 }
 public enum SessionNameSource: String, Codable, Sendable { case untitled, automatic, manual }
 
@@ -119,6 +123,7 @@ public struct WorkspaceRegistry: Codable, Equatable, Sendable {
               selectedSession.map(sessionIDs.contains) ?? true else { throw WorkspaceFault.invalidMembership }
         for workspace in workspaces {
             guard try WorkspaceStore.validName(workspace.name) == workspace.name else { throw WorkspaceFault.invalidName }
+            guard workspace.directory.map(validPath) ?? true else { throw WorkspaceFault.invalidMembership }
         }
         var allPanes = Set<PaneID>()
         var conversations = Set<String>()
@@ -136,7 +141,10 @@ public struct WorkspaceRegistry: Codable, Equatable, Sendable {
             let layoutIDs = session.layout?.panes ?? []
             guard Set(ids).count == ids.count, Set(ids) == Set(layoutIDs), ids.count == layoutIDs.count,
                   session.focusedPane.map(Set(ids).contains) ?? true else { throw WorkspaceFault.invalidLayout }
-            for id in ids { guard allPanes.insert(id).inserted else { throw WorkspaceFault.invalidLayout } }
+            for pane in session.panes {
+                guard pane.directory.map(validPath) ?? true else { throw WorkspaceFault.invalidMembership }
+                guard allPanes.insert(pane.id).inserted else { throw WorkspaceFault.invalidLayout }
+            }
         }
     }
     private func validPath(_ path: String) -> Bool {
@@ -194,7 +202,7 @@ public final class WorkspaceStore {
         let receipt = CreationReceipt(kind: "workspace", name: name, workspaceID: workspaceID, sessionID: sessionID,
                                       initialDirectory: initialDirectory, initialSessionFile: initialSessionFile)
         try commit { state in
-            state.workspaces.append(WorkspaceRecord(id: workspaceID, name: name))
+            state.workspaces.append(WorkspaceRecord(id: workspaceID, name: name, directory: initialDirectory))
             state.sessions.append(newSession(id: sessionID, workspaceID: workspaceID, name: "Untitled",
                                              directory: initialDirectory, sessionFile: initialSessionFile))
             state.selectedSession = sessionID
@@ -212,12 +220,12 @@ public final class WorkspaceStore {
                   receipt.initialDirectory == initialDirectory else { throw WorkspaceFault.conflict }
             return receipt
         }
-        guard registry.workspaces.contains(where: { $0.id == workspaceID }) else { throw WorkspaceFault.notFound }
+        guard let workspace = registry.workspaces.first(where: { $0.id == workspaceID }) else { throw WorkspaceFault.notFound }
         let sessionID = AxoSessionID()
         let receipt = CreationReceipt(kind: "session", name: name, workspaceID: workspaceID, sessionID: sessionID,
                                       initialDirectory: initialDirectory)
         try commit { state in
-            state.sessions.append(newSession(id: sessionID, workspaceID: workspaceID, name: name, directory: initialDirectory))
+            state.sessions.append(newSession(id: sessionID, workspaceID: workspaceID, name: name, directory: initialDirectory ?? workspace.directory))
             state.selectedSession = sessionID
             state.creations[commandID] = receipt
         }

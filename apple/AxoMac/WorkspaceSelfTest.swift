@@ -9,10 +9,13 @@ enum WorkspaceSelfTest {
     static func run(runtime: GhosttyRuntime, repository: String, installMenu: (WorkspaceController) -> Void) throws {
         let root = FileManager.default.temporaryDirectory.appendingPathComponent("axo-workspaces-" + UUID().uuidString)
         defer { try? FileManager.default.removeItem(at: root) }
-        let controller = try WorkspaceController(runtime: runtime, repository: repository, storageRoot: root) { _, session in
-            TerminalLaunch(directory: session.directory,
-                           command: "/bin/sh -c 'printf AXO_SYNTHETIC_WORKSPACE; i=0; while sleep 1; do i=$((i+1)); printf \"\\033]0;Axo synthetic %s\\007\" \"$i\"; done'")
+        var launches: [PaneID: Int] = [:]
+        let syntheticLaunch: (PaneRecord, WorkSession) -> TerminalLaunch = { pane, session in
+            launches[pane.id, default: 0] += 1
+            return TerminalLaunch(directory: pane.directory ?? session.directory,
+                command: "/bin/sh -c 'printf AXO_SYNTHETIC_WORKSPACE; i=0; while sleep 1; do i=$((i+1)); printf \"\\033]0;Axo synthetic %s\\007\" \"$i\"; done'")
         }
+        let controller = try WorkspaceController(runtime: runtime, repository: repository, storageRoot: root, launchOverride: syntheticLaunch)
         var namingPrompts = 0
         controller.nameProvider = { _, initial in namingPrompts += 1; return initial }
         installMenu(controller)
@@ -21,9 +24,10 @@ enum WorkspaceSelfTest {
         window.contentView = controller.view
         window.orderFront(nil)
         defer { window.orderOut(nil); window.contentView = nil }
-        guard !controller.hasLiveProcesses, let original = controller.registry.sessions.first,
-              let firstPane = original.focusedPane else { throw Failure.automaticRestart }
-        try controller.resumePane(firstPane, in: original.id)
+        guard controller.hasLiveProcesses, let original = controller.registry.sessions.first,
+              let firstPane = original.focusedPane, launches[firstPane] == 1 else { throw Failure.automaticRestart }
+        try controller.activateSession(original.id)
+        guard launches[firstPane] == 1 else { throw Failure.recreatedSurface }
         guard let firstTerminal = controller.terminal(for: firstPane), let surface = firstTerminal.surface else { throw Failure.missingSurface }
         let project = root.appendingPathComponent("Another project")
         try FileManager.default.createDirectory(at: project, withIntermediateDirectories: true)
@@ -45,7 +49,7 @@ enum WorkspaceSelfTest {
         controller.toggleSidebar(nil); window.contentView?.layoutSubtreeIfNeeded()
         print("AXO_SIDEBAR_GEOMETRY: restored \(controller.view.arrangedSubviews[0].frame.width)")
         guard !controller.sidebarCollapsed, abs(controller.view.arrangedSubviews[0].frame.width - expandedWidth) < 2 else { throw Failure.sidebar }
-        try controller.selectSession(original.id)
+        try controller.activateSession(original.id)
         guard controller.terminal(for: firstPane) === firstTerminal, firstTerminal.surface == surface else { throw Failure.recreatedSurface }
         try shortcut("d", keyCode: 2, window: window)
         try shortcut("e", keyCode: 14, shift: true, window: window)
@@ -54,9 +58,16 @@ enum WorkspaceSelfTest {
               splitSession.layout?.panes.count == 3 else { throw Failure.splitCreation }
         let shellPane = try XCTPane(controller.registry.sessions.first(where: { $0.id == original.id })?.focusedPane)
         controller.terminal(for: shellPane)?.workingDirectory = project.path
+        var projectRequests = 0
+        controller.workspaceRequestProvider = { initialDirectory in
+            guard initialDirectory == project.path else { return nil }
+            projectRequests += 1
+            return .init(directory: project.path, name: project.lastPathComponent)
+        }
         try shortcut("n", keyCode: 45, window: window)
         guard controller.registry.workspaces.count == 2, controller.registry.sessions.count == 3,
-              namingPrompts == 0, controller.registry.sessions[2].directory == project.path,
+              namingPrompts == 0, projectRequests == 1, controller.registry.sessions[2].directory == project.path,
+              controller.registry.workspaces[1].directory == project.path,
               controller.registry.workspaces[1].name == project.lastPathComponent,
               controller.terminal(for: firstPane) === firstTerminal else { throw Failure.workspaceCreation }
         // A hidden Pi pane's title event reads its own bounded metadata, not the selected session's file.
@@ -67,7 +78,7 @@ enum WorkspaceSelfTest {
         guard controller.registry.workspaces[1].name == "Renamed playground",
               controller.registry.sessions[2].name == "Manually named",
               controller.registry.sessions[2].effectiveNameSource == .manual else { throw Failure.rename }
-        try controller.selectSession(original.id)
+        try controller.activateSession(original.id)
         let deadline = Date().addingTimeInterval(2)
         while Date() < deadline { _ = RunLoop.current.run(mode: .default, before: Date().addingTimeInterval(0.02)) }
         let text = try screenText(surface)
@@ -92,10 +103,50 @@ enum WorkspaceSelfTest {
         pumpEvents()
         guard controller.registry.sessions.first(where: { $0.id == original.id })?.panes.count == 3,
               controller.terminal(for: upperRight) != nil else { throw Failure.cancelledClose }
-        let restored = try WorkspaceController(runtime: runtime, repository: repository, storageRoot: root)
+        let countsBeforeRestore = launches
+        let restored = try WorkspaceController(runtime: runtime, repository: repository, storageRoot: root, launchOverride: syntheticLaunch)
         guard restored.registry.workspaces.count == 2, restored.registry.sessions.count == 3,
-              !restored.hasLiveProcesses else { throw Failure.automaticRestart }
-        print("AXO_WORKSPACE_SELF_TEST_PASSED: immediate creation, focused cwd, private session storage, sidebar collapse/reopen, manual renames, split axes, retained live output, spatial focus, keyboard resize, cancelled close, durable stopped restore")
+              restored.hasLiveProcesses, original.panes.allSatisfy({ restored.terminal(for: $0.id) != nil }),
+              splitSession.panes.allSatisfy({ restored.terminal(for: $0.id)?.workingDirectory == ($0.directory ?? original.directory) }),
+              splitSession.panes.allSatisfy({ launches[$0.id] == (countsBeforeRestore[$0.id] ?? 0) + 1 }),
+              restored.registry.sessions.filter({ $0.id != original.id }).flatMap(\.panes).allSatisfy({ restored.terminal(for: $0.id) == nil }) else { throw Failure.automaticRestart }
+        let restoredCounts = launches
+        try restored.activateSession(original.id)
+        guard launches == restoredCounts else { throw Failure.recreatedSurface }
+        let next = restored.registry.sessions[1]
+        try restored.activateSession(next.id)
+        guard next.panes.allSatisfy({ restored.terminal(for: $0.id) != nil }) else { throw Failure.automaticRestart }
+        restored.workspaceRequestProvider = { _ in nil }
+        let stateBeforeCancel = restored.registry
+        restored.newWorkspace(nil)
+        guard restored.registry == stateBeforeCancel else { throw Failure.workspaceCreation }
+        let failureRoot = root.appendingPathComponent("failure-test")
+        let missing = failureRoot.appendingPathComponent("missing-project")
+        let failureStore = try WorkspaceStore(url: failureRoot.appendingPathComponent("workspaces.json"),
+                                               scratchRoot: failureRoot.appendingPathComponent("Workspaces"))
+        let failedProject = try failureStore.createWorkspace(name: "Missing directory", initialDirectory: missing.path)
+        let failedPi = try XCTPane(failureStore.registry.sessions[0].focusedPane)
+        let survivingShell = try failureStore.addShell(sessionID: failedProject.sessionID, beside: failedPi, axis: .horizontal)
+        try failureStore.updateSession(failedProject.sessionID) { value in
+            guard let index = value.panes.firstIndex(where: { $0.id == survivingShell }) else { throw Failure.missingSurface }
+            value.panes[index].directory = project.path
+        }
+        let failed = try WorkspaceController(runtime: runtime, repository: repository, storageRoot: failureRoot, launchOverride: syntheticLaunch)
+        window.contentView = failed.view; window.contentView?.layoutSubtreeIfNeeded(); pumpEvents()
+        guard failed.terminal(for: failedPi) == nil, failed.terminal(for: survivingShell) != nil,
+              !FileManager.default.fileExists(atPath: missing.path), let retry = findButton("Retry", in: failed.view) else { throw Failure.launchRecovery }
+        let failureCounts = launches
+        try failed.activateSession(failedProject.sessionID)
+        guard launches == failureCounts else { throw Failure.launchRecovery }
+        try FileManager.default.createDirectory(at: missing, withIntermediateDirectories: true)
+        retry.performClick(nil)
+        guard failed.terminal(for: failedPi)?.workingDirectory == missing.path,
+              launches[failedPi] == 1, launches[survivingShell] == failureCounts[survivingShell] else { throw Failure.launchRecovery }
+        print("AXO_WORKSPACE_SELF_TEST_PASSED: lazy automatic reopening, no duplicate launches, project folder/name intent and cancellation, saved shell directories, missing-directory failure/retry without fallback, sidebar collapse/reopen, manual renames, retained live output, split navigation/resize, cancelled close")
+    }
+    private static func findButton(_ title: String, in view: NSView) -> NSButton? {
+        if let button = view as? NSButton, button.title == title { return button }
+        return view.subviews.compactMap { findButton(title, in: $0) }.first
     }
     private static func XCTPane(_ pane: PaneID?) throws -> PaneID {
         guard let pane else { throw Failure.missingSurface }; return pane
@@ -125,6 +176,6 @@ enum WorkspaceSelfTest {
         guard let bytes = text.text else { return "" }
         return String(decoding: UnsafeRawBufferPointer(start: bytes, count: Int(text.text_len)), as: UTF8.self)
     }
-    enum Failure: Error { case sidebar, rename, missingSurface, sessionCreation, recreatedSurface, splitCreation, workspaceCreation, missingOutput, automaticRestart, unhandledShortcut, spatialFocus, resize, closeConfirmation, cancelledClose }
+    enum Failure: Error { case launchRecovery, sidebar, rename, missingSurface, sessionCreation, recreatedSurface, splitCreation, workspaceCreation, missingOutput, automaticRestart, unhandledShortcut, spatialFocus, resize, closeConfirmation, cancelledClose }
 }
 #endif

@@ -23,6 +23,7 @@ final class WorkspaceController: NSObject, NSOutlineViewDataSource, NSOutlineVie
     private let scratchRoot: URL
     private let runtime: GhosttyRuntime
     private var livePanes: [PaneID: TerminalView] = [:]
+    private var launchFailures: [PaneID: String] = [:]
     private var paneHosts: [PaneID: PaneHostView] = [:]
     private var splitHost: NSHostingView<PaneSplitTreeView>?
     private var closeConfirmation: NSAlert?
@@ -30,15 +31,40 @@ final class WorkspaceController: NSObject, NSOutlineViewDataSource, NSOutlineVie
     private var refreshingSidebar = false
     private var collapsedWorkspaces = Set<WorkspaceID>()
     private let launchOverride: ((PaneRecord, WorkSession) -> TerminalLaunch)?
+    struct WorkspaceCreationRequest { let directory: String; let name: String }
+    var workspaceRequestProvider: ((String?) -> WorkspaceCreationRequest?)?
     var nameProvider: ((String, String) -> String?)?
     var registry: WorkspaceRegistry { store.registry }
     func terminal(for pane: PaneID) -> TerminalView? { livePanes[pane] }
     func resumePane(_ id: PaneID, in sessionID: AxoSessionID) throws {
         guard let session = store.registry.sessions.first(where: { $0.id == sessionID }),
               let pane = session.panes.first(where: { $0.id == id }) else { throw WorkspaceFault.notFound }
+        launchFailures.removeValue(forKey: id)
         try launch(pane, in: session)
+        refreshSidebar(); showSelectedSession()
     }
-    func selectSession(_ id: AxoSessionID) throws { try store.select(id); refreshSidebar(); showSelectedSession() }
+    func activateSession(_ id: AxoSessionID) throws {
+        try store.select(id)
+        openSavedPanes(in: id)
+        refreshSidebar(); showSelectedSession()
+    }
+    private func openSavedPanes(in sessionID: AxoSessionID) {
+        guard let session = store.registry.sessions.first(where: { $0.id == sessionID }) else { return }
+        // Activation is execution intent; rendering, catalog reads, and title updates never launch work.
+        for pane in session.panes where launchFailures[pane.id] == nil {
+            do { try launch(pane, in: session) }
+            catch { launchFailures[pane.id] = launchFailureMessage(error) }
+        }
+    }
+    private func launchFailureMessage(_ error: Error) -> String {
+        if let fault = error as? WorkspaceFault, fault == .capacity {
+            return "The live terminal limit has been reached. Close a pane, then retry."
+        }
+        if let fault = error as? LaunchError, case .missingDirectory = fault {
+            return "The saved working directory is missing. Restore it, then retry; Axo will not choose another directory."
+        }
+        return "The terminal could not start. Check its launch configuration, then retry."
+    }
     var onTitle: ((String) -> Void)?
     var hasLiveProcesses: Bool { livePanes.values.contains { !$0.childExited } }
 
@@ -53,6 +79,12 @@ final class WorkspaceController: NSObject, NSOutlineViewDataSource, NSOutlineVie
     init(runtime: GhosttyRuntime, repository: String, storageRoot: URL? = nil,
          launchOverride: ((PaneRecord, WorkSession) -> TerminalLaunch)? = nil) throws {
         self.runtime = runtime; self.repository = repository; self.launchOverride = launchOverride
+        // Finder normally activates the existing app. Also reject a second direct executable launch
+        // before it writes registry state or automatically opens the same Pi files.
+        if storageRoot == nil, NSRunningApplication.runningApplications(withBundleIdentifier: "dev.leostera.axo.mac")
+            .contains(where: { $0.processIdentifier != ProcessInfo.processInfo.processIdentifier && !$0.isTerminated }) {
+            throw WorkspaceLaunchFault.otherAppRunning
+        }
         let support = storageRoot ?? FileManager.default.urls(for: .applicationSupportDirectory, in: .userDomainMask)[0]
             .appendingPathComponent("Axo")
         scratchRoot = support.appendingPathComponent("Workspaces")
@@ -66,10 +98,13 @@ final class WorkspaceController: NSObject, NSOutlineViewDataSource, NSOutlineVie
                                           initialSessionFile: storageRoot == nil ? repository + "/local/playground/session.jsonl" : nil)
         }
         runtime.onAction = { [weak self] terminal, action in self?.handle(terminal: terminal, action: action) ?? false }
-        refreshSidebar()
-        showSelectedSession()
-        // Even a newly imported prototype stays stopped: its JSONL may still be owned
-        // by the old running app/Pi. Metadata import is not live-process adoption.
+        // First legacy import cannot prove that an external Pi has released this file.
+        // All later saved-session activations reopen lazily, without replaying any input.
+        if firstLaunch, storageRoot == nil, let pane = selectedSession?.panes.first {
+            launchFailures[pane.id] = "This imported conversation may still be open in the old Pi. Stop that Pi before retrying."
+        }
+        if let id = store.registry.selectedSession { openSavedPanes(in: id) }
+        refreshSidebar(); showSelectedSession()
     }
 
     private var selectedSession: WorkSession? { store.registry.sessions.first { $0.id == store.registry.selectedSession } }
@@ -109,17 +144,31 @@ final class WorkspaceController: NSObject, NSOutlineViewDataSource, NSOutlineVie
     }
 
     @objc func newWorkspace(_ sender: Any?) {
-        createWorkspace(directory: focusedTerminal?.workingDirectory ?? selectedSession?.directory)
+        createWorkspace(initialDirectory: focusedTerminal?.workingDirectory ?? selectedSession?.directory)
     }
-    private func createWorkspace(directory: String?) {
+    private func requestWorkspace(initialDirectory: String?) -> WorkspaceCreationRequest? {
+        if let workspaceRequestProvider { return workspaceRequestProvider(initialDirectory) }
+        let panel = NSOpenPanel()
+        panel.title = "Choose the project's main folder"
+        panel.prompt = "Choose Folder"
+        panel.canChooseDirectories = true; panel.canChooseFiles = false; panel.allowsMultipleSelection = false
+        panel.canCreateDirectories = true; panel.treatsFilePackagesAsDirectories = false
+        if let initialDirectory, (try? requireDirectory(initialDirectory)) != nil {
+            panel.directoryURL = URL(fileURLWithPath: initialDirectory)
+        }
+        guard panel.runModal() == .OK, let url = panel.url else { return nil }
+        let directory = url.standardizedFileURL.path
+        let suggestedName = (try? WorkspaceStore.validName(url.lastPathComponent)) ?? "New project"
+        guard let name = askName(title: "Name project", initial: suggestedName) else { return nil }
+        return WorkspaceCreationRequest(directory: directory, name: name)
+    }
+    private func createWorkspace(initialDirectory: String?) {
+        guard let request = requestWorkspace(initialDirectory: initialDirectory) else { return }
         perform {
-            if let directory { try requireDirectory(directory) }
-            let name = directory.flatMap { try? WorkspaceStore.validName(URL(fileURLWithPath: $0).lastPathComponent) } ?? "New workspace"
-            let receipt = try store.createWorkspace(name: name, initialDirectory: directory)
+            try requireDirectory(request.directory)
+            let receipt = try store.createWorkspace(name: request.name, initialDirectory: request.directory)
+            openSavedPanes(in: receipt.sessionID)
             refreshSidebar(); showSelectedSession()
-            if let session = store.registry.sessions.first(where: { $0.id == receipt.sessionID }), let pane = session.panes.first {
-                try launch(pane, in: session)
-            }
         }
     }
     @objc func newSession(_ sender: Any?) {
@@ -130,10 +179,8 @@ final class WorkspaceController: NSObject, NSOutlineViewDataSource, NSOutlineVie
         perform {
             if let directory { try requireDirectory(directory) }
             let receipt = try store.createSession(workspaceID: workspaceID, name: "Untitled", initialDirectory: directory)
+            openSavedPanes(in: receipt.sessionID)
             refreshSidebar(); showSelectedSession()
-            if let session = store.registry.sessions.first(where: { $0.id == receipt.sessionID }), let pane = session.panes.first {
-                try launch(pane, in: session)
-            }
         }
     }
     @objc func splitRight(_ sender: Any?) { splitSelected(direction: .right) }
@@ -175,7 +222,7 @@ final class WorkspaceController: NSObject, NSOutlineViewDataSource, NSOutlineVie
             let directory = livePanes[paneID]?.workingDirectory ?? original.directory
             try requireDirectory(directory)
             guard livePanes.count < 128 else { throw WorkspaceFault.capacity }
-            let pane = PaneRecord(kind: .shell)
+            let pane = PaneRecord(kind: .shell, directory: directory)
             let newHost = PaneHostView(id: pane.id)
             let changed = try surfaceTree(in: original).inserting(view: newHost, at: target.leftmostLeaf(), direction: direction)
             try store.updateSession(sessionID) { value in
@@ -183,23 +230,31 @@ final class WorkspaceController: NSObject, NSOutlineViewDataSource, NSOutlineVie
             }
             paneHosts[pane.id] = newHost
             guard let session = store.registry.sessions.first(where: { $0.id == sessionID }) else { throw WorkspaceFault.notFound }
-            try launch(pane, in: session, shellDirectory: directory, inheriting: livePanes[paneID]?.surface)
+            do { try launch(pane, in: session, inheriting: livePanes[paneID]?.surface) }
+            catch { launchFailures[pane.id] = launchFailureMessage(error) }
+            refreshSidebar(); showSelectedSession()
         }
     }
-    private func launch(_ pane: PaneRecord, in session: WorkSession, shellDirectory: String? = nil, inheriting: ghostty_surface_t? = nil) throws {
-        guard livePanes[pane.id] == nil, livePanes.count < 128 else { throw WorkspaceFault.capacity }
+    private func launch(_ pane: PaneRecord, in session: WorkSession, inheriting: ghostty_surface_t? = nil) throws {
+        if let existing = livePanes[pane.id] {
+            guard existing.childExited else { return }
+            livePanes.removeValue(forKey: pane.id)?.removeFromSuperview()
+        }
+        guard livePanes.count < 128 else { throw WorkspaceFault.capacity }
         if pane.kind == .pi {
             let runningAgents = store.registry.sessions.flatMap(\.panes).filter { $0.kind == .pi && livePanes[$0.id] != nil }.count
             guard runningAgents < 32 else { throw WorkspaceFault.capacity }
         }
-        let directory = shellDirectory ?? session.directory
-        // Create only generated scratch directories. Missing imported/project directories require repair.
-        if directory.hasPrefix(scratchRoot.path + "/") {
+        let directory = pane.directory ?? session.directory
+        let generatedRoot = scratchRoot.appendingPathComponent(session.workspaceID.rawValue.uuidString)
+            .appendingPathComponent(session.id.rawValue.uuidString)
+        // Only the exact generated root may be recreated; missing project/shell directories require repair.
+        if directory == generatedRoot.path {
             try FileManager.default.createDirectory(atPath: directory, withIntermediateDirectories: true,
                                                     attributes: [.posixPermissions: 0o700])
         }
         try requireDirectory(directory)
-        if pane.kind == .pi, session.piSessionFile.hasPrefix(scratchRoot.path + "/") {
+        if pane.kind == .pi, session.piSessionFile == generatedRoot.appendingPathComponent("session.jsonl").path {
             try FileManager.default.createDirectory(at: URL(fileURLWithPath: session.piSessionFile).deletingLastPathComponent(),
                                                     withIntermediateDirectories: true, attributes: [.posixPermissions: 0o700])
         }
@@ -217,8 +272,7 @@ final class WorkspaceController: NSObject, NSOutlineViewDataSource, NSOutlineVie
             self.requestClose(id, sessionID: owner.id, needsConfirmation: alive)
         }
         livePanes[pane.id] = terminal
-        if selectedSession?.id == session.id { showSelectedSession() }
-        refreshSidebar()
+        launchFailures.removeValue(forKey: pane.id)
     }
     private func requestClose(_ paneID: PaneID, sessionID: AxoSessionID, needsConfirmation: Bool) {
         guard needsConfirmation else { finishClose(paneID, sessionID: sessionID); return }
@@ -250,6 +304,7 @@ final class WorkspaceController: NSObject, NSOutlineViewDataSource, NSOutlineVie
             }
             livePanes.removeValue(forKey: paneID)?.removeFromSuperview()
             paneHosts.removeValue(forKey: paneID)
+            launchFailures.removeValue(forKey: paneID)
             refreshSidebar(); showSelectedSession()
         }
     }
@@ -343,7 +398,7 @@ final class WorkspaceController: NSObject, NSOutlineViewDataSource, NSOutlineVie
             let host = NSHostingView(rootView: splitView(in: session))
             splitHost = host; body = host
         } else {
-            let button = NSButton(title: "Resume Pi", target: nil, action: nil)
+            let button = NSButton(title: "All terminals closed — Open Pi", target: nil, action: nil)
             button.action = #selector(resumeEmptySession(_:)); button.target = self
             body = button
         }
@@ -360,7 +415,8 @@ final class WorkspaceController: NSObject, NSOutlineViewDataSource, NSOutlineVie
             try store.updateSession(session.id) { value in
                 value.panes = [pane]; value.layout = .pane(pane.id); value.focusedPane = pane.id
             }
-            if let updated = selectedSession { try launch(pane, in: updated) }
+            openSavedPanes(in: session.id)
+            refreshSidebar(); showSelectedSession()
         }
     }
     private func surfaceTree(in session: WorkSession) -> SurfaceTree {
@@ -378,11 +434,13 @@ final class WorkspaceController: NSObject, NSOutlineViewDataSource, NSOutlineVie
         let host = paneHosts[id] ?? PaneHostView(id: id)
         paneHosts[id] = host
         if let terminal = livePanes[id] { host.show(terminal) }
-        else if host.subviews.isEmpty {
-            host.show(StoppedPaneView(title: session.panes.first(where: { $0.id == id })?.kind == .pi ? "Resume Pi" : "Open shell") { [weak self] in
-                guard let self, let current = self.store.registry.sessions.first(where: { $0.id == session.id }),
-                      let pane = current.panes.first(where: { $0.id == id }) else { return }
-                self.perform { try self.launch(pane, in: current) }
+        else {
+            let message = launchFailures[id] ?? "This terminal has not been opened."
+            host.show(TerminalLaunchFailureView(message: message) { [weak self] in
+                guard let self, self.store.registry.sessions.contains(where: { $0.id == session.id && $0.panes.contains(where: { $0.id == id }) }) else { return }
+                self.launchFailures.removeValue(forKey: id)
+                self.openSavedPanes(in: session.id)
+                self.refreshSidebar(); self.showSelectedSession()
             })
         }
         return host
@@ -427,7 +485,7 @@ final class WorkspaceController: NSObject, NSOutlineViewDataSource, NSOutlineVie
         if let nameProvider { return nameProvider(title, initial) }
         let alert = NSAlert(); alert.messageText = title
         let field = NSTextField(string: initial); field.frame = NSRect(x: 0, y: 0, width: 280, height: 24)
-        alert.accessoryView = field; alert.addButton(withTitle: "Create / Save"); alert.addButton(withTitle: "Cancel")
+        alert.accessoryView = field; alert.addButton(withTitle: title == "Name project" ? "Create Project" : "Save"); alert.addButton(withTitle: "Cancel")
         alert.window.initialFirstResponder = field
         guard alert.runModal() == .alertFirstButtonReturn else { return nil }
         return field.stringValue
@@ -467,14 +525,17 @@ final class WorkspaceController: NSObject, NSOutlineViewDataSource, NSOutlineVie
         case GHOSTTY_ACTION_NEW_WINDOW:
             guard let terminal, owner(of: terminal) != nil else { return false }
             let directory = terminal.workingDirectory
-            DispatchQueue.main.async { [weak self] in self?.createWorkspace(directory: directory) }
+            DispatchQueue.main.async { [weak self] in self?.createWorkspace(initialDirectory: directory) }
         case GHOSTTY_ACTION_SET_TITLE:
             if let title = action.action.set_title.title { terminal?.terminalTitle = String(String(cString: title).prefix(120)) }
             if let terminal { readSessionTitle(for: terminal) }
         case GHOSTTY_ACTION_PWD:
             if let pointer = action.action.pwd.pwd {
                 let path = String(cString: pointer)
-                if path.utf8.count <= 4_096, (try? requireDirectory(path)) != nil { terminal?.workingDirectory = path }
+                if path.utf8.count <= 4_096, (try? requireDirectory(path)) != nil, let terminal {
+                    terminal.workingDirectory = path
+                    saveShellDirectory(path, for: terminal)
+                }
             }
         case GHOSTTY_ACTION_SHOW_CHILD_EXITED:
             terminal?.childExited = true
@@ -530,6 +591,18 @@ final class WorkspaceController: NSObject, NSOutlineViewDataSource, NSOutlineVie
         default: return false
         }
         return true
+    }
+
+    private func saveShellDirectory(_ path: String, for terminal: TerminalView) {
+        guard let (session, paneID) = owner(of: terminal),
+              let pane = session.panes.first(where: { $0.id == paneID }), pane.kind == .shell,
+              pane.directory != path else { return }
+        do {
+            try store.updateSession(session.id) { value in
+                guard let index = value.panes.firstIndex(where: { $0.id == paneID }) else { throw WorkspaceFault.notFound }
+                value.panes[index].directory = path
+            }
+        } catch { /* A failed metadata write must not disrupt the running shell. */ }
     }
 
     func validateMenuItem(_ menuItem: NSMenuItem) -> Bool {
@@ -594,18 +667,30 @@ final class WorkspaceController: NSObject, NSOutlineViewDataSource, NSOutlineVie
         guard !refreshingSidebar, let item = sidebar.item(atRow: sidebar.selectedRow) as? SidebarItem else { return }
         let sessionID = item.session?.id ?? item.children.first?.session?.id
         guard let sessionID else { return }
-        perform { try store.select(sessionID); showSelectedSession() }
+        perform { try activateSession(sessionID) }
     }
 }
 
-private final class StoppedPaneView: NSView {
-    private let resume: () -> Void
-    init(title: String, resume: @escaping () -> Void) {
-        self.resume = resume; super.init(frame: .zero)
-        let button = NSButton(title: title, target: self, action: #selector(start))
-        button.translatesAutoresizingMaskIntoConstraints = false; addSubview(button)
-        NSLayoutConstraint.activate([button.centerXAnchor.constraint(equalTo: centerXAnchor), button.centerYAnchor.constraint(equalTo: centerYAnchor)])
+private enum WorkspaceLaunchFault: LocalizedError {
+    case otherAppRunning
+    var errorDescription: String? { "Axo is already running. Use its existing window, or quit it before opening another copy." }
+}
+
+private final class TerminalLaunchFailureView: NSView {
+    private let retry: () -> Void
+    init(message: String, retry: @escaping () -> Void) {
+        self.retry = retry; super.init(frame: .zero)
+        let label = NSTextField(wrappingLabelWithString: message)
+        label.alignment = .center; label.textColor = .secondaryLabelColor
+        let button = NSButton(title: "Retry", target: self, action: #selector(start))
+        let stack = NSStackView(views: [label, button]); stack.orientation = .vertical; stack.spacing = 12
+        stack.translatesAutoresizingMaskIntoConstraints = false; addSubview(stack)
+        NSLayoutConstraint.activate([
+            stack.centerXAnchor.constraint(equalTo: centerXAnchor), stack.centerYAnchor.constraint(equalTo: centerYAnchor),
+            stack.widthAnchor.constraint(lessThanOrEqualToConstant: 340),
+            stack.widthAnchor.constraint(lessThanOrEqualTo: widthAnchor, multiplier: 0.85),
+        ])
     }
     required init?(coder: NSCoder) { fatalError("Programmatic view only") }
-    @objc private func start() { resume() }
+    @objc private func start() { retry() }
 }

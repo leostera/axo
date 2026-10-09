@@ -142,6 +142,42 @@ final class WorkspaceStoreTests: XCTestCase {
         XCTAssertEqual(restored.sessions[0].effectiveNameSource, .untitled)
     }
 
+    func testProjectMainDirectoryAndShellDirectoriesSurviveReload() throws {
+        let (store, root) = try temporaryStore(); defer { try? FileManager.default.removeItem(at: root) }
+        let project = try store.createWorkspace(name: "My project", initialDirectory: "/projects/main")
+        _ = try store.createSession(workspaceID: project.workspaceID, name: "Untitled")
+        let pane = try XCTUnwrap(store.registry.sessions[0].focusedPane)
+        let shell = try store.addShell(sessionID: project.sessionID, beside: pane, axis: .horizontal)
+        try store.updateSession(project.sessionID) { session in
+            let index = try XCTUnwrap(session.panes.firstIndex(where: { $0.id == shell }))
+            session.panes[index].directory = "/projects/main/subfolder"
+        }
+        let restored = try WorkspaceStore(url: store.url, scratchRoot: root)
+        XCTAssertEqual(restored.registry.workspaces[0].directory, "/projects/main")
+        XCTAssertEqual(restored.registry.sessions[1].directory, "/projects/main")
+        XCTAssertEqual(restored.registry.sessions[0].panes[1].directory, "/projects/main/subfolder")
+        XCTAssertTrue(restored.registry.sessions.allSatisfy { $0.piSessionFile.hasPrefix(root.path + "/work/") })
+    }
+
+    func testInvalidShellDirectoriesCannotBePersisted() throws {
+        let (store, root) = try temporaryStore(); defer { try? FileManager.default.removeItem(at: root) }
+        let project = try store.createWorkspace(name: "Project")
+        let before = store.registry
+        for path in ["relative/path", "/bad\u{0}directory", "/" + String(repeating: "x", count: 4_096)] {
+            XCTAssertThrowsError(try store.updateSession(project.sessionID) { $0.panes[0].directory = path })
+            XCTAssertEqual(store.registry, before)
+        }
+    }
+
+    func testOldPaneRecordsWithoutWorkingDirectoriesRemainReadable() throws {
+        let pane = PaneRecord(kind: .shell)
+        var encoded = try XCTUnwrap(JSONSerialization.jsonObject(with: JSONEncoder().encode(pane)) as? [String: Any])
+        encoded.removeValue(forKey: "directory")
+        let decoded = try JSONDecoder().decode(PaneRecord.self, from: JSONSerialization.data(withJSONObject: encoded))
+        XCTAssertEqual(decoded.id, pane.id)
+        XCTAssertNil(decoded.directory)
+    }
+
     func testPrototypeImportReferencesOriginalFileWithoutCopyingIt() throws {
         let (store, root) = try temporaryStore(); defer { try? FileManager.default.removeItem(at: root) }
         _ = try store.createWorkspace(name: "Playground", initialDirectory: "/existing/playground",
