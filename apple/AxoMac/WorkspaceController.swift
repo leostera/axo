@@ -24,6 +24,7 @@ final class WorkspaceController: NSObject, NSOutlineViewDataSource, NSOutlineVie
     private let scratchRoot: URL
     private let stateRoot: URL
     private var stateBindings: [PaneID: MacSessionBinding] = [:]
+    private var initialObservationDeadlines: [PaneID: Date] = [:]
     private var agentSnapshots: [PaneID: MacSessionState] = [:]
     private var attentionReceipts: [PaneID: MacAttentionReceipt] = [:]
     private var stateObserver: MacSessionObserver?
@@ -392,7 +393,10 @@ final class WorkspaceController: NSObject, NSOutlineViewDataSource, NSOutlineVie
             self.requestClose(id, sessionID: owner.id, needsConfirmation: alive)
         }
         livePanes[pane.id] = terminal
-        if let observation { stateBindings[pane.id] = observation }
+        if let observation {
+            stateBindings[pane.id] = observation
+            initialObservationDeadlines[pane.id] = Date().addingTimeInterval(10)
+        }
         launchFailures.removeValue(forKey: pane.id)
     }
     private func requestClose(_ paneID: PaneID, sessionID: AxoSessionID, needsConfirmation: Bool) {
@@ -747,6 +751,9 @@ final class WorkspaceController: NSObject, NSOutlineViewDataSource, NSOutlineVie
     }
     private func receiveAgentState(_ observation: MacSessionState?, from binding: MacSessionBinding) {
         guard stateBindings[binding.paneID]?.generation == binding.generation, livePanes[binding.paneID]?.childExited == false else { return }
+        if let deadline = initialObservationDeadlines[binding.paneID], Date() >= deadline {
+            initialObservationDeadlines.removeValue(forKey: binding.paneID); refreshSidebar()
+        }
         guard let snapshot = observation else {
             if agentSnapshots.removeValue(forKey: binding.paneID) != nil { refreshSidebar() }
             return // Keep the receipt: recovering observation must not repeat an already reported episode.
@@ -764,13 +771,15 @@ final class WorkspaceController: NSObject, NSOutlineViewDataSource, NSOutlineVie
         let oldPresentation = agentSnapshots[binding.paneID].map { attentionReceipts[binding.paneID]?.presentation($0) ?? $0.state }
         attentionReceipts[binding.paneID] = receipt
         agentSnapshots[binding.paneID] = snapshot
-        if oldPresentation != receipt.presentation(snapshot) { refreshSidebar() }
+        let finishedLoading = initialObservationDeadlines.removeValue(forKey: binding.paneID) != nil
+        if finishedLoading || oldPresentation != receipt.presentation(snapshot) { refreshSidebar() }
         if notify { notifications?.notify(snapshot, binding: binding) }
         if isViewing(session.id) { notifications?.dismiss(session.id) }
     }
     private func discardObservation(_ pane: PaneID, sessionID: AxoSessionID) {
         if let binding = stateBindings.removeValue(forKey: pane) { try? FileManager.default.removeItem(atPath: binding.path) }
         agentSnapshots.removeValue(forKey: pane); attentionReceipts.removeValue(forKey: pane)
+        initialObservationDeadlines.removeValue(forKey: pane)
         notifications?.dismiss(sessionID, includingTests: true)
     }
     private func notificationTestDestination() -> MacSessionNotifications.Destination? {
@@ -844,7 +853,7 @@ final class WorkspaceController: NSObject, NSOutlineViewDataSource, NSOutlineVie
             if let snapshot = agentSnapshots[id] { return attentionReceipts[id]?.presentation(snapshot) ?? snapshot.state }
             return stateBindings[id] == nil ? nil : .detached
         }
-        return WorkspaceSidebarRow(name: item.workspace?.name ?? item.session?.name ?? "", workspace: workspace, running: running, activity: activity, actions: menu,
+        return WorkspaceSidebarRow(name: item.workspace?.name ?? item.session?.name ?? "", workspace: workspace, running: running, activity: activity, loading: piPane.map { initialObservationDeadlines[$0] != nil } ?? false, actions: menu,
                                    finishRename: { [weak self] name in self?.finishRenaming(item, name: name) })
     }
     private func readSessionTitle(for terminal: TerminalView) {

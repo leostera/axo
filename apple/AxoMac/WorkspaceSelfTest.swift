@@ -186,7 +186,19 @@ enum WorkspaceSelfTest {
         let badge = WorkspaceSidebarRow(name: "Working fixture", workspace: false, running: true, activity: .working,
                                        actions: NSMenu(), finishRename: { _ in })
         guard badge.accessibilityLabel()?.contains("Agent working") == true else { throw Failure.contextActions }
+        let loading = WorkspaceSidebarRow(name: "Loading fixture", workspace: false, running: true, activity: .detached, loading: true,
+                                         actions: NSMenu(), finishRename: { _ in })
+        let unavailable = WorkspaceSidebarRow(name: "Unavailable fixture", workspace: false, running: true, activity: .detached,
+                                             actions: NSMenu(), finishRename: { _ in })
+        guard loading.imageView == nil, loading.accessibilityLabel()?.contains("Loading agent status") == true,
+              findSpinner(in: loading)?.style == .spinning,
+              unavailable.imageView?.contentTintColor == .tertiaryLabelColor,
+              unavailable.imageView?.toolTip == "Agent status unavailable", findSpinner(in: unavailable) == nil else { throw Failure.sidebar }
         print("AXO_WORKSPACE_SELF_TEST_PASSED: lazy automatic reopening, project folder/name intent and cancellation, saved shell directories, missing-directory recovery, sidebar collapse/reopen, native inline rename, context duplicate and confirmed/cancelled removal, working badge, retained surfaces, split navigation/resize")
+    }
+    private static func findSpinner(in view: NSView) -> NSProgressIndicator? {
+        if let spinner = view as? NSProgressIndicator { return spinner }
+        return view.subviews.compactMap { findSpinner(in: $0) }.first
     }
     private static func imageCount(in view: NSView) -> Int {
         (view is NSImageView ? 1 : 0) + view.subviews.reduce(0) { $0 + imageCount(in: $1) }

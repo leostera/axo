@@ -7,31 +7,38 @@ final class WorkspaceSidebarRow: NSTableCellView, NSTextFieldDelegate {
     private let finishRename: (String?) -> Void
     private var cancelled = false
     private var editing = false
-    init(name: String, workspace: Bool, running: Bool, activity: MacAgentState? = nil,
+    init(name: String, workspace: Bool, running: Bool, activity: MacAgentState? = nil, loading: Bool = false,
          actions: NSMenu, finishRename: @escaping (String?) -> Void) {
         originalName = name; self.finishRename = finishRename
         super.init(frame: .zero); menu = actions
         let working = activity == .working, attention = activity == .attention
-        let description = working ? "Agent working" : attention ? "Needs your attention" : activity == .detached ? "Agent status unavailable" : running ? "Open" : "Stopped"
-        let symbol = workspace ? "folder" : working ? "hammer.fill" : attention ? "exclamationmark.circle.fill" : activity == .detached ? "questionmark.circle" : running ? "circle.fill" : "circle"
+        let open = running && activity != .detached && !loading
+        let description = loading ? "Loading agent status" : working ? "Agent working" : attention ? "Needs your attention" : activity == .detached ? "Agent status unavailable" : open ? "Open" : "Stopped"
+        let symbol = workspace ? "folder" : working ? "hammer.fill" : attention ? "exclamationmark.circle.fill" : open ? "circle.fill" : "circle"
         let icon = NSImageView(image: NSImage(systemSymbolName: symbol, accessibilityDescription: workspace ? "Workspace" : description)!)
-        icon.contentTintColor = workspace ? .secondaryLabelColor : attention ? .systemOrange : working || activity == .detached ? .secondaryLabelColor : running ? .systemGreen : .tertiaryLabelColor
+        icon.contentTintColor = workspace ? .secondaryLabelColor : attention ? .systemOrange : working ? .secondaryLabelColor : open ? .systemGreen : .tertiaryLabelColor
         icon.toolTip = workspace ? "Project" : description
-        icon.symbolConfiguration = NSImage.SymbolConfiguration(pointSize: !workspace && !working && !attention && activity != .detached ? 6 : 13, weight: .regular)
+        icon.symbolConfiguration = NSImage.SymbolConfiguration(pointSize: !workspace && !working && !attention ? 6 : 13, weight: .regular)
         icon.imageScaling = .scaleNone
-        imageView = icon
+        let leading: NSView
+        if loading && !workspace {
+            let spinner = NSProgressIndicator()
+            spinner.style = .spinning; spinner.controlSize = .mini; spinner.isIndeterminate = true
+            spinner.setAccessibilityLabel("Loading agent status"); spinner.toolTip = description
+            spinner.startAnimation(nil); leading = spinner
+        } else { imageView = icon; leading = icon }
         let label = NSTextField(labelWithString: name)
         label.font = workspace ? .systemFont(ofSize: 12, weight: .semibold) : .systemFont(ofSize: 13)
         label.lineBreakMode = .byTruncatingTail; label.delegate = self
         label.setContentCompressionResistancePriority(.defaultLow, for: .horizontal)
         textField = label
-        let stack = NSStackView(views: [icon, label]); stack.orientation = .horizontal; stack.spacing = 8
+        let stack = NSStackView(views: [leading, label]); stack.orientation = .horizontal; stack.spacing = 8
         stack.translatesAutoresizingMaskIntoConstraints = false; addSubview(stack)
         NSLayoutConstraint.activate([
             stack.leadingAnchor.constraint(equalTo: leadingAnchor, constant: 2),
             stack.trailingAnchor.constraint(equalTo: trailingAnchor, constant: -6),
             stack.centerYAnchor.constraint(equalTo: centerYAnchor),
-            icon.widthAnchor.constraint(equalToConstant: 14), icon.heightAnchor.constraint(equalToConstant: 14),
+            leading.widthAnchor.constraint(equalToConstant: 14), leading.heightAnchor.constraint(equalToConstant: 14),
         ])
         setAccessibilityLabel(name + (workspace ? ", workspace" : ", " + description))
     }
