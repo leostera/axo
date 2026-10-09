@@ -4,7 +4,9 @@ One Pi conversation, a native Mac terminal, and a native iPhone companion.
 
 This is the **single-workbench prototype**, not the complete [RFD](docs/rfds/RFD0001-axo-continuous-agent-workspaces.md). The narrower implementation contract and limitations are in [the first-slice notes](docs/first-slice.md).
 
-[RFD0002: shared session files](docs/rfds/RFD0002-shared-session-files.md) defines the next slice: explicit Mac/iPhone attachments backed by private R2 storage, demand-driven history, and a visible Back to bottom control. The local implementation and simulator validation are complete for the first implementation checkpoint; production rollout and the remaining acceptance drills are still gated. Production file storage remains disabled; provisioning and deployment require privacy/billing approval.
+[RFD0002: shared session files](docs/rfds/RFD0002-shared-session-files.md) defines explicit Mac/iPhone attachments, private R2 storage, and demand-driven history. Storage is now enabled for approved non-sensitive prototype use with direct signed uploads; the RFD's original checkpoint/deployment descriptions are historical and still need reconciliation. Physical phone paste/upload/send/Mac-read has been verified; deletion and other acceptance drills remain open.
+
+[RFD0003: workspaces, sessions, splits, and search](docs/rfds/RFD0003-workspaces-sessions-and-search.md) proposes the next priority: parallel workbenches, Mac vertical navigation and Ghostty splits, iPhone workspace/session navigation, explicit relay routing, and FFF-backed search. This takes precedence over executor-style service/tool integrations. It is a draft, not an implemented multi-session feature.
 
 ```text
 Mac: libghostty → interactive Pi + Axo extension
