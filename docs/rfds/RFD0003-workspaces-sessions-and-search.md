@@ -160,6 +160,8 @@ A local transactional store owns IDs, names/order, memberships, primary conversa
 
 A managed session gets its own Pi session file and launch directory. Fresh scratch directories are under an Axo-owned playground root keyed by session ID; existing project directories use host-approved directory references. Do not rewrite the existing prototype's `local/playground/session.jsonl` or implicitly copy its history into newly created sessions.
 
+The last pane may be closed without deleting the session: an empty layout is a valid stopped state with explicit Resume Pi/Open Terminal actions. Splitting requires a selected pane; keyboard/menu enablement must describe the empty/no-workspace case instead of guessing another session's focus.
+
 Restart restores records and layouts as **stopped**. It does not relaunch shells, servers, or uncertain agent work automatically. Explicit resume opens the recorded Pi conversation with its saved directory/trust configuration. A missing directory prompts for repair before execution, rather than silently changing to another project.
 
 ### Ghostty integration
@@ -182,7 +184,11 @@ The Axo extension remains separately installable into vanilla Pi. Axo-managed la
 
 Pi owns model selection, steering, tools, conversation trees, and persistence. Use documented events and APIs. A broker restart or app selection change cannot trigger prompt replay, a hidden continuation, or a Pi source rewrite. Fail explicitly when a supported API cannot preserve a required guarantee.
 
-The broker rejects duplicate live writers for a conversation. A runtime restart changes its generation, not its conversation or Axo session ID. Phone prompts resolve a binding once; answer/cancel/history/tool-output operations include the appropriate generation/view/request identities and never fall back to the selected or default runtime.
+The broker rejects duplicate **admitted** live writers for a conversation. This is not a claim that an unmanaged vanilla Pi process honors an Axo lock: externally opening the same JSONL without the plugin remains an unsupported concurrent-write risk. A runtime restart changes its generation, not its conversation or Axo session ID. Phone prompts resolve a binding once; answer/cancel/history/tool-output operations include the appropriate generation/view/request identities and never fall back to the selected or default runtime.
+
+Normal Pi `/new` and `/resume` commands must remain usable. Use public pre-switch/session lifecycle events to preflight ownership and observe the actual new conversation. A changed conversation detaches the old binding and invalidates old generation-bound requests; it never silently replaces the conversation addressed by the old Axo session. Select the existing Axo session for the newly chosen conversation, or register a new session in the same workspace. Transfer only the managed Pi pane; ordinary sibling shells retain their original session and processes. Split-tree repair and ownership transfer must be atomic and tested. A duplicate admitted writer is rejected before the switch where the public hook permits it, with navigation to the existing session offered instead. Verify this ordering before claiming write exclusion.
+
+Managed-Pi directory metadata comes from its current public Pi context, not a stale shell cwd/title. Ordinary-shell metadata can use Ghostty's validated pwd observation. Sidebar records must not imply that an agent's tools changed directory merely because a neighboring shell did.
 
 ### Catalog and relay routing
 
@@ -207,7 +213,7 @@ All request/reply envelopes identify their target and correlation ID, including 
 
 The relay authenticates the role before parsing/routing and verifies registered ownership. The host validates the binding again before dispatch. Opaque IDs locate records; they grant no access. Old runtime generations are rejected. Unknown subscriptions cannot cause a new Pi process to start.
 
-Persist catalog transitions and socket attachments needed for recovery. After hibernation, reconstruct catalog state and authenticated subscriptions from durable state/serialized attachments, not an in-memory selected-session variable. Existing credential expiry and file-maintenance deadlines must continue sharing the object's alarm. Host control/catalog mutations use a lease/boot generation to reject delayed updates from an obsolete connection.
+Persist catalog transitions and socket attachments needed for recovery. After hibernation, reconstruct catalog state and authenticated subscriptions from durable state/serialized attachments, not an in-memory selected-session variable. Keep each WebSocket attachment below Cloudflare's 16,384-byte limit; attachments survive hibernation but not socket closure, so catalog records and creation results belong in durable storage. Existing credential expiry and file-maintenance deadlines must continue sharing the object's alarm. Host control/catalog mutations use a lease/boot generation to reject delayed updates from an obsolete connection.
 
 The current one-host rule becomes one **host broker**, not one Pi process. Multiple phone clients can independently select different conversations. A live snapshot goes only to subscribers; catalog summaries can fan out to all authorized phones. An error or authentication expiry affects the relevant connection/scope, not another conversation's buffers.
 
@@ -255,7 +261,7 @@ Recommend an `AxoSearch` Swift wrapper over the C ABI, with one actor/serial own
 
 The native integration, arbitrary-name corpus ranking, content-index update/deletion behavior, cancellation granularity, and Apple Silicon/Intel packaging are **not yet built or benchmarked**. A Node search helper using the verified wrapper is an alternative if the Swift C bridge materially complicates ownership, not a requirement to change Pi. Do not silently replace FFF without revisiting the decision.
 
-Conversation extraction uses supported Pi history access or the existing projection semantics, not regex over serialized provider payloads. A search reader does not acquire write ownership or change Pi's branch. Local JSONL loading may be eager under Pi's API; indexing is asynchronous and transfer/result windows remain bounded. Branch replacement invalidates obsolete index documents. Live updates cannot repeatedly rebuild every saved conversation.
+Conversation extraction uses supported Pi history access or the existing projection semantics, not regex over serialized provider payloads. Prefer bounded local projection pages/deltas from an already-loaded plugin instance. A search reader does not acquire write ownership or change Pi's branch. Local JSONL loading may be eager under Pi's API; any stopped-session reader must enforce a source-byte admission limit and concurrency/memory budget before loading, and report unsupported/partial coverage rather than loading an unbounded file. Do not assume the projected corpus cap bounds the raw JSONL/base64 cost. Indexing is asynchronous and transfer/result windows remain bounded. Branch replacement invalidates obsolete index documents. Live updates cannot repeatedly rebuild every saved conversation.
 
 A query result includes query/index generation, kind, stable workspace/session/conversation or pane ID, branch/snapshot revision, and an anchor/snippet. Revalidate it before opening. Highlight offsets are not stable transcript identities. Indexing cannot invent missing/deleted transcript rows. Ordinary terminal snapshots are not a durable transcript or an execution log.
 
@@ -292,7 +298,7 @@ Creation is a remote execution capability. Phone directory selection uses approv
 ## Invariants
 
 - Workspace, Axo session, Pi conversation, pane, runtime, and view identities are distinct.
-- Exactly one live writer owns a Pi conversation; ordinary shell splits are not new managed conversations.
+- At most one broker-admitted live writer owns a Pi conversation; unmanaged external writes are not falsely represented as excluded. Ordinary shell splits are not new managed conversations.
 - Selection, palette opening, search, and read-only history do not execute or stop work.
 - Switching views retains live Ghostty surfaces and restores focus without inserting keystrokes.
 - Every command and asynchronous completion retains its original destination; no global-selection fallback.
@@ -331,6 +337,7 @@ Palette/name-search research and the FFF spike can inform earlier phases; termin
 - Keep a test server and two Pi runs alive while rapidly switching sessions/workspaces and resizing splits.
 - New split launches an ordinary shell in the validated directory, not another copy of the hardcoded prototype Pi session.
 - Restart one Pi runtime and retain its conversation ID/history while invalidating old generation-bound answers/cancels.
+- Use vanilla Pi `/new` and `/resume`: move the managed binding/pane to the correct Axo session, retain sibling shells, reject an already-admitted writer before switching where supported, and never retarget a pending phone command.
 - With two phones selecting different sessions, snapshots, questions, outputs, acknowledgements, file notifications, and errors cannot leak into another destination.
 - Create from the phone during another session's long-running tool; creation does not depend on interrupting that Pi.
 - Lose/repeat a create acknowledgement, crash around launch, and submit conflicting IDs: create one durable session or a truthful failure, never duplicate work.
@@ -409,6 +416,8 @@ Research sources:
 - [FFF MIT license](https://github.com/dmtrKovalenko/fff/blob/65119f965d39a657020daf9198a657f6d1f718fd/LICENSE)
 - [Pi public extension API](https://github.com/earendil-works/pi/blob/main/packages/coding-agent/docs/extensions.md)
 - [Pi session format](https://github.com/earendil-works/pi/blob/main/packages/coding-agent/docs/session-format.md)
+- [Cloudflare WebSocket hibernation and attachment limits](https://developers.cloudflare.com/durable-objects/best-practices/websockets/)
+- [Cloudflare SQLite-backed Durable Object storage](https://developers.cloudflare.com/durable-objects/api/sqlite-storage-api/)
 
 Pi references were checked against the installed vanilla `1.1.0` declarations/docs. Ghostty evidence comes from the repository's pinned vendor source. FFF was cloned for source research only; no dependency installation, native FFF build, new app feature, resource provisioning, or deployment was performed while drafting.
 
@@ -428,7 +437,7 @@ Pi references were checked against the installed vanilla `1.1.0` declarations/do
 - Exact local store schema and stable catalog ordering/revision conflict UI.
 - Unix-socket framing, local pairing, external-plugin binding, and host credential storage.
 - Ghostty surface retention/occlusion, process-exit/close callbacks, split accessibility, and real text-extraction coverage/cost.
-- C ABI packaging versus Node helper, index cache budgets, incremental projection, ranking, cancellation, and Unicode range semantics.
+- C ABI packaging versus Node helper, transitive dependency-license review, source-read/index cache budgets, incremental projection, ranking, cancellation, and Unicode range semantics.
 - Around-anchor history protocol and preview behavior when Pi cannot jump to a message in its native TUI.
 - Aggregate draft/history/index quotas, stopped-session search coverage, and explicit resume/trust behavior.
 - Version/capability rollout and a recovery path that does not regress to broadcast routing.
