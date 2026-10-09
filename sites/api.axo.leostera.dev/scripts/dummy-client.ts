@@ -59,6 +59,8 @@ async function boundedJson(response: Response): Promise<unknown> {
     reader.releaseLock();
   }
 }
+let mutationAttempted = false;
+
 async function main() {
   const [endpoint, credentialFile, ...flags] = process.argv.slice(2);
   if (!endpoint || !credentialFile)
@@ -136,6 +138,7 @@ async function main() {
     });
     // Capture the complete non-secret mutation intent before dispatch for later reconciliation.
     console.log(JSON.stringify(params));
+    mutationAttempted = true;
     const launched = await peer.call("axo.runtime.startApproved", params);
     if (!("result" in launched)) throw new Error("Mutation rejected");
     console.log(
@@ -151,7 +154,9 @@ async function main() {
 }
 main().catch(() => {
   console.error(
-    "Smoke test failed. A dispatched mutation may have an unknown outcome; no automatic retry was attempted.",
+    mutationAttempted
+      ? "Smoke test failed after a mutation attempt; outcome may be unknown. Reconcile commandId; no automatic retry was attempted."
+      : "Smoke test failed before any mutation attempt; no work was launched by this client. No automatic retry was attempted.",
   );
   process.exitCode = 1;
 });
