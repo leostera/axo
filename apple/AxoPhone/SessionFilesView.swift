@@ -43,7 +43,7 @@ struct SharedFileCard: View {
             if let error { Text(error).font(.caption).foregroundStyle(.orange) }
         }
         .padding(14)
-        .background(.white.opacity(0.065), in: RoundedRectangle(cornerRadius: 14))
+        .background(ChatColors.surface, in: RoundedRectangle(cornerRadius: 14))
         .accessibilityIdentifier("shared-file-\(file.id)")
         .quickLookPreview($previewURL)
         .onChange(of: availability) { _, state in if state != .ready { localURL = nil } }
@@ -205,7 +205,7 @@ struct DraftFilesBar: View {
                             Button("Review/upload") { reviewUpload(draft.id) }.font(.caption)
                         }
                     }
-                    .frame(width: 210).padding(10).background(.white.opacity(0.07), in: RoundedRectangle(cornerRadius: 12))
+                    .frame(width: 210).padding(10).background(ChatColors.surface, in: RoundedRectangle(cornerRadius: 12))
                 }
             }
         }

@@ -10,7 +10,6 @@ struct ChatMessageView: View {
     var fileClient: SessionFilesClient? = nil
     var isPending = false
     @State private var copied = false
-    @ScaledMetric(relativeTo: .body) private var bodySize = 18.0
 
     var body: some View {
         VStack(alignment: .leading, spacing: 12) {
@@ -28,10 +27,7 @@ struct ChatMessageView: View {
 
     @ViewBuilder private var messageBody: some View {
         if message.role == "thinking" {
-            Text(message.text)
-                .font(.callout.italic())
-                .foregroundStyle(.secondary)
-                .textSelection(.enabled)
+            ChatMarkdown(text: message.text, isThinking: true)
                 .frame(maxWidth: .infinity, alignment: .leading)
                 .accessibilityIdentifier("thinkingBlock")
         } else if message.role == "tool" {
@@ -54,14 +50,7 @@ struct ChatMessageView: View {
             }
         } else {
             VStack(alignment: .leading, spacing: 16) {
-                Markdown(message.text)
-                    .markdownTheme(theme)
-                    .markdownImageProvider(OmittedImages())
-                    .markdownInlineImageProvider(OmittedImages())
-                    .textSelection(.enabled)
-                    .environment(\.openURL, OpenURLAction { url in
-                        ["https", "http"].contains(url.scheme?.lowercased() ?? "") ? .systemAction : .discarded
-                    })
+                ChatMarkdown(text: message.text)
                 HStack(spacing: 18) {
                     copyButton
                     ShareLink(item: message.text) { Image(systemName: "square.and.arrow.up") }
@@ -94,9 +83,28 @@ struct ChatMessageView: View {
             .accessibilityLabel(copied ? "Copied response" : "Copy response")
     }
 
+}
+
+/// The same bounded, no-remote-images renderer serves public thinking and replies.
+struct ChatMarkdown: View {
+    let text: String
+    var isThinking = false
+    @ScaledMetric(relativeTo: .body) private var bodySize = 18.0
+
+    var body: some View {
+        Markdown(text)
+            .markdownTheme(theme)
+            .markdownImageProvider(OmittedImages())
+            .markdownInlineImageProvider(OmittedImages())
+            .textSelection(.enabled)
+            .environment(\.openURL, OpenURLAction { url in
+                ["https", "http"].contains(url.scheme?.lowercased() ?? "") ? .systemAction : .discarded
+            })
+    }
+
     private var theme: Theme {
         Theme.basic
-            .text { ForegroundColor(.white.opacity(0.94)); FontSize(bodySize) }
+            .text { ForegroundColor(isThinking ? .secondary : .primary); FontSize(isThinking ? bodySize * 0.85 : bodySize) }
             .paragraph { configuration in
                 configuration.label
                     .relativeLineSpacing(.em(0.2))
@@ -113,7 +121,7 @@ struct ChatMessageView: View {
             .blockquote { configuration in
                 configuration.label
                     .padding(.leading, 17)
-                    .overlay(alignment: .leading) { RoundedRectangle(cornerRadius: 2).fill(Color(white: 0.22)).frame(width: 3) }
+                    .overlay(alignment: .leading) { RoundedRectangle(cornerRadius: 2).fill(Color.secondary).frame(width: 3) }
                     .markdownMargin(top: 6, bottom: 18)
             }
             .codeBlock { configuration in
@@ -127,7 +135,7 @@ struct ChatMessageView: View {
                             .fixedSize(horizontal: true, vertical: false)
                     }
                 }
-                .padding(16).background(Color(white: 0.075), in: RoundedRectangle(cornerRadius: 16))
+                .padding(16).background(ChatColors.surface, in: RoundedRectangle(cornerRadius: 16))
                 .markdownMargin(top: 4, bottom: 18)
             }
             .table { configuration in
@@ -152,7 +160,7 @@ struct ChatEmptyState: View {
     var body: some View {
         VStack(spacing: 18) {
             Image(systemName: "sparkle").font(.system(size: 32, weight: .light))
-                .frame(width: 68, height: 68).background(Color(white: 0.07), in: Circle())
+                .frame(width: 68, height: 68).background(ChatColors.surface, in: Circle())
             Text("What are we working on?").font(.title2.weight(.semibold))
             Text("Your Mac’s Pi session, right here.").font(.body).foregroundStyle(.secondary)
             Button(status, action: connect).font(.caption).foregroundStyle(.secondary)
@@ -177,12 +185,12 @@ struct ChatQuestionCard: View {
                     Button { answer(option) } label: {
                         Text(option).multilineTextAlignment(.leading)
                             .padding(12).frame(maxWidth: .infinity, alignment: .leading)
-                            .background(.white.opacity(0.07), in: RoundedRectangle(cornerRadius: 13))
+                            .background(ChatColors.inset, in: RoundedRectangle(cornerRadius: 13))
                     }.buttonStyle(.plain).disabled(!canAnswer)
                 }
             }.padding(16)
         }
         .frame(maxHeight: 230)
-        .background(Color(white: 0.07), in: RoundedRectangle(cornerRadius: 22))
+        .background(ChatColors.surface, in: RoundedRectangle(cornerRadius: 22))
     }
 }

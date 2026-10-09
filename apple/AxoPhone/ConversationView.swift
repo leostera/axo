@@ -1,4 +1,4 @@
-import AxoCore
+ import AxoCore
 import AxoVoice
 import SwiftUI
 import PhotosUI
@@ -8,6 +8,7 @@ struct ConversationView: View {
     @State private var client = ConversationClient()
     @State private var voice = VoicePromptFactory.make()
     @AppStorage("relayEndpoint") private var endpointText = RelayEndpoint.defaultOrigin
+    @AppStorage("appearance") private var appearance: AppAppearance = .system
     @State private var draft = ""
     @State private var submittedDraft: SubmittedPrompt?
     private struct SubmittedPrompt {
@@ -37,7 +38,16 @@ struct ConversationView: View {
     @State private var pendingVoiceSendID: UUID?
     @State private var sheet: ChatSheet?
     @State private var error: String?
-    @State private var followsLatest = true
+    @State private var scrollState = ConversationScrollState()
+    @State private var scrollMetrics: ScrollMetrics?
+    @State private var queuedEarlierDemand = false
+    #if DEBUG
+    @State private var previewNewMessages: [ConversationMessage] = []
+    #endif
+    private var followsLatest: Bool { scrollState.followsLatest }
+    private var latestMessageID: String? {
+        isPreview ? messages.last?.id : client.snapshot?.messages.last?.id
+    }
     @State private var scrollRequest = 0
     @State private var scrollAnchor: String?
     @State private var userIsScrolling = false
@@ -66,7 +76,7 @@ struct ConversationView: View {
     }
     private var messages: [ConversationMessage] {
         #if DEBUG
-        if isPreview { return ChatPreviewData.messages }
+        if isPreview { return ChatPreviewData.messages + previewNewMessages }
         #endif
         return client.messages
     }
@@ -102,7 +112,8 @@ struct ConversationView: View {
 
     var body: some View {
         conversation
-            .background(Color.black)
+            .background(ChatColors.background)
+            .preferredColorScheme(appearance.colorScheme)
             .task {
                 #if DEBUG
                 if SharedFilePreview.enabled {
@@ -189,11 +200,13 @@ struct ConversationView: View {
                         ChatEmptyState(status: status, connect: { sheet = .connection }).disabled(voice.isBusy)
                     }
                     if client.hasEarlierMessages {
-                        Button(client.isLoadingHistory ? "Loading earlier messages…" : "Load earlier messages") {
-                            client.loadEarlierMessages()
+                        if client.isLoadingHistory {
+                            ProgressView("Loading earlier messages…").font(.caption)
+                        } else {
+                            Button("Load earlier messages") { client.loadEarlierMessages() }
+                                .font(.caption).foregroundStyle(.secondary)
+                                .disabled(client.link != .online)
                         }
-                        .font(.caption).foregroundStyle(.secondary)
-                        .disabled(client.isLoadingHistory || client.link != .online)
                     }
                     ForEach(messages) { message in
                         ChatMessageView(message: message, activity: agentActivities.first { $0.id == message.toolCallId },
@@ -224,30 +237,57 @@ struct ConversationView: View {
             .scrollPosition(id: $scrollAnchor, anchor: .top)
             .defaultScrollAnchor(.bottom, for: .initialOffset)
             .onScrollPhaseChange { _, phase in
-                userIsScrolling = phase == .interacting || phase == .decelerating
+                userIsScrolling = phase == .tracking || phase == .interacting || phase == .decelerating
+                if phase == .idle, followsLatest { proxy.scrollTo("latest", anchor: .bottom) }
             }
             .onScrollGeometryChange(for: ScrollMetrics.self) { geometry in
                 let offset = geometry.contentOffset.y + geometry.contentInsets.top
-                let bottom = geometry.contentSize.height - geometry.containerSize.height
+                let bottom = max(0, geometry.contentSize.height + geometry.contentInsets.top
+                                 + geometry.contentInsets.bottom - geometry.containerSize.height)
                 return ScrollMetrics(offset: offset, contentHeight: geometry.contentSize.height,
                                      nearTop: offset < geometry.containerSize.height / 2,
                                      nearBottom: offset >= bottom - 60)
             } action: { old, new in
-                followsLatest = new.nearBottom && !client.hasLaterMessages
+                scrollMetrics = new
+                // Streaming/layout growth must not switch off follow-latest.
+                if followsLatest && !userIsScrolling && (old.contentHeight != new.contentHeight || !new.nearBottom) {
+                    proxy.scrollTo("latest", anchor: .bottom)
+                }
+                // Page insertion/reconnect are not user demand. The bound anchor
+                // keeps the same message visible as older rows are prepended.
+                guard userIsScrolling, old.contentHeight == new.contentHeight, old.offset != new.offset else { return }
+                scrollState.userScrolled(isAtLatest: new.nearBottom && !client.hasLaterMessages)
                 client.isBrowsingHistory = !followsLatest
-                // Layout, page insertion and reconnect are not scroll demand.
-                guard userIsScrolling, old.contentHeight == new.contentHeight else { return }
-                if new.offset < old.offset && new.nearTop { client.loadEarlierMessages() }
+                if new.offset < old.offset && new.nearTop {
+                    if client.isLoadingHistory { queuedEarlierDemand = true }
+                    else { client.loadEarlierMessages() }
+                }
                 if new.offset > old.offset && new.nearBottom { client.loadLaterMessages() }
             }
+            .onChange(of: client.isLoadingHistory) { _, loading in
+                guard !loading, queuedEarlierDemand else { return }
+                queuedEarlierDemand = false
+                // Consume at most one queued, user-generated demand. Never
+                // recurse through every historical page just because it exists.
+                if !followsLatest, scrollMetrics?.nearTop == true { client.loadEarlierMessages() }
+            }
+            .onChange(of: latestMessageID) { previous, next in
+                scrollState.latestMessageChanged(from: previous, to: next)
+            }
+            .onChange(of: client.snapshot?.viewId) { previous, next in
+                if let previous, let next, previous != next {
+                    scrollState.jumpToLatest()
+                    queuedEarlierDemand = false
+                }
+            }
             .onChange(of: messages) { _, _ in
-                if followsLatest { proxy.scrollTo("latest", anchor: .bottom) }
+                if followsLatest && !userIsScrolling { proxy.scrollTo("latest", anchor: .bottom) }
             }
             .onChange(of: client.pendingPrompts) { _, _ in
-                if followsLatest { proxy.scrollTo("latest", anchor: .bottom) }
+                if followsLatest && !userIsScrolling { proxy.scrollTo("latest", anchor: .bottom) }
             }
             .onChange(of: agentActivities) { _, _ in
-                if followsLatest { proxy.scrollTo("latest", anchor: .bottom) }
+                if followsLatest && !userIsScrolling { proxy.scrollTo("latest", anchor: .bottom) }
             }
             .onChange(of: scrollRequest) { _, _ in
                 withAnimation { proxy.scrollTo("latest", anchor: .bottom) }
@@ -263,16 +303,16 @@ struct ConversationView: View {
                     Image(systemName: "line.3.horizontal.decrease").font(.system(size: 21, weight: .medium))
                         .frame(width: 46, height: 46)
                         .background(.ultraThinMaterial, in: Circle())
-                        .overlay(Circle().stroke(.white.opacity(0.12), lineWidth: 0.5))
+                        .overlay(Circle().stroke(ChatColors.border, lineWidth: 0.5))
                 }.accessibilityLabel("Connection settings").disabled(voice.isBusy)
                 Spacer(minLength: 0)
                 headerActions
             }
         }
         .buttonStyle(.plain)
-        .foregroundStyle(.white)
+        .foregroundStyle(.primary)
         .padding(.horizontal, 18).padding(.top, 6).padding(.bottom, 10)
-        .background(Color.black.opacity(0.96))
+        .background(ChatColors.background.opacity(0.96))
     }
 
     private var headerActions: some View {
@@ -284,13 +324,20 @@ struct ConversationView: View {
                 Button("Connection settings", systemImage: "network") { sheet = .connection }.disabled(voice.isBusy)
                 Button("Reconnect", systemImage: "arrow.clockwise") { reconnect() }.disabled(voice.isBusy)
                 Button("About voice", systemImage: "waveform") { sheet = .voiceDetails }.disabled(voice.isBusy)
+                #if DEBUG
+                if ProcessInfo.processInfo.arguments.contains("--axo-live-history-preview") {
+                    Button("Add synthetic message") {
+                        if let message = ChatPreviewData.newMessage() { previewNewMessages.append(message) }
+                    }
+                }
+                #endif
             } label: {
                 Image(systemName: "ellipsis").font(.system(size: 21, weight: .semibold)).frame(width: 44, height: 46)
             }.accessibilityLabel("Chat options")
         }
         .padding(.horizontal, 5)
         .background(.ultraThinMaterial, in: Capsule())
-        .overlay(Capsule().stroke(.white.opacity(0.12), lineWidth: 0.5))
+        .overlay(Capsule().stroke(ChatColors.border, lineWidth: 0.5))
     }
 
     private var headerTitle: some View {
@@ -326,14 +373,19 @@ struct ConversationView: View {
             }
             if !followsLatest || client.hasLaterMessages {
                 Button {
-                    if isPreview || client.backToBottom() { scrollRequest += 1 }
+                    if isPreview || client.backToBottom() {
+                        scrollState.jumpToLatest()
+                        queuedEarlierDemand = false
+                        scrollRequest += 1
+                    }
                 } label: {
-                    Label("Jump to latest", systemImage: "arrow.down")
+                    Label(scrollState.hasNewMessages ? "Jump to new message" : "Jump to latest", systemImage: "arrow.down")
                         .font(.callout.weight(.semibold))
-                        .padding(.horizontal, 14).padding(.vertical, 10)
+                        .padding(.horizontal, 14).padding(.vertical, 12)
+                        .contentShape(Capsule())
                 }
                 .buttonStyle(.plain)
-                .background(.ultraThinMaterial, in: Capsule())
+                .shadow(color: ChatColors.background, radius: 3)
                 .accessibilityIdentifier("back-to-bottom")
             }
             if let files = fileClient, !files.currentDrafts.isEmpty {
@@ -348,7 +400,6 @@ struct ConversationView: View {
                          showFiles: { sheet = .files })
         }
         .padding(.top, 10).padding(.bottom, 8)
-        .background(Color.black)
     }
 
     @ViewBuilder private var login: some View {
@@ -443,7 +494,8 @@ struct ConversationView: View {
         let attachments = fileClient?.readyDrafts.map(\.id) ?? []
         submittedDraft = SubmittedPrompt(id: id, text: draft, attachmentIDs: attachments)
         _ = client.backToBottom()
-        followsLatest = true
+        scrollState.jumpToLatest()
+        queuedEarlierDemand = false
         scrollRequest += 1
         client.send(.prompt(id: id, session: session, text: draft, attachmentIds: attachments))
     }

@@ -10,12 +10,12 @@ struct VoicePromptButton: View {
     var body: some View {
         Button(action: act) {
             Group {
-                if waiting { ProgressView().tint(prominent ? .black : .white) }
+                if waiting { ProgressView().tint(prominent ? ChatColors.background : .primary) }
                 else { Image(systemName: symbol).font(.system(size: 21, weight: .medium)) }
             }
-            .foregroundStyle(voice.state == .recording ? Color.red : prominent ? .black : .white)
+            .foregroundStyle(voice.state == .recording ? Color.red : prominent ? ChatColors.background : .primary)
             .frame(width: 44, height: 44)
-            .background(prominent ? Color.white : .clear, in: Circle())
+            .background(prominent ? Color.primary : .clear, in: Circle())
         }
         .buttonStyle(.plain).disabled(waiting).padding(.bottom, 1)
         .accessibilityLabel(label)
@@ -88,12 +88,12 @@ struct VoiceProgressCard: View {
                     }
                 }
                 if case .preparing(let progress) = voice.state {
-                    if progress.stage == .downloading { ProgressView(value: progress.fraction).tint(.white) }
-                    else { ProgressView().tint(.white) }
+                    if progress.stage == .downloading { ProgressView(value: progress.fraction).tint(.primary) }
+                    else { ProgressView().tint(.primary) }
                 }
             }
             .padding(14)
-            .background(Color(white: 0.065), in: RoundedRectangle(cornerRadius: 20))
+            .background(ChatColors.surface, in: RoundedRectangle(cornerRadius: 20))
         }
     }
 

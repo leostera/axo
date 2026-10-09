@@ -3,6 +3,7 @@ import SwiftUI
 
 struct ConnectionSettingsView: View {
     @Binding var endpoint: String
+    @AppStorage("appearance") private var appearance: AppAppearance = .system
     let status: String
     let canConnect: Bool
     let reconnect: () -> Void
@@ -14,6 +15,13 @@ struct ConnectionSettingsView: View {
     var body: some View {
         NavigationStack {
             Form {
+                Section("Appearance") {
+                    Picker("Theme", selection: $appearance) {
+                        ForEach(AppAppearance.allCases) { choice in Text(choice.title).tag(choice) }
+                    }
+                    .pickerStyle(.segmented)
+                    .accessibilityIdentifier("appearancePicker")
+                }
                 Section("Mac connection") {
                     Label(status, systemImage: "desktopcomputer")
                     Button("Reconnect", action: reconnect).disabled(!canConnect || !validEndpoint)
@@ -28,7 +36,7 @@ struct ConnectionSettingsView: View {
                     Text("Your Mac must have Axo running. Prompts are not queued while it is offline.")
                 }
             }
-            .tint(.white)
+            .tint(.primary)
             .navigationTitle("Connection").navigationBarTitleDisplayMode(.inline)
             .toolbar { Button("Done") { dismiss() } }
         }

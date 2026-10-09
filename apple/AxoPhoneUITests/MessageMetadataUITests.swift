@@ -16,8 +16,8 @@ final class MessageMetadataUITests: XCTestCase {
         let app = XCUIApplication()
         app.launchArguments = ["--axo-chat-preview"]
         app.launch()
-        let timestamp = app.buttons["message-timestamp"].firstMatch
-        XCTAssertTrue(timestamp.waitForExistence(timeout: 10))
+        XCTAssertTrue(app.buttons["message-timestamp"].firstMatch.waitForExistence(timeout: 10))
+        let timestamp = try XCTUnwrap(app.buttons.matching(identifier: "message-timestamp").allElementsBoundByIndex.first { $0.isHittable })
         XCTAssertEqual(timestamp.value as? String, "5 minutes ago")
         timestamp.tap()
         let year = String(Calendar.current.component(.year, from: .now))

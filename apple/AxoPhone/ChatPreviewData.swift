@@ -7,8 +7,14 @@ enum ChatPreviewData {
     static var enabled: Bool {
         let arguments = ProcessInfo.processInfo.arguments
         return arguments.contains("--axo-chat-preview") || arguments.contains("--axo-chat-preview-working")
-            || arguments.contains("--axo-history-preview") || arguments.contains("--axo-files-preview") || arguments.contains("--axo-file-draft-preview")
+            || arguments.contains("--axo-history-preview") || arguments.contains("--axo-live-history-preview") || arguments.contains("--axo-markdown-preview") || arguments.contains("--axo-files-preview") || arguments.contains("--axo-file-draft-preview")
     }
+    static func newMessage() -> ConversationMessage? {
+        let fields = ["id": UUID().uuidString, "role": "assistant", "text": "New synthetic message at the latest end."]
+        guard let data = try? JSONSerialization.data(withJSONObject: fields) else { return nil }
+        return try? JSONDecoder().decode(ConversationMessage.self, from: data)
+    }
+
     static var showsActivity: Bool { ProcessInfo.processInfo.arguments.contains("--axo-chat-preview-working") }
     static let liveText = "I’m checking how cancellation should flow through the relay and into Pi’s active run."
     static let events = [
@@ -54,7 +60,11 @@ enum ChatPreviewData {
             **Still your Pi session.** Nothing about how your Mac runs the work has changed.
             """]
         ]
-        if ProcessInfo.processInfo.arguments.contains("--axo-history-preview") {
+        if ProcessInfo.processInfo.arguments.contains("--axo-markdown-preview") {
+            records = [["id": "markdown-thinking", "role": "thinking", "text": "## Public thinking heading\n\nA **formatted** thought with `inline code`.\n\n- First public point\n- Second public point"],
+                       ["id": "markdown-reply", "role": "assistant", "text": "## Response heading\n\nA **formatted** response with `inline code`.\n\n```swift\nlet safe = true\n```"]]
+        }
+        if ProcessInfo.processInfo.arguments.contains("--axo-history-preview") || ProcessInfo.processInfo.arguments.contains("--axo-live-history-preview") {
             records = (0..<60).map { ["id": "history-\($0)", "role": "user", "text": "Earlier message \($0): synthetic scroll fixture."] }
             records.append(["id": "latest-preview", "role": "user", "text": "LATEST MESSAGE"])
         }

@@ -46,22 +46,22 @@ struct ChatComposer: View {
                     if hasDraft || hasAttachments || isTranscribing {
                         Button(action: send) {
                             Group {
-                                if isTranscribing { ProgressView().tint(.white) }
+                                if isTranscribing { ProgressView().tint(.primary) }
                                 else { Image(systemName: "arrow.up").font(.system(size: 20, weight: .semibold)) }
                             }
-                            .foregroundStyle(canSend ? .black : .white.opacity(0.3))
+                            .foregroundStyle(canSend ? ChatColors.background : Color.secondary)
                             .frame(width: 44, height: 44)
-                            .background(canSend ? Color.white : Color(white: 0.19), in: Circle())
+                            .background(canSend ? Color.primary : ChatColors.disabledControl, in: Circle())
                         }
                         .accessibilityLabel(isTranscribing ? "Transcribing" : "Send").accessibilityIdentifier("sendPromptButton").disabled(!canSend)
                         .padding(.bottom, 1)
                     }
                 }
-                .buttonStyle(.plain).foregroundStyle(.white)
+                .buttonStyle(.plain).foregroundStyle(.primary)
                 .padding(.horizontal, 8).padding(.bottom, 8)
             }
-            .background(Color(white: 0.065), in: RoundedRectangle(cornerRadius: 27))
-            .overlay(RoundedRectangle(cornerRadius: 27).stroke(.white.opacity(0.14), lineWidth: 0.75))
+            .background(ChatColors.surface, in: RoundedRectangle(cornerRadius: 27))
+            .overlay(RoundedRectangle(cornerRadius: 27).stroke(ChatColors.border, lineWidth: 0.75))
         }
         .padding(.horizontal, 16)
     }
