@@ -14,7 +14,10 @@ struct ChatMessageView: View {
     var body: some View {
         VStack(alignment: .leading, spacing: 12) {
             messageBody
-            ForEach(message.attachments ?? []) { file in SharedFileCard(file: file, client: fileClient) }
+            photoAttachments
+            ForEach((message.attachments ?? []).filter { !$0.mediaType.isImage }) { file in
+                SharedFileCard(file: file, client: fileClient)
+            }
             if message.role != "assistant" {
                 HStack(spacing: 12) {
                     if let timestamp = message.timestamp { MessageTimestamp(milliseconds: timestamp) }
@@ -22,6 +25,28 @@ struct ChatMessageView: View {
                 }
                 .frame(maxWidth: .infinity, alignment: message.role == "user" ? .trailing : .leading)
             }
+        }
+    }
+
+    @ViewBuilder private var photoAttachments: some View {
+        let photos = (message.attachments ?? []).filter { $0.mediaType.isImage }
+        let alignment: Alignment = message.role == "user" ? .trailing : .leading
+        if photos.count == 1, let photo = photos.first {
+            SharedFileCard(file: photo, client: fileClient).frame(maxWidth: .infinity, alignment: alignment)
+        } else if !photos.isEmpty {
+            GeometryReader { geometry in
+                ScrollView(.horizontal) {
+                    HStack(spacing: 8) {
+                        ForEach(photos) { photo in
+                            SharedFileCard(file: photo, client: fileClient, photoStyle: .collection)
+                        }
+                    }
+                    .frame(minWidth: geometry.size.width, alignment: alignment)
+                }
+                .scrollIndicators(.hidden)
+            }
+            .frame(height: 112)
+            .accessibilityIdentifier("messagePhotoCollection")
         }
     }
 

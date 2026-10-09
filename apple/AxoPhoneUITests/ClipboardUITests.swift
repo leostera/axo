@@ -65,6 +65,25 @@ final class ClipboardUITests: XCTestCase {
     }
 
     @MainActor
+    func testMultiplePhotosStayTogetherInSelectionOrder() throws {
+        let app = XCUIApplication()
+        app.launchArguments = ["--axo-photo-collection-preview"]
+        app.launch()
+        var frames: [CGRect] = []
+        for index in 2...4 {
+            let photo = app.buttons["shared-file-00000000-0000-4000-8000-00000000000\(index)"]
+            let rendered = XCTNSPredicateExpectation(predicate: NSPredicate(format: "label == %@", "Photo attachment"), object: photo)
+            XCTAssertEqual(XCTWaiter.wait(for: [rendered], timeout: 10), .completed)
+            frames.append(photo.frame)
+        }
+        XCTAssertLessThan(frames[0].minX, frames[1].minX)
+        XCTAssertLessThan(frames[1].minX, frames[2].minX)
+        XCTAssertEqual(frames[0].midY, frames[2].midY, accuracy: 1)
+        XCTAssertEqual(frames[0].width, 112, accuracy: 1)
+        XCTAssertEqual(frames[0].height, 112, accuracy: 1)
+    }
+
+    @MainActor
     func testSentPhotoRendersInlineAndOpensFullPreview() throws {
         let app = XCUIApplication()
         app.launchArguments = ["--axo-inline-photo-preview"]
@@ -72,7 +91,8 @@ final class ClipboardUITests: XCTestCase {
         let photo = app.buttons["shared-file-00000000-0000-4000-8000-000000000002"]
         let rendered = XCTNSPredicateExpectation(predicate: NSPredicate(format: "label == %@", "Photo attachment"), object: photo)
         XCTAssertEqual(XCTWaiter.wait(for: [rendered], timeout: 10), .completed)
-        XCTAssertGreaterThan(photo.frame.width, 200)
+        XCTAssertGreaterThan(photo.frame.height, photo.frame.width * 1.9, "Portrait photos must not be square-cropped")
+        XCTAssertGreaterThan(photo.frame.midX, app.frame.midX, "User photos align with the right-hand message")
         XCTAssertFalse(app.staticTexts["draft-photo.png"].exists)
         let screenshot = XCTAttachment(screenshot: app.screenshot())
         screenshot.name = "Inline photo without a filename card"

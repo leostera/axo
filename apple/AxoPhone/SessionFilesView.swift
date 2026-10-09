@@ -6,9 +6,20 @@ import QuickLook
 import SwiftUI
 import UniformTypeIdentifiers
 
+enum PhotoThumbnailStyle {
+    case individual, collection
+
+    func size(for image: UIImage) -> CGSize {
+        if self == .collection { return CGSize(width: 112, height: 112) }
+        let ratio = image.size.width / max(image.size.height, 1)
+        return ratio > 1 ? CGSize(width: 240, height: 240 / ratio) : CGSize(width: 240 * ratio, height: 240)
+    }
+}
+
 struct SharedFileCard: View {
     let file: SharedFile
     let client: SessionFilesClient?
+    var photoStyle: PhotoThumbnailStyle = .individual
     @State private var opening = false
     @State private var localURL: URL?
     @State private var previewURL: URL?
@@ -73,9 +84,12 @@ struct SharedFileCard: View {
 
     @ViewBuilder private var photoContent: some View {
         if let thumbnail {
-            Image(uiImage: thumbnail).resizable().scaledToFill()
-                .frame(width: 240, height: 240).clipped()
+            let size = photoStyle.size(for: thumbnail)
+            Image(uiImage: thumbnail).resizable()
+                .aspectRatio(contentMode: photoStyle == .individual ? .fit : .fill)
+                .frame(width: size.width, height: size.height).clipped()
                 .clipShape(RoundedRectangle(cornerRadius: 20))
+                .contentShape(RoundedRectangle(cornerRadius: 20))
                 .accessibilityLabel("Photo attachment")
                 .accessibilityIdentifier("shared-photo-\(file.id)")
         } else {
@@ -86,7 +100,7 @@ struct SharedFileCard: View {
                     Text(availability == .ready ? "Tap to load photo" : "Photo unavailable").font(.caption)
                 }
             }
-            .frame(width: 240, height: 240)
+            .frame(width: photoStyle == .collection ? 112 : 120, height: photoStyle == .collection ? 112 : 240)
             .background(ChatColors.surface, in: RoundedRectangle(cornerRadius: 20))
         }
     }

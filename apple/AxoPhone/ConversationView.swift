@@ -103,7 +103,12 @@ struct ConversationView: View {
         #if DEBUG
         if SharedFilePreview.isInlinePhotoPreview {
             var rows = ChatPreviewData.messages
-            if !rows.isEmpty { rows[0].attachments = previewFileClient?.readyDrafts }
+            if !rows.isEmpty {
+                let files = previewFileClient?.readyDrafts ?? []
+                if SharedFilePreview.isPhotoCollectionPreview, let first = files.first {
+                    rows[0].attachments = (try? SharedFilePreview.collectionFiles(first)) ?? []
+                } else { rows[0].attachments = files }
+            }
             return rows
         }
         if isPreview { return ChatPreviewData.messages + previewNewMessages }

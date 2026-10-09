@@ -10,7 +10,17 @@ import UniformTypeIdentifiers
 enum SharedFilePreview {
     static var enabled: Bool { ProcessInfo.processInfo.arguments.contains("--axo-file-draft-preview") || FilePreviewProtocol.isPhoto || isPastePreview }
     static var isPastePreview: Bool { ProcessInfo.processInfo.arguments.contains(where: { $0.hasPrefix("--axo-paste-") }) }
-    static var isInlinePhotoPreview: Bool { ProcessInfo.processInfo.arguments.contains("--axo-inline-photo-preview") }
+    static var isInlinePhotoPreview: Bool { ProcessInfo.processInfo.arguments.contains("--axo-inline-photo-preview") || isPhotoCollectionPreview }
+    static var isPhotoCollectionPreview: Bool { ProcessInfo.processInfo.arguments.contains("--axo-photo-collection-preview") }
+
+    static func collectionFiles(_ file: SharedFile) throws -> [SharedFile] {
+        let encoded = try JSONEncoder().encode(file)
+        guard var attributes = try JSONSerialization.jsonObject(with: encoded) as? [String: Any] else { return [] }
+        return try (2...4).map { index in
+            attributes["id"] = "00000000-0000-4000-8000-00000000000\(index)"
+            return try JSONDecoder().decode(SharedFile.self, from: JSONSerialization.data(withJSONObject: attributes))
+        }
+    }
     static func makeClient() async throws -> SessionFilesClient {
         let configuration = URLSessionConfiguration.ephemeral
         configuration.protocolClasses = [FilePreviewProtocol.self]
@@ -65,7 +75,9 @@ private actor PreviewFileServer {
         if request.httpMethod == "PUT" || path.hasSuffix("/complete") { state = "ready"; revision += 1 }
         if request.httpMethod == "DELETE" { state = "deleted"; revision += 1 }
         if path.hasSuffix("/content") && request.httpMethod == "GET" { return Reply(body: FilePreviewProtocol.content, mediaType: FilePreviewProtocol.mediaType) }
-        let file: [String: Any] = ["id": "00000000-0000-4000-8000-000000000002", "sessionId": "preview-session", "filename": attributes["filename"] ?? (FilePreviewProtocol.isPhoto ? "draft-photo.png" : "draft-report.md"),
+        let requested = path.components(separatedBy: "/files/").last?.components(separatedBy: "/").first ?? ""
+        let id = UUID(uuidString: requested) == nil ? "00000000-0000-4000-8000-000000000002" : requested
+        let file: [String: Any] = ["id": id, "sessionId": "preview-session", "filename": attributes["filename"] ?? (FilePreviewProtocol.isPhoto ? "draft-photo.png" : "draft-report.md"),
             "mediaType": attributes["mediaType"] ?? FilePreviewProtocol.mediaType, "byteLength": attributes["byteLength"] ?? FilePreviewProtocol.content.count,
             "sha256": attributes["sha256"] ?? SHA256.hash(data: FilePreviewProtocol.content).map { String(format: "%02x", $0) }.joined(),
             "origin": "phone", "createdAt": 0, "state": state]
@@ -85,10 +97,11 @@ private actor PreviewFileServer {
 }
 
 private final class FilePreviewProtocol: URLProtocol, @unchecked Sendable {
-    static var isPhoto: Bool { ProcessInfo.processInfo.arguments.contains("--axo-photo-draft-preview") || ProcessInfo.processInfo.arguments.contains("--axo-inline-photo-preview") || ProcessInfo.processInfo.arguments.contains("--axo-paste-image-preview") }
+    static var isPhoto: Bool { ProcessInfo.processInfo.arguments.contains("--axo-photo-draft-preview") || ProcessInfo.processInfo.arguments.contains("--axo-inline-photo-preview") || ProcessInfo.processInfo.arguments.contains("--axo-photo-collection-preview") || ProcessInfo.processInfo.arguments.contains("--axo-paste-image-preview") }
     static var mediaType: String { isPhoto ? "image/png" : "text/markdown" }
-    static let content: Data = isPhoto
-        ? Data(base64Encoded: "iVBORw0KGgoAAAANSUhEUgAAAAgAAAAICAYAAADED76LAAAAAXNSR0IArs4c6QAAADhlWElmTU0AKgAAAAgAAYdpAAQAAAABAAAAGgAAAAAAAqACAAQAAAABAAAACKADAAQAAAABAAAACAAAAAC2TFloAAAAF0lEQVQYGWM0SjnxnwEPYMIjB5YaHgoAcgACbQpAV0UAAAAASUVORK5CYII=")!
+    static let content: Data = ProcessInfo.processInfo.arguments.contains("--axo-inline-photo-preview") || ProcessInfo.processInfo.arguments.contains("--axo-photo-collection-preview")
+        ? Data(base64Encoded: "iVBORw0KGgoAAAANSUhEUgAAAAgAAAAQCAYAAAArij59AAAAFUlEQVR4nGMwSjnxHx9mGFUwkhQAAFWJLpB/PXKvAAAAAElFTkSuQmCC")!
+        : isPhoto ? Data(base64Encoded: "iVBORw0KGgoAAAANSUhEUgAAAAgAAAAICAYAAADED76LAAAAAXNSR0IArs4c6QAAADhlWElmTU0AKgAAAAgAAYdpAAQAAAABAAAAGgAAAAAAAqACAAQAAAABAAAACKADAAQAAAABAAAACAAAAAC2TFloAAAAF0lEQVQYGWM0SjnxnwEPYMIjB5YaHgoAcgACbQpAV0UAAAAASUVORK5CYII=")!
         : Data("# Synthetic shared report\n\nThis document exists only in the simulator fixture.\n".utf8)
     private static let server = PreviewFileServer()
     override class func canInit(with request: URLRequest) -> Bool { request.url?.host == "files-preview.invalid" || request.url?.host == String(repeating: "a", count: 32) + ".r2.cloudflarestorage.com" }
