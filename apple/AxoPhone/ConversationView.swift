@@ -66,7 +66,7 @@ struct ConversationView: View {
         let nearTop: Bool
         let nearBottom: Bool
     }
-    @FocusState private var composerFocused: Bool
+    @State private var composerFocused = false
     @Environment(\.scenePhase) private var scenePhase
 
     private enum ChatSheet: String, Identifiable {
@@ -101,6 +101,11 @@ struct ConversationView: View {
     }
     private var messages: [ConversationMessage] {
         #if DEBUG
+        if SharedFilePreview.isInlinePhotoPreview {
+            var rows = ChatPreviewData.messages
+            if !rows.isEmpty { rows[0].attachments = previewFileClient?.readyDrafts }
+            return rows
+        }
         if isPreview { return ChatPreviewData.messages + previewNewMessages }
         #endif
         return client.messages
@@ -445,7 +450,7 @@ struct ConversationView: View {
                 .accessibilityLabel(scrollState.hasNewMessages ? "Jump to new message" : "Jump to latest")
                 .accessibilityIdentifier("back-to-bottom")
             }
-            if isPreparingPhotos { ProgressView("Preparing photos…").font(.caption) }
+            if isPreparingPhotos { ProgressView("Preparing attachments…").font(.caption) }
             if let notice = fileClient?.notice { Text(notice).font(.caption).foregroundStyle(.orange).padding(.horizontal, 24) }
             ChatComposer(draft: $draft, focused: $composerFocused, voice: voice, canSend: canSend,
                          send: send,
@@ -454,7 +459,8 @@ struct ConversationView: View {
                          attachPhoto: { if fileClient != nil { selectingPhoto = true } else { sheet = .connection } },
                          attachCamera: { Task { @MainActor in beginCameraCapture() } },
                          fileClient: fileClient, canAttachPhotos: !isPreparingPhotos && (fileClient?.currentDrafts.count ?? 0) < 8,
-                         reviewUpload: { id in if let files = fileClient { publication = FilePublication(client: files, draftIDs: [id]) } })
+                         reviewUpload: { id in if let files = fileClient { publication = FilePublication(client: files, draftIDs: [id]) } },
+                         pasteAttachments: pasteAttachments)
         }
         .padding(.top, 10).padding(.bottom, 8)
     }
@@ -537,6 +543,50 @@ struct ConversationView: View {
         self.pendingVoiceSendID = nil
         guard canSend else { return }
         send()
+    }
+
+    private func pasteAttachments(_ providers: [NSItemProvider]) {
+        guard !voice.isBusy, !isPreparingPhotos else { error = "Finish the current capture before pasting attachments."; return }
+        guard let destination = fileClient, let session = destination.sessionId else {
+            error = "Connect to a conversation before pasting attachments. Your clipboard is unchanged."
+            return
+        }
+        guard providers.count <= 8 - destination.currentDrafts.count else {
+            error = "A prompt can have at most 8 attachments. Your clipboard is unchanged."
+            return
+        }
+        isPreparingPhotos = true
+        Task {
+            defer { isPreparingPhotos = false }
+            var documents: [UUID] = []
+            for provider in providers {
+                do {
+                    let attachment = try await ClipboardAttachment.load(provider)
+                    defer { attachment.discardTemporaryCopy() }
+                    guard fileClient === destination, destination.sessionId == session else {
+                        error = "Paste destination changed. Paste again in the intended conversation."
+                        return
+                    }
+                    switch attachment.kind {
+                    case .photo:
+                        let photo = try PickedPhoto.stageFile(attachment.source)
+                        defer { try? FileManager.default.removeItem(at: photo.url) }
+                        try await PhotoPublication.addSelectedPhoto(photo.url, to: destination) {
+                            fileClient === destination && destination.sessionId == session
+                        }
+                    case .file:
+                        if let id = await destination.addFile(attachment.source) { documents.append(id) }
+                    }
+                } catch { self.error = error.localizedDescription }
+            }
+            if !documents.isEmpty {
+                guard fileClient === destination, destination.sessionId == session else {
+                    error = "Pasted files remain local drafts in their original conversation. Review them there before uploading."
+                    return
+                }
+                publication = FilePublication(client: destination, draftIDs: documents)
+            }
+        }
     }
 
     private func stageFiles(_ urls: [URL], using files: SessionFilesClient) async {

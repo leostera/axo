@@ -1,0 +1,84 @@
+import XCTest
+
+final class ClipboardUITests: XCTestCase {
+    @MainActor
+    private func paste(into editor: XCUIElement, app: XCUIApplication) {
+        editor.press(forDuration: 1.2)
+        let item = app.menuItems["Paste"]
+        if item.waitForExistence(timeout: 2) { item.tap() }
+        else {
+            let button = app.buttons["Paste"]
+            XCTAssertTrue(button.waitForExistence(timeout: 3))
+            button.tap()
+        }
+    }
+
+    @MainActor
+    func testTextPastePreservesTypedText() throws {
+        let app = XCUIApplication()
+        app.launchArguments = ["--axo-paste-text-preview"]
+        app.launch()
+        let editor = app.textViews["promptDraft"]
+        XCTAssertTrue(editor.waitForExistence(timeout: 10))
+        editor.tap()
+        editor.typeText("Typed")
+        paste(into: editor, app: app)
+        XCTAssertEqual(editor.value as? String, "Typed pasted")
+        XCTAssertFalse(app.descendants(matching: .any).matching(identifier: "draftAttachment").firstMatch.exists)
+    }
+
+    @MainActor
+    func testImagePasteUploadsAnAttachmentWithoutInsertingItsFilename() throws {
+        let app = XCUIApplication()
+        app.launchArguments = ["--axo-paste-image-preview"]
+        app.launch()
+        let editor = app.textViews["promptDraft"]
+        XCTAssertTrue(editor.waitForExistence(timeout: 10))
+        editor.tap()
+        editor.typeText("Keep my image caption")
+        paste(into: editor, app: app)
+        let card = app.descendants(matching: .any).matching(identifier: "draftAttachment").firstMatch
+        let uploaded = XCTNSPredicateExpectation(predicate: NSPredicate(format: "value == %@", "Uploaded"), object: card)
+        let result = XCTWaiter.wait(for: [uploaded], timeout: 10)
+        if result != .completed { add(XCTAttachment(string: app.debugDescription)) }
+        XCTAssertEqual(result, .completed)
+        XCTAssertEqual(editor.value as? String, "Keep my image caption")
+        XCTAssertFalse(app.staticTexts["Uploaded · prompt not sent"].exists)
+        XCTAssertFalse(app.buttons["Upload files"].exists)
+    }
+
+    @MainActor
+    func testFilePasteStagesLocalDocumentForReview() throws {
+        let app = XCUIApplication()
+        app.launchArguments = ["--axo-paste-file-preview"]
+        app.launch()
+        let editor = app.textViews["promptDraft"]
+        XCTAssertTrue(editor.waitForExistence(timeout: 10))
+        editor.tap()
+        editor.typeText("Keep my file caption")
+        paste(into: editor, app: app)
+        XCTAssertTrue(app.buttons["Keep drafts without uploading"].waitForExistence(timeout: 10))
+        app.buttons["Keep drafts without uploading"].tap()
+        XCTAssertTrue(app.buttons["Remove pasted-report.md"].exists, app.debugDescription)
+        XCTAssertTrue(app.staticTexts["Local draft · not uploaded"].exists)
+        XCTAssertEqual(editor.value as? String, "Keep my file caption")
+    }
+
+    @MainActor
+    func testSentPhotoRendersInlineAndOpensFullPreview() throws {
+        let app = XCUIApplication()
+        app.launchArguments = ["--axo-inline-photo-preview"]
+        app.launch()
+        let photo = app.buttons["shared-file-00000000-0000-4000-8000-000000000002"]
+        let rendered = XCTNSPredicateExpectation(predicate: NSPredicate(format: "label == %@", "Photo attachment"), object: photo)
+        XCTAssertEqual(XCTWaiter.wait(for: [rendered], timeout: 10), .completed)
+        XCTAssertGreaterThan(photo.frame.width, 200)
+        XCTAssertFalse(app.staticTexts["draft-photo.png"].exists)
+        let screenshot = XCTAttachment(screenshot: app.screenshot())
+        screenshot.name = "Inline photo without a filename card"
+        screenshot.lifetime = .keepAlways
+        add(screenshot)
+        photo.tap()
+        XCTAssertTrue(app.buttons["Export original file"].waitForExistence(timeout: 5))
+    }
+}

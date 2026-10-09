@@ -4,7 +4,7 @@ import SwiftUI
 
 struct ChatComposer: View {
     @Binding var draft: String
-    let focused: FocusState<Bool>.Binding
+    let focused: Binding<Bool>
     let voice: VoicePrompt
     let canSend: Bool
     let send: () -> Void
@@ -15,6 +15,7 @@ struct ChatComposer: View {
     var fileClient: SessionFilesClient?
     var canAttachPhotos = true
     var reviewUpload: (UUID) -> Void = { _ in }
+    var pasteAttachments: ([NSItemProvider]) -> Void = { _ in }
 
     private var isTranscribing: Bool { voice.state == .transcribing }
     private var hasDraft: Bool { !draft.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty }
@@ -36,11 +37,11 @@ struct ChatComposer: View {
                 if let fileClient, !fileClient.currentDrafts.isEmpty {
                     DraftFilesBar(client: fileClient, reviewUpload: reviewUpload).padding(.top, 12)
                 }
-                TextField("Message Axo", text: $draft, axis: .vertical)
-                    .font(.body).lineLimit(1...6)
-                    .focused(focused)
+                ComposerTextEditor(text: $draft, focused: focused, pasteAttachments: pasteAttachments)
+                    .overlay(alignment: .topLeading) {
+                        if draft.isEmpty { Text("Message Axo").foregroundStyle(.secondary).allowsHitTesting(false) }
+                    }
                     .padding(.horizontal, 14).padding(.top, 12)
-                    .accessibilityIdentifier("promptDraft")
                 HStack(spacing: 8) {
                     Menu {
                         Button("Camera", systemImage: "camera", action: attachCamera).disabled(voice.isBusy || !canAttachPhotos)

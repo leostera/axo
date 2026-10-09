@@ -2,11 +2,19 @@ import XCTest
 
 final class SharedFilesUITests: XCTestCase {
     @MainActor
+    private func waitForUploadedAttachment(_ app: XCUIApplication) {
+        let card = app.descendants(matching: .any).matching(identifier: "draftAttachment").firstMatch
+        let uploaded = XCTNSPredicateExpectation(predicate: NSPredicate(format: "value == %@", "Uploaded"), object: card)
+        XCTAssertEqual(XCTWaiter.wait(for: [uploaded], timeout: 10), .completed)
+        XCTAssertFalse(app.staticTexts["Uploaded · prompt not sent"].exists)
+    }
+
+    @MainActor
     func testPhotoSelectionUploadsWithoutRepeatedConfirmationAndShowsComposerThumbnail() throws {
         let app = XCUIApplication()
         app.launchArguments = ["--axo-photo-draft-preview"]
         app.launch()
-        XCTAssertTrue(app.staticTexts["Uploaded · prompt not sent"].waitForExistence(timeout: 10))
+        waitForUploadedAttachment(app)
         XCTAssertTrue(app.images["draft-photo.png"].exists)
         XCTAssertTrue(app.buttons["Remove draft-photo.png"].exists)
         XCTAssertFalse(app.buttons["Upload files"].exists)
@@ -28,7 +36,7 @@ final class SharedFilesUITests: XCTestCase {
         XCTAssertTrue(button.waitForExistence(timeout: 3))
         XCTAssertTrue(button.isHittable)
         XCTAssertEqual(button.label, "Jump to latest")
-        XCTAssertLessThan(button.frame.maxY, app.textFields["promptDraft"].frame.minY)
+        XCTAssertLessThan(button.frame.maxY, app.textViews["promptDraft"].frame.minY)
         button.tap()
         XCTAssertTrue(latest.waitForExistence(timeout: 3))
         XCTAssertTrue(latest.isHittable)
@@ -62,7 +70,7 @@ final class SharedFilesUITests: XCTestCase {
         XCTAssertTrue(app.buttons["Review/upload"].waitForExistence(timeout: 10))
         app.buttons["Review/upload"].tap()
         app.buttons["Upload files"].tap()
-        XCTAssertTrue(app.staticTexts["Uploaded · prompt not sent"].waitForExistence(timeout: 10))
+        waitForUploadedAttachment(app)
         XCTAssertFalse(app.buttons["sendPromptButton"].isEnabled)
         app.buttons["Chat options"].tap()
         app.buttons["Session files"].tap()
@@ -82,7 +90,7 @@ final class SharedFilesUITests: XCTestCase {
         app.launchArguments = ["--axo-photo-draft-preview"]
         app.resetAuthorizationStatus(for: .camera)
         app.launch()
-        XCTAssertTrue(app.staticTexts["Uploaded · prompt not sent"].waitForExistence(timeout: 10))
+        waitForUploadedAttachment(app)
         let draft = app.descendants(matching: .any).matching(identifier: "promptDraft").firstMatch
         draft.tap()
         draft.typeText("Keep camera draft")

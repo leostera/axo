@@ -7,7 +7,7 @@ enum ChatPreviewData {
     static var enabled: Bool {
         let arguments = ProcessInfo.processInfo.arguments
         return arguments.contains("--axo-chat-preview") || arguments.contains("--axo-chat-preview-working")
-            || arguments.contains("--axo-history-preview") || arguments.contains("--axo-live-history-preview") || arguments.contains("--axo-markdown-preview") || arguments.contains("--axo-files-preview") || arguments.contains("--axo-file-draft-preview") || arguments.contains("--axo-photo-draft-preview")
+            || arguments.contains("--axo-history-preview") || arguments.contains("--axo-live-history-preview") || arguments.contains("--axo-markdown-preview") || arguments.contains("--axo-files-preview") || arguments.contains("--axo-file-draft-preview") || arguments.contains("--axo-photo-draft-preview") || arguments.contains("--axo-inline-photo-preview") || arguments.contains(where: { $0.hasPrefix("--axo-paste-") })
     }
     static func newMessage() -> ConversationMessage? {
         let fields = ["id": UUID().uuidString, "role": "assistant", "text": "New synthetic message at the latest end."]
@@ -74,6 +74,9 @@ enum ChatPreviewData {
                 "mediaType": "text/markdown", "byteLength": 1234, "sha256": String(repeating: "a", count: 64),
                 "origin": "host", "createdAt": 0, "state": "ready",
             ]]]]
+        }
+        if ProcessInfo.processInfo.arguments.contains("--axo-inline-photo-preview") {
+            records = [["id": "inline-photo", "role": "user", "text": "A shared photo"]]
         }
         for index in records.indices { records[index]["timestamp"] = Int64(Date().timeIntervalSince1970 * 1000) - 300_000 }
         guard let data = try? JSONSerialization.data(withJSONObject: records) else { return [] }
