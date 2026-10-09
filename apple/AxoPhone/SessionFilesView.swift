@@ -1,5 +1,4 @@
 import AxoCore
-import ImageIO
 import MarkdownUI
 import PhotosUI
 import QuickLook
@@ -25,9 +24,21 @@ struct SharedFileCard: View {
     @State private var previewURL: URL?
     @State private var showText = false
     @State private var thumbnail: UIImage?
-    @State private var previewImage: UIImage?
-    @State private var showImage = false
+    @State private var imagePreview: PhotoPreviewAsset?
+    @State private var openRequestID: UUID?
     @State private var error: String?
+
+    private struct PhotoLoadIdentity: Hashable {
+        let origin: URL?
+        let session: String?
+        let file: String
+        let checksum: String
+        let state: SharedFile.State
+    }
+    private var photoLoadIdentity: PhotoLoadIdentity {
+        PhotoLoadIdentity(origin: client?.storageOrigin, session: client?.sessionId,
+                          file: file.id, checksum: file.sha256, state: availability)
+    }
 
     private var availability: SharedFile.State { client?.files.first(where: { $0.id == file.id })?.state ?? file.state }
     private var availabilityLabel: String {
@@ -45,28 +56,31 @@ struct SharedFileCard: View {
             .buttonStyle(.plain)
             .disabled(client == nil || availability != .ready || opening)
             if let localURL, !file.mediaType.isImage { ShareLink("Export original file", item: localURL).font(.caption) }
-            if let error { Text(error).font(.caption).foregroundStyle(.orange) }
+            if let error, !file.mediaType.isImage { Text(error).font(.caption).foregroundStyle(.orange) }
         }
         .padding(file.mediaType.isImage ? 0 : 14)
         .background(file.mediaType.isImage ? .clear : ChatColors.surface, in: RoundedRectangle(cornerRadius: 14))
         .accessibilityIdentifier("shared-file-\(file.id)")
         .quickLookPreview($previewURL)
-        .onChange(of: availability) { _, state in if state != .ready { localURL = nil; thumbnail = nil } }
-        .task(id: "\(client?.storageOrigin.absoluteString ?? ""):\(client?.sessionId ?? ""):\(file.id):\(availability.rawValue)") {
+        .onChange(of: availability) { _, state in
+            if state != .ready { localURL = nil; thumbnail = nil; imagePreview = nil }
+        }
+        .task(id: photoLoadIdentity) {
             if file.mediaType.isImage { await loadPhotoPreview() }
         }
-        .onDisappear { if !showText && !showImage && previewURL == nil { localURL = nil } }
+        .onChange(of: photoLoadIdentity) { _, _ in
+            invalidatePendingOpen()
+            imagePreview = nil
+            localURL = nil
+            thumbnail = nil
+        }
+        .onDisappear {
+            if !showText && imagePreview == nil && previewURL == nil { localURL = nil; invalidatePendingOpen() }
+        }
         .sheet(isPresented: $showText) {
             if let localURL { SafeTextFilePreview(url: localURL, file: file) }
         }
-        .sheet(isPresented: $showImage, onDismiss: { previewImage = nil }) {
-            if let previewImage {
-                VStack {
-                    Image(uiImage: previewImage).resizable().scaledToFit()
-                    if let localURL { ShareLink("Export original file", item: localURL) }
-                }.padding()
-            }
-        }
+        .fullScreenCover(item: $imagePreview) { asset in PhotoFullScreenPreview(asset: asset) }
     }
 
     private var documentContent: some View {
@@ -97,7 +111,8 @@ struct SharedFileCard: View {
                 if opening { ProgressView() }
                 else {
                     Image(systemName: "photo").font(.title)
-                    Text(availability == .ready ? "Tap to load photo" : "Photo unavailable").font(.caption)
+                    Text(error == nil && availability == .ready ? "Tap to load photo" : "Photo unavailable").font(.caption)
+                        .accessibilityHint(error ?? "Tap to open the photo")
                 }
             }
             .frame(width: photoStyle == .collection ? 112 : 120, height: photoStyle == .collection ? 112 : 240)
@@ -109,11 +124,13 @@ struct SharedFileCard: View {
         guard let client, availability == .ready else { thumbnail = nil; return }
         opening = true
         error = nil
+        thumbnail = nil
+        localURL = nil
         defer { opening = false }
         do {
             let url = try await client.open(file)
             try Task.checkCancellation()
-            let image = try boundedThumbnail(url, maxPixelSize: 512)
+            let image = try PhotoThumbnail.decode(url, resolution: .message)
             localURL = url
             thumbnail = image
         } catch {
@@ -121,40 +138,42 @@ struct SharedFileCard: View {
         }
     }
 
+    private func invalidatePendingOpen() {
+        guard openRequestID != nil else { return }
+        openRequestID = nil
+        opening = false
+    }
+
     private func openFile() {
         guard let client, !opening else { return }
         opening = true
         error = nil
+        let request = UUID()
+        openRequestID = request
         Task {
-            defer { opening = false }
+            defer { if openRequestID == request { opening = false; openRequestID = nil } }
             do {
                 let url = try await client.open(file)
+                // A late open cannot present in a different scope or resurrect a removed row.
+                guard openRequestID == request else { return }
                 localURL = url
                 try presentPreview(url, mediaType: file.mediaType)
-            } catch { self.error = error.localizedDescription }
+            } catch {
+                guard openRequestID == request else { return }
+                self.error = error.localizedDescription
+                if file.mediaType.isImage { thumbnail = nil; localURL = nil }
+            }
         }
     }
 
     private func presentPreview(_ url: URL, mediaType: SharedFile.MediaType) throws {
         switch mediaType {
         case .text, .markdown: showText = true
-        case .png, .jpeg: previewImage = try boundedThumbnail(url); showImage = true
+        case .png, .jpeg: imagePreview = try PhotoPreviewAsset(original: url)
         case .pdf: previewURL = url
         case .binary: break // Original-byte export is available; unknown formats are never executed.
         }
     }
-}
-
-private func boundedThumbnail(_ url: URL, maxPixelSize: Int = 2048) throws -> UIImage {
-    guard let source = CGImageSourceCreateWithURL(url as CFURL, nil),
-          let properties = CGImageSourceCopyPropertiesAtIndex(source, 0, nil) as? [CFString: Any],
-          let width = properties[kCGImagePropertyPixelWidth] as? Int,
-          let height = properties[kCGImagePropertyPixelHeight] as? Int,
-          width > 0, height > 0, width <= 40_000_000 / height,
-          let image = CGImageSourceCreateThumbnailAtIndex(source, 0, [kCGImageSourceCreateThumbnailFromImageAlways: true, kCGImageSourceThumbnailMaxPixelSize: maxPixelSize, kCGImageSourceCreateThumbnailWithTransform: true] as CFDictionary) else {
-        throw FileTransferError.message("Unsupported image or more than 40 megapixels. Export the original to inspect it separately.")
-    }
-    return UIImage(cgImage: image)
 }
 
 private struct SafeTextFilePreview: View {
@@ -263,20 +282,32 @@ private struct DraftAttachmentCard: View {
     let retry: () -> Void
     let reviewUpload: () -> Void
     @State private var thumbnail: UIImage?
+    @State private var imagePreview: PhotoPreviewAsset?
+    @State private var previewError: String?
 
     var body: some View {
         VStack(alignment: .leading, spacing: 6) {
             if let thumbnail {
-                Image(uiImage: thumbnail).resizable().scaledToFill()
-                    .frame(width: 96, height: 96).clipShape(RoundedRectangle(cornerRadius: 20))
-                    .accessibilityLabel(draft.filename)
-                    .overlay(alignment: .topTrailing) { removeButton }
+                ZStack(alignment: .topTrailing) {
+                    Button {
+                        do { imagePreview = try PhotoPreviewAsset(original: draft.source) }
+                        catch { previewError = error.localizedDescription }
+                    } label: {
+                        Image(uiImage: thumbnail).resizable().scaledToFill()
+                            .frame(width: 96, height: 96).clipped()
+                            .clipShape(RoundedRectangle(cornerRadius: 20))
+                            .contentShape(RoundedRectangle(cornerRadius: 20))
+                    }
+                    .buttonStyle(.plain).accessibilityLabel("Preview \(draft.filename)")
+                    removeButton
+                }
             } else {
                 HStack {
                     Label(draft.filename, systemImage: "doc").font(.caption.weight(.semibold)).lineLimit(1)
                     removeButton
                 }
             }
+            if let previewError { Text(previewError).font(.caption2).foregroundStyle(.orange) }
             if draft.isQueued { Text("Queued for upload").font(.caption2).foregroundStyle(.secondary) }
             else if draft.isUploading { ProgressView(value: draft.progress) }
             else if let error = draft.error {
@@ -292,7 +323,10 @@ private struct DraftAttachmentCard: View {
         .accessibilityValue(draft.readyFile == nil ? "" : "Uploaded")
         .frame(width: thumbnail == nil ? 210 : 96).padding(thumbnail == nil ? 10 : 0)
         .background(thumbnail == nil ? ChatColors.surface : .clear, in: RoundedRectangle(cornerRadius: 12))
-        .task(id: draft.source) { thumbnail = try? boundedThumbnail(draft.source, maxPixelSize: 256) }
+        .task(id: draft.source) { thumbnail = try? PhotoThumbnail.decode(draft.source, resolution: .composer) }
+        .fullScreenCover(item: $imagePreview) { asset in
+            PhotoFullScreenPreview(asset: asset, removeDraftAttachment: remove)
+        }
     }
 
     private var removeButton: some View {

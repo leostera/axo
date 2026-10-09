@@ -16,7 +16,8 @@ enum SharedFilePreview {
     static func collectionFiles(_ file: SharedFile) throws -> [SharedFile] {
         let encoded = try JSONEncoder().encode(file)
         guard var attributes = try JSONSerialization.jsonObject(with: encoded) as? [String: Any] else { return [] }
-        return try (2...4).map { index in
+        let lastIndex = ProcessInfo.processInfo.arguments.contains("--axo-eight-photo-preview") ? 9 : 4
+        return try (2...lastIndex).map { index in
             attributes["id"] = "00000000-0000-4000-8000-00000000000\(index)"
             return try JSONDecoder().decode(SharedFile.self, from: JSONSerialization.data(withJSONObject: attributes))
         }
@@ -99,7 +100,9 @@ private actor PreviewFileServer {
 private final class FilePreviewProtocol: URLProtocol, @unchecked Sendable {
     static var isPhoto: Bool { ProcessInfo.processInfo.arguments.contains("--axo-photo-draft-preview") || ProcessInfo.processInfo.arguments.contains("--axo-inline-photo-preview") || ProcessInfo.processInfo.arguments.contains("--axo-photo-collection-preview") || ProcessInfo.processInfo.arguments.contains("--axo-paste-image-preview") }
     static var mediaType: String { isPhoto ? "image/png" : "text/markdown" }
-    static let content: Data = ProcessInfo.processInfo.arguments.contains("--axo-inline-photo-preview") || ProcessInfo.processInfo.arguments.contains("--axo-photo-collection-preview")
+    static let content: Data = ProcessInfo.processInfo.arguments.contains("--axo-invalid-photo-preview")
+        ? Data("Synthetic invalid image bytes".utf8)
+        : ProcessInfo.processInfo.arguments.contains("--axo-inline-photo-preview") || ProcessInfo.processInfo.arguments.contains("--axo-photo-collection-preview")
         ? Data(base64Encoded: "iVBORw0KGgoAAAANSUhEUgAAAAgAAAAQCAYAAAArij59AAAAFUlEQVR4nGMwSjnxHx9mGFUwkhQAAFWJLpB/PXKvAAAAAElFTkSuQmCC")!
         : isPhoto ? Data(base64Encoded: "iVBORw0KGgoAAAANSUhEUgAAAAgAAAAICAYAAADED76LAAAAAXNSR0IArs4c6QAAADhlWElmTU0AKgAAAAgAAYdpAAQAAAABAAAAGgAAAAAAAqACAAQAAAABAAAACKADAAQAAAABAAAACAAAAAC2TFloAAAAF0lEQVQYGWM0SjnxnwEPYMIjB5YaHgoAcgACbQpAV0UAAAAASUVORK5CYII=")!
         : Data("# Synthetic shared report\n\nThis document exists only in the simulator fixture.\n".utf8)

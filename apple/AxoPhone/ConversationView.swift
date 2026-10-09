@@ -194,7 +194,7 @@ struct ConversationView: View {
                 case .failure(let failure): error = failure.localizedDescription
                 }
             }
-            .photosPicker(isPresented: $selectingPhoto, selection: $selectedPhotos, maxSelectionCount: max(1, 8 - (fileClient?.currentDrafts.count ?? 0)), matching: .images)
+            .photosPicker(isPresented: $selectingPhoto, selection: $selectedPhotos, maxSelectionCount: max(1, 8 - (fileClient?.currentDrafts.count ?? 0)), selectionBehavior: .ordered, matching: .images)
             .onChange(of: selectedPhotos) { _, items in
                 guard !items.isEmpty, let destination = fileClient else { return }
                 selectedPhotos = []

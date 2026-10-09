@@ -84,6 +84,38 @@ final class ClipboardUITests: XCTestCase {
     }
 
     @MainActor
+    func testEightPhotoCollectionScrollsToAndOpensLastPhoto() throws {
+        let app = XCUIApplication()
+        app.launchArguments = ["--axo-photo-collection-preview", "--axo-eight-photo-preview"]
+        app.launch()
+        let last = app.buttons["shared-file-00000000-0000-4000-8000-000000000009"]
+        let rendered = XCTNSPredicateExpectation(predicate: NSPredicate(format: "label == %@", "Photo attachment"), object: last)
+        XCTAssertEqual(XCTWaiter.wait(for: [rendered], timeout: 10), .completed)
+        XCTAssertFalse(last.isHittable)
+        let row = app.scrollViews["messagePhotoCollection"]
+        row.swipeLeft()
+        row.swipeLeft()
+        XCTAssertTrue(last.isHittable)
+        last.tap()
+        XCTAssertTrue(app.buttons["Close image preview"].waitForExistence(timeout: 5))
+        app.buttons["Close image preview"].tap()
+        XCTAssertTrue(app.textViews["promptDraft"].waitForExistence(timeout: 5))
+    }
+
+    @MainActor
+    func testInvalidPhotoCannotOpenAnEmptyFullScreenPreview() throws {
+        let app = XCUIApplication()
+        app.launchArguments = ["--axo-inline-photo-preview", "--axo-invalid-photo-preview"]
+        app.launch()
+        let photo = app.buttons["shared-file-00000000-0000-4000-8000-000000000002"]
+        let unavailable = XCTNSPredicateExpectation(predicate: NSPredicate(format: "label CONTAINS %@", "Photo unavailable"), object: photo)
+        XCTAssertEqual(XCTWaiter.wait(for: [unavailable], timeout: 10), .completed)
+        photo.tap()
+        XCTAssertTrue(app.textViews["promptDraft"].exists)
+        XCTAssertFalse(app.buttons["Close image preview"].exists)
+    }
+
+    @MainActor
     func testSentPhotoRendersInlineAndOpensFullPreview() throws {
         let app = XCUIApplication()
         app.launchArguments = ["--axo-inline-photo-preview"]
@@ -100,5 +132,17 @@ final class ClipboardUITests: XCTestCase {
         add(screenshot)
         photo.tap()
         XCTAssertTrue(app.buttons["Export original file"].waitForExistence(timeout: 5))
+        let zoom = app.scrollViews["photoZoomView"]
+        XCTAssertTrue(zoom.waitForExistence(timeout: 5))
+        XCTAssertEqual(zoom.frame.height, app.frame.height, accuracy: 1, "Preview fills the screen, not a sheet")
+        zoom.doubleTap()
+        let zoomed = XCTNSPredicateExpectation(predicate: NSPredicate(format: "value != %@", "1.0×"), object: zoom)
+        XCTAssertEqual(XCTWaiter.wait(for: [zoomed], timeout: 3), .completed)
+        app.buttons["Photo options"].tap()
+        app.buttons["Reset zoom"].tap()
+        let fitted = XCTNSPredicateExpectation(predicate: NSPredicate(format: "value == %@", "1.0×"), object: zoom)
+        XCTAssertEqual(XCTWaiter.wait(for: [fitted], timeout: 3), .completed)
+        app.buttons["Close image preview"].tap()
+        XCTAssertTrue(app.textViews["promptDraft"].waitForExistence(timeout: 5))
     }
 }

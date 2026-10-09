@@ -15,12 +15,27 @@ final class SharedFilesUITests: XCTestCase {
         app.launchArguments = ["--axo-photo-draft-preview"]
         app.launch()
         waitForUploadedAttachment(app)
-        XCTAssertTrue(app.images["draft-photo.png"].exists)
+        XCTAssertTrue(app.buttons["Preview draft-photo.png"].exists)
         XCTAssertTrue(app.buttons["Remove draft-photo.png"].exists)
         XCTAssertFalse(app.buttons["Upload files"].exists)
         XCTAssertFalse(app.buttons["Keep drafts without uploading"].exists)
         app.buttons["Remove draft-photo.png"].tap()
-        XCTAssertFalse(app.images["draft-photo.png"].exists)
+        XCTAssertFalse(app.buttons["Preview draft-photo.png"].exists)
+    }
+
+    @MainActor
+    func testDraftPhotoOpensFullScreenAndCanBeRemovedWithoutSending() throws {
+        let app = XCUIApplication()
+        app.launchArguments = ["--axo-photo-draft-preview"]
+        app.launch()
+        waitForUploadedAttachment(app)
+        app.buttons["Preview draft-photo.png"].tap()
+        XCTAssertTrue(app.buttons["Close image preview"].waitForExistence(timeout: 5))
+        XCTAssertTrue(app.buttons["Export original file"].exists)
+        app.buttons["Photo options"].tap()
+        app.buttons["Remove attachment from draft"].tap()
+        XCTAssertTrue(app.textViews["promptDraft"].waitForExistence(timeout: 5))
+        XCTAssertFalse(app.buttons["Preview draft-photo.png"].exists)
     }
 
     @MainActor
