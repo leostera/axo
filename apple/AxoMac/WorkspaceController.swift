@@ -81,9 +81,12 @@ final class WorkspaceController: NSObject, NSOutlineViewDataSource, NSOutlineVie
         let session: WorkSession?
         var children: [SidebarItem] = []
         let isSeparator: Bool
-        init(workspace: WorkspaceRecord) { self.workspace = workspace; self.session = nil; isSeparator = false }
-        init(session: WorkSession) { self.workspace = nil; self.session = session; isSeparator = false }
-        override init() { self.workspace = nil; self.session = nil; isSeparator = true }
+        let sectionTitle: String?
+        var isDecoration: Bool { isSeparator || sectionTitle != nil }
+        init(workspace: WorkspaceRecord) { self.workspace = workspace; self.session = nil; isSeparator = false; sectionTitle = nil }
+        init(session: WorkSession) { self.workspace = nil; self.session = session; isSeparator = false; sectionTitle = nil }
+        init(sectionTitle: String) { workspace = nil; session = nil; isSeparator = false; self.sectionTitle = sectionTitle }
+        override init() { self.workspace = nil; self.session = nil; isSeparator = true; sectionTitle = nil }
     }
 
     init(runtime: GhosttyRuntime, repository: String, storageRoot: URL? = nil,
@@ -251,7 +254,7 @@ final class WorkspaceController: NSObject, NSOutlineViewDataSource, NSOutlineVie
     private func beginRenaming(_ target: SidebarItem) {
         let items = sidebarItems.flatMap { [$0] + $0.children }
         guard let current = items.first(where: { item in
-            !item.isSeparator && ((target.session != nil && item.session?.id == target.session?.id) ||
+            !item.isDecoration && ((target.session != nil && item.session?.id == target.session?.id) ||
                                  (target.workspace != nil && item.workspace?.id == target.workspace?.id))
         }), let row = sidebar.view(atColumn: 0, row: sidebar.row(forItem: current), makeIfNecessary: true) as? WorkspaceSidebarRow else { return }
         editingSidebar = true; row.beginRenaming()
@@ -267,7 +270,7 @@ final class WorkspaceController: NSObject, NSOutlineViewDataSource, NSOutlineVie
         refreshSidebar(); updateTitle(); restoreFocus()
     }
     private func itemMenu(_ item: SidebarItem) -> NSMenu {
-        let menu = NSMenu(); guard !item.isSeparator else { return menu }
+        let menu = NSMenu(); guard !item.isDecoration else { return menu }
         let options: [(String, Selector)] = [("Rename", item.workspace != nil ? #selector(renameWorkspace(_:)) : #selector(renameSession(_:))),
                                             ("Duplicate", #selector(duplicateItem(_:))), ("Remove", #selector(removeItem(_:)))]
         for (title, action) in options {
@@ -512,7 +515,9 @@ final class WorkspaceController: NSObject, NSOutlineViewDataSource, NSOutlineVie
         }
         let playgroundIDs = Set(active.filter { $0.effectiveKind == .playground }.map(\.id))
         let playgrounds = store.registry.sessions.filter { playgroundIDs.contains($0.workspaceID) && $0.isArchived != true }.map(SidebarItem.init(session:))
-        sidebarItems = projects + (!projects.isEmpty && !playgrounds.isEmpty ? [SidebarItem()] : []) + playgrounds
+        let workspaceSection = projects.isEmpty ? [] : [SidebarItem(sectionTitle: "Workspaces")] + projects
+        let sessionSection = playgrounds.isEmpty ? [] : [SidebarItem(sectionTitle: "Sessions")] + playgrounds
+        sidebarItems = workspaceSection + (!workspaceSection.isEmpty && !sessionSection.isEmpty ? [SidebarItem()] : []) + sessionSection
         sidebar.reloadData(); sidebar.expandItem(nil, expandChildren: true)
         for item in sidebarItems where item.workspace.map({ collapsedWorkspaces.contains($0.id) }) == true {
             sidebar.collapseItem(item)
@@ -830,6 +835,7 @@ final class WorkspaceController: NSObject, NSOutlineViewDataSource, NSOutlineVie
     func outlineView(_ outlineView: NSOutlineView, viewFor tableColumn: NSTableColumn?, item: Any) -> NSView? {
         guard let item = item as? SidebarItem else { return nil }
         if item.isSeparator { let line = NSBox(); line.boxType = .separator; return line }
+        if let title = item.sectionTitle { return WorkspaceSidebarHeading(title: title) }
         let menu = itemMenu(item)
         let workspace = item.workspace != nil
         let running = item.session?.panes.contains { livePanes[$0.id] != nil && livePanes[$0.id]?.childExited == false } ?? false
@@ -862,7 +868,8 @@ final class WorkspaceController: NSObject, NSOutlineViewDataSource, NSOutlineVie
             }
         }
     }
-    func outlineView(_ outlineView: NSOutlineView, shouldSelectItem item: Any) -> Bool { (item as? SidebarItem)?.isSeparator != true }
+    func outlineView(_ outlineView: NSOutlineView, shouldSelectItem item: Any) -> Bool { (item as? SidebarItem)?.isDecoration != true }
+    func outlineView(_ outlineView: NSOutlineView, isGroupItem item: Any) -> Bool { (item as? SidebarItem)?.sectionTitle != nil }
     func outlineView(_ outlineView: NSOutlineView, heightOfRowByItem item: Any) -> CGFloat { (item as? SidebarItem)?.isSeparator == true ? 20 : 28 }
     func outlineViewItemDidCollapse(_ notification: Notification) {
         guard !refreshingSidebar, let item = notification.userInfo?["NSObject"] as? SidebarItem, let workspace = item.workspace else { return }

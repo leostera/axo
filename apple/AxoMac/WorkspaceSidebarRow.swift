@@ -54,6 +54,23 @@ final class WorkspaceSidebarRow: NSTableCellView, NSTextFieldDelegate {
     }
 }
 
+/// A flat source-list group label, not another tree node that would indent its members.
+final class WorkspaceSidebarHeading: NSTableCellView {
+    init(title: String) {
+        super.init(frame: .zero)
+        let label = NSTextField(labelWithString: title)
+        label.font = .systemFont(ofSize: 12, weight: .semibold); label.textColor = .secondaryLabelColor
+        label.translatesAutoresizingMaskIntoConstraints = false; addSubview(label); textField = label
+        NSLayoutConstraint.activate([
+            label.leadingAnchor.constraint(equalTo: leadingAnchor, constant: 2),
+            label.trailingAnchor.constraint(lessThanOrEqualTo: trailingAnchor, constant: -6),
+            label.centerYAnchor.constraint(equalTo: centerYAnchor),
+        ])
+        setAccessibilityLabel(title)
+    }
+    required init?(coder: NSCoder) { fatalError("Programmatic view only") }
+}
+
 final class WorkspaceOutlineView: NSOutlineView {
     var itemMenu: ((Any) -> NSMenu)?
     var isStandaloneSession: ((Any) -> Bool)?

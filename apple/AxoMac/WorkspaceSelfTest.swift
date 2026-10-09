@@ -90,6 +90,16 @@ enum WorkspaceSelfTest {
               let child = findRow("Manually named", in: navigation),
               let standaloneText = standalone.textField, let childText = child.textField,
               standalone.imageView != nil, imageCount(in: standalone) == 1 else { throw Failure.sidebar }
+        var headings = Set<String>()
+        for index in 0..<navigation.numberOfRows {
+            if let heading = navigation.view(atColumn: 0, row: index, makeIfNecessary: true) as? WorkspaceSidebarHeading,
+               let title = heading.textField?.stringValue, let item = navigation.item(atRow: index) {
+                guard !controller.outlineView(navigation, shouldSelectItem: item), navigation.parent(forItem: item) == nil,
+                      imageCount(in: heading) == 0 else { throw Failure.sidebar }
+                headings.insert(title)
+            }
+        }
+        guard headings == ["Workspaces", "Sessions"] else { throw Failure.sidebar }
         let rootLeft = standaloneText.convert(standaloneText.bounds, to: navigation).minX
         let childLeft = childText.convert(childText.bounds, to: navigation).minX
         print("AXO_SIDEBAR_ROW_GEOMETRY: standalone text \(rootLeft), project child text \(childLeft)")
