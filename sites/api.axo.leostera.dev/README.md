@@ -2,7 +2,21 @@
 
 The first isolated implementation slice of [RFD0008](../../docs/rfds/RFD0008-private-multi-machine-control-plane.md): a Cloudflare Access-protected machine directory and per-machine WebSocket relay using the proper [`@axo/protocol` package](../../protocol/README.md). Its `json-rpc-2.0` dependency handles local service method dispatch and dummy-client correlation; Axo's schemas, leases and durable relay coordination remain separate.
 
-**Not deployed.** No DNS/Access policy, existing `service/`, R2 namespace, Mac packaging/startup, live registry or running application session has been changed. This is the next iteration of the existing private relay, not an account/enrollment platform or cloud executor.
+**Deployed private canary** on Cloudflare as `axo-api` at `https://api.axo.leostera.dev/` with separately provisioned Access policies. Authenticated live discovery has returned HTTP 200; full normal-system-DNS daemon/client connectivity is still awaiting local DNS propagation/cache expiry. The existing `service/`, R2 namespace, Mac packaging/startup, live registry and running application sessions remain unchanged. This is the next iteration of the existing private relay, not an account/enrollment platform or cloud executor.
+
+## Module layout and Vite
+
+`cf build` delegates to the configured Cloudflare Vite plugin. Vite bundles the complete module graph; multiple source files do not require multiple Worker deployments. [`src/index.ts`](src/index.ts) is only the entry-point export surface:
+
+- [`src/http/router.ts`](src/http/router.ts): public route selection, Access admission and trusted internal WebSocket context.
+- [`src/http/rpc.ts`](src/http/rpc.ts), [`src/http/body.ts`](src/http/body.ts): discovery dispatch and bounded body decoding.
+- [`src/axo-host-directory.ts`](src/axo-host-directory.ts): `AxoHostDirectory`, the bounded machine/principal projection and registration reservations.
+- [`src/axo-host-relay.ts`](src/axo-host-relay.ts): `AxoHostRelay`, the single per-host actor coordinating leases, hibernating sockets and durable correlations.
+- [`src/relay/peer.ts`](src/relay/peer.ts), [`src/relay/records.ts`](src/relay/records.ts): validated socket attachments and named SQL record types.
+- [`src/access.ts`](src/access.ts): JWT signature/claim/role validation.
+- [`src/observability.ts`](src/observability.ts): allowlisted, metadata-only event logging.
+
+The named Durable Object exports are deployment/storage identities, not cosmetic names. They were renamed before the first deployment; future renames require an explicit migration rather than silently replacing storage.
 
 ## Implemented boundary
 
@@ -81,7 +95,11 @@ Discovery is the default. A mutation prints its complete non-secret command iden
 
 See [`axod/README.md`](../../axod/README.md) for the opt-in `--relay-config` launch. Production uses Access service-token credentials; ephemeral assertion credentials are useful for bounded test/tool sessions and do not auto-refresh. Keep configuration private and outside argv/environment. Neither opening the Mac app nor reading the directory launches a configured daemon.
 
-`cloudflare.config.ts` deliberately has no public domain or legacy resource bindings. Required Access bindings are unconfigured secrets. Build/type generation use the **`cf` CLI**; no deployment script or existing Worker replacement is included. Native login/cookie behavior and the actual new-hostname audience/policy are still live acceptance gates.
+`cloudflare.config.ts` declares only the new custom domain and its own SQLite exports—no legacy relay/file bindings. Access issuer/audience/email/client ID are public policy configuration, not credentials; the service-token secret and human JWT remain in owned mode-0600 files outside the repository. Build/type generation/deployment use the **`cf` CLI**. The client supplies a `CF_Authorization` cookie for the Access gateway as well as an assertion header for isolated tests; the Worker independently verifies the gateway assertion. No automatic redirect or execution retry is enabled.
+
+Observability, invocation logs and traces are enabled. Trace sampling is 100% for this private canary; review volume/cost before broader use. Application events contain only allowlisted event names, roles, known method names, numeric close codes and reply/unknown dispositions. Do not add credentials, identities, URLs/query strings, raw exceptions, payloads or transcripts to diagnostics. A logged reply is not a claim that execution succeeded.
+
+The dedicated deployed-test daemon service token expires **2026-10-10T23:19:31Z**. Rotation/replacement must update both the new Access Service Auth policy and `ACCESS_HOST_CLIENT_ID`; do not reuse or modify the legacy Mac relay token. The cloud Worker stays deployed when the isolated fixture daemon is stopped.
 
 ## Next slices, not claimed complete
 
@@ -90,4 +108,4 @@ See [`axod/README.md`](../../axod/README.md) for the opt-in `--relay-config` lau
 - Additional mutating methods only after their durable receipts/reconciliation are defined; this slice has no remote stop method.
 - Operator forget/credential rotation, publication/retention policy and production backoff/rate-limit tuning.
 - Single-writer R2/file authorization migration, then coordinated native clients/packaging/ownership cutover after daemon hardening.
-- Separately approved DNS/Access provisioning/deployment and a smoke test against the **live hostname**. The local runtime suite is not production-cloud or physical-phone acceptance.
+- Finish the ordinary-DNS daemon/client smoke test against the **live hostname**, including real service-token WebSocket admission, a harmless approved-profile launch and disconnect/reconciliation. Authenticated live discovery alone is not full-route or physical-phone acceptance.

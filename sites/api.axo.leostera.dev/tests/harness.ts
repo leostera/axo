@@ -39,8 +39,8 @@ export async function harness() {
     compatibilityDate: "2026-10-09",
     compatibilityFlags: ["nodejs_compat"],
     durableObjects: {
-      TEST_DIRECTORY: { className: "MachineDirectory", useSQLite: true },
-      TEST_MACHINE: { className: "MachineRelay", useSQLite: true },
+      TEST_DIRECTORY: { className: "AxoHostDirectory", useSQLite: true },
+      TEST_MACHINE: { className: "AxoHostRelay", useSQLite: true },
     },
     resourcePersistencePath: join(directory, "storage"),
     unsafeInspectDurableObjects: true,

@@ -81,7 +81,7 @@ test(
     assert.equal(code(await pending), -32004);
     const storage = await state.h.mf.unsafeGetDurableObjectStorage(
       "api-test",
-      "MachineRelay",
+      "AxoHostRelay",
       { name: state.target.machineId },
     );
     assert.equal((await storage.exec("SELECT * FROM pending")).length, 0);

@@ -1,4 +1,5 @@
 import WebSocket from "ws";
+import { accessHeaders } from "./access-headers";
 import {
   replySchema,
   JSONRPCClient,
@@ -89,7 +90,7 @@ export class Peer {
     const socket = new WebSocket(
       `${url.replace(/^http/, "ws")}v1/machines/${machine}/${role}`,
       {
-        headers: { "Cf-Access-Jwt-Assertion": assertion },
+        headers: accessHeaders(assertion),
         maxPayload: 65_536,
         followRedirects: false,
       },

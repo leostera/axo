@@ -47,6 +47,12 @@ The directories now exist and the isolated vertical slice is implemented:
 
 This slice implements runtime metadata and operator-approved launch profiles, **not** session/Pi/native/file parity. Private Unix IPC remains local; authenticated loopback WebSocket, real vanilla Pi admission/control, richer catalogs/subscriptions and operational hardening remain gates. No new-hostname DNS/Access provisioning, deployment, production smoke test or current application cutover has occurred. The source/deployment distinctions above remain historical evidence, not rewritten claims.
 
+### Approved Cloudflare canary (2026-10-09)
+
+The user subsequently approved new-hostname Access provisioning, deployment and an isolated deployed connectivity test. `axo-api` is deployed at `api.axo.leostera.dev` with separate reusable human/service policies and a dedicated 24-hour test daemon credential. The exported SQLite classes are now `AxoHostDirectory` and `AxoHostRelay`; Vite bundles focused modules through a thin entry point. Invocation logs, metadata-only application events and 100% canary trace sampling are configured.
+
+A real human application JWT passed the deployed Worker and returned HTTP 200 discovery. That diagnostic used explicit DNS resolution because the local OS cached a negative record; it is **not** full normal-path acceptance. Ordinary system-DNS daemon/client connectivity is still pending propagation/cache expiry. No custom DNS resolver or address override was added to the product. The current native app, legacy relay and file authority remain untouched. See the [API README](../../sites/api.axo.leostera.dev/README.md) for current scope and credential expiry.
+
 ## Goals
 
 - Discover multiple authenticated machines in one private deployment without an account/enrollment product.

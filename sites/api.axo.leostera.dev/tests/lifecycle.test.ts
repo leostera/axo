@@ -54,11 +54,11 @@ test("hibernation restores pending correlation, partial batches and delivery cre
   const forwarded = callSchema.parse(await a.daemon.next());
   const storage = await h.mf.unsafeGetDurableObjectStorage(
     "api-test",
-    "MachineRelay",
+    "AxoHostRelay",
     { name: a.target.machineId },
   );
   assert.equal((await storage.exec("SELECT hop_id FROM pending")).length, 1);
-  await h.mf.unsafeEvictDurableObject("api-test", "MachineRelay", {
+  await h.mf.unsafeEvictDurableObject("api-test", "AxoHostRelay", {
     name: a.target.machineId,
     webSockets: "hibernate",
   });

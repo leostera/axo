@@ -63,7 +63,7 @@ Configuration must be an absolute, owned, single-linked regular mode-0600 file, 
 }
 ```
 
-This creates a stable private `machine-id.json` before cloud registration; corruption fails closed instead of regenerating another identity. The daemon opens outbound authenticated WSS, negotiates [shared JSON-RPC profile 1](../protocol/README.md), registers itself automatically, and heartbeats its fresh connection lease. Reconnect repeats **registration only**, never execution calls. Cloud/network/auth loss leaves local processes and private IPC usable. The API hostname has not been deployed/provisioned by this slice.
+This creates a stable private `machine-id.json` before cloud registration; corruption fails closed instead of regenerating another identity. The daemon opens outbound authenticated WSS, negotiates [shared JSON-RPC profile 1](../protocol/README.md), registers itself automatically, and heartbeats its fresh connection lease. Reconnect repeats **registration only**, never execution calls. Cloud/network/auth loss leaves local processes and private IPC usable. The API now has a separately approved private Cloudflare canary; see its README for the live acceptance checkpoint.
 
 The cloud can request bounded runtime metadata and launch only an operator-configured named profile. It cannot supply argv/cwd, attach a terminal, transport raw terminal bytes, signal historical PIDs or invoke Pi prompt/history APIs. Both adapters use the same `Manager` and durable launch receipts. A current response source generation does not rewrite historical terminal references, and receipt reconciliation can return a previously exited runtime without spawning again.
 

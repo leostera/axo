@@ -2,6 +2,7 @@ import { open } from "node:fs/promises";
 import { constants } from "node:fs";
 import { isAbsolute } from "node:path";
 import { Peer } from "../testing/client";
+import { accessHeaders } from "../testing/access-headers";
 import {
   replySchema,
   machineListResultSchema,
@@ -94,7 +95,7 @@ async function main() {
     method: "POST",
     redirect: "error",
     signal: AbortSignal.timeout(10000),
-    headers: { "Cf-Access-Jwt-Assertion": token },
+    headers: accessHeaders(token),
     body: JSON.stringify({
       jsonrpc: "2.0",
       id: "discover",
