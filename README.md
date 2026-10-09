@@ -8,6 +8,8 @@ This is the **single-workbench prototype**, not the complete [RFD](docs/rfds/RFD
 
 [RFD0003: workspaces, sessions, splits, and search](docs/rfds/RFD0003-workspaces-sessions-and-search.md) records the next priority: complete and validate parallel workbenches, Mac vertical navigation and Ghostty splits, iPhone workspace/session navigation, and explicit relay routing **before** revisiting search, FFF, or the command palette. This takes precedence over executor-style service/tool integrations. The Mac foundation is implemented locally using Ghostty's Swift split primitives, with [provenance and reuse notes](apple/AxoMac/Ghostty/README.md). Broker/relay/phone integration and end-to-end acceptance remain incomplete; this is not yet a deployed multi-session feature.
 
+[RFD0008: private multi-machine control plane](docs/rfds/RFD0008-private-multi-machine-control-plane.md) proposes the next iteration of the Access-protected relay in `sites/api.axo.leostera.dev/`, with automatic authenticated `axod` registration and shared JSON-RPC 2.0 contracts in `protocol/`. It adds no product accounts or enrollment flow. The existing `service/` and current Mac compatibility lane remain independent until a validated, explicitly approved cutover; the proposed API is not deployed.
+
 ```text
 Mac: libghostty → interactive Pi + Axo extension
                               ↕ WSS / Access service identity

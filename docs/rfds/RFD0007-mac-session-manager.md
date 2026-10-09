@@ -135,7 +135,7 @@ Define a small versioned, destination-aware interface before migrating owners. R
 
 All state-bearing replies identify host generation, target, correlation, and revision/generation as applicable. A create retry with the same ID and arguments returns its durable result; conflicting reuse fails. Metadata commit precedes launch, with no transaction held across launch, confirmation, or network I/O. Failure leaves the same retryable record, not a duplicate.
 
-A private Unix socket fits the existing broker direction; authenticated native IPC is another option. Use a capability/version handshake, restrictive filesystem permissions, same-user checks, bounded framing, and explicit client roles. Do not expose an unauthenticated localhost execution server. Local IPC compatibility is distinct from the phone wire protocol; do not gratuitously redesign that protocol during extraction.
+The standalone daemon currently uses a private Unix socket with a versioned custom envelope. [RFD0008](RFD0008-private-multi-machine-control-plane.md) proposes the next private-relay iteration: shared JSON-RPC 2.0 daemon methods over authenticated loopback WebSocket locally and Access-protected WSS remotely, with automatic authenticated machine registration and no account/enrollment product. That proposal supersedes the earlier eventual-transport recommendation, not the existing implementation or the independent current Mac/relay/iOS compatibility lane. Preserve capability/version negotiation, bounded framing, explicit roles and generation fences; never expose an unauthenticated localhost execution server. Its acceptance does not authorize a live owner/endpoint cutover.
 
 ### Terminal ownership and attachment spike
 
