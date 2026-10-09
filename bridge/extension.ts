@@ -1,6 +1,6 @@
 import { getMarkdownTheme, UserMessageComponent, type ExtensionAPI, type ExtensionContext } from "@earendil-works/pi-coding-agent";
 import { Type } from "typebox";
-import { Text } from "@earendil-works/pi-tui";
+import { Container, Text } from "@earendil-works/pi-tui";
 import { resolve } from "node:path";
 import { SessionFiles, stageFile, shareCommandPath } from "./files";
 import type { AssistantMessage } from "@earendil-works/pi-ai";
@@ -9,6 +9,7 @@ import { RelayConnection } from "./connection";
 import { promptDelivery } from "./delivery";
 import { attachmentFiles, projectHistory, projectMessages, submittedCommandIds } from "./projection";
 import { readToolOutput } from "./tool-output";
+import { renderPhoto } from "./photo-rendering";
 import { MAX_FRAME_BYTES, type AgentActivity, type AgentEvent, type PhoneFrame, type HostFrame, type Question } from "../shared/protocol";
 
 interface PendingQuestion { question: Question; finish: (answer: string | undefined) => void }
@@ -353,12 +354,27 @@ export default function axoBridge(pi: ExtensionAPI): void {
     const text = details && typeof details === "object" && "text" in details && typeof details.text === "string" ? details.text : "";
     return new UserMessageComponent(text, getMarkdownTheme(), options.outputPad);
   });
-  pi.registerMessageRenderer("axo.attachments", (message, options) => {
+  pi.registerMessageRenderer("axo.attachments", (message, options, theme) => {
     const details: unknown = message.details;
     const text = details && typeof details === "object" && "text" in details && typeof details.text === "string" ? details.text : "";
     const names = attachmentFiles(details).map(file => file.filename).join(", ");
     const display = [text, names ? `Shared files: ${names}` : ""].filter(Boolean).join("\n\n");
-    return new UserMessageComponent(display, getMarkdownTheme(), options.outputPad);
+    const component = new Container();
+    const generation = viewId;
+    component.addChild(new UserMessageComponent(display, getMarkdownTheme(), options.outputPad));
+    if (Array.isArray(message.content)) {
+      for (const block of message.content) {
+        if (block.type !== "image" || !["image/png", "image/jpeg"].includes(block.mimeType)
+            || block.data.length > Math.ceil(8 * 1024 * 1024 * 4 / 3) + 4) continue;
+        component.addChild(renderPhoto(block, { fallbackColor: text => theme.fg("muted", text) }, () => {
+          if (viewId !== generation || !context) return;
+          // The public widget API schedules a TUI render. Empty content adds no
+          // visible UI and avoids accessing Pi's private renderer internals.
+          context.ui.setWidget("axo-photo-render", []);
+        }));
+      }
+    }
+    return component;
   });
   pi.registerEntryRenderer<{ files: { filename: string }[] }>("axo.shared_file", entry => new Text(`Shared: ${entry.data?.files.map(file => file.filename).join(", ") ?? "file"}`, 0, 0));
 

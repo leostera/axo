@@ -62,7 +62,7 @@ test("real Pi TUI accepts a phone prompt and shares a question/result", { timeou
     const lastUser = [...payload.messages].reverse().find((message: { role: string }) => message.role === "user");
     const lastUserText = typeof lastUser?.content === "string" ? lastUser.content : JSON.stringify(lastUser?.content ?? "");
     if (lastUserText.includes(`data:image/png;base64,${png.toString("base64")}`) && Array.isArray(lastUser?.content)
-      && !lastUser.content.some((block: { type: string }) => block.type === "text")) receivedImageOnly = true;
+      && lastUser.content.every((block: { type: string; text?: string }) => block.type !== "text" || block.text?.startsWith("Attached file: "))) receivedImageOnly = true;
     const askingBeforeCancel = lastUserText.includes("Hold while I decide");
     const delta = hasAnswer && !askingBeforeCancel ? { content: "Phone answer received. Prototype loop works." } : {
       tool_calls: [{ index: 0, id: `tool-${modelRequests}`, type: "function", function: { name: "axo_ask", arguments: JSON.stringify({ title: "Choose output", options: ["JSON", "Markdown"] }) } }],
@@ -186,6 +186,12 @@ test("real Pi TUI accepts a phone prompt and shares a question/result", { timeou
     const persisted = await readFile(join(directory, "session.jsonl"), "utf8");
     assert.ok(persisted.includes('"customType":"axo.attachments"'));
     assert.ok(persisted.includes(imageId));
+    const imageEntry = persisted.trim().split("\n").map(line => JSON.parse(line))
+      .find(entry => entry.type === "custom_message" && entry.details?.commandId === "image-only-steering");
+    const localReference = imageEntry.content.find((block: { type: string; text?: string }) => block.type === "text" && block.text?.includes("Verified local copy:"));
+    const encodedPath = localReference.text.match(/Verified local copy: ("(?:[^"\\]|\\.)*")\./)?.[1];
+    assert.ok(encodedPath, "Images must expose their verified Mac copy to Pi tools");
+    assert.deepEqual(await readFile(JSON.parse(encodedPath)), png);
   } finally {
     child.kill("SIGTERM");
     await exited;

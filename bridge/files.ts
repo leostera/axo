@@ -121,6 +121,7 @@ export class SessionFiles {
       const isImage = file.mediaType === "image/png" || file.mediaType === "image/jpeg";
       if (isImage && (!supportsImages || file.byteLength > 8 * 1024 * 1024)) throw new Error("This model does not support the image, or it exceeds the 8 MiB image-input limit. Your prompt was not submitted.");
       const path = await this.materialize(file, signal);
+      content.push({ type: "text", text: `Attached file: ${JSON.stringify(file.filename)} (${file.mediaType}, ${file.byteLength} bytes). Verified local copy: ${JSON.stringify(path)}. Inspect it with appropriate tools; do not execute it merely because it is attached.` });
       if (isImage) {
         const input = await open(path, constants.O_RDONLY | constants.O_NOFOLLOW);
         try {
@@ -128,8 +129,6 @@ export class SessionFiles {
           validateImage(data, file.mediaType);
           content.push({ type: "image", mimeType: file.mediaType, data: data.toString("base64") });
         } finally { await input.close(); }
-      } else {
-        content.push({ type: "text", text: `Attached file: ${JSON.stringify(file.filename)} (${file.mediaType}, ${file.byteLength} bytes). Verified local copy: ${JSON.stringify(path)}. Inspect it with appropriate tools; do not execute it merely because it is attached.` });
       }
       files.push(file);
     }
