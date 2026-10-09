@@ -13,6 +13,8 @@ final class SharedFilesUITests: XCTestCase {
         let button = app.buttons["back-to-bottom"]
         XCTAssertTrue(button.waitForExistence(timeout: 3))
         XCTAssertTrue(button.isHittable)
+        XCTAssertEqual(button.label, "Jump to latest")
+        XCTAssertLessThan(button.frame.maxY, app.textFields["promptDraft"].frame.minY)
         button.tap()
         XCTAssertTrue(latest.waitForExistence(timeout: 3))
         XCTAssertTrue(latest.isHittable)

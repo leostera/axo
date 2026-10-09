@@ -8,6 +8,7 @@ struct ChatMessageView: View {
     var outputState: ToolOutputState? = nil
     var loadOutput: () -> Void = {}
     var fileClient: SessionFilesClient? = nil
+    var isPending = false
     @State private var copied = false
     @ScaledMetric(relativeTo: .body) private var bodySize = 18.0
 
@@ -15,6 +16,13 @@ struct ChatMessageView: View {
         VStack(alignment: .leading, spacing: 12) {
             messageBody
             ForEach(message.attachments ?? []) { file in SharedFileCard(file: file, client: fileClient) }
+            if message.role != "assistant" {
+                HStack(spacing: 12) {
+                    if let timestamp = message.timestamp { MessageTimestamp(milliseconds: timestamp) }
+                    if let deliveryLabel { Text(deliveryLabel).font(.caption).foregroundStyle(.secondary) }
+                }
+                .frame(maxWidth: .infinity, alignment: message.role == "user" ? .trailing : .leading)
+            }
         }
     }
 
@@ -58,11 +66,23 @@ struct ChatMessageView: View {
                     copyButton
                     ShareLink(item: message.text) { Image(systemName: "square.and.arrow.up") }
                         .accessibilityLabel("Share response")
+                    if let timestamp = message.timestamp { MessageTimestamp(milliseconds: timestamp) }
                 }
                 .font(.system(size: 16)).foregroundStyle(.secondary)
                 .buttonStyle(.plain)
             }
             .frame(maxWidth: .infinity, alignment: .leading)
+        }
+    }
+
+    private var deliveryLabel: String? {
+        switch message.delivery {
+        case .submitting: "Submitting…"
+        case .submitted: "Submitted to Pi · not yet recorded"
+        case .steering: isPending ? "Queued steering" : "Steering"
+        case .uncertain: "Delivery uncertain · check Pi before resending"
+        case .rejected: "Not accepted · draft retained"
+        case nil: nil
         }
     }
 

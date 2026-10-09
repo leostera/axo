@@ -80,7 +80,7 @@ final class ProtocolTests: XCTestCase {
         let command = PhoneCommand.cancel(id: "cancel-1", session: "s1", runId: "run-1")
         let value = try XCTUnwrap(JSONSerialization.jsonObject(with: JSONEncoder().encode(command)) as? [String: String])
         XCTAssertEqual(value, ["type": "cancel", "id": "cancel-1", "sessionId": "s1", "runId": "run-1"])
-        guard case .acknowledged("cancel-1", cancelled: true) = try RelayEvent.decode(Data(#"{"type":"ack","id":"cancel-1","disposition":"cancelled"}"#.utf8)) else {
+        guard case .acknowledged("cancel-1", cancelled: true, delivery: nil) = try RelayEvent.decode(Data(#"{"type":"ack","id":"cancel-1","disposition":"cancelled"}"#.utf8)) else {
             return XCTFail("Expected cancellation acknowledgement")
         }
     }

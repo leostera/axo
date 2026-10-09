@@ -20,6 +20,16 @@ public final class ConversationClient {
     public private(set) var activityEvents: [AgentEvent] = []
     public private(set) var droppedEventCount = 0
     public private(set) var messages: [ConversationMessage] = []
+    private struct PromptSubmission {
+        let sessionID: String
+        let viewID: String
+        var message: ConversationMessage
+    }
+    private var submissions: [PromptSubmission] = []
+    private var submissionOrigin: URL?
+    public var pendingPrompts: [ConversationMessage] {
+        submissions.filter { $0.sessionID == snapshot?.sessionId && $0.viewID == snapshot?.viewId }.map(\.message)
+    }
     public private(set) var hasEarlierMessages = false
     public private(set) var isLoadingHistory = false
     public private(set) var hasLaterMessages = false
@@ -51,6 +61,7 @@ public final class ConversationClient {
         disconnect()
         snapshot = nil
         notice = nil
+        if submissionOrigin != endpoint.baseURL { submissions = []; submissionOrigin = endpoint.baseURL }
         self.endpoint = endpoint
         self.authorizationCookie = authorizationCookie
         if files?.matches(endpoint) != true {
@@ -70,7 +81,10 @@ public final class ConversationClient {
         stopActiveSocket()
         endpoint = nil
         authorizationCookie = nil
-        if pendingID != nil { notice = "Delivery uncertain. Check the conversation before sending again." }
+        if pendingID != nil {
+            updateSubmission(pendingID, delivery: .uncertain)
+            notice = "Delivery uncertain. Check the conversation before sending again."
+        }
         pendingID = nil
         pendingCancellationID = nil
         link = .disconnected
@@ -225,6 +239,7 @@ public final class ConversationClient {
 
     public func send(_ command: PhoneCommand) {
         guard canSend, let socket else { return }
+        if command.type == "prompt", !recordPromptSubmission(command) { return }
         pendingID = command.id
         notice = nil
         Task {
@@ -235,9 +250,38 @@ public final class ConversationClient {
         }
     }
 
+    @discardableResult
+    func recordPromptSubmission(_ command: PhoneCommand) -> Bool {
+        guard let id = command.id, let snapshot, command.sessionId == snapshot.sessionId else { return false }
+        guard !submissions.contains(where: { $0.message.commandId == id }) else { return false }
+        guard submissions.count < 32 else {
+            notice = "Too many unresolved submissions. Check Pi before sending more prompts."
+            return false
+        }
+        var message = ConversationMessage(id: "submission-\(id)", role: "user", text: command.text ?? "", toolName: nil, toolCallId: nil, status: nil, output: nil, toolPresentation: nil)
+        message.commandId = id
+        message.timestamp = Int64(Date().timeIntervalSince1970 * 1000)
+        message.delivery = .submitting
+        message.attachments = files?.readyDrafts.filter { command.attachmentIds?.contains($0.id) == true }
+        submissions.append(PromptSubmission(sessionID: snapshot.sessionId, viewID: snapshot.viewId, message: message))
+        pendingID = id
+        return true
+    }
+
+    private func updateSubmission(_ id: String?, delivery: PromptDeliveryState) {
+        guard let id, let index = submissions.firstIndex(where: { $0.message.commandId == id }) else { return }
+        submissions[index].message.delivery = delivery
+    }
+
+    private func reconcileSubmissions(_ records: [ConversationMessage], sessionID: String) {
+        let recordedIDs = Set(records.compactMap(\.commandId))
+        submissions.removeAll { $0.sessionID == sessionID && recordedIDs.contains($0.message.commandId ?? "") }
+    }
+
     func apply(_ event: RelayEvent) {
         switch event {
         case .snapshot(let value):
+            reconcileSubmissions(value.messages, sessionID: value.sessionId)
             reconnectAttempt = 0
             files?.selectSession(value.sessionId)
             if eventSessionID != value.sessionId || historyViewID != value.viewId {
@@ -282,6 +326,7 @@ public final class ConversationClient {
                   request.sessionId == snapshot?.sessionId, page.sessionId == snapshot?.sessionId,
                   request.viewId == snapshot?.viewId, page.viewId == snapshot?.viewId,
                   request.beforeId == page.beforeId, request.direction == (page.direction ?? "before") else { return }
+            reconcileSubmissions(page.messages, sessionID: page.sessionId)
             _ = finishReadRequest(id: page.id)
             isLoadingHistory = false
             let ids = Set(messages.map(\.id))
@@ -312,15 +357,17 @@ public final class ConversationClient {
             // A handshake/presence event is not proof that a usable snapshot arrived.
             link = online ? .online : .macOffline
             if !online { snapshot = nil }
-        case .acknowledged(let id, let cancelled):
+        case .acknowledged(let id, _, let delivery):
             guard id == pendingID else { return }
+            updateSubmission(id, delivery: delivery == .steering ? .steering : .submitted)
             lastAcknowledgedID = id
             pendingID = nil
             pendingCancellationID = nil
-            notice = cancelled ? "Cancellation requested." : "Submitted to Pi."
+            notice = nil
         case .error(let id, let message):
             if let id, readRequests[id] != nil { failReadRequest(id: id, message: message); return }
             if id == nil || id == pendingID {
+                updateSubmission(pendingID, delivery: .rejected)
                 pendingID = nil
                 pendingCancellationID = nil
                 notice = message
@@ -335,6 +382,7 @@ public final class ConversationClient {
         reconnectTask?.cancel()
         reconnectTask = nil
         let hadPromptInFlight = pendingID != nil
+        updateSubmission(pendingID, delivery: .uncertain)
         pendingID = nil
         pendingCancellationID = nil
         let detail: String
@@ -352,7 +400,10 @@ public final class ConversationClient {
     private func connectionFailed(for failedSocket: URLSessionWebSocketTask) {
         guard socket === failedSocket else { return }
         stopActiveSocket()
-        if pendingID != nil { notice = "Delivery uncertain. Check the conversation before sending again." }
+        if pendingID != nil {
+            updateSubmission(pendingID, delivery: .uncertain)
+            notice = "Delivery uncertain. Check the conversation before sending again."
+        }
         pendingID = nil
         pendingCancellationID = nil
         link = .failed("Connection lost or Access expired. Reconnecting…")

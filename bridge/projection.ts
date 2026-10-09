@@ -36,44 +36,48 @@ function projectTranscript(entries: SessionEntry[], streaming?: AssistantMessage
   const blocks: ConversationMessage[] = [];
   const tools = new Map<string, ConversationMessage>();
   for (const entry of transcript) {
-    if (entry.type === "custom_message" && entry.customType === "axo.attachments") {
+    const entryTime = entry.type === "message" ? entry.message.timestamp : Date.parse(entry.timestamp);
+    const time = Number.isSafeInteger(entryTime) && entryTime >= 0 ? { timestamp: entryTime } : {};
+    if (entry.type === "custom_message" && (entry.customType === "axo.attachments" || entry.customType === "axo.prompt")) {
       const files = attachmentFiles(entry.details);
       const details = entry.details;
       const text = details && typeof details === "object" && "text" in details && typeof details.text === "string" ? details.text : "";
-      if (files.length) blocks.push({ id: entry.id, role: "user", text, attachments: files });
+      const commandId = details && typeof details === "object" && "commandId" in details && typeof details.commandId === "string" ? details.commandId : undefined;
+      const delivery = details && typeof details === "object" && "delivery" in details && details.delivery === "steering" ? "steering" as const : undefined;
+      if (text || files.length) blocks.push({ id: entry.id, role: "user", text, ...time, ...(files.length ? { attachments: files } : {}), ...(commandId ? { commandId } : {}), ...(delivery ? { delivery } : {}) });
       continue;
     }
     if (entry.type === "custom" && entry.customType === "axo.shared_file") {
       const files = attachmentFiles(entry.data);
-      if (files.length) blocks.push({ id: entry.id, role: "assistant", text: "Shared file", attachments: files });
+      if (files.length) blocks.push({ id: entry.id, role: "assistant", text: "Shared file", attachments: files, ...time });
       continue;
     }
     if (entry.type !== "message") continue;
     const message = entry.message;
     if (message.role === "user") {
       const text = textContent(message.content);
-      if (text) blocks.push({ id: entry.id, role: "user", text });
+      if (text) blocks.push({ id: entry.id, role: "user", text, ...time });
     } else if (message.role === "assistant") {
       const toolBlocks: ConversationMessage[] = [];
       message.content.forEach((block, index) => {
         const id = `assistant-${message.timestamp}:${index}`;
         switch (block.type) {
           case "text":
-            if (block.text) blocks.push({ id, role: "assistant", text: block.text });
+            if (block.text) blocks.push({ id, role: "assistant", text: block.text, ...time });
             break;
           case "thinking":
             // Match Pi's adjacent-block grouping; transport only provider-returned display text.
             if (index === 0 || message.content[index - 1]?.type !== "thinking") {
               const text = thinkingRunText(message, index);
-              if (text) blocks.push({ id, role: "thinking", text });
+              if (text) blocks.push({ id, role: "thinking", text, ...time });
               else if (message.stopReason === "pending" && !block.redacted) {
-                blocks.push({ id, role: "thinking", text: "Pi is thinking…" });
+                blocks.push({ id, role: "thinking", text: "Pi is thinking…", ...time });
               }
             }
             break;
           case "toolCall": {
             const tool: ConversationMessage = {
-              id: block.id, role: "tool", toolName: block.name, toolCallId: block.id,
+              id: block.id, role: "tool", toolName: block.name, toolCallId: block.id, ...time,
               ...presentTool(block.name, block.arguments),
               status: message.stopReason === "aborted" || message.stopReason === "error" ? "failed" : "running",
               ...(message.stopReason === "aborted" || message.stopReason === "error"
@@ -91,7 +95,7 @@ function projectTranscript(entries: SessionEntry[], streaming?: AssistantMessage
         : toolBlocks.length === 0 && message.stopReason === "aborted" ? message.errorMessage ?? "Operation aborted"
           : toolBlocks.length === 0 && message.stopReason === "error" ? `Error: ${message.errorMessage ?? "Unknown error"}`
             : undefined;
-      if (errorText) blocks.push({ id: `assistant-${message.timestamp}:error`, role: "assistant", text: errorText, status: "failed" });
+      if (errorText) blocks.push({ id: `assistant-${message.timestamp}:error`, role: "assistant", text: errorText, status: "failed", ...time });
     } else if (message.role === "toolResult") {
       const tool = tools.get(message.toolCallId);
       const fullOutput = toolResultText(message);
@@ -108,7 +112,7 @@ function projectTranscript(entries: SessionEntry[], streaming?: AssistantMessage
       } else {
         blocks.push({
           id: message.toolCallId, role: "tool", text: "", toolName: message.toolName,
-          toolCallId: message.toolCallId, status, output
+          toolCallId: message.toolCallId, status, output, ...time
         });
       }
     }

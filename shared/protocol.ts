@@ -24,6 +24,9 @@ export const messageSchema = z.object({
   output: z.string().max(500).optional(),
   toolPresentation: toolPresentationSchema.optional(),
   attachments: z.array(sharedFileSchema).max(8).optional(),
+  timestamp: z.number().int().nonnegative().optional(),
+  commandId: id.optional(),
+  delivery: z.enum(["submitting", "submitted", "steering", "uncertain", "rejected"]).optional(),
 });
 export const activitySchema = z.object({
   id,
@@ -71,7 +74,7 @@ export const hostFrameSchema = z.discriminatedUnion("type", [
     messages: z.array(messageSchema).max(80), hasEarlierMessages: z.boolean(), hasLaterMessages: z.boolean() }),
   z.object({ type: z.literal("tool_output"), id, sessionId: id, toolCallId: id,
     offset: z.number().int().nonnegative(), nextOffset: z.number().int().nonnegative().nullable(), text: z.string().max(12_000) }),
-  z.object({ type: z.literal("ack"), id, disposition: z.enum(["submitted", "cancelled"]) }),
+  z.object({ type: z.literal("ack"), id, disposition: z.enum(["submitted", "cancelled"]), delivery: z.enum(["submitted", "steering"]).optional() }),
   z.object({ type: z.literal("error"), id: id.optional(), message: z.string().max(2_000) }),
 ]);
 export type PhoneFrame = z.infer<typeof phoneFrameSchema>;

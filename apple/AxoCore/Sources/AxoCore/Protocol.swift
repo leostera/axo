@@ -10,6 +10,13 @@ public struct ConversationMessage: Codable, Identifiable, Equatable, Sendable {
     public let output: String?
     public let toolPresentation: ToolPresentation?
     public var attachments: [SharedFile]? = nil
+    public var timestamp: Int64? = nil
+    public var commandId: String? = nil
+    public var delivery: PromptDeliveryState? = nil
+}
+
+public enum PromptDeliveryState: String, Codable, Sendable {
+    case submitting, submitted, steering, uncertain, rejected
 }
 
 public struct ToolPresentation: Codable, Equatable, Sendable {
@@ -111,7 +118,7 @@ public enum RelayEvent: Sendable {
     case toolOutput(ToolOutputPage)
     case presence(Bool)
     case filesChanged(sessionId: String, revision: Int)
-    case acknowledged(String, cancelled: Bool)
+    case acknowledged(String, cancelled: Bool, delivery: PromptDeliveryState? = nil)
     case error(id: String?, message: String)
 
     public static func decode(_ data: Data) throws -> RelayEvent {
@@ -132,7 +139,7 @@ public enum RelayEvent: Sendable {
             guard let id = envelope.id,
                   let disposition = envelope.disposition,
                   disposition == "submitted" || disposition == "cancelled" else { throw ProtocolError.malformed }
-            return .acknowledged(id, cancelled: disposition == "cancelled")
+            return .acknowledged(id, cancelled: disposition == "cancelled", delivery: envelope.delivery)
         case "error":
             guard let message = envelope.message else { throw ProtocolError.malformed }
             return .error(id: envelope.id, message: message)
@@ -148,6 +155,7 @@ public enum RelayEvent: Sendable {
         let message: String?
         let sessionId: String?
         let revision: Int?
+        let delivery: PromptDeliveryState?
     }
 }
 

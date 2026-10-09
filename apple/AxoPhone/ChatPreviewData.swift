@@ -65,6 +65,7 @@ enum ChatPreviewData {
                 "origin": "host", "createdAt": 0, "state": "ready",
             ]]]]
         }
+        for index in records.indices { records[index]["timestamp"] = Int64(Date().timeIntervalSince1970 * 1000) - 300_000 }
         guard let data = try? JSONSerialization.data(withJSONObject: records) else { return [] }
         return (try? JSONDecoder().decode([ConversationMessage].self, from: data)) ?? []
     }()

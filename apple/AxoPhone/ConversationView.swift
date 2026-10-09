@@ -6,7 +6,7 @@ import UniformTypeIdentifiers
 
 struct ConversationView: View {
     @State private var client = ConversationClient()
-    @State private var voice = VoicePrompt(recorder: MicrophoneRecorder(), transcriber: AppleSpeechProvider.makeTranscriber())
+    @State private var voice = VoicePromptFactory.make()
     @AppStorage("relayEndpoint") private var endpointText = RelayEndpoint.defaultOrigin
     @State private var draft = ""
     @State private var submittedDraft: SubmittedPrompt?
@@ -200,6 +200,9 @@ struct ConversationView: View {
                                         outputState: message.toolCallId.flatMap { client.toolOutputs[$0] },
                                         loadOutput: { if let id = message.toolCallId { client.loadToolOutput(toolCallId: id) } }, fileClient: fileClient)
                     }
+                    ForEach(client.pendingPrompts) { message in
+                        ChatMessageView(message: message, fileClient: fileClient, isPending: true)
+                    }
                     AgentActivityView(state: agentState, runId: agentRunId, activities: agentActivities,
                                        canCancel: canCancelAgent,
                                        isCancelling: client.pendingCancellationID != nil,
@@ -237,23 +240,10 @@ struct ConversationView: View {
                 if new.offset < old.offset && new.nearTop { client.loadEarlierMessages() }
                 if new.offset > old.offset && new.nearBottom { client.loadLaterMessages() }
             }
-            .overlay(alignment: .bottomTrailing) {
-                if !followsLatest || client.hasLaterMessages {
-                    Button {
-                        if isPreview || client.backToBottom() { scrollRequest += 1 }
-                    } label: {
-                        Label("Back to bottom", systemImage: "arrow.down")
-                            .font(.callout.weight(.semibold))
-                            .padding(.horizontal, 14).padding(.vertical, 10)
-                    }
-                    .buttonStyle(.plain)
-                    .foregroundStyle(.white)
-                    .background(.ultraThinMaterial, in: Capsule())
-                    .padding(16)
-                    .accessibilityIdentifier("back-to-bottom")
-                }
-            }
             .onChange(of: messages) { _, _ in
+                if followsLatest { proxy.scrollTo("latest", anchor: .bottom) }
+            }
+            .onChange(of: client.pendingPrompts) { _, _ in
                 if followsLatest { proxy.scrollTo("latest", anchor: .bottom) }
             }
             .onChange(of: agentActivities) { _, _ in
@@ -266,49 +256,55 @@ struct ConversationView: View {
     }
 
     private var header: some View {
-        HStack(spacing: 16) {
-            Button { composerFocused = false; sheet = .connection } label: {
-                Image(systemName: "line.3.horizontal.decrease").font(.system(size: 21, weight: .medium))
-                    .frame(width: 46, height: 46)
-                    .background(.ultraThinMaterial, in: Circle())
-                    .overlay(Circle().stroke(.white.opacity(0.12), lineWidth: 0.5))
-            }.accessibilityLabel("Connection settings").disabled(voice.isBusy)
-            Spacer(minLength: 0)
-            Button { sheet = .connection } label: {
-                VStack(spacing: 3) {
-                    Text("Axo").font(.headline)
-                    HStack(spacing: 5) {
-                        Circle().fill(statusColor).frame(width: 5, height: 5)
-                        Text(shortStatus).font(.caption2).foregroundStyle(.secondary)
-                    }
-                }
-            }.accessibilityLabel("Axo. \(status)").disabled(voice.isBusy)
-            Spacer(minLength: 0)
-            HStack(spacing: 0) {
-                Button { composerFocused = true } label: {
-                    Image(systemName: "square.and.pencil").font(.system(size: 21))
-                        .frame(width: 45, height: 46)
-                }.accessibilityLabel("Write a message")
-                Menu {
-                    Button("Connection settings", systemImage: "network") { sheet = .connection }.disabled(voice.isBusy)
-                    Button("Back to bottom", systemImage: "arrow.down") {
-                        if isPreview || client.backToBottom() { scrollRequest += 1 }
-                    }
-                    Button("Reconnect", systemImage: "arrow.clockwise") { reconnect() }.disabled(voice.isBusy)
-                    Button("About voice", systemImage: "waveform") { sheet = .voiceDetails }.disabled(voice.isBusy)
-                } label: {
-                    Image(systemName: "ellipsis").font(.system(size: 21, weight: .semibold))
-                        .frame(width: 44, height: 46)
-                }.accessibilityLabel("Chat options")
+        ZStack {
+            headerTitle
+            HStack(spacing: 16) {
+                Button { composerFocused = false; sheet = .connection } label: {
+                    Image(systemName: "line.3.horizontal.decrease").font(.system(size: 21, weight: .medium))
+                        .frame(width: 46, height: 46)
+                        .background(.ultraThinMaterial, in: Circle())
+                        .overlay(Circle().stroke(.white.opacity(0.12), lineWidth: 0.5))
+                }.accessibilityLabel("Connection settings").disabled(voice.isBusy)
+                Spacer(minLength: 0)
+                headerActions
             }
-            .padding(.horizontal, 5)
-            .background(.ultraThinMaterial, in: Capsule())
-            .overlay(Capsule().stroke(.white.opacity(0.12), lineWidth: 0.5))
         }
         .buttonStyle(.plain)
         .foregroundStyle(.white)
         .padding(.horizontal, 18).padding(.top, 6).padding(.bottom, 10)
         .background(Color.black.opacity(0.96))
+    }
+
+    private var headerActions: some View {
+        HStack(spacing: 0) {
+            Button { composerFocused = true } label: {
+                Image(systemName: "square.and.pencil").font(.system(size: 21)).frame(width: 45, height: 46)
+            }.accessibilityLabel("Write a message")
+            Menu {
+                Button("Connection settings", systemImage: "network") { sheet = .connection }.disabled(voice.isBusy)
+                Button("Reconnect", systemImage: "arrow.clockwise") { reconnect() }.disabled(voice.isBusy)
+                Button("About voice", systemImage: "waveform") { sheet = .voiceDetails }.disabled(voice.isBusy)
+            } label: {
+                Image(systemName: "ellipsis").font(.system(size: 21, weight: .semibold)).frame(width: 44, height: 46)
+            }.accessibilityLabel("Chat options")
+        }
+        .padding(.horizontal, 5)
+        .background(.ultraThinMaterial, in: Capsule())
+        .overlay(Capsule().stroke(.white.opacity(0.12), lineWidth: 0.5))
+    }
+
+    private var headerTitle: some View {
+        Button { sheet = .connection } label: {
+            VStack(spacing: 3) {
+                Text("Axo").font(.headline).accessibilityIdentifier("conversation-title")
+                HStack(spacing: 5) {
+                    Circle().fill(statusColor).frame(width: 5, height: 5)
+                    Text(shortStatus).font(.caption2).foregroundStyle(.secondary)
+                }
+            }
+        }
+        .accessibilityLabel("Axo. \(status)")
+        .disabled(voice.isBusy)
     }
 
     private var bottomBar: some View {
@@ -327,6 +323,18 @@ struct ConversationView: View {
             }
             if let notice = client.notice {
                 Text(notice).font(.caption).foregroundStyle(.secondary).padding(.horizontal, 24)
+            }
+            if !followsLatest || client.hasLaterMessages {
+                Button {
+                    if isPreview || client.backToBottom() { scrollRequest += 1 }
+                } label: {
+                    Label("Jump to latest", systemImage: "arrow.down")
+                        .font(.callout.weight(.semibold))
+                        .padding(.horizontal, 14).padding(.vertical, 10)
+                }
+                .buttonStyle(.plain)
+                .background(.ultraThinMaterial, in: Capsule())
+                .accessibilityIdentifier("back-to-bottom")
             }
             if let files = fileClient, !files.currentDrafts.isEmpty {
                 DraftFilesBar(client: files, reviewUpload: { id in publication = FilePublication(client: files, draftIDs: [id]) })

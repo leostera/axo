@@ -147,7 +147,12 @@ export default function axoBridge(pi: ExtensionAPI): void {
       submitted.add(frame.id);
       const isIdle = context.isIdle();
       if (isIdle) activities = [];
-      pi.sendUserMessage(frame.text, promptDelivery(isIdle));
+      const delivery = isIdle ? "submitted" : "steering";
+      pi.sendMessage({ customType: "axo.prompt", display: true, content: frame.text,
+        details: { commandId: frame.id, text: frame.text, delivery },
+      }, { triggerTurn: true, ...promptDelivery(isIdle) });
+      connection?.send({ type: "ack", id: frame.id, disposition: "submitted", delivery });
+      return;
     }
     // The extension API is fire-and-forget; submitted is NOT proof of execution.
     connection?.send({ type: "ack", id: frame.id, disposition: "submitted" });
@@ -163,11 +168,12 @@ export default function axoBridge(pi: ExtensionAPI): void {
       pi.appendEntry("axo.submitted", { id: frame.id });
       submitted.add(frame.id);
       // Custom message content and details persist together: no guessed user-message anchor.
+      const delivery = ctx.isIdle() ? "submitted" : "steering";
       pi.sendMessage({ customType: "axo.attachments", display: true,
         content: [...(frame.text ? [{ type: "text" as const, text: frame.text }] : []), ...prepared.content],
-        details: { commandId: frame.id, text: frame.text, files: prepared.files },
+        details: { commandId: frame.id, text: frame.text, files: prepared.files, delivery },
       }, { triggerTurn: true, ...promptDelivery(ctx.isIdle()) });
-      connection?.send({ type: "ack", id: frame.id, disposition: "submitted" });
+      connection?.send({ type: "ack", id: frame.id, disposition: "submitted", delivery });
     } finally { preparing.delete(frame.id); }
   }
 
@@ -340,6 +346,12 @@ export default function axoBridge(pi: ExtensionAPI): void {
     context = undefined;
   });
 
+  pi.registerMessageRenderer("axo.prompt", (message, _options, theme) => {
+    const details = message.details;
+    const text = details && typeof details === "object" && "text" in details && typeof details.text === "string" ? details.text : "";
+    const steering = details && typeof details === "object" && "delivery" in details && details.delivery === "steering";
+    return new Text(`${theme.fg("accent", steering ? "Phone steering" : "Phone prompt")}\n${text}`, 0, 0);
+  });
   pi.registerMessageRenderer("axo.attachments", (message, _options, theme) => {
     const details: unknown = message.details;
     const text = details && typeof details === "object" && "text" in details && typeof details.text === "string" ? details.text : "";
