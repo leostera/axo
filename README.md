@@ -14,6 +14,12 @@ Mac: libghostty → interactive Pi + Axo extension
                        Native Swift iPhone client
 ```
 
+## Pi integration boundary
+
+Axo must work with **vanilla Pi plus an installable Axo extension**. The repository's installed Pi package is a development/test host, not a fork that Axo owns. Do not patch Pi sources, rewrite installed packages, depend on private runtime APIs, or require a replacement Pi CLI.
+
+Pi owns steering/follow-up queues, execution, session persistence, and the authoritative transcript. The extension must use supported public APIs and retain stable command/attachment identity without guessing anchors from text or timestamps. If an API cannot express a required guarantee, document the limitation and seek an upstream extension-API improvement rather than silently bypassing it.
+
 ## Current status
 
 - The real Pi **interactive TUI** has been exercised on a PTY with a local deterministic model: a remote prompt arrives, Pi asks a question, a remote answer resolves its local dialog, and its result returns to the phone-side connection. No paid model is used in tests.
