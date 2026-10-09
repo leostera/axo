@@ -85,6 +85,15 @@ enum WorkspaceSelfTest {
         guard text.contains("AXO_SYNTHETIC_WORKSPACE") else { throw Failure.missingOutput }
         guard controller.registry.sessions.first(where: { $0.id == original.id })?.name == "Generated session title",
               controller.registry.sessions[2].name == "Manually named" else { throw Failure.rename }
+        window.contentView?.layoutSubtreeIfNeeded()
+        guard let navigation = findOutline(in: controller.view), let standalone = findRow("Generated session title", in: navigation),
+              let child = findRow("Manually named", in: navigation),
+              let standaloneText = standalone.textField, let childText = child.textField,
+              standalone.imageView != nil, imageCount(in: standalone) == 1 else { throw Failure.sidebar }
+        let rootLeft = standaloneText.convert(standaloneText.bounds, to: navigation).minX
+        let childLeft = childText.convert(childText.bounds, to: navigation).minX
+        print("AXO_SIDEBAR_ROW_GEOMETRY: standalone text \(rootLeft), project child text \(childLeft)")
+        guard childLeft >= rootLeft + navigation.indentationPerLevel * 1.5 else { throw Failure.sidebar }
         guard let lastPane = splitSession.panes.last?.id, let lastSurface = controller.terminal(for: lastPane)?.surface else { throw Failure.missingSurface }
         // Exercise the real C action callback rather than duplicating navigation in the test.
         bind("goto_split:up", to: lastSurface)
@@ -168,6 +177,9 @@ enum WorkspaceSelfTest {
                                        actions: NSMenu(), finishRename: { _ in })
         guard badge.accessibilityLabel()?.contains("Agent working") == true else { throw Failure.contextActions }
         print("AXO_WORKSPACE_SELF_TEST_PASSED: lazy automatic reopening, project folder/name intent and cancellation, saved shell directories, missing-directory recovery, sidebar collapse/reopen, native inline rename, context duplicate and confirmed/cancelled removal, working badge, retained surfaces, split navigation/resize")
+    }
+    private static func imageCount(in view: NSView) -> Int {
+        (view is NSImageView ? 1 : 0) + view.subviews.reduce(0) { $0 + imageCount(in: $1) }
     }
     private static func findOutline(in view: NSView) -> NSOutlineView? {
         if let outline = view as? NSOutlineView { return outline }

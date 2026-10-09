@@ -11,25 +11,21 @@ final class WorkspaceSidebarRow: NSTableCellView, NSTextFieldDelegate {
          actions: NSMenu, finishRename: @escaping (String?) -> Void) {
         originalName = name; self.finishRename = finishRename
         super.init(frame: .zero); menu = actions
-        let icon = NSImageView(image: NSImage(systemSymbolName: workspace ? "folder" : "bubble.left",
-                                             accessibilityDescription: workspace ? "Workspace" : "Session")!)
-        icon.contentTintColor = .secondaryLabelColor
+        let working = activity == .working, attention = activity == .attention
+        let description = working ? "Agent working" : attention ? "Needs your attention" : activity == .detached ? "Agent status unavailable" : running ? "Open" : "Stopped"
+        let symbol = workspace ? "folder" : working ? "hammer.fill" : attention ? "exclamationmark.circle.fill" : activity == .detached ? "questionmark.circle" : running ? "circle.fill" : "circle"
+        let icon = NSImageView(image: NSImage(systemSymbolName: symbol, accessibilityDescription: workspace ? "Workspace" : description)!)
+        icon.contentTintColor = workspace ? .secondaryLabelColor : attention ? .systemOrange : working || activity == .detached ? .secondaryLabelColor : running ? .systemGreen : .tertiaryLabelColor
+        icon.toolTip = workspace ? "Project" : description
+        icon.symbolConfiguration = NSImage.SymbolConfiguration(pointSize: !workspace && !working && !attention && activity != .detached ? 6 : 13, weight: .regular)
+        icon.imageScaling = .scaleNone
+        imageView = icon
         let label = NSTextField(labelWithString: name)
         label.font = workspace ? .systemFont(ofSize: 12, weight: .semibold) : .systemFont(ofSize: 13)
         label.lineBreakMode = .byTruncatingTail; label.delegate = self
         label.setContentCompressionResistancePriority(.defaultLow, for: .horizontal)
         textField = label
         let stack = NSStackView(views: [icon, label]); stack.orientation = .horizontal; stack.spacing = 8
-        let working = activity == .working, attention = activity == .attention
-        let description = working ? "Agent working" : attention ? "Needs your attention" : activity == .detached ? "Agent status unavailable" : running ? "Open" : "Stopped"
-        if !workspace {
-            let symbol = working ? "hammer.fill" : attention ? "exclamationmark.circle.fill" : activity == .detached ? "questionmark.circle" : running ? "circle.fill" : "circle"
-            let status = NSImageView(image: NSImage(systemSymbolName: symbol, accessibilityDescription: description)!)
-            status.contentTintColor = attention ? .systemOrange : working || activity == .detached ? .secondaryLabelColor : running ? .systemGreen : .tertiaryLabelColor
-            status.toolTip = description; stack.addArrangedSubview(status)
-            status.widthAnchor.constraint(equalToConstant: working || attention || activity == .detached ? 13 : 6).isActive = true
-            status.heightAnchor.constraint(equalToConstant: working || attention || activity == .detached ? 13 : 6).isActive = true
-        }
         stack.translatesAutoresizingMaskIntoConstraints = false; addSubview(stack)
         NSLayoutConstraint.activate([
             stack.leadingAnchor.constraint(equalTo: leadingAnchor, constant: 2),
@@ -60,6 +56,16 @@ final class WorkspaceSidebarRow: NSTableCellView, NSTextFieldDelegate {
 
 final class WorkspaceOutlineView: NSOutlineView {
     var itemMenu: ((Any) -> NSMenu)?
+    var isStandaloneSession: ((Any) -> Bool)?
+    override func frameOfCell(atColumn column: Int, row: Int) -> NSRect {
+        var frame = super.frameOfCell(atColumn: column, row: row)
+        if let item = item(atRow: row), isStandaloneSession?(item) == true {
+            // Root leaves have no disclosure control; reclaim only its reserved gutter.
+            let gutter = min(indentationPerLevel, frame.minX)
+            frame.origin.x -= gutter; frame.size.width += gutter
+        }
+        return frame
+    }
     override func menu(for event: NSEvent) -> NSMenu? {
         let row = row(at: convert(event.locationInWindow, from: nil))
         guard row >= 0, let item = item(atRow: row) else { return nil }

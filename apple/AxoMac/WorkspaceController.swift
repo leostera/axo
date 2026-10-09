@@ -118,6 +118,7 @@ final class WorkspaceController: NSObject, NSOutlineViewDataSource, NSOutlineVie
         refreshSidebar(); showSelectedSession()
         if launchOverride == nil {
             notifications = MacSessionNotifications(isViewing: { [weak self] id in self?.isViewing(id) ?? false },
+                                                    testDestination: { [weak self] in self?.notificationTestDestination() },
                                                     activate: { [weak self] destination in self?.activateNotification(destination) })
             stateObserver = MacSessionObserver(bindings: { [weak self] in
                 guard let self else { return [] }
@@ -439,6 +440,9 @@ final class WorkspaceController: NSObject, NSOutlineViewDataSource, NSOutlineVie
         sidebar.style = .sourceList; sidebar.indentationPerLevel = 12; sidebar.backgroundColor = .clear
         sidebar.dataSource = self; sidebar.delegate = self
         sidebar.target = self; sidebar.doubleAction = #selector(renameClickedItem(_:))
+        sidebar.isStandaloneSession = { [weak sidebar] value in
+            (value as? SidebarItem)?.session != nil && sidebar?.parent(forItem: value) == nil
+        }
         sidebar.itemMenu = { [weak self] value in
             guard let self, let item = value as? SidebarItem else { return NSMenu() }
             return self.itemMenu(item)
@@ -745,8 +749,8 @@ final class WorkspaceController: NSObject, NSOutlineViewDataSource, NSOutlineVie
         guard let session = store.registry.sessions.first(where: { $0.id == binding.sessionID }),
               snapshot.matches(session: session.id, pane: binding.paneID, generation: binding.generation),
               snapshot.state == .detached || session.conversationID == nil || snapshot.conversationID == session.conversationID else { return }
-        if session.conversationID == nil, let conversation = snapshot.conversationID,
-           PiSessionTitle.readConversationID(from: session.piSessionFile) == conversation {
+        if session.conversationID == nil, let conversation = snapshot.conversationID {
+            guard PiSessionTitle.readConversationID(from: session.piSessionFile) == conversation else { return }
             do { try store.updateSession(session.id) { $0.conversationID = conversation } }
             catch { return } // Reject duplicate/malformed conversation admission; never show another session's state.
         }
@@ -762,12 +766,24 @@ final class WorkspaceController: NSObject, NSOutlineViewDataSource, NSOutlineVie
     private func discardObservation(_ pane: PaneID, sessionID: AxoSessionID) {
         if let binding = stateBindings.removeValue(forKey: pane) { try? FileManager.default.removeItem(atPath: binding.path) }
         agentSnapshots.removeValue(forKey: pane); attentionReceipts.removeValue(forKey: pane)
-        notifications?.dismiss(sessionID)
+        notifications?.dismiss(sessionID, includingTests: true)
+    }
+    private func notificationTestDestination() -> MacSessionNotifications.Destination? {
+        guard let session = selectedSession, session.isArchived != true,
+              let pane = session.panes.first(where: { $0.kind == .pi }), livePanes[pane.id]?.childExited == false,
+              let binding = stateBindings[pane.id], let snapshot = agentSnapshots[pane.id],
+              snapshot.matches(session: session.id, pane: pane.id, generation: binding.generation),
+              let conversation = snapshot.conversationID, session.conversationID == conversation else { return nil }
+        return .init(sessionID: session.id, paneID: pane.id, generation: binding.generation, conversationID: conversation)
     }
     private func activateNotification(_ destination: MacSessionNotifications.Destination) {
         guard let binding = stateBindings[destination.paneID], binding.sessionID == destination.sessionID,
-              binding.generation == destination.generation,
-              agentSnapshots[destination.paneID]?.conversationID == destination.conversationID else {
+              binding.generation == destination.generation, livePanes[destination.paneID]?.childExited == false,
+              let snapshot = agentSnapshots[destination.paneID],
+              snapshot.matches(session: destination.sessionID, pane: destination.paneID, generation: destination.generation),
+              snapshot.conversationID == destination.conversationID,
+              let session = store.registry.sessions.first(where: { $0.id == destination.sessionID && $0.isArchived != true }),
+              session.conversationID == destination.conversationID else {
             let alert = NSAlert(); alert.messageText = "This notification belongs to an earlier run"
             alert.informativeText = "Open the saved session from the sidebar to inspect it. No work was restarted or submitted."
             alert.runModal(); return
