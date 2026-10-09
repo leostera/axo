@@ -5,6 +5,8 @@ pub mod journal;
 pub mod model;
 pub mod protocol;
 mod pty;
+pub mod relay;
+pub mod rpc;
 pub mod runtime;
 pub mod server;
 #[cfg(test)]

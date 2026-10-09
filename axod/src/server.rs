@@ -265,7 +265,15 @@ fn check_peer(socket: &UnixStream) -> io::Result<()> {
 }
 
 pub fn serve(root: &Path) -> io::Result<()> {
+    serve_with_relay(root, None)
+}
+pub fn serve_with_relay(root: &Path, relay: Option<crate::relay::Config>) -> io::Result<()> {
     let journal = Journal::open(root)?;
+    let machine = if relay.is_some() {
+        Some(crate::relay::machine_id(root)?)
+    } else {
+        None
+    };
     let path = root.join("control.sock");
     if path.as_os_str().as_encoded_bytes().len() > 90 {
         return Err(io::Error::other("axod socket path is too long"));
@@ -279,6 +287,18 @@ pub fn serve(root: &Path) -> io::Result<()> {
     signal_hook::flag::register(libc::SIGTERM, stopping.clone())?;
     signal_hook::flag::register(libc::SIGINT, stopping.clone())?;
     let manager = Arc::new(Manager::new(journal));
+    if let Some(config) = relay {
+        let relay_manager = manager.clone();
+        let relay_stopping = stopping.clone();
+        thread::spawn(move || {
+            crate::relay::run(
+                config,
+                machine.expect("Configured relay has machine identity"),
+                relay_manager,
+                relay_stopping,
+            )
+        });
+    }
     let clients = Arc::new(AtomicUsize::new(0));
     let next_id = AtomicU64::new(1);
     while !stopping.load(Ordering::SeqCst) {

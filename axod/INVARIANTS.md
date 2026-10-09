@@ -9,6 +9,18 @@ This is an enforcement map, not a claim that the daemon is production-ready. The
 - `ClientId` is a local connection identity, not a Pi conversation or user capability. The private socket admits the same OS user; this is not a sandbox against that user's code.
 - Read-only metadata and restart loading never spawn, execute, adopt, or replay work. A fresh boot treats unfinished records as recovery-required.
 
+## Outbound relay boundary
+
+- Stable `MachineId` is persisted privately before registration, distinct from fresh host/runtime generations. Invalid identity state fails closed; no automatic replacement UUID or historic-PID adoption occurs.
+- Relay configuration is an owned, single-linked bounded mode-0600 regular file. Credential values stay outside argv/environment/logs; non-loopback plaintext, credential-bearing URLs and redirects are refused. Native-root TLS verification is retained.
+- Remote calls carry explicit machine/host/session/pane targets. `src/rpc.rs` checks them at the daemon boundary and invokes the same `Manager`, not a second executor or journal writer.
+- Only a named operator-approved launch profile can start remotely. Remote argv/cwd/terminal attachment/input are not admitted. Execution notifications never run.
+- Request IDs are correlation only; durable start `CommandId`/normalized launch receipts retain their existing conflict/reconciliation semantics. Reconnect repeats protocol negotiation/registration, never prompts, input or launch requests.
+- Response source generation is current, but historical runtime references are not rewritten. Reading/reconciling a completed receipt after reboot does not create another process.
+- Cloud expiry/disconnect cannot stop local children. Relay WebSocket messages/buffers/writes are bounded; connection liveness is not Pi admission or proof of descendant cleanup. Local IPC remains the existing private adapter.
+
+**Residual limits:** local WebSocket bootstrap, admitted Pi/session APIs, production credential/backoff/rotation policy and bounded DNS resolution remain unfinished. This adapter is not a Mac/phone ownership cutover or production availability guarantee.
+
 ## Launch intent and persistence
 
 - `Manager::start` serializes reconciliation, admission, durable intent, and process registration under the terminal-catalog mutex. Shutdown fences new admission before capturing owned terminals.
@@ -43,4 +55,4 @@ This is an enforcement map, not a claim that the daemon is production-ready. The
 
 ## Evidence boundary
 
-Rust tests validate constructors, state/receipt boundaries, completion orderings, persistence failures, and frame/cache limits. Python integration tests exercise isolated real daemon/PTY processes, including a surviving descendant. Neither establishes vanilla Pi admission, terminal-state reconstruction, Ghostty fidelity, relay ownership, or native app acceptance.
+Rust tests validate constructors, state/receipt boundaries, completion orderings, persistence failures, and frame/cache limits. Python integration tests exercise isolated real daemon/PTY processes, including a surviving descendant. The isolated API suite additionally runs a library-backed dummy network client through a real Worker/workerd to two actual daemon/PTY owners, with duplicate receipts, cold restart and post-cloud-loss progress. Hibernation tests inspect SQLite correlation and restore healthy sockets; full service restart verifies persisted registration without phantom routes. This establishes the standalone relay slice, not current application relay ownership, vanilla Pi admission, terminal-state reconstruction, Ghostty fidelity, native app/physical-phone acceptance or live-hostname deployment.

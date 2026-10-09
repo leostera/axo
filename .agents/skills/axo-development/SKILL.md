@@ -29,6 +29,14 @@ The current Mac app/bridge/relay/iOS compatibility work is an independent lane. 
 
 Use neutral relationship terminology: **host/child endpoints** for PTYs, **controller/worker** or **leader/follower** where appropriate. Preserve upstream API names only where required for compatibility.
 
+## Private API and protocol development
+
+Keep the next private control-plane iteration in `sites/api.axo.leostera.dev/` and shared contracts in the proper `@axo/protocol` package under `protocol/`. JavaScript consumers import its compiled package exports, not sibling TypeScript source. Preserve the current `service/` lane and its file/relay authority until a separately coordinated migration.
+
+Install/build/test the protocol package independently before the new API. Follow their READMEs for `cf` build/type generation, isolated Node/Miniflare tests and the real-`axod` network suite. Use the same supported workerd compatibility target; Miniflare v5 persistence uses `resourcePersistencePath`, and cold-runtime/hibernation tests must establish actual storage/socket recovery. Library request correlation is not durable command execution identity or DO recovery state.
+
+For packed-package consumer tests, create an explicit fixture `package.json` and assert `npm prefix` resolves to that fixture **before** any install. An empty temporary cwd can make npm walk to an unrelated ancestor project. Keep package tarballs, credentials and daemon state in owned disposable fixtures; never use live app state or deployment credentials for isolated tests.
+
 ## Validation and delivery
 
 - Make frequent, coherent, validated Conventional Commits and push proactively.

@@ -18,6 +18,7 @@ macro_rules! identity {
         }
     };
 }
+identity!(MachineId);
 identity!(SessionId);
 identity!(PaneId);
 identity!(HostGeneration);

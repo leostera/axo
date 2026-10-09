@@ -37,6 +37,16 @@ Source inspected on 2026-10-09 at checkout `1bcb3d1` with concurrent uncommitted
 
 The proposed `sites/api.axo.leostera.dev/` and `protocol/` directories do not exist at this checkpoint. Uncommitted source may change and does not establish the deployed relay's exact behavior. One host plus several phones is the accurate source baseline, even though this iteration follows the original one-client/one-server prototype.
 
+### First implementation slice (2026-10-09)
+
+The directories now exist and the isolated vertical slice is implemented:
+
+- [`protocol/`](../../protocol/README.md) is the proper private `@axo/protocol` JavaScript package: compiled ESM/declarations, typed method maps, JSON Schema, domain validators and shared Rust/TypeScript fixtures. The user selected `json-rpc-2.0` rather than another hand-maintained TypeScript RPC framework.
+- [`sites/api.axo.leostera.dev/`](../../sites/api.axo.leostera.dev/README.md) implements Access-validated discovery, a bounded directory and per-machine hibernating relays. Local service methods dispatch through the library server; SQLite correlation/leases survive hibernation rather than being replaced by the library's ephemeral client map.
+- `axod` optionally opens an authenticated outbound WebSocket from a private configuration file. The dummy client traverses the actual local Worker network endpoint to two real daemon/PTY owners, including retries, cold restart and cloud-loss behavior.
+
+This slice implements runtime metadata and operator-approved launch profiles, **not** session/Pi/native/file parity. Private Unix IPC remains local; authenticated loopback WebSocket, real vanilla Pi admission/control, richer catalogs/subscriptions and operational hardening remain gates. No new-hostname DNS/Access provisioning, deployment, production smoke test or current application cutover has occurred. The source/deployment distinctions above remain historical evidence, not rewritten claims.
+
 ## Goals
 
 - Discover multiple authenticated machines in one private deployment without an account/enrollment product.
@@ -139,7 +149,7 @@ Credential expiry/revocation invalidates cloud routes, not local sessions. Reche
 
 Use [JSON-RPC 2.0](https://www.jsonrpc.org/specification): standard requests, exactly one result/error per response, correlated IDs, standard error codes, notifications without responses and bounded batch processing. Axo method names use `axo.`, not the reserved `rpc.` prefix. JSON-RPC protocol version and application capability/version negotiation are separate.
 
-`protocol/` contains the normative method/schema definitions and language-neutral conformance fixtures. Rust, TypeScript and later Swift consumers must agree on encoding, errors, destinations and limits. Prefer a maintained implementation that supports the required bidirectional role, or a deliberately small tested standards-compliant codec; do not disguise the old custom envelope as JSON-RPC. Transport-client/server roles are independent of JSON-RPC roles: a daemon opens the outbound WebSocket and handles incoming calls on it.
+`protocol/` contains the normative method/schema definitions and language-neutral conformance fixtures, packaged as `@axo/protocol` for JavaScript/TypeScript consumers. Rust, TypeScript and later Swift consumers must agree on encoding, errors, destinations and limits. Use the selected `json-rpc-2.0` library for TypeScript client/server machinery, with typed method definitions and runtime domain guards in `@axo/protocol`; do not disguise the old custom envelope as JSON-RPC. Keep tested bounded adapters for its inspected singleton-batch/null-client-ID quirks, and disable its default exception logger. Rust retains its own conformance-tested implementation of the shared wire contract. Transport-client/server roles are independent of JSON-RPC roles: a daemon opens the outbound WebSocket and handles incoming calls on it.
 
 Illustrative method families, not frozen APIs:
 

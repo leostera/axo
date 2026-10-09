@@ -1,0 +1,33 @@
+{
+  "name": "@axo/private-api",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "dev": "cf dev",
+    "build": "npm --prefix ../../protocol run build && cf build",
+    "typecheck": "npm --prefix ../../protocol run build && cf workers types && tsc --noEmit",
+    "test": "npm --prefix ../../protocol run build && npm --prefix ../../protocol run schema:check && tsx --test tests/*.test.ts",
+    "smoke": "tsx scripts/dummy-client.ts"
+  },
+  "dependencies": {
+    "@axo/protocol": "file:../../protocol",
+    "jose": "^6.2.12",
+    "zod": "^4.5.0",
+    "ws": "^8.18.0"
+  },
+  "devDependencies": {
+    "cf": "1.0.0-beta.13",
+    "@cloudflare/vite-plugin": "2.0.0-beta.sha-52b0dc0e9",
+    "vite": "^8.3.0",
+    "typescript": "^7.0.2",
+    "miniflare": "5.20261006.1-alpha",
+    "esbuild": "^0.28.0",
+    "tsx": "^4.20.0",
+    "@types/node": "^24.0.0",
+    "@types/ws": "^8.18.0"
+  },
+  "overrides": {
+    "sharp": "0.35.5",
+    "workerd": "1.20261009.1"
+  }
+}
