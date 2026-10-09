@@ -4,6 +4,8 @@ One Pi conversation, a native Mac terminal, and a native iPhone companion.
 
 This is the **single-workbench prototype**, not the complete [RFD](docs/rfds/RFD0001-axo-continuous-agent-workspaces.md). The narrower implementation contract and limitations are in [the first-slice notes](docs/first-slice.md).
 
+[RFD0002: shared session files](docs/rfds/RFD0002-shared-session-files.md) defines the next slice: explicit Mac/iPhone attachments backed by private R2 storage, demand-driven history, and a visible Back to bottom control. Local implementation and simulator validation are in progress. Production file storage remains disabled; provisioning and deployment require privacy/billing approval.
+
 ```text
 Mac: libghostty → interactive Pi + Axo extension
                               ↕ WSS / Access service identity
