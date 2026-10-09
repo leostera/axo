@@ -75,7 +75,7 @@ Prerequisites:
 
 ```sh
 ./scripts/build-ghostty.sh
-./scripts/run-mac.sh
+./scripts/build-mac.sh
 ```
 
 If Xcode is installed but `xcode-select` still points to Command Line Tools, set `export DEVELOPER_DIR=/Applications/Xcode.app/Contents/Developer` for these commands. The development machine has a repository-local Zig at `vendor/toolchains/zig-aarch64-macos-0.16.0/zig`; select it with `export ZIG="$PWD/vendor/toolchains/zig-aarch64-macos-0.16.0/zig"` from the repository root. Neither setting changes the global toolchain.
@@ -84,9 +84,13 @@ The first Ghostty build encountered Zig's `TlsInitializationFailed` while downlo
 
 The build script fetches Ghostty commit `7ec9e26a29399b30ef78f06985fc75045b3cecb6` into ignored `vendor/ghostty/` and builds its full `GhosttyKit.xcframework`, not the VT-only library. Retain upstream and dependency licenses when distributing a built application.
 
-`run-mac.sh` generates the Xcode project, builds an unsigned local Mac app, and launches it with the repository/resource paths it needs. This is a development launch, not a distributable app bundle.
+**Double-click `dist/Axo.app` in Finder to launch Axo.** No launcher script, terminal setup, or environment variables are required. `build-mac.sh` only builds and packages the ad-hoc-signed app; it does not launch it or stop/restart running Pi sessions.
 
-The terminal starts `scripts/run-pi.sh` in `local/playground/`, with its persistent Pi history at `local/playground/session.jsonl`. It uses your normal Pi model credentials/settings. Without relay credentials it runs locally.
+Every Xcode build embeds this checkout's location in `AxoRepositoryPath` through `apple/AxoMac/Info.plist`. The build script validates that location and the signature before atomically replacing `dist/Axo.app` and retains the previous bundle for rollback. Always repackage after validated Mac/bridge changes; a DerivedData build alone is not delivery. See [.agents/skills/axo-macos-packaging/SKILL.md](.agents/skills/axo-macos-packaging/SKILL.md). Axo-specific development guidance lives in [.agents/skills/axo-development/SKILL.md](.agents/skills/axo-development/SKILL.md), not the personal memory repository.
+
+This remains a **checkout-bound development app**, not a standalone distribution: keep this repository and its Ghostty resources in place. If you move the checkout, rebuild the app from its new location.
+
+Each activated Axo session lazily opens its saved managed Pi and ordinary shell panes through `scripts/run-pi.sh` and login shells. New conversations have unique private Axo storage, independent of their project working directories; old playground history is imported by reference from `local/playground/session.jsonl`, with an explicit guard against an uncertain old writer. No prompts or shell commands are replayed. Pi uses your normal model credentials/settings. Without relay credentials it runs locally. Multiple local sessions do **not yet** imply safely addressed multi-session phone routing; that broker/relay work remains in RFD0003.
 
 Closing the window hides it and retains the terminal. Reopen through the Dock. **Quitting stops Pi** after confirmation; reopening resumes its saved history. This slice has no independently managed background daemon.
 

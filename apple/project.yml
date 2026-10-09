@@ -27,7 +27,7 @@ targets:
     platform: macOS
     sources:
       - path: AxoMac
-        excludes: [Ghostty/Package.swift, Ghostty/Tests, Ghostty/.build]
+        excludes: [Info.plist, Ghostty/Package.swift, Ghostty/Tests, Ghostty/.build]
     dependencies:
       - package: AxoCore
       - framework: ../vendor/ghostty/macos/GhosttyKit.xcframework
@@ -42,6 +42,7 @@ targets:
       base:
         PRODUCT_BUNDLE_IDENTIFIER: dev.leostera.axo.mac
         PRODUCT_NAME: Axo
+        INFOPLIST_FILE: AxoMac/Info.plist
         ENABLE_APP_SANDBOX: NO
         INFOPLIST_KEY_LSApplicationCategoryType: public.app-category.developer-tools
         INFOPLIST_KEY_CFBundleDisplayName: Axo

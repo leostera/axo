@@ -17,9 +17,14 @@ final class AxoMacApp: NSObject, NSApplicationDelegate, NSWindowDelegate {
     func applicationDidFinishLaunching(_ notification: Notification) {
         do {
             let environment = ProcessInfo.processInfo.environment
-            guard let root = environment["AXO_REPO"]
-                ?? Bundle.main.object(forInfoDictionaryKey: "AxoRepositoryPath") as? String else {
+            guard let configuredRoot = environment["AXO_REPO"]
+                ?? Bundle.main.object(forInfoDictionaryKey: "AxoRepositoryPath") as? String,
+                !configuredRoot.isEmpty else {
                 throw LaunchError.missingRepository
+            }
+            let root = URL(fileURLWithPath: configuredRoot).standardizedFileURL.path
+            guard FileManager.default.isReadableFile(atPath: root + "/scripts/run-pi.sh") else {
+                throw LaunchError.repositoryUnavailable(root)
             }
             // Finder launches do not inherit the development shell's resource paths.
             if environment["GHOSTTY_RESOURCES_DIR"] == nil {
@@ -62,7 +67,7 @@ final class AxoMacApp: NSObject, NSApplicationDelegate, NSWindowDelegate {
             #endif
             let alert = NSAlert()
             alert.messageText = "Axo could not start"
-            alert.informativeText = "\(error). Launch with scripts/run-mac.sh after building the Ghostty framework."
+            alert.informativeText = error.localizedDescription
             alert.runModal()
             NSApp.terminate(nil)
         }
@@ -136,4 +141,21 @@ final class AxoMacApp: NSObject, NSApplicationDelegate, NSWindowDelegate {
     }
 }
 
-enum LaunchError: Error { case missingRepository, ghosttyInitialization, surfaceCreation, missingDirectory }
+enum LaunchError: LocalizedError {
+    case missingRepository, repositoryUnavailable(String), ghosttyInitialization, surfaceCreation, missingDirectory
+
+    var errorDescription: String? {
+        switch self {
+        case .missingRepository:
+            "This development build is missing its checkout location. Run scripts/build-mac.sh from the Axo checkout, then open dist/Axo.app."
+        case .repositoryUnavailable(let path):
+            "The Axo checkout is unavailable at \(path). Keep the checkout in place, or rebuild the app from its new location with scripts/build-mac.sh."
+        case .ghosttyInitialization:
+            "The Ghostty terminal could not initialize. Build its framework with scripts/build-ghostty.sh, then rebuild Axo with scripts/build-mac.sh."
+        case .surfaceCreation:
+            "The terminal surface could not be created. Check that the Ghostty framework and resources are built for this checkout."
+        case .missingDirectory:
+            "The terminal's working directory is missing. Restore it or choose an existing directory."
+        }
+    }
+}
