@@ -91,6 +91,8 @@ npm run build:bridge
 
 This fallback runs in your current terminal; it is not presented as the native Axo app.
 
+For bridge updates, run `npm run build:bridge`, then `/reload` in the existing Pi terminal and reconnect the phone. **Do not quit Pi.** The build emits `bridge/dist/extension.ts`: Pi's loader refreshes TypeScript modules, whereas a native `.mjs` import can remain cached across `/reload`. The build also migrates the old `bridge/dist/extension.mjs` CLI path into a directory containing `index.ts`, so already-running Mac sessions can adopt the updated bridge without restarting. Do not replace that directory with a native `.mjs` bundle.
+
 ## Cloudflare relay and Access
 
 There is no Axo account database or GitHub OAuth implementation in this slice. Cloudflare Access owns login and policy.

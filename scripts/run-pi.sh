@@ -8,4 +8,4 @@ mkdir -p "$ROOT/local/playground"
 cd "$ROOT/local/playground"
 exec node "$ROOT/node_modules/@earendil-works/pi-coding-agent/dist/bundle/cli.js" \
   --session "$ROOT/local/playground/session.jsonl" \
-  --extension "$ROOT/bridge/dist/extension.mjs" "$@"
+  --extension "$ROOT/bridge/dist/extension.ts" "$@"

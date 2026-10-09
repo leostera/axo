@@ -10,5 +10,5 @@
     "types": ["node"]
   },
   "include": ["bridge/**/*.ts", "shared/**/*.ts", "tests/**/*.ts"],
-  "exclude": ["tests/fixtures/files-worker.ts"]
+  "exclude": ["bridge/dist", "tests/fixtures/files-worker.ts"]
 }
