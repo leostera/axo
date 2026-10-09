@@ -17,8 +17,8 @@ import { MAX_FRAME_BYTES, type AgentActivity, type AgentEvent, type PhoneFrame, 
 interface PendingQuestion { question: Question; finish: (answer: string | undefined) => void }
 
 export default function axoBridge(pi: ExtensionAPI): void {
-  registerSessionTitles(pi);
   const macState = registerMacSessionState(pi);
+  registerSessionTitles(pi, macState.waiting);
   let context: ExtensionContext | undefined;
   let viewId = crypto.randomUUID();
   let connection: RelayConnection | undefined;
