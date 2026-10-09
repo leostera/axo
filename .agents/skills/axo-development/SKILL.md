@@ -21,6 +21,14 @@ Reuse the pinned upstream Ghostty split implementation and preserve its MIT prov
 
 Use the current RFDs and repository tests for detailed contracts, especially `docs/rfds/RFD0003-workspaces-sessions-and-search.md`. Keep honest distinctions between implemented local features and unfinished addressed phone routing/broker work; search remains deferred until the foundation is complete.
 
+## Parallel daemon and application lanes
+
+The standalone Rust daemon is `axod/`. Implement and harden it there, not in new POCs. Its private runtime journal is not a second writer to the existing Mac workspace registry. Keep its processes/state isolated from the live application while developing it.
+
+The current Mac app/bridge/relay/iOS compatibility work is an independent lane. It retains its existing process ownership until a later explicitly coordinated refactor. Do not prematurely wire `axod` into the Mac app, its broker, packaging, startup, or live storage. Completing a daemon slice is not permission for cutover, migration, login registration, or live process restart.
+
+Use neutral relationship terminology: **host/child endpoints** for PTYs, **controller/worker** or **leader/follower** where appropriate. Preserve upstream API names only where required for compatibility.
+
 ## Validation and delivery
 
 - Make frequent, coherent, validated Conventional Commits and push proactively.

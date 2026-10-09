@@ -8,7 +8,7 @@
 
 ## Summary
 
-Ship two logical roles on the Mac: a per-user background session manager, provisionally called **Axo Host**, and the native workbench client. The host owns local workspace/session mutations, Pi and shell processes, terminal lifetimes, runtime admission, and the relay connection; the workbench owns terminal rendering and window-local presentation. Closing or quitting the workbench detaches its views without stopping work. Pi remains vanilla and authoritative for execution and history. Design the host for multiple explicitly addressed sessions from the beginning, but implement it in gated slices: establish the host boundary, prove one real terminal can detach/reconnect independently of the workbench, then move the existing multi-session model behind that boundary and validate concurrent sessions and phone use. This is a proposal, not an implemented availability guarantee or authorization to restart live processes, register a login item, or deploy cloud execution.
+Ship two logical roles on the Mac: a per-user background session manager, implemented by **`axod`** (the **Axo Host** role), and the native workbench client. The host owns local workspace/session mutations, Pi and shell processes, terminal lifetimes, runtime admission, and the relay connection; the workbench owns terminal rendering and window-local presentation. Closing or quitting the workbench detaches its views without stopping work. Pi remains vanilla and authoritative for execution and history. Design the host for multiple explicitly addressed sessions from the beginning, but implement it in gated slices: establish the host boundary, prove one real terminal can detach/reconnect independently of the workbench, then move the existing multi-session model behind that boundary and validate concurrent sessions and phone use. This is a proposal, not an implemented availability guarantee or authorization to restart live processes, register a login item, or deploy cloud execution.
 
 ## Motivation
 
@@ -33,6 +33,12 @@ Acceptance of this RFD requires coordinated amendments to RFD0003/RFD0004's life
 Inspection on 2026-10-09 finds durable IDs/layouts in `apple/AxoCore/Sources/AxoCore/WorkspaceStore.swift`, retained terminal views and launch policy in `apple/AxoMac/WorkspaceController.swift`, and command launch through Ghostty surface configuration in `apple/AxoMac/TerminalView.swift`.
 
 Concurrent, uncommitted work introduces `apple/AxoMac/BridgeHostProcess.swift`, `bridge/host-broker.ts`, and addressed phone/catalog routing. In that inspected slice the native controller still starts the broker and handles forwarded workspace mutations. These are useful integration seams, not validated background-host delivery. Uncommitted code may change; this RFD must not be read as an implementation snapshot of those files.
+
+### Active implementation and separate application lane
+
+The user has authorized implementation and hardening in the Rust [`axod`](../../axod/README.md) crate rather than further POCs. Its first slice supplies direct PTY ownership, explicitly addressed generation-fenced socket commands, attachment leases, bounded byte backlog/output, durable launch receipts, and fail-closed recovery. It does **not** yet supply terminal-state reconstruction, Ghostty attachment, Pi admission, the production workspace registry, or relay ownership. Synthetic daemon tests are not evidence of real Pi/TUI or app acceptance.
+
+A separate agent continues the **current** Mac app's relay/iOS compatibility work with its existing app-owned process model. These lanes remain independent. Only after `axod` is completed and hardened will a coordinated Mac refactor hand ownership to it. There is no current daemon dependency, launch-policy change, registry migration, packaging addition, or authorization to disturb live sessions. The existing lifetime/startup policy remains the baseline; the other policy proposals in this RFD remain proposals.
 
 ## Goals
 
