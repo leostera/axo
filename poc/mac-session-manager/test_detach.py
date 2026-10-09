@@ -126,10 +126,10 @@ class DetachTests(unittest.TestCase):
 
     def test_terminating_frontend_process_does_not_terminate_child(self):
         session, state = self.create("one")
-        master, slave = pty.openpty()
+        host_endpoint, child_endpoint = pty.openpty()
         frontend = subprocess.Popen([sys.executable, str(HERE / "client.py"), "--socket", self.socket,
-                                     "attach", session["id"]], stdin=slave, stdout=slave, stderr=slave)
-        os.close(slave)
+                                     "attach", session["id"]], stdin=child_endpoint, stdout=child_endpoint, stderr=child_endpoint)
+        os.close(child_endpoint)
         try:
             eventually(lambda: not self.detached(session))
             frontend.kill()
@@ -143,7 +143,7 @@ class DetachTests(unittest.TestCase):
             if frontend.poll() is None:
                 frontend.kill()
                 frontend.wait(timeout=3)
-            os.close(master)
+            os.close(host_endpoint)
 
     def test_real_terminal_interrupt_stops_only_its_addressed_child(self):
         session, state = self.create("one")

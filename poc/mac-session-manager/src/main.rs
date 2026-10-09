@@ -155,7 +155,7 @@ struct TerminalState {
 }
 struct Session {
     id: SessionId,
-    master: File,
+    controller: File,
     state: Mutex<TerminalState>,
 }
 impl Session {
@@ -201,7 +201,7 @@ fn start_session(cwd: &str, argv: &[String]) -> io::Result<Arc<Session>> {
     let child = pty::spawn(cwd, argv)?;
     let session = Arc::new(Session {
         id,
-        master: child.master,
+        controller: child.controller,
         state: Mutex::new(TerminalState {
             process: ProcessState::Running { pid: child.pid },
             attachment: None,
@@ -218,7 +218,7 @@ fn start_session(cwd: &str, argv: &[String]) -> io::Result<Arc<Session>> {
 
 fn drain_terminal(session: Arc<Session>) {
     let mut buffer = [0u8; OUTPUT_CHUNK];
-    let mut reader = &session.master;
+    let mut reader = &session.controller;
     loop {
         match reader.read(&mut buffer) {
             Ok(0) => {
@@ -245,7 +245,7 @@ fn drain_terminal(session: Arc<Session>) {
             Err(error) if error.kind() == io::ErrorKind::Interrupted => continue,
             Err(error) if error.kind() == io::ErrorKind::WouldBlock => {
                 let mut fd = libc::pollfd {
-                    fd: session.master.as_raw_fd(),
+                    fd: session.controller.as_raw_fd(),
                     events: libc::POLLIN,
                     revents: 0,
                 };
@@ -390,7 +390,7 @@ fn handle(
             let terminal = find_session(sessions, &session)?;
             let state = terminal.state.lock().unwrap();
             terminal.require_input_owner(client, &state)?;
-            let bytes = (&terminal.master).write(&data)?;
+            let bytes = (&terminal.controller).write(&data)?;
             sink.send(Event::InputAccepted { bytes }); // Partial acceptance is explicit, never silently replayed.
         }
         Request::Resize {
@@ -401,7 +401,7 @@ fn handle(
             let terminal = find_session(sessions, &session)?;
             let state = terminal.state.lock().unwrap();
             terminal.require_input_owner(client, &state)?;
-            pty::resize(&terminal.master, rows, columns)?;
+            pty::resize(&terminal.controller, rows, columns)?;
             sink.send(Event::Ok);
         }
         Request::Stop { session } => {

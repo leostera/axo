@@ -6,7 +6,7 @@ use std::path::Path;
 
 pub struct ChildTerminal {
     pub pid: libc::pid_t,
-    pub master: File,
+    pub controller: File,
 }
 
 pub fn spawn(cwd: &str, argv: &[String]) -> io::Result<ChildTerminal> {
@@ -52,12 +52,12 @@ pub fn spawn(cwd: &str, argv: &[String]) -> io::Result<ChildTerminal> {
         ws_ypixel: 0,
     };
     let executable = arguments[0].as_ptr();
-    let mut master = -1;
+    let mut controller_fd = -1;
     // Prepare all Rust-owned memory BEFORE fork. The child calls only libc then exec/_exit:
     // no allocator, mutex, logging, or Rust destructor after a multithreaded fork.
     let pid = unsafe {
         libc::forkpty(
-            &mut master,
+            &mut controller_fd,
             std::ptr::null_mut(),
             std::ptr::null_mut(),
             &mut size,
@@ -80,10 +80,16 @@ pub fn spawn(cwd: &str, argv: &[String]) -> io::Result<ChildTerminal> {
         }
     }
     // SAFETY: forkpty returned this owned descriptor only in the parent.
-    let master = unsafe { File::from_raw_fd(master) };
-    let flags = unsafe { libc::fcntl(master.as_raw_fd(), libc::F_GETFL) };
+    let controller = unsafe { File::from_raw_fd(controller_fd) };
+    let flags = unsafe { libc::fcntl(controller.as_raw_fd(), libc::F_GETFL) };
     if flags < 0
-        || unsafe { libc::fcntl(master.as_raw_fd(), libc::F_SETFL, flags | libc::O_NONBLOCK) } < 0
+        || unsafe {
+            libc::fcntl(
+                controller.as_raw_fd(),
+                libc::F_SETFL,
+                flags | libc::O_NONBLOCK,
+            )
+        } < 0
     {
         let error = io::Error::last_os_error();
         unsafe {
@@ -92,10 +98,10 @@ pub fn spawn(cwd: &str, argv: &[String]) -> io::Result<ChildTerminal> {
         }
         return Err(error);
     }
-    Ok(ChildTerminal { pid, master })
+    Ok(ChildTerminal { pid, controller })
 }
 
-pub fn resize(master: &File, rows: u16, columns: u16) -> io::Result<()> {
+pub fn resize(controller: &File, rows: u16, columns: u16) -> io::Result<()> {
     if rows == 0 || columns == 0 || rows > 500 || columns > 500 {
         return Err(io::Error::other(
             "Terminal dimensions must be within 1..500",
@@ -107,7 +113,7 @@ pub fn resize(master: &File, rows: u16, columns: u16) -> io::Result<()> {
         ws_xpixel: 0,
         ws_ypixel: 0,
     };
-    if unsafe { libc::ioctl(master.as_raw_fd(), libc::TIOCSWINSZ, &size) } < 0 {
+    if unsafe { libc::ioctl(controller.as_raw_fd(), libc::TIOCSWINSZ, &size) } < 0 {
         return Err(io::Error::last_os_error());
     }
     Ok(())

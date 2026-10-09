@@ -1,5 +1,7 @@
 # Mac session-manager POC
 
+**Historical reference.** Active daemon implementation and hardening now live in [`axod`](../../axod/README.md). Do not add another POC or extend this one; the current Mac app remains independent until the later daemon cutover.
+
 A small **Rust-owned native PTY host**, independent of the Mac workbench. No tmux, screen, Zellij, replacement Pi CLI, relay, or live Axo state is used.
 
 The host owns each PTY and child process. A disposable Python terminal client attaches through a private Unix socket. Closing/killing that client releases its input lease, not its child. The host drains output even with no attached client. Session IDs are random, validated, POC-local runtime identifiers—not Pi conversation IDs or persisted Axo sessions.
@@ -69,7 +71,7 @@ Stop every POC session you created before ending the host. The POC does not impl
 
 ## Implementation boundaries and limits
 
-- `src/pty.rs`: native `forkpty`, argv/environment preparation, nonblocking master, terminal resize. The post-fork child uses libc calls and `execve`/`_exit`, not Rust allocations/locks. Inherited `AXO_*` binding configuration is removed.
+- `src/pty.rs`: native `forkpty`, argv/environment preparation, nonblocking host endpoint, terminal resize. The post-fork child uses libc calls and `execve`/`_exit`, not Rust allocations/locks. Inherited `AXO_*` binding configuration is removed.
 - `src/main.rs`: process/attachment ownership, bounded wire parsing and output, private socket and same-user admission, explicit stop and locked child reaping.
 - `client.py`: disposable terminal transport, not the eventual Swift/Ghostty frontend.
 - `fixture.py` / `test_detach.py`: isolated real-child acceptance checks, not Pi lifecycle observations.
