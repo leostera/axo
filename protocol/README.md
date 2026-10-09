@@ -17,6 +17,22 @@ npm --prefix protocol test
 npm --prefix protocol run schema:check
 ```
 
+## Swift package
+
+`Package.swift` exposes the `AxoProtocol` library for macOS 14+ and iOS 17+, with no external dependencies. Add this directory as a local Swift package in Xcode, or use it from another Swift package:
+
+```swift
+.package(path: "../protocol")
+```
+
+The initial Swift surface includes JSON-RPC envelope/response types, a bounded envelope decoder, and Codable models for the currently implemented machine/runtime methods. It uses the shared `fixtures/envelopes.json` corpus to keep the Swift envelope boundary aligned with Rust and TypeScript. The real-daemon end-to-end test is run from the private API suite, which provides a disposable authenticated Worker and starts isolated `axod`/PTY fixtures; a plain `swift test` skips that test when the harness inputs are absent.
+
+```sh
+swift test --package-path protocol
+```
+
+The Codable contract models establish wire shapes; method-specific runtime validation and a reusable production client/server transport remain follow-up work before replacing an existing transport boundary. The end-to-end test exercises these Swift wire types over `URLSessionWebSocketTask` against a real daemon through the isolated API test harness.
+
 ## Typed use
 
 ```ts
