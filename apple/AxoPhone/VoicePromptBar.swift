@@ -21,7 +21,7 @@ struct VoicePromptButton: View {
         .accessibilityLabel(label)
         .accessibilityIdentifier("voicePromptButton")
         .alert("Set up Apple on-device speech?", isPresented: $confirmDownload) {
-            Button("Continue") { downloadApproved = true; voice.prepare() }
+            Button("Continue") { downloadApproved = true; voice.prepareAndRecord() }
             Button("Not now", role: .cancel) {}
         } message: {
             Text("Uses Apple's English speech model on this iPhone. Apple may need to download language assets first; use Wi-Fi. Audio stays on-device. After you stop, Axo sends the transcript to Pi when connected; otherwise it remains in your draft.")
@@ -29,14 +29,19 @@ struct VoicePromptButton: View {
     }
 
     private var waiting: Bool {
-        voice.isBusy && voice.state != .recording && voice.state != .requestingPermission
+        voice.isBusy && voice.state != .recording && voice.state != .transcribing
     }
-    private var symbol: String { voice.state == .recording ? "stop.fill" : prominent ? "waveform" : "mic" }
+    private var symbol: String {
+        if voice.state == .recording { return "stop.fill" }
+        if voice.state == .transcribing { return "xmark" }
+        return prominent ? "waveform" : "mic"
+    }
     private var label: String {
         switch voice.state {
         case .recording: "Stop and send"
         case .ready: "Record"
-        case .idle, .failed: downloadApproved ? "Prepare voice" : "Set up voice"
+        case .idle, .failed: downloadApproved ? "Record" : "Set up voice"
+        case .transcribing: "Cancel transcription"
         case .requestingPermission: "Record"
         default: "Voice is busy"
         }
@@ -46,8 +51,9 @@ struct VoicePromptButton: View {
         switch voice.state {
         case .recording: voice.finishRecording()
         case .ready: voice.startRecording()
+        case .transcribing: voice.cancel()
         case .idle, .failed:
-            if downloadApproved { voice.prepare() } else { confirmDownload = true }
+            if downloadApproved { voice.prepareAndRecord() } else { confirmDownload = true }
         default: break
         }
     }
@@ -93,8 +99,8 @@ struct VoiceProgressCard: View {
 
     private var shouldShow: Bool {
         switch voice.state {
-        case .preparing, .transcribing, .cancelling, .failed: true
-        case .idle, .ready, .requestingPermission, .recording: false
+        case .preparing, .cancelling, .failed: true
+        case .idle, .ready, .requestingPermission, .recording, .transcribing: false
         }
     }
     private var failedMessage: String? { if case .failed(let message) = voice.state { message } else { nil } }
@@ -107,7 +113,7 @@ struct VoiceProgressCard: View {
             case .loading: "Preparing on-device speech"
             }
         case .recording: "Recording"
-        case .transcribing: "Transcribing on this iPhone…"
+        case .transcribing: ""
         case .cancelling: "Cancelling…"
         case .failed: "Voice needs attention"
         default: "Preparing voice…"

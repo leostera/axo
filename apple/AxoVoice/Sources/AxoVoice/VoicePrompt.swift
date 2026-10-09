@@ -117,9 +117,20 @@ public final class VoicePrompt {
         }
     }
 
+    private enum PreparationIntent { case warmUp, record }
+
     /// Call only after the user consents to the model download.
-    public func prepare() {
+    public func prepare() { prepare(intent: .warmUp) }
+
+    /// One user action covers setup and capture; no second record tap is required.
+    public func prepareAndRecord() {
+        if state == .ready { startRecording() }
+        else { prepare(intent: .record) }
+    }
+
+    private func prepare(intent: PreparationIntent) {
         guard !isBusy else { return }
+        if intent == .record { transcript = nil }
         perform(starting: .requestingPermission) { [self] id in
             guard await self.recorder.requestPermission() else { throw VoicePromptError.microphoneDenied }
             try Task.checkCancellation()
@@ -129,6 +140,11 @@ public final class VoicePrompt {
                     guard let self, self.operationID == id, case .preparing = self.state else { return }
                     self.state = .preparing(progress)
                 }
+            }
+            try Task.checkCancellation()
+            if intent == .record {
+                try self.recorder.start()
+                return .recording
             }
             return .ready
         }

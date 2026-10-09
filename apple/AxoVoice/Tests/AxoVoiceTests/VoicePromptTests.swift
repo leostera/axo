@@ -4,6 +4,36 @@ import XCTest
 
 @MainActor
 final class VoicePromptTests: XCTestCase {
+    func testFirstApprovedTapPreparesAndStartsCaptureWithoutASecondTap() async throws {
+        let recorder = FakeRecorder()
+        let engine = FakeTranscriber()
+        let voice = VoicePrompt(recorder: recorder, transcriber: engine)
+        voice.prepareAndRecord()
+        try await waitUntil { voice.state == .recording }
+        XCTAssertEqual(recorder.starts, 1)
+        voice.finishRecording()
+        try await waitUntil { voice.state == .ready }
+        voice.prepareAndRecord()
+        try await waitUntil { voice.state == .recording }
+        XCTAssertEqual(recorder.starts, 2)
+        let preparations = await engine.preparations
+        XCTAssertEqual(preparations, 1, "The loaded model must not be prepared again for the next tap")
+        voice.cancel()
+        try await waitUntil { voice.state == .idle }
+    }
+
+    func testCancellingPreparationNeverStartsCaptureLater() async throws {
+        let recorder = FakeRecorder()
+        let engine = FakeTranscriber()
+        await engine.delayPreparation()
+        let voice = VoicePrompt(recorder: recorder, transcriber: engine)
+        voice.prepareAndRecord()
+        try await waitUntil { if case .preparing = voice.state { true } else { false } }
+        voice.cancel()
+        try await waitUntil { voice.state == .idle }
+        XCTAssertEqual(recorder.starts, 0)
+    }
+
     func testPermissionDenialDoesNotDownloadOrRecord() async throws {
         let recorder = FakeRecorder()
         recorder.permission = false
@@ -175,11 +205,14 @@ private actor FakeTranscriber: LocalSpeechTranscribing {
     var isWaiting: Bool { continuation != nil }
     private var result = " A dictated prompt. \n"
     private var blocked = false
+    private var slowPreparation = false
+    func delayPreparation() { slowPreparation = true }
     private var continuation: CheckedContinuation<String, Never>?
     func setBlocked(_ value: Bool) { blocked = value }
     func setResult(_ value: String) { result = value }
     func prepare(progress: @escaping @Sendable (VoiceModelProgress) -> Void) async throws {
         preparations += 1
+        if slowPreparation { try await Task.sleep(for: .seconds(1)) }
         progress(.init(fraction: 1, detail: "Ready"))
     }
     func transcribe(_ audioURL: URL) async throws -> String {

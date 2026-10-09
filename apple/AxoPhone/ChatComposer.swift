@@ -14,6 +14,7 @@ struct ChatComposer: View {
     var attachPhoto: () -> Void = {}
     var showFiles: () -> Void = {}
 
+    private var isTranscribing: Bool { voice.state == .transcribing }
     private var hasDraft: Bool { !draft.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty }
 
     var body: some View {
@@ -41,15 +42,18 @@ struct ChatComposer: View {
                             .frame(width: 44, height: 44)
                     }.accessibilityLabel("Composer options")
                     Spacer(minLength: 0)
-                    VoicePromptButton(voice: voice, prominent: !hasDraft)
-                    if hasDraft || hasAttachments {
+                    VoicePromptButton(voice: voice, prominent: !hasDraft && !isTranscribing)
+                    if hasDraft || hasAttachments || isTranscribing {
                         Button(action: send) {
-                            Image(systemName: "arrow.up").font(.system(size: 20, weight: .semibold))
-                                .foregroundStyle(canSend ? .black : .white.opacity(0.3))
-                                .frame(width: 44, height: 44)
-                                .background(canSend ? Color.white : Color(white: 0.19), in: Circle())
+                            Group {
+                                if isTranscribing { ProgressView().tint(.white) }
+                                else { Image(systemName: "arrow.up").font(.system(size: 20, weight: .semibold)) }
+                            }
+                            .foregroundStyle(canSend ? .black : .white.opacity(0.3))
+                            .frame(width: 44, height: 44)
+                            .background(canSend ? Color.white : Color(white: 0.19), in: Circle())
                         }
-                        .accessibilityLabel("Send").accessibilityIdentifier("sendPromptButton").disabled(!canSend)
+                        .accessibilityLabel(isTranscribing ? "Transcribing" : "Send").accessibilityIdentifier("sendPromptButton").disabled(!canSend)
                         .padding(.bottom, 1)
                     }
                 }
