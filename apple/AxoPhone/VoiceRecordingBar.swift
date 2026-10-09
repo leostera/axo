@@ -44,7 +44,7 @@ private struct RecordingWaveform: View {
                     ForEach(levels.indices, id: \.self) { index in
                         Capsule().fill(Color.secondary)
                             .frame(width: max(1, (geometry.size.width - 3 * 31) / 32),
-                                   height: max(3, min(32, sqrt(levels[index]) * 32)))
+                                   height: max(3, VoiceWaveformScale.heightFraction(for: levels[index]) * 32))
                     }
                 }
                 .frame(height: geometry.size.height)
