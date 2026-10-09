@@ -7,21 +7,21 @@ final class AppearanceAndScrollingUITests: XCTestCase {
         let app = XCUIApplication()
         app.launchArguments = ["--axo-chat-preview"]
         app.launch()
-        let browse = app.buttons["Workspaces and sessions"]
-        XCTAssertTrue(browse.waitForExistence(timeout: 10))
-        browse.tap()
+        let menu = app.buttons["Sessions menu"]
+        XCTAssertTrue(menu.waitForExistence(timeout: 10))
+        menu.tap()
         app.buttons["Settings"].tap()
-        app.buttons["Appearance"].tap()
-        let picker = app.segmentedControls["appearancePicker"]
+        let picker = app.descendants(matching: .any).matching(identifier: "appearancePicker").firstMatch
         XCTAssertTrue(picker.waitForExistence(timeout: 3))
         for (choice, light) in [("Light", true), ("Dark", false), ("System", UIScreen.main.traitCollection.userInterfaceStyle != .dark)] {
-            picker.buttons[choice].tap()
+            picker.tap()
+            app.buttons[choice].tap()
             // Screenshot of actual rendered colors, not a debug theme label.
             let value = try brightness(app, at: CGPoint(x: 2, y: app.frame.midY))
             if light { XCTAssertGreaterThan(value, 0.85, choice) }
             else { XCTAssertLessThan(value, 0.15, choice) }
         }
-        app.buttons["Done"].tap()
+        app.buttons["Close settings"].tap()
     }
 
     @MainActor

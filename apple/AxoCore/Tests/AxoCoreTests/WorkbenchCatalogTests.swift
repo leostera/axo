@@ -49,6 +49,56 @@ final class WorkbenchCatalogTests: XCTestCase {
         XCTAssertTrue(catalog.searchNames("not in catalog").isEmpty)
     }
 
+    func testCatalogCacheRoundTripsCompleteMetadataWithoutClaimingHostIsOnline() throws {
+        var catalog = WorkbenchCatalog()
+        let complete = #"{"type":"catalog_page","revision":9,"items":[{"kind":"workspace","workspace":{"id":"11111111-1111-4111-8111-111111111111","name":"Axo","kind":"project"}},{"kind":"session","session":{"id":"22222222-2222-4222-8222-222222222222","workspaceId":"11111111-1111-4111-8111-111111111111","name":"Phone","conversationId":"pi-phone","availability":"running"}}],"nextCursor":null,"hostOnline":true}"#
+        try catalog.apply(page(complete))
+        let cacheURL = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
+        defer { try? FileManager.default.removeItem(at: cacheURL) }
+        let cache = WorkbenchCatalogCache(fileURL: cacheURL)
+
+        try cache.save(catalog)
+        let restored = try XCTUnwrap(cache.load())
+
+        XCTAssertEqual(restored.snapshot(), catalog.snapshot())
+        XCTAssertFalse(restored.hostOnline, "A disk cache cannot assert that the Mac is currently online")
+    }
+
+    func testCatalogCacheDoesNotReplaceGoodCacheWithAnIncompletePage() throws {
+        var catalog = WorkbenchCatalog()
+        let partial = #"{"type":"catalog_page","revision":9,"items":[{"kind":"workspace","workspace":{"id":"11111111-1111-4111-8111-111111111111","name":"Axo","kind":"project"}}],"nextCursor":"9:1","hostOnline":true}"#
+        try catalog.apply(page(partial))
+        let cacheURL = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
+        defer { try? FileManager.default.removeItem(at: cacheURL) }
+        let cache = WorkbenchCatalogCache(fileURL: cacheURL)
+
+        try cache.save(catalog)
+
+        XCTAssertNil(try cache.load())
+        XCTAssertFalse(FileManager.default.fileExists(atPath: cacheURL.path))
+    }
+
+    func testCatalogSnapshotRejectsSessionsOutsideTheCachedWorkspaceSet() throws {
+        let session = try XCTUnwrap(page(#"{"type":"catalog_page","revision":1,"items":[{"kind":"workspace","workspace":{"id":"11111111-1111-4111-8111-111111111111","name":"Axo","kind":"project"}},{"kind":"session","session":{"id":"22222222-2222-4222-8222-222222222222","workspaceId":"11111111-1111-4111-8111-111111111111","name":"Phone","availability":"stopped"}}],"nextCursor":null,"hostOnline":false}"#).items.compactMap { item -> CatalogSession? in
+            if case .session(let session) = item { session } else { nil }
+        }.first)
+        let snapshot = WorkbenchCatalogSnapshot(revision: 1, workspaces: [], sessions: [session])
+
+        XCTAssertThrowsError(try WorkbenchCatalog(snapshot: snapshot)) { error in
+            XCTAssertEqual(error as? CatalogFault, .invalidMembership)
+        }
+    }
+
+    func testCatalogCacheRejectsOversizedFiles() throws {
+        let cacheURL = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
+        defer { try? FileManager.default.removeItem(at: cacheURL) }
+        try Data(repeating: 0, count: WorkbenchCatalogCache.maximumBytes + 1).write(to: cacheURL)
+
+        XCTAssertThrowsError(try WorkbenchCatalogCache(fileURL: cacheURL).load()) { error in
+            XCTAssertEqual(error as? CatalogCacheFault, .tooLarge)
+        }
+    }
+
     private func page(_ json: String) throws -> CatalogPage {
         try JSONDecoder().decode(CatalogPage.self, from: Data(json.utf8))
     }

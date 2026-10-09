@@ -204,12 +204,14 @@ public struct ToolOutputPage: Decodable, Sendable {
     }
 }
 
-public struct CatalogWorkspace: Decodable, Equatable, Identifiable, Sendable {
-    public enum Kind: String, Decodable, Sendable { case project, standalone }
+public struct CatalogWorkspace: Codable, Equatable, Identifiable, Sendable {
+    public enum Kind: String, Codable, Sendable { case project, standalone }
 
     public let id: WorkspaceID
     public let name: String
     public let kind: Kind
+
+    private enum CodingKeys: String, CodingKey { case id, name, kind }
 
     private struct WireValue: Decodable {
         let id: UUID
@@ -226,16 +228,25 @@ public struct CatalogWorkspace: Decodable, Equatable, Identifiable, Sendable {
         name = wire.name
         kind = wire.kind
     }
+
+    public func encode(to encoder: Encoder) throws {
+        var container = encoder.container(keyedBy: CodingKeys.self)
+        try container.encode(id.rawValue, forKey: .id)
+        try container.encode(name, forKey: .name)
+        try container.encode(kind, forKey: .kind)
+    }
 }
 
-public struct CatalogSession: Decodable, Equatable, Identifiable, Sendable {
-    public enum Availability: String, Decodable, Sendable { case running, stopped, failed }
+public struct CatalogSession: Codable, Equatable, Identifiable, Sendable {
+    public enum Availability: String, Codable, Sendable { case running, stopped, failed }
 
     public let id: AxoSessionID
     public let workspaceId: WorkspaceID
     public let name: String
     public let conversationId: String?
     public let availability: Availability
+
+    private enum CodingKeys: String, CodingKey { case id, workspaceId, name, conversationId, availability }
 
     private struct WireValue: Decodable {
         let id: UUID
@@ -256,6 +267,15 @@ public struct CatalogSession: Decodable, Equatable, Identifiable, Sendable {
         name = wire.name
         conversationId = wire.conversationId
         availability = wire.availability
+    }
+
+    public func encode(to encoder: Encoder) throws {
+        var container = encoder.container(keyedBy: CodingKeys.self)
+        try container.encode(id.rawValue, forKey: .id)
+        try container.encode(workspaceId.rawValue, forKey: .workspaceId)
+        try container.encode(name, forKey: .name)
+        try container.encodeIfPresent(conversationId, forKey: .conversationId)
+        try container.encode(availability, forKey: .availability)
     }
 }
 

@@ -10,19 +10,14 @@ final class PhoneWorkbenchState {
     enum Route: Hashable {
         case conversation(AxoSessionID)
         case preview
-        case settings
     }
 
     enum Sheet: String, Identifiable {
         case search
         case createWorkspace
         case createSession
+        case settings
         var id: String { rawValue }
-    }
-
-    struct LoginRequest: Identifiable {
-        let id = UUID()
-        let endpoint: RelayEndpoint
     }
 
     private struct PageRequest {
@@ -39,50 +34,44 @@ final class PhoneWorkbenchState {
     let client: ConversationClient
     let voice: VoicePrompt
     private(set) var catalog = WorkbenchCatalog()
-    var route: Route?
+    private(set) var persistenceError: String?
+    var route: Route? = .preview
     var sheet: Sheet?
     var notice: String?
-    var connectionError: String?
-    var loginRequest: LoginRequest?
     private(set) var isLoadingPage = false
     private(set) var pageError: String?
     private var pageRequests: [String: PageRequest] = [:]
+    private var pageTimeouts: [String: Task<Void, Never>] = [:]
+    private var catalogRefreshContinuation: CheckedContinuation<Void, Never>?
     private var createRequests: [String: String] = [:]
     private var pendingCreatedSessionID: AxoSessionID?
     private var hasUserNavigated = false
+    private var hasStarted = false
+    private let catalogCache = WorkbenchCatalogCache()
     private var drafts: [AxoSessionID: String] = [:]
     private var submittedDrafts: [String: SubmittedDraft] = [:]
     private var savedEndpoint: String
 
-    var endpointText: String {
-        get { savedEndpoint }
-        set {
-            guard savedEndpoint != newValue else { return }
-            savedEndpoint = newValue
-            UserDefaults.standard.set(newValue, forKey: "relayEndpoint")
-            connectionError = nil
-            client.disconnect()
-        }
-    }
-
-    var endpoint: RelayEndpoint? { try? RelayEndpoint(endpointText) }
+    private var endpoint: RelayEndpoint? { try? RelayEndpoint(savedEndpoint) }
     var canCreate: Bool { catalog.hostOnline && client.canSendWorkbenchCommands }
-
-    var connectionStatus: String {
-        switch client.link {
-        case .disconnected: "Sign in to connect to your Mac."
-        case .connecting: "Connecting to your relay…"
-        case .macOffline: "Mac offline — nothing is queued."
-        case .failed(let message): message
-        case .online: "Connected to Mac."
-        }
-    }
 
     init() {
         let client = ConversationClient()
         self.client = client
         self.voice = VoicePromptFactory.make()
         self.savedEndpoint = RelayEndpoint.restoredOrigin(UserDefaults.standard.string(forKey: "relayEndpoint"))
+        #if DEBUG
+        let usesPreviewData = ChatPreviewData.enabled || ProcessInfo.processInfo.arguments.contains("--axo-workbench-preview")
+        #else
+        let usesPreviewData = false
+        #endif
+        if !usesPreviewData {
+            do {
+                if let cachedCatalog = try catalogCache.load() { self.catalog = cachedCatalog }
+            } catch {
+                persistenceError = "Saved session list could not be read. It will refresh when available."
+            }
+        }
         if UserDefaults.standard.string(forKey: "relayEndpoint") != savedEndpoint {
             UserDefaults.standard.set(savedEndpoint, forKey: "relayEndpoint")
         }
@@ -91,6 +80,7 @@ final class PhoneWorkbenchState {
         if ChatPreviewData.enabled {
             route = .preview
         } else if ProcessInfo.processInfo.arguments.contains("--axo-workbench-preview") {
+            route = nil
             UserDefaults.standard.removeObject(forKey: "axo.selectedPhoneSessionID")
             let fixture = #"{"type":"catalog_page","revision":1,"items":[{"kind":"workspace","workspace":{"id":"11111111-1111-4111-8111-111111111111","name":"Axo Project","kind":"project"}},{"kind":"workspace","workspace":{"id":"33333333-3333-4333-8333-333333333333","name":"Research","kind":"standalone"}},{"kind":"session","session":{"id":"22222222-2222-4222-8222-222222222222","workspaceId":"11111111-1111-4111-8111-111111111111","name":"Phone shell","conversationId":"pi-phone-shell","availability":"running"}},{"kind":"session","session":{"id":"44444444-4444-4444-8444-444444444444","workspaceId":"33333333-3333-4333-8333-333333333333","name":"Research notes","availability":"stopped"}}],"nextCursor":null,"hostOnline":false}"#
             if case .catalogPage(let page) = try? RelayEvent.decode(Data(fixture.utf8)) { _ = try? catalog.apply(page) }
@@ -129,11 +119,15 @@ final class PhoneWorkbenchState {
         }
         hasUserNavigated = true
         self.route = route
-        guard case .conversation(let id) = route else { return }
-        let session = catalog.session(id: id)
-        client.selectSession(id, conversationID: session?.conversationId)
-        UserDefaults.standard.set(id.rawValue.uuidString, forKey: "axo.selectedPhoneSessionID")
-        notice = nil
+        switch route {
+        case .conversation(let id):
+            let session = catalog.session(id: id)
+            client.selectSession(id, conversationID: session?.conversationId)
+            UserDefaults.standard.set(id.rawValue.uuidString, forKey: "axo.selectedPhoneSessionID")
+            notice = nil
+        case .preview, nil:
+            client.selectSession(nil, conversationID: nil)
+        }
     }
 
     func selectSearchResult(_ item: CatalogPage.Item) {
@@ -151,7 +145,34 @@ final class PhoneWorkbenchState {
     }
 
     func refreshCatalog() {
+        guard client.canSendWorkbenchCommands else {
+            reconnect()
+            return
+        }
         requestPage(revision: nil, cursor: nil)
+    }
+
+    func reloadCatalog() async {
+        guard !isLoadingPage else { return }
+        await withCheckedContinuation { continuation in
+            catalogRefreshContinuation = continuation
+            refreshCatalog()
+            if !isLoadingPage { finishCatalogRefresh() }
+        }
+    }
+
+    func start() {
+        guard !hasStarted else { return }
+        hasStarted = true
+        #if DEBUG
+        if ChatPreviewData.enabled { return }
+        if ProcessInfo.processInfo.arguments.contains("--axo-workbench-preview") {
+            restoreSelectionIfAvailable()
+            return
+        }
+        #endif
+        restoreSelectionIfAvailable()
+        reconnect()
     }
 
     private func requestPage(revision: Int?, cursor: String?) {
@@ -159,10 +180,17 @@ final class PhoneWorkbenchState {
         pageRequests[id] = PageRequest(revision: revision, cursor: cursor)
         isLoadingPage = true
         pageError = nil
+        pageTimeouts[id] = Task { [weak self] in
+            try? await Task.sleep(nanoseconds: 15_000_000_000)
+            guard !Task.isCancelled else { return }
+            self?.timeOutPage(id)
+        }
         guard client.sendWorkbenchCommand(.catalogPage(id: id, revision: revision, cursor: cursor)) else {
             pageRequests.removeValue(forKey: id)
+            pageTimeouts.removeValue(forKey: id)?.cancel()
             isLoadingPage = false
-            pageError = "Connect to the relay before loading more workspaces and sessions."
+            pageError = nil
+            finishCatalogRefresh()
             return
         }
     }
@@ -174,14 +202,15 @@ final class PhoneWorkbenchState {
         }
         if let requestID = page.requestId {
             guard let request = pageRequests.removeValue(forKey: requestID) else { return }
+            pageTimeouts.removeValue(forKey: requestID)?.cancel()
             if let expectedRevision = request.revision, expectedRevision == catalog.revision, page.revision != expectedRevision {
-                pageRequests.removeAll()
+                cancelPageRequests()
                 pageError = "The catalog changed while paging. Refreshing from the latest revision."
                 refreshCatalog()
                 return
             }
             if request.cursor != nil && page.revision != request.revision {
-                pageRequests.removeAll()
+                cancelPageRequests()
                 pageError = "The catalog changed while paging. Refreshing from the latest revision."
                 refreshCatalog()
                 return
@@ -190,34 +219,38 @@ final class PhoneWorkbenchState {
 
         do {
             let revisionChanged = try catalog.apply(page)
-            if revisionChanged { pageRequests.removeAll() }
+            if revisionChanged { cancelPageRequests() }
             isLoadingPage = false
             pageError = nil
             restoreSelectionIfAvailable()
             removeMissingSelectionIfCatalogIsComplete()
             selectCreatedSessionIfAvailable()
             if catalog.nextCursor != nil { loadNextPage() }
+            else {
+                persistCatalog()
+                finishCatalogRefresh()
+            }
         } catch {
             isLoadingPage = false
             pageError = "The relay returned an inconsistent catalog. Refresh and try again."
+            finishCatalogRefresh()
         }
     }
 
     private func restoreSelectionIfAvailable() {
-        guard !hasUserNavigated, route == nil else { return }
+        guard !hasUserNavigated, route == nil || route == .preview else { return }
         if let saved = UserDefaults.standard.string(forKey: "axo.selectedPhoneSessionID"),
            let uuid = UUID(uuidString: saved) {
             let id = AxoSessionID(uuid)
             if let session = catalog.session(id: id) {
-                route = .conversation(id)
-                client.selectSession(id, conversationID: session.conversationId)
-                hasUserNavigated = true
+                activateOnStartup(session)
                 return
             }
             if catalog.nextCursor != nil { return }
             UserDefaults.standard.removeObject(forKey: "axo.selectedPhoneSessionID")
         }
-        if catalog.nextCursor == nil { hasUserNavigated = true }
+        guard catalog.nextCursor == nil else { return }
+        if let first = catalog.sessions.first { activateOnStartup(first) }
     }
 
     private func removeMissingSelectionIfCatalogIsComplete() {
@@ -227,6 +260,41 @@ final class PhoneWorkbenchState {
         client.selectSession(nil, conversationID: nil)
         UserDefaults.standard.removeObject(forKey: "axo.selectedPhoneSessionID")
         notice = "That session is no longer in the Mac catalog."
+    }
+
+    private func activateOnStartup(_ session: CatalogSession) {
+        route = .conversation(session.id)
+        client.selectSession(session.id, conversationID: session.conversationId)
+        UserDefaults.standard.set(session.id.rawValue.uuidString, forKey: "axo.selectedPhoneSessionID")
+        hasUserNavigated = true
+    }
+
+    private func cancelPageRequests() {
+        pageRequests.removeAll()
+        for timeout in pageTimeouts.values { timeout.cancel() }
+        pageTimeouts.removeAll()
+    }
+
+    private func timeOutPage(_ id: String) {
+        guard pageRequests.removeValue(forKey: id) != nil else { return }
+        pageTimeouts.removeValue(forKey: id)?.cancel()
+        isLoadingPage = false
+        pageError = "The session list could not be refreshed right now."
+        finishCatalogRefresh()
+    }
+
+    private func finishCatalogRefresh() {
+        catalogRefreshContinuation?.resume()
+        catalogRefreshContinuation = nil
+    }
+
+    private func persistCatalog() {
+        do {
+            try catalogCache.save(catalog)
+            persistenceError = nil
+        } catch {
+            persistenceError = "Saved session list could not be updated on this device."
+        }
     }
 
     private func selectCreatedSessionIfAvailable() {
@@ -241,14 +309,14 @@ final class PhoneWorkbenchState {
     }
 
     func createWorkspace(name rawName: String) {
-        guard canCreate else { notice = "The Mac is offline. Nothing was created or queued."; return }
+        guard canCreate else { notice = "Axo is reconnecting. Nothing was queued."; return }
         do {
             let name = try WorkspaceStore.validName(rawName)
             let id = UUID().uuidString
             createRequests[id] = "workspace"
             guard client.sendWorkbenchCommand(.createWorkspace(id: id, name: name)) else {
                 createRequests.removeValue(forKey: id)
-                notice = "The relay is disconnected. Nothing was created or queued."
+                notice = "Axo is reconnecting. Nothing was queued."
                 return
             }
             sheet = nil
@@ -257,14 +325,14 @@ final class PhoneWorkbenchState {
     }
 
     func createSession(workspaceID: WorkspaceID, name rawName: String) {
-        guard canCreate else { notice = "The Mac is offline. Nothing was created or queued."; return }
+        guard canCreate else { notice = "Axo is reconnecting. Nothing was queued."; return }
         do {
             let name = try WorkspaceStore.validName(rawName)
             let id = UUID().uuidString
             createRequests[id] = "session"
             guard client.sendWorkbenchCommand(.createSession(id: id, workspaceID: workspaceID, name: name)) else {
                 createRequests.removeValue(forKey: id)
-                notice = "The relay is disconnected. Nothing was created or queued."
+                notice = "Axo is reconnecting. Nothing was queued."
                 return
             }
             sheet = nil
@@ -274,7 +342,11 @@ final class PhoneWorkbenchState {
 
     private func receive(_ acknowledgement: SubscriptionAcknowledgement) {
         guard acknowledgement.sessionID == client.selectedSessionID else { return }
-        if !acknowledgement.hostOnline { notice = "Mac offline. Selection is local; nothing will be started." }
+        let needsCatalogRefresh = catalog.revision == nil || (!catalog.hostOnline && acknowledgement.hostOnline)
+        catalog.updateHostOnline(acknowledgement.hostOnline)
+        if needsCatalogRefresh && !isLoadingPage {
+            requestPage(revision: nil, cursor: nil)
+        }
     }
 
     private func receive(_ acknowledgement: CreationAcknowledgement) {
@@ -286,8 +358,10 @@ final class PhoneWorkbenchState {
 
     private func receiveError(id: String?, sessionID: AxoSessionID?, message: String) {
         if let id, pageRequests.removeValue(forKey: id) != nil {
+            pageTimeouts.removeValue(forKey: id)?.cancel()
             isLoadingPage = false
             pageError = message
+            finishCatalogRefresh()
         }
         if let id, createRequests.removeValue(forKey: id) != nil {
             notice = message
@@ -295,24 +369,11 @@ final class PhoneWorkbenchState {
         if sessionID == nil || sessionID == client.selectedSessionID { notice = message }
     }
 
-    func signIn() {
-        connectionError = nil
-        guard let endpoint else { connectionError = "Enter a valid HTTPS endpoint."; return }
-        loginRequest = LoginRequest(endpoint: endpoint)
-    }
-
     func reconnect() {
-        connectionError = nil
-        guard let endpoint else { connectionError = "Enter a valid HTTPS endpoint."; return }
-        guard let token = AccessCredential.load(host: endpoint.baseURL.host!) else { signIn(); return }
+        guard let endpoint,
+              let host = endpoint.baseURL.host,
+              let token = AccessCredential.load(host: host) else { return }
         client.connect(endpoint: endpoint, authorizationCookie: token)
     }
 
-    func authenticated(_ token: String, for endpoint: RelayEndpoint) {
-        do {
-            try AccessCredential.save(token, host: endpoint.baseURL.host!)
-            loginRequest = nil
-            client.connect(endpoint: endpoint, authorizationCookie: token)
-        } catch { connectionError = "Could not save Access credentials securely." }
-    }
 }

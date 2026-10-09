@@ -179,16 +179,17 @@ struct OmittedImages: ImageProvider, InlineImageProvider {
 }
 
 struct ChatEmptyState: View {
-    let status: String
-    let connect: () -> Void
+    let hasSession: Bool
 
     var body: some View {
         VStack(spacing: 18) {
             Image(systemName: "sparkle").font(.system(size: 32, weight: .light))
                 .frame(width: 68, height: 68).background(ChatColors.surface, in: Circle())
+                .accessibilityHidden(true)
             Text("What are we working on?").font(.title2.weight(.semibold))
-            Text("Your Mac’s Pi session, right here.").font(.body).foregroundStyle(.secondary)
-            Button(status, action: connect).font(.caption).foregroundStyle(.secondary)
+            Text(hasSession ? "Your conversation will appear here." : "Create a session from the menu to get started.")
+                .font(.body)
+                .foregroundStyle(.secondary)
         }
         .multilineTextAlignment(.center)
         .frame(maxWidth: .infinity).padding(.vertical, 90)

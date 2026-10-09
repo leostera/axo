@@ -8,7 +8,6 @@ import UniformTypeIdentifiers
 struct ConversationView: View {
     let client: ConversationClient
     let voice: VoicePrompt
-    @Binding var endpointText: String
     @Binding var draft: String
     @AppStorage("appearance") private var appearance: AppAppearance = .system
     let sessionName: String
@@ -74,13 +73,16 @@ struct ConversationView: View {
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
 
     private enum ChatSheet: String, Identifiable {
-        case connection, login, voiceDetails, files
+        case files
         var id: String { rawValue }
     }
 
     private func beginCameraCapture() {
         guard !voice.isBusy else { return }
-        guard let destination = fileClient, let session = destination.sessionId else { sheet = .connection; return }
+        guard let destination = fileClient, let session = destination.sessionId else {
+            error = "Select a session before adding attachments."
+            return
+        }
         guard UIImagePickerController.isSourceTypeAvailable(.camera) else {
             error = "Camera unavailable on this device. Choose Photos or Files instead."
             return
@@ -95,7 +97,6 @@ struct ConversationView: View {
         }
     }
 
-    private var endpoint: RelayEndpoint? { try? RelayEndpoint(endpointText) }
     private var isPreview: Bool {
         #if DEBUG
         return ChatPreviewData.enabled
@@ -153,6 +154,17 @@ struct ConversationView: View {
         conversation
             .background(ChatColors.background)
             .preferredColorScheme(appearance.colorScheme)
+            .simultaneousGesture(
+                DragGesture(minimumDistance: 24)
+                    .onEnded { value in
+                        guard !voice.isBusy,
+                              value.startLocation.x <= 24,
+                              value.translation.width >= 80,
+                              abs(value.translation.height) < 80 else { return }
+                        composerFocused = false
+                        showSidebar()
+                    }
+            )
             .task {
                 #if DEBUG
                 if SharedFilePreview.enabled {
@@ -164,18 +176,12 @@ struct ConversationView: View {
             .safeAreaInset(edge: .top, spacing: 0) { header }
             .safeAreaInset(edge: .bottom, spacing: 0) { bottomBar }
             .sheet(item: $sheet) { presented in
-                switch presented {
-                case .connection:
-                    NavigationStack {
-                        ConnectionSettingsView(endpoint: $endpointText, status: status, canConnect: !voice.isBusy,
-                                              reconnect: { reconnect() }, signIn: signIn)
+                if presented == .files {
+                    if let files = fileClient {
+                        SessionFilesView(client: files)
+                    } else {
+                        ContentUnavailableView("Choose a session first", systemImage: "folder")
                     }
-                case .login: login
-                case .voiceDetails:
-                    NavigationStack { VoiceInformationView() }
-                case .files:
-                    if let files = fileClient { SessionFilesView(client: files) }
-                    else { Text("Sign in to view session files.").padding() }
                 }
             }
             .fullScreenCover(item: $cameraDestination) { destination in
@@ -233,7 +239,6 @@ struct ConversationView: View {
             } message: {
                 Text("Selected snapshots are readable by Cloudflare and the relay; this is not end-to-end encrypted. Share only non-sensitive, approved files. Uploading does not send a prompt.\nDestination: \(publication?.client.storageOrigin.absoluteString ?? "relay")")
             }
-            .onChange(of: endpointText) { _, _ in error = nil; client.disconnect() }
             .onChange(of: client.lastAcknowledgedID) { _, id in
                 if let sent = submittedDraft, id == sent.id {
                     if draft == sent.text { draft = "" }
@@ -258,7 +263,7 @@ struct ConversationView: View {
             }
             .onChange(of: scenePhase) { _, phase in
                 if phase == .background { client.disconnect(); voice.cancel() }
-                if phase == .active, client.link == .disconnected, !voice.isBusy { reconnect(openLogin: false) }
+                if phase == .active, client.link == .disconnected, !voice.isBusy { reconnect() }
             }
     }
 
@@ -267,7 +272,7 @@ struct ConversationView: View {
             ScrollView {
                 LazyVStack(alignment: .leading, spacing: 30) {
                     if messages.isEmpty {
-                        ChatEmptyState(status: status, connect: { sheet = .connection }).disabled(voice.isBusy)
+                        ChatEmptyState(hasSession: client.selectedSessionID != nil).disabled(voice.isBusy)
                     }
                     if client.hasEarlierMessages {
                         if client.isLoadingHistory {
@@ -374,7 +379,7 @@ struct ConversationView: View {
                         .frame(width: 46, height: 46)
                         .background(.ultraThinMaterial, in: Circle())
                         .overlay(Circle().stroke(ChatColors.border, lineWidth: 0.5))
-                }.accessibilityLabel("Workspaces and sessions").disabled(voice.isBusy)
+                }.accessibilityLabel("Sessions menu").disabled(voice.isBusy)
                 Spacer(minLength: 0)
                 headerActions
             }
@@ -391,10 +396,8 @@ struct ConversationView: View {
                 Image(systemName: "square.and.pencil").font(.system(size: 21)).frame(width: 45, height: 46)
             }.accessibilityLabel("Write a message")
             Menu {
-                Button("Connection settings", systemImage: "network") { sheet = .connection }.disabled(voice.isBusy)
-                Button("Reconnect", systemImage: "arrow.clockwise") { reconnect() }.disabled(voice.isBusy)
                 Button("Session files", systemImage: "folder") { sheet = .files }
-                Button("About voice", systemImage: "waveform") { sheet = .voiceDetails }.disabled(voice.isBusy)
+                    .disabled(fileClient == nil)
                 #if DEBUG
                 if ProcessInfo.processInfo.arguments.contains("--axo-live-history-preview") {
                     Button("Add synthetic message") {
@@ -412,25 +415,10 @@ struct ConversationView: View {
     }
 
     private var headerTitle: some View {
-        Button { sheet = .connection } label: {
-            VStack(spacing: 3) {
-                Text(sessionName).font(.headline)
-                HStack(spacing: 5) {
-                    Image(systemName: "circle.fill")
-                        .font(.system(size: 5))
-                        .foregroundStyle(statusColor)
-                        .symbolEffect(
-                            .pulse,
-                            options: .repeating,
-                            isActive: client.link == .online && client.snapshot?.state == .running && !reduceMotion
-                        )
-                    Text(shortStatus).font(.caption2).foregroundStyle(.secondary)
-                }
-            }
-        }
-        .accessibilityLabel("\(sessionName). \(status)")
-        .accessibilityIdentifier("conversation-title")
-        .disabled(voice.isBusy)
+        Text(sessionName)
+            .font(.headline)
+            .lineLimit(1)
+            .accessibilityIdentifier("conversation-title")
     }
 
     private var bottomBar: some View {
@@ -449,6 +437,11 @@ struct ConversationView: View {
             }
             if let notice = client.notice {
                 Text(notice).font(.caption).foregroundStyle(.secondary).padding(.horizontal, 24)
+            } else if !draft.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty, client.link != .online {
+                Text("Not sent. Axo won’t queue messages while reconnecting.")
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+                    .padding(.horizontal, 24)
             }
             if !followsLatest || client.hasLaterMessages {
                 Button {
@@ -475,8 +468,8 @@ struct ConversationView: View {
             ChatComposer(draft: $draft, focused: $composerFocused, voice: voice, canSend: canSend,
                          send: send,
                          hasAttachments: !(fileClient?.currentDrafts.isEmpty ?? true),
-                         attachFile: { if fileClient != nil { importingFile = true } else { sheet = .connection } },
-                         attachPhoto: { if fileClient != nil { selectingPhoto = true } else { sheet = .connection } },
+                         attachFile: { if fileClient != nil { importingFile = true } else { error = "Select a session before adding attachments." } },
+                         attachPhoto: { if fileClient != nil { selectingPhoto = true } else { error = "Select a session before adding attachments." } },
                          attachCamera: { Task { @MainActor in beginCameraCapture() } },
                          fileClient: fileClient, canAttachPhotos: !isPreparingPhotos && (fileClient?.currentDrafts.count ?? 0) < 8,
                          reviewUpload: { id in if let files = fileClient { publication = FilePublication(client: files, draftIDs: [id]) } },
@@ -485,74 +478,12 @@ struct ConversationView: View {
         .padding(.top, 10).padding(.bottom, 8)
     }
 
-    @ViewBuilder private var login: some View {
-        if let endpoint {
-            NavigationStack {
-                AccessLogin(endpoint: endpoint, onAuthenticated: { token in
-                    do {
-                        try AccessCredential.save(token, host: endpoint.baseURL.host!)
-                        sheet = nil
-                        client.connect(endpoint: endpoint, authorizationCookie: token)
-                    } catch { self.error = "Could not save Access credentials securely." }
-                }, onFailure: { error = $0 })
-                .navigationTitle("Cloudflare Access").navigationBarTitleDisplayMode(.inline)
-                .safeAreaInset(edge: .bottom) {
-                    if let error { Text(error).foregroundStyle(.red).font(.caption).padding() }
-                }
-                .toolbar { Button("Cancel") { sheet = nil } }
-            }
-        }
-    }
-
-    private var shortStatus: String {
-        if isPreview { return "Preview" }
-        return switch client.link {
-        case .disconnected, .failed: "Disconnected"
-        case .connecting: "Connecting"
-        case .macOffline: "Mac offline"
-        case .online:
-            switch client.snapshot?.state {
-            case .running: "Pi is working"
-            case .waiting: "Waiting for you"
-            default: "Connected"
-            }
-        }
-    }
-
-    private var statusColor: Color {
-        switch client.link {
-        case .online: client.snapshot?.state == .waiting ? .orange : .green
-        case .connecting: .orange
-        default: .gray
-        }
-    }
-
-    private var status: String {
-        if isPreview { return "UI preview — no relay connection." }
-        return switch client.link {
-        case .disconnected: "Sign in to connect to your Mac."
-        case .connecting: "Connecting to your relay…"
-        case .macOffline: "Mac offline — prompts are not queued."
-        case .failed(let message): message
-        case .online: client.snapshot.map { "Pi: \($0.state.rawValue)" } ?? "Waiting for conversation…"
-        }
-    }
-
-    private func signIn() {
-        error = nil
-        guard endpoint != nil else { error = "Enter an HTTPS origin, without a path."; return }
-        sheet = .login
-    }
-
-    private func reconnect(openLogin: Bool = true) {
-        guard !isPreview else { return }
-        error = nil
-        guard let endpoint else { error = "Enter a valid HTTPS endpoint."; return }
-        guard let token = AccessCredential.load(host: endpoint.baseURL.host!) else {
-            if openLogin { sheet = .login }
-            return
-        }
-        sheet = nil
+    private func reconnect() {
+        let restoredOrigin = RelayEndpoint.restoredOrigin(UserDefaults.standard.string(forKey: "relayEndpoint"))
+        guard !isPreview,
+              let endpoint = try? RelayEndpoint(restoredOrigin),
+              let host = endpoint.baseURL.host,
+              let token = AccessCredential.load(host: host) else { return }
         client.connect(endpoint: endpoint, authorizationCookie: token)
     }
 
@@ -568,7 +499,7 @@ struct ConversationView: View {
     private func pasteAttachments(_ providers: [NSItemProvider]) {
         guard !voice.isBusy, !isPreparingPhotos else { error = "Finish the current capture before pasting attachments."; return }
         guard let destination = fileClient, let session = destination.sessionId else {
-            error = "Connect to a conversation before pasting attachments. Your clipboard is unchanged."
+            error = "Select a session before pasting attachments. Your clipboard is unchanged."
             return
         }
         guard providers.count <= 8 - destination.currentDrafts.count else {

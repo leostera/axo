@@ -474,10 +474,12 @@ public final class ConversationClient {
         if pendingID != nil {
             updateSubmission(pendingID, delivery: .uncertain)
             notice = "Delivery uncertain. Check the conversation before sending again."
+        } else {
+            notice = nil
         }
         pendingID = nil
         pendingCancellationID = nil
-        link = .failed("Connection lost or Access expired. Reconnecting…")
+        link = .failed("Reconnecting")
         scheduleReconnect()
     }
 

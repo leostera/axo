@@ -21,7 +21,7 @@ struct CreateWorkspaceSheet: View {
                 }
                 if !canCreate {
                     Section {
-                        Label("Connect to an online Mac first. Nothing is queued while offline.", systemImage: "wifi.slash")
+                        Label("New work isn’t queued while you’re offline.", systemImage: "clock")
                             .foregroundStyle(.secondary)
                     }
                 }
@@ -74,7 +74,7 @@ struct CreateSessionSheet: View {
                 }
                 if !canCreate {
                     Section {
-                        Label("Connect to an online Mac first. Nothing is queued while offline.", systemImage: "wifi.slash")
+                        Label("New work isn’t queued while you’re offline.", systemImage: "clock")
                             .foregroundStyle(.secondary)
                     }
                 }

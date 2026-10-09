@@ -5,6 +5,7 @@ import UniformTypeIdentifiers
 /// Own the native paste boundary rather than inspecting SwiftUI's private views.
 struct ComposerTextEditor: UIViewRepresentable {
     @Binding var text: String
+    @Binding var hasMultipleLines: Bool
     let focused: Binding<Bool>
     let pasteAttachments: ([NSItemProvider]) -> Void
 
@@ -54,7 +55,18 @@ struct ComposerTextEditor: UIViewRepresentable {
     final class Coordinator: NSObject, UITextViewDelegate {
         var parent: ComposerTextEditor
         init(parent: ComposerTextEditor) { self.parent = parent }
-        func textViewDidChange(_ view: UITextView) { parent.text = view.text }
+        func textViewDidChange(_ view: UITextView) {
+            parent.text = view.text
+            if view.text.isEmpty {
+                parent.hasMultipleLines = false
+                return
+            }
+            guard let font = view.font, view.bounds.width > 0 else { return }
+            let measuredHeight = view.sizeThatFits(CGSize(width: view.bounds.width, height: .greatestFiniteMagnitude)).height
+            if measuredHeight > font.lineHeight * 1.5 {
+                parent.hasMultipleLines = true
+            }
+        }
         func textViewDidBeginEditing(_ view: UITextView) { if !parent.focused.wrappedValue { parent.focused.wrappedValue = true } }
         func textViewDidEndEditing(_ view: UITextView) { if parent.focused.wrappedValue { parent.focused.wrappedValue = false } }
     }

@@ -96,17 +96,16 @@ final class VoicePromptUITests: XCTestCase {
     }
 
     @MainActor
-    func testVoiceDetailsExplainLocalProcessingAndAttribution() throws {
+    func testVoiceHelpIsNotASeparateSettingsDestination() throws {
         let app = XCUIApplication()
         app.launchArguments = ["--axo-chat-preview", "-appleSpeechSetupApproved", "NO"]
         app.launch()
-        let options = app.buttons["Chat options"]
-        XCTAssertTrue(options.waitForExistence(timeout: 10))
-        options.tap()
-        app.buttons["About voice"].tap()
-        XCTAssertTrue(app.navigationBars["Voice prompting"].waitForExistence(timeout: 3))
-        XCTAssertTrue(app.staticTexts["Apple on-device speech"].exists)
-        app.buttons["Done"].tap()
-        XCTAssertTrue(app.buttons["Set up voice"].exists)
+        let menu = app.buttons["Sessions menu"]
+        XCTAssertTrue(menu.waitForExistence(timeout: 10))
+        menu.tap()
+        app.buttons["Settings"].tap()
+        XCTAssertFalse(app.buttons["Voice prompting"].exists)
+        XCTAssertFalse(app.staticTexts["Apple on-device speech"].exists)
+        XCTAssertTrue(app.buttons["Close settings"].exists)
     }
 }

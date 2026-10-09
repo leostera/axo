@@ -2,7 +2,7 @@ import XCTest
 
 final class ChatLayoutUITests: XCTestCase {
     @MainActor
-    func testConnectionSettingsAreOutOfTheChat() throws {
+    func testConnectionInternalsAreNotExposedInChat() throws {
         let app = XCUIApplication()
         app.launchArguments = ["--axo-chat-preview"]
         app.launch()
@@ -10,16 +10,14 @@ final class ChatLayoutUITests: XCTestCase {
         XCTAssertTrue(options.waitForExistence(timeout: 10))
         XCTAssertFalse(app.textFields["relayEndpoint"].exists)
         options.tap()
-        app.buttons["Connection settings"].tap()
-        XCTAssertTrue(app.navigationBars["Connection"].waitForExistence(timeout: 3))
-        XCTAssertTrue(app.textFields["relayEndpoint"].exists)
-        XCTAssertTrue(app.buttons["Sign in with Cloudflare Access"].exists)
-        app.buttons["Done"].tap()
+        XCTAssertFalse(app.buttons["Connection settings"].exists)
+        XCTAssertFalse(app.buttons["Reconnect"].exists)
+        app.buttons["Chat options"].tap()
         XCTAssertTrue(app.buttons["Composer options"].exists)
     }
 
     @MainActor
-    func testComposerActionsSitBelowTheTextField() throws {
+    func testComposerStartsWithActionsBesideSingleLineInput() throws {
         let app = XCUIApplication()
         app.launchArguments = ["--axo-chat-preview"]
         app.launch()
@@ -30,8 +28,30 @@ final class ChatLayoutUITests: XCTestCase {
         XCTAssertTrue(options.exists)
         XCTAssertTrue(voice.exists)
         XCTAssertFalse(app.staticTexts["Checking microphone access…"].exists)
-        XCTAssertGreaterThan(options.frame.minY, input.frame.minY)
-        XCTAssertEqual(options.frame.midY, voice.frame.midY, accuracy: 4)
+        XCTAssertEqual(options.frame.midY, input.frame.midY, accuracy: 8)
+        XCTAssertEqual(voice.frame.midY, input.frame.midY, accuracy: 8)
+    }
+
+    @MainActor
+    func testComposerReflowsWhenTextWrapsAndCanExpandToFullScreen() throws {
+        let app = XCUIApplication()
+        app.launchArguments = ["--axo-chat-preview"]
+        app.launch()
+
+        let input = app.descendants(matching: .any).matching(identifier: "promptDraft").firstMatch
+        XCTAssertTrue(input.waitForExistence(timeout: 10))
+        input.tap()
+        input.typeText(String(repeating: "A", count: 80))
+
+        let expander = app.buttons["expandComposer"]
+        XCTAssertTrue(expander.waitForExistence(timeout: 5))
+        XCTAssertGreaterThan(app.buttons["Composer options"].frame.midY, input.frame.midY)
+        XCTAssertGreaterThan(app.buttons["voicePromptButton"].frame.midY, input.frame.midY)
+
+        expander.tap()
+        XCTAssertTrue(app.navigationBars["Message Axo"].waitForExistence(timeout: 5))
+        XCTAssertTrue(app.textViews["expanded-composer"].exists)
+        app.buttons["Done"].tap()
     }
 
     @MainActor
