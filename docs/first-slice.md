@@ -8,13 +8,15 @@ This is the deliberately smaller implementation selected after reviewing [RFD000
 - One fixed playground and one persistent Pi conversation.
 - One native iPhone conversation screen with text, Apple's on-device English speech recognition on supported iOS 26+ devices, keyboard dictation, and choice buttons. See [voice prompting](voice-prompts.md) for Apple language-asset setup and the automatic-send flow with draft fallback.
 - One Cloudflare relay channel, protected by Cloudflare Access rather than Axo-owned accounts.
+- Local RFD0002 implementation: explicitly published file snapshots, native draft/gallery/preview UI, and demand-driven recent history. Production R2 storage remains disabled pending approval; see [RFD0002](rfds/RFD0002-shared-session-files.md) for release gates.
+- The conversation UI requires iOS 18+; Apple's on-device voice integration remains iOS 26+.
 - No session/workspace navigation, GitHub login implementation, offline command queue, E2EE, independent background host, push notifications, or additional machines.
 
 The relay's one-channel design is intentional for this single-user prototype; it is not the multi-user partitioning strategy for the full product.
 
 ## Integration decision
 
-Use a Pi **extension in interactive mode**, not an RPC subprocess on the desktop. The extension receives remote prompts through its own authenticated WebSocket and calls Pi's `sendUserMessage`. It observes completed messages and `agent_settled`, publishing a bounded projection of the active conversation branch.
+Use a Pi **extension in interactive mode**, not an RPC subprocess on the desktop. The extension receives remote prompts through its own authenticated WebSocket and calls Pi's `sendUserMessage` for text or `sendMessage` for attachment-bearing custom messages whose content and metadata persist together. It observes completed messages and `agent_settled`, publishing a bounded projection of the active conversation branch.
 
 The `axo_ask` tool races a local Pi select dialog against a remote response. The first answer resolves it; the other path is cancelled. Stale question IDs are rejected. Arbitrary existing TUI dialogs are not intercepted or monkey-patched.
 
@@ -27,16 +29,17 @@ JSON text frames, maximum 256 KiB, over authenticated WebSockets:
 | Direction | Type | Meaning |
 | --- | --- | --- |
 | Phone → Mac | `sync` | Request current projection |
-| Phone → Mac | `prompt` | Command ID, explicit Pi session ID, bounded text |
+| Phone → Mac | `prompt` | Command ID, explicit Pi session ID, bounded text and optional shared-file IDs; never original file bytes |
 | Phone → Mac | `answer` | Command ID, session ID, question ID, offered choice |
 | Phone → Mac | `cancel` | Command ID, session ID, active run ID |
-| Phone → Mac | `history` | Read-only page before a transcript block ID |
+| Phone → Mac | `history` | Read-only before/after page with session, view, and cursor identity; demand-driven, not automatic full restoration |
 | Phone → Mac | `tool_output` | Read-only output page for a saved tool call, using a byte offset |
 | Mac → phone | `history` / `tool_output` | Correlated bounded pages; never execute or queue a prompt |
 | Mac → phone | `snapshot` | Session identity, agent state, bounded messages, pending question |
 | Mac → phone | `ack` | Command was submitted to Pi; not proof of execution |
 | Either bridge/relay → phone | `error` | Rejection or failure; correlated by command ID where possible |
 | Relay → phone | `presence` | Whether a currently authorized Mac connection exists |
+| Relay → phone | `files_changed` | Session/revision invalidation hint, not file bytes or transcript history |
 
 The TypeScript boundary validates frames. The native client decodes the same shapes. Snapshots are authoritative for the phone projection; the relay does not retain them for reconnects.
 

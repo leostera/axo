@@ -1,7 +1,7 @@
 # RFD0002 - Axo: shared session files
 
 - Feature Name: `axo-shared-session-files`
-- Status: Draft
+- Status: In progress — local implementation checkpoint validated; production approval pending
 - Start Date: 2026-10-09
 - Updated: 2026-10-09
 - Document Type: Proposal
@@ -34,7 +34,7 @@ The implemented [first slice](../first-slice.md) is narrower than RFD0001: one w
 
 Verified current behavior:
 
-| Area | Current implementation | Proposed change |
+| Area | Baseline before this RFD | Proposed change |
 | --- | --- | --- |
 | Relay | `service/src/index.ts` forwards live validated frames; rejects phone commands while the Mac is offline | Add an HTTP file API, durable file index, and file notifications; preserve offline prompt rejection |
 | Durable Object | `service/cloudflare.config.ts` configures SQLite storage; the relay currently uses storage for credential-expiry alarms, not a content index | Persist file/session records and cleanup state in this object |
@@ -72,6 +72,25 @@ The code paths above are repository-relative from the root. This document descri
 - Multipart/resumable uploads, large videos, audio uploads, or unbounded file sizes in the first version.
 - End-to-end encryption implementation as part of this slice; accepting a sensitive-content release without E2EE is not implied.
 - Full Mermaid/HTML document rendering or a general remote filesystem browser.
+
+## Local implementation checkpoint (2026-10-09)
+
+- Implemented authenticated file HTTP operations, private R2 streaming/integrity checks, SQLite ownership/idempotency/quota state, tombstones, alarm reconciliation, and separate read/write rollout controls. Both production controls remain `false`; the R2 binding declaration is **not** approval to provision or deploy it.
+- Implemented explicit Mac publication, consented phone publication, durable local drafts, three concurrent phone uploads, verified local materialization, file inventory, lazy native previews/export, and attachment-only prompts. Selecting a phone file stages it locally; only confirming publication starts uploads. Declining keeps the draft.
+- Implemented a 20-rendered-block recent window, bidirectional demand pages, branch/view fencing, bounded decoded history, and visible Back to bottom. No eager history restoration loop remains.
+- File metadata is validated at decoding boundaries. Native media/origin/transfer states and server HTTP operations have explicit domain types; reservation, transfer, recovery, and preview work are named operations rather than large mixed-responsibility branches.
+- Local validation: 42 TypeScript tests, 27 AxoCore tests, 10 iOS 27 simulator UI tests, bridge/service builds, and Mac build passed. Voice regression validation passed 18 tests; one real-speech/asset-install test remains opt-in and was skipped. UI HTTP fixtures are synthetic and in-process; these tests do not claim a deployed-cloud/device loop.
+- No production provisioning, deployment, phone installation, or running-Mac restart/reload was performed.
+
+### Conservative recovery invariant
+
+Elapsed time plus a missing R2 `HEAD` cannot prove that a previously admitted writer has stopped. The upload handler records quiescence only after both the pipe and R2 promises settle. Reconciliation can also prove completion by observing the single immutable conditional write. Otherwise it retains the attempt key and reserved capacity, including during deletion; a late write remains tracked and cannot resurrect a deleted file. Maintenance processes at most 80 records per pass and rotates checked records to avoid starvation.
+
+A crashed handler whose object never appears may therefore retain capacity indefinitely. Resolving that operational condition requires a proven provider write-lifetime/termination policy or an explicit operator recovery procedure before activation; silently freeing capacity or dropping the key is not safe. This is a deliberate fail-closed prototype behavior, not a claim that every orphan is automatically resolved after five minutes.
+
+### Remaining release gates
+
+Privacy/work-policy and spending approval, actual account ingress limits, log/header-redaction review, protected-origin HTTP/device validation, native prepend-offset stress tests, publication-tool consent/reload tests, and uncertain-submission crash drills remain open. Production rollback should leave storage/read/delete enabled while disabling `FILE_STORAGE_WRITES_ENABLED`, which also rejects attachment prompts as a whole. The protected-origin rename remains a separate coordinated change.
 
 ## Guide-level explanation
 
@@ -235,14 +254,14 @@ User cancellation requests server-side invalidation as well as aborting the loca
 
 After all requested files are ready and verified locally, preserve the existing prompt-submission contract: record the command before dispatch, submit through Pi's supported API, steer if busy, and never auto-replay uncertain work.
 
-- For supported screenshot formats/models, use `sendUserMessage` with Pi's actual `ImageContent` and text blocks. A cloud URL or path string alone is not image input. Pi can persist the image in its local history; this is not relay transcript storage.
+- For supported screenshot formats/models, use Pi's `sendMessage` with a displayed `axo.attachments` custom message containing actual `ImageContent` and text blocks, plus `triggerTurn: true` and the existing steering policy. A cloud URL or path string alone is not image input. Pi can persist the image in its local history; this is not relay transcript storage.
 - For documents, supply a safe local materialization reference and bounded descriptive text. Do not claim that PDF or arbitrary file bytes are native model inputs, or eagerly inline the whole document. Pi uses suitable host tools to inspect it.
 - Verify all inputs before dispatch. Model capability/type/size errors preserve the draft and do not run a reduced prompt.
 - Model-input conversion/resizing must be explicit. Keep the original shared snapshot unchanged; a derived image is a separate local/model representation. Photo formats such as HEIC require a tested conversion policy, not a renamed MIME type.
 
-Persist attachment associations using supported Pi custom entries/tool-result `details`, without changing the JSONL format or deriving identity from filenames in text. Proposed custom entry type: `axo.attachments`. A marker carries file IDs and the originating command/anchor information; a publication tool returns structured file metadata in its durable result. Register suitable Pi TUI rendering and extend the phone projection.
+Persist input content and attachment associations together in one supported Pi `custom_message` entry with custom type `axo.attachments`; its `details` contain the command ID, display text, and validated file references. The recorded entry ID is the transcript identity. This avoids guessing a user-message anchor or splitting associations from image content. A publication tool returns structured file metadata in its durable result; direct publication uses an `axo.shared_file` custom entry. Both have Pi TUI rendering and native projection.
 
-An upload is not automatically a finalized user message. The bridge must distinguish a pre-dispatch submission marker from a reference tied to a recorded prompt. Establish and test the association to the actual persisted user entry, including queued steering, concurrent local input, attachment-only messages, and crashes between marker and dispatch. If no finalized prompt can be identified, show unresolved submission state rather than inventing a successful message. Exact association mechanics are an implementation gate, not a claim that `sendUserMessage` returns a message ID.
+An upload is not automatically a finalized user message. `axo.submitted` is only a pre-dispatch deduplication marker, never a transcript card or proof of execution. Pi records the custom message when it consumes a queued steering input; until then acknowledgment means submission to Pi, not durable recording or execution. Duplicate/uncertain commands are rejected with a check-the-conversation warning and are never replayed automatically. Deterministic real-TUI tests cover actual image input, attachment-only steering during a live run, and durable custom-message content/details. Crash-between-marker-and-dispatch and concurrent local-input drills remain explicit rollout gates; no successful row is invented for a missing recorded entry.
 
 Reconstruct transcript cards from the active branch, preserving stable IDs through pagination and reload. A card for `axo_share_file` belongs to its existing stable tool row; avoid a second duplicate tool row. A direct publish command can produce a dedicated durable attachment row. Do not rely on ephemeral diagnostic events for either.
 
