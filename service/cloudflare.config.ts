@@ -19,6 +19,10 @@ export default defineConfig({
     },
     exports: { Relay: exports.durableObject({ storage: "sqlite" }) },
     env: {
+      // Enabling/deploying storage requires explicit billing/privacy approval (RFD0002).
+      FILES: bindings.r2({ name: "axo-session-files" }),
+      FILE_STORAGE_ENABLED: bindings.text("false"),
+      FILE_STORAGE_WRITES_ENABLED: bindings.text("false"),
       // These identities must match the narrowly scoped Access user and Service Auth policies.
       ACCESS_TEAM_URL: bindings.text("https://abstractmachines.cloudflareaccess.com"),
       ACCESS_AUD: bindings.text("27aa272296036691edc586961cc73c335993ac5efdefa5040e69adbc77cb5a0a"),

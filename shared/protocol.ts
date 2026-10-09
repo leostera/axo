@@ -1,4 +1,5 @@
 import { z } from "zod";
+import { sharedFileSchema } from "./files";
 
 export const MAX_FRAME_BYTES = 256 * 1024;
 export const MAX_PROMPT_LENGTH = 16_000;
@@ -22,6 +23,7 @@ export const messageSchema = z.object({
   status: z.enum(["running", "completed", "failed"]).optional(),
   output: z.string().max(500).optional(),
   toolPresentation: toolPresentationSchema.optional(),
+  attachments: z.array(sharedFileSchema).max(8).optional(),
 });
 export const activitySchema = z.object({
   id,
@@ -43,15 +45,17 @@ export const agentEventSchema = z.object({
 });
 export const phoneFrameSchema = z.discriminatedUnion("type", [
   z.object({ type: z.literal("sync") }),
-  z.object({ type: z.literal("prompt"), id, sessionId: id, text: z.string().trim().min(1).max(MAX_PROMPT_LENGTH) }),
+  z.object({ type: z.literal("prompt"), id, sessionId: id, text: z.string().trim().max(MAX_PROMPT_LENGTH),
+    attachmentIds: z.array(z.uuid()).min(1).max(8).optional(),
+  }).refine(frame => !!frame.text || !!frame.attachmentIds?.length, "A prompt needs text or attachments"),
   z.object({ type: z.literal("answer"), id, sessionId: id, questionId: id, value: z.string().max(500) }),
   z.object({ type: z.literal("cancel"), id, sessionId: id, runId: id }),
-  z.object({ type: z.literal("history"), id, sessionId: id, beforeId: id }),
+  z.object({ type: z.literal("history"), id, sessionId: id, viewId: id, beforeId: id, direction: z.enum(["before", "after"]).optional() }),
   z.object({ type: z.literal("tool_output"), id, sessionId: id, toolCallId: id, offset: z.number().int().nonnegative() }),
 ]);
 export const hostFrameSchema = z.discriminatedUnion("type", [
   z.object({
-    type: z.literal("snapshot"), sessionId: id,
+    type: z.literal("snapshot"), sessionId: id, viewId: id,
     state: z.enum(["idle", "running", "waiting"]),
     messages: z.array(messageSchema).max(80),
     hasEarlierMessages: z.boolean(),
@@ -62,8 +66,9 @@ export const hostFrameSchema = z.discriminatedUnion("type", [
     runId: id.nullable().optional(),
     question: questionSchema.nullable(),
   }),
-  z.object({ type: z.literal("history"), id, sessionId: id, beforeId: id,
-    messages: z.array(messageSchema).max(80), hasEarlierMessages: z.boolean() }),
+  z.object({ type: z.literal("history"), id, sessionId: id, viewId: id, beforeId: id,
+    direction: z.enum(["before", "after"]).optional(),
+    messages: z.array(messageSchema).max(80), hasEarlierMessages: z.boolean(), hasLaterMessages: z.boolean() }),
   z.object({ type: z.literal("tool_output"), id, sessionId: id, toolCallId: id,
     offset: z.number().int().nonnegative(), nextOffset: z.number().int().nonnegative().nullable(), text: z.string().max(12_000) }),
   z.object({ type: z.literal("ack"), id, disposition: z.enum(["submitted", "cancelled"]) }),

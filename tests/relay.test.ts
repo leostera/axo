@@ -74,7 +74,7 @@ test("relay carries prompts and snapshots bidirectionally and rejects a second h
   const prompt = { type: "prompt", id: "c", sessionId: "s", text: "hello" };
   phone.send(prompt);
   assert.deepEqual(await host.next(), prompt);
-  const snapshot = { type: "snapshot", sessionId: "s", state: "idle", messages: [{ id: "m", role: "assistant", text: "Hello back" }], hasEarlierMessages: false, question: null };
+  const snapshot = { type: "snapshot", sessionId: "s", viewId: "v", state: "idle", messages: [{ id: "m", role: "assistant", text: "Hello back" }], hasEarlierMessages: false, question: null };
   host.send(snapshot);
   assert.deepEqual(await phone.next(), snapshot);
   const outputRequest = { type: "tool_output", id: "output", sessionId: "s", toolCallId: "tool", offset: 0 };
@@ -83,10 +83,10 @@ test("relay carries prompts and snapshots bidirectionally and rejects a second h
   const output = { ...outputRequest, text: "Full output", nextOffset: null };
   host.send(output);
   assert.deepEqual(await phone.next(), output);
-  const historyRequest = { type: "history", id: "history", sessionId: "s", beforeId: "m" };
+  const historyRequest = { type: "history", id: "history", sessionId: "s", viewId: "v", beforeId: "m" };
   phone.send(historyRequest);
   assert.deepEqual(await host.next(), historyRequest);
-  const history = { ...historyRequest, messages: snapshot.messages, hasEarlierMessages: true };
+  const history = { ...historyRequest, messages: snapshot.messages, hasEarlierMessages: true, hasLaterMessages: false };
   host.send(history);
   assert.deepEqual(await phone.next(), history);
   const duplicate = await stub.fetch("https://internal/", { headers: { "X-Axo-Role": "host", "X-Axo-Expiry": String(Date.now() + 60_000) } });
@@ -96,6 +96,13 @@ test("relay carries prompts and snapshots bidirectionally and rejects a second h
   host.socket.close();
   assert.deepEqual(await phone.next(), { type: "presence", online: false });
   phone.socket.close();
+});
+
+test("private file HTTP endpoints enforce Access before exposing feature state", async () => {
+  for (const method of ["GET", "POST", "PUT", "DELETE"]) {
+    const response = await mf.dispatchFetch("https://example.com/files/sessions/s/files/f", { method });
+    assert.equal(response.status, 401);
+  }
 });
 
 test("internal upgrade also rejects expired identities", async () => {

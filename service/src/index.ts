@@ -1,10 +1,23 @@
 import { DurableObject } from "cloudflare:workers";
 import { authorize, type Principal } from "./access";
 import { hostFrameSchema, phoneFrameSchema, parseFrame } from "../../shared/protocol";
+import { FileIndex } from "./file-index";
+import { handleFiles } from "./files";
+import type { UploadRequest } from "../../shared/files";
 
 export default {
   async fetch(request, env, ctx): Promise<Response> {
     const path = new URL(request.url).pathname;
+    if (path.startsWith("/files/")) {
+      let principal: Principal;
+      try { principal = await authorize(request, "phone", env); }
+      catch {
+        try { principal = await authorize(request, "host", env); }
+        catch { return new Response("Cloudflare Access authentication required", { status: 401 }); }
+      }
+      if (!fileStorageEnabled(env)) return Response.json({ message: "Shared files are not enabled on this relay." }, { status: 503, headers: { "Cache-Control": "private, no-store" } });
+      return handleFiles(request, principal, ctx.exports.Relay.getByName("single-workbench"), env.FILES, { writesEnabled: fileWritesEnabled(env) });
+    }
     if (request.method !== "GET") return new Response("Method not allowed", { status: 405 });
     if (!["/login", "/connect/phone", "/connect/host"].includes(path)) return new Response("Not found", { status: 404 });
     const role = path === "/connect/host" ? "host" : "phone";
@@ -23,10 +36,47 @@ export default {
   },
 } satisfies ExportedHandler<Env>;
 
+function fileStorageEnabled(env: { FILE_STORAGE_ENABLED: string }): boolean { return env.FILE_STORAGE_ENABLED === "true"; }
+function fileWritesEnabled(env: { FILE_STORAGE_ENABLED: string; FILE_STORAGE_WRITES_ENABLED: string }): boolean { return fileStorageEnabled(env) && env.FILE_STORAGE_WRITES_ENABLED === "true"; }
+
 interface Attachment extends Principal { windowStart: number; count: number }
 
-/** One private workbench, no transcript or offline-prompt storage. */
+/** One private workbench. Files are durable; transcripts and offline prompts are not. */
 export class Relay extends DurableObject<Env> {
+  private readonly files: FileIndex;
+
+  constructor(ctx: DurableObjectState, env: Env) {
+    super(ctx, env);
+    this.files = new FileIndex(ctx.storage, env.FILES, (sessionId, revision) => {
+      ctx.waitUntil(ctx.storage.sync().then(() => this.broadcast("phone", JSON.stringify({ type: "files_changed", sessionId, revision }))));
+    });
+  }
+
+  admitFileRequest() { this.files.admitRequest(); }
+  getFile(sessionId: string, id: string) { return this.files.get(sessionId, id); }
+  listFiles(sessionId: string, cursor?: string) { return this.files.list(sessionId, cursor); }
+  async reserveFile(sessionId: string, input: UploadRequest, role: Principal["role"]) {
+    const file = this.files.reserve(sessionId, input, role);
+    await this.scheduleExpiry();
+    return file;
+  }
+  async beginFileUpload(sessionId: string, id: string) {
+    const lease = this.files.beginUpload(sessionId, id);
+    await this.scheduleExpiry();
+    return lease;
+  }
+  commitFile(sessionId: string, id: string, key: string) { return this.files.commit(sessionId, id, key); }
+  finishFileAttempt(sessionId: string, id: string, key: string) {
+    this.files.finishAttempt(sessionId, id, key);
+    this.ctx.waitUntil(this.files.maintain().then(() => this.scheduleExpiry()));
+  }
+  async deleteFile(sessionId: string, id: string) {
+    const file = await this.files.remove(sessionId, id);
+    await this.scheduleExpiry();
+    return file;
+  }
+  fileContent(sessionId: string, id: string) { return { file: this.files.get(sessionId, id), key: this.files.contentKey(sessionId, id) }; }
+
   async fetch(request: Request): Promise<Response> {
     // Only the authenticated entrypoint constructs this internal request.
     const role = request.headers.get("X-Axo-Role");
@@ -64,9 +114,17 @@ export class Relay extends DurableObject<Env> {
       if (typeof raw !== "string") throw new Error("Text frames required");
       if (identity.role === "host") {
         const frame = parseFrame(raw, hostFrameSchema);
+        if (frame.type === "snapshot" && fileStorageEnabled(this.env)) {
+          try { this.files.registerSession(frame.sessionId); }
+          catch { console.warn(JSON.stringify({ operation: "file_session_registration", outcome: "rejected" })); }
+        }
         this.broadcast("phone", JSON.stringify(frame));
       } else {
         const frame = parseFrame(raw, phoneFrameSchema);
+        if (frame.type === "prompt" && frame.attachmentIds?.length && !fileWritesEnabled(this.env)) {
+          socket.send(JSON.stringify({ type: "error", id: frame.id, message: "Attachment submission is temporarily disabled. Prompt not sent; keep the draft." }));
+          return;
+        }
         if (!this.peers("host").length) {
           socket.send(JSON.stringify({ type: "error", ...("id" in frame ? { id: frame.id } : {}), message: "Mac offline. Nothing was queued." }));
           return;
@@ -89,6 +147,7 @@ export class Relay extends DurableObject<Env> {
   }
 
   async alarm(): Promise<void> {
+    if (fileStorageEnabled(this.env)) await this.files.maintain();
     for (const socket of this.ctx.getWebSockets()) {
       const identity = socket.deserializeAttachment() as Attachment;
       if (identity.expiresAt <= Date.now()) socket.close(4001, "Access session expired");
@@ -112,6 +171,8 @@ export class Relay extends DurableObject<Env> {
 
   private async scheduleExpiry(): Promise<void> {
     const expiries = this.ctx.getWebSockets().map(socket => (socket.deserializeAttachment() as Attachment).expiresAt).filter(time => time > Date.now());
+    const maintenance = this.files.nextMaintenance();
+    if (maintenance !== undefined) expiries.push(maintenance);
     if (expiries.length) await this.ctx.storage.setAlarm(Math.min(...expiries));
     else await this.ctx.storage.deleteAlarm();
   }

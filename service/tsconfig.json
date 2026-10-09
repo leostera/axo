@@ -17,6 +17,7 @@
 	"include": [
 		"src",
 		"cloudflare.config.ts",
-		".cloudflare/types"
+		".cloudflare/types",
+		"../tests/fixtures/files-worker.ts"
 	]
 }

@@ -11,6 +11,7 @@ import { WebSocketServer, type WebSocket } from "ws";
 import type { AddressInfo } from "node:net";
 import { hostFrameSchema, type HostFrame } from "../shared/protocol";
 import { promptDelivery } from "../bridge/delivery";
+import { createHash } from "node:crypto";
 
 test("phone prompts interrupt active work instead of becoming follow-ups", () => {
   assert.equal(promptDelivery(true), undefined);
@@ -27,6 +28,20 @@ test("real Pi TUI accepts a phone prompt and shares a question/result", { timeou
   const sockets = new WebSocketServer({ server: relay });
   const frames: HostFrame[] = [];
   let host: WebSocket | undefined;
+  let metadataDelay = 0;
+  const imageId = "00000000-0000-4000-8000-000000000001";
+  const png = Buffer.from("iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mP8/x8AAwMCAO+aGQsAAAAASUVORK5CYII=", "base64");
+  relay.on("request", (request, response) => {
+    assert.equal(request.headers["cf-access-client-id"], "test-id");
+    assert.equal(request.headers["cf-access-client-secret"], "test-secret");
+    const sessionId = frames.find(frame => frame.type === "snapshot")?.sessionId;
+    if (request.url === `/files/sessions/${sessionId}/files/${imageId}`) {
+      response.setHeader("Content-Type", "application/json");
+      setTimeout(() => response.end(JSON.stringify({ id: imageId, sessionId, filename: "screenshot.png", mediaType: "image/png", byteLength: png.length,
+        sha256: createHash("sha256").update(png).digest("hex"), origin: "phone", createdAt: 0, state: "ready" })), metadataDelay);
+    } else if (request.url === `/files/sessions/${sessionId}/files/${imageId}/content`) { response.end(png); }
+    else { response.writeHead(404); response.end(); }
+  });
   sockets.on("connection", (socket, request) => {
     assert.equal(request.headers["cf-access-client-id"], "test-id");
     host = socket;
@@ -35,14 +50,19 @@ test("real Pi TUI accepts a phone prompt and shares a question/result", { timeou
   relay.listen(0, "localhost");
   await once(relay, "listening");
   let modelRequests = 0;
+  let receivedImage = false;
+  let receivedImageOnly = false;
   const model = httpServer(async (request, response) => {
     let body = "";
     for await (const part of request) body += part;
     const payload = JSON.parse(body);
     modelRequests++;
+    if (JSON.stringify(payload.messages).includes(`data:image/png;base64,${png.toString("base64")}`)) receivedImage = true;
     const hasAnswer = payload.messages.some((message: { role: string }) => message.role === "tool");
     const lastUser = [...payload.messages].reverse().find((message: { role: string }) => message.role === "user");
     const lastUserText = typeof lastUser?.content === "string" ? lastUser.content : JSON.stringify(lastUser?.content ?? "");
+    if (lastUserText.includes(`data:image/png;base64,${png.toString("base64")}`) && Array.isArray(lastUser?.content)
+      && !lastUser.content.some((block: { type: string }) => block.type === "text")) receivedImageOnly = true;
     const askingBeforeCancel = lastUserText.includes("Hold while I decide");
     const delta = hasAnswer && !askingBeforeCancel ? { content: "Phone answer received. Prototype loop works." } : {
       tool_calls: [{ index: 0, id: `tool-${modelRequests}`, type: "function", function: { name: "axo_ask", arguments: JSON.stringify({ title: "Choose output", options: ["JSON", "Markdown"] }) } }],
@@ -50,7 +70,7 @@ test("real Pi TUI accepts a phone prompt and shares a question/result", { timeou
     response.writeHead(200, { "Content-Type": "text/event-stream" });
     for (const [value, finish] of [[{ role: "assistant" }, null], [delta, null], [{}, hasAnswer && !askingBeforeCancel ? "stop" : "tool_calls"]]) {
       response.write(`data: ${JSON.stringify({ id: "completion", object: "chat.completion.chunk", created: 1, model: "fixture", choices: [{ index: 0, delta: value, finish_reason: finish }] })}\n\n`);
-      if (hasAnswer && !askingBeforeCancel && value === delta) await new Promise(resolve => setTimeout(resolve, 150));
+      if (hasAnswer && !askingBeforeCancel && value === delta) await new Promise(resolve => setTimeout(resolve, lastUserText.includes("Start a longer response") ? 1500 : 150));
     }
     response.end("data: [DONE]\n\n");
   });
@@ -115,7 +135,7 @@ test("real Pi TUI accepts a phone prompt and shares a question/result", { timeou
       host!.send(JSON.stringify({ type: "tool_output", id: "expand-tool", sessionId: initial.sessionId, toolCallId: tool.toolCallId, offset: 0 }));
       const output = await waitFor(frame => frame.type === "tool_output" && frame.id === "expand-tool");
       assert.ok(output.type === "tool_output" && output.text.includes("JSON") && output.nextOffset === null);
-      host!.send(JSON.stringify({ type: "history", id: "earlier", sessionId: initial.sessionId, beforeId: completed.messages.at(-1)!.id }));
+      host!.send(JSON.stringify({ type: "history", id: "earlier", sessionId: initial.sessionId, viewId: initial.viewId, beforeId: completed.messages.at(-1)!.id }));
       const history = await waitFor(frame => frame.type === "history" && frame.id === "earlier");
       assert.ok(history.type === "history" && history.messages.some(message => message.role === "tool"));
     }
@@ -134,7 +154,33 @@ test("real Pi TUI accepts a phone prompt and shares a question/result", { timeou
     await waitFor(frame => frame.type === "error" && frame.id === prompt.id && frame.message.includes("Already submitted"));
     host!.send(JSON.stringify({ ...prompt, id: "stale", sessionId: "wrong-session" }));
     await waitFor(frame => frame.type === "error" && frame.id === "stale");
-    assert.equal(modelRequests, 3);
+    const imagePrompt = { type: "prompt", id: "screenshot-prompt", sessionId: initial.sessionId, text: "Discuss this attached screenshot.", attachmentIds: [imageId] };
+    host!.send(JSON.stringify(imagePrompt));
+    await waitFor(frame => frame.type === "ack" && frame.id === imagePrompt.id);
+    await waitFor(frame => frame.type === "snapshot" && frame.state === "running"
+      && frame.messages.some(message => message.attachments?.[0]?.id === imageId));
+    const attached = await waitFor(frame => frame.type === "snapshot" && frame.state === "idle"
+      && frame.messages.some(message => message.text === imagePrompt.text && message.attachments?.[0]?.id === imageId));
+    assert.ok(attached.type === "snapshot" && attached.messages.some(message => message.role === "user" && message.attachments?.[0]?.id === imageId));
+    // The custom Pi message stores real image content and attachment details together.
+    const deadline = Date.now() + 3_000;
+    while (!receivedImage && Date.now() < deadline) await new Promise(resolve => setTimeout(resolve, 20));
+    assert.equal(receivedImage, true);
+    assert.equal(modelRequests, 4);
+    host!.send(JSON.stringify({ type: "prompt", id: "long-response", sessionId: initial.sessionId, text: "Start a longer response while I attach an image." }));
+    await waitFor(frame => frame.type === "snapshot" && frame.state === "running"
+      && frame.messages.some(message => message.text === "Start a longer response while I attach an image."));
+    // Make live event contexts change while HTTP preparation is suspended.
+    metadataDelay = 250;
+    host!.send(JSON.stringify({ type: "prompt", id: "image-only-steering", sessionId: initial.sessionId, text: "", attachmentIds: [imageId] }));
+    await waitFor(frame => frame.type === "ack" && frame.id === "image-only-steering");
+    await waitFor(frame => frame.type === "snapshot" && frame.state === "idle"
+      && frame.messages.some(message => message.role === "user" && message.text === "" && message.attachments?.[0]?.id === imageId));
+    assert.equal(receivedImageOnly, true);
+    assert.equal(modelRequests, 6);
+    const persisted = await readFile(join(directory, "session.jsonl"), "utf8");
+    assert.ok(persisted.includes('"customType":"axo.attachments"'));
+    assert.ok(persisted.includes(imageId));
   } finally {
     child.kill("SIGTERM");
     await exited;

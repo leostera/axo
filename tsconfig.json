@@ -9,5 +9,6 @@
     "skipLibCheck": true,
     "types": ["node"]
   },
-  "include": ["bridge/**/*.ts", "shared/**/*.ts", "tests/**/*.ts"]
+  "include": ["bridge/**/*.ts", "shared/**/*.ts", "tests/**/*.ts"],
+  "exclude": ["tests/fixtures/files-worker.ts"]
 }

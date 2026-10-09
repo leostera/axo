@@ -1,10 +1,13 @@
 import type { ExtensionAPI, ExtensionContext } from "@earendil-works/pi-coding-agent";
 import { Type } from "typebox";
+import { Text } from "@earendil-works/pi-tui";
+import { resolve } from "node:path";
+import { SessionFiles, stageFile, shareCommandPath } from "./files";
 import type { AssistantMessage } from "@earendil-works/pi-ai";
 import { loadConfig } from "./config";
 import { RelayConnection } from "./connection";
 import { promptDelivery } from "./delivery";
-import { projectHistory, projectMessages, submittedCommandIds } from "./projection";
+import { attachmentFiles, projectHistory, projectMessages, submittedCommandIds } from "./projection";
 import { readToolOutput } from "./tool-output";
 import { MAX_FRAME_BYTES, type AgentActivity, type AgentEvent, type PhoneFrame, type HostFrame, type Question } from "../shared/protocol";
 
@@ -12,7 +15,10 @@ interface PendingQuestion { question: Question; finish: (answer: string | undefi
 
 export default function axoBridge(pi: ExtensionAPI): void {
   let context: ExtensionContext | undefined;
+  let viewId = crypto.randomUUID();
   let connection: RelayConnection | undefined;
+  let files: SessionFiles | undefined;
+  const preparing = new Map<string, AbortController>();
   let pending: PendingQuestion | undefined;
   let submitted = new Set<string>();
   let activities: AgentActivity[] = [];
@@ -30,7 +36,7 @@ export default function axoBridge(pi: ExtensionAPI): void {
     if (!context) return;
     const events = replayRecentEvents ? recentEvents.slice(-50) : pendingEvents.splice(0, 50);
     const frame: Extract<HostFrame, { type: "snapshot" }> = {
-      type: "snapshot", sessionId: context.sessionManager.getSessionId(),
+      type: "snapshot", sessionId: context.sessionManager.getSessionId(), viewId,
       state: pending ? "waiting" : context.isIdle() ? "idle" : "running",
       ...projectHistory(context.sessionManager.getBranch(), streamingMessage), activities, events, droppedEvents,
       liveText, runId: activeRunID ?? null, question: pending?.question ?? null,
@@ -103,9 +109,11 @@ export default function axoBridge(pi: ExtensionAPI): void {
     const fail = (message: string) => connection?.send({ type: "error", id: frame.id, message });
     if (frame.sessionId !== context.sessionManager.getSessionId()) { fail("The desktop conversation changed. Refresh before sending."); return; }
     if (frame.type === "history") {
+      if (frame.viewId !== viewId) { fail("The conversation branch changed. Refresh before loading history."); return; }
       try {
-        connection?.send({ type: "history", id: frame.id, sessionId: frame.sessionId, beforeId: frame.beforeId,
-          ...projectHistory(context.sessionManager.getBranch(), streamingMessage, frame.beforeId) });
+        connection?.send({ type: "history", id: frame.id, sessionId: frame.sessionId, viewId, beforeId: frame.beforeId,
+          ...(frame.direction ? { direction: frame.direction } : {}),
+          ...projectHistory(context.sessionManager.getBranch(), streamingMessage, frame.beforeId, frame.direction) });
       } catch (error) { fail(error instanceof Error ? error.message : "Could not load history."); }
       return;
     }
@@ -116,7 +124,7 @@ export default function axoBridge(pi: ExtensionAPI): void {
       }).catch(error => fail(error instanceof Error ? error.message : "Could not load tool output."));
       return;
     }
-    if (submitted.has(frame.id)) { fail("Already submitted; not replayed. Check the conversation."); return; }
+    if (submitted.has(frame.id) || preparing.has(frame.id)) { fail("Already submitted or preparing; not replayed. Check the conversation."); return; }
     if (frame.type === "answer") {
       if (!pending || pending.question.id !== frame.questionId) { fail("That question is no longer pending."); return; }
       if (!pending.question.options.includes(frame.value)) { fail("Choose one of the offered answers."); return; }
@@ -130,6 +138,10 @@ export default function axoBridge(pi: ExtensionAPI): void {
       return;
     } else {
       if (pending) { fail("Answer the pending question before sending another prompt."); return; }
+      if (frame.attachmentIds?.length) {
+        void submitAttachments(frame, context, viewId).catch(error => fail(error instanceof Error ? error.message : "Could not prepare attachments. Prompt not submitted."));
+        return;
+      }
       // Record before dispatch: ambiguous crashes must never blindly replay side effects.
       pi.appendEntry("axo.submitted", { id: frame.id });
       submitted.add(frame.id);
@@ -141,10 +153,32 @@ export default function axoBridge(pi: ExtensionAPI): void {
     connection?.send({ type: "ack", id: frame.id, disposition: "submitted" });
   }
 
+  async function submitAttachments(frame: Extract<PhoneFrame, { type: "prompt" }>, ctx: ExtensionContext, generation: string): Promise<void> {
+    if (!files) throw new Error("Shared files require a configured relay.");
+    const controller = new AbortController();
+    preparing.set(frame.id, controller);
+    try {
+      const prepared = await files.prepare(frame.sessionId, frame.attachmentIds ?? [], ctx.model?.input.includes("image") ?? false, controller.signal);
+      if (viewId !== generation || context?.sessionManager.getSessionId() !== frame.sessionId || pending) throw new Error("Conversation changed or is waiting for an answer. Prompt not submitted.");
+      pi.appendEntry("axo.submitted", { id: frame.id });
+      submitted.add(frame.id);
+      // Custom message content and details persist together: no guessed user-message anchor.
+      pi.sendMessage({ customType: "axo.attachments", display: true,
+        content: [...(frame.text ? [{ type: "text" as const, text: frame.text }] : []), ...prepared.content],
+        details: { commandId: frame.id, text: frame.text, files: prepared.files },
+      }, { triggerTurn: true, ...promptDelivery(ctx.isIdle()) });
+      connection?.send({ type: "ack", id: frame.id, disposition: "submitted" });
+    } finally { preparing.delete(frame.id); }
+  }
+
   pi.on("session_start", (event, ctx) => {
+    for (const controller of preparing.values()) controller.abort();
+    preparing.clear();
+    files = undefined;
     connection?.stop();
     pending?.finish(undefined);
     context = ctx;
+    viewId = crypto.randomUUID();
     activities = [];
     recentEvents = [];
     pendingEvents = [];
@@ -158,7 +192,9 @@ export default function axoBridge(pi: ExtensionAPI): void {
     const configPath = process.env.AXO_CONFIG;
     if (!configPath) { ctx.ui.setStatus("axo", "Axo: local only (AXO_CONFIG not set)"); return; }
     try {
-      connection = new RelayConnection(loadConfig(configPath), receive,
+      const config = loadConfig(configPath);
+      files = new SessionFiles(config);
+      connection = new RelayConnection(config, receive,
         status => context?.ui.setStatus("axo", `Axo: ${status} · transcript blocks · paged history`), () => snapshot(true));
       connection.connect();
     } catch {
@@ -176,7 +212,11 @@ export default function axoBridge(pi: ExtensionAPI): void {
   pi.on("session_compact_failed", (event, ctx) => recordEvent(ctx, "session", event.type, `Context compaction ${event.aborted ? "aborted" : "failed"}`,
     event.errorMessage ? shortText(event.errorMessage, 500) : undefined));
   pi.on("session_before_tree", (event, ctx) => recordEvent(ctx, "session", event.type, "Session tree navigation requested"));
-  pi.on("session_tree", (event, ctx) => recordEvent(ctx, "session", event.type, "Session tree navigation completed"));
+  pi.on("session_tree", (event, ctx) => {
+    for (const controller of preparing.values()) controller.abort();
+    viewId = crypto.randomUUID();
+    recordEvent(ctx, "session", event.type, "Session tree navigation completed");
+  });
   pi.on("context", (event, ctx) => recordEvent(ctx, "provider", event.type, `${event.messages.length} context messages prepared`));
   pi.on("context_with_system", (event, ctx) => recordEvent(ctx, "provider", event.type, `${event.messages.length} model-context messages prepared; prompt content withheld`));
   pi.on("cache_warming_decision", (_event, ctx) => recordEvent(ctx, "provider", "cache_warming_decision", "Prompt cache decision made"));
@@ -290,11 +330,66 @@ export default function axoBridge(pi: ExtensionAPI): void {
     snapshot();
     pending?.finish(undefined);
     connection?.stop();
+    for (const controller of preparing.values()) controller.abort();
+    preparing.clear();
+    files = undefined;
     activeRunID = undefined;
     activeRunMessageID = undefined;
     liveText = undefined;
     streamingMessage = undefined;
     context = undefined;
+  });
+
+  pi.registerMessageRenderer("axo.attachments", (message, _options, theme) => {
+    const details: unknown = message.details;
+    const text = details && typeof details === "object" && "text" in details && typeof details.text === "string" ? details.text : "";
+    const names = attachmentFiles(details).map(file => file.filename).join(", ");
+    return new Text(`${theme.fg("accent", "Phone attachments")} · ${names}${text ? `\n${text}` : ""}`, 0, 0);
+  });
+  pi.registerEntryRenderer<{ files: { filename: string }[] }>("axo.shared_file", entry => new Text(`Shared: ${entry.data?.files.map(file => file.filename).join(", ") ?? "file"}`, 0, 0));
+
+  pi.registerCommand("axo-share", {
+    description: "Publish an immutable snapshot to this conversation's private cloud file storage (25 MiB maximum).",
+    async handler(path, ctx) {
+      if (!files || !path.trim()) { ctx.ui.notify("Usage: /axo-share <path> (requires the relay)", "error"); return; }
+      const generation = viewId;
+      const sessionId = ctx.sessionManager.getSessionId();
+      const staged = await stageFile(resolve(ctx.cwd, shareCommandPath(path)));
+      try {
+        const requestId = crypto.randomUUID();
+        pi.appendEntry("axo.upload", { requestId, sessionId, filename: staged.filename, sha256: staged.sha256 });
+        const file = await files.publish(sessionId, staged, undefined, requestId);
+        if (viewId !== generation || context?.sessionManager.getSessionId() !== sessionId) throw new Error("File uploaded to the original session; no reference added to the new conversation.");
+        pi.appendEntry("axo.shared_file", { files: [file] });
+        snapshot();
+        ctx.ui.notify(`Shared ${file.filename}`, "info");
+      } finally { await staged.dispose(); }
+    },
+  });
+
+  pi.registerTool({
+    name: "axo_share_file", label: "Share file with iPhone",
+    description: "Publish an immutable snapshot of one regular Mac file to the session's private cloud storage. Always asks for publication consent. Does not share files merely because they were read/written.",
+    parameters: Type.Object({ path: Type.String({ minLength: 1 }) }),
+    async execute(_id, args, signal, _onUpdate, ctx) {
+      if (!files) throw new Error("Shared files require a configured relay.");
+      const generation = viewId;
+      const sessionId = ctx.sessionManager.getSessionId();
+      const staged = await stageFile(resolve(ctx.cwd, args.path));
+      try {
+        const consent = await ctx.executeTool("axo_ask", {
+          title: `Upload ${staged.source} (${staged.byteLength} bytes) to private Cloudflare R2? The relay can read this file.`, options: ["Publish file", "Cancel"],
+        }, { signal });
+        const details: unknown = consent.result.details;
+        if (consent.isError || !details || typeof details !== "object" || !("value" in details) || details.value !== "Publish file") throw new Error("Publication cancelled. Nothing uploaded.");
+        if (viewId !== generation || signal?.aborted) throw new Error("Publication interrupted. Nothing uploaded.");
+        const requestId = crypto.randomUUID();
+        pi.appendEntry("axo.upload", { requestId, sessionId, toolCallId: _id, filename: staged.filename, sha256: staged.sha256 });
+        const file = await files.publish(sessionId, staged, signal, requestId);
+        if (viewId !== generation) throw new Error("File uploaded to the original session; no reference added to the new branch.");
+        return { content: [{ type: "text" as const, text: `Shared ${file.filename} (${file.byteLength} bytes). File ID: ${file.id}.` }], details: { files: [file] } };
+      } finally { await staged.dispose(); }
+    },
   });
 
   pi.registerTool({
