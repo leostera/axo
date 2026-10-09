@@ -108,9 +108,9 @@ final class WorkspaceController: NSObject, NSOutlineViewDataSource, NSOutlineVie
         configureSidebar()
         let firstLaunch = store.registry.workspaces.isEmpty
         if firstLaunch {
-            _ = try store.createWorkspace(name: "Playground", commandID: "prototype-import",
+            _ = try store.createWorkspace(name: "Sessions", commandID: "prototype-import",
                                           initialDirectory: storageRoot == nil ? repository + "/local/playground" : nil,
-                                          initialSessionFile: storageRoot == nil ? repository + "/local/playground/session.jsonl" : nil, kind: .playground)
+                                          initialSessionFile: storageRoot == nil ? repository + "/local/playground/session.jsonl" : nil, kind: .standalone)
         }
         runtime.onAction = { [weak self] terminal, action in self?.handle(terminal: terminal, action: action) ?? false }
         // First legacy import cannot prove that an external Pi has released this file.
@@ -197,7 +197,7 @@ final class WorkspaceController: NSObject, NSOutlineViewDataSource, NSOutlineVie
     }
     @objc func newSession(_ sender: Any?) {
         let clicked = sidebar.item(atRow: sidebar.selectedRow) as? SidebarItem
-        guard let workspaceID = selectedSession?.workspaceID ?? clicked?.workspace?.id else { newPlaygroundSession(sender); return }
+        guard let workspaceID = selectedSession?.workspaceID ?? clicked?.workspace?.id else { newStandaloneSession(sender); return }
         let directory = focusedTerminal?.workingDirectory ?? selectedSession?.directory ?? clicked?.workspace?.directory
         createSession(in: workspaceID, directory: directory)
     }
@@ -209,12 +209,12 @@ final class WorkspaceController: NSObject, NSOutlineViewDataSource, NSOutlineVie
             refreshSidebar(); showSelectedSession()
         }
     }
-    @objc func newPlaygroundSession(_ sender: Any?) {
-        if let workspace = store.registry.workspaces.first(where: { $0.effectiveKind == .playground && $0.isArchived != true }) {
+    @objc func newStandaloneSession(_ sender: Any?) {
+        if let workspace = store.registry.workspaces.first(where: { $0.effectiveKind == .standalone && $0.isArchived != true }) {
             createSession(in: workspace.id, directory: nil)
         } else {
             perform {
-                let receipt = try store.createWorkspace(name: "Playground", kind: .playground)
+                let receipt = try store.createWorkspace(name: "Sessions", kind: .standalone)
                 openSavedPanes(in: receipt.sessionID); refreshSidebar(); showSelectedSession()
             }
         }
@@ -222,8 +222,8 @@ final class WorkspaceController: NSObject, NSOutlineViewDataSource, NSOutlineVie
     @objc private func showCreationMenu(_ sender: NSButton) {
         let menu = NSMenu()
         let project = NSMenuItem(title: "New Project…", action: #selector(newWorkspace(_:)), keyEquivalent: "")
-        let playground = NSMenuItem(title: "New Playground Session", action: #selector(newPlaygroundSession(_:)), keyEquivalent: "")
-        project.target = self; playground.target = self; menu.addItem(project); menu.addItem(playground)
+        let session = NSMenuItem(title: "New Session", action: #selector(newStandaloneSession(_:)), keyEquivalent: "")
+        project.target = self; session.target = self; menu.addItem(project); menu.addItem(session)
         menu.popUp(positioning: nil, at: NSPoint(x: 0, y: sender.bounds.height + 4), in: sender)
     }
     @objc func splitRight(_ sender: Any?) { splitSelected(direction: .right) }
@@ -458,7 +458,7 @@ final class WorkspaceController: NSObject, NSOutlineViewDataSource, NSOutlineVie
         scroll.documentView = sidebar
         let heading = NSTextField(labelWithString: "Axo")
         heading.font = .systemFont(ofSize: 13, weight: .semibold); heading.textColor = .secondaryLabelColor
-        let create = sidebarButton(symbol: "plus", label: "Create project or playground session", action: #selector(showCreationMenu(_:)))
+        let create = sidebarButton(symbol: "plus", label: "Create project or session", action: #selector(showCreationMenu(_:)))
         let collapse = sidebarButton(symbol: "sidebar.left", label: "Collapse sidebar", action: #selector(toggleSidebar(_:)))
         let settings = NSButton(title: "Settings", target: self, action: #selector(showSettings(_:)))
         settings.isBordered = false; settings.font = .systemFont(ofSize: 12); settings.contentTintColor = .secondaryLabelColor
@@ -517,10 +517,10 @@ final class WorkspaceController: NSObject, NSOutlineViewDataSource, NSOutlineVie
             item.children = store.registry.sessions.filter { $0.workspaceID == workspace.id && $0.isArchived != true }.map(SidebarItem.init(session:))
             return item
         }
-        let playgroundIDs = Set(active.filter { $0.effectiveKind == .playground }.map(\.id))
-        let playgrounds = store.registry.sessions.filter { playgroundIDs.contains($0.workspaceID) && $0.isArchived != true }.map(SidebarItem.init(session:))
+        let standaloneIDs = Set(active.filter { $0.effectiveKind == .standalone }.map(\.id))
+        let sessions = store.registry.sessions.filter { standaloneIDs.contains($0.workspaceID) && $0.isArchived != true }.map(SidebarItem.init(session:))
         let workspaceSection = projects.isEmpty ? [] : [SidebarItem(sectionTitle: "Workspaces")] + projects
-        let sessionSection = playgrounds.isEmpty ? [] : [SidebarItem(sectionTitle: "Sessions")] + playgrounds
+        let sessionSection = sessions.isEmpty ? [] : [SidebarItem(sectionTitle: "Sessions")] + sessions
         sidebarItems = workspaceSection + (!workspaceSection.isEmpty && !sessionSection.isEmpty ? [SidebarItem()] : []) + sessionSection
         sidebar.reloadData(); sidebar.expandItem(nil, expandChildren: true)
         for item in sidebarItems where item.workspace.map({ collapsedWorkspaces.contains($0.id) }) == true {

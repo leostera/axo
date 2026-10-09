@@ -73,9 +73,9 @@ enum WorkspaceSelfTest {
         // A hidden Pi pane's title event reads its own bounded metadata, not the selected session's file.
         let metadata = "{\"type\":\"session\",\"id\":\"synthetic-conversation\"}\n{\"type\":\"session_info\",\"name\":\"Generated session title\"}\n"
         try Data(metadata.utf8).write(to: URL(fileURLWithPath: original.piSessionFile))
-        controller.nameProvider = { title, _ in title == "Rename workspace" ? "Renamed playground" : "Manually named" }
+        controller.nameProvider = { title, _ in title == "Rename workspace" ? "Renamed project" : "Manually named" }
         controller.renameWorkspace(nil); controller.renameSession(nil)
-        guard controller.registry.workspaces[1].name == "Renamed playground",
+        guard controller.registry.workspaces[1].name == "Renamed project",
               controller.registry.sessions[2].name == "Manually named",
               controller.registry.sessions[2].effectiveNameSource == .manual else { throw Failure.rename }
         try controller.activateSession(original.id)

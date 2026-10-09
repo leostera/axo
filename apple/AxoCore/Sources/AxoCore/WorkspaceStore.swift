@@ -81,7 +81,11 @@ public indirect enum PaneLayout: Codable, Equatable, Sendable {
     }
 }
 
-public enum WorkspaceKind: String, Codable, Sendable { case project, playground }
+public enum WorkspaceKind: String, Codable, Sendable {
+    case project
+    // Preserve the historical serialized spelling so saved registries and rollback builds remain compatible.
+    case standalone = "playground"
+}
 
 public struct WorkspaceRecord: Codable, Equatable, Identifiable, Sendable {
     public let id: WorkspaceID
@@ -188,10 +192,10 @@ public final class WorkspaceStore {
             registry = try JSONDecoder().decode(WorkspaceRegistry.self, from: Data(contentsOf: url))
             try registry.validate()
         } else { registry = WorkspaceRegistry() }
-        // Identify the legacy standalone playground by its creation identity, never by its editable name.
+        // Identify the legacy standalone session container by its creation identity, never by its editable name.
         if let id = registry.creations["prototype-import"]?.workspaceID,
            let index = registry.workspaces.firstIndex(where: { $0.id == id }), registry.workspaces[index].kind == nil {
-            try commit { $0.workspaces[index].kind = .playground }
+            try commit { $0.workspaces[index].kind = .standalone }
         }
     }
 

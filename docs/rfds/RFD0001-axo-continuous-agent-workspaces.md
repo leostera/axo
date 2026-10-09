@@ -45,7 +45,7 @@ Research has an additional quality criterion: its result should teach. A useful 
 - Starting a new conversation creates a new Axo session, potentially attached to an existing project or workspace. Adding another agent within an existing session is a separate action.
 - The first agent is the initial default agent, not a supervisor with special authority.
 - The phone must support creating new sessions, not merely resuming desktop-created ones.
-- Ideas may begin in a playground before a project directory or repository is chosen.
+- Ideas may begin in a standalone session before a project directory or repository is chosen.
 - Remote access is the default. Do not introduce separate local-only and remote-enabled product modes.
 - An account should make the user's devices easy to connect across networks. End-to-end encryption is the preferred security direction.
 - Full conversation storage on the server is not required initially.
@@ -90,7 +90,7 @@ The architecture below is a proposal for meeting these requirements. Unverified 
 | Session | A persistent workbench containing agents and optional terminals. |
 | Agent | A durable conversation binding plus a replaceable Pi runtime. |
 | Project | A reference to the files/repository being worked on, not another mandatory navigation layer. |
-| Playground | A configured area for work without an established project. Each new scratch session gets its own directory. |
+| Session scratch directory | An Axo-owned working directory for a session without an established project. Each new standalone session gets its own directory; the UI calls these Sessions. |
 | Terminal | A live interactive shell/process surface associated with a session. |
 | Attention item | An unresolved request, blocker, or unread result linked to an agent and its session. |
 | Execution host | The Mac running the work; one host initially. |
@@ -141,7 +141,7 @@ A session can contain a running agent, an unread result from another agent, and 
 1. Sign in and open Axo on the iPhone.
 2. Create a session from a workspace/project, or use a general new-conversation action.
 3. Type or dictate an idea. Show the destination and delivery state.
-4. If no project is chosen, start in a per-session playground directory on the Mac.
+4. If no project is chosen, start in a per-session scratch directory on the Mac.
 5. The agent determines whether to stay there, use an existing project, or create a new one. It asks when intent is ambiguous.
 6. Setup may include creating a directory/repository, installing dependencies, or publishing within the user's configured authority.
 7. The session gains a recognizable name and project association without losing the initial conversation.
@@ -158,7 +158,7 @@ Navigating away or closing a window does not stop work. Explicitly closing a ter
 
 Inactive sessions remain discoverable in the sidebar and search. Reopening one restores its conversation and starts an agent when needed. The first/default agent has no supervisory role; if unavailable, another existing agent can become the default, or a runtime can be started. Previously addressed messages retain their original recipient.
 
-Fresh terminals use the saved working directory if it still exists. If it is missing, Axo opens the conversation and asks the user to locate the project or select the playground before executing new work. It does not silently substitute a directory and run old commands there.
+Fresh terminals use the saved working directory if it still exists. If it is missing, Axo opens the conversation and asks the user to locate the project or select a session scratch directory before executing new work. It does not silently substitute a directory and run old commands there.
 
 ## Reference-level explanation
 
@@ -175,7 +175,7 @@ flowchart LR
         Store[Local Axo records\nPi history and artifacts]
         Pi[Pi runtimes]
         PTY[PTYs and user processes]
-        Files[Project directories and playground]
+        Files[Project directories and session scratch directories]
         UI <--> Host
         Host <--> Store
         Host <--> Pi
@@ -263,7 +263,7 @@ Axo observes settled runs but does not judge whether the user's goal was achieve
 
 Changing a session's working directory must update tool roots, resource discovery, context instructions, and future shell defaults consistently. Running `cd` in one tool call does not accomplish that.
 
-The SDK documents runtime/session replacement and service recreation for a target directory. Preservation of one conversation across a playground-to-project move still requires a focused integration test; no generic RPC `change_directory` command is assumed here.
+The SDK documents runtime/session replacement and service recreation for a target directory. Preservation of one conversation across a session-scratch-to-project move still requires a focused integration test; no generic RPC `change_directory` command is assumed here.
 
 A safe transition must quiesce the affected runtime, preserve conversation identity/history, resolve project trust and resources for the target, rebind event subscriptions, and commit the association only after successful startup. If the move fails, retain the original association and show the failure. Existing unrelated terminals do not silently change directories.
 
@@ -365,7 +365,7 @@ Voice input creates another data path. Prefer device-side dictation where availa
 
 The user has work restrictions. Remote-by-default is the requested product model, but suitability for work content remains a deployment-policy question. Encryption alone does not establish employer approval. Do not represent Axo as approved for restricted work before that is resolved.
 
-Agents run with available host permissions. The playground is a convenience, not a sandbox. Publishing and installation can have irreversible consequences even when free. Show destinations and actions in history, respect existing organizational/tool policies, and use scoped credentials where practical.
+Agents run with available host permissions. A session scratch directory is a convenience, not a sandbox. Publishing and installation can have irreversible consequences even when free. Show destinations and actions in history, respect existing organizational/tool policies, and use scoped credentials where practical.
 
 **Spending boundary:** the user wants approval before spending money. Ordinary configured model consumption, paid hosted resources, subscriptions, and usage-billed infrastructure need an explicit distinction. A prompt instruction or shell-command pattern matcher cannot guarantee this boundary when an agent has arbitrary shell/network access and billing-capable credentials. Enforce it through scoped capabilities/provider limits where possible and document residual risks. This is a pre-acceptance policy decision, not a solved safeguard.
 
@@ -409,7 +409,7 @@ Acceptance scenarios:
 - Open a result and clear its unread state; open a question and leave it pending until answered.
 - Run two agents and a Vim terminal in one session without conflating their conversations.
 - Close the desktop window while an agent/server continues; reopen and reconnect.
-- Create a new playground session from the iPhone on a different network and continue it on the Mac.
+- Create a new standalone session from the iPhone on a different network and continue it on the Mac.
 - Associate that session with an existing project or create a repository without losing the initial prompt/history.
 - Queue while the Mac is offline and deliver once, with truthful status and duplicate-delivery tests.
 - Answer the same request from both devices and reject the stale second answer.
@@ -513,7 +513,7 @@ Ghostty's upstream implementation pattern and the `cf` CLI's existence/version w
 
 1. Can the selected libghostty revision support Axo's required rendering, input, accessibility, and view-independent process lifetime through the full embedding API? What adaptation is needed while retaining the required libghostty foundation?
 2. Does a structured RPC-backed desktop agent pane preserve the essential current Pi experience, or is the stock TUI/extension bridge required?
-3. Can a conversation move from playground to project with correct tools, resource discovery, history, and trust semantics?
+3. Can a conversation move from a scratch directory to a project with correct tools, resource discovery, history, and trust semantics?
 4. What Mac power/network configuration actually supports the expected start-from-phone behavior, and what wake capability can be promised?
 5. What device enrollment, end-to-end encryption, key recovery, and phone-cache design is appropriate?
 6. Is remote access acceptable for the intended work content under applicable employer policy?

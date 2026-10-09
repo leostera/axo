@@ -49,7 +49,7 @@ final class AxoMacApp: NSObject, NSApplicationDelegate, NSWindowDelegate {
             let workspaces = try WorkspaceController(runtime: runtime, repository: root)
             self.workspaces = workspaces
             let window = NSWindow(contentRect: NSRect(x: 0, y: 0, width: 1280, height: 780), styleMask: [.titled, .closable, .miniaturizable, .resizable], backing: .buffered, defer: false)
-            window.title = "Axo — Playground"
+            window.title = "Axo"
             window.delegate = self
             window.contentView = workspaces.view
             workspaces.onTitle = { [weak window] title in window?.title = title }

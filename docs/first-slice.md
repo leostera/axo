@@ -5,7 +5,7 @@ This is the deliberately smaller implementation selected after reviewing [RFD000
 ## Scope
 
 - One native macOS window, one libghostty terminal, Pi started automatically.
-- One fixed playground and one persistent Pi conversation.
+- One fixed session working directory and one persistent Pi conversation (the original prototype).
 - One native iPhone conversation screen with text, Apple's on-device English speech recognition on supported iOS 26+ devices, keyboard dictation, and choice buttons. See [voice prompting](voice-prompts.md) for Apple language-asset setup and the automatic-send flow with draft fallback.
 - One Cloudflare relay channel, protected by Cloudflare Access rather than Axo-owned accounts.
 - Local RFD0002 implementation: explicitly published file snapshots, native draft/gallery/preview UI, and demand-driven recent history. Production R2 storage remains disabled pending approval; see [RFD0002](rfds/RFD0002-shared-session-files.md) for release gates.

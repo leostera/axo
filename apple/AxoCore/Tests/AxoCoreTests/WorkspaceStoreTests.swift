@@ -105,17 +105,17 @@ final class WorkspaceStoreTests: XCTestCase {
 
     func testTitlesAreDurableAndManualRenamesAlwaysWin() throws {
         let (store, root) = try temporaryStore(); defer { try? FileManager.default.removeItem(at: root) }
-        let created = try store.createWorkspace(name: "Playground")
+        let created = try store.createWorkspace(name: "Project")
         XCTAssertEqual(store.registry.sessions[0].name, "Untitled")
         try store.applyAutomaticTitle("Sidebar polish", to: created.sessionID)
         XCTAssertEqual(store.registry.sessions[0].effectiveNameSource, .automatic)
         try store.renameSession(created.sessionID, name: "My session")
         try store.applyAutomaticTitle("Late automatic title", to: created.sessionID)
-        try store.renameWorkspace(created.workspaceID, name: "My playground")
+        try store.renameWorkspace(created.workspaceID, name: "My project")
         let restored = try WorkspaceStore(url: store.url, scratchRoot: root)
         XCTAssertEqual(restored.registry.sessions[0].name, "My session")
         XCTAssertEqual(restored.registry.sessions[0].effectiveNameSource, .manual)
-        XCTAssertEqual(restored.registry.workspaces[0].name, "My playground")
+        XCTAssertEqual(restored.registry.workspaces[0].name, "My project")
         // Renaming even to the placeholder explicitly prevents future automatic replacement.
         try store.renameSession(created.sessionID, name: "Untitled")
         try store.applyAutomaticTitle("Must not overwrite", to: created.sessionID)
@@ -136,7 +136,7 @@ final class WorkspaceStoreTests: XCTestCase {
 
     func testOldRegistriesWithoutNameSourcesStillDecode() throws {
         let (store, root) = try temporaryStore(); defer { try? FileManager.default.removeItem(at: root) }
-        _ = try store.createWorkspace(name: "Playground")
+        _ = try store.createWorkspace(name: "Project")
         let restored = try JSONDecoder().decode(WorkspaceRegistry.self, from: JSONEncoder().encode(store.registry))
         XCTAssertNil(restored.sessions[0].nameSource)
         XCTAssertEqual(restored.sessions[0].effectiveNameSource, .untitled)
@@ -221,7 +221,7 @@ final class WorkspaceStoreTests: XCTestCase {
         XCTAssertEqual(try Data(contentsOf: file), bytes)
     }
 
-    func testLegacyPlaygroundIsClassifiedByCreationIdentityAndSurvivesRename() throws {
+    func testLegacyStandaloneSessionsAreClassifiedByCreationIdentityAndSurviveRename() throws {
         let (store, root) = try temporaryStore(); defer { try? FileManager.default.removeItem(at: root) }
         let legacy = try store.createWorkspace(name: "Playground", commandID: "prototype-import")
         var json = try XCTUnwrap(JSONSerialization.jsonObject(with: Data(contentsOf: store.url)) as? [String: Any])
@@ -229,11 +229,17 @@ final class WorkspaceStoreTests: XCTestCase {
         workspaces[0].removeValue(forKey: "kind"); json["workspaces"] = workspaces
         try JSONSerialization.data(withJSONObject: json).write(to: store.url)
         let restored = try WorkspaceStore(url: store.url, scratchRoot: root)
-        XCTAssertEqual(restored.registry.workspaces[0].effectiveKind, .playground)
+        XCTAssertEqual(restored.registry.workspaces[0].effectiveKind, .standalone)
         try restored.renameWorkspace(legacy.workspaceID, name: "Renamed container")
-        XCTAssertEqual(restored.registry.workspaces[0].effectiveKind, .playground)
-        _ = try restored.createWorkspace(name: "Playground", initialDirectory: "/a/real/project")
+        XCTAssertEqual(restored.registry.workspaces[0].effectiveKind, .standalone)
+        _ = try restored.createWorkspace(name: "Sessions", initialDirectory: "/a/real/project")
         XCTAssertEqual(restored.registry.workspaces[1].effectiveKind, .project)
+    }
+
+    func testStandaloneKindRetainsLegacySerializationForExistingRecordsAndRollback() throws {
+        let legacy = Data("\"playground\"".utf8)
+        XCTAssertEqual(try JSONDecoder().decode(WorkspaceKind.self, from: legacy), .standalone)
+        XCTAssertEqual(try JSONEncoder().encode(WorkspaceKind.standalone), legacy)
     }
 
     func testPrototypeImportReferencesOriginalFileWithoutCopyingIt() throws {
