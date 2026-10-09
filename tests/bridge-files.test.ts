@@ -9,6 +9,7 @@ import { attachmentFiles, projectMessages, projectHistory } from "../bridge/proj
 import { phoneFrameSchema } from "../shared/protocol";
 import type { SessionEntry } from "@earendil-works/pi-coding-agent";
 
+const axoSessionId = "00000000-0000-4000-8000-000000000101";
 const file = { id: "00000000-0000-4000-8000-000000000001", sessionId: "session", filename: "report.md", mediaType: "text/markdown" as const,
   byteLength: 12, sha256: "a".repeat(64), origin: "host" as const, createdAt: 0, state: "ready" as const };
 
@@ -55,9 +56,9 @@ test("attachment metadata follows durable Pi custom messages and branch projecti
 });
 
 test("attachment-only prompts are bounded and full history is only read through cursors", () => {
-  assert.ok(phoneFrameSchema.safeParse({ type: "prompt", id: "c", sessionId: "session", text: "", attachmentIds: [file.id] }).success);
-  assert.equal(phoneFrameSchema.safeParse({ type: "prompt", id: "c", sessionId: "session", text: "" }).success, false);
-  assert.equal(phoneFrameSchema.safeParse({ type: "prompt", id: "c", sessionId: "session", text: "", attachmentIds: Array(9).fill(file.id) }).success, false);
+  assert.ok(phoneFrameSchema.safeParse({ type: "prompt", id: "c", sessionId: axoSessionId, text: "", attachmentIds: [file.id] }).success);
+  assert.equal(phoneFrameSchema.safeParse({ type: "prompt", id: "c", sessionId: axoSessionId, text: "" }).success, false);
+  assert.equal(phoneFrameSchema.safeParse({ type: "prompt", id: "c", sessionId: axoSessionId, text: "", attachmentIds: Array(9).fill(file.id) }).success, false);
   const entries: SessionEntry[] = Array.from({ length: 2000 }, (_, n) => ({ type: "message", id: `m-${n}`, parentId: null, timestamp: "now",
     message: { role: "user", content: `Message ${n}`, timestamp: n } }));
   const tail = projectHistory(entries);

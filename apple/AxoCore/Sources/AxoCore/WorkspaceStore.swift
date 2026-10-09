@@ -209,7 +209,7 @@ public final class WorkspaceStore {
     @discardableResult
     public func createWorkspace(name: String, commandID: String = UUID().uuidString,
                                 initialDirectory: String? = nil, initialSessionFile: String? = nil,
-                                kind: WorkspaceKind = .project) throws -> CreationReceipt {
+                                kind: WorkspaceKind = .project, selectAfterCreation: Bool = true) throws -> CreationReceipt {
         let name = try Self.validName(name)
         if let receipt = registry.creations[commandID] {
             guard receipt.kind == "workspace", receipt.name == name,
@@ -224,7 +224,7 @@ public final class WorkspaceStore {
             state.workspaces.append(WorkspaceRecord(id: workspaceID, name: name, directory: initialDirectory, kind: kind))
             state.sessions.append(newSession(id: sessionID, workspaceID: workspaceID, name: "Untitled",
                                              directory: initialDirectory, sessionFile: initialSessionFile))
-            state.selectedSession = sessionID
+            if selectAfterCreation { state.selectedSession = sessionID }
             state.creations[commandID] = receipt
         }
         return receipt
@@ -232,7 +232,7 @@ public final class WorkspaceStore {
 
     @discardableResult
     public func createSession(workspaceID: WorkspaceID, name: String, commandID: String = UUID().uuidString,
-                              initialDirectory: String? = nil) throws -> CreationReceipt {
+                              initialDirectory: String? = nil, selectAfterCreation: Bool = true) throws -> CreationReceipt {
         let name = try Self.validName(name)
         if let receipt = registry.creations[commandID] {
             guard receipt.kind == "session", receipt.name == name, receipt.workspaceID == workspaceID,
@@ -245,7 +245,7 @@ public final class WorkspaceStore {
                                       initialDirectory: initialDirectory)
         try commit { state in
             state.sessions.append(newSession(id: sessionID, workspaceID: workspaceID, name: name, directory: initialDirectory ?? workspace.directory))
-            state.selectedSession = sessionID
+            if selectAfterCreation { state.selectedSession = sessionID }
             state.creations[commandID] = receipt
         }
         return receipt

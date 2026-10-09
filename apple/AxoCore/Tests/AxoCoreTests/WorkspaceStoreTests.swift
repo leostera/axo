@@ -23,6 +23,26 @@ final class WorkspaceStoreTests: XCTestCase {
         XCTAssertEqual(try FileManager.default.attributesOfItem(atPath: store.url.path)[.posixPermissions] as? Int, 0o600)
     }
 
+    func testRemoteCreationCanLeaveLocalSelectionUnchanged() throws {
+        let (store, root) = try temporaryStore(); defer { try? FileManager.default.removeItem(at: root) }
+        let local = try store.createWorkspace(name: "Local", commandID: "local")
+        let selected = store.registry.selectedSession
+
+        let remoteWorkspace = try store.createWorkspace(name: "Phone project", commandID: "phone-workspace",
+                                                        selectAfterCreation: false)
+        XCTAssertEqual(store.registry.selectedSession, selected)
+        XCTAssertEqual(try store.createWorkspace(name: "Phone project", commandID: "phone-workspace",
+                                                 selectAfterCreation: false), remoteWorkspace)
+        XCTAssertEqual(store.registry.selectedSession, selected)
+
+        let remoteSession = try store.createSession(workspaceID: local.workspaceID, name: "Phone session",
+                                                    commandID: "phone-session", selectAfterCreation: false)
+        XCTAssertEqual(store.registry.selectedSession, selected)
+        XCTAssertEqual(try store.createSession(workspaceID: local.workspaceID, name: "Phone session",
+                                               commandID: "phone-session", selectAfterCreation: false), remoteSession)
+        XCTAssertEqual(store.registry.selectedSession, selected)
+    }
+
     func testSplitCloseAndEmptyLayoutPreserveOtherSessions() throws {
         let (store, root) = try temporaryStore(); defer { try? FileManager.default.removeItem(at: root) }
         let first = try store.createWorkspace(name: "Axo")

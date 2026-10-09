@@ -5,7 +5,7 @@ import { resolve } from "node:path";
 import { SessionFiles, stageFile, shareCommandPath } from "./files";
 import type { AssistantMessage } from "@earendil-works/pi-ai";
 import { loadConfig } from "./config";
-import { RelayConnection } from "./connection";
+import { LocalRuntimeConnection, type RuntimeBinding } from "./local-runtime";
 import { promptDelivery } from "./delivery";
 import { attachmentFiles, projectHistory, projectMessages, submittedCommandIds } from "./projection";
 import { readToolOutput } from "./tool-output";
@@ -21,7 +21,8 @@ export default function axoBridge(pi: ExtensionAPI): void {
   registerSessionTitles(pi, macState.waiting);
   let context: ExtensionContext | undefined;
   let viewId = crypto.randomUUID();
-  let connection: RelayConnection | undefined;
+  let connection: LocalRuntimeConnection | undefined;
+  let runtimeBinding: RuntimeBinding | undefined;
   let files: SessionFiles | undefined;
   const preparing = new Map<string, AbortController>();
   let pending: PendingQuestion | undefined;
@@ -40,8 +41,10 @@ export default function axoBridge(pi: ExtensionAPI): void {
   function snapshot(replayRecentEvents = false): void {
     if (!context) return;
     const events = replayRecentEvents ? recentEvents.slice(-50) : pendingEvents.splice(0, 50);
+    if (!runtimeBinding) return;
+    const conversationId = context.sessionManager.getSessionId();
     const frame: Extract<HostFrame, { type: "snapshot" }> = {
-      type: "snapshot", sessionId: context.sessionManager.getSessionId(), viewId,
+      type: "snapshot", sessionId: runtimeBinding.sessionId, conversationId, viewId,
       state: pending ? "waiting" : context.isIdle() ? "idle" : "running",
       ...projectHistory(context.sessionManager.getBranch(), streamingMessage), activities, events, droppedEvents,
       liveText, runId: activeRunID ?? null, question: pending?.question ?? null,
@@ -109,42 +112,53 @@ export default function axoBridge(pi: ExtensionAPI): void {
   }
 
   function receive(frame: PhoneFrame): void {
-    if (!context) return;
+    if (!context || !runtimeBinding) return;
+    const binding = runtimeBinding;
     if (frame.type === "sync") { snapshot(true); return; }
-    const fail = (message: string) => connection?.send({ type: "error", id: frame.id, message });
-    if (frame.sessionId !== context.sessionManager.getSessionId()) { fail("The desktop conversation changed. Refresh before sending."); return; }
+    if (frame.type === "catalog_page" || frame.type === "subscribe" || frame.type.startsWith("create_") || frame.type.startsWith("rename_")) return;
+    const fail = (message: string) => connection?.send({ type: "error", id: frame.id, sessionId: runtimeBinding?.sessionId, message });
+    if (!("sessionId" in frame) || frame.sessionId !== runtimeBinding.sessionId) { fail("The Axo session binding changed. Refresh before sending."); return; }
     if (frame.type === "history") {
       if (frame.viewId !== viewId) { fail("The conversation branch changed. Refresh before loading history."); return; }
       try {
-        connection?.send({ type: "history", id: frame.id, sessionId: frame.sessionId, viewId, beforeId: frame.beforeId,
+        connection?.send({ type: "history", id: frame.id, sessionId: runtimeBinding.sessionId, conversationId: context.sessionManager.getSessionId(), viewId, beforeId: frame.beforeId,
           ...(frame.direction ? { direction: frame.direction } : {}),
           ...projectHistory(context.sessionManager.getBranch(), streamingMessage, frame.beforeId, frame.direction) });
       } catch (error) { fail(error instanceof Error ? error.message : "Could not load history."); }
       return;
     }
     if (frame.type === "tool_output") {
-      void readToolOutput(context.sessionManager.getBranch(), frame.toolCallId, frame.offset).then(page => {
-        connection?.send({ type: "tool_output", id: frame.id, sessionId: frame.sessionId,
+      const capturedContext = context;
+      const capturedBinding = runtimeBinding;
+      const capturedConversation = context.sessionManager.getSessionId();
+      void readToolOutput(capturedContext.sessionManager.getBranch(), frame.toolCallId, frame.offset).then(page => {
+        if (context !== capturedContext || runtimeBinding !== capturedBinding
+          || context.sessionManager.getSessionId() !== capturedConversation) return;
+        connection?.send({ type: "tool_output", id: frame.id, sessionId: capturedBinding.sessionId, conversationId: capturedConversation,
           toolCallId: frame.toolCallId, offset: frame.offset, ...page });
       }).catch(error => fail(error instanceof Error ? error.message : "Could not load tool output."));
       return;
     }
+    if (frame.type !== "prompt" && frame.type !== "answer" && frame.type !== "cancel") return;
     if (submitted.has(frame.id) || preparing.has(frame.id)) { fail("Already submitted or preparing; not replayed. Check the conversation."); return; }
     if (frame.type === "answer") {
       if (!pending || pending.question.id !== frame.questionId) { fail("That question is no longer pending."); return; }
       if (!pending.question.options.includes(frame.value)) { fail("Choose one of the offered answers."); return; }
       submitted.add(frame.id);
       pending.finish(frame.value);
+      connection?.send({ type: "ack", id: frame.id, sessionId: runtimeBinding.sessionId, disposition: "submitted" });
+      return;
     } else if (frame.type === "cancel") {
       if (context.isIdle() || frame.runId !== activeRunID) { fail("That Pi run is no longer active."); return; }
       submitted.add(frame.id);
       context.abort();
-      connection?.send({ type: "ack", id: frame.id, disposition: "cancelled" });
+      connection?.send({ type: "ack", id: frame.id, sessionId: runtimeBinding.sessionId, disposition: "cancelled" });
       return;
     } else {
       if (pending) { fail("Answer the pending question before sending another prompt."); return; }
       if (frame.attachmentIds?.length) {
-        void submitAttachments(frame, context, viewId).catch(error => fail(error instanceof Error ? error.message : "Could not prepare attachments. Prompt not submitted."));
+        const conversationId = context.sessionManager.getSessionId();
+        void submitAttachments(frame, context, viewId, conversationId).catch(error => fail(error instanceof Error ? error.message : "Could not prepare attachments. Prompt not submitted."));
         return;
       }
       // Record before dispatch: ambiguous crashes must never blindly replay side effects.
@@ -156,20 +170,19 @@ export default function axoBridge(pi: ExtensionAPI): void {
       pi.sendMessage({ customType: "axo.prompt", display: true, content: frame.text,
         details: { commandId: frame.id, text: frame.text, delivery },
       }, { triggerTurn: true, ...promptDelivery(isIdle) });
-      connection?.send({ type: "ack", id: frame.id, disposition: "submitted", delivery });
+      connection?.send({ type: "ack", id: frame.id, sessionId: binding.sessionId, disposition: "submitted", delivery });
       return;
     }
-    // The extension API is fire-and-forget; submitted is NOT proof of execution.
-    connection?.send({ type: "ack", id: frame.id, disposition: "submitted" });
   }
 
-  async function submitAttachments(frame: Extract<PhoneFrame, { type: "prompt" }>, ctx: ExtensionContext, generation: string): Promise<void> {
+  async function submitAttachments(frame: Extract<PhoneFrame, { type: "prompt" }>, ctx: ExtensionContext, generation: string, conversationId: string): Promise<void> {
     if (!files) throw new Error("Shared files require a configured relay.");
     const controller = new AbortController();
     preparing.set(frame.id, controller);
     try {
-      const prepared = await files.prepare(frame.sessionId, frame.attachmentIds ?? [], ctx.model?.input.includes("image") ?? false, controller.signal);
-      if (viewId !== generation || context?.sessionManager.getSessionId() !== frame.sessionId || pending) throw new Error("Conversation changed or is waiting for an answer. Prompt not submitted.");
+      const prepared = await files.prepare(conversationId, frame.attachmentIds ?? [], ctx.model?.input.includes("image") ?? false, controller.signal);
+      if (viewId !== generation || context?.sessionManager.getSessionId() !== conversationId
+        || runtimeBinding?.sessionId !== frame.sessionId || pending) throw new Error("Conversation changed or is waiting for an answer. Prompt not submitted.");
       pi.appendEntry("axo.submitted", { id: frame.id });
       submitted.add(frame.id);
       // Custom message content and details persist together: no guessed user-message anchor.
@@ -178,7 +191,7 @@ export default function axoBridge(pi: ExtensionAPI): void {
         content: [...(frame.text ? [{ type: "text" as const, text: frame.text }] : []), ...prepared.content],
         details: { commandId: frame.id, text: frame.text, files: prepared.files, delivery },
       }, { triggerTurn: true, ...promptDelivery(ctx.isIdle()) });
-      connection?.send({ type: "ack", id: frame.id, disposition: "submitted", delivery });
+      connection?.send({ type: "ack", id: frame.id, sessionId: runtimeBinding?.sessionId, disposition: "submitted", delivery });
     } finally { preparing.delete(frame.id); }
   }
 
@@ -187,6 +200,8 @@ export default function axoBridge(pi: ExtensionAPI): void {
     preparing.clear();
     files = undefined;
     connection?.stop();
+    connection = undefined;
+    runtimeBinding = undefined;
     pending?.finish(undefined);
     context = ctx;
     viewId = crypto.randomUUID();
@@ -205,7 +220,17 @@ export default function axoBridge(pi: ExtensionAPI): void {
     try {
       const config = loadConfig(configPath);
       files = new SessionFiles(config);
-      connection = new RelayConnection(config, receive,
+      const sessionId = process.env.AXO_WORK_SESSION_ID;
+      const paneId = process.env.AXO_PANE_ID;
+      const runtimeGeneration = process.env.AXO_RUNTIME_GENERATION;
+      const capability = process.env.AXO_BINDING_CAPABILITY;
+      const socketPath = process.env.AXO_BRIDGE_SOCKET;
+      if (!sessionId || !paneId || !runtimeGeneration || !capability || !socketPath) {
+        ctx.ui.setStatus("axo", "Axo: local only (managed bridge binding unavailable)");
+        return;
+      }
+      runtimeBinding = { sessionId, paneId, runtimeGeneration, capability, conversationId: ctx.sessionManager.getSessionId() };
+      connection = new LocalRuntimeConnection(socketPath, runtimeBinding, receive,
         status => context?.ui.setStatus("axo", `Axo: ${status} · transcript blocks · paged history`), () => snapshot(true));
       connection.connect();
     } catch {

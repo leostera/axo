@@ -29,7 +29,7 @@ test("direct completion verifies R2 metadata, tombstones remain unavailable and 
   try {
     const host = await mf.dispatchFetch("https://files.test/host", { headers: { Upgrade: "websocket" } });
     host.webSocket!.accept();
-    host.webSocket!.send(JSON.stringify({ type: "snapshot", sessionId: "session", viewId: "view", state: "idle", messages: [], hasEarlierMessages: false, question: null }));
+    host.webSocket!.send(JSON.stringify({ type: "snapshot", sessionId: "00000000-0000-4000-8000-000000000101", conversationId: "session", viewId: "view", state: "idle", messages: [], hasEarlierMessages: false, question: null }));
     await new Promise(resolve => setTimeout(resolve, 30));
     const request = (path: string, method = "GET", body?: unknown) => mf.dispatchFetch(`https://files.test/${path}`, { method, ...(body ? { body: JSON.stringify(body) } : {}) });
     const reserved = sharedFileSchema.parse(await (await request("files/sessions/session/uploads", "POST", attributes)).json());

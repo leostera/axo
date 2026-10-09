@@ -6,7 +6,8 @@ struct TerminalLaunch {
     let directory: String
     let command: String?
 
-    static func pi(repository: String, directory: String, sessionFile: String, observation: MacSessionBinding? = nil) -> Self {
+    static func pi(repository: String, directory: String, sessionFile: String, observation: MacSessionBinding? = nil,
+                   bridgeSocket: String? = nil) -> Self {
         var command = "/bin/bash " + quote(repository + "/scripts/run-pi.sh")
             + " --axo-session-file " + quote(sessionFile) + " --axo-directory " + quote(directory)
         if let observation {
@@ -14,6 +15,8 @@ struct TerminalLaunch {
                 + " --axo-work-session-id " + quote(observation.sessionID.rawValue.uuidString)
                 + " --axo-pane-id " + quote(observation.paneID.rawValue.uuidString)
                 + " --axo-runtime-generation " + quote(observation.generation.uuidString)
+                + " --axo-binding-capability " + quote(observation.capability.uuidString)
+            if let bridgeSocket { command += " --axo-bridge-socket " + quote(bridgeSocket) }
         }
         return Self(directory: directory, command: command)
     }
@@ -25,12 +28,19 @@ struct TerminalLaunch {
 final class TerminalView: NSView, NSTextInputClient {
     private let runtime: GhosttyRuntime
     private(set) var surface: ghostty_surface_t?
+    let runtimeGeneration = UUID()
     private var marked = NSAttributedString(string: "")
     private var tracking: NSTrackingArea?
     private var keyEvent: NSEvent?
     private var insertedDuringKey = false
     var onFocus: (() -> Void)?
     var onClose: ((Bool) -> Void)?
+    private(set) var hoveredURL: URL? {
+        didSet {
+            toolTip = hoveredURL?.absoluteString
+            window?.invalidateCursorRects(for: self)
+        }
+    }
     var workingDirectory: String
     var terminalTitle = "Terminal"
     var childExited = false
@@ -142,6 +152,25 @@ final class TerminalView: NSView, NSTextInputClient {
         else { _ = ghostty_surface_key(surface, key) }
     }
 
+    override func resetCursorRects() {
+        addCursorRect(bounds, cursor: hoveredURL == nil ? .iBeam : .pointingHand)
+    }
+
+    func updateHoveredURL(_ value: String?) {
+        hoveredURL = value.flatMap(Self.validatedWebURL)
+    }
+
+    static func validatedWebURL(_ value: String) -> URL? {
+        guard value.utf8.count <= 4_096,
+              value == value.trimmingCharacters(in: .whitespacesAndNewlines),
+              !value.unicodeScalars.contains(where: CharacterSet.controlCharacters.contains),
+              let components = URLComponents(string: value),
+              let scheme = components.scheme?.lowercased(), scheme == "http" || scheme == "https",
+              let host = components.host, !host.isEmpty,
+              components.user == nil, components.password == nil else { return nil }
+        return components.url
+    }
+
     override func updateTrackingAreas() {
         if let tracking { removeTrackingArea(tracking) }
         let area = NSTrackingArea(rect: bounds, options: [.mouseMoved, .activeInKeyWindow, .inVisibleRect], owner: self)
@@ -207,6 +236,13 @@ final class TerminalView: NSView, NSTextInputClient {
     @objc func paste(_ sender: Any?) {
         guard let surface, let text = NSPasteboard.general.string(forType: .string) else { return }
         text.withCString { ghostty_surface_text(surface, $0, UInt(text.utf8.count)) }
+    }
+
+    func insertVoiceText(_ text: String) -> Bool {
+        guard let surface, !childExited, !text.isEmpty, text.utf8.count <= 32_768,
+              !text.contains("\u{0}") else { return false }
+        text.withCString { ghostty_surface_text(surface, $0, UInt(text.utf8.count)) }
+        return true
     }
 
     // NSTextInputClient: composed input is forwarded without flattening IME preedit.

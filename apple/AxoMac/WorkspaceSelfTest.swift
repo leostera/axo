@@ -1,12 +1,20 @@
 #if DEBUG
 import AppKit
 import AxoCore
+import AxoVoice
 import GhosttyKit
 
 /// Isolated, non-Accessibility native smoke test. It launches synthetic shells, never Pi,
 /// and uses a fresh registry rather than opening or relaunching the user's live app.
+@MainActor
 enum WorkspaceSelfTest {
     static func run(runtime: GhosttyRuntime, repository: String, installMenu: (WorkspaceController) -> Void) throws {
+        guard TerminalView.validatedWebURL("https://example.com/path") != nil,
+              TerminalView.validatedWebURL("javascript:alert(1)") == nil,
+              TerminalView.validatedWebURL("file:///etc/passwd") == nil,
+              TerminalView.validatedWebURL("https://user:password@example.com") == nil else { throw Failure.unsafeURL }
+        try testVoiceOptionGestures()
+        try testVoiceOperations()
         let root = FileManager.default.temporaryDirectory.appendingPathComponent("axo-workspaces-" + UUID().uuidString)
         defer { try? FileManager.default.removeItem(at: root) }
         var launches: [PaneID: Int] = [:]
@@ -24,6 +32,11 @@ enum WorkspaceSelfTest {
         window.contentView = controller.view
         window.orderFront(nil)
         defer { window.orderOut(nil); window.contentView = nil }
+        try shortcut("p", keyCode: 35, shift: true, window: window)
+        pumpEvents()
+        guard let palette = NSApp.windows.first(where: { $0.title == "Command Palette" }), palette.isVisible else { throw Failure.palette }
+        palette.orderOut(nil)
+        window.makeKeyAndOrderFront(nil)
         guard controller.hasLiveProcesses, let original = controller.registry.sessions.first,
               let firstPane = original.focusedPane, launches[firstPane] == 1 else { throw Failure.automaticRestart }
         try controller.activateSession(original.id)
@@ -37,6 +50,11 @@ enum WorkspaceSelfTest {
               controller.registry.sessions[1].name == "Untitled",
               controller.registry.sessions[1].directory == project.path,
               controller.registry.sessions[1].piSessionFile.hasPrefix(root.path + "/Workspaces/") else { throw Failure.sessionCreation }
+        let secondSessionID = controller.registry.sessions[1].id
+        try shortcut("{", keyCode: 33, shift: true, window: window)
+        guard controller.registry.selectedSession == original.id else { throw Failure.sessionNavigation }
+        try shortcut("}", keyCode: 30, shift: true, window: window)
+        guard controller.registry.selectedSession == secondSessionID else { throw Failure.sessionNavigation }
         window.contentView?.layoutSubtreeIfNeeded()
         let expandedWidth = controller.view.arrangedSubviews[0].frame.width
         let originalContentWidth = controller.view.arrangedSubviews[1].frame.width
@@ -70,6 +88,10 @@ enum WorkspaceSelfTest {
               controller.registry.workspaces[1].directory == project.path,
               controller.registry.workspaces[1].name == project.lastPathComponent,
               controller.terminal(for: firstPane) === firstTerminal else { throw Failure.workspaceCreation }
+        try shortcut("<", keyCode: 43, shift: true, window: window)
+        guard controller.registry.selectedSession == original.id else { throw Failure.workspaceNavigation }
+        try shortcut(">", keyCode: 47, shift: true, window: window)
+        guard controller.registry.selectedSession == controller.registry.sessions[2].id else { throw Failure.workspaceNavigation }
         // A hidden Pi pane's title event reads its own bounded metadata, not the selected session's file.
         let metadata = "{\"type\":\"session\",\"id\":\"synthetic-conversation\"}\n{\"type\":\"session_info\",\"name\":\"Generated session title\"}\n"
         try Data(metadata.utf8).write(to: URL(fileURLWithPath: original.piSessionFile))
@@ -104,7 +126,12 @@ enum WorkspaceSelfTest {
         let childLeft = childText.convert(childText.bounds, to: navigation).minX
         print("AXO_SIDEBAR_ROW_GEOMETRY: standalone text \(rootLeft), project child text \(childLeft)")
         guard childLeft >= rootLeft + navigation.indentationPerLevel * 1.5 else { throw Failure.sidebar }
-        guard let lastPane = splitSession.panes.last?.id, let lastSurface = controller.terminal(for: lastPane)?.surface else { throw Failure.missingSurface }
+        guard let orderedPanes = splitSession.layout?.panes, orderedPanes.count == 3,
+              let lastPane = orderedPanes.last, let lastSurface = controller.terminal(for: lastPane)?.surface else { throw Failure.missingSurface }
+        try shortcut("]", keyCode: 30, window: window)
+        guard controller.registry.sessions.first(where: { $0.id == original.id })?.focusedPane == orderedPanes[0] else { throw Failure.paneNavigation }
+        try shortcut("[", keyCode: 33, window: window)
+        guard controller.registry.sessions.first(where: { $0.id == original.id })?.focusedPane == lastPane else { throw Failure.paneNavigation }
         // Exercise the real C action callback rather than duplicating navigation in the test.
         bind("goto_split:up", to: lastSurface)
         pumpEvents()
@@ -185,7 +212,11 @@ enum WorkspaceSelfTest {
               failed.terminal(for: survivingShell) != nil else { throw Failure.contextActions }
         let badge = WorkspaceSidebarRow(name: "Working fixture", workspace: false, running: true, activity: .working,
                                        actions: NSMenu(), finishRename: { _ in })
-        guard badge.accessibilityLabel()?.contains("Agent working") == true else { throw Failure.contextActions }
+        let recordingRow = WorkspaceSidebarRow(name: "Recording fixture", workspace: false, running: true,
+                                               voiceRecording: true, actions: NSMenu(), finishRename: { _ in })
+        guard badge.accessibilityLabel()?.contains("Agent working") == true,
+              recordingRow.accessibilityLabel()?.contains("Recording voice") == true,
+              recordingRow.imageView?.contentTintColor == .systemRed else { throw Failure.contextActions }
         let loading = WorkspaceSidebarRow(name: "Loading fixture", workspace: false, running: true, activity: .detached, loading: true,
                                          actions: NSMenu(), finishRename: { _ in })
         let unavailable = WorkspaceSidebarRow(name: "Unavailable fixture", workspace: false, running: true, activity: .detached,
@@ -194,7 +225,7 @@ enum WorkspaceSelfTest {
               findSpinner(in: loading)?.style == .spinning,
               unavailable.imageView?.contentTintColor == .tertiaryLabelColor,
               unavailable.imageView?.toolTip == "Agent status unavailable", findSpinner(in: unavailable) == nil else { throw Failure.sidebar }
-        print("AXO_WORKSPACE_SELF_TEST_PASSED: lazy automatic reopening, project folder/name intent and cancellation, saved shell directories, missing-directory recovery, sidebar collapse/reopen, native inline rename, context duplicate and confirmed/cancelled removal, working badge, retained surfaces, split navigation/resize")
+        print("AXO_WORKSPACE_SELF_TEST_PASSED: configurable Option voice gestures, automatic target-bound transcript insertion, sidebar recording indicator, native selection, safe URL policy, navigation, lifecycle, split navigation/resize")
     }
     private static func findSpinner(in view: NSView) -> NSProgressIndicator? {
         if let spinner = view as? NSProgressIndicator { return spinner }
@@ -221,6 +252,60 @@ enum WorkspaceSelfTest {
     private static func XCTPane(_ pane: PaneID?) throws -> PaneID {
         guard let pane else { throw Failure.missingSurface }; return pane
     }
+    private static func testVoiceOptionGestures() throws {
+        var gesture = MacVoiceOptionGesture()
+        let start = Date(timeIntervalSince1970: 10)
+        let held = gesture.handle(keyCode: 58, isDown: true, trigger: .holdOption, at: start)
+        let released = gesture.handle(keyCode: 58, isDown: false, trigger: .holdOption, at: start.addingTimeInterval(1))
+        guard held == .consume(.beginHold), released == .consume(.endHold) else { throw Failure.voiceGesture }
+
+        let firstTap = start.addingTimeInterval(2)
+        guard gesture.handle(keyCode: 61, isDown: true, trigger: .doublePressOption, at: firstTap) == .consume(),
+              gesture.handle(keyCode: 61, isDown: false, trigger: .doublePressOption, at: firstTap.addingTimeInterval(0.05)) == .consume(),
+              gesture.handle(keyCode: 61, isDown: true, trigger: .doublePressOption, at: firstTap.addingTimeInterval(0.2)) == .consume(),
+              gesture.handle(keyCode: 61, isDown: false, trigger: .doublePressOption, at: firstTap.addingTimeInterval(0.25)) == .consume(.toggleLock) else {
+            throw Failure.voiceGesture
+        }
+        let slowTap = start.addingTimeInterval(4)
+        _ = gesture.handle(keyCode: 58, isDown: true, trigger: .doublePressOption, at: slowTap)
+        _ = gesture.handle(keyCode: 58, isDown: false, trigger: .doublePressOption, at: slowTap.addingTimeInterval(0.05))
+        let tooLate = gesture.handle(keyCode: 58, isDown: true, trigger: .doublePressOption, at: slowTap.addingTimeInterval(0.6))
+        guard tooLate == .consume() else { throw Failure.voiceGesture }
+    }
+
+    @MainActor private static func testVoiceOperations() throws {
+        let recorder = SelfTestVoiceRecorder()
+        let voice = MacVoiceCoordinator(recorder: recorder, makeTranscriber: { SelfTestTranscriber(delay: .milliseconds(900)) })
+        var insertions: [(MacVoiceTarget, String)] = []
+        voice.onTranscriptReady = { target, text in
+            insertions.append((target, text))
+            return true
+        }
+        let first = MacVoiceTarget(sessionID: AxoSessionID(), paneID: PaneID(), runtimeGeneration: UUID(), workspaceName: "Project A", sessionName: "Session A")
+        let second = MacVoiceTarget(sessionID: AxoSessionID(), paneID: PaneID(), runtimeGeneration: UUID(), workspaceName: "Project B", sessionName: "Session B")
+        voice.startCapture(for: first)
+        try waitUntil { voice.isRecording }
+        voice.stopCapture()
+        guard voice.transcriptions.count == 1, voice.transcriptions[0].target == first else { throw Failure.voiceTarget }
+        voice.startCapture(for: second)
+        try waitUntil { voice.isRecording }
+        guard voice.transcriptions.count == 1, voice.recordingTarget == second else { throw Failure.voiceConcurrency }
+        voice.stopCapture()
+        try waitUntil { voice.transcripts.count == 2 }
+        guard insertions.contains(where: { $0.0 == first && $0.1 == "transcript one" }),
+              insertions.contains(where: { $0.0 == second && $0.1 == "transcript two" }),
+              voice.transcripts.allSatisfy({ $0.insertion == .inserted }) else { throw Failure.voiceTarget }
+        voice.shutdown()
+    }
+
+    private static func waitUntil(_ predicate: () -> Bool) throws {
+        let deadline = Date().addingTimeInterval(4)
+        while Date() < deadline && !predicate() {
+            _ = RunLoop.current.run(mode: .default, before: Date().addingTimeInterval(0.01))
+        }
+        guard predicate() else { throw Failure.voiceTimeout }
+    }
+
     private static func pumpEvents() {
         let deadline = Date().addingTimeInterval(0.2)
         while Date() < deadline { _ = RunLoop.current.run(mode: .default, before: Date().addingTimeInterval(0.01)) }
@@ -246,6 +331,47 @@ enum WorkspaceSelfTest {
         guard let bytes = text.text else { return "" }
         return String(decoding: UnsafeRawBufferPointer(start: bytes, count: Int(text.text_len)), as: UTF8.self)
     }
-    enum Failure: Error { case inlineRename, contextActions, launchRecovery, sidebar, rename, missingSurface, sessionCreation, recreatedSurface, splitCreation, workspaceCreation, missingOutput, automaticRestart, unhandledShortcut, spatialFocus, resize, closeConfirmation, cancelledClose }
+    enum Failure: Error { case inlineRename, contextActions, launchRecovery, sidebar, rename, missingSurface, sessionCreation, sessionNavigation, workspaceNavigation, paneNavigation, unsafeURL, palette, voiceGesture, voiceTarget, voiceConcurrency, voiceTimeout, recreatedSurface, splitCreation, workspaceCreation, missingOutput, automaticRestart, unhandledShortcut, spatialFocus, resize, closeConfirmation, cancelledClose }
 }
+
+#if DEBUG
+@MainActor
+private final class SelfTestVoiceRecorder: VoiceRecording {
+    var onFinished: (() -> Void)?
+    var onInterrupted: (() -> Void)?
+    private var nextRecording = 0
+    private var audioURL: URL?
+
+    func requestPermission() async -> Bool { true }
+    func start() throws {
+        nextRecording += 1
+        let text = nextRecording == 1 ? "transcript one" : "transcript two"
+        let url = FileManager.default.temporaryDirectory.appendingPathComponent("axo-voice-self-test-\(UUID()).txt")
+        try Data(text.utf8).write(to: url)
+        audioURL = url
+    }
+    func stop() throws -> URL {
+        guard let audioURL else { throw VoicePromptError.recorderUnavailable }
+        self.audioURL = nil
+        return audioURL
+    }
+    func cancel() {
+        if let audioURL { try? FileManager.default.removeItem(at: audioURL) }
+        audioURL = nil
+    }
+}
+
+private actor SelfTestTranscriber: LocalSpeechTranscribing {
+    let delay: Duration
+    init(delay: Duration) { self.delay = delay }
+    func prepare(progress: @escaping @Sendable (VoiceModelProgress) -> Void) async throws {
+        progress(.init(fraction: 1, detail: "Synthetic speech model ready"))
+    }
+    func transcribe(_ audioURL: URL) async throws -> String {
+        try await Task.sleep(for: delay)
+        return try String(contentsOf: audioURL, encoding: .utf8)
+    }
+    func unload() async {}
+}
+#endif
 #endif

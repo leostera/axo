@@ -9,8 +9,11 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import type { AssistantMessage } from "@earendil-works/pi-ai";
 
+const axoSessionId = "00000000-0000-4000-8000-000000000101";
+const conversationId = "pi-session-1";
+
 test("cancellation commands target a specific active run", () => {
-  const command = { type: "cancel", id: "cancel-1", sessionId: "s1", runId: "run-1" };
+  const command = { type: "cancel", id: "cancel-1", sessionId: axoSessionId, runId: "run-1" };
   assert.deepEqual(phoneFrameSchema.parse(command), command);
   assert.throws(() => phoneFrameSchema.parse({ ...command, runId: undefined }));
   assert.deepEqual(hostFrameSchema.parse({ type: "ack", id: command.id, disposition: "cancelled" }), {
@@ -19,7 +22,7 @@ test("cancellation commands target a specific active run", () => {
 });
 
 test("phone commands require a destination and reject empty/oversized prompts", () => {
-  const command = { type: "prompt", id: "c", sessionId: "s", text: "hello" };
+  const command = { type: "prompt", id: "c", sessionId: axoSessionId, text: "hello" };
   assert.deepEqual(phoneFrameSchema.parse(command), command);
   for (const change of [{ sessionId: undefined }, { text: " " }, { text: "x".repeat(16_001) }]) {
     assert.throws(() => phoneFrameSchema.parse({ ...command, ...change }));
@@ -29,7 +32,7 @@ test("phone commands require a destination and reject empty/oversized prompts", 
 
 test("running snapshots carry bounded tool activity and accept older hosts", () => {
   const snapshot = {
-    type: "snapshot", sessionId: "s1", viewId: "v", state: "running", messages: [], hasEarlierMessages: false, question: null,
+    type: "snapshot", sessionId: axoSessionId, conversationId, viewId: "v", state: "running", messages: [], hasEarlierMessages: false, question: null,
     activities: [{ id: "tool-1", toolName: "bash", summary: "{ command: ls }", status: "running", output: "README.md" }],
     events: [{ id: "event-1", sequence: 1, timestamp: 1000, category: "tool", name: "tool_execution_start", summary: "bash started", detail: "{ command: ls }" }],
     droppedEvents: 0,
@@ -98,7 +101,7 @@ test("transcript restores provider thinking text and correlated tool blocks from
   assert.equal(projected[1]?.text, "Synthetic provider display text.\n\nA second synthetic block.");
   assert.ok(!JSON.stringify(projected).includes("OPAQUE SIGNATURE"));
   assert.deepEqual(projectMessages(transcriptFixture()), projected); // Reconnect uses the same stable row IDs.
-  hostFrameSchema.parse({ type: "snapshot", sessionId: "s", viewId: "v", state: "idle", messages: projected, hasEarlierMessages: false, question: null });
+  hostFrameSchema.parse({ type: "snapshot", sessionId: axoSessionId, conversationId, viewId: "v", state: "idle", messages: projected, hasEarlierMessages: false, question: null });
 });
 
 test("streaming blocks use the same IDs as persisted blocks and are not duplicated", () => {
@@ -177,7 +180,7 @@ test("tool output shares the frame budget and aborted tool calls are failed", ()
   })) as SessionEntry[];
   const bounded = projectMessages(manyEntries);
   assert.ok(bounded.reduce((size, block) => size + block.text.length + (block.output?.length ?? 0), 0) <= 28_000);
-  const frame = { type: "snapshot", sessionId: "s", viewId: "v", state: "idle", messages: bounded, hasEarlierMessages: false, question: null };
+  const frame = { type: "snapshot", sessionId: axoSessionId, conversationId, viewId: "v", state: "idle", messages: bounded, hasEarlierMessages: false, question: null };
   parseFrame(JSON.stringify(frame), hostFrameSchema);
 });
 

@@ -25,6 +25,11 @@ async function buildBridge() {
     bundle: true, platform: "node", format: "esm", packages: "external",
     outfile: join(outputDirectory, "extension.ts"), logLevel: "info",
   });
+  await build({
+    entryPoints: [join(root, "bridge/host-main.ts")],
+    bundle: true, platform: "node", format: "esm", packages: "external",
+    outfile: join(outputDirectory, "host-broker.mjs"), logLevel: "info",
+  });
   await installLegacyEntrypoint(outputDirectory);
 }
 

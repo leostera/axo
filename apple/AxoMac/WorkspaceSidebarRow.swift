@@ -8,17 +8,17 @@ final class WorkspaceSidebarRow: NSTableCellView, NSTextFieldDelegate {
     private var cancelled = false
     private var editing = false
     init(name: String, workspace: Bool, running: Bool, activity: MacAgentState? = nil, loading: Bool = false,
-         actions: NSMenu, finishRename: @escaping (String?) -> Void) {
+         voiceRecording: Bool = false, actions: NSMenu, finishRename: @escaping (String?) -> Void) {
         originalName = name; self.finishRename = finishRename
         super.init(frame: .zero); menu = actions
         let working = activity == .working, attention = activity == .attention
         let open = running && activity != .detached && !loading
-        let description = loading ? "Loading agent status" : working ? "Agent working" : attention ? "Needs your attention" : activity == .detached ? "Agent status unavailable" : open ? "Open" : "Stopped"
-        let symbol = workspace ? "folder" : working ? "hammer.fill" : attention ? "exclamationmark.circle.fill" : open ? "circle.fill" : "circle"
+        let description = voiceRecording ? "Recording voice" : loading ? "Loading agent status" : working ? "Agent working" : attention ? "Needs your attention" : activity == .detached ? "Agent status unavailable" : open ? "Open" : "Stopped"
+        let symbol = workspace ? "folder" : voiceRecording ? "record.circle.fill" : working ? "hammer.fill" : attention ? "exclamationmark.circle.fill" : open ? "circle.fill" : "circle"
         let icon = NSImageView(image: NSImage(systemSymbolName: symbol, accessibilityDescription: workspace ? "Workspace" : description)!)
-        icon.contentTintColor = workspace ? .secondaryLabelColor : attention ? .systemOrange : working ? .secondaryLabelColor : open ? .systemGreen : .tertiaryLabelColor
+        icon.contentTintColor = workspace ? .secondaryLabelColor : voiceRecording ? .systemRed : attention ? .systemOrange : working ? .secondaryLabelColor : open ? .systemGreen : .tertiaryLabelColor
         icon.toolTip = workspace ? "Project" : description
-        icon.symbolConfiguration = NSImage.SymbolConfiguration(pointSize: !workspace && !working && !attention ? 6 : 13, weight: .regular)
+        icon.symbolConfiguration = NSImage.SymbolConfiguration(pointSize: voiceRecording ? 13 : !workspace && !working && !attention ? 6 : 13, weight: .regular)
         icon.imageScaling = .scaleNone
         let leading: NSView
         if loading && !workspace {
@@ -28,6 +28,7 @@ final class WorkspaceSidebarRow: NSTableCellView, NSTextFieldDelegate {
             spinner.startAnimation(nil); leading = spinner
         } else { imageView = icon; leading = icon }
         let label = NSTextField(labelWithString: name)
+        label.textColor = .labelColor
         label.font = workspace ? .systemFont(ofSize: 12, weight: .semibold) : .systemFont(ofSize: 13)
         label.lineBreakMode = .byTruncatingTail; label.delegate = self
         label.setContentCompressionResistancePriority(.defaultLow, for: .horizontal)

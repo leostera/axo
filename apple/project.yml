@@ -2,7 +2,7 @@ name: Axo
 options:
   bundleIdPrefix: dev.leostera.axo
   deploymentTarget:
-    macOS: '14.0'
+    macOS: '26.0'
     iOS: '18.0'
 settings:
   base:
@@ -30,6 +30,7 @@ targets:
         excludes: [Info.plist, Ghostty/Package.swift, Ghostty/Tests, Ghostty/.build]
     dependencies:
       - package: AxoCore
+      - package: AxoVoice
       - framework: ../vendor/ghostty/macos/GhosttyKit.xcframework
         embed: false
       - sdk: Metal.framework

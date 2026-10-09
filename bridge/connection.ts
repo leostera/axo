@@ -1,11 +1,11 @@
 import WebSocket from "ws";
 import { z } from "zod";
-import { MAX_FRAME_BYTES, parseFrame, phoneFrameSchema, type PhoneFrame, type HostFrame } from "../shared/protocol";
+import { MAX_FRAME_BYTES, parseFrame, relayToHostFrameSchema, type RelayToHostFrame, type HostFrame } from "../shared/protocol";
 import type { BridgeConfig } from "./config";
 
-const relayInputSchema = z.union([phoneFrameSchema, z.object({ type: z.literal("error"), message: z.string().max(2_000) })]);
+const relayInputSchema = z.union([relayToHostFrameSchema, z.object({ type: z.literal("error"), id: z.string().optional(), sessionId: z.string().optional(), message: z.string().max(2_000) })]);
 
-export function receiveRelayFrame(raw: string, onFrame: (frame: PhoneFrame) => void,
+export function receiveRelayFrame(raw: string, onFrame: (frame: RelayToHostFrame) => void,
                                   reply: (frame: HostFrame) => void, status: (message: string) => void): void {
   let frame: z.infer<typeof relayInputSchema>;
   try { frame = parseFrame(raw, relayInputSchema); }
@@ -34,7 +34,7 @@ export class RelayConnection {
 
   constructor(
     private config: BridgeConfig,
-    private onFrame: (frame: PhoneFrame) => void,
+    private onFrame: (frame: RelayToHostFrame) => void,
     private onStatus: (status: string) => void,
     private onOpen: () => void,
   ) {}

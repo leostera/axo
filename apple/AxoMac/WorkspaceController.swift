@@ -6,6 +6,9 @@ import SwiftUI
 /// Owns surfaces independently of selected views. Switching never releases a process.
 final class WorkspaceController: NSObject, NSOutlineViewDataSource, NSOutlineViewDelegate, NSSplitViewDelegate, NSMenuItemValidation {
     typealias SurfaceTree = SplitTree<PaneHostView>
+    private enum NavigationDirection: Equatable { case previous, next }
+    private enum NavigationScope { case pane, session, workspace }
+
     let view = NSSplitView()
     private let sidebar = WorkspaceOutlineView()
     private var editingSidebar = false
@@ -23,18 +26,27 @@ final class WorkspaceController: NSObject, NSOutlineViewDataSource, NSOutlineVie
     private let repository: String
     private let scratchRoot: URL
     private let stateRoot: URL
+    private let bridgeDirectory: URL
+    private let bindingDirectory: URL
+    private var bridgeHost: BridgeHostProcess?
     private var stateBindings: [PaneID: MacSessionBinding] = [:]
     private var initialObservationDeadlines: [PaneID: Date] = [:]
     private var agentSnapshots: [PaneID: MacSessionState] = [:]
     private var attentionReceipts: [PaneID: MacAttentionReceipt] = [:]
     private var stateObserver: MacSessionObserver?
     private var notifications: MacSessionNotifications?
+    private var voiceCoordinator: MacVoiceCoordinator?
+    private var voiceOptionMonitor: Any?
+    private var voiceApplicationResignObserver: NSObjectProtocol?
+    private var voiceOptionGesture = MacVoiceOptionGesture()
+    private var voiceOptionHoldOwnsCapture = false
     private let runtime: GhosttyRuntime
     private var livePanes: [PaneID: TerminalView] = [:]
     private var launchFailures: [PaneID: String] = [:]
     private var paneHosts: [PaneID: PaneHostView] = [:]
     private var splitHost: NSHostingView<PaneSplitTreeView>?
     private var closeConfirmation: NSAlert?
+    private var commandPalette: NSPanel?
     private var sidebarItems: [SidebarItem] = []
     private var refreshingSidebar = false
     private var collapsedWorkspaces = Set<WorkspaceID>()
@@ -56,6 +68,77 @@ final class WorkspaceController: NSObject, NSOutlineViewDataSource, NSOutlineVie
         openSavedPanes(in: id)
         notifications?.dismiss(id)
         refreshSidebar(); showSelectedSession()
+    }
+    func stopBridgeHost() { bridgeHost?.stop(); bridgeHost = nil }
+    @MainActor func shutdownVoice() {
+        voiceOptionHoldOwnsCapture = false
+        voiceOptionGesture.reset()
+        if let voiceOptionMonitor { NSEvent.removeMonitor(voiceOptionMonitor) }
+        voiceOptionMonitor = nil
+        if let voiceApplicationResignObserver {
+            NotificationCenter.default.removeObserver(voiceApplicationResignObserver)
+        }
+        voiceApplicationResignObserver = nil
+        voiceCoordinator?.shutdown()
+    }
+
+    private func handleBridgeRequest(_ frame: [String: Any]) {
+        guard let requestID = frame["id"] as? String, let type = frame["type"] as? String else { return }
+        do {
+            switch type {
+            case "create_workspace":
+                guard let name = frame["name"] as? String else { throw WorkspaceFault.invalidName }
+                let receipt = try store.createWorkspace(name: name, commandID: requestID, kind: .project,
+                                                        selectAfterCreation: false)
+                refreshSidebar()
+                bridgeHost?.reply(["type": "ack", "id": requestID, "disposition": "created",
+                                   "workspaceId": receipt.workspaceID.rawValue.uuidString,
+                                   "sessionId": receipt.sessionID.rawValue.uuidString])
+            case "create_session":
+                guard let name = frame["name"] as? String,
+                      let workspaceText = frame["workspaceId"] as? String,
+                      let workspaceUUID = UUID(uuidString: workspaceText) else { throw WorkspaceFault.notFound }
+                let receipt = try store.createSession(workspaceID: WorkspaceID(workspaceUUID), name: name,
+                                                       commandID: requestID, selectAfterCreation: false)
+                refreshSidebar()
+                bridgeHost?.reply(["type": "ack", "id": requestID, "disposition": "created",
+                                   "workspaceId": receipt.workspaceID.rawValue.uuidString,
+                                   "sessionId": receipt.sessionID.rawValue.uuidString])
+            case "rename_workspace":
+                guard let workspaceText = frame["workspaceId"] as? String,
+                      let workspaceUUID = UUID(uuidString: workspaceText),
+                      let name = frame["name"] as? String else { throw WorkspaceFault.conflict }
+                try store.renameWorkspace(WorkspaceID(workspaceUUID), name: name)
+                bridgeHost?.reply(["type": "ack", "id": requestID, "disposition": "updated"])
+            case "rename_session":
+                guard let sessionText = frame["sessionId"] as? String,
+                      let sessionUUID = UUID(uuidString: sessionText),
+                      let name = frame["name"] as? String else { throw WorkspaceFault.conflict }
+                try store.renameSession(AxoSessionID(sessionUUID), name: name)
+                bridgeHost?.reply(["type": "ack", "id": requestID, "disposition": "updated"])
+            default: throw WorkspaceFault.notFound
+            }
+        } catch {
+            bridgeHost?.reply(["type": "error", "id": requestID,
+                               "message": error is WorkspaceFault && (error as? WorkspaceFault) == .conflict
+                                ? "Workspace data changed. Refresh the catalog before retrying."
+                                : "The Mac could not apply that workspace change."])
+        }
+    }
+
+    private func writeBridgeBinding(_ binding: MacSessionBinding) throws {
+        let url = bindingDirectory.appendingPathComponent(binding.paneID.rawValue.uuidString + ".json")
+        let values: [String: String] = [
+            "sessionId": binding.sessionID.rawValue.uuidString,
+            "paneId": binding.paneID.rawValue.uuidString,
+            "runtimeGeneration": binding.generation.uuidString,
+            "capability": binding.capability.uuidString,
+        ]
+        let data = try JSONSerialization.data(withJSONObject: values)
+        try? FileManager.default.removeItem(at: url)
+        guard FileManager.default.createFile(atPath: url.path, contents: data, attributes: [.posixPermissions: 0o600]) else {
+            throw WorkspaceFault.corruptStore
+        }
     }
     private func openSavedPanes(in sessionID: AxoSessionID) {
         guard let session = store.registry.sessions.first(where: { $0.id == sessionID }) else { return }
@@ -90,22 +173,42 @@ final class WorkspaceController: NSObject, NSOutlineViewDataSource, NSOutlineVie
         override init() { self.workspace = nil; self.session = nil; isSeparator = true; sectionTitle = nil }
     }
 
-    init(runtime: GhosttyRuntime, repository: String, storageRoot: URL? = nil,
-         launchOverride: ((PaneRecord, WorkSession) -> TerminalLaunch)? = nil) throws {
+    @MainActor init(runtime: GhosttyRuntime, repository: String, storageRoot: URL? = nil,
+                    launchOverride: ((PaneRecord, WorkSession) -> TerminalLaunch)? = nil) throws {
         self.runtime = runtime; self.repository = repository; self.launchOverride = launchOverride
-        // Finder normally activates the existing app. Also reject a second direct executable launch
-        // before it writes registry state or automatically opens the same Pi files.
-        if storageRoot == nil, NSRunningApplication.runningApplications(withBundleIdentifier: "dev.leostera.axo.mac")
-            .contains(where: { $0.processIdentifier != ProcessInfo.processInfo.processIdentifier && !$0.isTerminated }) {
-            throw WorkspaceLaunchFault.otherAppRunning
-        }
         let support = storageRoot ?? FileManager.default.urls(for: .applicationSupportDirectory, in: .userDomainMask)[0]
             .appendingPathComponent("Axo")
         scratchRoot = support.appendingPathComponent("Workspaces")
         stateRoot = support.appendingPathComponent("RuntimeStates")
+        bridgeDirectory = support.appendingPathComponent("Bridge")
+        bindingDirectory = bridgeDirectory.appendingPathComponent("Bindings")
         store = try WorkspaceStore(url: support.appendingPathComponent("workspaces.json"), scratchRoot: scratchRoot)
         super.init()
+        let voice = MacVoiceCoordinator(historyURL: support.appendingPathComponent("voice-transcripts.json"))
+        voiceCoordinator = voice
+        voice.onActivityChanged = { [weak self] in self?.refreshSidebar() }
+        voice.onTranscriptReady = { [weak self] target, text in
+            self?.insertVoiceTranscript(for: target, text: text) ?? false
+        }
+        voice.onError = { NSSound.beep() }
+        installVoiceOptionMonitor()
         configureSidebar()
+        if launchOverride == nil {
+            let config = URL(fileURLWithPath: repository).appendingPathComponent("local/relay.json")
+            if FileManager.default.fileExists(atPath: config.path) {
+                do {
+                    let host = try BridgeHostProcess(repository: repository, config: config,
+                                                     registry: support.appendingPathComponent("workspaces.json"),
+                                                     socket: bridgeDirectory.appendingPathComponent("host.sock"),
+                                                     bindings: bindingDirectory)
+                    host.onRequest = { [weak self] frame in self?.handleBridgeRequest(frame) }
+                    bridgeHost = host
+                    try host.start()
+                } catch {
+                    fputs("Axo host broker could not start: \(error.localizedDescription)\n", stderr)
+                }
+            }
+        }
         let firstLaunch = store.registry.workspaces.isEmpty
         if firstLaunch {
             _ = try store.createWorkspace(name: "Sessions", commandID: "prototype-import",
@@ -122,7 +225,6 @@ final class WorkspaceController: NSObject, NSOutlineViewDataSource, NSOutlineVie
         refreshSidebar(); showSelectedSession()
         if launchOverride == nil {
             notifications = MacSessionNotifications(isViewing: { [weak self] id in self?.isViewing(id) ?? false },
-                                                    testDestination: { [weak self] in self?.notificationTestDestination() },
                                                     activate: { [weak self] destination in self?.activateNotification(destination) })
             stateObserver = MacSessionObserver(bindings: { [weak self] in
                 guard let self else { return [] }
@@ -226,6 +328,202 @@ final class WorkspaceController: NSObject, NSOutlineViewDataSource, NSOutlineVie
         project.target = self; session.target = self; menu.addItem(project); menu.addItem(session)
         menu.popUp(positioning: nil, at: NSPoint(x: 0, y: sender.bounds.height + 4), in: sender)
     }
+    @MainActor @objc func showCommandPalette(_ sender: Any?) {
+        let panel: NSPanel
+        if let existing = commandPalette {
+            panel = existing
+        } else {
+            panel = NSPanel(contentRect: NSRect(x: 0, y: 0, width: 620, height: 460),
+                            styleMask: [.titled, .closable], backing: .buffered, defer: false)
+            panel.title = "Command Palette"
+            panel.isFloatingPanel = true
+            panel.hidesOnDeactivate = false
+            panel.isReleasedWhenClosed = false
+            commandPalette = panel
+        }
+        panel.contentView = NSHostingView(rootView: MacCommandPaletteView(
+            commands: paletteCommands(), close: { [weak panel] in panel?.orderOut(nil) }
+        ))
+        panel.center()
+        NSApp.activate(ignoringOtherApps: true)
+        panel.makeKeyAndOrderFront(nil)
+    }
+
+    @MainActor private func paletteCommands() -> [MacPaletteCommand] {
+        var commands = [
+            paletteCommand("workspace.create", "New Workspace…", "Choose a project directory", "⌘N") { $0.newWorkspace(nil) },
+            paletteCommand("session.create", "New Session…", "Create a session in the selected workspace", "⌘T") { $0.newSession(nil) },
+            paletteCommand("settings.open", "Open Settings", "Keyboard shortcuts, voice, and notifications", "⌘,") { $0.showSettings(nil) },
+            paletteCommand("voice.toggle", "Start or Stop Voice Dictation", "Capture speech into the focused terminal pane", nil) { $0.toggleVoiceDictation(nil) },
+            paletteCommand("sidebar.toggle", "Toggle Sidebar", "Show or hide workspace navigation", "⌃⌘S") { $0.toggleSidebar(nil) },
+            paletteCommand("pane.previous", "Previous Pane", "Focus the previous pane", "⌘[") { $0.previousPane(nil) },
+            paletteCommand("pane.next", "Next Pane", "Focus the next pane", "⌘]") { $0.nextPane(nil) },
+            paletteCommand("session.previous", "Previous Session", "Activate the previous session", "⌘{") { $0.previousSession(nil) },
+            paletteCommand("session.next", "Next Session", "Activate the next session", "⌘}") { $0.nextSession(nil) },
+            paletteCommand("workspace.previous", "Previous Workspace", "Activate the previous workspace", "⌘<") { $0.previousWorkspace(nil) },
+            paletteCommand("workspace.next", "Next Workspace", "Activate the next workspace", "⌘>") { $0.nextWorkspace(nil) },
+            paletteCommand("pane.split-right", "Split Right", "Add a shell pane to the right", "⌘D") { $0.splitRight(nil) },
+            paletteCommand("pane.split-down", "Split Down", "Add a shell pane below", "⇧⌘E") { $0.splitDown(nil) },
+            paletteCommand("pane.close", "Close Pane…", "Close the focused pane", "⌘W") { $0.closePane(nil) },
+        ]
+        if let selectedSession {
+            commands.append(paletteCommand("session.rename", "Rename Current Session", selectedSession.name, nil) { $0.renameSession(nil) })
+            if let workspace = store.registry.workspaces.first(where: { $0.id == selectedSession.workspaceID }) {
+                commands.append(paletteCommand("workspace.rename", "Rename Current Workspace", workspace.name, nil) { $0.renameWorkspace(nil) })
+            }
+        }
+        for workspace in store.registry.workspaces where workspace.isArchived != true {
+            let workspaceSession = store.registry.sessions.first(where: { $0.workspaceID == workspace.id && $0.isArchived != true })
+            let workspaceID = workspace.id
+            if let workspaceSession {
+                let sessionID = workspaceSession.id
+                commands.append(paletteCommand("workspace.\(workspaceID.rawValue)", "Workspace: \(workspace.name)", "Activate its first session", nil) { controller in
+                    controller.perform { try controller.activateSession(sessionID) }
+                })
+            }
+        }
+        let workspaces = Dictionary(uniqueKeysWithValues: store.registry.workspaces.map { ($0.id, $0) })
+        for session in store.registry.sessions where session.isArchived != true {
+            let sessionID = session.id
+            let workspaceName = workspaces[session.workspaceID]?.name ?? "Workspace"
+            commands.append(paletteCommand("session.\(sessionID.rawValue)", "Session: \(session.name)", workspaceName, nil) { controller in
+                controller.perform { try controller.activateSession(sessionID) }
+            })
+            for pane in session.panes {
+                let paneID = pane.id
+                let paneName = pane.kind == .pi ? "Pi" : "Shell"
+                commands.append(paletteCommand("pane.\(sessionID.rawValue).\(paneID.rawValue)", "Pane: \(paneName)", "\(session.name) — \(workspaceName)", nil) { controller in
+                    controller.perform {
+                        try controller.activateSession(sessionID)
+                        controller.moveFocus(to: paneID, in: sessionID)
+                    }
+                })
+            }
+        }
+        return commands
+    }
+
+    @MainActor private func paletteCommand(_ id: String, _ title: String, _ detail: String, _ shortcut: String?,
+                                           action: @escaping @MainActor (WorkspaceController) -> Void) -> MacPaletteCommand {
+        MacPaletteCommand(id: id, title: title, detail: detail, shortcut: shortcut, perform: { [weak self] in
+            guard let self else { return }
+            self.commandPalette?.orderOut(nil)
+            action(self)
+        })
+    }
+
+    @MainActor @objc func toggleVoiceDictation(_ sender: Any?) {
+        toggleVoiceLock()
+    }
+
+    @MainActor private func installVoiceOptionMonitor() {
+        let controller = WeakWorkspaceController(self)
+        voiceOptionMonitor = NSEvent.addLocalMonitorForEvents(matching: .flagsChanged) { event in
+            let eventReference = MainActorEventReference(event)
+            let result = MainActor.assumeIsolated {
+                guard let controller = controller.value else { return MainActorEventResult(eventReference.event) }
+                return MainActorEventResult(controller.handleVoiceOptionEvent(eventReference.event))
+            }
+            return result.event
+        }
+        voiceApplicationResignObserver = NotificationCenter.default.addObserver(
+            forName: NSApplication.didResignActiveNotification, object: NSApp, queue: .main
+        ) { [controller] _ in
+            MainActor.assumeIsolated { controller.value?.applicationResignedDuringVoiceGesture() }
+        }
+    }
+
+    @MainActor private func handleVoiceOptionEvent(_ event: NSEvent) -> NSEvent? {
+        guard event.keyCode == 58 || event.keyCode == 61 else { return event }
+        let isDown = !voiceOptionGesture.isTrackingPress
+        if isDown {
+            let otherModifiers = event.modifierFlags.intersection([.shift, .control, .command, .function])
+            guard event.modifierFlags.contains(.option), otherModifiers.isEmpty,
+                  NSApp.isActive, let terminal = focusedTerminal,
+                  terminal.window === NSApp.keyWindow, terminal.window?.firstResponder === terminal else {
+                return event
+            }
+        }
+
+        let trigger = MacVoiceTrigger(rawValue: UserDefaults.standard.string(forKey: MacVoiceTrigger.settingsKey) ?? "")
+            ?? .defaultValue
+        let result = voiceOptionGesture.handle(keyCode: event.keyCode, isDown: isDown, trigger: trigger, at: Date())
+        guard result.consumeEvent else { return event }
+        if let action = result.action { performVoiceGesture(action) }
+        return nil
+    }
+
+    @MainActor private func performVoiceGesture(_ action: MacVoiceGestureAction) {
+        switch action {
+        case .beginHold:
+            beginVoiceOptionHold()
+        case .endHold:
+            finishVoiceOptionHold()
+        case .toggleLock:
+            toggleVoiceLock()
+        }
+    }
+
+    @MainActor private func beginVoiceOptionHold() {
+        guard let voiceCoordinator, !voiceCoordinator.isStarting, !voiceCoordinator.isRecording else { return }
+        guard let target = focusedVoiceTarget() else {
+            voiceCoordinator.report("Focus an open terminal pane before starting voice dictation.")
+            return
+        }
+        voiceOptionHoldOwnsCapture = true
+        voiceCoordinator.startCapture(for: target)
+    }
+
+    @MainActor private func finishVoiceOptionHold() {
+        guard voiceOptionHoldOwnsCapture else { return }
+        voiceOptionHoldOwnsCapture = false
+        if voiceCoordinator?.isStarting == true { voiceCoordinator?.cancelCapture() }
+        else if voiceCoordinator?.isRecording == true { voiceCoordinator?.stopCapture() }
+    }
+
+    @MainActor private func toggleVoiceLock() {
+        guard let voiceCoordinator else { return }
+        if voiceCoordinator.isStarting { voiceCoordinator.cancelCapture() }
+        else if voiceCoordinator.isRecording { voiceCoordinator.stopCapture() }
+        else if let target = focusedVoiceTarget() { voiceCoordinator.startCapture(for: target) }
+        else { voiceCoordinator.report("Focus an open terminal pane before starting voice dictation.") }
+    }
+
+    @MainActor private func applicationResignedDuringVoiceGesture() {
+        finishVoiceOptionHold()
+        voiceOptionGesture.reset()
+    }
+
+    private func focusedVoiceTarget() -> MacVoiceTarget? {
+        guard let session = selectedSession, let pane = session.focusedPane,
+              let terminal = livePanes[pane], !terminal.childExited,
+              let workspace = store.registry.workspaces.first(where: { $0.id == session.workspaceID }) else { return nil }
+        return MacVoiceTarget(sessionID: session.id, paneID: pane, runtimeGeneration: terminal.runtimeGeneration,
+                              workspaceName: workspace.name, sessionName: session.name)
+    }
+
+    private func canInsertVoiceDraft(_ target: MacVoiceTarget) -> Bool {
+        guard let session = store.registry.sessions.first(where: { $0.id == target.sessionID }),
+              session.panes.contains(where: { $0.id == target.paneID }),
+              let terminal = livePanes[target.paneID] else { return false }
+        return terminal.runtimeGeneration == target.runtimeGeneration && !terminal.childExited
+    }
+
+    @MainActor private func insertVoiceTranscript(for target: MacVoiceTarget, text: String) -> Bool {
+        guard canInsertVoiceDraft(target), let terminal = livePanes[target.paneID],
+              terminal.insertVoiceText(text) else {
+            NSSound.beep()
+            return false
+        }
+        return true
+    }
+
+    @objc func previousPane(_ sender: Any?) { navigate(.previous, scope: .pane) }
+    @objc func nextPane(_ sender: Any?) { navigate(.next, scope: .pane) }
+    @objc func previousSession(_ sender: Any?) { navigate(.previous, scope: .session) }
+    @objc func nextSession(_ sender: Any?) { navigate(.next, scope: .session) }
+    @objc func previousWorkspace(_ sender: Any?) { navigate(.previous, scope: .workspace) }
+    @objc func nextWorkspace(_ sender: Any?) { navigate(.next, scope: .workspace) }
     @objc func splitRight(_ sender: Any?) { splitSelected(direction: .right) }
     @objc func splitDown(_ sender: Any?) { splitSelected(direction: .down) }
     @objc func closePane(_ sender: Any?) {
@@ -325,6 +623,48 @@ final class WorkspaceController: NSObject, NSOutlineViewDataSource, NSOutlineVie
         if !sidebarCollapsed { view.setPosition(sidebarWidth, ofDividerAt: 0) }
         restoreFocus()
     }
+    private func navigate(_ direction: NavigationDirection, scope: NavigationScope) {
+        switch scope {
+        case .pane: navigatePane(direction)
+        case .session: navigateSession(direction)
+        case .workspace: navigateWorkspace(direction)
+        }
+    }
+
+    private func navigatePane(_ direction: NavigationDirection) {
+        guard let session = selectedSession, let panes = session.layout?.panes,
+              panes.count > 1, let focusedPane = session.focusedPane,
+              let currentIndex = panes.firstIndex(of: focusedPane) else { return }
+        let step = direction == .previous ? -1 : 1
+        let destination = panes[(currentIndex + step + panes.count) % panes.count]
+        guard livePanes[destination] != nil else { return }
+        perform { try store.updateSession(session.id) { $0.focusedPane = destination } }
+        moveFocus(to: destination, in: session.id)
+    }
+
+    private func navigateSession(_ direction: NavigationDirection) {
+        guard let session = selectedSession else { return }
+        let sessions = store.registry.sessions.filter {
+            $0.workspaceID == session.workspaceID && $0.isArchived != true
+        }
+        guard let currentIndex = sessions.firstIndex(where: { $0.id == session.id }), sessions.count > 1 else { return }
+        let step = direction == .previous ? -1 : 1
+        let destination = sessions[(currentIndex + step + sessions.count) % sessions.count]
+        perform { try activateSession(destination.id) }
+    }
+
+    private func navigateWorkspace(_ direction: NavigationDirection) {
+        guard let session = selectedSession else { return }
+        let workspaces = store.registry.workspaces.filter { $0.isArchived != true }
+        guard let currentIndex = workspaces.firstIndex(where: { $0.id == session.workspaceID }), workspaces.count > 1 else { return }
+        let step = direction == .previous ? -1 : 1
+        let destination = workspaces[(currentIndex + step + workspaces.count) % workspaces.count]
+        guard let session = store.registry.sessions.first(where: {
+            $0.workspaceID == destination.id && $0.isArchived != true
+        }) else { return }
+        perform { try activateSession(session.id) }
+    }
+
     private func splitSelected(direction: SurfaceTree.NewDirection) {
         guard let session = selectedSession, let paneID = session.focusedPane else { return }
         split(sessionID: session.id, paneID: paneID, direction: direction)
@@ -376,13 +716,21 @@ final class WorkspaceController: NSObject, NSOutlineViewDataSource, NSOutlineVie
         var observation: MacSessionBinding?
         if pane.kind == .pi, launchOverride == nil {
             try FileManager.default.createDirectory(at: stateRoot, withIntermediateDirectories: true, attributes: [.posixPermissions: 0o700])
-            observation = MacSessionBinding(sessionID: session.id, paneID: pane.id, generation: UUID(),
+            try FileManager.default.createDirectory(at: bindingDirectory, withIntermediateDirectories: true, attributes: [.posixPermissions: 0o700])
+            observation = MacSessionBinding(sessionID: session.id, paneID: pane.id, generation: UUID(), capability: UUID(),
                                             path: stateRoot.appendingPathComponent(pane.id.rawValue.uuidString + ".json").path)
+            try writeBridgeBinding(observation!)
         }
         let launch: TerminalLaunch = launchOverride?(pane, session) ?? (pane.kind == .pi
-            ? .pi(repository: repository, directory: directory, sessionFile: session.piSessionFile, observation: observation)
+            ? .pi(repository: repository, directory: directory, sessionFile: session.piSessionFile, observation: observation,
+                  bridgeSocket: bridgeDirectory.appendingPathComponent("host.sock").path)
             : .shell(directory: directory))
-        let terminal = try TerminalView(runtime: runtime, launch: launch, inheriting: inheriting)
+        let terminal: TerminalView
+        do { terminal = try TerminalView(runtime: runtime, launch: launch, inheriting: inheriting) }
+        catch {
+            if let observation { try? FileManager.default.removeItem(at: bindingDirectory.appendingPathComponent(observation.paneID.rawValue.uuidString + ".json")) }
+            throw error
+        }
         terminal.onFocus = { [weak self, weak terminal] in
             guard let self, let terminal, let (owner, id) = self.owner(of: terminal) else { return }
             if owner.focusedPane != id { self.perform { try self.store.updateSession(owner.id) { $0.focusedPane = id } } }
@@ -393,6 +741,7 @@ final class WorkspaceController: NSObject, NSOutlineViewDataSource, NSOutlineVie
             self.requestClose(id, sessionID: owner.id, needsConfirmation: alive)
         }
         livePanes[pane.id] = terminal
+        Task { @MainActor [weak self] in self?.voiceCoordinator?.destinationStateChanged() }
         if let observation {
             stateBindings[pane.id] = observation
             initialObservationDeadlines[pane.id] = Date().addingTimeInterval(10)
@@ -428,6 +777,7 @@ final class WorkspaceController: NSObject, NSOutlineViewDataSource, NSOutlineVie
                 if value.focusedPane == paneID { value.focusedPane = next.map { PaneID($0.id) }.flatMap { $0 == paneID ? nil : $0 } }
             }
             livePanes.removeValue(forKey: paneID)?.removeFromSuperview()
+            Task { @MainActor [weak self] in self?.voiceCoordinator?.destinationStateChanged() }
             paneHosts.removeValue(forKey: paneID)
             discardObservation(paneID, sessionID: sessionID)
             launchFailures.removeValue(forKey: paneID)
@@ -437,14 +787,15 @@ final class WorkspaceController: NSObject, NSOutlineViewDataSource, NSOutlineVie
 
     private func configureSidebar() {
         view.isVertical = true; view.dividerStyle = .thin; view.delegate = self
-        sidebarContainer.material = .sidebar; sidebarContainer.blendingMode = .behindWindow
+        sidebarContainer.material = .underWindowBackground; sidebarContainer.blendingMode = .withinWindow
         sidebarContainer.state = .followsWindowActiveState
         let scroll = NSScrollView()
         scroll.hasVerticalScroller = true; scroll.autohidesScrollers = true; scroll.drawsBackground = false
         let column = NSTableColumn(identifier: NSUserInterfaceItemIdentifier("navigation"))
         column.title = "Axo"; sidebar.addTableColumn(column); sidebar.outlineTableColumn = column
         sidebar.headerView = nil; sidebar.rowHeight = 28; sidebar.intercellSpacing = NSSize(width: 0, height: 2)
-        sidebar.style = .sourceList; sidebar.indentationPerLevel = 12; sidebar.backgroundColor = .clear
+        sidebar.style = .sourceList; sidebar.selectionHighlightStyle = .regular
+        sidebar.indentationPerLevel = 12; sidebar.backgroundColor = .clear
         sidebar.dataSource = self; sidebar.delegate = self
         sidebar.target = self; sidebar.doubleAction = #selector(renameClickedItem(_:))
         sidebar.isStandaloneSession = { [weak sidebar] value in
@@ -659,6 +1010,24 @@ final class WorkspaceController: NSObject, NSOutlineViewDataSource, NSOutlineVie
     private func handle(terminal: TerminalView?, action: ghostty_action_s) -> Bool {
         // Copy borrowed C strings during the callback; creation/close is deferred to avoid reentering Ghostty.
         switch action.tag {
+        case GHOSTTY_ACTION_MOUSE_OVER_LINK:
+            guard let terminal else { return false }
+            let link = action.action.mouse_over_link
+            guard link.len > 0, link.len <= 4_096, let pointer = link.url else {
+                terminal.updateHoveredURL(nil)
+                return true
+            }
+            let value = String(data: Data(bytes: pointer, count: Int(link.len)), encoding: .utf8)
+            terminal.updateHoveredURL(value)
+        case GHOSTTY_ACTION_OPEN_URL:
+            let request = action.action.open_url
+            guard request.len > 0, request.len <= 4_096, let pointer = request.url,
+                  let value = String(data: Data(bytes: pointer, count: Int(request.len)), encoding: .utf8),
+                  let url = TerminalView.validatedWebURL(value) else {
+                NSSound.beep()
+                return true
+            }
+            _ = NSWorkspace.shared.open(url)
         case GHOSTTY_ACTION_NEW_SPLIT:
             guard let terminal, let (session, pane) = owner(of: terminal) else { return false }
             let direction: SurfaceTree.NewDirection
@@ -691,6 +1060,7 @@ final class WorkspaceController: NSObject, NSOutlineViewDataSource, NSOutlineVie
             }
         case GHOSTTY_ACTION_SHOW_CHILD_EXITED:
             terminal?.childExited = true
+            Task { @MainActor [weak self] in self?.voiceCoordinator?.destinationStateChanged() }
             if let terminal, let (session, pane) = owner(of: terminal) { discardObservation(pane, sessionID: session.id) }
             DispatchQueue.main.async { [weak self] in self?.refreshSidebar() }
         case GHOSTTY_ACTION_GOTO_SPLIT:
@@ -778,17 +1148,10 @@ final class WorkspaceController: NSObject, NSOutlineViewDataSource, NSOutlineVie
     }
     private func discardObservation(_ pane: PaneID, sessionID: AxoSessionID) {
         if let binding = stateBindings.removeValue(forKey: pane) { try? FileManager.default.removeItem(atPath: binding.path) }
+        try? FileManager.default.removeItem(at: bindingDirectory.appendingPathComponent(pane.rawValue.uuidString + ".json"))
         agentSnapshots.removeValue(forKey: pane); attentionReceipts.removeValue(forKey: pane)
         initialObservationDeadlines.removeValue(forKey: pane)
-        notifications?.dismiss(sessionID, includingTests: true)
-    }
-    private func notificationTestDestination() -> MacSessionNotifications.Destination? {
-        guard let session = selectedSession, session.isArchived != true,
-              let pane = session.panes.first(where: { $0.kind == .pi }), livePanes[pane.id]?.childExited == false,
-              let binding = stateBindings[pane.id], let snapshot = agentSnapshots[pane.id],
-              snapshot.matches(session: session.id, pane: pane.id, generation: binding.generation),
-              let conversation = snapshot.conversationID, session.conversationID == conversation else { return nil }
-        return .init(sessionID: session.id, paneID: pane.id, generation: binding.generation, conversationID: conversation)
+        notifications?.dismiss(sessionID)
     }
     private func activateNotification(_ destination: MacSessionNotifications.Destination) {
         guard let binding = stateBindings[destination.paneID], binding.sessionID == destination.sessionID,
@@ -808,7 +1171,10 @@ final class WorkspaceController: NSObject, NSOutlineViewDataSource, NSOutlineVie
             view.window?.makeKeyAndOrderFront(nil); NSApp.activate(ignoringOtherApps: true); restoreFocus()
         }
     }
-    @objc func showSettings(_ sender: Any?) { notifications?.showSettings() }
+    @objc func showSettings(_ sender: Any?) {
+        guard let voiceCoordinator else { return }
+        notifications?.showSettings(voiceCoordinator: voiceCoordinator)
+    }
 
     private func saveShellDirectory(_ path: String, for terminal: TerminalView) {
         guard let (session, paneID) = owner(of: terminal),
@@ -824,6 +1190,13 @@ final class WorkspaceController: NSObject, NSOutlineViewDataSource, NSOutlineVie
 
     func validateMenuItem(_ menuItem: NSMenuItem) -> Bool {
         switch menuItem.action {
+        case #selector(previousPane(_:)), #selector(nextPane(_:)):
+            return (selectedSession?.layout?.panes.count ?? 0) > 1
+        case #selector(previousSession(_:)), #selector(nextSession(_:)):
+            guard let session = selectedSession else { return false }
+            return store.registry.sessions.filter { $0.workspaceID == session.workspaceID && $0.isArchived != true }.count > 1
+        case #selector(previousWorkspace(_:)), #selector(nextWorkspace(_:)):
+            return store.registry.workspaces.filter { $0.isArchived != true }.count > 1
         case #selector(splitRight(_:)), #selector(splitDown(_:)):
             return selectedSession?.focusedPane != nil && livePanes.count < 128
         case #selector(closePane(_:)):
@@ -853,7 +1226,11 @@ final class WorkspaceController: NSObject, NSOutlineViewDataSource, NSOutlineVie
             if let snapshot = agentSnapshots[id] { return attentionReceipts[id]?.presentation(snapshot) ?? snapshot.state }
             return stateBindings[id] == nil ? nil : .detached
         }
-        return WorkspaceSidebarRow(name: item.workspace?.name ?? item.session?.name ?? "", workspace: workspace, running: running, activity: activity, loading: piPane.map { initialObservationDeadlines[$0] != nil } ?? false, actions: menu,
+        let voiceRecording = voiceCoordinator?.recordingTarget?.sessionID == item.session?.id
+        return WorkspaceSidebarRow(name: item.workspace?.name ?? item.session?.name ?? "", workspace: workspace,
+                                   running: running, activity: activity,
+                                   loading: piPane.map { initialObservationDeadlines[$0] != nil } ?? false,
+                                   voiceRecording: voiceRecording, actions: menu,
                                    finishRename: { [weak self] name in self?.finishRenaming(item, name: name) })
     }
     private func readSessionTitle(for terminal: TerminalView) {
@@ -877,6 +1254,7 @@ final class WorkspaceController: NSObject, NSOutlineViewDataSource, NSOutlineVie
             }
         }
     }
+    func outlineView(_ outlineView: NSOutlineView, rowViewForItem item: Any) -> NSTableRowView? { NSTableRowView() }
     func outlineView(_ outlineView: NSOutlineView, shouldSelectItem item: Any) -> Bool { (item as? SidebarItem)?.isDecoration != true }
     func outlineView(_ outlineView: NSOutlineView, isGroupItem item: Any) -> Bool { (item as? SidebarItem)?.sectionTitle != nil }
     func outlineView(_ outlineView: NSOutlineView, heightOfRowByItem item: Any) -> CGFloat { (item as? SidebarItem)?.isSeparator == true ? 20 : 28 }
@@ -896,9 +1274,21 @@ final class WorkspaceController: NSObject, NSOutlineViewDataSource, NSOutlineVie
     }
 }
 
-private enum WorkspaceLaunchFault: LocalizedError {
-    case otherAppRunning
-    var errorDescription: String? { "Axo is already running. Use its existing window, or quit it before opening another copy." }
+@MainActor
+private final class WeakWorkspaceController: @unchecked Sendable {
+    weak var value: WorkspaceController?
+    init(_ value: WorkspaceController) { self.value = value }
+}
+
+/// Local event monitors run synchronously on AppKit's main thread; keep the event boxed while asserting that actor boundary.
+private final class MainActorEventReference: @unchecked Sendable {
+    let event: NSEvent
+    init(_ event: NSEvent) { self.event = event }
+}
+
+private final class MainActorEventResult: @unchecked Sendable {
+    let event: NSEvent?
+    init(_ event: NSEvent?) { self.event = event }
 }
 
 private final class TerminalLaunchFailureView: NSView {

@@ -6,6 +6,9 @@ import { mkdtemp, rm, readFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 
+const sessionId = "00000000-0000-4000-8000-000000000101";
+const workspaceId = "00000000-0000-4000-8000-000000000201";
+const conversationId = "pi-conversation-1";
 let mf: Miniflare;
 let directory: string;
 before(async () => {
@@ -49,53 +52,120 @@ async function connect(stub: Awaited<ReturnType<typeof room>>, role: "phone" | "
     socket,
     send: (frame: unknown) => socket.send(JSON.stringify(frame)),
     next: () => pending.length ? Promise.resolve(pending.shift()) : new Promise<unknown>((resolve, reject) => {
-      const timer = setTimeout(() => reject(new Error("Timed out waiting for relay")), 3000);
+      const timer = setTimeout(() => reject(new Error("Timed out waiting for relay")), 3_000);
       waiters.push(value => { clearTimeout(timer); resolve(value); });
     }),
   };
+}
+
+const catalog = {
+  type: "catalog",
+  catalog: { revision: 1, storeRevision: 2, workspaces: [{ id: workspaceId, name: "Project", kind: "project" }],
+    sessions: [{ id: sessionId, workspaceId, name: "Build", conversationId, availability: "running" }] },
+};
+
+async function nextMatching(peer: Awaited<ReturnType<typeof connect>>, predicate: (value: any) => boolean) {
+  for (let count = 0; count < 10; count++) {
+    const value = await peer.next();
+    if (predicate(value)) return value;
+  }
+  throw new Error("Expected relay frame was not received");
 }
 
 test("phone reports offline and does not queue a prompt", async () => {
   const stub = await room();
   const phone = await connect(stub, "phone");
   assert.deepEqual(await phone.next(), { type: "presence", online: false });
-  phone.send({ type: "prompt", id: "c", sessionId: "s", text: "hello" });
-  assert.deepEqual(await phone.next(), { type: "error", id: "c", message: "Mac offline. Nothing was queued." });
+  const page = await phone.next() as { type: string; hostOnline: boolean };
+  assert.equal(page.type, "catalog_page");
+  assert.equal(page.hostOnline, false);
+  phone.send({ type: "prompt", id: "c", sessionId, text: "hello" });
+  assert.deepEqual(await phone.next(), { type: "error", id: "c", sessionId, message: "Mac offline. Nothing was queued." });
   phone.socket.close();
 });
 
-test("relay carries prompts and snapshots bidirectionally and rejects a second host", async () => {
+test("relay persists the catalog and routes only to the subscribed Axo session", async () => {
   const stub = await room();
   const host = await connect(stub, "host");
-  assert.deepEqual(await host.next(), { type: "sync" });
+  assert.deepEqual(await host.next(), { type: "catalog_request", revision: 0 });
+  host.send(catalog);
   const phone = await connect(stub, "phone");
   assert.deepEqual(await phone.next(), { type: "presence", online: true });
-  assert.deepEqual(await host.next(), { type: "sync" });
-  const prompt = { type: "prompt", id: "c", sessionId: "s", text: "hello" };
+  // The host's send is asynchronous; the phone can observe revision 0 before the updated catalog broadcast.
+  const initialCatalog = await nextMatching(phone, value => {
+    const page = value as { type?: string; revision?: number };
+    return page.type === "catalog_page" && page.revision === 1;
+  }) as { type: string; revision: number; items: unknown[]; hostOnline: boolean };
+  assert.equal(initialCatalog.hostOnline, true);
+  assert.equal(initialCatalog.items.length, 2);
+
+  phone.send({ type: "subscribe", id: "sub", sessionId });
+  assert.deepEqual(await phone.next(), { type: "subscription", id: "sub", sessionId, hostOnline: true });
+  assert.deepEqual(await host.next(), { type: "sync", sessionId });
+
+  const prompt = { type: "prompt", id: "c", sessionId, text: "hello" };
   phone.send(prompt);
   assert.deepEqual(await host.next(), prompt);
-  const snapshot = { type: "snapshot", sessionId: "s", viewId: "v", state: "idle", messages: [{ id: "m", role: "assistant", text: "Hello back" }], hasEarlierMessages: false, question: null };
+  const snapshot = { type: "snapshot", sessionId, conversationId, viewId: "v", state: "idle",
+    messages: [{ id: "m", role: "assistant", text: "Hello back" }], hasEarlierMessages: false, question: null };
   host.send(snapshot);
   assert.deepEqual(await phone.next(), snapshot);
-  const outputRequest = { type: "tool_output", id: "output", sessionId: "s", toolCallId: "tool", offset: 0 };
+
+  const outputRequest = { type: "tool_output", id: "output", sessionId, toolCallId: "tool", offset: 0 };
   phone.send(outputRequest);
   assert.deepEqual(await host.next(), outputRequest);
-  const output = { ...outputRequest, text: "Full output", nextOffset: null };
+  const output = { type: "tool_output", id: "output", sessionId, conversationId,
+    toolCallId: "tool", offset: 0, text: "Full output", nextOffset: null };
   host.send(output);
   assert.deepEqual(await phone.next(), output);
-  const historyRequest = { type: "history", id: "history", sessionId: "s", viewId: "v", beforeId: "m" };
+
+  const historyRequest = { type: "history", id: "history", sessionId, viewId: "v", beforeId: "m" };
   phone.send(historyRequest);
   assert.deepEqual(await host.next(), historyRequest);
-  const history = { ...historyRequest, messages: snapshot.messages, hasEarlierMessages: true, hasLaterMessages: false };
+  const history = { ...historyRequest, conversationId, messages: snapshot.messages, hasEarlierMessages: true, hasLaterMessages: false };
   host.send(history);
   assert.deepEqual(await phone.next(), history);
+
+  const wrongDestination = { type: "prompt", id: "wrong", sessionId: "00000000-0000-4000-8000-000000000999", text: "no" };
+  phone.send(wrongDestination);
+  assert.deepEqual(await phone.next(), { type: "error", id: "wrong", sessionId: wrongDestination.sessionId,
+    message: "Select this session before sending a command to it." });
+
   const duplicate = await stub.fetch("https://internal/", { headers: { "X-Axo-Role": "host", "X-Axo-Expiry": String(Date.now() + 60_000) } });
   assert.equal(duplicate.status, 409);
   phone.send(snapshot);
   assert.deepEqual(await phone.next(), { type: "error", message: "Phone protocol mismatch. Update the iOS app, then reconnect." });
   host.socket.close();
   assert.deepEqual(await phone.next(), { type: "presence", online: false });
+  const offlineCatalog = await nextMatching(phone, value => (value as { type?: string }).type === "catalog_page") as { hostOnline: boolean };
+  assert.equal(offlineCatalog.hostOnline, false);
   phone.socket.close();
+});
+
+test("phone workspace creation is explicitly forwarded to the Mac and acknowledged by command ID", async () => {
+  const stub = await room();
+  const host = await connect(stub, "host");
+  assert.deepEqual(await host.next(), { type: "catalog_request", revision: 0 });
+  host.send(catalog);
+
+  const phone = await connect(stub, "phone");
+  assert.deepEqual(await phone.next(), { type: "presence", online: true });
+  await nextMatching(phone, value => (value as { type?: string; revision?: number }).type === "catalog_page"
+    && (value as { revision?: number }).revision === 1);
+
+  const request = { type: "create_workspace", id: "phone-create", name: "Phone project" };
+  phone.send(request);
+  assert.deepEqual(await host.next(), request);
+
+  const acknowledgement = {
+    type: "ack", id: "phone-create", disposition: "created",
+    workspaceId: "00000000-0000-4000-8000-000000000202",
+    sessionId: "00000000-0000-4000-8000-000000000102",
+  };
+  host.send(acknowledgement);
+  assert.deepEqual(await phone.next(), acknowledgement);
+  phone.socket.close();
+  host.socket.close();
 });
 
 test("private file HTTP endpoints enforce Access before exposing feature state", async () => {

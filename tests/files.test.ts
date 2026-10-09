@@ -27,7 +27,7 @@ before(async () => {
   assert.equal(response.status, 101);
   const socket = response.webSocket!;
   socket.accept();
-  socket.send(JSON.stringify({ type: "snapshot", sessionId: "session", viewId: "view", state: "idle", messages: [], hasEarlierMessages: false, question: null }));
+  socket.send(JSON.stringify({ type: "snapshot", sessionId: "00000000-0000-4000-8000-000000000101", conversationId: "session", viewId: "view", state: "idle", messages: [], hasEarlierMessages: false, question: null }));
   await new Promise(resolve => setTimeout(resolve, 30));
   socket.close();
 });

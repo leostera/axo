@@ -16,7 +16,7 @@ async function collect(entries: SessionEntry[]): Promise<string> {
   let output = "", offset: number | null = 0;
   while (offset !== null) {
     const page = await readToolOutput(entries, "call", offset);
-    parseFrame(JSON.stringify({ type: "tool_output", id: "request", sessionId: "s", toolCallId: "call", offset, ...page }), hostFrameSchema);
+    parseFrame(JSON.stringify({ type: "tool_output", id: "request", sessionId: "00000000-0000-4000-8000-000000000101", conversationId: "pi-session", toolCallId: "call", offset, ...page }), hostFrameSchema);
     if (page.nextOffset !== null) assert.ok(page.nextOffset > offset);
     output += page.text;
     offset = page.nextOffset;

@@ -8,7 +8,7 @@ if [[ ! -f "$AXO_CONFIG" ]]; then unset AXO_CONFIG; fi
 SESSION_FILE="$ROOT/local/playground/session.jsonl"
 DIRECTORY="$ROOT/local/playground"
 # Managed observation bindings are explicit launch arguments, never inherited from a parent Pi tool.
-unset AXO_STATE_FILE AXO_WORK_SESSION_ID AXO_PANE_ID AXO_RUNTIME_GENERATION AXO_MANAGED_SESSION_FILE
+unset AXO_STATE_FILE AXO_WORK_SESSION_ID AXO_PANE_ID AXO_RUNTIME_GENERATION AXO_BINDING_CAPABILITY AXO_BRIDGE_SOCKET AXO_MANAGED_SESSION_FILE
 # Axo-owned launch arguments are removed before invoking the unchanged Pi CLI.
 while [[ $# -gt 0 ]]; do
   case "$1" in
@@ -18,6 +18,8 @@ while [[ $# -gt 0 ]]; do
     --axo-work-session-id) [[ $# -ge 2 ]] || exit 64; export AXO_WORK_SESSION_ID="$2"; shift 2 ;;
     --axo-pane-id) [[ $# -ge 2 ]] || exit 64; export AXO_PANE_ID="$2"; shift 2 ;;
     --axo-runtime-generation) [[ $# -ge 2 ]] || exit 64; export AXO_RUNTIME_GENERATION="$2"; shift 2 ;;
+    --axo-binding-capability) [[ $# -ge 2 ]] || exit 64; export AXO_BINDING_CAPABILITY="$2"; shift 2 ;;
+    --axo-bridge-socket) [[ $# -ge 2 ]] || exit 64; export AXO_BRIDGE_SOCKET="$2"; shift 2 ;;
     *) break ;;
   esac
 done

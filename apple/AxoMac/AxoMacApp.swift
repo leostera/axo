@@ -15,6 +15,16 @@ final class AxoMacApp: NSObject, NSApplicationDelegate, NSWindowDelegate {
     }
 
     func applicationDidFinishLaunching(_ notification: Notification) {
+        if !CommandLine.arguments.contains("--axo-workspaces-self-test"),
+           let bundleID = Bundle.main.bundleIdentifier,
+           let existing = NSRunningApplication.runningApplications(withBundleIdentifier: bundleID)
+            .first(where: { $0.processIdentifier != ProcessInfo.processInfo.processIdentifier && !$0.isTerminated }) {
+            existing.unhide()
+            existing.activate(options: [.activateAllWindows])
+            NSApp.terminate(nil)
+            return
+        }
+
         do {
             let environment = ProcessInfo.processInfo.environment
             guard let configuredRoot = environment["AXO_REPO"]
@@ -73,6 +83,11 @@ final class AxoMacApp: NSObject, NSApplicationDelegate, NSWindowDelegate {
         }
     }
 
+    func applicationWillTerminate(_ notification: Notification) {
+        workspaces?.shutdownVoice()
+        workspaces?.stopBridgeHost()
+    }
+
     func applicationDidBecomeActive(_ notification: Notification) { runtime?.setFocus(true) }
     func applicationDidResignActive(_ notification: Notification) { runtime?.setFocus(false) }
     func windowDidBecomeKey(_ notification: Notification) {
@@ -112,6 +127,9 @@ final class AxoMacApp: NSObject, NSApplicationDelegate, NSWindowDelegate {
         let appItem = NSMenuItem()
         menu.addItem(appItem)
         let appMenu = NSMenu()
+        let settings = appMenu.addItem(withTitle: "Settings…", action: #selector(WorkspaceController.showSettings(_:)), keyEquivalent: ",")
+        settings.target = workspaces
+        appMenu.addItem(.separator())
         appMenu.addItem(withTitle: "Quit Axo", action: #selector(NSApplication.terminate(_:)), keyEquivalent: "q")
         appItem.submenu = appMenu
         let workItem = NSMenuItem()
@@ -123,6 +141,16 @@ final class AxoMacApp: NSObject, NSApplicationDelegate, NSWindowDelegate {
         }
         add("New Workspace…", #selector(WorkspaceController.newWorkspace(_:)), "n")
         add("New Session…", #selector(WorkspaceController.newSession(_:)), "t")
+        add("Command Palette…", #selector(WorkspaceController.showCommandPalette(_:)), "p", [.command, .shift])
+        let voice = work.addItem(withTitle: "Voice Dictation…", action: #selector(WorkspaceController.toggleVoiceDictation(_:)), keyEquivalent: "")
+        voice.target = workspaces
+        work.addItem(.separator())
+        add("Previous Pane", #selector(WorkspaceController.previousPane(_:)), "[")
+        add("Next Pane", #selector(WorkspaceController.nextPane(_:)), "]")
+        add("Previous Session", #selector(WorkspaceController.previousSession(_:)), "{")
+        add("Next Session", #selector(WorkspaceController.nextSession(_:)), "}")
+        add("Previous Workspace", #selector(WorkspaceController.previousWorkspace(_:)), "<")
+        add("Next Workspace", #selector(WorkspaceController.nextWorkspace(_:)), ">")
         work.addItem(.separator())
         add("Split Right", #selector(WorkspaceController.splitRight(_:)), "d")
         add("Split Down", #selector(WorkspaceController.splitDown(_:)), "e", [.command, .shift])

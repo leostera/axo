@@ -2,7 +2,7 @@ import { test } from "node:test";
 import assert from "node:assert/strict";
 import { createServer as httpsServer } from "node:https";
 import { createServer as httpServer } from "node:http";
-import { mkdtemp, readFile, writeFile, rm } from "node:fs/promises";
+import { mkdtemp, mkdir, readFile, writeFile, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
 import { spawn, execFileSync } from "node:child_process";
@@ -11,7 +11,8 @@ import { WebSocketServer, type WebSocket } from "ws";
 import type { AddressInfo } from "node:net";
 import { hostFrameSchema, type HostFrame } from "../shared/protocol";
 import { promptDelivery } from "../bridge/delivery";
-import { createHash } from "node:crypto";
+import { createHash, randomUUID } from "node:crypto";
+import { HostBroker } from "../bridge/host-broker";
 
 test("phone prompts interrupt active work instead of becoming follow-ups", () => {
   assert.equal(promptDelivery(true), undefined);
@@ -27,14 +28,23 @@ test("real Pi TUI accepts a phone prompt and shares a question/result", { timeou
   const relay = httpsServer({ key: await readFile(keyPath), cert: await readFile(certPath) });
   const sockets = new WebSocketServer({ server: relay });
   const frames: HostFrame[] = [];
+  const macCommands: unknown[] = [];
   let host: WebSocket | undefined;
+  let broker: HostBroker | undefined;
   let metadataDelay = 0;
+  const axoSessionId = "00000000-0000-4000-8000-000000000101";
+  const workspaceId = "00000000-0000-4000-8000-000000000201";
+  const standaloneWorkspaceId = "00000000-0000-4000-8000-000000000202";
+  const paneId = "00000000-0000-4000-8000-000000000301";
+  const runtimeGeneration = "00000000-0000-4000-8000-000000000401";
+  const capability = "00000000-0000-4000-8000-000000000501";
   const imageId = "00000000-0000-4000-8000-000000000001";
   const png = Buffer.from("iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mP8/x8AAwMCAO+aGQsAAAAASUVORK5CYII=", "base64");
   relay.on("request", (request, response) => {
     assert.equal(request.headers["cf-access-client-id"], "test-id");
     assert.equal(request.headers["cf-access-client-secret"], "test-secret");
-    const sessionId = frames.find(frame => frame.type === "snapshot")?.sessionId;
+    const sessionId = frames.find(frame => frame.type === "snapshot")?.type === "snapshot"
+      ? (frames.find(frame => frame.type === "snapshot") as Extract<HostFrame, { type: "snapshot" }>).conversationId : undefined;
     if (request.url === `/files/sessions/${sessionId}/files/${imageId}`) {
       response.setHeader("Content-Type", "application/json");
       setTimeout(() => response.end(JSON.stringify({ id: imageId, sessionId, filename: "screenshot.png", mediaType: "image/png", byteLength: png.length,
@@ -45,7 +55,11 @@ test("real Pi TUI accepts a phone prompt and shares a question/result", { timeou
   sockets.on("connection", (socket, request) => {
     assert.equal(request.headers["cf-access-client-id"], "test-id");
     host = socket;
-    socket.on("message", raw => frames.push(hostFrameSchema.parse(JSON.parse(raw.toString()))));
+    setTimeout(() => socket.send(JSON.stringify({ type: "catalog_request", revision: 0 })), 0);
+    socket.on("message", raw => {
+      try { frames.push(hostFrameSchema.parse(JSON.parse(raw.toString()))); }
+      catch { /* Relay-to-broker control frames are not public host snapshots. */ }
+    });
   });
   relay.listen(0, "localhost");
   await once(relay, "listening");
@@ -78,6 +92,35 @@ test("real Pi TUI accepts a phone prompt and shares a question/result", { timeou
   await once(model, "listening");
   const configPath = join(directory, "relay.json");
   await writeFile(configPath, JSON.stringify({ relayURL: `https://localhost:${(relay.address() as AddressInfo).port}`, accessClientId: "test-id", accessClientSecret: "test-secret" }), { mode: 0o600 });
+  const bindingDirectory = join(directory, "bindings");
+  await mkdir(bindingDirectory, { mode: 0o700 });
+  await writeFile(join(bindingDirectory, `${paneId}.json`), JSON.stringify({ sessionId: axoSessionId, paneId, runtimeGeneration, capability }), { mode: 0o600 });
+  const registryPath = join(directory, "workspaces.json");
+  await writeFile(registryPath, JSON.stringify({
+    version: 1, revision: 1,
+    workspaces: [
+      { id: { rawValue: workspaceId }, name: "Test workspace", directory: null, kind: "project" },
+      { id: { rawValue: standaloneWorkspaceId }, name: "Sessions", directory: null, kind: "playground" },
+    ],
+    sessions: [{ id: { rawValue: axoSessionId }, workspaceID: { rawValue: workspaceId }, name: "Bridge test", directory: directory,
+      piSessionFile: join(directory, "session.jsonl"), conversationID: null,
+      panes: [{ id: { rawValue: paneId }, kind: "pi", directory: null }], layout: null, focusedPane: { rawValue: paneId } }],
+  }), { mode: 0o600 });
+  const socketPath = join(directory, "bridge", "host.sock");
+  broker = new HostBroker({ relayURL: `https://localhost:${(relay.address() as AddressInfo).port}`, accessClientId: "test-id", accessClientSecret: "test-secret" }, {
+    socketPath, registryPath, bindingDirectory, onMacCommand: frame => macCommands.push(frame),
+  });
+  const oldTlsSetting = process.env.NODE_TLS_REJECT_UNAUTHORIZED;
+  process.env.NODE_TLS_REJECT_UNAUTHORIZED = "0";
+  try { await broker.start(); }
+  catch (error) {
+    broker.stop();
+    if (oldTlsSetting === undefined) delete process.env.NODE_TLS_REJECT_UNAUTHORIZED;
+    else process.env.NODE_TLS_REJECT_UNAUTHORIZED = oldTlsSetting;
+    sockets.close(); relay.close(); model.close();
+    await rm(directory, { recursive: true, force: true });
+    throw error;
+  }
   const child = spawn("python3", [resolve("tests/fixtures/terminal_driver.py"), process.execPath,
     resolve("node_modules/@earendil-works/pi-coding-agent/dist/bundle/cli.js"),
     "--no-extensions", "--no-skills", "--no-prompt-templates", "--no-themes", "--no-approve",
@@ -85,7 +128,9 @@ test("real Pi TUI accepts a phone prompt and shares a question/result", { timeou
     "--provider", "axo-test", "--model", "fixture", "--session", join(directory, "session.jsonl")], {
     cwd: directory, env: { ...process.env, HOME: directory, TERM: "xterm-256color", PI_CODING_AGENT_DIR: join(directory, "pi"),
       PI_OFFLINE: "1", PI_TELEMETRY: "0", PI_SKIP_VERSION_CHECK: "1", NODE_EXTRA_CA_CERTS: certPath,
-      AXO_CONFIG: configPath, AXO_TEST_MODEL_URL: `http://127.0.0.1:${(model.address() as AddressInfo).port}/v1` },
+      AXO_CONFIG: configPath, AXO_BRIDGE_SOCKET: socketPath, AXO_WORK_SESSION_ID: axoSessionId, AXO_PANE_ID: paneId,
+      AXO_RUNTIME_GENERATION: runtimeGeneration, AXO_BINDING_CAPABILITY: capability,
+      AXO_TEST_MODEL_URL: `http://127.0.0.1:${(model.address() as AddressInfo).port}/v1` },
     stdio: ["ignore", "pipe", "pipe"],
   });
   const exited = once(child, "exit");
@@ -106,6 +151,18 @@ test("real Pi TUI accepts a phone prompt and shares a question/result", { timeou
     const initial = await waitFor(frame => frame.type === "snapshot");
     assert.equal(initial.type, "snapshot");
     if (initial.type !== "snapshot") throw new Error("Expected snapshot");
+    const publishedCatalog = await waitFor(frame => frame.type === "catalog"
+      && frame.catalog.sessions.some(session => session.id === axoSessionId && session.availability === "running"));
+    if (publishedCatalog.type !== "catalog") throw new Error("Expected an admitted runtime catalog");
+    assert.equal(publishedCatalog.catalog.workspaces.find(workspace => workspace.id === standaloneWorkspaceId)?.kind, "standalone");
+    const rename = { type: "rename_session", id: "rename-session", sessionId: axoSessionId,
+      name: "Renamed from phone", expectedRevision: publishedCatalog.catalog.revision };
+    host!.send(JSON.stringify(rename));
+    const commandDeadline = Date.now() + 3_000;
+    while (macCommands.length === 0 && Date.now() < commandDeadline) await new Promise(resolve => setTimeout(resolve, 20));
+    assert.deepEqual(macCommands[0], rename);
+    host!.send(JSON.stringify({ ...rename, id: "stale-rename", expectedRevision: publishedCatalog.catalog.revision - 1 }));
+    await waitFor(frame => frame.type === "error" && frame.id === "stale-rename");
     const prompt = { type: "prompt", id: "phone-prompt", sessionId: initial.sessionId, text: "Ask which output format I want." };
     host!.send(JSON.stringify(prompt));
     await waitFor(frame => frame.type === "ack" && frame.id === prompt.id);
@@ -128,7 +185,7 @@ test("real Pi TUI accepts a phone prompt and shares a question/result", { timeou
       assert.ok(completed.activities?.some(activity => activity.toolName === "axo_ask" && activity.status === "completed"));
       assert.ok(completed.messages.some(message => message.role === "tool" && message.toolName === "axo_ask" && message.status === "completed"));
       const beforeSync = frames.length;
-      host!.send(JSON.stringify({ type: "sync" }));
+      host!.send(JSON.stringify({ type: "session_sync", sessionId: axoSessionId }));
       const deadline = Date.now() + 3_000;
       while (frames.length === beforeSync && Date.now() < deadline) await new Promise(resolve => setTimeout(resolve, 30));
       const restored = frames.slice(beforeSync).find(frame => frame.type === "snapshot");
@@ -154,7 +211,7 @@ test("real Pi TUI accepts a phone prompt and shares a question/result", { timeou
     assert.equal(cancelled.type, "snapshot");
     host!.send(JSON.stringify(prompt));
     await waitFor(frame => frame.type === "error" && frame.id === prompt.id && frame.message.includes("Already submitted"));
-    host!.send(JSON.stringify({ ...prompt, id: "stale", sessionId: "wrong-session" }));
+    host!.send(JSON.stringify({ ...prompt, id: "stale", sessionId: "00000000-0000-4000-8000-000000000999" }));
     await waitFor(frame => frame.type === "error" && frame.id === "stale");
     const imagePrompt = { type: "prompt", id: "screenshot-prompt", sessionId: initial.sessionId, text: "Discuss this attached screenshot.", attachmentIds: [imageId] };
     host!.send(JSON.stringify(imagePrompt));
@@ -195,6 +252,9 @@ test("real Pi TUI accepts a phone prompt and shares a question/result", { timeou
   } finally {
     child.kill("SIGTERM");
     await exited;
+    broker?.stop();
+    if (oldTlsSetting === undefined) delete process.env.NODE_TLS_REJECT_UNAUTHORIZED;
+    else process.env.NODE_TLS_REJECT_UNAUTHORIZED = oldTlsSetting;
     for (const socket of sockets.clients) socket.terminate();
     sockets.close();
     relay.close();
