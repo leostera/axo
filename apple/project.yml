@@ -8,6 +8,10 @@ settings:
   base:
     SWIFT_VERSION: '5.0'
     GENERATE_INFOPLIST_FILE: YES
+    MARKETING_VERSION: '0.1.0'
+    CURRENT_PROJECT_VERSION: '1'
+    INFOPLIST_KEY_CFBundleShortVersionString: $(MARKETING_VERSION)
+    INFOPLIST_KEY_CFBundleVersion: $(CURRENT_PROJECT_VERSION)
     CODE_SIGN_STYLE: Automatic
 packages:
   AxoCore:
