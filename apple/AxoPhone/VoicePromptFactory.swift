@@ -6,7 +6,8 @@ enum VoicePromptFactory {
     static func make() -> VoicePrompt {
         #if DEBUG
         if ProcessInfo.processInfo.arguments.contains("--axo-voice-preview") {
-            return VoicePrompt(recorder: PreviewRecorder(), transcriber: PreviewTranscriber())
+            let delay: Duration = ProcessInfo.processInfo.arguments.contains("--axo-voice-preview-fast") ? .milliseconds(150) : .seconds(30)
+            return VoicePrompt(recorder: PreviewRecorder(), transcriber: PreviewTranscriber(delay: delay))
         }
         #endif
         return VoicePrompt(recorder: MicrophoneRecorder(), transcriber: AppleSpeechProvider.makeTranscriber())
@@ -38,11 +39,14 @@ private final class PreviewRecorder: VoiceRecording {
 }
 
 private actor PreviewTranscriber: LocalSpeechTranscribing {
+    let delay: Duration
+    init(delay: Duration) { self.delay = delay }
+
     func prepare(progress: @escaping @Sendable (VoiceModelProgress) -> Void) async throws {
         progress(.init(fraction: 1, detail: "Synthetic voice fixture ready"))
     }
     func transcribe(_ audioURL: URL) async throws -> String {
-        try await Task.sleep(for: .seconds(30))
+        try await Task.sleep(for: delay)
         return "Synthetic dictated prompt"
     }
     func unload() async {}

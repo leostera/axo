@@ -24,7 +24,7 @@ struct VoicePromptButton: View {
             Button("Continue") { downloadApproved = true; voice.prepareAndRecord() }
             Button("Not now", role: .cancel) {}
         } message: {
-            Text("Uses Apple's English speech model on this iPhone. Apple may need to download language assets first; use Wi-Fi. Audio stays on-device. After you stop, Axo sends the transcript to Pi when connected; otherwise it remains in your draft.")
+            Text("Uses Apple's English speech model on this iPhone. Apple may need to download language assets first; use Wi-Fi. Audio stays on-device. Stop transcribes into your draft for review. Send transcribes and sends to Pi when available; otherwise it stays in your draft.")
         }
     }
 
@@ -38,7 +38,7 @@ struct VoicePromptButton: View {
     }
     private var label: String {
         switch voice.state {
-        case .recording: "Stop and send"
+        case .recording: "Stop recording"
         case .ready: "Record"
         case .idle, .failed: downloadApproved ? "Record" : "Set up voice"
         case .transcribing: "Cancel transcription"
@@ -129,7 +129,7 @@ struct VoiceInformationView: View {
             ScrollView {
                 VStack(alignment: .leading, spacing: 16) {
                     Text("Apple on-device speech").font(.title2.bold())
-                    Text("Tap the waveform or microphone to record, then tap stop and send. There is no recording time limit; long recordings use more device storage. Axo transcribes on this iPhone and sends the resulting prompt automatically when connected. If Axo is offline or cannot send, the transcript stays in your draft so you can send it later. You can dictate while the Mac is offline.")
+                    Text("Tap the waveform or microphone to record. Stop (the square) transcribes into your draft without sending, so you can review and edit. Send (the arrow) transcribes and sends the resulting prompt to Pi when available. Cancel (the cross) discards the recording and preserves existing draft text. There is no recording time limit; long recordings use more device storage. If Axo is offline or cannot send, the transcript stays in your draft and is never automatically replayed. You can dictate while the Mac is offline.")
                     Text("Recognition uses Apple's on-device SpeechTranscriber, not a server recognition service. Audio is never uploaded by Axo. Temporary recordings are deleted after transcription or cancellation; backgrounding or an audio interruption cancels capture.")
                     Text("Requires iOS 26 and a device that supports Apple's English speech model. Apple manages language assets and may download them during setup. Axo shows bytes when Apple reports byte counts, otherwise percentage progress. Apple may continue a shared asset download after you cancel setup.")
                     Text("No Parakeet, FluidAudio, Hugging Face download, or server-recognition fallback. The old Parakeet cache is removed when this version opens. This is stop-to-transcribe dictation, not live streaming.")

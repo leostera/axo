@@ -4,8 +4,8 @@
 
 1. Tap the waveform in Axo's composer (VoiceOver: **Set up voice**).
 2. Confirm **Set up Apple on-device speech?** and allow microphone access. Apple may need to download English language assets; use Wi-Fi and keep Axo open during setup.
-3. Tap the waveform/microphone to record, speak, then tap stop (VoiceOver: **Stop and send**). There is no duration cap; long recordings use more device storage. Recording ends when you stop it, an interruption occurs, or Axo enters the background.
-4. Axo transcribes on-device and sends the prompt automatically when connected. If sending is unavailable, the transcript stays in the draft for you to send later.
+3. Approved setup starts recording immediately; later waveform/microphone taps record directly. The compact bar shows measured local audio levels, **Cancel recording**, **Stop recording** (square), and **Send recording** (arrow). There is no duration cap; long recordings use more device storage.
+4. **Stop** transcribes into the draft without sending, so you can review/edit. **Send** transcribes and attempts submission once when available; otherwise the transcript stays in the draft for manual sending. **Cancel** discards the recording while preserving existing draft text. Transcription shows a spinner inside the send button and can be cancelled.
 
 The app uses **SpeechAnalyzer + SpeechTranscriber on iOS 26+**, not an Apple Foundation Models text LLM. English (US) is the initial language. The device must support SpeechTranscriber's on-device model. Older or unsupported devices get an explicit message; Axo never silently falls back to server recognition. Typing remains available.
 
@@ -25,7 +25,7 @@ Axo requests cancellation of setup, but Apple may continue a shared language-ass
 - Cancel, backgrounding, or audio interruption discards the current recording. Late recognition results are ignored. A new operation cannot overlap cancellation cleanup.
 - Each clip gets a fresh analyzer because a finalized `SpeechAnalyzer` cannot be reused. Only final results are appended; partial results do not become prompts.
 - Existing draft text is preserved, including edits made while recognition runs. Over-limit drafts are not truncated; automatic sending is skipped until the draft is shortened.
-- Stopping a recording explicitly initiates sending its transcript when the relay is available. If the relay is unavailable or the draft exceeds the text limit, the transcript remains in the draft for manual sending. No audio upload, paid inference, always-on listening, streaming UI, or background microphone mode is added.
+- Only the recording bar's Send action authorizes submission; Stop and automatic recorder completion default to draft review. The delivery intent belongs to that transcript and cannot leak to later recordings. Failed/unavailable sending never automatically replays. Local waveform metering is bounded and never uploaded. No audio upload, paid inference, always-on listening, or background microphone mode is added.
 - The app reserves only its English locale and does not release unrelated language reservations.
 
 ## Migration from Parakeet

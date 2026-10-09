@@ -85,13 +85,13 @@ struct SharedFileCard: View {
     }
 }
 
-private func boundedThumbnail(_ url: URL) throws -> UIImage {
+private func boundedThumbnail(_ url: URL, maxPixelSize: Int = 2048) throws -> UIImage {
     guard let source = CGImageSourceCreateWithURL(url as CFURL, nil),
           let properties = CGImageSourceCopyPropertiesAtIndex(source, 0, nil) as? [CFString: Any],
           let width = properties[kCGImagePropertyPixelWidth] as? Int,
           let height = properties[kCGImagePropertyPixelHeight] as? Int,
           width > 0, height > 0, width <= 40_000_000 / height,
-          let image = CGImageSourceCreateThumbnailAtIndex(source, 0, [kCGImageSourceCreateThumbnailFromImageAlways: true, kCGImageSourceThumbnailMaxPixelSize: 2048, kCGImageSourceCreateThumbnailWithTransform: true] as CFDictionary) else {
+          let image = CGImageSourceCreateThumbnailAtIndex(source, 0, [kCGImageSourceCreateThumbnailFromImageAlways: true, kCGImageSourceThumbnailMaxPixelSize: maxPixelSize, kCGImageSourceCreateThumbnailWithTransform: true] as CFDictionary) else {
         throw FileTransferError.message("Unsupported image or more than 40 megapixels. Export the original to inspect it separately.")
     }
     return UIImage(cgImage: image)
@@ -188,24 +188,8 @@ struct DraftFilesBar: View {
         ScrollView(.horizontal) {
             HStack(spacing: 10) {
                 ForEach(client.currentDrafts) { draft in
-                    VStack(alignment: .leading, spacing: 6) {
-                        HStack {
-                            Text(draft.filename).font(.caption.weight(.semibold)).lineLimit(1)
-                            Button { client.removeDraft(draft.id) } label: { Image(systemName: "xmark.circle.fill") }
-                                .accessibilityLabel("Remove \(draft.filename)")
-                        }
-                        if draft.isQueued { Text("Queued for upload").font(.caption2).foregroundStyle(.secondary) }
-                        else if draft.isUploading { ProgressView(value: draft.progress) }
-                        else if let error = draft.error {
-                            Text(error).font(.caption2).foregroundStyle(.orange).lineLimit(2)
-                            Button("Check/retry upload") { client.retryUpload(draft.id) }.font(.caption)
-                        } else if draft.file?.state == .ready { Text("Uploaded · prompt not sent").font(.caption2).foregroundStyle(.secondary) }
-                        else if draft.file == nil {
-                            Text("Local draft · not uploaded").font(.caption2).foregroundStyle(.secondary)
-                            Button("Review/upload") { reviewUpload(draft.id) }.font(.caption)
-                        }
-                    }
-                    .frame(width: 210).padding(10).background(ChatColors.surface, in: RoundedRectangle(cornerRadius: 12))
+                    DraftAttachmentCard(draft: draft, remove: { client.removeDraft(draft.id) },
+                                        retry: { client.retryUpload(draft.id) }, reviewUpload: { reviewUpload(draft.id) })
                 }
             }
         }
@@ -213,9 +197,75 @@ struct DraftFilesBar: View {
     }
 }
 
+private struct DraftAttachmentCard: View {
+    let draft: DraftFile
+    let remove: () -> Void
+    let retry: () -> Void
+    let reviewUpload: () -> Void
+    @State private var thumbnail: UIImage?
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 6) {
+            if let thumbnail {
+                Image(uiImage: thumbnail).resizable().scaledToFill()
+                    .frame(width: 96, height: 96).clipShape(RoundedRectangle(cornerRadius: 20))
+                    .accessibilityLabel(draft.filename)
+                    .overlay(alignment: .topTrailing) { removeButton }
+            } else {
+                HStack {
+                    Label(draft.filename, systemImage: "doc").font(.caption.weight(.semibold)).lineLimit(1)
+                    removeButton
+                }
+            }
+            if draft.isQueued { Text("Queued for upload").font(.caption2).foregroundStyle(.secondary) }
+            else if draft.isUploading { ProgressView(value: draft.progress) }
+            else if let error = draft.error {
+                Text(error).font(.caption2).foregroundStyle(.orange).lineLimit(2)
+                Button("Check/retry upload", action: retry).font(.caption)
+            } else if draft.file?.state == .ready {
+                Text("Uploaded · prompt not sent").font(.caption2).foregroundStyle(.secondary)
+            } else if draft.file == nil {
+                Text("Local draft · not uploaded").font(.caption2).foregroundStyle(.secondary)
+                Button("Review/upload", action: reviewUpload).font(.caption)
+            }
+        }
+        .frame(width: thumbnail == nil ? 210 : 96).padding(thumbnail == nil ? 10 : 0)
+        .background(thumbnail == nil ? ChatColors.surface : .clear, in: RoundedRectangle(cornerRadius: 12))
+        .task(id: draft.source) { thumbnail = try? boundedThumbnail(draft.source, maxPixelSize: 256) }
+    }
+
+    private var removeButton: some View {
+        Button(action: remove) {
+            Image(systemName: "xmark").font(.system(size: 12, weight: .bold))
+                .foregroundStyle(.white).frame(width: 26, height: 26)
+                .background(.black.opacity(0.6), in: Circle())
+                .frame(width: 44, height: 44).contentShape(Circle())
+        }
+        .buttonStyle(.plain).accessibilityLabel("Remove \(draft.filename)")
+    }
+}
+
 /// Photos intentionally publish a bounded JPEG representation; document picking preserves bytes.
 struct PickedPhoto: Transferable {
     let url: URL
+
+    @MainActor
+    static func stageCameraImage(_ image: UIImage) throws -> PickedPhoto {
+        guard image.size.width > 0, image.size.height > 0 else { throw FileTransferError.message("Could not capture photo.") }
+        let scale = min(1, 2048 / max(image.size.width, image.size.height))
+        let size = CGSize(width: image.size.width * scale, height: image.size.height * scale)
+        let format = UIGraphicsImageRendererFormat()
+        format.scale = 1
+        format.opaque = true
+        let bounded = UIGraphicsImageRenderer(size: size, format: format).image { _ in
+            image.draw(in: CGRect(origin: .zero, size: size))
+        }
+        guard let data = bounded.jpegData(compressionQuality: 0.9) else { throw FileTransferError.message("Could not create a JPEG photo attachment.") }
+        let url = FileManager.default.temporaryDirectory.appendingPathComponent("photo-\(UUID().uuidString).jpg")
+        try data.write(to: url, options: [.atomic, .completeFileProtection])
+        return PickedPhoto(url: url)
+    }
+
     static var transferRepresentation: some TransferRepresentation {
         FileRepresentation(importedContentType: .image) { received in
             let size = try received.file.resourceValues(forKeys: [.fileSizeKey]).fileSize ?? Int.max

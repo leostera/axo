@@ -1,5 +1,6 @@
  import AxoCore
 import AxoVoice
+import AVFoundation
 import SwiftUI
 import PhotosUI
 import UniformTypeIdentifiers
@@ -17,8 +18,15 @@ struct ConversationView: View {
         let attachmentIDs: [String]
     }
     @State private var importingFile = false
+    @State private var cameraDestination: CameraDestination?
+    private struct CameraDestination: Identifiable {
+        let id = UUID()
+        let client: SessionFilesClient
+        let session: String
+    }
     @State private var selectingPhoto = false
-    @State private var selectedPhoto: PhotosPickerItem?
+    @State private var selectedPhotos: [PhotosPickerItem] = []
+    @State private var isPreparingPhotos = false
     @State private var publication: FilePublication?
     #if DEBUG
     @State private var previewFileClient: SessionFilesClient?
@@ -64,6 +72,23 @@ struct ConversationView: View {
     private enum ChatSheet: String, Identifiable {
         case connection, login, voiceDetails, files
         var id: String { rawValue }
+    }
+
+    private func beginCameraCapture() {
+        guard !voice.isBusy else { return }
+        guard let destination = fileClient, let session = destination.sessionId else { sheet = .connection; return }
+        guard UIImagePickerController.isSourceTypeAvailable(.camera) else {
+            error = "Camera unavailable on this device. Choose Photos or Files instead."
+            return
+        }
+        Task {
+            guard await AVCaptureDevice.requestAccess(for: .video) else {
+                error = "Camera access is disabled. Allow it in iOS Settings to take a photo."
+                return
+            }
+            guard !voice.isBusy, fileClient === destination, destination.sessionId == session else { return }
+            cameraDestination = CameraDestination(client: destination, session: session)
+        }
     }
 
     private var endpoint: RelayEndpoint? { try? RelayEndpoint(endpointText) }
@@ -136,23 +161,50 @@ struct ConversationView: View {
                     else { Text("Sign in to view session files.").padding() }
                 }
             }
+            .fullScreenCover(item: $cameraDestination) { destination in
+                CameraCaptureView(captured: { image in
+                    cameraDestination = nil
+                    isPreparingPhotos = true
+                    Task {
+                        defer { isPreparingPhotos = false }
+                        do {
+                            let photo = try PickedPhoto.stageCameraImage(image)
+                            defer { try? FileManager.default.removeItem(at: photo.url) }
+                            try await PhotoPublication.addSelectedPhoto(photo.url, to: destination.client) {
+                                fileClient === destination.client && destination.client.sessionId == destination.session
+                            }
+                        } catch { self.error = error.localizedDescription }
+                    }
+                }, cancelled: { cameraDestination = nil })
+                    .ignoresSafeArea()
+            }
             .fileImporter(isPresented: $importingFile, allowedContentTypes: [.item], allowsMultipleSelection: true) { result in
                 switch result {
                 case .success(let urls): Task { if let files = fileClient { await stageFiles(urls, using: files) } }
                 case .failure(let failure): error = failure.localizedDescription
                 }
             }
-            .photosPicker(isPresented: $selectingPhoto, selection: $selectedPhoto, matching: .images)
-            .onChange(of: selectedPhoto) { _, item in
-                guard let item else { return }
+            .photosPicker(isPresented: $selectingPhoto, selection: $selectedPhotos, maxSelectionCount: max(1, 8 - (fileClient?.currentDrafts.count ?? 0)), matching: .images)
+            .onChange(of: selectedPhotos) { _, items in
+                guard !items.isEmpty, let destination = fileClient else { return }
+                selectedPhotos = []
+                let session = destination.sessionId
+                isPreparingPhotos = true
                 Task {
-                    do {
-                        if let photo = try await item.loadTransferable(type: PickedPhoto.self) {
+                    defer { isPreparingPhotos = false }
+                    for item in items {
+                        do {
+                            guard let photo = try await item.loadTransferable(type: PickedPhoto.self) else { continue }
                             defer { try? FileManager.default.removeItem(at: photo.url) }
-                            if let files = fileClient { await stageFiles([photo.url], using: files) }
-                        }
-                    } catch { self.error = error.localizedDescription }
-                    selectedPhoto = nil
+                            guard fileClient === destination, destination.sessionId == session else {
+                                self.error = "Photo destination changed. Select the photos again in the intended conversation."
+                                return
+                            }
+                            try await PhotoPublication.addSelectedPhoto(photo.url, to: destination) {
+                                fileClient === destination && destination.sessionId == session
+                            }
+                        } catch { self.error = error.localizedDescription }
+                    }
                 }
             }
             .confirmationDialog("Upload to private cloud?", isPresented: Binding(get: { publication != nil }, set: { if !$0 { publication = nil } }), titleVisibility: .visible) {
@@ -179,12 +231,13 @@ struct ConversationView: View {
                     pendingVoiceSendID = nil
                     error = "Draft exceeds 16,000 characters. Trim it before sending; no dictated text was discarded."
                 } else {
-                    pendingVoiceSendID = transcript.id
+                    pendingVoiceSendID = transcript.delivery == .send ? transcript.id : nil
                     sendVoiceTranscriptIfReady()
                 }
             }
             .onChange(of: voice.state) { _, state in
                 if state == .ready { sendVoiceTranscriptIfReady() }
+                if state == .idle || state == .cancelling { pendingVoiceSendID = nil }
             }
             .onChange(of: scenePhase) { _, phase in
                 if phase == .background { client.disconnect(); voice.cancel() }
@@ -323,6 +376,7 @@ struct ConversationView: View {
             Menu {
                 Button("Connection settings", systemImage: "network") { sheet = .connection }.disabled(voice.isBusy)
                 Button("Reconnect", systemImage: "arrow.clockwise") { reconnect() }.disabled(voice.isBusy)
+                Button("Session files", systemImage: "folder") { sheet = .files }
                 Button("About voice", systemImage: "waveform") { sheet = .voiceDetails }.disabled(voice.isBusy)
                 #if DEBUG
                 if ProcessInfo.processInfo.arguments.contains("--axo-live-history-preview") {
@@ -379,25 +433,28 @@ struct ConversationView: View {
                         scrollRequest += 1
                     }
                 } label: {
-                    Label(scrollState.hasNewMessages ? "Jump to new message" : "Jump to latest", systemImage: "arrow.down")
-                        .font(.callout.weight(.semibold))
-                        .padding(.horizontal, 14).padding(.vertical, 12)
-                        .contentShape(Capsule())
+                    HStack(spacing: 6) {
+                        Image(systemName: "arrow.down").font(.system(size: 20, weight: .semibold)).frame(width: 44, height: 44)
+                        if scrollState.hasNewMessages { Text("Jump to new message").font(.callout.weight(.semibold)).padding(.trailing, 14) }
+                    }
+                    .contentShape(Capsule())
                 }
                 .buttonStyle(.plain)
-                .shadow(color: ChatColors.background, radius: 3)
+                .background(.regularMaterial, in: Capsule())
+                .shadow(color: .black.opacity(0.08), radius: 8, y: 3)
+                .accessibilityLabel(scrollState.hasNewMessages ? "Jump to new message" : "Jump to latest")
                 .accessibilityIdentifier("back-to-bottom")
             }
-            if let files = fileClient, !files.currentDrafts.isEmpty {
-                DraftFilesBar(client: files, reviewUpload: { id in publication = FilePublication(client: files, draftIDs: [id]) })
-            }
+            if isPreparingPhotos { ProgressView("Preparing photos…").font(.caption) }
             if let notice = fileClient?.notice { Text(notice).font(.caption).foregroundStyle(.orange).padding(.horizontal, 24) }
             ChatComposer(draft: $draft, focused: $composerFocused, voice: voice, canSend: canSend,
-                         send: send, connectionSettings: { sheet = .connection }, voiceDetails: { sheet = .voiceDetails },
+                         send: send,
                          hasAttachments: !(fileClient?.currentDrafts.isEmpty ?? true),
                          attachFile: { if fileClient != nil { importingFile = true } else { sheet = .connection } },
                          attachPhoto: { if fileClient != nil { selectingPhoto = true } else { sheet = .connection } },
-                         showFiles: { sheet = .files })
+                         attachCamera: { Task { @MainActor in beginCameraCapture() } },
+                         fileClient: fileClient, canAttachPhotos: !isPreparingPhotos && (fileClient?.currentDrafts.count ?? 0) < 8,
+                         reviewUpload: { id in if let files = fileClient { publication = FilePublication(client: files, draftIDs: [id]) } })
         }
         .padding(.top, 10).padding(.bottom, 8)
     }

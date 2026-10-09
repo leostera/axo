@@ -7,7 +7,7 @@ enum ChatPreviewData {
     static var enabled: Bool {
         let arguments = ProcessInfo.processInfo.arguments
         return arguments.contains("--axo-chat-preview") || arguments.contains("--axo-chat-preview-working")
-            || arguments.contains("--axo-history-preview") || arguments.contains("--axo-live-history-preview") || arguments.contains("--axo-markdown-preview") || arguments.contains("--axo-files-preview") || arguments.contains("--axo-file-draft-preview")
+            || arguments.contains("--axo-history-preview") || arguments.contains("--axo-live-history-preview") || arguments.contains("--axo-markdown-preview") || arguments.contains("--axo-files-preview") || arguments.contains("--axo-file-draft-preview") || arguments.contains("--axo-photo-draft-preview")
     }
     static func newMessage() -> ConversationMessage? {
         let fields = ["id": UUID().uuidString, "role": "assistant", "text": "New synthetic message at the latest end."]
@@ -54,7 +54,7 @@ enum ChatPreviewData {
             A few small changes make a big difference:
 
             - **Readable responses.** Clear paragraphs, proper lists, and a little more space between ideas.
-            - **One simple composer.** Type a thought, or tap the waveform to speak it. Dictated prompts send when transcription finishes.
+            - **One simple composer.** Type a thought, or tap the waveform to speak it. Stop to review a transcript, or Send to submit it after transcription.
             - **Quiet controls.** Connection settings live behind the menu instead of taking over the screen.
 
             **Still your Pi session.** Nothing about how your Mac runs the work has changed.

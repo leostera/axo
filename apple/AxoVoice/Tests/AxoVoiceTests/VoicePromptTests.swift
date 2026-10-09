@@ -54,10 +54,25 @@ final class VoicePromptTests: XCTestCase {
         voice.finishRecording()
         try await waitUntil { voice.state == .ready && voice.transcript != nil }
         XCTAssertEqual(voice.transcript?.text, "A dictated prompt.")
+        XCTAssertEqual(voice.transcript?.delivery, .draft, "Stop alone must never authorize sending")
         XCTAssertEqual(voice.transcript?.appending(to: "My edited draft"), "My edited draft\nA dictated prompt.")
         XCTAssertFalse(FileManager.default.fileExists(atPath: audioURL.path))
         let transcriptions = await engine.transcriptions
         XCTAssertEqual(transcriptions, 1)
+    }
+
+    func testSendIntentBelongsToTheFinishedTranscriptAndDoesNotLeakToNextRecording() async throws {
+        let (voice, _, _) = try await preparedVoice()
+        voice.startRecording()
+        try await waitUntil { voice.state == .recording }
+        voice.finishRecording(delivery: .send)
+        try await waitUntil { voice.state == .ready && voice.transcript != nil }
+        XCTAssertEqual(voice.transcript?.delivery, .send)
+        voice.startRecording()
+        try await waitUntil { voice.state == .recording }
+        voice.finishRecording()
+        try await waitUntil { voice.state == .ready && voice.transcript != nil }
+        XCTAssertEqual(voice.transcript?.delivery, .draft)
     }
 
     func testCancelWhileRecordingDiscardsAudio() async throws {
@@ -114,6 +129,7 @@ final class VoicePromptTests: XCTestCase {
         recorder.onFinished?()
         recorder.onFinished?()
         try await waitUntil { voice.state == .ready && voice.transcript != nil }
+        XCTAssertEqual(voice.transcript?.delivery, .draft)
         let transcriptions = await engine.transcriptions
         XCTAssertEqual(transcriptions, 1)
     }

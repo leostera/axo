@@ -46,9 +46,17 @@ public enum VoicePromptState: Equatable {
     case failed(String)
 }
 
-public struct VoiceTranscript: Equatable {
+public enum VoiceTranscriptDelivery: Equatable, Sendable { case draft, send }
+
+public struct VoiceTranscript: Equatable, Sendable {
     public let id = UUID()
     public let text: String
+    public let delivery: VoiceTranscriptDelivery
+
+    public init(text: String, delivery: VoiceTranscriptDelivery = .draft) {
+        self.text = text
+        self.delivery = delivery
+    }
 
     /// Preserve edits made while recognition was running; never truncate dictated text.
     public func appending(to draft: String) -> String {
@@ -67,12 +75,18 @@ public protocol LocalSpeechTranscribing: Sendable {
 public protocol VoiceRecording: AnyObject {
     var onFinished: (() -> Void)? { get set }
     var onInterrupted: (() -> Void)? { get set }
+    /// Normalized microphone amplitude, queried only while capture is visible.
+    var audioLevel: Double { get }
     func requestPermission() async -> Bool
     func start() throws
     /// Stops capture and transfers ownership of the temporary file to the caller.
     func stop() throws -> URL
     /// Stops capture and removes any file still owned by the recorder.
     func cancel()
+}
+
+public extension VoiceRecording {
+    var audioLevel: Double { 0 }
 }
 
 public enum VoicePromptError: LocalizedError {
@@ -161,7 +175,14 @@ public final class VoicePrompt {
         }
     }
 
-    public func finishRecording() {
+    public var audioLevel: Double {
+        let level = recorder.audioLevel
+        return level.isFinite ? min(1, max(0, level)) : 0
+    }
+
+    /// Automatic recorder completion defaults to a draft; only explicit Send
+    /// authorizes submission. Bind that decision to this transcription result.
+    public func finishRecording(delivery: VoiceTranscriptDelivery = .draft) {
         guard state == .recording, task == nil else { return }
         // Change state before stop(), whose delegate can also report completion.
         state = .transcribing
@@ -173,7 +194,7 @@ public final class VoicePrompt {
                     .trimmingCharacters(in: .whitespacesAndNewlines)
                 try Task.checkCancellation()
                 guard !text.isEmpty else { throw VoicePromptError.noSpeech }
-                self.transcript = VoiceTranscript(text: text)
+                self.transcript = VoiceTranscript(text: text, delivery: delivery)
                 return .ready
             }
         } catch {

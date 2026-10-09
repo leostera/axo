@@ -6,7 +6,7 @@ import Foundation
 /// Synthetic, in-process HTTP fixture for simulator UI tests; never connects to a relay.
 @MainActor
 enum SharedFilePreview {
-    static var enabled: Bool { ProcessInfo.processInfo.arguments.contains("--axo-file-draft-preview") }
+    static var enabled: Bool { ProcessInfo.processInfo.arguments.contains("--axo-file-draft-preview") || FilePreviewProtocol.isPhoto }
     static func makeClient() async throws -> SessionFilesClient {
         let configuration = URLSessionConfiguration.ephemeral
         configuration.protocolClasses = [FilePreviewProtocol.self]
@@ -17,9 +17,10 @@ enum SharedFilePreview {
         let directory = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
         try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
         defer { try? FileManager.default.removeItem(at: directory) }
-        let source = directory.appendingPathComponent("draft-report.md")
+        let source = directory.appendingPathComponent(FilePreviewProtocol.isPhoto ? "draft-photo.png" : "draft-report.md")
         try FilePreviewProtocol.content.write(to: source)
-        await client.addFile(source)
+        if FilePreviewProtocol.isPhoto { try await PhotoPublication.addSelectedPhoto(source, to: client, isCurrentDestination: { true }) }
+        else { await client.addFile(source) }
         return client
     }
 }
@@ -33,8 +34,8 @@ private actor PreviewFileServer {
         if request.httpMethod == "PUT" || path.hasSuffix("/complete") { state = "ready"; revision += 1 }
         if request.httpMethod == "DELETE" { state = "deleted"; revision += 1 }
         if path.hasSuffix("/content") && request.httpMethod == "GET" { return Reply(body: FilePreviewProtocol.content, mediaType: "text/markdown") }
-        let file: [String: Any] = ["id": "00000000-0000-4000-8000-000000000002", "sessionId": "preview-session", "filename": "draft-report.md",
-            "mediaType": "text/markdown", "byteLength": FilePreviewProtocol.content.count,
+        let file: [String: Any] = ["id": "00000000-0000-4000-8000-000000000002", "sessionId": "preview-session", "filename": FilePreviewProtocol.isPhoto ? "draft-photo.png" : "draft-report.md",
+            "mediaType": FilePreviewProtocol.mediaType, "byteLength": FilePreviewProtocol.content.count,
             "sha256": SHA256.hash(data: FilePreviewProtocol.content).map { String(format: "%02x", $0) }.joined(),
             "origin": "phone", "createdAt": 0, "state": state]
         if path.hasSuffix("/authorize") {
@@ -43,7 +44,7 @@ private actor PreviewFileServer {
             return Reply(body: try JSONSerialization.data(withJSONObject: ["file": file, "upload": [
                 "url": "https://\(String(repeating: "a", count: 32)).r2.cloudflarestorage.com/test-files/files/\(id)/synthetic?X-Amz-Algorithm=AWS4-HMAC-SHA256",
                 "expiresAt": Int64(Date().timeIntervalSince1970 * 1000) + 60_000,
-                "headers": ["Content-Type": "text/markdown", "Content-Length": String(FilePreviewProtocol.content.count), "If-None-Match": "*", "x-amz-checksum-sha256": checksum],
+                "headers": ["Content-Type": FilePreviewProtocol.mediaType, "Content-Length": String(FilePreviewProtocol.content.count), "If-None-Match": "*", "x-amz-checksum-sha256": checksum],
             ]]), mediaType: "application/json")
         }
         let body: [String: Any] = path.hasSuffix("/files") ? ["files": state == "pending" ? [] : [file], "nextCursor": NSNull(), "revision": revision] : file
@@ -52,7 +53,11 @@ private actor PreviewFileServer {
 }
 
 private final class FilePreviewProtocol: URLProtocol, @unchecked Sendable {
-    static let content = Data("# Synthetic shared report\n\nThis document exists only in the simulator fixture.\n".utf8)
+    static var isPhoto: Bool { ProcessInfo.processInfo.arguments.contains("--axo-photo-draft-preview") }
+    static var mediaType: String { isPhoto ? "image/png" : "text/markdown" }
+    static let content: Data = isPhoto
+        ? Data(base64Encoded: "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mP8/x8AAwMCAO+aGQsAAAAASUVORK5CYII=")!
+        : Data("# Synthetic shared report\n\nThis document exists only in the simulator fixture.\n".utf8)
     private static let server = PreviewFileServer()
     override class func canInit(with request: URLRequest) -> Bool { request.url?.host == "files-preview.invalid" || request.url?.host == String(repeating: "a", count: 32) + ".r2.cloudflarestorage.com" }
     override class func canonicalRequest(for request: URLRequest) -> URLRequest { request }

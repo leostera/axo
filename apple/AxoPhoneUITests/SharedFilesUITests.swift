@@ -2,6 +2,20 @@ import XCTest
 
 final class SharedFilesUITests: XCTestCase {
     @MainActor
+    func testPhotoSelectionUploadsWithoutRepeatedConfirmationAndShowsComposerThumbnail() throws {
+        let app = XCUIApplication()
+        app.launchArguments = ["--axo-photo-draft-preview"]
+        app.launch()
+        XCTAssertTrue(app.staticTexts["Uploaded · prompt not sent"].waitForExistence(timeout: 10))
+        XCTAssertTrue(app.images["draft-photo.png"].exists)
+        XCTAssertTrue(app.buttons["Remove draft-photo.png"].exists)
+        XCTAssertFalse(app.buttons["Upload files"].exists)
+        XCTAssertFalse(app.buttons["Keep drafts without uploading"].exists)
+        app.buttons["Remove draft-photo.png"].tap()
+        XCTAssertFalse(app.images["draft-photo.png"].exists)
+    }
+
+    @MainActor
     func testBackToBottomIsVisibleWhileReadingOlderMessagesAndReturnsDirectly() throws {
         let app = XCUIApplication()
         app.launchArguments = ["--axo-history-preview"]
@@ -50,7 +64,7 @@ final class SharedFilesUITests: XCTestCase {
         app.buttons["Upload files"].tap()
         XCTAssertTrue(app.staticTexts["Uploaded · prompt not sent"].waitForExistence(timeout: 10))
         XCTAssertFalse(app.buttons["sendPromptButton"].isEnabled)
-        app.buttons["Composer options"].tap()
+        app.buttons["Chat options"].tap()
         app.buttons["Session files"].tap()
         let card = app.buttons["shared-file-00000000-0000-4000-8000-000000000002"]
         XCTAssertTrue(card.waitForExistence(timeout: 10))
@@ -63,6 +77,29 @@ final class SharedFilesUITests: XCTestCase {
     }
 
     @MainActor
+    func testCameraPermissionDenialPreservesTheDraft() throws {
+        let app = XCUIApplication()
+        app.launchArguments = ["--axo-photo-draft-preview"]
+        app.resetAuthorizationStatus(for: .camera)
+        app.launch()
+        XCTAssertTrue(app.staticTexts["Uploaded · prompt not sent"].waitForExistence(timeout: 10))
+        let draft = app.descendants(matching: .any).matching(identifier: "promptDraft").firstMatch
+        draft.tap()
+        draft.typeText("Keep camera draft")
+        app.buttons["Composer options"].tap()
+        let camera = app.buttons["attachCamera"]
+        XCTAssertTrue(camera.waitForExistence(timeout: 5))
+        XCTAssertTrue(camera.isEnabled)
+        camera.tap()
+        let system = XCUIApplication(bundleIdentifier: "com.apple.springboard")
+        let deny = system.alerts.buttons.matching(NSPredicate(format: "label CONTAINS[c] %@ AND label != %@", "Allow", "Allow")).firstMatch
+        if deny.waitForExistence(timeout: 3) { deny.tap() }
+        let refusal = app.staticTexts.matching(NSPredicate(format: "label BEGINSWITH %@", "Camera ")).firstMatch
+        XCTAssertTrue(refusal.waitForExistence(timeout: 5))
+        XCTAssertEqual(draft.value as? String, "Keep camera draft")
+    }
+
+    @MainActor
     func testFileCardAndExplicitComposerActionsDoNotRequireAConnection() throws {
         let app = XCUIApplication()
         app.launchArguments = ["--axo-files-preview"]
@@ -70,9 +107,14 @@ final class SharedFilesUITests: XCTestCase {
         XCTAssertTrue(app.staticTexts["report.md"].waitForExistence(timeout: 10))
         XCTAssertTrue(app.staticTexts["Discuss this shared report"].exists)
         app.buttons["Composer options"].tap()
-        XCTAssertTrue(app.buttons["Attach document"].exists)
-        XCTAssertTrue(app.buttons["Attach photo as JPEG (2048px)"].exists)
-        XCTAssertTrue(app.buttons["Session files"].exists)
+        XCTAssertTrue(app.buttons["Camera"].exists)
+        XCTAssertTrue(app.buttons["Photos"].exists)
+        XCTAssertTrue(app.buttons["Files"].exists)
+        XCTAssertFalse(app.buttons["Session files"].exists)
+        XCTAssertEqual(app.buttons.matching(NSPredicate(format: "label == %@", "Connection settings")).count, 1, "Only the existing header control remains")
+        XCTAssertFalse(app.buttons["Paste text at end"].exists)
+        XCTAssertFalse(app.buttons["About voice"].exists)
+        XCTAssertFalse(app.staticTexts["Selected photos upload to private cloud storage as JPEG (2048px). Not end-to-end encrypted."].exists)
         let screenshot = XCTAttachment(screenshot: app.screenshot())
         screenshot.name = "Shared file card and input actions"
         screenshot.lifetime = .keepAlways

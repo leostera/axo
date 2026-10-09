@@ -51,6 +51,7 @@ final class MicrophoneRecorder: NSObject, VoiceRecording, AVAudioRecorderDelegat
             ])
             self.recorder = recorder
             recorder.delegate = self
+            recorder.isMeteringEnabled = true
             guard recorder.prepareToRecord() else { throw VoicePromptError.recorderUnavailable }
             try FileManager.default.setAttributes([.protectionKey: FileProtectionType.complete], ofItemAtPath: url.path)
             guard recorder.record() else { throw VoicePromptError.recorderUnavailable }
@@ -58,6 +59,14 @@ final class MicrophoneRecorder: NSObject, VoiceRecording, AVAudioRecorderDelegat
             cancel()
             throw error
         }
+    }
+
+    var audioLevel: Double {
+        guard let recorder, recorder.isRecording else { return 0 }
+        recorder.updateMeters()
+        let decibels = Double(recorder.averagePower(forChannel: 0))
+        guard decibels.isFinite, decibels > -60 else { return 0 }
+        return min(1, max(0, pow(10, decibels / 20)))
     }
 
     func stop() throws -> URL {
