@@ -1,6 +1,29 @@
 import WebSocket from "ws";
+import { z } from "zod";
 import { MAX_FRAME_BYTES, parseFrame, phoneFrameSchema, type PhoneFrame, type HostFrame } from "../shared/protocol";
 import type { BridgeConfig } from "./config";
+
+const relayInputSchema = z.union([phoneFrameSchema, z.object({ type: z.literal("error"), message: z.string().max(2_000) })]);
+
+export function receiveRelayFrame(raw: string, onFrame: (frame: PhoneFrame) => void,
+                                  reply: (frame: HostFrame) => void, status: (message: string) => void): void {
+  let frame: z.infer<typeof relayInputSchema>;
+  try { frame = parseFrame(raw, relayInputSchema); }
+  catch {
+    reply({ type: "error", message: "Protocol mismatch. Update the relay and phone app, then run /reload on the Mac." });
+    return;
+  }
+  if (frame.type === "error") {
+    // Relay control errors are not phone commands. Never reflect them back.
+    status(frame.message);
+    return;
+  }
+  try { onFrame(frame); }
+  catch {
+    reply({ type: "error", ...("id" in frame ? { id: frame.id } : {}),
+      message: "The Mac bridge could not process the command. Run /reload, then reconnect; check Pi before retrying a prompt." });
+  }
+}
 
 export class RelayConnection {
   private socket?: WebSocket;
@@ -32,8 +55,7 @@ export class RelayConnection {
       this.onOpen();
     });
     socket.on("message", data => {
-      try { this.onFrame(parseFrame(data.toString(), phoneFrameSchema)); }
-      catch { this.send({ type: "error", message: "Invalid remote command" }); }
+      receiveRelayFrame(data.toString(), this.onFrame, frame => this.send(frame), this.onStatus);
     });
     socket.on("error", () => this.onStatus("relay unavailable; local Pi still works"));
     socket.on("close", () => {
