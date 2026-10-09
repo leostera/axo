@@ -1,0 +1,108 @@
+import { z } from "zod";
+import {
+  JSONRPCClient,
+  JSONRPCServer,
+  JSONRPCErrorException,
+  type SendRequest,
+  type TypedJSONRPCClient,
+  type TypedJSONRPCServer,
+} from "json-rpc-2.0";
+import {
+  LIMITS,
+  decode,
+  callSchema,
+  replySchema,
+  failure,
+  negotiateSchema,
+  registrationSchema,
+  machineListResultSchema,
+  listSchema,
+  startSchema,
+  results,
+  type Reply,
+} from "./contracts.js";
+
+export type Negotiated = {
+  protocolVersion: 1;
+  methods: string[];
+  deliveryCredits: { frames: number; bytes: number };
+};
+export type Registered = { leaseId: string; hostGeneration: string };
+export type Heartbeat = { leaseId: string };
+export type DaemonMethods = {
+  "axo.runtime.list": (
+    params: z.input<typeof listSchema>,
+  ) => z.output<(typeof results)["axo.runtime.list"]>;
+  "axo.runtime.startApproved": (
+    params: z.input<typeof startSchema>,
+  ) => z.output<(typeof results)["axo.runtime.startApproved"]>;
+};
+export type ServiceMethods = {
+  "axo.protocol.negotiate": (
+    params: z.input<typeof negotiateSchema>,
+  ) => Negotiated;
+  "axo.machine.register": (
+    params: z.input<typeof registrationSchema>,
+  ) => Registered;
+  "axo.machine.heartbeat": (params: Heartbeat) => Heartbeat;
+  "axo.machine.list": (
+    params: Record<string, never>,
+  ) => z.output<typeof machineListResultSchema>;
+};
+export type AxoMethods = ServiceMethods & DaemonMethods;
+export type AxoClient<Context = void> = TypedJSONRPCClient<AxoMethods, Context>;
+export type AxoServer<Context = void> = TypedJSONRPCServer<AxoMethods, Context>;
+
+export function createAxoClient<Context = void>(
+  send: SendRequest<Context>,
+): AxoClient<Context> {
+  return new JSONRPCClient<Context>(send, () => crypto.randomUUID());
+}
+export function createProfileServer<Context = void>(): JSONRPCServer<Context> {
+  const server = new JSONRPCServer<Context>({ errorListener: () => {} });
+  // The library defaults to console.warn(error): unsafe for credential/prompt-bearing exceptions.
+  server.mapErrorToJSONRPCErrorResponse = (id, error: unknown) =>
+    error instanceof JSONRPCErrorException && Number.isSafeInteger(error.code)
+      ? failure(id, error.code, "Operation rejected")
+      : failure(id, -32603, "Internal error");
+  server.applyMiddleware((next, request, context) => {
+    if (
+      request.id === undefined &&
+      ["axo.runtime.startApproved", "axo.machine.register"].includes(
+        request.method,
+      )
+    )
+      return Promise.resolve(null);
+    return next(request, context);
+  });
+  return server;
+}
+
+/** Bounded framing/domain guards around the library, including its single-reply batch quirk. */
+export async function serveProfileMessage<Context>(
+  server: JSONRPCServer<Context>,
+  raw: string,
+  context: Context,
+): Promise<Reply | Reply[] | null> {
+  const decoded = decode(raw);
+  if ("error" in decoded) return decoded.error;
+  const responses: Reply[] = [];
+  for (const entry of decoded.entries) {
+    const call = callSchema.safeParse(entry);
+    if (!call.success) {
+      responses.push(failure(null, -32600, "Invalid Request"));
+      continue;
+    }
+    const response = await server.receive(call.data, context);
+    if (response) responses.push(replySchema.parse(response));
+  }
+  if (!responses.length) return null;
+  // json-rpc-2.0 1.8.1 collapses a one-response batch; JSON-RPC requires an array.
+  const response = decoded.batch ? responses : responses[0];
+  if (
+    new TextEncoder().encode(JSON.stringify(response)).byteLength >
+    LIMITS.frameBytes
+  )
+    return failure(null, -32004, "Outcome unknown; response limit");
+  return response;
+}
