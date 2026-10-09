@@ -178,4 +178,10 @@ test("registered sessions, file index and R2 bytes survive a cold runtime restar
   assert.equal(restored.state, "ready");
   assert.equal(restored.sha256, digest("persist across restart"));
   assert.equal(await (await request(`session/files/${file.id}/content`)).text(), "persist across restart");
+
+  // Rollback disables publication, not authenticated access to already ready bytes.
+  const disabled = { "X-Test-Writes": "off" };
+  assert.equal((await mf.dispatchFetch("https://files.test/files/sessions/session/uploads", { method: "POST", headers: disabled, body: "{}" })).status, 503);
+  assert.equal(await (await mf.dispatchFetch(`https://files.test/files/sessions/session/files/${file.id}/content`, { headers: disabled })).text(), "persist across restart");
+  assert.equal((await mf.dispatchFetch(`https://files.test/files/sessions/session/files/${file.id}`, { method: "DELETE", headers: disabled })).status, 200);
 });
