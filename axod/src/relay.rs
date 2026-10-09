@@ -223,7 +223,17 @@ fn connect(config: &Config, machine: MachineId) -> io::Result<Socket> {
         .write_buffer_size(0)
         .max_write_buffer_size(131072);
     let (mut socket, _) = tungstenite::client_tls_with_config(request, stream, Some(limits), None)
-        .map_err(|_| io::Error::other("Relay handshake failed"))?;
+        .map_err(|error| {
+            io::Error::other(match error {
+                tungstenite::HandshakeError::Failure(tungstenite::Error::Tls(_)) => {
+                    "Relay TLS failed"
+                }
+                tungstenite::HandshakeError::Failure(tungstenite::Error::Http(_)) => {
+                    "Relay HTTP rejected"
+                }
+                _ => "Relay handshake failed",
+            })
+        })?;
     match socket.get_mut() {
         MaybeTlsStream::Plain(stream) => {
             stream.set_read_timeout(Some(Duration::from_millis(200)))?
@@ -386,9 +396,26 @@ fn session(
     Ok(())
 }
 pub fn run(config: Config, machine: MachineId, manager: Arc<Manager>, stopping: Arc<AtomicBool>) {
+    let mut last_failure = None;
     while !stopping.load(Ordering::SeqCst) {
-        // Errors are deliberately metadata-only. No credential, URL, prompt or frame logging.
-        let _ = session(&config, machine, &manager, &stopping);
+        // Only fixed classifications are logged, and only when the failure changes.
+        if let Err(error) = session(&config, machine, &manager, &stopping) {
+            let reason = match error.to_string().as_str() {
+                "Relay TLS failed" => "tls",
+                "Relay HTTP rejected" => "http_admission",
+                "Relay handshake failed" => "handshake",
+                "Relay admission rejected" => "protocol_admission",
+                "Relay admission deadline" => "protocol_deadline",
+                "Relay heartbeat deadline" => "heartbeat_deadline",
+                _ => "transport",
+            };
+            if last_failure != Some(reason) {
+                eprintln!("axod relay unavailable: {reason}");
+                last_failure = Some(reason);
+            }
+        } else {
+            last_failure = None;
+        }
         for _ in 0..10 {
             if stopping.load(Ordering::SeqCst) {
                 return;
