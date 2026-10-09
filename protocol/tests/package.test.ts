@@ -15,6 +15,31 @@ import {
   type AxoClient,
 } from "@axo/protocol";
 
+test("post-dispatch response failures stay bounded and outcome-unknown", async () => {
+  const server = createProfileServer();
+  let executions = 0;
+  server.addMethod("large", () => {
+    executions++;
+    return "x".repeat(70000);
+  });
+  server.addMethod("unserializable", () => {
+    executions++;
+    return 1n;
+  });
+  for (const method of ["large", "unserializable"]) {
+    const reply = await serveProfileMessage(
+      server,
+      JSON.stringify({ jsonrpc: "2.0", id: method, method }),
+      undefined,
+    );
+    assert.ok(reply && !Array.isArray(reply) && "error" in reply);
+    assert.equal(reply.error.code, -32004);
+    assert.match(reply.error.message, /Outcome unknown/);
+    assert.ok(JSON.stringify(reply).length < 200);
+  }
+  assert.equal(executions, 2); // A response error must never imply the operation did not run.
+});
+
 const target = {
   machineId: "11111111-1111-4111-8111-111111111111",
   hostGeneration: "22222222-2222-4222-8222-222222222222",

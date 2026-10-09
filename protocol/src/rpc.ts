@@ -94,15 +94,31 @@ export async function serveProfileMessage<Context>(
       continue;
     }
     const response = await server.receive(call.data, context);
-    if (response) responses.push(replySchema.parse(response));
+    if (response) {
+      const validated = replySchema.safeParse(response);
+      responses.push(
+        validated.success
+          ? validated.data
+          : failure(
+              call.data.id ?? null,
+              -32004,
+              "Outcome unknown; invalid response",
+            ),
+      );
+    }
   }
   if (!responses.length) return null;
   // json-rpc-2.0 1.8.1 collapses a one-response batch; JSON-RPC requires an array.
   const response = decoded.batch ? responses : responses[0];
-  if (
-    new TextEncoder().encode(JSON.stringify(response)).byteLength >
-    LIMITS.frameBytes
-  )
-    return failure(null, -32004, "Outcome unknown; response limit");
-  return response;
+  try {
+    if (
+      new TextEncoder().encode(JSON.stringify(response)).byteLength >
+      LIMITS.frameBytes
+    )
+      return failure(null, -32004, "Outcome unknown; response limit");
+    return response;
+  } catch {
+    // A handler may already have mutated state; serialization failure is not rejection.
+    return failure(null, -32004, "Outcome unknown; invalid response");
+  }
 }
