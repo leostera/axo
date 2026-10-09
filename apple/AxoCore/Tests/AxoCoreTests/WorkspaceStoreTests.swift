@@ -178,6 +178,64 @@ final class WorkspaceStoreTests: XCTestCase {
         XCTAssertNil(decoded.directory)
     }
 
+    func testDuplicatesAllocateNewConversationsAndPaneIdentitiesWithoutCopyingHistory() throws {
+        let (store, root) = try temporaryStore(); defer { try? FileManager.default.removeItem(at: root) }
+        let created = try store.createWorkspace(name: "Project", initialDirectory: "/project")
+        let pi = try XCTUnwrap(store.registry.sessions[0].focusedPane)
+        let shell = try store.addShell(sessionID: created.sessionID, beside: pi, axis: .vertical)
+        try store.updateSession(created.sessionID) { $0.conversationID = "original-conversation" }
+        let original = store.registry.sessions[0]
+        let copiedID = try store.duplicateSession(original.id)
+        let copy = try XCTUnwrap(store.registry.sessions.first(where: { $0.id == copiedID }))
+        XCTAssertEqual(copy.name, "Untitled copy")
+        XCTAssertEqual(copy.directory, original.directory)
+        XCTAssertNil(copy.conversationID)
+        XCTAssertNotEqual(copy.piSessionFile, original.piSessionFile)
+        XCTAssertFalse(FileManager.default.fileExists(atPath: copy.piSessionFile))
+        XCTAssertTrue(Set(copy.panes.map(\.id)).isDisjoint(with: [pi, shell]))
+        XCTAssertEqual(copy.panes.map(\.kind), original.panes.map(\.kind))
+        XCTAssertEqual(copy.layout?.panes, copy.panes.map(\.id))
+        XCTAssertEqual(store.registry.sessions[0], original)
+        _ = try store.duplicateWorkspace(created.workspaceID)
+        XCTAssertEqual(store.registry.workspaces.count, 2)
+        XCTAssertTrue(store.registry.sessions.filter({ $0.workspaceID != original.workspaceID }).allSatisfy { $0.conversationID == nil })
+        XCTAssertNoThrow(try store.registry.validate())
+    }
+
+    func testRemovalArchivesMetadataAndRetainsConversationFiles() throws {
+        let (store, root) = try temporaryStore(); defer { try? FileManager.default.removeItem(at: root) }
+        let created = try store.createWorkspace(name: "Project")
+        let file = URL(fileURLWithPath: store.registry.sessions[0].piSessionFile)
+        try FileManager.default.createDirectory(at: file.deletingLastPathComponent(), withIntermediateDirectories: true)
+        let bytes = Data("existing Pi history".utf8); try bytes.write(to: file)
+        try store.archiveSession(created.sessionID)
+        XCTAssertNil(store.registry.selectedSession)
+        XCTAssertThrowsError(try store.select(created.sessionID))
+        XCTAssertEqual(try Data(contentsOf: file), bytes)
+        try store.archiveWorkspace(created.workspaceID)
+        XCTAssertEqual(store.registry.workspaces[0].isArchived, true)
+        XCTAssertEqual(store.registry.sessions[0].isArchived, true)
+        XCTAssertThrowsError(try store.createSession(workspaceID: created.workspaceID, name: "Not allowed"))
+        let restored = try WorkspaceStore(url: store.url, scratchRoot: root)
+        XCTAssertEqual(restored.registry, store.registry)
+        XCTAssertEqual(try Data(contentsOf: file), bytes)
+    }
+
+    func testLegacyPlaygroundIsClassifiedByCreationIdentityAndSurvivesRename() throws {
+        let (store, root) = try temporaryStore(); defer { try? FileManager.default.removeItem(at: root) }
+        let legacy = try store.createWorkspace(name: "Playground", commandID: "prototype-import")
+        var json = try XCTUnwrap(JSONSerialization.jsonObject(with: Data(contentsOf: store.url)) as? [String: Any])
+        var workspaces = try XCTUnwrap(json["workspaces"] as? [[String: Any]])
+        workspaces[0].removeValue(forKey: "kind"); json["workspaces"] = workspaces
+        try JSONSerialization.data(withJSONObject: json).write(to: store.url)
+        let restored = try WorkspaceStore(url: store.url, scratchRoot: root)
+        XCTAssertEqual(restored.registry.workspaces[0].effectiveKind, .playground)
+        try restored.renameWorkspace(legacy.workspaceID, name: "Renamed container")
+        XCTAssertEqual(restored.registry.workspaces[0].effectiveKind, .playground)
+        _ = try restored.createWorkspace(name: "Playground", initialDirectory: "/a/real/project")
+        XCTAssertEqual(restored.registry.workspaces[1].effectiveKind, .project)
+    }
+
     func testPrototypeImportReferencesOriginalFileWithoutCopyingIt() throws {
         let (store, root) = try temporaryStore(); defer { try? FileManager.default.removeItem(at: root) }
         _ = try store.createWorkspace(name: "Playground", initialDirectory: "/existing/playground",

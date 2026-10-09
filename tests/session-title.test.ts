@@ -81,11 +81,14 @@ test("real vanilla Pi extension generates a title after the first reply and pers
   });
   await new Promise<void>(resolve => server.listen(0, "127.0.0.1", resolve));
   const address = server.address() as { port: number }, sessionFile = join(root, "session.jsonl");
+  const stateFile = join(root, "state.json"), runtimeGeneration = crypto.randomUUID();
   const child = spawn(process.execPath, [resolve("node_modules/@earendil-works/pi-coding-agent/dist/bundle/cli.js"),
     "--mode", "rpc", "--session", sessionFile, "--no-extensions", "--no-tools", "--no-skills", "--no-context-files",
     "--extension", resolve("tests/fixtures/session-titles.ts"), "--model", "axo-title-parent/fixture"],
     { cwd: root, env: { ...process.env, PI_CODING_AGENT_DIR: join(root, "agent"), PI_OFFLINE: "1", PI_TELEMETRY: "0",
-      AXO_AUTO_TITLE: "1", AXO_TITLE_MODEL: "axo-title-parent/fixture-mini", AXO_TEST_MODEL_URL: `http://127.0.0.1:${address.port}/v1` }, stdio: ["pipe", "pipe", "pipe"] });
+      AXO_AUTO_TITLE: "1", AXO_TITLE_MODEL: "axo-title-parent/fixture-mini", AXO_STATE_FILE: stateFile,
+      AXO_MANAGED_SESSION_FILE: sessionFile, AXO_WORK_SESSION_ID: crypto.randomUUID(), AXO_PANE_ID: crypto.randomUUID(),
+      AXO_RUNTIME_GENERATION: runtimeGeneration, AXO_TEST_MODEL_URL: `http://127.0.0.1:${address.port}/v1` }, stdio: ["pipe", "pipe", "pipe"] });
   let diagnostics = "", output = "";
   child.stderr.on("data", data => { diagnostics = (diagnostics + data).slice(-8_000); });
   child.stdout.on("data", data => { output = (output + data).slice(-16_000); });
@@ -107,6 +110,11 @@ test("real vanilla Pi extension generates a title after the first reply and pers
     const helper = JSON.stringify(requests[1]);
     assert.ok(!helper.includes("First Pi reply"));
     assert.equal(requests[1]!.max_tokens ?? requests[1]!.max_completion_tokens, 96);
+    const state = JSON.parse(await readFile(stateFile, "utf8"));
+    assert.equal(state.state, "attention"); assert.equal(state.attentionReason, "result");
+    assert.equal(state.runtimeGeneration, runtimeGeneration);
+    assert.ok(state.conversationID && state.attentionID);
+    assert.ok(!JSON.stringify(state).includes("Polish the workspace sidebar"));
   } finally {
     child.stdin.end();
     const kill = setTimeout(() => child.kill("SIGKILL"), 2_000);

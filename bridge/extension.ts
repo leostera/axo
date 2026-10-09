@@ -11,12 +11,14 @@ import { attachmentFiles, projectHistory, projectMessages, submittedCommandIds }
 import { readToolOutput } from "./tool-output";
 import { renderPhoto } from "./photo-rendering";
 import { registerSessionTitles } from "./session-title";
+import { registerMacSessionState } from "./mac-session-state";
 import { MAX_FRAME_BYTES, type AgentActivity, type AgentEvent, type PhoneFrame, type HostFrame, type Question } from "../shared/protocol";
 
 interface PendingQuestion { question: Question; finish: (answer: string | undefined) => void }
 
 export default function axoBridge(pi: ExtensionAPI): void {
   registerSessionTitles(pi);
+  const macState = registerMacSessionState(pi);
   let context: ExtensionContext | undefined;
   let viewId = crypto.randomUUID();
   let connection: RelayConnection | undefined;
@@ -438,11 +440,13 @@ export default function axoBridge(pi: ExtensionAPI): void {
       context = ctx;
       const question = { id: crypto.randomUUID(), title: args.title, options: args.options };
       const localDialog = new AbortController();
+      const resumeStatus = macState.waiting();
       let finish!: (answer: string | undefined) => void;
       const answer = new Promise<string | undefined>(resolve => {
         finish = value => {
           if (pending?.question.id !== question.id) return;
           pending = undefined;
+          resumeStatus();
           localDialog.abort();
           resolve(value);
           snapshot();

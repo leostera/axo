@@ -10,6 +10,20 @@ public struct PiSessionTitle: Equatable, Sendable {
     public let conversationID: String
     public let name: String
 
+    public static func readConversationID(from path: String) -> String? {
+        let descriptor = open(path, O_RDONLY | O_NOFOLLOW | O_NONBLOCK)
+        guard descriptor >= 0 else { return nil }
+        let file = FileHandle(fileDescriptor: descriptor, closeOnDealloc: true)
+        defer { try? file.close() }
+        var info = stat()
+        guard fstat(descriptor, &info) == 0, (info.st_mode & S_IFMT) == S_IFREG else { return nil }
+        guard let data = try? file.read(upToCount: 4_096), let line = data.split(separator: 10).first,
+              let header = try? JSONSerialization.jsonObject(with: Data(line)) as? [String: Any],
+              header["type"] as? String == "session", let id = header["id"] as? String,
+              !id.isEmpty, id.utf8.count <= 128 else { return nil }
+        return id
+    }
+
     public static func read(from path: String) -> PiSessionTitle? {
         let descriptor = open(path, O_RDONLY | O_NOFOLLOW | O_NONBLOCK)
         guard descriptor >= 0 else { return nil }

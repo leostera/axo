@@ -7,7 +7,8 @@ import SwiftUI
 final class WorkspaceController: NSObject, NSOutlineViewDataSource, NSOutlineViewDelegate, NSSplitViewDelegate, NSMenuItemValidation {
     typealias SurfaceTree = SplitTree<PaneHostView>
     let view = NSSplitView()
-    private let sidebar = NSOutlineView()
+    private let sidebar = WorkspaceOutlineView()
+    private var editingSidebar = false
     private let sidebarContainer = NSVisualEffectView()
     private let reopenSidebar = NSButton()
     private var sidebarMinimumWidth: NSLayoutConstraint?
@@ -21,6 +22,12 @@ final class WorkspaceController: NSObject, NSOutlineViewDataSource, NSOutlineVie
     private let store: WorkspaceStore
     private let repository: String
     private let scratchRoot: URL
+    private let stateRoot: URL
+    private var stateBindings: [PaneID: MacSessionBinding] = [:]
+    private var agentSnapshots: [PaneID: MacSessionState] = [:]
+    private var attentionReceipts: [PaneID: MacAttentionReceipt] = [:]
+    private var stateObserver: MacSessionObserver?
+    private var notifications: MacSessionNotifications?
     private let runtime: GhosttyRuntime
     private var livePanes: [PaneID: TerminalView] = [:]
     private var launchFailures: [PaneID: String] = [:]
@@ -46,6 +53,7 @@ final class WorkspaceController: NSObject, NSOutlineViewDataSource, NSOutlineVie
     func activateSession(_ id: AxoSessionID) throws {
         try store.select(id)
         openSavedPanes(in: id)
+        notifications?.dismiss(id)
         refreshSidebar(); showSelectedSession()
     }
     private func openSavedPanes(in sessionID: AxoSessionID) {
@@ -72,8 +80,10 @@ final class WorkspaceController: NSObject, NSOutlineViewDataSource, NSOutlineVie
         let workspace: WorkspaceRecord?
         let session: WorkSession?
         var children: [SidebarItem] = []
-        init(workspace: WorkspaceRecord) { self.workspace = workspace; self.session = nil }
-        init(session: WorkSession) { self.workspace = nil; self.session = session }
+        let isSeparator: Bool
+        init(workspace: WorkspaceRecord) { self.workspace = workspace; self.session = nil; isSeparator = false }
+        init(session: WorkSession) { self.workspace = nil; self.session = session; isSeparator = false }
+        override init() { self.workspace = nil; self.session = nil; isSeparator = true }
     }
 
     init(runtime: GhosttyRuntime, repository: String, storageRoot: URL? = nil,
@@ -88,6 +98,7 @@ final class WorkspaceController: NSObject, NSOutlineViewDataSource, NSOutlineVie
         let support = storageRoot ?? FileManager.default.urls(for: .applicationSupportDirectory, in: .userDomainMask)[0]
             .appendingPathComponent("Axo")
         scratchRoot = support.appendingPathComponent("Workspaces")
+        stateRoot = support.appendingPathComponent("RuntimeStates")
         store = try WorkspaceStore(url: support.appendingPathComponent("workspaces.json"), scratchRoot: scratchRoot)
         super.init()
         configureSidebar()
@@ -95,7 +106,7 @@ final class WorkspaceController: NSObject, NSOutlineViewDataSource, NSOutlineVie
         if firstLaunch {
             _ = try store.createWorkspace(name: "Playground", commandID: "prototype-import",
                                           initialDirectory: storageRoot == nil ? repository + "/local/playground" : nil,
-                                          initialSessionFile: storageRoot == nil ? repository + "/local/playground/session.jsonl" : nil)
+                                          initialSessionFile: storageRoot == nil ? repository + "/local/playground/session.jsonl" : nil, kind: .playground)
         }
         runtime.onAction = { [weak self] terminal, action in self?.handle(terminal: terminal, action: action) ?? false }
         // First legacy import cannot prove that an external Pi has released this file.
@@ -105,6 +116,14 @@ final class WorkspaceController: NSObject, NSOutlineViewDataSource, NSOutlineVie
         }
         if let id = store.registry.selectedSession { openSavedPanes(in: id) }
         refreshSidebar(); showSelectedSession()
+        if launchOverride == nil {
+            notifications = MacSessionNotifications(isViewing: { [weak self] id in self?.isViewing(id) ?? false },
+                                                    activate: { [weak self] destination in self?.activateNotification(destination) })
+            stateObserver = MacSessionObserver(bindings: { [weak self] in
+                guard let self else { return [] }
+                return self.stateBindings.values.filter { self.livePanes[$0.paneID]?.childExited == false }
+            }, receive: { [weak self] binding, snapshot in self?.receiveAgentState(snapshot, from: binding) })
+        }
     }
 
     private var selectedSession: WorkSession? { store.registry.sessions.first { $0.id == store.registry.selectedSession } }
@@ -172,8 +191,10 @@ final class WorkspaceController: NSObject, NSOutlineViewDataSource, NSOutlineVie
         }
     }
     @objc func newSession(_ sender: Any?) {
-        guard let workspaceID = selectedSession?.workspaceID else { newWorkspace(sender); return }
-        createSession(in: workspaceID, directory: focusedTerminal?.workingDirectory ?? selectedSession?.directory)
+        let clicked = sidebar.item(atRow: sidebar.selectedRow) as? SidebarItem
+        guard let workspaceID = selectedSession?.workspaceID ?? clicked?.workspace?.id else { newPlaygroundSession(sender); return }
+        let directory = focusedTerminal?.workingDirectory ?? selectedSession?.directory ?? clicked?.workspace?.directory
+        createSession(in: workspaceID, directory: directory)
     }
     private func createSession(in workspaceID: WorkspaceID, directory: String?) {
         perform {
@@ -183,6 +204,23 @@ final class WorkspaceController: NSObject, NSOutlineViewDataSource, NSOutlineVie
             refreshSidebar(); showSelectedSession()
         }
     }
+    @objc func newPlaygroundSession(_ sender: Any?) {
+        if let workspace = store.registry.workspaces.first(where: { $0.effectiveKind == .playground && $0.isArchived != true }) {
+            createSession(in: workspace.id, directory: nil)
+        } else {
+            perform {
+                let receipt = try store.createWorkspace(name: "Playground", kind: .playground)
+                openSavedPanes(in: receipt.sessionID); refreshSidebar(); showSelectedSession()
+            }
+        }
+    }
+    @objc private func showCreationMenu(_ sender: NSButton) {
+        let menu = NSMenu()
+        let project = NSMenuItem(title: "New Project…", action: #selector(newWorkspace(_:)), keyEquivalent: "")
+        let playground = NSMenuItem(title: "New Playground Session", action: #selector(newPlaygroundSession(_:)), keyEquivalent: "")
+        project.target = self; playground.target = self; menu.addItem(project); menu.addItem(playground)
+        menu.popUp(positioning: nil, at: NSPoint(x: 0, y: sender.bounds.height + 4), in: sender)
+    }
     @objc func splitRight(_ sender: Any?) { splitSelected(direction: .right) }
     @objc func splitDown(_ sender: Any?) { splitSelected(direction: .down) }
     @objc func closePane(_ sender: Any?) {
@@ -190,16 +228,87 @@ final class WorkspaceController: NSObject, NSOutlineViewDataSource, NSOutlineVie
         requestClose(paneID, sessionID: session.id, needsConfirmation: livePanes[paneID]?.childExited == false)
     }
     @objc func renameSession(_ sender: Any?) {
-        let session = (sender as? NSMenuItem)?.representedObject as? SidebarItem
-        guard let session = session?.session ?? selectedSession,
-              let name = askName(title: "Rename session", initial: session.name) else { return }
-        perform { try store.renameSession(session.id, name: name); refreshSidebar(); updateTitle() }
+        let item = (sender as? NSMenuItem)?.representedObject as? SidebarItem
+        guard let session = item?.session ?? selectedSession else { return }
+        if nameProvider != nil {
+            guard let name = askName(title: "Rename session", initial: session.name) else { return }
+            perform { try store.renameSession(session.id, name: name); refreshSidebar(); updateTitle() }
+        } else { beginRenaming(item ?? SidebarItem(session: session)) }
     }
     @objc func renameWorkspace(_ sender: Any?) {
         let item = (sender as? NSMenuItem)?.representedObject as? SidebarItem
-        guard let workspace = item?.workspace ?? store.registry.workspaces.first(where: { $0.id == selectedSession?.workspaceID }),
-              let name = askName(title: "Rename workspace", initial: workspace.name) else { return }
-        perform { try store.renameWorkspace(workspace.id, name: name); refreshSidebar() }
+        guard let workspace = item?.workspace ?? store.registry.workspaces.first(where: { $0.id == selectedSession?.workspaceID }) else { return }
+        if nameProvider != nil {
+            guard let name = askName(title: "Rename workspace", initial: workspace.name) else { return }
+            perform { try store.renameWorkspace(workspace.id, name: name); refreshSidebar() }
+        } else { beginRenaming(item ?? SidebarItem(workspace: workspace)) }
+    }
+    @objc private func renameClickedItem(_ sender: Any?) {
+        guard let item = sidebar.item(atRow: sidebar.clickedRow) as? SidebarItem else { return }
+        beginRenaming(item)
+    }
+    private func beginRenaming(_ target: SidebarItem) {
+        let items = sidebarItems.flatMap { [$0] + $0.children }
+        guard let current = items.first(where: { item in
+            !item.isSeparator && ((target.session != nil && item.session?.id == target.session?.id) ||
+                                 (target.workspace != nil && item.workspace?.id == target.workspace?.id))
+        }), let row = sidebar.view(atColumn: 0, row: sidebar.row(forItem: current), makeIfNecessary: true) as? WorkspaceSidebarRow else { return }
+        editingSidebar = true; row.beginRenaming()
+    }
+    private func finishRenaming(_ item: SidebarItem, name: String?) {
+        editingSidebar = false
+        if let name {
+            perform {
+                if let workspace = item.workspace { try store.renameWorkspace(workspace.id, name: name) }
+                else if let session = item.session { try store.renameSession(session.id, name: name) }
+            }
+        }
+        refreshSidebar(); updateTitle(); restoreFocus()
+    }
+    private func itemMenu(_ item: SidebarItem) -> NSMenu {
+        let menu = NSMenu(); guard !item.isSeparator else { return menu }
+        let options: [(String, Selector)] = [("Rename", item.workspace != nil ? #selector(renameWorkspace(_:)) : #selector(renameSession(_:))),
+                                            ("Duplicate", #selector(duplicateItem(_:))), ("Remove", #selector(removeItem(_:)))]
+        for (title, action) in options {
+            let command = NSMenuItem(title: title, action: action, keyEquivalent: "")
+            command.target = self; command.representedObject = item; menu.addItem(command)
+        }
+        return menu
+    }
+    @objc private func duplicateItem(_ sender: NSMenuItem) {
+        guard let item = sender.representedObject as? SidebarItem else { return }
+        perform {
+            let id: AxoSessionID?
+            if let workspace = item.workspace { id = try store.duplicateWorkspace(workspace.id) }
+            else if let session = item.session { id = try store.duplicateSession(session.id) }
+            else { return }
+            if let id { openSavedPanes(in: id) }
+            refreshSidebar(); showSelectedSession()
+        }
+    }
+    @objc private func removeItem(_ sender: NSMenuItem) {
+        guard let item = sender.representedObject as? SidebarItem, let window = view.window, closeConfirmation == nil else { return }
+        let sessions = item.workspace.map { workspace in store.registry.sessions.filter { $0.workspaceID == workspace.id } } ?? item.session.map { [$0] } ?? []
+        let alert = NSAlert(); alert.messageText = "Remove from the sidebar?"
+        alert.informativeText = "This stops these sessions' app-owned processes. Saved Pi history and shared files are retained; nothing is deleted from disk or the cloud."
+        alert.addButton(withTitle: "Remove"); alert.addButton(withTitle: "Cancel"); closeConfirmation = alert
+        alert.beginSheetModal(for: window) { [weak self] response in
+            guard let self else { return }; self.closeConfirmation = nil
+            guard response == .alertFirstButtonReturn else { return }
+            self.perform {
+                if let workspace = item.workspace { try self.store.archiveWorkspace(workspace.id) }
+                else if let session = item.session { try self.store.archiveSession(session.id) }
+                for session in sessions {
+                    for pane in session.panes {
+                        self.livePanes.removeValue(forKey: pane.id)?.removeFromSuperview()
+                        self.paneHosts.removeValue(forKey: pane.id)?.subviews.forEach { $0.removeFromSuperview() }
+                        self.launchFailures.removeValue(forKey: pane.id)
+                        self.discardObservation(pane.id, sessionID: session.id)
+                    }
+                }
+                self.refreshSidebar(); self.showSelectedSession()
+            }
+        }
     }
     @objc func toggleSidebar(_ sender: Any?) {
         if !sidebarCollapsed { sidebarWidth = max(180, sidebarContainer.frame.width) }
@@ -239,6 +348,7 @@ final class WorkspaceController: NSObject, NSOutlineViewDataSource, NSOutlineVie
         if let existing = livePanes[pane.id] {
             guard existing.childExited else { return }
             livePanes.removeValue(forKey: pane.id)?.removeFromSuperview()
+            discardObservation(pane.id, sessionID: session.id)
         }
         guard livePanes.count < 128 else { throw WorkspaceFault.capacity }
         if pane.kind == .pi {
@@ -258,8 +368,14 @@ final class WorkspaceController: NSObject, NSOutlineViewDataSource, NSOutlineVie
             try FileManager.default.createDirectory(at: URL(fileURLWithPath: session.piSessionFile).deletingLastPathComponent(),
                                                     withIntermediateDirectories: true, attributes: [.posixPermissions: 0o700])
         }
+        var observation: MacSessionBinding?
+        if pane.kind == .pi, launchOverride == nil {
+            try FileManager.default.createDirectory(at: stateRoot, withIntermediateDirectories: true, attributes: [.posixPermissions: 0o700])
+            observation = MacSessionBinding(sessionID: session.id, paneID: pane.id, generation: UUID(),
+                                            path: stateRoot.appendingPathComponent(pane.id.rawValue.uuidString + ".json").path)
+        }
         let launch: TerminalLaunch = launchOverride?(pane, session) ?? (pane.kind == .pi
-            ? .pi(repository: repository, directory: directory, sessionFile: session.piSessionFile)
+            ? .pi(repository: repository, directory: directory, sessionFile: session.piSessionFile, observation: observation)
             : .shell(directory: directory))
         let terminal = try TerminalView(runtime: runtime, launch: launch, inheriting: inheriting)
         terminal.onFocus = { [weak self, weak terminal] in
@@ -272,6 +388,7 @@ final class WorkspaceController: NSObject, NSOutlineViewDataSource, NSOutlineVie
             self.requestClose(id, sessionID: owner.id, needsConfirmation: alive)
         }
         livePanes[pane.id] = terminal
+        if let observation { stateBindings[pane.id] = observation }
         launchFailures.removeValue(forKey: pane.id)
     }
     private func requestClose(_ paneID: PaneID, sessionID: AxoSessionID, needsConfirmation: Bool) {
@@ -304,6 +421,7 @@ final class WorkspaceController: NSObject, NSOutlineViewDataSource, NSOutlineVie
             }
             livePanes.removeValue(forKey: paneID)?.removeFromSuperview()
             paneHosts.removeValue(forKey: paneID)
+            discardObservation(paneID, sessionID: sessionID)
             launchFailures.removeValue(forKey: paneID)
             refreshSidebar(); showSelectedSession()
         }
@@ -320,13 +438,21 @@ final class WorkspaceController: NSObject, NSOutlineViewDataSource, NSOutlineVie
         sidebar.headerView = nil; sidebar.rowHeight = 28; sidebar.intercellSpacing = NSSize(width: 0, height: 2)
         sidebar.style = .sourceList; sidebar.indentationPerLevel = 12; sidebar.backgroundColor = .clear
         sidebar.dataSource = self; sidebar.delegate = self
+        sidebar.target = self; sidebar.doubleAction = #selector(renameClickedItem(_:))
+        sidebar.itemMenu = { [weak self] value in
+            guard let self, let item = value as? SidebarItem else { return NSMenu() }
+            return self.itemMenu(item)
+        }
         sidebar.setAccessibilityLabel("Workspaces and sessions")
         scroll.documentView = sidebar
         let heading = NSTextField(labelWithString: "Axo")
         heading.font = .systemFont(ofSize: 13, weight: .semibold); heading.textColor = .secondaryLabelColor
-        let create = sidebarButton(symbol: "plus", label: "New workspace", action: #selector(newWorkspace(_:)))
+        let create = sidebarButton(symbol: "plus", label: "Create project or playground session", action: #selector(showCreationMenu(_:)))
         let collapse = sidebarButton(symbol: "sidebar.left", label: "Collapse sidebar", action: #selector(toggleSidebar(_:)))
-        for child in [scroll, heading, create, collapse] {
+        let settings = NSButton(title: "Settings", target: self, action: #selector(showSettings(_:)))
+        settings.isBordered = false; settings.font = .systemFont(ofSize: 12); settings.contentTintColor = .secondaryLabelColor
+        let headerLine = NSBox(), footerLine = NSBox(); headerLine.boxType = .separator; footerLine.boxType = .separator
+        for child in [scroll, heading, create, collapse, settings, headerLine, footerLine] {
             child.translatesAutoresizingMaskIntoConstraints = false; sidebarContainer.addSubview(child)
         }
         NSLayoutConstraint.activate([
@@ -334,10 +460,17 @@ final class WorkspaceController: NSObject, NSOutlineViewDataSource, NSOutlineVie
             heading.topAnchor.constraint(equalTo: sidebarContainer.topAnchor, constant: 14),
             create.trailingAnchor.constraint(equalTo: sidebarContainer.trailingAnchor, constant: -10),
             create.centerYAnchor.constraint(equalTo: heading.centerYAnchor),
-            scroll.topAnchor.constraint(equalTo: heading.bottomAnchor, constant: 12),
+            headerLine.leadingAnchor.constraint(equalTo: sidebarContainer.leadingAnchor, constant: 12),
+            headerLine.trailingAnchor.constraint(equalTo: sidebarContainer.trailingAnchor, constant: -12),
+            headerLine.topAnchor.constraint(equalTo: heading.bottomAnchor, constant: 12),
+            scroll.topAnchor.constraint(equalTo: headerLine.bottomAnchor, constant: 8),
             scroll.leadingAnchor.constraint(equalTo: sidebarContainer.leadingAnchor, constant: 6),
             scroll.trailingAnchor.constraint(equalTo: sidebarContainer.trailingAnchor, constant: -6),
-            scroll.bottomAnchor.constraint(equalTo: collapse.topAnchor, constant: -8),
+            scroll.bottomAnchor.constraint(equalTo: footerLine.topAnchor, constant: -8),
+            footerLine.leadingAnchor.constraint(equalTo: headerLine.leadingAnchor), footerLine.trailingAnchor.constraint(equalTo: headerLine.trailingAnchor),
+            footerLine.bottomAnchor.constraint(equalTo: collapse.topAnchor, constant: -10),
+            settings.leadingAnchor.constraint(equalTo: sidebarContainer.leadingAnchor, constant: 12),
+            settings.centerYAnchor.constraint(equalTo: collapse.centerYAnchor),
             collapse.trailingAnchor.constraint(equalTo: sidebarContainer.trailingAnchor, constant: -10),
             collapse.bottomAnchor.constraint(equalTo: sidebarContainer.bottomAnchor, constant: -10),
         ])
@@ -364,18 +497,23 @@ final class WorkspaceController: NSObject, NSOutlineViewDataSource, NSOutlineVie
         return button
     }
     private func refreshSidebar() {
+        guard !editingSidebar else { return }
         refreshingSidebar = true
         defer { refreshingSidebar = false }
-        sidebarItems = store.registry.workspaces.map { workspace in
+        let active = store.registry.workspaces.filter { $0.isArchived != true }
+        let projects = active.filter { $0.effectiveKind == .project }.map { workspace in
             let item = SidebarItem(workspace: workspace)
-            item.children = store.registry.sessions.filter { $0.workspaceID == workspace.id }.map(SidebarItem.init(session:))
+            item.children = store.registry.sessions.filter { $0.workspaceID == workspace.id && $0.isArchived != true }.map(SidebarItem.init(session:))
             return item
         }
+        let playgroundIDs = Set(active.filter { $0.effectiveKind == .playground }.map(\.id))
+        let playgrounds = store.registry.sessions.filter { playgroundIDs.contains($0.workspaceID) && $0.isArchived != true }.map(SidebarItem.init(session:))
+        sidebarItems = projects + (!projects.isEmpty && !playgrounds.isEmpty ? [SidebarItem()] : []) + playgrounds
         sidebar.reloadData(); sidebar.expandItem(nil, expandChildren: true)
         for item in sidebarItems where item.workspace.map({ collapsedWorkspaces.contains($0.id) }) == true {
             sidebar.collapseItem(item)
         }
-        for item in sidebarItems.flatMap(\.children) where item.session?.id == store.registry.selectedSession {
+        for item in sidebarItems.flatMap({ [$0] + $0.children }) where item.session?.id == store.registry.selectedSession {
             let row = sidebar.row(forItem: item)
             if row >= 0 { sidebar.selectRowIndexes(IndexSet(integer: row), byExtendingSelection: false) }
         }
@@ -391,6 +529,7 @@ final class WorkspaceController: NSObject, NSOutlineViewDataSource, NSOutlineVie
                 reopenSidebar.widthAnchor.constraint(equalToConstant: 24), reopenSidebar.heightAnchor.constraint(equalToConstant: 24),
             ])
         }
+        updateTitle()
         guard let session = selectedSession else { return }
         splitHost = nil
         let body: NSView
@@ -539,6 +678,7 @@ final class WorkspaceController: NSObject, NSOutlineViewDataSource, NSOutlineVie
             }
         case GHOSTTY_ACTION_SHOW_CHILD_EXITED:
             terminal?.childExited = true
+            if let terminal, let (session, pane) = owner(of: terminal) { discardObservation(pane, sessionID: session.id) }
             DispatchQueue.main.async { [weak self] in self?.refreshSidebar() }
         case GHOSTTY_ACTION_GOTO_SPLIT:
             guard let terminal, let (session, pane) = owner(of: terminal) else { return false }
@@ -593,6 +733,53 @@ final class WorkspaceController: NSObject, NSOutlineViewDataSource, NSOutlineVie
         return true
     }
 
+    private func isViewing(_ sessionID: AxoSessionID) -> Bool {
+        NSApp.isActive && selectedSession?.id == sessionID && view.window?.isKeyWindow == true && view.window?.isVisible == true
+    }
+    private func receiveAgentState(_ observation: MacSessionState?, from binding: MacSessionBinding) {
+        guard stateBindings[binding.paneID]?.generation == binding.generation, livePanes[binding.paneID]?.childExited == false else { return }
+        guard let snapshot = observation else {
+            if agentSnapshots.removeValue(forKey: binding.paneID) != nil { refreshSidebar() }
+            return // Keep the receipt: recovering observation must not repeat an already reported episode.
+        }
+        guard let session = store.registry.sessions.first(where: { $0.id == binding.sessionID }),
+              snapshot.matches(session: session.id, pane: binding.paneID, generation: binding.generation),
+              snapshot.state == .detached || session.conversationID == nil || snapshot.conversationID == session.conversationID else { return }
+        if session.conversationID == nil, let conversation = snapshot.conversationID,
+           PiSessionTitle.readConversationID(from: session.piSessionFile) == conversation {
+            do { try store.updateSession(session.id) { $0.conversationID = conversation } }
+            catch { return } // Reject duplicate/malformed conversation admission; never show another session's state.
+        }
+        var receipt = attentionReceipts[binding.paneID] ?? MacAttentionReceipt()
+        let notify = receipt.observe(snapshot, isViewing: isViewing(session.id))
+        let oldPresentation = agentSnapshots[binding.paneID].map { attentionReceipts[binding.paneID]?.presentation($0) ?? $0.state }
+        attentionReceipts[binding.paneID] = receipt
+        agentSnapshots[binding.paneID] = snapshot
+        if oldPresentation != receipt.presentation(snapshot) { refreshSidebar() }
+        if notify { notifications?.notify(snapshot, binding: binding) }
+        if isViewing(session.id) { notifications?.dismiss(session.id) }
+    }
+    private func discardObservation(_ pane: PaneID, sessionID: AxoSessionID) {
+        if let binding = stateBindings.removeValue(forKey: pane) { try? FileManager.default.removeItem(atPath: binding.path) }
+        agentSnapshots.removeValue(forKey: pane); attentionReceipts.removeValue(forKey: pane)
+        notifications?.dismiss(sessionID)
+    }
+    private func activateNotification(_ destination: MacSessionNotifications.Destination) {
+        guard let binding = stateBindings[destination.paneID], binding.sessionID == destination.sessionID,
+              binding.generation == destination.generation,
+              agentSnapshots[destination.paneID]?.conversationID == destination.conversationID else {
+            let alert = NSAlert(); alert.messageText = "This notification belongs to an earlier run"
+            alert.informativeText = "Open the saved session from the sidebar to inspect it. No work was restarted or submitted."
+            alert.runModal(); return
+        }
+        perform {
+            try store.updateSession(destination.sessionID) { $0.focusedPane = destination.paneID }
+            try activateSession(destination.sessionID)
+            view.window?.makeKeyAndOrderFront(nil); NSApp.activate(ignoringOtherApps: true); restoreFocus()
+        }
+    }
+    @objc func showSettings(_ sender: Any?) { notifications?.showSettings() }
+
     private func saveShellDirectory(_ path: String, for terminal: TerminalView) {
         guard let (session, paneID) = owner(of: terminal),
               let pane = session.panes.first(where: { $0.id == paneID }), pane.kind == .shell,
@@ -626,13 +813,17 @@ final class WorkspaceController: NSObject, NSOutlineViewDataSource, NSOutlineVie
     func outlineView(_ outlineView: NSOutlineView, isItemExpandable item: Any) -> Bool { (item as? SidebarItem)?.workspace != nil }
     func outlineView(_ outlineView: NSOutlineView, viewFor tableColumn: NSTableColumn?, item: Any) -> NSView? {
         guard let item = item as? SidebarItem else { return nil }
-        let menu = NSMenu()
+        if item.isSeparator { let line = NSBox(); line.boxType = .separator; return line }
+        let menu = itemMenu(item)
         let workspace = item.workspace != nil
-        let rename = NSMenuItem(title: workspace ? "Rename Workspace…" : "Rename Session…",
-                                action: workspace ? #selector(renameWorkspace(_:)) : #selector(renameSession(_:)), keyEquivalent: "")
-        rename.target = self; rename.representedObject = item; menu.addItem(rename)
         let running = item.session?.panes.contains { livePanes[$0.id] != nil && livePanes[$0.id]?.childExited == false } ?? false
-        return WorkspaceSidebarRow(name: item.workspace?.name ?? item.session?.name ?? "", workspace: workspace, running: running, actions: menu)
+        let piPane = item.session?.panes.first(where: { $0.kind == .pi })?.id
+        let activity = piPane.flatMap { id -> MacAgentState? in
+            if let snapshot = agentSnapshots[id] { return attentionReceipts[id]?.presentation(snapshot) ?? snapshot.state }
+            return stateBindings[id] == nil ? nil : .detached
+        }
+        return WorkspaceSidebarRow(name: item.workspace?.name ?? item.session?.name ?? "", workspace: workspace, running: running, activity: activity, actions: menu,
+                                   finishRename: { [weak self] name in self?.finishRenaming(item, name: name) })
     }
     private func readSessionTitle(for terminal: TerminalView) {
         guard let (session, pane) = owner(of: terminal), session.effectiveNameSource == .untitled,
@@ -655,6 +846,8 @@ final class WorkspaceController: NSObject, NSOutlineViewDataSource, NSOutlineVie
             }
         }
     }
+    func outlineView(_ outlineView: NSOutlineView, shouldSelectItem item: Any) -> Bool { (item as? SidebarItem)?.isSeparator != true }
+    func outlineView(_ outlineView: NSOutlineView, heightOfRowByItem item: Any) -> CGFloat { (item as? SidebarItem)?.isSeparator == true ? 20 : 28 }
     func outlineViewItemDidCollapse(_ notification: Notification) {
         guard !refreshingSidebar, let item = notification.userInfo?["NSObject"] as? SidebarItem, let workspace = item.workspace else { return }
         collapsedWorkspaces.insert(workspace.id)

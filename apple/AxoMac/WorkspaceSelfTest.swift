@@ -142,7 +142,43 @@ enum WorkspaceSelfTest {
         retry.performClick(nil)
         guard failed.terminal(for: failedPi)?.workingDirectory == missing.path,
               launches[failedPi] == 1, launches[survivingShell] == failureCounts[survivingShell] else { throw Failure.launchRecovery }
-        print("AXO_WORKSPACE_SELF_TEST_PASSED: lazy automatic reopening, no duplicate launches, project folder/name intent and cancellation, saved shell directories, missing-directory failure/retry without fallback, sidebar collapse/reopen, manual renames, retained live output, split navigation/resize, cancelled close")
+        failed.renameSession(nil)
+        guard let editor = window.firstResponder as? NSTextView, editor.isFieldEditor else { throw Failure.inlineRename }
+        editor.string = "Inline renamed"
+        window.makeFirstResponder(nil); pumpEvents()
+        guard failed.registry.sessions[0].name == "Inline renamed", failed.registry.sessions[0].effectiveNameSource == .manual else { throw Failure.inlineRename }
+        guard let outline = findOutline(in: failed.view), let row = findRow("Inline renamed", in: outline), let context = row.menu,
+              context.items.map(\.title) == ["Rename", "Duplicate", "Remove"] else { throw Failure.contextActions }
+        context.performActionForItem(at: 1); pumpEvents()
+        guard failed.registry.sessions.count == 2, let duplicate = failed.registry.sessions.last,
+              duplicate.name == "Inline renamed copy", duplicate.id != failedProject.sessionID,
+              duplicate.piSessionFile != failed.registry.sessions[0].piSessionFile,
+              duplicate.panes.allSatisfy({ failed.terminal(for: $0.id) != nil }),
+              let copiedRow = findRow(duplicate.name, in: outline), let copiedMenu = copiedRow.menu else { throw Failure.contextActions }
+        copiedMenu.performActionForItem(at: 2); pumpEvents()
+        guard let removal = window.attachedSheet else { throw Failure.contextActions }
+        window.endSheet(removal, returnCode: .alertSecondButtonReturn); pumpEvents()
+        guard failed.registry.sessions.last?.isArchived != true, failed.terminal(for: duplicate.panes[0].id) != nil else { throw Failure.contextActions }
+        copiedMenu.performActionForItem(at: 2); pumpEvents()
+        guard let confirmedRemoval = window.attachedSheet else { throw Failure.contextActions }
+        window.endSheet(confirmedRemoval, returnCode: .alertFirstButtonReturn); pumpEvents()
+        guard failed.registry.sessions.last?.isArchived == true, duplicate.panes.allSatisfy({ failed.terminal(for: $0.id) == nil }),
+              failed.terminal(for: survivingShell) != nil else { throw Failure.contextActions }
+        let badge = WorkspaceSidebarRow(name: "Working fixture", workspace: false, running: true, activity: .working,
+                                       actions: NSMenu(), finishRename: { _ in })
+        guard badge.accessibilityLabel()?.contains("Agent working") == true else { throw Failure.contextActions }
+        print("AXO_WORKSPACE_SELF_TEST_PASSED: lazy automatic reopening, project folder/name intent and cancellation, saved shell directories, missing-directory recovery, sidebar collapse/reopen, native inline rename, context duplicate and confirmed/cancelled removal, working badge, retained surfaces, split navigation/resize")
+    }
+    private static func findOutline(in view: NSView) -> NSOutlineView? {
+        if let outline = view as? NSOutlineView { return outline }
+        return view.subviews.compactMap { findOutline(in: $0) }.first
+    }
+    private static func findRow(_ name: String, in outline: NSOutlineView) -> WorkspaceSidebarRow? {
+        for index in 0..<outline.numberOfRows {
+            if let row = outline.view(atColumn: 0, row: index, makeIfNecessary: true) as? WorkspaceSidebarRow,
+               row.textField?.stringValue == name { return row }
+        }
+        return nil
     }
     private static func findButton(_ title: String, in view: NSView) -> NSButton? {
         if let button = view as? NSButton, button.title == title { return button }
@@ -176,6 +212,6 @@ enum WorkspaceSelfTest {
         guard let bytes = text.text else { return "" }
         return String(decoding: UnsafeRawBufferPointer(start: bytes, count: Int(text.text_len)), as: UTF8.self)
     }
-    enum Failure: Error { case launchRecovery, sidebar, rename, missingSurface, sessionCreation, recreatedSurface, splitCreation, workspaceCreation, missingOutput, automaticRestart, unhandledShortcut, spatialFocus, resize, closeConfirmation, cancelledClose }
+    enum Failure: Error { case inlineRename, contextActions, launchRecovery, sidebar, rename, missingSurface, sessionCreation, recreatedSurface, splitCreation, workspaceCreation, missingOutput, automaticRestart, unhandledShortcut, spatialFocus, resize, closeConfirmation, cancelledClose }
 }
 #endif

@@ -1,5 +1,6 @@
 import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
 import { registerSessionTitles } from "../../bridge/session-title";
+import { registerMacSessionState } from "../../bridge/mac-session-state";
 
 /** Title-only real-loader fixture: no relay connection or paid provider. */
 export default function sessionTitles(pi: ExtensionAPI) {
@@ -9,4 +10,5 @@ export default function sessionTitles(pi: ExtensionAPI) {
       contextWindow: 32_000, maxTokens: 1000, cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 } })),
   });
   registerSessionTitles(pi);
+  registerMacSessionState(pi);
 }

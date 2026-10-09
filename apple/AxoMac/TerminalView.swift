@@ -6,9 +6,16 @@ struct TerminalLaunch {
     let directory: String
     let command: String?
 
-    static func pi(repository: String, directory: String, sessionFile: String) -> Self {
-        Self(directory: directory, command: "/bin/bash " + quote(repository + "/scripts/run-pi.sh")
-             + " --axo-session-file " + quote(sessionFile) + " --axo-directory " + quote(directory))
+    static func pi(repository: String, directory: String, sessionFile: String, observation: MacSessionBinding? = nil) -> Self {
+        var command = "/bin/bash " + quote(repository + "/scripts/run-pi.sh")
+            + " --axo-session-file " + quote(sessionFile) + " --axo-directory " + quote(directory)
+        if let observation {
+            command += " --axo-state-file " + quote(observation.path)
+                + " --axo-work-session-id " + quote(observation.sessionID.rawValue.uuidString)
+                + " --axo-pane-id " + quote(observation.paneID.rawValue.uuidString)
+                + " --axo-runtime-generation " + quote(observation.generation.uuidString)
+        }
+        return Self(directory: directory, command: command)
     }
     static func shell(directory: String) -> Self { Self(directory: directory, command: nil) }
     private static func quote(_ value: String) -> String { "'" + value.replacingOccurrences(of: "'", with: "'\\''") + "'" }
