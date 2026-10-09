@@ -4,7 +4,7 @@ final class VoicePromptUITests: XCTestCase {
     @MainActor
     func testApprovedSetupImmediatelyRecordsAndTranscriptionUsesTheSendSpinner() throws {
         let app = XCUIApplication()
-        app.launchArguments = ["--axo-voice-preview", "-appleSpeechSetupApproved", "NO"]
+        app.launchArguments = ["--axo-chat-preview", "--axo-voice-preview", "-appleSpeechSetupApproved", "NO"]
         app.launch()
         let voice = app.buttons["voicePromptButton"]
         XCTAssertTrue(voice.waitForExistence(timeout: 10))
@@ -23,7 +23,7 @@ final class VoicePromptUITests: XCTestCase {
         // NSArgumentDomain's forced NO shadows persisted defaults for the entire launch.
         // Relaunch with the approved state instead of mistaking that fixture for a consent bug.
         app.terminate()
-        app.launchArguments = ["--axo-voice-preview", "-appleSpeechSetupApproved", "YES"]
+        app.launchArguments = ["--axo-chat-preview", "--axo-voice-preview", "-appleSpeechSetupApproved", "YES"]
         app.launch()
         XCTAssertTrue(app.buttons["Record"].waitForExistence(timeout: 5))
         app.buttons["voicePromptButton"].tap()
@@ -34,7 +34,7 @@ final class VoicePromptUITests: XCTestCase {
     @MainActor
     func testStopTranscribesIntoDraftForReview() throws {
         let app = XCUIApplication()
-        app.launchArguments = ["--axo-voice-preview", "--axo-voice-preview-fast", "-appleSpeechSetupApproved", "YES"]
+        app.launchArguments = ["--axo-chat-preview", "--axo-voice-preview", "--axo-voice-preview-fast", "-appleSpeechSetupApproved", "YES"]
         app.launch()
         XCTAssertTrue(app.buttons["Record"].waitForExistence(timeout: 10))
         app.buttons["Record"].tap()
@@ -50,7 +50,7 @@ final class VoicePromptUITests: XCTestCase {
     @MainActor
     func testSendRecordingRetainsTranscriptWhenOffline() throws {
         let app = XCUIApplication()
-        app.launchArguments = ["--axo-voice-preview", "--axo-voice-preview-fast", "-appleSpeechSetupApproved", "YES"]
+        app.launchArguments = ["--axo-chat-preview", "--axo-voice-preview", "--axo-voice-preview-fast", "-appleSpeechSetupApproved", "YES"]
         app.launch()
         XCTAssertTrue(app.buttons["Record"].waitForExistence(timeout: 10))
         app.buttons["Record"].tap()
@@ -65,7 +65,7 @@ final class VoicePromptUITests: XCTestCase {
     @MainActor
     func testCancelRecordingPreservesTypedDraft() throws {
         let app = XCUIApplication()
-        app.launchArguments = ["--axo-voice-preview", "-appleSpeechSetupApproved", "YES"]
+        app.launchArguments = ["--axo-chat-preview", "--axo-voice-preview", "-appleSpeechSetupApproved", "YES"]
         app.launch()
         let draft = app.descendants(matching: .any).matching(identifier: "promptDraft").firstMatch
         XCTAssertTrue(draft.waitForExistence(timeout: 10))
@@ -81,7 +81,7 @@ final class VoicePromptUITests: XCTestCase {
     @MainActor
     func testDownloadRequiresConfirmationAndCanBeDeclined() throws {
         let app = XCUIApplication()
-        app.launchArguments = ["-appleSpeechSetupApproved", "NO"]
+        app.launchArguments = ["--axo-chat-preview", "-appleSpeechSetupApproved", "NO"]
         app.launch()
         let setup = app.buttons["Set up voice"]
         XCTAssertTrue(setup.waitForExistence(timeout: 10))
@@ -98,7 +98,7 @@ final class VoicePromptUITests: XCTestCase {
     @MainActor
     func testVoiceDetailsExplainLocalProcessingAndAttribution() throws {
         let app = XCUIApplication()
-        app.launchArguments = ["-appleSpeechSetupApproved", "NO"]
+        app.launchArguments = ["--axo-chat-preview", "-appleSpeechSetupApproved", "NO"]
         app.launch()
         let options = app.buttons["Chat options"]
         XCTAssertTrue(options.waitForExistence(timeout: 10))

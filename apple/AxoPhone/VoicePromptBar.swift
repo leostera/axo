@@ -6,12 +6,17 @@ struct VoicePromptButton: View {
     let prominent: Bool
     @AppStorage("appleSpeechSetupApproved") private var downloadApproved = false
     @State private var confirmDownload = false
+    @Environment(\.accessibilityReduceMotion) private var reduceMotion
 
     var body: some View {
         Button(action: act) {
             Group {
                 if waiting { ProgressView().tint(prominent ? ChatColors.background : .primary) }
-                else { Image(systemName: symbol).font(.system(size: 21, weight: .medium)) }
+                else {
+                    Image(systemName: symbol)
+                        .font(.system(size: 21, weight: .medium))
+                        .symbolEffect(.pulse, options: .repeating, isActive: voice.state == .recording && !reduceMotion)
+                }
             }
             .foregroundStyle(voice.state == .recording ? Color.red : prominent ? ChatColors.background : .primary)
             .frame(width: 44, height: 44)
@@ -61,40 +66,47 @@ struct VoicePromptButton: View {
 
 struct VoiceProgressCard: View {
     let voice: VoicePrompt
+    @Environment(\.accessibilityReduceMotion) private var reduceMotion
 
     var body: some View {
-        if shouldShow {
-            VStack(alignment: .leading, spacing: 9) {
-                HStack(alignment: .top, spacing: 10) {
-                    Image(systemName: voice.state == .recording ? "record.circle.fill" : "waveform")
-                        .foregroundStyle(voice.state == .recording ? .red : .secondary)
-                    VStack(alignment: .leading, spacing: 4) {
-                        Text(title).font(.subheadline.weight(.medium))
-                        if case .preparing(let progress) = voice.state {
-                            if let bytes = progress.bytes {
-                                Text(bytes.formatted).font(.caption.monospacedDigit()).foregroundStyle(.secondary)
-                            } else if progress.stage == .downloading {
-                                Text(progress.fraction, format: .percent.precision(.fractionLength(0)))
-                                    .font(.caption.monospacedDigit()).foregroundStyle(.secondary)
+        Group {
+            if shouldShow {
+                VStack(alignment: .leading, spacing: 9) {
+                    HStack(alignment: .top, spacing: 10) {
+                        Image(systemName: voice.state == .recording ? "record.circle.fill" : "waveform")
+                            .foregroundStyle(voice.state == .recording ? .red : .secondary)
+                        VStack(alignment: .leading, spacing: 4) {
+                            Text(title).font(.subheadline.weight(.medium))
+                            if case .preparing(let progress) = voice.state {
+                                if let bytes = progress.bytes {
+                                    Text(bytes.formatted).font(.caption.monospacedDigit()).foregroundStyle(.secondary)
+                                } else if progress.stage == .downloading {
+                                    Text(progress.fraction, format: .percent.precision(.fractionLength(0)))
+                                        .font(.caption.monospacedDigit()).foregroundStyle(.secondary)
+                                }
+                                Text(progress.detail).font(.caption).foregroundStyle(.secondary)
                             }
-                            Text(progress.detail).font(.caption).foregroundStyle(.secondary)
+                            if let failedMessage { Text(failedMessage).font(.caption).foregroundStyle(.orange) }
                         }
-                        if let failedMessage { Text(failedMessage).font(.caption).foregroundStyle(.orange) }
-                    }
-                    Spacer(minLength: 0)
-                    if voice.isBusy && voice.state != .cancelling {
-                        Button { voice.cancel() } label: { Image(systemName: "xmark").font(.caption.weight(.semibold)).frame(width: 30, height: 30) }
+                        Spacer(minLength: 0)
+                        if voice.isBusy && voice.state != .cancelling {
+                            Button { voice.cancel() } label: {
+                                Image(systemName: "xmark").font(.caption.weight(.semibold)).frame(width: 30, height: 30)
+                            }
                             .accessibilityLabel("Cancel voice prompting")
+                        }
+                    }
+                    if case .preparing(let progress) = voice.state {
+                        if progress.stage == .downloading { ProgressView(value: progress.fraction).tint(.primary) }
+                        else { ProgressView().tint(.primary) }
                     }
                 }
-                if case .preparing(let progress) = voice.state {
-                    if progress.stage == .downloading { ProgressView(value: progress.fraction).tint(.primary) }
-                    else { ProgressView().tint(.primary) }
-                }
+                .padding(14)
+                .background(ChatColors.surface, in: RoundedRectangle(cornerRadius: 20))
+                .transition(reduceMotion ? .opacity : .move(edge: .bottom).combined(with: .opacity))
             }
-            .padding(14)
-            .background(ChatColors.surface, in: RoundedRectangle(cornerRadius: 20))
         }
+        .animation(reduceMotion ? .easeInOut(duration: 0.12) : .spring(response: 0.36, dampingFraction: 0.84), value: shouldShow)
     }
 
     private var shouldShow: Bool {
@@ -125,19 +137,17 @@ struct VoiceInformationView: View {
     @Environment(\.dismiss) private var dismiss
 
     var body: some View {
-        NavigationStack {
-            ScrollView {
-                VStack(alignment: .leading, spacing: 16) {
-                    Text("Apple on-device speech").font(.title2.bold())
-                    Text("Tap the waveform or microphone to record. Stop (the square) transcribes into your draft without sending, so you can review and edit. Send (the arrow) transcribes and sends the resulting prompt to Pi when available. Cancel (the cross) discards the recording and preserves existing draft text. There is no recording time limit; long recordings use more device storage. If Axo is offline or cannot send, the transcript stays in your draft and is never automatically replayed. You can dictate while the Mac is offline.")
-                    Text("Recognition uses Apple's on-device SpeechTranscriber, not a server recognition service. Audio is never uploaded by Axo. Temporary recordings are deleted after transcription or cancellation; backgrounding or an audio interruption cancels capture.")
-                    Text("Requires iOS 26 and a device that supports Apple's English speech model. Apple manages language assets and may download them during setup. Axo shows bytes when Apple reports byte counts, otherwise percentage progress. Apple may continue a shared asset download after you cancel setup.")
-                    Text("No Parakeet, FluidAudio, Hugging Face download, or server-recognition fallback. The old Parakeet cache is removed when this version opens. This is stop-to-transcribe dictation, not live streaming.")
-                    Link("About Apple's SpeechTranscriber", destination: URL(string: "https://developer.apple.com/documentation/speech/speechtranscriber")!)
-                }.padding(22)
-            }
-            .navigationTitle("Voice prompting").navigationBarTitleDisplayMode(.inline)
-            .toolbar { Button("Done") { dismiss() } }
+        ScrollView {
+            VStack(alignment: .leading, spacing: 16) {
+                Text("Apple on-device speech").font(.title2.bold())
+                Text("Tap the waveform or microphone to record. Stop (the square) transcribes into your draft without sending, so you can review and edit. Send (the arrow) transcribes and sends the resulting prompt to Pi when available. Cancel (the cross) discards the recording and preserves existing draft text. There is no recording time limit; long recordings use more device storage. If Axo is offline or cannot send, the transcript stays in your draft and is never automatically replayed. You can dictate while the Mac is offline.")
+                Text("Recognition uses Apple's on-device SpeechTranscriber, not a server recognition service. Audio is never uploaded by Axo. Temporary recordings are deleted after transcription or cancellation; backgrounding or an audio interruption cancels capture.")
+                Text("Requires iOS 26 and a device that supports Apple's English speech model. Apple manages language assets and may download them during setup. Axo shows bytes when Apple reports byte counts, otherwise percentage progress. Apple may continue a shared asset download after you cancel setup.")
+                Text("No Parakeet, FluidAudio, Hugging Face download, or server-recognition fallback. The old Parakeet cache is removed when this version opens. This is stop-to-transcribe dictation, not live streaming.")
+                Link("About Apple's SpeechTranscriber", destination: URL(string: "https://developer.apple.com/documentation/speech/speechtranscriber")!)
+            }.padding(22)
         }
+        .navigationTitle("Voice prompting").navigationBarTitleDisplayMode(.inline)
+        .toolbar { Button("Done") { dismiss() } }
     }
 }

@@ -54,7 +54,7 @@ public final class SessionFilesClient {
     public var readyDrafts: [SharedFile] { currentDrafts.compactMap(\.readyFile) }
     public var canSubmitDrafts: Bool { currentDrafts.allSatisfy { $0.readyFile != nil } }
 
-    public func selectSession(_ id: String) {
+    public func selectSession(_ id: String?) {
         guard id != sessionId else { return }
         sessionId = id
         files = []
@@ -65,7 +65,8 @@ public final class SessionFilesClient {
         notificationRevision = 0
         loadedRevision = 0
         isStale = true
-        UserDefaults.standard.set(id, forKey: "axo.fileSession.\(endpoint.baseURL.absoluteString)")
+        if let id { UserDefaults.standard.set(id, forKey: "axo.fileSession.\(endpoint.baseURL.absoluteString)") }
+        else { UserDefaults.standard.removeObject(forKey: "axo.fileSession.\(endpoint.baseURL.absoluteString)") }
     }
     public func invalidate(sessionId: String, revision: Int? = nil) {
         guard self.sessionId == sessionId else { return }

@@ -21,14 +21,14 @@ public final class ConversationClient {
     public private(set) var droppedEventCount = 0
     public private(set) var messages: [ConversationMessage] = []
     private struct PromptSubmission {
-        let sessionID: String
+        let sessionID: AxoSessionID
         let viewID: String
         var message: ConversationMessage
     }
     private var submissions: [PromptSubmission] = []
     private var submissionOrigin: URL?
     public var pendingPrompts: [ConversationMessage] {
-        submissions.filter { $0.sessionID == snapshot?.sessionId && $0.viewID == snapshot?.viewId }.map(\.message)
+        submissions.filter { $0.sessionID == snapshot?.sessionID && $0.viewID == snapshot?.viewId }.map(\.message)
     }
     public private(set) var hasEarlierMessages = false
     public private(set) var isLoadingHistory = false
@@ -41,6 +41,11 @@ public final class ConversationClient {
     private var readTimeouts: [String: Task<Void, Never>] = [:]
     public private(set) var lastAcknowledgedID: String?
     public private(set) var notice: String?
+    /// The navigation owner handles workbench control replies; conversation state stays local here.
+    public var receiveCatalogPage: ((CatalogPage) -> Void)?
+    public var receiveSubscription: ((SubscriptionAcknowledgement) -> Void)?
+    public var receiveCreationAcknowledgement: ((CreationAcknowledgement) -> Void)?
+    public var receiveCommandError: ((String?, AxoSessionID?, String) -> Void)?
     private var socket: URLSessionWebSocketTask?
     private var receiver: Task<Void, Never>?
     private var heartbeat: Task<Void, Never>?
@@ -49,13 +54,16 @@ public final class ConversationClient {
     private var authorizationCookie: String?
     private var reconnectAttempt = 0
     private var shouldReconnect = false
-    private var eventSessionID: String?
+    public private(set) var selectedSessionID: AxoSessionID?
+    private var selectedConversationID: String?
+    private var eventSessionID: AxoSessionID?
     private var seenEventIDs = Set<String>()
     private let session = URLSession(configuration: .ephemeral)
 
     public init() {}
 
     public var canSend: Bool { link == .online && snapshot != nil && pendingID == nil }
+    public var canSendWorkbenchCommands: Bool { shouldReconnect && socket != nil }
 
     public func connect(endpoint: RelayEndpoint, authorizationCookie: String) {
         disconnect()
@@ -99,6 +107,7 @@ public final class ConversationClient {
         socket.maximumMessageSize = 256 * 1024
         self.socket = socket
         socket.resume()
+        sendSubscription(to: socket)
         receiver = Task { [weak self] in
             do {
                 while !Task.isCancelled {
@@ -146,6 +155,55 @@ public final class ConversationClient {
         socket = nil
     }
 
+    public func selectSession(_ sessionID: AxoSessionID?, conversationID: String?) {
+        let changed = selectedSessionID != sessionID
+        selectedSessionID = sessionID
+        selectedConversationID = conversationID
+        files?.selectSession(conversationID)
+        guard changed else { return }
+        clearConversationState()
+        sendSubscription(to: socket)
+    }
+
+    private func clearConversationState() {
+        for id in Array(readRequests.keys) { _ = finishReadRequest(id: id) }
+        snapshot = nil
+        latestSnapshot = nil
+        eventSessionID = nil
+        historyViewID = nil
+        messages = []
+        activityEvents = []
+        seenEventIDs = []
+        toolOutputs = [:]
+        hasEarlierMessages = false
+        hasLaterMessages = false
+        isLoadingHistory = false
+        isBrowsingHistory = false
+    }
+
+    private func sendSubscription(to socket: URLSessionWebSocketTask?) {
+        guard let socket, shouldReconnect else { return }
+        let command = PhoneCommand.subscribe(id: UUID().uuidString, sessionID: selectedSessionID)
+        sendWorkbenchCommand(command, over: socket)
+    }
+
+    @discardableResult
+    public func sendWorkbenchCommand(_ command: PhoneCommand) -> Bool {
+        guard ["catalog_page", "subscribe", "create_workspace", "create_session", "rename_workspace", "rename_session"].contains(command.type),
+              let socket, shouldReconnect else { return false }
+        sendWorkbenchCommand(command, over: socket)
+        return true
+    }
+
+    private func sendWorkbenchCommand(_ command: PhoneCommand, over socket: URLSessionWebSocketTask) {
+        Task { [weak self] in
+            do {
+                let data = try JSONEncoder().encode(command)
+                try await socket.send(.string(String(decoding: data, as: UTF8.self)))
+            } catch { self?.connectionFailed(for: socket) }
+        }
+    }
+
     public func loadEarlierMessages() { loadHistory(direction: "before") }
     public func loadLaterMessages() { loadHistory(direction: "after") }
 
@@ -155,7 +213,7 @@ public final class ConversationClient {
         guard link == .online, socket != nil, !isLoadingHistory, available,
               let value = snapshot, let cursor else { return }
         isLoadingHistory = true
-        sendReadRequest(.history(id: UUID().uuidString, session: value.sessionId,
+        sendReadRequest(.history(id: UUID().uuidString, sessionID: value.sessionID,
                                 viewId: value.viewId, beforeId: cursor, direction: direction))
     }
 
@@ -189,13 +247,13 @@ public final class ConversationClient {
     }
 
     public func loadToolOutput(toolCallId: String) {
-        guard link == .online, socket != nil, let session = snapshot?.sessionId else { return }
+        guard link == .online, socket != nil, let sessionID = snapshot?.sessionID else { return }
         var output = toolOutputs[toolCallId] ?? ToolOutputState()
         guard !output.isLoading, let offset = output.nextOffset else { return }
         output.isLoading = true
         output.error = nil
         toolOutputs[toolCallId] = output
-        sendReadRequest(.toolOutput(id: UUID().uuidString, session: session, toolCallId: toolCallId, offset: offset))
+        sendReadRequest(.toolOutput(id: UUID().uuidString, sessionID: sessionID, toolCallId: toolCallId, offset: offset))
     }
 
     private func sendReadRequest(_ command: PhoneCommand) {
@@ -231,10 +289,10 @@ public final class ConversationClient {
     }
 
     public func cancelAgent(runId: String) {
-        guard canSend, let sessionId = snapshot?.sessionId, snapshot?.runId == runId else { return }
+        guard canSend, let sessionID = snapshot?.sessionID, snapshot?.runId == runId else { return }
         let id = UUID().uuidString
         pendingCancellationID = id
-        send(.cancel(id: id, session: sessionId, runId: runId))
+        send(.cancel(id: id, sessionID: sessionID, runId: runId))
     }
 
     public func send(_ command: PhoneCommand) {
@@ -252,7 +310,7 @@ public final class ConversationClient {
 
     @discardableResult
     func recordPromptSubmission(_ command: PhoneCommand) -> Bool {
-        guard let id = command.id, let snapshot, command.sessionId == snapshot.sessionId else { return false }
+        guard let id = command.id, let snapshot, command.sessionId == snapshot.sessionID.rawValue.uuidString else { return false }
         guard !submissions.contains(where: { $0.message.commandId == id }) else { return false }
         guard submissions.count < 32 else {
             notice = "Too many unresolved submissions. Check Pi before sending more prompts."
@@ -263,7 +321,7 @@ public final class ConversationClient {
         message.timestamp = Int64(Date().timeIntervalSince1970 * 1000)
         message.delivery = .submitting
         message.attachments = files?.readyDrafts.filter { command.attachmentIds?.contains($0.id) == true }
-        submissions.append(PromptSubmission(sessionID: snapshot.sessionId, viewID: snapshot.viewId, message: message))
+        submissions.append(PromptSubmission(sessionID: snapshot.sessionID, viewID: snapshot.viewId, message: message))
         pendingID = id
         return true
     }
@@ -273,20 +331,29 @@ public final class ConversationClient {
         submissions[index].message.delivery = delivery
     }
 
-    private func reconcileSubmissions(_ records: [ConversationMessage], sessionID: String) {
+    private func reconcileSubmissions(_ records: [ConversationMessage], sessionID: AxoSessionID) {
         let recordedIDs = Set(records.compactMap(\.commandId))
         submissions.removeAll { $0.sessionID == sessionID && recordedIDs.contains($0.message.commandId ?? "") }
     }
 
     func apply(_ event: RelayEvent) {
         switch event {
+        case .catalogPage(let page):
+            receiveCatalogPage?(page)
+        case .subscription(let acknowledgement):
+            receiveSubscription?(acknowledgement)
+        case .creationAcknowledged(let acknowledgement):
+            receiveCreationAcknowledgement?(acknowledgement)
         case .snapshot(let value):
-            reconcileSubmissions(value.messages, sessionID: value.sessionId)
+            guard selectedSessionID == value.sessionID,
+                  selectedConversationID.map({ $0 == value.conversationID }) ?? true else { return }
+            selectedConversationID = value.conversationID
+            reconcileSubmissions(value.messages, sessionID: value.sessionID)
             reconnectAttempt = 0
-            files?.selectSession(value.sessionId)
-            if eventSessionID != value.sessionId || historyViewID != value.viewId {
+            files?.selectSession(value.conversationID)
+            if eventSessionID != value.sessionID || historyViewID != value.viewId {
                 for id in Array(readRequests.keys) { _ = finishReadRequest(id: id) }
-                eventSessionID = value.sessionId
+                eventSessionID = value.sessionID
                 historyViewID = value.viewId
                 activityEvents = []
                 seenEventIDs = []
@@ -323,10 +390,11 @@ public final class ConversationClient {
             link = .online
         case .history(let page):
             guard let request = readRequests[page.id], request.type == "history",
-                  request.sessionId == snapshot?.sessionId, page.sessionId == snapshot?.sessionId,
+                  request.sessionId == page.sessionID.rawValue.uuidString, page.sessionID == snapshot?.sessionID,
+                  page.conversationID == snapshot?.conversationID,
                   request.viewId == snapshot?.viewId, page.viewId == snapshot?.viewId,
                   request.beforeId == page.beforeId, request.direction == (page.direction ?? "before") else { return }
-            reconcileSubmissions(page.messages, sessionID: page.sessionId)
+            reconcileSubmissions(page.messages, sessionID: page.sessionID)
             _ = finishReadRequest(id: page.id)
             isLoadingHistory = false
             let ids = Set(messages.map(\.id))
@@ -342,7 +410,8 @@ public final class ConversationClient {
             }
         case .toolOutput(let page):
             guard let request = readRequests[page.id], request.type == "tool_output",
-                  request.sessionId == snapshot?.sessionId, page.sessionId == snapshot?.sessionId,
+                  request.sessionId == page.sessionID.rawValue.uuidString, page.sessionID == snapshot?.sessionID,
+                  page.conversationID == snapshot?.conversationID,
                   request.toolCallId == page.toolCallId, request.offset == page.offset else { return }
             _ = finishReadRequest(id: page.id)
             guard var output = toolOutputs[page.toolCallId], output.nextOffset == page.offset else { return }
@@ -364,8 +433,10 @@ public final class ConversationClient {
             pendingID = nil
             pendingCancellationID = nil
             notice = nil
-        case .error(let id, let message):
+        case .error(let id, let sessionID, let message):
+            receiveCommandError?(id, sessionID, message)
             if let id, readRequests[id] != nil { failReadRequest(id: id, message: message); return }
+            if let sessionID, sessionID != selectedSessionID { return }
             if id == nil || id == pendingID {
                 updateSubmission(pendingID, delivery: .rejected)
                 pendingID = nil

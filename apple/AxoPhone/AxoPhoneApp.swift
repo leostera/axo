@@ -14,7 +14,7 @@ struct AxoPhoneApp: App {
 
     var body: some Scene {
         WindowGroup {
-            ConversationView()
+            PhoneWorkbenchView()
                 .task {
                     await Task.detached(priority: .utility) {
                         guard let support = FileManager.default.urls(for: .applicationSupportDirectory, in: .userDomainMask).first else { return }

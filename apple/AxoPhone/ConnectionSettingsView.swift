@@ -3,7 +3,6 @@ import SwiftUI
 
 struct ConnectionSettingsView: View {
     @Binding var endpoint: String
-    @AppStorage("appearance") private var appearance: AppAppearance = .system
     let status: String
     let canConnect: Bool
     let reconnect: () -> Void
@@ -13,33 +12,24 @@ struct ConnectionSettingsView: View {
     private var validEndpoint: Bool { (try? RelayEndpoint(endpoint)) != nil }
 
     var body: some View {
-        NavigationStack {
-            Form {
-                Section("Appearance") {
-                    Picker("Theme", selection: $appearance) {
-                        ForEach(AppAppearance.allCases) { choice in Text(choice.title).tag(choice) }
-                    }
-                    .pickerStyle(.segmented)
-                    .accessibilityIdentifier("appearancePicker")
-                }
-                Section("Mac connection") {
-                    Label(status, systemImage: "desktopcomputer")
-                    Button("Reconnect", action: reconnect).disabled(!canConnect || !validEndpoint)
-                    Button("Sign in with Cloudflare Access", action: signIn).disabled(!canConnect || !validEndpoint)
-                }
-                Section {
-                    TextField("HTTPS relay endpoint", text: $endpoint)
-                        .textInputAutocapitalization(.never).autocorrectionDisabled().keyboardType(.URL)
-                        .accessibilityIdentifier("relayEndpoint")
-                    if !validEndpoint { Text("Enter an HTTPS origin without a path.").font(.caption).foregroundStyle(.orange) }
-                } header: { Text("Relay") } footer: {
-                    Text("Your Mac must have Axo running. Prompts are not queued while it is offline.")
-                }
+        Form {
+            Section("Mac connection") {
+                Label(status, systemImage: "desktopcomputer")
+                Button("Reconnect", action: reconnect).disabled(!canConnect || !validEndpoint)
+                Button("Sign in with Cloudflare Access", action: signIn).disabled(!canConnect || !validEndpoint)
             }
-            .tint(.primary)
-            .navigationTitle("Connection").navigationBarTitleDisplayMode(.inline)
-            .toolbar { Button("Done") { dismiss() } }
+            Section {
+                TextField("HTTPS relay endpoint", text: $endpoint)
+                    .textInputAutocapitalization(.never).autocorrectionDisabled().keyboardType(.URL)
+                    .accessibilityIdentifier("relayEndpoint")
+                if !validEndpoint { Text("Enter an HTTPS origin without a path.").font(.caption).foregroundStyle(.orange) }
+            } header: { Text("Relay") } footer: {
+                Text("Your Mac must have Axo running. Prompts are not queued while it is offline.")
+            }
         }
+        .tint(.primary)
+        .navigationTitle("Connection").navigationBarTitleDisplayMode(.inline)
+        .toolbar { Button("Done") { dismiss() } }
         .presentationDragIndicator(.visible)
     }
 }

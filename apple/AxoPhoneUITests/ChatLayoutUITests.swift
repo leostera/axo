@@ -6,10 +6,11 @@ final class ChatLayoutUITests: XCTestCase {
         let app = XCUIApplication()
         app.launchArguments = ["--axo-chat-preview"]
         app.launch()
-        let settings = app.buttons["Connection settings"]
-        XCTAssertTrue(settings.waitForExistence(timeout: 10))
+        let options = app.buttons["Chat options"]
+        XCTAssertTrue(options.waitForExistence(timeout: 10))
         XCTAssertFalse(app.textFields["relayEndpoint"].exists)
-        settings.tap()
+        options.tap()
+        app.buttons["Connection settings"].tap()
         XCTAssertTrue(app.navigationBars["Connection"].waitForExistence(timeout: 3))
         XCTAssertTrue(app.textFields["relayEndpoint"].exists)
         XCTAssertTrue(app.buttons["Sign in with Cloudflare Access"].exists)

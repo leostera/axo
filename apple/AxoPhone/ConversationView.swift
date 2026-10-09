@@ -6,11 +6,14 @@ import PhotosUI
 import UniformTypeIdentifiers
 
 struct ConversationView: View {
-    @State private var client = ConversationClient()
-    @State private var voice = VoicePromptFactory.make()
-    @AppStorage("relayEndpoint") private var endpointText = RelayEndpoint.defaultOrigin
+    let client: ConversationClient
+    let voice: VoicePrompt
+    @Binding var endpointText: String
+    @Binding var draft: String
     @AppStorage("appearance") private var appearance: AppAppearance = .system
-    @State private var draft = ""
+    let sessionName: String
+    let showSidebar: () -> Void
+    let onPromptSubmitted: (String, String, [String]) -> Void
     @State private var submittedDraft: SubmittedPrompt?
     private struct SubmittedPrompt {
         let id: String
@@ -68,6 +71,7 @@ struct ConversationView: View {
     }
     @State private var composerFocused = false
     @Environment(\.scenePhase) private var scenePhase
+    @Environment(\.accessibilityReduceMotion) private var reduceMotion
 
     private enum ChatSheet: String, Identifiable {
         case connection, login, voiceDetails, files
@@ -162,10 +166,13 @@ struct ConversationView: View {
             .sheet(item: $sheet) { presented in
                 switch presented {
                 case .connection:
-                    ConnectionSettingsView(endpoint: $endpointText, status: status, canConnect: !voice.isBusy,
-                                           reconnect: { reconnect() }, signIn: signIn)
+                    NavigationStack {
+                        ConnectionSettingsView(endpoint: $endpointText, status: status, canConnect: !voice.isBusy,
+                                              reconnect: { reconnect() }, signIn: signIn)
+                    }
                 case .login: login
-                case .voiceDetails: VoiceInformationView()
+                case .voiceDetails:
+                    NavigationStack { VoiceInformationView() }
                 case .files:
                     if let files = fileClient { SessionFilesView(client: files) }
                     else { Text("Sign in to view session files.").padding() }
@@ -362,12 +369,12 @@ struct ConversationView: View {
         ZStack {
             headerTitle
             HStack(spacing: 16) {
-                Button { composerFocused = false; sheet = .connection } label: {
-                    Image(systemName: "line.3.horizontal.decrease").font(.system(size: 21, weight: .medium))
+                Button { composerFocused = false; showSidebar() } label: {
+                    Image(systemName: "line.3.horizontal").font(.system(size: 21, weight: .medium))
                         .frame(width: 46, height: 46)
                         .background(.ultraThinMaterial, in: Circle())
                         .overlay(Circle().stroke(ChatColors.border, lineWidth: 0.5))
-                }.accessibilityLabel("Connection settings").disabled(voice.isBusy)
+                }.accessibilityLabel("Workspaces and sessions").disabled(voice.isBusy)
                 Spacer(minLength: 0)
                 headerActions
             }
@@ -407,14 +414,22 @@ struct ConversationView: View {
     private var headerTitle: some View {
         Button { sheet = .connection } label: {
             VStack(spacing: 3) {
-                Text("Axo").font(.headline).accessibilityIdentifier("conversation-title")
+                Text(sessionName).font(.headline)
                 HStack(spacing: 5) {
-                    Circle().fill(statusColor).frame(width: 5, height: 5)
+                    Image(systemName: "circle.fill")
+                        .font(.system(size: 5))
+                        .foregroundStyle(statusColor)
+                        .symbolEffect(
+                            .pulse,
+                            options: .repeating,
+                            isActive: client.link == .online && client.snapshot?.state == .running && !reduceMotion
+                        )
                     Text(shortStatus).font(.caption2).foregroundStyle(.secondary)
                 }
             }
         }
-        .accessibilityLabel("Axo. \(status)")
+        .accessibilityLabel("\(sessionName). \(status)")
+        .accessibilityIdentifier("conversation-title")
         .disabled(voice.isBusy)
     }
 
@@ -601,19 +616,22 @@ struct ConversationView: View {
     }
 
     private func send() {
-        guard canSend, let session = client.snapshot?.sessionId else { return }
+        guard canSend, let sessionID = client.snapshot?.sessionID else { return }
         let id = UUID().uuidString
+        let text = draft
         let attachments = fileClient?.readyDrafts.map(\.id) ?? []
-        submittedDraft = SubmittedPrompt(id: id, text: draft, attachmentIDs: attachments)
+        submittedDraft = SubmittedPrompt(id: id, text: text, attachmentIDs: attachments)
         _ = client.backToBottom()
         scrollState.jumpToLatest()
         queuedEarlierDemand = false
         scrollRequest += 1
-        client.send(.prompt(id: id, session: session, text: draft, attachmentIds: attachments))
+        client.send(.prompt(id: id, sessionID: sessionID, text: text, attachmentIds: attachments))
+        if client.pendingID == id { onPromptSubmitted(id, text, attachments) }
+        else { submittedDraft = nil }
     }
 
     private func answer(_ question: Question, _ value: String) {
-        guard client.canSend, let session = client.snapshot?.sessionId else { return }
-        client.send(.answer(id: UUID().uuidString, session: session, question: question.id, value: value))
+        guard client.canSend, let sessionID = client.snapshot?.sessionID else { return }
+        client.send(.answer(id: UUID().uuidString, sessionID: sessionID, question: question.id, value: value))
     }
 }

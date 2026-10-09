@@ -91,7 +91,7 @@ final class SessionFilesTests: XCTestCase {
     func testAttachmentWireMetadataAndOnlyFileIDsInPrompts() throws {
         let file = try JSONDecoder().decode(SharedFile.self, from: JSONSerialization.data(withJSONObject: fileRecord))
         try file.validate()
-        let command = PhoneCommand.prompt(id: "c", session: "session", text: "", attachmentIds: [file.id])
+        let command = PhoneCommand.prompt(id: "c", sessionID: AxoSessionID(), text: "", attachmentIds: [file.id])
         let body = try XCTUnwrap(JSONSerialization.jsonObject(with: JSONEncoder().encode(command)) as? [String: Any])
         XCTAssertEqual(body["attachmentIds"] as? [String], [file.id])
         XCTAssertNil(body["sha256"])

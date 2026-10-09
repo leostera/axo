@@ -2,15 +2,25 @@ import XCTest
 @testable import AxoCore
 
 final class HistoryWindowTests: XCTestCase {
+    private let sessionID = "22222222-2222-4222-8222-222222222222"
+
     private func snapshot(_ ids: [Int], view: String = "view", text: String = "Synthetic message") throws -> RelayEvent {
         let messages = ids.map { ["id": "message-\($0)", "role": "user", "text": text] }
-        return try RelayEvent.decode(JSONSerialization.data(withJSONObject: ["type": "snapshot", "sessionId": "session", "viewId": view,
-            "state": "idle", "messages": messages, "hasEarlierMessages": true, "question": NSNull()]))
+        return try RelayEvent.decode(JSONSerialization.data(withJSONObject: ["type": "snapshot", "sessionId": sessionID,
+            "conversationId": "pi-conversation-1", "viewId": view, "state": "idle", "messages": messages,
+            "hasEarlierMessages": true, "question": NSNull()]))
+    }
+
+    @MainActor
+    private func selectedClient() -> ConversationClient {
+        let client = ConversationClient()
+        client.selectSession(AxoSessionID(UUID(uuidString: sessionID)!), conversationID: "pi-conversation-1")
+        return client
     }
 
     @MainActor
     func testIdleRecentWindowDoesNotStartHistoryRestoration() async throws {
-        let client = ConversationClient()
+        let client = selectedClient()
         defer { client.disconnect() }
         client.apply(try snapshot(Array(980..<1000)))
         try await Task.sleep(for: .milliseconds(600))
@@ -21,7 +31,7 @@ final class HistoryWindowTests: XCTestCase {
 
     @MainActor
     func testDisjointLatestWindowDoesNotDiscardOlderReadingRange() throws {
-        let client = ConversationClient()
+        let client = selectedClient()
         defer { client.disconnect() }
         client.apply(try snapshot(Array(0..<20)))
         client.isBrowsingHistory = true
@@ -37,7 +47,7 @@ final class HistoryWindowTests: XCTestCase {
 
     @MainActor
     func testBranchIdentityInvalidatesOldRangeEvenWhenMessageIDsOverlap() throws {
-        let client = ConversationClient()
+        let client = selectedClient()
         defer { client.disconnect() }
         client.apply(try snapshot(Array(0..<20)))
         client.isBrowsingHistory = true
@@ -47,7 +57,7 @@ final class HistoryWindowTests: XCTestCase {
 
     @MainActor
     func testDecodedHistoryCacheIsBoundedAndBottomRetainsOnlyRecentWindow() throws {
-        let client = ConversationClient()
+        let client = selectedClient()
         defer { client.disconnect() }
         for end in stride(from: 20, through: 1000, by: 10) {
             client.apply(try snapshot(Array((end-20)..<end), text: String(repeating: "x", count: 4000)))
@@ -61,7 +71,7 @@ final class HistoryWindowTests: XCTestCase {
 
     @MainActor
     func testOfflineBottomUsesLatestCachedWindowWithoutDispatching() throws {
-        let client = ConversationClient()
+        let client = selectedClient()
         defer { client.disconnect() }
         client.apply(try snapshot(Array(0..<20)))
         client.isBrowsingHistory = true

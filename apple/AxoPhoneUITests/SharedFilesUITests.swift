@@ -134,7 +134,7 @@ final class SharedFilesUITests: XCTestCase {
         XCTAssertTrue(app.buttons["Photos"].exists)
         XCTAssertTrue(app.buttons["Files"].exists)
         XCTAssertFalse(app.buttons["Session files"].exists)
-        XCTAssertEqual(app.buttons.matching(NSPredicate(format: "label == %@", "Connection settings")).count, 1, "Only the existing header control remains")
+        XCTAssertEqual(app.buttons.matching(NSPredicate(format: "label == %@", "Connection settings")).count, 0, "Connection settings is not part of the composer menu")
         XCTAssertFalse(app.buttons["Paste text at end"].exists)
         XCTAssertFalse(app.buttons["About voice"].exists)
         XCTAssertFalse(app.staticTexts["Selected photos upload to private cloud storage as JPEG (2048px). Not end-to-end encrypted."].exists)
