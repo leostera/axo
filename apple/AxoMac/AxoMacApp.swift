@@ -43,7 +43,7 @@ final class AxoMacApp: NSObject, NSApplicationDelegate, NSWindowDelegate {
             #endif
             let workspaces = try WorkspaceController(runtime: runtime, repository: root)
             self.workspaces = workspaces
-            let window = NSWindow(contentRect: NSRect(x: 0, y: 0, width: 1100, height: 750), styleMask: [.titled, .closable, .miniaturizable, .resizable], backing: .buffered, defer: false)
+            let window = NSWindow(contentRect: NSRect(x: 0, y: 0, width: 1280, height: 780), styleMask: [.titled, .closable, .miniaturizable, .resizable], backing: .buffered, defer: false)
             window.title = "Axo — Playground"
             window.delegate = self
             window.contentView = workspaces.view
@@ -123,6 +123,8 @@ final class AxoMacApp: NSObject, NSApplicationDelegate, NSWindowDelegate {
         add("Split Down", #selector(WorkspaceController.splitDown(_:)), "e", [.command, .shift])
         add("Close Pane…", #selector(WorkspaceController.closePane(_:)), "w")
         add("Rename Session…", #selector(WorkspaceController.renameSession(_:)), "")
+        add("Rename Workspace…", #selector(WorkspaceController.renameWorkspace(_:)), "")
+        add("Toggle Sidebar", #selector(WorkspaceController.toggleSidebar(_:)), "s", [.command, .control])
         workItem.submenu = work
         let editItem = NSMenuItem()
         menu.addItem(editItem)

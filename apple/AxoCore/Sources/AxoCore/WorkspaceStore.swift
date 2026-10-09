@@ -82,10 +82,16 @@ public struct WorkspaceRecord: Codable, Equatable, Identifiable, Sendable {
     public let id: WorkspaceID
     public var name: String
 }
+public enum SessionNameSource: String, Codable, Sendable { case untitled, automatic, manual }
+
 public struct WorkSession: Codable, Equatable, Identifiable, Sendable {
     public let id: AxoSessionID
     public var workspaceID: WorkspaceID
     public var name: String
+    public var nameSource: SessionNameSource? = nil
+    public var effectiveNameSource: SessionNameSource {
+        nameSource ?? ((name == "New session" || name == "Untitled") ? .untitled : .manual)
+    }
     public let directory: String
     public let piSessionFile: String
     public var conversationID: String?
@@ -143,6 +149,8 @@ public struct CreationReceipt: Codable, Equatable, Sendable {
     public let name: String
     public let workspaceID: WorkspaceID
     public let sessionID: AxoSessionID
+    public var initialDirectory: String? = nil
+    public var initialSessionFile: String? = nil
 }
 public enum WorkspaceFault: Error, Equatable {
     case invalidName, invalidMembership, invalidLayout, capacity, conflict, notFound, corruptStore
@@ -178,14 +186,16 @@ public final class WorkspaceStore {
                                 initialDirectory: String? = nil, initialSessionFile: String? = nil) throws -> CreationReceipt {
         let name = try Self.validName(name)
         if let receipt = registry.creations[commandID] {
-            guard receipt.kind == "workspace", receipt.name == name else { throw WorkspaceFault.conflict }
+            guard receipt.kind == "workspace", receipt.name == name,
+                  receipt.initialDirectory == initialDirectory, receipt.initialSessionFile == initialSessionFile else { throw WorkspaceFault.conflict }
             return receipt
         }
         let workspaceID = WorkspaceID(), sessionID = AxoSessionID()
-        let receipt = CreationReceipt(kind: "workspace", name: name, workspaceID: workspaceID, sessionID: sessionID)
+        let receipt = CreationReceipt(kind: "workspace", name: name, workspaceID: workspaceID, sessionID: sessionID,
+                                      initialDirectory: initialDirectory, initialSessionFile: initialSessionFile)
         try commit { state in
             state.workspaces.append(WorkspaceRecord(id: workspaceID, name: name))
-            state.sessions.append(newSession(id: sessionID, workspaceID: workspaceID, name: "New session",
+            state.sessions.append(newSession(id: sessionID, workspaceID: workspaceID, name: "Untitled",
                                              directory: initialDirectory, sessionFile: initialSessionFile))
             state.selectedSession = sessionID
             state.creations[commandID] = receipt
@@ -194,21 +204,42 @@ public final class WorkspaceStore {
     }
 
     @discardableResult
-    public func createSession(workspaceID: WorkspaceID, name: String, commandID: String = UUID().uuidString) throws -> CreationReceipt {
+    public func createSession(workspaceID: WorkspaceID, name: String, commandID: String = UUID().uuidString,
+                              initialDirectory: String? = nil) throws -> CreationReceipt {
         let name = try Self.validName(name)
         if let receipt = registry.creations[commandID] {
-            guard receipt.kind == "session", receipt.name == name, receipt.workspaceID == workspaceID else { throw WorkspaceFault.conflict }
+            guard receipt.kind == "session", receipt.name == name, receipt.workspaceID == workspaceID,
+                  receipt.initialDirectory == initialDirectory else { throw WorkspaceFault.conflict }
             return receipt
         }
         guard registry.workspaces.contains(where: { $0.id == workspaceID }) else { throw WorkspaceFault.notFound }
         let sessionID = AxoSessionID()
-        let receipt = CreationReceipt(kind: "session", name: name, workspaceID: workspaceID, sessionID: sessionID)
+        let receipt = CreationReceipt(kind: "session", name: name, workspaceID: workspaceID, sessionID: sessionID,
+                                      initialDirectory: initialDirectory)
         try commit { state in
-            state.sessions.append(newSession(id: sessionID, workspaceID: workspaceID, name: name))
+            state.sessions.append(newSession(id: sessionID, workspaceID: workspaceID, name: name, directory: initialDirectory))
             state.selectedSession = sessionID
             state.creations[commandID] = receipt
         }
         return receipt
+    }
+
+    public func renameWorkspace(_ id: WorkspaceID, name: String) throws {
+        let name = try Self.validName(name)
+        try commit { state in
+            guard let index = state.workspaces.firstIndex(where: { $0.id == id }) else { throw WorkspaceFault.notFound }
+            state.workspaces[index].name = name
+        }
+    }
+    public func renameSession(_ id: AxoSessionID, name: String) throws {
+        let name = try Self.validName(name)
+        try updateSession(id) { $0.name = name; $0.nameSource = .manual }
+    }
+    public func applyAutomaticTitle(_ title: String, to id: AxoSessionID) throws {
+        let title = try Self.validName(title)
+        guard let session = registry.sessions.first(where: { $0.id == id }) else { throw WorkspaceFault.notFound }
+        guard session.effectiveNameSource == .untitled else { return }
+        try updateSession(id) { $0.name = title; $0.nameSource = .automatic }
     }
 
     public func select(_ id: AxoSessionID) throws {

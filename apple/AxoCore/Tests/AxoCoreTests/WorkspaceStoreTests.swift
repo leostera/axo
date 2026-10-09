@@ -103,6 +103,45 @@ final class WorkspaceStoreTests: XCTestCase {
         XCTAssertTrue(store.registry.workspaces.isEmpty)
     }
 
+    func testTitlesAreDurableAndManualRenamesAlwaysWin() throws {
+        let (store, root) = try temporaryStore(); defer { try? FileManager.default.removeItem(at: root) }
+        let created = try store.createWorkspace(name: "Playground")
+        XCTAssertEqual(store.registry.sessions[0].name, "Untitled")
+        try store.applyAutomaticTitle("Sidebar polish", to: created.sessionID)
+        XCTAssertEqual(store.registry.sessions[0].effectiveNameSource, .automatic)
+        try store.renameSession(created.sessionID, name: "My session")
+        try store.applyAutomaticTitle("Late automatic title", to: created.sessionID)
+        try store.renameWorkspace(created.workspaceID, name: "My playground")
+        let restored = try WorkspaceStore(url: store.url, scratchRoot: root)
+        XCTAssertEqual(restored.registry.sessions[0].name, "My session")
+        XCTAssertEqual(restored.registry.sessions[0].effectiveNameSource, .manual)
+        XCTAssertEqual(restored.registry.workspaces[0].name, "My playground")
+        // Renaming even to the placeholder explicitly prevents future automatic replacement.
+        try store.renameSession(created.sessionID, name: "Untitled")
+        try store.applyAutomaticTitle("Must not overwrite", to: created.sessionID)
+        XCTAssertEqual(store.registry.sessions[0].name, "Untitled")
+    }
+
+    func testProjectWorkingDirectoryDoesNotMoveOrReuseConversationStorage() throws {
+        let (store, root) = try temporaryStore(); defer { try? FileManager.default.removeItem(at: root) }
+        let workspace = try store.createWorkspace(name: "Project", commandID: "cwd", initialDirectory: "/project")
+        let session = try store.createSession(workspaceID: workspace.workspaceID, name: "Untitled", commandID: "tab", initialDirectory: "/project/subfolder")
+        XCTAssertEqual(store.registry.sessions.map(\.directory), ["/project", "/project/subfolder"])
+        XCTAssertTrue(store.registry.sessions.allSatisfy { $0.piSessionFile.hasPrefix(root.path + "/work/") })
+        XCTAssertNotEqual(store.registry.sessions[0].piSessionFile, store.registry.sessions[1].piSessionFile)
+        XCTAssertThrowsError(try store.createWorkspace(name: "Project", commandID: "cwd", initialDirectory: "/different"))
+        XCTAssertThrowsError(try store.createSession(workspaceID: workspace.workspaceID, name: "Untitled", commandID: "tab", initialDirectory: "/different"))
+        XCTAssertEqual(session.sessionID, store.registry.sessions[1].id)
+    }
+
+    func testOldRegistriesWithoutNameSourcesStillDecode() throws {
+        let (store, root) = try temporaryStore(); defer { try? FileManager.default.removeItem(at: root) }
+        _ = try store.createWorkspace(name: "Playground")
+        let restored = try JSONDecoder().decode(WorkspaceRegistry.self, from: JSONEncoder().encode(store.registry))
+        XCTAssertNil(restored.sessions[0].nameSource)
+        XCTAssertEqual(restored.sessions[0].effectiveNameSource, .untitled)
+    }
+
     func testPrototypeImportReferencesOriginalFileWithoutCopyingIt() throws {
         let (store, root) = try temporaryStore(); defer { try? FileManager.default.removeItem(at: root) }
         _ = try store.createWorkspace(name: "Playground", initialDirectory: "/existing/playground",

@@ -4,10 +4,19 @@ import GhosttyKit
 import SwiftUI
 
 /// Owns surfaces independently of selected views. Switching never releases a process.
-final class WorkspaceController: NSObject, NSOutlineViewDataSource, NSOutlineViewDelegate, NSMenuItemValidation {
+final class WorkspaceController: NSObject, NSOutlineViewDataSource, NSOutlineViewDelegate, NSSplitViewDelegate, NSMenuItemValidation {
     typealias SurfaceTree = SplitTree<PaneHostView>
     let view = NSSplitView()
     private let sidebar = NSOutlineView()
+    private let sidebarContainer = NSVisualEffectView()
+    private let reopenSidebar = NSButton()
+    private var sidebarMinimumWidth: NSLayoutConstraint?
+    private var sidebarWidth: CGFloat = 210
+    private var positionedSidebar = false
+    private(set) var sidebarCollapsed = false
+    private let titleQueue = DispatchQueue(label: "dev.leostera.axo.session-titles", qos: .utility)
+    private var pendingTitleReads = Set<PaneID>()
+    private var deferredTitleReads = Set<PaneID>()
     private let content = NSView()
     private let store: WorkspaceStore
     private let repository: String
@@ -19,6 +28,7 @@ final class WorkspaceController: NSObject, NSOutlineViewDataSource, NSOutlineVie
     private var closeConfirmation: NSAlert?
     private var sidebarItems: [SidebarItem] = []
     private var refreshingSidebar = false
+    private var collapsedWorkspaces = Set<WorkspaceID>()
     private let launchOverride: ((PaneRecord, WorkSession) -> TerminalLaunch)?
     var nameProvider: ((String, String) -> String?)?
     var registry: WorkspaceRegistry { store.registry }
@@ -99,9 +109,13 @@ final class WorkspaceController: NSObject, NSOutlineViewDataSource, NSOutlineVie
     }
 
     @objc func newWorkspace(_ sender: Any?) {
-        guard let name = askName(title: "New workspace", initial: "New workspace") else { return }
+        createWorkspace(directory: focusedTerminal?.workingDirectory ?? selectedSession?.directory)
+    }
+    private func createWorkspace(directory: String?) {
         perform {
-            let receipt = try store.createWorkspace(name: name)
+            if let directory { try requireDirectory(directory) }
+            let name = directory.flatMap { try? WorkspaceStore.validName(URL(fileURLWithPath: $0).lastPathComponent) } ?? "New workspace"
+            let receipt = try store.createWorkspace(name: name, initialDirectory: directory)
             refreshSidebar(); showSelectedSession()
             if let session = store.registry.sessions.first(where: { $0.id == receipt.sessionID }), let pane = session.panes.first {
                 try launch(pane, in: session)
@@ -110,12 +124,12 @@ final class WorkspaceController: NSObject, NSOutlineViewDataSource, NSOutlineVie
     }
     @objc func newSession(_ sender: Any?) {
         guard let workspaceID = selectedSession?.workspaceID else { newWorkspace(sender); return }
-        createSession(in: workspaceID)
+        createSession(in: workspaceID, directory: focusedTerminal?.workingDirectory ?? selectedSession?.directory)
     }
-    private func createSession(in workspaceID: WorkspaceID) {
-        guard let name = askName(title: "New session", initial: "New session") else { return }
+    private func createSession(in workspaceID: WorkspaceID, directory: String?) {
         perform {
-            let receipt = try store.createSession(workspaceID: workspaceID, name: name)
+            if let directory { try requireDirectory(directory) }
+            let receipt = try store.createSession(workspaceID: workspaceID, name: "Untitled", initialDirectory: directory)
             refreshSidebar(); showSelectedSession()
             if let session = store.registry.sessions.first(where: { $0.id == receipt.sessionID }), let pane = session.panes.first {
                 try launch(pane, in: session)
@@ -129,8 +143,26 @@ final class WorkspaceController: NSObject, NSOutlineViewDataSource, NSOutlineVie
         requestClose(paneID, sessionID: session.id, needsConfirmation: livePanes[paneID]?.childExited == false)
     }
     @objc func renameSession(_ sender: Any?) {
-        guard let session = selectedSession, let name = askName(title: "Rename session", initial: session.name) else { return }
-        perform { try store.updateSession(session.id) { $0.name = name }; refreshSidebar(); updateTitle() }
+        let session = (sender as? NSMenuItem)?.representedObject as? SidebarItem
+        guard let session = session?.session ?? selectedSession,
+              let name = askName(title: "Rename session", initial: session.name) else { return }
+        perform { try store.renameSession(session.id, name: name); refreshSidebar(); updateTitle() }
+    }
+    @objc func renameWorkspace(_ sender: Any?) {
+        let item = (sender as? NSMenuItem)?.representedObject as? SidebarItem
+        guard let workspace = item?.workspace ?? store.registry.workspaces.first(where: { $0.id == selectedSession?.workspaceID }),
+              let name = askName(title: "Rename workspace", initial: workspace.name) else { return }
+        perform { try store.renameWorkspace(workspace.id, name: name); refreshSidebar() }
+    }
+    @objc func toggleSidebar(_ sender: Any?) {
+        if !sidebarCollapsed { sidebarWidth = max(180, sidebarContainer.frame.width) }
+        sidebarCollapsed.toggle()
+        sidebarMinimumWidth?.isActive = !sidebarCollapsed
+        sidebarContainer.isHidden = sidebarCollapsed
+        reopenSidebar.isHidden = !sidebarCollapsed
+        view.adjustSubviews()
+        if !sidebarCollapsed { view.setPosition(sidebarWidth, ofDividerAt: 0) }
+        restoreFocus()
     }
     private func splitSelected(direction: SurfaceTree.NewDirection) {
         guard let session = selectedSession, let paneID = session.focusedPane else { return }
@@ -167,6 +199,10 @@ final class WorkspaceController: NSObject, NSOutlineViewDataSource, NSOutlineVie
                                                     attributes: [.posixPermissions: 0o700])
         }
         try requireDirectory(directory)
+        if pane.kind == .pi, session.piSessionFile.hasPrefix(scratchRoot.path + "/") {
+            try FileManager.default.createDirectory(at: URL(fileURLWithPath: session.piSessionFile).deletingLastPathComponent(),
+                                                    withIntermediateDirectories: true, attributes: [.posixPermissions: 0o700])
+        }
         let launch: TerminalLaunch = launchOverride?(pane, session) ?? (pane.kind == .pi
             ? .pi(repository: repository, directory: directory, sessionFile: session.piSessionFile)
             : .shell(directory: directory))
@@ -219,18 +255,58 @@ final class WorkspaceController: NSObject, NSOutlineViewDataSource, NSOutlineVie
     }
 
     private func configureSidebar() {
-        view.isVertical = true; view.dividerStyle = .thin
+        view.isVertical = true; view.dividerStyle = .thin; view.delegate = self
+        sidebarContainer.material = .sidebar; sidebarContainer.blendingMode = .behindWindow
+        sidebarContainer.state = .followsWindowActiveState
         let scroll = NSScrollView()
-        scroll.hasVerticalScroller = true
+        scroll.hasVerticalScroller = true; scroll.autohidesScrollers = true; scroll.drawsBackground = false
         let column = NSTableColumn(identifier: NSUserInterfaceItemIdentifier("navigation"))
         column.title = "Axo"; sidebar.addTableColumn(column); sidebar.outlineTableColumn = column
-        sidebar.headerView = nil; sidebar.rowHeight = 32
+        sidebar.headerView = nil; sidebar.rowHeight = 28; sidebar.intercellSpacing = NSSize(width: 0, height: 2)
+        sidebar.style = .sourceList; sidebar.indentationPerLevel = 12; sidebar.backgroundColor = .clear
         sidebar.dataSource = self; sidebar.delegate = self
         sidebar.setAccessibilityLabel("Workspaces and sessions")
         scroll.documentView = sidebar
-        view.addArrangedSubview(scroll); view.addArrangedSubview(content)
-        scroll.widthAnchor.constraint(greaterThanOrEqualToConstant: 190).isActive = true
-        view.setPosition(230, ofDividerAt: 0)
+        let heading = NSTextField(labelWithString: "Axo")
+        heading.font = .systemFont(ofSize: 13, weight: .semibold); heading.textColor = .secondaryLabelColor
+        let create = sidebarButton(symbol: "plus", label: "New workspace", action: #selector(newWorkspace(_:)))
+        let collapse = sidebarButton(symbol: "sidebar.left", label: "Collapse sidebar", action: #selector(toggleSidebar(_:)))
+        for child in [scroll, heading, create, collapse] {
+            child.translatesAutoresizingMaskIntoConstraints = false; sidebarContainer.addSubview(child)
+        }
+        NSLayoutConstraint.activate([
+            heading.leadingAnchor.constraint(equalTo: sidebarContainer.leadingAnchor, constant: 16),
+            heading.topAnchor.constraint(equalTo: sidebarContainer.topAnchor, constant: 14),
+            create.trailingAnchor.constraint(equalTo: sidebarContainer.trailingAnchor, constant: -10),
+            create.centerYAnchor.constraint(equalTo: heading.centerYAnchor),
+            scroll.topAnchor.constraint(equalTo: heading.bottomAnchor, constant: 12),
+            scroll.leadingAnchor.constraint(equalTo: sidebarContainer.leadingAnchor, constant: 6),
+            scroll.trailingAnchor.constraint(equalTo: sidebarContainer.trailingAnchor, constant: -6),
+            scroll.bottomAnchor.constraint(equalTo: collapse.topAnchor, constant: -8),
+            collapse.trailingAnchor.constraint(equalTo: sidebarContainer.trailingAnchor, constant: -10),
+            collapse.bottomAnchor.constraint(equalTo: sidebarContainer.bottomAnchor, constant: -10),
+        ])
+        reopenSidebar.image = NSImage(systemSymbolName: "sidebar.left", accessibilityDescription: "Show sidebar")
+        reopenSidebar.isBordered = false; reopenSidebar.target = self; reopenSidebar.action = #selector(toggleSidebar(_:))
+        reopenSidebar.toolTip = "Show sidebar"; reopenSidebar.setAccessibilityLabel("Show sidebar")
+        reopenSidebar.isHidden = true
+        view.addArrangedSubview(sidebarContainer); view.addArrangedSubview(content)
+        sidebarMinimumWidth = sidebarContainer.widthAnchor.constraint(greaterThanOrEqualToConstant: 180)
+        sidebarMinimumWidth?.isActive = true
+        view.setPosition(sidebarWidth, ofDividerAt: 0)
+    }
+    func splitViewDidResizeSubviews(_ notification: Notification) {
+        // NSSplitView has zero bounds during construction; position only after the window lays it out.
+        guard !positionedSidebar, view.bounds.width >= 400, view.arrangedSubviews.count == 2 else { return }
+        positionedSidebar = true
+        view.setPosition(sidebarWidth, ofDividerAt: 0)
+    }
+    private func sidebarButton(symbol: String, label: String, action: Selector) -> NSButton {
+        let button = NSButton(image: NSImage(systemSymbolName: symbol, accessibilityDescription: label)!, target: self, action: action)
+        button.isBordered = false; button.toolTip = label; button.setAccessibilityLabel(label)
+        button.widthAnchor.constraint(equalToConstant: 24).isActive = true
+        button.heightAnchor.constraint(equalToConstant: 24).isActive = true
+        return button
     }
     private func refreshSidebar() {
         refreshingSidebar = true
@@ -241,6 +317,9 @@ final class WorkspaceController: NSObject, NSOutlineViewDataSource, NSOutlineVie
             return item
         }
         sidebar.reloadData(); sidebar.expandItem(nil, expandChildren: true)
+        for item in sidebarItems where item.workspace.map({ collapsedWorkspaces.contains($0.id) }) == true {
+            sidebar.collapseItem(item)
+        }
         for item in sidebarItems.flatMap(\.children) where item.session?.id == store.registry.selectedSession {
             let row = sidebar.row(forItem: item)
             if row >= 0 { sidebar.selectRowIndexes(IndexSet(integer: row), byExtendingSelection: false) }
@@ -249,6 +328,14 @@ final class WorkspaceController: NSObject, NSOutlineViewDataSource, NSOutlineVie
     private func showSelectedSession() {
         for terminal in livePanes.values { terminal.setFocus(false); terminal.setVisible(false) }
         content.subviews.forEach { $0.removeFromSuperview() }
+        defer {
+            reopenSidebar.translatesAutoresizingMaskIntoConstraints = false; content.addSubview(reopenSidebar)
+            NSLayoutConstraint.activate([
+                reopenSidebar.leadingAnchor.constraint(equalTo: content.leadingAnchor, constant: 10),
+                reopenSidebar.bottomAnchor.constraint(equalTo: content.bottomAnchor, constant: -10),
+                reopenSidebar.widthAnchor.constraint(equalToConstant: 24), reopenSidebar.heightAnchor.constraint(equalToConstant: 24),
+            ])
+        }
         guard let session = selectedSession else { return }
         splitHost = nil
         let body: NSView
@@ -332,7 +419,7 @@ final class WorkspaceController: NSObject, NSOutlineViewDataSource, NSOutlineVie
     private func updateTitle() { onTitle?(selectedSession.map { "Axo — " + $0.name } ?? "Axo") }
     private func requireDirectory(_ path: String) throws {
         var isDirectory: ObjCBool = false
-        guard !path.contains("\u{0}"), FileManager.default.fileExists(atPath: path, isDirectory: &isDirectory), isDirectory.boolValue else {
+        guard path.hasPrefix("/"), path.utf8.count <= 4_096, !path.contains("\u{0}"), FileManager.default.fileExists(atPath: path, isDirectory: &isDirectory), isDirectory.boolValue else {
             throw LaunchError.missingDirectory
         }
     }
@@ -374,12 +461,16 @@ final class WorkspaceController: NSObject, NSOutlineViewDataSource, NSOutlineVie
             }
             DispatchQueue.main.async { [weak self] in self?.split(sessionID: session.id, paneID: pane, direction: direction) }
         case GHOSTTY_ACTION_NEW_TAB:
-            guard let workspace = terminal.flatMap({ owner(of: $0)?.0.workspaceID }) ?? selectedSession?.workspaceID else { return false }
-            DispatchQueue.main.async { [weak self] in self?.createSession(in: workspace) }
+            guard let terminal, let (session, _) = owner(of: terminal) else { return false }
+            let directory = terminal.workingDirectory
+            DispatchQueue.main.async { [weak self] in self?.createSession(in: session.workspaceID, directory: directory) }
         case GHOSTTY_ACTION_NEW_WINDOW:
-            DispatchQueue.main.async { [weak self] in self?.newWorkspace(nil) }
+            guard let terminal, owner(of: terminal) != nil else { return false }
+            let directory = terminal.workingDirectory
+            DispatchQueue.main.async { [weak self] in self?.createWorkspace(directory: directory) }
         case GHOSTTY_ACTION_SET_TITLE:
             if let title = action.action.set_title.title { terminal?.terminalTitle = String(String(cString: title).prefix(120)) }
+            if let terminal { readSessionTitle(for: terminal) }
         case GHOSTTY_ACTION_PWD:
             if let pointer = action.action.pwd.pwd {
                 let path = String(cString: pointer)
@@ -447,8 +538,8 @@ final class WorkspaceController: NSObject, NSOutlineViewDataSource, NSOutlineVie
             return selectedSession?.focusedPane != nil && livePanes.count < 128
         case #selector(closePane(_:)):
             return selectedSession?.focusedPane != nil && closeConfirmation == nil
-        case #selector(renameSession(_:)):
-            return selectedSession != nil
+        case #selector(renameSession(_:)), #selector(renameWorkspace(_:)):
+            return menuItem.representedObject is SidebarItem || selectedSession != nil
         default: return true
         }
     }
@@ -460,12 +551,44 @@ final class WorkspaceController: NSObject, NSOutlineViewDataSource, NSOutlineVie
         (item as? SidebarItem)?.children[index] ?? sidebarItems[index]
     }
     func outlineView(_ outlineView: NSOutlineView, isItemExpandable item: Any) -> Bool { (item as? SidebarItem)?.workspace != nil }
-    func outlineView(_ outlineView: NSOutlineView, objectValueFor tableColumn: NSTableColumn?, byItem item: Any?) -> Any? {
+    func outlineView(_ outlineView: NSOutlineView, viewFor tableColumn: NSTableColumn?, item: Any) -> NSView? {
         guard let item = item as? SidebarItem else { return nil }
-        if let workspace = item.workspace { return workspace.name }
-        guard let session = item.session else { return nil }
-        let running = session.panes.contains { livePanes[$0.id] != nil && livePanes[$0.id]?.childExited == false }
-        return session.name + (running ? "  •" : "  — stopped")
+        let menu = NSMenu()
+        let workspace = item.workspace != nil
+        let rename = NSMenuItem(title: workspace ? "Rename Workspace…" : "Rename Session…",
+                                action: workspace ? #selector(renameWorkspace(_:)) : #selector(renameSession(_:)), keyEquivalent: "")
+        rename.target = self; rename.representedObject = item; menu.addItem(rename)
+        let running = item.session?.panes.contains { livePanes[$0.id] != nil && livePanes[$0.id]?.childExited == false } ?? false
+        return WorkspaceSidebarRow(name: item.workspace?.name ?? item.session?.name ?? "", workspace: workspace, running: running, actions: menu)
+    }
+    private func readSessionTitle(for terminal: TerminalView) {
+        guard let (session, pane) = owner(of: terminal), session.effectiveNameSource == .untitled,
+              session.panes.first(where: { $0.id == pane })?.kind == .pi else { return }
+        guard pendingTitleReads.insert(pane).inserted else { deferredTitleReads.insert(pane); return }
+        titleQueue.async { [weak self, weak terminal] in
+            let title = PiSessionTitle.read(from: session.piSessionFile)
+            DispatchQueue.main.async { [weak self, weak terminal] in
+                guard let self else { return }
+                self.pendingTitleReads.remove(pane)
+                if self.deferredTitleReads.remove(pane) != nil, let terminal, self.livePanes[pane] === terminal {
+                    self.readSessionTitle(for: terminal)
+                }
+                guard let terminal, self.livePanes[pane] === terminal, let title,
+                      session.conversationID == nil || session.conversationID == title.conversationID else { return }
+                do {
+                    try self.store.applyAutomaticTitle(title.name, to: session.id)
+                    self.refreshSidebar(); self.updateTitle()
+                } catch { /* Naming is best-effort and must not interrupt the user's terminal. */ }
+            }
+        }
+    }
+    func outlineViewItemDidCollapse(_ notification: Notification) {
+        guard !refreshingSidebar, let item = notification.userInfo?["NSObject"] as? SidebarItem, let workspace = item.workspace else { return }
+        collapsedWorkspaces.insert(workspace.id)
+    }
+    func outlineViewItemDidExpand(_ notification: Notification) {
+        guard !refreshingSidebar, let item = notification.userInfo?["NSObject"] as? SidebarItem, let workspace = item.workspace else { return }
+        collapsedWorkspaces.remove(workspace.id)
     }
     func outlineViewSelectionDidChange(_ notification: Notification) {
         guard !refreshingSidebar, let item = sidebar.item(atRow: sidebar.selectedRow) as? SidebarItem else { return }
