@@ -9,6 +9,10 @@ struct ChatComposer: View {
     let send: () -> Void
     let connectionSettings: () -> Void
     let voiceDetails: () -> Void
+    var hasAttachments = false
+    var attachFile: () -> Void = {}
+    var attachPhoto: () -> Void = {}
+    var showFiles: () -> Void = {}
 
     private var hasDraft: Bool { !draft.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty }
 
@@ -23,6 +27,9 @@ struct ChatComposer: View {
                     .accessibilityIdentifier("promptDraft")
                 HStack(spacing: 8) {
                     Menu {
+                        Button("Attach document", systemImage: "paperclip", action: attachFile).disabled(voice.isBusy)
+                        Button("Attach photo as JPEG (2048px)", systemImage: "photo", action: attachPhoto).disabled(voice.isBusy)
+                        Button("Session files", systemImage: "folder", action: showFiles)
                         Button("Paste text at end", systemImage: "doc.on.clipboard") {
                             if let text = UIPasteboard.general.string { draft += text }
                         }
@@ -35,7 +42,7 @@ struct ChatComposer: View {
                     }.accessibilityLabel("Composer options")
                     Spacer(minLength: 0)
                     VoicePromptButton(voice: voice, prominent: !hasDraft)
-                    if hasDraft {
+                    if hasDraft || hasAttachments {
                         Button(action: send) {
                             Image(systemName: "arrow.up").font(.system(size: 20, weight: .semibold))
                                 .foregroundStyle(canSend ? .black : .white.opacity(0.3))

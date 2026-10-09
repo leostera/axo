@@ -1,23 +1,58 @@
 import AxoCore
 import AxoVoice
 import SwiftUI
+import PhotosUI
+import UniformTypeIdentifiers
 
 struct ConversationView: View {
     @State private var client = ConversationClient()
     @State private var voice = VoicePrompt(recorder: MicrophoneRecorder(), transcriber: AppleSpeechProvider.makeTranscriber())
     @AppStorage("relayEndpoint") private var endpointText = RelayEndpoint.defaultOrigin
     @State private var draft = ""
-    @State private var submittedDraft: (id: String, text: String)?
+    @State private var submittedDraft: SubmittedPrompt?
+    private struct SubmittedPrompt {
+        let id: String
+        let text: String
+        let attachmentIDs: [String]
+    }
+    @State private var importingFile = false
+    @State private var selectingPhoto = false
+    @State private var selectedPhoto: PhotosPickerItem?
+    @State private var publication: FilePublication?
+    #if DEBUG
+    @State private var previewFileClient: SessionFilesClient?
+    #endif
+
+    private var fileClient: SessionFilesClient? {
+        #if DEBUG
+        if SharedFilePreview.enabled { return previewFileClient }
+        #endif
+        return client.files
+    }
+
+    private struct FilePublication {
+        let client: SessionFilesClient
+        let draftIDs: [UUID]
+    }
     @State private var pendingVoiceSendID: UUID?
     @State private var sheet: ChatSheet?
     @State private var error: String?
     @State private var followsLatest = true
     @State private var scrollRequest = 0
+    @State private var scrollAnchor: String?
+    @State private var userIsScrolling = false
+
+    private struct ScrollMetrics: Equatable {
+        let offset: CGFloat
+        let contentHeight: CGFloat
+        let nearTop: Bool
+        let nearBottom: Bool
+    }
     @FocusState private var composerFocused: Bool
     @Environment(\.scenePhase) private var scenePhase
 
     private enum ChatSheet: String, Identifiable {
-        case connection, login, voiceDetails
+        case connection, login, voiceDetails, files
         var id: String { rawValue }
     }
 
@@ -61,12 +96,21 @@ struct ConversationView: View {
     }
     private var canSend: Bool {
         !voice.isBusy && client.canSend && client.snapshot?.question == nil
-            && !draft.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty && draft.utf16.count <= 16_000
+            && (!draft.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty || !(fileClient?.readyDrafts.isEmpty ?? true))
+            && (fileClient?.canSubmitDrafts ?? true) && draft.utf16.count <= 16_000
     }
 
     var body: some View {
         conversation
             .background(Color.black)
+            .task {
+                #if DEBUG
+                if SharedFilePreview.enabled {
+                    do { previewFileClient = try await SharedFilePreview.makeClient() }
+                    catch { self.error = error.localizedDescription }
+                }
+                #endif
+            }
             .safeAreaInset(edge: .top, spacing: 0) { header }
             .safeAreaInset(edge: .bottom, spacing: 0) { bottomBar }
             .sheet(item: $sheet) { presented in
@@ -76,12 +120,44 @@ struct ConversationView: View {
                                            reconnect: { reconnect() }, signIn: signIn)
                 case .login: login
                 case .voiceDetails: VoiceInformationView()
+                case .files:
+                    if let files = fileClient { SessionFilesView(client: files) }
+                    else { Text("Sign in to view session files.").padding() }
                 }
+            }
+            .fileImporter(isPresented: $importingFile, allowedContentTypes: [.item], allowsMultipleSelection: true) { result in
+                switch result {
+                case .success(let urls): Task { if let files = fileClient { await stageFiles(urls, using: files) } }
+                case .failure(let failure): error = failure.localizedDescription
+                }
+            }
+            .photosPicker(isPresented: $selectingPhoto, selection: $selectedPhoto, matching: .images)
+            .onChange(of: selectedPhoto) { _, item in
+                guard let item else { return }
+                Task {
+                    do {
+                        if let photo = try await item.loadTransferable(type: PickedPhoto.self) {
+                            defer { try? FileManager.default.removeItem(at: photo.url) }
+                            if let files = fileClient { await stageFiles([photo.url], using: files) }
+                        }
+                    } catch { self.error = error.localizedDescription }
+                    selectedPhoto = nil
+                }
+            }
+            .confirmationDialog("Upload to private cloud?", isPresented: Binding(get: { publication != nil }, set: { if !$0 { publication = nil } }), titleVisibility: .visible) {
+                Button("Upload files") {
+                    if let publication { for id in publication.draftIDs { publication.client.retryUpload(id) } }
+                    publication = nil
+                }
+                Button("Keep drafts without uploading") { publication = nil }
+            } message: {
+                Text("Selected snapshots are readable by Cloudflare and the relay; this is not end-to-end encrypted. Share only non-sensitive, approved files. Uploading does not send a prompt.\nDestination: \(publication?.client.storageOrigin.absoluteString ?? "relay")")
             }
             .onChange(of: endpointText) { _, _ in error = nil; client.disconnect() }
             .onChange(of: client.lastAcknowledgedID) { _, id in
                 if let sent = submittedDraft, id == sent.id {
                     if draft == sent.text { draft = "" }
+                    fileClient?.acknowledgeDrafts(ids: sent.attachmentIDs)
                     submittedDraft = nil
                 }
             }
@@ -122,23 +198,61 @@ struct ConversationView: View {
                     ForEach(messages) { message in
                         ChatMessageView(message: message, activity: agentActivities.first { $0.id == message.toolCallId },
                                         outputState: message.toolCallId.flatMap { client.toolOutputs[$0] },
-                                        loadOutput: { if let id = message.toolCallId { client.loadToolOutput(toolCallId: id) } })
+                                        loadOutput: { if let id = message.toolCallId { client.loadToolOutput(toolCallId: id) } }, fileClient: fileClient)
                     }
                     AgentActivityView(state: agentState, runId: agentRunId, activities: agentActivities,
                                        canCancel: canCancelAgent,
                                        isCancelling: client.pendingCancellationID != nil,
                                        cancelRun: { client.cancelAgent(runId: $0) })
+                    if client.hasLaterMessages {
+                        Button("Load newer messages") { client.loadLaterMessages() }
+                            .font(.caption).foregroundStyle(.secondary)
+                            .disabled(client.isLoadingHistory || client.link != .online)
+                    }
                     Color.clear.frame(height: 1).id("latest")
-                        .onAppear { followsLatest = true }
-                        .onDisappear { followsLatest = false }
                 }
+                .scrollTargetLayout()
                 .padding(.horizontal, 20)
                 .padding(.top, 24)
                 .padding(.bottom, 20)
                 .frame(maxWidth: .infinity, alignment: .leading)
             }
             .scrollDismissesKeyboard(.interactively)
-            .defaultScrollAnchor(.bottom)
+            .scrollPosition(id: $scrollAnchor, anchor: .top)
+            .defaultScrollAnchor(.bottom, for: .initialOffset)
+            .onScrollPhaseChange { _, phase in
+                userIsScrolling = phase == .interacting || phase == .decelerating
+            }
+            .onScrollGeometryChange(for: ScrollMetrics.self) { geometry in
+                let offset = geometry.contentOffset.y + geometry.contentInsets.top
+                let bottom = geometry.contentSize.height - geometry.containerSize.height
+                return ScrollMetrics(offset: offset, contentHeight: geometry.contentSize.height,
+                                     nearTop: offset < geometry.containerSize.height / 2,
+                                     nearBottom: offset >= bottom - 60)
+            } action: { old, new in
+                followsLatest = new.nearBottom && !client.hasLaterMessages
+                client.isBrowsingHistory = !followsLatest
+                // Layout, page insertion and reconnect are not scroll demand.
+                guard userIsScrolling, old.contentHeight == new.contentHeight else { return }
+                if new.offset < old.offset && new.nearTop { client.loadEarlierMessages() }
+                if new.offset > old.offset && new.nearBottom { client.loadLaterMessages() }
+            }
+            .overlay(alignment: .bottomTrailing) {
+                if !followsLatest || client.hasLaterMessages {
+                    Button {
+                        if isPreview || client.backToBottom() { scrollRequest += 1 }
+                    } label: {
+                        Label("Back to bottom", systemImage: "arrow.down")
+                            .font(.callout.weight(.semibold))
+                            .padding(.horizontal, 14).padding(.vertical, 10)
+                    }
+                    .buttonStyle(.plain)
+                    .foregroundStyle(.white)
+                    .background(.ultraThinMaterial, in: Capsule())
+                    .padding(16)
+                    .accessibilityIdentifier("back-to-bottom")
+                }
+            }
             .onChange(of: messages) { _, _ in
                 if followsLatest { proxy.scrollTo("latest", anchor: .bottom) }
             }
@@ -177,7 +291,9 @@ struct ConversationView: View {
                 }.accessibilityLabel("Write a message")
                 Menu {
                     Button("Connection settings", systemImage: "network") { sheet = .connection }.disabled(voice.isBusy)
-                    Button("Jump to latest", systemImage: "arrow.down") { scrollRequest += 1 }
+                    Button("Back to bottom", systemImage: "arrow.down") {
+                        if isPreview || client.backToBottom() { scrollRequest += 1 }
+                    }
                     Button("Reconnect", systemImage: "arrow.clockwise") { reconnect() }.disabled(voice.isBusy)
                     Button("About voice", systemImage: "waveform") { sheet = .voiceDetails }.disabled(voice.isBusy)
                 } label: {
@@ -212,8 +328,16 @@ struct ConversationView: View {
             if let notice = client.notice {
                 Text(notice).font(.caption).foregroundStyle(.secondary).padding(.horizontal, 24)
             }
+            if let files = fileClient, !files.currentDrafts.isEmpty {
+                DraftFilesBar(client: files, reviewUpload: { id in publication = FilePublication(client: files, draftIDs: [id]) })
+            }
+            if let notice = fileClient?.notice { Text(notice).font(.caption).foregroundStyle(.orange).padding(.horizontal, 24) }
             ChatComposer(draft: $draft, focused: $composerFocused, voice: voice, canSend: canSend,
-                         send: send, connectionSettings: { sheet = .connection }, voiceDetails: { sheet = .voiceDetails })
+                         send: send, connectionSettings: { sheet = .connection }, voiceDetails: { sheet = .voiceDetails },
+                         hasAttachments: !(fileClient?.currentDrafts.isEmpty ?? true),
+                         attachFile: { if fileClient != nil { importingFile = true } else { sheet = .connection } },
+                         attachPhoto: { if fileClient != nil { selectingPhoto = true } else { sheet = .connection } },
+                         showFiles: { sheet = .files })
         }
         .padding(.top, 10).padding(.bottom, 8)
         .background(Color.black)
@@ -299,12 +423,21 @@ struct ConversationView: View {
         send()
     }
 
+    private func stageFiles(_ urls: [URL], using files: SessionFilesClient) async {
+        var ids: [UUID] = []
+        for url in urls { if let id = await files.addFile(url) { ids.append(id) } }
+        if !ids.isEmpty { publication = FilePublication(client: files, draftIDs: ids) }
+    }
+
     private func send() {
         guard canSend, let session = client.snapshot?.sessionId else { return }
         let id = UUID().uuidString
-        submittedDraft = (id, draft)
+        let attachments = fileClient?.readyDrafts.map(\.id) ?? []
+        submittedDraft = SubmittedPrompt(id: id, text: draft, attachmentIDs: attachments)
+        _ = client.backToBottom()
         followsLatest = true
-        client.send(.prompt(id: id, session: session, text: draft))
+        scrollRequest += 1
+        client.send(.prompt(id: id, session: session, text: draft, attachmentIds: attachments))
     }
 
     private func answer(_ question: Question, _ value: String) {

@@ -7,6 +7,7 @@ enum ChatPreviewData {
     static var enabled: Bool {
         let arguments = ProcessInfo.processInfo.arguments
         return arguments.contains("--axo-chat-preview") || arguments.contains("--axo-chat-preview-working")
+            || arguments.contains("--axo-history-preview") || arguments.contains("--axo-files-preview") || arguments.contains("--axo-file-draft-preview")
     }
     static var showsActivity: Bool { ProcessInfo.processInfo.arguments.contains("--axo-chat-preview-working") }
     static let liveText = "I’m checking how cancellation should flow through the relay and into Pi’s active run."
@@ -26,7 +27,7 @@ enum ChatPreviewData {
         AgentActivity(id: "preview-tool-2", toolName: "read", summary: "{ path: bridge/extension.ts }", status: .completed, output: "Added live tool activity and steering delivery."),
     ]
     static let messages: [ConversationMessage] = {
-        let records: [[String: Any]] = [
+        var records: [[String: Any]] = [
             ["id": "preview-user", "role": "user", "text": "Can we make this feel a little more calm and focused?"],
             ["id": "preview-thinking", "role": "thinking", "text": "Synthetic provider thinking text for the chat preview."],
             ["id": "preview-success", "role": "tool", "text": "npm test", "toolName": "bash",
@@ -53,6 +54,17 @@ enum ChatPreviewData {
             **Still your Pi session.** Nothing about how your Mac runs the work has changed.
             """]
         ]
+        if ProcessInfo.processInfo.arguments.contains("--axo-history-preview") {
+            records = (0..<60).map { ["id": "history-\($0)", "role": "user", "text": "Earlier message \($0): synthetic scroll fixture."] }
+            records.append(["id": "latest-preview", "role": "user", "text": "LATEST MESSAGE"])
+        }
+        if ProcessInfo.processInfo.arguments.contains("--axo-files-preview") {
+            records = [["id": "file-preview", "role": "user", "text": "Discuss this shared report", "attachments": [[
+                "id": "00000000-0000-4000-8000-000000000001", "sessionId": "preview", "filename": "report.md",
+                "mediaType": "text/markdown", "byteLength": 1234, "sha256": String(repeating: "a", count: 64),
+                "origin": "host", "createdAt": 0, "state": "ready",
+            ]]]]
+        }
         guard let data = try? JSONSerialization.data(withJSONObject: records) else { return [] }
         return (try? JSONDecoder().decode([ConversationMessage].self, from: data)) ?? []
     }()

@@ -14,6 +14,7 @@ public final class ConversationClient {
     public enum LinkState: Equatable { case disconnected, connecting, online, macOffline, failed(String) }
     public private(set) var link: LinkState = .disconnected
     public private(set) var snapshot: Snapshot?
+    public private(set) var files: SessionFilesClient?
     public private(set) var pendingID: String?
     public private(set) var pendingCancellationID: String?
     public private(set) var activityEvents: [AgentEvent] = []
@@ -21,12 +22,13 @@ public final class ConversationClient {
     public private(set) var messages: [ConversationMessage] = []
     public private(set) var hasEarlierMessages = false
     public private(set) var isLoadingHistory = false
+    public private(set) var hasLaterMessages = false
+    public var isBrowsingHistory = false
+    private var historyViewID: String?
+    private var latestSnapshot: Snapshot?
     public private(set) var toolOutputs: [String: ToolOutputState] = [:]
     private var readRequests: [String: PhoneCommand] = [:]
     private var readTimeouts: [String: Task<Void, Never>] = [:]
-    private var historyRestore: Task<Void, Never>?
-    private var historyRestoreID = UUID()
-    private var historyRestorationPaused = false
     public private(set) var lastAcknowledgedID: String?
     public private(set) var notice: String?
     private var socket: URLSessionWebSocketTask?
@@ -51,9 +53,13 @@ public final class ConversationClient {
         notice = nil
         self.endpoint = endpoint
         self.authorizationCookie = authorizationCookie
+        if files?.matches(endpoint) != true {
+            files?.cancelAllUploads()
+            files = SessionFilesClient(endpoint: endpoint, cookie: authorizationCookie)
+        }
+        else { files?.configure(endpoint: endpoint, cookie: authorizationCookie) }
         shouldReconnect = true
         reconnectAttempt = 0
-        historyRestorationPaused = false
         openSocket()
     }
 
@@ -117,8 +123,6 @@ public final class ConversationClient {
     }
 
     private func stopActiveSocket() {
-        historyRestore?.cancel()
-        historyRestore = nil
         for id in Array(readRequests.keys) { failReadRequest(id: id, message: "Connection lost. Try again when connected.") }
         receiver?.cancel()
         receiver = nil
@@ -128,27 +132,46 @@ public final class ConversationClient {
         socket = nil
     }
 
-    private func restoreHistory() {
-        guard historyRestore == nil, !historyRestorationPaused, hasEarlierMessages else { return }
-        let restoreID = UUID()
-        historyRestoreID = restoreID
-        historyRestore = Task { [weak self] in
-            while !Task.isCancelled {
-                guard let self, self.link == .online, self.hasEarlierMessages else { break }
-                self.loadEarlierMessages()
-                // Pace read-only pages below the relay's per-connection rate limit.
-                do { try await Task.sleep(for: .milliseconds(400)) } catch { break }
-            }
-            if self?.historyRestoreID == restoreID { self?.historyRestore = nil }
-        }
+    public func loadEarlierMessages() { loadHistory(direction: "before") }
+    public func loadLaterMessages() { loadHistory(direction: "after") }
+
+    private func loadHistory(direction: String) {
+        let available = direction == "before" ? hasEarlierMessages : hasLaterMessages
+        let cursor = direction == "before" ? messages.first?.id : messages.last?.id
+        guard link == .online, socket != nil, !isLoadingHistory, available,
+              let value = snapshot, let cursor else { return }
+        isLoadingHistory = true
+        sendReadRequest(.history(id: UUID().uuidString, session: value.sessionId,
+                                viewId: value.viewId, beforeId: cursor, direction: direction))
     }
 
-    public func loadEarlierMessages() {
-        guard link == .online, socket != nil, !isLoadingHistory, hasEarlierMessages,
-              let session = snapshot?.sessionId, let beforeId = messages.first?.id else { return }
-        historyRestorationPaused = false
-        isLoadingHistory = true
-        sendReadRequest(.history(id: UUID().uuidString, session: session, beforeId: beforeId))
+    @discardableResult
+    public func backToBottom() -> Bool {
+        guard let snapshot = latestSnapshot else { notice = "Newest messages unavailable. Reconnect to your Mac."; return false }
+        if link != .online { notice = "Showing newest cached messages. Reconnect to refresh." }
+        for id in Array(readRequests.keys) where readRequests[id]?.type == "history" { _ = finishReadRequest(id: id) }
+        isLoadingHistory = false
+        isBrowsingHistory = false
+        messages = snapshot.messages
+        hasEarlierMessages = snapshot.hasEarlierMessages
+        hasLaterMessages = false
+        pruneToolOutputs()
+        return true
+    }
+
+    private func boundHistory(keepingOlder: Bool) {
+        var bytes = messages.reduce(0) { $0 + ((try? JSONEncoder().encode($1).count) ?? 0) }
+        while messages.count > 200 || bytes > 256 * 1024 {
+            let removed = keepingOlder ? messages.removeLast() : messages.removeFirst()
+            bytes -= (try? JSONEncoder().encode(removed).count) ?? 0
+            if keepingOlder { hasLaterMessages = true } else { hasEarlierMessages = true }
+        }
+        pruneToolOutputs()
+    }
+
+    private func pruneToolOutputs() {
+        let visibleTools = Set(messages.compactMap(\.toolCallId))
+        for id in Array(toolOutputs.keys) where !visibleTools.contains(id) { toolOutputs.removeValue(forKey: id) }
     }
 
     public func loadToolOutput(toolCallId: String) {
@@ -185,10 +208,7 @@ public final class ConversationClient {
         guard let command = finishReadRequest(id: id) else { return }
         if command.type == "history" {
             isLoadingHistory = false
-            historyRestorationPaused = true
             notice = message
-            historyRestore?.cancel()
-            historyRestore = nil
         }
         if let toolCallId = command.toolCallId {
             toolOutputs[toolCallId]?.isLoading = false
@@ -219,26 +239,34 @@ public final class ConversationClient {
         switch event {
         case .snapshot(let value):
             reconnectAttempt = 0
-            if eventSessionID != value.sessionId {
+            files?.selectSession(value.sessionId)
+            if eventSessionID != value.sessionId || historyViewID != value.viewId {
                 for id in Array(readRequests.keys) { _ = finishReadRequest(id: id) }
                 eventSessionID = value.sessionId
+                historyViewID = value.viewId
                 activityEvents = []
                 seenEventIDs = []
                 messages = []
                 toolOutputs = [:]
                 hasEarlierMessages = value.hasEarlierMessages
-                historyRestorationPaused = false
+                hasLaterMessages = false
                 isLoadingHistory = false
             }
             let incomingIds = Set(value.messages.map(\.id))
-            if let previous = snapshot?.messages, !previous.isEmpty, incomingIds.isDisjoint(with: previous.map(\.id)) {
-                // A different branch or a large jump replaces the visible history.
-                messages = []
+            let overlaps = !incomingIds.isDisjoint(with: messages.map(\.id))
+            if messages.isEmpty || (!overlaps && !isBrowsingHistory) {
+                messages = value.messages
                 hasEarlierMessages = value.hasEarlierMessages
-                historyRestorationPaused = false
+                hasLaterMessages = false
+            } else if overlaps {
+                let updates = Dictionary(uniqueKeysWithValues: value.messages.map { ($0.id, $0) })
+                let existingIDs = Set(messages.map(\.id))
+                messages = messages.map { updates[$0.id] ?? $0 } + value.messages.filter { !existingIDs.contains($0.id) }
+            } else {
+                // A disjoint tail is ordinary new work, not proof of a different branch.
+                hasLaterMessages = true
             }
-            let previousMessages = messages.filter { !incomingIds.contains($0.id) }
-            messages = previousMessages + value.messages
+            boundHistory(keepingOlder: isBrowsingHistory)
             for event in value.events ?? [] where seenEventIDs.insert(event.id).inserted {
                 activityEvents.append(event)
                 if activityEvents.count > 500 {
@@ -247,17 +275,26 @@ public final class ConversationClient {
             }
             droppedEventCount = value.droppedEvents ?? 0
             snapshot = value
+            latestSnapshot = value
             link = .online
-            restoreHistory()
         case .history(let page):
             guard let request = readRequests[page.id], request.type == "history",
                   request.sessionId == snapshot?.sessionId, page.sessionId == snapshot?.sessionId,
-                  request.beforeId == page.beforeId else { return }
+                  request.viewId == snapshot?.viewId, page.viewId == snapshot?.viewId,
+                  request.beforeId == page.beforeId, request.direction == (page.direction ?? "before") else { return }
             _ = finishReadRequest(id: page.id)
             isLoadingHistory = false
             let ids = Set(messages.map(\.id))
-            messages = page.messages.filter { !ids.contains($0.id) } + messages
-            hasEarlierMessages = page.hasEarlierMessages
+            let additions = page.messages.filter { !ids.contains($0.id) }
+            if page.direction == "after" {
+                messages += additions
+                hasLaterMessages = page.hasLaterMessages
+                boundHistory(keepingOlder: false)
+            } else {
+                messages = additions + messages
+                hasEarlierMessages = page.hasEarlierMessages
+                boundHistory(keepingOlder: true)
+            }
         case .toolOutput(let page):
             guard let request = readRequests[page.id], request.type == "tool_output",
                   request.sessionId == snapshot?.sessionId, page.sessionId == snapshot?.sessionId,
@@ -269,6 +306,8 @@ public final class ConversationClient {
             output.isLoading = false
             output.error = nil
             toolOutputs[page.toolCallId] = output
+        case .filesChanged(let sessionId, let revision):
+            files?.invalidate(sessionId: sessionId, revision: revision)
         case .presence(let online):
             // A handshake/presence event is not proof that a usable snapshot arrived.
             link = online ? .online : .macOffline

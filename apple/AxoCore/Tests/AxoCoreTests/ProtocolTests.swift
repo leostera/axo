@@ -26,7 +26,7 @@ final class ProtocolTests: XCTestCase {
     }
 
     func testSnapshotMatchesWireFormat() throws {
-        let json = #"{"type":"snapshot","sessionId":"s1","state":"running","hasEarlierMessages":false,"messages":[{"id":"m1","role":"assistant","text":"Working"}],"activities":[{"id":"tool-1","toolName":"bash","summary":"ls","status":"running","output":"README.md"}],"events":[{"id":"event-1","sequence":1,"timestamp":1000,"category":"tool","name":"tool_execution_start","summary":"bash started","detail":"ls"}],"droppedEvents":0,"liveText":"Partial answer","runId":"run-1","question":null}"#
+        let json = #"{"type":"snapshot","sessionId":"s1","viewId":"v","state":"running","hasEarlierMessages":false,"messages":[{"id":"m1","role":"assistant","text":"Working"}],"activities":[{"id":"tool-1","toolName":"bash","summary":"ls","status":"running","output":"README.md"}],"events":[{"id":"event-1","sequence":1,"timestamp":1000,"category":"tool","name":"tool_execution_start","summary":"bash started","detail":"ls"}],"droppedEvents":0,"liveText":"Partial answer","runId":"run-1","question":null}"#
         guard case .snapshot(let snapshot) = try RelayEvent.decode(Data(json.utf8)) else { return XCTFail("Expected snapshot") }
         XCTAssertEqual(snapshot.sessionId, "s1")
         XCTAssertEqual(snapshot.state, .running)
@@ -41,7 +41,7 @@ final class ProtocolTests: XCTestCase {
     }
 
     func testTranscriptIncludesThinkingAndToolResults() throws {
-        let json = #"{"type":"snapshot","sessionId":"s1","state":"idle","hasEarlierMessages":false,"messages":[{"id":"think","role":"thinking","text":"Thinking block · content not shared"},{"id":"tool-ok","role":"tool","toolName":"bash","toolCallId":"call-ok","text":"ls","status":"completed","output":"README.md"},{"id":"tool-error","role":"tool","toolName":"read","toolCallId":"call-error","text":"missing.txt","status":"failed","output":"File not found"}],"question":null}"#
+        let json = #"{"type":"snapshot","sessionId":"s1","viewId":"v","state":"idle","hasEarlierMessages":false,"messages":[{"id":"think","role":"thinking","text":"Thinking block · content not shared"},{"id":"tool-ok","role":"tool","toolName":"bash","toolCallId":"call-ok","text":"ls","status":"completed","output":"README.md"},{"id":"tool-error","role":"tool","toolName":"read","toolCallId":"call-error","text":"missing.txt","status":"failed","output":"File not found"}],"question":null}"#
         guard case .snapshot(let snapshot) = try RelayEvent.decode(Data(json.utf8)) else { return XCTFail("Expected snapshot") }
         XCTAssertEqual(snapshot.messages.map(\.role), ["thinking", "tool", "tool"])
         XCTAssertEqual(snapshot.messages[1].status, .completed)
@@ -51,7 +51,7 @@ final class ProtocolTests: XCTestCase {
     }
 
     func testSnapshotsRemainCompatibleWithoutActivities() throws {
-        let json = #"{"type":"snapshot","sessionId":"s1","state":"idle","hasEarlierMessages":false,"messages":[],"question":null}"#
+        let json = #"{"type":"snapshot","sessionId":"s1","viewId":"v","state":"idle","hasEarlierMessages":false,"messages":[],"question":null}"#
         guard case .snapshot(let snapshot) = try RelayEvent.decode(Data(json.utf8)) else { return XCTFail("Expected snapshot") }
         XCTAssertNil(snapshot.activities)
         XCTAssertNil(snapshot.events)
@@ -59,7 +59,7 @@ final class ProtocolTests: XCTestCase {
     }
 
     func testMissingHistoryFieldIsAProtocolMismatchNotANetworkError() {
-        let json = #"{"type":"snapshot","sessionId":"s1","state":"idle","messages":[],"question":null}"#
+        let json = #"{"type":"snapshot","sessionId":"s1","viewId":"v","state":"idle","messages":[],"question":null}"#
         do {
             _ = try RelayEvent.decode(Data(json.utf8))
             XCTFail("Expected the new protocol to reject a stripped history field")

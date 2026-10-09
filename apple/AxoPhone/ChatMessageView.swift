@@ -7,10 +7,18 @@ struct ChatMessageView: View {
     var activity: AgentActivity? = nil
     var outputState: ToolOutputState? = nil
     var loadOutput: () -> Void = {}
+    var fileClient: SessionFilesClient? = nil
     @State private var copied = false
     @ScaledMetric(relativeTo: .body) private var bodySize = 18.0
 
     var body: some View {
+        VStack(alignment: .leading, spacing: 12) {
+            messageBody
+            ForEach(message.attachments ?? []) { file in SharedFileCard(file: file, client: fileClient) }
+        }
+    }
+
+    @ViewBuilder private var messageBody: some View {
         if message.role == "thinking" {
             Text(message.text)
                 .font(.callout.italic())
@@ -26,14 +34,16 @@ struct ChatMessageView: View {
                 .textSelection(.enabled)
                 .frame(maxWidth: .infinity, alignment: .leading)
         } else if message.role == "user" {
-            Text(message.text)
-                .font(.body).textSelection(.enabled)
-                .padding(.horizontal, 17).padding(.vertical, 13)
-                .background(Color.blue.opacity(0.24), in: RoundedRectangle(cornerRadius: 23))
-                .overlay(RoundedRectangle(cornerRadius: 23).stroke(Color.blue.opacity(0.34), lineWidth: 0.5))
-                .padding(.leading, 48)
-                .frame(maxWidth: .infinity, alignment: .trailing)
-                .contextMenu { copyButton; ShareLink(item: message.text) }
+            if !message.text.isEmpty {
+                Text(message.text)
+                    .font(.body).textSelection(.enabled)
+                    .padding(.horizontal, 17).padding(.vertical, 13)
+                    .background(Color.blue.opacity(0.24), in: RoundedRectangle(cornerRadius: 23))
+                    .overlay(RoundedRectangle(cornerRadius: 23).stroke(Color.blue.opacity(0.34), lineWidth: 0.5))
+                    .padding(.leading, 48)
+                    .frame(maxWidth: .infinity, alignment: .trailing)
+                    .contextMenu { copyButton; ShareLink(item: message.text) }
+            }
         } else {
             VStack(alignment: .leading, spacing: 16) {
                 Markdown(message.text)
@@ -108,7 +118,7 @@ struct ChatMessageView: View {
 }
 
 /// Markdown can contain remote image URLs; rendering a chat must not fetch them.
-private struct OmittedImages: ImageProvider, InlineImageProvider {
+struct OmittedImages: ImageProvider, InlineImageProvider {
     func makeImage(url: URL?) -> some View {
         Label("Image omitted", systemImage: "photo").font(.caption).foregroundStyle(.secondary)
     }

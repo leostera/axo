@@ -10,7 +10,7 @@ struct SwiftSmoke {
             do { _ = try RelayEndpoint(invalid); fatalError("Accepted invalid endpoint") }
             catch ProtocolError.invalidEndpoint {}
         }
-        let data = Data(#"{"type":"snapshot","sessionId":"s","state":"waiting","hasEarlierMessages":false,"messages":[],"question":{"id":"q","title":"Format?","options":["JSON","Markdown"]}}"#.utf8)
+        let data = Data(#"{"type":"snapshot","sessionId":"s","viewId":"v","state":"waiting","hasEarlierMessages":false,"messages":[],"question":{"id":"q","title":"Format?","options":["JSON","Markdown"]}}"#.utf8)
         guard case .snapshot(let snapshot) = try RelayEvent.decode(data) else { fatalError("Wrong event") }
         precondition(snapshot.question?.options == ["JSON", "Markdown"])
         let encoded = try JSONEncoder().encode(PhoneCommand.prompt(id: "c", session: "s", text: "Hello"))

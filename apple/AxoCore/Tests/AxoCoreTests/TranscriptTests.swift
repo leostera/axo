@@ -3,7 +3,7 @@ import XCTest
 
 final class TranscriptTests: XCTestCase {
     private func snapshot(_ messages: [[String: Any]], session: String = "session") throws -> RelayEvent {
-        let data = try JSONSerialization.data(withJSONObject: ["type": "snapshot", "sessionId": session,
+        let data = try JSONSerialization.data(withJSONObject: ["type": "snapshot", "sessionId": session, "viewId": "v",
             "state": "idle", "messages": messages, "hasEarlierMessages": false, "question": NSNull()])
         return try RelayEvent.decode(data)
     }
@@ -35,12 +35,12 @@ final class TranscriptTests: XCTestCase {
         XCTAssertEqual(wire["type"] as? String, "tool_output")
         XCTAssertEqual(wire["offset"] as? Int, 12000)
         XCTAssertNil(wire["text"])
-        let history = PhoneCommand.history(id: "earlier", session: "s", beforeId: "oldest")
+        let history = PhoneCommand.history(id: "earlier", session: "s", viewId: "v", beforeId: "oldest")
         XCTAssertEqual(history.beforeId, "oldest")
     }
 
     func testHistoryAndFullOutputPagesDecode() throws {
-        let history = #"{"type":"history","id":"h","sessionId":"s","beforeId":"m","hasEarlierMessages":true,"messages":[{"id":"call","role":"tool","text":"ls","status":"completed"}]}"#
+        let history = #"{"type":"history","id":"h","sessionId":"s","viewId":"v","beforeId":"m","hasEarlierMessages":true,"hasLaterMessages":false,"messages":[{"id":"call","role":"tool","text":"ls","status":"completed"}]}"#
         guard case .history(let page) = try RelayEvent.decode(Data(history.utf8)) else { return XCTFail("Expected history") }
         XCTAssertEqual(page.messages.first?.status, .completed)
         XCTAssertTrue(page.hasEarlierMessages)

@@ -9,6 +9,7 @@ public struct ConversationMessage: Codable, Identifiable, Equatable, Sendable {
     public let status: AgentActivityStatus?
     public let output: String?
     public let toolPresentation: ToolPresentation?
+    public var attachments: [SharedFile]? = nil
 }
 
 public struct ToolPresentation: Codable, Equatable, Sendable {
@@ -72,6 +73,7 @@ public struct AgentActivity: Codable, Identifiable, Equatable, Sendable {
 
 public struct Snapshot: Codable, Sendable {
     public let sessionId: String
+    public let viewId: String
     public let state: AgentState
     public let messages: [ConversationMessage]
     public let hasEarlierMessages: Bool
@@ -87,8 +89,11 @@ public struct HistoryPage: Decodable, Sendable {
     public let id: String
     public let sessionId: String
     public let beforeId: String
+    public let viewId: String
+    public let direction: String?
     public let messages: [ConversationMessage]
     public let hasEarlierMessages: Bool
+    public let hasLaterMessages: Bool
 }
 
 public struct ToolOutputPage: Decodable, Sendable {
@@ -105,6 +110,7 @@ public enum RelayEvent: Sendable {
     case history(HistoryPage)
     case toolOutput(ToolOutputPage)
     case presence(Bool)
+    case filesChanged(sessionId: String, revision: Int)
     case acknowledged(String, cancelled: Bool)
     case error(id: String?, message: String)
 
@@ -116,6 +122,9 @@ public enum RelayEvent: Sendable {
         case "snapshot": return .snapshot(try decoder.decode(Snapshot.self, from: data))
         case "history": return .history(try decoder.decode(HistoryPage.self, from: data))
         case "tool_output": return .toolOutput(try decoder.decode(ToolOutputPage.self, from: data))
+        case "files_changed":
+            guard let sessionId = envelope.sessionId, let revision = envelope.revision else { throw ProtocolError.malformed }
+            return .filesChanged(sessionId: sessionId, revision: revision)
         case "presence":
             guard let online = envelope.online else { throw ProtocolError.malformed }
             return .presence(online)
@@ -137,6 +146,8 @@ public enum RelayEvent: Sendable {
         let id: String?
         let disposition: String?
         let message: String?
+        let sessionId: String?
+        let revision: Int?
     }
 }
 
@@ -151,12 +162,17 @@ public struct PhoneCommand: Encodable, Sendable {
     public let value: String?
     public let runId: String?
     public var beforeId: String? = nil
+    public var viewId: String? = nil
+    public var direction: String? = nil
     public var toolCallId: String? = nil
     public var offset: Int? = nil
+    public var attachmentIds: [String]? = nil
 
-    public static func history(id: String, session: String, beforeId: String) -> Self {
+    public static func history(id: String, session: String, viewId: String, beforeId: String, direction: String = "before") -> Self {
         var command = Self(type: "history", id: id, sessionId: session, text: nil, questionId: nil, value: nil, runId: nil)
         command.beforeId = beforeId
+        command.viewId = viewId
+        command.direction = direction
         return command
     }
     public static func toolOutput(id: String, session: String, toolCallId: String, offset: Int) -> Self {
@@ -169,8 +185,10 @@ public struct PhoneCommand: Encodable, Sendable {
     public static func sync() -> Self {
         Self(type: "sync", id: nil, sessionId: nil, text: nil, questionId: nil, value: nil, runId: nil)
     }
-    public static func prompt(id: String, session: String, text: String) -> Self {
-        Self(type: "prompt", id: id, sessionId: session, text: text, questionId: nil, value: nil, runId: nil)
+    public static func prompt(id: String, session: String, text: String, attachmentIds: [String] = []) -> Self {
+        var command = Self(type: "prompt", id: id, sessionId: session, text: text, questionId: nil, value: nil, runId: nil)
+        command.attachmentIds = attachmentIds.isEmpty ? nil : attachmentIds
+        return command
     }
     public static func answer(id: String, session: String, question: String, value: String) -> Self {
         Self(type: "answer", id: id, sessionId: session, text: nil, questionId: question, value: value, runId: nil)
