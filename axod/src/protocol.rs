@@ -98,6 +98,7 @@ pub enum ErrorCode {
     StorageFailed,
     InputBlocked,
     InvalidSize,
+    InvalidTransition,
     RequestOutOfOrder,
 }
 #[derive(Clone, Serialize, Deserialize)]

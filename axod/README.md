@@ -34,6 +34,8 @@ SIGINT/SIGTERM stop accepting launches, request termination of owned child proce
 
 An existing socket is never automatically removed/replaced. A duplicate live daemon cannot acquire the directory lock. After an abrupt host crash, inspect ownership and surviving work before an operator removes a stale socket; do not automate endpoint replacement, restart uncertain children, or signal historical PIDs. Process IDs alone cannot prove ownership across daemon generations.
 
+The private runtime journal is now **version 2**: version 1 could record an exit before terminal/process-group completion was established, so it is rejected rather than silently trusting or migrating those claims. This changes no Mac workspace-registry format. Do not remove a journal to bypass recovery while old work may still survive.
+
 ## Versioned local protocol
 
 Frames are newline-delimited JSON, maximum **64 KiB including the newline**. Requests reject unknown fields. The request envelope is:
@@ -65,17 +67,23 @@ Request IDs are positive and monotonically increasing per connection. Up to 64 r
 
 ## Ownership, persistence, and bounds
 
-- `src/model.rs`: typed UUID identities and distinct process states. `Running` means a spawned child not yet observed exited, **not admitted/ready Pi**.
+- `src/model.rs`: typed UUID/client identities, validated positive child PIDs and terminal sizes, and distinct process states. `Running` means a spawned child not yet observed exited, **not admitted/ready Pi**.
 - `src/pty.rs`: native `forkpty`, host-side **controller** handle, child-side exec, nonblocking I/O, resize; no Rust allocation/logging/locking in the post-fork child. Inherited `AXO_*` configuration is removed so an active parent turn cannot retarget a child.
-- `src/runtime.rs`: terminal ownership, leases, continuous headless output drain, byte offsets/backlog, reaping, and generation checks. Reaped/fully drained terminals release their controller descriptors. PTYs still draining count against capacity even after their initial child exits.
-- `src/journal.rs`: exclusive OS lock, bounded private versioned JSON, atomic rename/fsync, durable launch receipts, fail-closed uncertain persistence. Stores identities/process dispositions and launch fingerprints, **not argv, prompts, output, or Pi history**. This runtime journal is not a second writer to the Mac workspace registry.
+- `src/runtime.rs`: terminal ownership, leases, continuous headless output drain, byte offsets/backlog, reaping, and generation checks. Reaped/fully drained terminals release their controller descriptors. PTYs still draining and uncertain process groups count against capacity even after their initial child exits. Clean completion requires the child to be reaped, terminal I/O to close normally, and the initial process group to be absent; failed I/O or uncertain group membership remains recovery-required.
+- `src/journal.rs`: exclusive OS lock, bounded private versioned JSON, atomic rename/fsync, immutable launch receipts, checked lifecycle transitions, fail-closed uncertain persistence. Stores identities/process dispositions and launch fingerprints, **not argv, prompts, output, or Pi history**. This runtime journal is not a second writer to the Mac workspace registry.
 - `src/server.rs`: same-user socket admission, bounded connections/queues/reply cache, version/generation fencing, metadata paging, controlled shutdown.
 
 Limits: 128 live terminal resources, 1000 terminal records, 2000 durable start receipts, 4 MiB journal, 16 client readers, 32 queued frames/client, 1 KiB output chunks, 8 KiB raw backlog/terminal, and 500 ms socket writes. Slow consumers lose their connection/lease, not the child or headless drain. Receipt exhaustion fails closed; eviction/retention is not silently introduced.
 
-The attach response discloses `first_offset`, `next_offset`, and whether the raw backlog is `truncated`. Snapshot/backlog and live-output handoff are serialized with terminal output. Exit events follow the final drained output.
+The attach response discloses `start_offset`, `next_offset`, and whether the raw backlog is `truncated`. Snapshot/backlog and live-output handoff are serialized with terminal output. Exit events follow the final drained output.
 
 **Raw bytes are not reconstructed terminal state.** This slice does not claim alternate-screen, cursor/modes, scrollback, feature-query, graphics/image, Unicode/IME, paste, or Ghostty reconnection fidelity. Terminal bytes remain local; they must never be placed in phone relay frames.
+
+## Review and invariants
+
+The Leo readability/types/invariants pass established focused launch/reconciliation, request-reading, frame-writing, and output/completion operations. Named outcomes replace dispatch tuples and signal booleans. See [INVARIANTS.md](INVARIANTS.md) for enforcement boundaries and residual limitations.
+
+Regression coverage includes direct journal receipt conflicts, forbidden state transitions, failed persistence, both reaper/EOF orderings, failed terminal I/O, request-frame bounds, byte-bounded reply caching, and a real descendant surviving its initial terminal child. The process-group existence probe uses signal **0** (no signal is delivered); numeric reuse can only cause conservative recovery. It cannot discover descendants that escaped into another group or session, and it never authorizes signaling a reaped PID.
 
 ## Remaining implementation/hardening
 

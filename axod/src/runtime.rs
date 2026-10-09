@@ -25,66 +25,212 @@ impl Sink {
         true
     }
 }
+pub struct AttachedTerminal {
+    pub attachment: AttachmentRef,
+    pub response: Response,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum OutputState {
+    Draining,
+    Closed,
+    Failed,
+}
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum ProcessGroupState {
+    Unobserved,
+    Empty,
+    Uncertain,
+}
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum CompletionPersistence {
+    Pending,
+    Recorded,
+    Failed,
+}
+enum StopTransition {
+    Signaled,
+    AlreadyStopped,
+}
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum ProcessSignal {
+    Terminate,
+    Kill,
+}
+impl ProcessSignal {
+    fn as_raw(self) -> i32 {
+        match self {
+            Self::Terminate => libc::SIGTERM,
+            Self::Kill => libc::SIGKILL,
+        }
+    }
+}
+
 struct Attachment {
-    owner: u64,
+    owner: ClientId,
     reference: AttachmentRef,
     sink: Sink,
 }
+struct CompletionRecord {
+    process: ProcessState,
+    persistence: CompletionPersistence,
+}
+
 struct State {
     process: ProcessState,
     attachment: Option<Attachment>,
     backlog: VecDeque<u8>,
     next_offset: u64,
-    output_finished: bool,
-    journal_finished: bool,
+    output: OutputState,
+    process_group: ProcessGroupState,
+    completion: CompletionPersistence,
 }
+impl State {
+    fn visible_process(&self) -> ProcessState {
+        if matches!(self.process, ProcessState::Exited { .. })
+            && (self.process_group != ProcessGroupState::Empty
+                || self.output == OutputState::Failed)
+        {
+            return ProcessState::RecoveryRequired {};
+        }
+        self.process.clone()
+    }
+    fn completion_record(&self) -> Option<CompletionRecord> {
+        let process = match (&self.process, self.output) {
+            (ProcessState::Exited { .. }, OutputState::Closed)
+                if self.process_group == ProcessGroupState::Empty =>
+            {
+                self.process.clone()
+            }
+            (ProcessState::Exited { .. } | ProcessState::RecoveryRequired {}, _) => {
+                ProcessState::RecoveryRequired {}
+            }
+            _ => return None,
+        };
+        let persistence = if self.output == OutputState::Draining {
+            CompletionPersistence::Pending
+        } else {
+            CompletionPersistence::Recorded
+        };
+        Some(CompletionRecord {
+            process,
+            persistence,
+        })
+    }
+}
+
 struct Terminal {
     reference: RuntimeRef,
     controller: Mutex<Option<Arc<File>>>,
     state: Mutex<State>,
     journal: Arc<Mutex<Journal>>,
+    completion_writer: Mutex<()>,
 }
 impl Terminal {
     fn owns_live_resources(&self) -> bool {
         let state = self.state.lock().unwrap();
-        !state.output_finished
+        state.output == OutputState::Draining
+            || state.process_group == ProcessGroupState::Uncertain
+            || state.completion == CompletionPersistence::Pending
             || matches!(
                 state.process,
-                ProcessState::Running { .. } | ProcessState::Stopping { .. }
+                ProcessState::Running { .. }
+                    | ProcessState::Stopping { .. }
+                    | ProcessState::RecoveryRequired {}
             )
     }
     fn snapshot(&self) -> TerminalSnapshot {
         let state = self.state.lock().unwrap();
         TerminalSnapshot {
             runtime: self.reference,
-            process: state.process.clone(),
+            process: state.visible_process(),
             attached: state.attachment.is_some(),
             backlog_bytes: state.backlog.len(),
         }
     }
-    fn stop(&self, signal: i32) -> Result<bool, ErrorCode> {
+    fn stop(&self, signal: ProcessSignal) -> Result<StopTransition, ErrorCode> {
         let mut state = self.state.lock().unwrap();
         let pid = match state.process {
             ProcessState::Running { pid } => pid,
-            ProcessState::Stopping { pid } if signal != libc::SIGTERM => pid,
-            _ => return Ok(false),
+            ProcessState::Stopping { pid } if signal == ProcessSignal::Kill => pid,
+            _ => return Ok(StopTransition::AlreadyStopped),
         };
         // The same state lock protects waitpid and signaling; never signal a reaped/reused PID.
-        if unsafe { libc::kill(-pid, signal) } < 0
+        if unsafe { libc::kill(-pid.as_raw(), signal.as_raw()) } < 0
             && io::Error::last_os_error().raw_os_error() != Some(libc::ESRCH)
         {
             return Err(ErrorCode::NotRunning);
         }
         state.process = ProcessState::Stopping { pid };
-        Ok(true)
+        Ok(StopTransition::Signaled)
     }
+
+    fn record_completion(&self) {
+        // Reaper and reader may finish in either order. Serialize their journal writes so
+        // an interim recovery record can never overwrite a later, proven clean completion.
+        let _writer = self.completion_writer.lock().unwrap();
+        let Some(record) = self.state.lock().unwrap().completion_record() else {
+            return;
+        };
+        let result = self
+            .journal
+            .lock()
+            .unwrap()
+            .update(self.reference, record.process);
+        self.state.lock().unwrap().completion = match result {
+            Ok(()) => record.persistence,
+            Err(_) => CompletionPersistence::Failed,
+        };
+    }
+    fn record_output(&self, data: &[u8]) -> Result<(), ErrorCode> {
+        let mut state = self.state.lock().unwrap();
+        let offset = state.next_offset;
+        state.next_offset = offset
+            .checked_add(data.len() as u64)
+            .ok_or(ErrorCode::Capacity)?;
+        for byte in data {
+            if state.backlog.len() == BACKLOG_BYTES {
+                state.backlog.pop_front();
+            }
+            state.backlog.push_back(*byte);
+        }
+        if let Some(attachment) = &state.attachment
+            && !attachment.sink.send(Frame::Output {
+                attachment: attachment.reference,
+                offset,
+                data: data.to_vec(),
+            })
+        {
+            state.attachment = None;
+        }
+        Ok(())
+    }
+
+    fn finish_output(&self, outcome: OutputState) {
+        {
+            let mut state = self.state.lock().unwrap();
+            state.output = outcome;
+            self.controller.lock().unwrap().take();
+            if outcome == OutputState::Failed {
+                if let Some(attachment) = state.attachment.take() {
+                    let _ = attachment.sink.socket.shutdown(std::net::Shutdown::Both);
+                }
+            } else if let ProcessState::Exited { wait_status } = state.process {
+                send_exit(&state, wait_status);
+            }
+        }
+        self.record_completion();
+    }
+
     fn require_attachment(
         &self,
         state: &State,
-        owner: u64,
+        owner: ClientId,
         reference: AttachmentRef,
     ) -> Result<(), ErrorCode> {
-        if !matches!(state.process, ProcessState::Running { .. }) {
+        if !matches!(state.process, ProcessState::Running { .. })
+            || state.output != OutputState::Draining
+        {
             return Err(ErrorCode::NotRunning);
         }
         if !state
@@ -95,6 +241,42 @@ impl Terminal {
             return Err(ErrorCode::StaleAttachment);
         }
         Ok(())
+    }
+}
+
+struct SpawnedTerminal {
+    terminal: Arc<Terminal>,
+    pid: ChildPid,
+    reader: Arc<File>,
+}
+impl SpawnedTerminal {
+    fn new(reference: RuntimeRef, child: pty::ChildTerminal, journal: Arc<Mutex<Journal>>) -> Self {
+        let reader = Arc::new(child.controller);
+        let terminal = Arc::new(Terminal {
+            reference,
+            controller: Mutex::new(Some(reader.clone())),
+            journal,
+            completion_writer: Mutex::new(()),
+            state: Mutex::new(State {
+                process: ProcessState::Running { pid: child.pid },
+                attachment: None,
+                backlog: VecDeque::with_capacity(BACKLOG_BYTES),
+                next_offset: 0,
+                output: OutputState::Draining,
+                process_group: ProcessGroupState::Unobserved,
+                completion: CompletionPersistence::Pending,
+            }),
+        });
+        Self {
+            terminal,
+            pid: child.pid,
+            reader,
+        }
+    }
+    fn supervise(self) {
+        let drain_owner = self.terminal.clone();
+        thread::spawn(move || drain(drain_owner, self.reader));
+        thread::spawn(move || reap(self.terminal, self.pid));
     }
 }
 
@@ -143,41 +325,9 @@ impl Manager {
             .unwrap()
             .lookup(command, target, launch)?;
         if let Some(previous) = previous {
-            let snapshot = terminals
-                .get(&target.pane_id)
-                .filter(|value| value.reference == previous)
-                .map(|value| value.snapshot())
-                .or_else(|| {
-                    self.journal
-                        .lock()
-                        .unwrap()
-                        .snapshots()
-                        .into_iter()
-                        .find(|value| value.runtime == previous)
-                })
-                .ok_or(ErrorCode::StaleRuntime)?;
-            return match snapshot.process {
-                ProcessState::Failed { .. } => Err(ErrorCode::LaunchFailed),
-                ProcessState::RecoveryRequired { .. } | ProcessState::Starting { .. } => {
-                    Err(ErrorCode::RecoveryRequired)
-                }
-                _ => Ok(snapshot),
-            };
+            return self.reconcile_start(previous, &terminals);
         }
-        if terminals
-            .values()
-            .filter(|value| value.owns_live_resources())
-            .count()
-            >= MAX_TERMINALS
-        {
-            return Err(ErrorCode::Capacity);
-        }
-        if terminals
-            .get(&target.pane_id)
-            .is_some_and(|value| value.owns_live_resources())
-        {
-            return Err(ErrorCode::Conflict);
-        }
+        check_launch_admission(&terminals, target)?;
         let reference = RuntimeRef {
             host_generation: self.generation,
             target,
@@ -187,50 +337,64 @@ impl Manager {
             .lock()
             .unwrap()
             .prepare(command, reference, launch)?;
-        // The durable intent is committed before fork; no disk transaction spans process launch.
-        let child = match pty::spawn(&launch.directory, &launch.argv) {
-            Ok(child) => child,
-            Err(_) => {
-                self.journal
-                    .lock()
-                    .unwrap()
-                    .update(reference, ProcessState::Failed {})?;
-                return Err(ErrorCode::LaunchFailed);
-            }
-        };
-        let terminal = Arc::new(Terminal {
-            reference,
-            controller: Mutex::new(Some(Arc::new(child.controller))),
-            journal: self.journal.clone(),
-            state: Mutex::new(State {
-                process: ProcessState::Running { pid: child.pid },
-                attachment: None,
-                backlog: VecDeque::with_capacity(BACKLOG_BYTES),
-                next_offset: 0,
-                output_finished: false,
-                journal_finished: false,
-            }),
-        });
+        // Intent precedes fork; child supervision must start even if its Running commit fails.
+        let spawned = self.spawn_terminal(reference, launch)?;
+        let terminal = spawned.terminal.clone();
         terminals.insert(target.pane_id, terminal.clone());
         let persisted = self
             .journal
             .lock()
             .unwrap()
-            .update(reference, ProcessState::Running { pid: child.pid });
-        let drain_owner = terminal.clone();
-        let reader = terminal
-            .controller
-            .lock()
-            .unwrap()
-            .as_ref()
-            .unwrap()
-            .clone();
-        thread::spawn(move || drain(drain_owner, reader));
-        let reap_owner = terminal.clone();
-        thread::spawn(move || reap(reap_owner, child.pid));
+            .update(reference, ProcessState::Running { pid: spawned.pid });
+        spawned.supervise();
         persisted?;
         Ok(terminal.snapshot())
     }
+
+    fn reconcile_start(
+        &self,
+        previous: RuntimeRef,
+        terminals: &BTreeMap<PaneId, Arc<Terminal>>,
+    ) -> Result<TerminalSnapshot, ErrorCode> {
+        let snapshot = terminals
+            .get(&previous.target.pane_id)
+            .filter(|value| value.reference == previous)
+            .map(|value| value.snapshot())
+            .or_else(|| {
+                self.journal
+                    .lock()
+                    .unwrap()
+                    .snapshots()
+                    .into_iter()
+                    .find(|value| value.runtime == previous)
+            })
+            .ok_or(ErrorCode::StaleRuntime)?;
+        match snapshot.process {
+            ProcessState::Failed {} => Err(ErrorCode::LaunchFailed),
+            ProcessState::RecoveryRequired {} | ProcessState::Starting {} => {
+                Err(ErrorCode::RecoveryRequired)
+            }
+            _ => Ok(snapshot),
+        }
+    }
+
+    fn spawn_terminal(
+        &self,
+        reference: RuntimeRef,
+        launch: &TerminalLaunch,
+    ) -> Result<SpawnedTerminal, ErrorCode> {
+        match pty::spawn(&launch.directory, &launch.argv) {
+            Ok(child) => Ok(SpawnedTerminal::new(reference, child, self.journal.clone())),
+            Err(_) => {
+                self.journal
+                    .lock()
+                    .unwrap()
+                    .update(reference, ProcessState::Failed {})?;
+                Err(ErrorCode::LaunchFailed)
+            }
+        }
+    }
+
     fn find(&self, reference: RuntimeRef) -> Result<Arc<Terminal>, ErrorCode> {
         if self.stopping.load(Ordering::SeqCst) {
             return Err(ErrorCode::NotRunning);
@@ -253,13 +417,15 @@ impl Manager {
     pub fn attach(
         &self,
         reference: RuntimeRef,
-        owner: u64,
+        owner: ClientId,
         sink: Sink,
         request_id: u64,
-    ) -> Result<(AttachmentRef, Response), ErrorCode> {
+    ) -> Result<AttachedTerminal, ErrorCode> {
         let terminal = self.find(reference)?;
         let mut state = terminal.state.lock().unwrap();
-        if !matches!(state.process, ProcessState::Running { .. }) {
+        if !matches!(state.process, ProcessState::Running { .. })
+            || state.output != OutputState::Draining
+        {
             return Err(ErrorCode::NotRunning);
         }
         if state.attachment.is_some() {
@@ -298,12 +464,15 @@ impl Manager {
             reference: attachment,
             sink,
         });
-        Ok((attachment, response))
+        Ok(AttachedTerminal {
+            attachment,
+            response,
+        })
     }
     pub fn input(
         &self,
         attachment: AttachmentRef,
-        owner: u64,
+        owner: ClientId,
         data: &[u8],
     ) -> Result<usize, ErrorCode> {
         if data.len() > 4096 {
@@ -321,22 +490,22 @@ impl Manager {
     pub fn resize(
         &self,
         attachment: AttachmentRef,
-        owner: u64,
+        owner: ClientId,
         rows: u16,
         columns: u16,
     ) -> Result<(), ErrorCode> {
+        let dimensions = TerminalSize::new(rows, columns).map_err(|_| ErrorCode::InvalidSize)?;
         let terminal = self.find(attachment.runtime)?;
         let state = terminal.state.lock().unwrap();
         terminal.require_attachment(&state, owner, attachment)?;
         let controller = terminal.controller.lock().unwrap();
         pty::resize(
             controller.as_ref().ok_or(ErrorCode::NotRunning)?,
-            rows,
-            columns,
+            dimensions,
         )
         .map_err(|_| ErrorCode::InvalidSize)
     }
-    pub fn detach(&self, attachment: AttachmentRef, owner: u64) -> Result<(), ErrorCode> {
+    pub fn detach(&self, attachment: AttachmentRef, owner: ClientId) -> Result<(), ErrorCode> {
         let terminal = self.find(attachment.runtime)?;
         let mut state = terminal.state.lock().unwrap();
         if !state
@@ -349,7 +518,7 @@ impl Manager {
         state.attachment = None;
         Ok(())
     }
-    pub fn disconnect(&self, owner: u64) {
+    pub fn disconnect(&self, owner: ClientId) {
         for terminal in self.terminals.lock().unwrap().values() {
             let mut state = terminal.state.lock().unwrap();
             if state
@@ -363,13 +532,13 @@ impl Manager {
     }
     pub fn stop(&self, reference: RuntimeRef) -> Result<(), ErrorCode> {
         let terminal = self.find(reference)?;
-        if !terminal.stop(libc::SIGTERM)? {
+        if let StopTransition::AlreadyStopped = terminal.stop(ProcessSignal::Terminate)? {
             return Ok(());
         }
         // Only the first stop transition gets an escalation worker; repeated requests stay bounded.
         thread::spawn(move || {
             thread::sleep(Duration::from_secs(1));
-            let _ = terminal.stop(libc::SIGKILL);
+            let _ = terminal.stop(ProcessSignal::Kill);
         });
         Ok(())
     }
@@ -380,17 +549,18 @@ impl Manager {
             return;
         }
         for terminal in &owned {
-            let _ = terminal.stop(libc::SIGTERM);
+            let _ = terminal.stop(ProcessSignal::Terminate);
         }
         thread::sleep(Duration::from_secs(1));
         for terminal in &owned {
-            let _ = terminal.stop(libc::SIGKILL);
+            let _ = terminal.stop(ProcessSignal::Kill);
         }
         for _ in 0..80 {
-            if owned
-                .iter()
-                .all(|value| value.state.lock().unwrap().journal_finished)
-            {
+            if owned.iter().all(|value| {
+                let state = value.state.lock().unwrap();
+                state.completion != CompletionPersistence::Pending
+                    && state.output != OutputState::Draining
+            }) {
                 break;
             }
             thread::sleep(Duration::from_millis(25));
@@ -398,55 +568,65 @@ impl Manager {
     }
 }
 
+fn check_launch_admission(
+    terminals: &BTreeMap<PaneId, Arc<Terminal>>,
+    target: TerminalTarget,
+) -> Result<(), ErrorCode> {
+    if terminals
+        .values()
+        .filter(|value| value.owns_live_resources())
+        .count()
+        >= MAX_TERMINALS
+    {
+        return Err(ErrorCode::Capacity);
+    }
+    if terminals
+        .get(&target.pane_id)
+        .is_some_and(|value| value.owns_live_resources())
+    {
+        return Err(ErrorCode::Conflict);
+    }
+    Ok(())
+}
+
 fn drain(terminal: Arc<Terminal>, controller: Arc<File>) {
     let mut reader = &*controller;
     let mut buffer = [0u8; OUTPUT_CHUNK];
-    loop {
+    let outcome = loop {
         match reader.read(&mut buffer) {
-            Ok(0) => break,
+            Ok(0) => break OutputState::Closed,
             Ok(count) => {
-                let mut state = terminal.state.lock().unwrap();
-                let offset = state.next_offset;
-                let Some(next) = offset.checked_add(count as u64) else {
-                    break;
-                };
-                state.next_offset = next;
-                for byte in &buffer[..count] {
-                    if state.backlog.len() == BACKLOG_BYTES {
-                        state.backlog.pop_front();
-                    }
-                    state.backlog.push_back(*byte);
-                }
-                if let Some(attachment) = &state.attachment
-                    && !attachment.sink.send(Frame::Output {
-                        attachment: attachment.reference,
-                        offset,
-                        data: buffer[..count].to_vec(),
-                    })
-                {
-                    state.attachment = None;
+                if terminal.record_output(&buffer[..count]).is_err() {
+                    break OutputState::Failed;
                 }
             }
             Err(error) if error.kind() == io::ErrorKind::Interrupted => continue,
             Err(error) if error.kind() == io::ErrorKind::WouldBlock => {
-                let mut fd = libc::pollfd {
-                    fd: controller.as_raw_fd(),
-                    events: libc::POLLIN,
-                    revents: 0,
-                };
-                unsafe {
-                    libc::poll(&mut fd, 1, 100);
+                if wait_for_output(controller.as_raw_fd()).is_err() {
+                    break OutputState::Failed;
                 }
             }
-            Err(_) => break,
+            // PTY EOF may be reported as EIO after its last child-side descriptor closes.
+            Err(error) if error.raw_os_error() == Some(libc::EIO) => break OutputState::Closed,
+            Err(_) => break OutputState::Failed,
+        }
+    };
+    terminal.finish_output(outcome);
+}
+
+fn wait_for_output(descriptor: i32) -> io::Result<()> {
+    let mut fd = libc::pollfd {
+        fd: descriptor,
+        events: libc::POLLIN,
+        revents: 0,
+    };
+    if unsafe { libc::poll(&mut fd, 1, 100) } < 0 {
+        let error = io::Error::last_os_error();
+        if error.kind() != io::ErrorKind::Interrupted {
+            return Err(error);
         }
     }
-    let mut state = terminal.state.lock().unwrap();
-    state.output_finished = true;
-    terminal.controller.lock().unwrap().take();
-    if let ProcessState::Exited { wait_status } = state.process {
-        send_exit(&state, wait_status);
-    }
+    Ok(())
 }
 fn send_exit(state: &State, wait_status: i32) {
     if let Some(attachment) = &state.attachment {
@@ -456,15 +636,29 @@ fn send_exit(state: &State, wait_status: i32) {
         });
     }
 }
-fn reap(terminal: Arc<Terminal>, pid: i32) {
+fn observe_process_group(pid: ChildPid) -> ProcessGroupState {
+    // Signal 0 delivers no signal: it is an existence/permission probe only.
+    // Reuse of this numeric group can only cause conservative recovery, never a kill/adoption.
+    // This proves nothing about descendants that deliberately left the original group.
+    if unsafe { libc::kill(-pid.as_raw(), 0) } < 0
+        && io::Error::last_os_error().raw_os_error() == Some(libc::ESRCH)
+    {
+        ProcessGroupState::Empty
+    } else {
+        ProcessGroupState::Uncertain
+    }
+}
+
+fn reap(terminal: Arc<Terminal>, pid: ChildPid) {
     loop {
         let ended = {
             let mut state = terminal.state.lock().unwrap();
             let mut wait_status = 0;
-            let result = unsafe { libc::waitpid(pid, &mut wait_status, libc::WNOHANG) };
-            if result == pid {
+            let result = unsafe { libc::waitpid(pid.as_raw(), &mut wait_status, libc::WNOHANG) };
+            if result == pid.as_raw() {
+                state.process_group = observe_process_group(pid);
                 state.process = ProcessState::Exited { wait_status };
-                if state.output_finished {
+                if state.output == OutputState::Closed {
                     send_exit(&state, wait_status);
                 }
                 Some(state.process.clone())
@@ -476,16 +670,144 @@ fn reap(terminal: Arc<Terminal>, pid: i32) {
                 None
             }
         };
-        if let Some(process) = ended {
-            // No runtime lock is held while committing; a stale generation cannot overwrite its successor.
-            let _ = terminal
-                .journal
-                .lock()
-                .unwrap()
-                .update(terminal.reference, process);
-            terminal.state.lock().unwrap().journal_finished = true;
+        if ended.is_some() {
+            terminal.record_completion();
             return;
         }
         thread::sleep(Duration::from_millis(25));
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::test_support::TestDirectory;
+
+    struct CompletionFixture {
+        terminal: Arc<Terminal>,
+        directory: TestDirectory,
+    }
+    impl CompletionFixture {
+        fn new() -> Self {
+            let directory = TestDirectory::new();
+            let mut journal = Journal::open(directory.path()).unwrap();
+            let reference = RuntimeRef {
+                host_generation: HostGeneration::new(),
+                target: TerminalTarget {
+                    session_id: SessionId::new(),
+                    pane_id: PaneId::new(),
+                },
+                runtime_generation: RuntimeGeneration::new(),
+            };
+            let launch = TerminalLaunch {
+                directory: "/".into(),
+                argv: vec!["/bin/sh".into()],
+            };
+            let process = ProcessState::Running {
+                pid: ChildPid::try_from(42).unwrap(),
+            };
+            journal
+                .prepare(CommandId::new(), reference, &launch)
+                .unwrap();
+            journal.update(reference, process.clone()).unwrap();
+            // Synthetic completion state only: no process is launched or signaled by these unit tests.
+            let terminal = Arc::new(Terminal {
+                reference,
+                controller: Mutex::new(None),
+                completion_writer: Mutex::new(()),
+                journal: Arc::new(Mutex::new(journal)),
+                state: Mutex::new(State {
+                    process,
+                    attachment: None,
+                    backlog: VecDeque::new(),
+                    next_offset: 0,
+                    output: OutputState::Draining,
+                    process_group: ProcessGroupState::Unobserved,
+                    completion: CompletionPersistence::Pending,
+                }),
+            });
+            Self {
+                terminal,
+                directory,
+            }
+        }
+        fn saved_process(&self) -> ProcessState {
+            self.terminal.journal.lock().unwrap().snapshots()[0]
+                .process
+                .clone()
+        }
+        fn observe_exit(&self) {
+            let mut state = self.terminal.state.lock().unwrap();
+            state.process = ProcessState::Exited { wait_status: 0 };
+            state.process_group = ProcessGroupState::Empty;
+        }
+    }
+
+    #[test]
+    fn reaped_child_is_uncertain_until_terminal_eof_then_becomes_clean() {
+        let fixture = CompletionFixture::new();
+        fixture.observe_exit();
+        fixture.terminal.record_completion();
+        assert_eq!(fixture.saved_process(), ProcessState::RecoveryRequired {});
+        assert!(fixture.terminal.owns_live_resources());
+        fixture.terminal.finish_output(OutputState::Closed);
+        assert_eq!(
+            fixture.saved_process(),
+            ProcessState::Exited { wait_status: 0 }
+        );
+        assert!(!fixture.terminal.owns_live_resources());
+    }
+
+    #[test]
+    fn terminal_eof_alone_does_not_claim_child_exit() {
+        let fixture = CompletionFixture::new();
+        fixture.terminal.finish_output(OutputState::Closed);
+        assert!(matches!(
+            fixture.saved_process(),
+            ProcessState::Running { .. }
+        ));
+        assert!(fixture.terminal.owns_live_resources());
+        fixture.observe_exit();
+        fixture.terminal.record_completion();
+        assert_eq!(
+            fixture.saved_process(),
+            ProcessState::Exited { wait_status: 0 }
+        );
+    }
+
+    #[test]
+    fn eof_with_uncertain_group_membership_stays_recovery_required() {
+        let fixture = CompletionFixture::new();
+        fixture.observe_exit();
+        fixture.terminal.state.lock().unwrap().process_group = ProcessGroupState::Uncertain;
+        fixture.terminal.finish_output(OutputState::Closed);
+        assert_eq!(fixture.saved_process(), ProcessState::RecoveryRequired {});
+        assert_eq!(
+            fixture.terminal.snapshot().process,
+            ProcessState::RecoveryRequired {}
+        );
+        assert!(fixture.terminal.owns_live_resources());
+    }
+
+    #[test]
+    fn failed_terminal_io_never_becomes_a_clean_completion() {
+        let fixture = CompletionFixture::new();
+        fixture.observe_exit();
+        fixture.terminal.finish_output(OutputState::Failed);
+        assert_eq!(fixture.saved_process(), ProcessState::RecoveryRequired {});
+    }
+
+    #[test]
+    fn completion_persistence_failure_is_not_reported_as_recorded() {
+        let fixture = CompletionFixture::new();
+        let path = fixture.directory.path().join("runtime-state.json");
+        std::fs::remove_file(&path).unwrap();
+        std::fs::create_dir(&path).unwrap();
+        fixture.observe_exit();
+        fixture.terminal.finish_output(OutputState::Closed);
+        assert_eq!(
+            fixture.terminal.state.lock().unwrap().completion,
+            CompletionPersistence::Failed
+        );
     }
 }

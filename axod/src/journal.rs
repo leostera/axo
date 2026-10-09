@@ -11,6 +11,10 @@ use std::os::unix::fs::{MetadataExt, OpenOptionsExt, PermissionsExt};
 use std::path::{Path, PathBuf};
 
 const MAX_BYTES: u64 = 4 * 1024 * 1024;
+// Version 1 could record Exited before PTY EOF; it cannot establish clean-completion evidence.
+const JOURNAL_VERSION: u16 = 2;
+const MAX_RECORDS: usize = 1000;
+const MAX_RECEIPTS: usize = 2000;
 #[derive(Clone, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 struct Receipt {
@@ -61,15 +65,15 @@ impl Journal {
         let mut saved = match read_saved(&path) {
             Ok(value) => value,
             Err(error) if error.kind() == io::ErrorKind::NotFound => Saved {
-                version: 1,
+                version: JOURNAL_VERSION,
                 terminals: BTreeMap::new(),
                 receipts: BTreeMap::new(),
             },
             Err(error) => return Err(error),
         };
-        if saved.version != 1
-            || saved.terminals.len() > 1000
-            || saved.receipts.len() > 2000
+        if saved.version != JOURNAL_VERSION
+            || saved.terminals.len() > MAX_RECORDS
+            || saved.receipts.len() > MAX_RECEIPTS
             || saved
                 .terminals
                 .iter()
@@ -124,9 +128,20 @@ impl Journal {
         runtime: RuntimeRef,
         launch: &TerminalLaunch,
     ) -> Result<(), ErrorCode> {
-        if self.saved.receipts.len() >= 2000
+        if self.poisoned {
+            return Err(ErrorCode::StorageFailed);
+        }
+        // A receipt is immutable even when the caller bypasses Manager's reconciliation path.
+        if let Some(previous) = self.lookup(command, runtime.target, launch)? {
+            return if previous == runtime {
+                Ok(())
+            } else {
+                Err(ErrorCode::Conflict)
+            };
+        }
+        if self.saved.receipts.len() >= MAX_RECEIPTS
             || (!self.saved.terminals.contains_key(&runtime.target.pane_id)
-                && self.saved.terminals.len() >= 1000)
+                && self.saved.terminals.len() >= MAX_RECORDS)
         {
             return Err(ErrorCode::Capacity);
         }
@@ -172,6 +187,9 @@ impl Journal {
         if record.runtime != runtime {
             return Err(ErrorCode::StaleRuntime);
         }
+        if !legal_transition(&record.process, &process) {
+            return Err(ErrorCode::InvalidTransition);
+        }
         record.process = process;
         self.commit(next)
     }
@@ -188,6 +206,21 @@ impl Journal {
         Ok(())
     }
 }
+fn legal_transition(previous: &ProcessState, next: &ProcessState) -> bool {
+    use ProcessState::*;
+    match (previous, next) {
+        (Starting {}, Running { .. } | Failed {} | RecoveryRequired {}) => true,
+        (Running { pid: old }, Running { pid: new } | Stopping { pid: new })
+        | (Stopping { pid: old }, Stopping { pid: new }) => old == new,
+        (Running { .. } | Stopping { .. }, Exited { .. } | RecoveryRequired {}) => true,
+        // Reaper and drain can establish clean completion after a conservative interim record.
+        (RecoveryRequired {}, Exited { .. } | RecoveryRequired {}) => true,
+        (Exited { wait_status: old }, Exited { wait_status: new }) => old == new,
+        (Failed {}, Failed {}) => true,
+        _ => false,
+    }
+}
+
 fn fingerprint(target: TerminalTarget, launch: &TerminalLaunch) -> String {
     let data = serde_json::to_vec(&(target, launch)).expect("Domain values serialize");
     format!("{:x}", Sha256::digest(data))
@@ -231,4 +264,120 @@ fn persist(root: &Path, next: &Saved) -> io::Result<()> {
     })();
     let _ = fs::remove_file(temporary);
     result
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::test_support::TestDirectory;
+
+    fn runtime() -> RuntimeRef {
+        RuntimeRef {
+            host_generation: HostGeneration::new(),
+            target: TerminalTarget {
+                session_id: SessionId::new(),
+                pane_id: PaneId::new(),
+            },
+            runtime_generation: RuntimeGeneration::new(),
+        }
+    }
+    fn launch() -> TerminalLaunch {
+        TerminalLaunch {
+            directory: "/".into(),
+            argv: vec!["/bin/sh".into()],
+        }
+    }
+
+    #[test]
+    fn prepare_cannot_reassign_a_command_receipt_or_change_its_arguments() {
+        let directory = TestDirectory::new();
+        let mut journal = Journal::open(directory.path()).unwrap();
+        let command = CommandId::new();
+        let original = runtime();
+        journal.prepare(command, original, &launch()).unwrap();
+        journal.update(original, ProcessState::Failed {}).unwrap();
+        let successor = RuntimeRef {
+            runtime_generation: RuntimeGeneration::new(),
+            ..original
+        };
+        assert_eq!(
+            journal.prepare(command, successor, &launch()),
+            Err(ErrorCode::Conflict)
+        );
+        let changed = TerminalLaunch {
+            argv: vec!["/bin/echo".into()],
+            ..launch()
+        };
+        assert_eq!(
+            journal.prepare(command, original, &changed),
+            Err(ErrorCode::Conflict)
+        );
+        journal.prepare(command, original, &launch()).unwrap();
+        assert_eq!(
+            journal.lookup(command, original.target, &launch()).unwrap(),
+            Some(original)
+        );
+        assert_eq!(journal.snapshots()[0].process, ProcessState::Failed {});
+    }
+
+    #[test]
+    fn completed_records_cannot_be_resurrected_or_have_their_exit_status_rewritten() {
+        let directory = TestDirectory::new();
+        let mut journal = Journal::open(directory.path()).unwrap();
+        let reference = runtime();
+        let pid = ChildPid::try_from(42).unwrap();
+        journal
+            .prepare(CommandId::new(), reference, &launch())
+            .unwrap();
+        journal
+            .update(reference, ProcessState::Running { pid })
+            .unwrap();
+        journal
+            .update(reference, ProcessState::Exited { wait_status: 0 })
+            .unwrap();
+        assert_eq!(
+            journal.update(reference, ProcessState::Running { pid }),
+            Err(ErrorCode::InvalidTransition)
+        );
+        assert_eq!(
+            journal.update(reference, ProcessState::Exited { wait_status: 7 }),
+            Err(ErrorCode::InvalidTransition)
+        );
+    }
+
+    #[test]
+    fn uncertain_persistence_fences_future_mutations() {
+        let directory = TestDirectory::new();
+        let mut journal = Journal::open(directory.path()).unwrap();
+        let reference = runtime();
+        let command = CommandId::new();
+        journal.prepare(command, reference, &launch()).unwrap();
+        let path = directory.path().join("runtime-state.json");
+        fs::remove_file(&path).unwrap();
+        fs::create_dir(&path).unwrap();
+        assert_eq!(
+            journal.update(reference, ProcessState::Failed {}),
+            Err(ErrorCode::StorageFailed)
+        );
+        fs::remove_dir(&path).unwrap();
+        assert_eq!(
+            journal.prepare(CommandId::new(), runtime(), &launch()),
+            Err(ErrorCode::StorageFailed)
+        );
+        assert_eq!(
+            journal.prepare(command, reference, &launch()),
+            Err(ErrorCode::StorageFailed)
+        );
+    }
+
+    #[test]
+    fn prior_journal_version_is_rejected_without_rewriting_its_completion_claims() {
+        let directory = TestDirectory::new();
+        let path = directory.path().join("runtime-state.json");
+        let data = br#"{"version":1,"terminals":{},"receipts":{}}"#;
+        fs::write(&path, data).unwrap();
+        fs::set_permissions(&path, fs::Permissions::from_mode(0o600)).unwrap();
+        assert!(Journal::open(directory.path()).is_err());
+        assert_eq!(fs::read(path).unwrap(), data);
+    }
 }

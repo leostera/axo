@@ -7,3 +7,5 @@ pub mod protocol;
 mod pty;
 pub mod runtime;
 pub mod server;
+#[cfg(test)]
+mod test_support;

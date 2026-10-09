@@ -25,7 +25,7 @@ use std::thread;
 use std::time::Duration;
 
 struct Cached {
-    fingerprint: Vec<u8>,
+    fingerprint: [u8; 32],
     response: Response,
     bytes: usize,
 }
@@ -84,17 +84,40 @@ impl Requests {
         );
     }
 }
-fn fingerprint(request: &Request) -> Vec<u8> {
-    Sha256::digest(serde_json::to_vec(request).unwrap()).to_vec()
+fn fingerprint(request: &Request) -> [u8; 32] {
+    Sha256::digest(serde_json::to_vec(request).expect("Domain request serializes")).into()
+}
+
+enum ResponseDelivery {
+    NeedsQueue,
+    AlreadyQueued,
+}
+struct DispatchOutcome {
+    response: Response,
+    delivery: ResponseDelivery,
+}
+impl DispatchOutcome {
+    fn pending(response: Response) -> Self {
+        Self {
+            response,
+            delivery: ResponseDelivery::NeedsQueue,
+        }
+    }
+    fn queued(response: Response) -> Self {
+        Self {
+            response,
+            delivery: ResponseDelivery::AlreadyQueued,
+        }
+    }
 }
 
 fn dispatch(
     request: &Request,
     manager: &Manager,
-    client: u64,
+    client: ClientId,
     sink: &Sink,
     attachment: &mut Option<AttachmentRef>,
-) -> Result<(Response, bool), ErrorCode> {
+) -> Result<DispatchOutcome, ErrorCode> {
     if request.version != VERSION {
         return Err(ErrorCode::IncompatibleVersion);
     }
@@ -133,10 +156,9 @@ fn dispatch(
             if attachment.is_some() {
                 return Err(ErrorCode::AlreadyAttached);
             }
-            let (lease, response) =
-                manager.attach(*runtime, client, sink.clone(), request.request_id)?;
-            *attachment = Some(lease);
-            return Ok((response, true));
+            let attached = manager.attach(*runtime, client, sink.clone(), request.request_id)?;
+            *attachment = Some(attached.attachment);
+            return Ok(DispatchOutcome::queued(attached.response));
         }
         Command::Input { attachment, data } => Response::InputAccepted {
             bytes: manager.input(*attachment, client, data)?,
@@ -159,10 +181,10 @@ fn dispatch(
             Response::Ok {}
         }
     };
-    Ok((response, false))
+    Ok(DispatchOutcome::pending(response))
 }
 
-fn client(socket: UnixStream, manager: Arc<Manager>, id: u64) -> io::Result<()> {
+fn client(socket: UnixStream, manager: Arc<Manager>, id: ClientId) -> io::Result<()> {
     // BSD/macOS accepted sockets can inherit the listener's nonblocking flag.
     // A client reader must wait for its next frame rather than treating EAGAIN as disconnect.
     socket.set_nonblocking(false)?;
@@ -174,49 +196,25 @@ fn client(socket: UnixStream, manager: Arc<Manager>, id: u64) -> io::Result<()> 
         sender,
         socket: shared.clone(),
     };
-    thread::spawn(move || {
-        let mut writer = &*shared;
-        while let Ok(frame) = receiver.recv() {
-            let Ok(mut data) = serde_json::to_vec(&frame) else {
-                break;
-            };
-            data.push(b'\n');
-            if data.len() as u64 > FRAME_BYTES || writer.write_all(&data).is_err() {
-                let _ = shared.shutdown(std::net::Shutdown::Both);
-                break;
-            }
-        }
-    });
+    thread::spawn(move || write_frames(shared, receiver));
     let mut reader = BufReader::new(socket);
     let mut requests = Requests::new();
     let mut attachment = None;
-    loop {
-        let mut data = Vec::new();
-        if !matches!((&mut reader).take(FRAME_BYTES + 1).read_until(b'\n', &mut data), Ok(length) if length > 0)
-        {
-            break;
-        }
-        if data.len() as u64 > FRAME_BYTES || !data.ends_with(b"\n") {
-            break;
-        }
-        let Ok(request) = serde_json::from_slice::<Request>(&data) else {
-            break;
-        };
-        let previous = requests.previous(&request);
-        let (response, sent) = match previous {
-            Ok(Some(response)) => (response, false),
-            Err(code) => (Response::from(code), false),
+    while let Ok(Some(request)) = read_request(&mut reader) {
+        let outcome = match requests.previous(&request) {
+            Ok(Some(response)) => DispatchOutcome::pending(response),
+            Err(code) => DispatchOutcome::pending(Response::from(code)),
             Ok(None) => {
                 let outcome = dispatch(&request, &manager, id, &sink, &mut attachment)
-                    .unwrap_or_else(|code| (Response::from(code), false));
-                requests.remember(&request, outcome.0.clone());
+                    .unwrap_or_else(|code| DispatchOutcome::pending(Response::from(code)));
+                requests.remember(&request, outcome.response.clone());
                 outcome
             }
         };
-        if !sent
+        if matches!(outcome.delivery, ResponseDelivery::NeedsQueue)
             && !sink.send(Frame::Response {
                 request_id: request.request_id,
-                response,
+                response: outcome.response,
             })
         {
             break;
@@ -226,6 +224,36 @@ fn client(socket: UnixStream, manager: Arc<Manager>, id: u64) -> io::Result<()> 
     let _ = sink.socket.shutdown(std::net::Shutdown::Both);
     Ok(())
 }
+fn read_request(reader: &mut impl BufRead) -> io::Result<Option<Request>> {
+    let mut data = Vec::new();
+    if reader.take(FRAME_BYTES + 1).read_until(b'\n', &mut data)? == 0 {
+        return Ok(None);
+    }
+    if data.len() as u64 > FRAME_BYTES || !data.ends_with(b"\n") {
+        return Err(io::Error::new(
+            io::ErrorKind::InvalidData,
+            "Incomplete or oversized request frame",
+        ));
+    }
+    serde_json::from_slice(&data)
+        .map(Some)
+        .map_err(|_| io::Error::new(io::ErrorKind::InvalidData, "Invalid request"))
+}
+
+fn write_frames(socket: Arc<UnixStream>, receiver: mpsc::Receiver<Frame>) {
+    let mut writer = &*socket;
+    while let Ok(frame) = receiver.recv() {
+        let Ok(mut data) = serde_json::to_vec(&frame) else {
+            break;
+        };
+        data.push(b'\n');
+        if data.len() as u64 > FRAME_BYTES || writer.write_all(&data).is_err() {
+            break;
+        }
+    }
+    let _ = socket.shutdown(std::net::Shutdown::Both);
+}
+
 fn check_peer(socket: &UnixStream) -> io::Result<()> {
     let (mut uid, mut gid) = (0, 0);
     if unsafe { libc::getpeereid(socket.as_raw_fd(), &mut uid, &mut gid) } < 0
@@ -272,7 +300,7 @@ pub fn serve(root: &Path) -> io::Result<()> {
         }
         let manager = manager.clone();
         let clients = clients.clone();
-        let id = next_id.fetch_add(1, Ordering::SeqCst);
+        let id = ClientId(next_id.fetch_add(1, Ordering::SeqCst));
         thread::spawn(move || {
             let _ = client(socket, manager, id);
             clients.fetch_sub(1, Ordering::SeqCst);
@@ -294,6 +322,76 @@ pub fn serve(root: &Path) -> io::Result<()> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn request_reader_rejects_partial_oversized_and_unknown_frames() {
+        use std::io::Cursor;
+        assert!(
+            read_request(&mut Cursor::new(Vec::<u8>::new()))
+                .unwrap()
+                .is_none()
+        );
+        assert!(read_request(&mut Cursor::new(b"{\"version\":1}")).is_err());
+        assert!(read_request(&mut Cursor::new(vec![b'x'; FRAME_BYTES as usize + 1])).is_err());
+        assert!(
+            read_request(&mut Cursor::new(
+                b"{\"version\":1,\"request_id\":1,\"command\":{\"op\":\"hello\"},\"extra\":true}\n"
+            ))
+            .is_err()
+        );
+        let valid = b"{\"version\":1,\"request_id\":1,\"command\":{\"op\":\"hello\"}}\n";
+        assert!(read_request(&mut Cursor::new(valid)).unwrap().is_some());
+    }
+
+    #[test]
+    fn reply_cache_evicts_large_backlogs_by_bytes_not_just_count() {
+        let runtime = RuntimeRef {
+            host_generation: HostGeneration::new(),
+            target: TerminalTarget {
+                session_id: SessionId::new(),
+                pane_id: PaneId::new(),
+            },
+            runtime_generation: RuntimeGeneration::new(),
+        };
+        let response = Response::Attached {
+            attachment: AttachmentRef {
+                runtime,
+                attachment_id: AttachmentId::new(),
+            },
+            terminal: TerminalSnapshot {
+                runtime,
+                process: ProcessState::Running {
+                    pid: ChildPid::try_from(42).unwrap(),
+                },
+                attached: true,
+                backlog_bytes: BACKLOG_BYTES,
+            },
+            backlog: RawBacklog {
+                start_offset: 0,
+                next_offset: BACKLOG_BYTES as u64,
+                data: vec![255; BACKLOG_BYTES],
+                truncated: false,
+            },
+        };
+        let mut requests = Requests::new();
+        let mut request = Request {
+            version: VERSION,
+            request_id: 1,
+            host_generation: None,
+            command: Command::Hello {},
+        };
+        for id in 1..10 {
+            request.request_id = id;
+            requests.remember(&request, response.clone());
+            assert!(requests.bytes <= 128 * 1024);
+        }
+        assert!(requests.cache.len() < 9);
+        request.request_id = 1;
+        assert_eq!(
+            requests.previous(&request).err(),
+            Some(ErrorCode::RequestOutOfOrder)
+        );
+    }
+
     #[test]
     fn request_reuse_conflicts_and_evicted_requests_never_execute_again() {
         let mut requests = Requests::new();

@@ -258,7 +258,7 @@ class DaemonTests(unittest.TestCase):
                 "runtime_generation": identity()}, "process": {"kind": "exited", "wait_status": 0},
                 "attached": False, "backlog_bytes": 0}
         path = self.directory / "runtime-state.json"
-        path.write_text(json.dumps({"version": 1, "terminals": records, "receipts": {}}))
+        path.write_text(json.dumps({"version": 2, "terminals": records, "receipts": {}}))
         os.chmod(path, 0o600)
         self.launch_host()
         first = self.client.call({"op": "list", "limit": 2})
@@ -317,6 +317,32 @@ class DaemonTests(unittest.TestCase):
         ticks = self.read(sibling_state)["ticks"]
         eventually(lambda: self.read(sibling_state)["ticks"] > ticks + 3)
         self.assertEqual(self.read(sibling_state)["pid"], sibling["process"]["pid"])
+
+    def test_reaped_initial_child_with_open_descendant_pty_is_not_clean_recovery(self):
+        state = self.directory / "descendant.json"
+        release = self.directory / "release-descendant"
+        done = self.directory / "descendant-done"
+        target = {"session_id": identity(), "pane_id": identity()}
+        command = {"op": "start", "command_id": identity(), "target": target,
+            "launch": {"directory": str(self.directory), "argv": [sys.executable,
+                str(ROOT / "tests/fixtures/terminal_descendant.py"), str(state), str(release), str(done)]}}
+        try:
+            self.assertEqual(self.client.call(command)["kind"], "started")
+            eventually(state.exists)
+            eventually(lambda: self.snapshots()[0]["process"]["kind"] == "recovery_required")
+            journal = self.directory / "runtime-state.json"
+            eventually(lambda: next(iter(self.read(journal)["terminals"].values()))["process"]["kind"] == "recovery_required")
+            replacement = dict(command, command_id=identity(),
+                launch={"directory": str(self.directory), "argv": ["/bin/sh"]})
+            self.assertEqual(self.client.call(replacement)["code"], "conflict")
+            self.stop_host()
+            self.launch_host()
+            self.assertEqual(self.snapshots()[0]["process"]["kind"], "recovery_required")
+            self.assertEqual(self.client.call(replacement)["code"], "recovery_required")
+            self.assertEqual(len(self.read(journal)["receipts"]), 1)
+        finally:
+            release.touch()
+            eventually(done.exists)
 
     def test_duplicate_daemon_and_symlink_journal_are_rejected(self):
         duplicate = subprocess.run([str(BINARY), "serve", str(self.directory)], capture_output=True, timeout=3)
