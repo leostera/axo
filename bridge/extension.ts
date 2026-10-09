@@ -10,11 +10,13 @@ import { promptDelivery } from "./delivery";
 import { attachmentFiles, projectHistory, projectMessages, submittedCommandIds } from "./projection";
 import { readToolOutput } from "./tool-output";
 import { renderPhoto } from "./photo-rendering";
+import { registerSessionTitles } from "./session-title";
 import { MAX_FRAME_BYTES, type AgentActivity, type AgentEvent, type PhoneFrame, type HostFrame, type Question } from "../shared/protocol";
 
 interface PendingQuestion { question: Question; finish: (answer: string | undefined) => void }
 
 export default function axoBridge(pi: ExtensionAPI): void {
+  registerSessionTitles(pi);
   let context: ExtensionContext | undefined;
   let viewId = crypto.randomUUID();
   let connection: RelayConnection | undefined;

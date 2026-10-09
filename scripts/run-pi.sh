@@ -2,6 +2,7 @@
 set -euo pipefail
 ROOT="$(cd "$(dirname "$0")/.." && pwd)"
 export PATH="/opt/homebrew/bin:/usr/local/bin:$PATH"
+export AXO_AUTO_TITLE="${AXO_AUTO_TITLE:-1}"
 export AXO_CONFIG="${AXO_CONFIG:-$ROOT/local/relay.json}"
 if [[ ! -f "$AXO_CONFIG" ]]; then unset AXO_CONFIG; fi
 SESSION_FILE="$ROOT/local/playground/session.jsonl"
