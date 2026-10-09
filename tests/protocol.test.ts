@@ -3,7 +3,10 @@ import assert from "node:assert/strict";
 import { hostFrameSchema, phoneFrameSchema, parseFrame, MAX_FRAME_BYTES } from "../shared/protocol";
 import { projectHistory, projectMessages, submittedCommandIds } from "../bridge/projection";
 import { presentTool } from "../bridge/tool-presentation";
-import type { SessionEntry } from "@earendil-works/pi-coding-agent";
+import { SessionManager, type SessionEntry } from "@earendil-works/pi-coding-agent";
+import { mkdtemp, rm } from "node:fs/promises";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
 import type { AssistantMessage } from "@earendil-works/pi-ai";
 
 test("cancellation commands target a specific active run", () => {
@@ -117,6 +120,38 @@ test("empty streaming and redacted thinking blocks do not expose opaque data", (
   const redacted = { ...empty, content: [{ ...empty.content[0]!, thinking: "REDACTED PAYLOAD", redacted: true }] };
   assert.deepEqual(projectMessages([], redacted), []);
   assert.deepEqual(projectMessages([], { ...redacted, stopReason: "stop" }), []);
+});
+
+test("public thinking runs stay distinct and empty/signature-only runs do not create blank rows", () => {
+  const message: AssistantMessage = { ...assistantFixture, stopReason: "stop", content: [
+    { type: "thinking", thinking: "## First public thought\n\n- A point", thinkingSignature: "OPAQUE" },
+    { type: "text", text: "A response." },
+    { type: "thinking", thinking: "**Second public thought**" },
+    { type: "thinking", thinking: "SECRET", redacted: true },
+  ] };
+  const blocks = projectMessages([], message);
+  assert.deepEqual(blocks.map(block => block.text), ["## First public thought\n\n- A point", "A response.", "**Second public thought**"]);
+  assert.deepEqual(projectMessages([], { ...message, content: [
+    { type: "thinking", thinking: "", thinkingSignature: "OPAQUE" },
+    { type: "thinking", thinking: " \n\n " },
+  ] }), []);
+});
+
+test("public Markdown thinking survives a real Pi JSONL close/reopen and history paging", async () => {
+  const directory = await mkdtemp(join(tmpdir(), "axo-thinking-history-"));
+  try {
+    const session = SessionManager.create(directory, directory);
+    session.appendMessage({ role: "user", content: "Synthetic question", timestamp: 1 });
+    session.appendMessage({ ...assistantFixture, stopReason: "stop", content: [
+      { type: "thinking", thinking: "## Public heading\n\nA **formatted** thought.", thinkingSignature: "OPAQUE" },
+      { type: "text", text: "## Public response\n\n- Result" },
+    ] });
+    const before = projectHistory(session.getBranch());
+    const reopened = SessionManager.open(session.getSessionFile()!);
+    assert.deepEqual(projectHistory(reopened.getBranch()), before);
+    assert.equal(before.messages.find(block => block.role === "thinking")?.text, "## Public heading\n\nA **formatted** thought.");
+    assert.ok(!JSON.stringify(before).includes("OPAQUE"));
+  } finally { await rm(directory, { recursive: true, force: true }); }
 });
 
 test("projection follows Pi's assistant/tool ordering and shows terminal response errors", () => {

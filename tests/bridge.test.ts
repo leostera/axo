@@ -113,6 +113,8 @@ test("real Pi TUI accepts a phone prompt and shares a question/result", { timeou
     if (waiting.type !== "snapshot" || !waiting.question) throw new Error("Expected question");
     assert.ok(waiting.activities?.some(activity => activity.toolName === "axo_ask" && activity.status === "running"));
     assert.ok(waiting.messages.some(message => message.role === "tool" && message.toolName === "axo_ask" && message.status === "running"));
+    assert.ok(!terminalOutput.includes("Phone prompt"));
+    assert.ok(!terminalOutput.includes("[axo.prompt]")); // No fallback custom box from a broken renderer.
     const userMessage = waiting.messages.find(message => message.role === "user" && message.text.includes(prompt.text));
     const toolStarted = waiting.events?.find(event => event.name === "tool_execution_start");
     assert.ok(toolStarted);
@@ -173,11 +175,14 @@ test("real Pi TUI accepts a phone prompt and shares a question/result", { timeou
     // Make live event contexts change while HTTP preparation is suspended.
     metadataDelay = 250;
     host!.send(JSON.stringify({ type: "prompt", id: "image-only-steering", sessionId: initial.sessionId, text: "", attachmentIds: [imageId] }));
-    await waitFor(frame => frame.type === "ack" && frame.id === "image-only-steering");
+    const steeringAck = await waitFor(frame => frame.type === "ack" && frame.id === "image-only-steering");
+    assert.ok(steeringAck.type === "ack" && steeringAck.delivery === "steering");
     await waitFor(frame => frame.type === "snapshot" && frame.state === "idle"
       && frame.messages.some(message => message.role === "user" && message.text === "" && message.attachments?.[0]?.id === imageId));
     assert.equal(receivedImageOnly, true);
     assert.equal(modelRequests, 6);
+    assert.ok(!terminalOutput.includes("Phone attachments"));
+    assert.ok(!terminalOutput.includes("[axo.attachments]"));
     const persisted = await readFile(join(directory, "session.jsonl"), "utf8");
     assert.ok(persisted.includes('"customType":"axo.attachments"'));
     assert.ok(persisted.includes(imageId));

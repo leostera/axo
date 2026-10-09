@@ -1,4 +1,4 @@
-import type { ExtensionAPI, ExtensionContext } from "@earendil-works/pi-coding-agent";
+import { getMarkdownTheme, UserMessageComponent, type ExtensionAPI, type ExtensionContext } from "@earendil-works/pi-coding-agent";
 import { Type } from "typebox";
 import { Text } from "@earendil-works/pi-tui";
 import { resolve } from "node:path";
@@ -346,17 +346,19 @@ export default function axoBridge(pi: ExtensionAPI): void {
     context = undefined;
   });
 
-  pi.registerMessageRenderer("axo.prompt", (message, _options, theme) => {
+  // Keep durable command identity in details, but use Pi's actual user renderer
+  // for queued/recorded phone steering instead of a special custom-message box.
+  pi.registerMessageRenderer("axo.prompt", (message, options) => {
     const details = message.details;
     const text = details && typeof details === "object" && "text" in details && typeof details.text === "string" ? details.text : "";
-    const steering = details && typeof details === "object" && "delivery" in details && details.delivery === "steering";
-    return new Text(`${theme.fg("accent", steering ? "Phone steering" : "Phone prompt")}\n${text}`, 0, 0);
+    return new UserMessageComponent(text, getMarkdownTheme(), options.outputPad);
   });
-  pi.registerMessageRenderer("axo.attachments", (message, _options, theme) => {
+  pi.registerMessageRenderer("axo.attachments", (message, options) => {
     const details: unknown = message.details;
     const text = details && typeof details === "object" && "text" in details && typeof details.text === "string" ? details.text : "";
     const names = attachmentFiles(details).map(file => file.filename).join(", ");
-    return new Text(`${theme.fg("accent", "Phone attachments")} · ${names}${text ? `\n${text}` : ""}`, 0, 0);
+    const display = [text, names ? `Shared files: ${names}` : ""].filter(Boolean).join("\n\n");
+    return new UserMessageComponent(display, getMarkdownTheme(), options.outputPad);
   });
   pi.registerEntryRenderer<{ files: { filename: string }[] }>("axo.shared_file", entry => new Text(`Shared: ${entry.data?.files.map(file => file.filename).join(", ") ?? "file"}`, 0, 0));
 
