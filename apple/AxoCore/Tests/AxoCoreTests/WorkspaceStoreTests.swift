@@ -42,6 +42,23 @@ final class WorkspaceStoreTests: XCTestCase {
         XCTAssertEqual(store.registry.sessions[1], other)
     }
 
+    func testNestedSplitRatioPersistsWithoutChangingIdentities() throws {
+        let (store, root) = try temporaryStore(); defer { try? FileManager.default.removeItem(at: root) }
+        let created = try store.createWorkspace(name: "Axo")
+        let pi = try XCTUnwrap(store.registry.sessions.first?.focusedPane)
+        let shell = try store.addShell(sessionID: created.sessionID, beside: pi, axis: .horizontal)
+        _ = try store.addShell(sessionID: created.sessionID, beside: shell, axis: .vertical)
+        let original = try XCTUnwrap(store.registry.sessions.first?.layout)
+        let resized = try original.settingFraction(0.7, at: [true])
+        XCTAssertEqual(resized.panes, original.panes)
+        XCTAssertNotEqual(resized, original)
+        XCTAssertThrowsError(try original.settingFraction(0.01, at: []))
+        XCTAssertThrowsError(try original.settingFraction(0.5, at: [false]))
+        try store.updateSession(created.sessionID) { $0.layout = resized }
+        let restored = try WorkspaceStore(url: store.url, scratchRoot: root)
+        XCTAssertEqual(restored.registry.sessions.first?.layout, resized)
+    }
+
     func testFailedMutationDoesNotChangeMemoryOrDisk() throws {
         let (store, root) = try temporaryStore(); defer { try? FileManager.default.removeItem(at: root) }
         let created = try store.createWorkspace(name: "Axo")
@@ -64,6 +81,26 @@ final class WorkspaceStoreTests: XCTestCase {
         _ = try store.createWorkspace(name: "Valid")
         try Data("not json".utf8).write(to: store.url)
         XCTAssertThrowsError(try WorkspaceStore(url: store.url, scratchRoot: root))
+    }
+
+    func testGhosttyWeightedEqualizationRatiosAreValidSavedMetadata() throws {
+        let (store, root) = try temporaryStore(); defer { try? FileManager.default.removeItem(at: root) }
+        let created = try store.createWorkspace(name: "Axo")
+        let pi = try XCTUnwrap(store.registry.sessions.first?.focusedPane)
+        _ = try store.addShell(sessionID: created.sessionID, beside: pi, axis: .horizontal)
+        try store.updateSession(created.sessionID) { session in
+            guard case .split(let axis, _, let first, let second) = session.layout else { throw WorkspaceFault.invalidLayout }
+            session.layout = .split(axis: axis, fraction: 1.0 / 12.0, first: first, second: second)
+        }
+        XCTAssertNoThrow(try store.registry.validate())
+    }
+
+    func testNulPathsCannotReachTerminalCStringBoundary() throws {
+        let (store, root) = try temporaryStore(); defer { try? FileManager.default.removeItem(at: root) }
+        XCTAssertThrowsError(try store.createWorkspace(name: "Axo", initialDirectory: "/tmp/unsafe\u{0}suffix"))
+        XCTAssertTrue(store.registry.workspaces.isEmpty)
+        XCTAssertThrowsError(try store.createWorkspace(name: "Axo", initialSessionFile: "/tmp/unsafe\u{0}suffix"))
+        XCTAssertTrue(store.registry.workspaces.isEmpty)
     }
 
     func testPrototypeImportReferencesOriginalFileWithoutCopyingIt() throws {

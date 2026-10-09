@@ -3,7 +3,7 @@ import AppKit
 @main
 final class AxoMacApp: NSObject, NSApplicationDelegate, NSWindowDelegate {
     private var window: NSWindow?
-    private var terminal: TerminalView?
+    private var workspaces: WorkspaceController?
     private var runtime: GhosttyRuntime?
 
     static func main() {
@@ -30,19 +30,36 @@ final class AxoMacApp: NSObject, NSApplicationDelegate, NSWindowDelegate {
             }
             let runtime = try GhosttyRuntime()
             self.runtime = runtime
-            let terminal = try TerminalView(runtime: runtime, repository: root)
-            self.terminal = terminal
+            #if DEBUG
+            if CommandLine.arguments.contains("--axo-workspaces-self-test") {
+                do {
+                    try WorkspaceSelfTest.run(runtime: runtime, repository: root) { controller in
+                        self.workspaces = controller; self.installMenu()
+                    }
+                    exit(0)
+                }
+                catch { fputs("Axo workspace self-test failed: \(error)\n", stderr); exit(1) }
+            }
+            #endif
+            let workspaces = try WorkspaceController(runtime: runtime, repository: root)
+            self.workspaces = workspaces
             let window = NSWindow(contentRect: NSRect(x: 0, y: 0, width: 1100, height: 750), styleMask: [.titled, .closable, .miniaturizable, .resizable], backing: .buffered, defer: false)
             window.title = "Axo — Playground"
             window.delegate = self
-            window.contentView = terminal
+            window.contentView = workspaces.view
+            workspaces.onTitle = { [weak window] title in window?.title = title }
             window.center()
             self.window = window
             installMenu()
             window.makeKeyAndOrderFront(nil)
-            window.makeFirstResponder(terminal)
+            workspaces.restoreFocus()
             NSApp.activate(ignoringOtherApps: true)
         } catch {
+            #if DEBUG
+            if CommandLine.arguments.contains("--axo-workspaces-self-test") {
+                fputs("Axo workspace self-test initialization failed: \(error)\n", stderr); exit(1)
+            }
+            #endif
             let alert = NSAlert()
             alert.messageText = "Axo could not start"
             alert.informativeText = "\(error). Launch with scripts/run-mac.sh after building the Ghostty framework."
@@ -53,25 +70,33 @@ final class AxoMacApp: NSObject, NSApplicationDelegate, NSWindowDelegate {
 
     func applicationDidBecomeActive(_ notification: Notification) { runtime?.setFocus(true) }
     func applicationDidResignActive(_ notification: Notification) { runtime?.setFocus(false) }
-    func windowDidBecomeKey(_ notification: Notification) { terminal?.setFocus(true) }
-    func windowDidResignKey(_ notification: Notification) { terminal?.setFocus(false) }
+    func windowDidBecomeKey(_ notification: Notification) {
+        DispatchQueue.main.async { [weak self] in self?.workspaces?.setFocus(true) }
+    }
+    func windowDidResignKey(_ notification: Notification) { workspaces?.setFocus(false) }
+    func windowDidChangeOcclusionState(_ notification: Notification) {
+        workspaces?.setWindowVisible(window?.occlusionState.contains(.visible) ?? false)
+    }
 
     func windowShouldClose(_ sender: NSWindow) -> Bool {
         // Keep the terminal surface/process alive when hiding the only window.
         sender.orderOut(nil)
+        workspaces?.setWindowVisible(false)
         return false
     }
 
     func applicationShouldHandleReopen(_ sender: NSApplication, hasVisibleWindows flag: Bool) -> Bool {
         window?.makeKeyAndOrderFront(nil)
+        workspaces?.setWindowVisible(true)
+        workspaces?.restoreFocus()
         return true
     }
 
     func applicationShouldTerminate(_ sender: NSApplication) -> NSApplication.TerminateReply {
-        guard terminal != nil else { return .terminateNow }
+        guard workspaces?.hasLiveProcesses == true else { return .terminateNow }
         let alert = NSAlert()
-        alert.messageText = "Quit Axo and stop Pi?"
-        alert.informativeText = "Closing the window keeps Pi running. Quitting stops the terminal. The Pi conversation remains saved locally."
+        alert.messageText = "Quit Axo and stop all terminals?"
+        alert.informativeText = "Closing the window keeps sessions and shells running. Quitting stops all app-owned processes. Pi conversations and layouts remain saved locally."
         alert.addButton(withTitle: "Quit")
         alert.addButton(withTitle: "Cancel")
         return alert.runModal() == .alertFirstButtonReturn ? .terminateNow : .terminateCancel
@@ -84,6 +109,21 @@ final class AxoMacApp: NSObject, NSApplicationDelegate, NSWindowDelegate {
         let appMenu = NSMenu()
         appMenu.addItem(withTitle: "Quit Axo", action: #selector(NSApplication.terminate(_:)), keyEquivalent: "q")
         appItem.submenu = appMenu
+        let workItem = NSMenuItem()
+        menu.addItem(workItem)
+        let work = NSMenu(title: "Workspace")
+        func add(_ title: String, _ action: Selector, _ key: String, _ modifiers: NSEvent.ModifierFlags = .command) {
+            let item = work.addItem(withTitle: title, action: action, keyEquivalent: key)
+            item.target = workspaces; item.keyEquivalentModifierMask = modifiers
+        }
+        add("New Workspace…", #selector(WorkspaceController.newWorkspace(_:)), "n")
+        add("New Session…", #selector(WorkspaceController.newSession(_:)), "t")
+        work.addItem(.separator())
+        add("Split Right", #selector(WorkspaceController.splitRight(_:)), "d")
+        add("Split Down", #selector(WorkspaceController.splitDown(_:)), "e", [.command, .shift])
+        add("Close Pane…", #selector(WorkspaceController.closePane(_:)), "w")
+        add("Rename Session…", #selector(WorkspaceController.renameSession(_:)), "")
+        workItem.submenu = work
         let editItem = NSMenuItem()
         menu.addItem(editItem)
         let edit = NSMenu(title: "Edit")
@@ -94,4 +134,4 @@ final class AxoMacApp: NSObject, NSApplicationDelegate, NSWindowDelegate {
     }
 }
 
-enum LaunchError: Error { case missingRepository, ghosttyInitialization, surfaceCreation }
+enum LaunchError: Error { case missingRepository, ghosttyInitialization, surfaceCreation, missingDirectory }

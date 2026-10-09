@@ -1,5 +1,18 @@
 import AppKit
 import GhosttyKit
+import AxoCore
+
+struct TerminalLaunch {
+    let directory: String
+    let command: String?
+
+    static func pi(repository: String, directory: String, sessionFile: String) -> Self {
+        Self(directory: directory, command: "/bin/bash " + quote(repository + "/scripts/run-pi.sh")
+             + " --axo-session-file " + quote(sessionFile) + " --axo-directory " + quote(directory))
+    }
+    static func shell(directory: String) -> Self { Self(directory: directory, command: nil) }
+    private static func quote(_ value: String) -> String { "'" + value.replacingOccurrences(of: "'", with: "'\\''") + "'" }
+}
 
 /// A small AppKit host for the full Ghostty surface API, not the VT-only library.
 final class TerminalView: NSView, NSTextInputClient {
@@ -9,29 +22,41 @@ final class TerminalView: NSView, NSTextInputClient {
     private var tracking: NSTrackingArea?
     private var keyEvent: NSEvent?
     private var insertedDuringKey = false
+    var onFocus: (() -> Void)?
+    var onClose: ((Bool) -> Void)?
+    var workingDirectory: String
+    var terminalTitle = "Terminal"
+    var childExited = false
     override var acceptsFirstResponder: Bool { true }
     override var isFlipped: Bool { true }
 
-    init(runtime: GhosttyRuntime, repository: String) throws {
+    init(runtime: GhosttyRuntime, launch: TerminalLaunch, inheriting parent: ghostty_surface_t? = nil) throws {
         self.runtime = runtime
+        self.workingDirectory = launch.directory
+        var isDirectory: ObjCBool = false
+        guard !launch.directory.contains("\u{0}"), FileManager.default.fileExists(atPath: launch.directory, isDirectory: &isDirectory),
+              isDirectory.boolValue else { throw LaunchError.missingDirectory }
         super.init(frame: NSRect(x: 0, y: 0, width: 1100, height: 750))
         wantsLayer = true
         registerForDraggedTypes([.string, .fileURL])
-        // Ghostty wraps this command in `exec -l`; it must begin with an executable, not a shell builtin.
-        let command = "/bin/bash " + Self.shellQuote(repository + "/scripts/run-pi.sh")
-        var config = ghostty_surface_config_new()
+        var config = parent.map { ghostty_surface_inherited_config($0, GHOSTTY_SURFACE_CONTEXT_SPLIT) } ?? ghostty_surface_config_new()
+        // Carry Ghostty font/context, but not a managed Pi command, input, or binding environment.
+        config.command = nil; config.initial_input = nil; config.env_vars = nil; config.env_var_count = 0
         config.platform_tag = GHOSTTY_PLATFORM_MACOS
         config.platform.macos = ghostty_platform_macos_s(nsview: Unmanaged.passUnretained(self).toOpaque())
         config.userdata = Unmanaged.passUnretained(self).toOpaque()
         config.scale_factor = Double(NSScreen.main?.backingScaleFactor ?? 2)
-        config.font_size = 14
-        config.wait_after_command = true
-        surface = repository.withCString { directory in
-            command.withCString { executable in
-                config.working_directory = directory
-                config.command = executable
-                return ghostty_surface_new(runtime.app, &config)
+        config.wait_after_command = launch.command != nil
+        surface = launch.directory.withCString { directory in
+            config.working_directory = directory
+            if let command = launch.command {
+                return command.withCString { executable in
+                    config.command = executable
+                    return ghostty_surface_new(runtime.app, &config)
+                }
             }
+            // nil means Ghostty's ordinary login shell, not the managed Pi launcher.
+            return ghostty_surface_new(runtime.app, &config)
         }
         guard surface != nil else { throw LaunchError.surfaceCreation }
     }
@@ -44,7 +69,7 @@ final class TerminalView: NSView, NSTextInputClient {
     override func viewDidMoveToWindow() {
         super.viewDidMoveToWindow()
         resizeSurface()
-        if let surface { ghostty_surface_set_occlusion(surface, window?.isVisible ?? false) }
+        setVisible(window?.occlusionState.contains(.visible) ?? false)
     }
 
     private func resizeSurface() {
@@ -55,11 +80,23 @@ final class TerminalView: NSView, NSTextInputClient {
         ghostty_surface_refresh(surface)
     }
 
+    override func becomeFirstResponder() -> Bool {
+        let result = super.becomeFirstResponder()
+        if result { onFocus?(); setFocus(window?.isKeyWindow == true) }
+        return result
+    }
+    override func resignFirstResponder() -> Bool {
+        let result = super.resignFirstResponder()
+        if result { setFocus(false) }
+        return result
+    }
+
+    func setVisible(_ visible: Bool) {
+        if let surface { ghostty_surface_set_occlusion(surface, visible) }
+    }
+
     func setFocus(_ focused: Bool) {
-        if let surface {
-            ghostty_surface_set_focus(surface, focused)
-            ghostty_surface_set_occlusion(surface, window?.isVisible ?? false)
-        }
+        if let surface { ghostty_surface_set_focus(surface, focused) }
     }
 
     override func keyDown(with event: NSEvent) {
@@ -210,5 +247,4 @@ final class TerminalView: NSView, NSTextInputClient {
         }
     }
 
-    private static func shellQuote(_ text: String) -> String { "'" + text.replacingOccurrences(of: "'", with: "'\\''") + "'" }
 }

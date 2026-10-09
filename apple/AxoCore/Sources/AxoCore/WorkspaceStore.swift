@@ -57,10 +57,21 @@ public indirect enum PaneLayout: Codable, Equatable, Sendable {
             }
         }
     }
+    /// Paths address split nodes in one captured layout, never pane text or selection.
+    public func settingFraction(_ fraction: Double, at path: [Bool]) throws -> PaneLayout {
+        guard fraction.isFinite, (0.1...0.9).contains(fraction),
+              case .split(let axis, let oldFraction, let first, let second) = self else { throw WorkspaceFault.invalidLayout }
+        guard let descendSecond = path.first else { return .split(axis: axis, fraction: fraction, first: first, second: second) }
+        let remaining = Array(path.dropFirst())
+        return .split(axis: axis, fraction: oldFraction,
+                      first: descendSecond ? first : try first.settingFraction(fraction, at: remaining),
+                      second: descendSecond ? try second.settingFraction(fraction, at: remaining) : second)
+    }
+
     fileprivate func validate(depth: Int = 0) throws {
         guard depth < 32 else { throw WorkspaceFault.invalidLayout }
         if case .split(_, let fraction, let first, let second) = self {
-            guard fraction.isFinite, (0.1...0.9).contains(fraction) else { throw WorkspaceFault.invalidLayout }
+            guard fraction.isFinite, fraction > 0, fraction < 1 else { throw WorkspaceFault.invalidLayout }
             try first.validate(depth: depth + 1)
             try second.validate(depth: depth + 1)
         }
@@ -107,8 +118,8 @@ public struct WorkspaceRegistry: Codable, Equatable, Sendable {
         var conversations = Set<String>()
         for session in sessions {
             guard try WorkspaceStore.validName(session.name) == session.name else { throw WorkspaceFault.invalidName }
-            guard workspaceIDs.contains(session.workspaceID), session.directory.hasPrefix("/"),
-                  session.piSessionFile.hasPrefix("/"), session.panes.count <= 128,
+            guard workspaceIDs.contains(session.workspaceID), validPath(session.directory),
+                  validPath(session.piSessionFile), session.panes.count <= 128,
                   session.panes.filter({ $0.kind == .pi }).count <= 1 else { throw WorkspaceFault.invalidMembership }
             if let conversation = session.conversationID {
                 guard !conversation.isEmpty, conversation.utf8.count <= 128,
@@ -121,6 +132,9 @@ public struct WorkspaceRegistry: Codable, Equatable, Sendable {
                   session.focusedPane.map(Set(ids).contains) ?? true else { throw WorkspaceFault.invalidLayout }
             for id in ids { guard allPanes.insert(id).inserted else { throw WorkspaceFault.invalidLayout } }
         }
+    }
+    private func validPath(_ path: String) -> Bool {
+        path.hasPrefix("/") && path.utf8.count <= 4_096 && !path.contains("\u{0}")
     }
 }
 
@@ -246,6 +260,7 @@ public final class WorkspaceStore {
         guard data.count <= 4 * 1024 * 1024 else { throw WorkspaceFault.capacity }
         try FileManager.default.createDirectory(at: url.deletingLastPathComponent(), withIntermediateDirectories: true,
                                                 attributes: [.posixPermissions: 0o700])
+        try FileManager.default.setAttributes([.posixPermissions: 0o700], ofItemAtPath: url.deletingLastPathComponent().path)
         let temporary = url.deletingLastPathComponent().appendingPathComponent(".registry-" + UUID().uuidString)
         defer { try? FileManager.default.removeItem(at: temporary) }
         // Create privately before writing any paths/metadata, then rename as the commit point.

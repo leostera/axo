@@ -25,8 +25,11 @@ targets:
   AxoMac:
     type: application
     platform: macOS
-    sources: [AxoMac]
+    sources:
+      - path: AxoMac
+        excludes: [Ghostty/Package.swift, Ghostty/Tests, Ghostty/.build]
     dependencies:
+      - package: AxoCore
       - framework: ../vendor/ghostty/macos/GhosttyKit.xcframework
         embed: false
       - sdk: Metal.framework

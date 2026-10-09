@@ -1,7 +1,7 @@
 # RFD0003 - Axo: workspaces, sessions, splits, and search
 
 - Feature Name: `axo-workspaces-sessions-and-search`
-- Status: Draft
+- Status: In progress
 - Start Date: 2026-10-09
 - Updated: 2026-10-09
 - Document Type: Proposal
@@ -15,6 +15,18 @@ Extend the single-workbench prototype into a native Mac workspace manager and a 
 The user confirmed **workspaces → sessions → splits first, search afterward**. The first delivery includes the complete foundation across Mac, relay, and phone, not only a local sidebar. Its completion gate is validated independent live sessions/shells, persistent navigation, explicit routing, phone creation/selection, and preservation of scoped drafts/files/history through switching and recovery.
 
 Search design below is retained as deferred research, not a dependency or acceptance requirement for this first delivery. Do not start FFF integration, a search corpus, search protocol endpoints, around-search-anchor history, or palette/name-search work before the foundation is complete. Do not ship nonfunctional search buttons or intercept Command-K/Command-P for an unimplemented palette.
+
+### Local implementation checkpoint
+
+The first Mac foundation increment is implemented locally, not installed over the running app:
+
+- `apple/AxoCore/Sources/AxoCore/WorkspaceStore.swift` stores bounded workspace/session/pane records and creation receipts, with distinct IDs, per-session Pi paths, validated split layouts, and private atomic persistence. The current implementation uses a single-owner, 4-MiB-bounded JSON registry rather than SQLite: copy/validate/private temporary write/rename supplies the local transaction, while the registry remains small and transcripts remain in Pi. SQLite remains an option if mutation/size needs justify it; the relay still requires durable SQLite-backed metadata.
+- `apple/AxoMac/WorkspaceController.swift` provides vertical navigation, creation/selection, ordinary shell splits, explicit stopped-pane resume, retained live surfaces, and close confirmation. This is not yet a complete multi-device workspace feature.
+- `apple/AxoMac/Ghostty/` reuses the pinned Ghostty Swift `SplitTree`, `SplitView`, divider, array helpers, and original layout tests under their MIT license. `PaneSplitTreeView.swift` adapts Ghostty's structural-identity renderer to Axo leaf hosts. Provenance and deliberate changes are recorded in its [reuse notes](../../apple/AxoMac/Ghostty/README.md).
+- Lifecycle behavior follows Ghostty's `BaseTerminalController` and surface view: registry/tree ownership independent of transient window attachment, bounded post-reparenting focus restoration, key-window/first-responder focus synchronization, separate occlusion, asynchronous target-bound close confirmation, and inherited split configuration without inheriting Pi commands/binding environments.
+- Validation covers Core store invariants, all 50 copied Ghostty layout tests, a Mac build, and an isolated native smoke test using synthetic shells and a temporary registry. The smoke test exercises real menu shortcuts/C actions, both split axes, surface retention/live output, spatial focus, keyboard resize, cancellation, and stopped restore. It does not establish two real Pi runtimes, production routing, or physical phone acceptance.
+
+**Still incomplete:** local host broker and plugin binding, addressed relay/catalog protocol and recovery, phone navigation/creation/scoped state, and integrated non-search acceptance. Search remains deferred. Do not mark this RFD complete or deploy the Mac-only increment as multi-session phone support.
 
 ## Motivation
 
@@ -162,7 +174,7 @@ Use named domain records and enums rather than positional tuples and ambient glo
 - Separate saved visibility, live runtime status, connection availability, and unread/pending-interaction state.
 - Captured command/search destinations, never a late lookup of the currently selected session.
 
-A local transactional store owns IDs, names/order, memberships, primary conversation references, split layouts, approved directory references, and creation-operation results. SQLite is the recommended implementation; it must not store a competing transcript. Schema migration and atomic writes precede process launch.
+A local transactional store owns IDs, names/order, memberships, primary conversation references, split layouts, approved directory references, and creation-operation results. SQLite was the initial recommendation; the first local implementation uses the bounded, private atomic registry described in the checkpoint above. Neither representation may store a competing transcript. Schema migration and atomic writes precede process launch.
 
 A managed session gets its own Pi session file and launch directory. Fresh scratch directories are under an Axo-owned playground root keyed by session ID; existing project directories use host-approved directory references. Do not rewrite the existing prototype's `local/playground/session.jsonl` or implicitly copy its history into newly created sessions.
 
