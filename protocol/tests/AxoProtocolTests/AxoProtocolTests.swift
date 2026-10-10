@@ -135,6 +135,11 @@ final class AxoProtocolTests: XCTestCase {
         let inconsistentAdmission = try value(#"{"hostGeneration":"22222222-2222-4222-8222-222222222222","revision":8,"sessions":[{"sessionId":"44444444-4444-4444-8444-444444444444","workspaceId":"33333333-3333-4333-8333-333333333333","name":"iOS work","nameSource":"manual","pi":{"paneId":"55555555-5555-4555-8555-555555555555","chatId":"66666666-6666-4666-8666-666666666666","admission":"notAdmitted"},"runtime":null}],"next":null}"#)
         XCTAssertThrowsError(try AxoProtocolResultValidator.sessionList(inconsistentAdmission, target: target, workspaceID: workspace))
 
+        let admittedChat = try value(#"{"hostGeneration":"22222222-2222-4222-8222-222222222222","revision":8,"sessions":[{"sessionId":"44444444-4444-4444-8444-444444444444","workspaceId":"33333333-3333-4333-8333-333333333333","name":"iOS work","nameSource":"manual","pi":{"paneId":"55555555-5555-4555-8555-555555555555","chatId":"66666666-6666-4666-8666-666666666666","admission":"ready"},"runtime":{"runtime":{"host_generation":"77777777-7777-4777-8777-777777777777","target":{"session_id":"44444444-4444-4444-8444-444444444444","pane_id":"55555555-5555-4555-8555-555555555555"},"runtime_generation":"88888888-8888-4888-8888-888888888888"},"process":{"kind":"running","pid":42},"attached":false,"backlog_bytes":0}}],"next":null}"#)
+        let admittedSessions = try AxoProtocolResultValidator.sessionList(admittedChat, target: target, workspaceID: workspace)
+        XCTAssertEqual(admittedSessions.sessions.first?.pi.admission, .ready)
+        XCTAssertEqual(admittedSessions.sessions.first?.pi.chatId, UUID(uuidString: "66666666-6666-4666-8666-666666666666"))
+
         let get = try value(#"{"hostGeneration":"22222222-2222-4222-8222-222222222222","revision":8,"session":{"sessionId":"44444444-4444-4444-8444-444444444444","workspaceId":"33333333-3333-4333-8333-333333333333","name":"iOS work","nameSource":"manual","pi":{"paneId":"55555555-5555-4555-8555-555555555555","chatId":null,"admission":"notAdmitted"},"runtime":null}}"#)
         let detail = try AxoProtocolResultValidator.sessionGet(get, target: WorkSessionTarget(machineId: machine, hostGeneration: host, workspaceId: workspace, sessionId: session))
         XCTAssertEqual(detail.session.pi.paneId, pane)

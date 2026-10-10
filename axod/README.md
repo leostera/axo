@@ -2,9 +2,9 @@
 
 Axo's standalone per-user Rust session-manager daemon. Active implementation and hardening happen here, not in new POCs. `axod` directly owns terminal children and PTYs; no tmux, screen, or Zellij backend is used.
 
-**Current boundary:** newly built Mac app bundles now run an Axod-only shell with this bundled daemon and a private state directory at `~/Library/Application Support/Axo/Axod` (no versioned directory suffix). The app reads daemon work/runtime metadata; it does not attach Ghostty, admit Pi sessions, or import the legacy workspace registry/history. It saves only local presentation state (including the selected workspace/session IDs, validated against fresh lists and scoped to the machine ID), not a competing copy of daemon records; selection never launches work. Unsupported Mac features are intentionally absent until Axod capabilities replace them. This does not migrate, stop, adopt, or rewrite existing work in an already-running app. The iOS and legacy service/file lanes remain separate.
+**Current boundary:** newly built Mac app bundles run an Axod-only workbench and include this daemon at `Contents/Helpers/axod`. The default instance uses the private directory `~/Library/Application Support/Axo/Axod`; named test builds use `~/Library/Application Support/Axo/Instances/<id>/Axod`. The UI reads daemon work/runtime metadata, admits Pi only through the explicit managed-session RPC, and reads/writes chat through Pi's canonical public API. It still does not attach Ghostty or import the legacy workspace registry/history. It saves only local presentation state (including machine-scoped selected workspace/session IDs validated against fresh lists), not a competing copy of daemon records; selection never launches work. This does not migrate, stop, adopt, or rewrite existing work in an already-running app. The iOS and legacy service/file lanes remain separate.
 
-On first app launch, Axo registers the main app as a user-level macOS login item using `SMAppService`. At login, macOS opens Axo, which starts the bundled daemon. `axod` is not independently registered as a LaunchAgent or LaunchDaemon; approval may be required in System Settings. Direct daemon startup independent of Axo remains a separate future decision.
+On first app launch, Axo registers itself as a user-level macOS login item and registers the bundled `axod` as an app-scoped user LaunchAgent through `SMAppService`. The daemon runs independently of the UI process. System Settings approval may be required. App bundles permit multiple instances; duplicate processes of the same build share that build's daemon, while named builds have isolated bundle IDs, LaunchAgent labels and state.
 
 ## Build and validate
 
@@ -30,6 +30,8 @@ state="$(mktemp -d /tmp/axod-local.XXXXXX)"
 chmod 700 "$state"
 cargo run --locked -- serve "$state"
 ```
+
+The bundled app service uses `axod serve-user [--instance-id safe-id]`; this creates its private default or named-instance state path below `~/Library/Application Support/Axo`.
 
 `serve` runs in the foreground and publishes `local-endpoint.json`, `machine-id.json` and `owner.lock`; mutations also create `runtime-state.json`. The absolute state directory must already exist, belong to this OS user, and deny group/other access. Discovery is atomically published as an owned single-linked mode-0600 regular file (at most 4 KiB). It contains only version, protocolVersion, endpoint, machineId and hostGeneration—**no local credentials**.
 
@@ -145,6 +147,6 @@ Regression coverage includes direct journal receipt conflicts, forbidden state t
 3. Complete shell job-control, descendant shutdown, unexpected I/O/reaper failures, and orphan/recovery operations, including crash drills.
 4. Daemon-owned workspace/session registry compatibility and one-writer cutover/rollback; explicit launch profiles and broker/relay ownership. Do not write the current live Mac registry during standalone development.
 5. Complete remaining RFD domains beyond the implemented work/Pi controls; retain simple local bootstrap and improve production backoff handling and bounded lifecycle/retention policies. Access remains the current cloud edge gate; no account/user-management system is introduced.
-6. Continue the coordinated Mac attachment/client refactor and evaluate daemon startup ownership (app login item versus a registered per-user LaunchAgent) before packaging and operational acceptance. These are distinct lifecycle choices; registration must be explicit and avoid duplicate daemon owners.
+6. Continue the coordinated Mac attachment/client refactor, bounded terminal data plane, and operational acceptance for per-user service registration. Service identity is app-scoped and build variants use separate labels/state directories; registration must remain explicit and avoid duplicate owners.
 
 See [RFD0007](../docs/rfds/RFD0007-mac-session-manager.md). Its startup/availability/persistence policy proposals are not silently accepted by this initial implementation.

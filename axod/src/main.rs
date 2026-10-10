@@ -1,13 +1,26 @@
 use std::{io, path::PathBuf};
 fn usage() -> io::Error {
     io::Error::other(
-        "Usage: axod serve /absolute/private/state-directory [--relay-config /absolute/private/config.json] [--profiles-config /absolute/private/profiles.json] [--pi-config /absolute/private/pi.json]",
+        "Usage: axod serve /absolute/private/state-directory [--relay-config /absolute/private/config.json] [--profiles-config /absolute/private/profiles.json] [--pi-config /absolute/private/pi.json] | axod serve-user [--instance-id safe-id]",
     )
 }
 fn main() -> io::Result<()> {
     let mut arguments = std::env::args().skip(1);
-    if arguments.next().as_deref() != Some("serve") {
-        return Err(usage());
+    match arguments.next().as_deref() {
+        Some("serve-user") => {
+            let instance_id = match (arguments.next(), arguments.next()) {
+                (None, None) => None,
+                (Some(flag), Some(value))
+                    if flag == "--instance-id" && arguments.next().is_none() =>
+                {
+                    Some(value)
+                }
+                _ => return Err(usage()),
+            };
+            return axod::user_service::serve(instance_id.as_deref());
+        }
+        Some("serve") => (),
+        _ => return Err(usage()),
     }
     let root = PathBuf::from(arguments.next().ok_or_else(usage)?);
     let mut relay = None;

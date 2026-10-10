@@ -32,7 +32,7 @@ The Swift surface includes JSON-RPC envelope/response types, a bounded envelope 
 swift test --package-path protocol
 ```
 
-The Codable contract models establish wire shapes, and `AxoProtocolResultValidator` / `AxoProtocolWorkRequestValidator` provide method-boundary validation. `AxoCore.AxoJSONRPCClient` opens credential-free local WebSockets only from a strictly validated private discovery descriptor; cloud calls still require the existing Access cookie. The new Axod-only Mac app uses this client for local work/runtime metadata; Pi admission/chat/history and terminal attachment remain incomplete capabilities. The private API end-to-end harness exercises negotiation and runtime methods against a real daemon, while work-record methods have focused Swift unit coverage.
+The Codable contract models establish wire shapes, and `AxoProtocolResultValidator`, `AxoProtocolWorkRequestValidator`, and `AxoProtocolPiRequest/ResultValidator` provide method-boundary validation. `AxoCore.AxoJSONRPCClient` opens credential-free local WebSockets only from a strictly validated private discovery descriptor; cloud calls still require the existing Access cookie. The new Axod-only Mac app uses this client for local work/runtime metadata and managed Pi admission, canonical chat/history, message/steering/cancel, and question answers. Terminal attachment remains unavailable. The private API end-to-end harness exercises negotiation/runtime methods; Pi request/result contracts have Swift unit coverage.
 
 ## Typed use
 
@@ -84,7 +84,16 @@ UUIDs are case-insensitive inputs normalized to lower-case routing keys. A label
 | `axo.session.get` | `{target: {...source, workspaceId, sessionId}}` | Work/pane metadata and runtime facts, not transcript/Pi readiness |
 | `axo.session.create` | `{target: {...source, workspaceId}, commandId, expectedRevision, name}` | Fresh unstarted work/Pi-pane identities, no fabricated chat/history |
 | `axo.session.rename` | `{target: {...source, workspaceId, sessionId}, commandId, expectedRevision, name}` | Durable manual Axo label, not Pi-title mutation |
-| `axo.command.get` | `{target, commandId}` | Read-only machine-scoped work/runtime receipt; null never proves rejection or safe replay |
+| `axo.command.get` | `{target, commandId}` | Read-only machine-scoped work/runtime/Pi receipt; null never proves rejection or safe replay |
+| `axo.session.start` | `{target: {...source, workspaceId, sessionId, paneId}, commandId, persistence}` | Explicit fresh managed Pi admission or exact stopped-runtime resume, local/remote RPC |
+| `axo.chat.get` | `{target: {...source, workspaceId, sessionId, paneId, runtimeHostGeneration, chatId, runtimeGeneration}, readMode}` | Bounded current snapshot through Pi's public API; explicit live/stopped mode |
+| `axo.chat.history` | `{target, readMode, limit?, cursor?}` | Bounded canonical Pi history with branch/source-scoped cursor |
+| `axo.chat.getToolOutput` | `{target, readMode, entryId, toolCallId, offset, limit?}` | Bounded canonical tool output range; no terminal bytes |
+| `axo.chat.sendMessage` | `{target, commandId, text}` | Addressed Pi public API send with durable intent receipt |
+| `axo.chat.sendSteeringMessage` | `{target, commandId, interactionId, text}` | Addressed steering for the captured active interaction |
+| `axo.chat.cancelTurn` | `{target, commandId, interactionId}` | Addressed cancellation of the captured active interaction |
+| `axo.chat.answerQuestion` | `{target, commandId, interactionId, questionId, optionId}` | Answer only a captured Pi-owned question and option |
+| `axo.chat.setViewing` | `{target, commandId, leaseId, viewing, ttlSeconds?}` | Bounded cooperative viewing lease for routed observers |
 
 `startApproved` has no remote argv, shell string or cwd parameter. `axod` resolves `profileId` from its private configuration and uses the existing `Manager::start`/durable launch receipt. Its result reports the actual terminal disposition; a retry can return a previously exited terminal, not a fresh process. Matching command IDs reconcile normalized execution intent, while conflicting target/launch arguments fail. Changing request IDs does not create a new logical command ID. No adapter replays calls on reconnect.
 
@@ -94,7 +103,7 @@ Workspace/session record methods now share the same isolated daemon store locall
 
 Create/rename return committed metadata and revision. Reusing a command reconciles the exact original normalized intent; conflicting arguments or execution/work command reuse reject. Work commits and runtime receipts are separate bounded stores under one owner/admission lock. Uncertain persistence fences mutations in both domains. `command.get` returns a work commit or original runtime reference with any available observation; missing or an absent historical snapshot never permits execution replay.
 
-The proposed `axo._.*` names in [RFD0009](../docs/rfds/RFD0009-protocol-capability-parity.md) have **not** replaced the current prototype spellings yet; no aliases are introduced. Work-record APIs now have Swift contract validation and an Axod-only Mac metadata reader, but no live registry handoff. Pi start/admission, chat controls/history, stop/subscriptions, file authority and Ghostty terminal attachment remain unfinished. A runtime observation in `session.get` is deliberately separate from the null/notAdmitted Pi binding.
+The proposed `axo._.*` names in [RFD0009](../docs/rfds/RFD0009-protocol-capability-parity.md) have **not** replaced the current prototype spellings yet; no aliases are introduced. Work-record APIs have Swift contract validation and the Axod-only Mac UI reads daemon records without a live registry handoff. The Mac has initial managed Pi start/resume, canonical chat/history, and addressed text/steering/cancel/question controls; broader operational acceptance, event subscriptions, bounded terminal attachment/data plane, workspace/session creation UI, file authority, and Ghostty integration remain unfinished. A runtime observation in `session.get` is deliberately separate from the null/notAdmitted Pi binding.
 
 ## Delivery and failure semantics
 
@@ -112,4 +121,4 @@ Access remains the current cloud edge gate; this package does not implement appl
 
 `axod serve` publishes an atomic, private mode-0600 `local-endpoint.json` (at most 4 KiB) in its owned state directory. `localEndpointSchema` / the `localEndpoint` JSON Schema definition describe `{version: 1, protocolVersion: 1, endpoint, machineId, hostGeneration}`. The endpoint is exactly `ws://127.0.0.1:<port>/v1/rpc`; there is no token or authentication header. Readers validate absolute path, ownership, regular/single-linked file, permissions, size and schema before connecting. The runtime validator also checks port range.
 
-Capture discovery before connection, negotiate, then send explicit machine/host targets and acknowledge each consumed reply frame. After disconnect, reread discovery to get the current boot fence; do not replay work. Both adapters use the same dispatcher/manager/receipts and named-profile policy. No terminal data is exposed by these methods. Native bootstrap/package wiring remains with the native agents; this is not a live-app ownership cutover.
+Capture discovery before connection, negotiate, then send explicit machine/host targets and acknowledge each consumed reply frame. After disconnect, reread discovery to get the current boot fence; do not replay work. Both adapters use the same dispatcher/manager/receipts and named-profile policy. No terminal data is exposed by these methods. The Axod-only native package now bundles `axod` plus an app-scoped user LaunchAgent; packaging is not a live-app ownership cutover or visual/Login Items acceptance.

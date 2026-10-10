@@ -519,6 +519,7 @@ public struct WorkspaceRecord: Decodable, Equatable, Sendable, Identifiable {
 }
 
 public typealias ProtocolWorkspaceRecord = WorkspaceRecord
+public typealias WorkWorkspaceRecord = WorkspaceRecord
 
 public enum WorkSessionNameSource: String, Decodable, Equatable, Sendable { case manual }
 public struct WorkSessionPiBinding: Decodable, Equatable, Sendable {
@@ -556,7 +557,7 @@ public struct WorkSessionRecord: Decodable, Equatable, Sendable, Identifiable {
 public struct WorkspaceListResult: Decodable, Equatable, Sendable {
     public let hostGeneration: UUID
     public let revision: WorkRevision
-    public let workspaces: [WorkspaceRecord]
+    public let workspaces: [WorkWorkspaceRecord]
     public let next: WorkPageCursor?
 }
 
@@ -576,7 +577,7 @@ public struct SessionGetResult: Decodable, Equatable, Sendable {
 public struct WorkspaceMutationResult: Decodable, Equatable, Sendable {
     public let hostGeneration: UUID
     public let revision: WorkRevision
-    public let workspace: WorkspaceRecord
+    public let workspace: WorkWorkspaceRecord
 }
 
 public struct SessionRecord: Decodable, Equatable, Sendable {
@@ -587,7 +588,7 @@ public struct SessionRecord: Decodable, Equatable, Sendable {
 }
 
 public enum CommittedWorkRecord: Decodable, Equatable, Sendable {
-    case workspace(WorkspaceRecord)
+    case workspace(WorkWorkspaceRecord)
     case session(SessionRecord)
 
     private enum CodingKeys: String, CodingKey { case kind, record }
@@ -599,7 +600,7 @@ public enum CommittedWorkRecord: Decodable, Equatable, Sendable {
             throw DecodingError.dataCorruptedError(forKey: .kind, in: container, debugDescription: "Invalid committed work record.")
         }
         switch try container.decode(Kind.self, forKey: .kind) {
-        case .workspace: self = .workspace(try container.decode(WorkspaceRecord.self, forKey: .record))
+        case .workspace: self = .workspace(try container.decode(WorkWorkspaceRecord.self, forKey: .record))
         case .session: self = .session(try container.decode(SessionRecord.self, forKey: .record))
         }
     }

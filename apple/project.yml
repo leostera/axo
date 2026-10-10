@@ -27,7 +27,11 @@ targets:
   AxoMac:
     type: application
     platform: macOS
-    sources: [AxoMacAxod]
+    sources:
+      - path: AxoMacAxod
+        excludes:
+          - Info.plist
+          - dev.leostera.axo.axod.plist
     dependencies:
       - package: AxoCore
       - package: AxoProtocol

@@ -4,7 +4,13 @@ import SwiftUI
 @main
 @MainActor
 final class AxodWorkbenchApp: NSObject, NSApplicationDelegate, NSWindowDelegate {
-    private static let mainWindowFrameAutosaveName = "Axo.MainWindow"
+    private static let mainWindowFrameAutosaveName = "Axo.MainWindow.\(Bundle.main.bundleIdentifier ?? "default")"
+    private static let applicationName: String = {
+        let base = "dev.leostera.axo.mac"
+        let identifier = Bundle.main.bundleIdentifier ?? base
+        guard identifier.hasPrefix(base + ".") else { return "Axo" }
+        return "Axo (\(identifier.dropFirst(base.count + 1)))"
+    }()
     static let showSettingsNotification = Notification.Name("AxoAxodWorkbenchShowSettings")
 
     private var coordinator: AxodWorkbenchCoordinator?
@@ -28,7 +34,7 @@ final class AxodWorkbenchApp: NSObject, NSApplicationDelegate, NSWindowDelegate 
             backing: .buffered,
             defer: false
         )
-        window.title = "Axo"
+        window.title = Self.applicationName
         window.delegate = self
         window.contentView = NSHostingView(rootView: AxodWorkbenchView(coordinator: coordinator))
         let restoredFrame = window.setFrameUsingName(Self.mainWindowFrameAutosaveName)
@@ -41,6 +47,7 @@ final class AxodWorkbenchApp: NSObject, NSApplicationDelegate, NSWindowDelegate 
         NSApp.activate(ignoringOtherApps: true)
 
         coordinator.registerForStartup()
+        coordinator.registerDaemonService()
         coordinator.connect()
     }
 
@@ -68,13 +75,13 @@ final class AxodWorkbenchApp: NSObject, NSApplicationDelegate, NSWindowDelegate 
 
     private func installMenu() {
         let menu = NSMenu()
-        let applicationItem = NSMenuItem(title: "Axo", action: nil, keyEquivalent: "")
+        let applicationItem = NSMenuItem(title: Self.applicationName, action: nil, keyEquivalent: "")
         menu.addItem(applicationItem)
         let applicationMenu = NSMenu()
         let settings = applicationMenu.addItem(withTitle: "Settings…", action: #selector(showSettings(_:)), keyEquivalent: ",")
         settings.target = self
         applicationMenu.addItem(.separator())
-        let quit = applicationMenu.addItem(withTitle: "Quit Axo", action: #selector(NSApplication.terminate(_:)), keyEquivalent: "q")
+        let quit = applicationMenu.addItem(withTitle: "Quit \(Self.applicationName)", action: #selector(NSApplication.terminate(_:)), keyEquivalent: "q")
         quit.target = NSApp
         applicationItem.submenu = applicationMenu
 

@@ -6,6 +6,7 @@ struct AxodWorkbenchView: View {
     @AppStorage("Axo.axod.sidebarCollapsed") private var sidebarCollapsed = false
     @State private var showingSettings = false
     @State private var showingUnavailableAction = false
+    @State private var chatDraft = ""
 
     private let paneBackground = Color(red: 0.16, green: 0.17, blue: 0.19)
 
@@ -170,30 +171,57 @@ struct AxodWorkbenchView: View {
     private var detailSurface: some View {
         ZStack(alignment: .topLeading) {
             paneBackground
-
             if let session = selectedSession {
-                VStack(alignment: .leading, spacing: 7) {
-                    Text(session.name)
-                        .font(.system(size: 14, weight: .medium))
-                        .foregroundStyle(Color.white.opacity(0.88))
-                    Text("Axod work record · Pi admission: \(session.pi.admission.rawValue)")
-                        .font(.system(size: 12))
-                        .foregroundStyle(Color.white.opacity(0.58))
-                    if let runtime = session.runtime {
-                        Text("Runtime: \(runtime.process.axodDescription) · \(runtime.backlogBytes) bytes buffered")
-                            .font(.system(size: 12))
-                            .foregroundStyle(Color.white.opacity(0.58))
-                    } else {
-                        Text("No runtime record")
-                            .font(.system(size: 12))
-                            .foregroundStyle(Color.white.opacity(0.58))
+                VStack(spacing: 0) {
+                    HStack(alignment: .top, spacing: 12) {
+                        VStack(alignment: .leading, spacing: 5) {
+                            Text(session.name)
+                                .font(.system(size: 14, weight: .medium))
+                                .foregroundStyle(Color.white.opacity(0.9))
+                            Text("Axod work record · Pi admission: \(session.pi.admission.rawValue)")
+                                .font(.system(size: 12))
+                                .foregroundStyle(Color.white.opacity(0.58))
+                            if let runtime = session.runtime {
+                                Text("Runtime: \(runtime.process.axodDescription) · \(runtime.backlogBytes) bytes buffered")
+                                    .font(.system(size: 12))
+                                    .foregroundStyle(Color.white.opacity(0.58))
+                            }
+                        }
+                        Spacer()
+                        if let title = piStartActionTitle(for: session) {
+                            Button {
+                                if coordinator.pendingPiStartCommandID == nil {
+                                    coordinator.startOrResumePi()
+                                } else {
+                                    coordinator.reconcilePendingPiStart()
+                                }
+                            } label: {
+                                if coordinator.isStartingPi || coordinator.isReconcilingPiCommand {
+                                    ProgressView().controlSize(.small)
+                                } else {
+                                    Text(coordinator.pendingPiStartCommandID == nil ? title : "Reconcile start")
+                                }
+                            }
+                            .disabled(coordinator.connectionState != .connected || coordinator.isStartingPi || coordinator.isReconcilingPiCommand)
+                        } else if coordinator.pendingPiStartCommandID != nil {
+                            Button("Reconcile start") { coordinator.reconcilePendingPiStart() }
+                                .disabled(coordinator.connectionState != .connected || coordinator.isReconcilingPiCommand)
+                        }
                     }
-                    Spacer(minLength: 20)
-                    Text("Terminal attachment is not available in this build.")
-                        .font(.system(size: 12))
-                        .foregroundStyle(Color.white.opacity(0.42))
+                    .padding(12)
+                    Divider().overlay(Color.white.opacity(0.08))
+                    HStack(spacing: 6) {
+                        Image(systemName: "info.circle")
+                        Text("Terminal attachment is not available yet. This conversation is read from Pi's canonical history.")
+                        Spacer(minLength: 0)
+                    }
+                    .font(.system(size: 11))
+                    .foregroundStyle(Color.white.opacity(0.52))
+                    .padding(.horizontal, 12)
+                    .padding(.vertical, 8)
+                    Divider().overlay(Color.white.opacity(0.08))
+                    chatContent
                 }
-                .padding(12)
                 .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
             } else {
                 VStack(alignment: .leading, spacing: 7) {
@@ -210,6 +238,150 @@ struct AxodWorkbenchView: View {
         }
     }
 
+    private var chatContent: some View {
+        VStack(spacing: 0) {
+            HStack(spacing: 8) {
+                Text(coordinator.chatStatusMessage)
+                    .lineLimit(2)
+                    .frame(maxWidth: .infinity, alignment: .leading)
+                if coordinator.pendingChatCommandId != nil {
+                    Button("Reconcile command") { coordinator.reconcilePendingPiCommand() }
+                        .disabled(coordinator.isReconcilingPiCommand || coordinator.connectionState != .connected)
+                } else if coordinator.chatTarget != nil {
+                    Button("Refresh chat") { coordinator.refreshChat() }
+                        .disabled(coordinator.connectionState != .connected)
+                }
+            }
+            .font(.system(size: 11))
+            .foregroundStyle(Color.white.opacity(0.62))
+            .padding(.horizontal, 12)
+            .padding(.vertical, 7)
+
+            if let snapshot = coordinator.chatSnapshot {
+                if coordinator.nextChatCursor != nil {
+                    Button("Load earlier history") { coordinator.loadMoreChatHistory() }
+                        .font(.system(size: 11))
+                        .buttonStyle(.plain)
+                        .foregroundStyle(Color.white.opacity(0.66))
+                        .padding(.vertical, 5)
+                }
+                ScrollView {
+                    LazyVStack(alignment: .leading, spacing: 12) {
+                        ForEach(coordinator.chatEntries, id: \.entryId) { entry in
+                            VStack(alignment: .leading, spacing: 4) {
+                                Text(entry.role ?? entry.toolName ?? entry.kind.capitalized)
+                                    .font(.system(size: 11, weight: .semibold))
+                                    .foregroundStyle(Color.white.opacity(0.55))
+                                Text(entry.text.isEmpty ? "[No text content]" : entry.text)
+                                    .font(.system(size: 12, design: .monospaced))
+                                    .foregroundStyle(Color.white.opacity(0.88))
+                                    .textSelection(.enabled)
+                                if entry.truncated {
+                                    Text("Entry truncated by Axod's bounded history projection.")
+                                        .font(.system(size: 10))
+                                        .foregroundStyle(Color.orange.opacity(0.78))
+                                }
+                            }
+                            .frame(maxWidth: .infinity, alignment: .leading)
+                            .padding(10)
+                            .background(Color.white.opacity(0.035), in: RoundedRectangle(cornerRadius: 6))
+                        }
+                    }
+                    .padding(12)
+                }
+                if let question = snapshot.question {
+                    VStack(alignment: .leading, spacing: 7) {
+                        Text(question.title)
+                            .font(.system(size: 12, weight: .medium))
+                            .foregroundStyle(Color.white.opacity(0.9))
+                        HStack {
+                            ForEach(question.options, id: \.id) { option in
+                                Button(option.label) { coordinator.answerChatQuestion(question, option: option) }
+                                    .disabled(snapshot.readMode != .live || coordinator.pendingChatCommandId != nil || coordinator.isSendingPiMessage)
+                            }
+                        }
+                    }
+                    .frame(maxWidth: .infinity, alignment: .leading)
+                    .padding(12)
+                    .background(Color.white.opacity(0.045))
+                }
+                if snapshot.readMode == .live {
+                    chatComposer(snapshot: snapshot)
+                } else {
+                    Text("Pi is stopped; this canonical conversation is read-only.")
+                        .font(.system(size: 11))
+                        .foregroundStyle(Color.white.opacity(0.52))
+                        .frame(maxWidth: .infinity, alignment: .leading)
+                        .padding(12)
+                }
+            } else if coordinator.chatTarget == nil {
+                VStack(alignment: .leading, spacing: 8) {
+                    Text(coordinator.chatStatusMessage)
+                        .font(.system(size: 12))
+                        .foregroundStyle(Color.white.opacity(0.58))
+                    if sessionRequiresRecovery {
+                        Text("No process, conversation, or historic PID is adopted automatically.")
+                            .font(.system(size: 11))
+                            .foregroundStyle(Color.white.opacity(0.42))
+                    }
+                    Spacer()
+                }
+                .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
+                .padding(12)
+            } else {
+                ProgressView("Loading canonical Pi history…")
+                    .frame(maxWidth: .infinity, maxHeight: .infinity)
+                    .foregroundStyle(Color.white.opacity(0.6))
+            }
+        }
+        .frame(maxWidth: .infinity, maxHeight: .infinity)
+    }
+
+    @ViewBuilder
+    private func chatComposer(snapshot: PiChatSnapshot) -> some View {
+        HStack(alignment: .bottom, spacing: 8) {
+            TextField(snapshot.busy ? "Steer the active Pi interaction…" : "Send a message to Pi…", text: $chatDraft, axis: .vertical)
+                .lineLimit(1...5)
+                .textFieldStyle(.plain)
+                .padding(9)
+                .background(Color.white.opacity(0.055), in: RoundedRectangle(cornerRadius: 6))
+                .disabled(snapshot.recovery || snapshot.uiWaits > 0 || snapshot.question != nil || coordinator.pendingChatCommandId != nil || coordinator.isSendingPiMessage)
+                .onSubmit { sendDraft(snapshot: snapshot) }
+            if snapshot.busy, snapshot.interactionId != nil {
+                Button("Cancel") { coordinator.cancelChatTurn() }
+                    .disabled(coordinator.pendingChatCommandId != nil || coordinator.isSendingPiMessage)
+            }
+            Button(snapshot.busy ? "Steer" : "Send") { sendDraft(snapshot: snapshot) }
+                .keyboardShortcut(.return, modifiers: [.command])
+                .disabled(chatDraft.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty ||
+                          coordinator.connectionState != .connected || snapshot.recovery || snapshot.uiWaits > 0 ||
+                          snapshot.question != nil || coordinator.pendingChatCommandId != nil || coordinator.isSendingPiMessage)
+        }
+        .font(.system(size: 12))
+        .padding(10)
+        .background(Color.black.opacity(0.14))
+    }
+
+    private func sendDraft(snapshot: PiChatSnapshot) {
+        let text = chatDraft.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !text.isEmpty else { return }
+        if snapshot.busy { coordinator.steerChat(text) }
+        else { coordinator.sendChatMessage(text) }
+        chatDraft = ""
+    }
+
+    private func piStartActionTitle(for session: WorkSessionRecord) -> String? {
+        switch session.pi.admission {
+        case .notAdmitted: return "Start Pi"
+        case .stopped, .failed: return "Resume Pi"
+        case .ready, .recoveryRequired: return nil
+        }
+    }
+
+    private var sessionRequiresRecovery: Bool {
+        selectedSession?.pi.admission == .recoveryRequired
+    }
+
     private var statusBar: some View {
         HStack(spacing: 7) {
             Circle()
@@ -219,7 +391,7 @@ struct AxodWorkbenchView: View {
                 .lineLimit(1)
                 .truncationMode(.middle)
             Spacer(minLength: 12)
-            if coordinator.needsLoginItemsReview {
+            if coordinator.needsLoginItemsReview || coordinator.needsDaemonServiceReview {
                 Button("Review Login Items…") { coordinator.openLoginItemsSettings() }
                     .buttonStyle(.plain)
             }
@@ -248,16 +420,20 @@ struct AxodWorkbenchView: View {
                 .font(.headline)
             Text(coordinator.startupMessage)
                 .foregroundStyle(.secondary)
-            if coordinator.needsLoginItemsReview {
+            Text("Background daemon")
+                .font(.headline)
+            Text(coordinator.daemonServiceMessage)
+                .foregroundStyle(.secondary)
+            if coordinator.needsLoginItemsReview || coordinator.needsDaemonServiceReview {
                 Button("Review Login Items…") { coordinator.openLoginItemsSettings() }
             }
-            Text("Axo opens at user login and starts the bundled axod daemon. The daemon is not installed as a separate system service.")
+            Text("Axo opens at user login. The bundled axod executable runs independently as a per-user LaunchAgent and is not a system-wide LaunchDaemon.")
                 .font(.callout)
                 .foregroundStyle(.secondary)
             Divider()
             Text("Local daemon")
                 .font(.headline)
-            Text("Axo reads workspace, session, and runtime metadata only. Pi chat history and terminal attachment are not available in this build.")
+            Text("Axo connects to the local daemon over AxoProtocol. Managed Pi chat uses addressed session/chat RPC; native terminal attachment remains a separate capability.")
                 .font(.callout)
                 .foregroundStyle(.secondary)
             Spacer()
@@ -293,7 +469,12 @@ struct AxodWorkbenchView: View {
     }
 
     private func updateWindowTitle() {
-        let title = selectedSession.map { "Axo — " + $0.name } ?? "Axo"
+        let base = "dev.leostera.axo.mac"
+        let identifier = Bundle.main.bundleIdentifier ?? base
+        let name = identifier.hasPrefix(base + ".")
+            ? "Axo (\(identifier.dropFirst(base.count + 1)))"
+            : "Axo"
+        let title = selectedSession.map { name + " — " + $0.name } ?? name
         NSApp.keyWindow?.title = title
     }
 

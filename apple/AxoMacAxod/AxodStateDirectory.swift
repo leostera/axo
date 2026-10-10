@@ -6,7 +6,8 @@ struct AxodStateDirectory {
     let root: URL
     private let endpointFile: URL
 
-    static func prepare() throws -> AxodStateDirectory {
+    static func prepare(bundleIdentifier: String = Bundle.main.bundleIdentifier ?? "") throws -> AxodStateDirectory {
+        let instanceID = try instanceID(for: bundleIdentifier)
         let support = try FileManager.default.url(
             for: .applicationSupportDirectory,
             in: .userDomainMask,
@@ -14,27 +15,54 @@ struct AxodStateDirectory {
             create: true
         )
         let appRoot = support.appendingPathComponent("Axo", isDirectory: true)
-        if !FileManager.default.fileExists(atPath: appRoot.path) {
-            try FileManager.default.createDirectory(
-                at: appRoot,
-                withIntermediateDirectories: false,
-                attributes: [.posixPermissions: 0o700]
-            )
-        }
-        try requireOwnedDirectory(appRoot, privatePermissions: false)
+        try createPrivateDirectoryIfNeeded(appRoot)
+        try requireOwnedDirectory(appRoot, privatePermissions: true)
 
-        let root = appRoot.appendingPathComponent("Axod", isDirectory: true)
-        if !FileManager.default.fileExists(atPath: root.path) {
-            try FileManager.default.createDirectory(
-                at: root,
-                withIntermediateDirectories: false,
-                attributes: [.posixPermissions: 0o700]
-            )
+        let stateParent: URL
+        if let instanceID {
+            let instances = appRoot.appendingPathComponent("Instances", isDirectory: true)
+            try createPrivateDirectoryIfNeeded(instances)
+            try requireOwnedDirectory(instances, privatePermissions: true)
+            stateParent = instances.appendingPathComponent(instanceID, isDirectory: true)
+            try createPrivateDirectoryIfNeeded(stateParent)
+            try requireOwnedDirectory(stateParent, privatePermissions: true)
+        } else {
+            stateParent = appRoot
         }
+
+        let root = stateParent.appendingPathComponent("Axod", isDirectory: true)
+        try createPrivateDirectoryIfNeeded(root)
         try requireOwnedDirectory(root, privatePermissions: true)
         return AxodStateDirectory(
             root: root,
             endpointFile: root.appendingPathComponent("local-endpoint.json")
+        )
+    }
+
+    static func instanceID(for bundleIdentifier: String) throws -> String? {
+        let base = "dev.leostera.axo.mac"
+        if bundleIdentifier == base { return nil }
+        let prefix = base + "."
+        guard bundleIdentifier.hasPrefix(prefix) else {
+            throw AxodStateDirectoryError.invalidBundleIdentifier
+        }
+        let value = String(bundleIdentifier.dropFirst(prefix.count))
+        let valid = !value.isEmpty && value.utf8.count <= 32 &&
+            value.split(separator: "-", omittingEmptySubsequences: false).allSatisfy { part in
+                !part.isEmpty && part.utf8.allSatisfy { byte in
+                    (byte >= 48 && byte <= 57) || (byte >= 97 && byte <= 122)
+                }
+            }
+        guard valid else { throw AxodStateDirectoryError.invalidBundleIdentifier }
+        return value
+    }
+
+    private static func createPrivateDirectoryIfNeeded(_ url: URL) throws {
+        guard !FileManager.default.fileExists(atPath: url.path) else { return }
+        try FileManager.default.createDirectory(
+            at: url,
+            withIntermediateDirectories: false,
+            attributes: [.posixPermissions: 0o700]
         )
     }
 
@@ -93,12 +121,14 @@ enum AxodStateDirectoryError: Error, LocalizedError {
     case unsafeDirectory
     case unsafeDiscovery
     case endpointChanged
+    case invalidBundleIdentifier
 
     var errorDescription: String? {
         switch self {
         case .unsafeDirectory: "Axo's private daemon state directory failed its ownership or permission checks."
         case .unsafeDiscovery: "The private daemon discovery file is malformed or unsafe. It was left untouched."
         case .endpointChanged: "The daemon restarted while Axo was reading it. Reconnect before continuing."
+        case .invalidBundleIdentifier: "This Axo bundle has an unsupported instance identifier. Rebuild it with a valid AXO_INSTANCE_ID."
         }
     }
 }
