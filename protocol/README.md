@@ -81,7 +81,7 @@ UUIDs are case-insensitive inputs normalized to lower-case routing keys. A label
 
 A `runtime.list` page returns `{hostGeneration, terminals, next}`. `startApproved` returns `{hostGeneration, terminal}`. Terminal snapshots describe runtime identities, process disposition, attachment state and backlog **count**; no terminal bytes travel through the API. The response validator rejects extra payload fields. Current source generation and original runtime generation are deliberately separate.
 
-This is not yet session/workspace/Pi API parity. Prompt/history/stop/subscriptions, local WebSocket dispatch, file authorization migration and native client cutover are not implemented by this profile.
+This is not yet session/workspace/Pi API parity. Prompt/history/stop/subscriptions, file authorization migration and native client cutover are not implemented by this profile. Local and cloud WebSocket adapters now dispatch the same implemented runtime methods.
 
 ## Delivery and failure semantics
 
@@ -93,4 +93,10 @@ Control calls expire after at most 10 seconds, further bounded by caller expiry 
 
 Other profile errors: negotiation required `-32001`; stale/wrong destination `-32002`; registration admission failure `-32003`; capacity `-32006`; command conflict `-32007`; storage failure `-32008`; recovery required `-32009`; other daemon rejection `-32010`. Error bodies contain no prompts, paths, credentials or raw upstream details.
 
-Authentication belongs to transport/caller context, never method parameters. Local private Unix IPC is still the daemon's existing development adapter; only the outbound relay uses this profile today. The local/relayed shared dispatcher direction does not authorize exposing an unauthenticated localhost execution endpoint.
+Access remains the current cloud edge gate; this package does not implement application accounts/auth or user management. The local Unix listener and legacy envelope have been removed. At the user's explicit request, local WebSocket is credential-free: numeric loopback, exact Host/path and no-Origin guards are browser restrictions, **not authentication against other local processes/users**. UUID routing identities are not credentials.
+
+## Local bootstrap
+
+`axod serve` publishes an atomic, private mode-0600 `local-endpoint.json` (at most 4 KiB) in its owned state directory. `localEndpointSchema` / the `localEndpoint` JSON Schema definition describe `{version: 1, protocolVersion: 1, endpoint, machineId, hostGeneration}`. The endpoint is exactly `ws://127.0.0.1:<port>/v1/rpc`; there is no token or authentication header. Readers validate absolute path, ownership, regular/single-linked file, permissions, size and schema before connecting. The runtime validator also checks port range.
+
+Capture discovery before connection, negotiate, then send explicit machine/host targets and acknowledge each consumed reply frame. After disconnect, reread discovery to get the current boot fence; do not replay work. Both adapters use the same dispatcher/manager/receipts and named-profile policy. No terminal data is exposed by these methods. Native bootstrap/package wiring remains with the native agents; this is not a live-app ownership cutover.

@@ -122,7 +122,7 @@ fn child_descriptor_ceiling() -> io::Result<libc::c_int> {
     Ok(ceiling)
 }
 
-fn validate_launch(cwd: &str, argv: &[String]) -> io::Result<()> {
+pub(crate) fn validate_launch(cwd: &str, argv: &[String]) -> io::Result<()> {
     if cwd.len() > 4096 || !Path::new(cwd).is_absolute() || !Path::new(cwd).is_dir() {
         return Err(io::Error::other(
             "Working directory must be an existing absolute directory",

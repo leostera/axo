@@ -1,13 +1,13 @@
 //! Outbound authenticated relay adapter. Reconnect never replays execution calls.
-use crate::{model::*, rpc, runtime::Manager};
+use crate::{model::*, private_file::read_private, rpc, runtime::Manager};
 use serde::Deserialize;
 use serde_json::{Value, json};
 use std::{
     collections::BTreeMap,
     fs::{File, OpenOptions},
-    io::{self, Read, Write},
+    io::{self, Write},
     net::{TcpStream, ToSocketAddrs},
-    os::unix::fs::{MetadataExt, OpenOptionsExt},
+    os::unix::fs::OpenOptionsExt,
     path::Path,
     sync::{
         Arc,
@@ -64,7 +64,20 @@ impl Config {
         {
             return Err(io::Error::other("Invalid relay label/profiles"));
         }
+        crate::profiles::Profiles::validate(config.profiles.clone())?;
         Ok(config)
+    }
+    pub(crate) fn profiles(&self) -> crate::profiles::Profiles {
+        crate::profiles::Profiles(self.profiles.clone())
+    }
+    pub(crate) fn use_profiles(&mut self, profiles: &crate::profiles::Profiles) -> io::Result<()> {
+        if !self.profiles.is_empty()
+            && serde_json::to_value(&self.profiles)? != serde_json::to_value(&profiles.0)?
+        {
+            return Err(io::Error::other("Conflicting local/cloud profiles"));
+        }
+        self.profiles = profiles.0.clone();
+        Ok(())
     }
     fn validate_credentials(&self) -> io::Result<()> {
         let values: Vec<&str> = match &self.credentials {
@@ -102,34 +115,6 @@ impl Config {
         }
         Ok(url)
     }
-}
-fn read_private(path: &Path, limit: usize) -> io::Result<Vec<u8>> {
-    if !path.is_absolute() {
-        return Err(io::Error::other("Private file path must be absolute"));
-    }
-    let mut file = OpenOptions::new()
-        .read(true)
-        .custom_flags(libc::O_NOFOLLOW | libc::O_NONBLOCK)
-        .open(path)?;
-    let metadata = file.metadata()?;
-    if !metadata.is_file()
-        || metadata.uid() != unsafe { libc::geteuid() }
-        || metadata.mode() & 0o777 != 0o600
-        || metadata.nlink() != 1
-        || metadata.len() > limit as u64
-    {
-        return Err(io::Error::other(
-            "Private file must be owned, regular, single-linked, mode 0600 and bounded",
-        ));
-    }
-    let mut bytes = Vec::new();
-    Read::by_ref(&mut file)
-        .take(limit as u64 + 1)
-        .read_to_end(&mut bytes)?;
-    if bytes.len() > limit {
-        return Err(io::Error::other("Private file limit"));
-    }
-    Ok(bytes)
 }
 pub fn machine_id(root: &Path) -> io::Result<MachineId> {
     let path = root.join("machine-id.json");
@@ -411,15 +396,8 @@ fn session(
                 Err(reply) => replies.push(reply),
             }
         }
-        if !replies.is_empty() {
-            send(
-                &mut socket,
-                if message.batch {
-                    json!(replies)
-                } else {
-                    replies.remove(0)
-                },
-            )?;
+        if let Some(reply) = rpc::bounded_replies(message.batch, replies) {
+            send(&mut socket, reply)?;
         }
     }
     let _ = socket.close(None);

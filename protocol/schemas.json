@@ -181,6 +181,41 @@
       ],
       "additionalProperties": false
     },
+    "localEndpoint": {
+      "type": "object",
+      "properties": {
+        "version": {
+          "type": "number",
+          "const": 1
+        },
+        "protocolVersion": {
+          "type": "number",
+          "const": 1
+        },
+        "endpoint": {
+          "type": "string",
+          "pattern": "^ws:\\/\\/127\\.0\\.0\\.1:[1-9][0-9]{0,4}\\/v1\\/rpc$"
+        },
+        "machineId": {
+          "type": "string",
+          "format": "uuid",
+          "pattern": "^([0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[1-8][0-9a-fA-F]{3}-[89abAB][0-9a-fA-F]{3}-[0-9a-fA-F]{12}|00000000-0000-0000-0000-000000000000|ffffffff-ffff-ffff-ffff-ffffffffffff)$"
+        },
+        "hostGeneration": {
+          "type": "string",
+          "format": "uuid",
+          "pattern": "^([0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[1-8][0-9a-fA-F]{3}-[89abAB][0-9a-fA-F]{3}-[0-9a-fA-F]{12}|00000000-0000-0000-0000-000000000000|ffffffff-ffff-ffff-ffff-ffffffffffff)$"
+        }
+      },
+      "required": [
+        "version",
+        "protocolVersion",
+        "endpoint",
+        "machineId",
+        "hostGeneration"
+      ],
+      "additionalProperties": false
+    },
     "machineListResult": {
       "type": "object",
       "properties": {

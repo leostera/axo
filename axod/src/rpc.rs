@@ -76,6 +76,32 @@ pub fn decode(raw: &str) -> Result<Message, Value> {
         }),
     }
 }
+/// Post-dispatch reply failure is outcome-unknown, never a claim of no execution.
+pub(crate) fn bounded_replies(batch: bool, replies: Vec<Value>) -> Option<Value> {
+    if replies.is_empty() {
+        return None;
+    }
+    let value = if batch {
+        Value::Array(replies)
+    } else {
+        replies.into_iter().next().expect("Nonempty replies")
+    };
+    if serde_json::to_vec(&value).is_ok_and(|raw| raw.len() <= FRAME_BYTES) {
+        return Some(value);
+    }
+    let unknown = |reply: &Value| {
+        error(
+            reply.get("id").cloned().unwrap_or(Value::Null),
+            -32004,
+            "Outcome unknown; reconcile commandId",
+        )
+    };
+    Some(match value {
+        Value::Array(replies) => Value::Array(replies.iter().map(unknown).collect()),
+        reply => unknown(&reply),
+    })
+}
+
 #[derive(Deserialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 struct Destination {
@@ -109,7 +135,7 @@ fn page_limit() -> usize {
     50
 }
 
-/// Execution goes through the same Manager as private IPC. No raw remote argv/paths.
+/// Both RPC adapters invoke this Manager. No raw RPC argv/paths.
 pub fn dispatch(
     call: Call,
     manager: &Manager,
@@ -175,10 +201,10 @@ fn start(
     let terminal = manager
         .start(params.command_id, target, launch)
         .map_err(|code| match code {
-            crate::protocol::ErrorCode::Conflict => (-32007, "Command conflict"),
-            crate::protocol::ErrorCode::StorageFailed => (-32008, "Storage failed"),
-            crate::protocol::ErrorCode::RecoveryRequired => (-32009, "Recovery required"),
-            crate::protocol::ErrorCode::Capacity => (-32006, "Capacity"),
+            crate::terminal::ErrorCode::Conflict => (-32007, "Command conflict"),
+            crate::terminal::ErrorCode::StorageFailed => (-32008, "Storage failed"),
+            crate::terminal::ErrorCode::RecoveryRequired => (-32009, "Recovery required"),
+            crate::terminal::ErrorCode::Capacity => (-32006, "Capacity"),
             _ => (-32010, "Daemon rejected operation"),
         })?;
     Ok(json!({"hostGeneration":manager.generation,"terminal":terminal}))
@@ -204,6 +230,18 @@ mod tests {
         let request = parse_call(json!({"jsonrpc":"2.0","id":null,"method":"test"})).unwrap();
         assert!(notification.id.is_none());
         assert_eq!(request.id, Some(Value::Null));
+    }
+    #[test]
+    fn oversized_post_dispatch_replies_preserve_ids_and_batch_shape_as_unknown() {
+        let large = json!({"jsonrpc":"2.0", "id":"one", "result":"x".repeat(FRAME_BYTES)});
+        let reply = bounded_replies(false, vec![large.clone()]).unwrap();
+        assert_eq!(reply["id"], "one");
+        assert_eq!(reply["error"]["code"], -32004);
+        let batch = bounded_replies(true, vec![large]).unwrap();
+        assert!(batch.is_array());
+        assert_eq!(batch[0]["id"], "one");
+        assert!(serde_json::to_vec(&batch).unwrap().len() <= FRAME_BYTES);
+        assert!(bounded_replies(false, vec![]).is_none());
     }
     #[test]
     fn shared_envelope_fixtures() {

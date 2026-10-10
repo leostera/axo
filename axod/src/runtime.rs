@@ -1,8 +1,8 @@
-use crate::{journal::Journal, model::*, protocol::*, pty};
+use crate::{journal::Journal, model::*, pty, terminal::*};
 use std::collections::{BTreeMap, VecDeque};
 use std::fs::File;
 use std::io::{self, Read, Write};
-use std::os::{fd::AsRawFd, unix::net::UnixStream};
+use std::os::fd::AsRawFd;
 use std::sync::{
     Arc, Mutex,
     atomic::{AtomicBool, Ordering},
@@ -14,12 +14,12 @@ use std::time::Duration;
 #[derive(Clone)]
 pub struct Sink {
     pub sender: SyncSender<Frame>,
-    pub socket: Arc<UnixStream>,
+    pub disconnected: Arc<AtomicBool>,
 }
 impl Sink {
     pub fn send(&self, frame: Frame) -> bool {
         if self.sender.try_send(frame).is_err() {
-            let _ = self.socket.shutdown(std::net::Shutdown::Both);
+            self.disconnected.store(true, Ordering::SeqCst);
             return false;
         }
         true
@@ -27,7 +27,7 @@ impl Sink {
 }
 pub struct AttachedTerminal {
     pub attachment: AttachmentRef,
-    pub response: Response,
+    pub initial: Frame,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -213,7 +213,7 @@ impl Terminal {
             self.controller.lock().unwrap().take();
             if outcome == OutputState::Failed {
                 if let Some(attachment) = state.attachment.take() {
-                    let _ = attachment.sink.socket.shutdown(std::net::Shutdown::Both);
+                    attachment.sink.disconnected.store(true, Ordering::SeqCst);
                 }
             } else if let ProcessState::Exited { wait_status } = state.process {
                 send_exit(&state, wait_status);
@@ -419,7 +419,6 @@ impl Manager {
         reference: RuntimeRef,
         owner: ClientId,
         sink: Sink,
-        request_id: u64,
     ) -> Result<AttachedTerminal, ErrorCode> {
         let terminal = self.find(reference)?;
         let mut state = terminal.state.lock().unwrap();
@@ -448,15 +447,12 @@ impl Manager {
             data: state.backlog.iter().copied().collect(),
         };
         // Publish attachment/backlog under the same lock as output; no gap or duplicate live bytes.
-        let response = Response::Attached {
+        let initial = Frame::Attached {
             attachment,
             terminal: snapshot,
             backlog,
         };
-        if !sink.send(Frame::Response {
-            request_id,
-            response: response.clone(),
-        }) {
+        if !sink.send(initial.clone()) {
             return Err(ErrorCode::Capacity);
         }
         state.attachment = Some(Attachment {
@@ -466,7 +462,7 @@ impl Manager {
         });
         Ok(AttachedTerminal {
             attachment,
-            response,
+            initial,
         })
     }
     pub fn input(

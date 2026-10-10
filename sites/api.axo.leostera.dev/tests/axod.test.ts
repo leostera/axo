@@ -12,6 +12,7 @@ import { once } from "node:events";
 import { promisify } from "node:util";
 import { harness, Peer, root } from "./harness";
 import { results, type Reply } from "@axo/protocol";
+import { readLocalEndpoint } from "../testing/local-endpoint";
 
 async function eventually<T>(
   operation: () => Promise<T>,
@@ -165,6 +166,18 @@ test(
         },
       );
     }
+    const localEndpoint = await readLocalEndpoint(
+      join(roots[0], "local-endpoint.json"),
+    );
+    assert.equal(localEndpoint.machineId, targets[0].machineId);
+    assert.equal(localEndpoint.hostGeneration, targets[0].hostGeneration);
+    const mac = await Peer.connectLocal(localEndpoint);
+    peers.push(mac);
+    await mac.negotiate();
+    assert.deepEqual(
+      value(await mac.call("axo.runtime.list", { target: targets[0] })),
+      value(await human.call("axo.runtime.list", { target: targets[0] })),
+    );
     const cli = await promisify(execFile)(
       process.execPath,
       [
@@ -195,7 +208,7 @@ test(
     const commandId = crypto.randomUUID();
     const params = { commandId, target, profileId: "fixture" };
     const launched = results["axo.runtime.startApproved"].parse(
-      value(await human.call("axo.runtime.startApproved", params)),
+      value(await mac.call("axo.runtime.startApproved", params)),
     );
     const retried = results["axo.runtime.startApproved"].parse(
       value(await human.call("axo.runtime.startApproved", params)),
@@ -219,6 +232,10 @@ test(
     assert.deepEqual(initial.inherited_axo, []);
     const aList = results["axo.runtime.list"].parse(
       value(await human.call("axo.runtime.list", { target: targets[0] })),
+    );
+    assert.deepEqual(
+      value(await mac.call("axo.runtime.list", { target: targets[0] })),
+      aList,
     );
     assert.equal(aList.terminals.length, 1);
     assert.equal(aList.terminals[0].runtime.target.pane_id, target.paneId);
@@ -357,7 +374,10 @@ test(
         },
       },
     );
-    assert.match(swiftRun.stdout, /testSwiftProtocolContractsAgainstRealAxod.*passed/);
+    assert.match(
+      swiftRun.stdout,
+      /testSwiftProtocolContractsAgainstRealAxod.*passed/,
+    );
     const swiftFixture = JSON.parse(await readFile(swiftState, "utf8")) as {
       ticks: number;
       pid: number;
@@ -371,6 +391,21 @@ test(
     for (const peer of peers) peer.close();
     await h.close();
     serviceStopped = true;
+    const localAfterOutage = await Peer.connectLocal(
+      await readLocalEndpoint(join(roots[1], "local-endpoint.json")),
+    );
+    peers.push(localAfterOutage);
+    await localAfterOutage.negotiate();
+    assert.equal(
+      results["axo.runtime.list"].parse(
+        value(
+          await localAfterOutage.call("axo.runtime.list", {
+            target: targets[1],
+          }),
+        ),
+      ).terminals.length,
+      1,
+    );
     const afterOutage = JSON.parse(await readFile(stateFiles[1], "utf8")) as {
       ticks: number;
       pid: number;

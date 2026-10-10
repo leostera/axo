@@ -1,6 +1,6 @@
 //! Runtime ownership/recovery receipts only. Never stores argv, prompts, or Pi history.
 use crate::model::*;
-use crate::protocol::ErrorCode;
+use crate::terminal::ErrorCode;
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 use std::collections::BTreeMap;

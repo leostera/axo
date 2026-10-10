@@ -5,6 +5,8 @@ import {
   JSONRPCClient,
   createJSONRPCRequest,
   failure,
+  localEndpointSchema,
+  type LocalEndpoint,
 } from "@axo/protocol";
 
 /** Dummy client: actual network WebSockets, no direct DO admission or retry queue. */
@@ -95,6 +97,19 @@ export class Peer {
         followRedirects: false,
       },
     );
+    return Peer.open(socket, credits);
+  }
+  static async connectLocal(discovery: LocalEndpoint, credits = true) {
+    const endpoint = localEndpointSchema.parse(discovery);
+    return Peer.open(
+      new WebSocket(endpoint.endpoint, {
+        maxPayload: 65_536,
+        followRedirects: false,
+      }),
+      credits,
+    );
+  }
+  private static async open(socket: WebSocket, credits: boolean) {
     const peer = new Peer(socket, credits);
     await new Promise<void>((resolve, reject) => {
       const timer = setTimeout(() => {

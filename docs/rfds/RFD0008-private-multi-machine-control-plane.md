@@ -8,7 +8,7 @@
 
 ## Summary
 
-Build the next iteration of the private relay at `bridge.axo.leostera.dev`: a Cloudflare Access-protected TypeScript control plane in `sites/api.axo.leostera.dev/` that discovers multiple authenticated `axod` machines and routes explicitly addressed commands to them. Use a shared JSON-RPC 2.0 daemon contract in `protocol/`, with authenticated loopback WebSockets for local Mac access and outbound WSS connections from daemons to the service. Machines become discoverable through authenticated registration, without product accounts, account ownership tables, pairing, or explicit enrollment approval. `axod` owns local work and Pi remains authoritative for agent execution/history. The current `service/` and Mac/relay/iOS compatibility lane remain intact until a separate validated cutover. This is a proposal, not authorization to deploy, change DNS/Access policies, register startup, migrate storage, or restart live work.
+Build the next iteration of the private relay at `bridge.axo.leostera.dev`: a Cloudflare Access-protected TypeScript control plane in `sites/api.axo.leostera.dev/` that discovers multiple authenticated `axod` machines and routes explicitly addressed commands to them. Use a shared JSON-RPC 2.0 daemon contract in `protocol/`, with native loopback WebSockets for local Mac access (credential-free at the current implementation checkpoint) and Access-protected outbound WSS connections from daemons to the service. Machines become discoverable through authenticated registration, without product accounts, account ownership tables, pairing, or explicit enrollment approval. `axod` owns local work and Pi remains authoritative for agent execution/history. The current `service/` and Mac/relay/iOS compatibility lane remain intact until a separate validated cutover. This is a proposal, not authorization to deploy, change DNS/Access policies, register startup, migrate storage, or restart live work.
 
 ## Motivation
 
@@ -52,6 +52,14 @@ This slice implements runtime metadata and operator-approved launch profiles, **
 The user subsequently approved new-hostname Access provisioning, deployment and an isolated deployed connectivity test. `axo-api` is deployed at `api.axo.leostera.dev` with separate reusable human/service policies and a dedicated 24-hour test daemon credential. The exported SQLite classes are now `AxoHostDirectory` and `AxoHostRelay`; Vite bundles focused modules through a thin entry point. Invocation logs, metadata-only application events and 100% canary trace sampling are configured.
 
 A real human application JWT passed the deployed Worker and returned HTTP 200 discovery. That diagnostic used explicit DNS resolution because the local OS cached a negative record; it is **not** full normal-path acceptance. Ordinary system-DNS daemon/client connectivity is still pending propagation/cache expiry. No custom DNS resolver or address override was added to the product. The current native app, legacy relay and file authority remain untouched. See the [API README](../../sites/api.axo.leostera.dev/README.md) for current scope and credential expiry.
+
+### 2026-10-10 — local WebSocket and shared-route parity
+
+The user requested the Mac-to-daemon JSON-RPC WebSocket, removal of the old Unix transport, and explicitly no local credentials/application-auth machinery. `axod serve` now publishes a private, atomic boot-fenced `local-endpoint.json`; numeric loopback/exact Host/path/no-Origin guards restrict browser access, but are not OS-user authentication. UUIDs remain routing identities, never credentials. Access is only the existing cloud edge gate, not an application account/user-management system.
+
+Local and relayed runtime methods invoke the identical dispatcher, approved profiles, manager and journal. Local-only profiles need no cloud credentials; conflicting local/cloud policies fail before startup. The fleet test exercises local launch and remote observation/reconciliation, plus local RPC after test cloud shutdown. A current release daemon also passed local launch -> live `api.axo.leostera.dev` -> remote receipt/runtime identity with one real PTY and progress after both clients quit. The Unix listener/envelope/cache are deleted; process regressions now exercise JSON-RPC or the transport-independent manager, without pretending terminal input is exposed by the new profile.
+
+This checkpoint unblocks native RPC/bootstrap work for the implemented methods. Pi session start/history/prompts/subscriptions and native terminal data/rendering remain separate follow-up capabilities. The live native/legacy/file owners remain unchanged.
 
 ### 2026-10-10 — normal-path deployed route validated
 
@@ -200,7 +208,7 @@ The successful result describes a termination request disposition, not confirmed
 
 Methods define named parameter objects and reject invalid domain values at their owning boundary. Mutations require a response-bearing call and durable command identity; valid notifications receive no JSON-RPC response but cannot invoke execution mutations. Events carry subscription identity, source generation and sequence/revision. Unknown methods, stale destinations, argument conflicts and unknown outcomes have distinct typed errors. Do not put prompts, paths or credentials in error details.
 
-Local transport is authenticated loopback WebSocket, replacing the standalone daemon's eventual Unix-socket control adapter. Bind only explicit loopback addresses, require an unpredictable native-provisioned credential, and validate Host/Origin/upgrade requests against browser and DNS-rebinding access. A port, Origin allowlist or localhost address alone is not authorization. Credential/port discovery uses private native storage, never public environment dumps or command-line secrets. Plain loopback WS versus local TLS/bootstrap requires a documented platform decision before the adapter ships; public links always use WSS.
+Local transport is now credential-free loopback WebSocket at the user's explicit request, replacing the Unix adapter. Bind only numeric loopback; validate exact Host/path/upgrade and reject all Origin headers. Private, boot-fenced discovery contains endpoint and machine/host identity only. Browser restrictions and private discovery are not OS-user authorization; ports and UUIDs are not credentials. Local WS is an intentional development boundary, not hardened multi-user isolation. Public links use Access-protected WSS; no application account/auth platform is introduced.
 
 The same dispatcher receives a trusted caller context with local/relayed method policy; a request parameter cannot claim to be local. Shared control RPC does not promise remote Ghostty terminal rendering or turn the private relay into arbitrary remote shell execution. Remote creation uses approved workspace/directory intents, not caller-supplied shell strings or arbitrary paths.
 
@@ -298,7 +306,7 @@ Development/deployment follows the project's TypeScript/Cloudflare **`cf` CLI** 
 Recommended gated slices:
 
 1. **Contract:** shared JSON-RPC/domain fixtures, method policies and version negotiation, including standard malformed-request/notification/batch tests.
-2. **Standalone local adapter:** authenticated loopback WebSocket invokes the existing daemon dispatcher/runtime manager; native UI remains untouched.
+2. **Standalone local adapter:** native loopback WebSocket invokes the existing daemon dispatcher/runtime manager; native UI remains untouched.
 3. **Private service:** authenticated registration/discovery and per-machine relay, exercised by two isolated daemon clients and an authorized client.
 4. **Route parity:** the same operation reaches the same daemon handler locally or remotely; wrong machine/generation/principal/response cannot cross routes.
 5. **Daemon capabilities:** registry compatibility, real vanilla Pi admission, prompt/history/status and recovery, with no-window structured client tests. Preserve the existing daemon's hardening gates.
@@ -314,7 +322,7 @@ Acceptance includes:
 - DO hibernation/recreation preserves durable registrations and safe connection restoration; directory/relay partial registration never produces an active phantom route.
 - Disconnect immediately before/after forwarding, timeout, slow consumers and queue exhaustion never duplicate execution or lose the explicit uncertainty state.
 - Local work continues when cloud credentials expire or the service is unavailable; neither cloud logout nor client quit stops it.
-- Browser-origin/Host attacks, missing local credentials, malformed frames, oversized batches and schema drift are rejected without execution.
+- Browser-origin/Host attacks, malformed frames, oversized batches and schema drift are rejected without execution.
 - Before file cutover, verify wrong-machine access denial, old immutable originals/metadata visibility, deletion races/fences and rollback with one file authority.
 
 These are future acceptance criteria, not tests claimed to have passed. Isolated fixtures do not establish provider/Pi, real native UI, physical phone or notification acceptance.

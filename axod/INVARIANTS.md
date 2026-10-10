@@ -6,20 +6,20 @@ This is an enforcement map, not a claim that the daemon is production-ready. The
 
 - Every mutation carries an explicit target/runtime/attachment. Distinct UUID types prevent mixing session, pane, host, runtime, attachment, and command identities in Rust. Socket decoding rejects malformed UUIDs and unknown fields; there is no ambient selected-session target.
 - Host/runtime generations are checked before accessing a live terminal. A connection-owned attachment gates input, resize, and detach. A stale reference cannot be retargeted to the pane's successor.
-- `ClientId` is a local connection identity, not a Pi conversation or user capability. The private socket admits the same OS user; this is not a sandbox against that user's code.
+- `ClientId` is an internal terminal consumer identity, not a Pi conversation or user capability. The local RPC listener is intentionally credential-free at the user's request. Numeric loopback/exact Host/path/no-Origin guards block browsers, not other local processes/users. Private discovery and UUIDs are not authentication. No hardened OS-user isolation is claimed.
 - Read-only metadata and restart loading never spawn, execute, adopt, or replay work. A fresh boot treats unfinished records as recovery-required.
 
 ## Outbound relay boundary
 
 - Stable `MachineId` is persisted privately before registration, distinct from fresh host/runtime generations. Invalid identity state fails closed; no automatic replacement UUID or historic-PID adoption occurs.
 - Relay configuration is an owned, single-linked bounded mode-0600 regular file. Credential values stay outside argv/environment/logs; non-loopback plaintext, credential-bearing URLs and redirects are refused. Native-root TLS verification is retained; the explicitly selected Rustls AWS-LC provider supports P-521 CA signatures. Configuration/provider and certificate-algorithm support are regression-tested before any network credentials are used.
-- Remote calls carry explicit machine/host/session/pane targets. `src/rpc.rs` checks them at the daemon boundary and invokes the same `Manager`, not a second executor or journal writer.
+- Remote calls carry explicit machine/host/session/pane targets. `src/rpc.rs` checks them at the daemon boundary and invokes the same `Manager`, not a second executor or journal writer. The local WebSocket uses the identical dispatcher and approved-profile policy.
 - Only a named operator-approved launch profile can start remotely. Remote argv/cwd/terminal attachment/input are not admitted. Execution notifications never run.
 - Request IDs are correlation only; durable start `CommandId`/normalized launch receipts retain their existing conflict/reconciliation semantics. Reconnect repeats protocol negotiation/registration, never prompts, input or launch requests.
 - Response source generation is current, but historical runtime references are not rewritten. Reading/reconciling a completed receipt after reboot does not create another process.
-- Cloud expiry/disconnect cannot stop local children. Relay WebSocket messages/buffers/writes are bounded; connection liveness is not Pi admission or proof of descendant cleanup. Local IPC remains the existing private adapter.
+- Cloud expiry/disconnect cannot stop local children. Relay WebSocket messages/buffers/writes are bounded; connection liveness is not Pi admission or proof of descendant cleanup. Local JSON-RPC remains usable independently. The Unix listener and legacy envelope are removed.
 
-**Residual limits:** local WebSocket bootstrap, admitted Pi/session APIs, production credential/backoff/rotation policy and bounded DNS resolution remain unfinished. This adapter is not a Mac/phone ownership cutover or production availability guarantee.
+**Residual limits:** local OS-user authorization, admitted Pi/session APIs, production backoff/rotation policy and bounded DNS resolution remain unfinished. Access is the current cloud edge gate, not a new application account/auth platform. This adapter is not a Mac/phone ownership cutover or production availability guarantee.
 
 ## Launch intent and persistence
 
@@ -49,8 +49,9 @@ This is an enforcement map, not a claim that the daemon is production-ready. The
 - Terminal operations acquire state before the optional controller handle. The drain worker owns a separate `Arc<File>` and never holds the controller mutex while reading/polling.
 - The completion-writer mutex orders journal dispositions; it takes state briefly, releases it before journal I/O, then publishes the outcome. No catalog lookup occurs from that path.
 - Output and attachment/backlog publication share the state mutex, preserving contiguous offsets at the backlog/live boundary. Offset overflow fails I/O rather than wrapping.
-- Client queues, reply caches, frame sizes, terminal backlog, live resources, and persistent records have explicit bounds. Repeated stop requests schedule only the first escalation worker. Slow consumers lose their lease/connection, not the terminal child.
-- Per-connection request retries reconcile a cached response. Conflicting/evicted IDs never execute again. This does not authorize input replay after reconnect or retrying a partial PTY write implicitly.
+- Client queues, reply-credit budgets, frame sizes, terminal backlog, live resources, and persistent records have explicit bounds. Repeated stop requests schedule only the first escalation worker. Slow consumers lose their lease/connection, not the terminal child.
+- JSON-RPC IDs are correlation only. Exposed mutations reconcile durable command receipts, not transport acceptance. Terminal input is not exposed by this profile; future input transport must not authorize replay or retry a partial PTY write implicitly.
+- Local connections include pending handshakes in the 16-worker cap. Upgrade headers have an absolute two-second deadline/8-KiB bound; messages, batches, call rate, reply credits and writes are bounded. Failed credit admission precedes dispatch; oversized post-dispatch replies remain outcome-unknown.
 
 **Residual limits:** mutex poisoning and worker-thread creation failure still need an explicit operational failure policy; signal-handler registration/lifetime and socket-startup cleanup need further hardening. These are not proven safe by happy-path tests or by stronger identity types.
 

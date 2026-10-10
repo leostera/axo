@@ -25,7 +25,7 @@ The named Durable Object exports are deployment/storage identities, not cosmetic
 - Authenticated machine registration automatically publishes machine discovery. No pairing, account creation or enrollment UI is involved. Directory reservations prevent arbitrary creation of unregistered relay objects; reserved-but-unregistered slots are not discoverable.
 - The directory and per-machine relay use independent SQLite Durable Objects and accepted WebSocket hibernation. Connection attachments hold bounded identity/credit metadata; SQLite holds membership, lease and pending correlation facts, not queued execution payloads.
 - Machine identity is durable; daemon boot generation and relay connection lease are fresh fences. A duplicate live connection is rejected. Expiry/close never deletes local work or claims old children died.
-- JSON-RPC `POST /v1/rpc` implements bounded `axo.machine.list` discovery. Relayed `axo.runtime.list` and `axo.runtime.startApproved` reach the same Rust runtime owner used by private IPC.
+- JSON-RPC `POST /v1/rpc` implements bounded `axo.machine.list` discovery. Relayed `axo.runtime.list` and `axo.runtime.startApproved` reach the same Rust dispatcher/runtime owner used by the native loopback JSON-RPC WebSocket.
 - Remote starts resolve an operator-configured named launch profile; there are no remote argv/cwd/shell parameters. Durable daemon receipts prevent duplicate starts.
 - Responses contain bounded structured terminal **metadata**, never terminal/audio/file bytes. A current response source generation does not rewrite historical runtime references.
 - Control-call deadlines are at most 10 seconds, machine leases at most 30 seconds/auth expiry. Missing replies are unknown outcomes; nothing is replayed on reconnect. Client/daemon frame delivery has explicit 32-frame/128-KiB credits.
@@ -114,9 +114,17 @@ The initial fixture command exposed the descriptor defect and was stopped throug
 
 Validation passed: 23 Rust tests, strict Clippy, release build, 13 daemon process tests, 7 protocol package tests, API typecheck and all 19 API tests. Only fixture PTYs were launched. No Pi session, native app, legacy relay or file authority was touched. Complete API-shutdown/local-progress evidence comes from the isolated real-Worker/two-daemon suite, not an outage imposed on the deployed Worker. Credential files and fixture intent/evidence stay private outside the repository.
 
+## Local/cloud parity checkpoint — 2026-10-10
+
+The Unix listener/legacy envelope is removed. `axod serve` now publishes private boot-fenced loopback WebSocket discovery. At the user's request, there is **no local credential or application-auth layer**; exact numeric Host/path and no-Origin checks block browsers but do not authorize OS users. Access remains the existing cloud edge gate, without an application account/user-management product.
+
+The real-Worker fleet suite now launches through a Mac-style local WebSocket and reconciles/observes that same runtime through the API's remote client route, using one manager/journal. It also verifies local RPC after complete test API shutdown. A release-daemon live-hostname smoke passed local launch, remote runtime/receipt identity, one running PTY, descriptor/config isolation and progress after both clients quit. A latest-release restart also confirmed stable machine/fresh source identity, stale-target rejection, unchanged historical runtime/receipt and no automatic launch. The owned fixture daemon was stopped; live discovery confirmed offline/null source generation while the API remains deployed. Neither native UI nor real Pi was involved. See [local bootstrap](../../protocol/README.md#local-bootstrap) for the native-client contract.
+
+Process regressions were moved from the removed Unix harness to real JSON-RPC process tests and transport-independent real-PTY manager tests. No old request-ID cache/input replay semantics are claimed for the new profile; input is not exposed. Final validation passed 28 Rust tests, seven protocol/package tests and 25 API/local/fleet tests, strict Clippy, release build, schema check, API typecheck/build and changed documentation link checks.
+
 ## Next slices, not claimed complete
 
-- Authenticated local loopback WebSocket bootstrap/adapter and local/relayed parity.
+- Native client/bootstrap integration using the local/remote RPC contracts.
 - Daemon-owned workspace/session catalogs, admitted vanilla Pi prompt/history/status and structured subscriptions.
 - Additional mutating methods only after their durable receipts/reconciliation are defined; this slice has no remote stop method.
 - Operator forget/credential rotation, publication/retention policy and production backoff/rate-limit tuning.

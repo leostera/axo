@@ -94,6 +94,21 @@ export function decode(raw: string): Decoded {
 export const negotiateSchema = z
   .object({ protocolVersion: z.literal(1) })
   .strict();
+// Private, boot-fenced local discovery. Routing metadata, not authentication.
+export const localEndpointSchema = z
+  .object({
+    version: z.literal(1),
+    protocolVersion: z.literal(1),
+    endpoint: z
+      .string()
+      .regex(/^ws:\/\/127\.0\.0\.1:[1-9][0-9]{0,4}\/v1\/rpc$/)
+      .refine((value) => Number(value.split(":")[2]?.split("/")[0]) <= 65535),
+    machineId: uuid,
+    hostGeneration: uuid,
+  })
+  .strict();
+export type LocalEndpoint = z.infer<typeof localEndpointSchema>;
+
 export const registrationSchema = z
   .object({
     protocolVersion: z.literal(1),
