@@ -22,6 +22,17 @@ Evidence: `axod/src/work.rs`, `work_rpc.rs`, `work_lifecycle_tests.rs`; `protoco
 
 This caught and fixed a real route mismatch: Rust's ordinary optional deserialization accepted explicit null request fields that the shared schema rejected. Omitted fields still default, and genuinely nullable all-workspace cursor scopes remain valid. Full validation: 36 Rust tests, 10 protocol/package tests and 58 API tests (including named subtests), strict Clippy, release build, schema check and API typecheck. Run the dedicated daemon suite with `npm --prefix sites/api.axo.leostera.dev run test:axod`; see `axod/tests/README.md` for coverage boundaries.
 
+### First bounded hardening checkpoint
+
+- [x] Add replayable `fast-check` differential fuzz/property tests against a development-only, mutation-forbidden oracle calling production Rust codec/read admission. Retain synthetic edge regressions and metadata-only failure diagnostics.
+- [x] Add Rust `proptest` receipt state machines, exact numeric/frame/reply properties, exhaustive synthetic-store truncation and commit-window faults before sync/rename and after rename.
+- [x] Fix observed route/profile disagreements: UTF-16 string limits, finite/scalar/depth-bounded JSON, exact floating-point round trips, integral numeric spellings, strict case-insensitive RFC UUID text, loss of prototype-like dictionary keys and cursor-domain/revision guards. Post-dispatch response failures preserve request IDs/batch shape, including inadmissible serialized replies.
+- [x] Exercise selected findings on both actual local/cloud sockets with unchanged work records and no launches. Distinguish lock contention from corrupt state in ownership tests; bounded fixture-only lock waits do not introduce command retries.
+
+Evidence: `axod/src/{rpc,work}_property_tests.rs`, `axod/examples/rpc-oracle.rs`, `protocol/tests/property.test.ts` and the hardening corpus in `tests/daemon-rpc.test.ts`. Validation: 45 Rust tests, 14 protocol/package tests, 41 dedicated daemon tests/subtests and 59 full API tests/subtests (full run with file concurrency 1); strict Clippy, release build, schema/API typecheck/build. Three additional Rust property-suite runs passed. See `axod/tests/README.md` for replay commands and coverage boundaries.
+
+This does **not** establish power-loss/fsync durability, abrupt-death/spawn-window recovery, escaped-descendant containment, coverage-guided fuzz completeness, production supervision/retention/rollback, native/Pi acceptance or resolution of every earlier contention stall. Injected failure and same-kernel reopen are distinct from actual crash/power-loss evidence. No live state, native ownership or deployment was changed.
+
 ## 2. Contract transition and real vanilla Pi ownership — next
 
 - [ ] Apply the `axo._.*` namespace coherently across Rust, TypeScript, Swift models/validators and isolated callers. Decide whether to delete the generic-launch helper or retain it behind explicit development policy; no old-name aliases.

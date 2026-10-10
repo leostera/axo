@@ -23,15 +23,17 @@
     "prepare": "npm run build",
     "schema": "tsx generate-schema.ts",
     "schema:check": "tsx generate-schema.ts --check",
-    "test": "npm run build && tsc -p tsconfig.tests.json && npm run schema:check && tsx --test tests/*.test.ts"
+    "test": "npm run build && tsc -p tsconfig.tests.json && npm run schema:check && tsx --test tests/*.test.ts",
+    "test:properties": "npm run build && tsc -p tsconfig.tests.json && npm run schema:check && tsx --test tests/property.test.ts"
   },
   "dependencies": {
     "json-rpc-2.0": "1.8.1",
     "zod": "^4.5.0"
   },
   "devDependencies": {
-    "typescript": "^7.0.2",
+    "@types/node": "^24.0.0",
+    "fast-check": "4.3.0",
     "tsx": "^4.20.0",
-    "@types/node": "^24.0.0"
+    "typescript": "^7.0.2"
   }
 }

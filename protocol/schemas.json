@@ -30,18 +30,9 @@
           "maxLength": 128
         },
         "params": {
-          "anyOf": [
-            {
-              "type": "object",
-              "propertyNames": {
-                "type": "string"
-              },
-              "additionalProperties": {}
-            },
-            {
-              "type": "array",
-              "items": {}
-            }
+          "type": [
+            "object",
+            "array"
           ]
         }
       },
@@ -991,6 +982,7 @@
                   "const": "sessions"
                 },
                 "workspaceId": {
+                  "default": null,
                   "anyOf": [
                     {
                       "type": "string",
@@ -1706,6 +1698,7 @@
                       "const": "sessions"
                     },
                     "workspaceId": {
+                      "default": null,
                       "anyOf": [
                         {
                           "type": "string",

@@ -13,7 +13,7 @@ const MAX_BYTES: usize = 4 * 1024 * 1024;
 const MAX_WORKSPACES: usize = 128;
 const MAX_SESSIONS: usize = 1000;
 const MAX_RECEIPTS: usize = 2000;
-const MAX_REVISION: u64 = 9_007_199_254_740_991;
+pub(crate) const MAX_REVISION: u64 = 9_007_199_254_740_991;
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
@@ -542,13 +542,23 @@ fn persist(root: &Path, bytes: &[u8]) -> io::Result<()> {
             .mode(0o600)
             .open(&temporary)?;
         file.write_all(bytes)?;
+        #[cfg(test)]
+        property_tests::checkpoint(property_tests::Stage::BeforeFileSync)?;
         file.sync_all()?;
+        #[cfg(test)]
+        property_tests::checkpoint(property_tests::Stage::BeforeRename)?;
         fs::rename(&temporary, root.join("work-records.json"))?;
+        #[cfg(test)]
+        property_tests::checkpoint(property_tests::Stage::AfterRename)?;
         File::open(root)?.sync_all()
     })();
     let _ = fs::remove_file(temporary);
     result
 }
+
+#[cfg(test)]
+#[path = "work_property_tests.rs"]
+mod property_tests;
 
 #[cfg(test)]
 mod tests {

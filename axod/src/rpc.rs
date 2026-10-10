@@ -18,7 +18,8 @@ pub struct Message {
 pub fn error(id: Value, code: i32, message: &str) -> Value {
     json!({"jsonrpc":"2.0", "id":id, "error":{"code":code,"message":message}})
 }
-pub fn parse_call(value: Value) -> Result<Call, Value> {
+pub fn parse_call(mut value: Value) -> Result<Call, Value> {
+    normalize_integer_numbers(&mut value);
     let invalid = || error(Value::Null, -32600, "Invalid Request");
     let object = value.as_object().ok_or_else(invalid)?;
     if object.get("jsonrpc").and_then(Value::as_str) != Some("2.0") {
@@ -55,6 +56,27 @@ pub fn parse_call(value: Value) -> Result<Call, Value> {
         method: method.to_owned(),
         params: object.get("params").cloned(),
     })
+}
+// JSON integer parameters describe values, not lexical forms (1, 1.0 and 1e0 agree).
+// Only exact safe integers are converted; floating IDs and fractional parameters stay numbers.
+fn normalize_integer_numbers(value: &mut Value) {
+    let mut pending = vec![value];
+    while let Some(value) = pending.pop() {
+        match value {
+            Value::Number(number) => {
+                if number.is_f64()
+                    && let Some(n) = number.as_f64()
+                    && n.fract() == 0.0
+                    && n.abs() <= 9_007_199_254_740_991.0
+                {
+                    *number = serde_json::Number::from(n as i64);
+                }
+            }
+            Value::Array(values) => pending.extend(values.iter_mut()),
+            Value::Object(values) => pending.extend(values.values_mut()),
+            _ => {}
+        }
+    }
 }
 pub fn decode(raw: &str) -> Result<Message, Value> {
     if raw.len() > FRAME_BYTES {
@@ -231,6 +253,10 @@ pub(crate) fn validate_target(
     }
     Ok(())
 }
+
+#[cfg(test)]
+#[path = "rpc_property_tests.rs"]
+mod property_tests;
 
 #[cfg(test)]
 mod tests {

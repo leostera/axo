@@ -249,3 +249,51 @@ test("maximum Unicode session pages and explicit null-ID mutations work over bot
   assert.deepEqual(pages[0], pages[1]);
   await noExecution(f);
 });
+
+test("hardening corpus has identical dispositions on real local and cloud sockets", { timeout: 25000 }, async t => {
+  const f = await daemonFixture(t);
+  const before = await metadata(f);
+  for (const { peer } of f.routes) {
+    const uuid = f.workspaceCommandId;
+    for (const commandId of [uuid.replaceAll("-", ""), `{${uuid}}`, `urn:uuid:${uuid}`]) {
+      assert.equal(error(await call(peer, "axo.command.get", { target: f.target, commandId })), -32602);
+    }
+    const upper = results["axo.command.get"].parse(value(await call(peer, "axo.command.get", {
+      target: { machineId: f.target.machineId.toUpperCase(), hostGeneration: f.target.hostGeneration.toUpperCase() },
+      commandId: uuid.toUpperCase(),
+    })));
+    assert.equal(upper.receipt?.kind, "work");
+    for (const method of ["axo.workspace.list", "axo.session.list"] as const) {
+      const scope = method === "axo.workspace.list" ? { kind: "sessions", workspaceId: null } : { kind: "workspaces" };
+      assert.equal(error(await call(peer, method, { target: f.target, cursor: {
+        target: f.target, revision: 2, after: f.workspaceTarget.workspaceId, scope,
+      } })), -32602);
+    }
+    for (const [index, number] of ["1.0", "1e0", "0.1e1"].entries()) {
+      await new Promise(resolve => setTimeout(resolve, 75));
+      peer.send(`{"jsonrpc":"2.0","id":"numeric-${index}","method":"axo.workspace.list","params":{"target":${JSON.stringify(f.target)},"limit":${number}}}`);
+      const reply = replySchema.parse(await peer.next());
+      assert.equal(reply.id, `numeric-${index}`);
+      assert.equal(results["axo.workspace.list"].parse(value(reply)).workspaces.length, 1);
+    }
+    for (const raw of [
+      JSON.stringify({ jsonrpc: "2.0", id: "😃".repeat(65), method: "axo.workspace.list", params: { target: f.target } }),
+      JSON.stringify({ jsonrpc: "2.0", id: 1, method: "😃".repeat(65) }),
+    ]) {
+      await new Promise(resolve => setTimeout(resolve, 75));
+      peer.send(raw);
+      assert.equal(error(replySchema.parse(await peer.next())), -32600);
+    }
+    for (const raw of [
+      '{"jsonrpc":"2.0","id":1e309,"method":"axo.workspace.list"}',
+      '{"jsonrpc":"2.0","id":1,"method":"\\ud800"}',
+      "[".repeat(128) + "0" + "]".repeat(128),
+    ]) {
+      await new Promise(resolve => setTimeout(resolve, 75));
+      peer.send(raw);
+      assert.equal(error(replySchema.parse(await peer.next())), -32700);
+    }
+  }
+  assert.equal(await metadata(f), before);
+  await noExecution(f);
+});

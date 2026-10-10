@@ -3,9 +3,14 @@ use uuid::Uuid;
 
 macro_rules! identity {
     ($name:ident) => {
-        #[derive(Clone, Copy, Debug, Eq, PartialEq, Ord, PartialOrd, Serialize, Deserialize)]
+        #[derive(Clone, Copy, Debug, Eq, PartialEq, Ord, PartialOrd, Serialize)]
         #[serde(transparent)]
         pub struct $name(Uuid);
+        impl<'de> Deserialize<'de> for $name {
+            fn deserialize<D: serde::Deserializer<'de>>(deserializer: D) -> Result<Self, D::Error> {
+                deserialize_uuid(deserializer).map(Self)
+            }
+        }
         impl $name {
             pub fn new() -> Self {
                 Self(Uuid::new_v4())
@@ -17,6 +22,19 @@ macro_rules! identity {
             }
         }
     };
+}
+/// Same RFC UUID text domain as the shared schema; case is not identity.
+pub(crate) fn deserialize_uuid<'de, D: serde::Deserializer<'de>>(
+    deserializer: D,
+) -> Result<Uuid, D::Error> {
+    let text = String::deserialize(deserializer)?;
+    let value = Uuid::parse_str(&text).map_err(|_| serde::de::Error::custom("Invalid UUID"))?;
+    let rfc =
+        (1..=8).contains(&value.get_version_num()) && value.get_variant() == uuid::Variant::RFC4122;
+    if text.len() != 36 || !(rfc || value.is_nil() || value == Uuid::max()) {
+        return Err(serde::de::Error::custom("Invalid UUID"));
+    }
+    Ok(value)
 }
 identity!(MachineId);
 identity!(WorkspaceId);

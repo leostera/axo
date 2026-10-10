@@ -21,7 +21,7 @@ export const LIMITS = {
   deadlineMs: 10_000,
 } as const;
 export const idSchema = z.union([
-  z.string().max(128),
+  z.string().max(128).refine(value => value.length <= 128),
   z
     .number()
     .finite()
@@ -30,13 +30,16 @@ export const idSchema = z.union([
   z.null(),
 ]);
 export type RpcId = z.infer<typeof idSchema>;
+// Preserve JSON dictionaries verbatim: Zod's record parser silently drops __proto__ keys.
+const paramsSchema = z.custom<Record<string, unknown> | unknown[]>(value =>
+  Array.isArray(value) || (value !== null && typeof value === "object" &&
+    (Object.getPrototypeOf(value) === Object.prototype || Object.getPrototypeOf(value) === null)),
+).meta({ type: ["object", "array"] });
 export const callSchema = z.object({
   jsonrpc: z.literal("2.0"),
   id: idSchema.optional(),
-  method: z.string().min(1).max(128),
-  params: z
-    .union([z.record(z.string(), z.unknown()), z.array(z.unknown())])
-    .optional(),
+  method: z.string().min(1).max(128).refine(value => value.length <= 128),
+  params: paramsSchema.optional(),
 });
 export type Call = z.infer<typeof callSchema>;
 export const replySchema = z.union([
@@ -82,6 +85,7 @@ export function decode(raw: string): Decoded {
   let value: unknown;
   try {
     value = JSON.parse(raw);
+    if (!interoperableJson(value)) throw new Error("Unsupported JSON value");
   } catch {
     return { error: failure(null, -32700, "Parse error") };
   }
@@ -91,6 +95,34 @@ export function decode(raw: string): Decoded {
     return { batch: true, entries: value };
   }
   return { batch: false, entries: [value] };
+}
+/** Match serde_json's bounded, finite, Unicode-scalar JSON domain, without recursion. */
+function interoperableJson(value: unknown): boolean {
+  const pending = [{ value, depth: 0 }];
+  while (pending.length) {
+    const { value, depth } = pending.pop()!;
+    if (typeof value === "number" && !Number.isFinite(value)) return false;
+    if (typeof value === "string" && !scalarString(value)) return false;
+    if (value !== null && typeof value === "object") {
+      if (depth >= 127) return false;
+      for (const [key, child] of Object.entries(value)) {
+        if (!scalarString(key)) return false;
+        pending.push({ value: child, depth: depth + 1 });
+      }
+    }
+  }
+  return true;
+}
+function scalarString(value: string): boolean {
+  for (let index = 0; index < value.length; index++) {
+    const unit = value.charCodeAt(index);
+    if (unit >= 0xdc00 && unit <= 0xdfff) return false;
+    if (unit >= 0xd800 && unit <= 0xdbff) {
+      const next = value.charCodeAt(++index);
+      if (!(next >= 0xdc00 && next <= 0xdfff)) return false;
+    }
+  }
+  return true;
 }
 export const negotiateSchema = z
   .object({ protocolVersion: z.literal(1) })

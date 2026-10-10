@@ -6,7 +6,8 @@ edition = "2024"
 [dependencies]
 libc = "0.2"
 serde = { version = "1", features = ["derive"] }
-serde_json = "1"
+# Hop IDs must round-trip to the same IEEE-754 number as JSON.parse on the cloud route.
+serde_json = { version = "1", features = ["float_roundtrip"] }
 uuid = { version = "1", features = ["v4", "serde"] }
 sha2 = "0.10"
 signal-hook = "0.3"
@@ -14,3 +15,6 @@ tungstenite = { version = "0.30.0", features = ["rustls-tls-native-roots"] }
 url = "2.5.8"
 # tungstenite disables rustls defaults; explicitly select one crypto provider for WSS.
 rustls = { version = "0.23.45", default-features = false, features = ["std", "aws-lc-rs", "tls12"] }
+
+[dev-dependencies]
+proptest = { version = "=1.11.0", default-features = false, features = ["std"] }

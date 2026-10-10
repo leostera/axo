@@ -39,6 +39,8 @@ Install/build/test the protocol package independently before the new API. Follow
 
 The private daemon work store is `work-records.json`, opened under the same owner lock as its runtime journal. It is not permission to import or mutate live Mac work records. Metadata create/rename/read must not launch or invent Pi chats; generic runtime observations remain distinct from admission. Preserve shared execution/work command admission, immutable receipts, source/revision/filter-bound cursors and cross-domain persistence fencing.
 
+For daemon hardening, run `npm --prefix protocol run test:properties` alongside Rust and real-route tests; see `axod/tests/README.md`. Differential oracles must call production codec/admission code and explicitly forbid mutations, not fake Pi execution. Retain seed/path replay and minimal synthetic regressions without logging payload bodies. Inject persistence faults at commit boundaries and distinguish memory fencing, same-kernel reopen and actual power-loss durability. Parallel PTY forks can briefly inherit other test roots' CLOEXEC locks: bounded waiting is allowed only for disposable fixture ownership, never commands/corruption or production replay. A passing generated suite is not production-hardening evidence.
+
 For packed-package consumer tests, create an explicit fixture `package.json` and assert `npm prefix` resolves to that fixture **before** any install. An empty temporary cwd can make npm walk to an unrelated ancestor project. Keep package tarballs, credentials and daemon state in owned disposable fixtures; never use live app state or deployment credentials for isolated tests.
 
 ## AxoPhone sidebar design contract

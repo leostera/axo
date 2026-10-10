@@ -58,9 +58,14 @@ impl Journal {
         if !owner_metadata.is_file()
             || owner_metadata.uid() != unsafe { libc::geteuid() }
             || owner_metadata.permissions().mode() & 0o077 != 0
-            || unsafe { libc::flock(owner.as_raw_fd(), libc::LOCK_EX | libc::LOCK_NB) } < 0
         {
-            return Err(io::Error::other("Another axod owns this state directory"));
+            return Err(io::Error::other("Invalid axod ownership lock"));
+        }
+        if unsafe { libc::flock(owner.as_raw_fd(), libc::LOCK_EX | libc::LOCK_NB) } < 0 {
+            return Err(io::Error::new(
+                io::Error::last_os_error().kind(),
+                "Another axod owns this state directory",
+            ));
         }
         let path = root.join("runtime-state.json");
         let mut saved = match read_saved(&path) {

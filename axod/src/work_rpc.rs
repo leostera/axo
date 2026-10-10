@@ -24,15 +24,16 @@ struct Cursor {
     target: Destination,
     revision: u64,
     scope: Scope,
+    #[serde(deserialize_with = "crate::model::deserialize_uuid")]
     after: uuid::Uuid,
 }
 #[derive(Deserialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 struct WorkspacePage {
     target: Destination,
-    #[serde(default, deserialize_with = "crate::rpc::non_null_option")]
+    #[serde(default, deserialize_with = "workspace_cursor")]
     cursor: Option<Cursor>,
-    #[serde(default = "page_limit")]
+    #[serde(default = "page_limit", deserialize_with = "bounded_page_limit")]
     limit: usize,
 }
 #[derive(Deserialize)]
@@ -41,9 +42,9 @@ struct SessionPage {
     target: Destination,
     #[serde(default, deserialize_with = "crate::rpc::non_null_option")]
     workspace_id: Option<WorkspaceId>,
-    #[serde(default, deserialize_with = "crate::rpc::non_null_option")]
+    #[serde(default, deserialize_with = "session_cursor")]
     cursor: Option<Cursor>,
-    #[serde(default = "page_limit")]
+    #[serde(default = "page_limit", deserialize_with = "bounded_page_limit")]
     limit: usize,
 }
 #[derive(Deserialize)]
@@ -108,6 +109,27 @@ struct GetCommand {
 fn page_limit() -> usize {
     50
 }
+fn bounded_page_limit<'de, D: serde::Deserializer<'de>>(d: D) -> Result<usize, D::Error> {
+    let limit = usize::deserialize(d)?;
+    if !(1..=50).contains(&limit) {
+        return Err(serde::de::Error::custom("Invalid page limit"));
+    }
+    Ok(limit)
+}
+fn workspace_cursor<'de, D: serde::Deserializer<'de>>(d: D) -> Result<Option<Cursor>, D::Error> {
+    let cursor = Cursor::deserialize(d)?;
+    if cursor.scope != Scope::Workspaces || cursor.revision > MAX_REVISION {
+        return Err(serde::de::Error::custom("Invalid workspace cursor"));
+    }
+    Ok(Some(cursor))
+}
+fn session_cursor<'de, D: serde::Deserializer<'de>>(d: D) -> Result<Option<Cursor>, D::Error> {
+    let cursor = Cursor::deserialize(d)?;
+    if !matches!(cursor.scope, Scope::Sessions { .. }) || cursor.revision > MAX_REVISION {
+        return Err(serde::de::Error::custom("Invalid session cursor"));
+    }
+    Ok(Some(cursor))
+}
 fn parse<T: DeserializeOwned>(params: Option<Value>) -> Result<T, (i32, &'static str)> {
     serde_json::from_value(params.unwrap_or(Value::Null)).map_err(|_| (-32602, "Invalid params"))
 }
@@ -155,6 +177,9 @@ fn page<T>(
 ) -> Result<Page<T>, (i32, &'static str)> {
     if limit == 0 || limit > 50 {
         return Err((-32602, "Invalid page limit"));
+    }
+    if cursor.as_ref().is_some_and(|c| c.revision > MAX_REVISION) {
+        return Err((-32602, "Invalid cursor revision"));
     }
     if let Some(cursor) = &cursor
         && (cursor.target != target

@@ -8,7 +8,6 @@ import {
   type TypedJSONRPCServer,
 } from "json-rpc-2.0";
 import {
-  LIMITS,
   decode,
   callSchema,
   replySchema,
@@ -109,14 +108,13 @@ export async function serveProfileMessage<Context>(
   // json-rpc-2.0 1.8.1 collapses a one-response batch; JSON-RPC requires an array.
   const response = decoded.batch ? responses : responses[0];
   try {
-    if (
-      new TextEncoder().encode(JSON.stringify(response)).byteLength >
-      LIMITS.frameBytes
-    )
-      return failure(null, -32004, "Outcome unknown; response limit");
-    return response;
+    const wire = decode(JSON.stringify(response));
+    if (!("error" in wire) && wire.entries.every(entry => replySchema.safeParse(entry).success))
+      return response;
   } catch {
     // A handler may already have mutated state; serialization failure is not rejection.
-    return failure(null, -32004, "Outcome unknown; invalid response");
   }
+  // Preserve each request ID and the batch shape; a null-ID error cannot reconcile its command.
+  const unknown = responses.map(reply => failure(reply.id, -32004, "Outcome unknown; reconcile commandId"));
+  return decoded.batch ? unknown : unknown[0];
 }
