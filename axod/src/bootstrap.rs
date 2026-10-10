@@ -3,7 +3,7 @@ use crate::{
     model::{HostGeneration, MachineId},
     private_file::read_private,
 };
-use serde::Serialize;
+use serde::{Deserialize, Serialize};
 use std::{
     fs::{self, File, OpenOptions},
     io::{self, Write},
@@ -11,9 +11,9 @@ use std::{
     path::{Path, PathBuf},
 };
 
-#[derive(Serialize)]
-#[serde(rename_all = "camelCase")]
-pub(crate) struct Discovery {
+#[derive(Clone, Debug, Deserialize, Serialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct Discovery {
     pub version: u16,
     pub protocol_version: u16,
     pub endpoint: String,

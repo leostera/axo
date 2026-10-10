@@ -5,6 +5,7 @@ import { mkdir, mkdtemp, readFile, rm, writeFile, realpath, lstat } from "node:f
 import { join, resolve } from "node:path";
 import type { TestContext } from "node:test";
 import { AmbientPi } from "../../pi/ambient.ts";
+import type { Record as ControlRecord } from "../../../pi-axo/control-protocol.ts";
 
 export type Runtime = { host_generation: string; runtime_generation: string; target: { session_id: string; pane_id: string } };
 export type State = { mode: string; stdinTTY: boolean; stdoutTTY: boolean; stderrTTY: boolean; rows: number; columns: number; pid: number; chatId: string; file: string; leafId: string | null; cwd: string; busy: boolean; interactionId: string | null; uiWaits: number; tools: string[]; pending: boolean; recovery: boolean };
@@ -91,10 +92,15 @@ export async function fixture(t: TestContext) {
       if (record.kind === "terminalBytes") { terminalBytes += record.count; continue; }
       if (record.kind === "gap") { gaps.add(key(record.runtime)); continue; }
       if (record.kind === "pi") {
-        const value = record.record;
-        if (value.kind === "ready") { ready.set(key(record.runtime), value.state); continue; }
-        if (value.kind === "status") { states.set(key(record.runtime), value.state); continue; }
-        settle(`pi:${key(record.runtime)}:${value.id}`, value);
+        const value = record.record as ControlRecord<State>;
+        if ("ready" in value) { ready.set(key(record.runtime), value.ready); continue; }
+        if ("status" in value) { states.set(key(record.runtime), value.status); continue; }
+        const { id, response } = value.reply;
+        const reply = response === "dispatched" ? { result: { disposition: "dispatched" } }
+          : "snapshot" in response ? { result: response.snapshot }
+          : "history" in response ? { result: response.history }
+          : { error: response.rejected };
+        settle(`pi:${key(record.runtime)}:${id}`, reply);
       } else settle(`host:${record.id}`, record);
     }
   });

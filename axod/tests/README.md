@@ -19,6 +19,12 @@ Actual interactive abort removes queued steering from execution; a regression ve
 
 **Scope:** the test adapter reaches the real manager and TUI extension through private fixture framing, not `axod serve`'s public local/cloud WebSockets or a product CLI. It does not prove production session admission, cross-pane/unmanaged canonical-file writer exclusivity, durable chat receipts, remotely answerable generic questions, crash durability or Ghostty rendering. Resume prechecks are fixture policy. See [Pi seam details](../pi/README.md) for architecture and residual gates. The six discovery cases are dependency policy only, not extra Pi execution tests.
 
+## Rust CLI and typed Pi transport checkpoints
+
+`cargo test --locked --offline` now includes `tests/public_cli.rs` (actual `axo` -> public local WebSocket -> `axod serve`, generic PTY/work metadata/receipts/stale targets) and `tests/interactive_pi.rs` (Rust-owned ambient TUI, typed extension IPC, real bash/canonical history). These are **separate paths**, not yet public Pi-control acceptance. No TypeScript orchestration is used by these Rust tests; Pi-side provider/tools remain TypeScript under `pi-axo/`.
+
+The owned control codec uses closed serde `Record`/`Response`/`Request` types, distinct chat/interaction/request IDs, request-specific reply matching and native operations. Unknown tags/fields, malformed payloads and wrong response kinds fail closed. Arbitrary canonical Pi document payloads remain explicit opaque `RawValue` wrappers rather than dynamic routing envelopes.
+
 ## Rust domain and process tests
 
 From `axod/`:

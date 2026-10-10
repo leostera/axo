@@ -3,6 +3,7 @@
 Axo's TypeScript extension loaded **inside the user's ambient vanilla Pi**. This is the Pi-facing adapter, not the daemon or an embedded Pi runtime.
 
 - `index.ts`: managed interactive control extension using public Pi APIs.
+- `control-protocol.ts`: typed responses/errors/events mirrored by closed Rust serde types in `axod/src/pi_control/wire.rs`; `index.ts` validates requests with a method-discriminated, closed Zod union.
 - `tests/fixtures/provider.ts`: controlled loopback provider and real interactive-tool/input-hook fixtures, loaded into actual Pi during integration tests.
 
 The Rust daemon in `../axod/` owns PTYs, child supervision, work records, RPC and journals. This extension observes actual Pi identity/lifecycle and invokes public message, steering, abort and read-only session APIs in that same interactive process. Pi alone owns execution, queues, dialogs and canonical history.

@@ -2,12 +2,13 @@
 name = "axod"
 version = "0.1.0"
 edition = "2024"
+default-run = "axod"
 
 [dependencies]
 libc = "0.2"
 serde = { version = "1", features = ["derive"] }
 # Hop IDs must round-trip to the same IEEE-754 number as JSON.parse on the cloud route.
-serde_json = { version = "1", features = ["float_roundtrip"] }
+serde_json = { version = "1", features = ["float_roundtrip", "raw_value"] }
 uuid = { version = "1", features = ["v4", "serde"] }
 sha2 = "0.10"
 signal-hook = "0.3"

@@ -31,6 +31,8 @@ Use neutral relationship terminology: **host/child endpoints** for PTYs, **contr
 
 ## Private API and protocol development
 
+Owned Rust protocols should deserialize into closed native enums/structs at the boundary and route by exhaustive matches, not inspect `serde_json::Value` keys or stringly typed method names. Use distinct identity types and request-specific response expectations. Isolate genuinely open-ended Pi/plugin documents in explicitly opaque payload types; they must not become routing or execution authority.
+
 Keep the next private control-plane iteration in `sites/api.axo.leostera.dev/` and shared contracts in the proper `@axo/protocol` package under `protocol/`. JavaScript consumers import its compiled package exports, not sibling TypeScript source. Preserve the current `service/` lane and its file/relay authority until a separately coordinated migration.
 
 Install/build/test the protocol package independently before the new API. Follow their READMEs for `cf` build/type generation, isolated Node/Miniflare tests and the real-`axod` network suite. Use the same supported workerd compatibility target; Miniflare v5 persistence uses `resourcePersistencePath`, and cold-runtime/hibernation tests must establish actual storage/socket recovery. Library request correlation is not durable command execution identity or DO recovery state.

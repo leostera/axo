@@ -118,7 +118,7 @@ test("wrong resume bindings and symlinks fail before launch, preserving original
 });
 test("wrong chat/runtime/host destinations cannot retarget interactive controls or run a model", options, async t => {
   const f = await fixture(t); const pi = await f.launch(await f.profile());
-  await assert.rejects(f.command(pi.runtime, { method: "send", target: { ...pi.target, chatId: "wrong-chat" }, text: "Never deliver" }), rejected("stale"));
+  await assert.rejects(f.command(pi.runtime, { method: "send", target: { ...pi.target, chatId: crypto.randomUUID() }, text: "Never deliver" }), rejected("stale"));
   const wrongRuntime: Runtime = { ...pi.runtime, host_generation: crypto.randomUUID() };
   await assert.rejects(f.command(pi.runtime, { method: "send", target: { ...pi.target, runtime: wrongRuntime }, text: "Never deliver" }), rejected("stale"));
   assert.equal(f.requests(), 0); assert.equal((await pi.get()).busy, false);

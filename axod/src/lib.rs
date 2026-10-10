@@ -1,10 +1,13 @@
 //! Axo's local runtime owner. Pi execution/history and native rendering remain separate owners.
 #[cfg(not(target_os = "macos"))]
 compile_error!("axod currently targets macOS");
+pub mod ambient_pi;
 mod bootstrap;
+pub mod client;
 pub mod journal;
 mod local;
 pub mod model;
+pub mod pi_control;
 mod private_file;
 pub mod profiles;
 mod pty;
