@@ -53,6 +53,14 @@ The user subsequently approved new-hostname Access provisioning, deployment and 
 
 A real human application JWT passed the deployed Worker and returned HTTP 200 discovery. That diagnostic used explicit DNS resolution because the local OS cached a negative record; it is **not** full normal-path acceptance. Ordinary system-DNS daemon/client connectivity is still pending propagation/cache expiry. No custom DNS resolver or address override was added to the product. The current native app, legacy relay and file authority remain untouched. See the [API README](../../sites/api.axo.leostera.dev/README.md) for current scope and credential expiry.
 
+### 2026-10-10 — normal-path deployed route validated
+
+Ordinary system DNS became available. The isolated release daemon registered through real Access service-token WSS and the authenticated client listed it through the deployed Worker. One approved fixture launch reached a real PTY; confirmed-receipt reconciliation preserved one process, client disconnect left local progress running, and client reconnect recovered the same runtime. Human credentials were rejected on the daemon route. A cold daemon restart preserved machine identity, changed the source generation, rejected stale-source reads, preserved historical runtime references and launched no work automatically.
+
+Live testing exposed a missing Rustls crypto-provider selection, the initial provider's lack of P-521 certificate support, and a Darwin networking descriptor inherited by the child. The daemon now selects the standard AWS-LC provider and closes the inherited nonstandard descriptor table before exec; focused regression tests cover provider/algorithm configuration and an intentionally inheritable descriptor. Final live admission uses native trust and normal DNS, without resolver/address/CA-file overrides or disabled verification.
+
+Cloud-outage/local-progress evidence remains the isolated real-Worker/two-daemon shutdown test, not a deployed Worker outage. This checkpoint completes the approved supervised fixture connectivity test, not Pi/session, native/physical-phone or unattended operational readiness. The existing app, relay and file authority remain unchanged.
+
 ## Goals
 
 - Discover multiple authenticated machines in one private deployment without an account/enrollment product.

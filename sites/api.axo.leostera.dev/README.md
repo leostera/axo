@@ -2,7 +2,7 @@
 
 The first isolated implementation slice of [RFD0008](../../docs/rfds/RFD0008-private-multi-machine-control-plane.md): a Cloudflare Access-protected machine directory and per-machine WebSocket relay using the proper [`@axo/protocol` package](../../protocol/README.md). Its `json-rpc-2.0` dependency handles local service method dispatch and dummy-client correlation; Axo's schemas, leases and durable relay coordination remain separate.
 
-**Deployed private canary** on Cloudflare as `axo-api` at `https://api.axo.leostera.dev/` with separately provisioned Access policies. Authenticated live discovery has returned HTTP 200; full normal-system-DNS daemon/client connectivity is still awaiting local DNS propagation/cache expiry. The existing `service/`, R2 namespace, Mac packaging/startup, live registry and running application sessions remain unchanged. This is the next iteration of the existing private relay, not an account/enrollment platform or cloud executor.
+**Deployed private canary** on Cloudflare as `axo-api` at `https://api.axo.leostera.dev/` with separately provisioned Access policies. The normal-system-DNS live route is validated: dedicated Access service-token WSS registration, authenticated client discovery/runtime listing, a real approved-profile PTY launch, durable receipt reconciliation, client disconnect/reconnect and cold-restart generation fencing. This is supervised connectivity evidence, not unattended/native/Pi readiness. The existing `service/`, R2 namespace, Mac packaging/startup, live registry and running application sessions remain unchanged. This is the next iteration of the existing private relay, not an account/enrollment platform or cloud executor.
 
 ## Module layout and Vite
 
@@ -104,6 +104,16 @@ Observability, invocation logs and traces are enabled. Trace sampling is 100% fo
 
 The dedicated deployed-test daemon service token expires **2026-10-10T23:19:31Z**. Rotation/replacement must update both the new Access Service Auth policy and `ACCESS_HOST_CLIENT_ID`; do not reuse or modify the legacy Mac relay token. The cloud Worker stays deployed when the isolated fixture daemon is stopped.
 
+## Deployed connectivity evidence — 2026-10-10
+
+The isolated release daemon connected to the live hostname using ordinary system DNS and native-root TLS verification. No resolver/address override, CA-file override or certificate-verification bypass was required. Live validation also rejected human credentials on the daemon route, verified one running PTY after explicit reconciliation of a confirmed launch receipt, observed local fixture progress after client disconnect, and recovered the same runtime through a fresh client. Cold daemon restart preserved machine identity, changed the source generation, rejected the old source target, retained historical runtime references and launched no work automatically.
+
+This test exposed two real-boundary defects: tungstenite's Rustls dependency had no crypto provider selected; the initial `ring` choice did not support the corporate proxy's P-521 CA signatures. The daemon now explicitly selects Rustls's standard AWS-LC provider, with a configuration/algorithm regression test. A Darwin networking control descriptor also escaped CLOEXEC-only isolation; the fork child now closes nonstandard descriptors up to a validated, bounded kernel allocation ceiling before exec, including descriptors created by libraries. An intentionally inheritable descriptor regression covers that boundary.
+
+The initial fixture command exposed the descriptor defect and was stopped through its owned daemon. Patched validation used a fresh, explicitly saved command identity; neither command was automatically replayed, and both receipts were retained. The final fixture daemon was stopped after cold-restart checks; live discovery reported it offline. The API remains deployed.
+
+Validation passed: 23 Rust tests, strict Clippy, release build, 13 daemon process tests, 7 protocol package tests, API typecheck and all 19 API tests. Only fixture PTYs were launched. No Pi session, native app, legacy relay or file authority was touched. Complete API-shutdown/local-progress evidence comes from the isolated real-Worker/two-daemon suite, not an outage imposed on the deployed Worker. Credential files and fixture intent/evidence stay private outside the repository.
+
 ## Next slices, not claimed complete
 
 - Authenticated local loopback WebSocket bootstrap/adapter and local/relayed parity.
@@ -111,4 +121,4 @@ The dedicated deployed-test daemon service token expires **2026-10-10T23:19:31Z*
 - Additional mutating methods only after their durable receipts/reconciliation are defined; this slice has no remote stop method.
 - Operator forget/credential rotation, publication/retention policy and production backoff/rate-limit tuning.
 - Single-writer R2/file authorization migration, then coordinated native clients/packaging/ownership cutover after daemon hardening.
-- Finish the ordinary-DNS daemon/client smoke test against the **live hostname**, including real service-token WebSocket admission, a harmless approved-profile launch and disconnect/reconciliation. Authenticated live discovery alone is not full-route or physical-phone acceptance.
+- Native Mac/physical-phone and real Pi acceptance; the deployed fixture route does not establish these.

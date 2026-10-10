@@ -8,6 +8,27 @@ use std::{
     path::PathBuf,
 };
 
+#[test]
+fn wss_has_a_crypto_provider_before_any_network_or_credentials() {
+    // Mirrors tungstenite's default TLS builder. Missing/ambiguous crypto features panic here.
+    let _config = rustls::ClientConfig::builder()
+        .with_root_certificates(rustls::RootCertStore::empty())
+        .with_no_client_auth();
+    // Corporate TLS inspection can use a P-521 CA with SHA-256 signatures.
+    // A provider switch must not silently remove support even when configuration still builds.
+    let provider = rustls::crypto::CryptoProvider::get_default().unwrap();
+    assert!(
+        provider
+            .signature_verification_algorithms
+            .all
+            .iter()
+            .any(|algorithm| {
+                algorithm.public_key_alg_id() == rustls::pki_types::alg_id::ECDSA_P521
+                    && algorithm.signature_alg_id() == rustls::pki_types::alg_id::ECDSA_SHA256
+            })
+    );
+}
+
 struct Directory(PathBuf);
 impl Directory {
     fn new() -> Self {

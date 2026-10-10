@@ -231,6 +231,36 @@ fn connect(config: &Config, machine: MachineId) -> io::Result<Socket> {
                 tungstenite::HandshakeError::Failure(tungstenite::Error::Http(_)) => {
                     "Relay HTTP rejected"
                 }
+                tungstenite::HandshakeError::Failure(tungstenite::Error::Io(error))
+                    if error.kind() == io::ErrorKind::InvalidData =>
+                {
+                    match error
+                        .get_ref()
+                        .and_then(|cause| cause.downcast_ref::<rustls::Error>())
+                    {
+                        Some(rustls::Error::InvalidCertificate(
+                            rustls::CertificateError::UnknownIssuer,
+                        )) => "Relay certificate issuer unknown",
+                        Some(rustls::Error::InvalidCertificate(
+                            rustls::CertificateError::BadSignature,
+                        )) => "Relay certificate signature invalid",
+                        Some(rustls::Error::InvalidCertificate(rustls::CertificateError::UnsupportedSignatureAlgorithmContext { .. } | rustls::CertificateError::UnsupportedSignatureAlgorithmForPublicKeyContext { .. })) => "Relay certificate algorithm unsupported",
+                        Some(rustls::Error::InvalidCertificate(_)) => "Relay certificate rejected",
+                        _ => "Relay TLS data rejected",
+                    }
+                }
+                tungstenite::HandshakeError::Failure(tungstenite::Error::Io(error))
+                    if matches!(
+                        error.kind(),
+                        io::ErrorKind::TimedOut | io::ErrorKind::WouldBlock
+                    ) =>
+                {
+                    "Relay handshake timeout"
+                }
+                tungstenite::HandshakeError::Interrupted(_) => "Relay handshake interrupted",
+                tungstenite::HandshakeError::Failure(tungstenite::Error::Protocol(_)) => {
+                    "Relay handshake protocol rejected"
+                }
                 _ => "Relay handshake failed",
             })
         })?;
@@ -404,6 +434,14 @@ pub fn run(config: Config, machine: MachineId, manager: Arc<Manager>, stopping: 
                 "Relay TLS failed" => "tls",
                 "Relay HTTP rejected" => "http_admission",
                 "Relay handshake failed" => "handshake",
+                "Relay TLS data rejected" => "tls_data",
+                "Relay certificate issuer unknown" => "certificate_issuer",
+                "Relay certificate signature invalid" => "certificate_signature",
+                "Relay certificate rejected" => "certificate",
+                "Relay certificate algorithm unsupported" => "certificate_algorithm",
+                "Relay handshake timeout" => "handshake_timeout",
+                "Relay handshake interrupted" => "handshake_interrupted",
+                "Relay handshake protocol rejected" => "handshake_protocol",
                 "Relay admission rejected" => "protocol_admission",
                 "Relay admission deadline" => "protocol_deadline",
                 "Relay heartbeat deadline" => "heartbeat_deadline",

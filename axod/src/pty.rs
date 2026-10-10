@@ -26,6 +26,7 @@ pub fn spawn(cwd: &str, argv: &[String]) -> io::Result<ChildTerminal> {
         ws_xpixel: 0,
         ws_ypixel: 0,
     };
+    let descriptor_ceiling = child_descriptor_ceiling()?;
     let executable = arguments[0].as_ptr();
     let mut controller_fd = -1;
     // Prepare all Rust-owned memory BEFORE fork. The child calls only libc then exec/_exit:
@@ -43,6 +44,19 @@ pub fn spawn(cwd: &str, argv: &[String]) -> io::Result<ChildTerminal> {
     }
     if pid == 0 {
         unsafe {
+            // Library-created descriptors may lack CLOEXEC (e.g. Darwin's cached netsrc socket).
+            // Close the inherited nonstandard table, not just descriptors this manager created.
+            for descriptor in 3..descriptor_ceiling {
+                while libc::close(descriptor) < 0 {
+                    let error = *libc::__error();
+                    if error == libc::EBADF {
+                        break;
+                    }
+                    if error != libc::EINTR {
+                        libc::_exit(126);
+                    }
+                }
+            }
             if libc::chdir(directory.as_ptr()) != 0 {
                 libc::_exit(126);
             }
@@ -82,6 +96,30 @@ pub fn resize(controller: &File, dimensions: TerminalSize) -> io::Result<()> {
         return Err(io::Error::last_os_error());
     }
     Ok(())
+}
+
+fn child_descriptor_ceiling() -> io::Result<libc::c_int> {
+    let mut ceiling: libc::c_int = 0;
+    let mut size = std::mem::size_of_val(&ceiling);
+    // Use Darwin's allocation ceiling, not a soft rlimit that may have been lowered
+    // below already-open inherited descriptors. This daemon never changes kernel limits.
+    if unsafe {
+        libc::sysctlbyname(
+            c"kern.maxfilesperproc".as_ptr(),
+            std::ptr::addr_of_mut!(ceiling).cast(),
+            &mut size,
+            std::ptr::null_mut(),
+            0,
+        )
+    } != 0
+    {
+        return Err(io::Error::last_os_error());
+    }
+    // Fail before fork rather than perform unbounded work or leave higher descriptors open.
+    if size != std::mem::size_of_val(&ceiling) || !(3..=1_048_576).contains(&ceiling) {
+        return Err(io::Error::other("Unsupported child descriptor limit"));
+    }
+    Ok(ceiling)
 }
 
 fn validate_launch(cwd: &str, argv: &[String]) -> io::Result<()> {
@@ -151,4 +189,29 @@ fn null_terminated_pointers(values: &[CString]) -> Vec<*const libc::c_char> {
         .map(|value| value.as_ptr())
         .chain(std::iter::once(std::ptr::null()))
         .collect()
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn child_closes_inheritable_descriptors_not_created_by_the_runtime() {
+        let source = File::open("/dev/null").unwrap();
+        let descriptor = unsafe { libc::fcntl(source.as_raw_fd(), libc::F_DUPFD, 200) };
+        assert!(descriptor >= 200);
+        let inherited = unsafe { File::from_raw_fd(descriptor) };
+        let script = format!(
+            "import os,sys\ntry: os.fstat({descriptor})\nexcept OSError: sys.exit(0)\nsys.exit(1)\n"
+        );
+        let terminal = spawn("/tmp", &["/usr/bin/python3".into(), "-c".into(), script]).unwrap();
+        let mut status = 0;
+        assert_eq!(
+            unsafe { libc::waitpid(terminal.pid.as_raw(), &mut status, 0) },
+            terminal.pid.as_raw()
+        );
+        assert!(libc::WIFEXITED(status));
+        assert_eq!(libc::WEXITSTATUS(status), 0);
+        drop(inherited);
+    }
 }

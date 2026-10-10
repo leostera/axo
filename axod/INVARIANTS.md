@@ -12,7 +12,7 @@ This is an enforcement map, not a claim that the daemon is production-ready. The
 ## Outbound relay boundary
 
 - Stable `MachineId` is persisted privately before registration, distinct from fresh host/runtime generations. Invalid identity state fails closed; no automatic replacement UUID or historic-PID adoption occurs.
-- Relay configuration is an owned, single-linked bounded mode-0600 regular file. Credential values stay outside argv/environment/logs; non-loopback plaintext, credential-bearing URLs and redirects are refused. Native-root TLS verification is retained.
+- Relay configuration is an owned, single-linked bounded mode-0600 regular file. Credential values stay outside argv/environment/logs; non-loopback plaintext, credential-bearing URLs and redirects are refused. Native-root TLS verification is retained; the explicitly selected Rustls AWS-LC provider supports P-521 CA signatures. Configuration/provider and certificate-algorithm support are regression-tested before any network credentials are used.
 - Remote calls carry explicit machine/host/session/pane targets. `src/rpc.rs` checks them at the daemon boundary and invokes the same `Manager`, not a second executor or journal writer.
 - Only a named operator-approved launch profile can start remotely. Remote argv/cwd/terminal attachment/input are not admitted. Execution notifications never run.
 - Request IDs are correlation only; durable start `CommandId`/normalized launch receipts retain their existing conflict/reconciliation semantics. Reconnect repeats protocol negotiation/registration, never prompts, input or launch requests.
@@ -25,6 +25,7 @@ This is an enforcement map, not a claim that the daemon is production-ready. The
 
 - `Manager::start` serializes reconciliation, admission, durable intent, and process registration under the terminal-catalog mutex. Shutdown fences new admission before capturing owned terminals.
 - A command receipt binds the original target, launch fingerprint, and runtime. `Journal::prepare` itself rejects conflicting reassignment; identical direct retries leave the receipt/disposition unchanged. Manager reconciliation must precede any new spawn.
+- Child exec inherits only standard descriptors: known daemon resources have CLOEXEC, and the fork child additionally closes the inherited nonstandard table, including library-created descriptors. The Darwin kernel allocation ceiling is captured before fork and bounded to 1,048,576; unsupported bounds reject before fork, unexpected close failures exit before exec. Kernel limits are not changed by this daemon. Only prepared memory and libc operations are used after fork.
 - Starting intent is durably committed before `forkpty`. After spawn, the daemon retains the terminal and starts drain/reaper workers even when its Running commit fails. Receipt reconciliation does not launch another child.
 - Journal updates require the exact runtime and a legal transition. Completed records cannot be resurrected or have their exit status rewritten. A conservative recovery record can become a proven exit only through the same live runtime's completion path.
 - Failed rename/fsync has an uncertain on-disk outcome. The journal fences subsequent mutations, not just that write. Completion persistence records failure explicitly rather than silently treating an ignored error as success.
