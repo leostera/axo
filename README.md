@@ -10,6 +10,8 @@ This is the **single-workbench prototype**, not the complete [RFD](docs/rfds/RFD
 
 [RFD0008: private multi-machine control plane](docs/rfds/RFD0008-private-multi-machine-control-plane.md) describes the next iteration of the Access-protected relay. Its [isolated API/daemon slice](sites/api.axo.leostera.dev/README.md) implements automatic authenticated machine registration and bounded runtime metadata/approved-profile control through the proper [`@axo/protocol` package](protocol/README.md), using `json-rpc-2.0`. A dummy network client tests a real local Worker with two actual `axod`/PTY owners. It adds no accounts or enrollment flow; local WebSocket bootstrap and local/cloud runtime RPC parity are implemented; richer Pi/session APIs and native wiring remain unfinished. The existing `service/` and current Mac compatibility lane retain their owners; the new API is deployed as a private Cloudflare canary, with the normal-DNS live daemon/client route validated through an approved fixture PTY launch, receipt reconciliation, client reconnect and cold-restart fencing. This is supervised connectivity evidence, not unattended operation or native/Pi acceptance.
 
+[RFD0009: protocol capability parity and native adoption](docs/rfds/RFD0009-protocol-capability-parity.md) maps the legacy/native capabilities against the new daemon route, with ownership, missing contracts and per-capability acceptance gates. It defines the next Pi/session and native-adoption slices without treating working transport as application parity.
+
 ```text
 Mac: libghostty → interactive Pi + Axo extension
                               ↕ WSS / Access service identity

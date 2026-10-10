@@ -3,7 +3,7 @@
 - Feature Name: `axo-private-control-plane`
 - Status: Proposal
 - Start Date: 2026-10-09
-- Updated: 2026-10-09
+- Updated: 2026-10-10
 - Document Type: Proposal
 
 ## Summary
@@ -69,6 +69,10 @@ Live testing exposed a missing Rustls crypto-provider selection, the initial pro
 
 Cloud-outage/local-progress evidence remains the isolated real-Worker/two-daemon shutdown test, not a deployed Worker outage. This checkpoint completes the approved supervised fixture connectivity test, not Pi/session, native/physical-phone or unattended operational readiness. The existing app, relay and file authority remain unchanged.
 
+## Boundary with application capability parity
+
+The implemented transport checkpoint is a foundation, not application protocol parity: local/cloud JSON-RPC, machine discovery and the narrow runtime profile are available. [RFD0009 — protocol capability parity and native adoption](RFD0009-protocol-capability-parity.md) now owns the capability matrix, legacy-behavior inventory, Pi/session contracts and per-capability native replacement gates. This RFD retains machine routing/lease/failure/privacy policy and its unfinished operational requirements; it is not marked wholly implemented merely because the transport slice passed. Neither document authorizes a live owner or file-authority cutover.
+
 ## Goals
 
 - Discover multiple authenticated machines in one private deployment without an account/enrollment product.
@@ -103,7 +107,7 @@ These are ownership boundaries, not a requirement to share runtime code across l
 
 ```mermaid
 flowchart LR
-    Mac[Mac client] -->|authenticated loopback WS| A[Local axod]
+    Mac[Mac client] -->|native loopback WS| A[Local axod]
     Mac -->|Access-authenticated WSS| API[Private API Worker]
     Phone[iOS client] -->|Access-authenticated WSS| API
     A -->|outbound WSS: register and receive calls| API
@@ -132,7 +136,7 @@ The Mac client lists registered machines and their presence. It selects a sessio
 
 If B is offline, the call is rejected without an offline queue. If B disconnects after forwarding, the result may be uncertain. The client does not resend a prompt under a new ID or run it on A. Reading a cached catalog/history never starts B's runtime.
 
-A local session instead uses the authenticated loopback connection. Loss of cloud authentication or network access does not stop local processes or revoke local interaction rights. Cloud logout is not implicitly host shutdown.
+A local session instead uses the native loopback connection, intentionally credential-free at the current development checkpoint. Loss of cloud authentication or network access does not stop local processes or revoke local interaction rights. Cloud logout is not implicitly host shutdown.
 
 ## Reference-level explanation
 
@@ -359,7 +363,7 @@ This retains current adapters cheaply but duplicates method/error semantics and 
 
 ### Keep Unix IPC or use gRPC
 
-A Unix socket could carry JSON-RPC and offers useful filesystem/same-user admission. It is orthogonal to standardizing the message contract, but the selected direction is authenticated loopback WebSocket to align with remote connections and native client tooling. gRPC offers schemas/tooling, but adds another streaming/runtime stack without a demonstrated need here. Compare maintained-library support before committing to a codec.
+A Unix socket could carry JSON-RPC and offers useful filesystem/same-user admission. It is orthogonal to standardizing the message contract, but the selected direction is native loopback WebSocket to align with remote connections and native client tooling. gRPC offers schemas/tooling, but adds another streaming/runtime stack without a demonstrated need here. Compare maintained-library support before committing to a codec.
 
 ### Expose each daemon directly on the network
 
@@ -382,7 +386,7 @@ Keep one private workbench and the existing adapters. Useful compatibility work 
 ### Before implementation acceptance
 
 - Confirm the directory/per-machine DO split versus a deliberately bounded single private coordinator.
-- Select local WebSocket credential bootstrap/storage and loopback TLS/Origin/Host policy against actual native platform behavior.
+- Validate credential-free local bootstrap/Host/Origin behavior with actual native clients and disclose its lack of OS-user authentication. Local credentials remain deferred; no authentication/enrollment scaffolding is selected.
 - Confirm approved Access human/daemon identities, per-host service-token provisioning and observed expiry/revocation semantics for the intended hostname. No account/enrollment product is needed.
 - Accept metadata publication/retention/removal policy, exact outbound/subscription byte limits, and the no-queue/unknown-outcome contract before live enablement.
 - Define the separate file-authority migration gate; new routing must not imply a fresh file namespace or duplicate existing writers.
