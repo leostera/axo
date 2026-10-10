@@ -7,6 +7,12 @@ import ServiceManagement
 
 @MainActor @Observable
 final class AxodWorkbenchCoordinator {
+    private enum PreferenceKey {
+        static let machineID = "Axo.axod.selection.machineID"
+        static let workspaceID = "Axo.axod.selection.workspaceID"
+        static let sessionID = "Axo.axod.selection.sessionID"
+    }
+
     enum ConnectionState: Equatable {
         case starting
         case connected
@@ -15,6 +21,7 @@ final class AxodWorkbenchCoordinator {
     }
 
     private(set) var connectionState: ConnectionState = .starting
+    private(set) var machineID: UUID?
     private(set) var workspaces: [WorkspaceRecord] = []
     private(set) var sessions: [WorkSessionRecord] = []
     private(set) var runtimes: [TerminalSnapshot] = []
@@ -27,6 +34,10 @@ final class AxodWorkbenchCoordinator {
     private(set) var startupMessage = "Registering Axo to open at login."
     private(set) var needsLoginItemsReview = false
 
+    @ObservationIgnored private let preferences: UserDefaults
+    @ObservationIgnored private var preferredMachineID: UUID?
+    @ObservationIgnored private var preferredWorkspaceID: UUID?
+    @ObservationIgnored private var preferredSessionID: UUID?
     private let rpc = AxoJSONRPCClient()
     private var stateDirectory: AxodStateDirectory?
     private var endpoint: LocalDaemonEndpoint?
@@ -38,6 +49,13 @@ final class AxodWorkbenchCoordinator {
     private var sessionLoadGeneration = UUID()
     private var connectTask: Task<Void, Never>?
     private var didCheckStartupRegistration = false
+
+    init(preferences: UserDefaults = .standard) {
+        self.preferences = preferences
+        preferredMachineID = UUID(uuidString: preferences.string(forKey: PreferenceKey.machineID) ?? "")
+        preferredWorkspaceID = UUID(uuidString: preferences.string(forKey: PreferenceKey.workspaceID) ?? "")
+        preferredSessionID = UUID(uuidString: preferences.string(forKey: PreferenceKey.sessionID) ?? "")
+    }
 
     func registerForStartup() {
         guard !didCheckStartupRegistration else { return }
@@ -154,6 +172,9 @@ final class AxodWorkbenchCoordinator {
     func selectWorkspace(_ workspaceID: UUID?) {
         selectedWorkspaceID = workspaceID
         selectedSessionID = nil
+        preferredWorkspaceID = workspaceID
+        preferredSessionID = nil
+        saveSelection()
         sessions = []
         nextSessionCursor = nil
         let load = UUID()
@@ -175,7 +196,10 @@ final class AxodWorkbenchCoordinator {
                       self.selectedWorkspaceID == workspaceID else { return }
                 self.sessions = result.sessions
                 self.selectedSessionID = result.sessions.first?.sessionId
+                self.preferredWorkspaceID = workspaceID
+                self.preferredSessionID = self.selectedSessionID
                 self.nextSessionCursor = result.next
+                self.saveSelection()
             } catch {
                 guard self.isCurrent(operation, connection: connection, endpoint: endpoint),
                       self.sessionLoadGeneration == load else { return }
@@ -188,6 +212,8 @@ final class AxodWorkbenchCoordinator {
     func selectSession(_ sessionID: UUID) {
         guard sessions.contains(where: { $0.sessionId == sessionID }) else { return }
         selectedSessionID = sessionID
+        preferredSessionID = sessionID
+        saveSelection()
     }
 
     func loadMoreWorkspaces() {
@@ -234,6 +260,8 @@ final class AxodWorkbenchCoordinator {
                 self.sessions.append(contentsOf: result.sessions)
                 if self.selectedSessionID == nil {
                     self.selectedSessionID = result.sessions.first?.sessionId
+                    self.preferredSessionID = self.selectedSessionID
+                    self.saveSelection()
                 }
                 self.nextSessionCursor = result.next
             } catch {
@@ -334,19 +362,34 @@ final class AxodWorkbenchCoordinator {
                 throw AxodWorkbenchError.superseded
             }
 
+            if preferredMachineID != endpoint.machineId {
+                preferredWorkspaceID = nil
+                preferredSessionID = nil
+            }
+            machineID = endpoint.machineId
+            preferredMachineID = endpoint.machineId
             self.endpoint = endpoint
             self.connection = connection
             self.runtimes = runtimes.terminals
             self.nextRuntimeID = runtimes.next
             self.workspaces = workspaces.workspaces
             self.nextWorkspaceCursor = workspaces.next
-            self.selectedWorkspaceID = workspaces.workspaces.first?.workspaceId
+            self.selectedWorkspaceID = preferredWorkspaceID.flatMap { savedID in
+                workspaces.workspaces.first(where: { $0.workspaceId == savedID })?.workspaceId
+            } ?? workspaces.workspaces.first?.workspaceId
+            if selectedWorkspaceID != preferredWorkspaceID {
+                preferredSessionID = nil
+            }
+            preferredWorkspaceID = selectedWorkspaceID
             self.sessions = []
+            self.selectedSessionID = nil
             self.nextSessionCursor = nil
             connectionState = .connected
             message = "Connected to local axod. Legacy workspaces and Pi histories were not imported or changed."
             if let workspaceID = selectedWorkspaceID {
                 await loadInitialSessions(workspaceID, over: connection, endpoint: endpoint, operation: operation)
+            } else {
+                saveSelection()
             }
             try requireCurrent(operation)
         } catch {
@@ -380,6 +423,8 @@ final class AxodWorkbenchCoordinator {
             nextSessionCursor = nil
             if let selectedWorkspaceID {
                 await loadInitialSessions(selectedWorkspaceID, over: connection, endpoint: endpoint, operation: operation)
+            } else {
+                saveSelection()
             }
         }
     }
@@ -406,14 +451,30 @@ final class AxodWorkbenchCoordinator {
                   selectedWorkspaceID == workspaceID,
                   sessionLoadGeneration == load else { return }
             sessions = result.sessions
-            if !result.sessions.contains(where: { $0.sessionId == selectedSessionID }) {
+            if preferredWorkspaceID == workspaceID,
+               let preferredSessionID,
+               result.sessions.contains(where: { $0.sessionId == preferredSessionID }) {
+                selectedSessionID = preferredSessionID
+            } else {
                 selectedSessionID = result.sessions.first?.sessionId
             }
+            preferredWorkspaceID = workspaceID
+            preferredSessionID = selectedSessionID
             nextSessionCursor = result.next
+            saveSelection()
         } catch {
             guard operationGeneration == operation else { return }
             message = "Connected, but the selected workspace's session page could not be read."
         }
+    }
+
+    private func saveSelection() {
+        guard let machineID else { return }
+        preferredMachineID = machineID
+        preferredWorkspaceID = selectedWorkspaceID
+        preferences.set(machineID.uuidString, forKey: PreferenceKey.machineID)
+        preferences.set(selectedWorkspaceID?.uuidString ?? "", forKey: PreferenceKey.workspaceID)
+        preferences.set(selectedSessionID?.uuidString ?? "", forKey: PreferenceKey.sessionID)
     }
 
     private func fetchWorkspaces(
