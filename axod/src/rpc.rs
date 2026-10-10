@@ -128,9 +128,19 @@ struct Start {
 #[serde(deny_unknown_fields)]
 struct List {
     target: Destination,
+    #[serde(default, deserialize_with = "non_null_option")]
     after: Option<PaneId>,
     #[serde(default = "page_limit")]
     limit: usize,
+}
+/// Optional request fields may be omitted, but explicit null must satisfy their actual type.
+/// Cursor scope fields declared nullable use ordinary Option deserialization instead.
+pub(crate) fn non_null_option<'de, D, T>(deserializer: D) -> Result<Option<T>, D::Error>
+where
+    D: serde::Deserializer<'de>,
+    T: Deserialize<'de>,
+{
+    T::deserialize(deserializer).map(Some)
 }
 fn page_limit() -> usize {
     50
@@ -243,6 +253,23 @@ mod tests {
         assert_eq!(batch[0]["id"], "one");
         assert!(serde_json::to_vec(&batch).unwrap().len() <= FRAME_BYTES);
         assert!(bounded_replies(false, vec![]).is_none());
+    }
+    #[test]
+    fn omitted_runtime_page_cursor_is_not_the_same_as_explicit_null() {
+        let mut params =
+            json!({"target":{"machineId":MachineId::new(),"hostGeneration":HostGeneration::new()}});
+        let absent: List = serde_json::from_value(params.clone()).unwrap();
+        assert!(absent.after.is_none());
+        assert_eq!(absent.limit, 50);
+        params["after"] = Value::Null;
+        assert!(serde_json::from_value::<List>(params.clone()).is_err());
+        params["after"] = json!(PaneId::new());
+        assert!(
+            serde_json::from_value::<List>(params)
+                .unwrap()
+                .after
+                .is_some()
+        );
     }
     #[test]
     fn shared_envelope_fixtures() {

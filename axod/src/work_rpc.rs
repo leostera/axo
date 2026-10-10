@@ -30,6 +30,7 @@ struct Cursor {
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 struct WorkspacePage {
     target: Destination,
+    #[serde(default, deserialize_with = "crate::rpc::non_null_option")]
     cursor: Option<Cursor>,
     #[serde(default = "page_limit")]
     limit: usize,
@@ -38,7 +39,9 @@ struct WorkspacePage {
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 struct SessionPage {
     target: Destination,
+    #[serde(default, deserialize_with = "crate::rpc::non_null_option")]
     workspace_id: Option<WorkspaceId>,
+    #[serde(default, deserialize_with = "crate::rpc::non_null_option")]
     cursor: Option<Cursor>,
     #[serde(default = "page_limit")]
     limit: usize,

@@ -14,7 +14,13 @@ Scope: implement [RFD0009](RFD0009-protocol-capability-parity.md) in dependency 
 - [x] Serialize execution/work command admission; reject cross-journal identity reuse. Uncertain persistence in either store fences mutations in both domains while preserving accepted children.
 - [x] Real local/Worker/daemon route tests for every new method, metadata-only creation, notifications, stale destinations/cursors, rename protection, restart durability, original receipts and historical runtime observations.
 
-Evidence: `axod/src/work.rs`, `work_rpc.rs`, `work_lifecycle_tests.rs`; `protocol/src/work-contracts.ts` and `protocol/tests/work.test.ts`; `sites/api.axo.leostera.dev/tests/work.test.ts`. Current checkpoint: 35 Rust tests, 10 protocol/package tests and 26 API/local/fleet tests; strict Clippy, release build, schema check, API typecheck/build. All fixture daemons are owned/disposable and stopped by teardown. No real Pi, native app, physical phone or deployed Worker adoption is established by this evidence.
+Evidence: `axod/src/work.rs`, `work_rpc.rs`, `work_lifecycle_tests.rs`; `protocol/src/work-contracts.ts` and `protocol/tests/work.test.ts`; `sites/api.axo.leostera.dev/tests/work.test.ts`. Initial record-store checkpoint: 35 Rust tests, 10 protocol/package tests and 26 API/local/fleet tests; strict Clippy, release build, schema check, API typecheck/build. All fixture daemons are owned/disposable and stopped by teardown. No real Pi, native app, physical phone or deployed Worker adoption is established by this evidence.
+
+### Exposed-RPC coverage checkpoint
+
+`tests/daemon-rpc.test.ts` and its owned real-daemon fixture now cover every shared exposed RPC on both routes, with a typed method-input matrix that must grow when `RemoteMethod` grows. Coverage includes malformed/extra/positional input, stale machine/source, notifications, concurrent hop/command conflicts, revision arbitration, storage failure fencing, nullable/default paging rules, explicit null request IDs and 50-record Unicode pages. RFD methods not implemented yet explicitly reject; this is not positive Pi/tool acceptance.
+
+This caught and fixed a real route mismatch: Rust's ordinary optional deserialization accepted explicit null request fields that the shared schema rejected. Omitted fields still default, and genuinely nullable all-workspace cursor scopes remain valid. Full validation: 36 Rust tests, 10 protocol/package tests and 58 API tests (including named subtests), strict Clippy, release build, schema check and API typecheck. Run the dedicated daemon suite with `npm --prefix sites/api.axo.leostera.dev run test:axod`; see `axod/tests/README.md` for coverage boundaries.
 
 ## 2. Contract transition and real vanilla Pi ownership — next
 

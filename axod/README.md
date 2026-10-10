@@ -13,11 +13,13 @@ cargo build --locked
 cargo fmt --check
 cargo test --locked --offline
 cargo clippy --locked --offline --all-targets -- -D warnings
-# Real process/WebSocket and route-parity tests:
+# Dedicated real-daemon RPC/process and local/cloud parity tests:
+npm --prefix ../sites/api.axo.leostera.dev run test:axod
+# Full API/JWT/hibernation suite:
 npm --prefix ../sites/api.axo.leostera.dev test
 ```
 
-Offline commands require cached dependencies. Python tests build the daemon and use owned, disposable real terminal children in private temporary directories. They are not fabricated Pi transcripts, real-provider tests, or native application acceptance.
+The [coverage guide](tests/README.md) separates domain/real-process tests, exhaustive exposed-RPC coverage and unsupported future Pi/chat methods. Offline commands require cached dependencies. Python tests build the daemon and use owned, disposable real terminal children in private temporary directories. They are not fabricated Pi transcripts, real-provider tests, or native application acceptance.
 
 ## Run explicitly
 

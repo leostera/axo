@@ -98,40 +98,40 @@ Route vocabulary: **shared** means the same daemon semantics locally or through 
 
 | Canonical method | Light capability specification | Route | Status |
 | --- | --- | --- | --- |
-| `axo.machine.list` | Page registered machines and observed reachability; never launch or publish histories | Service | Existing |
-| `axo.workspace.list` | Page approved daemon records with source/revision/filter-bound cursors; no published-cache read yet | Shared | Existing |
-| `axo.workspace.create` | Commit a workspace from an approved directory ID; stable IDs, no initial session and no launch | Shared | Existing |
-| `axo.workspace.rename` | Update the captured workspace's manual name under revision checks and a durable command receipt | Shared | Existing |
-| `axo.workspace.archive` | Archive work records while preserving originals; live-work policy must be decided first | Daemon; remote exposure undecided | Proposed |
-| `axo.workspace.duplicate` | Create independent records with fresh identities, not a copy of a live writer | Daemon; remote exposure undecided | Proposed |
-| `axo.session.list` | Page daemon work-session records within an explicit workspace filter; generic runtime facts do not imply Pi admission | Shared | Existing |
-| `axo.session.get` | Read manual work/pane metadata and observed runtime facts; Pi binding is currently null/notAdmitted; no messages or transcript | Shared | Existing |
-| `axo.session.create` | Commit an unstarted session record and fresh Pi-pane identity in an approved workspace; no chat fabricated or implicit launch | Shared | Existing |
-| `axo.session.rename` | Update the captured session's manual Axo name under revision/parent checks and durable receipt; not Pi-title mutation | Shared | Existing |
-| `axo.session.archive` | Archive the session record without deleting its original history/files; live-work policy is a separate gate | Daemon; remote exposure undecided | Proposed |
-| `axo.session.duplicate` | Commit a fresh independent session/conversation identity; history-copy semantics need an explicit decision | Daemon; remote exposure undecided | Proposed |
-| `axo.session.start` | Explicitly start the session's managed Pi pane from an approved fresh/resume persistence intent; report spawn separately from readiness | Shared | Proposed |
+| `axo.chat.answerQuestion` | Resolve the captured current Axo question with a validated offered choice; never infer approval | Shared | Proposed |
+| `axo.chat.cancelTurn` | Request cancellation of the captured active chat interaction/run, which may span internal Pi turns; do not kill its process or siblings | Shared | Proposed |
+| `axo.chat.getToolOutput` | Page detail for a captured tool-call identity and output offset within the chat; never invoke a tool | Shared | Proposed |
 | `axo.chat.get` | Read a bounded chat snapshot: recent messages/live state, active interaction, pending question and branch/view identity; not the entire transcript | Shared | Proposed |
 | `axo.chat.history` | Page canonical-history projections under an explicit chat/view cursor; not a flat JSONL dump | Shared | Proposed |
-| `axo.chat.getToolOutput` | Page detail for a captured tool-call identity and output offset within the chat; never invoke a tool | Shared | Proposed |
 | `axo.chat.sendMessage` | Submit a normal text/authorized-attachment message to a ready, idle admitted chat; reject busy or question-blocked state, never implicitly steer | Shared | Proposed |
 | `axo.chat.sendSteeringMessage` | Explicitly steer the captured active interaction through public Pi delivery; reject ended/idle or question-blocked state, never start a new interaction | Shared | Proposed |
-| `axo.chat.cancelTurn` | Request cancellation of the captured active chat interaction/run, which may span internal Pi turns; do not kill its process or siblings | Shared | Proposed |
-| `axo.chat.answerQuestion` | Resolve the captured current Axo question with a validated offered choice; never infer approval | Shared | Proposed |
+| `axo.chat.setViewing` | Report an expiring, explicitly chat-scoped viewing lease for attention policy; a subscription alone does not prove viewing | Shared | Proposed |
+| `axo.command.get` | Read a machine-scoped work commit or original runtime receipt/observation; null never means safe to replay or proven rejection | Shared | Existing |
+| `axo.machine.list` | Page registered machines and observed reachability; never launch or publish histories | Service | Existing |
+| `axo.observe.event` | Server notification for a subscribed structured change; includes producer/subscription/source/sequence, not an execution receipt | Daemon or service to client | Proposed |
 | `axo.observe.subscribe` | Establish bounded observation of an explicit scope with baseline/source/sequence and gap semantics; identify daemon versus service-projection producer | Daemon or service projection | Proposed |
 | `axo.observe.unsubscribe` | Release the captured subscription at its owning producer only; do not cancel work | Daemon or service projection | Proposed |
-| `axo.chat.setViewing` | Report an expiring, explicitly chat-scoped viewing lease for attention policy; a subscription alone does not prove viewing | Shared | Proposed |
-| `axo.observe.event` | Server notification for a subscribed structured change; includes producer/subscription/source/sequence, not an execution receipt | Daemon or service to client | Proposed |
-| `axo.command.get` | Read a machine-scoped work commit or original runtime receipt/observation; null never means safe to replay or proven rejection | Shared | Existing |
+| `axo.runtime.daemon.stop` | Explicitly stop the daemon and its owned work under confirmation/shutdown policy; not machine power-off or client logout | Local | Proposed; operational gate |
 | `axo.runtime.list` | Page process/runtime metadata, preserving historical runtime generations | Shared | Existing |
 | `axo.runtime.stop` | Request termination of one exact owned runtime; completion must be observed separately | Shared, subject to stop policy | Proposed |
-| `axo.session.pane.create` | Commit an approved shell-pane record in the captured session; layout/focus remain client-owned and creation does not launch | Local | Proposed; native pane parity |
-| `axo.session.pane.start` | Explicitly start that pane's approved shell/runtime without arbitrary remote argv/cwd; Pi admission remains `session.start` | Local | Proposed; native pane parity |
-| `axo.session.pane.remove` | Remove a stopped pane record after ownership/revision checks; not terminal detach, process-stop shorthand or history deletion | Local | Proposed; native pane parity |
 | `axo.runtime.terminal.attach` | Acquire a local interactive lease and negotiate a separate local data-channel/rendering contract | Local | Proposed; terminal feasibility gate |
 | `axo.runtime.terminal.detach` | Release that attachment lease only, leaving managed work running | Local | Proposed; terminal feasibility gate |
 | `axo.runtime.terminal.resize` | Resize under the captured current attachment/input-owner lease | Local | Proposed; terminal feasibility gate |
-| `axo.runtime.daemon.stop` | Explicitly stop the daemon and its owned work under confirmation/shutdown policy; not machine power-off or client logout | Local | Proposed; operational gate |
+| `axo.session.archive` | Archive the session record without deleting its original history/files; live-work policy is a separate gate | Daemon; remote exposure undecided | Proposed |
+| `axo.session.create` | Commit an unstarted session record and fresh Pi-pane identity in an approved workspace; no chat fabricated or implicit launch | Shared | Existing |
+| `axo.session.duplicate` | Commit a fresh independent session/conversation identity; history-copy semantics need an explicit decision | Daemon; remote exposure undecided | Proposed |
+| `axo.session.get` | Read manual work/pane metadata and observed runtime facts; Pi binding is currently null/notAdmitted; no messages or transcript | Shared | Existing |
+| `axo.session.list` | Page daemon work-session records within an explicit workspace filter; generic runtime facts do not imply Pi admission | Shared | Existing |
+| `axo.session.pane.create` | Commit an approved shell-pane record in the captured session; layout/focus remain client-owned and creation does not launch | Local | Proposed; native pane parity |
+| `axo.session.pane.remove` | Remove a stopped pane record after ownership/revision checks; not terminal detach, process-stop shorthand or history deletion | Local | Proposed; native pane parity |
+| `axo.session.pane.start` | Explicitly start that pane's approved shell/runtime without arbitrary remote argv/cwd; Pi admission remains `session.start` | Local | Proposed; native pane parity |
+| `axo.session.rename` | Update the captured session's manual Axo name under revision/parent checks and durable receipt; not Pi-title mutation | Shared | Existing |
+| `axo.session.start` | Explicitly start the session's managed Pi pane from an approved fresh/resume persistence intent; report spawn separately from readiness | Shared | Proposed |
+| `axo.workspace.archive` | Archive work records while preserving originals; live-work policy must be decided first | Daemon; remote exposure undecided | Proposed |
+| `axo.workspace.create` | Commit a workspace from an approved directory ID; stable IDs, no initial session and no launch | Shared | Existing |
+| `axo.workspace.duplicate` | Create independent records with fresh identities, not a copy of a live writer | Daemon; remote exposure undecided | Proposed |
+| `axo.workspace.list` | Page approved daemon records with source/revision/filter-bound cursors; no published-cache read yet | Shared | Existing |
+| `axo.workspace.rename` | Update the captured workspace's manual name under revision checks and a durable command receipt | Shared | Existing |
 
 #### Private/internal coordination
 
@@ -172,7 +172,7 @@ Create/rename parameters carry `commandId`, `expectedRevision`, explicit machine
 
 Live daemon list cursors disclose and fence source, global revision, domain and workspace filter. Mutations invalidate old pages; boot change invalidates old source cursors. `session.get` returns manual work/pane metadata, a null/unadmitted Pi chat binding and any exact matching generic runtime observation. `command.get` is read-only: work receipts include the committed metadata snapshot/revision, runtime receipts preserve the original runtime reference with any available matching observation. A missing receipt is unknown knowledge, not rejected execution or replay permission. These source-tested shapes are in the generated shared schema; Swift/native work-record models and live registry handoff remain separate unfinished gates.
 
-Evidence is isolated: Rust failure/bounds tests plus actual local/Worker/daemon tests cover every new method, receipt/revision conflicts, notifications, route/cursor fences, restart reconciliation and absence of metadata-driven launches. No real Pi/provider, native app or physical-device acceptance is claimed.
+Evidence is isolated: Rust failure/bounds tests plus actual local/Worker/daemon tests cover every new method, receipt/revision conflicts, notifications, route/cursor fences, restart reconciliation and absence of metadata-driven launches. The [exposed-RPC suite](../../sites/api.axo.leostera.dev/tests/daemon-rpc.test.ts) additionally runs every shared method's malformed/stale/notification boundaries on both routes, concurrent receipt/revision arbitration, storage fencing and Unicode/nullable paging cases. Optional request fields may be omitted but reject explicit null unless their schema is nullable; this route mismatch is now regression-tested. See the [test guide](../../axod/tests/README.md). No real Pi/provider, native app or physical-device acceptance is claimed.
 
 ### Legacy source audit — 2026-10-10
 
