@@ -7,12 +7,78 @@ enum ChatPreviewData {
     static var enabled: Bool {
         let arguments = ProcessInfo.processInfo.arguments
         return arguments.contains("--axo-chat-preview") || arguments.contains("--axo-chat-preview-working")
+            || arguments.contains("--axo-performance-preview")
             || arguments.contains("--axo-history-preview") || arguments.contains("--axo-live-history-preview") || arguments.contains("--axo-markdown-preview") || arguments.contains("--axo-files-preview") || arguments.contains("--axo-file-draft-preview") || arguments.contains("--axo-photo-draft-preview") || arguments.contains("--axo-inline-photo-preview") || arguments.contains("--axo-photo-collection-preview") || arguments.contains(where: { $0.hasPrefix("--axo-paste-") })
     }
     static func newMessage() -> ConversationMessage? {
         let fields = ["id": UUID().uuidString, "role": "assistant", "text": "New synthetic message at the latest end."]
         guard let data = try? JSONSerialization.data(withJSONObject: fields) else { return nil }
         return try? JSONDecoder().decode(ConversationMessage.self, from: data)
+    }
+
+    static var isPerformancePreview: Bool { ProcessInfo.processInfo.arguments.contains("--axo-performance-preview") }
+
+    // Stress an already-loaded conversation; production history pagination is exercised separately.
+    static let performanceMessageCount = 2_000
+    static let performanceSessionIDs = [
+        "22222222-2222-4222-8222-222222222222",
+        "55555555-5555-4555-8555-555555555555",
+        "66666666-6666-4666-8666-666666666666",
+    ]
+
+    private static var performanceMessageCache: [String: [ConversationMessage]] = [:]
+
+    static func preparePerformanceMessages() {
+        for sessionID in performanceSessionIDs {
+            _ = performanceMessages(forSessionKey: sessionID)
+        }
+    }
+
+    static func performanceMessages(for sessionID: AxoSessionID?) -> [ConversationMessage] {
+        let key = sessionID?.rawValue.uuidString.lowercased() ?? performanceSessionIDs[0]
+        return performanceMessages(forSessionKey: key)
+    }
+
+    private static func performanceMessages(forSessionKey key: String) -> [ConversationMessage] {
+        if let messages = performanceMessageCache[key] { return messages }
+
+        let messages = makePerformanceMessages(sessionID: key)
+        performanceMessageCache[key] = messages
+        return messages
+    }
+
+    static func performanceCatalog() -> WorkbenchCatalog {
+        let fixture = #"{"type":"catalog_page","revision":1,"items":[{"kind":"workspace","workspace":{"id":"11111111-1111-4111-8111-111111111111","name":"Axo Performance","kind":"project"}},{"kind":"workspace","workspace":{"id":"33333333-3333-4333-8333-333333333333","name":"Research Performance","kind":"project"}},{"kind":"session","session":{"id":"22222222-2222-4222-8222-222222222222","workspaceId":"11111111-1111-4111-8111-111111111111","name":"Load test A","conversationId":"perf-conversation-a","availability":"stopped"}},{"kind":"session","session":{"id":"55555555-5555-4555-8555-555555555555","workspaceId":"11111111-1111-4111-8111-111111111111","name":"Load test B","conversationId":"perf-conversation-b","availability":"stopped"}},{"kind":"session","session":{"id":"66666666-6666-4666-8666-666666666666","workspaceId":"33333333-3333-4333-8333-333333333333","name":"Load test C","conversationId":"perf-conversation-c","availability":"stopped"}}],"nextCursor":null,"hostOnline":false}"#
+        var catalog = WorkbenchCatalog()
+        if case .catalogPage(let page) = try? RelayEvent.decode(Data(fixture.utf8)) {
+            _ = try? catalog.apply(page)
+        }
+        return catalog
+    }
+
+    private static func makePerformanceMessages(sessionID: String) -> [ConversationMessage] {
+        let records: [[String: Any]] = (0..<performanceMessageCount).map { index in
+            let id = "perf-\(sessionID)-\(index)"
+            let sequence = index / 5
+            switch index % 5 {
+            case 0:
+                return ["id": id, "role": "user", "text": "Review the implementation and explain the tradeoff in section \(sequence)."]
+            case 1:
+                return ["id": id, "role": "assistant", "text": "## Finding \(sequence)\n\nThe update keeps work scoped to its original session while preserving a responsive conversation.\n\n- Stable row identity\n- Bounded history pages\n- No prompt replay"]
+            case 2:
+                return ["id": id, "role": "tool", "text": "npm test -- --runInBand", "toolName": "bash",
+                        "toolCallId": "perf-tool-\(sessionID)-\(sequence)", "status": "completed",
+                        "output": "Passed 42 tests.\nFixture \(sequence): protocol, state isolation, and rendering checks completed.",
+                        "toolPresentation": ["kind": "shell", "title": "Bash"]]
+            case 3:
+                return ["id": id, "role": "thinking", "text": "Checking the ownership boundary for item \(sequence).\n\nThe measured fixture is synthetic and does not issue relay commands."]
+            default:
+                let detail = String(repeating: "Paragraph for synthetic conversation item \(sequence). This stresses variable-height Markdown rows without remote assets. ", count: 3)
+                return ["id": id, "role": "assistant", "text": "### Implementation note \(sequence)\n\n\(detail)\n\n`sessionID` remains distinct from `conversationID`.\n\n1. Capture the destination.\n2. Revalidate the generation.\n3. Apply only to the original conversation."]
+            }
+        }
+        guard let data = try? JSONSerialization.data(withJSONObject: records) else { return [] }
+        return (try? JSONDecoder().decode([ConversationMessage].self, from: data)) ?? []
     }
 
     static var showsActivity: Bool { ProcessInfo.processInfo.arguments.contains("--axo-chat-preview-working") }

@@ -77,7 +77,14 @@ final class PhoneWorkbenchState {
         }
 
         #if DEBUG
-        if ChatPreviewData.enabled {
+        if ChatPreviewData.isPerformancePreview {
+            catalog = ChatPreviewData.performanceCatalog()
+            ChatPreviewData.preparePerformanceMessages()
+            if let session = catalog.sessions.first {
+                route = .conversation(session.id)
+                client.selectSession(session.id, conversationID: session.conversationId)
+            }
+        } else if ChatPreviewData.enabled {
             route = .preview
         } else if ProcessInfo.processInfo.arguments.contains("--axo-workbench-preview") {
             route = nil
@@ -123,7 +130,7 @@ final class PhoneWorkbenchState {
         case .conversation(let id):
             let session = catalog.session(id: id)
             client.selectSession(id, conversationID: session?.conversationId)
-            UserDefaults.standard.set(id.rawValue.uuidString, forKey: "axo.selectedPhoneSessionID")
+            persistSelectedSession(id)
             notice = nil
         case .preview, nil:
             client.selectSession(nil, conversationID: nil)
@@ -265,8 +272,15 @@ final class PhoneWorkbenchState {
     private func activateOnStartup(_ session: CatalogSession) {
         route = .conversation(session.id)
         client.selectSession(session.id, conversationID: session.conversationId)
-        UserDefaults.standard.set(session.id.rawValue.uuidString, forKey: "axo.selectedPhoneSessionID")
+        persistSelectedSession(session.id)
         hasUserNavigated = true
+    }
+
+    private func persistSelectedSession(_ id: AxoSessionID) {
+        #if DEBUG
+        guard !ChatPreviewData.isPerformancePreview else { return }
+        #endif
+        UserDefaults.standard.set(id.rawValue.uuidString, forKey: "axo.selectedPhoneSessionID")
     }
 
     private func cancelPageRequests() {

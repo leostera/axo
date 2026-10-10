@@ -107,6 +107,9 @@ struct ConversationView: View {
     }
     private var messages: [ConversationMessage] {
         #if DEBUG
+        if ChatPreviewData.isPerformancePreview {
+            return ChatPreviewData.performanceMessages(for: client.selectedSessionID)
+        }
         if SharedFilePreview.isInlinePhotoPreview {
             var rows = ChatPreviewData.messages
             if !rows.isEmpty {
@@ -298,6 +301,7 @@ struct ConversationView: View {
                 .padding(.bottom, 20)
                 .frame(maxWidth: .infinity, alignment: .leading)
             }
+            .accessibilityIdentifier("conversation-scroll")
             .scrollDismissesKeyboard(.interactively)
             .scrollPosition(id: $scrollAnchor, anchor: .top)
             .defaultScrollAnchor(.bottom, for: .initialOffset)
