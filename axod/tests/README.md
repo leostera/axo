@@ -1,6 +1,23 @@
 # axod test coverage
 
-Tests use owned disposable directories/processes, not live Mac state or deployment credentials. Pi-owned execution/history, native rendering and physical-device acceptance are separate gates.
+Tests use owned disposable directories/processes, not live Mac state or deployment credentials. Native rendering, public Pi RPC admission and physical-device acceptance are separate gates.
+
+## Real interactive Pi in native PTYs
+
+From the repository root:
+
+```sh
+npm run test:pi-interactive
+npm run test:pi-discovery
+```
+
+The interactive command builds the fixture adapter against the **production Rust Manager/journal/forkpty**, then starts the user's ambient Pi CLI and installed managed extension in an actual interactive TUI. No print/JSON/RPC mode, SDK-created agent, bundled runtime or visual terminal is used. A controlled loopback model provider makes failures/races reproducible while actual Pi owns its agent loop, tools, queues, dialogs and canonical persistence. Private HOME/settings/session roots exclude live user credentials/history.
+
+**24 combined tests pass** after moving the extension to `pi-axo/` (the earlier 23-case battery also passed two consecutive full runs): TUI/TTY/PID proof, public message and terminal input convergence, Unicode history/real bash, steering/normal intent, streamed and tool cancellation, real dialogs, sibling/session isolation, detach/resize/backlog, exact resume, bad bindings, concurrent/stale/invalid controls, same-pane writer exclusion, provider failure, a real input hook consuming a void dispatch without execution/replay, real tool fd isolation, owned stop and Pi-initiated shutdown. Terminal bytes are drained/count-discarded, never interpreted as structured control or readiness. Fixtures clean only their owned roots/groups/handles and do not print transcript/terminal bodies.
+
+Actual interactive abort removes queued steering from execution; a regression verifies subsequent normal input does not deliver it. This differs from the removed headless controller's findings. Public API dispatch is not execution completion.
+
+**Scope:** the test adapter reaches the real manager and TUI extension through private fixture framing, not `axod serve`'s public local/cloud WebSockets or a product CLI. It does not prove production session admission, cross-pane/unmanaged canonical-file writer exclusivity, durable chat receipts, remotely answerable generic questions, crash durability or Ghostty rendering. Resume prechecks are fixture policy. See [Pi seam details](../pi/README.md) for architecture and residual gates. The six discovery cases are dependency policy only, not extra Pi execution tests.
 
 ## Rust domain and process tests
 
@@ -11,7 +28,7 @@ cargo test --locked --offline
 cargo clippy --locked --offline --all-targets -- -D warnings
 ```
 
-These cover typed boundaries, runtime/work receipts, corruption/persistence fencing, private files, real PTYs, attachment/input/resize, slow readers, final output, descendants and stopped/recovery states. The `tests/fixtures/` programs are process fixtures, **not fake Pi sessions**.
+These cover typed boundaries, runtime/work receipts, corruption/persistence fencing, private files, real PTYs, attachment/input/resize, slow readers, final output, descendants and stopped/recovery states. The `tests/fixtures/` programs are process fixtures, **not fake Pi sessions**. Explicit controlled launches additionally verify fd-3 socket/TTY preservation, unrelated fd closure, CLOEXEC and immutable controlled-versus-ordinary intent; dropping/reconciling the channel cannot create another writer or stop work.
 
 ## Property/fuzz and commit-window hardening
 
@@ -35,7 +52,7 @@ Rust `proptest` exercises bounded UTF-8 input, exact IEEE-754 round trips, encod
 
 Test-only, thread-local hooks inject failures before file sync, before atomic rename and immediately after rename. The store must fence memory, retain known receipt reads and reject further mutations; reopening observes only the old or new atomic record/receipt pair. Exhaustive byte truncation of a synthetic store and individual receipt-invariant corruption must reject startup, never regenerate empty state. Ownership contention is distinguished from corruption; only disposable test roots may briefly wait for inherited CLOEXEC locks during parallel PTY forks. Production ownership acquisition remains fail-closed, with no command retry.
 
-**Evidence limits:** injected post-rename failure and same-kernel reopen do not prove power-loss durability or actual directory-fsync recovery. This is bounded generated testing, not coverage-guided libFuzzer, exhaustive correctness, production hardening, orphan containment or a fix for every compiler/Worker contention stall. Abrupt death at process/spawn/fsync boundaries, escaped descendants, soak/resource-exhaustion campaigns and native/Pi acceptance remain open.
+**Evidence limits:** injected post-rename failure and same-kernel reopen do not prove power-loss durability or actual directory-fsync recovery. This is bounded generated testing, not coverage-guided libFuzzer, exhaustive correctness, production hardening, orphan containment or a fix for every compiler/Worker contention stall. Abrupt death at process/spawn/fsync boundaries, escaped descendants, soak/resource-exhaustion campaigns and native/public-Pi admission remain open.
 
 ## Actual daemon RPC tests
 

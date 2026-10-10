@@ -82,6 +82,25 @@ impl ChildPid {
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub struct ClientId(pub(crate) u64);
+impl ClientId {
+    /// In-process terminal lease owner, not authentication or a caller-supplied wire ID.
+    pub fn new() -> Self {
+        static NEXT: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(1);
+        Self(
+            NEXT.try_update(
+                std::sync::atomic::Ordering::Relaxed,
+                std::sync::atomic::Ordering::Relaxed,
+                |id| id.checked_add(1),
+            )
+            .expect("Client identity capacity"),
+        )
+    }
+}
+impl Default for ClientId {
+    fn default() -> Self {
+        Self::new()
+    }
+}
 
 /// Construct once at the resize boundary; downstream PTY operations receive valid dimensions.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]

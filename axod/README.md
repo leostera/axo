@@ -19,7 +19,7 @@ npm --prefix ../sites/api.axo.leostera.dev run test:axod
 npm --prefix ../sites/api.axo.leostera.dev test
 ```
 
-The [coverage guide](tests/README.md) separates domain/real-process tests, exhaustive exposed-RPC coverage and unsupported future Pi/chat methods. Offline commands require cached dependencies. Python tests build the daemon and use owned, disposable real terminal children in private temporary directories. They are not fabricated Pi transcripts, real-provider tests, or native application acceptance.
+The [coverage guide](tests/README.md) separates domain/real-process tests, exhaustive exposed-RPC coverage and unsupported future Pi/chat methods. `npm run test:pi-interactive` now exercises 24 real ambient-Pi TUI/native-PTY cases through the production manager and installed extension, without a visual terminal; public WebSocket chat wiring remains pending. Offline commands require cached dependencies. Rust lifecycle tests use owned, disposable real Python terminal children in private temporary directories; these generic fixtures are not Pi transcripts or native application acceptance.
 
 ## Run explicitly
 

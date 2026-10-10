@@ -44,6 +44,14 @@ Evidence retained: `axod/pi/ambient.ts`, `axod/tests/pi/ambient.test.ts`; `npm r
 
 Historical `c8f72f9` characterized headless Pi RPC, but bypassed the intended Rust-daemon/PTY/TUI-extension path. Its idle-steering, abort-queue and RPC-dialog observations must be revalidated against the public APIs of the interactive extension; they do not prove TUI controls or generic approval parity. The removed tests are not current product coverage. See `axod/pi/README.md` for the intended path.
 
+### Actual interactive PTY foundation
+
+- [x] Production Rust native PTY/manager/journal controlled launch with an owner-only anonymous fd-3 socket, unrelated descriptor closure and immutable controlled-versus-ordinary launch intent.
+- [x] Pi-loaded TypeScript extension in `pi-axo/`, using public APIs inside actual ambient interactive Pi; no separate engine, terminal parsing or transcript writer.
+- [x] 24 combined real TUI/native-PTY tests: readiness/TTY/PID, actual tools/history, steering/cancel/dialogs, detach/resize, exact resume, independent sessions, stale/concurrent/invalid controls, provider/input-hook failures, stop/shutdown and tool-child fd exclusion.
+
+Evidence: `npm run test:pi-interactive`; 24-case run passed after extension relocation, with the preceding 23-case suite passing twice consecutively. Rust domain/process/relay regressions: 47 tests; dedicated daemon local/cloud regressions: 41 tests/subtests. The battery uses a test-only process adapter around the **production Manager**, not yet public WebSocket Pi controls or a product CLI. Its TypeScript orchestration and Python generic process fixtures are transitional; move daemon/CLI orchestration and child fixtures to Rust. Fixture resume policy and per-pane writer exclusion do not prove production canonical binding/writer admission. Interactive abort removes queued steering from execution, unlike the discarded headless observations; an actual consumed input-hook dispatch is conservatively fenced, never fabricated execution or replay.
+
 - [ ] Add a small actual Rust CLI using the same addressed public Axo WebSocket RPC as native clients; no direct Pi RPC shortcut.
 - [ ] Use that CLI in owned real-`axod` integration tests: explicit session start launches ambient Pi's interactive TUI in a native PTY, with a managed Axo extension controlling **that same Pi process**. Exercise real messages/tools, steering/cancel/history/exact resume, not terminal-text parsing or a fake agent harness.
 

@@ -136,8 +136,19 @@ impl Journal {
         target: TerminalTarget,
         launch: &TerminalLaunch,
     ) -> Result<Option<RuntimeRef>, ErrorCode> {
+        self.lookup_mode(command, target, launch, false)
+    }
+    pub(crate) fn lookup_mode(
+        &self,
+        command: CommandId,
+        target: TerminalTarget,
+        launch: &TerminalLaunch,
+        controlled: bool,
+    ) -> Result<Option<RuntimeRef>, ErrorCode> {
         match self.saved.receipts.get(&command) {
-            Some(receipt) if receipt.fingerprint == fingerprint(target, launch) => {
+            Some(receipt)
+                if receipt.fingerprint == launch_fingerprint(target, launch, controlled) =>
+            {
                 Ok(Some(receipt.runtime))
             }
             Some(_) => Err(ErrorCode::Conflict),
@@ -150,11 +161,20 @@ impl Journal {
         runtime: RuntimeRef,
         launch: &TerminalLaunch,
     ) -> Result<(), ErrorCode> {
+        self.prepare_mode(command, runtime, launch, false)
+    }
+    pub(crate) fn prepare_mode(
+        &mut self,
+        command: CommandId,
+        runtime: RuntimeRef,
+        launch: &TerminalLaunch,
+        controlled: bool,
+    ) -> Result<(), ErrorCode> {
         if self.poisoned {
             return Err(ErrorCode::StorageFailed);
         }
         // A receipt is immutable even when the caller bypasses Manager's reconciliation path.
-        if let Some(previous) = self.lookup(command, runtime.target, launch)? {
+        if let Some(previous) = self.lookup_mode(command, runtime.target, launch, controlled)? {
             return if previous == runtime {
                 Ok(())
             } else {
@@ -185,7 +205,7 @@ impl Journal {
         next.receipts.insert(
             command,
             Receipt {
-                fingerprint: fingerprint(runtime.target, launch),
+                fingerprint: launch_fingerprint(runtime.target, launch, controlled),
                 runtime,
             },
         );
@@ -243,6 +263,14 @@ fn legal_transition(previous: &ProcessState, next: &ProcessState) -> bool {
     }
 }
 
+fn launch_fingerprint(target: TerminalTarget, launch: &TerminalLaunch, controlled: bool) -> String {
+    let original = fingerprint(target, launch);
+    if controlled {
+        format!("controlled:{original}")
+    } else {
+        original
+    }
+}
 fn fingerprint(target: TerminalTarget, launch: &TerminalLaunch) -> String {
     let data = serde_json::to_vec(&(target, launch)).expect("Domain values serialize");
     format!("{:x}", Sha256::digest(data))

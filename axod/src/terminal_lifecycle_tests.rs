@@ -92,6 +92,38 @@ fn channel() -> (Sink, mpsc::Receiver<Frame>) {
 }
 
 #[test]
+fn control_channel_is_an_immutable_launch_intent_not_a_reconnectable_view() {
+    let f = Fixture::new();
+    let command = CommandId::new();
+    let target = TerminalTarget {
+        session_id: SessionId::new(),
+        pane_id: PaneId::new(),
+    };
+    let launch = TerminalLaunch {
+        directory: f.root.to_str().unwrap().into(),
+        argv: vec!["/bin/sh".into(), "-c".into(), "sleep 30".into()],
+    };
+    let (terminal, channel) = f
+        .manager
+        .start_with_control(command, target, &launch)
+        .unwrap();
+    assert!(matches!(
+        f.manager.start(command, target, &launch),
+        Err(ErrorCode::Conflict)
+    ));
+    assert!(matches!(
+        f.manager.start_with_control(command, target, &launch),
+        Err(ErrorCode::RecoveryRequired)
+    ));
+    drop(channel);
+    assert_eq!(f.manager.list().len(), 1);
+    assert_eq!(f.manager.list()[0].runtime, terminal.runtime);
+    assert!(matches!(
+        f.manager.list()[0].process,
+        ProcessState::Running { .. }
+    ));
+}
+#[test]
 fn input_resize_disconnect_and_attachment_generations_are_fenced() {
     let f = Fixture::new();
     let (one, state) = f.ticking("one.json", false);

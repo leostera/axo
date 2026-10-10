@@ -3,6 +3,7 @@ use std::ffi::CString;
 use std::fs::File;
 use std::io;
 use std::os::fd::{AsRawFd, FromRawFd};
+use std::os::unix::net::UnixStream;
 use std::path::Path;
 
 pub struct ChildTerminal {
@@ -11,6 +12,22 @@ pub struct ChildTerminal {
 }
 
 pub fn spawn(cwd: &str, argv: &[String]) -> io::Result<ChildTerminal> {
+    spawn_inner(cwd, argv, None)
+}
+
+/// Explicit managed launch only. The private worker endpoint becomes fd 3;
+/// all other nonstandard inherited descriptors are still closed before exec.
+pub fn spawn_with_control(cwd: &str, argv: &[String]) -> io::Result<(ChildTerminal, UnixStream)> {
+    let (controller, worker) = UnixStream::pair()?;
+    let child = spawn_inner(cwd, argv, Some(&worker))?;
+    drop(worker);
+    Ok((child, controller))
+}
+fn spawn_inner(
+    cwd: &str,
+    argv: &[String],
+    control: Option<&UnixStream>,
+) -> io::Result<ChildTerminal> {
     validate_launch(cwd, argv)?;
     let directory = c_string(cwd)?;
     let arguments: Vec<CString> = argv
@@ -28,6 +45,7 @@ pub fn spawn(cwd: &str, argv: &[String]) -> io::Result<ChildTerminal> {
     };
     let descriptor_ceiling = child_descriptor_ceiling()?;
     let executable = arguments[0].as_ptr();
+    let control_fd = control.map(AsRawFd::as_raw_fd);
     let mut controller_fd = -1;
     // Prepare all Rust-owned memory BEFORE fork. The child calls only libc then exec/_exit:
     // no allocator, mutex, logging, or Rust destructor after a multithreaded fork.
@@ -46,7 +64,13 @@ pub fn spawn(cwd: &str, argv: &[String]) -> io::Result<ChildTerminal> {
         unsafe {
             // Library-created descriptors may lack CLOEXEC (e.g. Darwin's cached netsrc socket).
             // Close the inherited nonstandard table, not just descriptors this manager created.
-            for descriptor in 3..descriptor_ceiling {
+            if let Some(descriptor) = control_fd
+                && (libc::dup2(descriptor, 3) < 0 || libc::fcntl(3, libc::F_SETFD, 0) < 0)
+            {
+                libc::_exit(126);
+            }
+            let first_closed = if control_fd.is_some() { 4 } else { 3 };
+            for descriptor in first_closed..descriptor_ceiling {
                 while libc::close(descriptor) < 0 {
                     let error = *libc::__error();
                     if error == libc::EBADF {
@@ -195,6 +219,39 @@ fn null_terminated_pointers(values: &[CString]) -> Vec<*const libc::c_char> {
 mod tests {
     use super::*;
 
+    #[test]
+    fn controlled_launch_keeps_only_the_explicit_socket_and_real_terminal_streams() {
+        use std::io::{Read, Write};
+        use std::time::Duration;
+        let source = File::open("/dev/null").unwrap();
+        let descriptor = unsafe { libc::fcntl(source.as_raw_fd(), libc::F_DUPFD, 200) };
+        assert!(descriptor >= 200);
+        let inherited = unsafe { File::from_raw_fd(descriptor) };
+        let script = format!(
+            "import os,sys\nassert os.isatty(0) and os.isatty(1) and os.isatty(2)\ntry: os.fstat({descriptor})\nexcept OSError: pass\nelse: sys.exit(9)\nos.write(3,b'ready')\nsys.exit(0 if os.read(3,1)==b'x' else 8)\n"
+        );
+        let (terminal, mut channel) =
+            spawn_with_control("/tmp", &["/usr/bin/python3".into(), "-c".into(), script]).unwrap();
+        assert_ne!(
+            unsafe { libc::fcntl(channel.as_raw_fd(), libc::F_GETFD) } & libc::FD_CLOEXEC,
+            0
+        );
+        channel
+            .set_read_timeout(Some(Duration::from_secs(3)))
+            .unwrap();
+        let mut ready = [0; 5];
+        channel.read_exact(&mut ready).unwrap();
+        assert_eq!(&ready, b"ready");
+        channel.write_all(b"x").unwrap();
+        let mut status = 0;
+        assert_eq!(
+            unsafe { libc::waitpid(terminal.pid.as_raw(), &mut status, 0) },
+            terminal.pid.as_raw()
+        );
+        assert!(libc::WIFEXITED(status));
+        assert_eq!(libc::WEXITSTATUS(status), 0);
+        drop(inherited);
+    }
     #[test]
     fn child_closes_inheritable_descriptors_not_created_by_the_runtime() {
         let source = File::open("/dev/null").unwrap();

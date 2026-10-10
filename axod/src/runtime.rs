@@ -3,6 +3,7 @@ use std::collections::{BTreeMap, VecDeque};
 use std::fs::File;
 use std::io::{self, Read, Write};
 use std::os::fd::AsRawFd;
+use std::os::unix::net::UnixStream;
 use std::sync::{
     Arc, Mutex,
     atomic::{AtomicBool, Ordering},
@@ -352,6 +353,27 @@ impl Manager {
         target: TerminalTarget,
         launch: &TerminalLaunch,
     ) -> Result<TerminalSnapshot, ErrorCode> {
+        self.start_inner(command, target, launch, false)
+            .map(|(terminal, _)| terminal)
+    }
+    /// The daemon owner receives the anonymous control endpoint, never a viewing client.
+    /// Reconciliation cannot recreate/retarget an already-issued endpoint.
+    pub fn start_with_control(
+        &self,
+        command: CommandId,
+        target: TerminalTarget,
+        launch: &TerminalLaunch,
+    ) -> Result<(TerminalSnapshot, UnixStream), ErrorCode> {
+        let (terminal, channel) = self.start_inner(command, target, launch, true)?;
+        Ok((terminal, channel.ok_or(ErrorCode::RecoveryRequired)?))
+    }
+    fn start_inner(
+        &self,
+        command: CommandId,
+        target: TerminalTarget,
+        launch: &TerminalLaunch,
+        controlled: bool,
+    ) -> Result<(TerminalSnapshot, Option<UnixStream>), ErrorCode> {
         let _admission = self.admission.lock().unwrap();
         {
             let work = self.work.lock().unwrap();
@@ -370,9 +392,11 @@ impl Manager {
             .journal
             .lock()
             .unwrap()
-            .lookup(command, target, launch)?;
+            .lookup_mode(command, target, launch, controlled)?;
         if let Some(previous) = previous {
-            return self.reconcile_start(previous, &terminals);
+            return self
+                .reconcile_start(previous, &terminals)
+                .map(|terminal| (terminal, None));
         }
         check_launch_admission(&terminals, target)?;
         let reference = RuntimeRef {
@@ -383,9 +407,9 @@ impl Manager {
         self.journal
             .lock()
             .unwrap()
-            .prepare(command, reference, launch)?;
+            .prepare_mode(command, reference, launch, controlled)?;
         // Intent precedes fork; child supervision must start even if its Running commit fails.
-        let spawned = self.spawn_terminal(reference, launch)?;
+        let (spawned, channel) = self.spawn_terminal(reference, launch, controlled)?;
         let terminal = spawned.terminal.clone();
         terminals.insert(target.pane_id, terminal.clone());
         let persisted = self
@@ -395,7 +419,7 @@ impl Manager {
             .update(reference, ProcessState::Running { pid: spawned.pid });
         spawned.supervise();
         persisted?;
-        Ok(terminal.snapshot())
+        Ok((terminal.snapshot(), channel))
     }
 
     fn reconcile_start(
@@ -429,9 +453,19 @@ impl Manager {
         &self,
         reference: RuntimeRef,
         launch: &TerminalLaunch,
-    ) -> Result<SpawnedTerminal, ErrorCode> {
-        match pty::spawn(&launch.directory, &launch.argv) {
-            Ok(child) => Ok(SpawnedTerminal::new(reference, child, self.journal.clone())),
+        controlled: bool,
+    ) -> Result<(SpawnedTerminal, Option<UnixStream>), ErrorCode> {
+        let child = if controlled {
+            pty::spawn_with_control(&launch.directory, &launch.argv)
+                .map(|(child, channel)| (child, Some(channel)))
+        } else {
+            pty::spawn(&launch.directory, &launch.argv).map(|child| (child, None))
+        };
+        match child {
+            Ok((child, channel)) => Ok((
+                SpawnedTerminal::new(reference, child, self.journal.clone()),
+                channel,
+            )),
             Err(_) => {
                 self.journal
                     .lock()
