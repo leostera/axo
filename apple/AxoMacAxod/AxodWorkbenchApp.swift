@@ -13,6 +13,6 @@ struct AxodWorkbenchApp: App {
                     coordinator.connect()
                 }
         }
-        .defaultSize(width: 1040, height: 700)
+        .defaultSize(width: 1280, height: 780)
     }
 }

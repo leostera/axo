@@ -19,6 +19,7 @@ final class AxodWorkbenchCoordinator {
     private(set) var sessions: [WorkSessionRecord] = []
     private(set) var runtimes: [TerminalSnapshot] = []
     private(set) var selectedWorkspaceID: UUID?
+    private(set) var selectedSessionID: UUID?
     private(set) var nextWorkspaceCursor: WorkPageCursor?
     private(set) var nextSessionCursor: WorkPageCursor?
     private(set) var nextRuntimeID: UUID?
@@ -119,6 +120,7 @@ final class AxodWorkbenchCoordinator {
         sessions = []
         runtimes = []
         selectedWorkspaceID = nil
+        selectedSessionID = nil
         nextWorkspaceCursor = nil
         nextSessionCursor = nil
         nextRuntimeID = nil
@@ -151,6 +153,7 @@ final class AxodWorkbenchCoordinator {
 
     func selectWorkspace(_ workspaceID: UUID?) {
         selectedWorkspaceID = workspaceID
+        selectedSessionID = nil
         sessions = []
         nextSessionCursor = nil
         let load = UUID()
@@ -171,6 +174,7 @@ final class AxodWorkbenchCoordinator {
                       self.sessionLoadGeneration == load,
                       self.selectedWorkspaceID == workspaceID else { return }
                 self.sessions = result.sessions
+                self.selectedSessionID = result.sessions.first?.sessionId
                 self.nextSessionCursor = result.next
             } catch {
                 guard self.isCurrent(operation, connection: connection, endpoint: endpoint),
@@ -178,6 +182,12 @@ final class AxodWorkbenchCoordinator {
                 self.message = "Could not load this workspace's sessions. Refresh to reconcile the current revision."
             }
         }
+    }
+
+    /// Selecting a record changes only the metadata detail; it is never process-launch intent.
+    func selectSession(_ sessionID: UUID) {
+        guard sessions.contains(where: { $0.sessionId == sessionID }) else { return }
+        selectedSessionID = sessionID
     }
 
     func loadMoreWorkspaces() {
@@ -222,6 +232,9 @@ final class AxodWorkbenchCoordinator {
                       self.sessionLoadGeneration == load,
                       self.selectedWorkspaceID == workspaceID else { return }
                 self.sessions.append(contentsOf: result.sessions)
+                if self.selectedSessionID == nil {
+                    self.selectedSessionID = result.sessions.first?.sessionId
+                }
                 self.nextSessionCursor = result.next
             } catch {
                 guard self.operationGeneration == operation,
@@ -363,6 +376,7 @@ final class AxodWorkbenchCoordinator {
         } else {
             self.selectedWorkspaceID = workspaces.workspaces.first?.workspaceId
             sessions = []
+            selectedSessionID = nil
             nextSessionCursor = nil
             if let selectedWorkspaceID {
                 await loadInitialSessions(selectedWorkspaceID, over: connection, endpoint: endpoint, operation: operation)
@@ -392,6 +406,9 @@ final class AxodWorkbenchCoordinator {
                   selectedWorkspaceID == workspaceID,
                   sessionLoadGeneration == load else { return }
             sessions = result.sessions
+            if !result.sessions.contains(where: { $0.sessionId == selectedSessionID }) {
+                selectedSessionID = result.sessions.first?.sessionId
+            }
             nextSessionCursor = result.next
         } catch {
             guard operationGeneration == operation else { return }
