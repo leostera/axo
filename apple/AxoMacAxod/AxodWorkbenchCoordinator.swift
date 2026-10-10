@@ -957,6 +957,7 @@ final class AxodWorkbenchCoordinator {
             self.stateDirectory = stateDirectory
 
             let previous = try stateDirectory.readEndpoint()
+            var repairedRegistration = false
             if let previous {
                 do {
                     try await connect(to: previous, stateDirectory: stateDirectory, operation: operation)
@@ -965,21 +966,50 @@ final class AxodWorkbenchCoordinator {
                     throw AxodWorkbenchError.protocolMismatch
                 } catch {
                     try requireCurrent(operation)
-                    message = "The discovered endpoint is stale. Waiting for the registered Axod service to publish its current boot."
+                    // A live owner is not a stale-file problem and must never be unregistered here.
+                    guard try await repairOwnerlessDaemonService(in: stateDirectory, operation: operation) else { throw error }
+                    repairedRegistration = true
                 }
             }
 
-            let discovered = try await waitForEndpoint(
-                in: stateDirectory,
-                replacing: previous,
-                operation: operation
-            )
+            let discovered: LocalDaemonEndpoint
+            do {
+                discovered = try await waitForEndpoint(in: stateDirectory, replacing: previous, operation: operation)
+            } catch {
+                guard !repairedRegistration,
+                      try await repairOwnerlessDaemonService(in: stateDirectory, operation: operation) else { throw error }
+                discovered = try await waitForEndpoint(in: stateDirectory, replacing: previous, operation: operation)
+            }
             try await connect(to: discovered, stateDirectory: stateDirectory, operation: operation)
         } catch {
             guard operationGeneration == operation else { return }
             connectionState = .failed(error.localizedDescription)
             message = error.localizedDescription
         }
+    }
+
+    private func repairOwnerlessDaemonService(in stateDirectory: AxodStateDirectory, operation: UUID) async throws -> Bool {
+        try requireCurrent(operation)
+        let service = SMAppService.agent(plistName: Self.axodAgentPlistName)
+        guard Bundle.main.bundleIdentifier == "dev.leostera.axo.mac" else { return false }
+        let needsRemoval: Bool
+        switch service.status {
+        case .enabled, .notFound: needsRemoval = true
+        case .notRegistered: needsRemoval = false
+        case .requiresApproval: return false
+        @unknown default: return false
+        }
+        guard let absence = try AxodOwnerAbsenceLease.acquire(in: stateDirectory.root) else { return false }
+        defer { absence.release() }
+        message = "Repairing the stopped axod service registration for this app bundle."
+        if needsRemoval { try await service.unregister() }
+        // Finish the captured registration repair even if a newer connect supersedes its UI.
+        // Registration may launch immediately. Release only after the old job is removed.
+        absence.release()
+        try service.register()
+        try requireCurrent(operation)
+        updateDaemonServiceMessage(for: service.status)
+        return true
     }
 
     private func connect(

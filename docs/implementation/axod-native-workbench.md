@@ -21,7 +21,7 @@ The operator wants `dist/Axo.app` to replace the former daily workbench so Axo c
 - Swift session parsing now includes typed, bounded shell-pane projections and checks session/pane ownership, unique IDs and exact terminal references. Previously Swift rejected the daemon's `shellPanes` field; empty-catalog builds did not expose this.
 - Local terminal attachment is a backend gap, not just an unwired view.
 - Archive/duplicate, attachments and explicit runtime/daemon stop need backend capability work.
-- API deployment and physical iOS installation succeeded during the baseline deployment. Mac packaging succeeded, but live helper replacement was **not** verified: the registered helper resolved a trashed older app and did not expose `axo.host.get`. Do not call this a completed live Mac upgrade or confirmed production cloud registration.
+- API deployment and physical iOS installation succeeded during the baseline deployment. Mac packaging succeeded, but live helper replacement was **not** verified: the registered helper resolved a trashed older app and did not expose `axo.host.get`. Do not call this a completed live Mac upgrade or confirmed production cloud registration. Native startup now attempts one ownerless registration repair under a validated exclusive `owner.lock` lease; it never unregisters an active owner based on discovery failure. The newer-app/live-older-daemon version comparison and atomic idle/quiesce upgrade handshake remain to implement.
 
 ## Validation
 
