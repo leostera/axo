@@ -104,6 +104,15 @@ Shell-pane checkpoint validation: **73 Rust tests** (64 library + 9 integration)
 - [ ] Local terminal attach/detach/resize contracts and separate bounded input/output channel. No control-frame terminal bytes or phone raw terminals.
 - [ ] Pinned Ghostty attachment, feature negotiation and truthful terminal-state recovery; validate real TUI, images, IME, paste, resize and detach/reconnect during work. Raw backlog is not a screen snapshot.
 
+### Completion and relay hardening checkpoint
+
+- [x] Require exact durable native completion and released owned resources for managed exact resume, stopped reads and stopped/failed admission; do not promote cached Pi readiness after native exit. Keep completed-control pruning proof-gated.
+- [x] Explicitly release cooperative writer locks before FD closure; duplicated-descriptor regression proves release and successor isolation without any PID signaling.
+- [x] Bound relay replies by actual single/batch wire shape, preserving original IDs as unknown outcomes instead of capacity-dropping clients. Verify deadline/late-success correlation cleanup and no automatic resend through an actual isolated Worker.
+- [x] Add shrinkable fixed-seed campaigns: 1,536 synthetic completion sequences and 12,000 relay framing/partial-serialization cases. Replay commands and evidence limits are in `axod/tests/README.md`.
+
+Validation: **78 Rust tests** (69 library + 9 integration), **21 protocol tests** with differential properties, and **85 full serial API tests/subtests** passed. Strict Clippy/fmt/release, schema, root/API typechecks and API source build passed. The initial parallel library run exposed close-only writer lease reacquisition failure; an explicit duplicated-FD regression establishes that failure mode, and subsequent full Rust runs pass with explicit unlock. These campaigns are bounded model/property fuzzing, not coverage-guided fuzzing, power-loss/escaped-descendant/crash/soak acceptance, Mac readiness or a live deployment. Remaining operational gates above remain open.
+
 ## 6. Native integration, files and operations
 
 - [ ] Shared `AxoProtocol` wire models and method validators; reuse `AxoCore` RPC client; private discovery validation and captured destinations after waits.

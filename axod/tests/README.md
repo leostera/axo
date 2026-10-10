@@ -78,6 +78,25 @@ Test-only, thread-local hooks inject failures before file sync, before atomic re
 
 **Evidence limits:** injected post-rename failure and same-kernel reopen do not prove power-loss durability or actual directory-fsync recovery. This is bounded generated testing, not coverage-guided libFuzzer, exhaustive correctness, production hardening, orphan containment or a fix for every compiler/Worker contention stall. Abrupt death at process/spawn/fsync boundaries, escaped descendants, soak/resource-exhaustion campaigns and native admission and the broader public-Pi crash/operational gates remain open.
 
+### Completion and relay framing campaigns
+
+Managed exact resume, stopped canonical reads and stopped admission require `Manager::runtime_completed`: the exact durable completed runtime and absence of owned live resources. An observed exit, EOF alone, an in-memory completion flag or failed persistence is insufficient. Synthetic tests cover drain/group/storage uncertainty and explicit cooperative lease release despite a duplicated open-file description; they never launch or signal their fixture PID.
+
+The completion state machine generates up to 23 observation/output/persistence/fault events, with independently varied output success and group certainty. Every step checks completion evidence, stopped admission and stale-runtime refusal. Three fixed-seed campaigns passed **1,536 sequences** (512 per seed). Repeat from Axo root:
+
+```sh
+for seed in 4282447 20261011 12648430; do
+  PROPTEST_CASES=512 PROPTEST_RNG_SEED="$seed" \
+    cargo test --manifest-path axod/Cargo.toml --locked --offline \
+    --lib completion_evidence_state_machine -- --test-threads=1 || exit 1
+done
+npm --prefix sites/api.axo.leostera.dev run test:properties
+```
+
+The relay campaign runs **12,000 cases** across the same three seeds: encoded bytes/JSON escaping/Unicode and numeric/null IDs, single-versus-batch wire shape, incremental partial-group serialization and repeated capacity reductions. Oversized results become correlated `-32004` outcomes, never replay permission; the real Worker test proves client/daemon routes remain usable and correlations are released. Mutation deadline/late-success tests verify no correlation resurrection or automatic resend. Those API endpoints are protocol fixtures, not execution evidence.
+
+Replay one relay property with `AXO_PROPERTY_SEED` and optional `AXO_PROPERTY_PATH`, using `tsx --test --test-name-pattern='seeded relay framing' tests/replies.property.test.ts` from the API directory. Failure diagnostics retain seed/path/shrinking but omit payload bodies. Rust completion counterexamples contain only synthetic event enums/booleans; normal proptest regression persistence and `PROPTEST_RNG_SEED` remain available. These bounded model/property campaigns are not coverage-guided fuzzing, real crash/power-loss drills or exhaustive correctness.
+
 ## Actual daemon RPC tests
 
 From the repository root:

@@ -15,6 +15,7 @@ The first isolated implementation slice of [RFD0008](../../docs/rfds/RFD0008-pri
 - [`src/axo-host-directory.ts`](src/axo-host-directory.ts): `AxoHostDirectory`, the bounded machine/principal projection and registration reservations.
 - [`src/axo-host-relay.ts`](src/axo-host-relay.ts): `AxoHostRelay`, the single per-host actor coordinating leases, hibernating sockets and durable correlations.
 - [`src/relay/peer.ts`](src/relay/peer.ts), [`src/relay/records.ts`](src/relay/records.ts): validated socket attachments and named SQL record types.
+- [`src/relay/replies.ts`](src/relay/replies.ts): encoded-wire reply group bounds with original-ID-preserving unknown outcomes; SQL storage shape is not the delivery shape.
 - [`src/access.ts`](src/access.ts): JWT signature/claim/role validation.
 - [`src/observability.ts`](src/observability.ts): allowlisted, metadata-only event logging.
 
@@ -56,6 +57,8 @@ The suite uses **Node test + Miniflare/workerd**, not a new test-framework migra
 ### API in isolation
 
 Tests open actual network sockets to the Worker. They sign ephemeral Access-shaped JWTs with a test RSA key and supply only a test JWKS through Miniflare's isolated outbound handler. No production auth bypass/test mode exists in the Worker; public validation remains in the path. Fake daemon endpoints are explicitly protocol fixtures, not claimed process/Pi execution.
+
+`npm run test:properties` runs two bounded relay framing campaigns across three fixed seeds (12,000 generated cases). They check Unicode/escaping/encoded-byte limits, numeric/null/Unicode IDs, single/batch shapes and partial-group serialization. Replay one property with `AXO_PROPERTY_SEED`/`AXO_PROPERTY_PATH`; diagnostics omit counterexample payloads. This is model/property fuzzing of production framing code, not coverage-guided or execution evidence. Oversized aggregate replies now reduce to bounded correlated unknown outcomes rather than dropping the client; real Worker tests verify route usability and cleanup. A mutation deadline test verifies late success cannot resurrect or resend its expired command. See [`axod/tests/README.md`](../../axod/tests/README.md) for campaign commands and limitations.
 
 Coverage includes invalid/forged/expired/ambiguous roles, multi-machine discovery, duplicate connections, case-normalized identities, request ID isolation, batches/null IDs/notifications, stale targets, malformed/oversized frames, delivery/deadline exhaustion, hibernation with pending/partial batches, cold service restart, generation pinning and no phantom active routes.
 

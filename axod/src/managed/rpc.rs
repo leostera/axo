@@ -397,10 +397,7 @@ fn canonical(
     if binding.target(machine, manager.generation) != target {
         return Err((-32002, "Stale stopped canonical destination"));
     }
-    if !matches!(
-        admission(manager, target.session_id, Some(target.runtime())),
-        Admission::Stopped | Admission::Failed
-    ) {
+    if !manager.runtime_completed(target.runtime()) {
         return Err((-32009, "Writer is not proven stopped"));
     }
     super::history::stopped(&binding).map_err(|_| (-32009, "Stopped canonical source unavailable"))

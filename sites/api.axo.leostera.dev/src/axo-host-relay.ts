@@ -26,6 +26,7 @@ import {
 import { peerSchema, type Peer, type CallerContext } from "./relay/peer";
 import type { Route, Group, Pending } from "./relay/records";
 import { recordApiEvent } from "./observability";
+import { boundReplyGroup } from "./relay/replies";
 
 export class AxoHostRelay extends DurableObject<Env> {
   private readonly rpc: JSONRPCServer<CallerContext>;
@@ -508,23 +509,18 @@ export class AxoHostRelay extends DurableObject<Env> {
     if (!group) return;
     const replies = JSON.parse(group.replies) as Reply[];
     replies.push(reply);
-    const encoded = JSON.stringify(replies);
-    if (new TextEncoder().encode(encoded).byteLength > LIMITS.frameBytes) {
-      const socket = this.socket(group.connection_id);
-      if (socket) this.drop(socket, 1009, "Response limit");
-      return;
-    }
+    const bounded = boundReplyGroup(replies, group.batch !== 0);
     if (group.remaining > 1) {
       sql.exec(
         "UPDATE groups SET remaining = remaining - 1, replies = ? WHERE group_id = ?",
-        encoded,
+        bounded.stored,
         groupId,
       );
       return;
     }
     sql.exec("DELETE FROM groups WHERE group_id = ?", groupId);
     const socket = this.socket(group.connection_id);
-    if (socket) this.send(socket, group.batch ? replies : replies[0]);
+    if (socket) this.send(socket, group.batch ? bounded.replies : bounded.replies[0]);
   }
   private send(socket: WebSocket, value: unknown): boolean {
     const raw = JSON.stringify(value);

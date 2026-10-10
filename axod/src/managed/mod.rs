@@ -22,7 +22,7 @@ pub(crate) enum Reservation {
     Existing(Box<Receipt>),
     New,
 }
-#[derive(Clone, Copy, Serialize)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub(crate) enum Admission {
     NotAdmitted,
@@ -92,17 +92,7 @@ fn start(
             },
             Some(binding),
         ) if binding.chat_id == *chat_id && binding.runtime == *previous_runtime => {
-            let stopped = manager
-                .list()
-                .into_iter()
-                .find(|terminal| terminal.runtime == binding.runtime)
-                .is_some_and(|terminal| {
-                    matches!(
-                        terminal.process,
-                        ProcessState::Exited { .. } | ProcessState::Failed { .. }
-                    )
-                });
-            if !stopped {
+            if !manager.runtime_completed(binding.runtime) {
                 return Err((-32009, "Previous writer is not proven stopped"));
             }
             manager
@@ -212,12 +202,7 @@ fn discard_completed_controls(manager: &Manager) {
     let completed = manager
         .list()
         .into_iter()
-        .filter(|terminal| {
-            matches!(
-                terminal.process,
-                ProcessState::Exited { .. } | ProcessState::Failed { .. }
-            )
-        })
+        .filter(|terminal| manager.runtime_completed(terminal.runtime))
         .map(|terminal| terminal.runtime)
         .collect::<Vec<_>>();
     manager
@@ -257,7 +242,15 @@ pub(crate) fn admission(
     session: SessionId,
     runtime: Option<RuntimeRef>,
 ) -> Admission {
-    if let Some(running) = manager.managed_live.lock().unwrap().get(&session).cloned()
+    let process = runtime.and_then(|runtime| {
+        manager
+            .list()
+            .into_iter()
+            .find(|terminal| terminal.runtime == runtime)
+            .map(|terminal| terminal.process)
+    });
+    if matches!(process, Some(ProcessState::Running { .. }))
+        && let Some(running) = manager.managed_live.lock().unwrap().get(&session).cloned()
         && Some(running.binding.runtime) == runtime
         && !manager.managed.lock().unwrap().is_fenced()
         && running.control.current().is_ok_and(|state| !state.recovery)
@@ -267,14 +260,13 @@ pub(crate) fn admission(
     let Some(runtime) = runtime else {
         return Admission::NotAdmitted;
     };
-    match manager
-        .list()
-        .into_iter()
-        .find(|terminal| terminal.runtime == runtime)
-        .map(|terminal| terminal.process)
-    {
-        Some(ProcessState::Exited { .. }) => Admission::Stopped,
-        Some(ProcessState::Failed { .. }) => Admission::Failed,
+    match process {
+        Some(ProcessState::Exited { .. }) if manager.runtime_completed(runtime) => {
+            Admission::Stopped
+        }
+        Some(ProcessState::Failed { .. }) if manager.runtime_completed(runtime) => {
+            Admission::Failed
+        }
         _ => Admission::RecoveryRequired,
     }
 }

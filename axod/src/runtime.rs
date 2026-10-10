@@ -1031,6 +1031,27 @@ mod tests {
                 directory,
             }
         }
+        fn observation_manager(&self) -> Manager {
+            // Synthetic observation only. Never launch, stop, adopt or signal the fixture PID.
+            let journal = self.terminal.journal.lock().unwrap();
+            Manager {
+                generation: self.terminal.reference.host_generation,
+                journal: self.terminal.journal.clone(),
+                work: journal.work.clone(),
+                managed: journal.managed.clone(),
+                panes: journal.panes.clone(),
+                managed_policy: Mutex::new(None),
+                managed_live: Mutex::new(BTreeMap::new()),
+                managed_start: Mutex::new(()),
+                pane_operation: Mutex::new(()),
+                admission: Mutex::new(()),
+                terminals: Mutex::new(BTreeMap::from([(
+                    self.terminal.reference.target.pane_id,
+                    self.terminal.clone(),
+                )])),
+                stopping: AtomicBool::new(false),
+            }
+        }
         fn saved_process(&self) -> ProcessState {
             self.terminal.journal.lock().unwrap().snapshots()[0]
                 .process
@@ -1043,6 +1064,137 @@ mod tests {
         }
     }
 
+    #[derive(Clone, Debug)]
+    enum CompletionEvent {
+        ObserveExit,
+        FinishOutput,
+        Persist,
+        FailStorage,
+    }
+
+    proptest::proptest! {
+        #![proptest_config(proptest::test_runner::Config { max_shrink_iters: 4096, ..proptest::test_runner::Config::default() })]
+        #[test]
+        fn completion_evidence_state_machine(
+            group_empty in proptest::bool::ANY,
+            clean_output in proptest::bool::ANY,
+            events in proptest::collection::vec(proptest::prop_oneof![
+                proptest::strategy::Just(CompletionEvent::ObserveExit),
+                proptest::strategy::Just(CompletionEvent::FinishOutput),
+                proptest::strategy::Just(CompletionEvent::Persist),
+                proptest::strategy::Just(CompletionEvent::FailStorage)
+            ], 0..24)
+        ) {
+            let fixture = CompletionFixture::new();
+            let manager = fixture.observation_manager();
+            let runtime = fixture.terminal.reference;
+            let mut exited = false; let mut output_finished = false; let mut faulted = false;
+            for event in events {
+                match event {
+                    CompletionEvent::ObserveExit => {
+                        fixture.observe_exit(); exited = true;
+                        if !group_empty { fixture.terminal.state.lock().unwrap().process_group = ProcessGroupState::Uncertain; }
+                        fixture.terminal.record_completion();
+                    }
+                    CompletionEvent::FinishOutput => {
+                        output_finished = true;
+                        fixture.terminal.finish_output(if clean_output { OutputState::Closed } else { OutputState::Failed });
+                    }
+                    CompletionEvent::Persist => fixture.terminal.record_completion(),
+                    CompletionEvent::FailStorage => {
+                        if !faulted {
+                            let path = fixture.directory.path().join("runtime-state.json");
+                            std::fs::remove_file(&path).unwrap(); std::fs::create_dir(path).unwrap(); faulted = true;
+                        }
+                        fixture.terminal.record_completion();
+                    }
+                }
+                let expected = exited && output_finished && group_empty && clean_output && !faulted;
+                proptest::prop_assert_eq!(manager.runtime_completed(runtime), expected);
+                proptest::prop_assert_eq!(manager.completion_evidence(runtime).is_some(), expected);
+                let admission = crate::managed::admission(&manager, runtime.target.session_id, Some(runtime));
+                proptest::prop_assert_eq!(admission, if expected { crate::managed::Admission::Stopped } else { crate::managed::Admission::RecoveryRequired });
+                let mut stale = runtime; stale.runtime_generation = RuntimeGeneration::new();
+                proptest::prop_assert!(!manager.runtime_completed(stale));
+            }
+        }
+    }
+
+    #[test]
+    fn visible_exit_cannot_authorize_stopped_pi_reads_resume_or_resource_completion() {
+        let fixture = CompletionFixture::new();
+        let manager = fixture.observation_manager();
+        let runtime = fixture.terminal.reference;
+        fixture.observe_exit();
+        assert!(matches!(
+            manager.list()[0].process,
+            ProcessState::Exited { .. }
+        ));
+        assert!(!manager.runtime_completed(runtime));
+        assert!(manager.completion_evidence(runtime).is_none());
+        assert_eq!(
+            crate::managed::admission(&manager, runtime.target.session_id, Some(runtime)),
+            crate::managed::Admission::RecoveryRequired
+        );
+        fixture.terminal.record_completion();
+        assert!(!manager.runtime_completed(runtime));
+        fixture.terminal.finish_output(OutputState::Closed);
+        assert!(manager.runtime_completed(runtime));
+        assert_eq!(
+            manager.completion_evidence(runtime).unwrap().runtime(),
+            runtime
+        );
+        assert_eq!(
+            crate::managed::admission(&manager, runtime.target.session_id, Some(runtime)),
+            crate::managed::Admission::Stopped
+        );
+        let mut stale = runtime;
+        stale.runtime_generation = RuntimeGeneration::new();
+        assert!(!manager.runtime_completed(stale));
+    }
+    #[test]
+    fn in_memory_completion_without_the_exact_durable_disposition_is_not_evidence() {
+        let fixture = CompletionFixture::new();
+        let manager = fixture.observation_manager();
+        let runtime = fixture.terminal.reference;
+        fixture.observe_exit();
+        {
+            let mut state = fixture.terminal.state.lock().unwrap();
+            state.output = OutputState::Closed;
+            state.completion = CompletionPersistence::Recorded;
+        }
+        assert!(!fixture.terminal.owns_live_resources());
+        assert!(
+            !manager.runtime_completed(runtime),
+            "Unpersisted visible exit became a completion witness"
+        );
+        assert_eq!(
+            crate::managed::admission(&manager, runtime.target.session_id, Some(runtime)),
+            crate::managed::Admission::RecoveryRequired
+        );
+        fixture.terminal.record_completion();
+        assert!(manager.runtime_completed(runtime));
+    }
+    #[test]
+    fn completion_persistence_failure_cannot_be_reported_as_stopped_pi() {
+        let fixture = CompletionFixture::new();
+        let manager = fixture.observation_manager();
+        let runtime = fixture.terminal.reference;
+        let path = fixture.directory.path().join("runtime-state.json");
+        std::fs::remove_file(&path).unwrap();
+        std::fs::create_dir(path).unwrap();
+        fixture.observe_exit();
+        fixture.terminal.finish_output(OutputState::Closed);
+        assert!(matches!(
+            manager.list()[0].process,
+            ProcessState::Exited { .. }
+        ));
+        assert!(manager.completion_evidence(runtime).is_none());
+        assert_eq!(
+            crate::managed::admission(&manager, runtime.target.session_id, Some(runtime)),
+            crate::managed::Admission::RecoveryRequired
+        );
+    }
     #[test]
     fn reaped_child_is_uncertain_until_terminal_eof_then_becomes_clean() {
         let fixture = CompletionFixture::new();
@@ -1087,6 +1239,13 @@ mod tests {
             ProcessState::RecoveryRequired {}
         );
         assert!(fixture.terminal.owns_live_resources());
+        let manager = fixture.observation_manager();
+        let runtime = fixture.terminal.reference;
+        assert!(manager.completion_evidence(runtime).is_none());
+        assert_eq!(
+            crate::managed::admission(&manager, runtime.target.session_id, Some(runtime)),
+            crate::managed::Admission::RecoveryRequired
+        );
     }
 
     #[test]

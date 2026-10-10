@@ -13,7 +13,15 @@ use std::{
     path::{Path, PathBuf},
 };
 pub struct WriterLease {
-    _file: File,
+    file: File,
+}
+impl Drop for WriterLease {
+    fn drop(&mut self) {
+        // Fork can briefly duplicate this open-file description before child FD cleanup.
+        // Release our cooperative ownership explicitly, not when the last duplicate closes.
+        // If unlock fails, acquisition still fails closed while any copy retains the lock.
+        unsafe { libc::flock(self.file.as_raw_fd(), libc::LOCK_UN) };
+    }
 }
 impl WriterLease {
     pub fn acquire(file: &Path) -> io::Result<Self> {
@@ -40,7 +48,33 @@ impl WriterLease {
         if unsafe { libc::flock(handle.as_raw_fd(), libc::LOCK_EX | libc::LOCK_NB) } != 0 {
             return Err(io::Error::other("Persistence already has a managed writer"));
         }
-        Ok(Self { _file: handle })
+        Ok(Self { file: handle })
+    }
+}
+#[cfg(test)]
+mod lease_tests {
+    use super::*;
+    use std::os::fd::{FromRawFd, OwnedFd};
+
+    #[test]
+    fn lease_release_is_not_delayed_by_a_duplicated_open_file_description() {
+        let root = crate::test_support::TestDirectory::new();
+        let file = root.path().join("writer.jsonl");
+        let lease = WriterLease::acquire(&file).unwrap();
+        // Model a fork's FD copy without launching or signaling any process.
+        let fd = unsafe { libc::fcntl(lease.file.as_raw_fd(), libc::F_DUPFD_CLOEXEC, 0) };
+        assert!(fd >= 0);
+        let copy = unsafe { OwnedFd::from_raw_fd(fd) };
+        assert!(WriterLease::acquire(&file).is_err());
+        drop(lease);
+        let successor = WriterLease::acquire(&file).unwrap();
+        drop(copy);
+        assert!(
+            WriterLease::acquire(&file).is_err(),
+            "Closing an old FD released its successor's lease"
+        );
+        drop(successor);
+        drop(WriterLease::acquire(&file).unwrap());
     }
 }
 #[derive(Deserialize)]

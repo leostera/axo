@@ -20,6 +20,8 @@ An actual Rust `axo` CLI must invoke public WebSocket RPC on an owned `axod serv
 
 - Initial **local-only shell panes** now support `axo.session.pane.add/remove`, matching explicit create-and-launch and Cmd+W terminate-and-remove. Actual CLI acceptance proves independent real TTY effects, sibling isolation, tombstones/original reconciliation and clean restart/no replay. A typed Manager completion witness gates final removal. `session.get/list` expose bounded shell views; shared protocol separates local (21) from remote (19) methods. Geometry/terminal bytes remain outside RPC. See `axod/PANES.md`; native shortcuts/attachment are not yet wired.
 
+- Completion hardening now uses the exact durable Manager proof for managed resume/stopped reads/admission, and explicitly releases cooperative writer locks despite transient FD copies. Bounded fixed-seed campaigns passed 1,536 synthetic completion sequences and 12,000 relay framing cases. Oversized reply groups preserve correlation IDs as unknown outcomes; isolated Worker deadline/late-success tests verify no resurrection/replay. These are model/source/isolated tests, not crash, escaped-descendant, power-loss, soak or native handoff acceptance. See `axod/tests/README.md`.
+
 ## Remaining dependency order
 
 1. **Harden managed Pi admission:** the explicit fresh/exact-resume policy, actual public bindings, durable intents and cooperative leases are implemented. Still prove crash/spawn/fsync windows, interrupted admission, arbitrary unmanaged writer exclusion/operational policy, lazy missing canonical-file behavior, bounded retention and orphan recovery. Never adopt or signal historical PIDs.

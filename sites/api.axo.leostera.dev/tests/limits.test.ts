@@ -1,7 +1,7 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
 import { harness, Peer } from "./harness";
-import { callSchema, decode, success, replySchema } from "@axo/protocol";
+import { LIMITS, results, remoteMethods, callSchema, decode, success, replySchema } from "@axo/protocol";
 
 async function connected() {
   const h = await harness();
@@ -101,7 +101,38 @@ test(
   },
 );
 
-test("oversized aggregate metadata batches close the client, not the machine route", async (t) => {
+test("expired mutation correlation ignores late success and never replays the command", { timeout: 16000 }, async (t) => {
+  const state = await connected();
+  t.after(() => state.close());
+  const commandId = crypto.randomUUID();
+  const target = { ...state.target, sessionId: crypto.randomUUID(), paneId: crypto.randomUUID() };
+  state.peer.send({ jsonrpc: "2.0", id: "mutation", method: "axo.runtime.startApproved", params: { target, commandId, profileId: "fixture" } });
+  const forwarded = callSchema.parse(await state.daemon.next());
+  assert.equal(forwarded.method, "axo.runtime.startApproved");
+  assert.equal(remoteMethods["axo.runtime.startApproved"].parse(forwarded.params).commandId, commandId);
+  const expired = replySchema.parse(await state.peer.next());
+  assert.equal(expired.id, "mutation");
+  assert.equal(code(expired), -32004);
+  const storage = await state.h.mf.unsafeGetDurableObjectStorage("api-test", "AxoHostRelay", { name: state.target.machineId });
+  assert.equal((await storage.exec("SELECT * FROM pending")).length, 0);
+  assert.equal((await storage.exec("SELECT * FROM groups")).length, 0);
+  // Valid synthetic metadata, not process or execution evidence. The old hop has expired.
+  const outcome = { hostGeneration: state.target.hostGeneration, terminal: { runtime: { host_generation: target.hostGeneration, target: { session_id: target.sessionId, pane_id: target.paneId }, runtime_generation: crypto.randomUUID() }, process: { kind: "exited", wait_status: 0 }, attached: false, backlog_bytes: 0 } };
+  assert.ok(results["axo.runtime.startApproved"].safeParse(outcome).success);
+  state.daemon.send(success(forwarded.id!, outcome));
+  state.peer.send({ jsonrpc: "2.0", id: "after-expiry", method: "axo.runtime.list", params: { target: state.target } });
+  const fresh = callSchema.parse(await state.daemon.next());
+  assert.equal(fresh.method, "axo.runtime.list", "The expired mutation was replayed");
+  assert.notEqual(fresh.id, forwarded.id);
+  state.daemon.send(success(fresh.id!, { hostGeneration: state.target.hostGeneration, terminals: [], next: null }));
+  const reply = replySchema.parse(await state.peer.next());
+  assert.equal(reply.id, "after-expiry", "Late success resurrected an expired correlation");
+  assert.ok("result" in reply);
+  assert.equal((await storage.exec("SELECT * FROM pending")).length, 0);
+  assert.equal((await storage.exec("SELECT * FROM groups")).length, 0);
+});
+
+test("oversized aggregate replies preserve every ID as bounded outcomes without dropping either route", async (t) => {
   const state = await connected();
   t.after(() => state.close());
   state.peer.send(
@@ -135,7 +166,24 @@ test("oversized aggregate metadata batches close the client, not the machine rou
         next: null,
       }),
     );
-  await assert.rejects(next, /Disconnected/);
+  const replies = await next;
+  assert.ok(Array.isArray(replies));
+  assert.equal(replies.length, 8);
+  assert.deepEqual(replies.map(reply => replySchema.parse(reply).id).sort(), Array.from({ length: 8 }, (_, index) => index));
+  assert.ok(replies.some(reply => code(reply) === -32004));
+  assert.ok(new TextEncoder().encode(JSON.stringify(replies)).byteLength <= LIMITS.frameBytes);
+  for (const reply of replies) {
+    const parsed = replySchema.parse(reply);
+    if ("error" in parsed) assert.equal(parsed.error.code, -32004);
+    else assert.ok(results["axo.runtime.list"].safeParse(parsed.result).success);
+  }
+  const fresh = state.peer.call("axo.runtime.list", { target: state.target });
+  const read = callSchema.parse(await state.daemon.next());
+  state.daemon.send(success(read.id!, { hostGeneration: state.target.hostGeneration, terminals: [], next: null }));
+  assert.ok("result" in replySchema.parse(await fresh));
+  const storage = await state.h.mf.unsafeGetDurableObjectStorage("api-test", "AxoHostRelay", { name: state.target.machineId });
+  assert.equal((await storage.exec("SELECT * FROM pending")).length, 0);
+  assert.equal((await storage.exec("SELECT * FROM groups")).length, 0);
   assert.equal(
     (await state.h.list(await state.h.token("client"))).result.machines[0]
       .online,
