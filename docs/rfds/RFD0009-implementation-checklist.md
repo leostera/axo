@@ -35,6 +35,16 @@ This does **not** establish power-loss/fsync durability, abrupt-death/spawn-wind
 
 ## 2. Contract transition and real vanilla Pi ownership — next
 
+### Ambient Pi control-seam checkpoint — not daemon admission yet
+
+- [x] Capture/validate ambient `pi` from operator PATH/absolute selection, ignoring npm-injected development bins; no repository/bundled runtime, installation or version fallback. Missing/unsupported Pi fails clearly; version checks do not replace actual RPC capability/readiness probes.
+- [x] Implement isolated owned-pipe control against vanilla Pi's documented RPC mode. Real ambient-Pi tests exercise fresh start, canonical persistence, exact resume, real tool execution, normal/busy/handled input, steering, cancellation/queue cleanup/settlement, sibling isolation and supported headless choices.
+- [x] Validate captured context/targets across awaits, managed-writer exclusion, stale/unclean leases, original-preserving bad-resume rejection, UTF-8 framing/bytes, bounded pending writes and truthful channel unknown outcomes. Separate negative discovery/transport fixtures do not count as Pi execution acceptance.
+
+Evidence: `axod/pi/` and `axod/tests/pi/`; `npm run test:pi` passes 30 tests (17 actual ambient-Pi lifecycle/control tests, 6 discovery policy tests, 7 negative transport tests), with three further real-Pi suite repeats and strict TypeScript checks. It runs the ambient installation (currently 1.1.0), not the repository's Pi devDependency. Raw Pi idle steering queues input, and raw abort retains queued steering; the managed seam guards these behaviors. Public RPC mode also supports dialog IDs/responses, a headless-specific capability distinct from the historical SDK UI-lifecycle-only audit and general TUI approval parity.
+
+This checkpoint does **not** implement public `axo.session.start`/`axo.chat.*`, bind Pi into the Rust manager's journals/execution owner, provide durable mutation receipts or prove local/cloud/native cutover. Those unchecked items below remain the critical path; see `axod/pi/README.md` for evidence and limits.
+
 - [ ] Apply the `axo._.*` namespace coherently across Rust, TypeScript, Swift models/validators and isolated callers. Decide whether to delete the generic-launch helper or retain it behind explicit development policy; no old-name aliases.
 - [ ] Make support advertisement distinguish adapter/route support from daemon support and actual Pi admission/readiness.
 - [ ] Define managed-runtime caller provenance independently of method spelling or claimed JSON identities. A daemon-owned inherited control channel is a candidate; do not add local credential/account machinery or restore a legacy-envelope listener.
