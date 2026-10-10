@@ -31,8 +31,12 @@ enum WorkspaceSelfTest {
         controller.nameProvider = { _, initial in namingPrompts += 1; return initial }
         installMenu(controller)
         guard let workspaceMenu = NSApp.mainMenu?.items.compactMap({ $0.submenu }).first(where: { $0.title == "Workspace" }),
+              let splitRightItem = workspaceMenu.items.first(where: { $0.title == "Split Right" }),
               let splitDownItem = workspaceMenu.items.first(where: { $0.title == "Split Down" }),
-              splitDownItem.keyEquivalent.isEmpty else { throw Failure.unhandledShortcut }
+              splitRightItem.keyEquivalent == "d", splitRightItem.keyEquivalentModifierMask == .command,
+              splitDownItem.keyEquivalent == "D", splitDownItem.keyEquivalentModifierMask == .command else {
+            throw Failure.unhandledShortcut
+        }
         let window = NSWindow(contentRect: NSRect(x: -3000, y: -3000, width: 1100, height: 750),
                               styleMask: [.titled, .resizable], backing: .buffered, defer: false)
         window.contentView = controller.view
@@ -85,10 +89,16 @@ enum WorkspaceSelfTest {
         try controller.activateSession(original.id)
         guard controller.terminal(for: firstPane) === firstTerminal, firstTerminal.surface == surface else { throw Failure.recreatedSurface }
         try shortcut("d", keyCode: 2, window: window)
-        controller.splitDown(nil)
+        guard let splitDownEvent = NSEvent.keyEvent(with: .keyDown, location: .zero,
+            modifierFlags: [.command, .shift], timestamp: 0, windowNumber: window.windowNumber,
+            context: nil, characters: "D", charactersIgnoringModifiers: "d", isARepeat: false, keyCode: 2),
+              controller.handleSplitDownShortcut(splitDownEvent) else { throw Failure.unhandledShortcut }
         guard let splitSession = controller.registry.sessions.first(where: { $0.id == original.id }),
+              let splitLayout = splitSession.layout,
               splitSession.panes.count == 3, splitSession.panes.map(\.kind) == [.pi, .shell, .shell],
-              splitSession.layout?.panes.count == 3 else { throw Failure.splitCreation }
+              case .split(axis: .horizontal, _, _, .split(axis: .vertical, _, _, _)) = splitLayout else {
+            throw Failure.splitCreation
+        }
         let shellPane = try XCTPane(controller.registry.sessions.first(where: { $0.id == original.id })?.focusedPane)
         controller.terminal(for: shellPane)?.workingDirectory = project.path
         var projectRequests = 0

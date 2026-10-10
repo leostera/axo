@@ -373,7 +373,7 @@ final class WorkspaceController: NSObject, NSOutlineViewDataSource, NSOutlineVie
             paletteCommand("workspace.previous", "Previous Workspace", "Activate the previous workspace", "⌘<") { $0.previousWorkspace(nil) },
             paletteCommand("workspace.next", "Next Workspace", "Activate the next workspace", "⌘>") { $0.nextWorkspace(nil) },
             paletteCommand("pane.split-right", "Split Right", "Add a shell pane to the right", "⌘D") { $0.splitRight(nil) },
-            paletteCommand("pane.split-down", "Split Down", "Add a shell pane below", nil) { $0.splitDown(nil) },
+            paletteCommand("pane.split-down", "Split Down", "Add a shell pane below", "⇧⌘D") { $0.splitDown(nil) },
             paletteCommand("pane.close", "Close Pane…", "Close the focused pane", "⌘W") { $0.closePane(nil) },
         ]
         if let selectedSession {
@@ -443,7 +443,15 @@ final class WorkspaceController: NSObject, NSOutlineViewDataSource, NSOutlineVie
         }
     }
 
+    func handleSplitDownShortcut(_ event: NSEvent) -> Bool {
+        let modifiers = event.modifierFlags.intersection(MacVoiceKeyBinding.relevantModifierFlags)
+        guard event.type == .keyDown, event.keyCode == 2, modifiers == [.command, .shift] else { return false }
+        splitDown(nil)
+        return true
+    }
+
     @MainActor private func handleVoiceKeyEvent(_ event: NSEvent) -> NSEvent? {
+        if handleSplitDownShortcut(event) { return nil }
         let binding = MacVoiceKeyBinding(
             rawValue: UserDefaults.standard.string(forKey: MacVoiceKeyBinding.settingsKey) ?? ""
         ) ?? .defaultValue

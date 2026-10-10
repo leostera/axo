@@ -159,7 +159,7 @@ final class AxoMacApp: NSObject, NSApplicationDelegate, NSWindowDelegate {
         add("Next Workspace", #selector(WorkspaceController.nextWorkspace(_:)), ">")
         work.addItem(.separator())
         add("Split Right", #selector(WorkspaceController.splitRight(_:)), "d")
-        add("Split Down", #selector(WorkspaceController.splitDown(_:)), "")
+        add("Split Down", #selector(WorkspaceController.splitDown(_:)), "D")
         add("Close Pane…", #selector(WorkspaceController.closePane(_:)), "w")
         add("Rename Session…", #selector(WorkspaceController.renameSession(_:)), "")
         add("Rename Workspace…", #selector(WorkspaceController.renameWorkspace(_:)), "")
