@@ -87,8 +87,7 @@ struct AxodNativeWorkbenchSplitView: NSViewRepresentable {
                 }
             },
             onExpand: { [weak self] in self?.sidebarCollapsed.wrappedValue = false },
-            onCreate: { [weak self] in self?.createWork() },
-            onSettings: { [weak self] in self?.openSettings() }
+            onCreate: { [weak self] in self?.createWork() }
         )
         private let content = NSView()
         private let outline = WorkspaceOutlineView()

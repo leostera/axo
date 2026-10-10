@@ -8,11 +8,10 @@ struct CompactSidebarChecks {
         _ = NSApplication.shared
         var expanded = false
         var created = false
-        var settings = false
         var selected: AxodCompactSidebarView.Destination?
         let workspace = UUID(), session = UUID()
         let rail = AxodCompactSidebarView(onSelect: { selected = $0 }, onExpand: { expanded = true },
-                                         onCreate: { created = true }, onSettings: { settings = true })
+                                         onCreate: { created = true })
         let window = NSWindow(contentRect: NSRect(x: 0, y: 0, width: 56, height: 520),
                               styleMask: [.titled, .resizable], backing: .buffered, defer: false)
         window.contentView = rail
@@ -46,17 +45,19 @@ struct CompactSidebarChecks {
         try click("Session: Fix sidebar")
         try check(selected == .session(session), "Wrong session destination")
         try click("Create workspace or session")
-        try click("Settings")
         try click("Expand sidebar")
-        try check(created && settings && expanded, "Compact actions must remain functional")
+        try check(created && expanded, "Compact actions must remain functional")
+        try check(!buttons(in: rail).contains { $0.accessibilityLabel() == "Settings" }, "Settings belongs in the app menu")
+        let expand = buttons(in: rail).first { $0.accessibilityLabel() == "Expand sidebar" }!
+        try check(expand.convert(expand.bounds, to: rail).minY < 20, "Expand control belongs at the bottom")
 
         rail.update(items: (0..<100).map { .init(destination: .session(UUID()), name: "Session \($0)", selected: false) })
         rail.layoutSubtreeIfNeeded()
-        try check(buttons(in: rail).count == 103, "Navigation must not be truncated")
+        try check(buttons(in: rail).count == 102, "Navigation must not be truncated")
         guard let scroll = rail.subviews.first(where: { $0 is NSScrollView }) as? NSScrollView,
               let document = scroll.documentView else { throw Failure.failed("Missing scrollable navigation") }
         try check(document.bounds.height > scroll.contentView.bounds.height, "Long navigation must scroll")
-        try click("Expand sidebar") // The footer/header remain outside the scrolling navigation.
+        try click("Expand sidebar") // The footer remains outside the scrolling navigation.
         print("Compact sidebar: visible 56pt rail, resized controls, exact navigation and persistent actions passed.")
     }
 }

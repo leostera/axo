@@ -21,14 +21,13 @@ final class AxodCompactSidebarView: NSView {
     private var items: [Item] = []
 
     init(onSelect: @escaping (Destination) -> Void, onExpand: @escaping () -> Void,
-         onCreate: @escaping () -> Void, onSettings: @escaping () -> Void) {
+         onCreate: @escaping () -> Void) {
         self.onSelect = onSelect
         super.init(frame: .zero)
         setAccessibilityLabel("Compact workspace and session sidebar")
 
         let expand = actionButton(symbol: "sidebar.left", label: "Expand sidebar", action: onExpand)
         let create = actionButton(symbol: "plus", label: "Create workspace or session", action: onCreate)
-        let settings = actionButton(symbol: "gearshape", label: "Settings", action: onSettings)
         let scroll = NSScrollView()
         scroll.drawsBackground = false
         scroll.hasVerticalScroller = true
@@ -39,21 +38,19 @@ final class AxodCompactSidebarView: NSView {
         navigation.translatesAutoresizingMaskIntoConstraints = false
         scroll.documentView = navigation
 
-        for child in [expand, create, scroll, settings] {
+        for child in [create, scroll, expand] {
             child.translatesAutoresizingMaskIntoConstraints = false
             addSubview(child)
         }
         NSLayoutConstraint.activate([
             expand.centerXAnchor.constraint(equalTo: centerXAnchor),
-            expand.topAnchor.constraint(equalTo: topAnchor, constant: 10),
+            expand.bottomAnchor.constraint(equalTo: bottomAnchor, constant: -10),
             create.centerXAnchor.constraint(equalTo: centerXAnchor),
-            create.topAnchor.constraint(equalTo: expand.bottomAnchor, constant: 6),
+            create.topAnchor.constraint(equalTo: topAnchor, constant: 10),
             scroll.leadingAnchor.constraint(equalTo: leadingAnchor),
             scroll.trailingAnchor.constraint(equalTo: trailingAnchor),
             scroll.topAnchor.constraint(equalTo: create.bottomAnchor, constant: 12),
-            scroll.bottomAnchor.constraint(equalTo: settings.topAnchor, constant: -12),
-            settings.centerXAnchor.constraint(equalTo: centerXAnchor),
-            settings.bottomAnchor.constraint(equalTo: bottomAnchor, constant: -10),
+            scroll.bottomAnchor.constraint(equalTo: expand.topAnchor, constant: -12),
             navigation.leadingAnchor.constraint(equalTo: scroll.contentView.leadingAnchor),
             navigation.trailingAnchor.constraint(equalTo: scroll.contentView.trailingAnchor),
             navigation.topAnchor.constraint(equalTo: scroll.contentView.topAnchor),
