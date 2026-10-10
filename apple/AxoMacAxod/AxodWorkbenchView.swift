@@ -264,10 +264,7 @@ struct AxodWorkbenchView: View {
                 Button("Review Login Items…") { coordinator.openLoginItemsSettings() }
                     .buttonStyle(.plain)
             }
-            if coordinator.connectionState == .connected {
-                Button("Refresh") { coordinator.refresh() }
-                    .buttonStyle(.plain)
-            } else {
+            if coordinator.connectionState != .connected {
                 Button("Connect") { coordinator.connect() }
                     .buttonStyle(.plain)
                     .disabled(coordinator.connectionState == .starting)

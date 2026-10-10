@@ -8,5 +8,9 @@
     <false/>
     <key>CFBundleDisplayName</key>
     <string>Axo</string>
+    <key>NSMicrophoneUsageDescription</key>
+    <string>Record dictation for on-device transcription. Audio is not uploaded.</string>
+    <key>NSSpeechRecognitionUsageDescription</key>
+    <string>Transcribe your dictation on this Mac using Apple Speech.</string>
 </dict>
 </plist>

@@ -49,6 +49,10 @@ if [[ "$(/usr/libexec/PlistBuddy -c 'Print :BundleProgram' "$AGENT_PLIST")" != "
 fi
 BUNDLED_AXOD_VERSION="$("$APP/Contents/Helpers/axod" --version)"
 plutil -insert AxoBundledAxodVersion -string "$BUNDLED_AXOD_VERSION" "$APP/Contents/Info.plist"
+BUILD_COMMIT="$(git -C "$ROOT" rev-parse HEAD)"
+BUILD_NUMBER="$(git -C "$ROOT" rev-list --count HEAD)"
+plutil -insert AxoBuildCommit -string "$BUILD_COMMIT" "$APP/Contents/Info.plist"
+/usr/libexec/PlistBuddy -c "Set :CFBundleVersion $BUILD_NUMBER" "$APP/Contents/Info.plist"
 STAGED_BUNDLE_ID="$(/usr/libexec/PlistBuddy -c Print:CFBundleIdentifier "$APP/Contents/Info.plist")"
 if [[ "$STAGED_BUNDLE_ID" != "$BUNDLE_ID" ]]; then
   echo 'The staged Axod-only app has an unexpected bundle identifier.' >&2

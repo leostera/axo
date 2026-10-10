@@ -3,33 +3,34 @@ import UserNotifications
 
 struct MacSettingsView: View {
     private enum SettingsPage: String, CaseIterable, Identifiable {
+        case general
         case keyboardShortcuts
         case voice
-        case notifications
 
         var id: Self { self }
         var title: String {
             switch self {
             case .keyboardShortcuts: "Keybindings"
-            case .voice: "Voice & Transcripts"
-            case .notifications: "Notifications"
+            case .voice: "Voice & Transcript"
+            case .general: "General"
             }
         }
         var symbol: String {
             switch self {
             case .keyboardShortcuts: "keyboard"
             case .voice: "waveform"
-            case .notifications: "bell"
+            case .general: "gearshape"
             }
         }
     }
 
     @Bindable var voice: MacVoiceCoordinator
+    @AppStorage(MacAppearance.settingsKey) private var appearanceRaw = MacAppearance.system.rawValue
     @AppStorage("axoAttentionNotifications") private var attentionNotifications = true
     @AppStorage("axoNotificationPreviews") private var notificationPreviews = false
     @AppStorage(MacVoiceKeyBinding.settingsKey) private var voiceKeyBindingRaw = MacVoiceKeyBinding.defaultValue.rawValue
     @State private var isCapturingVoiceKey = false
-    @State private var selectedSection: SettingsPage? = .keyboardShortcuts
+    @State private var selectedSection: SettingsPage? = .general
     @State private var notificationPermission = "Checking notification permission…"
 
     let onNotificationSettingChanged: (Bool) -> Void
@@ -50,8 +51,8 @@ struct MacSettingsView: View {
                 keyboardShortcuts
             case .voice:
                 voiceSettings
-            case .notifications:
-                notifications
+            case .general:
+                general
             case nil:
                 ContentUnavailableView("Choose a Settings Section", systemImage: "gear")
             }
@@ -61,6 +62,7 @@ struct MacSettingsView: View {
         .onChange(of: attentionNotifications) { _, enabled in
             onNotificationSettingChanged(enabled)
         }
+        .onChange(of: appearanceRaw) { _, _ in MacAppearance.applyPreference() }
         .task { refreshNotificationPermission() }
     }
 
@@ -72,7 +74,7 @@ struct MacSettingsView: View {
                     ("Previous pane", "⌘["),
                     ("Next pane", "⌘]"),
                     ("Split right", "⌘D"),
-                    ("Split down", "⇧⌘E"),
+                    ("Split down", "⇧⌘D"),
                     ("Close pane", "⌘W"),
                 ])
                 shortcutGroup("Sessions", rows: [
@@ -100,7 +102,7 @@ struct MacSettingsView: View {
 
     private var voiceSettings: some View {
         Form {
-            pageHeading("Voice & Transcripts", subtitle: "Configure local dictation and review transcripts captured from your terminal sessions.")
+            pageHeading("Voice & Transcript", subtitle: "Configure local dictation and review transcripts captured from your terminal sessions.")
             Section("Activation") {
                 Label("Voice key: \(voiceKeyBinding.title)", systemImage: "keyboard")
                 Text("Hold the key to talk. Double-press it to lock recording; double-press again to unlock and transcribe.")
@@ -199,10 +201,18 @@ struct MacSettingsView: View {
         }
     }
 
-    private var notifications: some View {
+    private var general: some View {
         Form {
-            pageHeading("Notifications", subtitle: "Choose when Axo may notify you about local session activity.")
-            Section {
+            pageHeading("General", subtitle: "Preferences for your Axo workbench.")
+            Section("Appearance") {
+                Picker("Appearance", selection: $appearanceRaw) {
+                    ForEach(MacAppearance.allCases) { appearance in
+                        Text(appearance.title).tag(appearance.rawValue)
+                    }
+                }
+                .pickerStyle(.segmented)
+            }
+            Section("Notifications") {
                 Toggle("Notify when sessions need attention", isOn: $attentionNotifications)
                 Toggle("Include recent reply previews", isOn: $notificationPreviews)
                 Text("Notifications identify the session and attention reason. Reply previews are off by default; when enabled, up to 180 characters of the latest reply may appear on your Lock Screen. Notifications are suppressed while you are viewing that session.")

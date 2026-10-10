@@ -34,9 +34,16 @@ targets:
           - dev.leostera.axo.axod.plist
       - path: AxoMac/WorkspaceSidebarRow.swift
       - path: AxoMac/WorkspaceWindowState.swift
+      - path: AxoMac/MacSettingsView.swift
+      - path: AxoMac/MacAppearance.swift
+      - path: AxoMac/MacVoiceCoordinator.swift
+      - path: AxoMac/MacVoiceHistoryStore.swift
+      - path: AxoMac/MacVoiceKeyBinding.swift
+      - path: AxoMac/MacVoiceKeyBindingRecorder.swift
     dependencies:
       - package: AxoCore
       - package: AxoProtocol
+      - package: AxoVoice
       - sdk: ServiceManagement.framework
     settings:
       base:

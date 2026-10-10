@@ -5,6 +5,7 @@ import Darwin
 import Observation
 import ServiceManagement
 import SwiftUI
+import UserNotifications
 
 @MainActor @Observable
 final class AxodWorkbenchCoordinator {
@@ -80,7 +81,9 @@ final class AxodWorkbenchCoordinator {
     private var chatObservationTask: Task<Void, Never>?
     private var hostObservationTask: Task<Void, Never>?
     private var connectTask: Task<Void, Never>?
+    let voice = MacVoiceCoordinator(historyURL: URL(fileURLWithPath: NSHomeDirectory(), isDirectory: true).appendingPathComponent("Library/Application Support/Axo/voice-transcripts.json"))
     @ObservationIgnored private var settingsWindow: NSWindow?
+    @ObservationIgnored private var aboutWindow: NSWindow?
     private var didCheckStartupRegistration = false
     private var didCheckDaemonService = false
 
@@ -186,6 +189,36 @@ final class AxodWorkbenchCoordinator {
         settingsWindow = window
         window.makeKeyAndOrderFront(nil)
         NSApp.activate(ignoringOtherApps: true)
+    }
+
+    func showAboutWindow() {
+        if let aboutWindow {
+            aboutWindow.makeKeyAndOrderFront(nil)
+            NSApp.activate(ignoringOtherApps: true)
+            return
+        }
+        let window = NSWindow(contentRect: NSRect(x: 0, y: 0, width: 400, height: 370),
+                              styleMask: [.titled, .closable], backing: .buffered, defer: false)
+        window.title = "About Axo"
+        window.isReleasedWhenClosed = false
+        window.contentView = NSHostingView(rootView: AxodAboutView(coordinator: self))
+        window.center()
+        aboutWindow = window
+        window.makeKeyAndOrderFront(nil)
+        NSApp.activate(ignoringOtherApps: true)
+    }
+
+    func notificationPreferenceChanged(_ enabled: Bool) {
+        guard enabled else { return }
+        UNUserNotificationCenter.current().requestAuthorization(options: [.alert, .sound]) { _, _ in }
+    }
+
+    func openNotificationSettings() {
+        var components = URLComponents()
+        components.scheme = "x-apple.systempreferences"
+        components.path = "com.apple.Notifications-Settings.extension"
+        components.queryItems = [URLQueryItem(name: "id", value: Bundle.main.bundleIdentifier)]
+        if let url = components.url { NSWorkspace.shared.open(url) }
     }
 
     private func updateDaemonServiceMessage(for status: SMAppService.Status, registrationFailed: Bool = false) {
@@ -978,7 +1011,7 @@ final class AxodWorkbenchCoordinator {
             self.nextSessionCursor = nil
             connectionState = .connected
             observeHost(over: connection, endpoint: endpoint, operation: operation)
-            message = "Connected to the local axod LaunchAgent. Legacy workspaces and Pi histories were not imported or changed."
+            message = "Connected to axod."
             if let workspaceID = selectedWorkspaceID {
                 await loadInitialSessions(workspaceID, over: connection, endpoint: endpoint, operation: operation)
             } else {

@@ -23,6 +23,7 @@ final class AxodWorkbenchApp: NSObject, NSApplicationDelegate, NSWindowDelegate,
     }
 
     func applicationDidFinishLaunching(_ notification: Notification) {
+        MacAppearance.applyPreference()
         let coordinator = AxodWorkbenchCoordinator()
         self.coordinator = coordinator
 
@@ -52,6 +53,7 @@ final class AxodWorkbenchApp: NSObject, NSApplicationDelegate, NSWindowDelegate,
 
     func applicationWillTerminate(_ notification: Notification) {
         window?.saveFrame(usingName: Self.mainWindowFrameAutosaveName)
+        coordinator?.voice.shutdown()
         // Axod owns its process tree; closing the client never stops or adopts daemon work.
     }
 
@@ -64,6 +66,8 @@ final class AxodWorkbenchApp: NSObject, NSApplicationDelegate, NSWindowDelegate,
         window?.makeKeyAndOrderFront(nil)
         return true
     }
+
+    @objc private func showAbout(_ sender: Any?) { coordinator?.showAboutWindow() }
 
     @objc private func showSettings(_ sender: Any?) {
         coordinator?.showSettingsWindow()
@@ -89,6 +93,9 @@ final class AxodWorkbenchApp: NSObject, NSApplicationDelegate, NSWindowDelegate,
         let applicationItem = NSMenuItem(title: Self.applicationName, action: nil, keyEquivalent: "")
         menu.addItem(applicationItem)
         let applicationMenu = NSMenu()
+        let about = applicationMenu.addItem(withTitle: "About Axo", action: #selector(showAbout(_:)), keyEquivalent: "")
+        about.target = self
+        applicationMenu.addItem(.separator())
         let settings = applicationMenu.addItem(withTitle: "Settings…", action: #selector(showSettings(_:)), keyEquivalent: ",")
         settings.target = self
         applicationMenu.addItem(.separator())
@@ -101,8 +108,7 @@ final class AxodWorkbenchApp: NSObject, NSApplicationDelegate, NSWindowDelegate,
         let workspaceMenu = NSMenu(title: "Workspace")
         let newWorkspaceItem = workspaceMenu.addItem(withTitle: "New Workspace…", action: #selector(newWorkspace(_:)), keyEquivalent: "n")
         newWorkspaceItem.target = self
-        newWorkspaceItem.keyEquivalentModifierMask = [.command, .shift]
-        let newSessionItem = workspaceMenu.addItem(withTitle: "New Session…", action: #selector(newSession(_:)), keyEquivalent: "n")
+        let newSessionItem = workspaceMenu.addItem(withTitle: "New Session…", action: #selector(newSession(_:)), keyEquivalent: "t")
         newSessionItem.target = self
         workspaceMenu.addItem(.separator())
         let refreshItem = workspaceMenu.addItem(withTitle: "Refresh", action: #selector(refresh(_:)), keyEquivalent: "r")
