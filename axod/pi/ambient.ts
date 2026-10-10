@@ -4,7 +4,13 @@ import { constants } from "node:fs";
 import { delimiter, isAbsolute, join, normalize } from "node:path";
 import { fileURLToPath } from "node:url";
 import { execFile } from "node:child_process";
-import { PiFailure } from "./process.ts";
+
+export class AmbientPiError extends Error {
+  constructor(readonly code: "missing" | "invalidSelection" | "invalidVersion" | "probeFailed" | "changed", message: string) {
+    super(message);
+    this.name = "AmbientPiError";
+  }
+}
 
 const developmentDependencies = fileURLToPath(new URL("../../node_modules/", import.meta.url));
 
@@ -16,7 +22,7 @@ export class AmbientPi {
     const path = options.path ?? options.env?.PATH ?? process.env.PATH ?? "";
     const env = Object.freeze({ ...(options.env ?? process.env) });
     if (selectedExecutable !== undefined && (isDevelopmentBin(selectedExecutable) || normalize(selectedExecutable).startsWith(developmentDependencies))) {
-      throw new PiFailure("rejected", "Repository-local Pi cannot be the runtime dependency");
+      throw new AmbientPiError("invalidSelection", "Repository-local Pi cannot be the runtime dependency");
     }
     const paths = selectedExecutable === undefined
       ? path.split(delimiter).filter(directory =>
@@ -30,17 +36,16 @@ export class AmbientPi {
       // Resolving it for execution could bypass a legitimate ambient launcher.
       let resolved: string;
       try { resolved = await realpath(executable); }
-      catch { throw new PiFailure("rejected", "Ambient Pi changed during discovery"); }
-      if (normalize(executable).startsWith(developmentDependencies) || resolved.startsWith(developmentDependencies)) throw new PiFailure("rejected", "Repository-local Pi cannot be the runtime dependency");
+      catch { throw new AmbientPiError("changed", "Ambient Pi changed during discovery"); }
+      if (normalize(executable).startsWith(developmentDependencies) || resolved.startsWith(developmentDependencies)) throw new AmbientPiError("invalidSelection", "Repository-local Pi cannot be the runtime dependency");
       const version = await probe(executable, env);
-      // Baseline for documented dispositions/settlement/canonical-entry RPCs, not an exact pin.
-      const match = /^(\d+)\.(\d+)\.(\d+)$/.exec(version);
-      if (!match || Number(match[1]) < 1 || (Number(match[1]) === 1 && Number(match[2]) < 1)) {
-        throw new PiFailure("rejected", "Ambient Pi is unsupported: RPC lifecycle support requires Pi 1.1.0 or newer");
+      // Version is dependency metadata, not a claim of TUI-extension capabilities/readiness.
+      if (!/^\d+\.\d+\.\d+(?:-[0-9A-Za-z.-]+)?(?:\+[0-9A-Za-z.-]+)?$/.test(version)) {
+        throw new AmbientPiError("invalidVersion", "Ambient Pi version output is unsupported");
       }
       return new AmbientPi(executable, version);
     }
-    throw new PiFailure("rejected", "Ambient Pi is missing: install Pi or configure its absolute executable; no bundled fallback");
+    throw new AmbientPiError("missing", "Ambient Pi is missing: install Pi or configure its absolute executable; no bundled fallback");
   }
 }
 function isDevelopmentBin(path: string): boolean {
@@ -49,7 +54,7 @@ function isDevelopmentBin(path: string): boolean {
 function probe(executable: string, env: NodeJS.ProcessEnv): Promise<string> {
   return new Promise((resolve, reject) => {
     execFile(executable, ["--version"], { env, timeout: 2500, maxBuffer: 4096, encoding: "utf8" }, (error, stdout) => {
-      if (error) reject(new PiFailure("rejected", "Ambient Pi capability/version probe failed"));
+      if (error) reject(new AmbientPiError("probeFailed", "Ambient Pi version probe failed"));
       else resolve(stdout.trim());
     });
   });

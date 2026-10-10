@@ -4,7 +4,7 @@
   "type": "module",
   "scripts": {
     "test": "tsx --test tests/*.test.ts",
-    "test:pi": "tsc -p axod/pi/tsconfig.json && tsx --test --test-concurrency=1 axod/tests/pi/*.test.ts",
+    "test:pi-discovery": "tsc -p axod/pi/tsconfig.json && tsx --test axod/tests/pi/ambient.test.ts",
     "typecheck": "tsc --noEmit && npm --prefix service run typecheck",
     "build:bridge": "node scripts/build-bridge.mjs",
     "build:service": "npm --prefix service run build"

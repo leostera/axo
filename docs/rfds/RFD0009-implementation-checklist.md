@@ -35,15 +35,19 @@ This does **not** establish power-loss/fsync durability, abrupt-death/spawn-wind
 
 ## 2. Contract transition and real vanilla Pi ownership — next
 
-### Ambient Pi control-seam checkpoint — not daemon admission yet
+### Ambient dependency discovery retained; headless detour removed
 
-- [x] Capture/validate ambient `pi` from operator PATH/absolute selection, ignoring npm-injected development bins; no repository/bundled runtime, installation or version fallback. Missing/unsupported Pi fails clearly; version checks do not replace actual RPC capability/readiness probes.
-- [x] Implement isolated owned-pipe control against vanilla Pi's documented RPC mode. Real ambient-Pi tests exercise fresh start, canonical persistence, exact resume, real tool execution, normal/busy/handled input, steering, cancellation/queue cleanup/settlement, sibling isolation and supported headless choices.
-- [x] Validate captured context/targets across awaits, managed-writer exclusion, stale/unclean leases, original-preserving bad-resume rejection, UTF-8 framing/bytes, bounded pending writes and truthful channel unknown outcomes. Separate negative discovery/transport fixtures do not count as Pi execution acceptance.
+- [x] Capture ambient `pi` from operator PATH/absolute selection, ignoring npm-injected development bins; no repository/bundled runtime, installation or fallback. Bound/sanitize version probes. Version metadata is not a capability/readiness claim.
+- [x] Remove the unused Pi `--mode rpc` controller and its execution/provider/transport fixtures. There is no selected product use case for a separate headless Pi mode.
 
-Evidence: `axod/pi/` and `axod/tests/pi/`; `npm run test:pi` passes 30 tests (17 actual ambient-Pi lifecycle/control tests, 6 discovery policy tests, 7 negative transport tests), with three further real-Pi suite repeats and strict TypeScript checks. It runs the ambient installation (currently 1.1.0), not the repository's Pi devDependency. Raw Pi idle steering queues input, and raw abort retains queued steering; the managed seam guards these behaviors. Public RPC mode also supports dialog IDs/responses, a headless-specific capability distinct from the historical SDK UI-lifecycle-only audit and general TUI approval parity.
+Evidence retained: `axod/pi/ambient.ts`, `axod/tests/pi/ambient.test.ts`; `npm run test:pi-discovery` checks six dependency policy cases with owned probe fixtures. This is **not actual Pi execution/admission or public-RPC acceptance**. No RPC-specific minimum version is imposed by discovery; actual extension capability checks belong to admission.
 
-This checkpoint does **not** implement public `axo.session.start`/`axo.chat.*`, bind Pi into the Rust manager's journals/execution owner, provide durable mutation receipts or prove local/cloud/native cutover. Those unchecked items below remain the critical path; see `axod/pi/README.md` for evidence and limits.
+Historical `c8f72f9` characterized headless Pi RPC, but bypassed the intended Rust-daemon/PTY/TUI-extension path. Its idle-steering, abort-queue and RPC-dialog observations must be revalidated against the public APIs of the interactive extension; they do not prove TUI controls or generic approval parity. The removed tests are not current product coverage. See `axod/pi/README.md` for the intended path.
+
+- [ ] Add a small actual Rust CLI using the same addressed public Axo WebSocket RPC as native clients; no direct Pi RPC shortcut.
+- [ ] Use that CLI in owned real-`axod` integration tests: explicit session start launches ambient Pi's interactive TUI in a native PTY, with a managed Axo extension controlling **that same Pi process**. Exercise real messages/tools, steering/cancel/history/exact resume, not terminal-text parsing or a fake agent harness.
+
+Public `axo.session.start`/`axo.chat.*`, Rust-owned Pi admission/journals, durable mutation receipts and local/cloud/native adoption remain unfinished. No attached Mac window is needed for this TUI test path; a running PTY is still required.
 
 - [ ] Apply the `axo._.*` namespace coherently across Rust, TypeScript, Swift models/validators and isolated callers. Decide whether to delete the generic-launch helper or retain it behind explicit development policy; no old-name aliases.
 - [ ] Make support advertisement distinguish adapter/route support from daemon support and actual Pi admission/readiness.
@@ -51,7 +55,7 @@ This checkpoint does **not** implement public `axo.session.start`/`axo.chat.*`, 
 - [ ] Implement approved `axo.session.start` fresh/exact-resume intents and durable spawn receipts; bind persistence only through actual public Pi session APIs. Never adopt live unmanaged sessions implicitly.
 - [ ] Admit a real vanilla Pi extension, with exact session/pane/runtime/host and canonical chat/file identity. Do not derive identity from PTY text or manufacture JSONL.
 - [ ] Prove one managed writer per persistence binding; distinguish spawn, admission, stopped, failed and recovery-required. No automatic restart/replay.
-- [ ] Validate headless UI/terminal behavior before claiming no-window readiness; disclose unsupported public UI waits.
+- [ ] Validate interactive Pi TUI behavior in the daemon-owned PTY with no attached Mac viewport before claiming no-window readiness; disclose unsupported public UI waits. No-window operation does not mean Pi RPC mode.
 - [ ] Exercise two actual independently addressed Pi sessions, disconnect/reconnect, exact resume, stale generation, startup failure and crash windows. Controlled public providers/tools are acceptable evidence for actual Pi execution, not substitutes for the Pi harness.
 
 ## 3. Chat reads and bounded observation
