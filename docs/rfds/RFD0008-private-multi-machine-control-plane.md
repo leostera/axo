@@ -177,7 +177,7 @@ Use [JSON-RPC 2.0](https://www.jsonrpc.org/specification): standard requests, ex
 
 `protocol/` contains the normative method/schema definitions and language-neutral conformance fixtures, packaged as `@axo/protocol` for JavaScript/TypeScript consumers. Rust, TypeScript and later Swift consumers must agree on encoding, errors, destinations and limits. Use the selected `json-rpc-2.0` library for TypeScript client/server machinery, with typed method definitions and runtime domain guards in `@axo/protocol`; do not disguise the old custom envelope as JSON-RPC. Keep tested bounded adapters for its inspected singleton-batch/null-client-ID quirks, and disable its default exception logger. Rust retains its own conformance-tested implementation of the shared wire contract. Transport-client/server roles are independent of JSON-RPC roles: a daemon opens the outbound WebSocket and handles incoming calls on it.
 
-Illustrative method families, not frozen APIs:
+Historical illustrative method families, not frozen APIs. [RFD0009](RFD0009-protocol-capability-parity.md#proposed-canonical-naming-catalogue) now defines the desired application taxonomy: work sessions are separate from `axo.chat.*`, and internal coordination belongs under `axo._.*`. The illustrative names below and prototype spellings elsewhere are historical design/implementation context, not a backwards-compatibility requirement or aliases to retain:
 
 | Family | Availability |
 | --- | --- |
