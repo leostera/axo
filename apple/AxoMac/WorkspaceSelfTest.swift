@@ -30,6 +30,9 @@ enum WorkspaceSelfTest {
         var namingPrompts = 0
         controller.nameProvider = { _, initial in namingPrompts += 1; return initial }
         installMenu(controller)
+        guard let workspaceMenu = NSApp.mainMenu?.items.compactMap({ $0.submenu }).first(where: { $0.title == "Workspace" }),
+              let splitDownItem = workspaceMenu.items.first(where: { $0.title == "Split Down" }),
+              splitDownItem.keyEquivalent.isEmpty else { throw Failure.unhandledShortcut }
         let window = NSWindow(contentRect: NSRect(x: -3000, y: -3000, width: 1100, height: 750),
                               styleMask: [.titled, .resizable], backing: .buffered, defer: false)
         window.contentView = controller.view
@@ -82,7 +85,7 @@ enum WorkspaceSelfTest {
         try controller.activateSession(original.id)
         guard controller.terminal(for: firstPane) === firstTerminal, firstTerminal.surface == surface else { throw Failure.recreatedSurface }
         try shortcut("d", keyCode: 2, window: window)
-        try shortcut("e", keyCode: 14, shift: true, window: window)
+        controller.splitDown(nil)
         guard let splitSession = controller.registry.sessions.first(where: { $0.id == original.id }),
               splitSession.panes.count == 3, splitSession.panes.map(\.kind) == [.pi, .shell, .shell],
               splitSession.layout?.panes.count == 3 else { throw Failure.splitCreation }

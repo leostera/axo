@@ -373,7 +373,7 @@ final class WorkspaceController: NSObject, NSOutlineViewDataSource, NSOutlineVie
             paletteCommand("workspace.previous", "Previous Workspace", "Activate the previous workspace", "⌘<") { $0.previousWorkspace(nil) },
             paletteCommand("workspace.next", "Next Workspace", "Activate the next workspace", "⌘>") { $0.nextWorkspace(nil) },
             paletteCommand("pane.split-right", "Split Right", "Add a shell pane to the right", "⌘D") { $0.splitRight(nil) },
-            paletteCommand("pane.split-down", "Split Down", "Add a shell pane below", "⇧⌘E") { $0.splitDown(nil) },
+            paletteCommand("pane.split-down", "Split Down", "Add a shell pane below", nil) { $0.splitDown(nil) },
             paletteCommand("pane.close", "Close Pane…", "Close the focused pane", "⌘W") { $0.closePane(nil) },
         ]
         if let selectedSession {
