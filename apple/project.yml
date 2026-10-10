@@ -16,6 +16,8 @@ settings:
 packages:
   AxoCore:
     path: AxoCore
+  AxoProtocol:
+    path: ../protocol
   AxoVoice:
     path: AxoVoice
   MarkdownUI:
@@ -30,6 +32,7 @@ targets:
         excludes: [Info.plist, Ghostty/Package.swift, Ghostty/Tests, Ghostty/.build]
     dependencies:
       - package: AxoCore
+      - package: AxoProtocol
       - package: AxoVoice
       - framework: ../vendor/ghostty/macos/GhosttyKit.xcframework
         embed: false

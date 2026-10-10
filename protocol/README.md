@@ -25,13 +25,13 @@ npm --prefix protocol run schema:check
 .package(path: "../protocol")
 ```
 
-The initial Swift surface includes JSON-RPC envelope/response types, a bounded envelope decoder, and Codable models for the currently implemented machine/runtime methods. It uses the shared `fixtures/envelopes.json` corpus to keep the Swift envelope boundary aligned with Rust and TypeScript. The real-daemon end-to-end test is run from the private API suite, which provides a disposable authenticated Worker and starts isolated `axod`/PTY fixtures; a plain `swift test` skips that test when the harness inputs are absent.
+The Swift surface includes JSON-RPC envelope/response types, a bounded envelope decoder, and Codable contracts for machine/runtime methods plus workspace/session records, mutations, and command receipts. Method validators enforce result shape, source-generation fences, work revisions, scoped cursors, approved directory-ID syntax, and unadmitted Pi-pane state. Request validators check work-page limits and mutation names/revisions before calls are encoded. Shared `fixtures/envelopes.json` keeps the Swift envelope boundary aligned with Rust and TypeScript. The real-daemon end-to-end test is run from the private API suite, which provides a disposable authenticated Worker and starts isolated `axod`/PTY fixtures; a plain `swift test` skips that test when the harness inputs are absent.
 
 ```sh
 swift test --package-path protocol
 ```
 
-The Codable contract models establish wire shapes; method-specific runtime validation and a reusable production client/server transport remain follow-up work before replacing an existing transport boundary. The end-to-end test exercises these Swift wire types over `URLSessionWebSocketTask` against a real daemon through the isolated API test harness.
+The Codable contract models establish wire shapes, and `AxoProtocolResultValidator` / `AxoProtocolWorkRequestValidator` provide the current method-boundary validation. A reusable production client/server transport remains follow-up work before replacing an existing transport boundary. The end-to-end test currently exercises negotiation and runtime methods over `URLSessionWebSocketTask` against a real daemon through the isolated API test harness; work-record methods have focused Swift unit coverage but are not part of that E2E harness yet.
 
 ## Typed use
 

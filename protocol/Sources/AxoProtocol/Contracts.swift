@@ -7,6 +7,7 @@ public enum AxoProtocol {
     public static let maximumPageSize = 50
     public static let maximumBacklogBytes = 8_192
     public static let maximumPendingCalls = 32
+    public static let maximumAdvertisedMethodCount = 64
     public static let maximumCallDurationSeconds = 10.0
     public static let deliveryCreditFrameCount = 32
     public static let deliveryCreditBytes = 128 * 1_024
@@ -19,6 +20,14 @@ public enum AxoProtocol {
         public static let listRuntimes = "axo.runtime.list"
         public static let startApprovedRuntime = "axo.runtime.startApproved"
         public static let acknowledgeTransport = "axo.transport.ack"
+        public static let listWorkspaces = "axo.workspace.list"
+        public static let createWorkspace = "axo.workspace.create"
+        public static let renameWorkspace = "axo.workspace.rename"
+        public static let listSessions = "axo.session.list"
+        public static let getSession = "axo.session.get"
+        public static let createSession = "axo.session.create"
+        public static let renameSession = "axo.session.rename"
+        public static let getCommand = "axo.command.get"
     }
 }
 
@@ -265,6 +274,328 @@ public struct RuntimeListResult: Codable, Equatable, Sendable {
         self.terminals = terminals
         self.next = next
     }
+}
+
+/// JavaScript-safe, nonnegative daemon work-record revision.
+public struct WorkRevision: RawRepresentable, Codable, Comparable, Equatable, Sendable {
+    public static let maximumSafeInteger = 9_007_199_254_740_991
+
+    public let rawValue: Int
+
+    public init?(rawValue: Int) {
+        guard (0...Self.maximumSafeInteger).contains(rawValue) else { return nil }
+        self.rawValue = rawValue
+    }
+
+    public init(from decoder: Decoder) throws {
+        let container = try decoder.singleValueContainer()
+        let value = try container.decode(Int.self)
+        guard let revision = Self(rawValue: value) else {
+            throw DecodingError.dataCorruptedError(in: container, debugDescription: "Work revisions must be nonnegative safe integers.")
+        }
+        self = revision
+    }
+
+    public func encode(to encoder: Encoder) throws {
+        var container = encoder.singleValueContainer()
+        try container.encode(rawValue)
+    }
+
+    public static func < (lhs: Self, rhs: Self) -> Bool { lhs.rawValue < rhs.rawValue }
+}
+
+public enum WorkCursorScope: Codable, Equatable, Sendable {
+    case workspaces
+    case sessions(workspaceId: UUID?)
+
+    private enum CodingKeys: String, CodingKey { case kind, workspaceId }
+    private enum Kind: String, Codable { case workspaces, sessions }
+
+    public init(from decoder: Decoder) throws {
+        let container = try decoder.container(keyedBy: CodingKeys.self)
+        switch try container.decode(Kind.self, forKey: .kind) {
+        case .workspaces:
+            guard Set(container.allKeys) == [.kind] else {
+                throw DecodingError.dataCorruptedError(forKey: .kind, in: container, debugDescription: "Workspace cursor scope has unexpected fields.")
+            }
+            self = .workspaces
+        case .sessions:
+            guard container.contains(.workspaceId) else {
+                throw DecodingError.keyNotFound(CodingKeys.workspaceId, .init(codingPath: decoder.codingPath, debugDescription: "Session cursor scope must bind its workspace filter."))
+            }
+            self = .sessions(workspaceId: try container.decodeIfPresent(UUID.self, forKey: .workspaceId))
+        }
+    }
+
+    public func encode(to encoder: Encoder) throws {
+        var container = encoder.container(keyedBy: CodingKeys.self)
+        switch self {
+        case .workspaces:
+            try container.encode(Kind.workspaces, forKey: .kind)
+        case .sessions(let workspaceId):
+            try container.encode(Kind.sessions, forKey: .kind)
+            if let workspaceId { try container.encode(workspaceId, forKey: .workspaceId) }
+            else { try container.encodeNil(forKey: .workspaceId) }
+        }
+    }
+}
+
+public struct WorkPageCursor: Codable, Equatable, Sendable {
+    public let target: MachineTarget
+    public let revision: WorkRevision
+    public let scope: WorkCursorScope
+    public let after: UUID
+
+    public init(target: MachineTarget, revision: WorkRevision, scope: WorkCursorScope, after: UUID) {
+        self.target = target
+        self.revision = revision
+        self.scope = scope
+        self.after = after
+    }
+}
+
+public struct WorkspaceListParameters: Encodable, Sendable {
+    public let target: MachineTarget
+    public let cursor: WorkPageCursor?
+    public let limit: Int
+
+    public init(target: MachineTarget, cursor: WorkPageCursor? = nil, limit: Int = AxoProtocol.maximumPageSize) {
+        self.target = target
+        self.cursor = cursor
+        self.limit = limit
+    }
+}
+
+public struct SessionListParameters: Encodable, Sendable {
+    public let target: MachineTarget
+    public let workspaceId: UUID?
+    public let cursor: WorkPageCursor?
+    public let limit: Int
+
+    public init(target: MachineTarget, workspaceId: UUID? = nil, cursor: WorkPageCursor? = nil, limit: Int = AxoProtocol.maximumPageSize) {
+        self.target = target
+        self.workspaceId = workspaceId
+        self.cursor = cursor
+        self.limit = limit
+    }
+}
+
+public struct WorkSessionTarget: Codable, Equatable, Sendable {
+    public let machineId: UUID
+    public let hostGeneration: UUID
+    public let workspaceId: UUID
+    public let sessionId: UUID
+
+    public init(machineId: UUID, hostGeneration: UUID, workspaceId: UUID, sessionId: UUID) {
+        self.machineId = machineId
+        self.hostGeneration = hostGeneration
+        self.workspaceId = workspaceId
+        self.sessionId = sessionId
+    }
+}
+
+public struct SessionGetParameters: Encodable, Sendable {
+    public let target: WorkSessionTarget
+    public init(target: WorkSessionTarget) { self.target = target }
+}
+
+public struct WorkWorkspaceTarget: Codable, Equatable, Sendable {
+    public let machineId: UUID
+    public let hostGeneration: UUID
+    public let workspaceId: UUID
+
+    public init(machineId: UUID, hostGeneration: UUID, workspaceId: UUID) {
+        self.machineId = machineId
+        self.hostGeneration = hostGeneration
+        self.workspaceId = workspaceId
+    }
+}
+
+public struct WorkspaceCreateParameters: Encodable, Sendable {
+    public let target: MachineTarget
+    public let commandId: UUID
+    public let expectedRevision: WorkRevision
+    public let directoryId: String
+    public let name: String
+
+    public init(target: MachineTarget, commandId: UUID, expectedRevision: WorkRevision, directoryId: String, name: String) {
+        self.target = target
+        self.commandId = commandId
+        self.expectedRevision = expectedRevision
+        self.directoryId = directoryId
+        self.name = name
+    }
+}
+
+public struct WorkspaceRenameParameters: Encodable, Sendable {
+    public let target: WorkWorkspaceTarget
+    public let commandId: UUID
+    public let expectedRevision: WorkRevision
+    public let name: String
+
+    public init(target: WorkWorkspaceTarget, commandId: UUID, expectedRevision: WorkRevision, name: String) {
+        self.target = target
+        self.commandId = commandId
+        self.expectedRevision = expectedRevision
+        self.name = name
+    }
+}
+
+public struct SessionCreateParameters: Encodable, Sendable {
+    public let target: WorkWorkspaceTarget
+    public let commandId: UUID
+    public let expectedRevision: WorkRevision
+    public let name: String
+
+    public init(target: WorkWorkspaceTarget, commandId: UUID, expectedRevision: WorkRevision, name: String) {
+        self.target = target
+        self.commandId = commandId
+        self.expectedRevision = expectedRevision
+        self.name = name
+    }
+}
+
+public struct SessionRenameParameters: Encodable, Sendable {
+    public let target: WorkSessionTarget
+    public let commandId: UUID
+    public let expectedRevision: WorkRevision
+    public let name: String
+
+    public init(target: WorkSessionTarget, commandId: UUID, expectedRevision: WorkRevision, name: String) {
+        self.target = target
+        self.commandId = commandId
+        self.expectedRevision = expectedRevision
+        self.name = name
+    }
+}
+
+public struct CommandGetParameters: Encodable, Sendable {
+    public let target: MachineTarget
+    public let commandId: UUID
+
+    public init(target: MachineTarget, commandId: UUID) {
+        self.target = target
+        self.commandId = commandId
+    }
+}
+
+public struct WorkspaceRecord: Decodable, Equatable, Sendable {
+    public let workspaceId: UUID
+    public let name: String
+    public let directoryId: String
+}
+
+public enum WorkSessionNameSource: String, Decodable, Equatable, Sendable { case manual }
+public enum WorkSessionAdmission: String, Decodable, Equatable, Sendable { case notAdmitted }
+
+public struct WorkSessionPiBinding: Decodable, Equatable, Sendable {
+    public let paneId: UUID
+    public let chatId: UUID?
+    public let admission: WorkSessionAdmission
+}
+
+public struct WorkSessionRecord: Decodable, Equatable, Sendable {
+    public let sessionId: UUID
+    public let workspaceId: UUID
+    public let name: String
+    public let nameSource: WorkSessionNameSource
+    public let pi: WorkSessionPiBinding
+    public let runtime: TerminalSnapshot?
+}
+
+public struct WorkspaceListResult: Decodable, Equatable, Sendable {
+    public let hostGeneration: UUID
+    public let revision: WorkRevision
+    public let workspaces: [WorkspaceRecord]
+    public let next: WorkPageCursor?
+}
+
+public struct SessionListResult: Decodable, Equatable, Sendable {
+    public let hostGeneration: UUID
+    public let revision: WorkRevision
+    public let sessions: [WorkSessionRecord]
+    public let next: WorkPageCursor?
+}
+
+public struct SessionGetResult: Decodable, Equatable, Sendable {
+    public let hostGeneration: UUID
+    public let revision: WorkRevision
+    public let session: WorkSessionRecord
+}
+
+public struct WorkspaceMutationResult: Decodable, Equatable, Sendable {
+    public let hostGeneration: UUID
+    public let revision: WorkRevision
+    public let workspace: WorkspaceRecord
+}
+
+public struct SessionRecord: Decodable, Equatable, Sendable {
+    public let sessionId: UUID
+    public let workspaceId: UUID
+    public let name: String
+    public let piPaneId: UUID
+}
+
+public enum CommittedWorkRecord: Decodable, Equatable, Sendable {
+    case workspace(WorkspaceRecord)
+    case session(SessionRecord)
+
+    private enum CodingKeys: String, CodingKey { case kind, record }
+    private enum Kind: String, Decodable { case workspace, session }
+
+    public init(from decoder: Decoder) throws {
+        let container = try decoder.container(keyedBy: CodingKeys.self)
+        guard Set(container.allKeys) == [.kind, .record] else {
+            throw DecodingError.dataCorruptedError(forKey: .kind, in: container, debugDescription: "Invalid committed work record.")
+        }
+        switch try container.decode(Kind.self, forKey: .kind) {
+        case .workspace: self = .workspace(try container.decode(WorkspaceRecord.self, forKey: .record))
+        case .session: self = .session(try container.decode(SessionRecord.self, forKey: .record))
+        }
+    }
+}
+
+public struct CommittedWork: Decodable, Equatable, Sendable {
+    public let revision: WorkRevision
+    public let record: CommittedWorkRecord
+}
+
+public enum CommandReceipt: Decodable, Equatable, Sendable {
+    case work(committed: CommittedWork)
+    case runtime(runtime: TerminalRuntime, terminal: TerminalSnapshot?)
+
+    private enum CodingKeys: String, CodingKey { case kind, committed, runtime, terminal }
+    private enum Kind: String, Decodable { case work, runtime }
+
+    public init(from decoder: Decoder) throws {
+        let container = try decoder.container(keyedBy: CodingKeys.self)
+        switch try container.decode(Kind.self, forKey: .kind) {
+        case .work:
+            guard Set(container.allKeys) == [.kind, .committed] else {
+                throw DecodingError.dataCorruptedError(forKey: .kind, in: container, debugDescription: "Invalid work receipt.")
+            }
+            self = .work(committed: try container.decode(CommittedWork.self, forKey: .committed))
+        case .runtime:
+            guard Set(container.allKeys) == [.kind, .runtime, .terminal] else {
+                throw DecodingError.dataCorruptedError(forKey: .kind, in: container, debugDescription: "Invalid runtime receipt.")
+            }
+            self = .runtime(
+                runtime: try container.decode(TerminalRuntime.self, forKey: .runtime),
+                terminal: try container.decodeIfPresent(TerminalSnapshot.self, forKey: .terminal)
+            )
+        }
+    }
+}
+
+public struct CommandGetResult: Decodable, Equatable, Sendable {
+    public let hostGeneration: UUID
+    public let receipt: CommandReceipt?
+}
+
+public struct SessionMutationResult: Decodable, Equatable, Sendable {
+    public let hostGeneration: UUID
+    public let revision: WorkRevision
+    public let session: WorkSessionRecord
 }
 
 public struct RuntimeStartResult: Codable, Equatable, Sendable {

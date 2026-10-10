@@ -107,6 +107,8 @@ public enum AxoControlPlaneSessionError: Error, Equatable, Sendable, LocalizedEr
     case noSelectedMachine
     case superseded
     case protocolMismatch
+    case unsupportedMethod(String)
+    case invalidPageRequest
 
     public var errorDescription: String? {
         switch self {
@@ -114,6 +116,8 @@ public enum AxoControlPlaneSessionError: Error, Equatable, Sendable, LocalizedEr
         case .noSelectedMachine: "Select an online machine before listing runtimes."
         case .superseded: "The selected machine changed while the request was in flight."
         case .protocolMismatch: "The host and client do not support the same control protocol."
+        case .unsupportedMethod(let method): "This host does not support \(method)."
+        case .invalidPageRequest: "The work-record page request does not match its captured scope."
         }
     }
 }
@@ -125,6 +129,7 @@ public actor AxoControlPlaneSession {
     private let rpc: AxoJSONRPCClient
     private var connection: AxoJSONRPCWebSocketConnection?
     private var target: MachineTarget?
+    private var negotiatedMethods = Set<String>()
     private var operationID = UUID()
 
     public init(
@@ -156,6 +161,7 @@ public actor AxoControlPlaneSession {
         operationID = thisOperation
         let oldConnection = connection
         connection = nil
+        negotiatedMethods = []
         target = destination
         await oldConnection?.close()
         try requireCurrent(thisOperation, destination: destination)
@@ -192,9 +198,11 @@ public actor AxoControlPlaneSession {
                 method: AxoProtocol.Method.negotiate,
                 parameters: NegotiationParameters()
             )
-            do { _ = try AxoProtocolResultValidator.negotiation(negotiation) }
+            let capabilities: ProtocolNegotiationResult
+            do { capabilities = try AxoProtocolResultValidator.negotiation(negotiation) }
             catch { throw AxoControlPlaneSessionError.protocolMismatch }
-            try requireCurrent(thisOperation, destination: destination)
+            try requireCurrent(thisOperation, destination: destination, connection: newConnection)
+            negotiatedMethods = Set(capabilities.methods)
 
             let runtimes = try await newConnection.request(
                 method: AxoProtocol.Method.listRuntimes,
@@ -206,11 +214,61 @@ public actor AxoControlPlaneSession {
         } catch {
             if operationID == thisOperation {
                 connection = nil
+                negotiatedMethods = []
                 target = nil
             }
             await newConnection.close()
             throw error
         }
+    }
+
+    public func supports(method: String) -> Bool {
+        connection != nil && negotiatedMethods.contains(method)
+    }
+
+    public func listWorkspaces(
+        cursor: WorkPageCursor? = nil,
+        limit: Int = AxoProtocol.maximumPageSize
+    ) async throws -> WorkspaceListResult {
+        let (destination, value) = try await requestCurrent(
+            method: AxoProtocol.Method.listWorkspaces,
+            parameters: WorkspaceListParameters(target: try selectedTarget(), cursor: cursor, limit: limit),
+            cursor: cursor,
+            scope: .workspaces,
+            limit: limit
+        )
+        return try AxoProtocolResultValidator.workspaceList(value, target: destination, cursor: cursor, limit: limit)
+    }
+
+    public func listSessions(
+        workspaceID: UUID? = nil,
+        cursor: WorkPageCursor? = nil,
+        limit: Int = AxoProtocol.maximumPageSize
+    ) async throws -> SessionListResult {
+        let scope = WorkCursorScope.sessions(workspaceId: workspaceID)
+        let (destination, value) = try await requestCurrent(
+            method: AxoProtocol.Method.listSessions,
+            parameters: SessionListParameters(target: try selectedTarget(), workspaceId: workspaceID, cursor: cursor, limit: limit),
+            cursor: cursor,
+            scope: scope,
+            limit: limit
+        )
+        return try AxoProtocolResultValidator.sessionList(value, target: destination, workspaceID: workspaceID, cursor: cursor, limit: limit)
+    }
+
+    public func getSession(workspaceID: UUID, sessionID: UUID) async throws -> SessionGetResult {
+        let destination = try selectedTarget()
+        let target = WorkSessionTarget(
+            machineId: destination.machineId,
+            hostGeneration: destination.hostGeneration,
+            workspaceId: workspaceID,
+            sessionId: sessionID
+        )
+        let (_, value) = try await requestCurrent(
+            method: AxoProtocol.Method.getSession,
+            parameters: SessionGetParameters(target: target)
+        )
+        return try AxoProtocolResultValidator.sessionGet(value, target: target)
     }
 
     public func refreshRuntimes(after: UUID? = nil) async throws -> RuntimeListResult {
@@ -230,9 +288,37 @@ public actor AxoControlPlaneSession {
     public func disconnect() async {
         operationID = UUID()
         target = nil
+        negotiatedMethods = []
         let oldConnection = connection
         connection = nil
         await oldConnection?.close()
+    }
+
+    private func selectedTarget() throws -> MachineTarget {
+        guard let target, connection != nil else { throw AxoControlPlaneSessionError.noSelectedMachine }
+        return target
+    }
+
+    private func requestCurrent<Parameters: Encodable & Sendable>(
+        method: String,
+        parameters: Parameters,
+        cursor: WorkPageCursor? = nil,
+        scope: WorkCursorScope? = nil,
+        limit: Int = AxoProtocol.maximumPageSize
+    ) async throws -> (MachineTarget, JSONValue) {
+        let destination = try selectedTarget()
+        guard negotiatedMethods.contains(method) else {
+            throw AxoControlPlaneSessionError.unsupportedMethod(method)
+        }
+        guard (1...AxoProtocol.maximumPageSize).contains(limit),
+              cursor == nil || (cursor?.target == destination && cursor?.scope == scope) else {
+            throw AxoControlPlaneSessionError.invalidPageRequest
+        }
+        guard let activeConnection = connection else { throw AxoControlPlaneSessionError.noSelectedMachine }
+        let thisOperation = operationID
+        let value = try await activeConnection.request(method: method, parameters: parameters)
+        try requireCurrent(thisOperation, destination: destination, connection: activeConnection)
+        return (destination, value)
     }
 
     private func requireCurrent(

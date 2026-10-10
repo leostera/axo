@@ -6,6 +6,8 @@ if [[ ! -d "$ROOT/vendor/ghostty/macos/GhosttyKit.xcframework" ]]; then
   exit 1
 fi
 command -v xcodegen >/dev/null || { echo 'Install XcodeGen, then rerun this script.' >&2; exit 1; }
+command -v cargo >/dev/null || { echo 'Install Rust and Cargo, then rerun this script.' >&2; exit 1; }
+cargo build --manifest-path "$ROOT/axod/Cargo.toml" --locked
 npm --prefix "$ROOT" run build:bridge
 (cd "$ROOT/apple" && xcodegen generate)
 xcodebuild -project "$ROOT/apple/Axo.xcodeproj" -scheme AxoMac -configuration Debug \
@@ -17,6 +19,8 @@ KEEP_STAGING=0
 trap 'if [[ "$KEEP_STAGING" == 0 ]]; then rm -rf "$STAGING"; fi' EXIT
 APP="$STAGING/Axo.app"
 ditto "$ROOT/apple/DerivedData/Build/Products/Debug/Axo.app" "$APP"
+mkdir -p "$APP/Contents/Helpers"
+install -m 0755 "$ROOT/axod/target/debug/axod" "$APP/Contents/Helpers/axod"
 
 # Fail before replacing the installed artifact if the build lost its Finder config.
 REPOSITORY="$(/usr/libexec/PlistBuddy -c Print:AxoRepositoryPath "$APP/Contents/Info.plist")"

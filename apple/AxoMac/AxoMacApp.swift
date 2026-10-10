@@ -1,4 +1,5 @@
 import AppKit
+import SwiftUI
 
 @main
 final class AxoMacApp: NSObject, NSApplicationDelegate, NSWindowDelegate {
@@ -7,6 +8,10 @@ final class AxoMacApp: NSObject, NSApplicationDelegate, NSWindowDelegate {
     private var window: NSWindow?
     private var workspaces: WorkspaceController?
     private var runtime: GhosttyRuntime?
+    #if DEBUG
+    private var daemonDevelopment: AxoDaemonDevelopmentCoordinator?
+    private var daemonDevelopmentWindow: NSWindow?
+    #endif
 
     static func main() {
         let app = NSApplication.shared
@@ -92,6 +97,11 @@ final class AxoMacApp: NSObject, NSApplicationDelegate, NSWindowDelegate {
         workspaces?.saveWindowLayout()
         workspaces?.shutdownVoice()
         workspaces?.stopBridgeHost()
+        #if DEBUG
+        if let connection = daemonDevelopment {
+            Task { @MainActor in connection.disconnect() }
+        }
+        #endif
     }
 
     func applicationDidBecomeActive(_ notification: Notification) { runtime?.setFocus(true) }
@@ -127,6 +137,37 @@ final class AxoMacApp: NSObject, NSApplicationDelegate, NSWindowDelegate {
         alert.addButton(withTitle: "Cancel")
         return alert.runModal() == .alertFirstButtonReturn ? .terminateNow : .terminateCancel
     }
+
+    #if DEBUG
+    @objc private func showDaemonDevelopment(_ sender: Any?) {
+        let coordinator: AxoDaemonDevelopmentCoordinator
+        if let daemonDevelopment {
+            coordinator = daemonDevelopment
+        } else {
+            let created = AxoDaemonDevelopmentCoordinator()
+            daemonDevelopment = created
+            coordinator = created
+        }
+        let panel: NSWindow
+        if let existing = daemonDevelopmentWindow {
+            panel = existing
+        } else {
+            panel = NSWindow(
+                contentRect: NSRect(x: 0, y: 0, width: 820, height: 520),
+                styleMask: [.titled, .closable, .miniaturizable, .resizable],
+                backing: .buffered,
+                defer: false
+            )
+            panel.title = "Local axod · Development"
+            panel.isReleasedWhenClosed = false
+            panel.contentView = NSHostingView(rootView: AxoDaemonDevelopmentView(coordinator: coordinator))
+            daemonDevelopmentWindow = panel
+        }
+        panel.center()
+        panel.makeKeyAndOrderFront(nil)
+        NSApp.activate(ignoringOtherApps: true)
+    }
+    #endif
 
     private func installMenu() {
         let menu = NSMenu()
@@ -171,6 +212,14 @@ final class AxoMacApp: NSObject, NSApplicationDelegate, NSWindowDelegate {
         edit.addItem(withTitle: "Copy", action: #selector(TerminalView.copy(_:)), keyEquivalent: "c")
         edit.addItem(withTitle: "Paste", action: #selector(TerminalView.paste(_:)), keyEquivalent: "v")
         editItem.submenu = edit
+        #if DEBUG
+        let developmentItem = NSMenuItem()
+        menu.addItem(developmentItem)
+        let development = NSMenu(title: "Development")
+        let localDaemon = development.addItem(withTitle: "Local axod Runtime Browser…", action: #selector(showDaemonDevelopment(_:)), keyEquivalent: "")
+        localDaemon.target = self
+        developmentItem.submenu = development
+        #endif
         NSApp.mainMenu = menu
     }
 }

@@ -2,11 +2,13 @@ import Foundation
 
 public enum AxoProtocolValidationError: Error, Equatable, Sendable, LocalizedError {
     case invalidResult(method: String)
+    case invalidParameters(method: String)
     case staleHost(expected: UUID, actual: UUID)
 
     public var errorDescription: String? {
         switch self {
         case .invalidResult(let method): "Invalid result for \(method)."
+        case .invalidParameters(let method): "Invalid parameters for \(method)."
         case .staleHost: "The machine restarted. Refresh discovery and runtimes."
         }
     }
@@ -20,9 +22,9 @@ public enum AxoProtocolResultValidator {
               let version = integer(fields["protocolVersion"]),
               version == AxoProtocol.version,
               case .array(let methodsValue)? = fields["methods"],
-              !methodsValue.isEmpty, methodsValue.count <= 16,
+              !methodsValue.isEmpty, methodsValue.count <= AxoProtocol.maximumAdvertisedMethodCount,
               let methods = methodsValue.asStrings,
-              methods.allSatisfy({ !$0.isEmpty && $0.utf16.count <= 128 }),
+              methods.allSatisfy({ $0.hasPrefix("axo.") && $0.utf16.count <= 128 }),
               Set(methods).count == methods.count,
               methods.contains(AxoProtocol.Method.listRuntimes),
               let credits = object(fields["deliveryCredits"], keys: ["frames", "bytes"]),
@@ -91,6 +93,380 @@ public enum AxoProtocolResultValidator {
             throw AxoProtocolValidationError.staleHost(expected: target.hostGeneration, actual: sourceGeneration)
         }
         return try decode(value, as: RuntimeListResult.self, method: method)
+    }
+
+    public static func workspaceList(
+        _ value: JSONValue,
+        target: MachineTarget,
+        cursor: WorkPageCursor? = nil,
+        limit: Int = AxoProtocol.maximumPageSize
+    ) throws -> WorkspaceListResult {
+        let method = AxoProtocol.Method.listWorkspaces
+        let expectedScope = WorkCursorScope.workspaces
+        guard (1...AxoProtocol.maximumPageSize).contains(limit),
+              let fields = object(value, keys: ["hostGeneration", "revision", "workspaces", "next"]),
+              let hostGeneration = uuid(fields["hostGeneration"]),
+              let revisionValue = integer(fields["revision"]),
+              let revision = WorkRevision(rawValue: revisionValue),
+              case .array(let workspaceValues)? = fields["workspaces"],
+              workspaceValues.count <= limit,
+              let next = fields["next"],
+              next.isNull || validCursor(next, target: target, revision: revision, scope: expectedScope)
+        else { throw invalid(method) }
+
+        guard hostGeneration == target.hostGeneration else {
+            throw AxoProtocolValidationError.staleHost(expected: target.hostGeneration, actual: hostGeneration)
+        }
+        if let cursor, cursor.target != target || cursor.scope != expectedScope || cursor.revision != revision {
+            throw invalid(method)
+        }
+
+        var seen = Set<UUID>()
+        for item in workspaceValues {
+            guard let record = object(item, keys: ["workspaceId", "name", "directoryId"]),
+                  let id = uuid(record["workspaceId"]), seen.insert(id).inserted,
+                  let name = string(record["name"]), validWorkName(name),
+                  let directoryID = string(record["directoryId"]), validDirectoryID(directoryID)
+            else { throw invalid(method) }
+        }
+        guard validNextAfter(fields["next"], lastID: workspaceValues.last.flatMap(workspaceID)) else {
+            throw invalid(method)
+        }
+        return try decode(value, as: WorkspaceListResult.self, method: method)
+    }
+
+    public static func sessionList(
+        _ value: JSONValue,
+        target: MachineTarget,
+        workspaceID: UUID? = nil,
+        cursor: WorkPageCursor? = nil,
+        limit: Int = AxoProtocol.maximumPageSize
+    ) throws -> SessionListResult {
+        let method = AxoProtocol.Method.listSessions
+        let expectedScope = WorkCursorScope.sessions(workspaceId: workspaceID)
+        guard (1...AxoProtocol.maximumPageSize).contains(limit),
+              let fields = object(value, keys: ["hostGeneration", "revision", "sessions", "next"]),
+              let hostGeneration = uuid(fields["hostGeneration"]),
+              let revisionValue = integer(fields["revision"]),
+              let revision = WorkRevision(rawValue: revisionValue),
+              case .array(let sessionValues)? = fields["sessions"],
+              sessionValues.count <= limit,
+              let next = fields["next"],
+              next.isNull || validCursor(next, target: target, revision: revision, scope: expectedScope)
+        else { throw invalid(method) }
+
+        guard hostGeneration == target.hostGeneration else {
+            throw AxoProtocolValidationError.staleHost(expected: target.hostGeneration, actual: hostGeneration)
+        }
+        if let cursor, cursor.target != target || cursor.scope != expectedScope || cursor.revision != revision {
+            throw invalid(method)
+        }
+
+        var seen = Set<UUID>()
+        for item in sessionValues {
+            guard validWorkSession(item),
+                  let session = object(item, keys: ["sessionId", "workspaceId", "name", "nameSource", "pi", "runtime"]),
+                  let id = uuid(session["sessionId"]), seen.insert(id).inserted,
+                  workspaceID == nil || uuid(session["workspaceId"]) == workspaceID
+            else { throw invalid(method) }
+        }
+        guard validNextAfter(fields["next"], lastID: sessionValues.last.flatMap(sessionID)) else {
+            throw invalid(method)
+        }
+        return try decode(value, as: SessionListResult.self, method: method)
+    }
+
+    public static func sessionGet(_ value: JSONValue, target: WorkSessionTarget) throws -> SessionGetResult {
+        let method = AxoProtocol.Method.getSession
+        guard let fields = object(value, keys: ["hostGeneration", "revision", "session"]),
+              let hostGeneration = uuid(fields["hostGeneration"]),
+              let revisionValue = integer(fields["revision"]), WorkRevision(rawValue: revisionValue) != nil,
+              validWorkSession(fields["session"]),
+              let session = object(fields["session"], keys: ["sessionId", "workspaceId", "name", "nameSource", "pi", "runtime"]),
+              uuid(session["sessionId"]) == target.sessionId,
+              uuid(session["workspaceId"]) == target.workspaceId
+        else { throw invalid(method) }
+        guard hostGeneration == target.hostGeneration else {
+            throw AxoProtocolValidationError.staleHost(expected: target.hostGeneration, actual: hostGeneration)
+        }
+        return try decode(value, as: SessionGetResult.self, method: method)
+    }
+
+    public static func workspaceCreate(
+        _ value: JSONValue,
+        target: MachineTarget,
+        expectedRevision: WorkRevision,
+        name: String,
+        directoryID: String
+    ) throws -> WorkspaceMutationResult {
+        let method = AxoProtocol.Method.createWorkspace
+        guard validWorkName(name), validDirectoryID(directoryID), expectedRevision.rawValue < WorkRevision.maximumSafeInteger else {
+            throw invalid(method)
+        }
+        let result = try workspaceMutationResult(value, method: method, target: target, expectedRevision: expectedRevision)
+        guard result.workspace.name == name, result.workspace.directoryId == directoryID else { throw invalid(method) }
+        return result
+    }
+
+    public static func workspaceRename(
+        _ value: JSONValue,
+        target: WorkWorkspaceTarget,
+        expectedRevision: WorkRevision,
+        name: String
+    ) throws -> WorkspaceMutationResult {
+        let method = AxoProtocol.Method.renameWorkspace
+        guard validWorkName(name), expectedRevision.rawValue < WorkRevision.maximumSafeInteger else { throw invalid(method) }
+        let result = try workspaceMutationResult(
+            value,
+            method: method,
+            target: MachineTarget(machineId: target.machineId, hostGeneration: target.hostGeneration),
+            expectedRevision: expectedRevision
+        )
+        guard result.workspace.workspaceId == target.workspaceId, result.workspace.name == name else { throw invalid(method) }
+        return result
+    }
+
+    public static func sessionCreate(
+        _ value: JSONValue,
+        target: WorkWorkspaceTarget,
+        expectedRevision: WorkRevision,
+        name: String
+    ) throws -> SessionMutationResult {
+        let method = AxoProtocol.Method.createSession
+        guard validWorkName(name), expectedRevision.rawValue < WorkRevision.maximumSafeInteger else { throw invalid(method) }
+        let result = try sessionMutationResult(
+            value,
+            method: method,
+            target: MachineTarget(machineId: target.machineId, hostGeneration: target.hostGeneration),
+            expectedRevision: expectedRevision
+        )
+        guard result.session.workspaceId == target.workspaceId, result.session.name == name else { throw invalid(method) }
+        return result
+    }
+
+    public static func sessionRename(
+        _ value: JSONValue,
+        target: WorkSessionTarget,
+        expectedRevision: WorkRevision,
+        name: String
+    ) throws -> SessionMutationResult {
+        let method = AxoProtocol.Method.renameSession
+        guard validWorkName(name), expectedRevision.rawValue < WorkRevision.maximumSafeInteger else { throw invalid(method) }
+        let result = try sessionMutationResult(
+            value,
+            method: method,
+            target: MachineTarget(machineId: target.machineId, hostGeneration: target.hostGeneration),
+            expectedRevision: expectedRevision
+        )
+        guard result.session.sessionId == target.sessionId,
+              result.session.workspaceId == target.workspaceId,
+              result.session.name == name else { throw invalid(method) }
+        return result
+    }
+
+    public static func commandGet(_ value: JSONValue, target: MachineTarget) throws -> CommandGetResult {
+        let method = AxoProtocol.Method.getCommand
+        guard let fields = object(value, keys: ["hostGeneration", "receipt"]),
+              let hostGeneration = uuid(fields["hostGeneration"]),
+              let receipt = fields["receipt"], validCommandReceipt(receipt)
+        else { throw invalid(method) }
+        guard hostGeneration == target.hostGeneration else {
+            throw AxoProtocolValidationError.staleHost(expected: target.hostGeneration, actual: hostGeneration)
+        }
+        return try decode(value, as: CommandGetResult.self, method: method)
+    }
+
+    private static func workspaceMutationResult(
+        _ value: JSONValue,
+        method: String,
+        target: MachineTarget,
+        expectedRevision: WorkRevision
+    ) throws -> WorkspaceMutationResult {
+        guard let fields = object(value, keys: ["hostGeneration", "revision", "workspace"]),
+              let hostGeneration = uuid(fields["hostGeneration"]),
+              let revisionValue = integer(fields["revision"]),
+              WorkRevision(rawValue: revisionValue)?.rawValue == expectedRevision.rawValue + 1,
+              let workspace = object(fields["workspace"], keys: ["workspaceId", "name", "directoryId"]),
+              uuid(workspace["workspaceId"]) != nil,
+              let name = string(workspace["name"]), validWorkName(name),
+              let directoryID = string(workspace["directoryId"]), validDirectoryID(directoryID)
+        else { throw invalid(method) }
+        guard hostGeneration == target.hostGeneration else {
+            throw AxoProtocolValidationError.staleHost(expected: target.hostGeneration, actual: hostGeneration)
+        }
+        return try decode(value, as: WorkspaceMutationResult.self, method: method)
+    }
+
+    private static func sessionMutationResult(
+        _ value: JSONValue,
+        method: String,
+        target: MachineTarget,
+        expectedRevision: WorkRevision
+    ) throws -> SessionMutationResult {
+        guard let fields = object(value, keys: ["hostGeneration", "revision", "session"]),
+              let hostGeneration = uuid(fields["hostGeneration"]),
+              let revisionValue = integer(fields["revision"]),
+              WorkRevision(rawValue: revisionValue)?.rawValue == expectedRevision.rawValue + 1,
+              validWorkSession(fields["session"])
+        else { throw invalid(method) }
+        guard hostGeneration == target.hostGeneration else {
+            throw AxoProtocolValidationError.staleHost(expected: target.hostGeneration, actual: hostGeneration)
+        }
+        return try decode(value, as: SessionMutationResult.self, method: method)
+    }
+
+    private static func validCommandReceipt(_ value: JSONValue) -> Bool {
+        if value.isNull { return true }
+        guard case .object(let fields) = value, let kind = string(fields["kind"]) else { return false }
+        switch kind {
+        case "work":
+            guard Set(fields.keys) == ["kind", "committed"],
+                  let committed = object(fields["committed"], keys: ["revision", "record"]),
+                  let revision = integer(committed["revision"]), WorkRevision(rawValue: revision) != nil, revision > 0,
+                  let record = committed["record"], validCommittedRecord(record)
+            else { return false }
+            return true
+        case "runtime":
+            guard Set(fields.keys) == ["kind", "runtime", "terminal"],
+                  let runtimeValue = fields["runtime"], let runtime = validTerminalRuntime(runtimeValue),
+                  let terminalValue = fields["terminal"]
+            else { return false }
+            if terminalValue.isNull { return true }
+            guard validTerminal(terminalValue),
+                  let terminalFields = object(terminalValue, keys: ["runtime", "process", "attached", "backlog_bytes"]),
+                  let observedRuntime = validTerminalRuntime(terminalFields["runtime"])
+            else { return false }
+            return observedRuntime == runtime
+        default:
+            return false
+        }
+    }
+
+    private static func validCommittedRecord(_ value: JSONValue) -> Bool {
+        guard let fields = object(value, keys: ["kind", "record"]),
+              let kind = string(fields["kind"]), let record = fields["record"]
+        else { return false }
+        switch kind {
+        case "workspace":
+            guard let workspace = object(record, keys: ["workspaceId", "name", "directoryId"]),
+                  uuid(workspace["workspaceId"]) != nil,
+                  let name = string(workspace["name"]), validWorkName(name),
+                  let directoryID = string(workspace["directoryId"]), validDirectoryID(directoryID)
+            else { return false }
+            return true
+        case "session":
+            guard let session = object(record, keys: ["sessionId", "workspaceId", "name", "piPaneId"]),
+                  uuid(session["sessionId"]) != nil, uuid(session["workspaceId"]) != nil,
+                  let name = string(session["name"]), validWorkName(name), uuid(session["piPaneId"]) != nil
+            else { return false }
+            return true
+        default:
+            return false
+        }
+    }
+
+    private static func validTerminalRuntime(_ value: JSONValue?) -> TerminalRuntime? {
+        guard let value,
+              let fields = object(value, keys: ["host_generation", "target", "runtime_generation"]),
+              uuid(fields["host_generation"]) != nil, uuid(fields["runtime_generation"]) != nil,
+              let target = object(fields["target"], keys: ["session_id", "pane_id"]),
+              uuid(target["session_id"]) != nil, uuid(target["pane_id"]) != nil
+        else { return nil }
+        return try? decode(value, as: TerminalRuntime.self, method: AxoProtocol.Method.getCommand)
+    }
+
+    private static func validCursor(
+        _ value: JSONValue,
+        target: MachineTarget,
+        revision: WorkRevision,
+        scope: WorkCursorScope
+    ) -> Bool {
+        guard let fields = object(value, keys: ["target", "revision", "scope", "after"]),
+              let targetFields = object(fields["target"], keys: ["machineId", "hostGeneration"]),
+              uuid(targetFields["machineId"]) == target.machineId,
+              uuid(targetFields["hostGeneration"]) == target.hostGeneration,
+              integer(fields["revision"]) == revision.rawValue,
+              uuid(fields["after"]) != nil,
+              let scopeFields = fields["scope"]
+        else { return false }
+
+        switch scope {
+        case .workspaces:
+            guard let value = object(scopeFields, keys: ["kind"]),
+                  string(value["kind"]) == "workspaces" else { return false }
+        case .sessions(let workspaceID):
+            guard let value = object(scopeFields, keys: ["kind", "workspaceId"]),
+                  string(value["kind"]) == "sessions" else { return false }
+            if let workspaceID {
+                guard uuid(value["workspaceId"]) == workspaceID else { return false }
+            } else if case .null? = value["workspaceId"] {
+                // The unfiltered cursor must explicitly carry a null filter.
+            } else {
+                return false
+            }
+        }
+        return true
+    }
+
+    private static func validNextAfter(_ next: JSONValue?, lastID: UUID?) -> Bool {
+        guard let next else { return false }
+        if next.isNull { return true }
+        guard let fields = object(next, keys: ["target", "revision", "scope", "after"]),
+              let after = uuid(fields["after"]), let lastID else { return false }
+        return after == lastID
+    }
+
+    private static func workspaceID(_ value: JSONValue) -> UUID? {
+        guard let fields = object(value, keys: ["workspaceId", "name", "directoryId"]) else { return nil }
+        return uuid(fields["workspaceId"])
+    }
+
+    private static func sessionID(_ value: JSONValue) -> UUID? {
+        guard let fields = object(value, keys: ["sessionId", "workspaceId", "name", "nameSource", "pi", "runtime"]) else { return nil }
+        return uuid(fields["sessionId"])
+    }
+
+    private static func validWorkSession(_ value: JSONValue?) -> Bool {
+        guard let fields = object(value, keys: ["sessionId", "workspaceId", "name", "nameSource", "pi", "runtime"]),
+              let sessionID = uuid(fields["sessionId"]), uuid(fields["workspaceId"]) != nil,
+              let name = string(fields["name"]), validWorkName(name),
+              string(fields["nameSource"]) == "manual",
+              let pi = object(fields["pi"], keys: ["paneId", "chatId", "admission"]),
+              let paneID = uuid(pi["paneId"]), case .null? = pi["chatId"],
+              string(pi["admission"]) == "notAdmitted",
+              let runtime = fields["runtime"]
+        else { return false }
+        if case .null = runtime { return true }
+        guard validTerminal(runtime),
+              let terminal = object(runtime, keys: ["runtime", "process", "attached", "backlog_bytes"]),
+              let reference = object(terminal["runtime"], keys: ["host_generation", "target", "runtime_generation"]),
+              let target = object(reference["target"], keys: ["session_id", "pane_id"])
+        else { return false }
+        return uuid(target["session_id"]) == sessionID && uuid(target["pane_id"]) == paneID
+    }
+
+    private static func validTerminal(_ value: JSONValue?) -> Bool {
+        guard let record = object(value, keys: ["runtime", "process", "attached", "backlog_bytes"]),
+              let runtime = object(record["runtime"], keys: ["host_generation", "target", "runtime_generation"]),
+              uuid(runtime["host_generation"]) != nil, uuid(runtime["runtime_generation"]) != nil,
+              let target = object(runtime["target"], keys: ["session_id", "pane_id"]),
+              uuid(target["session_id"]) != nil, uuid(target["pane_id"]) != nil,
+              validProcess(record["process"]), case .bool? = record["attached"],
+              let backlog = integer(record["backlog_bytes"]), (0...AxoProtocol.maximumBacklogBytes).contains(backlog)
+        else { return false }
+        return true
+    }
+
+    private static func validWorkName(_ value: String) -> Bool {
+        let scalars = Array(value.unicodeScalars)
+        return !scalars.isEmpty && scalars.count <= 80 &&
+            value == value.trimmingCharacters(in: .whitespacesAndNewlines) &&
+            !scalars.contains(where: { CharacterSet.controlCharacters.contains($0) || $0.properties.generalCategory == .surrogate })
+    }
+
+    private static func validDirectoryID(_ value: String) -> Bool {
+        !value.isEmpty && value.utf8.count <= 64 &&
+            value.utf8.allSatisfy { (65...90).contains($0) || (97...122).contains($0) || (48...57).contains($0) || $0 == 45 || $0 == 95 }
     }
 
     private static func validProcess(_ value: JSONValue?) -> Bool {

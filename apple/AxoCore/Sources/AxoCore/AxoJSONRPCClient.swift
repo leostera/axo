@@ -130,6 +130,12 @@ public struct AxoJSONRPCClient: Sendable {
         )
     }
 
+    public func openLocalWebSocket(
+        endpoint: LocalDaemonEndpoint
+    ) throws -> AxoJSONRPCWebSocketConnection {
+        try AxoJSONRPCWebSocketConnection(url: endpoint.url, accessCookie: nil)
+    }
+
     fileprivate static func validateMethod(_ method: String) throws {
         guard !method.isEmpty, method.utf16.count <= 128 else {
             throw AxoJSONRPCClientError.invalidMethod
@@ -188,13 +194,16 @@ public actor AxoJSONRPCWebSocketConnection {
 
     private let session: URLSession
     private let socket: URLSessionWebSocketTask
-    private let accessCookie: AxoControlPlaneAccessCookie
+    private let accessCookie: AxoControlPlaneAccessCookie?
     private var receiver: Task<Void, Never>?
     private var pending: [String: PendingCall] = [:]
     private var isClosed = false
 
-    fileprivate init(url: URL, accessCookie: AxoControlPlaneAccessCookie) throws {
-        guard url.scheme == "wss", url.user == nil, url.password == nil,
+    fileprivate init(url: URL, accessCookie: AxoControlPlaneAccessCookie?) throws {
+        let validCloudEndpoint = accessCookie != nil && url.scheme == "wss" && url.host != nil
+        let validLocalEndpoint = accessCookie == nil && url.scheme == "ws" &&
+            url.host == "127.0.0.1" && url.port != nil && url.path == "/v1/rpc"
+        guard (validCloudEndpoint || validLocalEndpoint), url.user == nil, url.password == nil,
               url.query == nil, url.fragment == nil else {
             throw ProtocolError.invalidEndpoint
         }
@@ -203,7 +212,12 @@ public actor AxoJSONRPCWebSocketConnection {
         self.accessCookie = accessCookie
         var request = URLRequest(url: url)
         request.timeoutInterval = AxoProtocol.maximumCallDurationSeconds
-        request.setValue(accessCookie.cookieHeaderValue, forHTTPHeaderField: "Cookie")
+        if let accessCookie {
+            guard accessCookie.expiresAt > .now else {
+                throw AxoJSONRPCClientError.unauthorized(statusCode: 401)
+            }
+            request.setValue(accessCookie.cookieHeaderValue, forHTTPHeaderField: "Cookie")
+        }
         socket = session.webSocketTask(with: request)
         socket.maximumMessageSize = AxoProtocolCodec.maximumFrameBytes
         socket.resume()
@@ -216,7 +230,7 @@ public actor AxoJSONRPCWebSocketConnection {
     ) async throws -> JSONValue {
         try AxoJSONRPCClient.validateMethod(method)
         guard !isClosed else { throw AxoJSONRPCClientError.disconnected }
-        guard accessCookie.expiresAt > .now else {
+        if let accessCookie, accessCookie.expiresAt <= .now {
             await close()
             throw AxoJSONRPCClientError.unauthorized(statusCode: 401)
         }
@@ -256,7 +270,7 @@ public actor AxoJSONRPCWebSocketConnection {
     public func sendNotification(method: String, parameters: JSONValue? = nil) async throws {
         try AxoJSONRPCClient.validateMethod(method)
         guard !isClosed else { throw AxoJSONRPCClientError.disconnected }
-        guard accessCookie.expiresAt > .now else {
+        if let accessCookie, accessCookie.expiresAt <= .now {
             await close()
             throw AxoJSONRPCClientError.unauthorized(statusCode: 401)
         }
