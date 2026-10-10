@@ -1,14 +1,9 @@
 #!/bin/bash
 set -euo pipefail
 ROOT="$(cd "$(dirname "$0")/.." && pwd)"
-if [[ ! -d "$ROOT/vendor/ghostty/macos/GhosttyKit.xcframework" ]]; then
-  echo 'Run scripts/build-ghostty.sh first.' >&2
-  exit 1
-fi
 command -v xcodegen >/dev/null || { echo 'Install XcodeGen, then rerun this script.' >&2; exit 1; }
 command -v cargo >/dev/null || { echo 'Install Rust and Cargo, then rerun this script.' >&2; exit 1; }
 cargo build --manifest-path "$ROOT/axod/Cargo.toml" --locked
-npm --prefix "$ROOT" run build:bridge
 (cd "$ROOT/apple" && xcodegen generate)
 xcodebuild -project "$ROOT/apple/Axo.xcodeproj" -scheme AxoMac -configuration Debug \
   -derivedDataPath "$ROOT/apple/DerivedData" CODE_SIGNING_ALLOWED=NO build
@@ -21,11 +16,13 @@ APP="$STAGING/Axo.app"
 ditto "$ROOT/apple/DerivedData/Build/Products/Debug/Axo.app" "$APP"
 mkdir -p "$APP/Contents/Helpers"
 install -m 0755 "$ROOT/axod/target/debug/axod" "$APP/Contents/Helpers/axod"
-
-# Fail before replacing the installed artifact if the build lost its Finder config.
-REPOSITORY="$(/usr/libexec/PlistBuddy -c Print:AxoRepositoryPath "$APP/Contents/Info.plist")"
-if [[ ! -f "$REPOSITORY/scripts/run-pi.sh" ]] || [[ "$(cd "$REPOSITORY" && pwd -P)" != "$(cd "$ROOT" && pwd -P)" ]]; then
-  echo 'The built app does not point to this Axo checkout; refusing to package it.' >&2
+if [[ ! -x "$APP/Contents/Helpers/axod" ]]; then
+  echo 'The staged app does not contain its executable axod helper.' >&2
+  exit 1
+fi
+BUNDLE_ID="$(/usr/libexec/PlistBuddy -c Print:CFBundleIdentifier "$APP/Contents/Info.plist")"
+if [[ "$BUNDLE_ID" != "dev.leostera.axo.mac" ]]; then
+  echo 'The staged Axod-only app has an unexpected bundle identifier.' >&2
   exit 1
 fi
 codesign --force --deep --sign - "$APP"

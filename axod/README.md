@@ -2,7 +2,7 @@
 
 Axo's standalone per-user Rust session-manager daemon. Active implementation and hardening happen here, not in new POCs. `axod` directly owns terminal children and PTYs; no tmux, screen, or Zellij backend is used.
 
-**Current boundary:** the Mac app remains on its existing process-ownership path while another agent updates its relay/iOS compatibility. This crate is not launched by, linked into, or packaged with the app yet. The later Mac refactor comes after daemon completion/hardening and a coordinated ownership handoff. No existing workspace registry, Pi history, relay deployment, login registration, or live process is changed by these commands.
+**Current boundary:** newly built Mac app bundles now run an Axod-only shell with this bundled daemon and an isolated private state directory. The app reads daemon work/runtime metadata; it does not attach Ghostty, admit Pi sessions, or import the legacy workspace registry/history. Unsupported Mac features are intentionally absent until Axod capabilities replace them. This does not migrate, stop, adopt, or rewrite existing work in an already-running app. The iOS and legacy service/file lanes remain separate.
 
 ## Build and validate
 

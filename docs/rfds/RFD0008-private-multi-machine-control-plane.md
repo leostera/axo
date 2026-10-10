@@ -8,7 +8,7 @@
 
 ## Summary
 
-Build the next iteration of the private relay at `bridge.axo.leostera.dev`: a Cloudflare Access-protected TypeScript control plane in `sites/api.axo.leostera.dev/` that discovers multiple authenticated `axod` machines and routes explicitly addressed commands to them. Use a shared JSON-RPC 2.0 daemon contract in `protocol/`, with native loopback WebSockets for local Mac access (credential-free at the current implementation checkpoint) and Access-protected outbound WSS connections from daemons to the service. Machines become discoverable through authenticated registration, without product accounts, account ownership tables, pairing, or explicit enrollment approval. `axod` owns local work and Pi remains authoritative for agent execution/history. The current `service/` and Mac/relay/iOS compatibility lane remain intact until a separate validated cutover. This is a proposal, not authorization to deploy, change DNS/Access policies, register startup, migrate storage, or restart live work.
+Build the next iteration of the private relay at `bridge.axo.leostera.dev`: a Cloudflare Access-protected TypeScript control plane in `sites/api.axo.leostera.dev/` that discovers multiple authenticated `axod` machines and routes explicitly addressed commands to them. Use a shared JSON-RPC 2.0 daemon contract in `protocol/`, with native loopback WebSockets for local Mac access (credential-free at the current implementation checkpoint) and Access-protected outbound WSS connections from daemons to the service. Machines become discoverable through authenticated registration, without product accounts, account ownership tables, pairing, or explicit enrollment approval. `axod` owns local work and Pi remains authoritative for agent execution/history. The selected Mac direction is an Axod-only app in newly built bundles; it starts with fresh Axod state and does not import legacy workspace records or adopt existing processes. Unsupported Mac features may be absent until Axod capabilities replace them. The already-running app and sessions remain untouched. This is not authorization to deploy, change DNS/Access policies, register startup, migrate existing storage, or restart live work.
 
 ## Motivation
 
@@ -68,6 +68,10 @@ Ordinary system DNS became available. The isolated release daemon registered thr
 Live testing exposed a missing Rustls crypto-provider selection, the initial provider's lack of P-521 certificate support, and a Darwin networking descriptor inherited by the child. The daemon now selects the standard AWS-LC provider and closes the inherited nonstandard descriptor table before exec; focused regression tests cover provider/algorithm configuration and an intentionally inheritable descriptor. Final live admission uses native trust and normal DNS, without resolver/address/CA-file overrides or disabled verification.
 
 Cloud-outage/local-progress evidence remains the isolated real-Worker/two-daemon shutdown test, not a deployed Worker outage. This checkpoint completes the approved supervised fixture connectivity test, not Pi/session, native/physical-phone or unattended operational readiness. The existing app, relay and file authority remain unchanged.
+
+### 2026-10-10 — Axod-only Mac bundle direction
+
+The user selected an Axod-only Mac app for newly built bundles and accepted temporary loss of features not yet supported by Axod. The new bundle uses a separate versioned private state directory, launches only the bundled daemon, and does not use the legacy Mac workspace/bridge execution path. It must not import the legacy registry or Pi histories, adopt historical PIDs, or claim generic runtime metadata is Pi readiness. This changes new-bundle behavior only: it does not migrate or stop existing sessions and does not authorize restarting the currently running app. Cloud file authority and iOS remain separate.
 
 ## Boundary with application capability parity
 

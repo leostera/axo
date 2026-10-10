@@ -25,13 +25,14 @@ npm --prefix protocol run schema:check
 .package(path: "../protocol")
 ```
 
-The Swift surface includes JSON-RPC envelope/response types, a bounded envelope decoder, and Codable contracts for machine/runtime methods plus workspace/session records, mutations, and command receipts. Method validators enforce result shape, source-generation fences, work revisions, scoped cursors, approved directory-ID syntax, and unadmitted Pi-pane state. Request validators check work-page limits and mutation names/revisions before calls are encoded. Shared `fixtures/envelopes.json` keeps the Swift envelope boundary aligned with Rust and TypeScript. The real-daemon end-to-end test is run from the private API suite, which provides a disposable authenticated Worker and starts isolated `axod`/PTY fixtures; a plain `swift test` skips that test when the harness inputs are absent.
+The Swift surface includes JSON-RPC envelope/response types, a bounded envelope decoder, typed machine/runtime/work-record contracts, workspace/session records, mutations, and command receipts. Strict validators enforce result shape, source-generation fences, work revisions, scoped cursors, approved directory-ID syntax, and request constraints before calls are encoded. Shared `fixtures/envelopes.json` keeps the Swift envelope boundary aligned with Rust and TypeScript. The private API suite runs cross-route real-daemon tests; the Core package also has an opt-in native local-WebSocket test against a disposable `axod` that exercises duplicate bootstrap, disconnect, and restart fencing without launching an existing fixture.
+
 
 ```sh
 swift test --package-path protocol
 ```
 
-The Codable contract models establish wire shapes, and `AxoProtocolResultValidator` / `AxoProtocolWorkRequestValidator` provide the current method-boundary validation. A reusable production client/server transport remains follow-up work before replacing an existing transport boundary. The end-to-end test currently exercises negotiation and runtime methods over `URLSessionWebSocketTask` against a real daemon through the isolated API test harness; work-record methods have focused Swift unit coverage but are not part of that E2E harness yet.
+The Codable contract models establish wire shapes, and `AxoProtocolResultValidator` / `AxoProtocolWorkRequestValidator` provide method-boundary validation. `AxoCore.AxoJSONRPCClient` opens credential-free local WebSockets only from a strictly validated private discovery descriptor; cloud calls still require the existing Access cookie. The new Axod-only Mac app uses this client for local work/runtime metadata; Pi admission/chat/history and terminal attachment remain incomplete capabilities. The private API end-to-end harness exercises negotiation and runtime methods against a real daemon, while work-record methods have focused Swift unit coverage.
 
 ## Typed use
 
@@ -93,7 +94,7 @@ Workspace/session record methods now share the same isolated daemon store locall
 
 Create/rename return committed metadata and revision. Reusing a command reconciles the exact original normalized intent; conflicting arguments or execution/work command reuse reject. Work commits and runtime receipts are separate bounded stores under one owner/admission lock. Uncertain persistence fences mutations in both domains. `command.get` returns a work commit or original runtime reference with any available observation; missing or an absent historical snapshot never permits execution replay.
 
-The proposed `axo._.*` names in [RFD0009](../docs/rfds/RFD0009-protocol-capability-parity.md) have **not** replaced the current prototype spellings yet; no aliases are introduced. Work-record APIs have TypeScript/Rust/schema evidence, not Swift/native adoption. Pi start/admission, chat controls/history, stop/subscriptions, file authority and native cutover remain unfinished. A runtime observation in `session.get` is deliberately separate from the null/notAdmitted Pi binding.
+The proposed `axo._.*` names in [RFD0009](../docs/rfds/RFD0009-protocol-capability-parity.md) have **not** replaced the current prototype spellings yet; no aliases are introduced. Work-record APIs now have Swift contract validation and an Axod-only Mac metadata reader, but no live registry handoff. Pi start/admission, chat controls/history, stop/subscriptions, file authority and Ghostty terminal attachment remain unfinished. A runtime observation in `session.get` is deliberately separate from the null/notAdmitted Pi binding.
 
 ## Delivery and failure semantics
 

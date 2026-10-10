@@ -5,9 +5,9 @@ description: Build, validate, and deliver Axo's Finder-launchable Mac app. Use a
 
 # Axo macOS packaging
 
-## Delivery rule
+## Axod-only delivery
 
-Leo explicitly requires **always repackaging `dist/Axo.app` after validated Mac changes**. A successful Xcode build under DerivedData is not delivery. Build the bridge as well so the shipped native launcher and Pi extension stay compatible.
+Leo explicitly requires **always repackaging `dist/Axo.app` after validated Mac changes**. A successful Xcode build under DerivedData is not delivery. The shipped Mac app is Axod-only: it bundles and launches `axod`, and does not include the legacy Ghostty workbench/bridge path. The iOS target remains a separate lane.
 
 Keep project-specific operational guidance in `<axo-root>/.agents/skills/axo-*`, not the personal memory repository. Update this skill as the packaging workflow changes; do not turn transient build results or backup paths into permanent instructions.
 
@@ -18,21 +18,21 @@ Resolve the Axo root from this skill's directory (`../../..`), rather than assum
 ```bash
 cd <axo-root>
 export DEVELOPER_DIR=/Applications/Xcode.app/Contents/Developer
-npm test
-npm run typecheck
+swift test --package-path protocol
 swift test --package-path apple/AxoCore
+cargo test --manifest-path axod/Cargo.toml --locked --offline
 bash scripts/build-mac.sh
-AXO_REPO="$PWD" apple/DerivedData/Build/Products/Debug/Axo.app/Contents/MacOS/Axo --axo-workspaces-self-test
 codesign --verify --deep --strict dist/Axo.app
 ```
 
 Run affected layout or phone tests as appropriate. A shared AxoCore change also requires an AxoPhone build. If validation fails after packaging, fix and rebuild/repackage; never present the failed artifact as ready.
 
-`build-mac.sh` requires XcodeGen and the pinned Ghostty framework (`scripts/build-ghostty.sh` if absent). It builds the bridge, generates the Xcode project, builds AxoMac, stages the bundle, validates its Finder configuration, signs it ad hoc, and atomically replaces the packaged app.
+`build-mac.sh` requires XcodeGen, Rust/Cargo and the Axod build dependencies. It builds `axod`, generates the Xcode project, builds the Axod-only AxoMac target, stages the app plus `Contents/Helpers/axod`, validates the helper and bundle identifier, signs ad hoc, and atomically replaces the packaged app. It does not build or bundle the legacy Pi bridge.
 
 ## Safe bundle replacement
 
-- Preserve the checkout-bound `AxoRepositoryPath` in Info.plist and check that its `scripts/run-pi.sh` exists.
+- Keep the state directory private and versioned; never read/import the legacy workspace registry or Pi histories during startup.
+- Keep `axod` inside `Contents/Helpers` and verify its executable and code signature as part of the staged bundle.
 - Stage on the same filesystem under `dist/`; verify the staged bundle before replacement.
 - Use macOS `renamex_np` with `RENAME_SWAP` when an app already exists. Retain the previous bundle at the staging path for rollback.
 - Never use `rm -rf dist/Axo.app` before installing its replacement. Reject a symlinked destination.

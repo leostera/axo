@@ -27,26 +27,15 @@ targets:
   AxoMac:
     type: application
     platform: macOS
-    sources:
-      - path: AxoMac
-        excludes: [Info.plist, Ghostty/Package.swift, Ghostty/Tests, Ghostty/.build]
+    sources: [AxoMacAxod]
     dependencies:
       - package: AxoCore
       - package: AxoProtocol
-      - package: AxoVoice
-      - framework: ../vendor/ghostty/macos/GhosttyKit.xcframework
-        embed: false
-      - sdk: Metal.framework
-      - sdk: MetalKit.framework
-      - sdk: QuartzCore.framework
-      - sdk: CoreText.framework
-      - sdk: Carbon.framework
-      - sdk: libc++.tbd
     settings:
       base:
         PRODUCT_BUNDLE_IDENTIFIER: dev.leostera.axo.mac
         PRODUCT_NAME: Axo
-        INFOPLIST_FILE: AxoMac/Info.plist
+        INFOPLIST_FILE: AxoMacAxod/Info.plist
         ENABLE_APP_SANDBOX: NO
         INFOPLIST_KEY_LSApplicationCategoryType: public.app-category.developer-tools
         INFOPLIST_KEY_CFBundleDisplayName: Axo

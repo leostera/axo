@@ -256,6 +256,10 @@ Capabilities must distinguish daemon support, route availability and admitted ru
 
 The inspected public SDK exposes `ui_prompt_start`/`ui_prompt_end` lifecycle events, and the legacy extension already observes them. They identify kind/title, not a remotely answerable question with choices or a general approval API. Only Axo-owned `axo_ask` questions currently have the actionable remote-answer contract. Do not repeat the stale claim that no public UI-wait observation exists, or infer complete permission parity from these hooks. Decide and test headless behavior before claiming ready/no-window support; no private APIs or terminal-text workaround is permitted.
 
+### 2026-10-10 — Axod-only Mac bundle selection
+
+The user selected an Axod-only Mac app for newly built bundles, accepting that unsupported features may temporarily disappear. This is a deliberate client-surface change, not a claim that every legacy capability has passed replacement gates. New bundles read only fresh Axod state and do not import the legacy registry, Pi histories, or existing process identities. The already-running app and its sessions remain untouched. The capability gates below still govern any later restoration of Pi/chat/history, file, subscription, and Ghostty terminal behavior; there is no silent fallback to the legacy executor.
+
 ## Implementation order and acceptance
 
 These are dependency gates, not a commitment to implement every row in one release. Terminal feasibility and registry characterization can proceed independently, but cutover waits for their relevant gates.

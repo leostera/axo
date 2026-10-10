@@ -21,11 +21,13 @@ Reuse the pinned upstream Ghostty split implementation and preserve its MIT prov
 
 Use the current RFDs and repository tests for detailed contracts, especially `docs/rfds/RFD0003-workspaces-sessions-and-search.md`. Keep honest distinctions between implemented local features and unfinished addressed phone routing/broker work; search remains deferred until the foundation is complete.
 
-## Parallel daemon and application lanes
+## Axod-only Mac migration
 
 The standalone Rust daemon is `axod/`. Implement and harden it there, not in new POCs. Pi-loaded extension code belongs in `pi-axo/` and uses TypeScript/public Pi APIs; it is not daemon implementation. Keep daemon/CLI integration orchestration and process fixtures in Rust; existing TypeScript daemon fixture orchestration is transitional, not the target architecture. Its private runtime journal is not a second writer to the existing Mac workspace registry. Keep its processes/state isolated from the live application while developing it.
 
-The current Mac app/bridge/relay/iOS compatibility work is an independent lane. It retains its existing process ownership until a later explicitly coordinated refactor. Do not prematurely wire `axod` into the Mac app, its broker, packaging, startup, or live storage. Completing a daemon slice is not permission for cutover, migration, login registration, or live process restart.
+The operator selected an Axod-only Mac app for newly built/relaunched bundles. Build Mac UI around the existing workbench design, with local RPC through `AxoProtocol`/`AxoCore` and the bundled `axod`; do not extend the legacy bridge/execution path or add compatibility import. Unsupported workbench features may be absent until their Axod capability exists.
+
+This is not a live-session migration. Use a new private, versioned Axod state directory, never import the legacy workspace registry or Pi histories, never adopt historical PIDs, and do not stop/restart the already-running app or its sessions without separate consent. Keep the iOS and legacy service/file lanes independent until separately requested. Axod's runtime journal and work-record store remain separate authorities; never create two writers during any future handoff.
 
 Use neutral relationship terminology: **host/child endpoints** for PTYs, **controller/worker** or **leader/follower** where appropriate. Preserve upstream API names only where required for compatibility.
 
