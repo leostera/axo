@@ -166,6 +166,112 @@ final class WorkspaceController: NSObject, NSOutlineViewDataSource, NSOutlineVie
     var onTitle: ((String) -> Void)?
     var hasLiveProcesses: Bool { livePanes.values.contains { !$0.childExited } }
 
+    private final class WorkspaceCreationForm: NSObject, NSTextFieldDelegate {
+        private let alert = NSAlert()
+        private let nameField = NSTextField()
+        private let folderValue = NSTextField(labelWithString: "Choose a folder…")
+        private let chooseFolderButton = NSButton(title: "Choose Folder…", target: nil, action: nil)
+        private let initialDirectory: String?
+        private var selectedDirectory: String?
+        private var nameWasEdited = false
+        private var createButton: NSButton?
+
+        init(initialDirectory: String?) {
+            self.initialDirectory = initialDirectory
+            super.init()
+            let suggestedName = initialDirectory.map { URL(fileURLWithPath: $0).lastPathComponent }
+                .flatMap { try? WorkspaceStore.validName($0) } ?? "New project"
+            nameField.stringValue = suggestedName
+            nameField.placeholderString = "Workspace name"
+            nameField.delegate = self
+            nameField.setAccessibilityLabel("Workspace name")
+            folderValue.lineBreakMode = .byTruncatingMiddle
+            folderValue.setAccessibilityLabel("Selected project folder")
+            chooseFolderButton.setAccessibilityLabel("Choose project folder")
+        }
+
+        func present() -> WorkspaceCreationRequest? {
+            alert.messageText = "New Workspace"
+            alert.informativeText = "Give this workspace a name and choose its main folder."
+            alert.addButton(withTitle: "Create Workspace")
+            alert.addButton(withTitle: "Cancel")
+            createButton = alert.buttons.first
+            chooseFolderButton.target = self
+            chooseFolderButton.action = #selector(chooseFolder(_:))
+            alert.accessoryView = accessoryView()
+            alert.window.initialFirstResponder = nameField
+            updateCreateButton()
+
+            guard alert.runModal() == .alertFirstButtonReturn,
+                  let directory = selectedDirectory,
+                  let name = try? WorkspaceStore.validName(nameField.stringValue.trimmingCharacters(in: .whitespacesAndNewlines)) else {
+                return nil
+            }
+            return WorkspaceCreationRequest(directory: directory, name: name)
+        }
+
+        func controlTextDidChange(_ notification: Notification) {
+            nameWasEdited = true
+            updateCreateButton()
+        }
+
+        @objc private func chooseFolder(_ sender: NSButton) {
+            let panel = NSOpenPanel()
+            panel.title = "Choose the project's main folder"
+            panel.prompt = "Choose Folder"
+            panel.canChooseDirectories = true; panel.canChooseFiles = false; panel.allowsMultipleSelection = false
+            panel.canCreateDirectories = true; panel.treatsFilePackagesAsDirectories = false
+            var isDirectory = ObjCBool(false)
+            if let initialDirectory,
+               FileManager.default.fileExists(atPath: initialDirectory, isDirectory: &isDirectory), isDirectory.boolValue {
+                panel.directoryURL = URL(fileURLWithPath: initialDirectory)
+            }
+            panel.beginSheetModal(for: alert.window) { [weak self] response in
+                guard response == .OK, let url = panel.url, let self else { return }
+                let directory = url.standardizedFileURL
+                self.selectedDirectory = directory.path
+                self.folderValue.stringValue = directory.path
+                self.folderValue.toolTip = directory.path
+                if !self.nameWasEdited,
+                   let suggestedName = try? WorkspaceStore.validName(directory.lastPathComponent) {
+                    self.nameField.stringValue = suggestedName
+                }
+                self.updateCreateButton()
+            }
+        }
+
+        private func accessoryView() -> NSView {
+            let nameLabel = NSTextField(labelWithString: "Name")
+            nameLabel.setContentHuggingPriority(.required, for: .horizontal)
+            nameLabel.widthAnchor.constraint(equalToConstant: 64).isActive = true
+            let nameRow = NSStackView(views: [nameLabel, nameField])
+            nameRow.orientation = .horizontal; nameRow.spacing = 8
+            nameField.setContentCompressionResistancePriority(.defaultLow, for: .horizontal)
+
+            let folderRow = NSStackView(views: [chooseFolderButton, folderValue])
+            folderRow.orientation = .horizontal; folderRow.spacing = 8
+            folderValue.setContentCompressionResistancePriority(.defaultLow, for: .horizontal)
+
+            let stack = NSStackView(views: [nameRow, folderRow])
+            stack.orientation = .vertical; stack.alignment = .leading; stack.spacing = 10
+            stack.translatesAutoresizingMaskIntoConstraints = false
+            let container = NSView(frame: NSRect(x: 0, y: 0, width: 420, height: 68))
+            container.addSubview(stack)
+            NSLayoutConstraint.activate([
+                stack.leadingAnchor.constraint(equalTo: container.leadingAnchor),
+                stack.trailingAnchor.constraint(equalTo: container.trailingAnchor),
+                stack.topAnchor.constraint(equalTo: container.topAnchor, constant: 4),
+                stack.bottomAnchor.constraint(equalTo: container.bottomAnchor, constant: -4),
+            ])
+            return container
+        }
+
+        private func updateCreateButton() {
+            let name = nameField.stringValue.trimmingCharacters(in: .whitespacesAndNewlines)
+            createButton?.isEnabled = selectedDirectory != nil && (try? WorkspaceStore.validName(name)) != nil
+        }
+    }
+
     private final class SidebarItem: NSObject {
         let workspace: WorkspaceRecord?
         let session: WorkSession?
@@ -284,19 +390,8 @@ final class WorkspaceController: NSObject, NSOutlineViewDataSource, NSOutlineVie
     }
     private func requestWorkspace(initialDirectory: String?) -> WorkspaceCreationRequest? {
         if let workspaceRequestProvider { return workspaceRequestProvider(initialDirectory) }
-        let panel = NSOpenPanel()
-        panel.title = "Choose the project's main folder"
-        panel.prompt = "Choose Folder"
-        panel.canChooseDirectories = true; panel.canChooseFiles = false; panel.allowsMultipleSelection = false
-        panel.canCreateDirectories = true; panel.treatsFilePackagesAsDirectories = false
-        if let initialDirectory, (try? requireDirectory(initialDirectory)) != nil {
-            panel.directoryURL = URL(fileURLWithPath: initialDirectory)
-        }
-        guard panel.runModal() == .OK, let url = panel.url else { return nil }
-        let directory = url.standardizedFileURL.path
-        let suggestedName = (try? WorkspaceStore.validName(url.lastPathComponent)) ?? "New project"
-        guard let name = askName(title: "Name project", initial: suggestedName) else { return nil }
-        return WorkspaceCreationRequest(directory: directory, name: name)
+        let form = WorkspaceCreationForm(initialDirectory: initialDirectory)
+        return form.present()
     }
     private func createWorkspace(initialDirectory: String?) {
         guard let request = requestWorkspace(initialDirectory: initialDirectory) else { return }
