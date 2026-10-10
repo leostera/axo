@@ -1,4 +1,10 @@
 import { z } from "zod";
+import { uuid, destinationSchema } from "./identity.js";
+import { terminalSchema } from "./runtime-contracts.js";
+import { workMethods, workResults } from "./work-contracts.js";
+export { uuid, destinationSchema } from "./identity.js";
+export * from "./runtime-contracts.js";
+export * from "./work-contracts.js";
 import {
   createJSONRPCErrorResponse,
   createJSONRPCSuccessResponse,
@@ -14,11 +20,6 @@ export const LIMITS = {
   leaseMs: 30_000,
   deadlineMs: 10_000,
 } as const;
-// UUID case cannot create two directory entries/relay objects for one identity.
-export const uuid = z
-  .string()
-  .uuid()
-  .transform((value) => value.toLowerCase());
 export const idSchema = z.union([
   z.string().max(128),
   z
@@ -134,9 +135,6 @@ export const machineListResultSchema = z
       .max(LIMITS.machines),
   })
   .strict();
-export const destinationSchema = z
-  .object({ machineId: uuid, hostGeneration: uuid })
-  .strict();
 export const listSchema = z
   .object({
     target: destinationSchema,
@@ -154,40 +152,14 @@ export const startSchema = z
   })
   .strict();
 export const remoteMethods = {
+  ...workMethods,
   "axo.runtime.list": listSchema,
   "axo.runtime.startApproved": startSchema,
 } as const;
 export type RemoteMethod = keyof typeof remoteMethods;
 export const METHODS = Object.keys(remoteMethods) as RemoteMethod[];
-const processSchema = z.discriminatedUnion("kind", [
-  z.object({ kind: z.literal("starting") }).strict(),
-  z
-    .object({ kind: z.literal("running"), pid: z.number().int().positive() })
-    .strict(),
-  z
-    .object({ kind: z.literal("stopping"), pid: z.number().int().positive() })
-    .strict(),
-  z
-    .object({ kind: z.literal("exited"), wait_status: z.number().int() })
-    .strict(),
-  z.object({ kind: z.literal("failed") }).strict(),
-  z.object({ kind: z.literal("recovery_required") }).strict(),
-]);
-export const terminalSchema = z
-  .object({
-    runtime: z
-      .object({
-        host_generation: uuid,
-        target: z.object({ session_id: uuid, pane_id: uuid }).strict(),
-        runtime_generation: uuid,
-      })
-      .strict(),
-    process: processSchema,
-    attached: z.boolean(),
-    backlog_bytes: z.number().int().min(0).max(8192),
-  })
-  .strict();
 export const results = {
+  ...workResults,
   "axo.runtime.list": z
     .object({
       hostGeneration: uuid,

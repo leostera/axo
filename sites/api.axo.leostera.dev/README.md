@@ -4,6 +4,8 @@ The first isolated implementation slice of [RFD0008](../../docs/rfds/RFD0008-pri
 
 **Deployed private canary** on Cloudflare as `axo-api` at `https://api.axo.leostera.dev/` with separately provisioned Access policies. The normal-system-DNS live route is validated: dedicated Access service-token WSS registration, authenticated client discovery/runtime listing, a real approved-profile PTY launch, durable receipt reconciliation, client disconnect/reconnect and cold-restart generation fencing. This is supervised connectivity evidence, not unattended/native/Pi readiness. The existing `service/`, R2 namespace, Mac packaging/startup, live registry and running application sessions remain unchanged. This is the next iteration of the existing private relay, not an account/enrollment platform or cloud executor.
 
+**RFD0009 source checkpoint (not deployed):** the shared package now validates/forwards eight daemon work-record/receipt methods through the existing relay. [`tests/work.test.ts`](tests/work.test.ts) exercises create/rename/list/get, no implicit execution, scoped cursor/revision conflicts, notifications, command collisions and restart reconciliation on both actual local and protected test-Worker routes. This is isolated source/build evidence only: the deployed canary paragraph above still describes its prior machine/runtime slice, not Pi/native acceptance or a live storage migration.
+
 ## Module layout and Vite
 
 `cf build` delegates to the configured Cloudflare Vite plugin. Vite bundles the complete module graph; multiple source files do not require multiple Worker deployments. [`src/index.ts`](src/index.ts) is only the entry-point export surface:

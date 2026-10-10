@@ -104,9 +104,10 @@ pub(crate) fn bounded_replies(batch: bool, replies: Vec<Value>) -> Option<Value>
 
 #[derive(Deserialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
-struct Destination {
-    machine_id: MachineId,
-    host_generation: HostGeneration,
+#[derive(Clone, Copy, Debug, PartialEq, Eq, serde::Serialize)]
+pub(crate) struct Destination {
+    pub(crate) machine_id: MachineId,
+    pub(crate) host_generation: HostGeneration,
 }
 #[derive(Deserialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
@@ -146,14 +147,14 @@ pub fn dispatch(
     let result = match call.method.as_str() {
         "axo.runtime.list" => list(call.params, manager, machine),
         "axo.runtime.startApproved" => start(call.params, manager, machine, profiles),
-        _ => Err((-32601, "Method not found")),
+        method => crate::work_rpc::dispatch(method, call.params, manager, machine, profiles),
     };
     Some(match result {
         Ok(result) => json!({"jsonrpc":"2.0", "id":id, "result":result}),
         Err((code, message)) => error(id, code, message),
     })
 }
-type Outcome = Result<Value, (i32, &'static str)>;
+pub(crate) type Outcome = Result<Value, (i32, &'static str)>;
 fn list(params: Option<Value>, manager: &Manager, machine: MachineId) -> Outcome {
     let params: List = serde_json::from_value(params.unwrap_or(Value::Null))
         .map_err(|_| (-32602, "Invalid params"))?;
@@ -209,7 +210,7 @@ fn start(
         })?;
     Ok(json!({"hostGeneration":manager.generation,"terminal":terminal}))
 }
-fn validate_target(
+pub(crate) fn validate_target(
     target_machine: MachineId,
     generation: HostGeneration,
     manager: &Manager,

@@ -23,13 +23,25 @@ This is an enforcement map, not a claim that the daemon is production-ready. The
 
 ## Launch intent and persistence
 
-- `Manager::start` serializes reconciliation, admission, durable intent, and process registration under the terminal-catalog mutex. Shutdown fences new admission before capturing owned terminals.
+- `Manager::start` serializes reconciliation, admission, durable intent, and process registration under shared command admission and the terminal-catalog mutex. Shutdown fences new admission before capturing owned terminals.
 - A command receipt binds the original target, launch fingerprint, and runtime. `Journal::prepare` itself rejects conflicting reassignment; identical direct retries leave the receipt/disposition unchanged. Manager reconciliation must precede any new spawn.
 - Child exec inherits only standard descriptors: known daemon resources have CLOEXEC, and the fork child additionally closes the inherited nonstandard table, including library-created descriptors. The Darwin kernel allocation ceiling is captured before fork and bounded to 1,048,576; unsupported bounds reject before fork, unexpected close failures exit before exec. Kernel limits are not changed by this daemon. Only prepared memory and libc operations are used after fork.
 - Starting intent is durably committed before `forkpty`. After spawn, the daemon retains the terminal and starts drain/reaper workers even when its Running commit fails. Receipt reconciliation does not launch another child.
 - Journal updates require the exact runtime and a legal transition. Completed records cannot be resurrected or have their exit status rewritten. A conservative recovery record can become a proven exit only through the same live runtime's completion path.
 - Failed rename/fsync has an uncertain on-disk outcome. The journal fences subsequent mutations, not just that write. Completion persistence records failure explicitly rather than silently treating an ignored error as success.
 - Version 2 requires the current completion contract. Version 1 is refused without rewriting its claims. This is a private daemon journal, not the existing Mac workspace registry.
+
+## Work-record authority and shared command admission
+
+- `Journal::open` acquires the exclusive directory lock before opening the private work store. Its records/receipts use a separate versioned file, not the live Mac registry or a Pi transcript. Create/rename/read cannot launch a process or invent a canonical chat identity.
+- Approved `directoryId` resolves a configured directory only; no RPC accepts caller cwd/argv. Resolved canonical paths stay private. Manual names are bounded/validated independently of Pi titles; immutable session/pane/parent bindings cannot be retargeted by rename.
+- One admission mutex serializes execution/work commands, with consistent admission → catalog/journal/work locking. Cross-journal command identity reuse rejects before side effects; boot also rejects persisted collisions. Work reads release their store guard before inspecting runtimes.
+- Work records and their immutable normalized-intent receipt commit together. Loading validates bounded records, unique pane identities, receipt revision continuity and exact metadata reconstruction. Record edits without matching receipts fail closed.
+- Failed work persistence is outcome-unknown because rename/fsync may already have committed. A fenced work or runtime store blocks new mutations in both domains; it does not stop accepted children or turn missing receipt knowledge into safe replay.
+- Page cursors bind machine/boot source, global revision, domain and workspace filter. Changing any invalidates the cursor, never silently mixes pages or redirects a call. Results expose generic runtime facts separately from Pi admission.
+- `command.get` reads existing work/runtime receipt evidence, never calls `start`. Original runtime references remain historical; no matching snapshot means missing observation, not new execution or completion proof.
+
+**Residual limits:** real Pi start/admission, archive/duplicate/panes, live registry migration, cache/subscriptions and Swift/native work-record adoption remain separate gates. Current prototype internal names have not yet moved to `axo._.*`; prefix spelling itself will not establish caller provenance.
 
 ## Child and terminal completion
 

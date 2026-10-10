@@ -9,6 +9,8 @@ import {
   machineListResultSchema,
   remoteMethods,
   results,
+  workMethods,
+  workResults,
 } from "./src/index.js";
 
 const definitions: Record<string, unknown> = {};
@@ -23,6 +25,8 @@ for (const [name, schema] of Object.entries({
   runtimeStartApprovedParams: remoteMethods["axo.runtime.startApproved"],
   runtimeListResult: results["axo.runtime.list"],
   runtimeStartApprovedResult: results["axo.runtime.startApproved"],
+  ...Object.fromEntries(Object.entries(workMethods).map(([method, schema]) => [`${method}Params`, schema])),
+  ...Object.fromEntries(Object.entries(workResults).map(([method, schema]) => [`${method}Result`, schema])),
 })) {
   const converted = z.toJSONSchema(schema, {
     target: "draft-2020-12",

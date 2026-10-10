@@ -16,8 +16,9 @@ import {
   negotiateSchema,
   registrationSchema,
   machineListResultSchema,
-  listSchema,
-  startSchema,
+  remoteMethods,
+  workMutationMethods,
+  type RemoteMethod,
   results,
   type Reply,
 } from "./contracts.js";
@@ -30,12 +31,9 @@ export type Negotiated = {
 export type Registered = { leaseId: string; hostGeneration: string };
 export type Heartbeat = { leaseId: string };
 export type DaemonMethods = {
-  "axo.runtime.list": (
-    params: z.input<typeof listSchema>,
-  ) => z.output<(typeof results)["axo.runtime.list"]>;
-  "axo.runtime.startApproved": (
-    params: z.input<typeof startSchema>,
-  ) => z.output<(typeof results)["axo.runtime.startApproved"]>;
+  [Method in RemoteMethod]: (
+    params: z.input<(typeof remoteMethods)[Method]>,
+  ) => z.output<(typeof results)[Method]>;
 };
 export type ServiceMethods = {
   "axo.protocol.negotiate": (
@@ -68,7 +66,7 @@ export function createProfileServer<Context = void>(): JSONRPCServer<Context> {
   server.applyMiddleware((next, request, context) => {
     if (
       request.id === undefined &&
-      ["axo.runtime.startApproved", "axo.machine.register"].includes(
+      [...workMutationMethods, "axo.runtime.startApproved", "axo.machine.register"].includes(
         request.method,
       )
     )

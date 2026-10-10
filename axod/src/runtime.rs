@@ -283,6 +283,8 @@ impl SpawnedTerminal {
 pub struct Manager {
     pub generation: HostGeneration,
     journal: Arc<Mutex<Journal>>,
+    pub(crate) work: Arc<Mutex<crate::work::WorkStore>>,
+    admission: Mutex<()>,
     terminals: Mutex<BTreeMap<PaneId, Arc<Terminal>>>,
     stopping: AtomicBool,
 }
@@ -290,10 +292,45 @@ impl Manager {
     pub fn new(journal: Journal) -> Self {
         Self {
             generation: HostGeneration::new(),
+            work: journal.work.clone(),
+            admission: Mutex::new(()),
             journal: Arc::new(Mutex::new(journal)),
             terminals: Mutex::new(BTreeMap::new()),
             stopping: AtomicBool::new(false),
         }
+    }
+    pub(crate) fn command_receipt(
+        &self,
+        command: CommandId,
+    ) -> Option<crate::work::CommandReceipt> {
+        let _admission = self.admission.lock().unwrap();
+        if let Some(committed) = self.work.lock().unwrap().receipt(command) {
+            return Some(crate::work::CommandReceipt::Work { committed });
+        }
+        let runtime = self.journal.lock().unwrap().command_runtime(command)?;
+        let terminal = self.list().into_iter().find(|t| t.runtime == runtime);
+        Some(crate::work::CommandReceipt::Runtime { runtime, terminal })
+    }
+    pub(crate) fn mutate_work(
+        &self,
+        command: CommandId,
+        intent: crate::work::WorkIntent,
+        profiles: &BTreeMap<String, TerminalLaunch>,
+    ) -> Result<crate::work::CommittedWork, crate::work::WorkError> {
+        let _admission = self.admission.lock().unwrap();
+        if self.stopping.load(Ordering::SeqCst) {
+            return Err(crate::work::WorkError::Rejected);
+        }
+        {
+            let journal = self.journal.lock().unwrap();
+            if journal.is_fenced() {
+                return Err(crate::work::WorkError::StorageFailed);
+            }
+            if journal.contains_command(command) {
+                return Err(crate::work::WorkError::Conflict);
+            }
+        }
+        self.work.lock().unwrap().apply(command, intent, profiles)
     }
     pub fn list(&self) -> Vec<TerminalSnapshot> {
         let mut records: BTreeMap<_, _> = self
@@ -315,6 +352,16 @@ impl Manager {
         target: TerminalTarget,
         launch: &TerminalLaunch,
     ) -> Result<TerminalSnapshot, ErrorCode> {
+        let _admission = self.admission.lock().unwrap();
+        {
+            let work = self.work.lock().unwrap();
+            if work.is_fenced() {
+                return Err(ErrorCode::StorageFailed);
+            }
+            if work.contains_command(command) {
+                return Err(ErrorCode::Conflict);
+            }
+        }
         let mut terminals = self.terminals.lock().unwrap();
         if self.stopping.load(Ordering::SeqCst) {
             return Err(ErrorCode::NotRunning);

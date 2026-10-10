@@ -29,6 +29,7 @@ struct Saved {
     receipts: BTreeMap<CommandId, Receipt>,
 }
 pub struct Journal {
+    pub(crate) work: std::sync::Arc<std::sync::Mutex<crate::work::WorkStore>>,
     root: PathBuf,
     saved: Saved,
     _owner_lock: File,
@@ -98,12 +99,28 @@ impl Journal {
                 terminal.process = ProcessState::RecoveryRequired {};
             }
         }
+        let work = crate::work::WorkStore::open(root)?;
+        if saved.receipts.keys().any(|id| work.contains_command(*id)) {
+            return Err(io::Error::other(
+                "Conflicting command identities across journals",
+            ));
+        }
         Ok(Self {
+            work: std::sync::Arc::new(std::sync::Mutex::new(work)),
             root: root.to_path_buf(),
             saved,
             _owner_lock: owner,
             poisoned: false,
         })
+    }
+    pub(crate) fn is_fenced(&self) -> bool {
+        self.poisoned
+    }
+    pub(crate) fn command_runtime(&self, command: CommandId) -> Option<RuntimeRef> {
+        self.saved.receipts.get(&command).map(|r| r.runtime)
+    }
+    pub(crate) fn contains_command(&self, command: CommandId) -> bool {
+        self.saved.receipts.contains_key(&command)
     }
     pub fn snapshots(&self) -> Vec<TerminalSnapshot> {
         self.saved.terminals.values().cloned().collect()

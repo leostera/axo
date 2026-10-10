@@ -19,12 +19,24 @@ macro_rules! identity {
     };
 }
 identity!(MachineId);
+identity!(WorkspaceId);
 identity!(SessionId);
 identity!(PaneId);
 identity!(HostGeneration);
 identity!(RuntimeGeneration);
 identity!(AttachmentId);
 identity!(CommandId);
+
+impl WorkspaceId {
+    pub(crate) fn as_uuid(self) -> Uuid {
+        self.0
+    }
+}
+impl SessionId {
+    pub(crate) fn as_uuid(self) -> Uuid {
+        self.0
+    }
+}
 
 /// Validates the PID range, not process ownership. Only the live runtime may signal/reap it.
 #[derive(Clone, Copy, Debug, Eq, PartialEq, Serialize, Deserialize)]

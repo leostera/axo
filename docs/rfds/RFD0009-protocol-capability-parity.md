@@ -1,7 +1,7 @@
 # RFD0009 - Axo: protocol capability parity and native adoption
 
 - Feature Name: `axo-protocol-capability-parity`
-- Status: Proposal
+- Status: In progress — isolated work records implemented; Pi/native gates pending
 - Start Date: 2026-10-10
 - Updated: 2026-10-10
 - Document Type: Proposal
@@ -28,6 +28,9 @@ Source inventory:
 - [`service/src/files.ts`](../../service/src/files.ts) and [RFD0002](RFD0002-shared-session-files.md): existing file HTTP lifecycle and immutable-file authority, separate from conversational control.
 - [`protocol/`](../../protocol/README.md), [`axod`](../../axod/README.md) and the [API](../../sites/api.axo.leostera.dev/README.md): implemented shared machine/runtime contracts and bounded local/cloud adapters.
 - [`AxoJSONRPCClient.swift`](../../apple/AxoCore/Sources/AxoCore/AxoJSONRPCClient.swift): reusable native client source exists; this is not proof of full native migration or physical-phone parity.
+- [`work.rs`](../../axod/src/work.rs), [`work_rpc.rs`](../../axod/src/work_rpc.rs), [`work-contracts.ts`](../../protocol/src/work-contracts.ts) and [`work.test.ts`](../../sites/api.axo.leostera.dev/tests/work.test.ts): isolated daemon-owned create/rename/domain reads and command reconciliation. Detailed remaining work is tracked in the [implementation checklist](RFD0009-implementation-checklist.md).
+
+**First implementation checkpoint:** seven workspace/session methods and `axo.command.get` share one private daemon store on local and relayed routes. Create is metadata-only, workspace creation returns no initial session, and a created session has one unadmitted Pi-pane identity but no fabricated chat/history. This does not implement Pi start/admission, native ownership handoff, file cutover or the proposed internal namespace transition. Work records use approved directory IDs and manual labels; read results disclose generic runtime facts separately from Pi admission.
 
 Status vocabulary below applies to the **new daemon route**, not to the existence of a legacy implementation. Implemented capability evidence describes the current prototype; it does not freeze its current spelling into the proposed taxonomy:
 
@@ -42,8 +45,8 @@ Status vocabulary below applies to the **new daemon route**, not to the existenc
 | --- | --- | --- | --- | --- |
 | Transport, negotiation and machine discovery / Mac, iOS | Legacy single-workbench relay; no equivalent multi-machine directory | API owns directory/leases; daemon owns execution; explicit local/remote destination | **Implemented:** local bootstrap, negotiation, registration/heartbeat, machine list and fenced relay | Native readers validate discovery and method results; wrong machine/source/lease never crosses routes; no mutation replay |
 | Runtime metadata and approved launch / Mac, structured clients | Native pane launch; former daemon control commands | One daemon manager/journal; operator-approved launch policy | **Implemented:** `axo.runtime.list`, `axo.runtime.startApproved`; **not Pi readiness** | Preserve durable receipt, unknown outcome and historical generation semantics on both routes |
-| Workspace/session catalog and selection / Mac, iOS | `catalog_page`, `subscribe`, `sync`; native registry and window-local selection | Daemon-owned work records/projection; selection remains client-local | **Missing:** runtime pages are not a workspace/session catalog | Machine/source/revision-bound cursors, stopped records, gap reconciliation and no launch from reading/selecting/restoring |
-| Create and rename workspaces/sessions / Mac, iOS | `create_workspace`, `create_session`, `rename_workspace`, `rename_session` | Exactly one registry writer; approved directory intents; preserve manual-title protection | **Missing** | Durable create receipts, revision conflicts and explicit launch intent; no remote arbitrary cwd/argv; compatible existing identities |
+| Workspace/session catalog and selection / Mac, iOS | `catalog_page`, `subscribe`, `sync`; native registry and window-local selection | Daemon-owned work records/projection; selection remains client-local | **Partial:** bounded daemon work-record pages/get exist; subscriptions/cache and native adoption remain missing | Machine/source/revision-bound cursors, stopped records, gap reconciliation and no launch from reading/selecting/restoring |
+| Create and rename workspaces/sessions / Mac, iOS | `create_workspace`, `create_session`, `rename_workspace`, `rename_session` | Exactly one registry writer; approved directory intents; preserve manual-title protection | **Implemented in isolated daemon storage:** durable create/rename/revision receipts; live registry import/cutover and native acceptance remain gated | Durable create receipts, revision conflicts and explicit launch intent; no remote arbitrary cwd/argv; compatible existing identities |
 | Archive and duplicate / Mac; remote exposure separately decided | Native archive/duplicate; not old phone methods | Registry authority; Pi/file authority stays intact | **Missing** | Archive preserves originals; duplicate uses fresh work/conversation identities; define stopped/live behavior without copying a live writer |
 | Explicit Pi session start and exact resume / Mac, iOS | Native Ghostty launch/resume and extension admission | Daemon resolves work target and managed Pi persistence; public Pi launch/registration | **Partial:** PTY spawn/receipts only | Real vanilla Pi binding to actual session ID/file; spawned versus ready; no ambient continue, duplicate writer or automatic restart |
 | Conversation snapshot, active branch and history / Mac, iOS | `sync`/`snapshot`, `history`; branch/view identity and bounded pages | Pi owns canonical JSONL and active branch; daemon/extension projects observations | **Missing** | Tree/compaction-aware projection, branch-bound cursors, stopped-history policy, encoded-byte bounds and no second transcript writer |
@@ -96,15 +99,15 @@ Route vocabulary: **shared** means the same daemon semantics locally or through 
 | Canonical method | Light capability specification | Route | Status |
 | --- | --- | --- | --- |
 | `axo.machine.list` | Page registered machines and observed reachability; never launch or publish histories | Service | Existing |
-| `axo.workspace.list` | Page approved workspace records, including stopped work; explicitly distinguish authoritative/live reads from any opted-in published cache | Shared; service observation policy if selected | Proposed |
-| `axo.workspace.create` | Commit a workspace from an approved directory intent and return stable IDs; do not launch Pi | Shared | Proposed |
-| `axo.workspace.rename` | Update the captured workspace's name under revision checks | Shared | Proposed |
+| `axo.workspace.list` | Page approved daemon records with source/revision/filter-bound cursors; no published-cache read yet | Shared | Existing |
+| `axo.workspace.create` | Commit a workspace from an approved directory ID; stable IDs, no initial session and no launch | Shared | Existing |
+| `axo.workspace.rename` | Update the captured workspace's manual name under revision checks and a durable command receipt | Shared | Existing |
 | `axo.workspace.archive` | Archive work records while preserving originals; live-work policy must be decided first | Daemon; remote exposure undecided | Proposed |
 | `axo.workspace.duplicate` | Create independent records with fresh identities, not a copy of a live writer | Daemon; remote exposure undecided | Proposed |
-| `axo.session.list` | Page work-session records, optionally within a captured workspace; separate presence/readiness and explicitly identify any published-cache source | Shared; service observation policy if selected | Proposed |
-| `axo.session.get` | Read work/pane metadata, opaque persistence/chat references and observed lifecycle/readiness; not messages, pending questions or a transcript | Shared | Proposed |
-| `axo.session.create` | Commit a stopped session record with fresh identity in an approved workspace; no implicit launch | Shared | Proposed |
-| `axo.session.rename` | Update the captured session's name, preserving manual-title protection and revision checks | Shared | Proposed |
+| `axo.session.list` | Page daemon work-session records within an explicit workspace filter; generic runtime facts do not imply Pi admission | Shared | Existing |
+| `axo.session.get` | Read manual work/pane metadata and observed runtime facts; Pi binding is currently null/notAdmitted; no messages or transcript | Shared | Existing |
+| `axo.session.create` | Commit an unstarted session record and fresh Pi-pane identity in an approved workspace; no chat fabricated or implicit launch | Shared | Existing |
+| `axo.session.rename` | Update the captured session's manual Axo name under revision/parent checks and durable receipt; not Pi-title mutation | Shared | Existing |
 | `axo.session.archive` | Archive the session record without deleting its original history/files; live-work policy is a separate gate | Daemon; remote exposure undecided | Proposed |
 | `axo.session.duplicate` | Commit a fresh independent session/conversation identity; history-copy semantics need an explicit decision | Daemon; remote exposure undecided | Proposed |
 | `axo.session.start` | Explicitly start the session's managed Pi pane from an approved fresh/resume persistence intent; report spawn separately from readiness | Shared | Proposed |
@@ -119,7 +122,7 @@ Route vocabulary: **shared** means the same daemon semantics locally or through 
 | `axo.observe.unsubscribe` | Release the captured subscription at its owning producer only; do not cancel work | Daemon or service projection | Proposed |
 | `axo.chat.setViewing` | Report an expiring, explicitly chat-scoped viewing lease for attention policy; a subscription alone does not prove viewing | Shared | Proposed |
 | `axo.observe.event` | Server notification for a subscribed structured change; includes producer/subscription/source/sequence, not an execution receipt | Daemon or service to client | Proposed |
-| `axo.command.get` | Read the known receipt/disposition of a logical command within its captured machine/work scope; missing/unknown never means safe to replay | Shared | Proposed |
+| `axo.command.get` | Read a machine-scoped work commit or original runtime receipt/observation; null never means safe to replay or proven rejection | Shared | Existing |
 | `axo.runtime.list` | Page process/runtime metadata, preserving historical runtime generations | Shared | Existing |
 | `axo.runtime.stop` | Request termination of one exact owned runtime; completion must be observed separately | Shared, subject to stop policy | Proposed |
 | `axo.session.pane.create` | Commit an approved shell-pane record in the captured session; layout/focus remain client-owned and creation does not launch | Local | Proposed; native pane parity |
@@ -160,6 +163,16 @@ Domain choices and light contracts:
 - **Other planes:** no `axo.runtime.terminal.input`/`axo.runtime.terminal.output` control RPC is selected; raw bytes belong to the separately gated local data channel. File reserve/authorize/complete/list/download/delete remain existing HTTP capabilities, not new `axo.file.*` aliases. Model/follow-up controls remain with Pi until their structured scope is accepted; voice, layout and drafts remain client-local.
 
 A lightweight intended flow is: `axo.workspace.list` → `axo.session.create` → explicit `axo.session.start` → `axo.session.get`/scoped observation of Pi readiness and the actual chat binding → `axo.chat.get` → `axo.chat.sendMessage`. Steering is a separate explicit `axo.chat.sendSteeringMessage` intent while an interaction is active. Reads and readiness observations do not execute. An uncertain mutation goes to `axo.command.get`, not an automatic resend. Exact schemas, cursor fields, error variants and public Pi admission evidence are the next contract pass.
+
+### Isolated work-record contracts
+
+`work-records.json` is a separate private version-1 store opened under the daemon's existing exclusive directory lock, not the live Mac registry or a Pi transcript. It holds approved directory bindings, stable work/pane IDs, manual labels, one global revision and immutable metadata receipts. Caps are 128 workspaces, 1000 sessions, 2000 work receipts and 4 MiB; atomic record/receipt replacement and directory sync precede success. Corrupt metadata, inconsistent receipt revisions, unreceipted record edits and cross-journal command collisions reject startup. Uncertain persistence fences work and execution mutation admission across both stores; reads and accepted children remain independent.
+
+Create/rename parameters carry `commandId`, `expectedRevision`, explicit machine/host plus workspace/session parents where applicable, and a 1–80 Unicode-scalar manual name without control characters or surrounding whitespace. `workspace.create.directoryId` currently selects only the directory of an operator-configured profile; it accepts no cwd/argv and does not execute that profile. The resolved canonical directory stays private; replay reconciles the original commit without reinterpreting changed profile policy. Pi start must later validate its actual approved persistence/directory binding.
+
+Live daemon list cursors disclose and fence source, global revision, domain and workspace filter. Mutations invalidate old pages; boot change invalidates old source cursors. `session.get` returns manual work/pane metadata, a null/unadmitted Pi chat binding and any exact matching generic runtime observation. `command.get` is read-only: work receipts include the committed metadata snapshot/revision, runtime receipts preserve the original runtime reference with any available matching observation. A missing receipt is unknown knowledge, not rejected execution or replay permission. These source-tested shapes are in the generated shared schema; Swift/native work-record models and live registry handoff remain separate unfinished gates.
+
+Evidence is isolated: Rust failure/bounds tests plus actual local/Worker/daemon tests cover every new method, receipt/revision conflicts, notifications, route/cursor fences, restart reconciliation and absence of metadata-driven launches. No real Pi/provider, native app or physical-device acceptance is claimed.
 
 ### Legacy source audit — 2026-10-10
 
@@ -271,7 +284,7 @@ Update the matrix when a contract or evidence changes, citing the implementation
 
 Before each owning slice, resolve:
 
-- Registry/data handoff seam and the minimum isolated work-record model for explicit Pi start; actual chat identity/binding; create versus start must remain distinct intents.
+- Live registry/data handoff and migration/rollback from the isolated private work-record store; actual Pi chat/persistence admission remains to be specified. Create versus start stays distinct.
 - Public Pi readiness/registration protocol, canonical persistence binding and ownership exclusion, including external unmanaged writers.
 - Exact schemas, scoped support advertisement and protocol-version transition for the selected public/private taxonomy; proposed names do not imply availability and no alias/backwards-compatibility requirement exists.
 - Message receipt evidence across crash windows, authoritative active interaction/run identity and normal/steering precondition enforcement; any follow-up queue policy requires a separate decision.

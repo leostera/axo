@@ -76,12 +76,24 @@ UUIDs are case-insensitive inputs normalized to lower-case routing keys. A label
 | `axo.runtime.list` | `{target: {machineId, hostGeneration}, after?, limit?}` | Relayed read-only daemon metadata, default/max page 50 |
 | `axo.runtime.startApproved` | `{commandId, target: {machineId, hostGeneration, sessionId, paneId}, profileId}` | Relayed daemon mutation using an operator-configured launch profile |
 | `axo.transport.ack` | `{frames: positive integer <= 32}` | WebSocket notification acknowledging consumed outbound frames |
+| `axo.workspace.list` | `{target, cursor?, limit?}` | Shared daemon record page; source/revision/domain-bound cursor |
+| `axo.workspace.create` | `{target, commandId, expectedRevision, directoryId, name}` | Metadata-only commit from an approved directory ID; no initial session or execution |
+| `axo.workspace.rename` | `{target: {...source, workspaceId}, commandId, expectedRevision, name}` | Durable manual-label mutation |
+| `axo.session.list` | `{target, workspaceId?, cursor?, limit?}` | Shared work-session pages; cursor includes workspace filter |
+| `axo.session.get` | `{target: {...source, workspaceId, sessionId}}` | Work/pane metadata and runtime facts, not transcript/Pi readiness |
+| `axo.session.create` | `{target: {...source, workspaceId}, commandId, expectedRevision, name}` | Fresh unstarted work/Pi-pane identities, no fabricated chat/history |
+| `axo.session.rename` | `{target: {...source, workspaceId, sessionId}, commandId, expectedRevision, name}` | Durable manual Axo label, not Pi-title mutation |
+| `axo.command.get` | `{target, commandId}` | Read-only machine-scoped work/runtime receipt; null never proves rejection or safe replay |
 
 `startApproved` has no remote argv, shell string or cwd parameter. `axod` resolves `profileId` from its private configuration and uses the existing `Manager::start`/durable launch receipt. Its result reports the actual terminal disposition; a retry can return a previously exited terminal, not a fresh process. Matching command IDs reconcile normalized execution intent, while conflicting target/launch arguments fail. Changing request IDs does not create a new logical command ID. No adapter replays calls on reconnect.
 
 A `runtime.list` page returns `{hostGeneration, terminals, next}`. `startApproved` returns `{hostGeneration, terminal}`. Terminal snapshots describe runtime identities, process disposition, attachment state and backlog **count**; no terminal bytes travel through the API. The response validator rejects extra payload fields. Current source generation and original runtime generation are deliberately separate.
 
-This is not yet session/workspace/Pi API parity. Prompt/history/stop/subscriptions, file authorization migration and native client cutover are not implemented by this profile. Local and cloud WebSocket adapters now dispatch the same implemented runtime methods.
+Workspace/session record methods now share the same isolated daemon store locally and through the API. `target` means explicit machine/host source; `expectedRevision` is the global work-record revision. Names are 1–80 Unicode scalar values without controls/surrounding whitespace. Work lists default/max at 50 and return source, revision and an explicitly scoped `next` cursor; a changed revision/source/domain/filter rejects a cursor. There is no cached public catalog endpoint or silent fallback. `directoryId` currently selects only an operator profile's approved directory; resolved host paths remain private.
+
+Create/rename return committed metadata and revision. Reusing a command reconciles the exact original normalized intent; conflicting arguments or execution/work command reuse reject. Work commits and runtime receipts are separate bounded stores under one owner/admission lock. Uncertain persistence fences mutations in both domains. `command.get` returns a work commit or original runtime reference with any available observation; missing or an absent historical snapshot never permits execution replay.
+
+The proposed `axo._.*` names in [RFD0009](../docs/rfds/RFD0009-protocol-capability-parity.md) have **not** replaced the current prototype spellings yet; no aliases are introduced. Work-record APIs have TypeScript/Rust/schema evidence, not Swift/native adoption. Pi start/admission, chat controls/history, stop/subscriptions, file authority and native cutover remain unfinished. A runtime observation in `session.get` is deliberately separate from the null/notAdmitted Pi binding.
 
 ## Delivery and failure semantics
 

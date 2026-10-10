@@ -17,3 +17,7 @@ pub mod terminal;
 mod terminal_lifecycle_tests;
 #[cfg(test)]
 mod test_support;
+pub mod work;
+#[cfg(test)]
+mod work_lifecycle_tests;
+mod work_rpc;
