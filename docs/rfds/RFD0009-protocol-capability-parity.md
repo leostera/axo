@@ -75,7 +75,63 @@ A native client may use the new machine/runtime browser while retaining legacy c
 
 ## Reference-level contracts
 
-Method names beyond those implemented in `protocol/` remain proposals. In particular, `axo.session.start` denotes the next proposed capability, not an available API. Specify request/result/event schemas and errors in the shared package before implementation; do not translate the old type-tagged envelope inside native clients.
+### Proposed canonical naming catalogue
+
+This catalogue is the naming proposal for review, not a claim that the methods are available or that their schemas are frozen. **Existing** names are implemented contracts and remain unchanged. **Proposed** names identify the intended application surface; acceptance and schemas follow the owning capability gate. Native clients must not translate the old type-tagged envelope into an alternate naming scheme.
+
+Use `axo.<namespace>.<operation>`, with singular domain/resource names and camelCase for compound operations, consistent with the existing `startApproved`. `protocol`, `transport` and `observe` are infrastructure namespaces. `list` is bounded paging, `get` reads one explicitly addressed resource/projection, and verbs describe intent rather than transport (`sync`, `send`, `execute` and a generic `action` are not application methods). A read never starts work. Do not expose UI selection as daemon execution authority.
+
+Route vocabulary: **shared** means the same daemon semantics locally or through the API, subject to advertised support/caller policy; **service** means client-to-API; **registration** means daemon-to-API; **local** means not forwarded through the cloud. Scope does not imply current implementation or permission.
+
+| Canonical method | Light capability specification | Route | Status |
+| --- | --- | --- | --- |
+| `axo.protocol.negotiate` | Negotiate the application profile before domain calls; supported-method/limit advertisement needs its own compatible schema | Local and service connections | Existing |
+| `axo.machine.list` | Page registered machines and observed reachability; never launch or publish histories | Service | Existing |
+| `axo.machine.register` | Bind the approved machine identity/source to an admitted service route, not account enrollment | Registration | Existing |
+| `axo.machine.heartbeat` | Renew the current route's bounded liveness lease | Registration | Existing |
+| `axo.transport.ack` | Notification returning consumed reply-frame credit; not execution acknowledgement | Local and service connections | Existing |
+| `axo.workspace.list` | Page approved workspace records, including stopped work; disclose only allowed metadata | Shared | Proposed |
+| `axo.workspace.create` | Commit a workspace from an approved directory intent and return stable IDs; do not launch Pi | Shared | Proposed |
+| `axo.workspace.rename` | Update the captured workspace's name under revision checks | Shared | Proposed |
+| `axo.workspace.archive` | Archive work records while preserving originals; live-work policy must be decided first | Daemon; remote exposure undecided | Proposed |
+| `axo.workspace.duplicate` | Create independent records with fresh identities, not a copy of a live writer | Daemon; remote exposure undecided | Proposed |
+| `axo.session.list` | Page session records, optionally within a captured workspace; separate presence from Pi readiness | Shared | Proposed |
+| `axo.session.get` | Read one session's work metadata, persistence binding and observed lifecycle/readiness; not its transcript | Shared | Proposed |
+| `axo.session.create` | Commit a stopped session record with fresh identity in an approved workspace; no implicit launch | Shared | Proposed |
+| `axo.session.rename` | Update the captured session's name, preserving manual-title protection and revision checks | Shared | Proposed |
+| `axo.session.archive` | Archive the session record without deleting its original history/files; live-work policy is a separate gate | Daemon; remote exposure undecided | Proposed |
+| `axo.session.duplicate` | Commit a fresh independent session/conversation identity; history-copy semantics need an explicit decision | Daemon; remote exposure undecided | Proposed |
+| `axo.session.start` | Explicitly start the session's managed Pi pane from an approved fresh/resume persistence intent; report spawn separately from readiness | Shared | Proposed |
+| `axo.session.prompt` | Submit text/authorized attachment references to the captured admitted Pi binding, with explicit busy-delivery policy and truthful disposition | Shared | Proposed |
+| `axo.turn.cancel` | Request cancellation of the captured active Pi turn; do not kill its process or siblings | Shared | Proposed |
+| `axo.question.answer` | Resolve the captured pending Axo question with a validated offered choice; never infer approval | Shared | Proposed |
+| `axo.conversation.get` | Read a bounded active-view snapshot: messages/live state, active turn and pending question, with conversation/branch identity | Shared | Proposed |
+| `axo.conversation.history` | Page canonical-history projections under an explicit conversation/view cursor; not a flat JSONL dump | Shared | Proposed |
+| `axo.conversation.toolOutput` | Page detail for a captured tool-call identity and output offset; never invoke a tool | Shared | Proposed |
+| `axo.observe.subscribe` | Establish bounded observation of an explicit scope with baseline/source/sequence and gap semantics | Shared | Proposed |
+| `axo.observe.unsubscribe` | Release the captured subscription only; do not cancel work | Shared | Proposed |
+| `axo.observe.setViewing` | Report an expiring, explicitly scoped client viewing lease for attention policy; a subscription alone does not prove viewing | Shared | Proposed |
+| `axo.observe.event` | Server notification for a subscribed structured change; includes subscription/source/sequence, not an execution receipt | Daemon to client, local or relayed | Proposed |
+| `axo.command.get` | Read the known receipt/disposition of a logical command within its captured machine/work scope; missing/unknown never means safe to replay | Shared | Proposed |
+| `axo.runtime.list` | Page process/runtime metadata, preserving historical runtime generations | Shared | Existing |
+| `axo.runtime.startApproved` | Start an operator-approved generic profile with a durable receipt; not the application session-create/start API | Shared | Existing |
+| `axo.runtime.stop` | Request termination of one exact owned runtime; completion must be observed separately | Shared, subject to stop policy | Proposed |
+| `axo.terminal.attach` | Acquire a local interactive lease and negotiate a separate local data-channel/rendering contract | Local | Proposed; terminal feasibility gate |
+| `axo.terminal.detach` | Release that attachment lease only, leaving managed work running | Local | Proposed; terminal feasibility gate |
+| `axo.terminal.resize` | Resize under the captured current attachment/input-owner lease | Local | Proposed; terminal feasibility gate |
+| `axo.host.stop` | Explicitly stop the daemon and its owned work under confirmation/shutdown policy; not machine power-off or client logout | Local | Proposed; operational gate |
+
+Naming choices to agree before schemas:
+
+- **Create versus start:** `axo.session.create` creates records; `axo.session.start` starts Pi for an existing record. A UI can deliberately compose them using distinct commands, but creating/listing/selecting/restoring never implicitly executes. Fresh versus exact resume is explicit persistence intent on `start`, not a separate `resume`/`restart` shortcut or ambient continue. Existing live-runtime handling must reject or report that binding without creating another writer.
+- **Catalog:** `workspace.list` and `session.list` replace the legacy catalog read surface. They share machine/source/catalog-revision semantics so clients cannot merge inconsistent pages. There is no second `catalog` writer or parallel `catalog.list` alias.
+- **Session versus conversation:** `session.get` is the work/lifecycle projection; `conversation.get` is the bounded chat snapshot. History and tool detail stay in the conversation namespace. Branch mutation/fork APIs are not selected by this naming pass.
+- **Cancel versus stop:** `turn.cancel` requests public Pi cancellation; `runtime.stop` terminates one owned process runtime; `host.stop` is explicit daemon shutdown. There is no ambiguous `session.cancel`, generic `stop` or session-wide kill method in this initial catalogue. Multi-pane stop orchestration needs a separate contract if required.
+- **Reconciliation versus replay:** `command.get` is read-only lookup, not a retry/recovery executor. Existing same-intent start reconciliation remains valid; a receipt lookup does not authorize a new command or replay of an uncertain prompt. Work mutations require durable command identity; connection maintenance and observation leases use their scoped ephemeral identities, not another execution journal.
+- **Events:** use one `observe.event` notification with a typed change kind, not a separate RPC method for every Pi callback. Candidate kinds include `catalog.changed`, `session.changed`, `conversation.changed`, `turn.changed`, `toolCall.changed`, `question.changed` and `file.changed`; payloads/coalescing and file-event sourcing remain undecided. Raw terminal, audio and file bodies are not event payloads.
+- **Other planes:** no `terminal.input`/`terminal.output` control RPC is selected; raw bytes belong to the separately gated local data channel. File reserve/authorize/complete/list/download/delete remain existing HTTP capabilities, not new `axo.file.*` aliases. Model/follow-up controls remain with Pi until their structured scope is accepted; voice, layout and drafts remain client-local.
+
+A lightweight intended flow is: `workspace.list` → `session.create` → explicit `session.start` → `session.get`/scoped observation of Pi readiness → `conversation.get` → `session.prompt`. Reads and readiness observations do not execute. An uncertain mutation goes to `command.get`, not an automatic resend. Exact schemas, cursor fields, error variants and public Pi admission evidence are the next contract pass.
 
 ### Common destination and outcome rules
 
@@ -144,6 +200,7 @@ Before each owning slice, resolve:
 
 - Registry compatibility seam and the minimum isolated work-record model for explicit Pi start; create versus start must remain distinct intents.
 - Public Pi readiness/registration protocol, canonical persistence binding and ownership exclusion, including external unmanaged writers.
+- Acceptance of the proposed canonical catalogue/scopes above, followed by exact schemas and compatible capability advertisement; proposed names do not imply availability.
 - Prompt receipt evidence across crash windows; authoritative turn identity and supported busy-delivery policy.
 - Active branch/view epochs, stopped-history access, event/snapshot schema, sequence gaps and exact observation budgets.
 - Headless extension UI behavior and which missing public observations require truthful unsupported/unknown state.
