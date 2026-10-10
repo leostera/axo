@@ -95,6 +95,28 @@ public enum AxoProtocolResultValidator {
         return try decode(value, as: RuntimeListResult.self, method: method)
     }
 
+    public static func workspaceDirectories(
+        _ value: JSONValue,
+        target: MachineTarget
+    ) throws -> WorkspaceDirectoryListResult {
+        let method = AxoProtocol.Method.listWorkspaceDirectories
+        guard let fields = object(value, keys: ["hostGeneration", "directories"]),
+              let hostGeneration = uuid(fields["hostGeneration"]),
+              case .array(let values)? = fields["directories"], values.count <= 16
+        else { throw invalid(method) }
+        guard hostGeneration == target.hostGeneration else {
+            throw AxoProtocolValidationError.staleHost(expected: target.hostGeneration, actual: hostGeneration)
+        }
+        var seen = Set<String>()
+        for value in values {
+            guard let directory = object(value, keys: ["directoryId", "name"]),
+                  let id = string(directory["directoryId"]), validDirectoryID(id), seen.insert(id).inserted,
+                  let name = string(directory["name"]), validWorkName(name)
+            else { throw invalid(method) }
+        }
+        return try decode(value, as: WorkspaceDirectoryListResult.self, method: method)
+    }
+
     public static func workspaceList(
         _ value: JSONValue,
         target: MachineTarget,
@@ -268,7 +290,7 @@ public enum AxoProtocolResultValidator {
         let method = AxoProtocol.Method.getCommand
         guard let fields = object(value, keys: ["hostGeneration", "receipt"]),
               let hostGeneration = uuid(fields["hostGeneration"]),
-              let receipt = fields["receipt"], validCommandReceipt(receipt)
+              let receipt = fields["receipt"], validCommandReceipt(receipt, target: target)
         else { throw invalid(method) }
         guard hostGeneration == target.hostGeneration else {
             throw AxoProtocolValidationError.staleHost(expected: target.hostGeneration, actual: hostGeneration)
@@ -315,10 +337,14 @@ public enum AxoProtocolResultValidator {
         return try decode(value, as: SessionMutationResult.self, method: method)
     }
 
-    private static func validCommandReceipt(_ value: JSONValue) -> Bool {
+    private static func validCommandReceipt(_ value: JSONValue, target: MachineTarget) -> Bool {
         if value.isNull { return true }
         guard case .object(let fields) = value, let kind = string(fields["kind"]) else { return false }
         switch kind {
+        case "pi":
+            guard Set(fields.keys) == ["kind", "receipt"],
+                  let receipt = fields["receipt"], PiProtocolValidator.validReceipt(receipt, target: target) else { return false }
+            return true
         case "work":
             guard Set(fields.keys) == ["kind", "committed"],
                   let committed = object(fields["committed"], keys: ["revision", "record"]),
@@ -432,10 +458,16 @@ public enum AxoProtocolResultValidator {
               let name = string(fields["name"]), validWorkName(name),
               string(fields["nameSource"]) == "manual",
               let pi = object(fields["pi"], keys: ["paneId", "chatId", "admission"]),
-              let paneID = uuid(pi["paneId"]), case .null? = pi["chatId"],
-              string(pi["admission"]) == "notAdmitted",
+              let paneID = uuid(pi["paneId"]),
+              let admissionName = string(pi["admission"]), let admission = PiAdmission(rawValue: admissionName),
+              let chatValue = pi["chatId"],
               let runtime = fields["runtime"]
         else { return false }
+        if case .null = chatValue {
+            guard admission == .notAdmitted else { return false }
+        } else {
+            guard uuid(chatValue) != nil, admission != .notAdmitted else { return false }
+        }
         if case .null = runtime { return true }
         guard validTerminal(runtime),
               let terminal = object(runtime, keys: ["runtime", "process", "attached", "backlog_bytes"]),

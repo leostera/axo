@@ -58,6 +58,7 @@ const mutationFields = {
   name: workNameSchema,
 };
 export const workMethods = {
+  "axo.workspace.directories": z.object({ target: destinationSchema }).strict(),
   "axo.workspace.list": z.object({
     target: destinationSchema,
     cursor: workspaceCursorSchema.optional(),
@@ -126,6 +127,13 @@ export const commandReceiptSchema = z.discriminatedUnion("kind", [
   }).strict(),
 ]);
 export const workResults = {
+  "axo.workspace.directories": z.object({
+    hostGeneration: uuid,
+    directories: z.array(z.object({
+      directoryId: workspaceRecordSchema.shape.directoryId,
+      name: workNameSchema,
+    }).strict()).max(16),
+  }).strict(),
   "axo.workspace.list": z.object({
     hostGeneration: uuid,
     revision: workRevisionSchema,

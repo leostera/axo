@@ -29,6 +29,11 @@ struct Cursor {
 }
 #[derive(Deserialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
+struct WorkspaceDirectories {
+    target: Destination,
+}
+#[derive(Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
 struct WorkspacePage {
     target: Destination,
     #[serde(default, deserialize_with = "workspace_cursor")]
@@ -152,6 +157,7 @@ pub(crate) fn dispatch(
     profiles: &BTreeMap<String, TerminalLaunch>,
 ) -> Outcome {
     match method {
+        "axo.workspace.directories" => workspace_directories(params, manager, machine, profiles),
         "axo.workspace.list" => workspace_page(params, manager, machine),
         "axo.session.list" => session_page(params, manager, machine),
         "axo.session.get" => session_get(params, manager, machine),
@@ -163,6 +169,26 @@ pub(crate) fn dispatch(
         _ => Err((-32601, "Method not found")),
     }
 }
+fn workspace_directories(
+    params: Option<Value>,
+    manager: &Manager,
+    machine: MachineId,
+    profiles: &BTreeMap<String, TerminalLaunch>,
+) -> Outcome {
+    let request: WorkspaceDirectories = parse(params)?;
+    validate_target(
+        request.target.machine_id,
+        request.target.host_generation,
+        manager,
+        machine,
+    )?;
+    let directories = profiles
+        .keys()
+        .map(|directory_id| json!({"directoryId": directory_id, "name": directory_id}))
+        .collect::<Vec<_>>();
+    Ok(json!({"hostGeneration": manager.generation, "directories": directories}))
+}
+
 struct Page<T> {
     records: Vec<T>,
     next: Option<Cursor>,

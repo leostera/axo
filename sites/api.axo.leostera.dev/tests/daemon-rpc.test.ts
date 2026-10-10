@@ -19,6 +19,7 @@ function methodInputs(f: Fixture) {
   const chatCommand = { target: chat, commandId: crypto.randomUUID() };
   // Adding an exposed method requires an input here, rather than silently losing test coverage.
   return {
+    "axo.workspace.directories": { target: f.target },
     "axo.workspace.list": { target: f.target },
     "axo.workspace.create": { target: f.target, ...mutation, directoryId: "approved" },
     "axo.workspace.rename": { target: f.workspaceTarget, ...mutation },
@@ -106,6 +107,33 @@ test("new Pi requests have matching bounded scalar, cursor and intent rejection 
   const before = await metadata(f);
   for (const { peer } of f.routes) for (const [method, params] of cases) assert.equal(error(await call(peer, method as string, params)), -32602);
   assert.equal(await metadata(f), before); await noExecution(f);
+});
+
+test("managed Pi reads and mutations reach axod on both routes without admitting or replaying work", { timeout: 20000 }, async t => {
+  const f = await daemonFixture(t); const inputs = methodInputs(f);
+  const before = await metadata(f);
+  const readMethods = ["axo.chat.get", "axo.chat.history", "axo.chat.getToolOutput"] as const;
+  const mutationMethods = [
+    "axo.chat.sendMessage", "axo.chat.sendSteeringMessage", "axo.chat.cancelTurn",
+    "axo.chat.answerQuestion", "axo.chat.setViewing",
+  ] as const;
+  for (const { peer } of f.routes) {
+    for (const method of readMethods) {
+      assert.equal(error(await call(peer, method, inputs[method])), -32009,
+        `${method} must report an unadmitted chat rather than starting one`);
+    }
+    for (const method of mutationMethods) {
+      const params = inputs[method];
+      assert.equal(error(await call(peer, method, params)), -32009,
+        `${method} must reject before preparing or dispatching an unadmitted mutation`);
+      const receipt = results["axo.command.get"].parse(value(await call(peer, "axo.command.get", {
+        target: f.target, commandId: params.commandId,
+      })));
+      assert.equal(receipt.receipt, null, `${method} must not leave a false admission receipt`);
+    }
+  }
+  assert.equal(await metadata(f), before);
+  await noExecution(f);
 });
 
 test("local-only shell-pane methods reject malformed targets and cannot be invoked through cloud routing", { timeout: 20000 }, async t => {

@@ -55,6 +55,107 @@ final class AxoProtocolE2ETests: XCTestCase {
         )
         XCTAssertEqual(before.hostGeneration, generation)
 
+        let initialWorkspaces: WorkspaceListResult = try await call(
+            socket, method: AxoProtocol.Method.listWorkspaces,
+            params: WorkspaceListParameters(target: listParameters.target)
+        )
+        XCTAssertEqual(initialWorkspaces.revision.rawValue, 0)
+        let workspaceCommand = UUID()
+        let createdWorkspace: WorkspaceMutationResult = try await call(
+            socket, method: AxoProtocol.Method.createWorkspace,
+            params: WorkspaceCreateParameters(
+                target: listParameters.target, commandId: workspaceCommand,
+                expectedRevision: initialWorkspaces.revision,
+                directoryId: profileID, name: "Native protocol test"
+            )
+        )
+        XCTAssertEqual(createdWorkspace.hostGeneration, generation)
+        let workspaceReceipt: CommandGetResult = try await call(
+            socket, method: AxoProtocol.Method.getCommand,
+            params: CommandGetParameters(target: listParameters.target, commandId: workspaceCommand)
+        )
+        guard case .work(let workspaceCommit)? = workspaceReceipt.receipt else {
+            return XCTFail("Workspace mutation receipt must reconcile through command.get")
+        }
+        XCTAssertEqual(workspaceCommit.revision, createdWorkspace.revision)
+
+        let workspaceRenameCommand = UUID()
+        let renamedWorkspace: WorkspaceMutationResult = try await call(
+            socket, method: AxoProtocol.Method.renameWorkspace,
+            params: WorkspaceRenameParameters(
+                target: WorkWorkspaceTarget(machineId: machine, hostGeneration: generation,
+                                             workspaceId: createdWorkspace.workspace.workspaceId),
+                commandId: workspaceRenameCommand, expectedRevision: createdWorkspace.revision,
+                name: "Renamed workspace"
+            )
+        )
+        XCTAssertEqual(renamedWorkspace.workspace.name, "Renamed workspace")
+
+        let createdSession: SessionMutationResult = try await call(
+            socket, method: AxoProtocol.Method.createSession,
+            params: SessionCreateParameters(
+                target: WorkWorkspaceTarget(machineId: machine, hostGeneration: generation,
+                                             workspaceId: createdWorkspace.workspace.workspaceId),
+                commandId: UUID(), expectedRevision: renamedWorkspace.revision, name: "Unadmitted work"
+            )
+        )
+        XCTAssertNil(createdSession.session.pi.chatId)
+        XCTAssertEqual(createdSession.session.pi.admission, .notAdmitted)
+
+        let sessionRenameCommand = UUID()
+        let renamedSession: SessionMutationResult = try await call(
+            socket, method: AxoProtocol.Method.renameSession,
+            params: SessionRenameParameters(
+                target: WorkSessionTarget(machineId: machine, hostGeneration: generation,
+                                           workspaceId: createdWorkspace.workspace.workspaceId,
+                                           sessionId: createdSession.session.sessionId),
+                commandId: sessionRenameCommand,
+                expectedRevision: createdSession.revision, name: "Renamed work"
+            )
+        )
+        XCTAssertEqual(renamedSession.session.name, "Renamed work")
+        let sessionReceipt: CommandGetResult = try await call(
+            socket, method: AxoProtocol.Method.getCommand,
+            params: CommandGetParameters(target: listParameters.target, commandId: sessionRenameCommand)
+        )
+        guard case .work(let sessionCommit)? = sessionReceipt.receipt else {
+            return XCTFail("Session mutation receipt must reconcile through command.get")
+        }
+        XCTAssertEqual(sessionCommit.revision, renamedSession.revision)
+
+        let secondSession: SessionMutationResult = try await call(
+            socket, method: AxoProtocol.Method.createSession,
+            params: SessionCreateParameters(
+                target: WorkWorkspaceTarget(machineId: machine, hostGeneration: generation,
+                                             workspaceId: createdWorkspace.workspace.workspaceId),
+                commandId: UUID(), expectedRevision: renamedSession.revision, name: "Second work"
+            )
+        )
+        let firstPage: SessionListResult = try await call(
+            socket, method: AxoProtocol.Method.listSessions,
+            params: SessionListParameters(target: listParameters.target,
+                                          workspaceId: createdWorkspace.workspace.workspaceId, limit: 1)
+        )
+        XCTAssertEqual(firstPage.sessions.count, 1)
+        let nextCursor = try XCTUnwrap(firstPage.next)
+        let secondPage: SessionListResult = try await call(
+            socket, method: AxoProtocol.Method.listSessions,
+            params: SessionListParameters(target: listParameters.target,
+                                          workspaceId: createdWorkspace.workspace.workspaceId,
+                                          cursor: nextCursor, limit: 1)
+        )
+        XCTAssertEqual(Set((firstPage.sessions + secondPage.sessions).map(\.sessionId)),
+                       [createdSession.session.sessionId, secondSession.session.sessionId])
+        let readSession: SessionGetResult = try await call(
+            socket, method: AxoProtocol.Method.getSession,
+            params: SessionGetParameters(target: WorkSessionTarget(
+                machineId: machine, hostGeneration: generation,
+                workspaceId: createdWorkspace.workspace.workspaceId,
+                sessionId: createdSession.session.sessionId
+            ))
+        )
+        XCTAssertEqual(readSession.session, renamedSession.session)
+
         let sessionID = UUID()
         let paneID = UUID()
         let commandID = UUID()
@@ -77,6 +178,15 @@ final class AxoProtocolE2ETests: XCTestCase {
         XCTAssertEqual(started.terminal.runtime.target.sessionId, sessionID)
         XCTAssertEqual(started.terminal.runtime.target.paneId, paneID)
         XCTAssertEqual(started.terminal.process.kind, "running")
+        let runtimeReceipt: CommandGetResult = try await call(
+            socket, method: AxoProtocol.Method.getCommand,
+            params: CommandGetParameters(target: listParameters.target, commandId: commandID)
+        )
+        guard case .runtime(let reference, let observation)? = runtimeReceipt.receipt else {
+            return XCTFail("Runtime mutation receipt must reconcile through command.get")
+        }
+        XCTAssertEqual(reference, started.terminal.runtime)
+        XCTAssertEqual(observation?.runtime, started.terminal.runtime)
 
         let retried: RuntimeStartResult = try await call(
             socket,
@@ -95,6 +205,11 @@ final class AxoProtocolE2ETests: XCTestCase {
             params: listParameters
         )
         XCTAssertTrue(after.terminals.contains { $0.runtime.target.paneId == paneID })
+        let unknownReceipt: CommandGetResult = try await call(
+            socket, method: AxoProtocol.Method.getCommand,
+            params: CommandGetParameters(target: listParameters.target, commandId: UUID())
+        )
+        XCTAssertNil(unknownReceipt.receipt, "A missing receipt is unknown, not rejection or permission to replay")
         let stateDeadline = Date().addingTimeInterval(5)
         while !FileManager.default.fileExists(atPath: statePath), Date() < stateDeadline {
             try await Task.sleep(for: .milliseconds(20))

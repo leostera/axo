@@ -54,7 +54,6 @@ struct PrivateMachineBrowserView: View {
                 } footer: {
                     Text("These are daemon hosts, not Pi conversations or histories.")
                 }
-                .accessibilityIdentifier("control-plane-machines")
 
                 if let machine = model.selectedMachine {
                     selectedMachineSection(machine)
@@ -159,9 +158,9 @@ struct PrivateMachineBrowserView: View {
                 Text(machine.online ? "Online" : "Offline")
                     .font(.caption.weight(.semibold))
                     .foregroundStyle(machine.online ? .green : .secondary)
-                    .accessibilityIdentifier(machine.online ? "machine-online-status" : "machine-offline-status")
             }
             .accessibilityElement(children: .combine)
+            .accessibilityIdentifier(machine.online ? "machine-online-status" : "machine-offline-status")
 
             if model.isLoadingRuntimes {
                 ProgressView("Negotiating and loading runtimes…")
@@ -189,6 +188,8 @@ struct PrivateMachineBrowserView: View {
             Text("Runtime and pane identifiers are daemon metadata. This does not expose Pi conversations, transcripts, or terminal output.")
         }
 
+        workRecordsSection(machine)
+
         if let result = model.selectedRuntimeResult {
             Section("Runtimes · source generation \(shortID(result.hostGeneration))") {
                 if result.terminals.isEmpty {
@@ -212,7 +213,90 @@ struct PrivateMachineBrowserView: View {
         }
     }
 
+    @ViewBuilder
+    private func workRecordsSection(_ machine: MachineSummary) -> some View {
+        Section {
+            if !machine.online {
+                Text("Work records are not available while this machine is offline. No cached catalog is shown.")
+                    .font(.caption).foregroundStyle(.secondary)
+            } else if model.isLoadingWork {
+                ProgressView("Loading workspaces and sessions…")
+            } else if let workNotice = model.workNotice {
+                Label(workNotice, systemImage: "exclamationmark.triangle")
+                    .font(.caption).foregroundStyle(.orange)
+            } else if model.selectedWorkspaces.isEmpty {
+                Text(model.isConnected ? "No workspaces on this machine." : "Connect to load work records.")
+                    .font(.subheadline).foregroundStyle(.secondary)
+            } else {
+                ForEach(model.selectedWorkspaces) { workspace in
+                    VStack(alignment: .leading, spacing: 6) {
+                        Text(workspace.name).font(.headline)
+                        ForEach(model.selectedWorkSessions.filter { $0.workspaceId == workspace.workspaceId }) { session in
+                            WorkRecordRow(session: session)
+                        }
+                    }
+                    .padding(.vertical, 4)
+                }
+            }
+        } header: {
+            HStack {
+                Text("Workspaces and sessions")
+                Spacer()
+                if let revision = model.selectedWorkRevision {
+                    Text("Revision \(revision.rawValue)").font(.caption2).foregroundStyle(.tertiary)
+                }
+            }
+        } footer: {
+            Text("A work session is not a Pi chat. This browser does not start work or load transcripts.")
+        }
+    }
+
     private func shortID(_ id: UUID) -> String { String(id.uuidString.prefix(8)).lowercased() }
+}
+
+private struct WorkRecordRow: View {
+    let session: WorkSessionRecord
+
+    private var runtimeDescription: String {
+        let process: String
+        if let runtime = session.runtime {
+            switch runtime.process {
+            case .starting: process = "Starting process"
+            case .running: process = "Process running"
+            case .stopping: process = "Process stopping"
+            case .exited(let status): process = "Historical process · exit status \(status)"
+            case .failed: process = "Process failed"
+            case .recoveryRequired: process = "Process recovery required"
+            }
+        } else {
+            process = "No runtime observed"
+        }
+        return process
+    }
+
+    private var piAdmissionDescription: String {
+        switch session.pi.admission {
+        case .notAdmitted: "Pi not admitted"
+        case .ready: "Pi ready"
+        case .stopped: "Pi stopped"
+        case .failed: "Pi failed"
+        case .recoveryRequired: "Pi recovery required"
+        }
+    }
+
+    var body: some View {
+        Label {
+            VStack(alignment: .leading, spacing: 2) {
+                Text(session.name).font(.subheadline)
+                Text(runtimeDescription).font(.caption).foregroundStyle(.secondary)
+                Text(piAdmissionDescription).font(.caption2).foregroundStyle(.tertiary)
+            }
+        } icon: {
+            Image(systemName: "square.stack.3d.up")
+                .foregroundStyle(.secondary)
+        }
+        .accessibilityElement(children: .combine)
+    }
 }
 
 private struct MachineDirectoryRow: View {
@@ -275,7 +359,6 @@ private struct MachineRuntimeRow: View {
                 Label(isHistorical ? "Historical runtime" : "Current runtime", systemImage: isHistorical ? "clock.arrow.circlepath" : "terminal")
                     .font(.subheadline.weight(.semibold))
                     .foregroundStyle(isHistorical ? .secondary : .primary)
-                    .accessibilityIdentifier(isHistorical ? "machine-runtime-historical" : "machine-runtime-current")
                 Spacer()
                 Text(processText).font(.caption).foregroundStyle(.secondary)
             }
@@ -291,6 +374,7 @@ private struct MachineRuntimeRow: View {
         }
         .padding(.vertical, 4)
         .accessibilityElement(children: .combine)
+        .accessibilityIdentifier(isHistorical ? "machine-runtime-historical" : "machine-runtime-current")
     }
 
     private func shortID(_ id: UUID) -> String { String(id.uuidString.prefix(8)).lowercased() }

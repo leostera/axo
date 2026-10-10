@@ -112,6 +112,11 @@ final class AxoProtocolTests: XCTestCase {
         let pane = UUID(uuidString: "55555555-5555-4555-8555-555555555555")!
         let target = MachineTarget(machineId: machine, hostGeneration: host)
 
+        let directories = try value(#"{"hostGeneration":"22222222-2222-4222-8222-222222222222","directories":[{"directoryId":"approved","name":"Approved"}]}"#)
+        XCTAssertEqual(try AxoProtocolResultValidator.workspaceDirectories(directories, target: target).directories.first?.directoryId, "approved")
+        let staleDirectories = try value(#"{"hostGeneration":"99999999-9999-4999-8999-999999999999","directories":[]}"#)
+        XCTAssertThrowsError(try AxoProtocolResultValidator.workspaceDirectories(staleDirectories, target: target))
+
         let workspacePage = try value(#"{"hostGeneration":"22222222-2222-4222-8222-222222222222","revision":7,"workspaces":[{"workspaceId":"33333333-3333-4333-8333-333333333333","name":"Axo 😃","directoryId":"approved"}],"next":{"target":{"machineId":"11111111-1111-4111-8111-111111111111","hostGeneration":"22222222-2222-4222-8222-222222222222"},"revision":7,"scope":{"kind":"workspaces"},"after":"33333333-3333-4333-8333-333333333333"}}"#)
         let decodedWorkspaces = try AxoProtocolResultValidator.workspaceList(workspacePage, target: target)
         XCTAssertEqual(decodedWorkspaces.workspaces.first?.workspaceId, workspace)
@@ -127,8 +132,8 @@ final class AxoProtocolTests: XCTestCase {
         let wrongScope = try value(#"{"hostGeneration":"22222222-2222-4222-8222-222222222222","revision":8,"sessions":[{"sessionId":"44444444-4444-4444-8444-444444444444","workspaceId":"33333333-3333-4333-8333-333333333333","name":"iOS work","nameSource":"manual","pi":{"paneId":"55555555-5555-4555-8555-555555555555","chatId":null,"admission":"notAdmitted"},"runtime":null}],"next":{"target":{"machineId":"11111111-1111-4111-8111-111111111111","hostGeneration":"22222222-2222-4222-8222-222222222222"},"revision":8,"scope":{"kind":"sessions","workspaceId":null},"after":"44444444-4444-4444-8444-444444444444"}}"#)
         XCTAssertThrowsError(try AxoProtocolResultValidator.sessionList(wrongScope, target: target, workspaceID: workspace))
 
-        let admittedChat = try value(#"{"hostGeneration":"22222222-2222-4222-8222-222222222222","revision":8,"sessions":[{"sessionId":"44444444-4444-4444-8444-444444444444","workspaceId":"33333333-3333-4333-8333-333333333333","name":"iOS work","nameSource":"manual","pi":{"paneId":"55555555-5555-4555-8555-555555555555","chatId":"66666666-6666-4666-8666-666666666666","admission":"ready"},"runtime":null}],"next":null}"#)
-        XCTAssertThrowsError(try AxoProtocolResultValidator.sessionList(admittedChat, target: target, workspaceID: workspace))
+        let inconsistentAdmission = try value(#"{"hostGeneration":"22222222-2222-4222-8222-222222222222","revision":8,"sessions":[{"sessionId":"44444444-4444-4444-8444-444444444444","workspaceId":"33333333-3333-4333-8333-333333333333","name":"iOS work","nameSource":"manual","pi":{"paneId":"55555555-5555-4555-8555-555555555555","chatId":"66666666-6666-4666-8666-666666666666","admission":"notAdmitted"},"runtime":null}],"next":null}"#)
+        XCTAssertThrowsError(try AxoProtocolResultValidator.sessionList(inconsistentAdmission, target: target, workspaceID: workspace))
 
         let get = try value(#"{"hostGeneration":"22222222-2222-4222-8222-222222222222","revision":8,"session":{"sessionId":"44444444-4444-4444-8444-444444444444","workspaceId":"33333333-3333-4333-8333-333333333333","name":"iOS work","nameSource":"manual","pi":{"paneId":"55555555-5555-4555-8555-555555555555","chatId":null,"admission":"notAdmitted"},"runtime":null}}"#)
         let detail = try AxoProtocolResultValidator.sessionGet(get, target: WorkSessionTarget(machineId: machine, hostGeneration: host, workspaceId: workspace, sessionId: session))
@@ -165,10 +170,10 @@ final class AxoProtocolTests: XCTestCase {
         let commandGet = try JSONDecoder().decode(JSONValue.self, from: encoder.encode(CommandGetParameters(target: target, commandId: commandId)))
         XCTAssertEqual(commandGet, try value(#"{"commandId":"88888888-8888-4888-8888-888888888888","target":{"hostGeneration":"22222222-2222-4222-8222-222222222222","machineId":"11111111-1111-4111-8111-111111111111"}}"#))
         XCTAssertEqual([
-            AxoProtocol.Method.listWorkspaces, AxoProtocol.Method.createWorkspace, AxoProtocol.Method.renameWorkspace,
+            AxoProtocol.Method.listWorkspaceDirectories, AxoProtocol.Method.listWorkspaces, AxoProtocol.Method.createWorkspace, AxoProtocol.Method.renameWorkspace,
             AxoProtocol.Method.listSessions, AxoProtocol.Method.getSession, AxoProtocol.Method.createSession,
             AxoProtocol.Method.renameSession, AxoProtocol.Method.getCommand,
-        ], ["axo.workspace.list", "axo.workspace.create", "axo.workspace.rename", "axo.session.list", "axo.session.get", "axo.session.create", "axo.session.rename", "axo.command.get"])
+        ], ["axo.workspace.directories", "axo.workspace.list", "axo.workspace.create", "axo.workspace.rename", "axo.session.list", "axo.session.get", "axo.session.create", "axo.session.rename", "axo.command.get"])
 
         try AxoProtocolWorkRequestValidator.validate(WorkspaceCreateParameters(
             target: target, commandId: UUID(), expectedRevision: revision, directoryId: "approved", name: "Axo"

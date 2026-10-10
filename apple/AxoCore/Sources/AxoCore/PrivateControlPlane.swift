@@ -122,7 +122,7 @@ public enum AxoControlPlaneSessionError: Error, Equatable, Sendable, LocalizedEr
     }
 }
 
-/// Read-only discovery and runtime browsing for the v1 profile; it never retries or replays a mutation.
+/// Authenticated discovery, runtime, work-record, and managed-Pi RPCs. Mutations are sent once; uncertain outcomes require receipt reconciliation.
 public actor AxoControlPlaneSession {
     private let endpoint: AxoControlPlaneEndpoint
     private let accessCookie: AxoControlPlaneAccessCookie
@@ -226,6 +226,15 @@ public actor AxoControlPlaneSession {
         connection != nil && negotiatedMethods.contains(method)
     }
 
+    public func listWorkspaceDirectories() async throws -> WorkspaceDirectoryListResult {
+        let destination = try selectedTarget()
+        let (_, value) = try await requestCurrent(
+            method: AxoProtocol.Method.listWorkspaceDirectories,
+            parameters: WorkspaceDirectoryListParameters(target: destination)
+        )
+        return try AxoProtocolResultValidator.workspaceDirectories(value, target: destination)
+    }
+
     public func listWorkspaces(
         cursor: WorkPageCursor? = nil,
         limit: Int = AxoProtocol.maximumPageSize
@@ -269,6 +278,239 @@ public actor AxoControlPlaneSession {
             parameters: SessionGetParameters(target: target)
         )
         return try AxoProtocolResultValidator.sessionGet(value, target: target)
+    }
+
+    /// Reconcile an uncertain command by its stable command ID; never resend it automatically.
+    public func getCommand(commandID: UUID) async throws -> CommandGetResult {
+        let destination = try selectedTarget()
+        let (_, value) = try await requestCurrent(
+            method: AxoProtocol.Method.getCommand,
+            parameters: CommandGetParameters(target: destination, commandId: commandID)
+        )
+        return try AxoProtocolResultValidator.commandGet(value, target: destination)
+    }
+
+    public func createWorkspace(commandID: UUID = UUID(), expectedRevision: WorkRevision,
+                                directoryID: String, name: String) async throws -> WorkspaceMutationResult {
+        let destination = try selectedTarget()
+        let parameters = WorkspaceCreateParameters(target: destination, commandId: commandID,
+                                                   expectedRevision: expectedRevision, directoryId: directoryID, name: name)
+        try AxoProtocolWorkRequestValidator.validate(parameters)
+        let (_, value) = try await requestCurrent(method: AxoProtocol.Method.createWorkspace, parameters: parameters)
+        return try AxoProtocolResultValidator.workspaceCreate(value, target: destination,
+                                                             expectedRevision: expectedRevision, name: name,
+                                                             directoryID: directoryID)
+    }
+
+    public func renameWorkspace(workspaceID: UUID, commandID: UUID = UUID(), expectedRevision: WorkRevision,
+                                name: String) async throws -> WorkspaceMutationResult {
+        let destination = try selectedTarget()
+        let workTarget = WorkWorkspaceTarget(machineId: destination.machineId,
+                                             hostGeneration: destination.hostGeneration, workspaceId: workspaceID)
+        let parameters = WorkspaceRenameParameters(target: workTarget, commandId: commandID,
+                                                   expectedRevision: expectedRevision, name: name)
+        try AxoProtocolWorkRequestValidator.validate(parameters)
+        let (_, value) = try await requestCurrent(method: AxoProtocol.Method.renameWorkspace, parameters: parameters)
+        return try AxoProtocolResultValidator.workspaceRename(value, target: workTarget,
+                                                             expectedRevision: expectedRevision, name: name)
+    }
+
+    public func createSession(workspaceID: UUID, commandID: UUID = UUID(), expectedRevision: WorkRevision,
+                              name: String) async throws -> SessionMutationResult {
+        let destination = try selectedTarget()
+        let workTarget = WorkWorkspaceTarget(machineId: destination.machineId,
+                                             hostGeneration: destination.hostGeneration, workspaceId: workspaceID)
+        let parameters = SessionCreateParameters(target: workTarget, commandId: commandID,
+                                                 expectedRevision: expectedRevision, name: name)
+        try AxoProtocolWorkRequestValidator.validate(parameters)
+        let (_, value) = try await requestCurrent(method: AxoProtocol.Method.createSession, parameters: parameters)
+        return try AxoProtocolResultValidator.sessionCreate(value, target: workTarget,
+                                                            expectedRevision: expectedRevision, name: name)
+    }
+
+    public func renameSession(workspaceID: UUID, sessionID: UUID, commandID: UUID = UUID(),
+                              expectedRevision: WorkRevision, name: String) async throws -> SessionMutationResult {
+        let destination = try selectedTarget()
+        let workTarget = WorkSessionTarget(machineId: destination.machineId,
+                                           hostGeneration: destination.hostGeneration,
+                                           workspaceId: workspaceID, sessionId: sessionID)
+        let parameters = SessionRenameParameters(target: workTarget, commandId: commandID,
+                                                 expectedRevision: expectedRevision, name: name)
+        try AxoProtocolWorkRequestValidator.validate(parameters)
+        let (_, value) = try await requestCurrent(method: AxoProtocol.Method.renameSession, parameters: parameters)
+        return try AxoProtocolResultValidator.sessionRename(value, target: workTarget,
+                                                           expectedRevision: expectedRevision, name: name)
+    }
+
+    public func startPiSession(target: PiSessionTarget, commandID: UUID = UUID(),
+                               persistence: PiPersistence = .fresh) async throws -> PiSessionStartResult {
+        guard let destination = self.target, let activeConnection = connection else {
+            throw AxoControlPlaneSessionError.noSelectedMachine
+        }
+        guard target.machineId == destination.machineId, target.hostGeneration == destination.hostGeneration,
+              [target.machineId, target.hostGeneration, target.workspaceId, target.sessionId, target.paneId, commandID]
+                .allSatisfy(isNonNilUUID) else {
+            throw AxoProtocolValidationError.invalidResult(method: AxoProtocol.Method.startSession)
+        }
+        if case .resume(let chatId, let previousRuntime) = persistence {
+            guard isNonNilUUID(chatId), isNonNilUUID(previousRuntime.hostGeneration),
+                  isNonNilUUID(previousRuntime.runtimeGeneration),
+                  previousRuntime.target.sessionId == target.sessionId,
+                  previousRuntime.target.paneId == target.paneId else {
+                throw AxoProtocolValidationError.invalidResult(method: AxoProtocol.Method.startSession)
+            }
+        }
+        try requireSupported(AxoProtocol.Method.startSession)
+        let thisOperation = operationID
+        let value = try await activeConnection.request(
+            method: AxoProtocol.Method.startSession,
+            parameters: PiSessionStartParameters(target: target, commandId: commandID, persistence: persistence)
+        )
+        let result = try PiProtocolValidator.sessionStart(value, target: target, commandId: commandID,
+                                                          persistence: persistence)
+        try requireCurrent(thisOperation, destination: destination, connection: activeConnection)
+        return result
+    }
+
+    public func getPiChat(_ chat: PiChatTarget, readMode: PiReadMode = .live) async throws -> PiChatSnapshot {
+        let (destination, activeConnection) = try captureChat(chat, method: AxoProtocol.Method.getChat)
+        let thisOperation = operationID
+        let value = try await activeConnection.request(
+            method: AxoProtocol.Method.getChat,
+            parameters: PiChatGetParameters(target: chat, readMode: readMode)
+        )
+        let result = try PiProtocolValidator.chatGet(value, target: chat, readMode: readMode)
+        try requireCurrent(thisOperation, destination: destination, connection: activeConnection)
+        return result
+    }
+
+    public func getPiChatHistory(_ chat: PiChatTarget, readMode: PiReadMode = .live,
+                                 limit: Int = 50, cursor: PiHistoryCursor? = nil) async throws -> PiChatHistoryResult {
+        let (destination, activeConnection) = try captureChat(chat, method: AxoProtocol.Method.getChatHistory)
+        guard (1...50).contains(limit), cursor.map({ $0.target == chat && $0.readMode == readMode }) ?? true else {
+            throw AxoProtocolValidationError.invalidResult(method: AxoProtocol.Method.getChatHistory)
+        }
+        let thisOperation = operationID
+        let value = try await activeConnection.request(
+            method: AxoProtocol.Method.getChatHistory,
+            parameters: PiChatHistoryParameters(target: chat, readMode: readMode, limit: limit, cursor: cursor)
+        )
+        let result = try PiProtocolValidator.chatHistory(value, target: chat, readMode: readMode,
+                                                        limit: limit, cursor: cursor)
+        try requireCurrent(thisOperation, destination: destination, connection: activeConnection)
+        return result
+    }
+
+    public func getPiToolOutput(_ chat: PiChatTarget, entryID: String, toolCallID: String,
+                                offset: Int, readMode: PiReadMode = .live,
+                                limit: Int = PiProtocolValidator.maximumToolOutputBytes) async throws -> PiToolOutputResult {
+        let (destination, activeConnection) = try captureChat(chat, method: AxoProtocol.Method.getToolOutput)
+        guard (1...PiProtocolValidator.maximumToolOutputBytes).contains(limit),
+              (0...9_007_199_254_740_991).contains(offset) else {
+            throw AxoProtocolValidationError.invalidResult(method: AxoProtocol.Method.getToolOutput)
+        }
+        let thisOperation = operationID
+        let value = try await activeConnection.request(
+            method: AxoProtocol.Method.getToolOutput,
+            parameters: PiToolOutputParameters(target: chat, readMode: readMode, entryId: entryID,
+                                               toolCallId: toolCallID, offset: offset, limit: limit)
+        )
+        let result = try PiProtocolValidator.toolOutput(value, target: chat, readMode: readMode,
+                                                        entryId: entryID, toolCallId: toolCallID,
+                                                        offset: offset, limit: limit)
+        try requireCurrent(thisOperation, destination: destination, connection: activeConnection)
+        return result
+    }
+
+    public func sendPiMessage(_ chat: PiChatTarget, commandID: UUID = UUID(), text: String) async throws -> PiMutationResult {
+        guard PiProtocolValidator.validMessageText(text) else {
+            throw AxoProtocolValidationError.invalidResult(method: AxoProtocol.Method.sendChatMessage)
+        }
+        return try await mutatePiChat(chat, commandID: commandID, operation: .sendMessage,
+                                      method: AxoProtocol.Method.sendChatMessage,
+                                      parameters: PiChatTextParameters(target: chat, commandId: commandID, text: text))
+    }
+
+    public func steerPiChat(_ chat: PiChatTarget, commandID: UUID = UUID(), interactionID: UUID,
+                            text: String) async throws -> PiMutationResult {
+        guard PiProtocolValidator.validMessageText(text), isNonNilUUID(interactionID) else {
+            throw AxoProtocolValidationError.invalidResult(method: AxoProtocol.Method.sendChatSteeringMessage)
+        }
+        return try await mutatePiChat(chat, commandID: commandID, operation: .sendSteeringMessage,
+                                      method: AxoProtocol.Method.sendChatSteeringMessage,
+                                      parameters: PiChatSteeringParameters(target: chat, commandId: commandID,
+                                                                          interactionId: interactionID, text: text))
+    }
+
+    public func cancelPiTurn(_ chat: PiChatTarget, commandID: UUID = UUID(),
+                             interactionID: UUID) async throws -> PiMutationResult {
+        guard isNonNilUUID(interactionID) else {
+            throw AxoProtocolValidationError.invalidResult(method: AxoProtocol.Method.cancelChatTurn)
+        }
+        return try await mutatePiChat(chat, commandID: commandID, operation: .cancelTurn,
+                                      method: AxoProtocol.Method.cancelChatTurn,
+                                      parameters: PiChatCancelParameters(target: chat, commandId: commandID,
+                                                                        interactionId: interactionID))
+    }
+
+    public func answerPiQuestion(_ chat: PiChatTarget, commandID: UUID = UUID(),
+                                 interactionID: UUID, questionID: UUID, optionID: UUID) async throws -> PiMutationResult {
+        guard [interactionID, questionID, optionID].allSatisfy(isNonNilUUID) else {
+            throw AxoProtocolValidationError.invalidResult(method: AxoProtocol.Method.answerChatQuestion)
+        }
+        return try await mutatePiChat(chat, commandID: commandID, operation: .answerQuestion,
+                                      method: AxoProtocol.Method.answerChatQuestion,
+                                      parameters: PiChatAnswerParameters(target: chat, commandId: commandID,
+                                                                        interactionId: interactionID,
+                                                                        questionId: questionID, optionId: optionID))
+    }
+
+    public func setPiChatViewing(_ chat: PiChatTarget, commandID: UUID = UUID(), leaseID: UUID,
+                                 viewing: Bool, ttlSeconds: Int = 45) async throws -> PiMutationResult {
+        guard isNonNilUUID(leaseID), (1...120).contains(ttlSeconds) else {
+            throw AxoProtocolValidationError.invalidResult(method: AxoProtocol.Method.setChatViewing)
+        }
+        return try await mutatePiChat(chat, commandID: commandID, operation: .setViewing,
+                                      method: AxoProtocol.Method.setChatViewing,
+                                      parameters: PiChatViewingParameters(target: chat, commandId: commandID,
+                                                                         leaseId: leaseID, viewing: viewing,
+                                                                         ttlSeconds: ttlSeconds))
+    }
+
+    private func mutatePiChat<Parameters: Encodable & Sendable>(_ chat: PiChatTarget, commandID: UUID,
+                                                                  operation: PiChatOperation, method: String,
+                                                                  parameters: Parameters) async throws -> PiMutationResult {
+        let (destination, activeConnection) = try captureChat(chat, method: method)
+        guard isNonNilUUID(commandID) else { throw AxoProtocolValidationError.invalidResult(method: method) }
+        let thisOperation = operationID
+        let value = try await activeConnection.request(method: method, parameters: parameters)
+        let result = try PiProtocolValidator.mutation(value, target: chat, commandId: commandID,
+                                                       operation: operation, method: method)
+        try requireCurrent(thisOperation, destination: destination, connection: activeConnection)
+        return result
+    }
+
+    private func captureChat(_ chat: PiChatTarget, method: String) throws -> (MachineTarget, AxoJSONRPCWebSocketConnection) {
+        guard let destination = target, let activeConnection = connection else {
+            throw AxoControlPlaneSessionError.noSelectedMachine
+        }
+        guard chat.machineId == destination.machineId, chat.hostGeneration == destination.hostGeneration,
+              [chat.machineId, chat.hostGeneration, chat.workspaceId, chat.sessionId, chat.paneId,
+               chat.runtimeHostGeneration, chat.runtimeGeneration, chat.chatId].allSatisfy(isNonNilUUID) else {
+            throw AxoProtocolValidationError.invalidResult(method: method)
+        }
+        try requireSupported(method)
+        return (destination, activeConnection)
+    }
+
+    private func isNonNilUUID(_ id: UUID) -> Bool {
+        id != UUID(uuidString: "00000000-0000-0000-0000-000000000000")
+    }
+
+    private func requireSupported(_ method: String) throws {
+        guard negotiatedMethods.contains(method) else {
+            throw AxoControlPlaneSessionError.unsupportedMethod(method)
+        }
     }
 
     public func refreshRuntimes(after: UUID? = nil) async throws -> RuntimeListResult {

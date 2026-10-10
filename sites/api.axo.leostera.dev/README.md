@@ -73,7 +73,7 @@ Coverage includes invalid/forged/expired/ambiguous roles, multi-machine discover
 5. Client reconnect preserving runtime identity.
 6. Cold daemon restart preserving machine/receipt identity, using a fresh source generation and retaining historical runtime references without relaunching work.
 7. Fixture ticks advancing **after** API shutdown has completed: cloud loss does not kill the PTY.
-8. A SwiftPM end-to-end test using the Swift package's Codable request/response contracts over `URLSessionWebSocketTask`, through the protected test Worker to a real `axod`. It negotiates, lists, starts an approved profile, retries the same command ID and verifies the typed runtime snapshot plus the owned PTY fixture.
+8. A SwiftPM end-to-end test using the Swift package's Codable request/response contracts over `URLSessionWebSocketTask`, through the protected test Worker to a real `axod`. It negotiates, exercises workspace/session create/rename/get and cursor pagination, reconciles work/runtime/missing receipts through `axo.command.get`, starts an approved profile, retries the same command ID and verifies typed results plus the owned PTY fixture.
 
 The Swift test gets its short-lived client assertion from a mode-0600 file in the test's temporary directory. It does not contact the deployed API or use deployment credentials. A plain `swift test` skips this network test unless the harness variables are provided; `npm test` in this site runs it as part of the real-`axod` suite.
 

@@ -141,6 +141,13 @@ fn actual_cli_starts_managed_tui_sends_real_message_and_reads_canonical_tool_evi
     };
     let destination =
         json!({"machineId":descriptor.machine_id,"hostGeneration":descriptor.host_generation});
+    let directories = cli(
+        &discovery,
+        "axo.workspace.directories",
+        json!({"target":destination}),
+    );
+    assert_eq!(directories["directories"], json!([{"directoryId":"work","name":"work"}]));
+    assert!(!directories.to_string().contains(cwd.to_str().unwrap()));
     let workspace = cli(
         &discovery,
         "axo.workspace.create",

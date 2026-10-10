@@ -102,6 +102,74 @@ final class AxoJSONRPCClientTests: XCTestCase {
         }
     }
 
+    func testHTTPRedirectAndUnexpectedContentTypeFailClosed() async throws {
+        try await assertHTTPFailure(
+            .redirectRejected,
+            response: .init(status: 302, body: Data(), contentType: "text/plain")
+        )
+        try await assertHTTPFailure(
+            .unexpectedContentType,
+            response: .init(status: 200, body: Data(#"{}"#.utf8), contentType: "text/html")
+        )
+    }
+
+    func testExpiredAccessCookieIsRejectedBeforeDispatch() async throws {
+        let expired = try AxoControlPlaneAccessCookie(
+            jwt(audience: AxoControlPlaneEndpoint.accessAudience, expiration: 1_700_000_060),
+            now: Date(timeIntervalSince1970: 1_700_000_000)
+        )
+
+        do {
+            _ = try await makeClient().callHTTP(
+                endpoint: .production,
+                accessCookie: expired,
+                method: AxoProtocol.Method.listMachines,
+                parameters: EmptyRPCParameters()
+            )
+            XCTFail("Expected expired credential rejection")
+        } catch let error as AxoJSONRPCClientError {
+            XCTAssertEqual(error, .unauthorized(statusCode: 401))
+        }
+        XCTAssertEqual(HTTPResponseStore.shared.requestCount(), 0)
+    }
+
+    func testTimedOutMutationHasUnknownOutcomeAndIsSentOnlyOnce() async throws {
+        HTTPResponseStore.shared.install { _ in
+            .init(status: 500, body: Data(), failsWithTimeout: true)
+        }
+
+        do {
+            _ = try await makeClient().callHTTP(
+                endpoint: .production,
+                accessCookie: try AxoControlPlaneAccessCookie(jwt(audience: AxoControlPlaneEndpoint.accessAudience, expiration: 4_102_444_800)),
+                method: AxoProtocol.Method.createWorkspace,
+                parameters: EmptyRPCParameters()
+            )
+            XCTFail("Expected an uncertain transport outcome")
+        } catch let error as AxoJSONRPCClientError {
+            guard case .outcomeUnknown(let requestID) = error else {
+                return XCTFail("Expected an unknown outcome, received \(error)")
+            }
+            XCTAssertFalse(requestID.isEmpty)
+        }
+        XCTAssertEqual(HTTPResponseStore.shared.requestCount(), 1)
+    }
+
+    private func assertHTTPFailure(_ expected: AxoJSONRPCClientError, response: StubHTTPResponse) async throws {
+        HTTPResponseStore.shared.install { _ in response }
+        do {
+            _ = try await makeClient().callHTTP(
+                endpoint: .production,
+                accessCookie: try AxoControlPlaneAccessCookie(jwt(audience: AxoControlPlaneEndpoint.accessAudience, expiration: 4_102_444_800)),
+                method: AxoProtocol.Method.listMachines,
+                parameters: EmptyRPCParameters()
+            )
+            XCTFail("Expected \(expected)")
+        } catch let error as AxoJSONRPCClientError {
+            XCTAssertEqual(error, expected)
+        }
+    }
+
     private func makeClient() -> AxoJSONRPCClient {
         let configuration = URLSessionConfiguration.ephemeral
         configuration.protocolClasses = [StubURLProtocol.self]
@@ -137,6 +205,7 @@ private struct StubHTTPResponse: Sendable {
     let status: Int
     let body: Data
     var contentType = "application/json"
+    var failsWithTimeout = false
 }
 
 private final class HTTPResponseStore: @unchecked Sendable {
@@ -144,6 +213,7 @@ private final class HTTPResponseStore: @unchecked Sendable {
     private let lock = NSLock()
     private var handler: @Sendable (URLRequest) -> StubHTTPResponse = { _ in .init(status: 500, body: Data()) }
     private var recordedRequest: URLRequest?
+    private var recordedRequestCount = 0
 
     func install(_ handler: @escaping @Sendable (URLRequest) -> StubHTTPResponse) {
         lock.lock()
@@ -155,8 +225,15 @@ private final class HTTPResponseStore: @unchecked Sendable {
         lock.lock()
         let handler = self.handler
         recordedRequest = request
+        recordedRequestCount += 1
         lock.unlock()
         return handler(request)
+    }
+
+    func requestCount() -> Int {
+        lock.lock()
+        defer { lock.unlock() }
+        return recordedRequestCount
     }
 
     func lastRequest() -> URLRequest? {
@@ -167,6 +244,10 @@ private final class HTTPResponseStore: @unchecked Sendable {
 
     func clear() {
         install { _ in .init(status: 500, body: Data()) }
+        lock.lock()
+        recordedRequest = nil
+        recordedRequestCount = 0
+        lock.unlock()
     }
 }
 
@@ -177,6 +258,10 @@ private final class StubURLProtocol: URLProtocol {
     override func startLoading() {
         guard let url = request.url else { return }
         let stub = HTTPResponseStore.shared.response(for: request)
+        if stub.failsWithTimeout {
+            client?.urlProtocol(self, didFailWithError: URLError(.timedOut))
+            return
+        }
         let response = HTTPURLResponse(
             url: url,
             statusCode: stub.status,

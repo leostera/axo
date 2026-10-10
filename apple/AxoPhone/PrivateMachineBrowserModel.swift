@@ -15,6 +15,11 @@ final class PrivateMachineBrowserModel {
     private(set) var accessMessage: String?
     private(set) var runtimeResults: [UUID: RuntimeListResult] = [:]
     private(set) var runtimeCursors: [UUID: UUID] = [:]
+    private(set) var workspaces: [UUID: [ProtocolWorkspaceRecord]] = [:]
+    private(set) var workSessions: [UUID: [WorkSessionRecord]] = [:]
+    private(set) var workRevisions: [UUID: WorkRevision] = [:]
+    private(set) var isLoadingWork = false
+    private(set) var workNotice: String?
 
     private let endpoint = AxoControlPlaneEndpoint.production
     private var accessCookie: AxoControlPlaneAccessCookie?
@@ -47,6 +52,9 @@ final class PrivateMachineBrowserModel {
     }
 
     var selectedRuntimes: [TerminalSnapshot] { selectedRuntimeResult?.terminals ?? [] }
+    var selectedWorkspaces: [ProtocolWorkspaceRecord] { selectedMachineID.flatMap { workspaces[$0] } ?? [] }
+    var selectedWorkSessions: [WorkSessionRecord] { selectedMachineID.flatMap { workSessions[$0] } ?? [] }
+    var selectedWorkRevision: WorkRevision? { selectedMachineID.flatMap { workRevisions[$0] } }
     var selectedRuntimeCursor: UUID? {
         guard let selectedMachineID else { return nil }
         return runtimeCursors[selectedMachineID]
@@ -84,6 +92,10 @@ final class PrivateMachineBrowserModel {
         machines = []
         runtimeResults = [:]
         runtimeCursors = [:]
+        workspaces = [:]
+        workSessions = [:]
+        workRevisions = [:]
+        workNotice = nil
         selectedMachineID = nil
         connectedMachineID = nil
         isConnected = false
@@ -93,6 +105,7 @@ final class PrivateMachineBrowserModel {
         discoveryOperation = UUID()
         isDiscovering = false
         isLoadingRuntimes = false
+        isLoadingWork = false
     }
 
     func refreshMachines() async {
@@ -115,14 +128,22 @@ final class PrivateMachineBrowserModel {
             if let selectedMachineID,
                let selected = result.machines.first(where: { $0.machineId == selectedMachineID }) {
                 if !selected.online || selected.hostGeneration != runtimeResults[selectedMachineID]?.hostGeneration {
+                    selectionOperation = UUID()
+                    isLoadingRuntimes = false
+                    isLoadingWork = false
                     isConnected = false
                     connectedMachineID = nil
+                    clearWorkRecords(for: selectedMachineID)
                     await controlPlane.disconnect()
                 }
-            } else if selectedMachineID != nil {
+            } else if let selectedMachineID {
+                selectionOperation = UUID()
+                isLoadingRuntimes = false
+                isLoadingWork = false
                 isConnected = false
                 connectedMachineID = nil
                 notice = "This host is no longer in the authorized machine directory."
+                clearWorkRecords(for: selectedMachineID)
                 await controlPlane.disconnect()
             }
         } catch {
@@ -133,6 +154,11 @@ final class PrivateMachineBrowserModel {
     func selectMachine(_ machineID: UUID) async {
         guard let machine = machines.first(where: { $0.machineId == machineID }) else { return }
         selectedMachineID = machineID
+        workspaces[machineID] = nil
+        workSessions[machineID] = nil
+        workRevisions[machineID] = nil
+        workNotice = nil
+        isLoadingWork = false
         let operation = UUID()
         selectionOperation = operation
         notice = nil
@@ -148,6 +174,9 @@ final class PrivateMachineBrowserModel {
         #endif
 
         guard machine.online, machine.hostGeneration != nil else {
+            workspaces[machineID] = nil
+            workSessions[machineID] = nil
+            workRevisions[machineID] = nil
             await controlPlane?.disconnect()
             return
         }
@@ -162,9 +191,65 @@ final class PrivateMachineBrowserModel {
             runtimeCursors[machineID] = result.next
             connectedMachineID = machineID
             isConnected = true
+            await refreshWorkRecords(for: machineID, operation: operation)
         } catch {
             guard selectionOperation == operation, selectedMachineID == machineID else { return }
             await report(error)
+        }
+    }
+
+    func refreshWorkRecords() async {
+        guard let machineID = selectedMachineID else { return }
+        await refreshWorkRecords(for: machineID, operation: selectionOperation)
+    }
+
+    private func refreshWorkRecords(for machineID: UUID, operation: UUID) async {
+        guard connectedMachineID == machineID, selectionOperation == operation,
+              let controlPlane else { return }
+        workspaces[machineID] = nil
+        workSessions[machineID] = nil
+        workRevisions[machineID] = nil
+        isLoadingWork = true
+        workNotice = nil
+        defer { if selectionOperation == operation { isLoadingWork = false } }
+
+        do {
+            var workspaceRecords: [ProtocolWorkspaceRecord] = []
+            var workspaceCursor: WorkPageCursor?
+            var revision: WorkRevision?
+            repeat {
+                let page = try await controlPlane.listWorkspaces(cursor: workspaceCursor)
+                guard selectionOperation == operation, selectedMachineID == machineID else { return }
+                if let revision, revision != page.revision { throw AxoProtocolValidationError.invalidResult(method: AxoProtocol.Method.listWorkspaces) }
+                revision = page.revision
+                workspaceRecords.append(contentsOf: page.workspaces)
+                workspaceCursor = page.next
+            } while workspaceCursor != nil
+
+            var sessionRecords: [WorkSessionRecord] = []
+            var sessionCursor: WorkPageCursor?
+            repeat {
+                let page = try await controlPlane.listSessions(cursor: sessionCursor)
+                guard selectionOperation == operation, selectedMachineID == machineID else { return }
+                guard page.revision == revision else { throw AxoProtocolValidationError.invalidResult(method: AxoProtocol.Method.listSessions) }
+                sessionRecords.append(contentsOf: page.sessions)
+                sessionCursor = page.next
+            } while sessionCursor != nil
+
+            guard selectionOperation == operation, selectedMachineID == machineID,
+                  let revision,
+                  sessionRecords.allSatisfy({ session in workspaceRecords.contains(where: { $0.workspaceId == session.workspaceId }) }) else {
+                throw AxoProtocolValidationError.invalidResult(method: AxoProtocol.Method.listSessions)
+            }
+            workspaces[machineID] = workspaceRecords
+            workSessions[machineID] = sessionRecords
+            workRevisions[machineID] = revision
+        } catch {
+            guard selectionOperation == operation, selectedMachineID == machineID else { return }
+            workspaces[machineID] = nil
+            workSessions[machineID] = nil
+            workRevisions[machineID] = nil
+            await reportWork(error)
         }
     }
 
@@ -181,10 +266,13 @@ final class PrivateMachineBrowserModel {
             guard selectionOperation == operation, selectedMachineID == machineID else { return }
             runtimeResults[machineID] = result
             runtimeCursors[machineID] = result.next
+            await refreshWorkRecords(for: machineID, operation: operation)
         } catch {
             guard selectionOperation == operation else { return }
             isConnected = false
             connectedMachineID = nil
+            isLoadingWork = false
+            clearWorkRecords(for: machineID)
             await report(error)
         }
     }
@@ -219,6 +307,8 @@ final class PrivateMachineBrowserModel {
         selectionOperation = UUID()
         isConnected = false
         connectedMachineID = nil
+        isLoadingWork = false
+        if let selectedMachineID { clearWorkRecords(for: selectedMachineID) }
         await controlPlane?.disconnect()
     }
 
@@ -230,6 +320,13 @@ final class PrivateMachineBrowserModel {
         await refreshMachines()
         guard let refreshed = machines.first(where: { $0.machineId == machineID }), refreshed.online else { return }
         await selectMachine(machineID)
+    }
+
+    private func clearWorkRecords(for machineID: UUID) {
+        workspaces[machineID] = nil
+        workSessions[machineID] = nil
+        workRevisions[machineID] = nil
+        workNotice = nil
     }
 
     private func use(_ credential: AxoControlPlaneAccessCookie) {
@@ -253,6 +350,10 @@ final class PrivateMachineBrowserModel {
                 notice = "The machine selection changed. Refresh the list before continuing."
             case .protocolMismatch:
                 notice = "This host uses an incompatible control protocol. No runtime data was applied."
+            case .unsupportedMethod(let method):
+                notice = "This host does not support \(method). No legacy data was loaded."
+            case .invalidPageRequest:
+                notice = "The work-record page no longer matches the selected host or revision. Refresh before continuing."
             }
             return
         }
@@ -265,6 +366,26 @@ final class PrivateMachineBrowserModel {
             return
         }
         notice = error.localizedDescription
+    }
+
+    private func reportWork(_ error: Error) async {
+        if let controlError = error as? AxoControlPlaneSessionError,
+           case .unsupportedMethod(let method) = controlError {
+            workNotice = "This daemon does not support \(method). No legacy or cached catalog was used."
+            return
+        }
+        if let validationError = error as? AxoProtocolValidationError,
+           case .staleHost = validationError {
+            workNotice = "The daemon restarted while loading work records. Refresh machines and try again."
+            return
+        }
+        if let rpcError = error as? AxoJSONRPCClientError,
+           case .remote(code: -32002, message: _) = rpcError {
+            workNotice = "The work-record page became stale. Refresh to load one current revision."
+            return
+        }
+        await report(error)
+        workNotice = notice ?? "Work records are unavailable. Nothing was loaded from a legacy catalog."
     }
 
     #if DEBUG
@@ -302,6 +423,17 @@ final class PrivateMachineBrowserModel {
         runtimeResults[onlineID] = RuntimeListResult(hostGeneration: currentGeneration, terminals: [current, historical], next: nil)
         runtimeResults[offlineID] = RuntimeListResult(hostGeneration: oldGeneration, terminals: [current], next: nil)
         runtimeResults[restartedID] = RuntimeListResult(hostGeneration: oldGeneration, terminals: [historical], next: nil)
+        let workspaceID = UUID(uuidString: "bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb")!
+        let workSessionID = UUID(uuidString: "cccccccc-cccc-4ccc-8ccc-cccccccccccc")!
+        workspaces[onlineID] = [ProtocolWorkspaceRecord(workspaceId: workspaceID, name: "Axo", directoryId: "project")]
+        workSessions[onlineID] = [WorkSessionRecord(
+            sessionId: workSessionID, workspaceId: workspaceID, name: "Build the phone app",
+            nameSource: .manual,
+            pi: WorkSessionPiBinding(paneId: UUID(uuidString: "dddddddd-dddd-4ddd-8ddd-dddddddddddd")!,
+                                     chatId: nil, admission: .notAdmitted),
+            runtime: nil
+        )]
+        workRevisions[onlineID] = WorkRevision(rawValue: 7)
         selectedMachineID = onlineID
         connectedMachineID = onlineID
         isConnected = true

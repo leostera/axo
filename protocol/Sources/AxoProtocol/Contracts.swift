@@ -20,6 +20,7 @@ public enum AxoProtocol {
         public static let listRuntimes = "axo.runtime.list"
         public static let startApprovedRuntime = "axo.runtime.startApproved"
         public static let acknowledgeTransport = "axo.transport.ack"
+        public static let listWorkspaceDirectories = "axo.workspace.directories"
         public static let listWorkspaces = "axo.workspace.list"
         public static let createWorkspace = "axo.workspace.create"
         public static let renameWorkspace = "axo.workspace.rename"
@@ -28,6 +29,15 @@ public enum AxoProtocol {
         public static let createSession = "axo.session.create"
         public static let renameSession = "axo.session.rename"
         public static let getCommand = "axo.command.get"
+        public static let startSession = "axo.session.start"
+        public static let getChat = "axo.chat.get"
+        public static let getChatHistory = "axo.chat.history"
+        public static let getToolOutput = "axo.chat.getToolOutput"
+        public static let sendChatMessage = "axo.chat.sendMessage"
+        public static let sendChatSteeringMessage = "axo.chat.sendSteeringMessage"
+        public static let cancelChatTurn = "axo.chat.cancelTurn"
+        public static let answerChatQuestion = "axo.chat.answerQuestion"
+        public static let setChatViewing = "axo.chat.setViewing"
     }
 }
 
@@ -354,6 +364,22 @@ public struct WorkPageCursor: Codable, Equatable, Sendable {
     }
 }
 
+public struct WorkspaceDirectoryListParameters: Encodable, Sendable {
+    public let target: MachineTarget
+    public init(target: MachineTarget) { self.target = target }
+}
+
+public struct WorkspaceDirectorySummary: Decodable, Equatable, Sendable, Identifiable {
+    public var id: String { directoryId }
+    public let directoryId: String
+    public let name: String
+}
+
+public struct WorkspaceDirectoryListResult: Decodable, Equatable, Sendable {
+    public let hostGeneration: UUID
+    public let directories: [WorkspaceDirectorySummary]
+}
+
 public struct WorkspaceListParameters: Encodable, Sendable {
     public let target: MachineTarget
     public let cursor: WorkPageCursor?
@@ -479,28 +505,52 @@ public struct CommandGetParameters: Encodable, Sendable {
     }
 }
 
-public struct WorkspaceRecord: Decodable, Equatable, Sendable {
+public struct WorkspaceRecord: Decodable, Equatable, Sendable, Identifiable {
+    public var id: UUID { workspaceId }
     public let workspaceId: UUID
     public let name: String
     public let directoryId: String
+
+    public init(workspaceId: UUID, name: String, directoryId: String) {
+        self.workspaceId = workspaceId
+        self.name = name
+        self.directoryId = directoryId
+    }
 }
 
-public enum WorkSessionNameSource: String, Decodable, Equatable, Sendable { case manual }
-public enum WorkSessionAdmission: String, Decodable, Equatable, Sendable { case notAdmitted }
+public typealias ProtocolWorkspaceRecord = WorkspaceRecord
 
+public enum WorkSessionNameSource: String, Decodable, Equatable, Sendable { case manual }
 public struct WorkSessionPiBinding: Decodable, Equatable, Sendable {
     public let paneId: UUID
     public let chatId: UUID?
-    public let admission: WorkSessionAdmission
+    public let admission: PiAdmission
+
+    public init(paneId: UUID, chatId: UUID?, admission: PiAdmission) {
+        self.paneId = paneId
+        self.chatId = chatId
+        self.admission = admission
+    }
 }
 
-public struct WorkSessionRecord: Decodable, Equatable, Sendable {
+public struct WorkSessionRecord: Decodable, Equatable, Sendable, Identifiable {
+    public var id: UUID { sessionId }
     public let sessionId: UUID
     public let workspaceId: UUID
     public let name: String
     public let nameSource: WorkSessionNameSource
     public let pi: WorkSessionPiBinding
     public let runtime: TerminalSnapshot?
+
+    public init(sessionId: UUID, workspaceId: UUID, name: String, nameSource: WorkSessionNameSource,
+                pi: WorkSessionPiBinding, runtime: TerminalSnapshot?) {
+        self.sessionId = sessionId
+        self.workspaceId = workspaceId
+        self.name = name
+        self.nameSource = nameSource
+        self.pi = pi
+        self.runtime = runtime
+    }
 }
 
 public struct WorkspaceListResult: Decodable, Equatable, Sendable {
@@ -561,15 +611,21 @@ public struct CommittedWork: Decodable, Equatable, Sendable {
 }
 
 public enum CommandReceipt: Decodable, Equatable, Sendable {
+    case pi(PiCommandReceipt)
     case work(committed: CommittedWork)
     case runtime(runtime: TerminalRuntime, terminal: TerminalSnapshot?)
 
-    private enum CodingKeys: String, CodingKey { case kind, committed, runtime, terminal }
-    private enum Kind: String, Decodable { case work, runtime }
+    private enum CodingKeys: String, CodingKey { case kind, receipt, committed, runtime, terminal }
+    private enum Kind: String, Decodable { case pi, work, runtime }
 
     public init(from decoder: Decoder) throws {
         let container = try decoder.container(keyedBy: CodingKeys.self)
         switch try container.decode(Kind.self, forKey: .kind) {
+        case .pi:
+            guard Set(container.allKeys) == [.kind, .receipt] else {
+                throw DecodingError.dataCorruptedError(forKey: .kind, in: container, debugDescription: "Invalid Pi receipt.")
+            }
+            self = .pi(try container.decode(PiCommandReceipt.self, forKey: .receipt))
         case .work:
             guard Set(container.allKeys) == [.kind, .committed] else {
                 throw DecodingError.dataCorruptedError(forKey: .kind, in: container, debugDescription: "Invalid work receipt.")
