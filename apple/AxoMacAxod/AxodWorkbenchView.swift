@@ -254,7 +254,8 @@ struct AxodWorkbenchView: View {
             Circle()
                 .fill(connectionColor)
                 .frame(width: 7, height: 7)
-            Text(coordinator.message)
+            Text(coordinator.onlineMessage)
+                .help(coordinator.message)
                 .lineLimit(1)
                 .truncationMode(.middle)
             Spacer(minLength: 12)
@@ -292,9 +293,9 @@ struct AxodWorkbenchView: View {
 
     private var connectionColor: Color {
         switch coordinator.connectionState {
-        case .starting: .orange
-        case .connected: .green
-        case .disconnected: .secondary
+        case .starting: .yellow
+        case .connected: coordinator.hostStatus?.cloud.isOnline == true ? .green : .blue
+        case .disconnected: .red
         case .failed: .red
         }
     }

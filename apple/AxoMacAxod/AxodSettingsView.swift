@@ -73,6 +73,10 @@ struct AxodSettingsView: View {
     private var backgroundDaemonPage: some View {
         Form {
             pageHeading("Background Daemon", subtitle: "Axo runs its bundled axod helper as a per-user LaunchAgent.")
+            Section("Versions") {
+                LabeledContent("Bundled axod", value: Bundle.main.object(forInfoDictionaryKey: "AxoBundledAxodVersion") as? String ?? "Not packaged")
+                LabeledContent("Running axod", value: coordinator.hostStatus?.daemonVersion ?? "Unavailable")
+            }
             Section("Service status") {
                 Text(coordinator.daemonServiceMessage)
                     .textSelection(.enabled)
@@ -81,7 +85,7 @@ struct AxodSettingsView: View {
                 }
             }
             Section("State") {
-                Text("Each app build uses its own private Axod state directory. The daemon is not a system-wide LaunchDaemon.")
+                Text("Axo uses its private per-user Axod state directory. All launches share that daemon. It is not a system-wide LaunchDaemon.")
                     .foregroundStyle(.secondary)
             }
         }
@@ -95,8 +99,9 @@ struct AxodSettingsView: View {
         Form {
             pageHeading("Local Daemon", subtitle: "Inspect work owned by Axod on this Mac.")
             Section("Connection") {
-                Text(coordinator.message)
+                Text(coordinator.onlineMessage)
                     .textSelection(.enabled)
+                Text(coordinator.message).font(.caption).foregroundStyle(.secondary)
                 if coordinator.connectionState != .connected {
                     Button("Connect") { coordinator.connect() }
                 } else {

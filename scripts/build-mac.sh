@@ -47,6 +47,8 @@ if [[ "$(/usr/libexec/PlistBuddy -c 'Print :BundleProgram' "$AGENT_PLIST")" != "
   echo 'The staged Axod LaunchAgent does not match the standard Axo app bundle.' >&2
   exit 1
 fi
+BUNDLED_AXOD_VERSION="$("$APP/Contents/Helpers/axod" --version)"
+plutil -insert AxoBundledAxodVersion -string "$BUNDLED_AXOD_VERSION" "$APP/Contents/Info.plist"
 STAGED_BUNDLE_ID="$(/usr/libexec/PlistBuddy -c Print:CFBundleIdentifier "$APP/Contents/Info.plist")"
 if [[ "$STAGED_BUNDLE_ID" != "$BUNDLE_ID" ]]; then
   echo 'The staged Axod-only app has an unexpected bundle identifier.' >&2

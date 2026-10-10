@@ -146,7 +146,10 @@ fn actual_cli_starts_managed_tui_sends_real_message_and_reads_canonical_tool_evi
         "axo.workspace.directories",
         json!({"target":destination}),
     );
-    assert_eq!(directories["directories"], json!([{"directoryId":"work","name":"work"}]));
+    assert_eq!(
+        directories["directories"],
+        json!([{"directoryId":"work","name":"work"}])
+    );
     assert!(!directories.to_string().contains(cwd.to_str().unwrap()));
     let workspace = cli(
         &discovery,
@@ -471,6 +474,14 @@ fn actual_cli_starts_managed_tui_sends_real_message_and_reads_canonical_tool_evi
     );
     assert!(model.requests() == 5, "Stale source dispatched");
     let mut cloud = worker.connect(reboot.machine_id);
+    let host_target =
+        json!({"machineId":reboot.machine_id,"hostGeneration":reboot.host_generation});
+    let host = cli(&discovery, "axo.host.get", json!({"target":host_target}));
+    assert_eq!(
+        host["cloud"]["kind"], "online",
+        "Authenticated registration did not establish cloud presence"
+    );
+    assert_eq!(host["daemonVersion"], axod::host::VERSION);
     let cloud_snapshot = cloud.call("axo.chat.get", json!({"target":resumed["chat"]}));
     assert!(cloud_snapshot["target"] == resumed["chat"] && cloud_snapshot["admission"] == "ready");
     let second = cli(
@@ -520,6 +531,16 @@ fn actual_cli_starts_managed_tui_sends_real_message_and_reads_canonical_tool_evi
     );
     drop(cloud);
     worker.stop();
+    let deadline = Instant::now() + Duration::from_secs(5);
+    while cli(&discovery, "axo.host.get", json!({"target":host_target}))["cloud"]["kind"]
+        == "online"
+    {
+        assert!(
+            Instant::now() < deadline,
+            "Cloud loss retained online status"
+        );
+        thread::sleep(Duration::from_millis(50));
+    }
     assert!(
         cli(
             &discovery,

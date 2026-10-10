@@ -4,6 +4,7 @@ compile_error!("axod currently targets macOS");
 pub mod ambient_pi;
 mod bootstrap;
 pub mod client;
+pub mod host;
 pub mod journal;
 mod local;
 mod managed;

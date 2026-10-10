@@ -123,6 +123,13 @@ fn actual_cli_creates_addressed_metadata_and_reconciles_one_real_pty_launch() {
     assert!(list.status.success(), "CLI read failed");
     let list: Value = serde_json::from_slice(&list.stdout).unwrap();
     assert_eq!(list["revision"], 0);
+    let host = daemon.call("axo.host.get", json!({"target":target}));
+    assert_eq!(host["cloud"]["kind"], "notConfigured");
+    assert_eq!(host["daemonVersion"], axod::host::VERSION);
+    assert_eq!(host["machineId"], target["machineId"]);
+    assert_eq!(host["hostGeneration"], target["hostGeneration"]);
+    assert!(!host["hostname"].as_str().unwrap().is_empty());
+    assert!(!host["machineType"].as_str().unwrap().is_empty());
     let create = daemon.invoke("axo.workspace.create", json!({"target":target,"commandId":uuid::Uuid::new_v4(),"expectedRevision":0,"directoryId":"fixture","name":"Rust CLI"}));
     assert!(create.status.success(), "CLI metadata mutation failed");
     assert!(

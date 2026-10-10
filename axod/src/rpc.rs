@@ -194,6 +194,7 @@ fn dispatch_route(
 ) -> Option<Value> {
     let id = call.id?; // Execution notifications are never admitted.
     let result = match call.method.as_str() {
+        "axo.host.get" if local => crate::host::get(call.params, manager, machine),
         "axo.runtime.list" => list(call.params, manager, machine),
         "axo.runtime.startApproved" => start(call.params, manager, machine, profiles),
         "axo.session.pane.add" | "axo.session.pane.remove" if local => {

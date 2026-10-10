@@ -4,11 +4,13 @@ import { terminalSchema } from "./runtime-contracts.js";
 import { workMethods, workResults } from "./work-contracts.js";
 import { piMethods, piResults } from "./pi-contracts.js";
 import { paneMethods, paneResults } from "./pane-contracts.js";
+import { hostMethods, hostResults } from "./host-contracts.js";
 export { uuid, destinationSchema } from "./identity.js";
 export * from "./runtime-contracts.js";
 export * from "./work-contracts.js";
 export * from "./pi-contracts.js";
 export * from "./pane-contracts.js";
+export * from "./host-contracts.js";
 import {
   createJSONRPCErrorResponse,
   createJSONRPCSuccessResponse,
@@ -196,12 +198,13 @@ export const remoteMethods = {
 export type RemoteMethod = keyof typeof remoteMethods;
 export const METHODS = Object.keys(remoteMethods) as RemoteMethod[];
 // Shell-pane lifecycle is local-only; layout/rendering and terminal bytes stay local too.
-export const localMethods = { ...remoteMethods, ...paneMethods } as const;
+export const localMethods = { ...remoteMethods, ...paneMethods, ...hostMethods } as const;
 export type LocalMethod = keyof typeof localMethods;
 export const results = {
   ...workResults,
   ...piResults,
   ...paneResults,
+  ...hostResults,
   "axo.runtime.list": z
     .object({
       hostGeneration: uuid,

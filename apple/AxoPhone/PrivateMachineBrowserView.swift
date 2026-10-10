@@ -132,7 +132,7 @@ struct PrivateMachineBrowserView: View {
     private func selectedMachineSection(_ machine: MachineSummary) -> some View {
         Section {
             if !machine.online {
-                Label("Host offline · cached runtime data is historical", systemImage: "wifi.slash")
+                Label("Host offline · runtime and work metadata unavailable", systemImage: "wifi.slash")
                     .foregroundStyle(.orange)
                     .accessibilityIdentifier("control-plane-offline-banner")
             } else if model.isRuntimeGenerationStale {
@@ -193,7 +193,7 @@ struct PrivateMachineBrowserView: View {
         if let result = model.selectedRuntimeResult {
             Section("Runtimes · source generation \(shortID(result.hostGeneration))") {
                 if result.terminals.isEmpty {
-                    Text(machine.online && !model.isRuntimeGenerationStale ? "No runtime records" : "No cached runtime records")
+                    Text("No runtime records")
                         .foregroundStyle(.secondary)
                 }
                 ForEach(result.terminals, id: \.runtime.runtimeGeneration) { terminal in
@@ -217,7 +217,7 @@ struct PrivateMachineBrowserView: View {
     private func workRecordsSection(_ machine: MachineSummary) -> some View {
         Section {
             if !machine.online {
-                Text("Work records are not available while this machine is offline. No cached catalog is shown.")
+                Text("Runtime and work metadata are not shown while this machine is offline.")
                     .font(.caption).foregroundStyle(.secondary)
             } else if model.isLoadingWork {
                 ProgressView("Loading workspaces and sessions…")

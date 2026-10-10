@@ -7,6 +7,10 @@ fn usage() -> io::Error {
 fn main() -> io::Result<()> {
     let mut arguments = std::env::args().skip(1);
     match arguments.next().as_deref() {
+        Some("--version") if arguments.next().is_none() => {
+            println!("{}", axod::host::VERSION);
+            return Ok(());
+        }
         Some("serve-user") => {
             let instance_id = match (arguments.next(), arguments.next()) {
                 (None, None) => None,

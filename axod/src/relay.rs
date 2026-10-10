@@ -67,6 +67,14 @@ impl Config {
         crate::profiles::Profiles::validate(config.profiles.clone())?;
         Ok(config)
     }
+    pub(crate) fn use_host_identity(&mut self) {
+        let (hostname, machine_type) = crate::host::identity();
+        let mut label = format!("{hostname} · {machine_type}");
+        while label.encode_utf16().count() > 80 {
+            label.pop();
+        }
+        self.label = label;
+    }
     pub(crate) fn profiles(&self) -> crate::profiles::Profiles {
         crate::profiles::Profiles(self.profiles.clone())
     }
@@ -343,12 +351,21 @@ fn session(
         json!({"protocolVersion":1,"machineId":machine,"hostGeneration":manager.generation,"label":config.label}),
     )?;
     let registered = handshake_reply(&mut socket, "register", stopping)?;
-    let lease_id = registered["leaseId"]
-        .as_str()
-        .and_then(|value| uuid::Uuid::parse_str(value).ok())
-        .ok_or_else(|| io::Error::other("Invalid route lease"))?;
-    if registered["hostGeneration"] != serde_json::to_value(manager.generation)? {
+    #[derive(Deserialize)]
+    #[serde(rename_all = "camelCase", deny_unknown_fields)]
+    struct RegisteredLease {
+        lease_id: uuid::Uuid,
+        host_generation: crate::model::HostGeneration,
+        lease_expires_at: Option<u64>,
+    }
+    let registered: RegisteredLease =
+        serde_json::from_value(registered).map_err(|_| io::Error::other("Invalid route lease"))?;
+    let lease_id = registered.lease_id;
+    if registered.host_generation != manager.generation {
         return Err(io::Error::other("Wrong route generation"));
+    }
+    if let Some(expires_at) = registered.lease_expires_at {
+        manager.host.acknowledge(lease_id, expires_at)?;
     }
     let mut heartbeat = Instant::now();
     let mut heartbeat_pending = false;
@@ -381,6 +398,20 @@ fn session(
             {
                 return Err(io::Error::other("Heartbeat rejected"));
             }
+            #[derive(Deserialize)]
+            #[serde(rename_all = "camelCase", deny_unknown_fields)]
+            struct HeartbeatLease {
+                lease_id: uuid::Uuid,
+                lease_expires_at: Option<u64>,
+            }
+            let lease: HeartbeatLease = serde_json::from_value(value["result"].clone())
+                .map_err(|_| io::Error::other("Invalid heartbeat lease"))?;
+            if lease.lease_id != lease_id {
+                return Err(io::Error::other("Heartbeat rejected"));
+            }
+            if let Some(expires_at) = lease.lease_expires_at {
+                manager.host.acknowledge(lease_id, expires_at)?;
+            }
             heartbeat_pending = false;
             continue;
         }
@@ -406,6 +437,7 @@ fn session(
 pub fn run(config: Config, machine: MachineId, manager: Arc<Manager>, stopping: Arc<AtomicBool>) {
     let mut last_failure = None;
     while !stopping.load(Ordering::SeqCst) {
+        manager.host.connecting();
         // Only fixed classifications are logged, and only when the failure changes.
         if let Err(error) = session(&config, machine, &manager, &stopping) {
             let reason = match error.to_string().as_str() {
@@ -432,6 +464,7 @@ pub fn run(config: Config, machine: MachineId, manager: Arc<Manager>, stopping: 
         } else {
             last_failure = None;
         }
+        manager.host.offline();
         for _ in 0..10 {
             if stopping.load(Ordering::SeqCst) {
                 return;

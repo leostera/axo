@@ -18,6 +18,7 @@ public enum AxoProtocol {
         public static let heartbeat = "axo.machine.heartbeat"
         public static let listMachines = "axo.machine.list"
         public static let listRuntimes = "axo.runtime.list"
+        public static let getHost = "axo.host.get"
         public static let startApprovedRuntime = "axo.runtime.startApproved"
         public static let acknowledgeTransport = "axo.transport.ack"
         public static let listWorkspaceDirectories = "axo.workspace.directories"

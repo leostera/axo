@@ -419,6 +419,7 @@ export class AxoHostRelay extends DurableObject<Env> {
     return {
       leaseId: peer.connectionId,
       hostGeneration: parsed.data.hostGeneration,
+      leaseExpiresAt: this.admittedDaemon(peer).lease_until,
     };
   }
   private heartbeat(params: unknown, { peer }: CallerContext): Heartbeat {
@@ -436,7 +437,7 @@ export class AxoHostRelay extends DurableObject<Env> {
       Math.min(peer.expiresAt, Date.now() + LIMITS.leaseMs),
       peer.connectionId,
     );
-    return { leaseId: peer.connectionId };
+    return { leaseId: peer.connectionId, leaseExpiresAt: this.admittedDaemon(peer).lease_until };
   }
 
   private receiveReply(socket: WebSocket, reply: Reply): void {

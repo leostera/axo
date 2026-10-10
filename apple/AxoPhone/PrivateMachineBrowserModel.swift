@@ -47,8 +47,9 @@ final class PrivateMachineBrowserModel {
     }
 
     var selectedRuntimeResult: RuntimeListResult? {
-        guard let selectedMachineID else { return nil }
-        return runtimeResults[selectedMachineID]
+        guard let machine = selectedMachine, machine.online,
+              let result = runtimeResults[machine.machineId], result.hostGeneration == machine.hostGeneration else { return nil }
+        return result
     }
 
     var selectedRuntimes: [TerminalSnapshot] { selectedRuntimeResult?.terminals ?? [] }
@@ -69,7 +70,10 @@ final class PrivateMachineBrowserModel {
         #if DEBUG
         if isPreview { return }
         #endif
-        await refreshMachines()
+        while !Task.isCancelled {
+            await refreshMachines()
+            do { try await Task.sleep(for: .seconds(5)) } catch { return }
+        }
     }
 
     func signIn(_ credential: AxoControlPlaneAccessCookie) async {
@@ -124,10 +128,20 @@ final class PrivateMachineBrowserModel {
         do {
             let result = try await controlPlane.discoverMachines()
             guard discoveryOperation == operation else { return }
+            let previousMachines = machines
             machines = result.machines
+            for machineID in Set(runtimeResults.keys).union(workspaces.keys) {
+                let knownGeneration = runtimeResults[machineID]?.hostGeneration ?? previousMachines.first { $0.machineId == machineID }?.hostGeneration
+                guard let current = result.machines.first(where: { $0.machineId == machineID }),
+                      current.online, current.hostGeneration == knownGeneration else {
+                    clearMachineMetadata(for: machineID)
+                    continue
+                }
+            }
             if let selectedMachineID,
                let selected = result.machines.first(where: { $0.machineId == selectedMachineID }) {
-                if !selected.online || selected.hostGeneration != runtimeResults[selectedMachineID]?.hostGeneration {
+                let knownGeneration = runtimeResults[selectedMachineID]?.hostGeneration ?? previousMachines.first { $0.machineId == selectedMachineID }?.hostGeneration
+                if !selected.online || selected.hostGeneration != knownGeneration {
                     selectionOperation = UUID()
                     isLoadingRuntimes = false
                     isLoadingWork = false
@@ -147,6 +161,23 @@ final class PrivateMachineBrowserModel {
                 await controlPlane.disconnect()
             }
         } catch {
+            guard discoveryOperation == operation else { return }
+            // An unavailable directory is not a cached fleet. Keep credentials, not stale views.
+            selectionOperation = UUID()
+            machines = []
+            runtimeResults = [:]
+            runtimeCursors = [:]
+            workspaces = [:]
+            workSessions = [:]
+            workRevisions = [:]
+            selectedMachineID = nil
+            connectedMachineID = nil
+            isConnected = false
+            isLoadingRuntimes = false
+            isLoadingWork = false
+            workNotice = nil
+            await controlPlane.disconnect()
+            guard discoveryOperation == operation else { return }
             await report(error)
         }
     }
@@ -174,9 +205,7 @@ final class PrivateMachineBrowserModel {
         #endif
 
         guard machine.online, machine.hostGeneration != nil else {
-            workspaces[machineID] = nil
-            workSessions[machineID] = nil
-            workRevisions[machineID] = nil
+            clearMachineMetadata(for: machineID)
             await controlPlane?.disconnect()
             return
         }
@@ -194,6 +223,7 @@ final class PrivateMachineBrowserModel {
             await refreshWorkRecords(for: machineID, operation: operation)
         } catch {
             guard selectionOperation == operation, selectedMachineID == machineID else { return }
+            clearMachineMetadata(for: machineID)
             await report(error)
         }
     }
@@ -272,7 +302,7 @@ final class PrivateMachineBrowserModel {
             isConnected = false
             connectedMachineID = nil
             isLoadingWork = false
-            clearWorkRecords(for: machineID)
+            clearMachineMetadata(for: machineID)
             await report(error)
         }
     }
@@ -299,6 +329,11 @@ final class PrivateMachineBrowserModel {
             runtimeCursors[machineID] = page.next
         } catch {
             guard selectionOperation == operation else { return }
+            isConnected = false
+            connectedMachineID = nil
+            clearMachineMetadata(for: machineID)
+            await controlPlane.disconnect()
+            guard selectionOperation == operation else { return }
             await report(error)
         }
     }
@@ -308,7 +343,7 @@ final class PrivateMachineBrowserModel {
         isConnected = false
         connectedMachineID = nil
         isLoadingWork = false
-        if let selectedMachineID { clearWorkRecords(for: selectedMachineID) }
+        if let selectedMachineID { clearMachineMetadata(for: selectedMachineID) }
         await controlPlane?.disconnect()
     }
 
@@ -320,6 +355,12 @@ final class PrivateMachineBrowserModel {
         await refreshMachines()
         guard let refreshed = machines.first(where: { $0.machineId == machineID }), refreshed.online else { return }
         await selectMachine(machineID)
+    }
+
+    private func clearMachineMetadata(for machineID: UUID) {
+        runtimeResults[machineID] = nil
+        runtimeCursors[machineID] = nil
+        clearWorkRecords(for: machineID)
     }
 
     private func clearWorkRecords(for machineID: UUID) {

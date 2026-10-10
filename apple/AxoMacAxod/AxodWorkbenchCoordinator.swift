@@ -27,6 +27,14 @@ final class AxodWorkbenchCoordinator {
 
     private(set) var connectionState: ConnectionState = .starting
     private(set) var machineID: UUID?
+    private(set) var hostStatus: HostStatusResult?
+    var onlineMessage: String {
+        switch connectionState {
+        case .starting: return "axo is starting"
+        case .connected: return hostStatus?.cloud.isOnline == true ? "axo is online" : "axo is connected locally"
+        case .disconnected, .failed: return "axo is offline"
+        }
+    }
     private(set) var workspaces: [WorkWorkspaceRecord] = []
     private(set) var sessions: [WorkSessionRecord] = []
     private(set) var runtimes: [TerminalSnapshot] = []
@@ -64,6 +72,7 @@ final class AxodWorkbenchCoordinator {
     private var sessionLoadGeneration = UUID()
     private var chatLoadGeneration = UUID()
     private var chatObservationTask: Task<Void, Never>?
+    private var hostObservationTask: Task<Void, Never>?
     private var connectTask: Task<Void, Never>?
     @ObservationIgnored private var settingsWindow: NSWindow?
     private var didCheckStartupRegistration = false
@@ -230,6 +239,8 @@ final class AxodWorkbenchCoordinator {
         connection = nil
         endpoint = nil
         connectionState = .starting
+        hostObservationTask?.cancel()
+        hostStatus = nil
         message = "Validating Axo's private daemon state."
         connectTask = Task { [weak self] in
             guard let self else { return }
@@ -245,6 +256,8 @@ final class AxodWorkbenchCoordinator {
         sessionLoadGeneration = UUID()
         connectTask?.cancel()
         connectTask = nil
+        hostObservationTask?.cancel()
+        hostStatus = nil
         let oldConnection = connection
         connection = nil
         endpoint = nil
@@ -825,6 +838,7 @@ final class AxodWorkbenchCoordinator {
             self.selectedSessionID = nil
             self.nextSessionCursor = nil
             connectionState = .connected
+            observeHost(over: connection, endpoint: endpoint, operation: operation)
             message = "Connected to the local axod LaunchAgent. Legacy workspaces and Pi histories were not imported or changed."
             if let workspaceID = selectedWorkspaceID {
                 await loadInitialSessions(workspaceID, over: connection, endpoint: endpoint, operation: operation)
@@ -1296,6 +1310,32 @@ final class AxodWorkbenchCoordinator {
         isCurrent(operation, connection: connection, endpoint: endpoint) && refreshGeneration == refresh
     }
 
+    private func observeHost(over connection: AxoJSONRPCWebSocketConnection, endpoint: LocalDaemonEndpoint, operation: UUID) {
+        hostObservationTask?.cancel()
+        hostObservationTask = Task { [weak self] in
+            while !Task.isCancelled {
+                do {
+                    let value = try await connection.request(method: AxoProtocol.Method.getHost, parameters: HostGetParameters(target: MachineTarget(machineId: endpoint.machineId, hostGeneration: endpoint.hostGeneration)))
+                    guard let self, self.isCurrent(operation, connection: connection, endpoint: endpoint) else { return }
+                    try self.stateDirectory?.requireCurrentEndpoint(endpoint)
+                    self.hostStatus = try AxoProtocolResultValidator.host(value, target: MachineTarget(machineId: endpoint.machineId, hostGeneration: endpoint.hostGeneration))
+                } catch {
+                    guard let self, self.isCurrent(operation, connection: connection, endpoint: endpoint) else { return }
+                    self.hostStatus = nil // Unknown/unavailable is never cloud-online.
+                    if let rpcError = error as? AxoJSONRPCClientError {
+                        switch rpcError {
+                        case .disconnected, .outcomeUnknown:
+                            self.connectionFailed(error, operation: operation, connection: connection)
+                            return
+                        default: break
+                        }
+                    }
+                }
+                do { try await Task.sleep(for: .seconds(2)) } catch { return }
+            }
+        }
+    }
+
     private func connectionFailed(
         _ error: Error,
         operation: UUID,
@@ -1304,6 +1344,13 @@ final class AxodWorkbenchCoordinator {
         guard operationGeneration == operation, self.connection === connection else { return }
         self.connection = nil
         endpoint = nil
+        hostObservationTask?.cancel()
+        hostStatus = nil
+        workspaces = []; sessions = []; runtimes = []
+        nextWorkspaceCursor = nil; nextSessionCursor = nil; nextRuntimeID = nil
+        selectedWorkspaceID = nil; selectedSessionID = nil
+        stopChatObservation()
+        chatTarget = nil; chatSnapshot = nil; chatEntries = []; nextChatCursor = nil
         connectionState = .failed("Local daemon connection lost")
         message = "Connection lost. Reconnect to inspect the daemon; no work was replayed."
         Task { await connection.close() }

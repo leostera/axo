@@ -14,9 +14,14 @@ pub fn serve(instance_id: Option<&str>) -> io::Result<()> {
     let root = ensure_state_directory(&home, instance_id)?;
     let profiles_path = root.join("profiles.json");
     let pi_path = root.join("pi.json");
+    let relay_path = root.join("relay.json");
+    let mut relay = read_optional(&relay_path, crate::relay::Config::read)?;
+    if let Some(config) = relay.as_mut() {
+        config.use_host_identity();
+    }
     let profiles = read_optional(&profiles_path, crate::profiles::Profiles::read)?;
     let pi = read_optional(&pi_path, crate::PiPolicy::read)?;
-    crate::server::serve_with_pi(&root, None, profiles, pi)
+    crate::server::serve_with_pi(&root, relay, profiles, pi)
 }
 
 fn ensure_state_directory(home: &Path, instance_id: Option<&str>) -> io::Result<PathBuf> {

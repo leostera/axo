@@ -300,6 +300,7 @@ impl RuntimeCompletion {
 }
 pub struct Manager {
     pub generation: HostGeneration,
+    pub host: crate::host::HostStatus,
     journal: Arc<Mutex<Journal>>,
     pub(crate) work: Arc<Mutex<crate::work::WorkStore>>,
     pub(crate) managed: Arc<Mutex<crate::managed::store::Store>>,
@@ -316,6 +317,7 @@ impl Manager {
     pub fn new(journal: Journal) -> Self {
         Self {
             generation: HostGeneration::new(),
+            host: crate::host::HostStatus::default(),
             work: journal.work.clone(),
             managed: journal.managed.clone(),
             managed_policy: Mutex::new(None),
@@ -1036,6 +1038,7 @@ mod tests {
             let journal = self.terminal.journal.lock().unwrap();
             Manager {
                 generation: self.terminal.reference.host_generation,
+                host: crate::host::HostStatus::default(),
                 journal: self.terminal.journal.clone(),
                 work: journal.work.clone(),
                 managed: journal.managed.clone(),

@@ -29,8 +29,8 @@ export type Negotiated = {
   methods: string[];
   deliveryCredits: { frames: number; bytes: number };
 };
-export type Registered = { leaseId: string; hostGeneration: string };
-export type Heartbeat = { leaseId: string };
+export type Registered = { leaseId: string; hostGeneration: string; leaseExpiresAt?: number };
+export type Heartbeat = { leaseId: string; leaseExpiresAt?: number };
 export type DaemonMethods = {
   [Method in LocalMethod]: (
     params: z.input<(typeof localMethods)[Method]>,
