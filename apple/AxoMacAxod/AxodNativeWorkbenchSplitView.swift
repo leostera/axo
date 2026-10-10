@@ -78,11 +78,25 @@ struct AxodNativeWorkbenchSplitView: NSViewRepresentable {
         private let rootView = NSView()
         private let splitView = NSSplitView()
         private let sidebarContainer = NSVisualEffectView()
+        private let expandedSidebar = NSView()
+        private lazy var compactSidebar = AxodCompactSidebarView(
+            onSelect: { [weak self] destination in
+                switch destination {
+                case .workspace(let id): self?.workbench.selectWorkspace(id)
+                case .session(let id): self?.workbench.selectSession(id)
+                }
+            },
+            onExpand: { [weak self] in self?.sidebarCollapsed.wrappedValue = false },
+            onCreate: { [weak self] in self?.createWork() },
+            onSettings: { [weak self] in self?.openSettings() }
+        )
         private let content = NSView()
         private let outline = WorkspaceOutlineView()
         private let detailHost: NSHostingView<AnyView>
         private let preferences = UserDefaults.standard
         private var sidebarMinimumWidth: NSLayoutConstraint?
+        private var compactSidebarWidth: NSLayoutConstraint?
+        private var displayedCollapsed: Bool?
         private var sidebarWidth: CGFloat
         private var positionedSidebar = false
         private var sidebarItems: [Item] = []
@@ -137,9 +151,7 @@ struct AxodNativeWorkbenchSplitView: NSViewRepresentable {
                 splitView.bottomAnchor.constraint(equalTo: rootView.bottomAnchor),
             ])
 
-            sidebarContainer.isHidden = sidebarCollapsed.wrappedValue
-            sidebarMinimumWidth?.isActive = !sidebarCollapsed.wrappedValue
-            splitView.setPosition(sidebarCollapsed.wrappedValue ? 0 : sidebarWidth, ofDividerAt: 0)
+            setSidebarCollapsed(sidebarCollapsed.wrappedValue)
             return rootView
         }
 
@@ -172,6 +184,16 @@ struct AxodNativeWorkbenchSplitView: NSViewRepresentable {
             sidebarContainer.material = .underWindowBackground
             sidebarContainer.blendingMode = .withinWindow
             sidebarContainer.state = .followsWindowActiveState
+            for child in [expandedSidebar, compactSidebar] {
+                child.translatesAutoresizingMaskIntoConstraints = false
+                sidebarContainer.addSubview(child)
+                NSLayoutConstraint.activate([
+                    child.leadingAnchor.constraint(equalTo: sidebarContainer.leadingAnchor),
+                    child.trailingAnchor.constraint(equalTo: sidebarContainer.trailingAnchor),
+                    child.topAnchor.constraint(equalTo: sidebarContainer.topAnchor),
+                    child.bottomAnchor.constraint(equalTo: sidebarContainer.bottomAnchor),
+                ])
+            }
 
             let scroll = NSScrollView()
             scroll.hasVerticalScroller = true
@@ -210,37 +232,37 @@ struct AxodNativeWorkbenchSplitView: NSViewRepresentable {
 
             for child in [scroll, heading, create, collapse, settings, headerLine, footerLine] {
                 child.translatesAutoresizingMaskIntoConstraints = false
-                sidebarContainer.addSubview(child)
+                expandedSidebar.addSubview(child)
             }
             NSLayoutConstraint.activate([
-                heading.leadingAnchor.constraint(equalTo: sidebarContainer.leadingAnchor, constant: 16),
-                heading.topAnchor.constraint(equalTo: sidebarContainer.topAnchor, constant: 14),
-                create.trailingAnchor.constraint(equalTo: sidebarContainer.trailingAnchor, constant: -10),
+                heading.leadingAnchor.constraint(equalTo: expandedSidebar.leadingAnchor, constant: 16),
+                heading.topAnchor.constraint(equalTo: expandedSidebar.topAnchor, constant: 14),
+                create.trailingAnchor.constraint(equalTo: expandedSidebar.trailingAnchor, constant: -10),
                 create.centerYAnchor.constraint(equalTo: heading.centerYAnchor),
-                headerLine.leadingAnchor.constraint(equalTo: sidebarContainer.leadingAnchor, constant: 12),
-                headerLine.trailingAnchor.constraint(equalTo: sidebarContainer.trailingAnchor, constant: -12),
+                headerLine.leadingAnchor.constraint(equalTo: expandedSidebar.leadingAnchor, constant: 12),
+                headerLine.trailingAnchor.constraint(equalTo: expandedSidebar.trailingAnchor, constant: -12),
                 headerLine.topAnchor.constraint(equalTo: heading.bottomAnchor, constant: 12),
                 scroll.topAnchor.constraint(equalTo: headerLine.bottomAnchor, constant: 8),
-                scroll.leadingAnchor.constraint(equalTo: sidebarContainer.leadingAnchor, constant: 6),
-                scroll.trailingAnchor.constraint(equalTo: sidebarContainer.trailingAnchor, constant: -6),
+                scroll.leadingAnchor.constraint(equalTo: expandedSidebar.leadingAnchor, constant: 6),
+                scroll.trailingAnchor.constraint(equalTo: expandedSidebar.trailingAnchor, constant: -6),
                 scroll.bottomAnchor.constraint(equalTo: footerLine.topAnchor, constant: -8),
                 footerLine.leadingAnchor.constraint(equalTo: headerLine.leadingAnchor),
                 footerLine.trailingAnchor.constraint(equalTo: headerLine.trailingAnchor),
                 footerLine.bottomAnchor.constraint(equalTo: collapse.topAnchor, constant: -10),
-                settings.leadingAnchor.constraint(equalTo: sidebarContainer.leadingAnchor, constant: 12),
+                settings.leadingAnchor.constraint(equalTo: expandedSidebar.leadingAnchor, constant: 12),
                 settings.centerYAnchor.constraint(equalTo: collapse.centerYAnchor),
-                collapse.trailingAnchor.constraint(equalTo: sidebarContainer.trailingAnchor, constant: -10),
-                collapse.bottomAnchor.constraint(equalTo: sidebarContainer.bottomAnchor, constant: -10),
+                collapse.trailingAnchor.constraint(equalTo: expandedSidebar.trailingAnchor, constant: -10),
+                collapse.bottomAnchor.constraint(equalTo: expandedSidebar.bottomAnchor, constant: -10),
             ])
 
             sidebarMinimumWidth = sidebarContainer.widthAnchor.constraint(
                 greaterThanOrEqualToConstant: CGFloat(WorkspaceWindowState.minimumSidebarWidth)
             )
-            sidebarMinimumWidth?.isActive = !sidebarCollapsed.wrappedValue
+            sidebarMinimumWidth?.isActive = true
+            compactSidebarWidth = sidebarContainer.widthAnchor.constraint(equalToConstant: AxodCompactSidebarView.width)
             sidebarContainer.widthAnchor.constraint(
                 lessThanOrEqualToConstant: CGFloat(WorkspaceWindowState.maximumSidebarWidth)
             ).isActive = true
-            sidebarContainer.isHidden = sidebarCollapsed.wrappedValue
         }
 
         private func refreshSidebar(
@@ -257,6 +279,7 @@ struct AxodNativeWorkbenchSplitView: NSViewRepresentable {
             )
             guard snapshot != lastSnapshot else { return }
             lastSnapshot = snapshot
+            refreshCompactSidebar(snapshot)
 
             sidebarItems = [Item(heading: "Workspaces")]
             for workspace in workspaces {
@@ -289,18 +312,38 @@ struct AxodNativeWorkbenchSplitView: NSViewRepresentable {
             }
         }
 
+        private func refreshCompactSidebar(_ snapshot: Snapshot) {
+            let items = snapshot.workspaces.flatMap { workspace -> [AxodCompactSidebarView.Item] in
+                let selected = workspace.workspaceId == snapshot.selectedWorkspaceID
+                let workspaceItem = AxodCompactSidebarView.Item(
+                    destination: .workspace(workspace.workspaceId), name: workspace.name, selected: selected
+                )
+                guard selected else { return [workspaceItem] }
+                return [workspaceItem] + snapshot.sessions
+                    .filter { $0.workspaceId == workspace.workspaceId }
+                    .map { AxodCompactSidebarView.Item(destination: .session($0.sessionId), name: $0.name,
+                                                       selected: $0.sessionId == snapshot.selectedSessionID) }
+            }
+            compactSidebar.update(items: items)
+        }
+
         private func setSidebarCollapsed(_ collapsed: Bool) {
-            let isAlreadyCollapsed = sidebarContainer.isHidden
-            guard collapsed != isAlreadyCollapsed else { return }
-            sidebarContainer.isHidden = collapsed
-            sidebarMinimumWidth?.isActive = !collapsed
-            splitView.setPosition(collapsed ? 0 : sidebarWidth, ofDividerAt: 0)
+            guard displayedCollapsed != collapsed else { return }
+            displayedCollapsed = collapsed
+            expandedSidebar.isHidden = collapsed
+            compactSidebar.isHidden = !collapsed
+            compactSidebarWidth?.isActive = false
+            sidebarMinimumWidth?.constant = collapsed ? AxodCompactSidebarView.width : CGFloat(WorkspaceWindowState.minimumSidebarWidth)
+            compactSidebarWidth?.isActive = collapsed
+            // Initial mounting has no viewport yet; let the first real resize position it.
+            guard splitView.bounds.width > 0 else { return }
+            splitView.setPosition(collapsed ? AxodCompactSidebarView.width : sidebarWidth, ofDividerAt: 0)
             splitView.adjustSubviews()
         }
 
         func splitView(_ splitView: NSSplitView, constrainSplitPosition proposedPosition: CGFloat, ofSubviewAt dividerIndex: Int) -> CGFloat {
             guard splitView === self.splitView, dividerIndex == 0 else { return proposedPosition }
-            guard !sidebarCollapsed.wrappedValue else { return 0 }
+            guard !sidebarCollapsed.wrappedValue else { return AxodCompactSidebarView.width }
             let available = splitView.bounds.width - splitView.dividerThickness - 200
             let minimum = CGFloat(WorkspaceWindowState.minimumSidebarWidth)
             let maximum = min(CGFloat(WorkspaceWindowState.maximumSidebarWidth), max(minimum, available))
@@ -316,7 +359,7 @@ struct AxodNativeWorkbenchSplitView: NSViewRepresentable {
             let divider = splitView.dividerThickness
             let width: CGFloat
             if sidebarCollapsed.wrappedValue {
-                width = 0
+                width = AxodCompactSidebarView.width
             } else {
                 width = min(sidebarWidth, max(0, bounds.width - divider - 200))
             }
@@ -331,7 +374,7 @@ struct AxodNativeWorkbenchSplitView: NSViewRepresentable {
             guard splitView.bounds.width >= 400, splitView.arrangedSubviews.count == 2 else { return }
             if !positionedSidebar {
                 positionedSidebar = true
-                splitView.setPosition(sidebarCollapsed.wrappedValue ? 0 : sidebarWidth, ofDividerAt: 0)
+                splitView.setPosition(sidebarCollapsed.wrappedValue ? AxodCompactSidebarView.width : sidebarWidth, ofDividerAt: 0)
                 return
             }
             guard !sidebarCollapsed.wrappedValue else { return }

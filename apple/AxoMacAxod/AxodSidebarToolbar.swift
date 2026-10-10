@@ -1,6 +1,6 @@
 import AppKit
 
-/// Window chrome, not a detail-surface overlay: hiding the sidebar cannot hide its toggle.
+/// Window chrome complements the compact rail; both toggle expanded/compact navigation.
 @MainActor
 final class AxodSidebarToolbar: NSObject, NSToolbarDelegate {
     static let collapsedPreferenceKey = "Axo.axod.sidebarCollapsed"
@@ -32,7 +32,7 @@ final class AxodSidebarToolbar: NSObject, NSToolbarDelegate {
         guard identifier == Self.toggleItemIdentifier else { return nil }
         let item = NSToolbarItem(itemIdentifier: identifier)
         item.label = "Toggle Sidebar"
-        item.toolTip = "Show or hide sidebar (⌃⌘S)"
+        item.toolTip = "Expand or collapse sidebar (⌃⌘S)"
         item.image = NSImage(systemSymbolName: "sidebar.left", accessibilityDescription: "Toggle Sidebar")
         item.target = self
         item.action = #selector(toggleSidebar(_:))
