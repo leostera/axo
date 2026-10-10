@@ -285,10 +285,17 @@ enum LaunchControl {
     Ordinary,
     Controlled,
     ReservedPi,
+    ReservedPane,
 }
 impl LaunchControl {
     fn controlled(&self) -> bool {
-        !matches!(self, Self::Ordinary)
+        matches!(self, Self::Controlled | Self::ReservedPi)
+    }
+}
+pub(crate) struct RuntimeCompletion(RuntimeRef);
+impl RuntimeCompletion {
+    pub(crate) fn runtime(&self) -> RuntimeRef {
+        self.0
     }
 }
 pub struct Manager {
@@ -299,6 +306,8 @@ pub struct Manager {
     pub(crate) managed_policy: Mutex<Option<crate::managed::policy::Policy>>,
     pub(crate) managed_live: Mutex<BTreeMap<SessionId, Arc<crate::managed::Running>>>,
     pub(crate) managed_start: Mutex<()>,
+    pub(crate) panes: Arc<Mutex<crate::panes::store::Store>>,
+    pub(crate) pane_operation: Mutex<()>,
     admission: Mutex<()>,
     terminals: Mutex<BTreeMap<PaneId, Arc<Terminal>>>,
     stopping: AtomicBool,
@@ -312,6 +321,8 @@ impl Manager {
             managed_policy: Mutex::new(None),
             managed_live: Mutex::new(BTreeMap::new()),
             managed_start: Mutex::new(()),
+            panes: journal.panes.clone(),
+            pane_operation: Mutex::new(()),
             admission: Mutex::new(()),
             journal: Arc::new(Mutex::new(journal)),
             terminals: Mutex::new(BTreeMap::new()),
@@ -329,6 +340,12 @@ impl Manager {
                 view.runtime = self.journal.lock().unwrap().command_runtime(command);
             }
             return Some(crate::work::CommandReceipt::Pi { receipt: view });
+        }
+        if let Some(mut receipt) = self.panes.lock().unwrap().receipt(command) {
+            if receipt.runtime.is_none() {
+                receipt.runtime = self.journal.lock().unwrap().command_runtime(command);
+            }
+            return Some(crate::work::CommandReceipt::Pane { receipt });
         }
         if let Some(committed) = self.work.lock().unwrap().receipt(command) {
             return Some(crate::work::CommandReceipt::Work { committed });
@@ -365,6 +382,15 @@ impl Manager {
                 return Err(crate::work::WorkError::Conflict);
             }
         }
+        {
+            let panes = self.panes.lock().unwrap();
+            if panes.is_fenced() {
+                return Err(crate::work::WorkError::StorageFailed);
+            }
+            if panes.contains_command(command) {
+                return Err(crate::work::WorkError::Conflict);
+            }
+        }
         self.work.lock().unwrap().apply(command, intent, profiles)
     }
     pub(crate) fn prepare_managed(
@@ -384,17 +410,84 @@ impl Manager {
         }
         let journal = self.journal.lock().unwrap();
         let work = self.work.lock().unwrap();
-        if journal.is_fenced() || work.is_fenced() || store.is_fenced() {
+        let panes = self.panes.lock().unwrap();
+        if journal.is_fenced() || work.is_fenced() || store.is_fenced() || panes.is_fenced() {
             return Err(Error::StorageFenced);
         }
-        if journal.contains_command(command) || work.contains_command(command) {
+        if journal.contains_command(command)
+            || work.contains_command(command)
+            || panes.contains_command(command)
+        {
             return Err(Error::Conflict);
         }
         drop(journal);
         drop(work);
+        drop(panes);
         store
             .prepare(command, intent, fingerprint)
             .map(|_| crate::managed::Reservation::New)
+    }
+    pub(crate) fn prepare_pane(
+        &self,
+        command: CommandId,
+        intent: crate::panes::store::Intent,
+    ) -> Result<crate::panes::store::Receipt, crate::panes::store::Error> {
+        use crate::panes::store::Error;
+        let _admission = self.admission.lock().unwrap();
+        let mut panes = self.panes.lock().unwrap();
+        if let Some(receipt) = panes.reconcile(command, &intent)? {
+            return Ok(receipt);
+        }
+        let journal = self.journal.lock().unwrap();
+        let work = self.work.lock().unwrap();
+        let managed = self.managed.lock().unwrap();
+        if self.stopping.load(Ordering::SeqCst) {
+            return Err(Error::Conflict);
+        }
+        let target = intent.target();
+        if target.host_generation != self.generation
+            || work
+                .session(target.workspace_id, target.session_id)
+                .is_err()
+        {
+            return Err(Error::Conflict);
+        }
+        if panes.is_fenced() || journal.is_fenced() || work.is_fenced() || managed.is_fenced() {
+            return Err(Error::Fenced);
+        }
+        if journal.contains_command(command)
+            || work.contains_command(command)
+            || managed.contains_command(command)
+        {
+            return Err(Error::Conflict);
+        }
+        panes.prepare(command, intent)
+    }
+    pub(crate) fn pane_command_runtime(&self, command: CommandId) -> Option<RuntimeRef> {
+        self.journal.lock().unwrap().command_runtime(command)
+    }
+    pub(crate) fn completion_evidence(&self, runtime: RuntimeRef) -> Option<RuntimeCompletion> {
+        self.runtime_completed(runtime)
+            .then_some(RuntimeCompletion(runtime))
+    }
+    pub(crate) fn runtime_completed(&self, runtime: RuntimeRef) -> bool {
+        let terminals = self.terminals.lock().unwrap();
+        if terminals
+            .get(&runtime.target.pane_id)
+            .is_some_and(|terminal| terminal.reference == runtime && terminal.owns_live_resources())
+        {
+            return false;
+        }
+        drop(terminals);
+        let journal = self.journal.lock().unwrap();
+        !journal.is_fenced()
+            && journal.snapshots().iter().any(|snapshot| {
+                snapshot.runtime == runtime
+                    && matches!(
+                        snapshot.process,
+                        ProcessState::Exited { .. } | ProcessState::Failed { .. }
+                    )
+            })
     }
     pub fn list(&self) -> Vec<TerminalSnapshot> {
         let mut records: BTreeMap<_, _> = self
@@ -441,6 +534,15 @@ impl Manager {
             self.start_inner(command, target, launch, LaunchControl::ReservedPi)?;
         Ok((terminal, channel.ok_or(ErrorCode::RecoveryRequired)?))
     }
+    pub(crate) fn start_reserved_pane(
+        &self,
+        command: CommandId,
+        target: TerminalTarget,
+        launch: &TerminalLaunch,
+    ) -> Result<TerminalSnapshot, ErrorCode> {
+        self.start_inner(command, target, launch, LaunchControl::ReservedPane)
+            .map(|(terminal, _)| terminal)
+    }
     fn start_inner(
         &self,
         command: CommandId,
@@ -450,6 +552,26 @@ impl Manager {
     ) -> Result<(TerminalSnapshot, Option<UnixStream>), ErrorCode> {
         let controlled = mode.controlled();
         let _admission = self.admission.lock().unwrap();
+        {
+            let panes = self.panes.lock().unwrap();
+            if panes.is_fenced() {
+                return Err(ErrorCode::StorageFailed);
+            }
+            if let Some(receipt) = panes.receipt(command) {
+                let permitted = matches!(mode, LaunchControl::ReservedPane)
+                    && matches!(receipt.intent, crate::panes::store::Intent::AddPane { target: destination, .. } if destination.session_id == target.session_id && destination.host_generation == self.generation)
+                    && receipt.pane_id == target.pane_id
+                    && receipt.disposition == crate::panes::store::Disposition::Prepared;
+                if !permitted {
+                    return Err(ErrorCode::Conflict);
+                }
+            } else if matches!(mode, LaunchControl::ReservedPane) {
+                return Err(ErrorCode::Conflict);
+            }
+            if !matches!(mode, LaunchControl::ReservedPane) && panes.contains_pane(target.pane_id) {
+                return Err(ErrorCode::Conflict);
+            }
+        }
         {
             let store = self.managed.lock().unwrap();
             if store.is_fenced() {

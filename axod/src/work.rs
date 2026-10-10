@@ -149,6 +149,9 @@ pub enum WorkError {
 #[derive(Clone, Serialize)]
 #[serde(tag = "kind", rename_all = "camelCase")]
 pub enum CommandReceipt {
+    Pane {
+        receipt: crate::panes::store::Receipt,
+    },
     Pi {
         receipt: crate::managed::store::ReceiptView,
     },
@@ -187,6 +190,12 @@ impl WorkStore {
             saved,
             poisoned: false,
         })
+    }
+    pub(crate) fn is_pi_pane(&self, pane: PaneId) -> bool {
+        self.saved
+            .sessions
+            .values()
+            .any(|session| session.pi_pane_id == pane)
     }
     pub(crate) fn is_fenced(&self) -> bool {
         self.poisoned
@@ -550,7 +559,7 @@ fn valid_name(name: &str) -> bool {
         && name.chars().count() <= 80
         && !name.chars().any(char::is_control)
 }
-fn valid_directory_id(id: &str) -> bool {
+pub(crate) fn valid_directory_id(id: &str) -> bool {
     !id.is_empty()
         && id.len() <= 64
         && id

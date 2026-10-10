@@ -263,13 +263,34 @@ fn session_page(params: Option<Value>, manager: &Manager, machine: MachineId) ->
         params.limit,
     )?;
     let runtimes = manager.list();
-    let sessions: Vec<_> = page
-        .records
-        .into_iter()
-        .map(|s| session_view(s, &runtimes, manager))
-        .collect();
+    let mut sessions = Vec::new();
+    let mut bytes = 0;
+    let mut last = None;
+    let mut next = page.next;
+    for session in page.records {
+        let id = session.session_id.as_uuid();
+        let view = session_view(session, &runtimes, manager);
+        let size = serde_json::to_vec(&view)
+            .map_err(|_| (-32006, "Session projection unavailable"))?
+            .len();
+        if bytes + size > 48 * 1024 {
+            let after = last.ok_or((-32006, "Session projection capacity"))?;
+            next = Some(Cursor {
+                target: params.target,
+                revision,
+                scope: Scope::Sessions {
+                    workspace_id: params.workspace_id,
+                },
+                after,
+            });
+            break;
+        }
+        bytes += size;
+        last = Some(id);
+        sessions.push(view);
+    }
     Ok(
-        json!({"hostGeneration":manager.generation,"revision":revision,"sessions":sessions,"next":page.next}),
+        json!({"hostGeneration":manager.generation,"revision":revision,"sessions":sessions,"next":next}),
     )
 }
 fn session_get(params: Option<Value>, manager: &Manager, machine: MachineId) -> Outcome {
@@ -305,7 +326,7 @@ fn session_view(session: SessionRecord, runtimes: &[TerminalSnapshot], manager: 
             crate::managed::admission(manager, session.session_id, Some(binding.runtime))
         });
     let chat_id = binding.map(|binding| binding.chat_id);
-    json!({"sessionId":session.session_id,"workspaceId":session.workspace_id,"name":session.name,"nameSource":"manual","pi":{"paneId":session.pi_pane_id,"chatId":chat_id,"admission":admission},"runtime":runtime})
+    json!({"sessionId":session.session_id,"workspaceId":session.workspace_id,"name":session.name,"nameSource":"manual","pi":{"paneId":session.pi_pane_id,"chatId":chat_id,"admission":admission},"runtime":runtime,"shellPanes":crate::panes::session_views(session.session_id, manager)})
 }
 fn command_get(params: Option<Value>, manager: &Manager, machine: MachineId) -> Outcome {
     let params: GetCommand = parse(params)?;

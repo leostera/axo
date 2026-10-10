@@ -15,10 +15,11 @@ import {
   negotiateSchema,
   registrationSchema,
   machineListResultSchema,
-  remoteMethods,
+  localMethods,
   workMutationMethods,
   piMutationMethods,
-  type RemoteMethod,
+  paneMutationMethods,
+  type LocalMethod,
   results,
   type Reply,
 } from "./contracts.js";
@@ -31,8 +32,8 @@ export type Negotiated = {
 export type Registered = { leaseId: string; hostGeneration: string };
 export type Heartbeat = { leaseId: string };
 export type DaemonMethods = {
-  [Method in RemoteMethod]: (
-    params: z.input<(typeof remoteMethods)[Method]>,
+  [Method in LocalMethod]: (
+    params: z.input<(typeof localMethods)[Method]>,
   ) => z.output<(typeof results)[Method]>;
 };
 export type ServiceMethods = {
@@ -66,7 +67,7 @@ export function createProfileServer<Context = void>(): JSONRPCServer<Context> {
   server.applyMiddleware((next, request, context) => {
     if (
       request.id === undefined &&
-      [...workMutationMethods, ...piMutationMethods, "axo.runtime.startApproved", "axo.machine.register"].includes(
+      [...workMutationMethods, ...piMutationMethods, ...paneMutationMethods, "axo.runtime.startApproved", "axo.machine.register"].includes(
         request.method,
       )
     )

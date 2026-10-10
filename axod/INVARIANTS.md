@@ -78,7 +78,7 @@ This is an enforcement map, not a claim that the daemon is production-ready. The
 ## Managed public admission and chat receipts
 
 - Validated private Pi policy separately approves work directory, session root, installed extension, captured ambient launcher and closed operator flags. Caller cwd/argv/file paths/modes are not accepted. Actual extension admission binds chat/file/cwd/TTY/model and the same native child; process-running is not readiness.
-- Durable normalized preparation/intent precedes native spawn or public Pi dispatch. `pi-state.json` stores hashes/identities/original dispositions, not message or transcript bodies. All three stores share admission/collision/storage fences. Accepted ownership survives uncertainty; command reconciliation never reexecutes or reinterprets changed policy.
+- Durable normalized preparation/intent precedes native spawn or public Pi dispatch. `pi-state.json` stores hashes/identities/original dispositions, not message or transcript bodies. Work/runtime/Pi/pane stores share admission/collision/storage fences. Accepted ownership survives uncertainty; command reconciliation never reexecutes or reinterprets changed policy.
 - Current `hostGeneration` fences the request; `runtimeHostGeneration` retains the original runtime's birth identity. Fresh cannot replace an existing canonical binding. Exact resume requires that binding, a proven stopped original writer, validated public header/tree and cooperative lease; no unmanaged adoption or historical PID signal.
 - Start binding and disposition commit together. Startup validates machine/work/pane membership, hashes, intent/runtime/disposition relationships, unique managed files/chats and receipt/binding reconstruction. Prepared unknown outcomes remain unknown; missing receipts do not authorize replay.
 - Normal sends require ready/idle state. Steering/cancel/answer capture the active interaction and revalidate at extension dispatch. Questions block sends. Known delivery rejection differs from uncertain dispatch; a consumed void send fences recovery rather than fabricating a canonical message or retry.
@@ -87,6 +87,16 @@ This is an enforcement map, not a claim that the daemon is production-ready. The
 - Expiring viewing leases are bounded ephemeral metadata; original receipt reconciliation does not renew an expired lease. Client/control/cloud loss never stops accepted Pi.
 
 **Residual limits:** managed writer leases are cooperative, not exclusion of arbitrary same-user unmanaged writers. Empty Pi sessions may not yet persist their lazy file; missing exact-resume files reject. Full compaction/plugin/spool/bidirectional/observation/attachment parity, histories beyond current file bounds, abrupt crash/power-loss/escaped descendants, retention and operational recovery remain open. Initial isolated acceptance is not Mac readiness.
+
+## Explicit local shell-pane lifecycle
+
+- `pane.add` is explicit create-and-launch; `pane.remove` is explicit Cmd+W terminate-and-remove, not renderer detach. Split direction/focus remain Mac-local. These are local-only methods; neither the cloud allowlist nor Rust relay dispatcher admits them.
+- `pane-state.json` stores bounded pane identities, tombstones, profile IDs and original operation dispositions, not argv/geometry/bytes. Shared admission prevents work/runtime/Pi/pane command reuse; every domain checks pane storage fencing. Generic launch cannot replace a managed or tombstoned shell pane.
+- The approved profile's canonical directory must match the captured work directory; launch uses that captured canonical path. Native intent precedes launch. Removal reserves exact runtime/closing intent before signals and cannot retarget the Pi pane or a sibling.
+- Final removal requires a non-deserializable Manager completion witness for the exact runtime: owned resource drain/reap/group absence and recorded completion. Already-completed historical runtimes can be tombstoned without signals. Unknown completion remains prepared/closing/recovery; original reconciliation cannot repeat signals or launch effects.
+- Active session panes are bounded to 32; retained identities/receipts to 1,000/2,000 and storage to 4 MiB. Session-list projections shorten with a source-bound continuation to stay within 48 KiB. Work revision is not a pane/live-process observation epoch.
+
+**Residual limits:** original-group ownership does not prove absence of escaped/job-control descendants; deadline/uncertain prepared operations require recovery rather than fake removal. No automatic shell restoration, live Mac adoption, terminal data-plane, Ghostty rendering or abrupt crash/power-loss/retention guarantee is added. See `PANES.md`.
 
 ## Evidence boundary
 

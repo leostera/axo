@@ -347,7 +347,7 @@ impl Connection {
         if !self.negotiated {
             return Some(rpc::error(id, -32001, "Negotiation required"));
         }
-        rpc::dispatch(call, &context.manager, context.machine, &context.profiles.0)
+        rpc::dispatch_local(call, &context.manager, context.machine, &context.profiles.0)
     }
 }
 fn send(

@@ -43,6 +43,9 @@ pub fn serve_with_pi(
     if !journal.managed.lock().unwrap().belongs_to(machine) {
         return Err(io::Error::other("Managed state belongs to another machine"));
     }
+    if !journal.panes.lock().unwrap().belongs_to(machine) {
+        return Err(io::Error::other("Pane state belongs to another machine"));
+    }
     let manager = Arc::new(Manager::new(journal));
     *manager.managed_policy.lock().unwrap() = pi;
     let stopping = Arc::new(AtomicBool::new(false));

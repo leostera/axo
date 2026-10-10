@@ -37,6 +37,12 @@ Positive local evidence: metadata-only creation, actual admission, real bash/can
 
 Six managed unit tests separately prove normalized fingerprints/no persisted prompt text, immutable dispositions, every-byte synthetic truncation/corruption, persistence fencing, cooperative lease/private-path checks, active-tree reconstruction and cross-domain collisions. These are not extra Pi execution cases. Full compaction/plugin/spool projection, unmanaged-writer exclusion, abrupt crash/power-loss, scalable history, observation subscriptions and remaining RFD domains are still open. See [managed setup/contracts/limits](../MANAGED_PI.md).
 
+## Local shell-pane add/remove checkpoint
+
+`tests/public_cli.rs` now adds two actual independent shell PTYs through `axo`/public local RPC/`axod serve`, verifies real TTY effects/no duplicate launch, stale scope/generic replacement rejection, removal of only the captured shell, durable tombstones/receipts, restart without replay and historical stopped removal. `tests/managed_public.rs` separately verifies shell removal does not stop/replay a sibling actual Pi and Pi storage failure fences new pane admission.
+
+Five synthetic pane store/admission tests cover original dispositions, tombstones, wrong runtime, missing completion witness, duplicate removal, exhaustive truncation/unreceipted edits and global command/storage fencing. The real route matrix checks malformed/stale/idless local requests and cloud refusal of these local-only methods. No terminal bytes/geometry, Ghostty/shortcut adoption or full escaped-process/crash/operational acceptance is claimed. See [pane contracts and limits](../PANES.md).
+
 ## Rust domain and process tests
 
 From `axod/`:

@@ -233,10 +233,10 @@ test(
     const aList = results["axo.runtime.list"].parse(
       value(await human.call("axo.runtime.list", { target: targets[0] })),
     );
-    assert.deepEqual(
-      value(await mac.call("axo.runtime.list", { target: targets[0] })),
-      aList,
-    );
+    const macList = results["axo.runtime.list"].parse(value(await mac.call("axo.runtime.list", { target: targets[0] })));
+    // Sequential live snapshots may have different output-byte counts; routing identities must agree.
+    const identities = (page: typeof aList) => ({ hostGeneration: page.hostGeneration, next: page.next, terminals: page.terminals.map(({ runtime, process, attached }) => ({ runtime, process, attached })) });
+    assert.deepEqual(identities(macList), identities(aList));
     assert.equal(aList.terminals.length, 1);
     assert.equal(aList.terminals[0].runtime.target.pane_id, target.paneId);
     assert.equal(

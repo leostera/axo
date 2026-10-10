@@ -175,10 +175,30 @@ pub fn dispatch(
     machine: MachineId,
     profiles: &BTreeMap<String, TerminalLaunch>,
 ) -> Option<Value> {
+    dispatch_route(call, manager, machine, profiles, false)
+}
+pub(crate) fn dispatch_local(
+    call: Call,
+    manager: &Manager,
+    machine: MachineId,
+    profiles: &BTreeMap<String, TerminalLaunch>,
+) -> Option<Value> {
+    dispatch_route(call, manager, machine, profiles, true)
+}
+fn dispatch_route(
+    call: Call,
+    manager: &Manager,
+    machine: MachineId,
+    profiles: &BTreeMap<String, TerminalLaunch>,
+    local: bool,
+) -> Option<Value> {
     let id = call.id?; // Execution notifications are never admitted.
     let result = match call.method.as_str() {
         "axo.runtime.list" => list(call.params, manager, machine),
         "axo.runtime.startApproved" => start(call.params, manager, machine, profiles),
+        "axo.session.pane.add" | "axo.session.pane.remove" if local => {
+            crate::panes::dispatch(&call.method, call.params, manager, machine, profiles)
+        }
         "axo.session.start" => {
             crate::managed::dispatch(&call.method, call.params, manager, machine)
         }

@@ -31,6 +31,7 @@ struct Saved {
 pub struct Journal {
     pub(crate) work: std::sync::Arc<std::sync::Mutex<crate::work::WorkStore>>,
     pub(crate) managed: std::sync::Arc<std::sync::Mutex<crate::managed::store::Store>>,
+    pub(crate) panes: std::sync::Arc<std::sync::Mutex<crate::panes::store::Store>>,
     root: PathBuf,
     saved: Saved,
     _owner_lock: File,
@@ -129,7 +130,41 @@ impl Journal {
                 }
             }
         }
+        let panes = crate::panes::store::Store::open(root, &work)?;
+        let runtime_receipts = saved
+            .receipts
+            .iter()
+            .map(|(command, receipt)| (*command, receipt.runtime))
+            .collect();
+        if panes
+            .commands()
+            .any(|command| work.contains_command(command) || managed.contains_command(command))
+            || !panes.validate_runtime(&runtime_receipts)
+        {
+            return Err(io::Error::other(
+                "Conflicting pane command or runtime identity",
+            ));
+        }
+        for command in panes.commands() {
+            let receipt = panes.receipt(command).expect("Stored pane receipt");
+            if receipt.disposition == crate::panes::store::Disposition::Removed
+                && receipt.runtime.is_some_and(|runtime| {
+                    !saved.terminals.values().any(|terminal| {
+                        terminal.runtime == runtime
+                            && matches!(
+                                terminal.process,
+                                ProcessState::Exited { .. } | ProcessState::Failed { .. }
+                            )
+                    })
+                })
+            {
+                return Err(io::Error::other(
+                    "Pane removed without recorded runtime completion",
+                ));
+            }
+        }
         Ok(Self {
+            panes: std::sync::Arc::new(std::sync::Mutex::new(panes)),
             managed: std::sync::Arc::new(std::sync::Mutex::new(managed)),
             work: std::sync::Arc::new(std::sync::Mutex::new(work)),
             root: root.to_path_buf(),

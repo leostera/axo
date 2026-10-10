@@ -3,7 +3,7 @@ import assert from "node:assert/strict";
 import { readFile, rename, mkdir, stat } from "node:fs/promises";
 import { join } from "node:path";
 import {
-  METHODS, results, replySchema, workMutationMethods, remoteMethods,
+  METHODS, results, replySchema, workMutationMethods, remoteMethods, paneMethods,
   type RemoteMethod,
 } from "@axo/protocol";
 import type { z } from "zod";
@@ -108,6 +108,25 @@ test("new Pi requests have matching bounded scalar, cursor and intent rejection 
   assert.equal(await metadata(f), before); await noExecution(f);
 });
 
+test("local-only shell-pane methods reject malformed targets and cannot be invoked through cloud routing", { timeout: 20000 }, async t => {
+  const f = await daemonFixture(t);
+  const inputs = {
+    "axo.session.pane.add": { target: f.sessionTarget, commandId: crypto.randomUUID(), profileId: "approved" },
+    "axo.session.pane.remove": { target: f.sessionTarget, commandId: crypto.randomUUID(), paneId: crypto.randomUUID(), runtime: null },
+  } satisfies { [Method in keyof typeof paneMethods]: z.input<(typeof paneMethods)[Method]> };
+  const before = await metadata(f);
+  for (const { name, peer } of f.routes) {
+    for (const [method, params] of Object.entries(inputs)) {
+      if (name === "cloud") { assert.equal(error(await call(peer, method, params)), -32601); continue; }
+      for (const bad of [[], {}, { ...params, direction: "right" }, { ...params, target: { ...params.target, machineId: "bad" } }]) assert.equal(error(await call(peer, method, bad)), -32602);
+      for (const field of ["machineId", "hostGeneration"] as const) assert.equal(error(await call(peer, method, { ...params, target: { ...params.target, [field]: crypto.randomUUID() } })), -32002);
+      peer.send({ jsonrpc: "2.0", method, params });
+      await call(peer, "axo.command.get", { target: f.target, commandId: f.workspaceCommandId });
+    }
+  }
+  assert.equal(await metadata(f), before); await noExecution(f);
+});
+
 test("optional paging inputs have identical absent-versus-null semantics on both routes", { timeout: 20000 }, async t => {
   const f = await daemonFixture(t);
   for (const { name, peer } of f.routes) {
@@ -156,7 +175,7 @@ test("the RFD's unimplemented operations fail explicitly rather than pretending 
   const catalogue = document.split("### Proposed canonical naming catalogue")[1].split("Domain choices and light contracts:")[0];
   const names = [...catalogue.matchAll(/^\| `(axo\.[A-Za-z_.]+)` \|/gm)].map(match => match[1]);
   assert.equal(new Set(names).size, names.length);
-  const available = new Set<string>([...METHODS, "axo.machine.list"]);
+  const available = new Set<string>([...METHODS, ...Object.keys(paneMethods), "axo.machine.list"]);
   const unsupported = names.filter(method => !available.has(method));
   assert.ok(unsupported.includes("axo.session.archive"));
   assert.ok(!unsupported.includes("axo.session.start"));

@@ -7,6 +7,7 @@ pub mod client;
 pub mod journal;
 mod local;
 mod managed;
+mod panes;
 pub use managed::policy::Policy as PiPolicy;
 pub mod model;
 pub mod pi_control;

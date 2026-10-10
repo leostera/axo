@@ -416,6 +416,31 @@ fn actual_cli_starts_managed_tui_sends_real_message_and_reads_canonical_tool_evi
         "Resume replaced canonical identity or reused runtime"
     );
     assert!(model.requests() == 5, "Restart or resume replayed work");
+    let shell_parent = json!({"machineId":reboot.machine_id,"hostGeneration":reboot.host_generation,"workspaceId":resumed["chat"]["workspaceId"],"sessionId":resumed["chat"]["sessionId"]});
+    let shell = cli(
+        &discovery,
+        "axo.session.pane.add",
+        json!({"target":shell_parent,"commandId":uuid::Uuid::new_v4(),"profileId":"work"}),
+    );
+    assert!(
+        shell["pane"]["kind"] == "shell" && shell["pane"]["paneId"] != resumed["chat"]["paneId"]
+    );
+    let removed_shell = cli(
+        &discovery,
+        "axo.session.pane.remove",
+        json!({"target":shell_parent,"commandId":uuid::Uuid::new_v4(),"paneId":shell["pane"]["paneId"],"runtime":shell["pane"]["runtime"]}),
+    );
+    assert!(removed_shell["receipt"]["disposition"]["kind"] == "removed");
+    assert!(
+        cli(
+            &discovery,
+            "axo.chat.get",
+            json!({"target":resumed["chat"]})
+        )["admission"]
+            == "ready"
+            && model.requests() == 5,
+        "Shell removal stopped or replayed the sibling Pi"
+    );
     let resumed_history = cli(
         &discovery,
         "axo.chat.history",
@@ -576,6 +601,12 @@ fn actual_cli_starts_managed_tui_sends_real_message_and_reads_canonical_tool_evi
         &discovery,
         "axo.runtime.startApproved",
         json!({"target":{"machineId":reboot.machine_id,"hostGeneration":reboot.host_generation,"sessionId":uuid::Uuid::new_v4(),"paneId":uuid::Uuid::new_v4()},"commandId":uuid::Uuid::new_v4(),"profileId":"work"}),
+        -32008,
+    );
+    cli_error(
+        &discovery,
+        "axo.session.pane.add",
+        json!({"target":{"machineId":reboot.machine_id,"hostGeneration":reboot.host_generation,"workspaceId":resumed["chat"]["workspaceId"],"sessionId":resumed["chat"]["sessionId"]},"commandId":uuid::Uuid::new_v4(),"profileId":"work"}),
         -32008,
     );
     assert!(model.requests() == 7, "Storage failure dispatched work");

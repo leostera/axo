@@ -40,7 +40,7 @@ All configuration files are owned, single-linked regular mode-0600 files without
 
 ## Methods and identities
 
-The shared package exposes 19 daemon methods: the earlier ten work/generic-runtime methods plus:
+The shared package exposes these 19 daemon methods on both local/cloud routes: the earlier ten work/generic-runtime methods plus the nine below. Two additional [shell-pane methods](PANES.md) are local-only, bringing local support to 21.
 
 - `axo.session.start`
 - `axo.chat.get`, `axo.chat.history`, `axo.chat.getToolOutput`
@@ -87,6 +87,6 @@ Viewing leases are explicit chat-scoped metadata (maximum 16, TTL 1–120 second
 
 `cargo test --manifest-path axod/Cargo.toml --locked --offline --test managed_public -- --test-threads=1` owns the actual binaries, ambient Pi, private roots, Rust HTTP model and real Worker/Access fixture. Rust owns all daemon/Pi/process orchestration; the Node fixture only hosts Worker/workerd. Synthetic assertions stay in bounded private files. Owned compiler/Worker process groups retain an unreaped leader until cleanup, and terminal bytes are never interpreted.
 
-The acceptance test exercises actual local CLI admission/messages/real bash/canonical history/tool pages, start/message reconciliation, owned questions/choices, viewing expiry/no renewal on replay, explicit steering/cancel/late rejection, clean restart/stopped reads/exact resume, actual cloud admission of an independent Pi and real tool effect, cloud/client loss, stale targets, consumed-input uncertainty and three-domain storage fencing without stopping accepted Pi. The separate 24-case TUI battery remains transitional TypeScript orchestration around the production Manager, not extra public-path cases.
+The acceptance test exercises actual local CLI admission/messages/real bash/canonical history/tool pages, start/message reconciliation, owned questions/choices, viewing expiry/no renewal on replay, explicit steering/cancel/late rejection, clean restart/stopped reads/exact resume, actual cloud admission of an independent Pi and real tool effect, cloud/client loss, stale targets, consumed-input uncertainty and shared-domain storage fencing without stopping accepted Pi. The separate 24-case TUI battery remains transitional TypeScript orchestration around the production Manager, not extra public-path cases.
 
 **Not production/Mac readiness:** cooperative managed writer leases do not exclude arbitrary unmanaged same-user writers. An empty newly admitted Pi may not yet have persisted its lazy canonical file; missing exact-resume files reject rather than minting another chat. Full branch/view epochs and bidirectional history, compaction/plugin/spool projection, public observation/gaps, attachments under existing file authority, public-path sibling/cancellation/crash campaigns, escaped descendants/power-loss/soak, namespace/stop/pane/archive/cache/data-plane work and native adoption remain open. No live deployments, registry migrations, app packaging or restarts were performed.
