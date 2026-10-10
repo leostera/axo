@@ -204,7 +204,7 @@ public enum AxoProtocolResultValidator {
               let hostGeneration = uuid(fields["hostGeneration"]),
               let revisionValue = integer(fields["revision"]), WorkRevision(rawValue: revisionValue) != nil,
               validWorkSession(fields["session"]),
-              let session = object(fields["session"], keys: ["sessionId", "workspaceId", "name", "nameSource", "pi", "runtime"]),
+              let session = workSessionFields(fields["session"]),
               uuid(session["sessionId"]) == target.sessionId,
               uuid(session["workspaceId"]) == target.workspaceId
         else { throw invalid(method) }
@@ -448,12 +448,12 @@ public enum AxoProtocolResultValidator {
     }
 
     private static func sessionID(_ value: JSONValue) -> UUID? {
-        guard let fields = object(value, keys: ["sessionId", "workspaceId", "name", "nameSource", "pi", "runtime"]) else { return nil }
+        guard let fields = workSessionFields(value) else { return nil }
         return uuid(fields["sessionId"])
     }
 
     private static func validWorkSession(_ value: JSONValue?) -> Bool {
-        guard let fields = object(value, keys: ["sessionId", "workspaceId", "name", "nameSource", "pi", "runtime"]),
+        guard let fields = workSessionFields(value),
               let sessionID = uuid(fields["sessionId"]), uuid(fields["workspaceId"]) != nil,
               let name = string(fields["name"]), validWorkName(name),
               string(fields["nameSource"]) == "manual",
@@ -463,6 +463,15 @@ public enum AxoProtocolResultValidator {
               let chatValue = pi["chatId"],
               let runtime = fields["runtime"]
         else { return false }
+        if let panes = fields["shellPanes"] {
+            guard case .array(let values) = panes, values.count <= 32 else { return false }
+            var ids: Set<UUID> = [paneID]
+            for pane in values {
+                guard validShellPane(pane, sessionID: sessionID),
+                      case .object(let fields) = pane,
+                      let id = uuid(fields["paneId"]), ids.insert(id).inserted else { return false }
+            }
+        }
         if case .null = chatValue {
             guard admission == .notAdmitted else { return false }
         } else {
@@ -475,6 +484,32 @@ public enum AxoProtocolResultValidator {
               let target = object(reference["target"], keys: ["session_id", "pane_id"])
         else { return false }
         return uuid(target["session_id"]) == sessionID && uuid(target["pane_id"]) == paneID
+    }
+
+    private static func workSessionFields(_ value: JSONValue?) -> [String: JSONValue]? {
+        guard case .object(let fields)? = value else { return nil }
+        let required: Set<String> = ["sessionId", "workspaceId", "name", "nameSource", "pi", "runtime"]
+        guard Set(fields.keys) == required || Set(fields.keys) == required.union(["shellPanes"]) else { return nil }
+        return fields
+    }
+
+    private static func validShellPane(_ value: JSONValue, sessionID: UUID) -> Bool {
+        guard let pane = object(value, keys: ["paneId", "kind", "profileId", "state", "runtime", "terminal"]),
+              let paneID = uuid(pane["paneId"]), string(pane["kind"]) == "shell",
+              let profile = string(pane["profileId"]), validDirectoryID(profile),
+              let state = string(pane["state"]), ShellPaneState(rawValue: state) != nil,
+              let runtime = pane["runtime"], let terminal = pane["terminal"] else { return false }
+        if !runtime.isNull {
+            guard let reference = object(runtime, keys: ["host_generation", "target", "runtime_generation"]),
+                  uuid(reference["host_generation"]) != nil, uuid(reference["runtime_generation"]) != nil,
+                  let target = object(reference["target"], keys: ["session_id", "pane_id"]),
+                  uuid(target["session_id"]) == sessionID, uuid(target["pane_id"]) == paneID else { return false }
+        }
+        if !terminal.isNull {
+            guard validTerminal(terminal), case .object(let fields) = terminal,
+                  fields["runtime"] == runtime else { return false }
+        }
+        return true
     }
 
     private static func validTerminal(_ value: JSONValue?) -> Bool {

@@ -45,6 +45,10 @@ Run affected layout or phone tests as appropriate. A shared AxoCore change also 
 
 Repackaging is authorized routinely. **It does not authorize a live app/Pi stop, restart, or relaunch**, nor physical phone installation. Ask separately before those operations; protect active work. Synthetic isolated native self-tests are not acceptance evidence for the live app.
 
+Before retiring a working client during a cutover, verify the replacement's required operation parity; an empty catalog, successful build, or metadata connection does not prove a daily-workbench replacement.
+
+An enabled `SMAppService` and successful `launchctl kickstart` do not prove the current bundled helper is running. Service registrations can still resolve a moved or trashed older bundle. Verify the actual running daemon version through local host diagnostics and, when needed, inspect the executable associated with the current service handle. Do not reset service registration or signal an observed historical PID as an automatic repair; preserve accepted work and obtain the applicable live-operation consent.
+
 After packaging, report the actual `dist/Axo.app` path, validation results, and whether the live app was left running. Do not tell the user the running app has upgraded merely because the bundle was replaced.
 
 Commit coherent tested changes frequently and push proactively. Preserve unrelated local work; do not bundle unrelated RFD drafts into a packaging commit.

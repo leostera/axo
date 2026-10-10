@@ -3,7 +3,7 @@ import SwiftUI
 
 @main
 @MainActor
-final class AxodWorkbenchApp: NSObject, NSApplicationDelegate, NSWindowDelegate {
+final class AxodWorkbenchApp: NSObject, NSApplicationDelegate, NSWindowDelegate, NSMenuItemValidation {
     private static let mainWindowFrameAutosaveName = "Axo.MainWindow.\(Bundle.main.bundleIdentifier ?? "default")"
     private static let applicationName: String = {
         let base = "dev.leostera.axo.mac"
@@ -71,6 +71,18 @@ final class AxodWorkbenchApp: NSObject, NSApplicationDelegate, NSWindowDelegate 
 
     @objc private func refresh(_ sender: Any?) { coordinator?.refresh() }
     @objc private func connect(_ sender: Any?) { coordinator?.connect() }
+    @objc private func newWorkspace(_ sender: Any?) { coordinator?.newWorkspace() }
+    @objc private func newSession(_ sender: Any?) { coordinator?.newSession() }
+
+    func validateMenuItem(_ menuItem: NSMenuItem) -> Bool {
+        if menuItem.action == #selector(newWorkspace(_:)) {
+            return coordinator?.canEditWork == true && coordinator?.workEditor == nil
+        }
+        if menuItem.action == #selector(newSession(_:)) {
+            return coordinator?.canEditWork == true && coordinator?.workEditor == nil && coordinator?.selectedWorkspaceID != nil
+        }
+        return true
+    }
 
     private func installMenu() {
         let menu = NSMenu()
@@ -87,6 +99,12 @@ final class AxodWorkbenchApp: NSObject, NSApplicationDelegate, NSWindowDelegate 
         let workspaceItem = NSMenuItem()
         menu.addItem(workspaceItem)
         let workspaceMenu = NSMenu(title: "Workspace")
+        let newWorkspaceItem = workspaceMenu.addItem(withTitle: "New Workspace…", action: #selector(newWorkspace(_:)), keyEquivalent: "n")
+        newWorkspaceItem.target = self
+        newWorkspaceItem.keyEquivalentModifierMask = [.command, .shift]
+        let newSessionItem = workspaceMenu.addItem(withTitle: "New Session…", action: #selector(newSession(_:)), keyEquivalent: "n")
+        newSessionItem.target = self
+        workspaceMenu.addItem(.separator())
         let refreshItem = workspaceMenu.addItem(withTitle: "Refresh", action: #selector(refresh(_:)), keyEquivalent: "r")
         refreshItem.target = self
         let connectItem = workspaceMenu.addItem(withTitle: "Connect / Reconnect", action: #selector(connect(_:)), keyEquivalent: "r")

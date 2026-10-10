@@ -11,14 +11,14 @@ struct AxodNativeWorkbenchSplitView: NSViewRepresentable {
     @Binding var sidebarCollapsed: Bool
     let detail: AnyView
     let openSettings: () -> Void
-    let createUnavailable: () -> Void
+    let createWork: () -> Void
 
     func makeCoordinator() -> SidebarController {
         SidebarController(
             workbench: workbench,
             sidebarCollapsed: $sidebarCollapsed,
             openSettings: openSettings,
-            createUnavailable: createUnavailable
+            createWork: createWork
         )
     }
 
@@ -36,7 +36,7 @@ struct AxodNativeWorkbenchSplitView: NSViewRepresentable {
             sidebarCollapsed: $sidebarCollapsed,
             detail: detail,
             openSettings: openSettings,
-            createUnavailable: createUnavailable
+            createWork: createWork
         )
     }
 
@@ -92,19 +92,19 @@ struct AxodNativeWorkbenchSplitView: NSViewRepresentable {
         private var workbench: AxodWorkbenchCoordinator
         private var sidebarCollapsed: Binding<Bool>
         private var openSettings: () -> Void
-        private var createUnavailable: () -> Void
+        private var createWork: () -> Void
         private var sidebarStateSaveWork: DispatchWorkItem?
 
         init(
             workbench: AxodWorkbenchCoordinator,
             sidebarCollapsed: Binding<Bool>,
             openSettings: @escaping () -> Void,
-            createUnavailable: @escaping () -> Void
+            createWork: @escaping () -> Void
         ) {
             self.workbench = workbench
             self.sidebarCollapsed = sidebarCollapsed
             self.openSettings = openSettings
-            self.createUnavailable = createUnavailable
+            self.createWork = createWork
             self.sidebarWidth = Self.validatedSidebarWidth(
                 storedValue: UserDefaults.standard.object(forKey: Self.sidebarWidthKey) as? NSNumber
             )
@@ -170,12 +170,12 @@ struct AxodNativeWorkbenchSplitView: NSViewRepresentable {
             sidebarCollapsed: Binding<Bool>,
             detail: AnyView,
             openSettings: @escaping () -> Void,
-            createUnavailable: @escaping () -> Void
+            createWork: @escaping () -> Void
         ) {
             self.workbench = workbench
             self.sidebarCollapsed = sidebarCollapsed
             self.openSettings = openSettings
-            self.createUnavailable = createUnavailable
+            self.createWork = createWork
             detailHost.rootView = detail
             refreshSidebar(
                 workspaces: workspaces,
@@ -433,7 +433,7 @@ struct AxodNativeWorkbenchSplitView: NSViewRepresentable {
         }
 
         @objc private func showSettings(_ sender: Any?) { openSettings() }
-        @objc private func createWorkspaceOrSession(_ sender: Any?) { createUnavailable() }
+        @objc private func createWorkspaceOrSession(_ sender: Any?) { createWork() }
 
         @objc private func collapseSidebar(_ sender: Any?) {
             sidebarCollapsed.wrappedValue = true

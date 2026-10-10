@@ -4,7 +4,6 @@ import SwiftUI
 struct AxodWorkbenchView: View {
     @Bindable var coordinator: AxodWorkbenchCoordinator
     @AppStorage("Axo.axod.sidebarCollapsed") private var sidebarCollapsed = false
-    @State private var showingUnavailableAction = false
     @State private var chatDraft = ""
 
     private let paneBackground = Color(red: 0.16, green: 0.17, blue: 0.19)
@@ -20,7 +19,7 @@ struct AxodWorkbenchView: View {
                 sidebarCollapsed: $sidebarCollapsed,
                 detail: AnyView(detailSurface),
                 openSettings: { coordinator.showSettingsWindow() },
-                createUnavailable: { showingUnavailableAction = true }
+                createWork: { coordinator.showCreationMenu() }
             )
             statusBar
         }
@@ -28,10 +27,8 @@ struct AxodWorkbenchView: View {
         .onAppear(perform: updateWindowTitle)
         .onChange(of: coordinator.selectedSessionID) { _, _ in updateWindowTitle() }
         .onChange(of: coordinator.sessions) { _, _ in updateWindowTitle() }
-        .alert("Not available in this build", isPresented: $showingUnavailableAction) {
-            Button("OK", role: .cancel) { }
-        } message: {
-            Text("This Axod-only build reads daemon work records but does not yet create workspaces or sessions.")
+        .sheet(item: $coordinator.workEditor) { context in
+            AxodWorkEditor(context: context, coordinator: coordinator)
         }
     }
 
@@ -254,6 +251,10 @@ struct AxodWorkbenchView: View {
             Circle()
                 .fill(connectionColor)
                 .frame(width: 7, height: 7)
+            if coordinator.pendingWorkCommandID != nil {
+                Button("Reconcile work command") { coordinator.reconcilePendingWork() }
+                    .disabled(coordinator.connectionState != .connected || coordinator.isEditingWork)
+            }
             Text(coordinator.onlineMessage)
                 .help(coordinator.message)
                 .lineLimit(1)

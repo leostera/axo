@@ -543,15 +543,30 @@ public struct WorkSessionRecord: Decodable, Equatable, Sendable, Identifiable {
     public let nameSource: WorkSessionNameSource
     public let pi: WorkSessionPiBinding
     public let runtime: TerminalSnapshot?
+    public let shellPanes: [ShellPaneRecord]
+
+    private enum CodingKeys: String, CodingKey { case sessionId, workspaceId, name, nameSource, pi, runtime, shellPanes }
+    public init(from decoder: Decoder) throws {
+        let fields = try decoder.container(keyedBy: CodingKeys.self)
+        sessionId = try fields.decode(UUID.self, forKey: .sessionId)
+        workspaceId = try fields.decode(UUID.self, forKey: .workspaceId)
+        name = try fields.decode(String.self, forKey: .name)
+        nameSource = try fields.decode(WorkSessionNameSource.self, forKey: .nameSource)
+        pi = try fields.decode(WorkSessionPiBinding.self, forKey: .pi)
+        runtime = try fields.decodeIfPresent(TerminalSnapshot.self, forKey: .runtime)
+        // Match the shared TypeScript contract's default empty pane collection.
+        shellPanes = try fields.decodeIfPresent([ShellPaneRecord].self, forKey: .shellPanes) ?? []
+    }
 
     public init(sessionId: UUID, workspaceId: UUID, name: String, nameSource: WorkSessionNameSource,
-                pi: WorkSessionPiBinding, runtime: TerminalSnapshot?) {
+                pi: WorkSessionPiBinding, runtime: TerminalSnapshot?, shellPanes: [ShellPaneRecord] = []) {
         self.sessionId = sessionId
         self.workspaceId = workspaceId
         self.name = name
         self.nameSource = nameSource
         self.pi = pi
         self.runtime = runtime
+        self.shellPanes = shellPanes
     }
 }
 
