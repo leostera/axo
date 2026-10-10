@@ -11,8 +11,6 @@ final class AxodWorkbenchApp: NSObject, NSApplicationDelegate, NSWindowDelegate 
         guard identifier.hasPrefix(base + ".") else { return "Axo" }
         return "Axo (\(identifier.dropFirst(base.count + 1)))"
     }()
-    static let showSettingsNotification = Notification.Name("AxoAxodWorkbenchShowSettings")
-
     private var coordinator: AxodWorkbenchCoordinator?
     private var window: NSWindow?
 
@@ -35,6 +33,7 @@ final class AxodWorkbenchApp: NSObject, NSApplicationDelegate, NSWindowDelegate 
             defer: false
         )
         window.title = Self.applicationName
+        window.identifier = NSUserInterfaceItemIdentifier(Self.mainWindowFrameAutosaveName)
         window.delegate = self
         window.contentView = NSHostingView(rootView: AxodWorkbenchView(coordinator: coordinator))
         let restoredFrame = window.setFrameUsingName(Self.mainWindowFrameAutosaveName)
@@ -67,7 +66,7 @@ final class AxodWorkbenchApp: NSObject, NSApplicationDelegate, NSWindowDelegate 
     }
 
     @objc private func showSettings(_ sender: Any?) {
-        NotificationCenter.default.post(name: Self.showSettingsNotification, object: nil)
+        coordinator?.showSettingsWindow()
     }
 
     @objc private func refresh(_ sender: Any?) { coordinator?.refresh() }

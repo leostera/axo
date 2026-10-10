@@ -4,7 +4,6 @@ import SwiftUI
 struct AxodWorkbenchView: View {
     @Bindable var coordinator: AxodWorkbenchCoordinator
     @AppStorage("Axo.axod.sidebarCollapsed") private var sidebarCollapsed = false
-    @State private var showingSettings = false
     @State private var showingUnavailableAction = false
     @State private var chatDraft = ""
 
@@ -12,160 +11,28 @@ struct AxodWorkbenchView: View {
 
     var body: some View {
         VStack(spacing: 0) {
-            HSplitView {
-                if sidebarCollapsed {
-                    Button {
-                        sidebarCollapsed = false
-                    } label: {
-                        Image(systemName: "sidebar.left")
-                            .frame(width: 34, height: 34)
-                    }
-                    .buttonStyle(.plain)
-                    .help("Show sidebar")
-                } else {
-                    sidebar
-                        .frame(minWidth: 180, idealWidth: 300, maxWidth: 300)
-                }
-
-                detailSurface
-                    .frame(minWidth: 480, maxWidth: .infinity, maxHeight: .infinity)
-            }
+            AxodNativeWorkbenchSplitView(
+                workbench: coordinator,
+                workspaces: coordinator.workspaces,
+                sessions: coordinator.sessions,
+                selectedWorkspaceID: coordinator.selectedWorkspaceID,
+                selectedSessionID: coordinator.selectedSessionID,
+                sidebarCollapsed: $sidebarCollapsed,
+                detail: AnyView(detailSurface),
+                openSettings: { coordinator.showSettingsWindow() },
+                createUnavailable: { showingUnavailableAction = true }
+            )
             statusBar
         }
         .frame(minWidth: 760, minHeight: 520)
         .onAppear(perform: updateWindowTitle)
         .onChange(of: coordinator.selectedSessionID) { _, _ in updateWindowTitle() }
         .onChange(of: coordinator.sessions) { _, _ in updateWindowTitle() }
-        .onReceive(NotificationCenter.default.publisher(for: AxodWorkbenchApp.showSettingsNotification)) { _ in
-            showingSettings = true
-        }
         .alert("Not available in this build", isPresented: $showingUnavailableAction) {
             Button("OK", role: .cancel) { }
         } message: {
             Text("This Axod-only build reads daemon work records but does not yet create workspaces or sessions.")
         }
-        .sheet(isPresented: $showingSettings) {
-            settingsSheet
-        }
-    }
-
-    private var sidebar: some View {
-        VStack(spacing: 0) {
-            HStack {
-                Text("Axo")
-                    .font(.system(size: 13, weight: .semibold))
-                    .foregroundStyle(.secondary)
-                Spacer()
-                Button {
-                    showingUnavailableAction = true
-                } label: {
-                    Image(systemName: "plus")
-                        .frame(width: 24, height: 24)
-                }
-                .buttonStyle(.plain)
-                .help("Create workspace or session")
-            }
-            .padding(.leading, 16)
-            .padding(.trailing, 10)
-            .padding(.top, 12)
-            .padding(.bottom, 10)
-
-            Divider()
-                .padding(.horizontal, 12)
-
-            ScrollView {
-                VStack(alignment: .leading, spacing: 2) {
-                    sectionHeading("Workspaces")
-                        .padding(.top, 12)
-
-                    ForEach(coordinator.workspaces, id: \.workspaceId) { workspace in
-                        sidebarRow(
-                            workspace.name,
-                            systemImage: "folder",
-                            selected: coordinator.selectedWorkspaceID == workspace.workspaceId && coordinator.selectedSessionID == nil
-                        ) {
-                            coordinator.selectWorkspace(workspace.workspaceId)
-                        }
-
-                        if coordinator.selectedWorkspaceID == workspace.workspaceId {
-                            sectionHeading("Sessions")
-                                .padding(.top, 8)
-                                .padding(.leading, 14)
-
-                            ForEach(coordinator.sessions, id: \.sessionId) { session in
-                                sidebarRow(
-                                    session.name,
-                                    systemImage: statusSymbol(session.runtime?.process),
-                                    symbolColor: statusColor(session.runtime?.process),
-                                    selected: coordinator.selectedSessionID == session.sessionId,
-                                    indentation: 18
-                                ) {
-                                    coordinator.selectSession(session.sessionId)
-                                }
-                            }
-
-                            if coordinator.sessions.isEmpty && coordinator.connectionState == .connected {
-                                Text("No sessions")
-                                    .font(.system(size: 12))
-                                    .foregroundStyle(.tertiary)
-                                    .padding(.leading, 38)
-                                    .padding(.vertical, 5)
-                            }
-
-                            if coordinator.nextSessionCursor != nil {
-                                Button("Load more sessions") { coordinator.loadMoreSessions() }
-                                    .font(.system(size: 12))
-                                    .buttonStyle(.plain)
-                                    .foregroundStyle(.secondary)
-                                    .padding(.leading, 38)
-                                    .padding(.vertical, 5)
-                            }
-                        }
-                    }
-
-                    if coordinator.nextWorkspaceCursor != nil {
-                        Button("Load more workspaces") { coordinator.loadMoreWorkspaces() }
-                            .font(.system(size: 12))
-                            .buttonStyle(.plain)
-                            .foregroundStyle(.secondary)
-                            .padding(.leading, 18)
-                            .padding(.vertical, 5)
-                    }
-
-                    if coordinator.workspaces.isEmpty && coordinator.connectionState == .connected {
-                        Text("No workspaces")
-                            .font(.system(size: 12))
-                            .foregroundStyle(.tertiary)
-                            .padding(.leading, 18)
-                            .padding(.vertical, 5)
-                    }
-                }
-                .frame(maxWidth: .infinity, alignment: .leading)
-            }
-
-            Divider()
-                .padding(.horizontal, 12)
-
-            HStack {
-                Button("Settings") { showingSettings = true }
-                    .font(.system(size: 12))
-                    .buttonStyle(.plain)
-                    .foregroundStyle(.secondary)
-                Spacer()
-                Button {
-                    sidebarCollapsed = true
-                } label: {
-                    Image(systemName: "sidebar.left")
-                        .frame(width: 24, height: 24)
-                }
-                .buttonStyle(.plain)
-                .help("Collapse sidebar")
-            }
-            .padding(.leading, 12)
-            .padding(.trailing, 10)
-            .padding(.vertical, 8)
-        }
-        .background(Color(nsColor: .windowBackgroundColor))
     }
 
     private var detailSurface: some View {
@@ -411,53 +278,6 @@ struct AxodWorkbenchView: View {
         .background(Color(nsColor: .windowBackgroundColor))
     }
 
-    private var settingsSheet: some View {
-        VStack(spacing: 0) {
-            ScrollView {
-                VStack(alignment: .leading, spacing: 16) {
-                    Text("Settings")
-                        .font(.title2.weight(.semibold))
-                    Divider()
-                    Text("Startup")
-                        .font(.headline)
-                    Text(coordinator.startupMessage)
-                        .foregroundStyle(.secondary)
-                        .fixedSize(horizontal: false, vertical: true)
-                    Text("Background daemon")
-                        .font(.headline)
-                    Text(coordinator.daemonServiceMessage)
-                        .foregroundStyle(.secondary)
-                        .fixedSize(horizontal: false, vertical: true)
-                    if coordinator.needsLoginItemsReview || coordinator.needsDaemonServiceReview {
-                        Button("Review Login Items…") { coordinator.openLoginItemsSettings() }
-                    }
-                    Text("Axo opens at user login. The bundled axod executable runs independently as a per-user LaunchAgent and is not a system-wide LaunchDaemon.")
-                        .font(.callout)
-                        .foregroundStyle(.secondary)
-                        .fixedSize(horizontal: false, vertical: true)
-                    Divider()
-                    Text("Local daemon")
-                        .font(.headline)
-                    Text("Axo connects to the local daemon over AxoProtocol. Managed Pi chat uses addressed session/chat RPC; native terminal attachment remains a separate capability.")
-                        .font(.callout)
-                        .foregroundStyle(.secondary)
-                        .fixedSize(horizontal: false, vertical: true)
-                }
-                .frame(maxWidth: .infinity, alignment: .leading)
-                .padding(24)
-            }
-            Divider()
-            HStack {
-                Spacer()
-                Button("Done") { showingSettings = false }
-                    .keyboardShortcut(.defaultAction)
-            }
-            .padding(.horizontal, 24)
-            .padding(.vertical, 14)
-        }
-        .frame(width: 600, height: 460)
-    }
-
     private var selectedSession: WorkSessionRecord? {
         coordinator.sessions.first { $0.sessionId == coordinator.selectedSessionID }
     }
@@ -486,69 +306,10 @@ struct AxodWorkbenchView: View {
             ? "Axo (\(identifier.dropFirst(base.count + 1)))"
             : "Axo"
         let title = selectedSession.map { name + " — " + $0.name } ?? name
-        NSApp.keyWindow?.title = title
+        let windowIdentifier = "Axo.MainWindow.\(Bundle.main.bundleIdentifier ?? "default")"
+        NSApp.windows.first { $0.identifier?.rawValue == windowIdentifier }?.title = title
     }
 
-    private func sectionHeading(_ title: String) -> some View {
-        Text(title)
-            .font(.system(size: 12, weight: .semibold))
-            .foregroundStyle(.secondary)
-            .padding(.horizontal, 10)
-            .padding(.vertical, 5)
-    }
-
-    private func sidebarRow(
-        _ title: String,
-        systemImage: String,
-        symbolColor: Color = .secondary,
-        selected: Bool,
-        indentation: CGFloat = 0,
-        action: @escaping () -> Void
-    ) -> some View {
-        Button(action: action) {
-            HStack(spacing: 8) {
-                Image(systemName: systemImage)
-                    .font(.system(size: 13, weight: .regular))
-                    .foregroundStyle(selected ? Color(nsColor: .labelColor) : symbolColor)
-                    .frame(width: 14, height: 14)
-                Text(title)
-                    .font(.system(size: 13))
-                    .lineLimit(1)
-                    .truncationMode(.middle)
-                    .foregroundStyle(Color.primary)
-                Spacer(minLength: 0)
-            }
-            .padding(.leading, 8 + indentation)
-            .padding(.trailing, 8)
-            .frame(height: 28)
-            .frame(maxWidth: .infinity, alignment: .leading)
-            .background {
-                if selected {
-                    RoundedRectangle(cornerRadius: 5)
-                        .fill(Color(nsColor: .unemphasizedSelectedContentBackgroundColor))
-                }
-            }
-            .contentShape(Rectangle())
-        }
-        .buttonStyle(.plain)
-    }
-
-    private func statusSymbol(_ process: TerminalProcess?) -> String {
-        switch process {
-        case .starting: "circle.dotted"
-        case .running: "circle.fill"
-        case .stopping: "circle.dashed"
-        case .exited, .failed, .recoveryRequired, nil: "circle"
-        }
-    }
-
-    private func statusColor(_ process: TerminalProcess?) -> Color {
-        switch process {
-        case .starting, .stopping: .orange
-        case .running: .green
-        case .exited, .failed, .recoveryRequired, nil: .secondary
-        }
-    }
 }
 
 private extension TerminalProcess {

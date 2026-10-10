@@ -4,6 +4,7 @@ import AxoProtocol
 import Darwin
 import Observation
 import ServiceManagement
+import SwiftUI
 
 @MainActor @Observable
 final class AxodWorkbenchCoordinator {
@@ -64,6 +65,7 @@ final class AxodWorkbenchCoordinator {
     private var chatLoadGeneration = UUID()
     private var chatObservationTask: Task<Void, Never>?
     private var connectTask: Task<Void, Never>?
+    @ObservationIgnored private var settingsWindow: NSWindow?
     private var didCheckStartupRegistration = false
     private var didCheckDaemonService = false
 
@@ -147,6 +149,28 @@ final class AxodWorkbenchCoordinator {
 
     func openLoginItemsSettings() {
         SMAppService.openSystemSettingsLoginItems()
+    }
+
+    func showSettingsWindow() {
+        if let settingsWindow {
+            settingsWindow.makeKeyAndOrderFront(nil)
+            NSApp.activate(ignoringOtherApps: true)
+            return
+        }
+
+        let window = NSWindow(
+            contentRect: NSRect(x: 0, y: 0, width: 760, height: 520),
+            styleMask: [.titled, .closable, .miniaturizable, .resizable],
+            backing: .buffered,
+            defer: false
+        )
+        window.title = "Settings"
+        window.isReleasedWhenClosed = false
+        window.contentView = NSHostingView(rootView: AxodSettingsView(coordinator: self))
+        window.center()
+        settingsWindow = window
+        window.makeKeyAndOrderFront(nil)
+        NSApp.activate(ignoringOtherApps: true)
     }
 
     private func updateDaemonServiceMessage(for status: SMAppService.Status, registrationFailed: Bool = false) {

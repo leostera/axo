@@ -32,6 +32,8 @@ targets:
         excludes:
           - Info.plist
           - dev.leostera.axo.axod.plist
+      - path: AxoMac/WorkspaceSidebarRow.swift
+      - path: AxoMac/WorkspaceWindowState.swift
     dependencies:
       - package: AxoCore
       - package: AxoProtocol
