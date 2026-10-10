@@ -35,6 +35,9 @@ struct AxodWorkbenchView: View {
         .onAppear(perform: updateWindowTitle)
         .onChange(of: coordinator.selectedSessionID) { _, _ in updateWindowTitle() }
         .onChange(of: coordinator.sessions) { _, _ in updateWindowTitle() }
+        .onReceive(NotificationCenter.default.publisher(for: AxodWorkbenchApp.showSettingsNotification)) { _ in
+            showingSettings = true
+        }
         .alert("Not available in this build", isPresented: $showingUnavailableAction) {
             Button("OK", role: .cancel) { }
         } message: {
@@ -136,7 +139,6 @@ struct AxodWorkbenchView: View {
                             .padding(.vertical, 5)
                     }
                 }
-                .padding(.horizontal, 6)
                 .frame(maxWidth: .infinity, alignment: .leading)
             }
 
@@ -315,23 +317,23 @@ struct AxodWorkbenchView: View {
             HStack(spacing: 8) {
                 Image(systemName: systemImage)
                     .font(.system(size: 13, weight: .regular))
-                    .foregroundStyle(selected ? Color.white : symbolColor)
+                    .foregroundStyle(selected ? Color(nsColor: .labelColor) : symbolColor)
                     .frame(width: 14, height: 14)
                 Text(title)
                     .font(.system(size: 13))
                     .lineLimit(1)
                     .truncationMode(.middle)
-                    .foregroundStyle(selected ? Color.white : Color.primary)
+                    .foregroundStyle(Color.primary)
                 Spacer(minLength: 0)
             }
-            .padding(.leading, 2 + indentation)
-            .padding(.trailing, 6)
+            .padding(.leading, 8 + indentation)
+            .padding(.trailing, 8)
             .frame(height: 28)
             .frame(maxWidth: .infinity, alignment: .leading)
             .background {
                 if selected {
                     RoundedRectangle(cornerRadius: 5)
-                        .fill(Color.accentColor)
+                        .fill(Color(nsColor: .unemphasizedSelectedContentBackgroundColor))
                 }
             }
             .contentShape(Rectangle())
