@@ -8,7 +8,7 @@
 
 ## Summary
 
-Build the next iteration of the private relay at `bridge.axo.leostera.dev`: a Cloudflare Access-protected TypeScript control plane in `sites/api.axo.leostera.dev/` that discovers multiple authenticated `axod` machines and routes explicitly addressed commands to them. Use a shared JSON-RPC 2.0 daemon contract in `protocol/`, with native loopback WebSockets for local Mac access (credential-free at the current implementation checkpoint) and Access-protected outbound WSS connections from daemons to the service. Machines become discoverable through authenticated registration, without product accounts, account ownership tables, pairing, or explicit enrollment approval. `axod` owns local work and Pi remains authoritative for agent execution/history. The selected Mac direction is an Axod-only app in newly built bundles; it starts with fresh Axod state and does not import legacy workspace records or adopt existing processes. Unsupported Mac features may be absent until Axod capabilities replace them. The already-running app and sessions remain untouched. This is not authorization to deploy, change DNS/Access policies, register startup, migrate existing storage, or restart live work.
+Build the next iteration of the private relay at `bridge.axo.leostera.dev`: a Cloudflare Access-protected TypeScript control plane in `sites/api.axo.leostera.dev/` that discovers multiple authenticated `axod` machines and routes explicitly addressed commands to them. Use a shared JSON-RPC 2.0 daemon contract in `protocol/`, with native loopback WebSockets for local Mac access (credential-free at the current implementation checkpoint) and Access-protected outbound WSS connections from daemons to the service. Machines become discoverable through authenticated registration, without product accounts, account ownership tables, pairing, or explicit enrollment approval. `axod` owns local work and Pi remains authoritative for agent execution/history. The selected Mac direction is an Axod-only app in newly built bundles; it starts with fresh Axod state and does not import legacy workspace records or adopt existing processes. Unsupported Mac features may be absent until Axod capabilities replace them. The already-running app and sessions remain untouched. The new app will register the main Axo app as a user-level login item on first launch; this does not register an `axod` service. This is not authorization to deploy, change DNS/Access policies, migrate existing storage, or restart live work.
 
 ## Motivation
 
@@ -24,7 +24,7 @@ A shared contract should let local and remote commands have the same meaning. It
 - [RFD0002](RFD0002-shared-session-files.md) retains immutable files, explicit publication consent, direct signed transfers, deletion fences and bounded history. A new hostname/machine namespace cannot silently reset or duplicate that storage.
 - [RFD0003](RFD0003-workspaces-sessions-and-search.md) supplies independent session identities and addressed routing. Multi-machine catalog keys extend that namespace; the existing non-search foundation and compatibility work remain necessary.
 - [RFD0006](RFD0006-axo-ios-app-architecture.md) remains the native phone direction. Login/paging may discover machines, but accounts, offline outboxes and raw terminal access are not added.
-- [RFD0007](RFD0007-mac-session-manager.md) supplies daemon/workbench separation. This RFD proposes replacing the eventual ad hoc local control envelope with shared JSON-RPC/WebSocket adapters; it does not accelerate Mac ownership handoff or accept RFD0007's startup policy proposals.
+- [RFD0007](RFD0007-mac-session-manager.md) supplies daemon/workbench separation. This RFD proposes replacing the eventual ad hoc local control envelope with shared JSON-RPC/WebSocket adapters; it does not accelerate Mac ownership handoff or accept RFD0007's daemon-service startup policy proposals. The separate main-app login-item behavior is recorded in the Axod-only Mac selection below.
 
 ### Current checkpoint, not production evidence
 
@@ -71,7 +71,7 @@ Cloud-outage/local-progress evidence remains the isolated real-Worker/two-daemon
 
 ### 2026-10-10 — Axod-only Mac bundle direction
 
-The user selected an Axod-only Mac app for newly built bundles and accepted temporary loss of features not yet supported by Axod. The new bundle uses a separate versioned private state directory, launches only the bundled daemon, and does not use the legacy Mac workspace/bridge execution path. It must not import the legacy registry or Pi histories, adopt historical PIDs, or claim generic runtime metadata is Pi readiness. This changes new-bundle behavior only: it does not migrate or stop existing sessions and does not authorize restarting the currently running app. Cloud file authority and iOS remain separate.
+The user selected an Axod-only Mac app for newly built bundles and accepted temporary loss of features not yet supported by Axod. The new bundle uses the separate private `~/Library/Application Support/Axo/Axod` state directory, launches only the bundled daemon, and does not use the legacy Mac workspace/bridge execution path. It must not import the legacy registry or Pi histories, adopt historical PIDs, or claim generic runtime metadata is Pi readiness. This changes new-bundle behavior only: it does not migrate or stop existing sessions and does not authorize restarting the currently running app. Cloud file authority and iOS remain separate.
 
 ## Boundary with application capability parity
 
@@ -132,7 +132,7 @@ The arrows into the API are connection initiation. Once connected, messages trav
 
 There is **no** account creation, pairing code, user approval queue, public-key enrollment ceremony or product enrollment endpoint. Credential configuration is still necessary: removing enrollment does not remove authentication. Recommended operator practice is a distinct Access service token per host; shared credentials are a weaker private convenience, not hardware identity.
 
-Opening or closing the Mac app is not required to register an already-configured daemon. Installing/enabling background startup and deciding how credentials are stored remain operational prerequisites, not side effects of this RFD.
+Opening or closing the Mac app is not required to register an already-configured cloud daemon. The Axod-only Mac app registers itself as the main app login item through `SMAppService` on first launch; at login, macOS opens Axo and Axo starts its bundled local daemon. This is user-level app startup, not an `axod` LaunchAgent/LaunchDaemon or pre-login boot service. macOS may require approval in System Settings. Cloud daemon credentials remain a separate operational concern.
 
 ### Example: choose work on another machine
 

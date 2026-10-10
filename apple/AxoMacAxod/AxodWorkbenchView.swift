@@ -14,12 +14,21 @@ struct AxodWorkbenchView: View {
                 runtimeBrowser
                     .tabItem { Label("Runtimes", systemImage: "server.rack") }
             }
-            Text("Local loopback RPC is credential-free, not OS-user authorization. This app currently reads work and runtime metadata only.")
-                .font(.caption)
-                .foregroundStyle(.tertiary)
-                .frame(maxWidth: .infinity, alignment: .leading)
-                .padding(.horizontal, 16)
-                .padding(.vertical, 8)
+            VStack(alignment: .leading, spacing: 4) {
+                HStack {
+                    Text(coordinator.startupMessage)
+                    if coordinator.needsLoginItemsReview {
+                        Button("Review Login Items…") { coordinator.openLoginItemsSettings() }
+                            .buttonStyle(.link)
+                    }
+                }
+                Text("When Axo opens—including at login if enabled—it starts axod. Local loopback RPC is credential-free, not OS-user authorization; this app reads metadata only.")
+                    .foregroundStyle(.tertiary)
+            }
+            .font(.caption)
+            .frame(maxWidth: .infinity, alignment: .leading)
+            .padding(.horizontal, 16)
+            .padding(.vertical, 8)
         }
         .frame(minWidth: 760, minHeight: 520)
     }

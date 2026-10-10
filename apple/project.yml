@@ -31,6 +31,7 @@ targets:
     dependencies:
       - package: AxoCore
       - package: AxoProtocol
+      - sdk: ServiceManagement.framework
     settings:
       base:
         PRODUCT_BUNDLE_IDENTIFIER: dev.leostera.axo.mac

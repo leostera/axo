@@ -7,7 +7,7 @@ description: Build, validate, and deliver Axo's Finder-launchable Mac app. Use a
 
 ## Axod-only delivery
 
-Leo explicitly requires **always repackaging `dist/Axo.app` after validated Mac changes**. A successful Xcode build under DerivedData is not delivery. The shipped Mac app is Axod-only: it bundles and launches `axod`, and does not include the legacy Ghostty workbench/bridge path. The iOS target remains a separate lane.
+Leo explicitly requires **always repackaging `dist/Axo.app` after validated Mac changes**. A successful Xcode build under DerivedData is not delivery. The shipped Mac app is Axod-only: it bundles and launches `axod`, and does not include the legacy Ghostty workbench/bridge path. On first app launch it registers the main Axo app as a macOS login item with `SMAppService`; login opens Axo, which starts the bundled daemon. This is not a separate `axod` LaunchAgent/LaunchDaemon, and System Settings approval may be needed. The iOS target remains a separate lane.
 
 Keep project-specific operational guidance in `<axo-root>/.agents/skills/axo-*`, not the personal memory repository. Update this skill as the packaging workflow changes; do not turn transient build results or backup paths into permanent instructions.
 
@@ -31,7 +31,7 @@ Run affected layout or phone tests as appropriate. A shared AxoCore change also 
 
 ## Safe bundle replacement
 
-- Keep the state directory private and versioned; never read/import the legacy workspace registry or Pi histories during startup.
+- Keep the Axod state directory private at `~/Library/Application Support/Axo/Axod`; do not version its directory name or import the legacy workspace registry or Pi histories during startup.
 - Keep `axod` inside `Contents/Helpers` and verify its executable and code signature as part of the staged bundle.
 - Stage on the same filesystem under `dist/`; verify the staged bundle before replacement.
 - Use macOS `renamex_np` with `RENAME_SWAP` when an app already exists. Retain the previous bundle at the staging path for rollback.

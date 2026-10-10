@@ -8,7 +8,10 @@ struct AxodWorkbenchApp: App {
         Window("Axo", id: "main") {
             AxodWorkbenchView(coordinator: coordinator)
                 .frame(minWidth: 760, minHeight: 520)
-                .task { coordinator.connect() }
+                .task {
+                    coordinator.registerForStartup()
+                    coordinator.connect()
+                }
         }
         .defaultSize(width: 1040, height: 700)
     }

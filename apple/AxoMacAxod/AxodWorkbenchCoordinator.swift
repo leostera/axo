@@ -3,6 +3,7 @@ import AxoCore
 import AxoProtocol
 import Darwin
 import Observation
+import ServiceManagement
 
 @MainActor @Observable
 final class AxodWorkbenchCoordinator {
@@ -22,6 +23,8 @@ final class AxodWorkbenchCoordinator {
     private(set) var nextSessionCursor: WorkPageCursor?
     private(set) var nextRuntimeID: UUID?
     private(set) var message = "Starting the local Axo daemon."
+    private(set) var startupMessage = "Registering Axo to open at login."
+    private(set) var needsLoginItemsReview = false
 
     private let rpc = AxoJSONRPCClient()
     private var stateDirectory: AxodStateDirectory?
@@ -33,6 +36,58 @@ final class AxodWorkbenchCoordinator {
     private var refreshGeneration = UUID()
     private var sessionLoadGeneration = UUID()
     private var connectTask: Task<Void, Never>?
+    private var didCheckStartupRegistration = false
+
+    func registerForStartup() {
+        guard !didCheckStartupRegistration else { return }
+        didCheckStartupRegistration = true
+        let service = SMAppService.mainApp
+        switch service.status {
+        case .enabled:
+            startupMessage = "Axo is registered to open at login."
+        case .notRegistered:
+            do {
+                try service.register()
+                updateStartupMessage(for: service.status)
+            } catch {
+                updateStartupMessage(for: service.status, registrationFailed: true)
+            }
+        case .requiresApproval:
+            updateStartupMessage(for: service.status)
+        case .notFound:
+            startupMessage = "Axo could not register itself for login startup from this app location."
+            needsLoginItemsReview = true
+        @unknown default:
+            startupMessage = "Axo's login startup status is unavailable."
+            needsLoginItemsReview = true
+        }
+    }
+
+    func openLoginItemsSettings() {
+        SMAppService.openSystemSettingsLoginItems()
+    }
+
+    private func updateStartupMessage(for status: SMAppService.Status, registrationFailed: Bool = false) {
+        switch status {
+        case .enabled:
+            startupMessage = "Axo is registered to open at login."
+            needsLoginItemsReview = false
+        case .requiresApproval:
+            startupMessage = "Approve Axo in System Settings to open it automatically at login."
+            needsLoginItemsReview = true
+        case .notRegistered:
+            startupMessage = registrationFailed
+                ? "Axo could not register for login startup. Review Login Items in System Settings."
+                : "Axo is not registered to open at login."
+            needsLoginItemsReview = true
+        case .notFound:
+            startupMessage = "Axo's app bundle was not found for login startup."
+            needsLoginItemsReview = true
+        @unknown default:
+            startupMessage = "Axo's login startup status is unavailable."
+            needsLoginItemsReview = true
+        }
+    }
 
     func connect() {
         guard connectTask == nil else { return }

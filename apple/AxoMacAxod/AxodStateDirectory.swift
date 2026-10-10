@@ -23,7 +23,7 @@ struct AxodStateDirectory {
         }
         try requireOwnedDirectory(appRoot, privatePermissions: false)
 
-        let root = appRoot.appendingPathComponent("Axod-v1", isDirectory: true)
+        let root = appRoot.appendingPathComponent("Axod", isDirectory: true)
         if !FileManager.default.fileExists(atPath: root.path) {
             try FileManager.default.createDirectory(
                 at: root,
