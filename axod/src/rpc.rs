@@ -179,6 +179,12 @@ pub fn dispatch(
     let result = match call.method.as_str() {
         "axo.runtime.list" => list(call.params, manager, machine),
         "axo.runtime.startApproved" => start(call.params, manager, machine, profiles),
+        "axo.session.start" => {
+            crate::managed::dispatch(&call.method, call.params, manager, machine)
+        }
+        method if method.starts_with("axo.chat.") => {
+            crate::managed::dispatch(method, call.params, manager, machine)
+        }
         method => crate::work_rpc::dispatch(method, call.params, manager, machine, profiles),
     };
     Some(match result {

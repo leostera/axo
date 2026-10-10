@@ -4,7 +4,7 @@ import { Type } from "typebox";
 import { readFileSync } from "node:fs";
 export default function provider(pi: ExtensionAPI) {
   pi.on("input", event => { if (event.text === "FIXTURE_HANDLED_INPUT") return { action: "handled" }; });
-  const config = JSON.parse(readFileSync(process.env.AXO_INTERACTIVE_FIXTURE_CONFIG!, "utf8"));
+  const config = JSON.parse(readFileSync(process.env.PI_AXO_INTERACTIVE_FIXTURE_CONFIG!, "utf8"));
   const url = new URL(config.baseUrl);
   if (url.protocol !== "http:" || url.hostname !== "127.0.0.1") throw new Error("Fixture provider must be loopback");
   pi.registerProvider("axo-interactive-fixture", { baseUrl: url.toString(), apiKey: "local-fixture-only", api: "openai-completions",

@@ -4,6 +4,7 @@ Axo's TypeScript extension loaded **inside the user's ambient vanilla Pi**. This
 
 - `index.ts`: managed interactive control extension using public Pi APIs.
 - `control-protocol.ts`: typed responses/errors/events mirrored by closed Rust serde types in `axod/src/pi_control/wire.rs`; `index.ts` validates requests with a method-discriminated, closed Zod union.
+- `questions.ts`: public `axo_ask`, one offered-option question shared by the local selector and captured remote answer; cancellation/invalid values never approval.
 - `tests/fixtures/provider.ts`: controlled loopback provider and real interactive-tool/input-hook fixtures, loaded into actual Pi during integration tests.
 
 The Rust daemon in `../axod/` owns PTYs, child supervision, work records, RPC and journals. This extension observes actual Pi identity/lifecycle and invokes public message, steering, abort and read-only session APIs in that same interactive process. Pi alone owns execution, queues, dialogs and canonical history.
@@ -19,4 +20,4 @@ npm run test:pi-interactive
 
 The root Pi dependency supplies development declarations only; execution uses the normal ambient launcher, never the repository package. No live Pi installation or application configuration is changed by these commands.
 
-See [the current integration evidence and remaining gates](../axod/pi/README.md). The existing TypeScript integration orchestrator is transitional: daemon/CLI orchestration and process fixtures are intended to move to Rust. Public `axo.session.start`/`axo.chat.*` wiring, durable admission/mutation receipts and full canonical writer/history policies remain pending. This folder does not replace or migrate the independently owned legacy `bridge/`.
+See [the current integration evidence and remaining gates](../axod/pi/README.md). The existing TypeScript integration orchestrator is transitional: daemon/CLI orchestration and process fixtures are intended to move to Rust. Initial public `axo.session.start`/`axo.chat.*`, durable metadata-only receipts, live/stopped branch reads and cooperative managed writer policy are now implemented and actual local/cloud paths pass. See [operator setup, contracts and remaining limits](../axod/MANAGED_PI.md). Full observation/compaction/attachment/crash/unmanaged-writer/operational parity remains pending. This folder does not replace or migrate the independently owned legacy `bridge/`.

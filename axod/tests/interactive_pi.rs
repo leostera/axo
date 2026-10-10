@@ -88,7 +88,7 @@ impl Fixture {
             .parent()
             .unwrap()
             .to_path_buf();
-        let mut argv = vec!["/bin/sh".into(), "-c".into(), "export HOME=\"$1\" PI_CODING_AGENT_DIR=\"$2\" AXO_INTERACTIVE_FIXTURE_CONFIG=\"$3\" PI_OFFLINE=1; shift 3; exec \"$@\"".into(), "owned-fixture".into(), self.root.to_str().unwrap().into(), agent.to_str().unwrap().into(), config.to_str().unwrap().into(), self.ambient.executable.to_str().unwrap().into()];
+        let mut argv = vec!["/bin/sh".into(), "-c".into(), "export HOME=\"$1\" PI_CODING_AGENT_DIR=\"$2\" PI_AXO_INTERACTIVE_FIXTURE_CONFIG=\"$3\" PI_OFFLINE=1; shift 3; exec \"$@\"".into(), "owned-fixture".into(), self.root.to_str().unwrap().into(), agent.to_str().unwrap().into(), config.to_str().unwrap().into(), self.ambient.executable.to_str().unwrap().into()];
         argv.extend(
             [
                 "--no-extensions",

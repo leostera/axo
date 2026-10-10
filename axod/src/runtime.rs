@@ -281,10 +281,24 @@ impl SpawnedTerminal {
     }
 }
 
+enum LaunchControl {
+    Ordinary,
+    Controlled,
+    ReservedPi,
+}
+impl LaunchControl {
+    fn controlled(&self) -> bool {
+        !matches!(self, Self::Ordinary)
+    }
+}
 pub struct Manager {
     pub generation: HostGeneration,
     journal: Arc<Mutex<Journal>>,
     pub(crate) work: Arc<Mutex<crate::work::WorkStore>>,
+    pub(crate) managed: Arc<Mutex<crate::managed::store::Store>>,
+    pub(crate) managed_policy: Mutex<Option<crate::managed::policy::Policy>>,
+    pub(crate) managed_live: Mutex<BTreeMap<SessionId, Arc<crate::managed::Running>>>,
+    pub(crate) managed_start: Mutex<()>,
     admission: Mutex<()>,
     terminals: Mutex<BTreeMap<PaneId, Arc<Terminal>>>,
     stopping: AtomicBool,
@@ -294,6 +308,10 @@ impl Manager {
         Self {
             generation: HostGeneration::new(),
             work: journal.work.clone(),
+            managed: journal.managed.clone(),
+            managed_policy: Mutex::new(None),
+            managed_live: Mutex::new(BTreeMap::new()),
+            managed_start: Mutex::new(()),
             admission: Mutex::new(()),
             journal: Arc::new(Mutex::new(journal)),
             terminals: Mutex::new(BTreeMap::new()),
@@ -305,6 +323,13 @@ impl Manager {
         command: CommandId,
     ) -> Option<crate::work::CommandReceipt> {
         let _admission = self.admission.lock().unwrap();
+        if let Some(receipt) = self.managed.lock().unwrap().receipt(command) {
+            let mut view = receipt.view();
+            if view.runtime.is_none() {
+                view.runtime = self.journal.lock().unwrap().command_runtime(command);
+            }
+            return Some(crate::work::CommandReceipt::Pi { receipt: view });
+        }
         if let Some(committed) = self.work.lock().unwrap().receipt(command) {
             return Some(crate::work::CommandReceipt::Work { committed });
         }
@@ -331,7 +356,45 @@ impl Manager {
                 return Err(crate::work::WorkError::Conflict);
             }
         }
+        {
+            let managed = self.managed.lock().unwrap();
+            if managed.is_fenced() {
+                return Err(crate::work::WorkError::StorageFailed);
+            }
+            if managed.contains_command(command) {
+                return Err(crate::work::WorkError::Conflict);
+            }
+        }
         self.work.lock().unwrap().apply(command, intent, profiles)
+    }
+    pub(crate) fn prepare_managed(
+        &self,
+        command: CommandId,
+        intent: crate::managed::store::Intent,
+        fingerprint: crate::managed::store::Fingerprint,
+    ) -> Result<crate::managed::Reservation, crate::managed::store::Error> {
+        use crate::managed::store::Error;
+        let _admission = self.admission.lock().unwrap();
+        let mut store = self.managed.lock().unwrap();
+        if let Some(receipt) = store.reconcile(command, &intent, &fingerprint)? {
+            return Ok(crate::managed::Reservation::Existing(Box::new(receipt)));
+        }
+        if self.stopping.load(Ordering::SeqCst) {
+            return Err(Error::Conflict);
+        }
+        let journal = self.journal.lock().unwrap();
+        let work = self.work.lock().unwrap();
+        if journal.is_fenced() || work.is_fenced() || store.is_fenced() {
+            return Err(Error::StorageFenced);
+        }
+        if journal.contains_command(command) || work.contains_command(command) {
+            return Err(Error::Conflict);
+        }
+        drop(journal);
+        drop(work);
+        store
+            .prepare(command, intent, fingerprint)
+            .map(|_| crate::managed::Reservation::New)
     }
     pub fn list(&self) -> Vec<TerminalSnapshot> {
         let mut records: BTreeMap<_, _> = self
@@ -353,7 +416,7 @@ impl Manager {
         target: TerminalTarget,
         launch: &TerminalLaunch,
     ) -> Result<TerminalSnapshot, ErrorCode> {
-        self.start_inner(command, target, launch, false)
+        self.start_inner(command, target, launch, LaunchControl::Ordinary)
             .map(|(terminal, _)| terminal)
     }
     /// The daemon owner receives the anonymous control endpoint, never a viewing client.
@@ -364,7 +427,18 @@ impl Manager {
         target: TerminalTarget,
         launch: &TerminalLaunch,
     ) -> Result<(TerminalSnapshot, UnixStream), ErrorCode> {
-        let (terminal, channel) = self.start_inner(command, target, launch, true)?;
+        let (terminal, channel) =
+            self.start_inner(command, target, launch, LaunchControl::Controlled)?;
+        Ok((terminal, channel.ok_or(ErrorCode::RecoveryRequired)?))
+    }
+    pub(crate) fn start_reserved_pi(
+        &self,
+        command: CommandId,
+        target: TerminalTarget,
+        launch: &TerminalLaunch,
+    ) -> Result<(TerminalSnapshot, UnixStream), ErrorCode> {
+        let (terminal, channel) =
+            self.start_inner(command, target, launch, LaunchControl::ReservedPi)?;
         Ok((terminal, channel.ok_or(ErrorCode::RecoveryRequired)?))
     }
     fn start_inner(
@@ -372,9 +446,26 @@ impl Manager {
         command: CommandId,
         target: TerminalTarget,
         launch: &TerminalLaunch,
-        controlled: bool,
+        mode: LaunchControl,
     ) -> Result<(TerminalSnapshot, Option<UnixStream>), ErrorCode> {
+        let controlled = mode.controlled();
         let _admission = self.admission.lock().unwrap();
+        {
+            let store = self.managed.lock().unwrap();
+            if store.is_fenced() {
+                return Err(ErrorCode::StorageFailed);
+            }
+            if let Some(receipt) = store.receipt(command) {
+                let permitted = matches!(mode, LaunchControl::ReservedPi)
+                    && matches!(receipt.intent, crate::managed::store::Intent::Start { target: destination, .. } if destination.session_id == target.session_id && destination.pane_id == target.pane_id && destination.host_generation == self.generation)
+                    && receipt.disposition == crate::managed::store::Disposition::Prepared;
+                if !permitted {
+                    return Err(ErrorCode::Conflict);
+                }
+            } else if matches!(mode, LaunchControl::ReservedPi) {
+                return Err(ErrorCode::Conflict);
+            }
+        }
         {
             let work = self.work.lock().unwrap();
             if work.is_fenced() {
@@ -397,6 +488,16 @@ impl Manager {
             return self
                 .reconcile_start(previous, &terminals)
                 .map(|terminal| (terminal, None));
+        }
+        if !matches!(mode, LaunchControl::ReservedPi)
+            && self
+                .managed
+                .lock()
+                .unwrap()
+                .binding(target.session_id)
+                .is_some_and(|binding| binding.pane_id == target.pane_id)
+        {
+            return Err(ErrorCode::Conflict);
         }
         check_launch_admission(&terminals, target)?;
         let reference = RuntimeRef {

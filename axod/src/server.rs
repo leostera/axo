@@ -19,8 +19,16 @@ pub fn serve_with_relay(root: &Path, relay: Option<relay::Config>) -> io::Result
 }
 pub fn serve_configured(
     root: &Path,
+    relay: Option<relay::Config>,
+    profiles: Option<Profiles>,
+) -> io::Result<()> {
+    serve_with_pi(root, relay, profiles, None)
+}
+pub fn serve_with_pi(
+    root: &Path,
     mut relay: Option<relay::Config>,
     profiles: Option<Profiles>,
+    pi: Option<crate::PiPolicy>,
 ) -> io::Result<()> {
     let profiles = profiles.unwrap_or_else(|| {
         relay
@@ -32,7 +40,11 @@ pub fn serve_configured(
     }
     let journal = Journal::open(root)?;
     let machine = relay::machine_id(root)?;
+    if !journal.managed.lock().unwrap().belongs_to(machine) {
+        return Err(io::Error::other("Managed state belongs to another machine"));
+    }
     let manager = Arc::new(Manager::new(journal));
+    *manager.managed_policy.lock().unwrap() = pi;
     let stopping = Arc::new(AtomicBool::new(false));
     let term = signal_hook::flag::register(libc::SIGTERM, stopping.clone())?;
     let interrupt = match signal_hook::flag::register(libc::SIGINT, stopping.clone()) {

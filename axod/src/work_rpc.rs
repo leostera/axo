@@ -266,7 +266,7 @@ fn session_page(params: Option<Value>, manager: &Manager, machine: MachineId) ->
     let sessions: Vec<_> = page
         .records
         .into_iter()
-        .map(|s| session_view(s, &runtimes))
+        .map(|s| session_view(s, &runtimes, manager))
         .collect();
     Ok(
         json!({"hostGeneration":manager.generation,"revision":revision,"sessions":sessions,"next":page.next}),
@@ -290,15 +290,22 @@ fn session_get(params: Option<Value>, manager: &Manager, machine: MachineId) -> 
         )
     };
     Ok(
-        json!({"hostGeneration":manager.generation,"revision":revision,"session":session_view(session, &manager.list())}),
+        json!({"hostGeneration":manager.generation,"revision":revision,"session":session_view(session, &manager.list(), manager)}),
     )
 }
-fn session_view(session: SessionRecord, runtimes: &[TerminalSnapshot]) -> Value {
+fn session_view(session: SessionRecord, runtimes: &[TerminalSnapshot], manager: &Manager) -> Value {
     let runtime = runtimes.iter().find(|r| {
         r.runtime.target.session_id == session.session_id
             && r.runtime.target.pane_id == session.pi_pane_id
     });
-    json!({"sessionId":session.session_id,"workspaceId":session.workspace_id,"name":session.name,"nameSource":"manual","pi":{"paneId":session.pi_pane_id,"chatId":null,"admission":"notAdmitted"},"runtime":runtime})
+    let binding = manager.managed.lock().unwrap().binding(session.session_id);
+    let admission = binding
+        .as_ref()
+        .map_or(crate::managed::Admission::NotAdmitted, |binding| {
+            crate::managed::admission(manager, session.session_id, Some(binding.runtime))
+        });
+    let chat_id = binding.map(|binding| binding.chat_id);
+    json!({"sessionId":session.session_id,"workspaceId":session.workspace_id,"name":session.name,"nameSource":"manual","pi":{"paneId":session.pi_pane_id,"chatId":chat_id,"admission":admission},"runtime":runtime})
 }
 fn command_get(params: Option<Value>, manager: &Manager, machine: MachineId) -> Outcome {
     let params: GetCommand = parse(params)?;
@@ -402,7 +409,7 @@ fn mutate(
             json!({"hostGeneration":manager.generation,"revision":committed.revision,"workspace":workspace})
         }
         WorkRecord::Session(session) => {
-            json!({"hostGeneration":manager.generation,"revision":committed.revision,"session":session_view(session, &manager.list())})
+            json!({"hostGeneration":manager.generation,"revision":committed.revision,"session":session_view(session, &manager.list(), manager)})
         }
     })
 }

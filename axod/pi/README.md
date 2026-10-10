@@ -2,7 +2,7 @@
 
 Axo depends on the **user's ambient `pi` installation**. It does not bundle, vendor, fork or patch Pi, and never uses the repository's Pi npm devDependency as a runtime fallback. There is no download, auto-update or installation behavior.
 
-## Intended product path — public RPC wiring still pending
+## Selected product path — initial public RPC wiring implemented
 
 ```text
 Mac / Rust CLI / iOS
@@ -20,7 +20,7 @@ The extension runs inside **that same PTY-hosted Pi process**. Terminal keyboard
 
 A work session contains its managed Pi pane and can contain additional shell panes with their own PTYs. Metadata creation does not launch; the UI explicitly composes create/start/attach. Splitting does not implicitly create another Pi writer. Ghostty attachment to a daemon-owned terminal remains a feasibility gate; its pinned surface API cannot simply be assumed to accept an external PTY descriptor.
 
-The Rust CLI integration tests must ultimately exercise **this public Axo RPC → daemon → native PTY → ambient Pi TUI + extension path**, including actual admission, canonical persistence, messages, steering, cancellation, exact resume, real tool effects and independent sessions. A Mac window is not needed to run those tests, but Pi must still run interactively in its PTY.
+`tests/managed_public.rs` now exercises **this public Axo RPC → daemon → native PTY → ambient Pi TUI + extension path**, including actual admission, canonical persistence, messages, steering, cancellation, exact resume and real tool effects. A Rust-owned peer through the real isolated Worker also admits an independent actual Pi and verifies its tool effect. See [managed setup/contracts/remaining gates](../MANAGED_PI.md). A Mac window is not needed to run those tests, but Pi must still run interactively in its PTY.
 
 ## Real interactive PTY battery
 
@@ -45,7 +45,7 @@ Models use a controlled loopback-only provider installed through public Pi APIs.
 
 **Observed mode difference:** interactive `ctx.abort()` removes queued steering from execution; the regression verifies it is not delivered after a subsequent explicit normal send. The discarded headless RPC behavior was not interchangeable. Dispatch acknowledges only `dispatched` because public extension send/abort APIs return void; lifecycle/canonical evidence establishes execution/settlement separately.
 
-**Limits:** these tests reach the production Rust PTY manager and actual TUI extension directly through fixture-owned framing. They do **not** yet route Pi controls through `axod serve`'s local/cloud WebSockets or an actual product CLI; implement `axo.session.start`/`axo.chat.*`, full machine/workspace addressing, durable mutation disposition, canonical binding/writer admission and bounded observation/history contracts before claiming that layer. The example's resume prechecks are fixture policy, not production admission. Per-pane writer exclusion is not proof against arbitrary different-pane/unmanaged writers opening one file. Ghostty rendering, crash/spawn/fsync windows, escaped descendants, client/cloud failure recovery and production supervision still have separate gates.
+**Limits:** these tests reach the production Rust PTY manager and actual TUI extension directly through fixture-owned framing. This 24-case battery itself does **not** route Pi controls through public WebSockets/CLI; the new `tests/managed_public.rs` proves the initial production local/cloud path separately. Full observation/history/operational parity remains open. The example's resume prechecks are fixture policy, not production admission. Per-pane writer exclusion is not proof against arbitrary different-pane/unmanaged writers opening one file. Ghostty rendering, crash/spawn/fsync windows, escaped descendants, client/cloud failure recovery and production supervision still have separate gates.
 
 ## Dependency discovery only
 
@@ -67,4 +67,4 @@ The `--mode rpc` controller and its subprocess/provider/lifecycle fixtures intro
 
 The old RPC-mode findings about idle steering queues, abort retaining queued input and remotely answerable RPC dialogs are **mode-specific characterization**, not proof of TUI-extension behavior. The interactive battery above now verifies the selected public APIs and has already demonstrated different cancellation behavior. Do not copy unsupported APIs or generic remote-approval claims from the discarded controller. Historical evidence remains in Git, not as a second supported product path.
 
-No live registry, file authority, startup, deployment or app/process ownership has changed. Implementing the above path remains the RFD0009 critical work, not a completed feature.
+No live registry, file authority, startup, deployment or app/process ownership has changed. The initial path is implemented and isolated acceptance passes; remaining RFD0009 observation, attachment, namespace/data-plane, writer/crash and operational gates still block completion/Mac handoff.

@@ -30,6 +30,7 @@ struct Saved {
 }
 pub struct Journal {
     pub(crate) work: std::sync::Arc<std::sync::Mutex<crate::work::WorkStore>>,
+    pub(crate) managed: std::sync::Arc<std::sync::Mutex<crate::managed::store::Store>>,
     root: PathBuf,
     saved: Saved,
     _owner_lock: File,
@@ -110,7 +111,26 @@ impl Journal {
                 "Conflicting command identities across journals",
             ));
         }
+        let managed = crate::managed::store::Store::open(root, &work)?;
+        for command in managed.commands() {
+            if work.contains_command(command) {
+                return Err(io::Error::other("Conflicting managed command identity"));
+            }
+            if let Some(runtime) = saved.receipts.get(&command).map(|receipt| receipt.runtime) {
+                let receipt = managed.receipt(command).expect("Stored managed receipt");
+                let crate::managed::store::Intent::Start { target, .. } = receipt.intent else {
+                    return Err(io::Error::other("Conflicting managed runtime receipt"));
+                };
+                if runtime.target.session_id != target.session_id
+                    || runtime.target.pane_id != target.pane_id
+                    || runtime.host_generation != target.host_generation
+                {
+                    return Err(io::Error::other("Conflicting managed runtime target"));
+                }
+            }
+        }
         Ok(Self {
+            managed: std::sync::Arc::new(std::sync::Mutex::new(managed)),
             work: std::sync::Arc::new(std::sync::Mutex::new(work)),
             root: root.to_path_buf(),
             saved,

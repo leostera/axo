@@ -2,9 +2,11 @@ import { z } from "zod";
 import { uuid, destinationSchema } from "./identity.js";
 import { terminalSchema } from "./runtime-contracts.js";
 import { workMethods, workResults } from "./work-contracts.js";
+import { piMethods, piResults } from "./pi-contracts.js";
 export { uuid, destinationSchema } from "./identity.js";
 export * from "./runtime-contracts.js";
 export * from "./work-contracts.js";
+export * from "./pi-contracts.js";
 import {
   createJSONRPCErrorResponse,
   createJSONRPCSuccessResponse,
@@ -185,6 +187,7 @@ export const startSchema = z
   .strict();
 export const remoteMethods = {
   ...workMethods,
+  ...piMethods,
   "axo.runtime.list": listSchema,
   "axo.runtime.startApproved": startSchema,
 } as const;
@@ -192,6 +195,7 @@ export type RemoteMethod = keyof typeof remoteMethods;
 export const METHODS = Object.keys(remoteMethods) as RemoteMethod[];
 export const results = {
   ...workResults,
+  ...piResults,
   "axo.runtime.list": z
     .object({
       hostGeneration: uuid,

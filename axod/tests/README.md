@@ -1,6 +1,6 @@
 # axod test coverage
 
-Tests use owned disposable directories/processes, not live Mac state or deployment credentials. Native rendering, public Pi RPC admission and physical-device acceptance are separate gates.
+Tests use owned disposable directories/processes, not live Mac state or deployment credentials. Public Pi RPC admission now has isolated positive evidence; native rendering, crash/operational readiness and physical-device acceptance remain separate gates.
 
 ## Real interactive Pi in native PTYs
 
@@ -21,9 +21,21 @@ Actual interactive abort removes queued steering from execution; a regression ve
 
 ## Rust CLI and typed Pi transport checkpoints
 
-`cargo test --locked --offline` now includes `tests/public_cli.rs` (actual `axo` -> public local WebSocket -> `axod serve`, generic PTY/work metadata/receipts/stale targets) and `tests/interactive_pi.rs` (Rust-owned ambient TUI, typed extension IPC, real bash/canonical history). These are **separate paths**, not yet public Pi-control acceptance. No TypeScript orchestration is used by these Rust tests; Pi-side provider/tools remain TypeScript under `pi-axo/`.
+`cargo test --locked --offline` now includes `tests/public_cli.rs` (actual `axo` -> public local WebSocket -> `axod serve`, generic PTY/work metadata/receipts/stale targets) and `tests/interactive_pi.rs` (Rust-owned ambient TUI, typed extension IPC, real bash/canonical history). Those earlier tests are separate paths; the new joined checkpoint below adds public Pi-control acceptance. No TypeScript orchestration is used by these Rust tests; Pi-side provider/tools remain TypeScript under `pi-axo/`.
 
 The owned control codec uses closed serde `Record`/`Response`/`Request` types, distinct chat/interaction/request IDs, request-specific reply matching and native operations. Unknown tags/fields, malformed payloads and wrong response kinds fail closed. Arbitrary canonical Pi document payloads remain explicit opaque `RawValue` wrappers rather than dynamic routing envelopes.
+
+## Joined actual public CLI/cloud/Pi checkpoint
+
+```sh
+cargo test --manifest-path axod/Cargo.toml --locked --offline --test managed_public -- --test-threads=1
+```
+
+`tests/managed_public.rs` owns the actual binaries, ambient interactive Pi, private work/HOME/session roots, Rust HTTP model and actual isolated Worker/Access fixture. Rust orchestrates daemon/Pi/model/processes; Node hosts only Worker/workerd. It builds the installed shared protocol from source without installing packages, keeps synthetic assertions in bounded private files, and cleans compiler/Worker groups while holding their original unreaped leader. npm dependencies and ambient Pi must already be available; no runtime fallback/upgrade is performed.
+
+Positive local evidence: metadata-only creation, actual admission, real bash/canonical history/tool paging, original message/start receipts, Axo-owned question/answer/no replay, viewing expiry/no renewal, active steering/cancel/late rejection and queued-steering exclusion. Clean daemon restart preserves machine/chat, permits explicit stopped branch reads and exact resume without provider calls. Positive cloud evidence: the real Worker forwards start/message/history into an independent actual Pi, whose bash effect is verified; cloud/client loss leaves accepted Pi admitted. Stale targets, consumed input-hook uncertainty and injected `pi-state.json` failure verify no fabricated execution/replay, preserved receipts and three-domain fencing without killing accepted Pi.
+
+Six managed unit tests separately prove normalized fingerprints/no persisted prompt text, immutable dispositions, every-byte synthetic truncation/corruption, persistence fencing, cooperative lease/private-path checks, active-tree reconstruction and cross-domain collisions. These are not extra Pi execution cases. Full compaction/plugin/spool projection, unmanaged-writer exclusion, abrupt crash/power-loss, scalable history, observation subscriptions and remaining RFD domains are still open. See [managed setup/contracts/limits](../MANAGED_PI.md).
 
 ## Rust domain and process tests
 
@@ -58,7 +70,7 @@ Rust `proptest` exercises bounded UTF-8 input, exact IEEE-754 round trips, encod
 
 Test-only, thread-local hooks inject failures before file sync, before atomic rename and immediately after rename. The store must fence memory, retain known receipt reads and reject further mutations; reopening observes only the old or new atomic record/receipt pair. Exhaustive byte truncation of a synthetic store and individual receipt-invariant corruption must reject startup, never regenerate empty state. Ownership contention is distinguished from corruption; only disposable test roots may briefly wait for inherited CLOEXEC locks during parallel PTY forks. Production ownership acquisition remains fail-closed, with no command retry.
 
-**Evidence limits:** injected post-rename failure and same-kernel reopen do not prove power-loss durability or actual directory-fsync recovery. This is bounded generated testing, not coverage-guided libFuzzer, exhaustive correctness, production hardening, orphan containment or a fix for every compiler/Worker contention stall. Abrupt death at process/spawn/fsync boundaries, escaped descendants, soak/resource-exhaustion campaigns and native/public-Pi admission remain open.
+**Evidence limits:** injected post-rename failure and same-kernel reopen do not prove power-loss durability or actual directory-fsync recovery. This is bounded generated testing, not coverage-guided libFuzzer, exhaustive correctness, production hardening, orphan containment or a fix for every compiler/Worker contention stall. Abrupt death at process/spawn/fsync boundaries, escaped descendants, soak/resource-exhaustion campaigns and native admission and the broader public-Pi crash/operational gates remain open.
 
 ## Actual daemon RPC tests
 

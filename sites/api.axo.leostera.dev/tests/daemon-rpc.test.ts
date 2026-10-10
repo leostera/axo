@@ -14,6 +14,9 @@ type Fixture = Awaited<ReturnType<typeof daemonFixture>>;
 type MethodInputs = { [Method in RemoteMethod]: z.input<(typeof remoteMethods)[Method]> };
 function methodInputs(f: Fixture) {
   const mutation = { commandId: crypto.randomUUID(), expectedRevision: 2, name: "Explicit mutation" };
+  const piTarget = { ...f.sessionTarget, paneId: f.session.pi.paneId };
+  const chat = { ...piTarget, runtimeHostGeneration: f.target.hostGeneration, runtimeGeneration: crypto.randomUUID(), chatId: crypto.randomUUID() };
+  const chatCommand = { target: chat, commandId: crypto.randomUUID() };
   // Adding an exposed method requires an input here, rather than silently losing test coverage.
   return {
     "axo.workspace.list": { target: f.target },
@@ -24,6 +27,15 @@ function methodInputs(f: Fixture) {
     "axo.session.create": { target: f.workspaceTarget, ...mutation },
     "axo.session.rename": { target: f.sessionTarget, ...mutation },
     "axo.command.get": { target: f.target, commandId: f.workspaceCommandId },
+    "axo.session.start": { target: piTarget, commandId: crypto.randomUUID(), persistence: { kind: "fresh" as const } },
+    "axo.chat.get": { target: chat },
+    "axo.chat.history": { target: chat },
+    "axo.chat.getToolOutput": { target: chat, entryId: "recorded-entry", toolCallId: "recorded-call", offset: 0 },
+    "axo.chat.sendMessage": { ...chatCommand, text: "Not executed" },
+    "axo.chat.sendSteeringMessage": { ...chatCommand, interactionId: crypto.randomUUID(), text: "Not executed" },
+    "axo.chat.cancelTurn": { ...chatCommand, interactionId: crypto.randomUUID() },
+    "axo.chat.answerQuestion": { ...chatCommand, interactionId: crypto.randomUUID(), questionId: crypto.randomUUID(), optionId: crypto.randomUUID() },
+    "axo.chat.setViewing": { ...chatCommand, leaseId: crypto.randomUUID(), viewing: true, ttlSeconds: 30 },
     "axo.runtime.list": { target: f.target },
     "axo.runtime.startApproved": {
       target: { ...f.target, sessionId: f.session.sessionId, paneId: f.session.pi.paneId },
@@ -78,6 +90,24 @@ test("every exposed daemon RPC rejects malformed or stale calls on both real rou
   await noExecution(f);
 });
 
+test("new Pi requests have matching bounded scalar, cursor and intent rejection on both routes", { timeout: 20000 }, async t => {
+  const f = await daemonFixture(t); const inputs = methodInputs(f);
+  const history = inputs["axo.chat.history"];
+  const cursor = { target: history.target, readMode: "live", leafId: "leaf", after: "entry" };
+  const cases = [
+    ["axo.chat.history", { ...history, cursor: null }],
+    ["axo.chat.history", { ...history, readMode: null }],
+    ["axo.chat.history", { ...history, cursor: { ...cursor, after: "界".repeat(43) } }],
+    ["axo.chat.history", { ...history, cursor: { ...cursor, after: "bad\nidentity" } }],
+    ["axo.chat.getToolOutput", { ...inputs["axo.chat.getToolOutput"], toolCallId: "" }],
+    ["axo.chat.getToolOutput", { ...inputs["axo.chat.getToolOutput"], offset: Number.MAX_SAFE_INTEGER + 1 }],
+    ...["\u0085", " /model", "\u0085/cmd", "x".repeat(48*1024+1)].map(text => ["axo.chat.sendMessage", { ...inputs["axo.chat.sendMessage"], text }]),
+  ] as const;
+  const before = await metadata(f);
+  for (const { peer } of f.routes) for (const [method, params] of cases) assert.equal(error(await call(peer, method as string, params)), -32602);
+  assert.equal(await metadata(f), before); await noExecution(f);
+});
+
 test("optional paging inputs have identical absent-versus-null semantics on both routes", { timeout: 20000 }, async t => {
   const f = await daemonFixture(t);
   for (const { name, peer } of f.routes) {
@@ -128,9 +158,10 @@ test("the RFD's unimplemented operations fail explicitly rather than pretending 
   assert.equal(new Set(names).size, names.length);
   const available = new Set<string>([...METHODS, "axo.machine.list"]);
   const unsupported = names.filter(method => !available.has(method));
-  assert.ok(unsupported.includes("axo.session.start"));
-  assert.ok(unsupported.includes("axo.chat.sendMessage"));
-  assert.ok(unsupported.includes("axo.chat.answerQuestion"));
+  assert.ok(unsupported.includes("axo.session.archive"));
+  assert.ok(!unsupported.includes("axo.session.start"));
+  assert.ok(!unsupported.includes("axo.chat.sendMessage"));
+  assert.ok(!unsupported.includes("axo.chat.answerQuestion"));
   const before = await metadata(f);
   for (const { name, peer } of f.routes) {
     await t.test(name, async () => {

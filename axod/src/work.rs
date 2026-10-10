@@ -14,6 +14,10 @@ const MAX_WORKSPACES: usize = 128;
 const MAX_SESSIONS: usize = 1000;
 const MAX_RECEIPTS: usize = 2000;
 pub(crate) const MAX_REVISION: u64 = 9_007_199_254_740_991;
+pub(crate) struct ExecutionContext {
+    pub directory_id: String,
+    pub directory: PathBuf,
+}
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
@@ -145,6 +149,9 @@ pub enum WorkError {
 #[derive(Clone, Serialize)]
 #[serde(tag = "kind", rename_all = "camelCase")]
 pub enum CommandReceipt {
+    Pi {
+        receipt: crate::managed::store::ReceiptView,
+    },
     Work {
         committed: CommittedWork,
     },
@@ -229,6 +236,26 @@ impl WorkStore {
             .filter(|s| s.workspace_id == workspace)
             .cloned()
             .ok_or(WorkError::NotFound)
+    }
+    pub(crate) fn execution_context(
+        &self,
+        workspace: WorkspaceId,
+        session: SessionId,
+        pane: PaneId,
+    ) -> Result<ExecutionContext, WorkError> {
+        let record = self.session(workspace, session)?;
+        if record.pi_pane_id != pane {
+            return Err(WorkError::NotFound);
+        }
+        let workspace = self
+            .saved
+            .workspaces
+            .get(&workspace)
+            .ok_or(WorkError::NotFound)?;
+        Ok(ExecutionContext {
+            directory_id: workspace.record.directory_id.clone(),
+            directory: PathBuf::from(&workspace.directory),
+        })
     }
     pub fn apply(
         &mut self,

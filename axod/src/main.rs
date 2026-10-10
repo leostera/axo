@@ -1,7 +1,7 @@
 use std::{io, path::PathBuf};
 fn usage() -> io::Error {
     io::Error::other(
-        "Usage: axod serve /absolute/private/state-directory [--relay-config /absolute/private/config.json] [--profiles-config /absolute/private/profiles.json]",
+        "Usage: axod serve /absolute/private/state-directory [--relay-config /absolute/private/config.json] [--profiles-config /absolute/private/profiles.json] [--pi-config /absolute/private/pi.json]",
     )
 }
 fn main() -> io::Result<()> {
@@ -12,6 +12,7 @@ fn main() -> io::Result<()> {
     let root = PathBuf::from(arguments.next().ok_or_else(usage)?);
     let mut relay = None;
     let mut profiles = None;
+    let mut pi = None;
     while let Some(flag) = arguments.next() {
         let path = PathBuf::from(arguments.next().ok_or_else(usage)?);
         match flag.as_str() {
@@ -19,8 +20,9 @@ fn main() -> io::Result<()> {
             "--profiles-config" if profiles.is_none() => {
                 profiles = Some(axod::profiles::Profiles::read(&path)?)
             }
+            "--pi-config" if pi.is_none() => pi = Some(axod::PiPolicy::read(&path)?),
             _ => return Err(usage()),
         }
     }
-    axod::server::serve_configured(&root, relay, profiles)
+    axod::server::serve_with_pi(&root, relay, profiles, pi)
 }

@@ -13,6 +13,22 @@ macro_rules! uuid_id {
 uuid_id!(ChatId);
 uuid_id!(InteractionId);
 uuid_id!(RequestId);
+uuid_id!(QuestionId);
+uuid_id!(OptionId);
+#[derive(Clone, Debug, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct Question {
+    pub id: QuestionId,
+    pub interaction_id: InteractionId,
+    pub title: String,
+    pub options: Vec<QuestionOption>,
+}
+#[derive(Clone, Debug, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct QuestionOption {
+    pub id: OptionId,
+    pub label: String,
+}
 impl RequestId {
     pub(super) fn new() -> Self {
         Self(uuid::Uuid::new_v4())
@@ -49,6 +65,8 @@ pub struct State {
     pub busy: bool,
     pub interaction_id: Option<InteractionId>,
     pub ui_waits: u16,
+    #[serde(default)]
+    pub question: Option<Question>,
     pub tools: Vec<String>,
     pub pending: bool,
     pub recovery: bool,
@@ -123,7 +141,11 @@ pub(super) struct InteractionTarget {
     pub interaction_id: InteractionId,
 }
 #[derive(Serialize)]
-#[serde(tag = "method", rename_all = "camelCase")]
+#[serde(
+    tag = "method",
+    rename_all = "camelCase",
+    rename_all_fields = "camelCase"
+)]
 pub(super) enum Request<'a> {
     Bind {
         id: RequestId,
@@ -151,6 +173,12 @@ pub(super) enum Request<'a> {
         id: RequestId,
         target: InteractionTarget,
     },
+    Answer {
+        id: RequestId,
+        target: InteractionTarget,
+        question_id: QuestionId,
+        option_id: OptionId,
+    },
     Shutdown {
         id: RequestId,
         target: Target,
@@ -171,6 +199,7 @@ impl Request<'_> {
             | Self::Send { id, .. }
             | Self::Steer { id, .. }
             | Self::Cancel { id, .. }
+            | Self::Answer { id, .. }
             | Self::Shutdown { id, .. } => *id,
         }
     }

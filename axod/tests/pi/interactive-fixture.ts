@@ -129,7 +129,7 @@ export async function fixture(t: TestContext) {
     const agent = join(directory, "agent"); await mkdir(agent, { mode: 0o700 });
     await writeFile(join(agent, "settings.json"), JSON.stringify({ quietStartup: true, compaction: { enabled: false }, retry: { enabled: false }, packages: [], cacheWarming: { enabled: false } }), { mode: 0o600 });
     const config = join(directory, "provider.json"); await writeFile(config, JSON.stringify({ baseUrl: `http://127.0.0.1:${port}/${name}/v1` }), { mode: 0o600 });
-    const argv = ["/bin/sh", "-c", 'export HOME="$1" PI_CODING_AGENT_DIR="$2" AXO_INTERACTIVE_FIXTURE_CONFIG="$3" PI_OFFLINE=1; shift 3; exec "$@"', "owned-pi", root, agent, config, ambient.executable,
+    const argv = ["/bin/sh", "-c", 'export HOME="$1" PI_CODING_AGENT_DIR="$2" PI_AXO_INTERACTIVE_FIXTURE_CONFIG="$3" PI_OFFLINE=1; shift 3; exec "$@"', "owned-pi", root, agent, config, ambient.executable,
       "--no-extensions", "--no-skills", "--no-themes", "--no-context-files", "--no-prompt-templates", "--no-approve", "--offline",
       "--extension", resolve("pi-axo/index.ts"), "--extension", resolve("pi-axo/tests/fixtures/provider.ts"),
       "--axo-managed-control", "--provider", "axo-interactive-fixture", "--model", "fixture", "--tools", "bash,fixture_ask", "--session-dir", sessions];

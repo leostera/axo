@@ -11,7 +11,10 @@ use std::{
     thread,
     time::{Duration, Instant},
 };
-pub use wire::{CanonicalDocument, ChatId, History, InteractionId, Mode, Model, State};
+pub use wire::{
+    CanonicalDocument, ChatId, History, InteractionId, Mode, Model, OptionId, Question, QuestionId,
+    State,
+};
 use wire::{
     Expected, InteractionTarget, Record, RemoteError, Request, RequestId, Response, Target,
 };
@@ -26,6 +29,7 @@ pub enum ControlError {
     Busy,
     Blocked,
     Invalid,
+    RecoveryRequired,
     OutcomeUnknown,
 }
 /// Only extension dispatch acknowledgement, never execution/delivery/settlement proof.
@@ -168,6 +172,19 @@ impl Control {
         self.dispatch_request(Request::Cancel {
             id: RequestId::new(),
             target: self.interaction_target(interaction),
+        })
+    }
+    pub fn answer(
+        &self,
+        interaction: InteractionId,
+        question_id: QuestionId,
+        option_id: OptionId,
+    ) -> Result<Dispatched, ControlError> {
+        self.dispatch_request(Request::Answer {
+            id: RequestId::new(),
+            target: self.interaction_target(interaction),
+            question_id,
+            option_id,
         })
     }
     pub fn shutdown(&self) -> Result<Dispatched, ControlError> {
@@ -342,10 +359,9 @@ fn rejection(error: RemoteError) -> ControlError {
         RemoteError::Blocked => ControlError::Blocked,
         RemoteError::Invalid => ControlError::Invalid,
         RemoteError::Stale | RemoteError::StaleInteraction => ControlError::Stale,
-        RemoteError::NotReady
-        | RemoteError::NotInteractive
-        | RemoteError::Rejected
-        | RemoteError::Recovery
-        | RemoteError::Unknown => ControlError::OutcomeUnknown,
+        RemoteError::NotReady | RemoteError::NotInteractive => ControlError::NotReady,
+        RemoteError::Rejected => ControlError::Invalid,
+        RemoteError::Recovery => ControlError::RecoveryRequired,
+        RemoteError::Unknown => ControlError::OutcomeUnknown,
     }
 }

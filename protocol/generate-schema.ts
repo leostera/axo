@@ -11,6 +11,8 @@ import {
   results,
   workMethods,
   workResults,
+  piMethods,
+  piResults,
 } from "./src/index.js";
 
 const definitions: Record<string, unknown> = {};
@@ -27,6 +29,8 @@ for (const [name, schema] of Object.entries({
   runtimeStartApprovedResult: results["axo.runtime.startApproved"],
   ...Object.fromEntries(Object.entries(workMethods).map(([method, schema]) => [`${method}Params`, schema])),
   ...Object.fromEntries(Object.entries(workResults).map(([method, schema]) => [`${method}Result`, schema])),
+  ...Object.fromEntries(Object.entries(piMethods).map(([method, schema]) => [`${method}Params`, schema])),
+  ...Object.fromEntries(Object.entries(piResults).map(([method, schema]) => [`${method}Result`, schema])),
 })) {
   const converted = z.toJSONSchema(schema, {
     target: "draft-2020-12",

@@ -54,18 +54,26 @@ Evidence: `npm run test:pi-interactive`; 24-case run passed after extension relo
 
 - [x] Add a small actual Rust CLI using the same addressed local public Axo WebSocket RPC as native clients; no direct Pi RPC shortcut. `axo rpc DISCOVERY METHOD` reads bounded params from stdin, negotiates/ACKs, preserves destinations and never retries execution. Cloud CLI support remains separate.
 
-Rust-only checkpoints: `src/client.rs`, `src/bin/axo.rs`, `src/ambient_pi.rs`, typed `src/pi_control{,/wire}.rs`, `tests/public_cli.rs`, `tests/interactive_pi.rs`. Owned IPC deserializes into closed request/record/response types with request-kind correlation, distinct identity types and typed operations; no `Value` key routing. Pi-owned document payloads are explicitly opaque `RawValue`, not protocol discriminators. Validation: 60 Rust tests plus 24 transitional actual-TUI tests; fmt/Clippy/typechecks. The CLI->public-daemon generic PTY test and Rust->actual-Pi test are still **separate**, not the required combined public Pi acceptance path.
-- [ ] Use that CLI in owned real-`axod` integration tests: explicit session start launches ambient Pi's interactive TUI in a native PTY, with a managed Axo extension controlling **that same Pi process**. Exercise real messages/tools, steering/cancel/history/exact resume, not terminal-text parsing or a fake agent harness.
+Rust-only checkpoints: `src/client.rs`, `src/bin/axo.rs`, `src/ambient_pi.rs`, typed `src/pi_control{,/wire}.rs`, `tests/public_cli.rs`, `tests/interactive_pi.rs`. Owned IPC deserializes into closed request/record/response types with request-kind correlation, distinct identity types and typed operations; no `Value` key routing. Pi-owned document payloads are explicitly opaque `RawValue`, not protocol discriminators. Validation: 60 Rust tests plus 24 transitional actual-TUI tests; fmt/Clippy/typechecks. At `ad544d2` these were **separate** paths; the combined checkpoint below supersedes that limitation.
+- [x] Use that CLI in owned real-`axod` integration tests: explicit session start launches ambient Pi's interactive TUI in a native PTY, with a managed Axo extension controlling **that same Pi process**. Exercise real messages/tools, steering/cancel/history/exact resume, not terminal-text parsing or a fake agent harness.
 
-Public `axo.session.start`/`axo.chat.*`, Rust-owned Pi admission/journals, durable mutation receipts and local/cloud/native adoption remain unfinished. No attached Mac window is needed for this TUI test path; a running PTY is still required.
+### Joined production public Pi checkpoint
+
+`axo.session.start` plus eight `axo.chat.*` methods now use the shared Rust dispatcher on both routes (19 exposed daemon methods). Explicit private Pi policy selects the approved directory, session root and installed extension; callers never supply cwd/argv. Private `pi-state.json` stores metadata/fingerprints/original dispositions, not prompts/history. Captured identities include current host and the original runtime host generation. Startup validates receipts/bindings/work membership and cross-domain collisions; persistence uncertainty fences work/runtime/Pi mutations, not accepted work.
+
+`tests/managed_public.rs` owns actual `axo`/`axod serve`, ambient TUI and Rust model fixture: real bash/canonical branch/history/tool detail, original command reconciliation, owned question/option answering, viewing expiry without renewal, explicit steering/cancel/late rejection, clean restart/stopped reads/exact resume, stale destinations and real input-hook consumed-dispatch uncertainty. A Rust-owned cloud peer through the actual isolated Worker/Access fixture admits an independent Pi and verifies a real tool effect; cloud/client loss preserves accepted Pi. Node hosts only Worker/workerd, with private synthetic assertions and pinned owned-process-group cleanup. The protocol matrix guards all new mutation notifications and bounded targets/cursors/tool IDs/text on both routes.
+
+Six managed store/lease/tree/cross-domain unit tests exercise hash normalization, original dispositions, truncation/corruption, persistence fences, cooperative writer exclusion and active-branch reconstruction. Same-kernel reopen and graceful restart are not abrupt crash/power-loss proof. See `axod/MANAGED_PI.md` for setup, bounds and limitations. The remaining 24-case orchestration/Python fixtures have not yet migrated to Rust. No Mac, live registry or deployment adoption occurred. An actual running PTY is required; a Mac window is not.
+
+Final checkpoint validation: **67 Rust tests** (59 library + 8 integration), **18 protocol tests** including replayable differential properties, **60 serial daemon local/cloud tests/subtests**, **24 transitional actual-TUI cases** and **6 discovery cases** passed. Strict all-target Clippy, fmt, release build, schema check, root/Pi/API typechecks and API source build passed. The complete service/native/device suites and live deployment are not claimed by these runs.
 
 - [ ] Apply the `axo._.*` namespace coherently across Rust, TypeScript, Swift models/validators and isolated callers. Decide whether to delete the generic-launch helper or retain it behind explicit development policy; no old-name aliases.
 - [ ] Make support advertisement distinguish adapter/route support from daemon support and actual Pi admission/readiness.
 - [ ] Define managed-runtime caller provenance independently of method spelling or claimed JSON identities. A daemon-owned inherited control channel is a candidate; do not add local credential/account machinery or restore a legacy-envelope listener.
-- [ ] Implement approved `axo.session.start` fresh/exact-resume intents and durable spawn receipts; bind persistence only through actual public Pi session APIs. Never adopt live unmanaged sessions implicitly.
-- [ ] Admit a real vanilla Pi extension, with exact session/pane/runtime/host and canonical chat/file identity. Do not derive identity from PTY text or manufacture JSONL.
+- [x] Implement approved `axo.session.start` fresh/exact-resume intents and durable spawn receipts; bind persistence only through actual public Pi session APIs. Never adopt live unmanaged sessions implicitly.
+- [x] Admit a real vanilla Pi extension, with exact session/pane/runtime/host and canonical chat/file identity. Do not derive identity from PTY text or manufacture JSONL.
 - [ ] Prove one managed writer per persistence binding; distinguish spawn, admission, stopped, failed and recovery-required. No automatic restart/replay.
-- [ ] Validate interactive Pi TUI behavior in the daemon-owned PTY with no attached Mac viewport before claiming no-window readiness; disclose unsupported public UI waits. No-window operation does not mean Pi RPC mode.
+- [x] Validate interactive Pi TUI behavior in the daemon-owned PTY with no attached Mac viewport before claiming no-window readiness; disclose unsupported public UI waits. No-window operation does not mean Pi RPC mode.
 - [ ] Exercise two actual independently addressed Pi sessions, disconnect/reconnect, exact resume, stale generation, startup failure and crash windows. Controlled public providers/tools are acceptable evidence for actual Pi execution, not substitutes for the Pi harness.
 
 ## 3. Chat reads and bounded observation
@@ -74,13 +82,13 @@ Public `axo.session.start`/`axo.chat.*`, Rust-owned Pi admission/journals, durab
 - [ ] Active-view epochs and source-bound bidirectional history cursors; explicit stopped-history policy; UTF-8 encoded-byte bounds and continuation/truncation fixtures.
 - [ ] `axo.observe.subscribe/unsubscribe/event`, bounded producer/client state, baselines, expiry, sequence gaps and read-only resynchronization.
 - [ ] Public Pi lifecycle/assistant/thinking/tool/model/provider/UI-wait observations, without claiming remotely answerable generic approvals.
-- [ ] `axo.chat.setViewing`: scoped expiring viewing leases, independent from subscription ownership.
+- [x] `axo.chat.setViewing`: scoped expiring viewing leases, independent from subscription ownership.
 - [ ] Decide opt-in bounded offline metadata replication and `axo._.catalog.publish`; any cached reads remain domain reads with explicit freshness/source policy, never public catalog-list aliases or history uploads.
 
 ## 4. Addressed chat controls
 
-- [ ] `axo.chat.sendMessage`: ready/idle normal intent; reject busy/question-blocked state without steering conversion.
-- [ ] `axo.chat.sendSteeringMessage`: captured active interaction; reject ended/idle state without starting a new interaction.
+- [x] `axo.chat.sendMessage`: ready/idle normal text intent; reject busy/question-blocked state without steering conversion.
+- [x] `axo.chat.sendSteeringMessage`: captured active interaction; reject ended/idle state without starting a new interaction.
 - [ ] Attachments prepared under captured targets and current existing file authority; revalidate after awaits; attachment-only messages supported.
 - [ ] Durable normalized message disposition/evidence, pre/post-dispatch crash drills and truthful unknown outcome; no prompt bodies in diagnostics/runtime journal, no automatic replay or competing queue.
 - [ ] `axo.chat.answerQuestion`: actual Axo-owned question/options, pending recovery, stale/duplicate rejection and no cancellation-as-approval.

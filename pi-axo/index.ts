@@ -4,13 +4,14 @@ import type { ExtensionAPI, ExtensionContext } from "@earendil-works/pi-coding-a
 import { Socket } from "node:net";
 import { randomUUID } from "node:crypto";
 import { z } from "zod";
+import { questions } from "./questions.ts";
 import { ControlFailure, type Record as ControlRecord, type Response } from "./control-protocol.ts";
 const runtimeSchema = z.object({ host_generation: z.string().uuid(), runtime_generation: z.string().uuid(),
   target: z.object({ session_id: z.string().uuid(), pane_id: z.string().uuid() }).strict() }).strict();
 const targetSchema = z.object({ runtime: runtimeSchema, chatId: z.string().uuid() }).strict();
 const interactionTargetSchema = targetSchema.extend({ interactionId: z.string().uuid() }).strict();
 const idSchema = z.string().min(1).max(128);
-const textSchema = z.string().min(1).refine(value => value.trim().length > 0 && !value.startsWith("/") && [...value].every(character => { const code = character.codePointAt(0)!; return code < 0xd800 || code > 0xdfff; }));
+const textSchema = z.string().min(1).refine(value => /[^\p{White_Space}]/u.test(value) && !/^\p{White_Space}*\//u.test(value) && [...value].every(character => { const code = character.codePointAt(0)!; return code < 0xd800 || code > 0xdfff; }));
 const requestSchema = z.discriminatedUnion("method", [
   z.object({ id: idSchema, method: z.literal("bind"), runtime: runtimeSchema }).strict(),
   z.object({ id: idSchema, method: z.literal("get"), target: targetSchema }).strict(),
@@ -18,6 +19,7 @@ const requestSchema = z.discriminatedUnion("method", [
   z.object({ id: idSchema, method: z.literal("send"), target: targetSchema, text: textSchema }).strict(),
   z.object({ id: idSchema, method: z.literal("steer"), target: interactionTargetSchema, text: textSchema }).strict(),
   z.object({ id: idSchema, method: z.literal("cancel"), target: interactionTargetSchema }).strict(),
+  z.object({ id: idSchema, method: z.literal("answer"), target: interactionTargetSchema, questionId: z.string().uuid(), optionId: z.string().uuid() }).strict(),
   z.object({ id: idSchema, method: z.literal("shutdown"), target: targetSchema }).strict(),
 ]);
 
@@ -37,6 +39,7 @@ export default function managed(pi: ExtensionAPI) {
   let cancelling = false;
   let recovery = false;
   let buffer = Buffer.alloc(0);
+  const ownedQuestions = questions(pi, changed, () => interactionId);
   function write(value: ControlRecord<ReturnType<typeof snapshot>>) {
     if (!socket || socket.destroyed) return;
     const raw = JSON.stringify(value) + "\n";
@@ -48,7 +51,7 @@ export default function managed(pi: ExtensionAPI) {
     return { chatId: ctx.sessionManager.getSessionId(), file: ctx.sessionManager.getSessionFile() ?? null,
       leafId: ctx.sessionManager.getLeafId(), cwd: ctx.cwd, mode: ctx.mode, stdinTTY: !!process.stdin.isTTY, stdoutTTY: !!process.stdout.isTTY, stderrTTY: !!process.stderr.isTTY,
       rows: process.stdout.rows, columns: process.stdout.columns, pid: process.pid,
-      busy: !ctx.isIdle() || submissionPending, interactionId, uiWaits, tools: [...activeTools], pending: ctx.hasPendingMessages(), recovery,
+      busy: !ctx.isIdle() || submissionPending, interactionId, uiWaits, question: ownedQuestions.current(), tools: [...activeTools], pending: ctx.hasPendingMessages(), recovery,
       model: ctx.model ? { id: ctx.model.id, provider: ctx.model.provider } : null };
   }
   function respond(id: string | null, response: Response<ReturnType<typeof snapshot>>) { write({ reply: { id, response } }); }
@@ -69,9 +72,13 @@ export default function managed(pi: ExtensionAPI) {
       if (request.method === "get") { respond(request.id, { snapshot: snapshot() }); return; }
       if (request.method === "history") { respond(request.id, { history: { leafId: ctx.sessionManager.getLeafId(), entries: ctx.sessionManager.getEntries(), branch: ctx.sessionManager.getBranch() } }); return; }
       if (recovery || (!interactionId && ctx.hasPendingMessages())) throw new ControlFailure("recovery");
+      if (request.method === "answer") {
+        if (cancelling || request.target.interactionId !== interactionId) throw new ControlFailure("staleInteraction");
+        ownedQuestions.answer(request.questionId, request.optionId, request.target.interactionId); respond(request.id, "dispatched"); return;
+      }
       if (request.method === "shutdown") { respond(request.id, "dispatched"); ctx.shutdown(); return; }
       if (request.method === "send") {
-        if (!ctx.isIdle() || submissionPending || interactionId || uiWaits || cancelling) throw new ControlFailure("busy");
+        if (!ctx.isIdle() || submissionPending || interactionId || uiWaits || ownedQuestions.current() || cancelling) throw new ControlFailure("busy");
         submissionPending = true;
         // Public void dispatch may be swallowed/blocked by an input hook. A deadline
         // is only uncertainty fencing, not execution/rejection proof or replay permission.
@@ -81,7 +88,7 @@ export default function managed(pi: ExtensionAPI) {
       } else {
         if (!interactionId || request.target.interactionId !== interactionId || ctx.isIdle() || cancelling) throw new ControlFailure("staleInteraction");
         if (request.method === "steer") {
-          if (uiWaits) throw new ControlFailure("blocked");
+          if (uiWaits || ownedQuestions.current()) throw new ControlFailure("blocked");
           pi.sendUserMessage(request.text, { deliverAs: "steer" });
         } else if (request.method === "cancel") { cancelling = true; ctx.abort(); }
       }
