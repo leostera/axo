@@ -63,6 +63,11 @@ fi
 codesign --force --deep --sign - "$APP"
 codesign --verify --deep --strict "$APP"
 
+# ditto preserves Xcode's original bundle-directory dates, even after fresh builds.
+# Stamp only the new outer bundle, not its contents or the retained previous package.
+PACKAGE_DATE="$(LC_ALL=C date '+%m/%d/%Y %H:%M:%S')"
+xcrun SetFile -d "$PACKAGE_DATE" -m "$PACKAGE_DATE" "$APP"
+
 # Atomic same-filesystem replacement preserves a running bundle's mapped files and a rollback copy.
 # Never stop a process or touch Application Support while packaging.
 python3 - "$APP" "$OUTPUT_APP" <<'PY'

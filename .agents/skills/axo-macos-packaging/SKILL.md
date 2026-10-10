@@ -39,6 +39,7 @@ Run affected layout or phone tests as appropriate. A shared AxoCore change also 
 - Use macOS `renamex_np` with `RENAME_SWAP` when an app already exists. Retain the previous bundle at the staging path for rollback.
 - Never use `rm -rf dist/Axo.app` before installing its replacement. Reject a symlinked destination.
 - Do not touch Application Support, conversation files, drafts, attachments, or running processes while packaging.
+- `ditto` preserves the original DerivedData bundle-directory creation/modification dates even when its contents are freshly rebuilt. Stamp the staged outer `.app` directory's dates with packaging time using `xcrun SetFile` after signing; verify them on the final bundle. Do not recursively stamp signed contents or alter the retained previous package. Directory dates are delivery metadata, not proof of a running upgrade.
 - Signing can change Mach-O bytes. Raw `cmp` is not a valid signed/unsigned executable comparison; use build UUIDs/code-section checks if needed, plus strict signature verification.
 
 ## Operational consent and evidence
