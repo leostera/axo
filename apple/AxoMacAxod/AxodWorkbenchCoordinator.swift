@@ -184,7 +184,8 @@ final class AxodWorkbenchCoordinator {
         )
         window.title = "Settings"
         window.isReleasedWhenClosed = false
-        window.contentView = NSHostingView(rootView: AxodSettingsView(coordinator: self))
+        window.toolbarStyle = .unified
+        window.contentViewController = NSHostingController(rootView: AxodSettingsView(coordinator: self))
         window.center()
         settingsWindow = window
         window.makeKeyAndOrderFront(nil)

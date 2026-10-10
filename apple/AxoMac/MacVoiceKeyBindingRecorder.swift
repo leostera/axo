@@ -15,8 +15,14 @@ struct MacVoiceKeyBindingRecorder: NSViewRepresentable {
     }
 
     func updateNSView(_ button: MacVoiceKeyBindingButton, context: Context) {
+        button.onCapture = { binding = $0 }
+        button.onCaptureStateChanged = { isCapturing = $0 }
         button.binding = binding
         button.isCapturing = isCapturing
+    }
+
+    static func dismantleNSView(_ button: MacVoiceKeyBindingButton, coordinator: ()) {
+        button.cancelCapture()
     }
 }
 
@@ -40,22 +46,43 @@ final class MacVoiceKeyBindingButton: NSButton {
     override var acceptsFirstResponder: Bool { true }
 
     @objc private func beginCapture() {
+        guard let window, window.makeFirstResponder(self) else { return }
         isCapturing = true
         onCaptureStateChanged?(true)
-        window?.makeFirstResponder(self)
     }
+
+    override func resignFirstResponder() -> Bool {
+        if isCapturing { finishCapture(releaseFocus: false) }
+        return super.resignFirstResponder()
+    }
+
+    func cancelCapture() { finishCapture(releaseFocus: false) }
 
     override func keyDown(with event: NSEvent) {
         guard isCapturing else { super.keyDown(with: event); return }
-        guard event.keyCode != 53 else { endCapture(); return }
-        capture(event)
+        _ = handleCaptureEvent(event)
     }
 
     override func flagsChanged(with event: NSEvent) {
-        guard isCapturing, MacVoiceKeyBinding.ModifierKey(keyCode: event.keyCode) != nil else {
-            super.flagsChanged(with: event); return
+        guard isCapturing else { super.flagsChanged(with: event); return }
+        _ = handleCaptureEvent(event)
+    }
+
+    @discardableResult
+    func handleCaptureEvent(_ event: NSEvent) -> Bool {
+        guard isCapturing else { return false }
+        switch event.type {
+        case .keyDown:
+            if event.keyCode == 53 { finishCapture(); return true }
+            capture(event)
+            return true
+        case .flagsChanged:
+            guard let modifier = MacVoiceKeyBinding.ModifierKey(keyCode: event.keyCode),
+                  event.modifierFlags.contains(modifier.modifierFlag) else { return true }
+            capture(event) // Only the press, never a modifier release.
+            return true
+        default: return false
         }
-        capture(event)
     }
 
     private func capture(_ event: NSEvent) {
@@ -65,13 +92,14 @@ final class MacVoiceKeyBindingButton: NSButton {
         ) else { return }
         self.binding = binding
         onCapture?(binding)
-        endCapture()
+        finishCapture()
     }
 
-    private func endCapture() {
+    private func finishCapture(releaseFocus: Bool = true) {
+        guard isCapturing else { return }
         isCapturing = false
         onCaptureStateChanged?(false)
-        window?.makeFirstResponder(nil)
+        if releaseFocus, window?.firstResponder === self { window?.makeFirstResponder(nil) }
     }
 
     private func updateTitle() {
@@ -80,6 +108,10 @@ final class MacVoiceKeyBindingButton: NSButton {
     }
 
     private static func keyName(for event: NSEvent) -> String {
+        // Character accessors are invalid for flagsChanged and raise an AppKit exception.
+        if event.type == .flagsChanged {
+            return MacVoiceKeyBinding.ModifierKey(keyCode: event.keyCode)?.title ?? ""
+        }
         let characters = event.charactersIgnoringModifiers ?? ""
         return switch event.keyCode {
         case 36: "Return"

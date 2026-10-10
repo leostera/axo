@@ -31,13 +31,14 @@ struct MacSettingsView: View {
     @AppStorage(MacVoiceKeyBinding.settingsKey) private var voiceKeyBindingRaw = MacVoiceKeyBinding.defaultValue.rawValue
     @State private var isCapturingVoiceKey = false
     @State private var selectedSection: SettingsPage? = .general
+    @State private var columnVisibility: NavigationSplitViewVisibility = .all
     @State private var notificationPermission = "Checking notification permission…"
 
     let onNotificationSettingChanged: (Bool) -> Void
     let openNotificationSettings: () -> Void
 
     var body: some View {
-        NavigationSplitView {
+        NavigationSplitView(columnVisibility: $columnVisibility) {
             List(SettingsPage.allCases, selection: $selectedSection) { section in
                 Label(section.title, systemImage: section.symbol)
                     .tag(section)
@@ -46,18 +47,23 @@ struct MacSettingsView: View {
             .navigationTitle("Axo Settings")
             .navigationSplitViewColumnWidth(min: 180, ideal: 200, max: 250)
         } detail: {
-            switch selectedSection {
-            case .keyboardShortcuts:
-                keyboardShortcuts
-            case .voice:
-                voiceSettings
-            case .general:
-                general
-            case nil:
-                ContentUnavailableView("Choose a Settings Section", systemImage: "gear")
+            Group {
+                switch selectedSection {
+                case .keyboardShortcuts:
+                    keyboardShortcuts
+                case .voice:
+                    voiceSettings
+                case .general:
+                    general
+                case nil:
+                    ContentUnavailableView("Choose a Settings Section", systemImage: "gear")
+                }
             }
+            .navigationTitle("Settings")
+            .toolbarBackground(Color(nsColor: .windowBackgroundColor), for: .windowToolbar)
+            .toolbarBackground(.visible, for: .windowToolbar)
         }
-        .toolbar(removing: .sidebarToggle)
+        .navigationSplitViewStyle(.balanced)
         .frame(minWidth: 720, minHeight: 480)
         .onChange(of: attentionNotifications) { _, enabled in
             onNotificationSettingChanged(enabled)

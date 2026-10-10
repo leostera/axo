@@ -28,6 +28,8 @@ Use these as design guidance, not as substitutes for Apple's API documentation, 
 - Prefer system sidebar/window materials, standard controls, and semantic/adaptive colors. Keep custom styling for specific Axo product needs, especially the terminal surface; avoid opaque backgrounds or card-heavy rows by default.
 - Make important actions discoverable through menus, scene commands, toolbars, and keyboard shortcuts. Route all entry points through the same typed command path with captured `WindowID` and session/pane IDs where relevant. Do not make a critical action gesture-only.
 - Keep a dedicated `Settings` scene for app-level appearance, shortcut, voice, and notification preferences; do not push global settings into the workspace/session navigation stack.
+- For collapsible SwiftUI settings navigation, bind `NavigationSplitView` column visibility and use the system sidebar toggle, rather than an unrelated custom collapse button. In AppKit-created utility windows, embed through `NSHostingController` and respect toolbar/content safe areas; validate both expanded and collapsed layouts.
+- A keybinding recorder must distinguish key events from `flagsChanged`: character accessors such as `charactersIgnoringModifiers` raise an AppKit exception on modifier-only events. Capture the modifier's key code on press, not release; cancel on focus loss or teardown. `bash scripts/check-mac-voice-keybinding.sh` exercises this in an owned hidden window without Accessibility or another app's events.
 
 ## AppKit boundary
 
