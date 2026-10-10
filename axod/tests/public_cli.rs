@@ -17,11 +17,19 @@ struct Daemon {
 }
 impl Daemon {
     fn start() -> Self {
+        Self::start_with_profiles(true)
+    }
+    fn start_with_profiles(approved: bool) -> Self {
         let root = std::env::temp_dir().join(format!("axo-rust-cli-{}", uuid::Uuid::new_v4()));
         fs::create_dir(&root).unwrap();
         fs::set_permissions(&root, fs::Permissions::from_mode(0o700)).unwrap();
         let config = root.join("profiles.json");
-        fs::write(&config, serde_json::to_vec(&json!({"profiles":{"fixture":{"directory":root,"argv":["/bin/sh","-c","printf accepted > marker.txt"]},"shell":{"directory":root,"argv":["/bin/sh","-c","trap '' TERM; test -t 0 && test -t 1 || exit 17; printf TTY >> shell-effects.txt; while :; do sleep 1; done"]}}})).unwrap()).unwrap();
+        let profiles = if approved {
+            json!({"profiles":{"fixture":{"directory":root,"argv":["/bin/sh","-c","printf accepted > marker.txt"]},"shell":{"directory":root,"argv":["/bin/sh","-c","trap '' TERM; test -t 0 && test -t 1 || exit 17; printf TTY >> shell-effects.txt; while :; do sleep 1; done"]}}})
+        } else {
+            json!({"profiles":{}})
+        };
+        fs::write(&config, serde_json::to_vec(&profiles).unwrap()).unwrap();
         fs::set_permissions(&config, fs::Permissions::from_mode(0o600)).unwrap();
         let child = Command::new(env!("CARGO_BIN_EXE_axod"))
             .arg("serve")
@@ -287,5 +295,58 @@ fn actual_cli_adds_independent_shell_ptys_and_remove_kills_only_the_captured_pan
             json!({"target":daemon.target(),"commandId":remove_command})
         )["receipt"]["kind"]
             == "pane"
+    );
+}
+
+#[test]
+fn cli_creates_local_workspace_and_session_with_no_approved_profiles() {
+    let mut daemon = Daemon::start_with_profiles(false);
+    let selected = daemon.root.join("selected-project");
+    fs::create_dir(&selected).unwrap();
+    let selected = fs::canonicalize(selected).unwrap();
+    let target = daemon.target();
+    assert!(
+        daemon.call("axo.workspace.directories", json!({"target":target}))["directories"]
+            .as_array()
+            .unwrap()
+            .is_empty()
+    );
+    let command = uuid::Uuid::new_v4();
+    let params = json!({"target":target,"commandId":command,"expectedRevision":0,"directoryPath":selected,"name":"Project"});
+    let created = daemon.call("axo.workspace.createLocal", params.clone());
+    assert_eq!(created, daemon.call("axo.workspace.createLocal", params));
+    let mut workspace_target = target;
+    workspace_target["workspaceId"] = created["workspace"]["workspaceId"].clone();
+    let session = daemon.call("axo.session.create", json!({"target":workspace_target,"commandId":uuid::Uuid::new_v4(),"expectedRevision":1,"name":"Build Axo"}));
+    assert_eq!(
+        session["session"]["workspaceId"],
+        workspace_target["workspaceId"]
+    );
+    assert_eq!(session["session"]["pi"]["admission"], "notAdmitted");
+    assert!(
+        daemon.call("axo.runtime.list", json!({"target":daemon.target()}))["terminals"]
+            .as_array()
+            .unwrap()
+            .is_empty()
+    );
+    daemon.restart();
+    let receipt = daemon.call(
+        "axo.command.get",
+        json!({"target":daemon.target(),"commandId":command}),
+    );
+    assert_eq!(receipt["receipt"]["kind"], "work");
+    assert_eq!(
+        receipt["receipt"]["committed"]["record"]["record"],
+        created["workspace"]
+    );
+    assert_eq!(
+        daemon.call(
+            "axo.session.list",
+            json!({"target":daemon.target(),"workspaceId":workspace_target["workspaceId"]})
+        )["sessions"]
+            .as_array()
+            .unwrap()
+            .len(),
+        1
     );
 }

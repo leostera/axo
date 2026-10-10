@@ -348,20 +348,18 @@ final class AxodWorkbenchCoordinator {
             defer { self.isEditingWork = false }
             do {
                 let page = try await self.fetchWorkspaces(cursor: nil, over: connection, endpoint: endpoint, operation: operation)
-                let raw = try await connection.request(method: AxoProtocol.Method.listWorkspaceDirectories, parameters: WorkspaceDirectoryListParameters(target: target))
-                let directories = try AxoProtocolResultValidator.workspaceDirectories(raw, target: target)
                 guard self.isCurrent(operation, connection: connection, endpoint: endpoint) else { return }
                 try self.stateDirectory?.requireCurrentEndpoint(endpoint)
                 self.workEditMessage = "Creating work records does not start Pi or a shell."
-                self.workEditor = AxodWorkEditorContext(kind: kind, target: target, revision: page.revision, directories: directories.directories)
+                self.workEditor = AxodWorkEditorContext(kind: kind, target: target, revision: page.revision)
             } catch {
                 guard self.isCurrent(operation, connection: connection, endpoint: endpoint) else { return }
-                self.message = "Could not read the current work revision and approved directories. No work was created."
+                self.message = "Could not read the current work revision. No work was created."
             }
         }
     }
 
-    func createWork(_ context: AxodWorkEditorContext, name: String, directoryID: String) {
+    func createWork(_ context: AxodWorkEditorContext, name: String, directory: LocalDirectoryPath?) {
         guard canEditWork, workEditor?.id == context.id, let connection, let endpoint,
               endpoint.machineId == context.target.machineId, endpoint.hostGeneration == context.target.hostGeneration else { return }
         let operation = operationGeneration
@@ -373,24 +371,12 @@ final class AxodWorkbenchCoordinator {
             defer { self.isEditingWork = false }
             do {
                 try self.stateDirectory?.requireCurrentEndpoint(endpoint)
-                switch context.kind {
-                case .workspace:
-                    guard context.directories.contains(where: { $0.directoryId == directoryID }) else { return }
-                    let parameters = WorkspaceCreateParameters(target: context.target, commandId: command, expectedRevision: context.revision, directoryId: directoryID, name: name)
-                    try AxoProtocolWorkRequestValidator.validate(parameters)
-                    self.savePendingWork(command, machineID: context.target.machineId)
-                    let value = try await connection.request(method: AxoProtocol.Method.createWorkspace, parameters: parameters)
-                    _ = try AxoProtocolResultValidator.workspaceCreate(value, target: context.target, expectedRevision: context.revision, name: name, directoryID: directoryID)
-                case .session(let workspaceID):
-                    let target = WorkWorkspaceTarget(machineId: context.target.machineId, hostGeneration: context.target.hostGeneration, workspaceId: workspaceID)
-                    let parameters = SessionCreateParameters(target: target, commandId: command, expectedRevision: context.revision, name: name)
-                    try AxoProtocolWorkRequestValidator.validate(parameters)
-                    self.savePendingWork(command, machineID: context.target.machineId)
-                    let value = try await connection.request(method: AxoProtocol.Method.createSession, parameters: parameters)
-                    _ = try AxoProtocolResultValidator.sessionCreate(value, target: target, expectedRevision: context.revision, name: name)
-                }
+                let selection = try await self.dispatchWorkCreation(context, name: name, directory: directory,
+                                                                  command: command, over: connection)
                 guard self.isCurrent(operation, connection: connection, endpoint: endpoint) else { return }
                 try self.stateDirectory?.requireCurrentEndpoint(endpoint)
+                self.preferredWorkspaceID = selection.workspaceID
+                self.preferredSessionID = selection.sessionID
                 self.clearPendingWork(command, machineID: context.target.machineId)
                 self.workEditor = nil
                 self.message = "Work record created. No process was started."
@@ -400,7 +386,18 @@ final class AxodWorkbenchCoordinator {
                 if self.pendingWorkCommandID == command {
                     if case AxoJSONRPCClientError.remote(let code, _) = error, [-32601, -32602, -32002, -32006, -32007, -32010].contains(code) {
                         self.clearPendingWork(command, machineID: context.target.machineId)
-                        self.workEditMessage = "Request rejected. Refresh and reopen the editor with the current revision."
+                        switch code {
+                        case -32601:
+                            self.workEditMessage = "The running daemon does not support this creation method. Its older registered helper must be upgraded; this workspace was not created."
+                        case -32602:
+                            self.workEditMessage = "The selected folder is unavailable or has changed. Choose the folder again; no work was created."
+                        case -32002, -32007:
+                            self.workEditMessage = "The work catalog or connection changed. Cancel and reopen this editor for the current revision."
+                        case -32006:
+                            self.workEditMessage = "The daemon's work-record capacity is full. No work was created."
+                        default:
+                            self.workEditMessage = "The daemon rejected creation. No work was created."
+                        }
                     } else {
                         self.workEditMessage = "Outcome unknown. Reconcile the saved command; do not submit it again."
                     }
@@ -408,6 +405,41 @@ final class AxodWorkbenchCoordinator {
                     self.workEditMessage = "The name or request is invalid. No command was dispatched."
                 }
             }
+        }
+    }
+
+    private enum CreatedWorkSelection {
+        case workspace(UUID)
+        case session(workspaceID: UUID, sessionID: UUID)
+        var workspaceID: UUID {
+            switch self { case .workspace(let id): id; case .session(let id, _): id }
+        }
+        var sessionID: UUID? {
+            switch self { case .workspace: nil; case .session(_, let id): id }
+        }
+    }
+
+    private func dispatchWorkCreation(_ context: AxodWorkEditorContext, name: String, directory: LocalDirectoryPath?,
+                                      command: UUID, over connection: AxoJSONRPCWebSocketConnection) async throws -> CreatedWorkSelection {
+        switch context.kind {
+        case .workspace:
+            guard let directory else { throw AxoProtocolValidationError.invalidParameters(method: AxoProtocol.Method.createLocalWorkspace) }
+            let parameters = LocalWorkspaceCreateParameters(target: context.target, commandId: command,
+                expectedRevision: context.revision, directoryPath: directory, name: name)
+            try AxoProtocolWorkRequestValidator.validate(parameters)
+            savePendingWork(command, machineID: context.target.machineId)
+            let value = try await connection.request(method: AxoProtocol.Method.createLocalWorkspace, parameters: parameters)
+            let result = try AxoProtocolResultValidator.localWorkspaceCreate(value, target: context.target,
+                expectedRevision: context.revision, name: name)
+            return .workspace(result.workspace.workspaceId)
+        case .session(let workspaceID):
+            let target = WorkWorkspaceTarget(machineId: context.target.machineId, hostGeneration: context.target.hostGeneration, workspaceId: workspaceID)
+            let parameters = SessionCreateParameters(target: target, commandId: command, expectedRevision: context.revision, name: name)
+            try AxoProtocolWorkRequestValidator.validate(parameters)
+            savePendingWork(command, machineID: context.target.machineId)
+            let value = try await connection.request(method: AxoProtocol.Method.createSession, parameters: parameters)
+            let result = try AxoProtocolResultValidator.sessionCreate(value, target: target, expectedRevision: context.revision, name: name)
+            return .session(workspaceID: workspaceID, sessionID: result.session.sessionId)
         }
     }
 

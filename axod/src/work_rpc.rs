@@ -78,6 +78,15 @@ struct CreateWorkspace {
 }
 #[derive(Deserialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
+struct CreateLocalWorkspace {
+    target: Destination,
+    command_id: CommandId,
+    expected_revision: u64,
+    directory_path: String,
+    name: String,
+}
+#[derive(Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
 struct RenameWorkspace {
     target: WorkspaceTarget,
     command_id: CommandId,
@@ -163,6 +172,7 @@ pub(crate) fn dispatch(
         "axo.session.get" => session_get(params, manager, machine),
         "axo.command.get" => command_get(params, manager, machine),
         "axo.workspace.create"
+        | "axo.workspace.createLocal"
         | "axo.workspace.rename"
         | "axo.session.create"
         | "axo.session.rename" => mutate(method, params, manager, machine, profiles),
@@ -380,6 +390,18 @@ fn work_command(method: &str, params: Option<Value>) -> Result<WorkCommand, (i32
                 command: p.command_id,
                 intent: WorkIntent::CreateWorkspace {
                     directory_id: p.directory_id,
+                    name: p.name,
+                    expected_revision: p.expected_revision,
+                },
+            }
+        }
+        "axo.workspace.createLocal" => {
+            let p: CreateLocalWorkspace = parse(params)?;
+            WorkCommand {
+                target: p.target,
+                command: p.command_id,
+                intent: WorkIntent::CreateLocalWorkspace {
+                    directory: LocalDirectoryPath::parse(p.directory_path).map_err(failure)?,
                     name: p.name,
                     expected_revision: p.expected_revision,
                 },

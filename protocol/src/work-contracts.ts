@@ -93,6 +93,18 @@ export const workMethods = {
     commandId: uuid,
   }).strict(),
 } as const;
+// Selecting a local folder is approval on that host; never expose paths to cloud callers.
+export const localDirectoryPathSchema = z.string().min(1).max(16384)
+  .regex(/^\/[^\0]*$/u)
+  .refine(path => new TextEncoder().encode(path).length <= 16384)
+  .brand<"LocalDirectoryPath">();
+export const localWorkMethods = {
+  "axo.workspace.createLocal": z.object({
+    target: destinationSchema,
+    ...mutationFields,
+    directoryPath: localDirectoryPathSchema,
+  }).strict(),
+} as const;
 export const workMutationMethods = [
   "axo.workspace.create",
   "axo.workspace.rename",
@@ -126,6 +138,7 @@ export const commandReceiptSchema = z.discriminatedUnion("kind", [
     terminal: terminalSchema.nullable(),
   }).strict(),
 ]);
+export const localWorkResults = { "axo.workspace.createLocal": workspaceResult } as const;
 export const workResults = {
   "axo.workspace.directories": z.object({
     hostGeneration: uuid,

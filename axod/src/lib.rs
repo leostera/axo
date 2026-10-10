@@ -28,4 +28,6 @@ pub mod user_service;
 pub mod work;
 #[cfg(test)]
 mod work_lifecycle_tests;
+#[cfg(test)]
+mod work_local_tests;
 mod work_rpc;

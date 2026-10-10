@@ -21,6 +21,11 @@ public enum AxoProtocolWorkRequestValidator {
         else { throw invalid(AxoProtocol.Method.createWorkspace) }
     }
 
+    public static func validate(_ parameters: LocalWorkspaceCreateParameters) throws {
+        guard validName(parameters.name), parameters.expectedRevision.rawValue < WorkRevision.maximumSafeInteger
+        else { throw invalid(AxoProtocol.Method.createLocalWorkspace) }
+    }
+
     public static func validate(_ parameters: WorkspaceRenameParameters) throws {
         guard validName(parameters.name), parameters.expectedRevision.rawValue < WorkRevision.maximumSafeInteger
         else { throw invalid(AxoProtocol.Method.renameWorkspace) }

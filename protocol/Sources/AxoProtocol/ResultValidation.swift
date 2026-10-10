@@ -230,6 +230,18 @@ public enum AxoProtocolResultValidator {
         return result
     }
 
+    public static func localWorkspaceCreate(
+        _ value: JSONValue, target: MachineTarget, expectedRevision: WorkRevision, name: String
+    ) throws -> WorkspaceMutationResult {
+        let method = AxoProtocol.Method.createLocalWorkspace
+        guard validWorkName(name), expectedRevision.rawValue < WorkRevision.maximumSafeInteger else { throw invalid(method) }
+        let result = try workspaceMutationResult(value, method: method, target: target, expectedRevision: expectedRevision)
+        guard result.workspace.name == name,
+              result.workspace.directoryId == "local_" + result.workspace.workspaceId.uuidString.lowercased()
+        else { throw invalid(method) }
+        return result
+    }
+
     public static func workspaceRename(
         _ value: JSONValue,
         target: WorkWorkspaceTarget,

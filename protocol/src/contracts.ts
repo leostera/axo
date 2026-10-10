@@ -1,7 +1,7 @@
 import { z } from "zod";
 import { uuid, destinationSchema } from "./identity.js";
 import { terminalSchema } from "./runtime-contracts.js";
-import { workMethods, workResults } from "./work-contracts.js";
+import { workMethods, workResults, localWorkMethods, localWorkResults } from "./work-contracts.js";
 import { piMethods, piResults } from "./pi-contracts.js";
 import { paneMethods, paneResults } from "./pane-contracts.js";
 import { hostMethods, hostResults } from "./host-contracts.js";
@@ -198,10 +198,11 @@ export const remoteMethods = {
 export type RemoteMethod = keyof typeof remoteMethods;
 export const METHODS = Object.keys(remoteMethods) as RemoteMethod[];
 // Shell-pane lifecycle is local-only; layout/rendering and terminal bytes stay local too.
-export const localMethods = { ...remoteMethods, ...paneMethods, ...hostMethods } as const;
+export const localMethods = { ...remoteMethods, ...localWorkMethods, ...paneMethods, ...hostMethods } as const;
 export type LocalMethod = keyof typeof localMethods;
 export const results = {
   ...workResults,
+  ...localWorkResults,
   ...piResults,
   ...paneResults,
   ...hostResults,

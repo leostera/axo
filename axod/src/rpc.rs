@@ -195,6 +195,13 @@ fn dispatch_route(
     let id = call.id?; // Execution notifications are never admitted.
     let result = match call.method.as_str() {
         "axo.host.get" if local => crate::host::get(call.params, manager, machine),
+        "axo.workspace.createLocal" => {
+            if local {
+                crate::work_rpc::dispatch(&call.method, call.params, manager, machine, profiles)
+            } else {
+                Err((-32601, "Method not found"))
+            }
+        }
         "axo.runtime.list" => list(call.params, manager, machine),
         "axo.runtime.startApproved" => start(call.params, manager, machine, profiles),
         "axo.session.pane.add" | "axo.session.pane.remove" if local => {

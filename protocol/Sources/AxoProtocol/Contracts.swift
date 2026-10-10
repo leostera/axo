@@ -24,6 +24,7 @@ public enum AxoProtocol {
         public static let listWorkspaceDirectories = "axo.workspace.directories"
         public static let listWorkspaces = "axo.workspace.list"
         public static let createWorkspace = "axo.workspace.create"
+        public static let createLocalWorkspace = "axo.workspace.createLocal"
         public static let renameWorkspace = "axo.workspace.rename"
         public static let listSessions = "axo.session.list"
         public static let getSession = "axo.session.get"

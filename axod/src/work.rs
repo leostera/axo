@@ -34,12 +34,42 @@ pub struct SessionRecord {
     pub name: String,
     pub pi_pane_id: PaneId,
 }
+/// Shape-checked absolute local path. Existence and canonical identity are checked on creation,
+/// never while reconstructing already-committed receipts after a directory has gone away.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize)]
+#[serde(transparent)]
+pub struct LocalDirectoryPath(String);
+impl LocalDirectoryPath {
+    pub(crate) fn parse(value: String) -> Result<Self, WorkError> {
+        if valid_directory(&value) {
+            Ok(Self(value))
+        } else {
+            Err(WorkError::Invalid)
+        }
+    }
+    fn as_str(&self) -> &str {
+        &self.0
+    }
+}
+impl<'de> Deserialize<'de> for LocalDirectoryPath {
+    fn deserialize<D: serde::Deserializer<'de>>(d: D) -> Result<Self, D::Error> {
+        Self::parse(String::deserialize(d)?)
+            .map_err(|_| serde::de::Error::custom("Invalid local directory"))
+    }
+}
+
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(tag = "operation", rename_all = "camelCase", deny_unknown_fields)]
 pub enum WorkIntent {
     #[serde(rename_all = "camelCase")]
     CreateWorkspace {
         directory_id: String,
+        name: String,
+        expected_revision: u64,
+    },
+    #[serde(rename_all = "camelCase")]
+    CreateLocalWorkspace {
+        directory: LocalDirectoryPath,
         name: String,
         expected_revision: u64,
     },
@@ -67,6 +97,7 @@ impl WorkIntent {
     fn name(&self) -> &str {
         match self {
             Self::CreateWorkspace { name, .. }
+            | Self::CreateLocalWorkspace { name, .. }
             | Self::RenameWorkspace { name, .. }
             | Self::CreateSession { name, .. }
             | Self::RenameSession { name, .. } => name,
@@ -75,6 +106,9 @@ impl WorkIntent {
     fn expected_revision(&self) -> u64 {
         match self {
             Self::CreateWorkspace {
+                expected_revision, ..
+            }
+            | Self::CreateLocalWorkspace {
                 expected_revision, ..
             }
             | Self::RenameWorkspace {
@@ -93,6 +127,7 @@ impl WorkIntent {
             && self.expected_revision() <= MAX_REVISION
             && match self {
                 Self::CreateWorkspace { directory_id, .. } => valid_directory_id(directory_id),
+                Self::CreateLocalWorkspace { .. } => true,
                 _ => true,
             }
     }
@@ -355,6 +390,34 @@ impl Saved {
                 );
                 Ok(WorkRecord::Workspace(record))
             }
+            WorkIntent::CreateLocalWorkspace {
+                directory, name, ..
+            } => {
+                if self.workspaces.len() >= MAX_WORKSPACES {
+                    return Err(WorkError::Capacity);
+                }
+                let canonical =
+                    fs::canonicalize(directory.as_str()).map_err(|_| WorkError::Invalid)?;
+                // Selection is already resolved by the local picker. Do not silently retarget it.
+                if !canonical.is_dir() || canonical != Path::new(directory.as_str()) {
+                    return Err(WorkError::Invalid);
+                }
+                fs::read_dir(&canonical).map_err(|_| WorkError::Invalid)?;
+                let workspace_id = WorkspaceId::new();
+                let record = WorkspaceRecord {
+                    workspace_id,
+                    name: name.clone(),
+                    directory_id: format!("local_{}", workspace_id.as_uuid()),
+                };
+                self.workspaces.insert(
+                    workspace_id,
+                    Workspace {
+                        record: record.clone(),
+                        directory: directory.as_str().to_owned(),
+                    },
+                );
+                Ok(WorkRecord::Workspace(record))
+            }
             WorkIntent::RenameWorkspace {
                 workspace_id, name, ..
             } => {
@@ -445,7 +508,10 @@ impl Saved {
         let mut sessions = BTreeMap::new();
         for receipt in receipts {
             match (&receipt.intent, &receipt.committed.record) {
-                (WorkIntent::CreateWorkspace { .. }, WorkRecord::Workspace(record)) => {
+                (
+                    WorkIntent::CreateWorkspace { .. } | WorkIntent::CreateLocalWorkspace { .. },
+                    WorkRecord::Workspace(record),
+                ) => {
                     if workspaces
                         .insert(record.workspace_id, record.clone())
                         .is_some()
@@ -502,6 +568,20 @@ impl Saved {
                 record.name == *name
                     && record.directory_id == *directory_id
                     && self.valid_workspace_result(record)
+            }
+            (
+                WorkIntent::CreateLocalWorkspace {
+                    directory, name, ..
+                },
+                WorkRecord::Workspace(record),
+            ) => {
+                record.name == *name
+                    && record.directory_id == format!("local_{}", record.workspace_id.as_uuid())
+                    && self.valid_workspace_result(record)
+                    && self
+                        .workspaces
+                        .get(&record.workspace_id)
+                        .is_some_and(|w| w.directory == directory.as_str())
             }
             (
                 WorkIntent::RenameWorkspace {
