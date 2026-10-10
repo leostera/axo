@@ -27,19 +27,13 @@ codesign --verify --deep --strict dist/Axo.app
 
 Run affected layout or phone tests as appropriate. A shared AxoCore change also requires an AxoPhone build. If validation fails after packaging, fix and rebuild/repackage; never present the failed artifact as ready.
 
-`build-mac.sh` requires XcodeGen, Rust/Cargo and the Axod build dependencies. It builds `axod`, generates the Xcode project, builds the Axod-only AxoMac target, stages the app plus `Contents/Helpers/axod` and the user LaunchAgent plist, validates their identity, signs ad hoc, and atomically replaces the selected app bundle. It does not build or bundle the legacy Pi bridge.
+`build-mac.sh` requires XcodeGen, Rust/Cargo and the Axod build dependencies. It builds exactly one app bundle: `dist/Axo.app`, with `axod` at `Contents/Helpers/axod` and its per-user LaunchAgent plist. It validates identity, signs ad hoc, and atomically replaces that one bundle. It rejects `AXO_INSTANCE_ID` and `AXO_OUTPUT_APP`; do not produce versioned or named app bundles. It does not build or bundle the legacy Pi bridge.
 
-`Axo.app` allows multiple app processes (`LSMultipleInstancesProhibited=false`); `open -n <path-to-Axo.app>` explicitly requests a separate process, and clients from the same bundle connect to that bundle's one Axod service. To build and test two app/daemon versions side by side without sharing daemon state or LaunchAgent identity, build a named variant and distinct output:
-
-```bash
-AXO_INSTANCE_ID=2 AXO_OUTPUT_APP="$PWD/dist/Axo-2.app" bash scripts/build-mac.sh
-```
-
-The variant receives a distinct bundle identifier, LaunchAgent label, and private state directory under `~/Library/Application Support/Axo/Instances/2/Axod`. Its app bundle still includes its own `axod`. Give each concurrently tested daemon build a fresh instance ID/output path: named app bundles are intentionally not replaced, avoiding accidental reuse of an older registered daemon. Launch a variant with `open -n "$PWD/dist/Axo-2.app"`. The default bundle keeps the existing `~/Library/Application Support/Axo/Axod` location.
+`Axo.app` allows multiple app processes (`LSMultipleInstancesProhibited=false`); `open -n "$PWD/dist/Axo.app"` explicitly requests another process of the same build. All such processes share the same Axod LaunchAgent, daemon version, preferences, and state directory (`~/Library/Application Support/Axo/Axod`). Atomic replacement lets an already-running process retain its mapped executable while later launches use the new `Axo.app`, but both connect to that same daemon. Testing different daemon versions in parallel is not supported by this single-bundle workflow.
 
 ## Safe bundle replacement
 
-- Keep each Axod state directory private. The default uses `~/Library/Application Support/Axo/Axod`; named test variants use `~/Library/Application Support/Axo/Instances/<id>/Axod`. Never import the legacy workspace registry or Pi histories during startup.
+- Keep Axod state private at `~/Library/Application Support/Axo/Axod`. Never import the legacy workspace registry or Pi histories during startup.
 - Keep `axod` inside `Contents/Helpers` and verify its executable and code signature as part of the staged bundle.
 - Stage on the same filesystem under `dist/`; verify the staged bundle before replacement.
 - Use macOS `renamex_np` with `RENAME_SWAP` when an app already exists. Retain the previous bundle at the staging path for rollback.

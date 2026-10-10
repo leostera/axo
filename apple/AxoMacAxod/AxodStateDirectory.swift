@@ -128,7 +128,7 @@ enum AxodStateDirectoryError: Error, LocalizedError {
         case .unsafeDirectory: "Axo's private daemon state directory failed its ownership or permission checks."
         case .unsafeDiscovery: "The private daemon discovery file is malformed or unsafe. It was left untouched."
         case .endpointChanged: "The daemon restarted while Axo was reading it. Reconnect before continuing."
-        case .invalidBundleIdentifier: "This Axo bundle has an unsupported instance identifier. Rebuild it with a valid AXO_INSTANCE_ID."
+        case .invalidBundleIdentifier: "This Axo bundle has an unsupported bundle identifier. Rebuild the standard Axo.app package."
         }
     }
 }

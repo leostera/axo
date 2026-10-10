@@ -1,43 +1,19 @@
 #!/bin/bash
 set -euo pipefail
 ROOT="$(cd "$(dirname "$0")/.." && pwd)"
-INSTANCE_ID="${AXO_INSTANCE_ID:-default}"
-OUTPUT_APP="${AXO_OUTPUT_APP:-$ROOT/dist/Axo.app}"
+OUTPUT_APP="$ROOT/dist/Axo.app"
+BUNDLE_ID="dev.leostera.axo.mac"
+AGENT_LABEL="dev.leostera.axo.axod"
+DISPLAY_NAME="Axo"
 
-if [[ ! "$INSTANCE_ID" =~ ^[a-z0-9]+(-[a-z0-9]+)*$ || ${#INSTANCE_ID} -gt 32 ]]; then
-  echo 'AXO_INSTANCE_ID must be 1-32 lowercase letters/digits separated by single hyphens.' >&2
+if [[ -n "${AXO_INSTANCE_ID:-}" || -n "${AXO_OUTPUT_APP:-}" ]]; then
+  echo 'This packaging workflow builds only dist/Axo.app; unset AXO_INSTANCE_ID and AXO_OUTPUT_APP.' >&2
   exit 1
 fi
-if [[ "$INSTANCE_ID" != "default" && -z "${AXO_OUTPUT_APP:-}" ]]; then
-  echo 'A non-default instance needs AXO_OUTPUT_APP so it cannot replace the default app.' >&2
-  exit 1
-fi
-if [[ "$OUTPUT_APP" != /* ]]; then OUTPUT_APP="$ROOT/$OUTPUT_APP"; fi
 mkdir -p "$ROOT/dist"
 if [[ -L "$ROOT/dist" ]]; then
   echo 'Refusing to package through a symlinked dist directory.' >&2
   exit 1
-fi
-if [[ "$(dirname "$OUTPUT_APP")" != "$ROOT/dist" || "$OUTPUT_APP" != *.app ]]; then
-  echo 'AXO_OUTPUT_APP must be a .app directly inside this checkout dist directory.' >&2
-  exit 1
-fi
-if [[ "$INSTANCE_ID" != "default" && "$OUTPUT_APP" == "$ROOT/dist/Axo.app" ]]; then
-  echo 'A named test instance must not replace dist/Axo.app.' >&2
-  exit 1
-fi
-if [[ "$INSTANCE_ID" != "default" && ( -e "$OUTPUT_APP" || -L "$OUTPUT_APP" ) ]]; then
-  echo 'Named test bundles are immutable build slots; choose a fresh AXO_INSTANCE_ID and AXO_OUTPUT_APP.' >&2
-  exit 1
-fi
-AGENT_LABEL="dev.leostera.axo.axod"
-DISPLAY_NAME="Axo"
-if [[ "$INSTANCE_ID" == "default" ]]; then
-  BUNDLE_ID="dev.leostera.axo.mac"
-else
-  BUNDLE_ID="dev.leostera.axo.mac.$INSTANCE_ID"
-  AGENT_LABEL+=".$INSTANCE_ID"
-  DISPLAY_NAME="Axo ($INSTANCE_ID)"
 fi
 
 command -v xcodegen >/dev/null || { echo 'Install XcodeGen, then rerun this script.' >&2; exit 1; }
@@ -63,26 +39,12 @@ fi
 AGENT_PLIST="$APP/Contents/Library/LaunchAgents/dev.leostera.axo.axod.plist"
 mkdir -p "$(dirname "$AGENT_PLIST")"
 install -m 0644 "$ROOT/apple/AxoMacAxod/dev.leostera.axo.axod.plist" "$AGENT_PLIST"
-python3 - "$AGENT_PLIST" "$INSTANCE_ID" <<'PY'
-import plistlib, sys
-path, instance = sys.argv[1:]
-with open(path, "rb") as source:
-    plist = plistlib.load(source)
-label = "dev.leostera.axo.axod"
-arguments = ["axod", "serve-user"]
-if instance != "default":
-    label += "." + instance
-    arguments += ["--instance-id", instance]
-plist["Label"] = label
-plist["ProgramArguments"] = arguments
-with open(path, "wb") as destination:
-    plistlib.dump(plist, destination, fmt=plistlib.FMT_XML, sort_keys=True)
-PY
 plutil -lint "$AGENT_PLIST" >/dev/null
 if [[ "$(/usr/libexec/PlistBuddy -c 'Print :BundleProgram' "$AGENT_PLIST")" != "Contents/Helpers/axod" || \
+      "$(/usr/libexec/PlistBuddy -c 'Print :ProgramArguments:0' "$AGENT_PLIST")" != "axod" || \
       "$(/usr/libexec/PlistBuddy -c 'Print :ProgramArguments:1' "$AGENT_PLIST")" != "serve-user" || \
       "$(/usr/libexec/PlistBuddy -c 'Print :Label' "$AGENT_PLIST")" != "$AGENT_LABEL" ]]; then
-  echo 'The staged Axod LaunchAgent does not match this app instance.' >&2
+  echo 'The staged Axod LaunchAgent does not match the standard Axo app bundle.' >&2
   exit 1
 fi
 STAGED_BUNDLE_ID="$(/usr/libexec/PlistBuddy -c Print:CFBundleIdentifier "$APP/Contents/Info.plist")"
