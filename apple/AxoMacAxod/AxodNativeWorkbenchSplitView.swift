@@ -81,7 +81,6 @@ struct AxodNativeWorkbenchSplitView: NSViewRepresentable {
         private let content = NSView()
         private let outline = WorkspaceOutlineView()
         private let detailHost: NSHostingView<AnyView>
-        private let reopenSidebar = NSButton()
         private let preferences = UserDefaults.standard
         private var sidebarMinimumWidth: NSLayoutConstraint?
         private var sidebarWidth: CGFloat
@@ -124,22 +123,6 @@ struct AxodNativeWorkbenchSplitView: NSViewRepresentable {
                 detailHost.bottomAnchor.constraint(equalTo: content.bottomAnchor),
             ])
 
-            reopenSidebar.image = NSImage(systemSymbolName: "sidebar.left", accessibilityDescription: "Show sidebar")
-            reopenSidebar.isBordered = false
-            reopenSidebar.target = self
-            reopenSidebar.action = #selector(showSidebar(_:))
-            reopenSidebar.toolTip = "Show sidebar"
-            reopenSidebar.setAccessibilityLabel("Show sidebar")
-            reopenSidebar.isHidden = !sidebarCollapsed.wrappedValue
-            reopenSidebar.translatesAutoresizingMaskIntoConstraints = false
-            content.addSubview(reopenSidebar)
-            NSLayoutConstraint.activate([
-                reopenSidebar.leadingAnchor.constraint(equalTo: content.leadingAnchor, constant: 10),
-                reopenSidebar.bottomAnchor.constraint(equalTo: content.bottomAnchor, constant: -10),
-                reopenSidebar.widthAnchor.constraint(equalToConstant: 24),
-                reopenSidebar.heightAnchor.constraint(equalToConstant: 24),
-            ])
-
             splitView.isVertical = true
             splitView.dividerStyle = .thin
             splitView.delegate = self
@@ -155,7 +138,6 @@ struct AxodNativeWorkbenchSplitView: NSViewRepresentable {
             ])
 
             sidebarContainer.isHidden = sidebarCollapsed.wrappedValue
-            reopenSidebar.isHidden = !sidebarCollapsed.wrappedValue
             sidebarMinimumWidth?.isActive = !sidebarCollapsed.wrappedValue
             splitView.setPosition(sidebarCollapsed.wrappedValue ? 0 : sidebarWidth, ofDividerAt: 0)
             return rootView
@@ -311,7 +293,6 @@ struct AxodNativeWorkbenchSplitView: NSViewRepresentable {
             let isAlreadyCollapsed = sidebarContainer.isHidden
             guard collapsed != isAlreadyCollapsed else { return }
             sidebarContainer.isHidden = collapsed
-            reopenSidebar.isHidden = !collapsed
             sidebarMinimumWidth?.isActive = !collapsed
             splitView.setPosition(collapsed ? 0 : sidebarWidth, ofDividerAt: 0)
             splitView.adjustSubviews()
@@ -437,10 +418,6 @@ struct AxodNativeWorkbenchSplitView: NSViewRepresentable {
 
         @objc private func collapseSidebar(_ sender: Any?) {
             sidebarCollapsed.wrappedValue = true
-        }
-
-        @objc private func showSidebar(_ sender: Any?) {
-            sidebarCollapsed.wrappedValue = false
         }
 
         private func sidebarButton(symbol: String, label: String, action: Selector) -> NSButton {

@@ -13,6 +13,7 @@ final class AxodWorkbenchApp: NSObject, NSApplicationDelegate, NSWindowDelegate,
     }()
     private var coordinator: AxodWorkbenchCoordinator?
     private var window: NSWindow?
+    private var sidebarToolbar: AxodSidebarToolbar?
 
     static func main() {
         let application = NSApplication.shared
@@ -36,7 +37,15 @@ final class AxodWorkbenchApp: NSObject, NSApplicationDelegate, NSWindowDelegate,
         window.title = Self.applicationName
         window.identifier = NSUserInterfaceItemIdentifier(Self.mainWindowFrameAutosaveName)
         window.delegate = self
-        window.contentView = NSHostingView(rootView: AxodWorkbenchView(coordinator: coordinator))
+        let sidebarToolbar = AxodSidebarToolbar {
+            let preferences = UserDefaults.standard
+            let key = AxodSidebarToolbar.collapsedPreferenceKey
+            preferences.set(!preferences.bool(forKey: key), forKey: key)
+        }
+        self.sidebarToolbar = sidebarToolbar
+        window.toolbarStyle = .unifiedCompact
+        window.toolbar = sidebarToolbar.makeToolbar()
+        window.contentViewController = NSHostingController(rootView: AxodWorkbenchView(coordinator: coordinator))
         let restoredFrame = window.setFrameUsingName(Self.mainWindowFrameAutosaveName)
         window.setFrameAutosaveName(Self.mainWindowFrameAutosaveName)
         if !restoredFrame { window.center() }
@@ -77,8 +86,15 @@ final class AxodWorkbenchApp: NSObject, NSApplicationDelegate, NSWindowDelegate,
     @objc private func connect(_ sender: Any?) { coordinator?.connect() }
     @objc private func newWorkspace(_ sender: Any?) { coordinator?.newWorkspace() }
     @objc private func newSession(_ sender: Any?) { coordinator?.newSession() }
+    @objc private func toggleSidebar(_ sender: Any?) {
+        guard let window, NSApp.keyWindow === window else { return }
+        sidebarToolbar?.toggleSidebar(sender)
+    }
 
     func validateMenuItem(_ menuItem: NSMenuItem) -> Bool {
+        if menuItem.action == #selector(toggleSidebar(_:)) {
+            return window != nil && NSApp.keyWindow === window
+        }
         if menuItem.action == #selector(newWorkspace(_:)) {
             return coordinator?.canEditWork == true && coordinator?.workEditor == nil
         }
@@ -117,6 +133,14 @@ final class AxodWorkbenchApp: NSObject, NSApplicationDelegate, NSWindowDelegate,
         connectItem.target = self
         connectItem.keyEquivalentModifierMask = [.command, .shift]
         workspaceItem.submenu = workspaceMenu
+
+        let viewItem = NSMenuItem()
+        menu.addItem(viewItem)
+        let viewMenu = NSMenu(title: "View")
+        let toggle = viewMenu.addItem(withTitle: "Toggle Sidebar", action: #selector(toggleSidebar(_:)), keyEquivalent: "s")
+        toggle.target = self
+        toggle.keyEquivalentModifierMask = [.control, .command]
+        viewItem.submenu = viewMenu
 
         NSApp.mainMenu = menu
     }

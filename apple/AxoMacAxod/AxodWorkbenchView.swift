@@ -3,7 +3,7 @@ import SwiftUI
 
 struct AxodWorkbenchView: View {
     @Bindable var coordinator: AxodWorkbenchCoordinator
-    @AppStorage("Axo.axod.sidebarCollapsed") private var sidebarCollapsed = false
+    @AppStorage(AxodSidebarToolbar.collapsedPreferenceKey) private var sidebarCollapsed = false
     @State private var chatDraft = ""
 
     private let paneBackground = Color(red: 0.16, green: 0.17, blue: 0.19)
