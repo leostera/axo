@@ -26,29 +26,41 @@ final class PaneHostView: NSView, Codable, Identifiable {
 struct PaneSplitTreeView: View {
     typealias Tree = SplitTree<PaneHostView>
     let tree: Tree
+    let focusedPane: PaneID?
     let resize: (Tree.Node, Double) -> Void
     let equalize: () -> Void
 
     var body: some View {
         if let node = tree.zoomed ?? tree.root {
-            Subtree(node: node, resize: resize, equalize: equalize)
+            Subtree(node: node, focusedPane: focusedPane, resize: resize, equalize: equalize)
                 .id(node.structuralIdentity)
         }
     }
     private struct Subtree: View {
         let node: Tree.Node
+        let focusedPane: PaneID?
         let resize: (Tree.Node, Double) -> Void
         let equalize: () -> Void
         var body: some View {
             switch node {
             case .leaf(let view):
-                Leaf(view: view).accessibilityElement(children: .contain).accessibilityLabel("Terminal pane")
+                Leaf(view: view)
+                    .overlay {
+                        if let focusedPane, focusedPane.rawValue != view.id {
+                            Color.black.opacity(0.055)
+                                .allowsHitTesting(false)
+                                .accessibilityHidden(true)
+                        }
+                    }
+                    .animation(.easeInOut(duration: 0.12), value: focusedPane)
+                    .accessibilityElement(children: .contain)
+                    .accessibilityLabel("Terminal pane")
             case .split(let split):
                 SplitView(split.direction == .horizontal ? .horizontal : .vertical,
                           Binding(get: { CGFloat(split.ratio) }, set: { resize(node, Double($0)) }),
                           dividerColor: Color(nsColor: .separatorColor),
-                          left: { Subtree(node: split.left, resize: resize, equalize: equalize) },
-                          right: { Subtree(node: split.right, resize: resize, equalize: equalize) },
+                          left: { Subtree(node: split.left, focusedPane: focusedPane, resize: resize, equalize: equalize) },
+                          right: { Subtree(node: split.right, focusedPane: focusedPane, resize: resize, equalize: equalize) },
                           onEqualize: equalize)
             }
         }

@@ -800,7 +800,7 @@ final class WorkspaceController: NSObject, NSOutlineViewDataSource, NSOutlineVie
         let step = direction == .previous ? -1 : 1
         let destination = panes[(currentIndex + step + panes.count) % panes.count]
         guard livePanes[destination] != nil else { return }
-        perform { try store.updateSession(session.id) { $0.focusedPane = destination } }
+        setFocusedPane(destination, in: session.id)
         moveFocus(to: destination, in: session.id)
     }
 
@@ -895,7 +895,7 @@ final class WorkspaceController: NSObject, NSOutlineViewDataSource, NSOutlineVie
         }
         terminal.onFocus = { [weak self, weak terminal] in
             guard let self, let terminal, let (owner, id) = self.owner(of: terminal) else { return }
-            if owner.focusedPane != id { self.perform { try self.store.updateSession(owner.id) { $0.focusedPane = id } } }
+            self.setFocusedPane(id, in: owner.id)
             DispatchQueue.main.async { [weak self] in self?.setFocus(true) }
         }
         terminal.onClose = { [weak self, weak terminal] alive in
@@ -1187,7 +1187,7 @@ final class WorkspaceController: NSObject, NSOutlineViewDataSource, NSOutlineVie
         return host
     }
     private func splitView(in session: WorkSession) -> PaneSplitTreeView {
-        PaneSplitTreeView(tree: surfaceTree(in: session), resize: { [weak self] node, ratio in
+        PaneSplitTreeView(tree: surfaceTree(in: session), focusedPane: session.focusedPane, resize: { [weak self] node, ratio in
             guard let self, ratio.isFinite, self.selectedSession?.id == session.id,
                   let current = self.selectedSession else { return }
             let tree = self.surfaceTree(in: current)
@@ -1198,6 +1198,13 @@ final class WorkspaceController: NSObject, NSOutlineViewDataSource, NSOutlineVie
                 try self.saveTree(resized, in: current.id)
             }
         }, equalize: { [weak self] in self?.equalize(session.id) })
+    }
+    private func setFocusedPane(_ paneID: PaneID, in sessionID: AxoSessionID) {
+        guard let session = store.registry.sessions.first(where: { $0.id == sessionID }),
+              session.focusedPane != paneID else { return }
+        perform { try store.updateSession(sessionID) { $0.focusedPane = paneID } }
+        guard let selectedSession, selectedSession.id == sessionID else { return }
+        splitHost?.rootView = splitView(in: selectedSession)
     }
     private func matchingNode(_ target: SurfaceTree.Node, in node: SurfaceTree.Node?) -> SurfaceTree.Node? {
         guard let node else { return nil }
@@ -1318,7 +1325,7 @@ final class WorkspaceController: NSObject, NSOutlineViewDataSource, NSOutlineVie
                   let next = tree.focusTarget(for: direction, from: node), livePanes[PaneID(next.id)] != nil else { return false }
             DispatchQueue.main.async { [weak self] in
                 guard let self, self.selectedSession?.id == session.id else { return }
-                self.perform { try self.store.updateSession(session.id) { $0.focusedPane = PaneID(next.id) } }
+                self.setFocusedPane(PaneID(next.id), in: session.id)
                 self.moveFocus(to: PaneID(next.id), in: session.id)
             }
         case GHOSTTY_ACTION_EQUALIZE_SPLITS:
