@@ -33,6 +33,18 @@ struct PhoneSettingsView: View {
                     .pickerStyle(.menu)
                     .accessibilityIdentifier("accentColorPicker")
                 }
+
+                Section("Private control plane") {
+                    NavigationLink {
+                        PrivateMachineBrowserView()
+                    } label: {
+                        Label("Browse machines", systemImage: "server.rack")
+                    }
+                    .accessibilityIdentifier("private-machine-browser")
+                    Text("Daemon runtime metadata stays separate from chat and files.")
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
+                }
             }
             .listStyle(.insetGrouped)
             .scrollContentBackground(.hidden)

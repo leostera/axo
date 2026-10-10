@@ -1,0 +1,297 @@
+import AxoCore
+import AxoProtocol
+import SwiftUI
+
+@MainActor
+struct PrivateMachineBrowserView: View {
+    @State private var model = PrivateMachineBrowserModel()
+    @State private var isShowingLogin = false
+    @State private var loginError: String?
+    @Environment(\.dismiss) private var dismiss
+
+    var body: some View {
+        List {
+            if !model.isSignedIn {
+                Section("Cloudflare Access") {
+                    if let accessMessage = model.accessMessage {
+                        Label(accessMessage, systemImage: "exclamationmark.shield")
+                            .foregroundStyle(.orange)
+                    } else {
+                        Text("Sign in to discover machines on your private Axo network.")
+                            .foregroundStyle(.secondary)
+                    }
+                    Button("Sign in with Cloudflare Access", systemImage: "person.crop.circle.badge.checkmark") {
+                        isShowingLogin = true
+                    }
+                    .accessibilityIdentifier("control-plane-login")
+                }
+            } else {
+                Section {
+                    if model.machines.isEmpty {
+                        ContentUnavailableView(
+                            model.isDiscovering ? "Finding machines…" : "No machines found",
+                            systemImage: "desktopcomputer",
+                            description: Text("Only authenticated Axo daemons appear here. Discovery does not start work.")
+                        )
+                    } else {
+                        ForEach(model.machines, id: \.machineId) { machine in
+                            MachineDirectoryRow(
+                                machine: machine,
+                                isSelected: model.selectedMachineID == machine.machineId
+                            ) {
+                                Task { await model.selectMachine(machine.machineId) }
+                            }
+                        }
+                    }
+                } header: {
+                    HStack {
+                        Text("Machines")
+                        Spacer()
+                        if model.isDiscovering {
+                            ProgressView().controlSize(.small)
+                        }
+                    }
+                } footer: {
+                    Text("These are daemon hosts, not Pi conversations or histories.")
+                }
+                .accessibilityIdentifier("control-plane-machines")
+
+                if let machine = model.selectedMachine {
+                    selectedMachineSection(machine)
+                }
+
+                if let notice = model.notice {
+                    Section {
+                        Label(notice, systemImage: "exclamationmark.triangle")
+                            .foregroundStyle(.orange)
+                            .accessibilityIdentifier("control-plane-notice")
+                    }
+                }
+
+                Section {
+                    Button("Sign out of private machines", systemImage: "rectangle.portrait.and.arrow.right", role: .destructive) {
+                        Task { await model.signOut() }
+                    }
+                    .accessibilityIdentifier("control-plane-signout")
+                }
+            }
+        }
+        .listStyle(.insetGrouped)
+        .navigationTitle("Private machines")
+        .navigationBarTitleDisplayMode(.inline)
+        .toolbar {
+            ToolbarItem(placement: .topBarTrailing) {
+                if model.isSignedIn {
+                    Button {
+                        Task { await model.refreshMachines() }
+                    } label: {
+                        Image(systemName: "arrow.clockwise")
+                    }
+                    .disabled(model.isDiscovering)
+                    .accessibilityLabel("Refresh machines")
+                    .accessibilityIdentifier("control-plane-refresh-machines")
+                }
+            }
+        }
+        .refreshable { await model.refreshMachines() }
+        .task { await model.start() }
+        .sheet(isPresented: $isShowingLogin) {
+            NavigationStack {
+                VStack(spacing: 16) {
+                    Text("Sign in to Axo’s private machine directory.")
+                        .font(.headline)
+                        .multilineTextAlignment(.center)
+                        .padding(.horizontal)
+                    ControlPlaneAccessLogin(
+                        endpoint: .production,
+                        onAuthenticated: { credential in
+                            isShowingLogin = false
+                            Task { await model.signIn(credential) }
+                        },
+                        onFailure: { loginError = $0 }
+                    )
+                    .clipShape(RoundedRectangle(cornerRadius: 14))
+                    if let loginError {
+                        Text(loginError).font(.caption).foregroundStyle(.orange)
+                    }
+                }
+                .padding()
+                .navigationTitle("Cloudflare Access")
+                .navigationBarTitleDisplayMode(.inline)
+                .toolbar {
+                    ToolbarItem(placement: .cancellationAction) {
+                        Button("Cancel") { isShowingLogin = false }
+                    }
+                }
+            }
+            .presentationDetents([.large])
+            .presentationDragIndicator(.visible)
+        }
+    }
+
+    @ViewBuilder
+    private func selectedMachineSection(_ machine: MachineSummary) -> some View {
+        Section {
+            if !machine.online {
+                Label("Host offline · cached runtime data is historical", systemImage: "wifi.slash")
+                    .foregroundStyle(.orange)
+                    .accessibilityIdentifier("control-plane-offline-banner")
+            } else if model.isRuntimeGenerationStale {
+                Label("Stale host generation · refresh before using this runtime list", systemImage: "clock.badge.exclamationmark")
+                    .foregroundStyle(.orange)
+                    .accessibilityIdentifier("control-plane-stale-banner")
+            }
+
+            HStack(spacing: 10) {
+                VStack(alignment: .leading, spacing: 3) {
+                    Text(machine.label).font(.headline)
+                    Text("Machine · \(shortID(machine.machineId))")
+                        .font(.caption).foregroundStyle(.secondary)
+                    if let generation = machine.hostGeneration {
+                        Text("Active generation · \(shortID(generation))")
+                            .font(.caption).foregroundStyle(.secondary)
+                    } else {
+                        Text("No active host generation")
+                            .font(.caption).foregroundStyle(.secondary)
+                    }
+                }
+                Spacer()
+                Text(machine.online ? "Online" : "Offline")
+                    .font(.caption.weight(.semibold))
+                    .foregroundStyle(machine.online ? .green : .secondary)
+                    .accessibilityIdentifier(machine.online ? "machine-online-status" : "machine-offline-status")
+            }
+            .accessibilityElement(children: .combine)
+
+            if model.isLoadingRuntimes {
+                ProgressView("Negotiating and loading runtimes…")
+            } else if machine.online && !model.isConnected {
+                Button("Connect and list runtimes", systemImage: "arrow.trianglehead.2.clockwise.rotate.90") {
+                    Task { await model.reconnect() }
+                }
+                .accessibilityIdentifier("control-plane-reconnect")
+            } else if model.isConnected {
+                HStack {
+                    Button("Refresh runtimes", systemImage: "arrow.clockwise") {
+                        Task { await model.refreshRuntimes() }
+                    }
+                    .accessibilityIdentifier("control-plane-refresh-runtimes")
+                    Spacer()
+                    Button("Disconnect", systemImage: "xmark.circle") {
+                        Task { await model.disconnect() }
+                    }
+                    .accessibilityIdentifier("control-plane-disconnect")
+                }
+            }
+        } header: {
+            Text("Runtime metadata")
+        } footer: {
+            Text("Runtime and pane identifiers are daemon metadata. This does not expose Pi conversations, transcripts, or terminal output.")
+        }
+
+        if let result = model.selectedRuntimeResult {
+            Section("Runtimes · source generation \(shortID(result.hostGeneration))") {
+                if result.terminals.isEmpty {
+                    Text(machine.online && !model.isRuntimeGenerationStale ? "No runtime records" : "No cached runtime records")
+                        .foregroundStyle(.secondary)
+                }
+                ForEach(result.terminals, id: \.runtime.runtimeGeneration) { terminal in
+                    MachineRuntimeRow(
+                        terminal: terminal,
+                        sourceGeneration: result.hostGeneration,
+                        currentGeneration: machine.hostGeneration,
+                        hostOnline: machine.online
+                    )
+                }
+                if model.selectedRuntimeCursor != nil && machine.online && model.isConnected {
+                    Button("Load more runtimes") { Task { await model.loadMoreRuntimes() } }
+                        .disabled(model.isLoadingRuntimes)
+                        .accessibilityIdentifier("control-plane-load-more-runtimes")
+                }
+            }
+        }
+    }
+
+    private func shortID(_ id: UUID) -> String { String(id.uuidString.prefix(8)).lowercased() }
+}
+
+private struct MachineDirectoryRow: View {
+    let machine: MachineSummary
+    let isSelected: Bool
+    let select: () -> Void
+
+    var body: some View {
+        Button(action: select) {
+            HStack(spacing: 12) {
+                Image(systemName: machine.online ? "desktopcomputer" : "desktopcomputer.trianglebadge.exclamationmark")
+                    .foregroundStyle(machine.online ? .primary : .secondary)
+                VStack(alignment: .leading, spacing: 3) {
+                    Text(machine.label).font(.body.weight(.medium))
+                    Text(machine.online ? "Online · generation \(machine.hostGeneration.map(shortID) ?? "unknown")" : "Offline")
+                        .font(.caption).foregroundStyle(machine.online ? .green : .secondary)
+                }
+                Spacer()
+                if isSelected { Image(systemName: "checkmark.circle.fill").foregroundStyle(.tint) }
+            }
+            .contentShape(Rectangle())
+        }
+        .buttonStyle(.plain)
+        .accessibilityIdentifier("machine-\(machine.machineId.uuidString.lowercased())")
+        .accessibilityAddTraits(isSelected ? .isSelected : [])
+    }
+
+    private func shortID(_ id: UUID) -> String { String(id.uuidString.prefix(8)).lowercased() }
+}
+
+private struct MachineRuntimeRow: View {
+    let terminal: TerminalSnapshot
+    let sourceGeneration: UUID
+    let currentGeneration: UUID?
+    let hostOnline: Bool
+
+    private var isHistorical: Bool {
+        guard hostOnline, sourceGeneration == currentGeneration,
+              terminal.runtime.hostGeneration == sourceGeneration else { return true }
+        switch terminal.process {
+        case .starting, .running, .stopping: return false
+        case .exited, .failed, .recoveryRequired: return true
+        }
+    }
+
+    private var processText: String {
+        switch terminal.process {
+        case .starting: "Starting"
+        case .running(let pid): "Running · PID \(pid)"
+        case .stopping(let pid): "Stopping · PID \(pid)"
+        case .exited(let status): "Exited · status \(status)"
+        case .failed: "Failed"
+        case .recoveryRequired: "Recovery required"
+        }
+    }
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 6) {
+            HStack {
+                Label(isHistorical ? "Historical runtime" : "Current runtime", systemImage: isHistorical ? "clock.arrow.circlepath" : "terminal")
+                    .font(.subheadline.weight(.semibold))
+                    .foregroundStyle(isHistorical ? .secondary : .primary)
+                    .accessibilityIdentifier(isHistorical ? "machine-runtime-historical" : "machine-runtime-current")
+                Spacer()
+                Text(processText).font(.caption).foregroundStyle(.secondary)
+            }
+            Text("Session \(shortID(terminal.runtime.target.sessionId)) · pane \(shortID(terminal.runtime.target.paneId))")
+                .font(.caption).foregroundStyle(.secondary)
+            Text("Runtime generation \(shortID(terminal.runtime.runtimeGeneration)) · host \(shortID(terminal.runtime.hostGeneration))")
+                .font(.caption2).foregroundStyle(.tertiary)
+            HStack(spacing: 12) {
+                Text(terminal.attached ? "Attached" : "Detached")
+                Text("Backlog · \(terminal.backlogBytes) bytes")
+            }
+            .font(.caption2).foregroundStyle(.tertiary)
+        }
+        .padding(.vertical, 4)
+        .accessibilityElement(children: .combine)
+    }
+
+    private func shortID(_ id: UUID) -> String { String(id.uuidString.prefix(8)).lowercased() }
+}

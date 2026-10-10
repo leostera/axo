@@ -197,6 +197,16 @@ public struct DecodedRPCMessage: Equatable, Sendable {
     }
 }
 
+public struct DecodedRPCResponses: Equatable, Sendable {
+    public let isBatch: Bool
+    public let responses: [RPCResponse]
+
+    public init(isBatch: Bool, responses: [RPCResponse]) {
+        self.isBatch = isBatch
+        self.responses = responses
+    }
+}
+
 /// The profile's bounded JSON-RPC 2.0 envelope decoder, shared by all transports.
 public enum AxoProtocolCodec {
     public static let maximumFrameBytes = 65_536
@@ -225,6 +235,41 @@ public enum AxoProtocolCodec {
         }
 
         return DecodedRPCMessage(isBatch: false, entries: [decodeEntry(value)])
+    }
+
+    public static func decodeResponses(_ raw: String) throws -> DecodedRPCResponses {
+        guard raw.utf8.count <= maximumFrameBytes else {
+            throw RPCProtocolError(code: -32600, message: "Frame limit")
+        }
+        let data = Data(raw.utf8)
+        let value: Any
+        do {
+            value = try JSONSerialization.jsonObject(with: data, options: [.fragmentsAllowed])
+        } catch {
+            throw RPCProtocolError(code: -32700, message: "Parse error")
+        }
+
+        let values: [Any]
+        let isBatch: Bool
+        if let batch = value as? [Any] {
+            guard !batch.isEmpty, batch.count <= maximumBatchCalls else {
+                throw RPCProtocolError(code: -32600, message: "Batch limit")
+            }
+            values = batch
+            isBatch = true
+        } else {
+            values = [value]
+            isBatch = false
+        }
+
+        let responses = try values.map { value -> RPCResponse in
+            guard JSONSerialization.isValidJSONObject(value),
+                  let item = try? JSONSerialization.data(withJSONObject: value),
+                  let response = try? JSONDecoder().decode(RPCResponse.self, from: item)
+            else { throw RPCProtocolError(code: -32600, message: "Invalid response") }
+            return response
+        }
+        return DecodedRPCResponses(isBatch: isBatch, responses: responses)
     }
 
     private static func decodeEntry(_ value: Any) -> DecodedRPCEntry {

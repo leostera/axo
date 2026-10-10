@@ -6,6 +6,10 @@ public enum AxoProtocol {
     public static let maximumLabelLength = 80
     public static let maximumPageSize = 50
     public static let maximumBacklogBytes = 8_192
+    public static let maximumPendingCalls = 32
+    public static let maximumCallDurationSeconds = 10.0
+    public static let deliveryCreditFrameCount = 32
+    public static let deliveryCreditBytes = 128 * 1_024
 
     public enum Method {
         public static let negotiate = "axo.protocol.negotiate"
@@ -18,10 +22,36 @@ public enum AxoProtocol {
     }
 }
 
+public struct EmptyRPCParameters: Codable, Equatable, Sendable {
+    public init() {}
+}
+
 public struct NegotiationParameters: Codable, Equatable, Sendable {
     public let protocolVersion: Int
 
     public init() { protocolVersion = AxoProtocol.version }
+}
+
+public struct ProtocolNegotiationResult: Codable, Equatable, Sendable {
+    public struct DeliveryCredits: Codable, Equatable, Sendable {
+        public let frames: Int
+        public let bytes: Int
+
+        public init(frames: Int, bytes: Int) {
+            self.frames = frames
+            self.bytes = bytes
+        }
+    }
+
+    public let protocolVersion: Int
+    public let methods: [String]
+    public let deliveryCredits: DeliveryCredits
+
+    public init(protocolVersion: Int, methods: [String], deliveryCredits: DeliveryCredits) {
+        self.protocolVersion = protocolVersion
+        self.methods = methods
+        self.deliveryCredits = deliveryCredits
+    }
 }
 
 public struct MachineRegistration: Codable, Equatable, Sendable {

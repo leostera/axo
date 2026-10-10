@@ -5,8 +5,16 @@ let package = Package(
     name: "AxoCore",
     platforms: [.macOS(.v14), .iOS(.v17)],
     products: [.library(name: "AxoCore", targets: ["AxoCore"])],
+    dependencies: [
+        .package(path: "../../protocol"),
+    ],
     targets: [
-        .target(name: "AxoCore"),
-        .testTarget(name: "AxoCoreTests", dependencies: ["AxoCore"]),
+        .target(name: "AxoCore", dependencies: [
+            .product(name: "AxoProtocol", package: "protocol"),
+        ]),
+        .testTarget(name: "AxoCoreTests", dependencies: [
+            "AxoCore",
+            .product(name: "AxoProtocol", package: "protocol"),
+        ]),
     ]
 )
