@@ -37,6 +37,19 @@ Install/build/test the protocol package independently before the new API. Follow
 
 For packed-package consumer tests, create an explicit fixture `package.json` and assert `npm prefix` resolves to that fixture **before** any install. An empty temporary cwd can make npm walk to an unrelated ancestor project. Keep package tarballs, credentials and daemon state in owned disposable fixtures; never use live app state or deployment credentials for isolated tests.
 
+## AxoPhone sidebar design contract
+
+When refining the compact iPhone Sessions menu, use the supplied ChatGPT sidebar screenshot as a proportional reference:
+
+- Keep the Sessions list underneath the chat surface. Reveal it by translating the foreground chat right; use a width-derived reveal distance of about 79% of the available compact viewport, capped near 360 pt, and make the exposed sidebar the same width.
+- Align sidebar content to shared rails: roughly 32 pt leading and 24 pt trailing. Keep search and Settings on the trailing rail.
+- Use text-only session rows, grouped by workspace. Inset the selected-row background about 10 pt from each edge; use a roughly 44 pt row with a 38 pt selected pill, and inset the label so its leading edge aligns with the 32 pt content rail. Reserve symbols for actions, not session identity.
+- Keep the header compact, use 44 pt controls, and align the bottom New Session and Settings actions to the same rails.
+- Extend a secondary-system-surface backplate behind the foreground chat through the status-bar and home-indicator safe areas. At full reveal, a tertiary-system-surface overlay near 0.64 opacity over chat content lands near the reference's `#1b1b1b` background while muting bright content to roughly `#78`; keep that overlay confined to the shifted chat, never the sidebar. Do not snap the color change only after the gesture ends. Let corner rounding (about 42 pt on the supplied phone) and shadow track the same progress.
+- Keep workspace creation out of the scrolling session list; expose it alongside New Session in the footer action menu so the list remains visually focused on sessions.
+- While the menu is open, dim and disable the foreground chat, including scroll and accessibility interaction, while keeping the exposed sidebar interactive. Preserve a reverse-swipe close path that can begin on the visible chat surface as well as the sidebar.
+- These are reference starting measurements, not device-wide constants. Derive the reveal from available geometry and verify Dynamic Type, landscape, and narrow layouts. User-facing terminology is **Sessions**, never “Playground”; retain that spelling only in compatibility code when required by stored data.
+
 ## Validation and delivery
 
 - Make frequent, coherent, validated Conventional Commits and push proactively.

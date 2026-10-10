@@ -87,7 +87,7 @@ final class SharedFilesUITests: XCTestCase {
         app.buttons["Upload files"].tap()
         waitForUploadedAttachment(app)
         XCTAssertFalse(app.buttons["sendPromptButton"].isEnabled)
-        app.buttons["Chat options"].tap()
+        app.buttons["Composer options"].tap()
         app.buttons["Session files"].tap()
         let card = app.buttons["shared-file-00000000-0000-4000-8000-000000000002"]
         XCTAssertTrue(card.waitForExistence(timeout: 10))

@@ -6,13 +6,14 @@ final class ChatLayoutUITests: XCTestCase {
         let app = XCUIApplication()
         app.launchArguments = ["--axo-chat-preview"]
         app.launch()
-        let options = app.buttons["Chat options"]
-        XCTAssertTrue(options.waitForExistence(timeout: 10))
+        let sessionMenu = app.buttons["Sessions menu"]
+        XCTAssertTrue(sessionMenu.waitForExistence(timeout: 10))
+        XCTAssertFalse(app.buttons["Write a message"].exists)
+        XCTAssertFalse(app.buttons["Chat options"].exists)
         XCTAssertFalse(app.textFields["relayEndpoint"].exists)
-        options.tap()
+        sessionMenu.tap()
         XCTAssertFalse(app.buttons["Connection settings"].exists)
         XCTAssertFalse(app.buttons["Reconnect"].exists)
-        app.buttons["Chat options"].tap()
         XCTAssertTrue(app.buttons["Composer options"].exists)
     }
 

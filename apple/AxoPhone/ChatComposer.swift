@@ -15,6 +15,8 @@ struct ChatComposer: View {
     var fileClient: SessionFilesClient?
     var canAttachPhotos = true
     var reviewUpload: (UUID) -> Void = { _ in }
+    var openFiles: () -> Void = {}
+    var debugAction: (() -> Void)? = nil
     var pasteAttachments: ([NSItemProvider]) -> Void = { _ in }
 
     @State private var hasMultipleLines = false
@@ -138,6 +140,9 @@ struct ChatComposer: View {
 
     private var attachmentButton: some View {
         Menu {
+            Button("Session files", systemImage: "folder", action: openFiles)
+                .disabled(fileClient == nil)
+            Divider()
             Button("Camera", systemImage: "camera", action: attachCamera)
                 .disabled(voice.isBusy || !canAttachPhotos)
                 .accessibilityIdentifier("attachCamera")
@@ -145,6 +150,10 @@ struct ChatComposer: View {
                 .disabled(voice.isBusy || !canAttachPhotos)
             Button("Files", systemImage: "folder", action: attachFile)
                 .disabled(voice.isBusy)
+            if let debugAction {
+                Divider()
+                Button("Add synthetic message", action: debugAction)
+            }
         } label: {
             Image(systemName: "plus")
                 .font(.system(size: 23, weight: .regular))

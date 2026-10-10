@@ -72,7 +72,7 @@ final class AppearanceAndScrollingUITests: XCTestCase {
 
     @MainActor
     private func addMessage(_ app: XCUIApplication) {
-        app.buttons["Chat options"].tap()
+        app.buttons["Composer options"].tap()
         app.buttons["Add synthetic message"].tap()
     }
 

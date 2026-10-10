@@ -9,6 +9,7 @@ description: Best practices and example-driven guidance for building SwiftUI vie
 
 - Follow `.agents/skills/axo-development/SKILL.md`; for native macOS UI, also follow `.agents/skills/axo-macos-native-apps/SKILL.md`. Apply these patterns primarily to `apple/AxoPhone` and shared Swift packages where relevant.
 - Treat Axo as an existing project: reuse its models, navigation, service boundaries, and nearby conventions rather than scaffolding a new app architecture. Preserve accepted protocol/RFD contracts.
+- For AxoPhone's compact Sessions sidebar proportions and interaction, follow the sidebar design contract in `../axo-development/SKILL.md`.
 - Check `apple/project.yml` before using newer APIs; preserve the current iOS 18.0 / Swift 5.0 baseline unless explicitly approved.
 
 ## Quick start

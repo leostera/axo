@@ -49,7 +49,8 @@ struct ConversationView: View {
     @State private var sheet: ChatSheet?
     @State private var error: String?
     @State private var scrollState = ConversationScrollState()
-    @State private var scrollMetrics: ScrollMetrics?
+    @State private var isNearTop = false
+    @State private var latestScrollIsScheduled = false
     @State private var queuedEarlierDemand = false
     #if DEBUG
     @State private var previewNewMessages: [ConversationMessage] = []
@@ -154,17 +155,6 @@ struct ConversationView: View {
         conversation
             .background(ChatColors.background)
             .preferredColorScheme(appearance.colorScheme)
-            .simultaneousGesture(
-                DragGesture(minimumDistance: 24)
-                    .onEnded { value in
-                        guard !voice.isBusy,
-                              value.startLocation.x <= 24,
-                              value.translation.width >= 80,
-                              abs(value.translation.height) < 80 else { return }
-                        composerFocused = false
-                        showSidebar()
-                    }
-            )
             .task {
                 #if DEBUG
                 if SharedFilePreview.enabled {
@@ -313,7 +303,7 @@ struct ConversationView: View {
             .defaultScrollAnchor(.bottom, for: .initialOffset)
             .onScrollPhaseChange { _, phase in
                 userIsScrolling = phase == .tracking || phase == .interacting || phase == .decelerating
-                if phase == .idle, followsLatest { proxy.scrollTo("latest", anchor: .bottom) }
+                if phase == .idle, followsLatest { scheduleScrollToLatest(using: proxy) }
             }
             .onScrollGeometryChange(for: ScrollMetrics.self) { geometry in
                 let offset = geometry.contentOffset.y + geometry.contentInsets.top
@@ -323,16 +313,20 @@ struct ConversationView: View {
                                      nearTop: offset < geometry.containerSize.height / 2,
                                      nearBottom: offset >= bottom - 60)
             } action: { old, new in
-                scrollMetrics = new
-                // Streaming/layout growth must not switch off follow-latest.
-                if followsLatest && !userIsScrolling && (old.contentHeight != new.contentHeight || !new.nearBottom) {
-                    proxy.scrollTo("latest", anchor: .bottom)
+                if isNearTop != new.nearTop { isNearTop = new.nearTop }
+                // Keep streaming growth pinned without feeding a scroll update
+                // back into this geometry callback in the same frame.
+                if followsLatest && !userIsScrolling && old.contentHeight != new.contentHeight {
+                    scheduleScrollToLatest(using: proxy)
                 }
                 // Page insertion/reconnect are not user demand. The bound anchor
                 // keeps the same message visible as older rows are prepended.
                 guard userIsScrolling, old.contentHeight == new.contentHeight, old.offset != new.offset else { return }
-                scrollState.userScrolled(isAtLatest: new.nearBottom && !client.hasLaterMessages)
-                client.isBrowsingHistory = !followsLatest
+                let isAtLatest = new.nearBottom && !client.hasLaterMessages
+                if scrollState.followsLatest != isAtLatest || (isAtLatest && scrollState.hasNewMessages) {
+                    scrollState.userScrolled(isAtLatest: isAtLatest)
+                    client.isBrowsingHistory = !isAtLatest
+                }
                 if new.offset < old.offset && new.nearTop {
                     if client.isLoadingHistory { queuedEarlierDemand = true }
                     else { client.loadEarlierMessages() }
@@ -344,7 +338,7 @@ struct ConversationView: View {
                 queuedEarlierDemand = false
                 // Consume at most one queued, user-generated demand. Never
                 // recurse through every historical page just because it exists.
-                if !followsLatest, scrollMetrics?.nearTop == true { client.loadEarlierMessages() }
+                if !followsLatest, isNearTop { client.loadEarlierMessages() }
             }
             .onChange(of: latestMessageID) { previous, next in
                 scrollState.latestMessageChanged(from: previous, to: next)
@@ -355,63 +349,44 @@ struct ConversationView: View {
                     queuedEarlierDemand = false
                 }
             }
-            .onChange(of: messages) { _, _ in
-                if followsLatest && !userIsScrolling { proxy.scrollTo("latest", anchor: .bottom) }
-            }
-            .onChange(of: client.pendingPrompts) { _, _ in
-                if followsLatest && !userIsScrolling { proxy.scrollTo("latest", anchor: .bottom) }
-            }
-            .onChange(of: agentActivities) { _, _ in
-                if followsLatest && !userIsScrolling { proxy.scrollTo("latest", anchor: .bottom) }
-            }
             .onChange(of: scrollRequest) { _, _ in
                 withAnimation { proxy.scrollTo("latest", anchor: .bottom) }
             }
         }
     }
 
+    private func scheduleScrollToLatest(using proxy: ScrollViewProxy) {
+        guard !latestScrollIsScheduled else { return }
+        latestScrollIsScheduled = true
+        Task { @MainActor in
+            await Task.yield()
+            if followsLatest && !userIsScrolling {
+                proxy.scrollTo("latest", anchor: .bottom)
+            }
+            latestScrollIsScheduled = false
+        }
+    }
+
     private var header: some View {
         ZStack {
             headerTitle
-            HStack(spacing: 16) {
+            HStack {
                 Button { composerFocused = false; showSidebar() } label: {
-                    Image(systemName: "line.3.horizontal").font(.system(size: 21, weight: .medium))
-                        .frame(width: 46, height: 46)
-                        .background(.ultraThinMaterial, in: Circle())
+                    VStack(spacing: 4) {
+                        Capsule().frame(width: 16, height: 2)
+                        Capsule().frame(width: 16, height: 2)
+                    }
+                    .frame(width: 44, height: 44)
+                    .background(.ultraThinMaterial, in: Circle())
                         .overlay(Circle().stroke(ChatColors.border, lineWidth: 0.5))
                 }.accessibilityLabel("Sessions menu").disabled(voice.isBusy)
                 Spacer(minLength: 0)
-                headerActions
             }
         }
         .buttonStyle(.plain)
         .foregroundStyle(.primary)
-        .padding(.horizontal, 18).padding(.top, 6).padding(.bottom, 10)
+        .padding(.horizontal, 14).padding(.top, 0).padding(.bottom, 10)
         .background(ChatColors.background.opacity(0.96))
-    }
-
-    private var headerActions: some View {
-        HStack(spacing: 0) {
-            Button { composerFocused = true } label: {
-                Image(systemName: "square.and.pencil").font(.system(size: 21)).frame(width: 45, height: 46)
-            }.accessibilityLabel("Write a message")
-            Menu {
-                Button("Session files", systemImage: "folder") { sheet = .files }
-                    .disabled(fileClient == nil)
-                #if DEBUG
-                if ProcessInfo.processInfo.arguments.contains("--axo-live-history-preview") {
-                    Button("Add synthetic message") {
-                        if let message = ChatPreviewData.newMessage() { previewNewMessages.append(message) }
-                    }
-                }
-                #endif
-            } label: {
-                Image(systemName: "ellipsis").font(.system(size: 21, weight: .semibold)).frame(width: 44, height: 46)
-            }.accessibilityLabel("Chat options")
-        }
-        .padding(.horizontal, 5)
-        .background(.ultraThinMaterial, in: Capsule())
-        .overlay(Capsule().stroke(ChatColors.border, lineWidth: 0.5))
     }
 
     private var headerTitle: some View {
@@ -473,10 +448,22 @@ struct ConversationView: View {
                          attachCamera: { Task { @MainActor in beginCameraCapture() } },
                          fileClient: fileClient, canAttachPhotos: !isPreparingPhotos && (fileClient?.currentDrafts.count ?? 0) < 8,
                          reviewUpload: { id in if let files = fileClient { publication = FilePublication(client: files, draftIDs: [id]) } },
+                         openFiles: { sheet = .files }, debugAction: debugAddSyntheticMessage,
                          pasteAttachments: pasteAttachments)
         }
         .padding(.top, 10).padding(.bottom, 8)
     }
+
+    #if DEBUG
+    private var debugAddSyntheticMessage: (() -> Void)? {
+        guard ProcessInfo.processInfo.arguments.contains("--axo-live-history-preview") else { return nil }
+        return {
+            if let message = ChatPreviewData.newMessage() { previewNewMessages.append(message) }
+        }
+    }
+    #else
+    private var debugAddSyntheticMessage: (() -> Void)? { nil }
+    #endif
 
     private func reconnect() {
         let restoredOrigin = RelayEndpoint.restoredOrigin(UserDefaults.standard.string(forKey: "relayEndpoint"))

@@ -6,13 +6,37 @@ final class WorkbenchShellUITests: XCTestCase {
         let app = XCUIApplication()
         app.launchArguments = ["--axo-workbench-preview"]
         app.launch()
-        XCTAssertTrue(app.staticTexts["conversation-title"].waitForExistence(timeout: 10))
+        let conversationTitle = app.staticTexts["conversation-title"]
+        XCTAssertTrue(conversationTitle.waitForExistence(timeout: 10))
 
         let start = app.coordinate(withNormalizedOffset: CGVector(dx: 0.01, dy: 0.5))
         let end = app.coordinate(withNormalizedOffset: CGVector(dx: 0.7, dy: 0.5))
         start.press(forDuration: 0.05, thenDragTo: end)
 
         XCTAssertTrue(app.staticTexts["workbench-menu-title"].waitForExistence(timeout: 3))
+        XCTAssertFalse(conversationTitle.exists)
+        let settings = app.buttons["Settings"]
+        XCTAssertTrue(settings.waitForExistence(timeout: 3))
+        XCTAssertTrue(settings.isHittable)
+        settings.tap()
+        XCTAssertTrue(app.navigationBars["Settings"].waitForExistence(timeout: 3))
+    }
+
+    @MainActor
+    func testSwipeFromChatSideClosesSessionMenu() throws {
+        let app = XCUIApplication()
+        app.launchArguments = ["--axo-workbench-preview"]
+        app.launch()
+        XCTAssertTrue(app.buttons["Sessions menu"].waitForExistence(timeout: 10))
+
+        app.buttons["Sessions menu"].tap()
+        XCTAssertTrue(app.staticTexts["workbench-menu-title"].waitForExistence(timeout: 3))
+
+        let start = app.coordinate(withNormalizedOffset: CGVector(dx: 0.96, dy: 0.5))
+        let end = app.coordinate(withNormalizedOffset: CGVector(dx: 0.70, dy: 0.5))
+        start.press(forDuration: 0.05, thenDragTo: end)
+
+        XCTAssertTrue(app.staticTexts["conversation-title"].waitForExistence(timeout: 3))
     }
 
     @MainActor
