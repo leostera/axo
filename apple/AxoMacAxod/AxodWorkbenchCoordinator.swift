@@ -87,12 +87,18 @@ final class AxodWorkbenchCoordinator {
                 updateStartupMessage(for: service.status)
             } catch {
                 updateStartupMessage(for: service.status, registrationFailed: true)
+                startupMessage = "Axo could not register for login startup: \(error.localizedDescription)"
             }
         case .requiresApproval:
             updateStartupMessage(for: service.status)
         case .notFound:
-            startupMessage = "Axo could not register itself for login startup from this app location."
-            needsLoginItemsReview = true
+            do {
+                try service.register()
+                updateStartupMessage(for: service.status)
+            } catch {
+                startupMessage = "Axo could not register for login startup: \(error.localizedDescription)"
+                needsLoginItemsReview = true
+            }
         @unknown default:
             startupMessage = "Axo's login startup status is unavailable."
             needsLoginItemsReview = true
@@ -121,12 +127,18 @@ final class AxodWorkbenchCoordinator {
                 updateDaemonServiceMessage(for: service.status)
             } catch {
                 updateDaemonServiceMessage(for: service.status, registrationFailed: true)
+                daemonServiceMessage = "Axo could not register the axod LaunchAgent: \(error.localizedDescription)"
             }
         case .requiresApproval:
             updateDaemonServiceMessage(for: service.status)
         case .notFound:
-            daemonServiceMessage = "The bundled axod LaunchAgent was not found. Rebuild the app package."
-            needsDaemonServiceReview = true
+            do {
+                try service.register()
+                updateDaemonServiceMessage(for: service.status)
+            } catch {
+                daemonServiceMessage = "Axo could not register the axod LaunchAgent: \(error.localizedDescription)"
+                needsDaemonServiceReview = true
+            }
         @unknown default:
             daemonServiceMessage = "The axod LaunchAgent status is unavailable."
             needsDaemonServiceReview = true
@@ -183,6 +195,11 @@ final class AxodWorkbenchCoordinator {
 
     func connect() {
         guard connectTask == nil else { return }
+        guard SMAppService.agent(plistName: Self.axodAgentPlistName).status == .enabled else {
+            connectionState = .failed(daemonServiceMessage)
+            message = daemonServiceMessage
+            return
+        }
         let operation = UUID()
         operationGeneration = operation
         let oldConnection = connection

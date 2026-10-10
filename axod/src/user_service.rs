@@ -144,17 +144,17 @@ mod tests {
     fn instance_state_is_isolated_and_rejects_path_syntax() {
         let home = TestDirectory::new();
         let stable = ensure_state_directory(home.path(), None).unwrap();
-        let preview = ensure_state_directory(home.path(), Some("preview-2")).unwrap();
+        let instance = ensure_state_directory(home.path(), Some("2")).unwrap();
         assert_eq!(
             stable,
             home.path().join("Library/Application Support/Axo/Axod")
         );
         assert_eq!(
-            preview,
+            instance,
             home.path()
-                .join("Library/Application Support/Axo/Instances/preview-2/Axod")
+                .join("Library/Application Support/Axo/Instances/2/Axod")
         );
-        assert_ne!(stable, preview);
+        assert_ne!(stable, instance);
         assert!(ensure_state_directory(home.path(), Some("../shared")).is_err());
         assert!(ensure_state_directory(home.path(), Some("Preview")).is_err());
     }

@@ -412,39 +412,50 @@ struct AxodWorkbenchView: View {
     }
 
     private var settingsSheet: some View {
-        VStack(alignment: .leading, spacing: 16) {
-            Text("Settings")
-                .font(.title2.weight(.semibold))
-            Divider()
-            Text("Startup")
-                .font(.headline)
-            Text(coordinator.startupMessage)
-                .foregroundStyle(.secondary)
-            Text("Background daemon")
-                .font(.headline)
-            Text(coordinator.daemonServiceMessage)
-                .foregroundStyle(.secondary)
-            if coordinator.needsLoginItemsReview || coordinator.needsDaemonServiceReview {
-                Button("Review Login Items…") { coordinator.openLoginItemsSettings() }
+        VStack(spacing: 0) {
+            ScrollView {
+                VStack(alignment: .leading, spacing: 16) {
+                    Text("Settings")
+                        .font(.title2.weight(.semibold))
+                    Divider()
+                    Text("Startup")
+                        .font(.headline)
+                    Text(coordinator.startupMessage)
+                        .foregroundStyle(.secondary)
+                        .fixedSize(horizontal: false, vertical: true)
+                    Text("Background daemon")
+                        .font(.headline)
+                    Text(coordinator.daemonServiceMessage)
+                        .foregroundStyle(.secondary)
+                        .fixedSize(horizontal: false, vertical: true)
+                    if coordinator.needsLoginItemsReview || coordinator.needsDaemonServiceReview {
+                        Button("Review Login Items…") { coordinator.openLoginItemsSettings() }
+                    }
+                    Text("Axo opens at user login. The bundled axod executable runs independently as a per-user LaunchAgent and is not a system-wide LaunchDaemon.")
+                        .font(.callout)
+                        .foregroundStyle(.secondary)
+                        .fixedSize(horizontal: false, vertical: true)
+                    Divider()
+                    Text("Local daemon")
+                        .font(.headline)
+                    Text("Axo connects to the local daemon over AxoProtocol. Managed Pi chat uses addressed session/chat RPC; native terminal attachment remains a separate capability.")
+                        .font(.callout)
+                        .foregroundStyle(.secondary)
+                        .fixedSize(horizontal: false, vertical: true)
+                }
+                .frame(maxWidth: .infinity, alignment: .leading)
+                .padding(24)
             }
-            Text("Axo opens at user login. The bundled axod executable runs independently as a per-user LaunchAgent and is not a system-wide LaunchDaemon.")
-                .font(.callout)
-                .foregroundStyle(.secondary)
             Divider()
-            Text("Local daemon")
-                .font(.headline)
-            Text("Axo connects to the local daemon over AxoProtocol. Managed Pi chat uses addressed session/chat RPC; native terminal attachment remains a separate capability.")
-                .font(.callout)
-                .foregroundStyle(.secondary)
-            Spacer()
             HStack {
                 Spacer()
                 Button("Done") { showingSettings = false }
                     .keyboardShortcut(.defaultAction)
             }
+            .padding(.horizontal, 24)
+            .padding(.vertical, 14)
         }
-        .padding(24)
-        .frame(width: 520, height: 360)
+        .frame(width: 600, height: 460)
     }
 
     private var selectedSession: WorkSessionRecord? {

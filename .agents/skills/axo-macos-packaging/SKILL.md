@@ -32,10 +32,10 @@ Run affected layout or phone tests as appropriate. A shared AxoCore change also 
 `Axo.app` allows multiple app processes (`LSMultipleInstancesProhibited=false`); `open -n <path-to-Axo.app>` explicitly requests a separate process, and clients from the same bundle connect to that bundle's one Axod service. To build and test two app/daemon versions side by side without sharing daemon state or LaunchAgent identity, build a named variant and distinct output:
 
 ```bash
-AXO_INSTANCE_ID=preview-1 AXO_OUTPUT_APP="$PWD/dist/Axo-preview-1.app" bash scripts/build-mac.sh
+AXO_INSTANCE_ID=2 AXO_OUTPUT_APP="$PWD/dist/Axo-2.app" bash scripts/build-mac.sh
 ```
 
-The variant receives a distinct bundle identifier, LaunchAgent label, and private state directory under `~/Library/Application Support/Axo/Instances/preview-1/Axod`. Its app bundle still includes its own `axod`. Give each concurrently tested daemon build a fresh instance ID/output path: named app bundles are intentionally not replaced, avoiding accidental reuse of an older registered daemon. Launch a variant with `open -n "$PWD/dist/Axo-preview-1.app"`. The default bundle keeps the existing `~/Library/Application Support/Axo/Axod` location.
+The variant receives a distinct bundle identifier, LaunchAgent label, and private state directory under `~/Library/Application Support/Axo/Instances/2/Axod`. Its app bundle still includes its own `axod`. Give each concurrently tested daemon build a fresh instance ID/output path: named app bundles are intentionally not replaced, avoiding accidental reuse of an older registered daemon. Launch a variant with `open -n "$PWD/dist/Axo-2.app"`. The default bundle keeps the existing `~/Library/Application Support/Axo/Axod` location.
 
 ## Safe bundle replacement
 
