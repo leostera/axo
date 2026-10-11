@@ -7,6 +7,7 @@ final class TerminalView: NSView, NSTextInputClient {
     private let runtime: GhosttyRuntime
     private(set) var surface: ghostty_surface_t?
     let runtimeGeneration = UUID()
+    private(set) var focusGeneration = UUID()
     private var marked = NSAttributedString(string: "")
     private var tracking: NSTrackingArea?
     private var keyEvent: NSEvent?
@@ -103,12 +104,12 @@ final class TerminalView: NSView, NSTextInputClient {
 
     override func becomeFirstResponder() -> Bool {
         let result = super.becomeFirstResponder()
-        if result { onFocus?(); updateWindowState() }
+        if result { focusGeneration = UUID(); onFocus?(); updateWindowState() }
         return result
     }
     override func resignFirstResponder() -> Bool {
         let result = super.resignFirstResponder()
-        if result { setFocus(false) }
+        if result { focusGeneration = UUID(); setFocus(false) }
         return result
     }
 

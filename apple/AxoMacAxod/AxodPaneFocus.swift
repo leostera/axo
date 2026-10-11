@@ -5,5 +5,6 @@ import AppKit
     let source: TerminalLaunch.Key
     let destination: TerminalLaunch.Key
     let viewportID: UUID
+    let responderGeneration: UUID
     weak var window: NSWindow?
 }

@@ -896,7 +896,7 @@ final class AxodWorkbenchCoordinator {
               let destinationKey = currentTerminalKey(move.destination, in: session),
               let destination = terminalSurfaces.presentation(for: destinationKey), destination.window === window,
               destination.viewportID == source.viewportID else { return nil }
-        return AxodPaneFocus(move: move, source: source.key, destination: destinationKey, viewportID: source.viewportID, window: window)
+        return AxodPaneFocus(move: move, source: source.key, destination: destinationKey, viewportID: source.viewportID, responderGeneration: source.view.focusGeneration, window: window)
     }
     @discardableResult func focusPane(_ direction: AxodPaneFocusDirection, in window: NSWindow) -> Bool {
         guard let request = capturePaneFocus(direction, in: window) else { return false }
@@ -908,6 +908,7 @@ final class AxodWorkbenchCoordinator {
               currentTerminalKey(request.destination.paneID, in: session) == request.destination,
               let source = terminalSurfaces.presentation(for: request.source), let destination = terminalSurfaces.presentation(for: request.destination),
               source.window === window, destination.window === window, window.firstResponder === source.view,
+              source.view.focusGeneration == request.responderGeneration,
               source.viewportID == request.viewportID, destination.viewportID == request.viewportID else { return false }
         return window.makeFirstResponder(destination.view)
     }

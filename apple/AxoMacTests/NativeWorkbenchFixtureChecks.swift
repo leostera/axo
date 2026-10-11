@@ -624,10 +624,12 @@ struct NativeWorkbenchFixtureChecks {
         precondition(piPresentation.key.paneID == session.pi.paneId && !coordinator.focusPane(.left, in: window))
         precondition(coordinator.focusPane(.next, in: window) && window.firstResponder === shellView)
         precondition(coordinator.focusPane(.previous, in: window) && window.firstResponder === piPresentation.view)
+        let beforeEditor = coordinator.capturePaneFocus(.right, in: window)!
         let editor = NSTextView(frame: .zero)
         window.contentView!.addSubview(editor)
         precondition(window.makeFirstResponder(editor) && !coordinator.focusPane(.right, in: window))
-        precondition(window.firstResponder === editor && window.makeFirstResponder(shellView))
+        precondition(window.firstResponder === editor && window.makeFirstResponder(piPresentation.view))
+        precondition(!coordinator.applyPaneFocus(beforeEditor) && window.makeFirstResponder(shellView))
         editor.removeFromSuperview()
         let competing = AxodTerminalHostView()
         competing.install(launch: rightLaunch, surfaces: coordinator.terminalSurfaces, inputEnabled: true, viewportID: UUID(), onFocus: {})
