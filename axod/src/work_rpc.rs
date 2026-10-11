@@ -64,7 +64,7 @@ struct WorkspaceTarget {
 struct SessionTarget {
     machine_id: MachineId,
     host_generation: HostGeneration,
-    workspace_id: WorkspaceId,
+    workspace_id: Option<WorkspaceId>,
     session_id: SessionId,
 }
 #[derive(Deserialize)]
@@ -84,6 +84,7 @@ struct CreateLocalWorkspace {
     expected_revision: u64,
     directory_path: String,
     name: String,
+    initial_session_name: Option<String>,
 }
 #[derive(Deserialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
@@ -96,10 +97,17 @@ struct RenameWorkspace {
 #[derive(Deserialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 struct CreateSession {
-    target: WorkspaceTarget,
+    target: SessionCreationTarget,
     command_id: CommandId,
     expected_revision: u64,
     name: String,
+}
+#[derive(Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+struct SessionCreationTarget {
+    machine_id: MachineId,
+    host_generation: HostGeneration,
+    workspace_id: Option<WorkspaceId>,
 }
 #[derive(Deserialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
@@ -361,8 +369,20 @@ fn session_view(session: SessionRecord, runtimes: &[TerminalSnapshot], manager: 
         .map_or(crate::managed::Admission::NotAdmitted, |binding| {
             crate::managed::admission(manager, session.session_id, Some(binding.runtime))
         });
+    let title = manager
+        .managed_live
+        .lock()
+        .unwrap()
+        .get(&session.session_id)
+        .and_then(|running| running.control.current().ok())
+        .and_then(|state| state.title)
+        .or_else(|| {
+            binding
+                .as_ref()
+                .and_then(|b| crate::managed::title::canonical_title(&b.file))
+        });
     let chat_id = binding.map(|binding| binding.chat_id);
-    json!({"sessionId":session.session_id,"workspaceId":session.workspace_id,"name":session.name,"nameSource":"manual","pi":{"paneId":session.pi_pane_id,"chatId":chat_id,"admission":admission},"runtime":runtime,"shellPanes":crate::panes::session_views(session.session_id, manager)})
+    json!({"sessionId":session.session_id,"workspaceId":session.workspace_id,"name":session.name,"nameSource":"manual","pi":{"paneId":session.pi_pane_id,"chatId":chat_id,"admission":admission,"title":title},"runtime":runtime,"shellPanes":crate::panes::session_views(session.session_id, manager)})
 }
 fn command_get(params: Option<Value>, manager: &Manager, machine: MachineId) -> Outcome {
     let params: GetCommand = parse(params)?;
@@ -381,7 +401,11 @@ struct WorkCommand {
     command: CommandId,
     intent: WorkIntent,
 }
-fn work_command(method: &str, params: Option<Value>) -> Result<WorkCommand, (i32, &'static str)> {
+fn work_command(
+    method: &str,
+    params: Option<Value>,
+    manager: &Manager,
+) -> Result<WorkCommand, (i32, &'static str)> {
     Ok(match method {
         "axo.workspace.create" => {
             let p: CreateWorkspace = parse(params)?;
@@ -403,6 +427,7 @@ fn work_command(method: &str, params: Option<Value>) -> Result<WorkCommand, (i32
                 intent: WorkIntent::CreateLocalWorkspace {
                     directory: LocalDirectoryPath::parse(p.directory_path).map_err(failure)?,
                     name: p.name,
+                    initial_session_name: p.initial_session_name,
                     expected_revision: p.expected_revision,
                 },
             }
@@ -430,10 +455,20 @@ fn work_command(method: &str, params: Option<Value>) -> Result<WorkCommand, (i32
                     host_generation: p.target.host_generation,
                 },
                 command: p.command_id,
-                intent: WorkIntent::CreateSession {
-                    workspace_id: p.target.workspace_id,
-                    name: p.name,
-                    expected_revision: p.expected_revision,
+                intent: match p.target.workspace_id {
+                    Some(workspace_id) => WorkIntent::CreateSession {
+                        workspace_id,
+                        name: p.name,
+                        expected_revision: p.expected_revision,
+                    },
+                    None => WorkIntent::CreateStandaloneSession {
+                        directory: manager
+                            .user_home
+                            .clone()
+                            .ok_or((-32003, "Captured user home unavailable"))?,
+                        name: p.name,
+                        expected_revision: p.expected_revision,
+                    },
                 },
             }
         }
@@ -463,7 +498,7 @@ fn mutate(
     machine: MachineId,
     profiles: &BTreeMap<String, TerminalLaunch>,
 ) -> Outcome {
-    let request = work_command(method, params)?;
+    let request = work_command(method, params, manager)?;
     validate_target(
         request.target.machine_id,
         request.target.host_generation,
@@ -479,6 +514,10 @@ fn mutate(
         }
         WorkRecord::Session(session) => {
             json!({"hostGeneration":manager.generation,"revision":committed.revision,"session":session_view(session, &manager.list(), manager)})
+        }
+        WorkRecord::WorkspaceSession { workspace, session } => {
+            json!({"hostGeneration":manager.generation,"revision":committed.revision,"workspace":workspace,
+                "session":session_view(session, &manager.list(), manager)})
         }
     })
 }

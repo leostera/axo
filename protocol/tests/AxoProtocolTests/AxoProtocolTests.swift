@@ -188,7 +188,7 @@ final class AxoProtocolTests: XCTestCase {
             commandId: UUID(), expectedRevision: revision, name: "Renamed"
         ))
         try AxoProtocolWorkRequestValidator.validate(SessionCreateParameters(
-            target: WorkWorkspaceTarget(machineId: machine, hostGeneration: host, workspaceId: workspace),
+            target: WorkSessionDestination(machineId: machine, hostGeneration: host, workspaceId: workspace),
             commandId: UUID(), expectedRevision: revision, name: "New session"
         ))
         try AxoProtocolWorkRequestValidator.validate(SessionRenameParameters(
@@ -229,7 +229,7 @@ final class AxoProtocolTests: XCTestCase {
 
         let createdSession = try value(#"{"hostGeneration":"22222222-2222-4222-8222-222222222222","revision":7,"session":{"sessionId":"44444444-4444-4444-8444-444444444444","workspaceId":"33333333-3333-4333-8333-333333333333","name":"Session","nameSource":"manual","pi":{"paneId":"55555555-5555-4555-8555-555555555555","chatId":null,"admission":"notAdmitted"},"runtime":null}}"#)
         XCTAssertEqual(try AxoProtocolResultValidator.sessionCreate(
-            createdSession, target: workspaceTarget, expectedRevision: WorkRevision(rawValue: 6)!, name: "Session"
+            createdSession, target: WorkSessionDestination(machineId: machine, hostGeneration: host, workspaceId: workspace), expectedRevision: WorkRevision(rawValue: 6)!, name: "Session"
         ).session.pi.paneId, pane)
 
         let renamedSession = try value(#"{"hostGeneration":"22222222-2222-4222-8222-222222222222","revision":8,"session":{"sessionId":"44444444-4444-4444-8444-444444444444","workspaceId":"33333333-3333-4333-8333-333333333333","name":"Renamed session","nameSource":"manual","pi":{"paneId":"55555555-5555-4555-8555-555555555555","chatId":null,"admission":"notAdmitted"},"runtime":null}}"#)

@@ -171,6 +171,19 @@ fn serve(mut stream: TcpStream, requests: &AtomicUsize) {
         .is_some_and(|message| {
             message["content"]
                 .to_string()
+                .contains("TITLE_AND_ACTUAL_TOOL")
+        })
+    {
+        json!({"tool_calls":[
+            {"index":0,"id":format!("bash-{count}"),"type":"function","function":{"name":"bash","arguments":"{\"command\":\"printf Pi-owned-tool > marker.txt\"}"}},
+            {"index":1,"id":format!("title-{count}"),"type":"function","function":{"name":"axo_set_title","arguments":"{\"title\":\"Axo Workbench\"}"}}
+        ]})
+    } else if body["messages"]
+        .as_array()
+        .and_then(|messages| messages.last())
+        .is_some_and(|message| {
+            message["content"]
+                .to_string()
                 .contains("ASK_OWNED_QUESTION")
         })
     {

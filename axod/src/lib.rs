@@ -24,6 +24,8 @@ pub mod terminal;
 mod terminal_lifecycle_tests;
 #[cfg(test)]
 mod test_support;
+mod upgrade;
+mod user_path;
 pub mod user_service;
 pub mod work;
 #[cfg(test)]
@@ -31,3 +33,5 @@ mod work_lifecycle_tests;
 #[cfg(test)]
 mod work_local_tests;
 mod work_rpc;
+#[cfg(test)]
+mod work_standalone_tests;

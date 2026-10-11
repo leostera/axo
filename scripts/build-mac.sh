@@ -36,6 +36,9 @@ if [[ ! -x "$APP/Contents/Helpers/axod" ]]; then
   exit 1
 fi
 
+# Bundle the installable Axo adapter and its schema libraries, not the ambient Pi engine.
+node "$ROOT/scripts/build-pi-adapter.mjs" "$APP/Contents/Resources/pi-axo/index.mjs"
+
 AGENT_PLIST="$APP/Contents/Library/LaunchAgents/dev.leostera.axo.axod.plist"
 mkdir -p "$(dirname "$AGENT_PLIST")"
 install -m 0644 "$ROOT/apple/AxoMacAxod/dev.leostera.axo.axod.plist" "$AGENT_PLIST"

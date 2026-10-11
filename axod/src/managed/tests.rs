@@ -55,7 +55,7 @@ impl Fixture {
         let target = SessionTarget {
             machine_id: MachineId::new(),
             host_generation: HostGeneration::new(),
-            workspace_id: workspace.workspace_id,
+            workspace_id: Some(workspace.workspace_id),
             session_id: session.session_id,
             pane_id: session.pi_pane_id,
         };

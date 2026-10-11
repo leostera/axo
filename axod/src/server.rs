@@ -46,8 +46,10 @@ pub fn serve_with_pi(
     if !journal.panes.lock().unwrap().belongs_to(machine) {
         return Err(io::Error::other("Pane state belongs to another machine"));
     }
-    let manager = Arc::new(Manager::new(journal));
+    let mut manager = Manager::new(journal);
+    manager.normal_path = pi.as_ref().and_then(|policy| policy.normal_path.clone());
     *manager.managed_policy.lock().unwrap() = pi;
+    let manager = Arc::new(manager);
     let stopping = Arc::new(AtomicBool::new(false));
     let term = signal_hook::flag::register(libc::SIGTERM, stopping.clone())?;
     let interrupt = match signal_hook::flag::register(libc::SIGINT, stopping.clone()) {

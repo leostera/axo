@@ -205,13 +205,17 @@ public enum PiProtocolValidator {
 
     private static func validSessionTarget(_ value: JSONValue?) -> Bool {
         guard let fields = object(value, keys: ["machineId", "hostGeneration", "workspaceId", "sessionId", "paneId"]) else { return false }
-        return fields.values.allSatisfy { uuid($0) != nil }
+        return fields.allSatisfy { key, value in
+            key == "workspaceId" ? value.isNull || uuid(value) != nil : uuid(value) != nil
+        }
     }
 
     private static func validChatTarget(_ value: JSONValue?, session: PiSessionTarget? = nil) -> Bool {
         guard let fields = object(value, keys: ["machineId", "hostGeneration", "workspaceId", "sessionId", "paneId",
                                                "runtimeHostGeneration", "runtimeGeneration", "chatId"]),
-              fields.values.allSatisfy({ uuid($0) != nil }) else { return false }
+              fields.allSatisfy({ key, value in
+                  key == "workspaceId" ? value.isNull || uuid(value) != nil : uuid(value) != nil
+              }) else { return false }
         guard let session else { return true }
         return uuid(fields["machineId"]) == session.machineId
             && uuid(fields["hostGeneration"]) == session.hostGeneration

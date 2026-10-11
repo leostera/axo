@@ -2,7 +2,7 @@ import { z } from "zod";
 import { destinationSchema, uuid } from "./identity.js";
 import { runtimeRefSchema, terminalSchema } from "./runtime-contracts.js";
 
-export const paneSessionTargetSchema = destinationSchema.extend({ workspaceId: uuid, sessionId: uuid }).strict();
+export const paneSessionTargetSchema = destinationSchema.extend({ workspaceId: uuid.nullable().default(null), sessionId: uuid }).strict();
 const profileId = z.string().regex(/^[a-zA-Z0-9_-]{1,64}$/);
 export const paneIntentSchema = z.discriminatedUnion("operation", [
   z.object({ operation: z.literal("addPane"), target: paneSessionTargetSchema, profileId }).strict(),

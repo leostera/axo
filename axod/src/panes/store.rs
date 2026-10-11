@@ -15,7 +15,7 @@ const MAX_BYTES: usize = 4 * 1024 * 1024;
 pub struct SessionTarget {
     pub machine_id: MachineId,
     pub host_generation: HostGeneration,
-    pub workspace_id: WorkspaceId,
+    pub workspace_id: Option<WorkspaceId>,
     pub session_id: SessionId,
 }
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
@@ -56,7 +56,7 @@ pub enum PaneState {
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct PaneRecord {
     pub pane_id: PaneId,
-    pub workspace_id: WorkspaceId,
+    pub workspace_id: Option<WorkspaceId>,
     pub session_id: SessionId,
     pub profile_id: String,
     pub add_command: CommandId,

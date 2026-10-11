@@ -280,7 +280,9 @@ struct AxodNativeWorkbenchSplitView: NSViewRepresentable {
             lastSnapshot = snapshot
             refreshCompactSidebar(snapshot)
 
-            sidebarItems = [Item(heading: "Workspaces")]
+            sidebarItems = [Item(heading: "Standalone Sessions")]
+            sidebarItems.append(contentsOf: sessions.filter { $0.workspaceId == nil }.map(Item.init(session:)))
+            sidebarItems.append(Item(heading: "Workspaces"))
             for workspace in workspaces {
                 let item = Item(workspace: workspace)
                 item.children = sessions
@@ -300,8 +302,8 @@ struct AxodNativeWorkbenchSplitView: NSViewRepresentable {
             let selectedItem = sidebarItems
                 .flatMap { [$0] + $0.children }
                 .first {
-                    $0.session?.sessionId == selectedSessionID ||
-                    (selectedSessionID == nil && $0.workspace?.workspaceId == selectedWorkspaceID)
+                    (selectedSessionID != nil && $0.session?.sessionId == selectedSessionID) ||
+                    (selectedSessionID == nil && selectedWorkspaceID != nil && $0.workspace?.workspaceId == selectedWorkspaceID)
                 }
             if let selectedItem {
                 let row = outline.row(forItem: selectedItem)
@@ -323,7 +325,10 @@ struct AxodNativeWorkbenchSplitView: NSViewRepresentable {
                     .map { AxodCompactSidebarView.Item(destination: .session($0.sessionId), name: $0.name,
                                                        selected: $0.sessionId == snapshot.selectedSessionID) }
             }
-            compactSidebar.update(items: items)
+            let standalone = snapshot.sessions.filter { $0.workspaceId == nil }
+                .map { AxodCompactSidebarView.Item(destination: .session($0.sessionId), name: $0.name,
+                                                   selected: $0.sessionId == snapshot.selectedSessionID) }
+            compactSidebar.update(items: standalone + items)
         }
 
         private func setSidebarCollapsed(_ collapsed: Bool) {
@@ -434,7 +439,7 @@ struct AxodNativeWorkbenchSplitView: NSViewRepresentable {
                 if case .running? = session.runtime?.process { running = true }
                 else { running = false }
                 return WorkspaceSidebarRow(
-                    name: session.name,
+                    name: session.displayName,
                     workspace: false,
                     running: running,
                     actions: actions,

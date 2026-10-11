@@ -20,8 +20,20 @@ pub fn serve(instance_id: Option<&str>) -> io::Result<()> {
         config.use_host_identity();
     }
     let profiles = read_optional(&profiles_path, crate::profiles::Profiles::read)?;
-    let pi = read_optional(&pi_path, crate::PiPolicy::read)?;
-    crate::server::serve_with_pi(&root, relay, profiles, pi)
+    let mut pi = match read_optional(&pi_path, crate::PiPolicy::read)? {
+        Some(policy) => policy,
+        None => {
+            let executable = std::env::current_exe()?;
+            let contents = executable
+                .parent()
+                .and_then(Path::parent)
+                .ok_or_else(|| io::Error::other("Installed Axo adapter location unavailable"))?;
+            crate::PiPolicy::for_user(contents.join("Resources/pi-axo/index.mjs"), &root)?
+        }
+    };
+    // Missing/unsupported Pi never takes the metadata daemon offline. Report it at admission.
+    pi.normal_path = crate::user_path::CapturedPath::capture(&home).ok();
+    crate::server::serve_with_pi(&root, relay, profiles, Some(pi))
 }
 
 fn ensure_state_directory(home: &Path, instance_id: Option<&str>) -> io::Result<PathBuf> {

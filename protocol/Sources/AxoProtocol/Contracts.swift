@@ -411,10 +411,18 @@ public struct SessionListParameters: Encodable, Sendable {
 public struct WorkSessionTarget: Codable, Equatable, Sendable {
     public let machineId: UUID
     public let hostGeneration: UUID
-    public let workspaceId: UUID
+    public let workspaceId: UUID?
     public let sessionId: UUID
 
-    public init(machineId: UUID, hostGeneration: UUID, workspaceId: UUID, sessionId: UUID) {
+    private enum CodingKeys: String, CodingKey { case machineId, hostGeneration, workspaceId, sessionId }
+    public func encode(to encoder: Encoder) throws {
+        var fields = encoder.container(keyedBy: CodingKeys.self)
+        try fields.encode(machineId, forKey: .machineId)
+        try fields.encode(hostGeneration, forKey: .hostGeneration)
+        try fields.encode(workspaceId, forKey: .workspaceId)
+        try fields.encode(sessionId, forKey: .sessionId)
+    }
+    public init(machineId: UUID, hostGeneration: UUID, workspaceId: UUID?, sessionId: UUID) {
         self.machineId = machineId
         self.hostGeneration = hostGeneration
         self.workspaceId = workspaceId
@@ -469,13 +477,31 @@ public struct WorkspaceRenameParameters: Encodable, Sendable {
     }
 }
 
+/// Explicit absence of a workspace selects the daemon's captured home, not a synthetic workspace.
+public struct WorkSessionDestination: Codable, Equatable, Sendable {
+    public let machineId: UUID
+    public let hostGeneration: UUID
+    public let workspaceId: UUID?
+    public init(machineId: UUID, hostGeneration: UUID, workspaceId: UUID?) {
+        self.machineId = machineId
+        self.hostGeneration = hostGeneration
+        self.workspaceId = workspaceId
+    }
+    private enum CodingKeys: String, CodingKey { case machineId, hostGeneration, workspaceId }
+    public func encode(to encoder: Encoder) throws {
+        var fields = encoder.container(keyedBy: CodingKeys.self)
+        try fields.encode(machineId, forKey: .machineId)
+        try fields.encode(hostGeneration, forKey: .hostGeneration)
+        try fields.encode(workspaceId, forKey: .workspaceId)
+    }
+}
 public struct SessionCreateParameters: Encodable, Sendable {
-    public let target: WorkWorkspaceTarget
+    public let target: WorkSessionDestination
     public let commandId: UUID
     public let expectedRevision: WorkRevision
     public let name: String
 
-    public init(target: WorkWorkspaceTarget, commandId: UUID, expectedRevision: WorkRevision, name: String) {
+    public init(target: WorkSessionDestination, commandId: UUID, expectedRevision: WorkRevision, name: String) {
         self.target = target
         self.commandId = commandId
         self.expectedRevision = expectedRevision
@@ -528,19 +554,22 @@ public struct WorkSessionPiBinding: Decodable, Equatable, Sendable {
     public let paneId: UUID
     public let chatId: UUID?
     public let admission: PiAdmission
+    public let title: String?
 
-    public init(paneId: UUID, chatId: UUID?, admission: PiAdmission) {
+    public init(paneId: UUID, chatId: UUID?, admission: PiAdmission, title: String? = nil) {
         self.paneId = paneId
         self.chatId = chatId
         self.admission = admission
+        self.title = title
     }
 }
 
 public struct WorkSessionRecord: Decodable, Equatable, Sendable, Identifiable {
     public var id: UUID { sessionId }
     public let sessionId: UUID
-    public let workspaceId: UUID
+    public let workspaceId: UUID?
     public let name: String
+    public var displayName: String { pi.title ?? name }
     public let nameSource: WorkSessionNameSource
     public let pi: WorkSessionPiBinding
     public let runtime: TerminalSnapshot?
@@ -550,7 +579,7 @@ public struct WorkSessionRecord: Decodable, Equatable, Sendable, Identifiable {
     public init(from decoder: Decoder) throws {
         let fields = try decoder.container(keyedBy: CodingKeys.self)
         sessionId = try fields.decode(UUID.self, forKey: .sessionId)
-        workspaceId = try fields.decode(UUID.self, forKey: .workspaceId)
+        workspaceId = try fields.decodeIfPresent(UUID.self, forKey: .workspaceId)
         name = try fields.decode(String.self, forKey: .name)
         nameSource = try fields.decode(WorkSessionNameSource.self, forKey: .nameSource)
         pi = try fields.decode(WorkSessionPiBinding.self, forKey: .pi)
@@ -559,7 +588,7 @@ public struct WorkSessionRecord: Decodable, Equatable, Sendable, Identifiable {
         shellPanes = try fields.decodeIfPresent([ShellPaneRecord].self, forKey: .shellPanes) ?? []
     }
 
-    public init(sessionId: UUID, workspaceId: UUID, name: String, nameSource: WorkSessionNameSource,
+    public init(sessionId: UUID, workspaceId: UUID?, name: String, nameSource: WorkSessionNameSource,
                 pi: WorkSessionPiBinding, runtime: TerminalSnapshot?, shellPanes: [ShellPaneRecord] = []) {
         self.sessionId = sessionId
         self.workspaceId = workspaceId
@@ -599,17 +628,22 @@ public struct WorkspaceMutationResult: Decodable, Equatable, Sendable {
 
 public struct SessionRecord: Decodable, Equatable, Sendable {
     public let sessionId: UUID
-    public let workspaceId: UUID
+    public let workspaceId: UUID?
     public let name: String
     public let piPaneId: UUID
 }
 
+public struct WorkspaceSessionRecord: Decodable, Equatable, Sendable {
+    public let workspace: WorkWorkspaceRecord
+    public let session: SessionRecord
+}
 public enum CommittedWorkRecord: Decodable, Equatable, Sendable {
     case workspace(WorkWorkspaceRecord)
     case session(SessionRecord)
+    case workspaceSession(WorkspaceSessionRecord)
 
     private enum CodingKeys: String, CodingKey { case kind, record }
-    private enum Kind: String, Decodable { case workspace, session }
+    private enum Kind: String, Decodable { case workspace, session, workspaceSession }
 
     public init(from decoder: Decoder) throws {
         let container = try decoder.container(keyedBy: CodingKeys.self)
@@ -619,6 +653,7 @@ public enum CommittedWorkRecord: Decodable, Equatable, Sendable {
         switch try container.decode(Kind.self, forKey: .kind) {
         case .workspace: self = .workspace(try container.decode(WorkWorkspaceRecord.self, forKey: .record))
         case .session: self = .session(try container.decode(SessionRecord.self, forKey: .record))
+        case .workspaceSession: self = .workspaceSession(try container.decode(WorkspaceSessionRecord.self, forKey: .record))
         }
     }
 }

@@ -104,6 +104,7 @@ fn local_folder_must_be_usable_but_committed_receipts_survive_its_removal() {
             WorkIntent::CreateLocalWorkspace {
                 directory: LocalDirectoryPath::parse(alias.to_str().unwrap().to_owned()).unwrap(),
                 name: "Unresolved alias".into(),
+                initial_session_name: None,
                 expected_revision: 0,
             },
             &BTreeMap::new()
@@ -114,6 +115,7 @@ fn local_folder_must_be_usable_but_committed_receipts_survive_its_removal() {
     let intent = WorkIntent::CreateLocalWorkspace {
         directory: LocalDirectoryPath::parse(directory.clone()).unwrap(),
         name: "Local".into(),
+        initial_session_name: None,
         expected_revision: 0,
     };
     let receipt = manager
@@ -132,6 +134,7 @@ fn local_folder_must_be_usable_but_committed_receipts_survive_its_removal() {
             WorkIntent::CreateLocalWorkspace {
                 directory: LocalDirectoryPath::parse(directory).unwrap(),
                 name: "Missing".into(),
+                initial_session_name: None,
                 expected_revision: 1,
             },
             &BTreeMap::new()

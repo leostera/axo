@@ -57,7 +57,7 @@ final class AxodWorkbenchApp: NSObject, NSApplicationDelegate, NSWindowDelegate,
 
         coordinator.registerForStartup()
         coordinator.registerDaemonService()
-        coordinator.connect()
+        coordinator.connect(createInitialSession: true)
     }
 
     func applicationWillTerminate(_ notification: Notification) {
@@ -99,7 +99,7 @@ final class AxodWorkbenchApp: NSObject, NSApplicationDelegate, NSWindowDelegate,
             return coordinator?.canEditWork == true && coordinator?.workEditor == nil
         }
         if menuItem.action == #selector(newSession(_:)) {
-            return coordinator?.canEditWork == true && coordinator?.workEditor == nil && coordinator?.selectedWorkspaceID != nil
+            return coordinator?.canEditWork == true && coordinator?.workEditor == nil
         }
         return true
     }

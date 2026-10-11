@@ -27,12 +27,27 @@ public struct LocalWorkspaceCreateParameters: Encodable, Sendable {
     public let expectedRevision: WorkRevision
     public let directoryPath: LocalDirectoryPath
     public let name: String
+    public let initialSessionName: String?
 
-    public init(target: MachineTarget, commandId: UUID, expectedRevision: WorkRevision, directoryPath: LocalDirectoryPath, name: String) {
+    public init(target: MachineTarget, commandId: UUID, expectedRevision: WorkRevision, directoryPath: LocalDirectoryPath, name: String, initialSessionName: String? = nil) {
         self.target = target
         self.commandId = commandId
         self.expectedRevision = expectedRevision
         self.directoryPath = directoryPath
         self.name = name
+        self.initialSessionName = initialSessionName
+    }
+}
+
+public struct LocalWorkspaceMutationResult: Equatable, Sendable {
+    public let hostGeneration: UUID
+    public let revision: WorkRevision
+    public let workspace: WorkWorkspaceRecord
+    public let session: WorkSessionRecord?
+    public init(hostGeneration: UUID, revision: WorkRevision, workspace: WorkWorkspaceRecord, session: WorkSessionRecord?) {
+        self.hostGeneration = hostGeneration
+        self.revision = revision
+        self.workspace = workspace
+        self.session = session
     }
 }

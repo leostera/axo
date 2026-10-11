@@ -4,7 +4,7 @@ use serde::Deserialize;
 use std::{
     collections::BTreeMap,
     fs, io,
-    os::unix::fs::{MetadataExt, PermissionsExt},
+    os::unix::fs::{DirBuilderExt, MetadataExt, PermissionsExt},
     path::{Path, PathBuf},
 };
 #[derive(Clone, Deserialize)]
@@ -21,12 +21,25 @@ pub(crate) struct Profile {
 pub struct Policy {
     pub(crate) extension: PathBuf,
     pub(crate) profiles: BTreeMap<String, Profile>,
+    local: Option<LocalPolicy>,
+    pub(crate) normal_path: Option<crate::user_path::CapturedPath>,
+}
+#[derive(Clone, Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+struct LocalPolicy {
+    session_directory: PathBuf,
+    #[serde(default)]
+    executable: Option<PathBuf>,
+    #[serde(default)]
+    arguments: Vec<String>,
 }
 #[derive(Deserialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 struct Document {
     extension: PathBuf,
     profiles: BTreeMap<String, Profile>,
+    #[serde(default)]
+    local: Option<LocalPolicy>,
 }
 pub(crate) struct ApprovedLaunch {
     pub terminal: crate::model::TerminalLaunch,
@@ -65,27 +78,85 @@ impl Policy {
             }
             validate_arguments(&profile.arguments)?;
         }
+        if let Some(local) = &policy.local {
+            validate_sessions(&local.session_directory)?;
+            validate_arguments(&local.arguments)?;
+        }
         Ok(Self {
             extension: policy.extension,
             profiles: policy.profiles,
+            local: policy.local,
+            normal_path: None,
         })
+    }
+    /// The app installs only its adapter, never a Pi engine or replacement launcher.
+    pub(crate) fn for_user(extension: PathBuf, root: &Path) -> io::Result<Self> {
+        if !extension.is_absolute() || !fs::metadata(&extension)?.is_file() {
+            return Err(io::Error::other("Installed Axo extension unavailable"));
+        }
+        let sessions = root.join("PiSessions");
+        match fs::DirBuilder::new().mode(0o700).create(&sessions) {
+            Ok(()) => (),
+            Err(error) if error.kind() == io::ErrorKind::AlreadyExists => (),
+            Err(error) => return Err(error),
+        }
+        validate_sessions(&sessions)?;
+        Ok(Self {
+            extension,
+            profiles: BTreeMap::new(),
+            normal_path: None,
+            local: Some(LocalPolicy {
+                session_directory: sessions,
+                executable: None,
+                // Vanilla Pi still reads context files, but executable project-local
+                // resources need separate approval rather than an unanswerable startup dialog.
+                arguments: vec!["--no-approve".into()],
+            }),
+        })
+    }
+    pub(crate) fn profile(
+        &self,
+        approval: &crate::work::DirectoryApproval,
+        directory: &Path,
+    ) -> io::Result<Profile> {
+        match approval {
+            crate::work::DirectoryApproval::Profile(id) => self
+                .profiles
+                .get(id)
+                .cloned()
+                .ok_or_else(|| io::Error::other("Pi directory profile unavailable")),
+            crate::work::DirectoryApproval::LocalSelection
+            | crate::work::DirectoryApproval::UserHome => {
+                let local = self
+                    .local
+                    .as_ref()
+                    .ok_or_else(|| io::Error::other("Local Pi policy unavailable"))?;
+                validate_sessions(&local.session_directory)?;
+                Ok(Profile {
+                    directory: directory.to_owned(),
+                    session_directory: local.session_directory.clone(),
+                    executable: local.executable.clone(),
+                    arguments: local.arguments.clone(),
+                })
+            }
+        }
     }
     pub(crate) fn launch(
         &self,
-        id: &str,
+        profile: &Profile,
         directory: &Path,
         resume: Option<&Path>,
     ) -> io::Result<ApprovedLaunch> {
-        let profile = self
-            .profiles
-            .get(id)
-            .ok_or_else(|| io::Error::other("Pi directory profile unavailable"))?;
         if fs::canonicalize(&profile.directory)? != fs::canonicalize(directory)? {
             return Err(io::Error::other(
                 "Work directory no longer approved by Pi policy",
             ));
         }
-        let ambient = AmbientPi::find(profile.executable.as_deref()).map_err(io::Error::other)?;
+        let ambient = AmbientPi::find_with_path(
+            profile.executable.as_deref(),
+            self.normal_path.as_ref().map(|path| path.as_os_str()),
+        )
+        .map_err(io::Error::other)?;
         let mut argv = vec![
             ambient
                 .executable
@@ -127,6 +198,20 @@ impl Policy {
             sessions: profile.session_directory.clone(),
         })
     }
+}
+fn validate_sessions(path: &Path) -> io::Result<()> {
+    let metadata = fs::symlink_metadata(path)?;
+    if !path.is_absolute()
+        || !metadata.is_dir()
+        || metadata.file_type().is_symlink()
+        || metadata.uid() != unsafe { libc::geteuid() }
+        || metadata.permissions().mode() & 0o077 != 0
+    {
+        return Err(io::Error::other(
+            "Pi sessions require an owned private directory",
+        ));
+    }
+    Ok(())
 }
 fn validate_arguments(arguments: &[String]) -> io::Result<()> {
     if arguments.len() > 64 {

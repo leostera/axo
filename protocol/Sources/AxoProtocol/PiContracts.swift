@@ -11,11 +11,20 @@ public enum PiAdmission: String, Codable, Equatable, Sendable {
 public struct PiSessionTarget: Codable, Equatable, Sendable {
     public let machineId: UUID
     public let hostGeneration: UUID
-    public let workspaceId: UUID
+    public let workspaceId: UUID?
     public let sessionId: UUID
     public let paneId: UUID
 
-    public init(machineId: UUID, hostGeneration: UUID, workspaceId: UUID, sessionId: UUID, paneId: UUID) {
+    private enum CodingKeys: String, CodingKey { case machineId, hostGeneration, workspaceId, sessionId, paneId }
+    public func encode(to encoder: Encoder) throws {
+        var fields = encoder.container(keyedBy: CodingKeys.self)
+        try fields.encode(machineId, forKey: .machineId)
+        try fields.encode(hostGeneration, forKey: .hostGeneration)
+        try fields.encode(workspaceId, forKey: .workspaceId)
+        try fields.encode(sessionId, forKey: .sessionId)
+        try fields.encode(paneId, forKey: .paneId)
+    }
+    public init(machineId: UUID, hostGeneration: UUID, workspaceId: UUID?, sessionId: UUID, paneId: UUID) {
         self.machineId = machineId
         self.hostGeneration = hostGeneration
         self.workspaceId = workspaceId
@@ -27,14 +36,28 @@ public struct PiSessionTarget: Codable, Equatable, Sendable {
 public struct PiChatTarget: Codable, Equatable, Sendable {
     public let machineId: UUID
     public let hostGeneration: UUID
-    public let workspaceId: UUID
+    public let workspaceId: UUID?
     public let sessionId: UUID
     public let paneId: UUID
     public let runtimeHostGeneration: UUID
     public let runtimeGeneration: UUID
     public let chatId: UUID
 
-    public init(machineId: UUID, hostGeneration: UUID, workspaceId: UUID, sessionId: UUID, paneId: UUID,
+    private enum CodingKeys: String, CodingKey {
+        case machineId, hostGeneration, workspaceId, sessionId, paneId, runtimeHostGeneration, runtimeGeneration, chatId
+    }
+    public func encode(to encoder: Encoder) throws {
+        var fields = encoder.container(keyedBy: CodingKeys.self)
+        try fields.encode(machineId, forKey: .machineId)
+        try fields.encode(hostGeneration, forKey: .hostGeneration)
+        try fields.encode(workspaceId, forKey: .workspaceId)
+        try fields.encode(sessionId, forKey: .sessionId)
+        try fields.encode(paneId, forKey: .paneId)
+        try fields.encode(runtimeHostGeneration, forKey: .runtimeHostGeneration)
+        try fields.encode(runtimeGeneration, forKey: .runtimeGeneration)
+        try fields.encode(chatId, forKey: .chatId)
+    }
+    public init(machineId: UUID, hostGeneration: UUID, workspaceId: UUID?, sessionId: UUID, paneId: UUID,
                 runtimeHostGeneration: UUID, runtimeGeneration: UUID, chatId: UUID) {
         self.machineId = machineId
         self.hostGeneration = hostGeneration

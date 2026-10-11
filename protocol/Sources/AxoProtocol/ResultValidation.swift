@@ -231,15 +231,29 @@ public enum AxoProtocolResultValidator {
     }
 
     public static func localWorkspaceCreate(
-        _ value: JSONValue, target: MachineTarget, expectedRevision: WorkRevision, name: String
-    ) throws -> WorkspaceMutationResult {
+        _ value: JSONValue, target: MachineTarget, expectedRevision: WorkRevision, name: String, initialSessionName: String? = nil
+    ) throws -> LocalWorkspaceMutationResult {
         let method = AxoProtocol.Method.createLocalWorkspace
-        guard validWorkName(name), expectedRevision.rawValue < WorkRevision.maximumSafeInteger else { throw invalid(method) }
-        let result = try workspaceMutationResult(value, method: method, target: target, expectedRevision: expectedRevision)
+        guard validWorkName(name), initialSessionName.map(validWorkName) ?? true,
+              expectedRevision.rawValue < WorkRevision.maximumSafeInteger,
+              case .object(var fields) = value else { throw invalid(method) }
+        let sessionValue = fields.removeValue(forKey: "session")
+        let result = try workspaceMutationResult(.object(fields), method: method, target: target, expectedRevision: expectedRevision)
         guard result.workspace.name == name,
               result.workspace.directoryId == "local_" + result.workspace.workspaceId.uuidString.lowercased()
         else { throw invalid(method) }
-        return result
+        let session: WorkSessionRecord?
+        if let initialSessionName {
+            guard let sessionValue, validWorkSession(sessionValue) else { throw invalid(method) }
+            let parsed = try decode(sessionValue, as: WorkSessionRecord.self, method: method)
+            guard parsed.workspaceId == result.workspace.workspaceId, parsed.name == initialSessionName else { throw invalid(method) }
+            session = parsed
+        } else {
+            guard sessionValue == nil else { throw invalid(method) }
+            session = nil
+        }
+        return LocalWorkspaceMutationResult(hostGeneration: result.hostGeneration, revision: result.revision,
+                                            workspace: result.workspace, session: session)
     }
 
     public static func workspaceRename(
@@ -262,7 +276,7 @@ public enum AxoProtocolResultValidator {
 
     public static func sessionCreate(
         _ value: JSONValue,
-        target: WorkWorkspaceTarget,
+        target: WorkSessionDestination,
         expectedRevision: WorkRevision,
         name: String
     ) throws -> SessionMutationResult {
@@ -392,9 +406,16 @@ public enum AxoProtocolResultValidator {
                   let directoryID = string(workspace["directoryId"]), validDirectoryID(directoryID)
             else { return false }
             return true
+        case "workspaceSession":
+            guard let pair = object(record, keys: ["workspace", "session"]),
+                  let workspaceValue = pair["workspace"], let sessionValue = pair["session"],
+                  case .object(let workspace) = workspaceValue, case .object(let session) = sessionValue,
+                  validCommittedRecord(.object(["kind": .string("workspace"), "record": workspaceValue])),
+                  validCommittedRecord(.object(["kind": .string("session"), "record": sessionValue])) else { return false }
+            return uuid(workspace["workspaceId"]) == uuid(session["workspaceId"])
         case "session":
             guard let session = object(record, keys: ["sessionId", "workspaceId", "name", "piPaneId"]),
-                  uuid(session["sessionId"]) != nil, uuid(session["workspaceId"]) != nil,
+                  uuid(session["sessionId"]) != nil, nullableWorkspace(session["workspaceId"]),
                   let name = string(session["name"]), validWorkName(name), uuid(session["piPaneId"]) != nil
             else { return false }
             return true
@@ -464,17 +485,25 @@ public enum AxoProtocolResultValidator {
         return uuid(fields["sessionId"])
     }
 
+    private static func nullableWorkspace(_ value: JSONValue?) -> Bool {
+        value?.isNull == true || uuid(value) != nil
+    }
     private static func validWorkSession(_ value: JSONValue?) -> Bool {
         guard let fields = workSessionFields(value),
-              let sessionID = uuid(fields["sessionId"]), uuid(fields["workspaceId"]) != nil,
+              let sessionID = uuid(fields["sessionId"]), nullableWorkspace(fields["workspaceId"]),
               let name = string(fields["name"]), validWorkName(name),
               string(fields["nameSource"]) == "manual",
-              let pi = object(fields["pi"], keys: ["paneId", "chatId", "admission"]),
+              case .object(let pi)? = fields["pi"],
+              Set(pi.keys).isSuperset(of: ["paneId", "chatId", "admission"]),
+              Set(pi.keys).isSubset(of: ["paneId", "chatId", "admission", "title"]),
               let paneID = uuid(pi["paneId"]),
               let admissionName = string(pi["admission"]), let admission = PiAdmission(rawValue: admissionName),
               let chatValue = pi["chatId"],
               let runtime = fields["runtime"]
         else { return false }
+        if let title = pi["title"], title != .null {
+            guard let name = string(title), validWorkName(name) else { return false }
+        }
         if let panes = fields["shellPanes"] {
             guard case .array(let values) = panes, values.count <= 32 else { return false }
             var ids: Set<UUID> = [paneID]

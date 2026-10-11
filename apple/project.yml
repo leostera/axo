@@ -35,6 +35,7 @@ targets:
       - path: AxoMac/WorkspaceSidebarRow.swift
       - path: AxoMac/WorkspaceWindowState.swift
       - path: AxoMac/MacSettingsView.swift
+      - path: AxoMac/MacSettingsNavigation.swift
       - path: AxoMac/MacAppearance.swift
       - path: AxoMac/MacVoiceCoordinator.swift
       - path: AxoMac/MacVoiceHistoryStore.swift

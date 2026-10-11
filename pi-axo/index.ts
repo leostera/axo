@@ -5,6 +5,7 @@ import { Socket } from "node:net";
 import { randomUUID } from "node:crypto";
 import { z } from "zod";
 import { questions } from "./questions.ts";
+import { sessionTitles } from "./title.ts";
 import { ControlFailure, type Record as ControlRecord, type Response } from "./control-protocol.ts";
 const runtimeSchema = z.object({ host_generation: z.string().uuid(), runtime_generation: z.string().uuid(),
   target: z.object({ session_id: z.string().uuid(), pane_id: z.string().uuid() }).strict() }).strict();
@@ -40,6 +41,7 @@ export default function managed(pi: ExtensionAPI) {
   let recovery = false;
   let buffer = Buffer.alloc(0);
   const ownedQuestions = questions(pi, changed, () => interactionId);
+  sessionTitles(pi, changed);
   function write(value: ControlRecord<ReturnType<typeof snapshot>>) {
     if (!socket || socket.destroyed) return;
     const raw = JSON.stringify(value) + "\n";
@@ -48,7 +50,9 @@ export default function managed(pi: ExtensionAPI) {
   }
   function snapshot() {
     if (!ctx) throw new ControlFailure("notReady");
+    const title = pi.getSessionName();
     return { chatId: ctx.sessionManager.getSessionId(), file: ctx.sessionManager.getSessionFile() ?? null,
+      title: title && title === title.trim() && title.length <= 80 && !/[\u0000-\u001f\u007f]/u.test(title) ? title : null,
       leafId: ctx.sessionManager.getLeafId(), cwd: ctx.cwd, mode: ctx.mode, stdinTTY: !!process.stdin.isTTY, stdoutTTY: !!process.stdout.isTTY, stderrTTY: !!process.stderr.isTTY,
       rows: process.stdout.rows, columns: process.stdout.columns, pid: process.pid,
       busy: !ctx.isIdle() || submissionPending, interactionId, uiWaits, question: ownedQuestions.current(), tools: [...activeTools], pending: ctx.hasPendingMessages(), recovery,

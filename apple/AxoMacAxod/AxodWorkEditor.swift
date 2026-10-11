@@ -3,7 +3,7 @@ import SwiftUI
 import UniformTypeIdentifiers
 
 struct AxodWorkEditorContext: Identifiable {
-    enum Kind { case workspace, session(workspaceID: UUID) }
+    enum Kind { case workspace, session(workspaceID: UUID?) }
     let id = UUID()
     let kind: Kind
     let target: MachineTarget
@@ -21,12 +21,23 @@ struct AxodWorkEditor: View {
     @State private var choosingFolder = false
     @State private var folderError: String?
 
+    init(context: AxodWorkEditorContext, coordinator: AxodWorkbenchCoordinator) {
+        self.context = context
+        self.coordinator = coordinator
+        _name = State(initialValue: { if case .session = context.kind { return "New Session" }; return "" }())
+    }
+
     var body: some View {
         VStack(alignment: .leading, spacing: 16) {
             Text(context.title).font(.headline)
-            TextField("Name", text: $name)
-                .textFieldStyle(.roundedBorder)
-            if case .workspace = context.kind {
+            if case .workspace = context.kind, coordinator.createdSessionForEditor == nil {
+                TextField("Workspace name", text: $name).textFieldStyle(.roundedBorder)
+            }
+            if case .session(let workspaceID) = context.kind {
+                Text(workspaceID == nil ? "Starts in your home folder ($HOME)." : "Starts in this workspace’s folder.")
+                    .font(.callout).foregroundStyle(.secondary)
+            }
+            if case .workspace = context.kind, coordinator.createdSessionForEditor == nil {
                 Button(directory == nil ? "Choose Folder…" : "Change Folder…", systemImage: "folder") { choosingFolder = true }
                 if let directory {
                     Text(directory.rawValue).font(.callout).foregroundStyle(.secondary).textSelection(.enabled)
@@ -36,11 +47,18 @@ struct AxodWorkEditor: View {
             Text(coordinator.workEditMessage).font(.caption).foregroundStyle(.secondary)
             HStack {
                 Spacer()
-                Button("Cancel") { coordinator.workEditor = nil }
-                    .keyboardShortcut(.cancelAction)
-                Button("Create") { coordinator.createWork(context, name: name, directory: directory) }
-                    .keyboardShortcut(.defaultAction)
-                    .disabled(!canCreate || coordinator.isEditingWork || coordinator.pendingWorkCommandID != nil)
+                if coordinator.createdSessionForEditor != nil {
+                    Button("Open Session") { coordinator.workEditor = nil }
+                        .keyboardShortcut(.defaultAction)
+                } else {
+                    Button("Cancel") { coordinator.workEditor = nil }
+                        .keyboardShortcut(.cancelAction)
+                    if case .workspace = context.kind {
+                        Button("Create & Start") { coordinator.createWork(context, name: name, directory: directory) }
+                            .keyboardShortcut(.defaultAction)
+                            .disabled(!canCreate || coordinator.isEditingWork || coordinator.pendingWorkCommandID != nil)
+                    }
+                }
             }
         }
         .padding(24)

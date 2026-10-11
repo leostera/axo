@@ -15,7 +15,7 @@ const MAX_BYTES: usize = 4 * 1024 * 1024;
 pub struct SessionTarget {
     pub machine_id: MachineId,
     pub host_generation: HostGeneration,
-    pub workspace_id: WorkspaceId,
+    pub workspace_id: Option<WorkspaceId>,
     pub session_id: SessionId,
     pub pane_id: PaneId,
 }
@@ -25,7 +25,7 @@ pub struct ChatTarget {
     pub machine_id: MachineId,
     pub host_generation: HostGeneration,
     pub runtime_host_generation: HostGeneration,
-    pub workspace_id: WorkspaceId,
+    pub workspace_id: Option<WorkspaceId>,
     pub session_id: SessionId,
     pub pane_id: PaneId,
     pub runtime_generation: RuntimeGeneration,
@@ -125,7 +125,7 @@ impl Receipt {
 #[derive(Clone, Debug, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct Binding {
-    pub workspace_id: WorkspaceId,
+    pub workspace_id: Option<WorkspaceId>,
     pub session_id: SessionId,
     pub pane_id: PaneId,
     pub chat_id: ChatId,

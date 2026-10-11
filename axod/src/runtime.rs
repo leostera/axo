@@ -301,6 +301,8 @@ impl RuntimeCompletion {
 pub struct Manager {
     pub generation: HostGeneration,
     pub host: crate::host::HostStatus,
+    pub(crate) user_home: Option<crate::work::LocalDirectoryPath>,
+    pub(crate) normal_path: Option<crate::user_path::CapturedPath>,
     journal: Arc<Mutex<Journal>>,
     pub(crate) work: Arc<Mutex<crate::work::WorkStore>>,
     pub(crate) managed: Arc<Mutex<crate::managed::store::Store>>,
@@ -310,6 +312,7 @@ pub struct Manager {
     pub(crate) panes: Arc<Mutex<crate::panes::store::Store>>,
     pub(crate) pane_operation: Mutex<()>,
     admission: Mutex<()>,
+    upgrade: Mutex<Option<crate::upgrade::Plan>>,
     terminals: Mutex<BTreeMap<PaneId, Arc<Terminal>>>,
     stopping: AtomicBool,
 }
@@ -318,6 +321,8 @@ impl Manager {
         Self {
             generation: HostGeneration::new(),
             host: crate::host::HostStatus::default(),
+            user_home: crate::work::capture_user_home(),
+            normal_path: None,
             work: journal.work.clone(),
             managed: journal.managed.clone(),
             managed_policy: Mutex::new(None),
@@ -326,10 +331,55 @@ impl Manager {
             panes: journal.panes.clone(),
             pane_operation: Mutex::new(()),
             admission: Mutex::new(()),
+            upgrade: Mutex::new(None),
             journal: Arc::new(Mutex::new(journal)),
             terminals: Mutex::new(BTreeMap::new()),
             stopping: AtomicBool::new(false),
         }
+    }
+    pub(crate) fn prepare_upgrade(
+        &self,
+        plan: &crate::upgrade::Plan,
+    ) -> Result<crate::upgrade::Disposition, (i32, &'static str)> {
+        use crate::upgrade::Disposition;
+        // Lock in the same order as start/remove paths. No admission may slip between
+        // the resource proof and freeze, including a start still probing ambient Pi.
+        let _starting = self.managed_start.lock().unwrap();
+        let _panes = self.pane_operation.lock().unwrap();
+        let _admission = self.admission.lock().unwrap();
+        let mut upgrade = self.upgrade.lock().unwrap();
+        if let Some(existing) = upgrade.as_ref() {
+            return if existing == plan {
+                Ok(Disposition::Quiesced)
+            } else {
+                Err((-32007, "Another upgrade handoff owns quiescence"))
+            };
+        }
+        if crate::upgrade::build_number() == 0
+            || plan.replacement_build_number <= crate::upgrade::build_number()
+        {
+            return Ok(Disposition::NotNewer);
+        }
+        if self.stopping.load(Ordering::SeqCst) {
+            return Err((-32010, "Daemon stopping"));
+        }
+        if self.journal.lock().unwrap().is_fenced()
+            || self.work.lock().unwrap().is_fenced()
+            || self.managed.lock().unwrap().is_fenced()
+            || self.panes.lock().unwrap().is_fenced()
+        {
+            return Err((-32008, "Storage fenced; upgrade refused"));
+        }
+        let snapshots = self.journal.lock().unwrap().snapshots();
+        if snapshots
+            .iter()
+            .any(|snapshot| !self.runtime_completed(snapshot.runtime))
+        {
+            return Ok(Disposition::DeferredActiveWork);
+        }
+        self.stopping.store(true, Ordering::SeqCst);
+        *upgrade = Some(plan.clone());
+        Ok(Disposition::Quiesced)
     }
     pub(crate) fn command_receipt(
         &self,
@@ -681,10 +731,19 @@ impl Manager {
         controlled: bool,
     ) -> Result<(SpawnedTerminal, Option<UnixStream>), ErrorCode> {
         let child = if controlled {
-            pty::spawn_with_control(&launch.directory, &launch.argv)
-                .map(|(child, channel)| (child, Some(channel)))
+            pty::spawn_with_control_path(
+                &launch.directory,
+                &launch.argv,
+                self.normal_path.as_ref().map(|path| path.as_os_str()),
+            )
+            .map(|(child, channel)| (child, Some(channel)))
         } else {
-            pty::spawn(&launch.directory, &launch.argv).map(|child| (child, None))
+            pty::spawn_with_path(
+                &launch.directory,
+                &launch.argv,
+                self.normal_path.as_ref().map(|path| path.as_os_str()),
+            )
+            .map(|child| (child, None))
         };
         match child {
             Ok((child, channel)) => Ok((
@@ -1039,6 +1098,8 @@ mod tests {
             Manager {
                 generation: self.terminal.reference.host_generation,
                 host: crate::host::HostStatus::default(),
+                user_home: crate::work::capture_user_home(),
+                normal_path: None,
                 journal: self.terminal.journal.clone(),
                 work: journal.work.clone(),
                 managed: journal.managed.clone(),
@@ -1048,6 +1109,7 @@ mod tests {
                 managed_start: Mutex::new(()),
                 pane_operation: Mutex::new(()),
                 admission: Mutex::new(()),
+                upgrade: Mutex::new(None),
                 terminals: Mutex::new(BTreeMap::from([(
                     self.terminal.reference.target.pane_id,
                     self.terminal.clone(),

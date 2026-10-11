@@ -287,7 +287,7 @@ private struct WorkRecordRow: View {
     var body: some View {
         Label {
             VStack(alignment: .leading, spacing: 2) {
-                Text(session.name).font(.subheadline)
+                Text(session.displayName).font(.subheadline)
                 Text(runtimeDescription).font(.caption).foregroundStyle(.secondary)
                 Text(piAdmissionDescription).font(.caption2).foregroundStyle(.tertiary)
             }

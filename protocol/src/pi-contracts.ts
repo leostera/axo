@@ -3,7 +3,7 @@ import { uuid, destinationSchema } from "./identity.js";
 import { runtimeRefSchema } from "./runtime-contracts.js";
 const recordedId = z.string().min(1).refine(value => new TextEncoder().encode(value).byteLength <= 128 && !/[\p{Cc}\p{Cs}]/u.test(value));
 export const piAdmissionSchema = z.enum(["notAdmitted", "ready", "stopped", "failed", "recoveryRequired"]);
-export const piSessionTargetSchema = destinationSchema.extend({ workspaceId: uuid, sessionId: uuid, paneId: uuid }).strict();
+export const piSessionTargetSchema = destinationSchema.extend({ workspaceId: uuid.nullable().default(null), sessionId: uuid, paneId: uuid }).strict();
 export const chatTargetSchema = piSessionTargetSchema.extend({ runtimeHostGeneration: uuid, chatId: uuid, runtimeGeneration: uuid }).strict();
 export const piPersistenceSchema = z.discriminatedUnion("kind", [
   z.object({ kind: z.literal("fresh") }).strict(),

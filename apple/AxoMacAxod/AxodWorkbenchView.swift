@@ -28,7 +28,7 @@ struct AxodWorkbenchView: View {
         .onChange(of: coordinator.selectedSessionID) { _, _ in updateWindowTitle() }
         .onChange(of: coordinator.sessions) { _, _ in updateWindowTitle() }
         .sheet(item: $coordinator.workEditor) { context in
-            AxodWorkEditor(context: context, coordinator: coordinator)
+            AxodWorkEditor(context: context, coordinator: coordinator).id(context.id)
         }
     }
 
@@ -39,7 +39,7 @@ struct AxodWorkbenchView: View {
                 VStack(spacing: 0) {
                     HStack(alignment: .top, spacing: 12) {
                         VStack(alignment: .leading, spacing: 5) {
-                            Text(session.name)
+                            Text(session.displayName)
                                 .font(.system(size: 14, weight: .medium))
                                 .foregroundStyle(Color.white.opacity(0.9))
                             Text("Axod work record · Pi admission: \(session.pi.admission.rawValue)")
@@ -180,9 +180,6 @@ struct AxodWorkbenchView: View {
                 }
             } else if coordinator.chatTarget == nil {
                 VStack(alignment: .leading, spacing: 8) {
-                    Text(coordinator.chatStatusMessage)
-                        .font(.system(size: 12))
-                        .foregroundStyle(Color.white.opacity(0.58))
                     if sessionRequiresRecovery {
                         Text("No process, conversation, or historic PID is adopted automatically.")
                             .font(.system(size: 11))
@@ -304,7 +301,7 @@ struct AxodWorkbenchView: View {
         let name = identifier.hasPrefix(base + ".")
             ? "Axo (\(identifier.dropFirst(base.count + 1)))"
             : "Axo"
-        let title = selectedSession.map { name + " — " + $0.name } ?? name
+        let title = selectedSession.map { name + " — " + $0.displayName } ?? name
         let windowIdentifier = "Axo.MainWindow.\(Bundle.main.bundleIdentifier ?? "default")"
         NSApp.windows.first { $0.identifier?.rawValue == windowIdentifier }?.title = title
     }

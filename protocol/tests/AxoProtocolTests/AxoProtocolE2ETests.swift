@@ -94,7 +94,7 @@ final class AxoProtocolE2ETests: XCTestCase {
         let createdSession: SessionMutationResult = try await call(
             socket, method: AxoProtocol.Method.createSession,
             params: SessionCreateParameters(
-                target: WorkWorkspaceTarget(machineId: machine, hostGeneration: generation,
+                target: WorkSessionDestination(machineId: machine, hostGeneration: generation,
                                              workspaceId: createdWorkspace.workspace.workspaceId),
                 commandId: UUID(), expectedRevision: renamedWorkspace.revision, name: "Unadmitted work"
             )
@@ -126,7 +126,7 @@ final class AxoProtocolE2ETests: XCTestCase {
         let secondSession: SessionMutationResult = try await call(
             socket, method: AxoProtocol.Method.createSession,
             params: SessionCreateParameters(
-                target: WorkWorkspaceTarget(machineId: machine, hostGeneration: generation,
+                target: WorkSessionDestination(machineId: machine, hostGeneration: generation,
                                              workspaceId: createdWorkspace.workspace.workspaceId),
                 commandId: UUID(), expectedRevision: renamedSession.revision, name: "Second work"
             )

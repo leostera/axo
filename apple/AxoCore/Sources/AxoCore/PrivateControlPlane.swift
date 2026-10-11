@@ -265,7 +265,7 @@ public actor AxoControlPlaneSession {
         return try AxoProtocolResultValidator.sessionList(value, target: destination, workspaceID: workspaceID, cursor: cursor, limit: limit)
     }
 
-    public func getSession(workspaceID: UUID, sessionID: UUID) async throws -> SessionGetResult {
+    public func getSession(workspaceID: UUID?, sessionID: UUID) async throws -> SessionGetResult {
         let destination = try selectedTarget()
         let target = WorkSessionTarget(
             machineId: destination.machineId,
@@ -315,11 +315,11 @@ public actor AxoControlPlaneSession {
                                                              expectedRevision: expectedRevision, name: name)
     }
 
-    public func createSession(workspaceID: UUID, commandID: UUID = UUID(), expectedRevision: WorkRevision,
+    public func createSession(workspaceID: UUID? = nil, commandID: UUID = UUID(), expectedRevision: WorkRevision,
                               name: String) async throws -> SessionMutationResult {
         let destination = try selectedTarget()
-        let workTarget = WorkWorkspaceTarget(machineId: destination.machineId,
-                                             hostGeneration: destination.hostGeneration, workspaceId: workspaceID)
+        let workTarget = WorkSessionDestination(machineId: destination.machineId,
+                                               hostGeneration: destination.hostGeneration, workspaceId: workspaceID)
         let parameters = SessionCreateParameters(target: workTarget, commandId: commandID,
                                                  expectedRevision: expectedRevision, name: name)
         try AxoProtocolWorkRequestValidator.validate(parameters)
@@ -328,7 +328,7 @@ public actor AxoControlPlaneSession {
                                                             expectedRevision: expectedRevision, name: name)
     }
 
-    public func renameSession(workspaceID: UUID, sessionID: UUID, commandID: UUID = UUID(),
+    public func renameSession(workspaceID: UUID?, sessionID: UUID, commandID: UUID = UUID(),
                               expectedRevision: WorkRevision, name: String) async throws -> SessionMutationResult {
         let destination = try selectedTarget()
         let workTarget = WorkSessionTarget(machineId: destination.machineId,
@@ -348,8 +348,8 @@ public actor AxoControlPlaneSession {
             throw AxoControlPlaneSessionError.noSelectedMachine
         }
         guard target.machineId == destination.machineId, target.hostGeneration == destination.hostGeneration,
-              [target.machineId, target.hostGeneration, target.workspaceId, target.sessionId, target.paneId, commandID]
-                .allSatisfy(isNonNilUUID) else {
+              [target.machineId, target.hostGeneration, target.sessionId, target.paneId, commandID]
+                .allSatisfy(isNonNilUUID), target.workspaceId.map(isNonNilUUID) ?? true else {
             throw AxoProtocolValidationError.invalidResult(method: AxoProtocol.Method.startSession)
         }
         if case .resume(let chatId, let previousRuntime) = persistence {
@@ -495,8 +495,9 @@ public actor AxoControlPlaneSession {
             throw AxoControlPlaneSessionError.noSelectedMachine
         }
         guard chat.machineId == destination.machineId, chat.hostGeneration == destination.hostGeneration,
-              [chat.machineId, chat.hostGeneration, chat.workspaceId, chat.sessionId, chat.paneId,
-               chat.runtimeHostGeneration, chat.runtimeGeneration, chat.chatId].allSatisfy(isNonNilUUID) else {
+              [chat.machineId, chat.hostGeneration, chat.sessionId, chat.paneId,
+               chat.runtimeHostGeneration, chat.runtimeGeneration, chat.chatId].allSatisfy(isNonNilUUID),
+              chat.workspaceId.map(isNonNilUUID) ?? true else {
             throw AxoProtocolValidationError.invalidResult(method: method)
         }
         try requireSupported(method)

@@ -268,7 +268,7 @@ final class PrivateMachineBrowserModel {
 
             guard selectionOperation == operation, selectedMachineID == machineID,
                   let revision,
-                  sessionRecords.allSatisfy({ session in workspaceRecords.contains(where: { $0.workspaceId == session.workspaceId }) }) else {
+                  sessionRecords.allSatisfy({ session in session.workspaceId == nil || workspaceRecords.contains(where: { $0.workspaceId == session.workspaceId }) }) else {
                 throw AxoProtocolValidationError.invalidResult(method: AxoProtocol.Method.listSessions)
             }
             workspaces[machineID] = workspaceRecords

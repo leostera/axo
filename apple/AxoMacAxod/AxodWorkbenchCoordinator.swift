@@ -49,6 +49,8 @@ final class AxodWorkbenchCoordinator {
     private(set) var daemonServiceMessage = "Registering the bundled axod service."
     private(set) var needsLoginItemsReview = false
     private(set) var needsDaemonServiceReview = false
+    private(set) var needsLegacyDaemonReplacement = false
+    private(set) var isUpgradingDaemon = false
     private(set) var chatTarget: PiChatTarget?
     private(set) var chatSnapshot: PiChatSnapshot?
     private(set) var chatEntries: [PiCanonicalProjection] = []
@@ -57,11 +59,13 @@ final class AxodWorkbenchCoordinator {
     private(set) var pendingChatCommandId: UUID?
     private(set) var pendingPiStartCommandID: UUID?
     var workEditor: AxodWorkEditorContext?
+    private var activeCreationContext: AxodWorkEditorContext?
     private(set) var isEditingWork = false
-    private(set) var workEditMessage = "Creating work records does not start a process."
+    private(set) var workEditMessage = "Create a session and start your ambient Pi."
+    private(set) var createdSessionForEditor: WorkSessionRecord?
     private(set) var pendingWorkCommandID: UUID?
     private(set) var pendingWorkIsUnreadable = false
-    var canEditWork: Bool { connectionState == .connected && !isEditingWork && pendingWorkCommandID == nil && !pendingWorkIsUnreadable }
+    var canEditWork: Bool { connectionState == .connected && !isEditingWork && !isUpgradingDaemon && !needsLegacyDaemonReplacement && pendingWorkCommandID == nil && !pendingWorkIsUnreadable }
     private(set) var isStartingPi = false
     private(set) var isSendingPiMessage = false
     private(set) var isReconcilingPiCommand = false
@@ -84,6 +88,7 @@ final class AxodWorkbenchCoordinator {
     let voice = MacVoiceCoordinator(historyURL: URL(fileURLWithPath: NSHomeDirectory(), isDirectory: true).appendingPathComponent("Library/Application Support/Axo/voice-transcripts.json"))
     @ObservationIgnored private var settingsWindow: NSWindow?
     @ObservationIgnored private var aboutWindow: NSWindow?
+    private var catalogRevision: WorkRevision?
     private var didCheckStartupRegistration = false
     private var didCheckDaemonService = false
 
@@ -266,9 +271,9 @@ final class AxodWorkbenchCoordinator {
         }
     }
 
-    func connect() {
-        guard connectTask == nil else { return }
-        guard SMAppService.agent(plistName: Self.axodAgentPlistName).status == .enabled else {
+    func connect(createInitialSession: Bool = false) {
+        guard connectTask == nil, !isUpgradingDaemon else { return }
+        guard SMAppService.agent(plistName: Self.axodAgentPlistName).status != .requiresApproval else {
             connectionState = .failed(daemonServiceMessage)
             message = daemonServiceMessage
             return
@@ -286,6 +291,15 @@ final class AxodWorkbenchCoordinator {
             guard let self else { return }
             await oldConnection?.close()
             await self.bootstrapAndConnect(operation: operation)
+            if createInitialSession, self.operationGeneration == operation, self.canEditWork,
+               self.workspaces.isEmpty, self.sessions.isEmpty, self.runtimes.isEmpty,
+               let revision = self.catalogRevision, let endpoint = self.endpoint {
+                let context = AxodWorkEditorContext(kind: .session(workspaceID: nil),
+                    target: MachineTarget(machineId: endpoint.machineId, hostGeneration: endpoint.hostGeneration), revision: revision)
+                self.createdSessionForEditor = nil
+                self.activeCreationContext = context
+                self.createWork(context, name: "New Session", directory: nil)
+            }
             if self.operationGeneration == operation { self.connectTask = nil }
         }
     }
@@ -304,6 +318,7 @@ final class AxodWorkbenchCoordinator {
         workspaces = []
         sessions = []
         runtimes = []
+        catalogRevision = nil
         stopChatObservation()
         chatTarget = nil
         chatSnapshot = nil
@@ -327,13 +342,17 @@ final class AxodWorkbenchCoordinator {
         workspace.isEnabled = canEditWork
         let session = menu.addItem(withTitle: "New Session…", action: #selector(newSession), keyEquivalent: "")
         session.target = self
-        session.isEnabled = canEditWork && selectedWorkspaceID != nil
+        session.isEnabled = canEditWork
+        let projectSession = menu.addItem(withTitle: "New Session in Workspace…", action: #selector(newWorkspaceSession), keyEquivalent: "")
+        projectSession.target = self
+        projectSession.isEnabled = canEditWork && selectedWorkspaceID != nil
         menu.autoenablesItems = false
         menu.popUp(positioning: nil, at: NSEvent.mouseLocation, in: nil)
     }
 
     @objc func newWorkspace() { prepareWorkEditor(.workspace) }
-    @objc func newSession() {
+    @objc func newSession() { prepareWorkEditor(.session(workspaceID: nil)) }
+    @objc func newWorkspaceSession() {
         guard let workspaceID = selectedWorkspaceID else { return }
         prepareWorkEditor(.session(workspaceID: workspaceID))
     }
@@ -345,22 +364,29 @@ final class AxodWorkbenchCoordinator {
         isEditingWork = true
         Task { [weak self] in
             guard let self else { return }
-            defer { self.isEditingWork = false }
             do {
                 let page = try await self.fetchWorkspaces(cursor: nil, over: connection, endpoint: endpoint, operation: operation)
                 guard self.isCurrent(operation, connection: connection, endpoint: endpoint) else { return }
                 try self.stateDirectory?.requireCurrentEndpoint(endpoint)
-                self.workEditMessage = "Creating work records does not start Pi or a shell."
-                self.workEditor = AxodWorkEditorContext(kind: kind, target: target, revision: page.revision)
+                self.createdSessionForEditor = nil
+                self.workEditMessage = "A workspace starts its first session in the selected folder. A standalone session starts in your home folder."
+                let context = AxodWorkEditorContext(kind: kind, target: target, revision: page.revision)
+                self.activeCreationContext = context
+                self.isEditingWork = false
+                switch kind {
+                case .workspace: self.workEditor = context
+                case .session: self.createWork(context, name: "New Session", directory: nil)
+                }
             } catch {
                 guard self.isCurrent(operation, connection: connection, endpoint: endpoint) else { return }
+                self.isEditingWork = false
                 self.message = "Could not read the current work revision. No work was created."
             }
         }
     }
 
     func createWork(_ context: AxodWorkEditorContext, name: String, directory: LocalDirectoryPath?) {
-        guard canEditWork, workEditor?.id == context.id, let connection, let endpoint,
+        guard canEditWork, createdSessionForEditor == nil, (workEditor?.id ?? activeCreationContext?.id) == context.id, let connection, let endpoint,
               endpoint.machineId == context.target.machineId, endpoint.hostGeneration == context.target.hostGeneration else { return }
         let operation = operationGeneration
         let command = UUID()
@@ -375,17 +401,41 @@ final class AxodWorkbenchCoordinator {
                                                                   command: command, over: connection)
                 guard self.isCurrent(operation, connection: connection, endpoint: endpoint) else { return }
                 try self.stateDirectory?.requireCurrentEndpoint(endpoint)
-                self.preferredWorkspaceID = selection.workspaceID
-                self.preferredSessionID = selection.sessionID
                 self.clearPendingWork(command, machineID: context.target.machineId)
+                let session: WorkSessionRecord
+                switch selection {
+                case .workspace(let workspace, let first):
+                    self.workspaces.append(workspace)
+                    session = first
+                case .session(let record): session = record
+                }
+                self.sessions.append(session)
                 self.workEditor = nil
-                self.message = "Work record created. No process was started."
-                self.refresh()
+                self.activeCreationContext = nil
+                self.selectedWorkspaceID = session.workspaceId
+                self.selectedSessionID = session.sessionId
+                self.preferredWorkspaceID = session.workspaceId
+                self.preferredSessionID = session.sessionId
+                self.saveSelection()
+                self.workEditMessage = "Session created. Starting Pi…"
+                let ready = await self.startCreatedSession(session, target: context.target, over: connection,
+                                                          endpoint: endpoint, operation: operation)
+                guard self.isCurrent(operation, connection: connection, endpoint: endpoint),
+                      self.selectedSessionID == session.sessionId else { return }
+                if ready {
+                    self.workEditor = nil
+                    self.createdSessionForEditor = nil
+                    self.message = "Session created and Pi is ready."
+                    self.refresh()
+                } else {
+                    self.workEditMessage = self.chatStatusMessage
+                    self.message = self.chatStatusMessage
+                }
             } catch {
                 guard self.isCurrent(operation, connection: connection, endpoint: endpoint) else { return }
-                if self.pendingWorkCommandID == command {
+                if let pending = self.pendingWorkCommandID {
                     if case AxoJSONRPCClientError.remote(let code, _) = error, [-32601, -32602, -32002, -32006, -32007, -32010].contains(code) {
-                        self.clearPendingWork(command, machineID: context.target.machineId)
+                        self.clearPendingWork(pending, machineID: context.target.machineId)
                         switch code {
                         case -32601:
                             self.workEditMessage = "The running daemon does not support this creation method. Its older registered helper must be upgraded; this workspace was not created."
@@ -404,19 +454,14 @@ final class AxodWorkbenchCoordinator {
                 } else {
                     self.workEditMessage = "The name or request is invalid. No command was dispatched."
                 }
+                self.message = self.workEditMessage
             }
         }
     }
 
     private enum CreatedWorkSelection {
-        case workspace(UUID)
-        case session(workspaceID: UUID, sessionID: UUID)
-        var workspaceID: UUID {
-            switch self { case .workspace(let id): id; case .session(let id, _): id }
-        }
-        var sessionID: UUID? {
-            switch self { case .workspace: nil; case .session(_, let id): id }
-        }
+        case workspace(WorkWorkspaceRecord, WorkSessionRecord)
+        case session(WorkSessionRecord)
     }
 
     private func dispatchWorkCreation(_ context: AxodWorkEditorContext, name: String, directory: LocalDirectoryPath?,
@@ -425,21 +470,22 @@ final class AxodWorkbenchCoordinator {
         case .workspace:
             guard let directory else { throw AxoProtocolValidationError.invalidParameters(method: AxoProtocol.Method.createLocalWorkspace) }
             let parameters = LocalWorkspaceCreateParameters(target: context.target, commandId: command,
-                expectedRevision: context.revision, directoryPath: directory, name: name)
+                expectedRevision: context.revision, directoryPath: directory, name: name, initialSessionName: "New Session")
             try AxoProtocolWorkRequestValidator.validate(parameters)
             savePendingWork(command, machineID: context.target.machineId)
             let value = try await connection.request(method: AxoProtocol.Method.createLocalWorkspace, parameters: parameters)
             let result = try AxoProtocolResultValidator.localWorkspaceCreate(value, target: context.target,
-                expectedRevision: context.revision, name: name)
-            return .workspace(result.workspace.workspaceId)
+                expectedRevision: context.revision, name: name, initialSessionName: "New Session")
+            guard let first = result.session else { throw AxoProtocolValidationError.invalidResult(method: AxoProtocol.Method.createLocalWorkspace) }
+            return .workspace(result.workspace, first)
         case .session(let workspaceID):
-            let target = WorkWorkspaceTarget(machineId: context.target.machineId, hostGeneration: context.target.hostGeneration, workspaceId: workspaceID)
+            let target = WorkSessionDestination(machineId: context.target.machineId, hostGeneration: context.target.hostGeneration, workspaceId: workspaceID)
             let parameters = SessionCreateParameters(target: target, commandId: command, expectedRevision: context.revision, name: name)
             try AxoProtocolWorkRequestValidator.validate(parameters)
             savePendingWork(command, machineID: context.target.machineId)
             let value = try await connection.request(method: AxoProtocol.Method.createSession, parameters: parameters)
             let result = try AxoProtocolResultValidator.sessionCreate(value, target: target, expectedRevision: context.revision, name: name)
-            return .session(workspaceID: workspaceID, sessionID: result.session.sessionId)
+            return .session(result.session)
         }
     }
 
@@ -456,13 +502,24 @@ final class AxodWorkbenchCoordinator {
                 let result = try AxoProtocolResultValidator.commandGet(value, target: target)
                 guard self.isCurrent(operation, connection: connection, endpoint: endpoint) else { return }
                 try self.stateDirectory?.requireCurrentEndpoint(endpoint)
-                guard case .work = result.receipt else {
+                guard case .work(let committed) = result.receipt else {
                     self.workEditMessage = "No committed work receipt was found. The unresolved command was not replayed."
                     return
                 }
+                switch committed.record {
+                case .workspace(let workspace):
+                    self.preferredWorkspaceID = workspace.workspaceId
+                    self.preferredSessionID = nil
+                case .session(let session):
+                    self.preferredWorkspaceID = session.workspaceId
+                    self.preferredSessionID = session.sessionId
+                case .workspaceSession(let pair):
+                    self.preferredWorkspaceID = pair.workspace.workspaceId
+                    self.preferredSessionID = pair.session.sessionId
+                }
                 self.clearPendingWork(command, machineID: target.machineId)
                 self.workEditor = nil
-                self.message = "Original work command confirmed; refreshing the catalog without replay."
+                self.message = "Original work command confirmed; refreshing the catalog without replay or Pi launch."
                 self.refresh()
             } catch {
                 guard self.isCurrent(operation, connection: connection, endpoint: endpoint) else { return }
@@ -516,30 +573,24 @@ final class AxodWorkbenchCoordinator {
         preferredWorkspaceID = workspaceID
         preferredSessionID = nil
         saveSelection()
-        sessions = []
         nextSessionCursor = nil
         let load = UUID()
         sessionLoadGeneration = load
-        guard let workspaceID, let connection, let endpoint else { return }
+        guard let connection, let endpoint else { return }
         let operation = operationGeneration
         Task { [weak self] in
             guard let self else { return }
             do {
-                let result = try await self.fetchSessions(
-                    workspaceID: workspaceID,
-                    cursor: nil,
-                    over: connection,
-                    endpoint: endpoint,
-                    operation: operation
-                )
+                let catalog = try await self.fetchSessionCatalog(over: connection, endpoint: endpoint, operation: operation)
                 guard self.isCurrent(operation, connection: connection, endpoint: endpoint),
                       self.sessionLoadGeneration == load,
                       self.selectedWorkspaceID == workspaceID else { return }
-                self.sessions = result.sessions
-                self.selectedSessionID = result.sessions.first?.sessionId
+                self.sessions = catalog.sessions
+                self.catalogRevision = catalog.revision
+                self.selectedSessionID = catalog.sessions.first(where: { $0.workspaceId == workspaceID })?.sessionId
                 self.preferredWorkspaceID = workspaceID
                 self.preferredSessionID = self.selectedSessionID
-                self.nextSessionCursor = result.next
+                self.nextSessionCursor = nil
                 self.saveSelection()
                 self.activateSelectedSession()
             } catch {
@@ -552,7 +603,10 @@ final class AxodWorkbenchCoordinator {
 
     /// Selecting a record changes only the metadata detail; it is never process-launch intent.
     func selectSession(_ sessionID: UUID) {
-        guard sessions.contains(where: { $0.sessionId == sessionID }) else { return }
+        guard let session = sessions.first(where: { $0.sessionId == sessionID }) else { return }
+        sessionLoadGeneration = UUID()
+        selectedWorkspaceID = session.workspaceId
+        preferredWorkspaceID = session.workspaceId
         stopChatObservation()
         chatSnapshot = nil
         chatEntries = []
@@ -567,8 +621,69 @@ final class AxodWorkbenchCoordinator {
         sessions.first { $0.sessionId == selectedSessionID }
     }
 
+    /// Creation is explicit launch intent. Catalog reads and restoration never call this.
+    private func startCreatedSession(_ session: WorkSessionRecord, target: MachineTarget,
+                                     over connection: AxoJSONRPCWebSocketConnection,
+                                     endpoint: LocalDaemonEndpoint, operation: UUID) async -> Bool {
+        let destination = PiSessionTarget(machineId: target.machineId, hostGeneration: target.hostGeneration,
+            workspaceId: session.workspaceId, sessionId: session.sessionId, paneId: session.pi.paneId)
+        let key = pendingStartKey(machineID: target.machineId, sessionID: session.sessionId)
+        guard preferences.data(forKey: key) == nil else {
+            chatStatusMessage = "A previous start is unresolved. Reconcile it; no second start was sent."
+            return false
+        }
+        let pending = PendingPiStart(target: destination, commandId: UUID(), persistence: .fresh)
+        do { preferences.set(try JSONEncoder().encode(pending), forKey: key) }
+        catch {
+            chatStatusMessage = "The session was created, but its start intent could not be saved. No Pi start was sent."
+            return false
+        }
+        pendingPiStartCommandID = pending.commandId
+        isStartingPi = true
+        defer { isStartingPi = false }
+        do {
+            try stateDirectory?.requireCurrentEndpoint(endpoint)
+            let value = try await connection.request(method: AxoProtocol.Method.startSession,
+                parameters: PiSessionStartParameters(target: destination, commandId: pending.commandId, persistence: .fresh))
+            let result = try PiProtocolValidator.sessionStart(value, target: destination,
+                commandId: pending.commandId, persistence: .fresh)
+            guard isCurrent(operation, connection: connection, endpoint: endpoint), selectedSessionID == session.sessionId else { return false }
+            try stateDirectory?.requireCurrentEndpoint(endpoint)
+            switch result.receipt.disposition {
+            case .prepared:
+                chatStatusMessage = "Session created; Pi start remains uncertain. Reconcile the saved start, do not create another session."
+            case .rejected(let code):
+                preferences.removeObject(forKey: key)
+                pendingPiStartCommandID = nil
+                chatStatusMessage = "Session created, but Pi startup was rejected before execution (\(code)). Open the session to retry its start."
+            case .dispatched:
+                guard result.admission == .ready, let chat = result.chat else {
+                    chatStatusMessage = "Session created; Pi did not confirm readiness. Reconcile its saved start before retrying."
+                    return false
+                }
+                preferences.removeObject(forKey: key)
+                pendingPiStartCommandID = nil
+                chatTarget = chat
+                chatStatusMessage = "Pi is ready."
+                return true
+            }
+        } catch {
+            guard isCurrent(operation, connection: connection, endpoint: endpoint), selectedSessionID == session.sessionId else { return false }
+            if let code = Self.knownNoEffectCode(error) {
+                preferences.removeObject(forKey: key)
+                pendingPiStartCommandID = nil
+                chatStatusMessage = code == -32003
+                    ? "Session created, but the running daemon cannot launch Pi. It needs the current app's adapter and local launch policy; ambient Pi must be installed. No execution was started."
+                    : "Session created, but Pi start was rejected before execution (\(code)). Open the session to retry its start."
+            } else {
+                chatStatusMessage = "Session created; Pi start outcome is unknown. Its saved command must be reconciled before any new start."
+            }
+        }
+        return false
+    }
+
     func startOrResumePi() {
-        guard connectionState == .connected, let session = selectedSession,
+        guard connectionState == .connected, !isUpgradingDaemon, let session = selectedSession,
               let connection, let endpoint else { return }
         let target = PiSessionTarget(
             machineId: endpoint.machineId,
@@ -961,6 +1076,7 @@ final class AxodWorkbenchCoordinator {
             if let previous {
                 do {
                     try await connect(to: previous, stateDirectory: stateDirectory, operation: operation)
+                    try await upgradeConnectedDaemon(in: stateDirectory, operation: operation)
                     return
                 } catch AxodWorkbenchError.protocolMismatch {
                     throw AxodWorkbenchError.protocolMismatch
@@ -981,11 +1097,80 @@ final class AxodWorkbenchCoordinator {
                 discovered = try await waitForEndpoint(in: stateDirectory, replacing: previous, operation: operation)
             }
             try await connect(to: discovered, stateDirectory: stateDirectory, operation: operation)
+            try await upgradeConnectedDaemon(in: stateDirectory, operation: operation)
         } catch {
             guard operationGeneration == operation else { return }
             connectionState = .failed(error.localizedDescription)
             message = error.localizedDescription
         }
+    }
+
+    private func upgradeConnectedDaemon(in stateDirectory: AxodStateDirectory, operation: UUID) async throws {
+        guard !isUpgradingDaemon, let connection, let endpoint, Bundle.main.bundleIdentifier == "dev.leostera.axo.mac" else { return }
+        isUpgradingDaemon = true
+        defer { isUpgradingDaemon = false }
+        let decision = try await AxodDaemonUpgrade.prepare(over: connection, endpoint: endpoint, preferences: preferences,
+            info: Bundle.main.infoDictionary ?? [:], validate: {
+                try self.requireCurrent(operation)
+                try stateDirectory.requireCurrentEndpoint(endpoint)
+            })
+        switch decision {
+        case .keepCurrent: needsLegacyDaemonReplacement = false
+        case .legacyAwaitingSafeStop:
+            needsLegacyDaemonReplacement = true
+            daemonServiceMessage = "Automatic helper update is waiting for the older daemon to stop safely. This version cannot prove an idle handoff; running or uncertain work is preserved."
+        case .deferredActiveWork:
+            needsLegacyDaemonReplacement = false
+            daemonServiceMessage = "Helper update deferred: an owned runtime is still running or its completion is uncertain. Your work was left untouched."
+        case .quiesced:
+            try await replaceDaemonRegistration(in: stateDirectory, replacing: endpoint, operation: operation)
+        }
+    }
+
+    private func replaceDaemonRegistration(in stateDirectory: AxodStateDirectory, replacing previous: LocalDaemonEndpoint,
+                                            operation: UUID) async throws {
+        try requireCurrent(operation)
+        try stateDirectory.requireCurrentEndpoint(previous)
+        connectionState = .starting
+        hostObservationTask?.cancel()
+        hostStatus = nil
+        message = "Installing this app’s axod helper. Work and Pi history are preserved."
+        let service = SMAppService.agent(plistName: Self.axodAgentPlistName)
+        // An unstructured MainActor task completes the captured registration operation
+        // even if the connect task is canceled after unregistering the old job.
+        let registration = Task { @MainActor in
+            try await service.unregister()
+            let deadline = ContinuousClock.now.advanced(by: .seconds(8))
+            var absence: AxodOwnerAbsenceLease?
+            repeat {
+                absence = try AxodOwnerAbsenceLease.acquire(in: stateDirectory.root)
+                if absence != nil { break }
+                try await Task.sleep(for: .milliseconds(100))
+            } while ContinuousClock.now < deadline
+            guard let absence else { throw AxodWorkbenchError.startupTimedOut }
+            defer { absence.release() }
+            absence.release()
+            try service.register()
+        }
+        try await registration.value
+        try requireCurrent(operation)
+        let oldConnection = connection
+        connection = nil
+        await oldConnection?.close()
+        let fresh = try await waitForEndpoint(in: stateDirectory, replacing: previous, operation: operation)
+        try await connect(to: fresh, stateDirectory: stateDirectory, operation: operation)
+        guard let connection else { throw AxodWorkbenchError.startupTimedOut }
+        let target = MachineTarget(machineId: fresh.machineId, hostGeneration: fresh.hostGeneration)
+        let value = try await connection.request(method: AxoProtocol.Method.getHost, parameters: HostGetParameters(target: target))
+        try requireCurrent(operation)
+        try stateDirectory.requireCurrentEndpoint(fresh)
+        let running = try AxoProtocolResultValidator.host(value, target: target)
+        guard running.daemonVersion == Bundle.main.infoDictionary?["AxoBundledAxodVersion"] as? String else {
+            throw AxoProtocolValidationError.invalidResult(method: AxoProtocol.Method.getHost)
+        }
+        preferences.removeObject(forKey: AxodDaemonUpgrade.pendingKey(fresh.machineId))
+        needsLegacyDaemonReplacement = false
+        daemonServiceMessage = "The current bundled axod helper is running."
     }
 
     private func repairOwnerlessDaemonService(in stateDirectory: AxodStateDirectory, operation: UUID) async throws -> Bool {
@@ -1065,7 +1250,7 @@ final class AxodWorkbenchCoordinator {
             self.selectedWorkspaceID = preferredWorkspaceID.flatMap { savedID in
                 workspaces.workspaces.first(where: { $0.workspaceId == savedID })?.workspaceId
             } ?? workspaces.workspaces.first?.workspaceId
-            if selectedWorkspaceID != preferredWorkspaceID {
+            if preferredWorkspaceID != nil && selectedWorkspaceID != preferredWorkspaceID {
                 preferredSessionID = nil
             }
             preferredWorkspaceID = selectedWorkspaceID
@@ -1075,11 +1260,7 @@ final class AxodWorkbenchCoordinator {
             connectionState = .connected
             observeHost(over: connection, endpoint: endpoint, operation: operation)
             message = "Connected to axod."
-            if let workspaceID = selectedWorkspaceID {
-                await loadInitialSessions(workspaceID, over: connection, endpoint: endpoint, operation: operation)
-            } else {
-                saveSelection()
-            }
+            await loadInitialSessions(selectedWorkspaceID, over: connection, endpoint: endpoint, operation: operation)
             try requireCurrent(operation)
         } catch {
             await connection.close()
@@ -1102,24 +1283,14 @@ final class AxodWorkbenchCoordinator {
         nextRuntimeID = runtimes.next
         self.workspaces = workspaces.workspaces
         nextWorkspaceCursor = workspaces.next
-        if let selectedWorkspaceID,
-           workspaces.workspaces.contains(where: { $0.workspaceId == selectedWorkspaceID }) {
-            await loadInitialSessions(selectedWorkspaceID, over: connection, endpoint: endpoint, operation: operation)
-        } else {
+        if let selectedWorkspaceID, !workspaces.workspaces.contains(where: { $0.workspaceId == selectedWorkspaceID }) {
             self.selectedWorkspaceID = workspaces.workspaces.first?.workspaceId
-            sessions = []
-            selectedSessionID = nil
-            nextSessionCursor = nil
-            if let selectedWorkspaceID {
-                await loadInitialSessions(selectedWorkspaceID, over: connection, endpoint: endpoint, operation: operation)
-            } else {
-                saveSelection()
-            }
         }
+        await loadInitialSessions(selectedWorkspaceID, over: connection, endpoint: endpoint, operation: operation)
     }
 
     private func loadInitialSessions(
-        _ workspaceID: UUID,
+        _ workspaceID: UUID?,
         over connection: AxoJSONRPCWebSocketConnection,
         endpoint: LocalDaemonEndpoint,
         operation: UUID
@@ -1129,27 +1300,21 @@ final class AxodWorkbenchCoordinator {
         let load = UUID()
         sessionLoadGeneration = load
         do {
-            let result = try await fetchSessions(
-                workspaceID: workspaceID,
-                cursor: nil,
-                over: connection,
-                endpoint: endpoint,
-                operation: operation
-            )
+            let catalog = try await fetchSessionCatalog(over: connection, endpoint: endpoint, operation: operation)
             guard isCurrent(operation, connection: connection, endpoint: endpoint),
                   selectedWorkspaceID == workspaceID,
                   sessionLoadGeneration == load else { return }
-            sessions = result.sessions
-            if preferredWorkspaceID == workspaceID,
-               let preferredSessionID,
-               result.sessions.contains(where: { $0.sessionId == preferredSessionID }) {
+            sessions = catalog.sessions
+            catalogRevision = catalog.revision
+            if let preferredSessionID, let preferred = catalog.sessions.first(where: { $0.sessionId == preferredSessionID }) {
                 selectedSessionID = preferredSessionID
+                selectedWorkspaceID = preferred.workspaceId
             } else {
-                selectedSessionID = result.sessions.first?.sessionId
+                selectedSessionID = catalog.sessions.first(where: { $0.workspaceId == workspaceID })?.sessionId
             }
-            preferredWorkspaceID = workspaceID
+            preferredWorkspaceID = selectedWorkspaceID
             preferredSessionID = selectedSessionID
-            nextSessionCursor = result.next
+            nextSessionCursor = nil
             saveSelection()
             activateSelectedSession()
         } catch {
@@ -1476,8 +1641,35 @@ final class AxodWorkbenchCoordinator {
         return result
     }
 
+    private struct SessionCatalog {
+        let sessions: [WorkSessionRecord]
+        let revision: WorkRevision
+    }
+    private func fetchSessionCatalog(over connection: AxoJSONRPCWebSocketConnection,
+                                     endpoint: LocalDaemonEndpoint, operation: UUID) async throws -> SessionCatalog {
+        var sessions: [WorkSessionRecord] = []
+        var seen = Set<UUID>()
+        var cursor: WorkPageCursor?
+        var revision: WorkRevision?
+        repeat {
+            let page = try await fetchSessions(workspaceID: nil, cursor: cursor, over: connection,
+                                               endpoint: endpoint, operation: operation)
+            guard revision == nil || revision == page.revision,
+                  sessions.count + page.sessions.count <= 1000,
+                  page.sessions.allSatisfy({ seen.insert($0.sessionId).inserted }),
+                  page.next == nil || !page.sessions.isEmpty else {
+                throw AxoProtocolValidationError.invalidResult(method: AxoProtocol.Method.listSessions)
+            }
+            revision = page.revision
+            sessions.append(contentsOf: page.sessions)
+            cursor = page.next
+        } while cursor != nil
+        guard let revision else { throw AxoProtocolValidationError.invalidResult(method: AxoProtocol.Method.listSessions) }
+        return SessionCatalog(sessions: sessions, revision: revision)
+    }
+
     private func fetchSessions(
-        workspaceID: UUID,
+        workspaceID: UUID?,
         cursor: WorkPageCursor?,
         over connection: AxoJSONRPCWebSocketConnection,
         endpoint: LocalDaemonEndpoint,
@@ -1554,6 +1746,32 @@ final class AxodWorkbenchCoordinator {
                     guard let self, self.isCurrent(operation, connection: connection, endpoint: endpoint) else { return }
                     try self.stateDirectory?.requireCurrentEndpoint(endpoint)
                     self.hostStatus = try AxoProtocolResultValidator.host(value, target: MachineTarget(machineId: endpoint.machineId, hostGeneration: endpoint.hostGeneration))
+                    if !self.isEditingWork, let selected = self.selectedSessionID,
+                       let record = self.sessions.first(where: { $0.sessionId == selected }) {
+                        let destination = WorkSessionTarget(machineId: endpoint.machineId, hostGeneration: endpoint.hostGeneration,
+                                                            workspaceId: record.workspaceId, sessionId: selected)
+                        let metadata = try await connection.request(method: AxoProtocol.Method.getSession,
+                                                                    parameters: SessionGetParameters(target: destination))
+                        let updated = try AxoProtocolResultValidator.sessionGet(metadata, target: destination).session
+                        guard self.isCurrent(operation, connection: connection, endpoint: endpoint) else { return }
+                        try self.stateDirectory?.requireCurrentEndpoint(endpoint)
+                        if let index = self.sessions.firstIndex(where: { $0.sessionId == selected }) {
+                            self.sessions[index] = updated
+                        }
+                    }
+                    if self.connectTask == nil, !self.isUpgradingDaemon, !self.isEditingWork,
+                       self.hostStatus?.daemonVersion != Bundle.main.infoDictionary?["AxoBundledAxodVersion"] as? String,
+                       let directory = self.stateDirectory {
+                        // A separate task survives cancellation of this observation loop during handoff.
+                        Task { [weak self] in
+                            guard let self else { return }
+                            do { try await self.upgradeConnectedDaemon(in: directory, operation: operation) }
+                            catch {
+                                guard self.operationGeneration == operation else { return }
+                                self.daemonServiceMessage = "Automatic helper update could not be confirmed. Its captured handoff will be reconciled; no work was replayed."
+                            }
+                        }
+                    }
                 } catch {
                     guard let self, self.isCurrent(operation, connection: connection, endpoint: endpoint) else { return }
                     self.hostStatus = nil // Unknown/unavailable is never cloud-online.

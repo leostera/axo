@@ -14,8 +14,14 @@ const MAX_WORKSPACES: usize = 128;
 const MAX_SESSIONS: usize = 1000;
 const MAX_RECEIPTS: usize = 2000;
 pub(crate) const MAX_REVISION: u64 = 9_007_199_254_740_991;
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub(crate) enum DirectoryApproval {
+    Profile(String),
+    LocalSelection,
+    UserHome,
+}
 pub(crate) struct ExecutionContext {
-    pub directory_id: String,
+    pub approval: DirectoryApproval,
     pub directory: PathBuf,
 }
 
@@ -30,7 +36,7 @@ pub struct WorkspaceRecord {
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct SessionRecord {
     pub session_id: SessionId,
-    pub workspace_id: WorkspaceId,
+    pub workspace_id: Option<WorkspaceId>,
     pub name: String,
     pub pi_pane_id: PaneId,
 }
@@ -50,6 +56,19 @@ impl LocalDirectoryPath {
     fn as_str(&self) -> &str {
         &self.0
     }
+}
+pub(crate) fn capture_user_home() -> Option<LocalDirectoryPath> {
+    use std::os::unix::fs::MetadataExt;
+    let home = PathBuf::from(std::env::var_os("HOME")?);
+    if !home.is_absolute() {
+        return None;
+    }
+    let home = fs::canonicalize(home).ok()?;
+    let metadata = fs::metadata(&home).ok()?;
+    if !metadata.is_dir() || metadata.uid() != unsafe { libc::geteuid() } {
+        return None;
+    }
+    LocalDirectoryPath::parse(home.to_str()?.to_owned()).ok()
 }
 impl<'de> Deserialize<'de> for LocalDirectoryPath {
     fn deserialize<D: serde::Deserializer<'de>>(d: D) -> Result<Self, D::Error> {
@@ -71,6 +90,8 @@ pub enum WorkIntent {
     CreateLocalWorkspace {
         directory: LocalDirectoryPath,
         name: String,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        initial_session_name: Option<String>,
         expected_revision: u64,
     },
     #[serde(rename_all = "camelCase")]
@@ -86,8 +107,14 @@ pub enum WorkIntent {
         expected_revision: u64,
     },
     #[serde(rename_all = "camelCase")]
+    CreateStandaloneSession {
+        directory: LocalDirectoryPath,
+        name: String,
+        expected_revision: u64,
+    },
+    #[serde(rename_all = "camelCase")]
     RenameSession {
-        workspace_id: WorkspaceId,
+        workspace_id: Option<WorkspaceId>,
         session_id: SessionId,
         name: String,
         expected_revision: u64,
@@ -100,6 +127,7 @@ impl WorkIntent {
             | Self::CreateLocalWorkspace { name, .. }
             | Self::RenameWorkspace { name, .. }
             | Self::CreateSession { name, .. }
+            | Self::CreateStandaloneSession { name, .. }
             | Self::RenameSession { name, .. } => name,
         }
     }
@@ -117,6 +145,9 @@ impl WorkIntent {
             | Self::CreateSession {
                 expected_revision, ..
             }
+            | Self::CreateStandaloneSession {
+                expected_revision, ..
+            }
             | Self::RenameSession {
                 expected_revision, ..
             } => *expected_revision,
@@ -127,7 +158,12 @@ impl WorkIntent {
             && self.expected_revision() <= MAX_REVISION
             && match self {
                 Self::CreateWorkspace { directory_id, .. } => valid_directory_id(directory_id),
-                Self::CreateLocalWorkspace { .. } => true,
+                Self::CreateLocalWorkspace {
+                    initial_session_name,
+                    ..
+                } => initial_session_name
+                    .as_ref()
+                    .is_none_or(|name| valid_name(name)),
                 _ => true,
             }
     }
@@ -142,6 +178,10 @@ impl WorkIntent {
 pub enum WorkRecord {
     Workspace(WorkspaceRecord),
     Session(SessionRecord),
+    WorkspaceSession {
+        workspace: WorkspaceRecord,
+        session: SessionRecord,
+    },
 }
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
@@ -168,6 +208,8 @@ struct Saved {
     revision: u64,
     workspaces: BTreeMap<WorkspaceId, Workspace>,
     sessions: BTreeMap<SessionId, SessionRecord>,
+    #[serde(default)]
+    standalone_directories: BTreeMap<SessionId, LocalDirectoryPath>,
     receipts: BTreeMap<CommandId, Receipt>,
 }
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -215,6 +257,7 @@ impl WorkStore {
                 revision: 0,
                 workspaces: BTreeMap::new(),
                 sessions: BTreeMap::new(),
+                standalone_directories: BTreeMap::new(),
                 receipts: BTreeMap::new(),
             },
             Err(error) => return Err(error),
@@ -265,15 +308,16 @@ impl WorkStore {
             .saved
             .sessions
             .values()
-            .filter(|s| workspace.is_none_or(|id| s.workspace_id == id))
+            .filter(|s| workspace.is_none_or(|id| s.workspace_id == Some(id)))
             .cloned()
             .collect())
     }
     pub fn session(
         &self,
-        workspace: WorkspaceId,
+        workspace: impl Into<Option<WorkspaceId>>,
         session: SessionId,
     ) -> Result<SessionRecord, WorkError> {
+        let workspace = workspace.into();
         self.saved
             .sessions
             .get(&session)
@@ -283,21 +327,44 @@ impl WorkStore {
     }
     pub(crate) fn execution_context(
         &self,
-        workspace: WorkspaceId,
+        workspace: impl Into<Option<WorkspaceId>>,
         session: SessionId,
         pane: PaneId,
     ) -> Result<ExecutionContext, WorkError> {
+        let workspace = workspace.into();
         let record = self.session(workspace, session)?;
         if record.pi_pane_id != pane {
             return Err(WorkError::NotFound);
         }
+        let Some(workspace) = workspace else {
+            let directory = self
+                .saved
+                .standalone_directories
+                .get(&session)
+                .ok_or(WorkError::NotFound)?;
+            return Ok(ExecutionContext {
+                approval: DirectoryApproval::UserHome,
+                directory: PathBuf::from(directory.as_str()),
+            });
+        };
+        // Authority comes from the validated original creation receipt, never an ID prefix.
+        let local = self.saved.receipts.values().any(|receipt| {
+            matches!((&receipt.intent, &receipt.committed.record),
+                (WorkIntent::CreateLocalWorkspace { .. }, WorkRecord::Workspace(record))
+                    | (WorkIntent::CreateLocalWorkspace { .. }, WorkRecord::WorkspaceSession { workspace: record, .. })
+                    if record.workspace_id == workspace)
+        });
         let workspace = self
             .saved
             .workspaces
             .get(&workspace)
             .ok_or(WorkError::NotFound)?;
         Ok(ExecutionContext {
-            directory_id: workspace.record.directory_id.clone(),
+            approval: if local {
+                DirectoryApproval::LocalSelection
+            } else {
+                DirectoryApproval::Profile(workspace.record.directory_id.clone())
+            },
             directory: PathBuf::from(&workspace.directory),
         })
     }
@@ -391,8 +458,14 @@ impl Saved {
                 Ok(WorkRecord::Workspace(record))
             }
             WorkIntent::CreateLocalWorkspace {
-                directory, name, ..
+                directory,
+                name,
+                initial_session_name,
+                ..
             } => {
+                if initial_session_name.is_some() && self.sessions.len() >= MAX_SESSIONS {
+                    return Err(WorkError::Capacity);
+                }
                 if self.workspaces.len() >= MAX_WORKSPACES {
                     return Err(WorkError::Capacity);
                 }
@@ -416,7 +489,21 @@ impl Saved {
                         directory: directory.as_str().to_owned(),
                     },
                 );
-                Ok(WorkRecord::Workspace(record))
+                if let Some(name) = initial_session_name {
+                    let session = SessionRecord {
+                        session_id: SessionId::new(),
+                        workspace_id: Some(workspace_id),
+                        name: name.clone(),
+                        pi_pane_id: PaneId::new(),
+                    };
+                    self.sessions.insert(session.session_id, session.clone());
+                    Ok(WorkRecord::WorkspaceSession {
+                        workspace: record,
+                        session,
+                    })
+                } else {
+                    Ok(WorkRecord::Workspace(record))
+                }
             }
             WorkIntent::RenameWorkspace {
                 workspace_id, name, ..
@@ -439,10 +526,33 @@ impl Saved {
                 }
                 let record = SessionRecord {
                     session_id: SessionId::new(),
-                    workspace_id: *workspace_id,
+                    workspace_id: Some(*workspace_id),
                     name: name.clone(),
                     pi_pane_id: PaneId::new(),
                 };
+                self.sessions.insert(record.session_id, record.clone());
+                Ok(WorkRecord::Session(record))
+            }
+            WorkIntent::CreateStandaloneSession {
+                directory, name, ..
+            } => {
+                if self.sessions.len() >= MAX_SESSIONS {
+                    return Err(WorkError::Capacity);
+                }
+                let canonical =
+                    fs::canonicalize(directory.as_str()).map_err(|_| WorkError::Invalid)?;
+                if canonical != Path::new(directory.as_str()) || !canonical.is_dir() {
+                    return Err(WorkError::Invalid);
+                }
+                fs::read_dir(&canonical).map_err(|_| WorkError::Invalid)?;
+                let record = SessionRecord {
+                    session_id: SessionId::new(),
+                    workspace_id: None,
+                    name: name.clone(),
+                    pi_pane_id: PaneId::new(),
+                };
+                self.standalone_directories
+                    .insert(record.session_id, directory.clone());
                 self.sessions.insert(record.session_id, record.clone());
                 Ok(WorkRecord::Session(record))
             }
@@ -478,7 +588,18 @@ impl Saved {
             && self.sessions.iter().all(|(id, s)| {
                 *id == s.session_id
                     && valid_name(&s.name)
-                    && self.workspaces.contains_key(&s.workspace_id)
+                    && match s.workspace_id {
+                        Some(workspace) => {
+                            self.workspaces.contains_key(&workspace)
+                                && !self.standalone_directories.contains_key(id)
+                        }
+                        None => self.standalone_directories.contains_key(id),
+                    }
+            })
+            && self.standalone_directories.keys().all(|id| {
+                self.sessions
+                    .get(id)
+                    .is_some_and(|s| s.workspace_id.is_none())
             })
             && self.receipts.values().all(|r| self.valid_receipt(r))
             && self.records_match_receipts();
@@ -520,6 +641,20 @@ impl Saved {
                     }
                 }
                 (
+                    WorkIntent::CreateLocalWorkspace { .. },
+                    WorkRecord::WorkspaceSession { workspace, session },
+                ) => {
+                    if workspaces
+                        .insert(workspace.workspace_id, workspace.clone())
+                        .is_some()
+                        || sessions
+                            .insert(session.session_id, session.clone())
+                            .is_some()
+                    {
+                        return false;
+                    }
+                }
+                (
                     WorkIntent::RenameWorkspace { workspace_id, .. },
                     WorkRecord::Workspace(record),
                 ) => {
@@ -532,6 +667,11 @@ impl Saved {
                     if !workspaces.contains_key(workspace_id)
                         || sessions.insert(record.session_id, record.clone()).is_some()
                     {
+                        return false;
+                    }
+                }
+                (WorkIntent::CreateStandaloneSession { .. }, WorkRecord::Session(record)) => {
+                    if sessions.insert(record.session_id, record.clone()).is_some() {
                         return false;
                     }
                 }
@@ -571,7 +711,10 @@ impl Saved {
             }
             (
                 WorkIntent::CreateLocalWorkspace {
-                    directory, name, ..
+                    directory,
+                    name,
+                    initial_session_name: None,
+                    ..
                 },
                 WorkRecord::Workspace(record),
             ) => {
@@ -582,6 +725,27 @@ impl Saved {
                         .workspaces
                         .get(&record.workspace_id)
                         .is_some_and(|w| w.directory == directory.as_str())
+            }
+            (
+                WorkIntent::CreateLocalWorkspace {
+                    directory,
+                    name,
+                    initial_session_name: Some(session_name),
+                    ..
+                },
+                WorkRecord::WorkspaceSession { workspace, session },
+            ) => {
+                workspace.name == *name
+                    && workspace.directory_id
+                        == format!("local_{}", workspace.workspace_id.as_uuid())
+                    && self.valid_workspace_result(workspace)
+                    && self
+                        .workspaces
+                        .get(&workspace.workspace_id)
+                        .is_some_and(|w| w.directory == directory.as_str())
+                    && session.workspace_id == Some(workspace.workspace_id)
+                    && session.name == *session_name
+                    && self.valid_session_result(session)
             }
             (
                 WorkIntent::RenameWorkspace {
@@ -599,9 +763,20 @@ impl Saved {
                 },
                 WorkRecord::Session(record),
             ) => {
-                record.workspace_id == *workspace_id
+                record.workspace_id == Some(*workspace_id)
                     && record.name == *name
                     && self.valid_session_result(record)
+            }
+            (
+                WorkIntent::CreateStandaloneSession {
+                    directory, name, ..
+                },
+                WorkRecord::Session(record),
+            ) => {
+                record.workspace_id.is_none()
+                    && record.name == *name
+                    && self.valid_session_result(record)
+                    && self.standalone_directories.get(&record.session_id) == Some(directory)
             }
             (
                 WorkIntent::RenameSession {
@@ -740,7 +915,7 @@ mod tests {
             .apply(
                 CommandId::new(),
                 WorkIntent::RenameSession {
-                    workspace_id: workspace.workspace_id,
+                    workspace_id: Some(workspace.workspace_id),
                     session_id: session.session_id,
                     name: "Protected label".into(),
                     expected_revision: 2,

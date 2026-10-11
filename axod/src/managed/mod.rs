@@ -7,6 +7,7 @@ mod rpc;
 pub(crate) mod store;
 #[cfg(test)]
 mod tests;
+pub(crate) mod title;
 use crate::{model::*, pi_control::Control, runtime::Manager};
 use persistence::WriterLease;
 use serde::Serialize;
@@ -55,7 +56,7 @@ fn start(
         .unwrap()
         .execution_context(target.workspace_id, target.session_id, target.pane_id)
         .map_err(|_| (-32010, "Work destination not found"))?;
-    let directory_id = context.directory_id;
+    let approval = context.approval;
     let directory = context.directory;
     let intent = Intent::Start {
         target,
@@ -78,9 +79,8 @@ fn start(
         .clone()
         .ok_or((-32003, "Managed Pi policy unavailable"))?;
     let profile = policy
-        .profiles
-        .get(&directory_id)
-        .ok_or((-32003, "Managed directory policy unavailable"))?;
+        .profile(&approval, &directory)
+        .map_err(|_| (-32003, "Managed directory policy unavailable"))?;
     let previous = manager.managed.lock().unwrap().binding(target.session_id);
     let mut lease = None;
     let resume = match (&persistence, previous.as_ref()) {
@@ -111,7 +111,7 @@ fn start(
         _ => return Err((-32007, "Persistence intent conflict")),
     };
     let approved = policy
-        .launch(&directory_id, &directory, resume.as_deref())
+        .launch(&profile, &directory, resume.as_deref())
         .map_err(|_| (-32003, "Ambient Pi dependency or policy unavailable"))?;
     let launch = approved.terminal;
     let sessions = approved.sessions;

@@ -195,6 +195,9 @@ fn dispatch_route(
     let id = call.id?; // Execution notifications are never admitted.
     let result = match call.method.as_str() {
         "axo.host.get" if local => crate::host::get(call.params, manager, machine),
+        "axo.host.prepareUpgrade" if local => {
+            crate::upgrade::prepare(call.params, manager, machine)
+        }
         "axo.workspace.createLocal" => {
             if local {
                 crate::work_rpc::dispatch(&call.method, call.params, manager, machine, profiles)

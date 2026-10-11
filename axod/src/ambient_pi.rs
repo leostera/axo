@@ -37,8 +37,17 @@ impl std::fmt::Display for DependencyError {
 impl std::error::Error for DependencyError {}
 impl AmbientPi {
     pub fn find(selected: Option<&Path>) -> Result<Self, DependencyError> {
+        Self::find_with_path(selected, None)
+    }
+    pub(crate) fn find_with_path(
+        selected: Option<&Path>,
+        normal_path: Option<&std::ffi::OsStr>,
+    ) -> Result<Self, DependencyError> {
         // Capture environment/selection once before invoking any subprocess.
-        let env: BTreeMap<OsString, OsString> = std::env::vars_os().collect();
+        let mut env: BTreeMap<OsString, OsString> = std::env::vars_os().collect();
+        if let Some(path) = normal_path {
+            env.insert("PATH".into(), path.to_owned());
+        }
         let path = env
             .get(&OsString::from("PATH"))
             .cloned()

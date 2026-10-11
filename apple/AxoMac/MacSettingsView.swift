@@ -2,51 +2,31 @@ import SwiftUI
 import UserNotifications
 
 struct MacSettingsView: View {
-    private enum SettingsPage: String, CaseIterable, Identifiable {
-        case general
-        case keyboardShortcuts
-        case voice
-
-        var id: Self { self }
-        var title: String {
-            switch self {
-            case .keyboardShortcuts: "Keybindings"
-            case .voice: "Voice & Transcript"
-            case .general: "General"
-            }
-        }
-        var symbol: String {
-            switch self {
-            case .keyboardShortcuts: "keyboard"
-            case .voice: "waveform"
-            case .general: "gearshape"
-            }
-        }
-    }
-
     @Bindable var voice: MacVoiceCoordinator
     @AppStorage(MacAppearance.settingsKey) private var appearanceRaw = MacAppearance.system.rawValue
     @AppStorage("axoAttentionNotifications") private var attentionNotifications = true
     @AppStorage("axoNotificationPreviews") private var notificationPreviews = false
     @AppStorage(MacVoiceKeyBinding.settingsKey) private var voiceKeyBindingRaw = MacVoiceKeyBinding.defaultValue.rawValue
     @State private var isCapturingVoiceKey = false
-    @State private var selectedSection: SettingsPage? = .general
-    @State private var columnVisibility: NavigationSplitViewVisibility = .all
+    @State private var selectedSection: MacSettingsPage? = .general
+    @AppStorage("Axo.settings.sidebarCollapsed") private var sidebarCollapsed = false
+    @AppStorage("Axo.settings.sidebarWidth") private var sidebarWidth = 200.0
     @State private var notificationPermission = "Checking notification permission…"
 
     let onNotificationSettingChanged: (Bool) -> Void
     let openNotificationSettings: () -> Void
 
     var body: some View {
-        NavigationSplitView(columnVisibility: $columnVisibility) {
-            List(SettingsPage.allCases, selection: $selectedSection) { section in
-                Label(section.title, systemImage: section.symbol)
-                    .tag(section)
-            }
-            .listStyle(.sidebar)
-            .navigationTitle("Axo Settings")
-            .navigationSplitViewColumnWidth(min: 180, ideal: 200, max: 250)
-        } detail: {
+        HSplitView {
+            MacSettingsNavigation(selected: $selectedSection, collapsed: $sidebarCollapsed)
+                .frame(minWidth: sidebarCollapsed ? 56 : 180,
+                       idealWidth: sidebarCollapsed ? 56 : expandedSidebarWidth,
+                       maxWidth: sidebarCollapsed ? 56 : 250)
+                .onGeometryChange(for: Double.self) { $0.size.width } action: { width in
+                    guard !sidebarCollapsed, width.isFinite, (180...250).contains(width),
+                          abs(width - sidebarWidth) > 0.5 else { return }
+                    sidebarWidth = width
+                }
             Group {
                 switch selectedSection {
                 case .keyboardShortcuts:
@@ -63,13 +43,16 @@ struct MacSettingsView: View {
             .toolbarBackground(Color(nsColor: .windowBackgroundColor), for: .windowToolbar)
             .toolbarBackground(.visible, for: .windowToolbar)
         }
-        .navigationSplitViewStyle(.balanced)
         .frame(minWidth: 720, minHeight: 480)
         .onChange(of: attentionNotifications) { _, enabled in
             onNotificationSettingChanged(enabled)
         }
         .onChange(of: appearanceRaw) { _, _ in MacAppearance.applyPreference() }
         .task { refreshNotificationPermission() }
+    }
+
+    private var expandedSidebarWidth: Double {
+        sidebarWidth.isFinite ? min(250, max(180, sidebarWidth)) : 200
     }
 
     private var keyboardShortcuts: some View {

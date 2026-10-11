@@ -49,6 +49,8 @@ pub enum Mode {
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct State {
     pub chat_id: ChatId,
+    #[serde(default, deserialize_with = "deserialize_title")]
+    pub title: Option<String>,
     pub file: Option<PathBuf>,
     pub leaf_id: Option<String>,
     pub cwd: PathBuf,
@@ -72,6 +74,19 @@ pub struct State {
     pub recovery: bool,
     pub model: Option<Model>,
 }
+fn deserialize_title<'de, D: serde::Deserializer<'de>>(d: D) -> Result<Option<String>, D::Error> {
+    let title = Option::<String>::deserialize(d)?;
+    if title.as_ref().is_some_and(|t| {
+        t.is_empty()
+            || t.trim() != t
+            || t.encode_utf16().count() > 80
+            || t.chars().any(char::is_control)
+    }) {
+        return Err(serde::de::Error::custom("Invalid session title"));
+    }
+    Ok(title)
+}
+
 /// Exact Pi-owned document, including arbitrary public extension data. Interpretation
 /// belongs to the canonical-history projection, not this transport router. RawValue
 /// preserves JSON without using dynamic Value checks to identify protocol messages.
