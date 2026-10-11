@@ -1,19 +1,21 @@
 ---
 name: axo-macos-packaging
-description: Build, validate, and deliver Axo's Finder-launchable Mac app. Use after any Mac or bridge change that affects the shipped development app, and when updating dist/Axo.app.
+description: Build, validate, and deliver Axo's Finder-launchable Mac app. Use after any Mac app, bundled helper, or Pi extension change that affects the shipped development app, and when updating dist/Axo.app.
 ---
 
 # Axo macOS packaging
 
-## Axod-only delivery
+Resolve the Axo root from `../../..` relative to this skill. **Always repackage `dist/Axo.app` after validated Mac changes.** A DerivedData build is not delivery. Follow the sibling [development](../axo-development/SKILL.md) and [native Mac](../axo-macos-native-apps/SKILL.md) skills.
 
-Leo explicitly requires **always repackaging `dist/Axo.app` after validated Mac changes**. A successful Xcode build under DerivedData is not delivery. The shipped Mac app is Axod-only: it bundles `axod` at `Contents/Helpers/axod` and registers that app-bundled helper as a per-user `SMAppService` LaunchAgent; it does not include the legacy Ghostty workbench/bridge path. Axo itself is registered as the login item. System Settings approval may be needed. Each app bundle is self-contained for moving to another Mac, although this development build is ad-hoc signed, not notarized. The iOS target remains a separate lane.
+## Current package
 
-Keep project-specific operational guidance in `<axo-root>/.agents/skills/axo-*`, not the personal memory repository. Update this skill as the packaging workflow changes; do not turn transient build results or backup paths into permanent instructions.
+- The development artifact is one self-contained, ad-hoc-signed `dist/Axo.app`, not a notarized distribution.
+- The app embeds `Contents/Helpers/axod`, its installed Pi extension/resources and per-user LaunchAgent plist. Ambient vanilla Pi remains an external runtime dependency.
+- Axo registers as a login item; `SMAppService` registers the bundled daemon as a per-user LaunchAgent. System Settings approval may be required. The app can start its captured helper when validated ownership permits it.
+- State is `~/Library/Application Support/Axo/Axod`. Multiple processes of the same bundle share daemon, preferences and state (`LSMultipleInstancesProhibited=false`). Do not create named/versioned app variants or concurrently test different daemon versions against that shared state.
+- Phone builds/routing/deployments are independent. Local packaging does not authorize changing or installing them.
 
-## Build and validate
-
-Resolve the Axo root from this skill's directory (`../../..`), rather than assuming the terminal's current directory is the repository root. Use:
+## Build and verify
 
 ```bash
 cd <axo-root>
@@ -25,31 +27,31 @@ bash scripts/build-mac.sh
 codesign --verify --deep --strict dist/Axo.app
 ```
 
-Run affected layout or phone tests as appropriate. A shared AxoCore change also requires an AxoPhone build. If validation fails after packaging, fix and rebuild/repackage; never present the failed artifact as ready.
+Run affected TypeScript/layout/native/Xcode UI tests. Shared AxoCore changes require an AxoPhone build. Builds and native fixture compilation must be sequential against shared DerivedData.
 
-`build-mac.sh` requires XcodeGen, Rust/Cargo and the Axod build dependencies. It builds exactly one app bundle: `dist/Axo.app`, with `axod` at `Contents/Helpers/axod` and its per-user LaunchAgent plist. It validates identity, signs ad hoc, and atomically replaces that one bundle. It rejects `AXO_INSTANCE_ID` and `AXO_OUTPUT_APP`; do not produce versioned or named app bundles. It does not build or bundle the legacy Pi bridge.
+`build-mac.sh` requires XcodeGen, Rust/Cargo and the daemon dependencies. It builds, validates, signs and atomically replaces exactly `dist/Axo.app`; `AXO_INSTANCE_ID` and `AXO_OUTPUT_APP` are rejected. Validate the exact committed source, `AxoBuildCommit`, bundle version, executable/helper identity and strict signatures. Signing changes Mach-O bytes; compare build UUIDs/code sections when needed, not raw signed/unsigned `cmp`.
 
-`Axo.app` allows multiple app processes (`LSMultipleInstancesProhibited=false`); `open -n "$PWD/dist/Axo.app"` explicitly requests another process of the same build. All such processes share the same Axod LaunchAgent, daemon version, preferences, and state directory (`~/Library/Application Support/Axo/Axod`). Atomic replacement lets an already-running process retain its mapped executable while later launches use the new `Axo.app`, but both connect to that same daemon. Testing different daemon versions in parallel is not supported by this single-bundle workflow.
+If a package fails validation, fix and repackage before reporting it ready. After committing source, rebuild for the exact commit and rerun the applicable packaged acceptance lanes.
 
-## Safe bundle replacement
+## Atomic replacement
 
-- Keep Axod state private at `~/Library/Application Support/Axo/Axod`. Never import the legacy workspace registry or Pi histories during startup.
-- Keep `axod` inside `Contents/Helpers` and verify its executable and code signature as part of the staged bundle.
-- Stage on the same filesystem under `dist/`; verify the staged bundle before replacement.
-- Use macOS `renamex_np` with `RENAME_SWAP` when an app already exists. Retain the previous bundle at the staging path for rollback.
-- Never use `rm -rf dist/Axo.app` before installing its replacement. Reject a symlinked destination.
-- Do not touch Application Support, conversation files, drafts, attachments, or running processes while packaging.
-- `ditto` preserves the original DerivedData bundle-directory creation/modification dates even when its contents are freshly rebuilt. Stamp the staged outer `.app` directory's dates with packaging time using `xcrun SetFile` after signing; verify them on the final bundle. Do not recursively stamp signed contents or alter the retained previous package. Directory dates are delivery metadata, not proof of a running upgrade.
-- Signing can change Mach-O bytes. Raw `cmp` is not a valid signed/unsigned executable comparison; use build UUIDs/code-section checks if needed, plus strict signature verification.
+- Stage on the same filesystem under `dist/`; validate the staged bundle and embedded executable/signatures before replacement.
+- Reject symlinked destinations. Use `renamex_np(RENAME_SWAP)` for an existing app; retain the swapped-out bundle at the staging path for rollback. Never delete `dist/Axo.app` first.
+- Do not modify Application Support, histories, drafts, attachments, credentials or running processes while packaging.
+- Stamp only the staged outer `.app` directory dates with packaging time (`xcrun SetFile`) after signing, then verify the final dates. `ditto` otherwise preserves DerivedData directory timestamps. Do not recursively touch signed contents or the rollback package.
+- An already-running app retains mapped code while later launches use the replacement bundle. Both still share daemon/state. Bundle replacement does not upgrade the running app/helper.
 
-## Operational consent and evidence
+## Runtime and consent
 
-Repackaging is authorized routinely. **It does not authorize a live app/Pi stop, restart, or relaunch**, nor physical phone installation. Ask separately before those operations; protect active work. Synthetic isolated native self-tests are not acceptance evidence for the live app.
+- Packaging is authorized routinely; live app/daemon/Pi stop, restart or relaunch, service reset, remote deployment and physical-device installation require applicable explicit consent or exact durable lifecycle authority.
+- Never adopt or signal PIDs discovered in files or process lists. Preserve accepted work and uncertain outcomes. Normal frontend exit does not stop daemon-owned work.
+- Service status and successful `launchctl` commands are not proof of the running binary or operational readiness. Verify actual host version and exact runtime capabilities through addressed diagnostics.
+- Ownership repair uses validated exclusive `owner.lock`, not refused sockets, empty cached catalogs or apparent process absence. Unregister/register only under the supported ownership procedure; release the lease before starting the captured service. `scripts/check-mac-owner-lease.sh` tests private fixture contention/metadata, not normal service handoff.
+- Incompatible active helpers visibly block unsupported operations. Do not replace one until the Manager supplies required durable idle/completion authority or the operator supplies scoped consent/reconciliation.
+- Never bypass denied Accessibility or other permissions. Xcode UI testing must refuse if an Axo frontend is open because launch automation can terminate same-bundle applications.
 
-Before retiring a working client during a cutover, verify the replacement's required operation parity; an empty catalog, successful build, or metadata connection does not prove a daily-workbench replacement.
+## Acceptance and report
 
-An enabled `SMAppService` and successful `launchctl kickstart` do not prove the current bundled helper is running. Service registrations can still resolve a moved or trashed older bundle. A launchd job in `spawn failed` / `EX_CONFIG` may have no running owner while leaving an old discovery file behind. Startup repair may unregister/register once only while holding the same validated `owner.lock` exclusive lease as axod, proving no cooperative owner; release it after unregister and before registering the captured bundle. Never equate a refused socket, empty runtime page or cached PID with this absence proof. Run `bash scripts/check-mac-owner-lease.sh` for owned contention/metadata checks; actual SMAppService replacement remains a separate live acceptance. Verify the actual running daemon version through local host diagnostics and, when needed, inspect the executable associated with the current service handle. Do not reset service registration or signal an observed historical PID as an automatic repair; preserve accepted work and obtain the applicable live-operation consent.
+Use `scripts/check-mac-app-startup.sh` and its unavailable-Pi negative control for packaged startup; use `scripts/check-mac-ui.sh` for actual XCTest UI. Their Rust-prepared roots/helper/model are private and disposable. Match claims to evidence: isolated UI/component success does not prove normal ServiceManagement, argument-free Finder, physical IME, independent windows or notification delivery.
 
-After packaging, report the actual `dist/Axo.app` path, validation results, and whether the live app was left running. Do not tell the user the running app has upgraded merely because the bundle was replaced.
-
-Commit coherent tested changes frequently and push proactively. Preserve unrelated local work; do not bundle unrelated RFD drafts into a packaging commit.
+Commit coherent validated Conventional Commits and push proactively. Report the actual `dist/Axo.app` path, exact source/build/signature/test status and whether normal live processes were left untouched. Keep current workflow in project skills; retain test evidence and decisions in project documentation, not a skill timeline.

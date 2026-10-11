@@ -1,37 +1,42 @@
 ---
 name: axo-pi-title-and-attention
-description: Implement or troubleshoot Axo conversation naming, sidebar agent-state icons, and macOS attention notifications using public vanilla Pi APIs.
+description: Implement or troubleshoot Axo conversation naming, sidebar status, and macOS attention coverage using public vanilla Pi APIs.
 ---
 
 # Axo Pi titles and attention
 
-Read the sibling [development](../axo-development/SKILL.md) and [packaging](../axo-macos-packaging/SKILL.md) skills when changing this integration. Resolve paths from the Axo root, three parents above this directory.
+Resolve paths from the Axo root (`../../..`). Follow [development](../axo-development/SKILL.md), [native Mac](../axo-macos-native-apps/SKILL.md) and [packaging](../axo-macos-packaging/SKILL.md). The active integration is `pi-axo/` inside daemon-owned ambient interactive Pi.
 
-## Naming
+## Conversation naming
 
-- `bridge/session-title.ts` registers the model-callable `axo_set_title` tool. Do not reinstate the superseded separate naming agent, provider selection, or hidden startup user message.
-- Add first-request naming guidance to a named **structured section** of `before_agent_start.systemPromptOptions`. Do not replace the whole system prompt or fabricate user/history entries. `AXO_AUTO_TITLE=0` disables automatic guidance, not explicit tool access. If the tool is not selected, do not instruct the model to call it.
-- Pi owns the persisted conversation name through public `pi.setSessionName`; `axo.title_set` is only a durable naming marker. Normal tool calls/results remain in Pi's authoritative transcript. A normal tool-follow-up model request is not a separate naming instance.
-- Bind calls by Pi's stable tool-call ID, captured conversation/file identity, and lifecycle generation. Bound the pending-call map and revalidate after approval waits. Switch/fork/tree/reload/shutdown or abort must reject stale callbacks.
-- Validate nonempty single-line titles of at most 120 UTF-8 bytes, with no control characters. A repeat of the current title is a no-op. Replacing another title requires `replace=true` plus actual user approval; cancellation and newer manual names win.
-- Native manually named Axo session labels are separate from the Pi conversation name and remain protected. Do not silently turn an agent suggestion into a manual workspace/session rename.
-- Use `tests/session-title.test.ts` including its real vanilla Pi CLI/local-provider fixture. It must show no startup model request, one real user message, a normal naming tool result, and no helper model. Explicit `--tools` CLI selections must include `axo_set_title`; `--no-tools` excludes it.
+- `pi-axo/title.ts` registers `axo_set_title`. It calls public `pi.setSessionName`; Pi alone persists canonical conversation metadata. The tool/result belongs to the real user turn, not a second naming model or fabricated history entry.
+- Titles are nonempty, trimmed, at most 80 JavaScript string code units, with no control characters. Keep validation consistent with the extension snapshot and shared protocol. The current tool accepts `title`; it does not have a replacement/approval flag.
+- `before_agent_start.systemPromptOptions.sections.axo_session_title` supplies guidance only when `selectedTools` includes `axo_set_title`. Preserve the system prompt's other structured sections; do not fabricate a startup user message or model request.
+- `changed()` publishes canonical title through the managed control snapshot. Native manual workspace/session labels are separate; `WorkSessionRecord.displayName` respects manual protection. A Pi title is not a manual work rename. Unknown `manualName` capability disables unsupported editing rather than inventing protection.
+- Capture exact runtime/conversation/source identities around asynchronous work. A title observation must not rebind another conversation or reconstruct a canonical record from terminal text.
 
-## Observations and sidebar
+## Current status transport and sidebar
 
-Use **Sessions** in the UI and documentation, never “playground sessions.” Internally use `standalone` to distinguish sessions outside project groups. Retain historical JSON spellings and `local/playground` paths only for compatibility; do not rename or move existing Pi history.
+- `pi-axo/index.ts` activates managed control only for the explicit inherited fd-3 launch. It uses public Pi events/context/session-manager APIs and has no separate listener or RPC-mode engine.
+- Snapshots include exact chat/file/leaf/cwd/runtime identity, title, busy/pending state, Axo-owned question/UI waits, active tools and recovery. `pi-axo/questions.ts` owns supported question interactions; arbitrary extensions' permission/dialog waits are not globally observable through current public Pi APIs.
+- Axod validates bindings and exposes addressed public snapshots. Keep generic runtime existence separate from admitted Pi readiness. Missing, malformed, disconnected, stale or recovery state is unavailable/uncertain, not confirmed idle or replay permission.
+- The current native outline renders folder workspace rows and session title/running-status rows. It does not implement full working/attention episode presentation or agent-attention notification delivery. Do not describe those as operational based on available control fields.
+- Metadata/title refresh preserves row identity/order, native selection/range anchor, displayed session, field editor and unchanged terminal/chat bindings. Use Sessions terminology; standalone means no workspace.
 
-- `bridge/mac-session-state.ts` is read-only local telemetry, **not a command broker or transcript replica**. Publish only public lifecycle facts and Axo-owned UI waits; never guess state from terminal text.
-- Start the heartbeat from `session_start`, not extension discovery, and release it idempotently at shutdown. Atomic private frames are bounded to 4 KiB and paired with explicit Axo session, pane, runtime generation, and expected Pi file. The native observation lease is 30 seconds.
-- Validate the conversation against its Pi header before admitting observations or notifying. Missing, expired, malformed, or detached observations are unavailable—not proof of idle/working state.
-- Each session row has **one leading icon**: hammer for working, small green dot for open/idle, alert for attention, native mini spinner while initial agent status is loading, and an empty gray dot when stopped/unavailable. Initial observation loading is bounded to ten seconds and ends on the first admitted observation; missing/invalid telemetry must never spin forever or look like confirmed idle. Do not use a question-mark icon. Project headers retain folders. Standalone session leaves reclaim their disclosure gutter; project children retain hierarchy indentation. Flat, non-selectable **Workspaces** and **Sessions** group headings distinguish the populated sections without introducing another tree level.
-- Settled results/failures become idle after viewing; pending questions remain alert until answered. Attention episode IDs deduplicate polling without suppressing genuinely new episodes.
-- Pi currently has no public global observer for arbitrary other extensions' permission/dialog waits. Document incomplete coverage; do not patch Pi or claim global attention parity.
+## Current notification coverage
 
-## macOS notification acceptance
+`AxodWorkbenchCoordinator.notificationPreferenceChanged` requests UserNotifications authorization; `openNotificationSettings` opens the app's system notification settings. These settings hooks are not agent-attention delivery, notification-click routing or delivery acceptance.
 
-- `MacSessionNotifications.swift` uses native UserNotifications with permission-gated, generic text, no prompts/replies/paths, and opaque session/pane/runtime/conversation destinations. Coalesce attention notifications per session and suppress them while actually viewing that session.
-- Notification clicks must validate a fresh admitted live runtime/conversation before selecting its session/pane. Stale notifications must not retarget or restart old work. Never submit a prompt from a notification.
-- Settings exposes permission status, the macOS settings link, and **Send Test Notification** for a captured selected live Pi binding. It is explicitly labeled as a test, may show while the app is foreground, and does not fabricate an agent attention event or submit work. Bound tests to one replaceable notification per session.
-- Repackage first. Ask before a live-app restart; never kill the Pi hosting the current assistant turn. Let the user perform a safe restart after the turn if necessary.
-- Live acceptance requires the user to allow notifications, see the banner/Notification Center item, click it, and verify the correct session/pane opens. Also check foreground suppression and a real background settled reply/Axo question. Synthetic native smoke tests and successful `center.add` completion alone do not prove these outcomes. Focus/banners/sound preferences can suppress delivery even when permission is allowed.
+When implementing notification delivery:
+
+- Derive supported attention facts from exact admitted snapshots/public events, not terminal text or timestamps. Document unsupported external extension waits.
+- Use generic permission-gated text and opaque captured session/pane/runtime/conversation destinations, with no prompts, replies or private paths.
+- Coalesce episodes, suppress when actually viewing the target, and validate current admitted binding on click. Notification interaction is selection only: never submit work, restart a runtime or retarget stale destinations.
+- Test actual permission, banner/Notification Center delivery, correct click destination, foreground suppression and supported background reply/question episodes. Successful `center.add` or synthetic component tests alone are not delivery proof.
+
+## Validation
+
+- `npm run test:pi-interactive` exercises ambient interactive Pi and the installed extension in owned Rust PTYs. `axod/tests/managed_public.rs` exercises public managed routes, canonical title/history and exact binding behavior.
+- `scripts/check-mac-workbench.sh` chat mode covers real tools/title/history through production native coordination. `scripts/check-mac-ui.sh` covers actual native row rename/selection and a UI-typed Pi turn with its real viewport response/canonical file.
+- Keep model counts explicit: loading/observing/naming guidance does not itself issue a model request; a tool follow-up belongs to the normal turn.
+- Package Mac-affecting changes, preserve all live histories/work, and obtain consent separately for live restart or notification acceptance requiring user interaction. Never stop the Pi hosting an active assistant turn.
