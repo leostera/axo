@@ -1,7 +1,15 @@
 # Native creation sequencing checkpoint
 
 **Implemented source and client-state fixtures, not full native A02/A03 acceptance.**
-Exact committed/package versions are recorded after validated packaging.
+
+## Exact versions
+
+- Implementation source **`141b3f88edce19b3441fe2c19dfdb7587ce99979`**, committed
+  and pushed on `main`.
+- Delivered **`dist/Axo.app` build122**, `AxoBuildCommit` exactly that source;
+  bundled helper **`0.1.0 (141b3f88)`**. Strict deep signature verification passes.
+- Atomic packaging retains the prior signed bundle. Documentation-only version
+  recording afterward does not change bundled code or the running app/helper.
 
 ## Change
 
@@ -43,7 +51,13 @@ are not renderer input receipts or a new executor.
 - Mac and iOS targets compile; protocol TS 24 cases and protocol/API properties
   pass. Owned sidebar, owner lease and voice keybinding checks pass.
 - AxoCore 81 cases pass against the preceding build120 helper in owned roots.
-  Exact new-package checks are recorded below after packaging.
+  Exact new-package checks follow below.
+- Build122 actual bundled-helper AxoCore lane: **81 tests, zero skips/failures**,
+  in owned private fixture roots. Packaged-helper Ghostty component checks also
+  pass for actual full-surface Unicode/PTY geometry and non-destructive disposal.
+  These validate the preserved attachment seam, not a fresh packaged-app
+  New Session click or actual Pi startup UX.
+- Client hint/no-replay checks were rerun after packaging and pass.
 
 **Still open:** actual fresh New Session through the packaged Mac, immediate visible
 Pi-left/shell-right usability through delayed/failed/question-waiting Pi startup,
@@ -55,4 +69,4 @@ client-state fixtures.
 
 No live app/helper restart, uncertain replay, credentials/deployment change or
 physical phone installation occurred. Temporary logs are
-`/tmp/axo-two-pane-{protocol,mac,ios,core,client,sidebar,owner,voice,protocol-ts,protocol-properties,api-properties}.log`.
+`/tmp/axo-two-pane-{protocol,mac,ios,core,client,sidebar,owner,voice,protocol-ts,protocol-properties,api-properties,package,packaged-core,packaged-native}.log`.
