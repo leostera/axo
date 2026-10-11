@@ -1,8 +1,21 @@
 # Native Ghostty attachment checkpoint
 
 This checkpoint is **component evidence**, not full supported-workflow acceptance.
-Exact implementation/package versions will be recorded after the validated source
-commit and atomic signed packaging. No inventory acceptance gate is closed.
+No inventory acceptance gate is closed.
+
+## Exact versions
+
+- Implementation source: `ab417fd7399259b13c97b3b3af24d2c8db11be59`, committed and
+  pushed on `main`.
+- Package: `dist/Axo.app`, build **118**, `AxoBuildCommit` exactly the source above.
+- Bundled helper: **`0.1.0 (ab417fd7)`**; strict deep code-signature verification
+  passes. The upstream MIT notice is present at `Contents/Resources/LICENSE.txt`.
+- Ghostty tracked checkout: `7ec9e26a29399b30ef78f06985fc75045b3cecb6`, unmodified.
+  Characterized static universal archive SHA256:
+  `7fe3dda81082531ce1f920abb38834a5dc7e46c291d68969c7559f28eb360ab5`.
+  This identifies the tested artifact; it is not a reproducible-build/ABI claim.
+- Version-recording documentation changes after that implementation commit do
+  not alter the bundled executable. The live helper/app version was not changed.
 
 ## Implementation
 
@@ -25,7 +38,12 @@ authority. URL opening is bounded, http/https-only, credential-free and user-dri
 
 ## Validation
 
-- Mac target compilation/linking passes.
+- Mac target compilation/linking and atomic packaging pass.
+- Both native component fixtures were rerun against the **actual build118 bundled
+  helper**, not just the debug executable; both pass.
+- Actual packaged-helper AxoCore lane: **81 tests, zero skips/failures** in owned
+  private fixture roots. No shared AxoCore source changed; no new phone build is
+  claimed.
 - `scripts/check-mac-terminal.sh`: owned offscreen full-surface creation/cache,
   modifier and preedit checks, missing-discovery failure without fallback, safe URL
   parser checks and disposal.
@@ -59,4 +77,10 @@ silently evicting recoverable screens.
 
 These owned offscreen checks do not prove actual packaged-workbench or live-service
 acceptance. No live app/helper restart, historical PID signal, uncertain replay,
-credentials/deployment change or device installation was performed.
+credentials/deployment change or device installation was performed. The previous
+signed bundle is retained by atomic packaging for rollback.
+
+Temporary validation logs (not acceptance archives):
+`/tmp/axo-native-attachment-{build,rust,clippy,protocol,layout,sidebar,owner,voice,protocol-properties,api-properties,package,packaged-surface,core}.log`.
+The unbundled development native fixture log is
+`/tmp/axo-native-terminal-fixture.log`; assertions never dump terminal text.
