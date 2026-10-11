@@ -118,7 +118,8 @@ struct NativeWorkbenchFixtureChecks {
             }
         } catch {
             let text = visibleText(shellView)
-            fputs("Owned shell input diagnostic: frontendExited=\(shellView.childExited) inputEnabled=\(shellView.inputEnabled) commandEcho=\(text.contains("printf native-shell-ready")) visibleBytes=\(text.utf8.count)\n", stderr)
+            let classes = ["InvalidDiscovery", "Offline", "Protocol", "Capacity", "geometry exceeds", "handshake", "Rejected", "screen recovery", "Invalid argument", "Interrupted", "Input/output error", "Unexpected", "Timeout", "deadline", "unknown", "closed", "sequence"].filter { text.contains($0) }
+            fputs("Owned shell input diagnostic: frontendExited=\(shellView.childExited) inputEnabled=\(shellView.inputEnabled) commandEcho=\(text.contains("printf native-shell-ready")) visibleBytes=\(text.utf8.count) staticClasses=\(classes)\n", stderr)
             throw error
         }
         phase("shell-effect")
