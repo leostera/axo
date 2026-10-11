@@ -28,7 +28,7 @@ use tungstenite::{
 };
 
 const MAX_CLIENTS: usize = 32;
-const FRAME_BYTES: usize = 48 * 1024;
+pub(crate) const FRAME_BYTES: usize = 48 * 1024;
 const DELIVERY_BYTES: usize = 128 * 1024;
 const DELIVERY_FRAMES: usize = 32;
 const INPUT_BYTES: usize = 4096;
@@ -37,7 +37,7 @@ const PATH: &str = "/v1/terminal";
 
 #[derive(Serialize, Deserialize)]
 #[serde(tag = "type", rename_all = "snake_case", deny_unknown_fields)]
-enum Command {
+pub(crate) enum Command {
     Attach {
         version: u16,
         machine_id: MachineId,
@@ -63,7 +63,7 @@ enum Command {
 }
 #[derive(Serialize, Deserialize)]
 #[serde(tag = "type", rename_all = "snake_case", deny_unknown_fields)]
-enum Event {
+pub(crate) enum Event {
     Attached {
         version: u16,
         machine_id: MachineId,

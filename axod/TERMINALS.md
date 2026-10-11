@@ -63,12 +63,54 @@ launch, stop, work creation or chat commands.
 - Payload bodies, terminal bytes and input are never emitted in diagnostics.
   Parse/delivery failures have static errors, and teardown is owner-fenced.
 
+## Typed native consumer
+
+`terminal_client::TerminalClient` uses the same closed Rust codec, a captured
+machine/runtime and private terminal discovery. Its upgrade/initial attachment
+has an absolute deadline; streaming reads are bounded polls. It validates every
+attachment and contiguous output offset, enforces consumer delivery credits,
+and returns opaque payload chunks without diagnostic formatting. A chunk can
+be acknowledged only for its issuing attachment after consumption.
+
+Only one input packet and one resize may be pending. Input receipts must match
+the exact sequence and byte count; resize receipts must match the submitted
+size. Missing receipts expire to unknown, poison the connection and never
+reconnect/replay automatically. Dropping/detaching the consumer releases only
+presentation. Initial bytes are explicitly raw backlog, not recovered VT state.
+
+## Transport-only frontend child
+
+The bundled helper exposes:
+
+```text
+axod terminal-attach /absolute/private/state-directory machine-id host-generation session-id pane-id runtime-generation
+```
+
+All identities are parsed into native domain types. This mode cannot create,
+launch, resume or stop work. It requires a frontend TTY, captures/restores its
+termios, forwards raw input without outer echo or signal-character handling,
+tracks frontend geometry, and acknowledges output only after bounded TTY writes.
+Only explicitly acknowledged unaccepted input suffixes may use a new sequence.
+SIGTERM/INT/HUP and TTY/transport loss close the presentation lease, not the
+managed process/group. An exit event is not a durable completion receipt.
+
+This is a **basic stream attachment seam**, not screen restoration. Truncated
+backlog is refused with a static recovery-unavailable error while preserving
+work. Non-truncated raw bytes also do not prove restored historical geometry or
+full VT state. There is no automatic reconnect/input replay. Ghostty surface
+integration and truthful recovery must still be implemented and accepted.
+
 ## Evidence and remaining gates
 
-Five isolated Rust tests exercise real native PTYs over both production local
+Six isolated Rust tests exercise real native PTYs over both production local
 listeners: input, resize, detach/reconnect, stale identities, sibling survival,
 EOF ordering, private discovery, browser/cross-plane rejection, slow-reader
 lease loss with continued work/control availability, closed parsing and credits.
+The typed consumer additionally passes three pure state/receipt/credit tests.
+Two actual-binary frontend tests wrap the helper in a separate owned native PTY
+and reach the real daemon through its terminal plane: Unicode input, real inner
+PTY resize, frontend termination with continued single managed runtime, and
+truncated-replay refusal without stopping work. This is not a Ghostty surface.
 These are **transport/PTY fixtures**, not native Ghostty, IME, images, actual
 workbench, deployed-route or physical-phone acceptance.
 
@@ -82,8 +124,8 @@ or ABI compatibility of separately built artifacts.
 
 The public GhosttyKit surface API creates its own command; it has no direct
 external-PTY/snapshot-adoption entry point. RFD0007 explicitly permits a
-transport-only attachment child. The next integration must distinguish that
-frontend child from the daemon-owned Pi/shell and validate surface disposal
+transport-only attachment child. The new helper mode establishes that child boundary at the byte-stream level.
+The next native integration must validate Ghostty surface disposal
 without stopping work. Do not modify ignored Ghostty sources or launch another
 Pi to obtain a second view.
 

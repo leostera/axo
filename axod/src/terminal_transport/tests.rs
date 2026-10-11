@@ -342,6 +342,67 @@ fn slow_terminal_reader_loses_only_its_lease_and_control_rpc_remains_available()
 }
 
 #[test]
+fn typed_terminal_client_consumes_real_output_and_releases_only_its_lease() {
+    use crate::terminal_client::{StreamError, StreamEvent, TerminalClient};
+    let fixture = Fixture::new();
+    let runtime = fixture.launch("stty raw -echo; printf ready; cat");
+    assert!(matches!(
+        TerminalClient::connect(fixture.root.path(), MachineId::new(), runtime),
+        Err(StreamError::InvalidDiscovery)
+    ));
+    let (mut client, initial) =
+        TerminalClient::connect(fixture.root.path(), fixture.machine, runtime).unwrap();
+    let mut consumed = initial.backlog.data().to_vec();
+    client.acknowledge(&initial.backlog).unwrap();
+    client.input("hello λ\n".as_bytes()).unwrap();
+    assert_eq!(client.input(b"duplicate"), Err(StreamError::InputPending));
+    client.resize(TerminalSize::new(42, 91).unwrap()).unwrap();
+    let deadline = Instant::now() + Duration::from_secs(3);
+    let mut applied = false;
+    let mut resized = false;
+    while !applied
+        || !resized
+        || !consumed
+            .windows(9)
+            .any(|bytes| bytes == "hello λ\n".as_bytes())
+    {
+        assert!(
+            Instant::now() < deadline,
+            "Owned typed client fixture deadline"
+        );
+        match client.read().unwrap() {
+            Some(StreamEvent::Output(chunk)) => {
+                assert!(consumed.len() + chunk.data().len() <= 8192);
+                consumed.extend_from_slice(chunk.data());
+                client.acknowledge(&chunk).unwrap();
+            }
+            Some(StreamEvent::InputApplied {
+                sequence: 0,
+                accepted_bytes: 9,
+            }) => applied = true,
+            Some(StreamEvent::Resized {
+                rows: 42,
+                columns: 91,
+            }) => resized = true,
+            None => (),
+            _ => panic!("Unexpected typed client event"),
+        }
+    }
+    client.detach().unwrap();
+    eventually(|| !fixture.manager.list()[0].attached);
+    assert_eq!(fixture.manager.list().len(), 1);
+    assert!(matches!(
+        fixture.manager.list()[0].process,
+        ProcessState::Running { .. }
+    ));
+    let (replacement, _) =
+        TerminalClient::connect(fixture.root.path(), fixture.machine, runtime).unwrap();
+    drop(replacement);
+    eventually(|| !fixture.manager.list()[0].attached);
+    assert_eq!(fixture.manager.list().len(), 1);
+}
+
+#[test]
 fn browser_and_cross_plane_requests_are_rejected_and_discovery_is_private() {
     use std::os::unix::fs::{MetadataExt, PermissionsExt};
     let fixture = Fixture::new();

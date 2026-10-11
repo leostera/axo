@@ -161,6 +161,12 @@ impl Client {
     }
 }
 fn discovery_address(discovery: &Discovery) -> Result<SocketAddr, ClientError> {
+    native_discovery_address(discovery, "/v1/rpc")
+}
+pub(crate) fn native_discovery_address(
+    discovery: &Discovery,
+    path: &str,
+) -> Result<SocketAddr, ClientError> {
     let url = url::Url::parse(&discovery.endpoint).map_err(|_| ClientError::InvalidDiscovery)?;
     let port = url
         .port()
@@ -168,7 +174,7 @@ fn discovery_address(discovery: &Discovery) -> Result<SocketAddr, ClientError> {
         .ok_or(ClientError::InvalidDiscovery)?;
     if discovery.version != 1
         || discovery.protocol_version != 1
-        || discovery.endpoint != format!("ws://127.0.0.1:{port}/v1/rpc")
+        || discovery.endpoint != format!("ws://127.0.0.1:{port}{path}")
     {
         return Err(ClientError::InvalidDiscovery);
     }

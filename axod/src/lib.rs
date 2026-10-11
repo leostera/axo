@@ -20,6 +20,8 @@ pub mod rpc;
 pub mod runtime;
 pub mod server;
 pub mod terminal;
+pub mod terminal_client;
+pub mod terminal_frontend;
 #[cfg(test)]
 mod terminal_lifecycle_tests;
 mod terminal_transport;
