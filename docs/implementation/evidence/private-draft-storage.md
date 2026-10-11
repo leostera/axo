@@ -1,6 +1,6 @@
 # Private draft storage foundation — build140 (not editor persistence)
 
-> Historical build140 scope. Production wiring is recorded separately in [build142 scoped draft persistence](durable-chat-drafts.md); statements below describe the dormant foundation at its owning version, not current editor behavior.
+> Historical build140 scope. Production wiring is recorded separately in [build144 scoped draft persistence](durable-chat-drafts.md); statements below describe the dormant foundation at its owning version, not current editor behavior.
 
 ## Exact delivery
 

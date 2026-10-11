@@ -1,10 +1,12 @@
-# Scoped draft persistence integration — build142
+# Scoped draft persistence integration — build144
 
 ## Exact delivery and scope
 
-Implementation **`223a537eda5aa14d77c9b9e5f7ebdd1c97069b17`**, `dist/Axo.app` **build142**, bundled helper **`0.1.0 (223a537e)`**, matching `AxoBuildCommit`; `codesign --verify --deep --strict` passes. This connects the [build140 dormant storage foundation](private-draft-storage.md) to production editor/coordinator state. It does **not** close M12/M13, A09/A10 or any full workflow gate. The running app/helper, live data, API deployment and physical phone were left untouched. An exact package is not a live helper upgrade.
+Implementation **`2c6b1c970d570f970b917bf905f5d1d489e647d0`**, `dist/Axo.app` **build144**, bundled helper **`0.1.0 (2c6b1c97)`**, matching `AxoBuildCommit`; `codesign --verify --deep --strict` passes. This connects the [build140 dormant storage foundation](private-draft-storage.md) to production editor/coordinator state. It does **not** close M12/M13, A09/A10 or any full workflow gate. The running app/helper, live data, API deployment and physical phone were left untouched. An exact package is not a live helper upgrade.
 
 ## Implemented boundaries
+
+The integration first shipped as source `223a537`/build142 with the same passing 14-scenario campaign. Final review added source `2c6b1c9`: lifecycle/root checks after worker awaits prevent a late load from reviving failed storage and a late save from clearing fenced text/tickets. Compile-only deterministic return gates hold after **real I/O** to reproduce those races; they are absent from shipping builds. Final build144 repeats the exact-package campaign below.
 
 - Production `AxodChatDrafts` requires trusted private storage loading before editing/submission. `AxodDraftPersistence` serializes encoding, disk reads and atomic commits off the main actor. Typing captures bounded immutable rows, with at most one active write and one coalesced latest snapshot, not a write-task queue per keystroke. Budgets remain 32 editable drafts/32 pending records, 64KiB per draft/1MiB aggregate and 2MiB archive; RPC/terminal bounds are unchanged.
 - Only the fixed `chat-drafts` child of the captured private local state root is provisioned. Existing unsafe roots/files are not repaired/replaced. Creation flushes the parent; subsequent storage retains no-follow component walking, pinned descriptor identities, regular single-link0600 files, validated transaction-local leases, store-bound exact-byte CAS, atomic same-directory writes and uncertain-I/O fencing.
@@ -28,14 +30,14 @@ These are offscreen owned production components and fresh **coordinators in one 
 
 ### Component/regression lanes
 
-- `check-mac-draft-persistence.sh`: 1,000 coalesced synthetic editor revisions, fresh cache/runtime-generation-independent text, exact original operation/target/revision ticket restoration, no capture over unresolved ticket, wrong-target refusal, rejected/unknown/ABA outcomes, durable unchanged-revision clearing, competing stale-store refusal, writer-lease failure preserving text/ticket, opaque-file preservation, successful quit freeze/flush and failed quit without discarding text.
+- `check-mac-draft-persistence.sh`: 1,000 coalesced synthetic editor revisions, fresh cache/runtime-generation-independent text, exact original operation/target/revision ticket restoration, no capture over unresolved ticket, wrong-target refusal, rejected/unknown/ABA outcomes, durable unchanged-revision clearing, competing stale-store refusal, writer-lease failure preserving text/ticket, opaque-file preservation, successful quit freeze/flush and failed quit without discarding text. Deterministic late-load/save gates verify that failed storage stays failed and retains local text/original ticket even when old I/O later returns.
 - `check-mac-chat-drafts.sh`: existing bounded draft/receipt/preflight checks pass.
 - `check-mac-draft-storage.sh`: archive/storage/fault checks pass, including older/future version and invalid operation refusal. Fault seams remain compile-only. Same-kernel reopen/pre-post-rename injection is not crash/power-loss proof.
 - Exact helper public CLI **8 passed**; exact helper AxoCore **81 passed/no skips**.
 - Full serial Rust **104 library + interactive1/local2/managed-public1/CLI8/relay4** pass; all-target strict Clippy and formatting pass. Swift protocol **41 executed/one existing real-daemon E2E skip**; no coverage is claimed for that skip. Pane-layout and shell-creation checks pass.
 - Mac compile, atomic packaging and deep strict signature pass. Existing MacAppearance actor-conformance, linker search-path and AppIntents warnings remain nonfatal. No new TS/API/iOS build/device/deployment results are claimed.
 
-Logs: `/tmp/axo-durable-draft-{unit-initial,storage-initial,build-initial,build-rerun,native-initial,persistence-initial,persistence-quit,unit-final,storage-final,build-final,native-expanded,persistence-final,build-precommit,native-final,clippy,rust,core,protocol,storage-v2,layout,shell,package-exact}.log`; final exact-package `/tmp/axo-durable-draft-142-{native,cli,core,unit,storage,persistence}.log`. Intermediate packages are not the final exact-source claim. No failing test run occurred in this owning campaign; earlier storage/chat failures remain in their historical evidence rather than being erased.
+Logs: `/tmp/axo-durable-draft-{unit-initial,storage-initial,build-initial,build-rerun,native-initial,persistence-initial,persistence-quit,unit-final,storage-final,build-final,native-expanded,persistence-final,build-precommit,native-final,clippy,rust,core,protocol,storage-v2,layout,shell,package-exact}.log`; prior exact-package `/tmp/axo-durable-draft-142-{native,cli,core,unit,storage,persistence}.log`, final `/tmp/axo-durable-draft-144-{native,cli,core,unit,storage,persistence}.log`, and `/tmp/axo-durable-draft-fences-{unit,build,native,package}.log`. Intermediate packages are not the final exact-source claim. No failing test run occurred in this owning campaign; earlier storage/chat failures remain in their historical evidence rather than being erased.
 
 ## Still-required acceptance
 
