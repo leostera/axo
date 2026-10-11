@@ -4,7 +4,6 @@ import SwiftUI
 struct AxodWorkbenchView: View {
     @Bindable var coordinator: AxodWorkbenchCoordinator
     @AppStorage(AxodSidebarToolbar.collapsedPreferenceKey) private var sidebarCollapsed = false
-    @State private var chatDraft = ""
     @State private var showsConversation = false
 
     private let paneBackground = Color(red: 0.16, green: 0.17, blue: 0.19)
@@ -156,7 +155,7 @@ struct AxodWorkbenchView: View {
                             .foregroundStyle(Color.white.opacity(0.9))
                         HStack {
                             ForEach(question.options, id: \.id) { option in
-                                Button(option.label) { coordinator.answerChatQuestion(question, option: option) }
+                                Button(option.label) { coordinator.answerChatQuestion(question, option: option, snapshot: snapshot) }
                                     .disabled(snapshot.readMode != .live || coordinator.pendingChatCommandId != nil || coordinator.isSendingPiMessage)
                             }
                         }
@@ -166,7 +165,7 @@ struct AxodWorkbenchView: View {
                     .background(Color.white.opacity(0.045))
                 }
                 if snapshot.readMode == .live {
-                    chatComposer(snapshot: snapshot)
+                    AxodChatComposer(snapshot: snapshot, coordinator: coordinator, drafts: coordinator.chatDrafts)
                 } else {
                     Text("Pi is stopped; this canonical conversation is read-only.")
                         .font(.system(size: 11))
@@ -192,39 +191,6 @@ struct AxodWorkbenchView: View {
             }
         }
         .frame(maxWidth: .infinity, maxHeight: .infinity)
-    }
-
-    @ViewBuilder
-    private func chatComposer(snapshot: PiChatSnapshot) -> some View {
-        HStack(alignment: .bottom, spacing: 8) {
-            TextField(snapshot.busy ? "Steer the active Pi interaction…" : "Send a message to Pi…", text: $chatDraft, axis: .vertical)
-                .lineLimit(1...5)
-                .textFieldStyle(.plain)
-                .padding(9)
-                .background(Color.white.opacity(0.055), in: RoundedRectangle(cornerRadius: 6))
-                .disabled(snapshot.recovery || snapshot.uiWaits > 0 || snapshot.question != nil || coordinator.pendingChatCommandId != nil || coordinator.isSendingPiMessage)
-                .onSubmit { sendDraft(snapshot: snapshot) }
-            if snapshot.busy, snapshot.interactionId != nil {
-                Button("Cancel") { coordinator.cancelChatTurn() }
-                    .disabled(coordinator.pendingChatCommandId != nil || coordinator.isSendingPiMessage)
-            }
-            Button(snapshot.busy ? "Steer" : "Send") { sendDraft(snapshot: snapshot) }
-                .keyboardShortcut(.return, modifiers: [.command])
-                .disabled(chatDraft.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty ||
-                          coordinator.connectionState != .connected || snapshot.recovery || snapshot.uiWaits > 0 ||
-                          snapshot.question != nil || coordinator.pendingChatCommandId != nil || coordinator.isSendingPiMessage)
-        }
-        .font(.system(size: 12))
-        .padding(10)
-        .background(Color.black.opacity(0.14))
-    }
-
-    private func sendDraft(snapshot: PiChatSnapshot) {
-        let text = chatDraft.trimmingCharacters(in: .whitespacesAndNewlines)
-        guard !text.isEmpty else { return }
-        if snapshot.busy { coordinator.steerChat(text) }
-        else { coordinator.sendChatMessage(text) }
-        chatDraft = ""
     }
 
     private func piStartActionTitle(for session: WorkSessionRecord) -> String? {
