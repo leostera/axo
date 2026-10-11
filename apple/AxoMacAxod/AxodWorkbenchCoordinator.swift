@@ -54,7 +54,9 @@ final class AxodWorkbenchCoordinator {
     private(set) var chatTarget: PiChatTarget?
     private(set) var chatSnapshot: PiChatSnapshot?
     private(set) var chatEntries: [PiCanonicalProjection] = []
-    private(set) var nextChatCursor: PiHistoryCursor?
+    let historyWindow = AxodChatHistoryWindow()
+    @ObservationIgnored private var historyPageTask: Task<Void, Never>?
+    var displayedChatEntries: [PiCanonicalProjection] { historyWindow.mode == .page ? (historyWindow.page?.entries ?? []) : chatEntries }
     let toolOutput = AxodToolOutput()
     @ObservationIgnored private var toolOutputTask: Task<Void, Never>?
     private(set) var chatStatusMessage = "Select an admitted Pi session to view its canonical conversation."
@@ -399,7 +401,6 @@ final class AxodWorkbenchCoordinator {
         chatTarget = nil
         chatSnapshot = nil
         chatEntries = []
-        nextChatCursor = nil
         pendingChatCommandId = nil
         selectedWorkspaceID = nil
         selectedSessionID = nil
@@ -764,7 +765,6 @@ final class AxodWorkbenchCoordinator {
         chatTarget = nil
         chatSnapshot = nil
         chatEntries = []
-        nextChatCursor = nil
         pendingChatCommandId = nil
         selectedWorkspaceID = workspaceID
         selectedSessionID = nil
@@ -808,7 +808,6 @@ final class AxodWorkbenchCoordinator {
         stopChatObservation()
         chatSnapshot = nil
         chatEntries = []
-        nextChatCursor = nil
         selectedSessionID = sessionID
         preferredSessionID = sessionID
         saveSelection()
@@ -1213,14 +1212,10 @@ final class AxodWorkbenchCoordinator {
                 let snapshot = try await self.fetchChatSnapshot(
                     target: target, readMode: readMode, over: connection, endpoint: endpoint, operation: operation
                 )
-                let history = try await self.fetchChatHistory(
-                    target: target, readMode: readMode, cursor: nil, over: connection, endpoint: endpoint, operation: operation
-                )
                 guard self.isCurrent(operation, connection: connection, endpoint: endpoint),
                       self.chatLoadGeneration == load, self.chatTarget == target else { return }
+                try self.applyRecentChatSnapshot(snapshot)
                 self.chatSnapshot = snapshot
-                self.chatEntries = Self.merging(history.entries, snapshot.recentEntries)
-                self.nextChatCursor = history.next
                 self.chatStatusMessage = "Showing Pi-owned canonical history. A dispatched message is not proof of execution."
                 self.beginChatObservation(target: target, readMode: readMode, load: load, over: connection, endpoint: endpoint, operation: operation)
             } catch {
@@ -1231,34 +1226,53 @@ final class AxodWorkbenchCoordinator {
         }
     }
 
-    func loadMoreChatHistory() {
-        guard let target = chatTarget, let cursor = nextChatCursor,
-              let snapshot = chatSnapshot, let connection, let endpoint else { return }
+    func showRecentChatHistory(source: AxodChatHistoryWindow.Source) {
+        guard historyWindow.source == source else { return }
+        historyWindow.showRecent()
+        historyPageTask?.cancel()
+    }
+
+    func loadChatHistoryPage(snapshot: PiChatSnapshot, movement: AxodChatHistoryWindow.Movement, presentationID: UUID) {
+        let source = AxodChatHistoryWindow.Source(target: snapshot.target, readMode: snapshot.readMode)
+        guard historyWindow.source == source else { return }
+        guard canReadSelectedChat(target: source.target, readMode: source.readMode) else { historyWindow.invalidateSource(); return }
+        guard let connection, let endpoint, let ticket = historyWindow.begin(movement, presentationID: presentationID) else { return }
         let operation = operationGeneration
-        let load = chatLoadGeneration
-        Task { [weak self] in
+        historyPageTask = Task { [weak self] in
             guard let self else { return }
+            defer { self.historyPageTask = nil }
             do {
-                let page = try await self.fetchChatHistory(
-                    target: target, readMode: snapshot.readMode, cursor: cursor,
-                    over: connection, endpoint: endpoint, operation: operation
-                )
+                try Task.checkCancellation()
+                try self.stateDirectory?.requireCurrentEndpoint(endpoint)
+                let result = try await self.fetchChatHistory(target: source.target, readMode: source.readMode, cursor: ticket.cursor,
+                    over: connection, endpoint: endpoint, operation: operation)
+                try Task.checkCancellation()
                 guard self.isCurrent(operation, connection: connection, endpoint: endpoint),
-                      self.chatLoadGeneration == load, self.chatTarget == target else { return }
-                self.chatEntries = Self.merging(self.chatEntries, page.entries)
-                self.nextChatCursor = page.next
+                      self.canReadSelectedChat(target: source.target, readMode: source.readMode) else { self.historyWindow.fail(ticket, issue: .unavailable); return }
+                try self.stateDirectory?.requireCurrentEndpoint(endpoint)
+                self.historyWindow.complete(ticket, result: result)
             } catch {
-                guard self.isCurrent(operation, connection: connection, endpoint: endpoint),
-                      self.chatLoadGeneration == load, self.chatTarget == target else { return }
-                self.chatStatusMessage = "The history cursor is stale. Refresh the selected chat before loading more."
+                let issue: AxodChatHistoryWindow.Issue
+                if case AxoJSONRPCClientError.remote(let code, _) = error, code == -32002 { issue = .headChanged }
+                else { issue = error is CancellationError ? .unavailable : .failed }
+                self.historyWindow.fail(ticket, issue: issue)
             }
         }
+    }
+
+    private func applyRecentChatSnapshot(_ snapshot: PiChatSnapshot) throws {
+        guard snapshot.recentEntries.count <= 10,
+              AxodChatHistoryWindow.fits(snapshot.recentEntries, bytes: AxodChatHistoryWindow.maximumRecentBytes) else {
+            throw AxoProtocolValidationError.invalidResult(method: AxoProtocol.Method.getChat)
+        }
+        chatEntries = snapshot.recentEntries
+        historyWindow.observe(snapshot)
     }
 
     func openToolOutput(entry: PiCanonicalProjection, snapshot: PiChatSnapshot) {
         guard let source = AxodToolOutput.Source(entry: entry, snapshot: snapshot),
               chatSnapshot?.target == snapshot.target, chatSnapshot?.readMode == snapshot.readMode,
-              chatEntries.contains(where: { $0.entryId == source.entryID && $0.toolCallId == source.toolCallID && $0.role == "toolResult" }),
+              displayedChatEntries.contains(where: { $0.entryId == source.entryID && $0.toolCallId == source.toolCallID && $0.role == "toolResult" }),
               canReadToolOutput(source), let ticket = toolOutput.open(source) else { return }
         readToolOutput(ticket)
     }
@@ -1276,12 +1290,15 @@ final class AxodWorkbenchCoordinator {
     }
 
     private func canReadToolOutput(_ source: AxodToolOutput.Source) -> Bool {
+        canReadSelectedChat(target: source.target, readMode: source.readMode)
+    }
+    private func canReadSelectedChat(target: PiChatTarget, readMode: PiReadMode) -> Bool {
         guard connectionState == .connected, let endpoint, let session = selectedSession,
-              endpoint.machineId == source.target.machineId, endpoint.hostGeneration == source.target.hostGeneration,
-              session.sessionId == source.target.sessionId, session.workspaceId == source.target.workspaceId,
-              session.pi.paneId == source.target.paneId, session.pi.chatId == source.target.chatId,
-              session.runtime?.runtime == source.target.runtime else { return false }
-        switch (source.readMode, session.pi.admission) {
+              endpoint.machineId == target.machineId, endpoint.hostGeneration == target.hostGeneration,
+              session.sessionId == target.sessionId, session.workspaceId == target.workspaceId,
+              session.pi.paneId == target.paneId, session.pi.chatId == target.chatId,
+              session.runtime?.runtime == target.runtime else { return false }
+        switch (readMode, session.pi.admission) {
         case (.live, .ready), (.stopped, .stopped), (.stopped, .failed): return true
         default: return false
         }
@@ -1755,17 +1772,16 @@ final class AxodWorkbenchCoordinator {
     private func activateSelectedSession() {
         // An immutable tool entry is not a branch-page cursor. Keep its explicit reader
         // across metadata-only refresh while the full selected writer/read mode is unchanged.
-        stopChatObservation(preservingToolOutput: toolOutput.source.map(canReadToolOutput) ?? false)
+        stopChatObservation(preservingToolOutput: toolOutput.source.map(canReadToolOutput) ?? false,
+            preservingHistory: historyWindow.source.map { canReadSelectedChat(target: $0.target, readMode: $0.readMode) } ?? false)
         chatTarget = nil
         chatSnapshot = nil
         chatEntries = []
-        nextChatCursor = nil
         guard let session = selectedSession, let endpoint else {
             stopChatObservation()
             chatTarget = nil
             chatSnapshot = nil
             chatEntries = []
-            nextChatCursor = nil
             pendingPiStartCommandID = nil
             pendingChatCommandId = nil
             chatStatusMessage = "Select an admitted Pi session to view its canonical conversation."
@@ -1784,14 +1800,12 @@ final class AxodWorkbenchCoordinator {
             chatTarget = nil
             chatSnapshot = nil
             chatEntries = []
-            nextChatCursor = nil
             chatStatusMessage = "This session has no Pi conversation yet. Start Pi explicitly to create one."
             return
         case .recoveryRequired:
             chatTarget = nil
             chatSnapshot = nil
             chatEntries = []
-            nextChatCursor = nil
             chatStatusMessage = "Axod cannot prove the Pi writer stopped. Recovery is required before history or resume."
             return
         case .ready, .stopped, .failed:
@@ -1801,7 +1815,6 @@ final class AxodWorkbenchCoordinator {
             chatTarget = nil
             chatSnapshot = nil
             chatEntries = []
-            nextChatCursor = nil
             chatStatusMessage = "The admitted Pi binding/runtime is incomplete. No new chat was created."
             return
         }
@@ -2028,8 +2041,8 @@ final class AxodWorkbenchCoordinator {
                         self.refreshChat()
                         return
                     }
+                    try self.applyRecentChatSnapshot(snapshot)
                     self.chatSnapshot = snapshot
-                    self.chatEntries = Self.merging(self.chatEntries, snapshot.recentEntries)
                 } catch {
                     guard self.isCurrent(operation, connection: connection, endpoint: endpoint) else { return }
                     self.chatStatusMessage = "Live Pi refresh failed. No command was replayed."
@@ -2039,8 +2052,9 @@ final class AxodWorkbenchCoordinator {
         }
     }
 
-    private func stopChatObservation(preservingToolOutput: Bool = false) {
+    private func stopChatObservation(preservingToolOutput: Bool = false, preservingHistory: Bool = false) {
         if !preservingToolOutput { closeToolOutput() }
+        if !preservingHistory { historyWindow.close(); historyPageTask?.cancel() }
         chatObservationTask?.cancel()
         chatObservationTask = nil
         chatLoadGeneration = UUID()
@@ -2099,23 +2113,6 @@ final class AxodWorkbenchCoordinator {
         default:
             return nil
         }
-    }
-
-    private static func merging(
-        _ older: [PiCanonicalProjection],
-        _ newer: [PiCanonicalProjection]
-    ) -> [PiCanonicalProjection] {
-        var positions: [String: Int] = [:]
-        var merged: [PiCanonicalProjection] = []
-        for entry in older + newer {
-            if let position = positions[entry.entryId] {
-                merged[position] = entry
-            } else {
-                positions[entry.entryId] = merged.count
-                merged.append(entry)
-            }
-        }
-        return merged
     }
 
     private func saveSelection() {
@@ -2325,7 +2322,7 @@ final class AxodWorkbenchCoordinator {
         nextWorkspaceCursor = nil; nextSessionCursor = nil; nextRuntimeID = nil
         selectedWorkspaceID = nil; selectedSessionID = nil
         stopChatObservation()
-        chatTarget = nil; chatSnapshot = nil; chatEntries = []; nextChatCursor = nil
+        chatTarget = nil; chatSnapshot = nil; chatEntries = []
         connectionState = .failed("Local daemon connection lost")
         message = "Connection lost. Reconnect to inspect the daemon; no work was replayed."
         Task { await connection.close() }

@@ -174,10 +174,18 @@ fn serve(mut stream: TcpStream, requests: &AtomicUsize) {
                 .contains("TITLE_AND_ACTUAL_TOOL")
         })
     {
-        json!({"tool_calls":[
-            {"index":0,"id":format!("bash-{count}"),"type":"function","function":{"name":"bash","arguments":"{\"command\":\"printf Pi-owned-tool > marker.txt; i=0; while [ \\\"$i\\\" -lt 3000 ]; do printf 'λ界'; i=$((i+1)); done\"}"}},
-            {"index":1,"id":format!("title-{count}"),"type":"function","function":{"name":"axo_set_title","arguments":"{\"title\":\"Axo Workbench\"}"}}
-        ]})
+        // Public title tools create real Pi-owned canonical records for a multi-page history.
+        // Stay within the production 32-tool-call projection bound; no fixture writes JSONL.
+        let mut calls: Vec<Value> = (0..31)
+            .map(|index| {
+                let title = if index == 30 { "Axo Workbench".into() } else { format!("History fixture {index}") };
+                json!({"index":index,"id":format!("title-{count}-{index}"),"type":"function",
+                    "function":{"name":"axo_set_title","arguments":json!({"title":title}).to_string()}})
+            })
+            .collect();
+        calls.push(json!({"index":31,"id":format!("bash-{count}"),"type":"function","function":{"name":"bash",
+            "arguments":"{\"command\":\"printf Pi-owned-tool > marker.txt; i=0; while [ \\\"$i\\\" -lt 3000 ]; do printf 'λ界'; i=$((i+1)); done\"}"}}));
+        json!({"tool_calls":calls})
     } else if body["messages"]
         .as_array()
         .and_then(|messages| messages.last())

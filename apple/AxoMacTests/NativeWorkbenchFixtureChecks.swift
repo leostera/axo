@@ -402,6 +402,26 @@ struct NativeWorkbenchFixtureChecks {
         try await wait("normal-turn canonical title in native catalog") { coordinator.selectedSession?.pi.title == "Axo Workbench" }
         precondition(coordinator.selectedSession?.displayName == "Daily work" && coordinator.selectedSession?.manualName == true)
         print("PASS: owned native inline sidebar rename, durable protected name, later actual Pi canonical title kept separately, unchanged Pi/shell execution")
+        guard let historySnapshot = coordinator.chatSnapshot else { throw Failure.missing("canonical history source") }
+        let historySource = AxodChatHistoryWindow.Source(target: historySnapshot.target, readMode: historySnapshot.readMode)
+        coordinator.loadChatHistoryPage(snapshot: historySnapshot, movement: .beginning, presentationID: coordinator.historyWindow.presentationID)
+        try await wait("canonical history beginning page") { !coordinator.historyWindow.isLoading && coordinator.historyWindow.page != nil }
+        guard let beginning = coordinator.historyWindow.page, let nextCursor = beginning.next else { throw Failure.missing("multi-page canonical history") }
+        let renderedBeginning = coordinator.historyWindow.presentationID
+        precondition(beginning.entries.count <= 50 && coordinator.displayedChatEntries == beginning.entries && coordinator.chatEntries.count <= 10)
+        coordinator.loadChatHistoryPage(snapshot: historySnapshot, movement: .next, presentationID: renderedBeginning)
+        try await wait("canonical history next page") { !coordinator.historyWindow.isLoading && coordinator.historyWindow.pageCursor == nextCursor }
+        guard let following = coordinator.historyWindow.page else { throw Failure.missing("canonical history following page") }
+        precondition(Set(beginning.entries.map(\.entryId)).isDisjoint(with: Set(following.entries.map(\.entryId))))
+        precondition(coordinator.displayedChatEntries.count <= 50 && coordinator.displayedChatEntries == following.entries)
+        coordinator.loadChatHistoryPage(snapshot: historySnapshot, movement: .previous, presentationID: coordinator.historyWindow.presentationID)
+        try await wait("canonical history previous page") { !coordinator.historyWindow.isLoading && coordinator.historyWindow.page == beginning }
+        precondition(coordinator.historyWindow.previous.isEmpty)
+        coordinator.loadChatHistoryPage(snapshot: historySnapshot, movement: .next, presentationID: renderedBeginning)
+        precondition(!coordinator.historyWindow.isLoading && coordinator.historyWindow.page == beginning)
+        coordinator.showRecentChatHistory(source: historySource)
+        precondition(coordinator.historyWindow.mode == .recent && coordinator.historyWindow.page == nil && coordinator.displayedChatEntries.count <= 10)
+        print("PASS: owned native bounded canonical history beginning/next/previous/recent navigation, authoritative entry order, no gaps mixed into live entries and stale rendered-page ABA refusal")
         try await wait("rendered canonical tool source after catalog observation") {
             coordinator.chatSnapshot != nil && coordinator.chatEntries.contains(where: { $0.role == "toolResult" && $0.toolName == "bash" })
         }

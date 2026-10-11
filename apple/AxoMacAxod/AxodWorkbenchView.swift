@@ -121,21 +121,7 @@ struct AxodWorkbenchView: View {
             .padding(.vertical, 7)
 
             if let snapshot = coordinator.chatSnapshot {
-                if coordinator.nextChatCursor != nil {
-                    Button("Load earlier history") { coordinator.loadMoreChatHistory() }
-                        .font(.system(size: 11))
-                        .buttonStyle(.plain)
-                        .foregroundStyle(Color.white.opacity(0.66))
-                        .padding(.vertical, 5)
-                }
-                ScrollView {
-                    LazyVStack(alignment: .leading, spacing: 12) {
-                        ForEach(coordinator.chatEntries, id: \.entryId) { entry in
-                            AxodCanonicalHistoryEntryRow(entry: entry, snapshot: snapshot, coordinator: coordinator)
-                        }
-                    }
-                    .padding(12)
-                }
+                AxodChatHistoryView(snapshot: snapshot, coordinator: coordinator)
                 if let question = snapshot.question {
                     VStack(alignment: .leading, spacing: 7) {
                         Text(question.title)
