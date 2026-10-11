@@ -10,11 +10,17 @@ struct AxodSessionTerminals: View {
         // Use the pinned upstream primitive, not a second split geometry engine.
         SplitView(.horizontal, $fraction, dividerColor: Color(nsColor: .separatorColor), left: {
             AxodRuntimeTerminalPane(title: "Pi", sessionID: session.sessionId,
-                                    snapshot: session.runtime, coordinator: coordinator)
+                                    snapshot: coordinator.presentationSnapshot(for: session), coordinator: coordinator)
         }, right: {
             if session.shellPanes.isEmpty {
-                AxodTerminalInlineState(title: "Shell", message: "An independent regular shell has not been created for this session.")
-                    .frame(minWidth: 240)
+                VStack(alignment: .leading, spacing: 8) {
+                    AxodTerminalInlineState(title: "Shell", message: coordinator.shellStartupState(for: session.sessionId)?.message
+                        ?? "An independent regular shell has not been created for this session.")
+                    if case .unresolved? = coordinator.shellStartupState(for: session.sessionId) {
+                        Button("Reconcile shell start") { coordinator.reconcileSelectedShell() }.padding(12)
+                    }
+                }
+                .frame(minWidth: 240)
             } else {
                 VStack(spacing: 1) {
                     ForEach(session.shellPanes) { pane in

@@ -75,6 +75,7 @@ final class AxodWorkbenchCoordinator {
     @ObservationIgnored private var preferredWorkspaceID: UUID?
     @ObservationIgnored private var preferredSessionID: UUID?
     let terminalSurfaces = AxodTerminalSurfaces()
+    let shellCreation: AxodShellCreation
     private let rpc = AxoJSONRPCClient()
     private var stateDirectory: AxodStateDirectory?
     private var endpoint: LocalDaemonEndpoint?
@@ -106,6 +107,7 @@ final class AxodWorkbenchCoordinator {
 
     init(preferences: UserDefaults = .standard) {
         self.preferences = preferences
+        self.shellCreation = AxodShellCreation(preferences: preferences)
         preferredMachineID = UUID(uuidString: preferences.string(forKey: PreferenceKey.machineID) ?? "")
         preferredWorkspaceID = UUID(uuidString: preferences.string(forKey: PreferenceKey.workspaceID) ?? "")
         preferredSessionID = UUID(uuidString: preferences.string(forKey: PreferenceKey.sessionID) ?? "")
@@ -429,7 +431,21 @@ final class AxodWorkbenchCoordinator {
                 self.preferredWorkspaceID = session.workspaceId
                 self.preferredSessionID = session.sessionId
                 self.saveSelection()
-                self.workEditMessage = "Session created. Starting Pi…"
+                self.workEditMessage = "Session created. Starting its independent terminals…"
+                let shell = await self.shellCreation.start(session: session, source: context.target, send: { parameters in
+                    try await connection.request(method: AxoProtocol.Method.addShellPane, parameters: parameters)
+                }) {
+                    guard self.isCurrent(operation, connection: connection, endpoint: endpoint),
+                          let directory = self.stateDirectory else { throw CancellationError() }
+                    try directory.requireCurrentEndpoint(endpoint)
+                }
+                guard self.isCurrent(operation, connection: connection, endpoint: endpoint) else { return }
+                if let shell, let index = self.sessions.firstIndex(where: { $0.sessionId == session.sessionId && $0.workspaceId == session.workspaceId }) {
+                    let existing = self.sessions[index]
+                    self.sessions[index] = WorkSessionRecord(sessionId: existing.sessionId, workspaceId: existing.workspaceId,
+                        name: existing.name, nameSource: existing.nameSource, pi: existing.pi, runtime: existing.runtime,
+                        shellPanes: existing.shellPanes.filter { $0.paneId != shell.paneId } + [shell])
+                }
                 let ready = await self.startCreatedSession(session, target: context.target, over: connection,
                                                           endpoint: endpoint, operation: operation)
                 guard self.isCurrent(operation, connection: connection, endpoint: endpoint),
@@ -633,6 +649,79 @@ final class AxodWorkbenchCoordinator {
         sessions.first { $0.sessionId == selectedSessionID }
     }
 
+    func presentationSnapshot(for session: WorkSessionRecord) -> TerminalSnapshot? {
+        if let admitted = session.runtime { return admitted }
+        guard let endpoint else { return nil }
+        return runtimes.first {
+            $0.runtime.hostGeneration == endpoint.hostGeneration &&
+            $0.runtime.target.sessionId == session.sessionId &&
+            $0.runtime.target.paneId == session.pi.paneId
+        }
+    }
+
+    private func observeStartingTerminal(session: WorkSessionRecord, endpoint: LocalDaemonEndpoint,
+                                         operation: UUID, control: AxoJSONRPCWebSocketConnection) -> Task<Void, Never> {
+        Task { [weak self] in
+            guard let self, let directory = self.stateDirectory else { return }
+            let source = MachineTarget(machineId: endpoint.machineId, hostGeneration: endpoint.hostGeneration)
+            do {
+                try directory.requireCurrentEndpoint(endpoint)
+                let observer = try self.rpc.openLocalWebSocket(endpoint: endpoint)
+                defer { Task { await observer.close() } }
+                let negotiation = try await observer.request(method: AxoProtocol.Method.negotiate, parameters: NegotiationParameters())
+                _ = try AxoProtocolResultValidator.negotiation(negotiation)
+                while !Task.isCancelled {
+                    var after: UUID?
+                    var cursors = Set<UUID>()
+                    for _ in 0..<20 {
+                        let value = try await observer.request(method: AxoProtocol.Method.listRuntimes,
+                            parameters: RuntimeListParameters(target: source, after: after))
+                        let page = try AxoProtocolResultValidator.runtimeList(value, target: source)
+                        guard !Task.isCancelled, self.isCurrent(operation, connection: control, endpoint: endpoint) else { return }
+                        try directory.requireCurrentEndpoint(endpoint)
+                        if let snapshot = page.terminals.first(where: {
+                            $0.runtime.hostGeneration == source.hostGeneration &&
+                            $0.runtime.target.sessionId == session.sessionId &&
+                            $0.runtime.target.paneId == session.pi.paneId
+                        }) {
+                            self.runtimes.removeAll { $0.runtime.target.paneId == session.pi.paneId }
+                            self.runtimes.append(snapshot)
+                            break
+                        }
+                        guard let next = page.next, cursors.insert(next).inserted else { break }
+                        after = next
+                    }
+                    try await Task.sleep(for: .milliseconds(200))
+                }
+            } catch {
+                // Read-only observer failure never retries a start or changes its receipt.
+            }
+        }
+    }
+
+    func shellStartupState(for sessionID: UUID) -> AxodShellCreation.State? {
+        guard let machineID else { return nil }
+        return shellCreation.states[.init(machineID: machineID, sessionID: sessionID)]
+    }
+
+    func reconcileSelectedShell() {
+        guard let session = selectedSession, let endpoint, let connection else { return }
+        let operation = operationGeneration
+        let source = MachineTarget(machineId: endpoint.machineId, hostGeneration: endpoint.hostGeneration)
+        Task { [weak self] in
+            guard let self else { return }
+            await self.shellCreation.reconcile(session: session, source: source, lookup: { parameters in
+                try await connection.request(method: AxoProtocol.Method.getCommand, parameters: parameters)
+            }) {
+                guard self.isCurrent(operation, connection: connection, endpoint: endpoint),
+                      let directory = self.stateDirectory else { throw CancellationError() }
+                try directory.requireCurrentEndpoint(endpoint)
+            }
+            guard self.isCurrent(operation, connection: connection, endpoint: endpoint) else { return }
+            self.refresh()
+        }
+    }
+
     /// Creation is explicit launch intent. Catalog reads and restoration never call this.
     private func startCreatedSession(_ session: WorkSessionRecord, target: MachineTarget,
                                      over connection: AxoJSONRPCWebSocketConnection,
@@ -652,7 +741,8 @@ final class AxodWorkbenchCoordinator {
         }
         pendingPiStartCommandID = pending.commandId
         isStartingPi = true
-        defer { isStartingPi = false }
+        let observer = observeStartingTerminal(session: session, endpoint: endpoint, operation: operation, control: connection)
+        defer { observer.cancel(); isStartingPi = false }
         do {
             try stateDirectory?.requireCurrentEndpoint(endpoint)
             let value = try await connection.request(method: AxoProtocol.Method.startSession,
@@ -1352,6 +1442,7 @@ final class AxodWorkbenchCoordinator {
             chatStatusMessage = "Select an admitted Pi session to view its canonical conversation."
             return
         }
+        shellCreation.restore(session: session, machineID: endpoint.machineId)
         let startKey = pendingStartKey(machineID: endpoint.machineId, sessionID: session.sessionId)
         pendingPiStartCommandID = (preferences.data(forKey: startKey)
             .flatMap { try? JSONDecoder().decode(PendingPiStart.self, from: $0) })?.commandId
