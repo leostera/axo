@@ -132,7 +132,7 @@ struct NativeWorkbenchFixtureChecks {
                 "Unexpected", "Timeout", "deadline", "unknown", "closed", "sequence",
                 "OutputBinding", "OutputOffset", "OutputBytes", "InputWithoutPending", "InputReceipt",
                 "ResizeWithoutPending", "ResizeReceipt", "ExitReceipt", "UnexpectedAttached", "EventJson",
-                "WebsocketFrame", "PresentationClosed", "QueueCapacity", "TransportUnavailable", "DaemonStopping",
+                "WebsocketFrame", "PresentationClosed", "QueueCapacity", "InvalidFrame", "OutputFailed", "ReceiverReleased", "TransportUnavailable", "DaemonStopping",
                 "FrontendInputEof", "FrontendSignal", "DaemonExited", "rejected", "InvalidRequest", "StaleHost",
                 "StaleRuntime", "StaleAttachment", "NotFound", "Conflict", "AlreadyAttached", "NotRunning",
                 "RecoveryRequired", "LaunchFailed", "StorageFailed", "InputBlocked", "InvalidSize", "InvalidTransition",

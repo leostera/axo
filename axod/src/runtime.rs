@@ -12,7 +12,7 @@ use std::thread;
 use std::time::Duration;
 
 mod delivery;
-pub use delivery::{OutputReceiver, Sink};
+pub use delivery::{DeliveryLoss, OutputReceiver, Sink};
 pub struct AttachedTerminal {
     pub attachment: AttachmentRef,
     pub initial: Frame,
@@ -201,7 +201,7 @@ impl Terminal {
             self.controller.lock().unwrap().take();
             if outcome == OutputState::Failed {
                 if let Some(attachment) = state.attachment.take() {
-                    attachment.sink.disconnect();
+                    attachment.sink.disconnect(DeliveryLoss::OutputFailed);
                 }
             } else if let ProcessState::Exited { wait_status } = state.process {
                 send_exit(&state, wait_status);

@@ -4,11 +4,20 @@ use std::{
     collections::VecDeque,
     sync::{
         Arc, Condvar, Mutex,
-        atomic::{AtomicBool, AtomicUsize, Ordering},
+        atomic::{AtomicU8, AtomicUsize, Ordering},
         mpsc::{RecvError, RecvTimeoutError, TryRecvError},
     },
     time::{Duration, Instant},
 };
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[repr(u8)]
+pub enum DeliveryLoss {
+    QueueCapacity = 1,
+    InvalidFrame = 2,
+    OutputFailed = 3,
+    ReceiverReleased = 4,
+}
 
 struct State {
     frames: VecDeque<Frame>,
@@ -19,7 +28,25 @@ struct Shared {
     ready: Condvar,
     capacity: usize,
     senders: AtomicUsize,
-    disconnected: AtomicBool,
+    loss: AtomicU8,
+}
+impl Shared {
+    fn record_loss(&self, reason: DeliveryLoss) {
+        // Preserve the first loss; teardown must not rewrite overload or I/O evidence.
+        let _ = self
+            .loss
+            .compare_exchange(0, reason as u8, Ordering::SeqCst, Ordering::SeqCst);
+    }
+    fn loss(&self) -> Option<DeliveryLoss> {
+        match self.loss.load(Ordering::SeqCst) {
+            0 => None,
+            1 => Some(DeliveryLoss::QueueCapacity),
+            2 => Some(DeliveryLoss::InvalidFrame),
+            3 => Some(DeliveryLoss::OutputFailed),
+            4 => Some(DeliveryLoss::ReceiverReleased),
+            _ => unreachable!("Only closed delivery loss variants are stored"),
+        }
+    }
 }
 pub struct Sink {
     shared: Arc<Shared>,
@@ -39,7 +66,7 @@ impl Sink {
             ready: Condvar::new(),
             capacity,
             senders: AtomicUsize::new(1),
-            disconnected: AtomicBool::new(false),
+            loss: AtomicU8::new(0),
         });
         (
             Self {
@@ -49,16 +76,16 @@ impl Sink {
         )
     }
     pub fn is_disconnected(&self) -> bool {
-        self.shared.disconnected.load(Ordering::SeqCst)
+        self.shared.loss.load(Ordering::SeqCst) != 0
     }
-    pub fn disconnect(&self) {
-        self.shared.disconnected.store(true, Ordering::SeqCst);
+    pub fn disconnect(&self, reason: DeliveryLoss) {
+        self.shared.record_loss(reason);
         self.shared.state.lock().unwrap().closed = true;
         self.shared.ready.notify_all();
     }
     pub fn send(&self, frame: Frame) -> bool {
         let mut state = self.shared.state.lock().unwrap();
-        if state.closed || self.shared.disconnected.load(Ordering::SeqCst) {
+        if state.closed || self.shared.loss.load(Ordering::SeqCst) != 0 {
             return false;
         }
         // A single queued output frame is always <= OUTPUT_CHUNK; initial replay
@@ -76,7 +103,11 @@ impl Sink {
             self.shared.ready.notify_one();
             return true;
         }
-        self.shared.disconnected.store(true, Ordering::SeqCst);
+        self.shared.record_loss(if valid {
+            DeliveryLoss::QueueCapacity
+        } else {
+            DeliveryLoss::InvalidFrame
+        });
         state.closed = true;
         self.shared.ready.notify_all();
         false
@@ -142,8 +173,11 @@ fn append(frames: &mut VecDeque<Frame>, frame: Frame, capacity: usize) -> bool {
 }
 
 impl OutputReceiver {
+    pub fn loss(&self) -> Option<DeliveryLoss> {
+        self.shared.loss()
+    }
     pub fn is_disconnected(&self) -> bool {
-        self.shared.disconnected.load(Ordering::SeqCst)
+        self.shared.loss.load(Ordering::SeqCst) != 0
     }
     pub fn try_recv(&self) -> Result<Frame, TryRecvError> {
         let mut state = self.shared.state.lock().unwrap();
@@ -187,7 +221,7 @@ impl OutputReceiver {
 }
 impl Drop for OutputReceiver {
     fn drop(&mut self) {
-        self.shared.disconnected.store(true, Ordering::SeqCst);
+        self.shared.record_loss(DeliveryLoss::ReceiverReleased);
         self.shared.state.lock().unwrap().closed = true;
         self.shared.ready.notify_all();
     }
@@ -254,6 +288,9 @@ mod tests {
         assert!(sink.send(output(identity, 0, vec![1; OUTPUT_CHUNK - 1])));
         assert!(!sink.send(output(identity, (OUTPUT_CHUNK - 1) as u64, vec![2; 2])));
         assert!(receiver.is_disconnected());
+        assert_eq!(receiver.loss(), Some(DeliveryLoss::QueueCapacity));
+        sink.disconnect(DeliveryLoss::OutputFailed);
+        assert_eq!(receiver.loss(), Some(DeliveryLoss::QueueCapacity));
         let Frame::Output { data, .. } = receiver.recv().unwrap() else {
             panic!("Output expected")
         };
@@ -301,6 +338,10 @@ mod tests {
         drop(receiver);
         assert!(sink.is_disconnected());
         assert!(!sink.send(output(attachment(), 0, vec![1])));
+        assert_eq!(sink.shared.loss(), Some(DeliveryLoss::ReceiverReleased));
+        let (sink, receiver) = Sink::bounded(1);
+        sink.disconnect(DeliveryLoss::OutputFailed);
+        assert_eq!(receiver.loss(), Some(DeliveryLoss::OutputFailed));
     }
     #[test]
     fn oversize_or_overflow_output_fails_closed() {
@@ -308,6 +349,7 @@ mod tests {
             let (sink, receiver) = Sink::bounded(1);
             assert!(!sink.send(output(attachment(), offset, vec![0; bytes])));
             assert!(receiver.is_disconnected());
+            assert_eq!(receiver.loss(), Some(DeliveryLoss::InvalidFrame));
             assert!(matches!(
                 receiver.try_recv(),
                 Err(TryRecvError::Disconnected)

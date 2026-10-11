@@ -360,8 +360,8 @@ fn client(stream: TcpStream, context: &Context) -> io::Result<()> {
             }
         }
     }
-    if receiver.is_disconnected() {
-        eprintln!("Terminal presentation closed: QueueCapacity");
+    if let Some(reason) = receiver.loss() {
+        eprintln!("Terminal presentation closed: {reason:?}");
     } else if context.unavailable.load(Ordering::SeqCst) {
         eprintln!("Terminal presentation closed: TransportUnavailable");
     } else {
