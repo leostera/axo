@@ -31,6 +31,10 @@ The initial Mac compile rejected a non-Hashable full-target keypath subscript. T
 
 Logs: `/tmp/axo-chat-drafts-{unit,unit-final,unit-rerun,unit-rerun2,unit-bounds,unit-bounds2,unit-passing,build,build-rerun,build-final,build-validated,native,core,cli,protocol,layout,shell,build-precommit,unit-precommit,native-precommit,package-exact}.log` and `/tmp/axo-chat-drafts-135-{unit,native,core,cli}.log`. No payload bodies/credentials were printed; failed evidence was not removed.
 
+## Subsequent action checkpoint
+
+[Build138 native chat actions](native-chat-actions.md) adds actual local RPC/Pi tool/title/history, question/independent-shell, cancellation/steering and later draft acknowledgement/reconnect evidence through the production coordinator. It still does not prove actual composer input/IME, durable/branch drafts, deployed/device routes or a full gate.
+
 ## Open acceptance and capability
 
 **M12/M13/A09/A10 remain incomplete.** This cache does not persist across a new coordinator/app exit/crash and supplies no branch-specific draft policy or durable reading state. It is not canonical history, a transcript cache, a cloud archive or an offline execution queue. Aggregate history eviction, tool detail, scalable/source-bound reading and branch/navigation transfer remain open.

@@ -53,6 +53,10 @@ still open.
 
 Do not erase failed evidence: an early fixture timed out waiting for the shell effect; its cause was not established. After adding observed output readiness, the first build127 packaged-helper campaign also failed its unavailable-Pi mode: the native frontend had exited and command echo was present, but the shell effect was missing. No input was resent; only owned fixture children/roots were torn down. Later passing runs do **not** establish the failure's cause or prove it cannot recur. The fixture now reports only frontend/input flags, byte count and allowlisted static error classes, never terminal bodies. Native input/presentation robustness remains an open acceptance item requiring failure-class capture and a concrete fix if reproduced.
 
+## Subsequent actual chat-action checkpoint
+
+[Build138 native chat actions](native-chat-actions.md) adds a sixth mode with the public provider extension and Rust-owned loopback model. Actual local Pi tools/title/history, a waiting question with usable native shell, offered/stale answer, cancellation/steering, original draft revisions and exact request/runtime counts pass through production coordinator actions. Failed visibility/timing predicates remain preserved; test-only public-Pi progress is not authority or renderer recovery. Real OS composer/IME/Finder/live/deployed/phone gates remain open.
+
 ## Remaining actual-surface acceptance
 
 These runs do not launch the Finder bundle or exercise SMAppService, actual project picker, real keyboard/IME/focus/scale/paste/drop, question-waiting Pi, multiwindow, complete visible VT state/graphics/scrollback recovery, live recovery reconciliation, helper handoff or phone/deployed routes. Retained surfaces are not VT reconstruction. The current live namespace is not genuinely empty and must not be reset to manufacture acceptance. No full supported workflow is complete.
