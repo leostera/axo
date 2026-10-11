@@ -21,6 +21,26 @@ final class AxodWorkbenchApp: NSObject, NSApplicationDelegate, NSWindowDelegate,
 #endif
 
     static func main() {
+#if DEBUG
+        if CommandLine.arguments == [CommandLine.arguments[0], "-repair-stopped-service"] {
+            // Explicit operator action in the actual signed app's Bundle.main
+            // context. Never a connection fallback or a hidden execution command.
+            let application = NSApplication.shared
+            application.setActivationPolicy(.prohibited)
+            guard !NSWorkspace.shared.runningApplications.contains(where: {
+                $0.bundleIdentifier == "dev.leostera.axo.mac" && $0.processIdentifier != ProcessInfo.processInfo.processIdentifier
+            }) else { fputs("Quit Axo frontends before stopped-service maintenance\n", stderr); exit(2) }
+            Task { @MainActor in
+                do { try await AxodStoppedServiceRepair.run(); exit(0) }
+                catch {
+                    fputs("Stopped-service maintenance was not confirmed. Its original ticket is preserved; no retry or state reset was performed.\n", stderr)
+                    exit(3)
+                }
+            }
+            application.run()
+            return
+        }
+#endif
         let application = NSApplication.shared
         let delegate = AxodWorkbenchApp()
         application.delegate = delegate
@@ -49,7 +69,7 @@ final class AxodWorkbenchApp: NSObject, NSApplicationDelegate, NSWindowDelegate,
             if uiTest { uiTestContext = selfTest }
         }
 #else
-        if CommandLine.arguments.contains("-self-test") || CommandLine.arguments.contains("-ui-test") {
+        if CommandLine.arguments.contains("-self-test") || CommandLine.arguments.contains("-ui-test") || CommandLine.arguments.contains("-repair-stopped-service") {
             fputs("Axo diagnostic flags require a development build\n", stderr); exit(2)
         }
         let coordinator = AxodWorkbenchCoordinator()
