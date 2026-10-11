@@ -73,6 +73,11 @@ import Observation
     private var savedArchive: AxodChatDraftArchive?
     private var resolutions: [UUID: Outcome] = [:]
     private var waiters: [Waiter] = []
+    #if AXO_DRAFT_PERSISTENCE_FIXTURE
+    @ObservationIgnored var fixtureAfterLoad: (() async -> Void)?
+    @ObservationIgnored var fixtureAfterSave: (() async -> Void)?
+    func fixtureAwaitSave() async { if let pump { await pump.value } }
+    #endif
 
     /// Volatile mode is explicit for pure local tests. Product coordinators
     /// require storage and cannot edit/send before a trusted load completes.
@@ -107,7 +112,10 @@ import Observation
         let task = Task { [weak self] in
             do {
                 let archive = try await worker.load()
-                guard let self else { return }
+                #if AXO_DRAFT_PERSISTENCE_FIXTURE
+                if let gate = self?.fixtureAfterLoad { await gate() }
+                #endif
+                guard let self, self.storage == .loading, self.parent == parent else { return }
                 if let archive {
                     self.entries = Dictionary(uniqueKeysWithValues: archive.drafts.map {
                         ($0.conversation, Entry(text: $0.text, revision: $0.revision, bytes: $0.text.utf8.count))
@@ -230,6 +238,10 @@ import Observation
                 let archive: AxodChatDraftArchive
                 do { archive = try await worker.save(drafts: save.drafts, pending: save.pending) }
                 catch { self.failStorage(); break }
+                #if AXO_DRAFT_PERSISTENCE_FIXTURE
+                if let gate = self.fixtureAfterSave { await gate() }
+                #endif
+                guard self.storage == .ready else { break }
                 self.savedSequence = save.sequence; self.savedArchive = archive
                 for (command, outcome) in save.resolutions {
                     guard self.resolutions[command] == outcome, let captured = self.submissions[command] else { continue }

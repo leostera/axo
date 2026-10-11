@@ -7,6 +7,20 @@ import Foundation
         do { try await checks() }
         catch { fputs("Draft persistence checks failed: class=Unexpected\n", stderr); exit(1) }
     }
+    @MainActor private final class IOGate {
+        private var entered = false
+        private var arrival: CheckedContinuation<Void, Never>?
+        private var release: CheckedContinuation<Void, Never>?
+        func hold() async {
+            entered = true; arrival?.resume(); arrival = nil
+            await withCheckedContinuation { release = $0 }
+        }
+        func awaitEntry() async {
+            if entered { return }
+            await withCheckedContinuation { arrival = $0 }
+        }
+        func resume() { release?.resume(); release = nil }
+    }
     @MainActor private static func checks() async throws {
         guard let canonical = realpath(FileManager.default.temporaryDirectory.path, nil) else { throw AxodChatDraftStore.Failure.unsafeStorage }
         let base = URL(fileURLWithPath: String(cString: canonical)).appendingPathComponent("axo-draft-persistence-\(UUID())")
@@ -110,6 +124,32 @@ import Foundation
         let relaunched = AxodChatDrafts(requiresPersistence: true)
         await relaunched.openStorage(in: quitParent)
         precondition(relaunched.text(for: resumed) == "accepted before ordinary quit")
+        let lateLoad = AxodChatDrafts(requiresPersistence: true), loadGate = IOGate()
+        let loadParent = try root(), otherParent = try root()
+        lateLoad.fixtureAfterLoad = { await loadGate.hold() }
+        let loading = Task { await lateLoad.openStorage(in: loadParent) }
+        await loadGate.awaitEntry()
+        await lateLoad.openStorage(in: otherParent)
+        loadGate.resume(); await loading.value
+        precondition(lateLoad.blocksAutomaticStartup && !lateLoad.canEdit)
+
+        let lateSave = AxodChatDrafts(requiresPersistence: true), saveGate = IOGate()
+        await lateSave.openStorage(in: try root())
+        lateSave.edit("late acknowledgement must not clear after fencing", for: original)
+        let lateTicket = lateSave.capture(for: original)!
+        let latePersisted = await lateSave.persist(lateTicket)
+        precondition(latePersisted)
+        lateSave.fixtureAfterSave = { await saveGate.hold() }
+        let settling = Task { await lateSave.settle(commandID: lateTicket.commandID, target: original, outcome: .dispatched) }
+        await saveGate.awaitEntry()
+        await lateSave.openStorage(in: otherParent)
+        saveGate.resume()
+        let lateResult = await settling.value
+        await lateSave.fixtureAwaitSave()
+        precondition(!lateResult && lateSave.blocksAutomaticStartup)
+        precondition(lateSave.text(for: original) == "late acknowledgement must not clear after fencing")
+        precondition(lateSave.pending(for: original)?.commandID == lateTicket.commandID)
+        print("PASS: compile-only deterministic late load/save return gates cannot revive failed storage or clear its original text/ticket; actual storage I/O retained, not crash proof")
         print("PASS: off-typing-path bounded/coalesced draft persistence, fresh caches/exact resume, operation/target/revision tickets, rejected/unknown/ABA and conditional durable acknowledgement")
         print("PASS: stale process/lease failure fences, local text and original ticket preservation, opaque storage blocks automation without reset; not actual composer/crash/power-loss/branch acceptance")
     }
