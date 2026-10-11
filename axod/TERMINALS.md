@@ -52,7 +52,12 @@ launch, stop, work creation or chat commands.
   must arrive within 2 seconds.
 - Incoming/outgoing WebSocket messages: 48 KiB encoded; native library framing.
 - Per-client producer queue: 32 frames, each live output chunk at most 1024 raw
-  bytes; initial backlog at most 8 KiB.
+  bytes; initial backlog at most 8 KiB. The bounded delivery queue coalesces only
+  adjacent output with the same captured attachment and contiguous offsets, up to
+  that 1024-byte limit. PTY read fragmentation is not frame pressure. Identity,
+  offset gaps and Attached/Exited control boundaries are never merged; failed
+  capacity insertion cannot mutate a queued prefix. Receiver locks are released
+  before network/TTY I/O. A full queue still loses only presentation.
 - Delivery credits: at most 32 outstanding data frames / 128 KiB encoded, with
   worst-case frame reservation. Clients must acknowledge only consumed data.
 - Writes: 500 ms socket timeout. The server polls reads every 10 ms and limits
@@ -61,7 +66,7 @@ launch, stop, work creation or chat commands.
   producer queue detaches that consumer instead of blocking a child. Control
   RPC has independent listener/client limits.
 - Payload bodies, terminal bytes and input are never emitted in diagnostics.
-  Parse/delivery failures have static errors, and teardown is owner-fenced.
+  Parse/delivery failures have closed body-free failure classes, and teardown is owner-fenced. A WebSocket presentation close poisons the client without clearing uncertainty or replaying input; it is not malformed output or completion.
 
 ## Typed native consumer
 

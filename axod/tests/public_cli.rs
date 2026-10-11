@@ -331,7 +331,7 @@ fn actual_cli_default_shells_use_captured_home_or_approved_project_without_profi
 #[test]
 fn actual_frontend_child_forwards_pty_input_resize_and_quits_without_stopping_work() {
     use axod::{model::*, runtime::Sink, terminal::Frame};
-    use std::sync::{Arc, atomic::AtomicBool, mpsc};
+    use std::sync::mpsc;
     let daemon = Daemon::start();
     let discovery = Client::connect(&daemon.discovery()).unwrap().discovery;
     let started = daemon.call(
@@ -369,18 +369,8 @@ fn actual_frontend_child_forwards_pty_input_resize_and_quits_without_stopping_wo
         )
         .unwrap();
     let owner = ClientId::new();
-    let (sender, receiver) = mpsc::sync_channel(32);
-    let attached = frontend
-        .manager
-        .attach(
-            relay.runtime,
-            owner,
-            Sink {
-                sender,
-                disconnected: Arc::new(AtomicBool::new(false)),
-            },
-        )
-        .unwrap();
+    let (sink, receiver) = Sink::bounded(32);
+    let attached = frontend.manager.attach(relay.runtime, owner, sink).unwrap();
     let mut consumed = Vec::new();
     let deadline = Instant::now() + Duration::from_secs(5);
     while !consumed.windows(5).any(|bytes| bytes == b"ready") {

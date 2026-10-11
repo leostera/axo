@@ -7,25 +7,12 @@ use std::os::unix::net::UnixStream;
 use std::sync::{
     Arc, Mutex,
     atomic::{AtomicBool, Ordering},
-    mpsc::SyncSender,
 };
 use std::thread;
 use std::time::Duration;
 
-#[derive(Clone)]
-pub struct Sink {
-    pub sender: SyncSender<Frame>,
-    pub disconnected: Arc<AtomicBool>,
-}
-impl Sink {
-    pub fn send(&self, frame: Frame) -> bool {
-        if self.sender.try_send(frame).is_err() {
-            self.disconnected.store(true, Ordering::SeqCst);
-            return false;
-        }
-        true
-    }
-}
+mod delivery;
+pub use delivery::{OutputReceiver, Sink};
 pub struct AttachedTerminal {
     pub attachment: AttachmentRef,
     pub initial: Frame,
@@ -214,7 +201,7 @@ impl Terminal {
             self.controller.lock().unwrap().take();
             if outcome == OutputState::Failed {
                 if let Some(attachment) = state.attachment.take() {
-                    attachment.sink.disconnected.store(true, Ordering::SeqCst);
+                    attachment.sink.disconnect();
                 }
             } else if let ProcessState::Exited { wait_status } = state.process {
                 send_exit(&state, wait_status);

@@ -2,7 +2,7 @@
 use crate::{
     journal::Journal,
     model::*,
-    runtime::{Manager, Sink},
+    runtime::{Manager, OutputReceiver, Sink},
     terminal::{ErrorCode, Frame},
 };
 use serde_json::Value;
@@ -10,11 +10,6 @@ use std::os::unix::fs::DirBuilderExt;
 use std::{
     fs,
     path::PathBuf,
-    sync::{
-        Arc,
-        atomic::{AtomicBool, Ordering},
-        mpsc,
-    },
     thread,
     time::{Duration, Instant},
 };
@@ -80,15 +75,8 @@ fn eventually(mut ready: impl FnMut() -> bool) {
 fn read(path: &PathBuf) -> Option<Value> {
     serde_json::from_slice(&fs::read(path).ok()?).ok()
 }
-fn channel() -> (Sink, mpsc::Receiver<Frame>) {
-    let (sender, receiver) = mpsc::sync_channel(32);
-    (
-        Sink {
-            sender,
-            disconnected: Arc::new(AtomicBool::new(false)),
-        },
-        receiver,
-    )
+fn channel() -> (Sink, OutputReceiver) {
+    Sink::bounded(32)
 }
 
 #[test]
@@ -173,7 +161,7 @@ fn slow_output_is_bounded_and_reconnect_backlog_offsets_are_contiguous() {
     let (terminal, _) = f.ticking("flood.json", true);
     eventually(|| f.manager.list()[0].backlog_bytes == 8192);
     let (sink, receiver) = channel();
-    let disconnected = sink.disconnected.clone();
+    let observed = sink.clone();
     let attached = f
         .manager
         .attach(terminal.runtime, ClientId(1), sink)
@@ -189,7 +177,7 @@ fn slow_output_is_bounded_and_reconnect_backlog_offsets_are_contiguous() {
         Frame::Output { offset, .. } => assert_eq!(offset, backlog.next_offset),
         _ => panic!("Live output"),
     }
-    eventually(|| disconnected.load(Ordering::SeqCst));
+    eventually(|| observed.is_disconnected());
     assert!(!f.manager.list()[0].attached);
 }
 #[test]

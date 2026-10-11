@@ -34,7 +34,23 @@ struct TerminalLaunch {
                          runtime.target.paneId.uuidString, runtime.runtimeGeneration.uuidString]
         // Pinned Ghostty's macOS embedding already wraps this with exec -l.
         // A second exec token would be treated as the executable name.
-        return Self(key: key, directory: root.path, command: arguments.map(quote).joined(separator: " "))
+        let command = arguments.map(quote).joined(separator: " ")
+#if AXO_NATIVE_FIXTURE
+        // The disposable fixture retains only the frontend's body-free stderr.
+        // Managed PTY bytes still use /dev/tty, never this diagnostic file.
+        let diagnostic = root.appendingPathComponent("frontend-\(runtime.runtimeGeneration.uuidString).stderr")
+        let descriptor = Darwin.open(diagnostic.path, O_WRONLY | O_CREAT | O_NOFOLLOW | O_CLOEXEC, S_IRUSR | S_IWUSR)
+        guard descriptor >= 0 else { throw LaunchError.surfaceCreation }
+        defer { Darwin.close(descriptor) }
+        var info = stat()
+        guard fstat(descriptor, &info) == 0, info.st_uid == geteuid(), info.st_nlink == 1,
+              info.st_mode & S_IFMT == S_IFREG, info.st_mode & 0o777 == 0o600 else {
+            throw LaunchError.surfaceCreation
+        }
+        return Self(key: key, directory: root.path, command: command + " 2>" + quote(diagnostic.path))
+#else
+        return Self(key: key, directory: root.path, command: command)
+#endif
     }
 
     private static func quote(_ value: String) -> String {

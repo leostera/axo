@@ -16,7 +16,6 @@ use std::{
     sync::{
         Arc,
         atomic::{AtomicBool, Ordering},
-        mpsc,
     },
     thread::{self, JoinHandle},
     time::{Duration, Instant},
@@ -207,7 +206,22 @@ fn accept_clients(listener: TcpListener, context: Arc<Context>) {
                 if let Ok(worker) = thread::Builder::new()
                     .name("axod-terminal-client".into())
                     .spawn(move || {
-                        let _ = client(stream, &context);
+                        if let Err(error) = client(stream, &context) {
+                            let class = match error.to_string().as_str() {
+                                "Invalid terminal command" => "CommandJson",
+                                "Terminal connection closed or unsupported message" => {
+                                    "UnsupportedCommandFrame"
+                                }
+                                "Terminal transport closed" => "SocketEnded",
+                                "Terminal rate limit" => "RateLimit",
+                                "Terminal credit limit" => "CreditLimit",
+                                "Terminal delivery unknown; input must not be replayed" => {
+                                    "WriteUnknown"
+                                }
+                                _ => "OtherIo",
+                            };
+                            eprintln!("Terminal presentation failed: {class}");
+                        }
                     })
                 {
                     workers.push(worker);
@@ -282,16 +296,8 @@ fn client(stream: TcpStream, context: &Context) -> io::Result<()> {
         manager: context.manager.clone(),
         owner,
     };
-    let (sender, receiver) = mpsc::sync_channel(DELIVERY_FRAMES);
-    let disconnected = Arc::new(AtomicBool::new(false));
-    let attached = match context.manager.attach(
-        runtime,
-        owner,
-        Sink {
-            sender,
-            disconnected: disconnected.clone(),
-        },
-    ) {
+    let (sink, receiver) = Sink::bounded(DELIVERY_FRAMES);
+    let attached = match context.manager.attach(runtime, owner, sink) {
         Ok(attached) => attached,
         Err(code) => return send(&mut socket, &Event::Rejected { code }),
     };
@@ -302,7 +308,7 @@ fn client(stream: TcpStream, context: &Context) -> io::Result<()> {
     let mut state = Connection::new(attached.attachment);
     while !context.stopping.load(Ordering::SeqCst)
         && !context.unavailable.load(Ordering::SeqCst)
-        && !disconnected.load(Ordering::SeqCst)
+        && !receiver.is_disconnected()
     {
         // The manager always drains its PTY. Slow clients lose only this lease,
         // never work; the bounded queue/credits cannot stall the process reader.
@@ -347,11 +353,19 @@ fn client(stream: TcpStream, context: &Context) -> io::Result<()> {
                     return Ok(());
                 }
                 Err(code) => {
+                    eprintln!("Terminal command rejected: {code:?}");
                     send(&mut socket, &Event::Rejected { code })?;
                     return Ok(());
                 }
             }
         }
+    }
+    if receiver.is_disconnected() {
+        eprintln!("Terminal presentation closed: QueueCapacity");
+    } else if context.unavailable.load(Ordering::SeqCst) {
+        eprintln!("Terminal presentation closed: TransportUnavailable");
+    } else {
+        eprintln!("Terminal presentation closed: DaemonStopping");
     }
     let _ = socket.close(None);
     Ok(())

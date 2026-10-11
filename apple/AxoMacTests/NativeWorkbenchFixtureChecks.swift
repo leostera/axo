@@ -118,7 +118,26 @@ struct NativeWorkbenchFixtureChecks {
             }
         } catch {
             let text = visibleText(shellView)
-            let classes = ["InvalidDiscovery", "Offline", "Protocol", "Capacity", "geometry exceeds", "handshake", "Rejected", "screen recovery", "Invalid argument", "Interrupted", "Input/output error", "Unexpected", "Timeout", "deadline", "unknown", "closed", "sequence"].filter { text.contains($0) }
+            let diagnosticURL = root.appendingPathComponent("frontend-\(snapshot.runtime.runtimeGeneration.uuidString).stderr")
+            let handle = try? FileHandle(forReadingFrom: diagnosticURL)
+            let recorded = (try? handle?.read(upToCount: 4096)) ?? Data()
+            try? handle?.close()
+            let daemonHandle = try? FileHandle(forReadingFrom: root.deletingLastPathComponent().appendingPathComponent("daemon.stderr"))
+            let daemonRecord = (try? daemonHandle?.read(upToCount: 4096)) ?? Data()
+            try? daemonHandle?.close()
+            let diagnostic = (text + String(decoding: recorded + daemonRecord, as: UTF8.self)).filter { !$0.isWhitespace }
+            let classes = [
+                "InvalidDiscovery", "Offline", "Protocol", "Capacity", "geometry exceeds", "handshake",
+                "Rejected", "screen recovery", "Invalid argument", "Interrupted", "Input/output error",
+                "Unexpected", "Timeout", "deadline", "unknown", "closed", "sequence",
+                "OutputBinding", "OutputOffset", "OutputBytes", "InputWithoutPending", "InputReceipt",
+                "ResizeWithoutPending", "ResizeReceipt", "ExitReceipt", "UnexpectedAttached", "EventJson",
+                "WebsocketFrame", "PresentationClosed", "QueueCapacity", "TransportUnavailable", "DaemonStopping",
+                "FrontendInputEof", "FrontendSignal", "DaemonExited", "rejected", "InvalidRequest", "StaleHost",
+                "StaleRuntime", "StaleAttachment", "NotFound", "Conflict", "AlreadyAttached", "NotRunning",
+                "RecoveryRequired", "LaunchFailed", "StorageFailed", "InputBlocked", "InvalidSize", "InvalidTransition",
+                "CommandJson", "UnsupportedCommandFrame", "SocketEnded", "RateLimit", "CreditLimit", "WriteUnknown", "OtherIo",
+            ].filter { diagnostic.contains($0.filter { !$0.isWhitespace }) }
             fputs("Owned shell input diagnostic: frontendExited=\(shellView.childExited) inputEnabled=\(shellView.inputEnabled) commandEcho=\(text.contains("printf native-shell-ready")) visibleBytes=\(text.utf8.count) staticClasses=\(classes)\n", stderr)
             throw error
         }

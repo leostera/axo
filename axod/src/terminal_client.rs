@@ -21,15 +21,33 @@ pub enum StreamError {
     InvalidDiscovery,
     Offline,
     Protocol,
+    ProtocolFault(ProtocolFault),
+    PresentationClosed,
     Capacity,
     InputPending,
     OutcomeUnknown,
     Rejected(ErrorCode),
 }
+/// Closed body-free failure locations, never packet data or identity values.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum ProtocolFault {
+    OutputBinding,
+    OutputOffset,
+    OutputBytes,
+    InputWithoutPending,
+    InputReceipt,
+    ResizeWithoutPending,
+    ResizeReceipt,
+    ExitReceipt,
+    UnexpectedAttached,
+    EventJson,
+    WebsocketFrame,
+}
 impl std::fmt::Display for StreamError {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
             Self::Rejected(code) => write!(f, "Terminal request rejected ({code:?})"),
+            Self::PresentationClosed => f.write_str("Terminal presentation closed (PresentationClosed); input delivery may be unknown, do not replay"),
             Self::OutcomeUnknown => {
                 f.write_str("Terminal delivery unknown; input must not be replayed")
             }
@@ -111,13 +129,14 @@ impl StreamState {
                 offset,
                 data,
             } => {
-                if attachment != self.attachment
-                    || self.exited
-                    || offset != self.next_offset
-                    || data.is_empty()
-                    || data.len() > OUTPUT_CHUNK
-                {
-                    return Err(StreamError::Protocol);
+                if attachment != self.attachment || self.exited {
+                    return Err(StreamError::ProtocolFault(ProtocolFault::OutputBinding));
+                }
+                if offset != self.next_offset {
+                    return Err(StreamError::ProtocolFault(ProtocolFault::OutputOffset));
+                }
+                if data.is_empty() || data.len() > OUTPUT_CHUNK {
+                    return Err(StreamError::ProtocolFault(ProtocolFault::OutputBytes));
                 }
                 let next_offset = offset
                     .checked_add(data.len() as u64)
@@ -136,12 +155,17 @@ impl StreamState {
                 sequence,
                 accepted_bytes,
             } => {
-                let pending = self.pending_input.as_ref().ok_or(StreamError::Protocol)?;
+                let pending = self
+                    .pending_input
+                    .as_ref()
+                    .ok_or(StreamError::ProtocolFault(
+                        ProtocolFault::InputWithoutPending,
+                    ))?;
                 if attachment != self.attachment
                     || pending.sequence != sequence
                     || accepted_bytes > pending.bytes
                 {
-                    return Err(StreamError::Protocol);
+                    return Err(StreamError::ProtocolFault(ProtocolFault::InputReceipt));
                 }
                 self.pending_input = None;
                 Ok(StreamEvent::InputApplied {
@@ -154,12 +178,17 @@ impl StreamState {
                 rows,
                 columns,
             } => {
-                let pending = self.pending_resize.as_ref().ok_or(StreamError::Protocol)?;
+                let pending = self
+                    .pending_resize
+                    .as_ref()
+                    .ok_or(StreamError::ProtocolFault(
+                        ProtocolFault::ResizeWithoutPending,
+                    ))?;
                 if attachment != self.attachment
                     || pending.size.rows() != rows
                     || pending.size.columns() != columns
                 {
-                    return Err(StreamError::Protocol);
+                    return Err(StreamError::ProtocolFault(ProtocolFault::ResizeReceipt));
                 }
                 self.pending_resize = None;
                 Ok(StreamEvent::Resized { rows, columns })
@@ -169,13 +198,15 @@ impl StreamState {
                 wait_status,
             } => {
                 if attachment != self.attachment || self.exited {
-                    return Err(StreamError::Protocol);
+                    return Err(StreamError::ProtocolFault(ProtocolFault::ExitReceipt));
                 }
                 self.exited = true;
                 Ok(StreamEvent::Exited { wait_status })
             }
             Event::Rejected { code } => Err(StreamError::Rejected(code)),
-            Event::Attached { .. } => Err(StreamError::Protocol),
+            Event::Attached { .. } => Err(StreamError::ProtocolFault(
+                ProtocolFault::UnexpectedAttached,
+            )),
         }
     }
     fn acknowledge(&mut self, chunk: &OutputChunk) -> Result<(), StreamError> {
@@ -445,8 +476,9 @@ fn receive(socket: &mut WebSocket<StreamIo>) -> Result<Option<(Event, usize)>, S
     match socket.read() {
         Ok(Message::Text(raw)) => serde_json::from_str(&raw)
             .map(|event| Some((event, raw.len())))
-            .map_err(|_| StreamError::Protocol),
-        Ok(_) => Err(StreamError::Protocol),
+            .map_err(|_| StreamError::ProtocolFault(ProtocolFault::EventJson)),
+        Ok(Message::Close(_)) => Err(StreamError::PresentationClosed),
+        Ok(_) => Err(StreamError::ProtocolFault(ProtocolFault::WebsocketFrame)),
         Err(tungstenite::Error::Io(error))
             if matches!(
                 error.kind(),
@@ -488,7 +520,11 @@ mod tests {
     fn output_identity_offsets_bounds_and_credits_are_exact() {
         let mut state = new_state();
         let attachment = state.attachment;
-        for (offset, data) in [(1, vec![0]), (0, vec![]), (0, vec![0; OUTPUT_CHUNK + 1])] {
+        for (offset, data, fault) in [
+            (1, vec![0], ProtocolFault::OutputOffset),
+            (0, vec![], ProtocolFault::OutputBytes),
+            (0, vec![0; OUTPUT_CHUNK + 1], ProtocolFault::OutputBytes),
+        ] {
             assert!(matches!(
                 state.consume(
                     Event::Output {
@@ -498,7 +534,7 @@ mod tests {
                     },
                     100
                 ),
-                Err(StreamError::Protocol)
+                Err(StreamError::ProtocolFault(actual)) if actual == fault
             ));
             assert_eq!(state.next_offset, 0);
         }
@@ -535,7 +571,9 @@ mod tests {
                 },
                 100
             ),
-            Err(StreamError::Protocol)
+            Err(StreamError::ProtocolFault(
+                ProtocolFault::InputWithoutPending
+            ))
         ));
         state.pending_input = Some(PendingInput {
             sequence: 0,
@@ -552,7 +590,7 @@ mod tests {
                     },
                     100
                 ),
-                Err(StreamError::Protocol)
+                Err(StreamError::ProtocolFault(ProtocolFault::InputReceipt))
             ));
             assert!(state.pending_input.is_some());
         }
@@ -584,7 +622,7 @@ mod tests {
                 },
                 100
             ),
-            Err(StreamError::Protocol)
+            Err(StreamError::ProtocolFault(ProtocolFault::ResizeReceipt))
         ));
         assert!(state.pending_resize.is_some());
         assert!(matches!(
@@ -631,7 +669,7 @@ mod tests {
                 },
                 100
             ),
-            Err(StreamError::Protocol)
+            Err(StreamError::ProtocolFault(ProtocolFault::ExitReceipt))
         ));
     }
 }

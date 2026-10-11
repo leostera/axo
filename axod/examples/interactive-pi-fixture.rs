@@ -13,7 +13,7 @@ use std::{
     io::{self, BufRead, BufReader, Read, Write},
     os::unix::net::UnixStream,
     path::PathBuf,
-    sync::{Arc, Mutex, atomic::AtomicBool, mpsc},
+    sync::{Arc, Mutex},
     thread,
 };
 const LIMIT: u64 = 65_536;
@@ -185,11 +185,7 @@ fn drive(manager: &Manager) -> io::Result<()> {
             }
             Command::List { id } => (id, Ok(json!(manager.list()))),
             Command::Attach { id, runtime } => {
-                let (sender, receiver) = mpsc::sync_channel(16);
-                let sink = Sink {
-                    sender,
-                    disconnected: Arc::new(AtomicBool::new(false)),
-                };
+                let (sink, receiver) = Sink::bounded(16);
                 let result = manager.attach(runtime, owner, sink).map(|attached| {
                     let output = output.clone();
                     thread::spawn(move || { while let Ok(frame) = receiver.recv() { if let Frame::Output { data, .. } = frame { emit(&output, json!({"kind":"terminalBytes","runtime":runtime,"count":data.len()})); } } });

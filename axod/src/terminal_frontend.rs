@@ -200,7 +200,10 @@ pub fn run(root: &Path, machine: MachineId, runtime: RuntimeRef) -> io::Result<(
                 }
             }
             Some(StreamEvent::Resized { .. }) => (),
-            Some(StreamEvent::Exited { .. }) => return Ok(()), // Not a durable stop/completion receipt.
+            Some(StreamEvent::Exited { .. }) => {
+                eprintln!("Terminal presentation ended: DaemonExited");
+                return Ok(()); // Not a durable stop/completion receipt.
+            }
             None => (),
         }
         if pending.is_none()
@@ -208,7 +211,8 @@ pub fn run(root: &Path, machine: MachineId, runtime: RuntimeRef) -> io::Result<(
             && let Some(count) = tty.input(&mut input)?
         {
             if count == 0 {
-                break;
+                eprintln!("Terminal presentation ended: FrontendInputEof");
+                return Ok(());
             }
             let sequence = client.input(&input[..count]).map_err(io::Error::other)?;
             pending = Some(PendingInput {
@@ -217,6 +221,7 @@ pub fn run(root: &Path, machine: MachineId, runtime: RuntimeRef) -> io::Result<(
             });
         }
     }
+    eprintln!("Terminal presentation ended: FrontendSignal");
     // Drop closes only this presentation lease; no managed PID/group is signaled.
     Ok(())
 }
