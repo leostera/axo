@@ -11,6 +11,16 @@
 - Atomic packaging retains the prior signed bundle. Documentation-only version
   recording afterward does not change bundled code or the running app/helper.
 
+## Subsequent checkpoint
+
+[Owned production-native workbench checks](native-workbench-fixture.md) later exposed
+and fixed the startup observer's local/cloud negotiation-validator mismatch and
+session-list rejection of pane-aware records. The early-attachment description
+below was source intent, not passing operational evidence for build122. The newer
+build128 checkpoint adds bounded offscreen production-view execution/restoration
+checks, but retains an unresolved intermittent frontend-loss observation and
+closes no full native acceptance gate.
+
 ## Change
 
 After explicit workspace/session metadata commits, the Mac selects that committed

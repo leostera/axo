@@ -15,6 +15,14 @@
 - Documentation-only recording after this source does not change the bundled code
   or running app/helper.
 
+## Subsequent native component
+
+[Build128 owned production-native workbench checks](native-workbench-fixture.md)
+subsequently exercise automatic creation, opaque pending-hint blocking and
+retained reconnect/fresh-launch-coordinator restoration through production native
+views/protocol paths. They do not launch the Finder bundle/service or close A07;
+an intermittent frontend-loss/input-effect observation also remains open.
+
 ## Authority and behavior
 
 The local-only `axo.session.createIfEmpty` commits standalone session metadata in
