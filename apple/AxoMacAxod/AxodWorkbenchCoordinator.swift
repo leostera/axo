@@ -99,6 +99,10 @@ final class AxodWorkbenchCoordinator {
     private var hostObservationTask: Task<Void, Never>?
     private var connectTask: Task<Void, Never>?
     private let bundledDaemon = AxodBundledDaemon()
+#if DEBUG
+    func configureSelfTest(_ context: AxodAppSelfTest) { bundledDaemon.selfTest = context }
+    func stopSelfTestDaemon() async { await bundledDaemon.stopSelfTestChild() }
+#endif
     let voice: MacVoiceCoordinator
 #if AXO_NATIVE_FIXTURE
     @ObservationIgnored private var fixtureAttachmentHelper: URL?
@@ -125,7 +129,7 @@ final class AxodWorkbenchCoordinator {
                                              runtime: snapshot.runtime, helper: helper)
     }
 
-    init(preferences: UserDefaults = .standard) {
+    init(preferences: UserDefaults = .standard, voiceHistoryURL: URL? = nil) {
         self.preferences = preferences
         self.shellCreation = AxodShellCreation(preferences: preferences)
         self.paneLayouts = AxodPaneLayouts(preferences: preferences)
@@ -133,7 +137,7 @@ final class AxodWorkbenchCoordinator {
         // Owned checks neither load live voice history nor request microphone access.
         self.voice = MacVoiceCoordinator()
 #else
-        self.voice = MacVoiceCoordinator(historyURL: URL(fileURLWithPath: NSHomeDirectory(), isDirectory: true).appendingPathComponent("Library/Application Support/Axo/voice-transcripts.json"))
+        self.voice = MacVoiceCoordinator(historyURL: voiceHistoryURL ?? URL(fileURLWithPath: NSHomeDirectory(), isDirectory: true).appendingPathComponent("Library/Application Support/Axo/voice-transcripts.json"))
 #endif
         preferredMachineID = UUID(uuidString: preferences.string(forKey: PreferenceKey.machineID) ?? "")
         preferredWorkspaceID = UUID(uuidString: preferences.string(forKey: PreferenceKey.workspaceID) ?? "")
@@ -1568,7 +1572,13 @@ final class AxodWorkbenchCoordinator {
 
     private func bootstrapAndConnect(operation: UUID) async {
         do {
-            let stateDirectory = try AxodStateDirectory.prepare()
+            let stateDirectory: AxodStateDirectory
+#if DEBUG
+            if let context = bundledDaemon.selfTest { stateDirectory = try AxodStateDirectory.openExisting(root: context.state) }
+            else { stateDirectory = try AxodStateDirectory.prepare() }
+#else
+            stateDirectory = try AxodStateDirectory.prepare()
+#endif
             try requireCurrent(operation)
             self.stateDirectory = stateDirectory
 
@@ -1611,6 +1621,18 @@ final class AxodWorkbenchCoordinator {
     }
 
     private func upgradeConnectedDaemon(in stateDirectory: AxodStateDirectory, operation: UUID) async throws {
+#if DEBUG
+        if bundledDaemon.selfTest != nil, let connection, let endpoint {
+            let target = MachineTarget(machineId: endpoint.machineId, hostGeneration: endpoint.hostGeneration)
+            let value = try await connection.request(method: AxoProtocol.Method.getHost, parameters: HostGetParameters(target: target))
+            try requireCurrent(operation)
+            try stateDirectory.requireCurrentEndpoint(endpoint)
+            let status = try AxoProtocolResultValidator.host(value, target: target)
+            guard status.daemonVersion == Bundle.main.infoDictionary?["AxoBundledAxodVersion"] as? String else {
+                throw AxoProtocolValidationError.invalidResult(method: AxoProtocol.Method.getHost)
+            }
+        }
+#endif
         guard !isUpgradingDaemon, let connection, let endpoint, Bundle.main.bundleIdentifier == "dev.leostera.axo.mac" else { return }
         isUpgradingDaemon = true
         defer { isUpgradingDaemon = false }
@@ -1679,6 +1701,9 @@ final class AxodWorkbenchCoordinator {
     }
 
     private func repairOwnerlessDaemonService(in stateDirectory: AxodStateDirectory, operation: UUID) async throws -> Bool {
+#if DEBUG
+        if bundledDaemon.selfTest != nil { return false }
+#endif
         try requireCurrent(operation)
         let service = SMAppService.agent(plistName: Self.axodAgentPlistName)
         guard Bundle.main.bundleIdentifier == "dev.leostera.axo.mac" else { return false }

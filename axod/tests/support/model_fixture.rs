@@ -163,7 +163,16 @@ fn serve(mut stream: TcpStream, requests: &AtomicUsize) {
         let _ = stream.write_all(b"data: [DONE]\n\n");
         return;
     }
-    let delta = if finished {
+    let delta = if body["messages"]
+        .as_array()
+        .and_then(|messages| messages.last())
+        .is_some_and(|message| {
+            message["content"]
+                .to_string()
+                .contains("APP_STARTUP_TYPED_MESSAGE")
+        }) {
+        json!({"content":"Actual app Pi response λ 界"})
+    } else if finished {
         json!({"content":"Actual public RPC tool complete λ 界"})
     } else if body["messages"]
         .as_array()
@@ -214,14 +223,16 @@ fn serve(mut stream: TcpStream, requests: &AtomicUsize) {
     let frame = |delta: Value, reason: Value| {
         json!({"id":format!("fixture-{count}"),"object":"chat.completion.chunk","created":1,"model":"fixture","choices":[{"index":0,"delta":delta,"finish_reason":reason}]}).to_string()
     };
+    let finish_reason = if delta.get("tool_calls").is_some() {
+        "tool_calls"
+    } else {
+        "stop"
+    };
     let body = format!(
         "data: {}\n\ndata: {}\n\ndata: {}\n\ndata: [DONE]\n\n",
         frame(json!({"role":"assistant"}), Value::Null),
         frame(delta, Value::Null),
-        frame(
-            json!({}),
-            json!(if finished { "stop" } else { "tool_calls" })
-        )
+        frame(json!({}), json!(finish_reason))
     );
     let response = format!(
         "HTTP/1.1 200 OK\r\nContent-Type: text/event-stream\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{body}",

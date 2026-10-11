@@ -39,7 +39,7 @@ struct AxodStateDirectory {
         )
     }
 
-#if AXO_NATIVE_FIXTURE
+#if AXO_NATIVE_FIXTURE || DEBUG
     /// The fixture already owns the selected root; never creates or imports state.
     static func openExisting(root: URL) throws -> AxodStateDirectory {
         try requireOwnedDirectory(root, privatePermissions: true)

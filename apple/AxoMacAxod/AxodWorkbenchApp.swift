@@ -15,6 +15,7 @@ final class AxodWorkbenchApp: NSObject, NSApplicationDelegate, NSWindowDelegate,
     private var window: NSWindow?
     private var sidebarToolbar: AxodSidebarToolbar?
     private var waitingForDraftSave = false
+    private var savesWindowFrame = true
 
     static func main() {
         let application = NSApplication.shared
@@ -26,7 +27,25 @@ final class AxodWorkbenchApp: NSObject, NSApplicationDelegate, NSWindowDelegate,
 
     func applicationDidFinishLaunching(_ notification: Notification) {
         MacAppearance.applyPreference()
+#if DEBUG
+        let selfTest: AxodAppSelfTest?
+        if CommandLine.arguments.contains("-self-test") {
+            guard CommandLine.arguments.count == 3, CommandLine.arguments[1] == "-self-test",
+                  CommandLine.arguments[2].hasPrefix("/") else {
+                fputs("Usage: Axo -self-test /absolute/private/fixture-root\n", stderr); exit(2)
+            }
+            do { selfTest = try AxodAppSelfTest(root: URL(fileURLWithPath: CommandLine.arguments[2], isDirectory: true)) }
+            catch { fputs("Axo self-test requires a safe prepared fixture root\n", stderr); exit(2) }
+        } else { selfTest = nil }
+        let coordinator = AxodWorkbenchCoordinator(preferences: selfTest?.preferences ?? .standard,
+            voiceHistoryURL: selfTest?.root.appendingPathComponent("voice-transcripts.json"))
+        if let selfTest { coordinator.configureSelfTest(selfTest); savesWindowFrame = false }
+#else
+        if CommandLine.arguments.contains("-self-test") {
+            fputs("Axo -self-test requires a development build\n", stderr); exit(2)
+        }
         let coordinator = AxodWorkbenchCoordinator()
+#endif
         self.coordinator = coordinator
 
         let window = NSWindow(
@@ -47,8 +66,8 @@ final class AxodWorkbenchApp: NSObject, NSApplicationDelegate, NSWindowDelegate,
         window.toolbarStyle = .unifiedCompact
         window.toolbar = sidebarToolbar.makeToolbar()
         window.contentViewController = NSHostingController(rootView: AxodWorkbenchView(coordinator: coordinator))
-        let restoredFrame = window.setFrameUsingName(Self.mainWindowFrameAutosaveName)
-        window.setFrameAutosaveName(Self.mainWindowFrameAutosaveName)
+        let restoredFrame = savesWindowFrame && window.setFrameUsingName(Self.mainWindowFrameAutosaveName)
+        if savesWindowFrame { window.setFrameAutosaveName(Self.mainWindowFrameAutosaveName) }
         if !restoredFrame { window.center() }
 
         self.window = window
@@ -56,9 +75,21 @@ final class AxodWorkbenchApp: NSObject, NSApplicationDelegate, NSWindowDelegate,
         window.makeKeyAndOrderFront(nil)
         NSApp.activate(ignoringOtherApps: true)
 
+#if DEBUG
+        if selfTest == nil {
+            coordinator.registerForStartup()
+            coordinator.registerDaemonService()
+        }
+#else
         coordinator.registerForStartup()
         coordinator.registerDaemonService()
+#endif
         coordinator.connect(createInitialSession: true)
+#if DEBUG
+        if let selfTest {
+            Task { await selfTest.run(coordinator: coordinator, window: window) }
+        }
+#endif
     }
 
     func applicationShouldTerminate(_ sender: NSApplication) -> NSApplication.TerminateReply {
@@ -79,7 +110,7 @@ final class AxodWorkbenchApp: NSObject, NSApplicationDelegate, NSWindowDelegate,
     }
 
     func applicationWillTerminate(_ notification: Notification) {
-        window?.saveFrame(usingName: Self.mainWindowFrameAutosaveName)
+        if savesWindowFrame { window?.saveFrame(usingName: Self.mainWindowFrameAutosaveName) }
         coordinator?.voice.shutdown()
         // Axod owns its process tree; closing the client never stops or adopts daemon work.
     }
