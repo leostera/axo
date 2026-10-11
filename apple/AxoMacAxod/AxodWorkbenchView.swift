@@ -66,7 +66,7 @@ struct AxodWorkbenchView: View {
             }
             if coordinator.needsLoginItemsReview || coordinator.needsDaemonServiceReview {
                 HStack {
-                    Text(coordinator.daemonServiceMessage).frame(maxWidth: .infinity, alignment: .leading)
+                    Text(coordinator.serviceReviewMessage).frame(maxWidth: .infinity, alignment: .leading)
                     Button("Background Service…") { coordinator.showServiceSettingsWindow() }
                 }.padding(10)
             }
@@ -85,7 +85,7 @@ struct AxodWorkbenchView: View {
                 .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
             } else {
                 VStack(alignment: .leading, spacing: 7) {
-                    Text("No sessions yet")
+                    Text(coordinator.connectionState == .connected ? "Select or create a session" : "Background service unavailable")
                         .font(.system(size: 14, weight: .medium))
                         .foregroundStyle(Color.white.opacity(0.88))
                     Text(emptyDetailMessage)

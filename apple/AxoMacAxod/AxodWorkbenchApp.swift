@@ -15,6 +15,7 @@ final class AxodWorkbenchApp: NSObject, NSApplicationDelegate, NSWindowDelegate,
     private var window: NSWindow?
     private var waitingForDraftSave = false
     private var savesWindowFrame = true
+    private var menuBar: AxodMenuBarController?
 #if DEBUG
     private var selfTestTask: Task<Void, Never>?
     private var uiTestContext: AxodAppSelfTest?
@@ -88,7 +89,7 @@ final class AxodWorkbenchApp: NSObject, NSApplicationDelegate, NSWindowDelegate,
         window.title = Self.applicationName
         window.identifier = NSUserInterfaceItemIdentifier(Self.mainWindowFrameAutosaveName)
         window.delegate = self
-        window.contentViewController = NSHostingController(rootView: AxodWorkbenchView(coordinator: coordinator))
+        window.contentViewController = NSHostingController(rootView: AxodApplicationView(coordinator: coordinator))
         let restoredFrame = savesWindowFrame && window.setFrameUsingName(Self.mainWindowFrameAutosaveName)
         if savesWindowFrame { window.setFrameAutosaveName(Self.mainWindowFrameAutosaveName) }
         if !restoredFrame { window.center() }
@@ -101,11 +102,23 @@ final class AxodWorkbenchApp: NSObject, NSApplicationDelegate, NSWindowDelegate,
 
         self.window = window
         installMenu()
-        window.makeKeyAndOrderFront(nil)
-        NSApp.activate(ignoringOtherApps: true)
+        menuBar = AxodMenuBarController(status: { [weak coordinator] in
+            guard let coordinator else { return "Axo — Service state unavailable" }
+            if coordinator.showsSetup { return "Axo — Setup required" }
+            return coordinator.connectionState == .connected ? "Axo — Connected locally" : "Axo — Service unavailable"
+        }, open: { [weak self] in self?.showWorkbench(nil) },
+           settings: { [weak self] in self?.showSettings(nil) },
+           service: { [weak self] in self?.serviceSettings(nil) })
+        let center = NotificationCenter.default
+        center.addObserver(self, selector: #selector(windowPresentationChanged(_:)), name: NSWindow.willCloseNotification, object: nil)
+        center.addObserver(self, selector: #selector(windowPresentationChanged(_:)), name: NSWindow.didBecomeKeyNotification, object: nil)
+        let loginLaunch = AxodResidentPresentation.isLoginLaunch(NSAppleEventManager.shared().currentAppleEvent)
+        if loginLaunch { NSApp.setActivationPolicy(.accessory) }
+        else { showWorkbench(nil) }
 
-        // Registration is explicit setup, not an app/window lifecycle effect.
-        coordinator.connect(createInitialSession: true)
+        // Login-only residency never creates work. An explicit initial app
+        // opening retains its fenced empty-start intent until setup completes.
+        coordinator.connect(createInitialSession: !loginLaunch)
 #if DEBUG
         if let selfTest, !uiTest {
             selfTestTask = Task { await selfTest.run(coordinator: coordinator, window: window) }
@@ -127,13 +140,13 @@ final class AxodWorkbenchApp: NSObject, NSApplicationDelegate, NSWindowDelegate,
         guard !waitingForDraftSave else { return .terminateLater }
         // Commit the field editor before freezing accepted draft edits. A failed
         // responder transfer cancels quit rather than silently dropping input.
-        if let window, !window.makeFirstResponder(nil) { return .terminateCancel }
+        if let window = NSApp.keyWindow ?? window, !window.makeFirstResponder(nil) { return .terminateCancel }
         waitingForDraftSave = true
         Task { [weak self] in
             let saved = await coordinator.chatDrafts.prepareToQuit()
             guard let self else { sender.reply(toApplicationShouldTerminate: false); return }
             self.waitingForDraftSave = false
-            if !saved { self.window?.makeKeyAndOrderFront(nil) }
+            if !saved { self.showWorkbench(nil) }
 #if DEBUG
             if saved, let context = self.uiTestContext {
                 coordinator.disconnect()
@@ -151,31 +164,63 @@ final class AxodWorkbenchApp: NSObject, NSApplicationDelegate, NSWindowDelegate,
         uiTestContext?.checkpoint("ui-terminated")
 #endif
         if savesWindowFrame { window?.saveFrame(usingName: Self.mainWindowFrameAutosaveName) }
+        NotificationCenter.default.removeObserver(self)
+        menuBar?.remove()
+        menuBar = nil
         coordinator?.voice.shutdown()
         // Axod owns its process tree; closing the client never stops or adopts daemon work.
     }
 
     func windowShouldClose(_ sender: NSWindow) -> Bool {
-        sender.orderOut(nil)
+        AxodResidentPresentation.hide(sender)
         return false
     }
 
+    func applicationShouldTerminateAfterLastWindowClosed(_ sender: NSApplication) -> Bool { false }
+
     func applicationShouldHandleReopen(_ sender: NSApplication, hasVisibleWindows flag: Bool) -> Bool {
-        window?.makeKeyAndOrderFront(nil)
+        showWorkbench(nil)
         return true
+    }
+
+    @objc private func showWorkbench(_ sender: Any?) {
+        if let window { AxodResidentPresentation.show(window) }
+    }
+
+    @objc private func windowPresentationChanged(_ notification: Notification) {
+        // willClose is delivered before the window leaves the application's
+        // visible set; observe after that transition, not from a stale count.
+        Task { @MainActor [weak self] in self?.updateActivationPolicy() }
+    }
+
+    private func updateActivationPolicy() {
+        let policy = AxodResidentPresentation.activationPolicy(windows: NSApp.windows)
+        if NSApp.activationPolicy() != policy { NSApp.setActivationPolicy(policy) }
     }
 
     @objc private func showAbout(_ sender: Any?) { coordinator?.showAboutWindow() }
 
     @objc private func showSettings(_ sender: Any?) {
+        NSApp.setActivationPolicy(.regular)
         coordinator?.showSettingsWindow()
+        NSApp.activate(ignoringOtherApps: true)
     }
 
-    @objc private func serviceSettings(_ sender: Any?) { coordinator?.showServiceSettingsWindow() }
+    @objc private func serviceSettings(_ sender: Any?) {
+        NSApp.setActivationPolicy(.regular)
+        coordinator?.showServiceSettingsWindow()
+        NSApp.activate(ignoringOtherApps: true)
+    }
     @objc private func refresh(_ sender: Any?) { coordinator?.refresh() }
     @objc private func connect(_ sender: Any?) { coordinator?.connect() }
-    @objc private func newWorkspace(_ sender: Any?) { coordinator?.newWorkspace() }
-    @objc private func newSession(_ sender: Any?) { coordinator?.newSession() }
+    @objc private func newWorkspace(_ sender: Any?) {
+        guard coordinator?.showsSetup == false else { return }
+        coordinator?.newWorkspace()
+    }
+    @objc private func newSession(_ sender: Any?) {
+        guard coordinator?.showsSetup == false else { return }
+        coordinator?.newSession()
+    }
     @objc private func splitRight(_ sender: Any?) {
         guard let window, NSApp.keyWindow === window else { return }
         coordinator?.splitRight(sender)
@@ -212,6 +257,8 @@ final class AxodWorkbenchApp: NSObject, NSApplicationDelegate, NSWindowDelegate,
     }
 
     func validateMenuItem(_ menuItem: NSMenuItem) -> Bool {
+        if coordinator?.showsSetup == true, let action = menuItem.action,
+           [#selector(newWorkspace(_:)), #selector(newSession(_:)), #selector(splitRight(_:)), #selector(splitDown(_:))].contains(action) { return false }
         if let direction = focusDirection(for: menuItem.action) {
             guard let window, NSApp.keyWindow === window else { return false }
             return coordinator?.capturePaneFocus(direction, in: window) != nil
@@ -248,6 +295,8 @@ final class AxodWorkbenchApp: NSObject, NSApplicationDelegate, NSWindowDelegate,
         settings.target = self
         let service = applicationMenu.addItem(withTitle: "Background Service…", action: #selector(serviceSettings(_:)), keyEquivalent: "")
         service.target = self
+        let open = applicationMenu.addItem(withTitle: "Open Axo", action: #selector(showWorkbench(_:)), keyEquivalent: "")
+        open.target = self
         applicationMenu.addItem(.separator())
         let quit = applicationMenu.addItem(withTitle: "Quit \(Self.applicationName)", action: #selector(NSApplication.terminate(_:)), keyEquivalent: "q")
         quit.target = NSApp

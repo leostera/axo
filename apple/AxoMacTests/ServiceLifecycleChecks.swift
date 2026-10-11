@@ -78,6 +78,14 @@ import Foundation
         precondition(platform.agentCalls == 2 && lifecycle.failureMessage != nil)
         for _ in 0..<5 { lifecycle.observeRegistration() }
         precondition(platform.agentCalls == 2, "Unknown setup outcome is observed, not replayed")
-        print("PASS: registration/readiness separation, stale observation fencing, explicit ownerless setup, approval/installation refusal, no reconnect effects, and independent frontend login startup")
+        platform.loginRegistration = .requiresApproval
+        let disabledPendingApproval = await lifecycle.setFrontendAtLogin(false)
+        precondition(disabledPendingApproval)
+        precondition(platform.logoutCalls == 2 && platform.agentCalls == 2)
+        platform.loginRegistration = .unavailable
+        let enabledUnavailableLogin = await lifecycle.setFrontendAtLogin(true)
+        precondition(!enabledUnavailableLogin)
+        precondition(lifecycle.failureMessage != nil && platform.agentCalls == 2)
+        print("PASS: registration/readiness separation, stale observation fencing, explicit ownerless setup, approval/installation refusal, no reconnect effects, and confirmed independent frontend login startup")
     }
 }

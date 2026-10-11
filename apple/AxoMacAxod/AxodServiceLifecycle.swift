@@ -114,18 +114,24 @@ final class AxodServiceLifecycle {
 
     /// Main-app login registration is independent from daemon supervision.
     /// Disabling this login item never unregisters the agent or quits the app.
-    func setFrontendAtLogin(_ enabled: Bool) async {
-        guard operation == .idle else { return }
+    @discardableResult
+    func setFrontendAtLogin(_ enabled: Bool) async -> Bool {
+        guard operation == .idle else { return false }
         operation = enabled ? .enablingLogin : .disablingLogin
         defer { operation = .idle; observeRegistration() }
         failureMessage = nil
         observeRegistration()
         do {
             if enabled, loginRegistration == .notRegistered { try platform.registerLogin() }
-            else if !enabled, loginRegistration == .enabled { try await platform.unregisterLogin() }
+            else if !enabled, loginRegistration == .enabled || loginRegistration == .requiresApproval { try await platform.unregisterLogin() }
+            observeRegistration()
+            let accepted = enabled ? (loginRegistration == .enabled || loginRegistration == .requiresApproval) : loginRegistration == .notRegistered
+            if !accepted { failureMessage = "macOS has not confirmed the selected login-startup setting. Review it in System Settings." }
+            return accepted
         } catch {
             failureMessage = "Frontend login startup could not be changed. Review the actual status in System Settings."
             logger.error("Frontend login registration failed; code \((error as NSError).code, privacy: .public)")
+            return false
         }
     }
 

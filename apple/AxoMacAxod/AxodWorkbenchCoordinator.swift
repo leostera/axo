@@ -43,8 +43,30 @@ final class AxodWorkbenchCoordinator {
     private(set) var nextRuntimeID: UUID?
     private(set) var message = "Connecting to the Axod background service."
     let serviceLifecycle: AxodServiceLifecycle
+    let setupPresentation: AxodSetupPresentation
+    var showsSetup: Bool { !usesFixtureDaemon && !setupPresentation.enteredWorkbench }
+    var setupStage: AxodSetupPolicy.Stage {
+        let installed = AxodSetupPolicy.isInstalled(bundle: Bundle.main.bundleURL,
+            home: URL(fileURLWithPath: NSHomeDirectory(), isDirectory: true))
+        let fact: AxodSetupPolicy.Connection
+        if connectTask != nil || connectionState == .starting { fact = .checking }
+        else if connectionState == .connected, let endpoint {
+            fact = .loaded(MachineTarget(machineId: endpoint.machineId, hostGeneration: endpoint.hostGeneration))
+        } else { fact = .unavailable }
+        return AxodSetupPolicy.stage(installed: installed, registration: serviceLifecycle.registration,
+            availability: serviceLifecycle.availability, connection: fact)
+    }
+    var setupLoginStartup: Bool {
+        get { setupPresentation.requestedLoginStartup ?? (serviceLifecycle.loginRegistration == .enabled || serviceLifecycle.loginRegistration == .requiresApproval) }
+        set { setupPresentation.requestedLoginStartup = newValue }
+    }
     var daemonServiceMessage: String { serviceLifecycle.failureMessage ?? serviceLifecycle.registration.message }
     var needsLoginItemsReview: Bool { serviceLifecycle.loginRegistration == .requiresApproval }
+    var serviceReviewMessage: String {
+        needsLoginItemsReview && !needsDaemonServiceReview
+            ? "Opening the Axo menu-bar app at login needs macOS approval. The daemon registration is separate."
+            : daemonServiceMessage
+    }
     var needsDaemonServiceReview: Bool { !usesFixtureDaemon && serviceLifecycle.registration != .enabled }
     @ObservationIgnored private var usesFixtureDaemon = false
     private(set) var helperUpdateAvailable = false
@@ -139,6 +161,7 @@ final class AxodWorkbenchCoordinator {
     init(preferences: UserDefaults = .standard, voiceHistoryURL: URL? = nil,
          serviceLifecycle: AxodServiceLifecycle? = nil) {
         self.serviceLifecycle = serviceLifecycle ?? .shared
+        self.setupPresentation = AxodSetupPresentation(preferences: preferences)
         self.preferences = preferences
         self.shellCreation = AxodShellCreation(preferences: preferences)
         self.paneLayouts = AxodPaneLayouts(preferences: preferences)
@@ -171,6 +194,39 @@ final class AxodWorkbenchCoordinator {
             try serviceLifecycle.enableAgent(in: directory.root)
             connect()
         } catch { serviceSetupFailure = error.localizedDescription }
+    }
+
+    func revealInstallationSource() { NSWorkspace.shared.activateFileViewerSelecting([Bundle.main.bundleURL]) }
+
+    func openApplicationsFolder() {
+        let folder = URL(fileURLWithPath: NSHomeDirectory(), isDirectory: true).appendingPathComponent("Applications", isDirectory: true)
+        // Finder guidance, not an installer: never create/replace an application
+        // or transfer service ownership on behalf of a view callback.
+        NSWorkspace.shared.selectFile(nil, inFileViewerRootedAtPath: FileManager.default.fileExists(atPath: folder.path) ? folder.path : "/Applications")
+    }
+
+    func finishSetup() async {
+        guard !setupPresentation.isFinishing, case .ready(let target) = setupStage else { return }
+        setupPresentation.isFinishing = true
+        defer { setupPresentation.isFinishing = false }
+        setupPresentation.failure = nil
+        let operation = operationGeneration
+        if let requested = setupPresentation.requestedLoginStartup {
+            guard await serviceLifecycle.setFrontendAtLogin(requested) else {
+                setupPresentation.failure = serviceLifecycle.failureMessage ?? "Another service setting is still being changed. Wait for it before finishing setup."
+                return
+            }
+        }
+        guard operationGeneration == operation,
+              setupPresentation.complete(captured: target, stage: setupStage) else {
+            setupPresentation.failure = "The service changed during setup. Check its current readiness before opening Axo."
+            return
+        }
+        if requestedEmptyLaunch && !consumedEmptyLaunch {
+            requestedEmptyLaunch = false
+            consumedEmptyLaunch = true
+            finishInitialConnection(operation: operation, allowEmptyLaunch: true)
+        }
     }
 
     func openLoginItemsSettings() { serviceLifecycle.openApprovalSettings() }
@@ -266,11 +322,15 @@ final class AxodWorkbenchCoordinator {
             guard let self else { return }
             await oldConnection?.close()
             await self.bootstrapAndConnect(operation: operation)
-            if self.operationGeneration == operation, self.connectionState == .connected {
-                if allowEmptyLaunch { self.consumedEmptyLaunch = true; self.requestedEmptyLaunch = false }
-                self.finishInitialConnection(operation: operation, allowEmptyLaunch: allowEmptyLaunch)
+            guard self.operationGeneration == operation else { return }
+            self.connectTask = nil
+            if self.connectionState == .connected {
+                self.setupPresentation.restoreIfKnownReady(self.setupStage)
+                if !self.showsSetup {
+                    if allowEmptyLaunch { self.consumedEmptyLaunch = true; self.requestedEmptyLaunch = false }
+                    self.finishInitialConnection(operation: operation, allowEmptyLaunch: allowEmptyLaunch)
+                }
             }
-            if self.operationGeneration == operation { self.connectTask = nil }
         }
     }
 
