@@ -85,6 +85,7 @@ fn main() {
             "pending",
             "panes",
             "chat",
+            "storage",
         ] {
             if only_chat && mode != "chat" {
                 continue;
@@ -108,6 +109,13 @@ fn main() {
             let agent = root.join("agent");
             for path in [&state, &home, &sessions, &agent] {
                 fs::DirBuilder::new().mode(0o700).create(path).unwrap();
+            }
+            if mode == "storage" {
+                let drafts = state.join("chat-drafts");
+                fs::DirBuilder::new().mode(0o700).create(&drafts).unwrap();
+                let file = drafts.join("drafts.bin");
+                fs::write(&file, b"opaque-owned-draft").unwrap();
+                fs::set_permissions(file, fs::Permissions::from_mode(0o600)).unwrap();
             }
             // A synthetic login-shell output marker lets the native check observe
             // the actual presentation stream before its one intentional input.

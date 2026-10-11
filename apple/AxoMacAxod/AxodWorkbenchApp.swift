@@ -14,6 +14,7 @@ final class AxodWorkbenchApp: NSObject, NSApplicationDelegate, NSWindowDelegate,
     private var coordinator: AxodWorkbenchCoordinator?
     private var window: NSWindow?
     private var sidebarToolbar: AxodSidebarToolbar?
+    private var waitingForDraftSave = false
 
     static func main() {
         let application = NSApplication.shared
@@ -58,6 +59,23 @@ final class AxodWorkbenchApp: NSObject, NSApplicationDelegate, NSWindowDelegate,
         coordinator.registerForStartup()
         coordinator.registerDaemonService()
         coordinator.connect(createInitialSession: true)
+    }
+
+    func applicationShouldTerminate(_ sender: NSApplication) -> NSApplication.TerminateReply {
+        guard let coordinator else { return .terminateNow }
+        guard !waitingForDraftSave else { return .terminateLater }
+        // Commit the field editor before freezing accepted draft edits. A failed
+        // responder transfer cancels quit rather than silently dropping input.
+        if let window, !window.makeFirstResponder(nil) { return .terminateCancel }
+        waitingForDraftSave = true
+        Task { [weak self] in
+            let saved = await coordinator.chatDrafts.prepareToQuit()
+            guard let self else { sender.reply(toApplicationShouldTerminate: false); return }
+            self.waitingForDraftSave = false
+            if !saved { self.window?.makeKeyAndOrderFront(nil) }
+            sender.reply(toApplicationShouldTerminate: saved)
+        }
+        return .terminateLater
     }
 
     func applicationWillTerminate(_ notification: Notification) {

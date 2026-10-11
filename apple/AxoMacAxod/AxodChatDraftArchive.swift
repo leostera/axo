@@ -3,20 +3,21 @@ import Foundation
 
 /// A private draft archive, not canonical Pi history or permission to dispatch.
 /// The bounded binary format has no object keys that can silently shadow text.
-@MainActor struct AxodChatDraftArchive {
-    struct Draft {
+struct AxodChatDraftArchive: Sendable {
+    struct Draft: Sendable {
         let conversation: AxodChatDrafts.Conversation
         let revision: UUID
         let text: String
     }
-    struct Pending {
+    struct Pending: Sendable {
         let commandID: UUID
         let target: PiChatTarget
         let revision: UUID
+        let operation: PiChatOperation
     }
     enum Failure: Error { case malformed }
     static let maximumEncodedBytes = 2 * 1024 * 1024
-    private static let header = Data("AXO-DRAFTS".utf8) + Data([0, 1])
+    private static let header = Data("AXO-DRAFTS".utf8) + Data([0, 2])
     let revision: UUID
     let drafts: [Draft]
     let pending: [Pending]
@@ -41,6 +42,7 @@ import Foundation
             let key = AxodChatDrafts.Conversation(item.target)
             guard valid(key), nonzero(item.commandID), nonzero(item.revision),
                   [item.target.hostGeneration, item.target.runtimeHostGeneration, item.target.runtimeGeneration].allSatisfy(nonzero),
+                  item.operation == .sendMessage || item.operation == .sendSteeringMessage,
                   commands.insert(item.commandID).inserted, waiting.insert(key).inserted else { throw Failure.malformed }
         }
         return Self(revision: revision, drafts: drafts, pending: pending)
@@ -60,6 +62,7 @@ import Foundation
         for item in pending {
             Self.append(item.commandID, to: &data)
             Self.append(item.revision, to: &data)
+            data.append(item.operation == .sendMessage ? 0 : 1)
             Self.append(AxodChatDrafts.Conversation(item.target), to: &data)
             Self.append(item.target.hostGeneration, to: &data)
             Self.append(item.target.runtimeHostGeneration, to: &data)
@@ -84,18 +87,21 @@ import Foundation
         let pendingCount = try reader.count(maximum: AxodChatDrafts.maximumConversations)
         var pending: [Pending] = []
         for _ in 0..<pendingCount {
-            let command = try reader.uuid(), revision = try reader.uuid(), key = try reader.conversation()
+            let command = try reader.uuid(), revision = try reader.uuid(), operation = try reader.take(1)[0]
+            guard operation <= 1 else { throw Failure.malformed }
+            let key = try reader.conversation()
             let host = try reader.uuid(), runtimeHost = try reader.uuid(), runtime = try reader.uuid()
             let target = PiChatTarget(machineId: key.machineID, hostGeneration: host, workspaceId: key.workspaceID,
                                       sessionId: key.sessionID, paneId: key.paneID, runtimeHostGeneration: runtimeHost,
                                       runtimeGeneration: runtime, chatId: key.chatID)
-            pending.append(Pending(commandID: command, target: target, revision: revision))
+            pending.append(Pending(commandID: command, target: target, revision: revision,
+                                   operation: operation == 0 ? .sendMessage : .sendSteeringMessage))
         }
         guard reader.offset == data.count else { throw Failure.malformed }
         return try make(revision: revision, drafts: drafts, pending: pending)
     }
 
-    nonisolated private static func nonzero(_ id: UUID) -> Bool { id.uuidString != "00000000-0000-0000-0000-000000000000" }
+    private static func nonzero(_ id: UUID) -> Bool { id.uuidString != "00000000-0000-0000-0000-000000000000" }
     private static func valid(_ key: AxodChatDrafts.Conversation) -> Bool {
         [key.machineID, key.sessionID, key.paneID, key.chatID].allSatisfy(nonzero) && key.workspaceID.map(nonzero) != false
     }

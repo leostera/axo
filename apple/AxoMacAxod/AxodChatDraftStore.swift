@@ -4,7 +4,7 @@ import Foundation
 /// Pinned owner-only draft storage. A checkpoint carries exact original bytes;
 /// another process's commit is a conflict, never permission to overwrite it.
 /// This storage primitive does not load editors or dispatch/reconcile commands.
-@MainActor final class AxodChatDraftStore {
+final class AxodChatDraftStore {
     enum Failure: Error, Equatable { case unsafeStorage, invalidArchive, writerBusy, conflict, io, fenced }
     struct Checkpoint {
         let archive: AxodChatDraftArchive?
@@ -151,6 +151,23 @@ import Foundation
         let path = try Self.directoryMetadata(reopened)
         guard Identity(held) == identity, Identity(path) == identity else { throw Failure.unsafeStorage }
     }
+    /// Only the captured local app namespace may provision this fixed child.
+    /// Existing roots are checked, never chmodded/replaced to make them usable.
+    static func provision(in parent: URL) throws -> URL {
+        guard parent.isFileURL, parent.host == nil || parent.host == "", parent.path.hasPrefix("/") else { throw Failure.unsafeStorage }
+        let fd = try openDirectory(parent)
+        defer { close(fd) }
+        _ = try directoryMetadata(fd)
+        let created = mkdirat(fd, "chat-drafts", 0o700) == 0
+        if !created && errno != EEXIST { throw Failure.io }
+        let root = parent.appendingPathComponent("chat-drafts", isDirectory: true)
+        let child = try openDirectory(root)
+        defer { close(child) }
+        _ = try directoryMetadata(child)
+        if created { try flush(fd) }
+        return root
+    }
+
     private static func openDirectory(_ root: URL) throws -> Int32 {
         // Walk from /: O_NOFOLLOW on only the final component is insufficient.
         var fd = open("/", O_RDONLY | O_DIRECTORY | O_CLOEXEC)

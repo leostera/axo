@@ -10,6 +10,10 @@ struct AxodWorkbenchView: View {
 
     var body: some View {
         VStack(spacing: 0) {
+            if let message = coordinator.chatDrafts.quitMessage {
+                Text(message).font(.system(size: 12)).foregroundStyle(.secondary)
+                    .frame(maxWidth: .infinity, alignment: .leading).padding(10)
+            }
             AxodNativeWorkbenchSplitView(
                 workbench: coordinator,
                 workspaces: coordinator.workspaces,

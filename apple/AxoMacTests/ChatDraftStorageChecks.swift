@@ -30,15 +30,21 @@ import Foundation
         let original = target(), other = target(workspace: UUID())
         let text = "synthetic private draft 🦊\n\"\\\0"
         let entry = AxodChatDraftArchive.Draft(conversation: .init(original), revision: UUID(), text: text)
-        let pending = AxodChatDraftArchive.Pending(commandID: UUID(), target: original, revision: entry.revision)
+        let pending = AxodChatDraftArchive.Pending(commandID: UUID(), target: original, revision: entry.revision, operation: .sendMessage)
         let archive = try AxodChatDraftArchive.make(drafts: [entry, .init(conversation: .init(other), revision: UUID(), text: "other")], pending: [pending])
         let parsed = try AxodChatDraftArchive.parse(archive.encoded)
         precondition(parsed.encoded == archive.encoded && parsed.drafts[0].text == text)
         precondition(parsed.pending[0].target == original && parsed.pending[0].commandID == pending.commandID)
         for end in 0..<archive.encoded.count { precondition((try? AxodChatDraftArchive.parse(archive.encoded.prefix(end))) == nil) }
         precondition((try? AxodChatDraftArchive.parse(archive.encoded + Data([0]))) == nil)
-        var version = archive.encoded; version[10] = 2
+        var version = archive.encoded; version[11] = 1
         precondition((try? AxodChatDraftArchive.parse(version)) == nil)
+        version[11] = 3
+        precondition((try? AxodChatDraftArchive.parse(version)) == nil)
+        let pendingOnly = try AxodChatDraftArchive.make(drafts: [], pending: [pending])
+        var invalidOperation = pendingOnly.encoded; invalidOperation[68] = 2
+        precondition((try? AxodChatDraftArchive.parse(invalidOperation)) == nil)
+        precondition((try? AxodChatDraftArchive.make(drafts: [], pending: [.init(commandID: UUID(), target: original, revision: UUID(), operation: .cancelTurn)])) == nil)
         precondition((try? AxodChatDraftArchive.make(drafts: [entry, entry], pending: [])) == nil)
         precondition((try? AxodChatDraftArchive.make(drafts: [], pending: [pending, pending])) == nil)
         precondition((try? AxodChatDraftArchive.make(drafts: [.init(conversation: .init(original), revision: UUID(), text: "")], pending: [])) == nil)

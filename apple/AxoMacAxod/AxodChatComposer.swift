@@ -13,6 +13,7 @@ struct AxodChatComposer: View {
             HStack(alignment: .bottom, spacing: 8) {
                 TextField(snapshot.busy ? "Steer the active Pi interaction…" : "Send a message to Pi…",
                           text: $drafts[text: AxodChatDrafts.Conversation(snapshot.target)], axis: .vertical)
+                    .disabled(!drafts.canEdit)
                     .lineLimit(1...5)
                     .textFieldStyle(.plain)
                     .padding(9)
@@ -29,8 +30,10 @@ struct AxodChatComposer: View {
                     .disabled(unavailable || drafts.issue(for: snapshot.target) != nil || coordinator.connectionState != .connected ||
                               drafts.text(for: snapshot.target).trimmingCharacters(in: .whitespacesAndNewlines).isEmpty)
             }
-            if let issue = drafts.issue(for: snapshot.target) {
+            if let issue = drafts.issue(for: snapshot.target), issue != .storageUnavailable {
                 Text(issue.message).font(.system(size: 11)).foregroundStyle(.secondary)
+            } else if let message = drafts.storageMessage {
+                Text(message).font(.system(size: 11)).foregroundStyle(.secondary)
             }
         }
         .font(.system(size: 12))

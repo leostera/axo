@@ -29,7 +29,9 @@ struct NativeWorkbenchFixtureChecks {
 
     @MainActor private static func check() async throws {
         precondition(CommandLine.arguments.count == 5)
-        let root = URL(fileURLWithPath: CommandLine.arguments[1], isDirectory: true)
+        guard let canonical = realpath(CommandLine.arguments[1], nil) else { throw Failure.missing("owned canonical root") }
+        let root = URL(fileURLWithPath: String(cString: canonical), isDirectory: true)
+        free(canonical)
         let helper = URL(fileURLWithPath: CommandLine.arguments[2])
         let home = URL(fileURLWithPath: CommandLine.arguments[3], isDirectory: true)
         guard let mode = Mode(rawValue: CommandLine.arguments[4]) else { throw Failure.missing("known fixture mode") }
@@ -68,7 +70,14 @@ struct NativeWorkbenchFixtureChecks {
             return
         }
         if mode == .panes { try await checkControlBurst(root: root) }
-        try await coordinator.connectOwnedFixture(root: root, helper: helper, appLaunch: mode == .automatic)
+        try await coordinator.connectOwnedFixture(root: root, helper: helper, appLaunch: mode == .automatic || mode == .storage)
+        if mode == .storage {
+            precondition(coordinator.sessions.isEmpty && coordinator.runtimes.isEmpty && !coordinator.isStartingPi)
+            precondition(coordinator.emptyStartupMessage != nil && coordinator.chatDrafts.blocksAutomaticStartup && !coordinator.chatDrafts.canEdit)
+            let opaque = try Data(contentsOf: root.appendingPathComponent("chat-drafts/drafts.bin"))
+            precondition(opaque == Data("opaque-owned-draft".utf8))
+            print("PASS: owned native opaque draft storage blocks automatic empty startup and editor dispatch, preserves original bytes; explicit creation remains separate")
+        }
         if mode != .automatic {
             precondition(coordinator.sessions.isEmpty && coordinator.canEditWork)
             precondition(NSApp.sendAction(#selector(AxodWorkbenchCoordinator.newSession), to: coordinator, from: NSMenuItem()))
@@ -172,6 +181,10 @@ struct NativeWorkbenchFixtureChecks {
         if mode == .chat {
             try await checkChat(coordinator: coordinator, window: window, home: home, shellView: shellView)
         }
+        if mode == .chat {
+            let saved = await coordinator.chatDrafts.flush()
+            precondition(saved)
+        }
         let draftTarget = coordinator.chatTarget
         let retainedDraft = draftTarget.map { coordinator.chatDrafts.text(for: $0) }
         // Native reload/reselection preserves the exact frontend/surface. It is
@@ -216,6 +229,35 @@ struct NativeWorkbenchFixtureChecks {
         precondition(restored.selectedSessionID == originalSession && restored.sessions.count == 1)
         precondition(restored.selectedSession?.shellPanes.first(where: { $0.paneId == shell.paneId })?.runtime == snapshot.runtime)
         precondition(!restored.isStartingPi && !restored.isEditingWork && restored.workEditor == nil)
+        if mode == .chat, let draftTarget {
+            try await wait("fresh coordinator canonical chat/draft recovery") { restored.chatSnapshot?.target == draftTarget }
+            precondition(restored.chatDrafts.text(for: draftTarget) == "preserved after actual steering")
+            // The fixture knows this new ticket was never sent. Across another
+            // fresh coordinator it must remain unresolved, not gain replay permission.
+            let ticket = restored.chatDrafts.capture(for: draftTarget)!
+            let durable = await restored.chatDrafts.persist(ticket)
+            precondition(durable)
+            restored.disconnect()
+            let pending = AxodWorkbenchCoordinator(preferences: preferences)
+            defer { pending.disconnect(); pending.voice.shutdown() }
+            try await pending.connectOwnedFixture(root: root, helper: helper, appLaunch: true)
+            try await wait("fresh coordinator original archive ticket") { pending.chatSnapshot?.target == draftTarget }
+            precondition(pending.pendingChatCommandId == ticket.commandID)
+            precondition(pending.chatDrafts.text(for: draftTarget) == "preserved after actual steering")
+            precondition(pending.chatDrafts.capture(for: draftTarget) == nil)
+            pending.reconcilePendingPiCommand()
+            try await wait("original unknown ticket read-only receipt lookup") {
+                !pending.isReconcilingPiCommand && pending.chatStatusMessage == "No matching durable Pi command receipt is visible. It was not replayed."
+            }
+            precondition(pending.pendingChatCommandId == ticket.commandID && pending.chatDrafts.pending(for: draftTarget)?.commandID == ticket.commandID)
+            precondition(pending.chatDrafts.text(for: draftTarget) == "preserved after actual steering" && !pending.isStartingPi)
+            print("PASS: owned fresh native coordinators recover editable text and exact original unresolved ticket; actual original receipt lookup remains unknown without hint recreation, replay or new model call")
+        }
+        if mode == .storage {
+            precondition(restored.chatDrafts.blocksAutomaticStartup && !restored.chatDrafts.canEdit)
+            let opaque = try Data(contentsOf: root.appendingPathComponent("chat-drafts/drafts.bin"))
+            precondition(opaque == Data("opaque-owned-draft".utf8))
+        }
         if mode == .panes {
             let identity = AxodPaneLayouts.Session(machineID: restored.machineID!, sessionID: session.sessionId)
             precondition(restored.selectedSession?.shellPanes.count == 3 && restored.paneLayouts.trees[identity]?.count == 4)
@@ -441,6 +483,6 @@ struct NativeWorkbenchFixtureChecks {
             try await Task.sleep(for: .milliseconds(10))
         }
     }
-    private enum Mode: String { case delayed, unavailable, automatic, pending, panes, chat }
+    private enum Mode: String { case delayed, unavailable, automatic, pending, panes, chat, storage }
     private enum Failure: Error { case missing(String) }
 }
