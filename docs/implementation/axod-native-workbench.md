@@ -6,7 +6,7 @@ The operator wants `dist/Axo.app` to replace the former daily workbench so Axo c
 
 ## Current workflow audit
 
-The [supported-workflow inventory and acceptance plan](supported-workflow-inventory.md) audits source `23be4c9`, traces native/local/cloud/phone workflows and existing file authority, distinguishes component evidence from actual-surface acceptance, and records scope questions that must be resolved before new implementation. Its source baseline is not a claim that the live helper or deployed API matches the packaged app.
+The [supported-workflow inventory and acceptance plan](supported-workflow-inventory.md) audits source `23be4c9`, traces native/local/cloud/phone workflows and existing file authority, distinguishes component evidence from actual-surface acceptance, and records the user's resolved scope decisions. Empty startup automatically creates a Pi-left/shell-right session; standalone uses HOME and projects use the selected folder. Safe URLs, appearance import, all-action shortcuts, menu-bar controls, iOS push and basic Pi usage display are included. The phone caches its catalog but disables offline-machine session interaction. Its source baseline is not a claim that the live helper or deployed API matches the packaged app.
 
 ## Ordered implementation
 
