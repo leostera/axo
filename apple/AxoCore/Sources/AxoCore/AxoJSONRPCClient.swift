@@ -198,6 +198,7 @@ public actor AxoJSONRPCWebSocketConnection {
     private var receiver: Task<Void, Never>?
     private var pending: [String: PendingCall] = [:]
     private var isClosed = false
+    private var nextRequestDispatch = ContinuousClock().now
 
     fileprivate init(url: URL, accessCookie: AxoControlPlaneAccessCookie?) throws {
         let validCloudEndpoint = accessCookie != nil && url.scheme == "wss" && url.host != nil
@@ -245,7 +246,6 @@ public actor AxoJSONRPCWebSocketConnection {
             throw AxoJSONRPCClientError.frameTooLarge
         }
         let raw = String(decoding: data, as: UTF8.self)
-        let socket = self.socket
         let deadline = AxoJSONRPCClient.boundedTimeout(timeout)
 
         return try await withTaskCancellationHandler {
@@ -257,13 +257,36 @@ public actor AxoJSONRPCWebSocketConnection {
                     await self?.expire(requestID)
                 }
                 pending[requestID] = PendingCall(continuation: continuation, deadline: timeoutTask)
-                Task { [weak self] in
-                    do { try await socket.send(.string(raw)) }
-                    catch { await self?.fail(requestID, with: .outcomeUnknown(requestID: requestID)) }
-                }
+                Task { [weak self] in await self?.dispatchRequest(raw, requestID: requestID) }
             }
         } onCancel: {
             Task { await self.cancel(requestID) }
+        }
+    }
+
+    /// Local admission counts both requests and response-credit acknowledgements.
+    /// Space actual request dispatches (not just their creation) to leave room for
+    /// acknowledgements under the existing 30-command window. The existing pending
+    /// call cap/deadlines bound waiters. Recheck closed/pending state before a
+    /// queued write; observed cancellation/expiry removes that permission. Already
+    /// dispatched delivery can remain unknown. This is not an offline queue or retry.
+    private func dispatchRequest(_ raw: String, requestID: String) async {
+        let clock = ContinuousClock()
+        while !isClosed, pending[requestID] != nil, !Task.isCancelled {
+            if let accessCookie, accessCookie.expiresAt <= .now {
+                fail(requestID, with: .unauthorized(statusCode: 401))
+                await close()
+                return
+            }
+            let now = clock.now
+            if now >= nextRequestDispatch {
+                nextRequestDispatch = now.advanced(by: .milliseconds(100))
+                do { try await socket.send(.string(raw)) }
+                catch { fail(requestID, with: .outcomeUnknown(requestID: requestID)) }
+                return
+            }
+            do { try await clock.sleep(until: nextRequestDispatch) }
+            catch { return }
         }
     }
 

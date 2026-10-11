@@ -68,7 +68,7 @@ fn main() {
         AmbientPi::find(None).expect("Actual ambient Pi required; no repository fallback");
     for repetition in 1..=repetitions {
         println!("Owned native campaign repetition={repetition}/{repetitions}");
-        for mode in ["delayed", "unavailable", "automatic", "pending"] {
+        for mode in ["delayed", "unavailable", "automatic", "pending", "panes"] {
             let temporary =
                 std::env::temp_dir().join(format!("axo-native-workbench-{}", uuid::Uuid::new_v4()));
             fs::DirBuilder::new()
@@ -182,6 +182,7 @@ fn main() {
             let expected = match mode {
                 "pending" => 0,
                 "unavailable" => 1,
+                "panes" => 4,
                 _ => 2,
             };
             assert_eq!(terminals.len(), expected);

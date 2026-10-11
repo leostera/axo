@@ -39,8 +39,8 @@ final class AxodShellCreation {
         if states[identity] != .starting(saved.commandId) { states[identity] = .unresolved(saved.commandId) }
     }
 
-    /// Called only for a freshly committed explicit creation, never by restore/reconnect.
-    func start(session: WorkSessionRecord, source: MachineTarget,
+    /// Called only for explicit creation/split actions, never by restore/reconnect.
+    func start(session: WorkSessionRecord, source: MachineTarget, commandID: UUID = UUID(),
                send: @MainActor (ShellPaneAddParameters) async throws -> JSONValue,
                validate: @MainActor () throws -> Void) async -> ShellPaneRecord? {
         let identity = Session(machineID: source.machineId, sessionID: session.sessionId)
@@ -49,7 +49,7 @@ final class AxodShellCreation {
             return nil
         }
         let pending = ShellPaneAddParameters(target: WorkSessionTarget(machineId: source.machineId,
-            hostGeneration: source.hostGeneration, workspaceId: session.workspaceId, sessionId: session.sessionId), commandId: UUID())
+            hostGeneration: source.hostGeneration, workspaceId: session.workspaceId, sessionId: session.sessionId), commandId: commandID)
         do {
             try validate()
             preferences.set(try JSONEncoder().encode(pending), forKey: key(identity))
@@ -81,15 +81,21 @@ final class AxodShellCreation {
         }
     }
 
-    func reconcile(session: WorkSessionRecord, source: MachineTarget,
+    func reconcile(session: WorkSessionRecord, source: MachineTarget, parameters: ShellPaneAddParameters? = nil,
                    lookup: @MainActor (CommandGetParameters) async throws -> JSONValue,
-                   validate: @MainActor () throws -> Void) async {
+                   validate: @MainActor () throws -> Void) async -> ShellPaneReceipt? {
         let identity = Session(machineID: source.machineId, sessionID: session.sessionId)
-        guard let data = preferences.data(forKey: key(identity)),
-              let pending = try? JSONDecoder().decode(ShellPaneAddParameters.self, from: data),
-              pending.target.machineId == source.machineId, pending.target.sessionId == session.sessionId,
+        let pending: ShellPaneAddParameters
+        if preferences.object(forKey: key(identity)) != nil {
+            guard let data = preferences.data(forKey: key(identity)), data.count <= 4096,
+                  let saved = try? JSONDecoder().decode(ShellPaneAddParameters.self, from: data),
+                  parameters == nil || parameters == saved else { states[identity] = .unavailable; return nil }
+            pending = saved
+        } else if let parameters { pending = parameters }
+        else { states[identity] = .unavailable; return nil }
+        guard pending.target.machineId == source.machineId, pending.target.sessionId == session.sessionId,
               pending.target.workspaceId == session.workspaceId, pending.profileId == nil else {
-            states[identity] = .unavailable; return
+            states[identity] = .unavailable; return nil
         }
         do {
             try validate()
@@ -98,7 +104,7 @@ final class AxodShellCreation {
             try validate()
             guard case .pane(let receipt)? = result.receipt, receipt.commandId == pending.commandId,
                   receipt.intent == .add(target: pending.target, profileId: nil) else {
-                states[identity] = .unresolved(pending.commandId); return
+                states[identity] = .unresolved(pending.commandId); return nil
             }
             switch receipt.disposition {
             case .prepared: states[identity] = .unresolved(pending.commandId)
@@ -109,7 +115,8 @@ final class AxodShellCreation {
             case .removed:
                 states[identity] = .unresolved(pending.commandId)
             }
-        } catch { states[identity] = .unresolved(pending.commandId) }
+            return receipt
+        } catch { states[identity] = .unresolved(pending.commandId); return nil }
     }
     private func key(_ identity: Session) -> String {
         Self.prefix + identity.machineID.uuidString + "." + identity.sessionID.uuidString

@@ -86,6 +86,14 @@ final class AxodWorkbenchApp: NSObject, NSApplicationDelegate, NSWindowDelegate,
     @objc private func connect(_ sender: Any?) { coordinator?.connect() }
     @objc private func newWorkspace(_ sender: Any?) { coordinator?.newWorkspace() }
     @objc private func newSession(_ sender: Any?) { coordinator?.newSession() }
+    @objc private func splitRight(_ sender: Any?) {
+        guard let window, NSApp.keyWindow === window else { return }
+        coordinator?.splitRight(sender)
+    }
+    @objc private func splitDown(_ sender: Any?) {
+        guard let window, NSApp.keyWindow === window else { return }
+        coordinator?.splitDown(sender)
+    }
     @objc private func toggleSidebar(_ sender: Any?) {
         guard let window, NSApp.keyWindow === window else { return }
         sidebarToolbar?.toggleSidebar(sender)
@@ -94,6 +102,9 @@ final class AxodWorkbenchApp: NSObject, NSApplicationDelegate, NSWindowDelegate,
     func validateMenuItem(_ menuItem: NSMenuItem) -> Bool {
         if menuItem.action == #selector(toggleSidebar(_:)) {
             return window != nil && NSApp.keyWindow === window
+        }
+        if menuItem.action == #selector(splitRight(_:)) || menuItem.action == #selector(splitDown(_:)) {
+            return window != nil && NSApp.keyWindow === window && coordinator?.canSplitPane == true
         }
         if menuItem.action == #selector(newWorkspace(_:)) {
             return coordinator?.canEditWork == true && coordinator?.workEditor == nil
@@ -124,7 +135,7 @@ final class AxodWorkbenchApp: NSObject, NSApplicationDelegate, NSWindowDelegate,
         let workspaceMenu = NSMenu(title: "Workspace")
         let newWorkspaceItem = workspaceMenu.addItem(withTitle: "New Workspace…", action: #selector(newWorkspace(_:)), keyEquivalent: "n")
         newWorkspaceItem.target = self
-        let newSessionItem = workspaceMenu.addItem(withTitle: "New Session…", action: #selector(newSession(_:)), keyEquivalent: "t")
+        let newSessionItem = workspaceMenu.addItem(withTitle: "New Session", action: #selector(newSession(_:)), keyEquivalent: "t")
         newSessionItem.target = self
         workspaceMenu.addItem(.separator())
         let refreshItem = workspaceMenu.addItem(withTitle: "Refresh", action: #selector(refresh(_:)), keyEquivalent: "r")
@@ -133,6 +144,16 @@ final class AxodWorkbenchApp: NSObject, NSApplicationDelegate, NSWindowDelegate,
         connectItem.target = self
         connectItem.keyEquivalentModifierMask = [.command, .shift]
         workspaceItem.submenu = workspaceMenu
+
+        let paneItem = NSMenuItem()
+        menu.addItem(paneItem)
+        let paneMenu = NSMenu(title: "Pane")
+        let right = paneMenu.addItem(withTitle: "Split Right", action: #selector(splitRight(_:)), keyEquivalent: "d")
+        right.target = self
+        let down = paneMenu.addItem(withTitle: "Split Down", action: #selector(splitDown(_:)), keyEquivalent: "d")
+        down.target = self
+        down.keyEquivalentModifierMask = [.command, .shift]
+        paneItem.submenu = paneMenu
 
         let viewItem = NSMenuItem()
         menu.addItem(viewItem)

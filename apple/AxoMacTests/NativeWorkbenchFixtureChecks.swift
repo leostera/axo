@@ -1,4 +1,5 @@
 import AppKit
+import AxoCore
 import AxoProtocol
 import GhosttyKit
 import SwiftUI
@@ -60,6 +61,7 @@ struct NativeWorkbenchFixtureChecks {
             print("PASS: owned native pending opaque machine hint blocks empty-startup; reconnect leaves hint/work untouched; not live acceptance")
             return
         }
+        if mode == .panes { try await checkControlBurst(root: root) }
         try await coordinator.connectOwnedFixture(root: root, helper: helper, appLaunch: mode == .automatic)
         if mode != .automatic {
             precondition(coordinator.sessions.isEmpty && coordinator.canEditWork)
@@ -158,9 +160,14 @@ struct NativeWorkbenchFixtureChecks {
             precondition(coordinator.selectedSession?.pi.admission != .ready)
             precondition(coordinator.workEditor == nil)
         }
+        if mode == .panes {
+            try await checkSplits(coordinator: coordinator, window: window, home: home, session: session, shell: shell, shellView: shellView)
+        }
         // Native reload/reselection preserves the exact frontend/surface. It is
         // not a new writer, and retained rendering is not a VT recovery claim.
         let originalSession = coordinator.selectedSessionID
+        let layoutIdentity = AxodPaneLayouts.Session(machineID: coordinator.machineID!, sessionID: session.sessionId)
+        let savedLayout = coordinator.paneLayouts.trees[layoutIdentity].flatMap { AxodPaneLayoutPersistence.write($0, session: layoutIdentity) }
         coordinator.selectSession(session.sessionId)
         coordinator.refresh()
         try await Task.sleep(for: .milliseconds(300))
@@ -175,9 +182,13 @@ struct NativeWorkbenchFixtureChecks {
         precondition(coordinator.sessions.count == 1 && coordinator.workEditor == nil)
         let reconnected = try coordinator.terminalSurfaces.view(for: shellLaunch)
         precondition(reconnected === shellView)
-        precondition(coordinator.selectedSession?.shellPanes.first?.runtime == snapshot.runtime)
+        precondition(coordinator.selectedSession?.shellPanes.first(where: { $0.paneId == shell.paneId })?.runtime == snapshot.runtime)
         precondition(!coordinator.isStartingPi, "Restoration/reconnect dispatched another start")
-        shellView.detachPresentation()
+        for pane in coordinator.selectedSession?.shellPanes ?? [] {
+            if let snapshot = pane.terminal, let launch = try? coordinator.terminalLaunch(for: snapshot, sessionID: session.sessionId) {
+                try coordinator.terminalSurfaces.view(for: launch).detachPresentation()
+            }
+        }
         if let current = coordinator.selectedSession, let pi = coordinator.presentationSnapshot(for: current),
            let launch = try? coordinator.terminalLaunch(for: pi, sessionID: current.sessionId) {
             try coordinator.terminalSurfaces.view(for: launch).detachPresentation()
@@ -188,9 +199,106 @@ struct NativeWorkbenchFixtureChecks {
         defer { restored.disconnect(); restored.voice.shutdown() }
         try await restored.connectOwnedFixture(root: root, helper: helper, appLaunch: true)
         precondition(restored.selectedSessionID == originalSession && restored.sessions.count == 1)
-        precondition(restored.selectedSession?.shellPanes.first?.runtime == snapshot.runtime)
+        precondition(restored.selectedSession?.shellPanes.first(where: { $0.paneId == shell.paneId })?.runtime == snapshot.runtime)
         precondition(!restored.isStartingPi && !restored.isEditingWork && restored.workEditor == nil)
+        if mode == .panes {
+            let identity = AxodPaneLayouts.Session(machineID: restored.machineID!, sessionID: session.sessionId)
+            precondition(restored.selectedSession?.shellPanes.count == 3 && restored.paneLayouts.trees[identity]?.count == 4)
+            let restoredLayout = restored.paneLayouts.trees[identity].flatMap { AxodPaneLayoutPersistence.write($0, session: identity) }
+            precondition(savedLayout != nil && restoredLayout == savedLayout)
+        }
         print("PASS: owned production native creation, immediate selection/no modal, captured PTY surfaces, independent shell input, retained restoration/reconnect/later-launch (\(mode.rawValue)); not Finder/service/live acceptance")
+    }
+
+    @MainActor private static func checkControlBurst(root: URL) async throws {
+        let directory = try AxodStateDirectory.openExisting(root: root)
+        guard let endpoint = try directory.readEndpoint() else { throw Failure.missing("burst endpoint") }
+        let peer = try AxoJSONRPCClient().openLocalWebSocket(endpoint: endpoint)
+        defer { Task { await peer.close() } }
+        let negotiation = try await peer.request(method: AxoProtocol.Method.negotiate, parameters: NegotiationParameters())
+        _ = try AxoProtocolResultValidator.localNegotiation(negotiation)
+        let source = MachineTarget(machineId: endpoint.machineId, hostGeneration: endpoint.hostGeneration)
+        var completed = 0
+        do {
+            for _ in 0..<24 {
+                let value = try await peer.request(method: AxoProtocol.Method.listRuntimes, parameters: RuntimeListParameters(target: source))
+                let result = try AxoProtocolResultValidator.runtimeList(value, target: source)
+                precondition(result.terminals.isEmpty)
+                completed += 1
+            }
+        } catch { throw Failure.missing("read-only control burst after \(completed) replies") }
+        let commandID = UUID()
+        let creation = SessionCreateParameters(target: WorkSessionDestination(machineId: source.machineId,
+            hostGeneration: source.hostGeneration, workspaceId: nil), commandId: commandID,
+            expectedRevision: WorkRevision(rawValue: 0)!, name: "Cancelled queued fixture metadata")
+        let cancelled = Task { try await peer.request(method: AxoProtocol.Method.createSession, parameters: creation) }
+        cancelled.cancel()
+        do {
+            _ = try await cancelled.value
+            throw Failure.missing("queued cancellation was not observed")
+        } catch AxoJSONRPCClientError.outcomeUnknown { /* Conservative outcome; never replay. */ }
+        try await Task.sleep(for: .milliseconds(250))
+        let lookup = try await peer.request(method: AxoProtocol.Method.getCommand,
+            parameters: CommandGetParameters(target: source, commandId: commandID))
+        let command = try AxoProtocolResultValidator.commandGet(lookup, target: source)
+        precondition(command.receipt == nil)
+        let catalog = try await peer.request(method: AxoProtocol.Method.listSessions, parameters: SessionListParameters(target: source))
+        let page = try AxoProtocolResultValidator.sessionList(catalog, target: source, workspaceID: nil)
+        precondition(page.sessions.isEmpty)
+        print("PASS: owned read-only control burst preserves original command/ack rate bounds; observed queued cancellation has no late metadata dispatch or receipt")
+    }
+
+    @MainActor private static func checkSplits(coordinator: AxodWorkbenchCoordinator, window: NSWindow, home: URL,
+                                              session: WorkSessionRecord, shell: ShellPaneRecord, shellView: TerminalView) async throws {
+        let originalPi = coordinator.selectedSession?.runtime?.runtime
+        precondition(originalPi != nil)
+        let identity = AxodPaneLayouts.Session(machineID: coordinator.machineID!, sessionID: session.sessionId)
+        precondition(window.makeFirstResponder(shellView))
+        precondition(coordinator.paneLayouts.focusedPanes[identity] == shell.paneId && coordinator.canSplitPane)
+        precondition(NSApp.sendAction(#selector(AxodWorkbenchCoordinator.splitRight(_:)), to: coordinator, from: NSMenuItem()))
+        try await wait("explicit right split committed") { coordinator.selectedSession?.shellPanes.count == 2 }
+        guard let right = coordinator.selectedSession?.shellPanes.first(where: { $0.paneId != shell.paneId }),
+              let rightSnapshot = right.terminal else { throw Failure.missing("right captured shell") }
+        let rightLaunch = try coordinator.terminalLaunch(for: rightSnapshot, sessionID: session.sessionId)
+        let rightView = try coordinator.terminalSurfaces.view(for: rightLaunch)
+        try await wait("right split native surface and output") {
+            rightView.window === window && visibleText(rightView).contains("axo-native-shell-prompt")
+        }
+        precondition(shellView.window === window && !shellView.childExited && !rightView.childExited)
+        let shellFrame = shellView.convert(shellView.bounds, to: window.contentView)
+        let rightFrame = rightView.convert(rightView.bounds, to: window.contentView)
+        precondition(shellFrame.width > 0 && rightFrame.width > 0 && rightFrame.midX > shellFrame.midX)
+        try await shellEffect(rightView, window: window, home: home, marker: "native-pane-right")
+        precondition(coordinator.paneLayouts.focusedPanes[identity] == right.paneId && coordinator.canSplitPane)
+        precondition(NSApp.sendAction(#selector(AxodWorkbenchCoordinator.splitDown(_:)), to: coordinator, from: NSMenuItem()))
+        try await wait("explicit down split committed") { coordinator.selectedSession?.shellPanes.count == 3 }
+        guard let down = coordinator.selectedSession?.shellPanes.first(where: { $0.paneId != shell.paneId && $0.paneId != right.paneId }),
+              let downSnapshot = down.terminal else { throw Failure.missing("down captured shell") }
+        let downLaunch = try coordinator.terminalLaunch(for: downSnapshot, sessionID: session.sessionId)
+        let downView = try coordinator.terminalSurfaces.view(for: downLaunch)
+        try await wait("down split native surface and output") {
+            downView.window === window && visibleText(downView).contains("axo-native-shell-prompt")
+        }
+        let topFrame = rightView.convert(rightView.bounds, to: window.contentView)
+        let downFrame = downView.convert(downView.bounds, to: window.contentView)
+        precondition(topFrame.height > 0 && downFrame.height > 0 && abs(topFrame.midX - downFrame.midX) < 2)
+        precondition(window.contentView!.isFlipped ? downFrame.midY > topFrame.midY : downFrame.midY < topFrame.midY)
+        try await shellEffect(downView, window: window, home: home, marker: "native-pane-down")
+        precondition(coordinator.selectedSession?.runtime?.runtime == originalPi)
+        precondition(Set(coordinator.selectedSession!.shellPanes.compactMap { $0.runtime?.runtimeGeneration }).count == 3)
+        precondition(!shellView.childExited && !rightView.childExited && !downView.childExited)
+        print("PASS: owned production right/down split selectors, exact focused anchors, fresh independent PTYs, native geometry/input, sibling Pi and retained surfaces; not real OS shortcut/multiwindow acceptance")
+    }
+
+    @MainActor private static func shellEffect(_ view: TerminalView, window: NSWindow, home: URL, marker: String) async throws {
+        precondition(window.makeFirstResponder(view) && view.inputEnabled)
+        view.insertText("printf \(marker) > \"$HOME/\(marker)\"", replacementRange: NSRange(location: NSNotFound, length: 0))
+        let enter = NSEvent.keyEvent(with: .keyDown, location: .zero, modifierFlags: [], timestamp: 0,
+            windowNumber: window.windowNumber, context: nil, characters: "\r", charactersIgnoringModifiers: "\r", isARepeat: false, keyCode: 36)!
+        view.keyDown(with: enter)
+        try await wait("one native split shell effect") {
+            (try? Data(contentsOf: home.appendingPathComponent(marker))) == Data(marker.utf8)
+        }
     }
 
     /// Bounded synthetic screen predicates only; never printed or used as Pi admission.
@@ -215,6 +323,6 @@ struct NativeWorkbenchFixtureChecks {
             try await Task.sleep(for: .milliseconds(10))
         }
     }
-    private enum Mode: String { case delayed, unavailable, automatic, pending }
+    private enum Mode: String { case delayed, unavailable, automatic, pending, panes }
     private enum Failure: Error { case missing(String) }
 }
