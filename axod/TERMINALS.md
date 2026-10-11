@@ -97,8 +97,9 @@ managed process/group. An exit event is not a durable completion receipt.
 This is a **basic stream attachment seam**, not screen restoration. Truncated
 backlog is refused with a static recovery-unavailable error while preserving
 work. Non-truncated raw bytes also do not prove restored historical geometry or
-full VT state. There is no automatic reconnect/input replay. Ghostty surface
-integration and truthful recovery must still be implemented and accepted.
+full VT state. There is no automatic reconnect/input replay. The Mac target now
+uses the full pinned Ghostty surface with this transport child; truthful recovery
+and actual workbench acceptance must still be implemented and validated.
 
 ## Evidence and remaining gates
 
@@ -124,10 +125,19 @@ or ABI compatibility of separately built artifacts.
 
 The public GhosttyKit surface API creates its own command; it has no direct
 external-PTY/snapshot-adoption entry point. RFD0007 explicitly permits a
-transport-only attachment child. The new helper mode establishes that child boundary at the byte-stream level.
-The next native integration must validate Ghostty surface disposal
-without stopping work. Do not modify ignored Ghostty sources or launch another
-Pi to obtain a second view.
+transport-only attachment child. The Mac `TerminalLaunch` can construct only the
+captured bundled `terminal-attach` command. The surface cache is keyed by machine,
+host, session, pane and runtime generation; a second simultaneous viewport is
+rejected rather than silently transferring ownership or duplicating work.
+`bash scripts/check-mac-terminal.sh` exercises an owned offscreen surface/cache,
+modifier-only events and IME preedit, missing-discovery failure, URL parsing and
+disposal. Its Rust-owned actual CLI/daemon/full-Ghostty fixture also verifies
+Unicode input/output, eventual geometry and the exact unchanged running runtime
+after disposal. This is **native component evidence**, not actual workbench,
+real IME composition, graphics or restoration acceptance. Ghostty applies its
+outer-PTY resize asynchronously; native resize dispatch is not an ordering barrier
+for the following input. See [exact checkpoint evidence](../docs/implementation/evidence/native-ghostty-attachment.md).
+Do not modify ignored Ghostty sources or launch another Pi to obtain a second view.
 
 **Screen recovery remains missing.** Raw backlog, even when not truncated, is
 not a complete VT snapshot (historical geometry/parser state also matters).
@@ -135,6 +145,6 @@ The VT snapshot API is a promising primitive, not a deployed recovery strategy.
 GhosttyKit cannot directly adopt that binary snapshot, and styled active-screen
 replay is not yet proven equivalent for hidden screens, input modes, unfinished
 sequences, scrollback or Kitty graphics. A renderer must not silently label a
-lossy reconstruction as restored. Native external attachment, snapshot/live
-boundary handling, resizing, IME, graphics, headless feature-query behavior and
+lossy reconstruction as restored. Snapshot/live boundary handling, native
+resize/focus lifecycle, real IME, graphics, headless feature-query behavior and
 actual session workbench acceptance remain open inventory gates.

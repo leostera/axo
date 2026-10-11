@@ -39,6 +39,8 @@ Use these as design guidance, not as substitutes for Apple's API documentation, 
 - Add only the smallest AppKit bridge needed for a named capability gap, such as Axo's terminal `NSView`/`NSTextInputClient`, first-responder/IME behavior, specialized menu validation, panels, or a focused window hook.
 - SwiftUI remains the source of truth for selection and observable app state. A representable coordinator owns delegate/lifecycle glue, not a second app architecture.
 - Never let view reconstruction or window attachment define terminal-surface/process ownership. Preserve explicit pane/session identity and validate stale callbacks.
+- The Axod terminal surface launches only the captured bundled `axod terminal-attach` presentation child; keep Pi/shell ownership in the daemon. Pinned Ghostty's macOS shell-command wrapper already supplies `exec -l`: do not prefix the embedding command with another `exec`. Retain surfaces by exact machine/host/session/pane/runtime identity, never retarget from the current global selection, and reject competing interactive viewports rather than duplicating execution.
+- Ghostty's outer-PTY resize is asynchronous. A surface-size setter is not a barrier for later terminal input. `bash scripts/check-mac-terminal.sh` runs owned offscreen native checks plus a Rust-owned actual CLI/daemon/full-surface fixture for Unicode, eventual geometry and non-destructive disposal. Build the Mac target and debug helper/CLI first; `AXO_LOCAL_DAEMON_BINARY` selects the exact packaged helper for owned checks. These component fixtures do not establish daily-workbench, real OS IME, images, multiwindow, live restart or VT recovery acceptance. Never dump terminal bytes while diagnosing them.
 
 ## Build, run, test, and package
 

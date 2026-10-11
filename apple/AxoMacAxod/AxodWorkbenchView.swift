@@ -5,6 +5,7 @@ struct AxodWorkbenchView: View {
     @Bindable var coordinator: AxodWorkbenchCoordinator
     @AppStorage(AxodSidebarToolbar.collapsedPreferenceKey) private var sidebarCollapsed = false
     @State private var chatDraft = ""
+    @State private var showsConversation = false
 
     private let paneBackground = Color(red: 0.16, green: 0.17, blue: 0.19)
 
@@ -52,6 +53,7 @@ struct AxodWorkbenchView: View {
                             }
                         }
                         Spacer()
+                        Button(showsConversation ? "Terminals" : "Conversation") { showsConversation.toggle() }
                         if let title = piStartActionTitle(for: session) {
                             Button {
                                 if coordinator.pendingPiStartCommandID == nil {
@@ -74,17 +76,11 @@ struct AxodWorkbenchView: View {
                     }
                     .padding(12)
                     Divider().overlay(Color.white.opacity(0.08))
-                    HStack(spacing: 6) {
-                        Image(systemName: "info.circle")
-                        Text("Terminal attachment is not available yet. This conversation is read from Pi's canonical history.")
-                        Spacer(minLength: 0)
+                    if showsConversation {
+                        chatContent
+                    } else {
+                        AxodSessionTerminals(session: session, coordinator: coordinator).id(session.sessionId)
                     }
-                    .font(.system(size: 11))
-                    .foregroundStyle(Color.white.opacity(0.52))
-                    .padding(.horizontal, 12)
-                    .padding(.vertical, 8)
-                    Divider().overlay(Color.white.opacity(0.08))
-                    chatContent
                 }
                 .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
             } else {
@@ -308,7 +304,7 @@ struct AxodWorkbenchView: View {
 
 }
 
-private extension TerminalProcess {
+extension TerminalProcess {
     var axodDescription: String {
         switch self {
         case .starting: "Starting"

@@ -74,6 +74,7 @@ final class AxodWorkbenchCoordinator {
     @ObservationIgnored private var preferredMachineID: UUID?
     @ObservationIgnored private var preferredWorkspaceID: UUID?
     @ObservationIgnored private var preferredSessionID: UUID?
+    let terminalSurfaces = AxodTerminalSurfaces()
     private let rpc = AxoJSONRPCClient()
     private var stateDirectory: AxodStateDirectory?
     private var endpoint: LocalDaemonEndpoint?
@@ -91,6 +92,17 @@ final class AxodWorkbenchCoordinator {
     private var catalogRevision: WorkRevision?
     private var didCheckStartupRegistration = false
     private var didCheckDaemonService = false
+
+    func terminalLaunch(for snapshot: TerminalSnapshot, sessionID: UUID) throws -> TerminalLaunch {
+        guard connectionState == .connected, let endpoint, let stateDirectory,
+              snapshot.runtime.target.sessionId == sessionID,
+              snapshot.runtime.hostGeneration == endpoint.hostGeneration,
+              case .running = snapshot.process else { throw LaunchError.surfaceCreation }
+        try stateDirectory.requireCurrentEndpoint(endpoint)
+        let helper = Bundle.main.bundleURL.appendingPathComponent("Contents/Helpers/axod")
+        return try TerminalLaunch.attachment(root: stateDirectory.root, machineID: endpoint.machineId,
+                                             runtime: snapshot.runtime, helper: helper)
+    }
 
     init(preferences: UserDefaults = .standard) {
         self.preferences = preferences

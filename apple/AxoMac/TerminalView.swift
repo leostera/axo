@@ -1,28 +1,6 @@
 import AppKit
 import GhosttyKit
-import AxoCore
-
-struct TerminalLaunch {
-    let directory: String
-    let command: String?
-
-    static func pi(repository: String, directory: String, sessionFile: String, observation: MacSessionBinding? = nil,
-                   bridgeSocket: String? = nil) -> Self {
-        var command = "/bin/bash " + quote(repository + "/scripts/run-pi.sh")
-            + " --axo-session-file " + quote(sessionFile) + " --axo-directory " + quote(directory)
-        if let observation {
-            command += " --axo-state-file " + quote(observation.path)
-                + " --axo-work-session-id " + quote(observation.sessionID.rawValue.uuidString)
-                + " --axo-pane-id " + quote(observation.paneID.rawValue.uuidString)
-                + " --axo-runtime-generation " + quote(observation.generation.uuidString)
-                + " --axo-binding-capability " + quote(observation.capability.uuidString)
-            if let bridgeSocket { command += " --axo-bridge-socket " + quote(bridgeSocket) }
-        }
-        return Self(directory: directory, command: command)
-    }
-    static func shell(directory: String) -> Self { Self(directory: directory, command: nil) }
-    private static func quote(_ value: String) -> String { "'" + value.replacingOccurrences(of: "'", with: "'\\''") + "'" }
-}
+import AxoProtocol
 
 /// A small AppKit host for the full Ghostty surface API, not the VT-only library.
 final class TerminalView: NSView, NSTextInputClient {
@@ -33,6 +11,7 @@ final class TerminalView: NSView, NSTextInputClient {
     private var tracking: NSTrackingArea?
     private var keyEvent: NSEvent?
     private var insertedDuringKey = false
+    private var windowObservers: [NSObjectProtocol] = []
     var onFocus: (() -> Void)?
     var onClose: ((Bool) -> Void)?
     private(set) var hoveredURL: URL? {
@@ -44,6 +23,8 @@ final class TerminalView: NSView, NSTextInputClient {
     var workingDirectory: String
     var terminalTitle = "Terminal"
     var childExited = false
+    var inputEnabled = true
+    private var canSendInput: Bool { inputEnabled && !childExited && surface != nil }
     override var acceptsFirstResponder: Bool { true }
     override var isFlipped: Bool { true }
 
@@ -62,50 +43,81 @@ final class TerminalView: NSView, NSTextInputClient {
         config.platform_tag = GHOSTTY_PLATFORM_MACOS
         config.platform.macos = ghostty_platform_macos_s(nsview: Unmanaged.passUnretained(self).toOpaque())
         config.userdata = Unmanaged.passUnretained(self).toOpaque()
-        config.scale_factor = Double(NSScreen.main?.backingScaleFactor ?? 2)
-        config.wait_after_command = launch.command != nil
+        // The actual owning window supplies backing scale after attachment.
+        config.scale_factor = 1
+        config.wait_after_command = true
         surface = launch.directory.withCString { directory in
             config.working_directory = directory
-            if let command = launch.command {
-                return command.withCString { executable in
-                    config.command = executable
-                    return ghostty_surface_new(runtime.app, &config)
-                }
+            return launch.command.withCString { executable in
+                config.command = executable
+                return ghostty_surface_new(runtime.app, &config)
             }
-            // nil means Ghostty's ordinary login shell, not the managed Pi launcher.
-            return ghostty_surface_new(runtime.app, &config)
         }
         guard surface != nil else { throw LaunchError.surfaceCreation }
     }
 
     required init?(coder: NSCoder) { fatalError("Programmatic view only") }
-    deinit { if let surface { ghostty_surface_free(surface) } }
+    deinit {
+        windowObservers.forEach(NotificationCenter.default.removeObserver)
+        if let surface { ghostty_surface_free(surface) }
+    }
 
     override func layout() { super.layout(); resizeSurface() }
     override func viewDidChangeBackingProperties() { super.viewDidChangeBackingProperties(); resizeSurface() }
     override func viewDidMoveToWindow() {
         super.viewDidMoveToWindow()
+        windowObservers.forEach(NotificationCenter.default.removeObserver)
+        windowObservers.removeAll()
+        if let window {
+            for name in [NSWindow.didBecomeKeyNotification, NSWindow.didResignKeyNotification, NSWindow.didChangeOcclusionStateNotification] {
+                observeWindow(name, object: window)
+            }
+            for name in [NSApplication.didBecomeActiveNotification, NSApplication.didResignActiveNotification] {
+                observeWindow(name, object: NSApp)
+            }
+        }
         resizeSurface()
+        updateWindowState()
+    }
+
+    private func observeWindow(_ name: Notification.Name, object: AnyObject) {
+        windowObservers.append(NotificationCenter.default.addObserver(forName: name, object: object, queue: .main) { [weak self] _ in
+            MainActor.assumeIsolated { self?.updateWindowState() }
+        })
+    }
+    private func updateWindowState() {
+        runtime.setFocus(NSApp.isActive)
+        setFocus(NSApp.isActive && window?.isKeyWindow == true && window?.firstResponder === self)
         setVisible(window?.occlusionState.contains(.visible) ?? false)
     }
 
     private func resizeSurface() {
         guard let surface else { return }
-        let scale = window?.backingScaleFactor ?? NSScreen.main?.backingScaleFactor ?? 2
+        let scale = window?.backingScaleFactor ?? 1
         ghostty_surface_set_content_scale(surface, scale, scale)
-        ghostty_surface_set_size(surface, UInt32(max(1, bounds.width * scale)), UInt32(max(1, bounds.height * scale)))
+        let width = bounds.width * scale, height = bounds.height * scale
+        guard width.isFinite, height.isFinite, width <= CGFloat(UInt32.max), height <= CGFloat(UInt32.max) else { return }
+        ghostty_surface_set_size(surface, UInt32(max(1, width)), UInt32(max(1, height)))
         ghostty_surface_refresh(surface)
     }
 
     override func becomeFirstResponder() -> Bool {
         let result = super.becomeFirstResponder()
-        if result { onFocus?(); setFocus(window?.isKeyWindow == true) }
+        if result { onFocus?(); updateWindowState() }
         return result
     }
     override func resignFirstResponder() -> Bool {
         let result = super.resignFirstResponder()
         if result { setFocus(false) }
         return result
+    }
+
+    /// Releases the frontend surface/attach child only, never the managed runtime.
+    func detachPresentation() {
+        guard let current = surface else { return }
+        surface = nil
+        childExited = true
+        ghostty_surface_free(current)
     }
 
     func setVisible(_ visible: Bool) {
@@ -117,7 +129,7 @@ final class TerminalView: NSView, NSTextInputClient {
     }
 
     override func keyDown(with event: NSEvent) {
-        guard surface != nil else { return }
+        guard canSendInput else { return }
         keyEvent = event
         insertedDuringKey = false
         if !event.modifierFlags.contains(.control) && !event.modifierFlags.contains(.command) { interpretKeyEvents([event]) }
@@ -140,13 +152,14 @@ final class TerminalView: NSView, NSTextInputClient {
     }
 
     private func sendKey(_ event: NSEvent, text: String?, released: Bool = false) {
-        guard let surface else { return }
+        guard canSendInput, let surface else { return }
         var key = ghostty_input_key_s()
-        key.action = released ? GHOSTTY_ACTION_RELEASE : (event.isARepeat ? GHOSTTY_ACTION_REPEAT : GHOSTTY_ACTION_PRESS)
+        key.action = released ? GHOSTTY_ACTION_RELEASE : (event.type != .flagsChanged && event.isARepeat ? GHOSTTY_ACTION_REPEAT : GHOSTTY_ACTION_PRESS)
         key.keycode = UInt32(event.keyCode)
         key.mods = modifiers(event.modifierFlags)
         key.consumed_mods = text == nil ? GHOSTTY_MODS_NONE : modifiers(event.modifierFlags.intersection([.shift, .option]))
-        key.unshifted_codepoint = event.characters(byApplyingModifiers: [])?.unicodeScalars.first?.value ?? 0
+        // AppKit character accessors are invalid for modifier-only events.
+        key.unshifted_codepoint = event.type == .flagsChanged ? 0 : (event.characters(byApplyingModifiers: [])?.unicodeScalars.first?.value ?? 0)
         key.composing = hasMarkedText()
         if let text { text.withCString { key.text = $0; _ = ghostty_surface_key(surface, key) } }
         else { _ = ghostty_surface_key(surface, key) }
@@ -189,22 +202,22 @@ final class TerminalView: NSView, NSTextInputClient {
             if event.clickCount == 1, !NSWorkspace.shared.open(url) { NSSound.beep() }
             return
         }
-        if let surface { _ = ghostty_surface_mouse_button(surface, GHOSTTY_MOUSE_PRESS, GHOSTTY_MOUSE_LEFT, modifiers(event.modifierFlags)) }
+        if canSendInput, let surface { _ = ghostty_surface_mouse_button(surface, GHOSTTY_MOUSE_PRESS, GHOSTTY_MOUSE_LEFT, modifiers(event.modifierFlags)) }
     }
     override func mouseUp(with event: NSEvent) {
         mousePosition(event)
-        if let surface { _ = ghostty_surface_mouse_button(surface, GHOSTTY_MOUSE_RELEASE, GHOSTTY_MOUSE_LEFT, modifiers(event.modifierFlags)) }
+        if canSendInput, let surface { _ = ghostty_surface_mouse_button(surface, GHOSTTY_MOUSE_RELEASE, GHOSTTY_MOUSE_LEFT, modifiers(event.modifierFlags)) }
     }
     override func scrollWheel(with event: NSEvent) {
-        if let surface { ghostty_surface_mouse_scroll(surface, event.scrollingDeltaX, event.scrollingDeltaY, event.hasPreciseScrollingDeltas ? 1 : 0) }
+        if canSendInput, let surface { ghostty_surface_mouse_scroll(surface, event.scrollingDeltaX, event.scrollingDeltaY, event.hasPreciseScrollingDeltas ? 1 : 0) }
     }
     override func draggingEntered(_ sender: NSDraggingInfo) -> NSDragOperation {
-        guard surface != nil, let types = sender.draggingPasteboard.types,
+        guard canSendInput, let types = sender.draggingPasteboard.types,
               !Set(types).isDisjoint(with: Self.dropTypes) else { return [] }
         return .copy
     }
     override func performDragOperation(_ sender: NSDraggingInfo) -> Bool {
-        guard let surface,
+        guard canSendInput, let surface,
               let content = opinionatedDropText(from: sender.draggingPasteboard) else { return false }
         window?.makeFirstResponder(self)
         content.withCString { ghostty_surface_text(surface, $0, UInt(content.utf8.count)) }
@@ -224,7 +237,7 @@ final class TerminalView: NSView, NSTextInputClient {
         return contents.joined(separator: " ")
     }
     private func mousePosition(_ event: NSEvent) {
-        guard let surface else { return }
+        guard canSendInput, let surface else { return }
         let point = convert(event.locationInWindow, from: nil)
         ghostty_surface_mouse_pos(surface, point.x, point.y, modifiers(event.modifierFlags))
     }
@@ -240,12 +253,12 @@ final class TerminalView: NSView, NSTextInputClient {
         NSPasteboard.general.setString(value, forType: .string)
     }
     @objc func paste(_ sender: Any?) {
-        guard let surface, let text = NSPasteboard.general.string(forType: .string) else { return }
+        guard canSendInput, let surface, let text = NSPasteboard.general.string(forType: .string) else { return }
         text.withCString { ghostty_surface_text(surface, $0, UInt(text.utf8.count)) }
     }
 
     func insertVoiceText(_ text: String) -> Bool {
-        guard let surface, !childExited, !text.isEmpty, text.utf8.count <= 32_768,
+        guard canSendInput, let surface, !text.isEmpty, text.utf8.count <= 32_768,
               !text.contains("\u{0}") else { return false }
         text.withCString { ghostty_surface_text(surface, $0, UInt(text.utf8.count)) }
         return true
@@ -253,6 +266,7 @@ final class TerminalView: NSView, NSTextInputClient {
 
     // NSTextInputClient: composed input is forwarded without flattening IME preedit.
     func insertText(_ string: Any, replacementRange: NSRange) {
+        guard canSendInput else { return }
         let text = (string as? NSAttributedString)?.string ?? (string as? String ?? "")
         unmarkText()
         if let event = keyEvent { insertedDuringKey = true; sendKey(event, text: text) }

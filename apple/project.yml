@@ -41,17 +41,38 @@ targets:
       - path: AxoMac/MacVoiceHistoryStore.swift
       - path: AxoMac/MacVoiceKeyBinding.swift
       - path: AxoMac/MacVoiceKeyBindingRecorder.swift
+      - path: AxoMac/GhosttyRuntime.swift
+      - path: AxoMac/TerminalView.swift
+      - path: AxoMac/Ghostty
+        excludes:
+          - Package.swift
+          - .build
+          - Tests
+          - README.md
+          - LICENSE.txt
+      - path: AxoMac/Ghostty/LICENSE.txt
+        buildPhase: resources
     dependencies:
       - package: AxoCore
       - package: AxoProtocol
       - package: AxoVoice
       - sdk: ServiceManagement.framework
+      - framework: ../vendor/ghostty/macos/GhosttyKit.xcframework
+        embed: false
+      - sdk: Metal.framework
+      - sdk: QuartzCore.framework
+      - sdk: CoreText.framework
+      - sdk: CoreGraphics.framework
+      - sdk: IOSurface.framework
+      - sdk: Carbon.framework
+      - sdk: IOKit.framework
     settings:
       base:
         PRODUCT_BUNDLE_IDENTIFIER: dev.leostera.axo.mac
         PRODUCT_NAME: Axo
         INFOPLIST_FILE: AxoMacAxod/Info.plist
         ENABLE_APP_SANDBOX: NO
+        OTHER_LDFLAGS: $(inherited) -lc++
         INFOPLIST_KEY_LSApplicationCategoryType: public.app-category.developer-tools
         INFOPLIST_KEY_CFBundleDisplayName: Axo
   AxoPhone:

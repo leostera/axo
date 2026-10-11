@@ -1,6 +1,7 @@
 import AppKit
 import GhosttyKit
 
+@MainActor
 final class GhosttyRuntime {
     private(set) var app: ghostty_app_t?
     var onAction: ((TerminalView?, ghostty_action_s) -> Bool)?
@@ -18,20 +19,28 @@ final class GhosttyRuntime {
         }
         callbacks.action_cb = { app, target, action in
             guard let app, let pointer = ghostty_app_userdata(app) else { return false }
-            let runtime = Unmanaged<GhosttyRuntime>.fromOpaque(pointer).takeUnretainedValue()
-            var view: TerminalView?
-            if target.tag == GHOSTTY_TARGET_SURFACE, let surface = target.target.surface,
-               let userdata = ghostty_surface_userdata(surface) {
-                view = Unmanaged<TerminalView>.fromOpaque(userdata).takeUnretainedValue()
+            // Ghostty UI actions run synchronously on the embedding main thread;
+            // borrowed action strings may not escape this callback.
+            guard Thread.isMainThread else { return false }
+            return MainActor.assumeIsolated {
+                let runtime = Unmanaged<GhosttyRuntime>.fromOpaque(pointer).takeUnretainedValue()
+                var view: TerminalView?
+                if target.tag == GHOSTTY_TARGET_SURFACE, let surface = target.target.surface,
+                   let userdata = ghostty_surface_userdata(surface) {
+                    view = Unmanaged<TerminalView>.fromOpaque(userdata).takeUnretainedValue()
+                }
+                return runtime.onAction?(view, action) ?? false
             }
-            return runtime.onAction?(view, action) ?? false
         }
         // Clipboard reads are denied in the prototype. Explicit Cmd-V pastes via surface_text.
         callbacks.read_clipboard_cb = { _, _, _, _, _, _ in GHOSTTY_CLIPBOARD_READ_UNAVAILABLE }
         callbacks.confirm_read_clipboard_cb = { pointer, _, state, _ in
             guard let pointer else { return }
-            let view = Unmanaged<TerminalView>.fromOpaque(pointer).takeUnretainedValue()
-            if let surface = view.surface { ghostty_surface_deny_clipboard_request(surface, state) }
+            guard Thread.isMainThread else { return }
+            MainActor.assumeIsolated {
+                let view = Unmanaged<TerminalView>.fromOpaque(pointer).takeUnretainedValue()
+                if let surface = view.surface { ghostty_surface_deny_clipboard_request(surface, state) }
+            }
         }
         callbacks.write_clipboard_cb = { _, _, _, _, _ in }
         callbacks.close_surface_cb = { pointer, alive in
