@@ -21,6 +21,7 @@ export const sessionRecordSchema = z.object({
   workspaceId: uuid.nullable(),
   name: workNameSchema,
   piPaneId: uuid,
+  manualName: z.boolean().optional(),
 }).strict();
 // A runtime is a process observation, not evidence of Pi admission.
 export const workSessionSchema = z.object({
@@ -28,6 +29,7 @@ export const workSessionSchema = z.object({
   workspaceId: uuid.nullable(),
   name: workNameSchema,
   nameSource: z.literal("manual"),
+  manualName: z.boolean().optional(),
   pi: z.object({
     paneId: uuid,
     chatId: uuid.nullable(),

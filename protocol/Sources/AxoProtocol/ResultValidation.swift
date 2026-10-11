@@ -443,7 +443,10 @@ public enum AxoProtocolResultValidator {
                   validCommittedRecord(.object(["kind": .string("session"), "record": sessionValue])) else { return false }
             return uuid(workspace["workspaceId"]) == uuid(session["workspaceId"])
         case "session":
-            guard let session = object(record, keys: ["sessionId", "workspaceId", "name", "piPaneId"]),
+            guard case .object(let session) = record,
+                  Set(session.keys).isSuperset(of: ["sessionId", "workspaceId", "name", "piPaneId"]),
+                  Set(session.keys).isSubset(of: ["sessionId", "workspaceId", "name", "piPaneId", "manualName"]),
+                  session["manualName"].map({ if case .bool = $0 { return true }; return false }) ?? true,
                   uuid(session["sessionId"]) != nil, nullableWorkspace(session["workspaceId"]),
                   let name = string(session["name"]), validWorkName(name), uuid(session["piPaneId"]) != nil
             else { return false }
@@ -559,7 +562,9 @@ public enum AxoProtocolResultValidator {
     private static func workSessionFields(_ value: JSONValue?) -> [String: JSONValue]? {
         guard case .object(let fields)? = value else { return nil }
         let required: Set<String> = ["sessionId", "workspaceId", "name", "nameSource", "pi", "runtime"]
-        guard Set(fields.keys) == required || Set(fields.keys) == required.union(["shellPanes"]) else { return nil }
+        guard Set(fields.keys).isSuperset(of: required),
+              Set(fields.keys).isSubset(of: required.union(["shellPanes", "manualName"])),
+              fields["manualName"].map({ if case .bool = $0 { return true }; return false }) ?? true else { return nil }
         return fields
     }
 

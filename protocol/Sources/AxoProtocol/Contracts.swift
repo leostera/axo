@@ -572,19 +572,22 @@ public struct WorkSessionRecord: Decodable, Equatable, Sendable, Identifiable {
     public let sessionId: UUID
     public let workspaceId: UUID?
     public let name: String
-    public var displayName: String { pi.title ?? name }
+    public var displayName: String { manualName == true ? name : (pi.title ?? name) }
+    /// Nil means an older peer did not advertise protected-name semantics.
+    public let manualName: Bool?
     public let nameSource: WorkSessionNameSource
     public let pi: WorkSessionPiBinding
     public let runtime: TerminalSnapshot?
     public let shellPanes: [ShellPaneRecord]
 
-    private enum CodingKeys: String, CodingKey { case sessionId, workspaceId, name, nameSource, pi, runtime, shellPanes }
+    private enum CodingKeys: String, CodingKey { case sessionId, workspaceId, name, nameSource, manualName, pi, runtime, shellPanes }
     public init(from decoder: Decoder) throws {
         let fields = try decoder.container(keyedBy: CodingKeys.self)
         sessionId = try fields.decode(UUID.self, forKey: .sessionId)
         workspaceId = try fields.decodeIfPresent(UUID.self, forKey: .workspaceId)
         name = try fields.decode(String.self, forKey: .name)
         nameSource = try fields.decode(WorkSessionNameSource.self, forKey: .nameSource)
+        manualName = try fields.decodeIfPresent(Bool.self, forKey: .manualName)
         pi = try fields.decode(WorkSessionPiBinding.self, forKey: .pi)
         runtime = try fields.decodeIfPresent(TerminalSnapshot.self, forKey: .runtime)
         // Match the shared TypeScript contract's default empty pane collection.
@@ -592,11 +595,12 @@ public struct WorkSessionRecord: Decodable, Equatable, Sendable, Identifiable {
     }
 
     public init(sessionId: UUID, workspaceId: UUID?, name: String, nameSource: WorkSessionNameSource,
-                pi: WorkSessionPiBinding, runtime: TerminalSnapshot?, shellPanes: [ShellPaneRecord] = []) {
+                pi: WorkSessionPiBinding, runtime: TerminalSnapshot?, shellPanes: [ShellPaneRecord] = [], manualName: Bool? = nil) {
         self.sessionId = sessionId
         self.workspaceId = workspaceId
         self.name = name
         self.nameSource = nameSource
+        self.manualName = manualName
         self.pi = pi
         self.runtime = runtime
         self.shellPanes = shellPanes
@@ -634,6 +638,7 @@ public struct SessionRecord: Decodable, Equatable, Sendable {
     public let workspaceId: UUID?
     public let name: String
     public let piPaneId: UUID
+    public let manualName: Bool?
 }
 
 public struct WorkspaceSessionRecord: Decodable, Equatable, Sendable {

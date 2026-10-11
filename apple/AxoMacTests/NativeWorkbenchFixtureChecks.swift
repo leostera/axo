@@ -258,6 +258,8 @@ struct NativeWorkbenchFixtureChecks {
         precondition(!restored.isStartingPi && !restored.isEditingWork && restored.workEditor == nil)
         if mode == .chat, let draftTarget {
             try await wait("fresh coordinator canonical chat/draft recovery") { restored.chatSnapshot?.target == draftTarget }
+            precondition(restored.selectedSession?.manualName == true && restored.selectedSession?.displayName == "Daily work")
+            precondition(restored.selectedSession?.pi.title == "Axo Workbench")
             precondition(restored.chatDrafts.text(for: draftTarget) == "preserved after actual steering")
             // The fixture knows this new ticket was never sent. Across another
             // fresh coordinator it must remain unresolved, not gain replay permission.
@@ -348,9 +350,43 @@ struct NativeWorkbenchFixtureChecks {
         try await wait("native canonical chat ready") {
             coordinator.chatSnapshot?.admission == .ready && coordinator.chatSnapshot?.busy == false
         }
-        guard let ready = coordinator.chatSnapshot else { throw Failure.missing("captured native chat") }
+        guard var ready = coordinator.chatSnapshot else { throw Failure.missing("captured native chat") }
         let target = ready.target
         let originalPi = coordinator.selectedSession?.runtime?.runtime
+        guard let selected = coordinator.selectedSession, let content = window.contentView else { throw Failure.missing("rename source") }
+        var views: [NSView] = [content]
+        var index = 0
+        var renameRow: WorkspaceSidebarRow?
+        while index < views.count && index < 256 {
+            let view = views[index]; index += 1
+            if let row = view as? WorkspaceSidebarRow, row.textField?.stringValue == selected.displayName { renameRow = row; break }
+            views.append(contentsOf: view.subviews)
+        }
+        guard let renameRow, let action = renameRow.menu?.items.first(where: { $0.title == "Rename…" }), action.isEnabled else {
+            throw Failure.missing("native sidebar rename action")
+        }
+        precondition(NSApp.sendAction(#selector(WorkspaceSidebarRow.renameFromMenu(_:)), to: renameRow, from: action))
+        precondition(coordinator.isRenamingWork)
+        guard let editor = renameRow.textField?.currentEditor() as? NSTextView else { throw Failure.missing("native inline rename field editor") }
+        editor.insertText("Daily work", replacementRange: NSRange(location: 0, length: editor.string.utf16.count))
+        precondition(window.makeFirstResponder(nil))
+        do {
+            try await wait("native inline rename receipt and protected catalog") {
+                !coordinator.isEditingWork && !coordinator.isRenamingWork && coordinator.pendingWorkCommandID == nil &&
+                coordinator.selectedSession?.manualName == true && coordinator.selectedSession?.displayName == "Daily work"
+            }
+        } catch {
+            let matching = coordinator.selectedSession?.displayName == "Daily work"
+            let rejected = coordinator.message.hasPrefix("Rename was rejected")
+            let invalid = coordinator.message.hasPrefix("Name is invalid")
+            let unknown = coordinator.message.hasPrefix("Rename outcome unknown")
+            print("Owned rename diagnostic: editing=\(coordinator.isEditingWork) field=\(coordinator.isRenamingWork) pending=\(coordinator.pendingWorkCommandID != nil) protected=\(coordinator.selectedSession?.manualName == true) matching=\(matching) rejected=\(rejected) invalid=\(invalid) unknown=\(unknown)")
+            throw error
+        }
+        precondition(coordinator.selectedSession?.runtime?.runtime == originalPi)
+        try await wait("selected conversation ready after metadata rename") { coordinator.chatSnapshot?.target == target && coordinator.chatSnapshot?.busy == false }
+        guard let current = coordinator.chatSnapshot else { throw Failure.missing("same conversation after rename") }
+        ready = current
         precondition(coordinator.chatDrafts.edit("TITLE_AND_ACTUAL_TOOL", for: target))
         coordinator.submitChatDraft(snapshot: ready)
         precondition(coordinator.isSendingPiMessage && coordinator.pendingChatCommandId != nil)
@@ -364,6 +400,8 @@ struct NativeWorkbenchFixtureChecks {
         precondition(coordinator.chatDrafts.text(for: target) == "edited during real normal submission")
         coordinator.refresh()
         try await wait("normal-turn canonical title in native catalog") { coordinator.selectedSession?.pi.title == "Axo Workbench" }
+        precondition(coordinator.selectedSession?.displayName == "Daily work" && coordinator.selectedSession?.manualName == true)
+        print("PASS: owned native inline sidebar rename, durable protected name, later actual Pi canonical title kept separately, unchanged Pi/shell execution")
         try await wait("canonical chat reload after title catalog refresh") {
             coordinator.chatSnapshot?.target == target && coordinator.chatSnapshot?.busy == false
         }

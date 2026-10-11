@@ -72,6 +72,76 @@ fn standalone_creation_captures_home_without_inventing_workspace_or_executing() 
     assert!(work.workspaces().is_empty());
 }
 #[test]
+fn unrecorded_name_protection_preserves_original_record_shape_without_inference() {
+    let original = json!({"sessionId":SessionId::new(),"workspaceId":null,"name":"An existing name","piPaneId":PaneId::new()});
+    let parsed: SessionRecord = serde_json::from_value(original.clone()).unwrap();
+    assert_eq!(parsed.manual_name, None);
+    assert_eq!(serde_json::to_value(parsed).unwrap(), original);
+    for invalid in [json!(null), json!("true"), json!(1)] {
+        let mut record = original.clone();
+        record["manualName"] = invalid;
+        assert!(serde_json::from_value::<SessionRecord>(record).is_err());
+    }
+}
+
+#[test]
+fn explicit_rename_protection_is_durable_and_original_creation_receipt_is_immutable() {
+    let root = TestDirectory::new();
+    let home = TestDirectory::new();
+    let directory = fs::canonicalize(home.path()).unwrap();
+    let mut manager = Manager::new(Journal::open(root.path()).unwrap());
+    manager.user_home =
+        Some(LocalDirectoryPath::parse(directory.to_str().unwrap().into()).unwrap());
+    let machine = MachineId::new();
+    let source = json!({"machineId":machine,"hostGeneration":manager.generation});
+    let creation_id = CommandId::new();
+    let creation =
+        json!({"target":source,"commandId":creation_id,"expectedRevision":0,"name":"New Session"});
+    let created = call(&manager, machine, "axo.session.create", creation.clone());
+    assert_eq!(created["result"]["session"]["manualName"], false);
+    let session = created["result"]["session"]["sessionId"].clone();
+    let target = json!({"machineId":machine,"hostGeneration":manager.generation,"workspaceId":null,"sessionId":session});
+    let command = CommandId::new();
+    let rename =
+        json!({"target":target,"commandId":command,"expectedRevision":1,"name":"Daily work"});
+    let renamed = call(&manager, machine, "axo.session.rename", rename.clone());
+    assert_eq!(renamed["result"]["session"]["manualName"], true);
+    assert_eq!(renamed["result"]["session"]["name"], "Daily work");
+    assert_eq!(
+        renamed,
+        call(&manager, machine, "axo.session.rename", rename.clone())
+    );
+    assert_eq!(
+        created,
+        call(&manager, machine, "axo.session.create", creation)
+    );
+    let mut stale = rename;
+    stale["commandId"] = json!(CommandId::new());
+    assert_eq!(
+        call(&manager, machine, "axo.session.rename", stale)["error"]["code"],
+        -32007
+    );
+    assert!(manager.list().is_empty());
+    drop(manager);
+    let reopened = Manager::new(Journal::open(root.path()).unwrap());
+    let current = json!({"machineId":machine,"hostGeneration":reopened.generation,"workspaceId":null,"sessionId":session});
+    let record = call(
+        &reopened,
+        machine,
+        "axo.session.get",
+        json!({"target":current}),
+    );
+    assert_eq!(record["result"]["session"]["manualName"], true);
+    assert_eq!(record["result"]["session"]["name"], "Daily work");
+    assert!(reopened.list().is_empty());
+    let original = reopened.work.lock().unwrap().receipt(creation_id).unwrap();
+    match original.record {
+        WorkRecord::Session(record) => assert_eq!(record.manual_name, Some(false)),
+        _ => panic!("wrong receipt domain"),
+    }
+}
+
+#[test]
 fn standalone_directory_cannot_be_changed_without_changing_original_receipt() {
     let root = TestDirectory::new();
     let home = TestDirectory::new();

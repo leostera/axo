@@ -212,6 +212,11 @@ struct AxodNativeWorkbenchSplitView: NSViewRepresentable {
             outline.backgroundColor = .clear
             outline.dataSource = self
             outline.delegate = self
+            outline.itemMenu = { [weak self] item in
+                guard let self else { return NSMenu() }
+                let row = self.outline.row(forItem: item)
+                return (self.outline.view(atColumn: 0, row: row, makeIfNecessary: true) as? WorkspaceSidebarRow)?.menu ?? NSMenu()
+            }
             outline.setAccessibilityLabel("Workspaces and sessions")
             scroll.documentView = outline
 
@@ -270,6 +275,8 @@ struct AxodNativeWorkbenchSplitView: NSViewRepresentable {
             selectedWorkspaceID: UUID?,
             selectedSessionID: UUID?
         ) {
+            // Preserve the live field editor while Pi titles/catalog observations change.
+            guard !workbench.isRenamingWork else { return }
             let snapshot = Snapshot(
                 workspaces: workspaces,
                 sessions: sessions,
@@ -425,28 +432,42 @@ struct AxodNativeWorkbenchSplitView: NSViewRepresentable {
             guard let item = value as? Item else { return nil }
             if let heading = item.heading { return WorkspaceSidebarHeading(title: heading) }
             let actions = NSMenu()
+            actions.autoenablesItems = false
+            var rename: AxodWorkRename?
             if let workspace = item.workspace {
-                return WorkspaceSidebarRow(
+                let row = WorkspaceSidebarRow(
                     name: workspace.name,
                     workspace: true,
                     running: false,
                     actions: actions,
-                    finishRename: { _ in }
+                    canBeginRename: { [weak workbench = workbench] in rename = workbench?.beginWorkRename(workspace: workspace); return rename != nil },
+                    finishRename: { [weak workbench = workbench] name in if let rename { workbench?.finishWorkRename(rename, name: name) } }
                 )
+                addRenameAction(to: row, menu: actions, enabled: workbench.canEditWork)
+                return row
             }
             if let session = item.session {
                 let running: Bool
                 if case .running? = session.runtime?.process { running = true }
                 else { running = false }
-                return WorkspaceSidebarRow(
+                let row = WorkspaceSidebarRow(
                     name: session.displayName,
                     workspace: false,
                     running: running,
                     actions: actions,
-                    finishRename: { _ in }
+                    canBeginRename: { [weak workbench = workbench] in rename = workbench?.beginWorkRename(session: session); return rename != nil },
+                    finishRename: { [weak workbench = workbench] name in if let rename { workbench?.finishWorkRename(rename, name: name) } }
                 )
+                addRenameAction(to: row, menu: actions, enabled: workbench.canEditWork && session.manualName != nil)
+                return row
             }
             return nil
+        }
+
+        private func addRenameAction(to row: WorkspaceSidebarRow, menu: NSMenu, enabled: Bool) {
+            let action = menu.addItem(withTitle: "Rename…", action: #selector(WorkspaceSidebarRow.renameFromMenu(_:)), keyEquivalent: "")
+            action.target = row
+            action.isEnabled = enabled
         }
 
         func outlineViewSelectionDidChange(_ notification: Notification) {

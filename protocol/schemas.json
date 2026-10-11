@@ -1547,6 +1547,9 @@
                 "type": "string",
                 "const": "manual"
               },
+              "manualName": {
+                "type": "boolean"
+              },
               "pi": {
                 "type": "object",
                 "properties": {
@@ -2168,6 +2171,9 @@
               "type": "string",
               "const": "manual"
             },
+            "manualName": {
+              "type": "boolean"
+            },
             "pi": {
               "type": "object",
               "properties": {
@@ -2712,6 +2718,9 @@
               "type": "string",
               "const": "manual"
             },
+            "manualName": {
+              "type": "boolean"
+            },
             "pi": {
               "type": "object",
               "properties": {
@@ -3255,6 +3264,9 @@
             "nameSource": {
               "type": "string",
               "const": "manual"
+            },
+            "manualName": {
+              "type": "boolean"
             },
             "pi": {
               "type": "object",
@@ -4559,6 +4571,9 @@
                                       "type": "string",
                                       "format": "uuid",
                                       "pattern": "^([0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[1-8][0-9a-fA-F]{3}-[89abAB][0-9a-fA-F]{3}-[0-9a-fA-F]{12}|00000000-0000-0000-0000-000000000000|ffffffff-ffff-ffff-ffff-ffffffffffff)$"
+                                    },
+                                    "manualName": {
+                                      "type": "boolean"
                                     }
                                   },
                                   "required": [
@@ -4640,6 +4655,9 @@
                                           "type": "string",
                                           "format": "uuid",
                                           "pattern": "^([0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[1-8][0-9a-fA-F]{3}-[89abAB][0-9a-fA-F]{3}-[0-9a-fA-F]{12}|00000000-0000-0000-0000-000000000000|ffffffff-ffff-ffff-ffff-ffffffffffff)$"
+                                        },
+                                        "manualName": {
+                                          "type": "boolean"
                                         }
                                       },
                                       "required": [
@@ -5090,6 +5108,9 @@
             "nameSource": {
               "type": "string",
               "const": "manual"
+            },
+            "manualName": {
+              "type": "boolean"
             },
             "pi": {
               "type": "object",
@@ -5634,6 +5655,9 @@
             "nameSource": {
               "type": "string",
               "const": "manual"
+            },
+            "manualName": {
+              "type": "boolean"
             },
             "pi": {
               "type": "object",

@@ -24,6 +24,38 @@ final class ShellPaneSessionTests: XCTestCase {
             "terminal": .object(["runtime": runtime, "process": .object(["kind": .string("running"), "pid": .number(1234)]),
                                  "attached": .bool(false), "backlog_bytes": .number(0)])])
     }
+    func testManualNameWinsWithoutDiscardingCanonicalPiTitle() throws {
+        guard case .object(var envelope) = result(panes: []), case .object(var record)? = envelope["session"],
+              case .object(var pi)? = record["pi"] else { return XCTFail() }
+        pi["title"] = .string("A later Pi title")
+        record["pi"] = .object(pi)
+        for flag in [JSONValue.bool(false), .bool(true)] {
+            record["manualName"] = flag
+            envelope["session"] = .object(record)
+            let parsed = try AxoProtocolResultValidator.sessionGet(.object(envelope), target: target).session
+            XCTAssertEqual(parsed.pi.title, "A later Pi title")
+            XCTAssertEqual(parsed.displayName, flag == .bool(true) ? "Native session" : "A later Pi title")
+        }
+        for invalid in [JSONValue.null, .string("true"), .number(1)] {
+            record["manualName"] = invalid
+            envelope["session"] = .object(record)
+            XCTAssertThrowsError(try AxoProtocolResultValidator.sessionGet(.object(envelope), target: target))
+        }
+        record.removeValue(forKey: "manualName")
+        envelope["session"] = .object(record)
+        let legacy = try AxoProtocolResultValidator.sessionGet(.object(envelope), target: target).session
+        XCTAssertNil(legacy.manualName)
+        XCTAssertEqual(legacy.displayName, "A later Pi title")
+    }
+
+    func testWorkNameBudgetCountsUnicodeScalarsLikeTheDaemonAndTypeScript() throws {
+        let source = WorkSessionTarget(machineId: machine, hostGeneration: host, workspaceId: workspace, sessionId: session)
+        let valid = SessionRenameParameters(target: source, commandId: UUID(), expectedRevision: WorkRevision(rawValue: 0)!, name: String(repeating: "😀", count: 80))
+        let invalid = SessionRenameParameters(target: source, commandId: UUID(), expectedRevision: WorkRevision(rawValue: 0)!, name: String(repeating: "😀", count: 81))
+        XCTAssertNoThrow(try AxoProtocolWorkRequestValidator.validate(valid))
+        XCTAssertThrowsError(try AxoProtocolWorkRequestValidator.validate(invalid))
+    }
+
     func testProductionSessionShapeWithEmptyShellPaneArray() throws {
         let session = try AxoProtocolResultValidator.sessionGet(result(panes: []), target: target).session
         XCTAssertEqual(session.shellPanes, [])

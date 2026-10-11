@@ -391,7 +391,7 @@ fn session_view(session: SessionRecord, runtimes: &[TerminalSnapshot], manager: 
                 .and_then(|b| crate::managed::title::canonical_title(&b.file))
         });
     let chat_id = binding.map(|binding| binding.chat_id);
-    json!({"sessionId":session.session_id,"workspaceId":session.workspace_id,"name":session.name,"nameSource":"manual","pi":{"paneId":session.pi_pane_id,"chatId":chat_id,"admission":admission,"title":title},"runtime":runtime,"shellPanes":crate::panes::session_views(session.session_id, manager)})
+    json!({"sessionId":session.session_id,"workspaceId":session.workspace_id,"name":session.name,"nameSource":"manual","manualName":session.manual_name.unwrap_or(false),"pi":{"paneId":session.pi_pane_id,"chatId":chat_id,"admission":admission,"title":title},"runtime":runtime,"shellPanes":crate::panes::session_views(session.session_id, manager)})
 }
 fn command_get(params: Option<Value>, manager: &Manager, machine: MachineId) -> Outcome {
     let params: GetCommand = parse(params)?;

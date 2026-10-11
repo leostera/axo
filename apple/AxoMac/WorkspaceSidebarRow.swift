@@ -24,11 +24,12 @@ final class WorkspaceSidebarRowView: NSTableRowView {
 final class WorkspaceSidebarRow: NSTableCellView, NSTextFieldDelegate {
     private let originalName: String
     private let finishRename: (String?) -> Void
+    private let canBeginRename: () -> Bool
     private var cancelled = false
     private var editing = false
     init(name: String, workspace: Bool, running: Bool, activity: MacAgentState? = nil, loading: Bool = false,
-         voiceRecording: Bool = false, actions: NSMenu, finishRename: @escaping (String?) -> Void) {
-        originalName = name; self.finishRename = finishRename
+         voiceRecording: Bool = false, actions: NSMenu, canBeginRename: @escaping () -> Bool = { true }, finishRename: @escaping (String?) -> Void) {
+        originalName = name; self.finishRename = finishRename; self.canBeginRename = canBeginRename
         super.init(frame: .zero); menu = actions
         let working = activity == .working, attention = activity == .attention
         let open = running && activity != .detached && !loading
@@ -63,13 +64,16 @@ final class WorkspaceSidebarRow: NSTableCellView, NSTextFieldDelegate {
         setAccessibilityLabel(name + (workspace ? ", workspace" : ", " + description))
     }
     required init?(coder: NSCoder) { fatalError("Programmatic view only") }
+    @objc func renameFromMenu(_ sender: Any?) { beginRenaming() }
     func beginRenaming() {
-        guard let label = textField, !editing else { return }
+        guard window != nil, let label = textField, !editing, canBeginRename() else { return }
         editing = true; cancelled = false
         label.isEditable = true; label.isSelectable = true; label.isBezeled = true; label.drawsBackground = true
         label.selectText(nil)
+        if label.currentEditor() == nil { cancelled = true; endRenaming() }
     }
-    func controlTextDidEndEditing(_ notification: Notification) {
+    func controlTextDidEndEditing(_ notification: Notification) { endRenaming() }
+    private func endRenaming() {
         guard editing, let label = textField else { return }; editing = false
         label.isEditable = false; label.isSelectable = false; label.isBezeled = false; label.drawsBackground = false
         finishRename(cancelled ? nil : label.stringValue)

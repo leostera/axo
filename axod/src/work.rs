@@ -39,6 +39,18 @@ pub struct SessionRecord {
     pub workspace_id: Option<WorkspaceId>,
     pub name: String,
     pub pi_pane_id: PaneId,
+    /// Explicit protection. Preserve absence in older records and original receipts.
+    #[serde(
+        default,
+        skip_serializing_if = "Option::is_none",
+        deserialize_with = "recorded_name_protection"
+    )]
+    pub manual_name: Option<bool>,
+}
+fn recorded_name_protection<'de, D: serde::Deserializer<'de>>(
+    d: D,
+) -> Result<Option<bool>, D::Error> {
+    bool::deserialize(d).map(Some)
 }
 /// Shape-checked absolute local path. Existence and canonical identity are checked on creation,
 /// never while reconstructing already-committed receipts after a directory has gone away.
@@ -514,6 +526,7 @@ impl Saved {
                         workspace_id: Some(workspace_id),
                         name: name.clone(),
                         pi_pane_id: PaneId::new(),
+                        manual_name: Some(false),
                     };
                     self.sessions.insert(session.session_id, session.clone());
                     Ok(WorkRecord::WorkspaceSession {
@@ -548,6 +561,7 @@ impl Saved {
                     workspace_id: Some(*workspace_id),
                     name: name.clone(),
                     pi_pane_id: PaneId::new(),
+                    manual_name: Some(false),
                 };
                 self.sessions.insert(record.session_id, record.clone());
                 Ok(WorkRecord::Session(record))
@@ -577,6 +591,7 @@ impl Saved {
                     workspace_id: None,
                     name: name.clone(),
                     pi_pane_id: PaneId::new(),
+                    manual_name: Some(false),
                 };
                 self.standalone_directories
                     .insert(record.session_id, directory.clone());
@@ -595,6 +610,7 @@ impl Saved {
                     .filter(|s| s.workspace_id == *workspace_id)
                     .ok_or(WorkError::NotFound)?;
                 session.name = name.clone();
+                session.manual_name = Some(true);
                 Ok(WorkRecord::Session(session.clone()))
             }
         }

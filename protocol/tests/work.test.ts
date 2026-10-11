@@ -21,6 +21,16 @@ test("work schemas require explicit scopes, safe revisions and approved director
   assert.equal(workMethods["axo.session.list"].safeParse({ target, limit: 51 }).success, false);
 });
 
+test("manual name protection is a closed optional boolean, not Pi title mutation", () => {
+  const session = { sessionId: crypto.randomUUID(), workspaceId: null, name: "Daily work", nameSource: "manual",
+    pi: { paneId: crypto.randomUUID(), chatId: null, admission: "notAdmitted", title: "A later Pi title" }, runtime: null };
+  const result = { hostGeneration: target.hostGeneration, revision: 1, session };
+  const schema = workResults["axo.session.get"];
+  assert.ok(schema.safeParse(result).success);
+  for (const manualName of [false, true]) assert.ok(schema.safeParse({ ...result, session: { ...session, manualName } }).success);
+  for (const manualName of [null, "true", 1]) assert.equal(schema.safeParse({ ...result, session: { ...session, manualName } }).success, false);
+});
+
 test("every work-mutation notification is blocked before handler dispatch", async () => {
   const server = createProfileServer(); let mutations = 0;
   for (const method of workMutationMethods) server.addMethod(method, () => { mutations++; return {}; });
