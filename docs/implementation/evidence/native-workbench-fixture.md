@@ -39,7 +39,17 @@ The first three modes check retained surface identity on selection/refresh/recon
 - Three fresh-root debug-helper runs passed after adding observed shell-output readiness. Eight consecutive build127 four-mode runs subsequently passed, including overlap with four serial public-CLI batteries in separate roots. These are bounded runs, not soak or exhaustive correctness.
 - Existing Swift-6-mode `MacAppearance` actor-conformance warning remains; deployment is still Swift5/macOS26/iOS18.
 
-## Unresolved intermittent observation
+## Subsequent correction
+
+[Build131 bounded-delivery evidence](bounded-terminal-delivery.md) subsequently
+reproduces presentation close, corrects per-read queue fragmentation with bounded
+coalescing and adds precise first-loss reasons. Its exact packaged-helper
+20-round/80-scenario campaign passes. The old aggregate disconnected flag was not
+sufficient to attribute every historical failure exclusively to capacity; the
+failed evidence below remains historical, and full actual-surface robustness is
+still open.
+
+## Historical intermittent observation
 
 Do not erase failed evidence: an early fixture timed out waiting for the shell effect; its cause was not established. After adding observed output readiness, the first build127 packaged-helper campaign also failed its unavailable-Pi mode: the native frontend had exited and command echo was present, but the shell effect was missing. No input was resent; only owned fixture children/roots were torn down. Later passing runs do **not** establish the failure's cause or prove it cannot recur. The fixture now reports only frontend/input flags, byte count and allowlisted static error classes, never terminal bodies. Native input/presentation robustness remains an open acceptance item requiring failure-class capture and a concrete fix if reproduced.
 
