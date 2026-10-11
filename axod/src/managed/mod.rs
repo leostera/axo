@@ -4,6 +4,7 @@ mod persistence;
 pub(crate) mod policy;
 mod projection;
 mod rpc;
+mod session_directory;
 pub(crate) mod store;
 #[cfg(test)]
 mod tests;
@@ -78,10 +79,36 @@ fn start(
         .unwrap()
         .clone()
         .ok_or((-32003, "Managed Pi policy unavailable"))?;
-    let profile = policy
+    let mut profile = policy
         .profile(&approval, &directory)
         .map_err(|_| (-32003, "Managed directory policy unavailable"))?;
     let previous = manager.managed.lock().unwrap().binding(target.session_id);
+    let mut prepare_workspace_sessions = false;
+    if target.workspace_id.is_some() {
+        let workspace_sessions = session_directory::path(&directory, target.session_id);
+        match (&persistence, previous.as_ref()) {
+            (Persistence::Fresh, None) => {
+                profile.session_directory = workspace_sessions;
+                prepare_workspace_sessions = true;
+            }
+            (Persistence::Resume { .. }, Some(binding))
+                if binding.file.parent() == Some(workspace_sessions.as_path()) =>
+            {
+                profile.session_directory =
+                    session_directory::prepare(&directory, target.session_id, false).map_err(
+                        |_| {
+                            (
+                                -32003,
+                                "Original workspace session directory unavailable or unsafe",
+                            )
+                        },
+                    )?;
+            }
+            // An existing binding retains its original approved persistence location.
+            // Never relocate, copy, or rewrite a canonical Pi history on resume.
+            _ => (),
+        }
+    }
     let mut lease = None;
     let resume = match (&persistence, previous.as_ref()) {
         (Persistence::Fresh, None) => None,
@@ -130,6 +157,14 @@ fn start(
     {
         Reservation::Existing(receipt) => return start_result(manager, machine, *receipt),
         Reservation::New => (),
+    }
+    if prepare_workspace_sessions {
+        session_directory::prepare(&directory, target.session_id, true).map_err(|_| {
+            (
+                -32004,
+                "Workspace session directory unavailable after reservation; reconcile commandId",
+            )
+        })?;
     }
     let native = TerminalTarget {
         session_id: target.session_id,

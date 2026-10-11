@@ -532,7 +532,7 @@ final class AxodWorkbenchCoordinator {
     }
 
     @objc func newWorkspace() { prepareWorkEditor(.workspace) }
-    @objc func newSession() { prepareWorkEditor(.session(workspaceID: nil)) }
+    @objc func newSession() { prepareWorkEditor(.session(workspaceID: selectedWorkspaceID)) }
     @objc func newWorkspaceSession() {
         guard let workspaceID = selectedWorkspaceID else { return }
         prepareWorkEditor(.session(workspaceID: workspaceID))

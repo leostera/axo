@@ -222,7 +222,12 @@ struct AxodWorkbenchView: View {
         let name = identifier.hasPrefix(base + ".")
             ? "Axo (\(identifier.dropFirst(base.count + 1)))"
             : "Axo"
-        let title = selectedSession.map { name + " — " + $0.displayName } ?? name
+#if DEBUG
+        let titleName = CommandLine.arguments.contains("-ui-test") ? "Axo UI Test (temporary)" : name
+#else
+        let titleName = name
+#endif
+        let title = selectedSession.map { titleName + " — " + $0.displayName } ?? titleName
         let windowIdentifier = "Axo.MainWindow.\(Bundle.main.bundleIdentifier ?? "default")"
         NSApp.windows.first { $0.identifier?.rawValue == windowIdentifier }?.title = title
     }

@@ -94,6 +94,17 @@ targets:
         INFOPLIST_KEY_NSMicrophoneUsageDescription: Record voice prompts for on-device transcription. Audio is not uploaded.
         INFOPLIST_KEY_UILaunchScreen_Generation: YES
         INFOPLIST_KEY_UIApplicationSceneManifest_Generation: YES
+  AxoMacUITests:
+    type: bundle.ui-testing
+    platform: macOS
+    sources: [AxoMacUITests]
+    dependencies:
+      - target: AxoMac
+    settings:
+      base:
+        PRODUCT_BUNDLE_IDENTIFIER: dev.leostera.axo.mac.uitests
+        TEST_TARGET_NAME: AxoMac
+        ENABLE_APP_SANDBOX: NO
   AxoPhoneUITests:
     type: bundle.ui-testing
     platform: iOS
@@ -109,6 +120,12 @@ schemes:
     build:
       targets:
         AxoMac: all
+    test:
+      targets:
+        - AxoMacUITests
+      environmentVariables:
+        AXO_UI_TEST_ROOT: $(AXO_UI_TEST_ROOT)
+        AXO_UI_TEST_APP: $(AXO_UI_TEST_APP)
   AxoPhone:
     build:
       targets:

@@ -14,3 +14,8 @@ xcrun swiftc -parse-as-library \
   "$ROOT/apple/AxoMacTests/CompactSidebarChecks.swift" \
   -o "$TMP/check-compact-sidebar"
 "$TMP/check-compact-sidebar"
+xcrun swiftc -parse-as-library \
+  "$ROOT/apple/AxoMacAxod/AxodSidebarSelection.swift" \
+  "$ROOT/apple/AxoMacTests/SidebarSelectionChecks.swift" \
+  -o "$TMP/check-sidebar-selection"
+"$TMP/check-sidebar-selection"

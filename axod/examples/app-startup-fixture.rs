@@ -6,7 +6,8 @@ use axod::ambient_pi::AmbientPi;
 use serde_json::json;
 use std::{
     fs,
-    os::unix::fs::{DirBuilderExt, PermissionsExt},
+    io::Read,
+    os::unix::fs::{DirBuilderExt, OpenOptionsExt, PermissionsExt},
     path::Path,
     process::{Command, Stdio},
     thread,
@@ -40,10 +41,11 @@ fn account_shell() -> std::path::PathBuf {
     fs::canonicalize(path).unwrap()
 }
 fn main() {
+    let ui_test = std::env::var("AXO_APP_SELF_TEST_CASE").as_deref() == Ok("ui");
     let unavailable = match std::env::var("AXO_APP_SELF_TEST_CASE").as_deref() {
-        Ok("available") | Err(std::env::VarError::NotPresent) => false,
+        Ok("available") | Ok("ui") | Err(std::env::VarError::NotPresent) => false,
         Ok("unavailable") => true,
-        _ => panic!("AXO_APP_SELF_TEST_CASE must be available or unavailable"),
+        _ => panic!("AXO_APP_SELF_TEST_CASE must be available, unavailable or ui"),
     };
     let app = std::env::args_os()
         .nth(1)
@@ -64,13 +66,24 @@ fn main() {
         capability.status.success() && capability.stdout == b"2\n",
         "Bundle must support isolated self-test before launch"
     );
+    if ui_test {
+        let capability = Command::new("/usr/bin/plutil")
+            .args(["-extract", "AxoUITestProtocolVersion", "raw", "-o", "-"])
+            .arg(app.join("Contents/Info.plist"))
+            .output()
+            .unwrap();
+        assert!(
+            capability.status.success() && capability.stdout == b"1\n",
+            "Bundle must explicitly support isolated UI testing before launch"
+        );
+    }
     let repo = Path::new(env!("CARGO_MANIFEST_DIR")).parent().unwrap();
     let pi = AmbientPi::find(None).expect("Ambient interactive Pi required");
     let model = model_fixture::Fixture::new();
     let root = std::env::temp_dir().join(format!("axo-app-startup-{}", uuid::Uuid::new_v4()));
     fs::DirBuilder::new().mode(0o700).create(&root).unwrap();
     let root = fs::canonicalize(root).unwrap();
-    for name in ["home", "sessions", "agent"] {
+    for name in ["home", "sessions", "agent", "workspace"] {
         fs::DirBuilder::new()
             .mode(0o700)
             .create(root.join(name))
@@ -121,6 +134,24 @@ fn main() {
     );
     let output = fs::File::create(root.join("app.log")).unwrap();
     fs::set_permissions(root.join("app.log"), fs::Permissions::from_mode(0o600)).unwrap();
+    if ui_test {
+        run_ui_tests(&app, &root, repo);
+        verify_ui_workspace_history(&root);
+        assert_eq!(
+            model.requests(),
+            1,
+            "Exactly one UI-typed workspace Pi turn"
+        );
+        assert!(
+            !state.join("local-endpoint.json").exists(),
+            "Owned UI-test helper must be stopped on normal fixture quit"
+        );
+        fs::remove_dir_all(&root).unwrap();
+        println!(
+            "PASS: Xcode UI automation of packaged app sidebar selection, exact-row rename, workspace Command-T, UI-typed Pi turn and workspace-local canonical history; one model request, isolated state and owned helper cleanup"
+        );
+        return;
+    }
     // LaunchServices opens the signed bundle as a fresh application instance.
     let mut child = Command::new("/usr/bin/open")
         .args(["-n", "-W"])
@@ -186,4 +217,161 @@ fn main() {
     println!(
         "PASS: actual app exit and owned daemon cleanup; no normal-service registration or live-state changes"
     );
+}
+
+#[derive(serde::Deserialize)]
+struct UiWorkspace {
+    record: axod::work::WorkspaceRecord,
+}
+#[derive(serde::Deserialize)]
+struct UiRecords {
+    workspaces: std::collections::BTreeMap<axod::model::WorkspaceId, UiWorkspace>,
+    sessions: std::collections::BTreeMap<axod::model::SessionId, axod::work::SessionRecord>,
+}
+fn read_ui_records(root: &Path) -> Option<UiRecords> {
+    use std::os::unix::fs::MetadataExt;
+    let file = fs::OpenOptions::new()
+        .read(true)
+        .custom_flags(libc::O_NOFOLLOW | libc::O_CLOEXEC)
+        .open(root.join("home/Library/Application Support/Axo/Axod/work-records.json"))
+        .ok()?;
+    let metadata = file.metadata().ok()?;
+    if !metadata.is_file()
+        || metadata.nlink() != 1
+        || metadata.uid() != unsafe { libc::geteuid() }
+        || metadata.permissions().mode() & 0o077 != 0
+        || metadata.len() > 4 * 1024 * 1024
+    {
+        return None;
+    }
+    serde_json::from_reader(file.take(4 * 1024 * 1024 + 1)).ok()
+}
+fn verify_ui_workspace_history(root: &Path) {
+    let records = read_ui_records(root).expect("Owned committed UI records");
+    let workspace = records
+        .workspaces
+        .values()
+        .find(|workspace| workspace.record.name == "UI Workspace")
+        .expect("Owned workspace setup");
+    let sessions: Vec<_> = records
+        .sessions
+        .values()
+        .filter(|session| session.workspace_id == Some(workspace.record.workspace_id))
+        .collect();
+    assert_eq!(
+        sessions.len(),
+        2,
+        "Command-T must add exactly one session to the owned workspace"
+    );
+    let session = sessions
+        .iter()
+        .find(|session| session.name == "New Session")
+        .expect("Command-T workspace membership");
+    let session_id = serde_json::to_value(session.session_id).unwrap();
+    let directory = root
+        .join("workspace/.axo/sessions")
+        .join(session_id.as_str().unwrap());
+    let metadata = fs::symlink_metadata(&directory).expect("Workspace-local session directory");
+    assert!(metadata.is_dir() && !metadata.file_type().is_symlink());
+    assert_eq!(metadata.permissions().mode() & 0o777, 0o700);
+    let histories = fs::read_dir(&directory)
+        .unwrap()
+        .filter_map(Result::ok)
+        .filter(|entry| {
+            entry
+                .path()
+                .extension()
+                .is_some_and(|extension| extension == "jsonl")
+        })
+        .count();
+    assert_eq!(
+        histories, 1,
+        "Exactly one ambient-Pi canonical history in the work-session UUID folder"
+    );
+}
+
+fn run_ui_tests(app: &Path, root: &Path, repo: &Path) {
+    // XCTest's launch() terminates existing instances by bundle ID. Never let
+    // this isolated fixture silently stop a normal frontend.
+    let safe = Command::new("/usr/bin/xcrun")
+        .args(["swift", "-e", "import AppKit; if NSWorkspace.shared.runningApplications.contains(where: { $0.bundleIdentifier == \"dev.leostera.axo.mac\" }) { exit(2) }"])
+        .status().unwrap();
+    assert!(
+        safe.success(),
+        "Close the live Axo frontend explicitly before UI automation; daemon work is not part of this fixture"
+    );
+    let log = fs::File::create(root.join("xcode-ui.log")).unwrap();
+    fs::set_permissions(root.join("xcode-ui.log"), fs::Permissions::from_mode(0o600)).unwrap();
+    let result_bundle = root.join("UI.xcresult");
+    let mut child = Command::new("/usr/bin/xcrun")
+        .arg("xcodebuild")
+        .args(["test", "-project"])
+        .arg(repo.join("apple/Axo.xcodeproj"))
+        .args([
+            "-scheme",
+            "AxoMac",
+            "-destination",
+            "platform=macOS",
+            "-derivedDataPath",
+        ])
+        .arg(repo.join("apple/DerivedData"))
+        .args([
+            "-only-testing:AxoMacUITests/SessionSidebarUITests",
+            "-parallel-testing-enabled",
+            "NO",
+            "-resultBundlePath",
+        ])
+        .arg(&result_bundle)
+        .arg(format!("AXO_UI_TEST_ROOT={}", root.display()))
+        .arg(format!("AXO_UI_TEST_APP={}", app.display()))
+        .args(["CODE_SIGN_IDENTITY=-", "CODE_SIGNING_ALLOWED=YES"])
+        .stdin(Stdio::null())
+        .stdout(log.try_clone().unwrap())
+        .stderr(log)
+        .spawn()
+        .unwrap();
+    let deadline = Instant::now() + Duration::from_secs(600);
+    let mut workspace_prepared = false;
+    loop {
+        if !workspace_prepared
+            && read_ui_records(root).is_some_and(|records| {
+                records
+                    .sessions
+                    .values()
+                    .any(|session| session.name == "UI renamed")
+            })
+        {
+            workspace_prepared = true;
+            let mut client = axod::client::Client::connect(
+                &root.join("home/Library/Application Support/Axo/Axod/local-endpoint.json"),
+            )
+            .unwrap();
+            let target = json!({"machineId": client.discovery.machine_id, "hostGeneration": client.discovery.host_generation});
+            let page = client
+                .call("axo.workspace.list", json!({"target": target, "limit": 50}))
+                .unwrap();
+            let revision = page["revision"].as_u64().expect("Typed workspace revision");
+            client.call("axo.workspace.createLocal", json!({
+                "target": target, "commandId": uuid::Uuid::new_v4(), "expectedRevision": revision,
+                "directoryPath": root.join("workspace"), "name": "UI Workspace", "initialSessionName": "UI workspace initial"
+            })).expect("Owned workspace setup via public RPC, never a work-store edit or replay");
+        }
+        if let Some(status) = child.try_wait().unwrap() {
+            assert!(
+                status.success(),
+                "Xcode UI test failed; private fixture and xcresult retained at {}",
+                root.display()
+            );
+            break;
+        }
+        if Instant::now() >= deadline {
+            child.kill().unwrap();
+            child.wait().unwrap();
+            panic!(
+                "Owned Xcode runner timed out; no discovered application PID was signaled; fixture retained at {}",
+                root.display()
+            );
+        }
+        thread::sleep(Duration::from_millis(100));
+    }
 }

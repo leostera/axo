@@ -18,6 +18,7 @@ final class AxodWorkbenchApp: NSObject, NSApplicationDelegate, NSWindowDelegate,
     private var savesWindowFrame = true
 #if DEBUG
     private var selfTestTask: Task<Void, Never>?
+    private var uiTestContext: AxodAppSelfTest?
 #endif
 
     static func main() {
@@ -32,8 +33,9 @@ final class AxodWorkbenchApp: NSObject, NSApplicationDelegate, NSWindowDelegate,
         MacAppearance.applyPreference()
 #if DEBUG
         let selfTest: AxodAppSelfTest?
-        if CommandLine.arguments.contains("-self-test") {
-            guard CommandLine.arguments.count == 3, CommandLine.arguments[1] == "-self-test",
+        let uiTest = CommandLine.arguments.contains("-ui-test")
+        if CommandLine.arguments.contains("-self-test") || uiTest {
+            guard CommandLine.arguments.count == 3, ["-self-test", "-ui-test"].contains(CommandLine.arguments[1]),
                   CommandLine.arguments[2].hasPrefix("/") else {
                 fputs("Usage: Axo -self-test /absolute/private/fixture-root\n", stderr); exit(2)
             }
@@ -42,10 +44,14 @@ final class AxodWorkbenchApp: NSObject, NSApplicationDelegate, NSWindowDelegate,
         } else { selfTest = nil }
         let coordinator = AxodWorkbenchCoordinator(preferences: selfTest?.preferences ?? .standard,
             voiceHistoryURL: selfTest?.root.appendingPathComponent("voice-transcripts.json"))
-        if let selfTest { coordinator.configureSelfTest(selfTest); savesWindowFrame = false }
+        if let selfTest {
+            coordinator.configureSelfTest(selfTest)
+            savesWindowFrame = false
+            if uiTest { uiTestContext = selfTest }
+        }
 #else
-        if CommandLine.arguments.contains("-self-test") {
-            fputs("Axo -self-test requires a development build\n", stderr); exit(2)
+        if CommandLine.arguments.contains("-self-test") || CommandLine.arguments.contains("-ui-test") {
+            fputs("Axo diagnostic flags require a development build\n", stderr); exit(2)
         }
         let coordinator = AxodWorkbenchCoordinator()
 #endif
@@ -72,6 +78,12 @@ final class AxodWorkbenchApp: NSObject, NSApplicationDelegate, NSWindowDelegate,
         let restoredFrame = savesWindowFrame && window.setFrameUsingName(Self.mainWindowFrameAutosaveName)
         if savesWindowFrame { window.setFrameAutosaveName(Self.mainWindowFrameAutosaveName) }
         if !restoredFrame { window.center() }
+#if DEBUG
+        if uiTest, let screen = NSScreen.screens.first {
+            window.setFrameOrigin(NSPoint(x: screen.visibleFrame.minX + 20,
+                y: screen.visibleFrame.maxY - window.frame.height - 20))
+        }
+#endif
 
         self.window = window
         installMenu()
@@ -89,7 +101,7 @@ final class AxodWorkbenchApp: NSObject, NSApplicationDelegate, NSWindowDelegate,
 #endif
         coordinator.connect(createInitialSession: true)
 #if DEBUG
-        if let selfTest {
+        if let selfTest, !uiTest {
             selfTestTask = Task { await selfTest.run(coordinator: coordinator, window: window) }
         }
 #endif
@@ -97,6 +109,7 @@ final class AxodWorkbenchApp: NSObject, NSApplicationDelegate, NSWindowDelegate,
 
     func applicationShouldTerminate(_ sender: NSApplication) -> NSApplication.TerminateReply {
 #if DEBUG
+        uiTestContext?.checkpoint("ui-quit-requested")
         if let selfTestTask {
             // An interrupted diagnostic must fail and clean up its owned helper,
             // not leave a test daemon behind or terminate normal user work.
@@ -115,12 +128,22 @@ final class AxodWorkbenchApp: NSObject, NSApplicationDelegate, NSWindowDelegate,
             guard let self else { sender.reply(toApplicationShouldTerminate: false); return }
             self.waitingForDraftSave = false
             if !saved { self.window?.makeKeyAndOrderFront(nil) }
+#if DEBUG
+            if saved, let context = self.uiTestContext {
+                coordinator.disconnect()
+                await coordinator.stopSelfTestDaemon()
+                context.preferences.removePersistentDomain(forName: "Axo.AppSelfTest.\(context.root.lastPathComponent)")
+            }
+#endif
             sender.reply(toApplicationShouldTerminate: saved)
         }
         return .terminateLater
     }
 
     func applicationWillTerminate(_ notification: Notification) {
+#if DEBUG
+        uiTestContext?.checkpoint("ui-terminated")
+#endif
         if savesWindowFrame { window?.saveFrame(usingName: Self.mainWindowFrameAutosaveName) }
         coordinator?.voice.shutdown()
         // Axod owns its process tree; closing the client never stops or adopts daemon work.

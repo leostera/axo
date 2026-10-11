@@ -174,6 +174,27 @@ final class TerminalView: NSView, NSTextInputClient {
         else { _ = ghostty_surface_key(surface, key) }
     }
 
+    override func isAccessibilityElement() -> Bool { true }
+    override func accessibilityRole() -> NSAccessibility.Role? { .textArea }
+    override func isAccessibilityEnabled() -> Bool { canSendInput }
+    override func isAccessibilityFocused() -> Bool { window?.firstResponder === self }
+    override func accessibilityLabel() -> String? { "Terminal" }
+    override func accessibilityValue() -> Any? {
+        // Only the visible viewport, never a transcript/backlog cache. This lets
+        // VoiceOver and authorized UI automation read the actual Ghostty plane.
+        guard let surface else { return "" }
+        var selection = ghostty_selection_s()
+        selection.top_left.tag = GHOSTTY_POINT_VIEWPORT
+        selection.top_left.coord = GHOSTTY_POINT_COORD_TOP_LEFT
+        selection.bottom_right.tag = GHOSTTY_POINT_VIEWPORT
+        selection.bottom_right.coord = GHOSTTY_POINT_COORD_BOTTOM_RIGHT
+        var text = ghostty_text_s()
+        guard ghostty_surface_read_text(surface, selection, &text) else { return "" }
+        defer { ghostty_surface_free_text(surface, &text) }
+        guard let pointer = text.text, text.text_len <= 65536 else { return "" }
+        return String(decoding: UnsafeRawBufferPointer(start: pointer, count: Int(text.text_len)), as: UTF8.self)
+    }
+
     override func resetCursorRects() {
         addCursorRect(bounds, cursor: hoveredURL == nil ? .iBeam : .pointingHand)
     }

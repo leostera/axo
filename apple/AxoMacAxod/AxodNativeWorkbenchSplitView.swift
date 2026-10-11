@@ -43,8 +43,8 @@ struct AxodNativeWorkbenchSplitView: NSViewRepresentable {
     @MainActor
     final class SidebarController: NSObject, NSSplitViewDelegate, NSOutlineViewDataSource, NSOutlineViewDelegate {
         private final class Item: NSObject {
-            let workspace: WorkWorkspaceRecord?
-            let session: WorkSessionRecord?
+            var workspace: WorkWorkspaceRecord?
+            var session: WorkSessionRecord?
             let heading: String?
             var children: [Item] = []
 
@@ -68,6 +68,7 @@ struct AxodNativeWorkbenchSplitView: NSViewRepresentable {
         }
 
         private struct Snapshot: Equatable {
+            let machineID: UUID?
             let workspaces: [WorkWorkspaceRecord]
             let sessions: [WorkSessionRecord]
             let selectedWorkspaceID: UUID?
@@ -101,6 +102,7 @@ struct AxodNativeWorkbenchSplitView: NSViewRepresentable {
         private var sidebarItems: [Item] = []
         private var lastSnapshot: Snapshot?
         private var refreshingSidebar = false
+        private var sidebarSelection = AxodSidebarSelection()
         private var workbench: AxodWorkbenchCoordinator
         private var sidebarCollapsed: Binding<Bool>
         private var openSettings: () -> Void
@@ -209,6 +211,8 @@ struct AxodNativeWorkbenchSplitView: NSViewRepresentable {
             outline.intercellSpacing = NSSize(width: 0, height: 2)
             outline.style = .sourceList
             outline.selectionHighlightStyle = .regular
+            outline.allowsMultipleSelection = true
+            outline.allowsEmptySelection = true
             outline.indentationPerLevel = 12
             outline.backgroundColor = .clear
             outline.dataSource = self
@@ -216,7 +220,13 @@ struct AxodNativeWorkbenchSplitView: NSViewRepresentable {
             outline.itemMenu = { [weak self] item in
                 guard let self else { return NSMenu() }
                 let row = self.outline.row(forItem: item)
-                return (self.outline.view(atColumn: 0, row: row, makeIfNecessary: true) as? WorkspaceSidebarRow)?.menu ?? NSMenu()
+                guard let menu = (self.outline.view(atColumn: 0, row: row, makeIfNecessary: true) as? WorkspaceSidebarRow)?.menu else { return NSMenu() }
+                if let session = (item as? Item)?.session {
+                    let targets = self.sidebarSelection.targets(clickedSessionID: session.sessionId)
+                    menu.items.first { $0.action == #selector(WorkspaceSidebarRow.renameFromMenu(_:)) }?.isEnabled =
+                        targets.count == 1 && self.workbench.canEditWork && session.manualName != nil
+                }
+                return menu
             }
             outline.setAccessibilityLabel("Workspaces and sessions")
             scroll.documentView = outline
@@ -272,52 +282,82 @@ struct AxodNativeWorkbenchSplitView: NSViewRepresentable {
 
         private func refreshSidebar(
             workspaces: [WorkWorkspaceRecord],
-            sessions: [WorkSessionRecord],
+            sessions incomingSessions: [WorkSessionRecord],
             selectedWorkspaceID: UUID?,
             selectedSessionID: UUID?
         ) {
             // Preserve the live field editor while Pi titles/catalog observations change.
             guard !workbench.isRenamingWork else { return }
+            let orderedIDs = sidebarSelection.order(machineID: workbench.machineID, incoming: incomingSessions.map(\.sessionId))
+            let records = incomingSessions.reduce(into: [UUID: WorkSessionRecord]()) { $0[$1.sessionId] = $1 }
+            let sessions = orderedIDs.compactMap { records[$0] }
             let snapshot = Snapshot(
+                machineID: workbench.machineID,
                 workspaces: workspaces,
                 sessions: sessions,
                 selectedWorkspaceID: selectedWorkspaceID,
                 selectedSessionID: selectedSessionID
             )
             guard snapshot != lastSnapshot else { return }
+            let sameRows = lastSnapshot.map { previous in
+                previous.machineID == snapshot.machineID &&
+                previous.workspaces.map(\.workspaceId) == workspaces.map(\.workspaceId) &&
+                previous.sessions.count == sessions.count &&
+                zip(previous.sessions, sessions).allSatisfy { before, after in
+                    before.sessionId == after.sessionId && before.workspaceId == after.workspaceId
+                }
+            } ?? false
             lastSnapshot = snapshot
             refreshCompactSidebar(snapshot)
-
-            sidebarItems = [Item(heading: "Standalone Sessions")]
-            sidebarItems.append(contentsOf: sessions.filter { $0.workspaceId == nil }.map(Item.init(session:)))
-            sidebarItems.append(Item(heading: "Workspaces"))
-            for workspace in workspaces {
-                let item = Item(workspace: workspace)
-                item.children = sessions
-                    .filter { $0.workspaceId == workspace.workspaceId }
-                    .map(Item.init(session:))
-                sidebarItems.append(item)
-            }
+            sidebarSelection.observe(machineID: snapshot.machineID, available: Set(sessions.map(\.sessionId)),
+                displayedSessionID: selectedSessionID)
+            let expandedWorkspaces = Set(sidebarItems.compactMap { item in
+                outline.isItemExpanded(item) ? item.workspace?.workspaceId : nil
+            })
 
             refreshingSidebar = true
             defer { refreshingSidebar = false }
-            outline.reloadData()
-            if let selectedWorkspaceID,
-               let item = sidebarItems.first(where: { $0.workspace?.workspaceId == selectedWorkspaceID }) {
-                outline.expandItem(item)
-            }
-
-            let selectedItem = sidebarItems
-                .flatMap { [$0] + $0.children }
-                .first {
-                    (selectedSessionID != nil && $0.session?.sessionId == selectedSessionID) ||
-                    (selectedSessionID == nil && selectedWorkspaceID != nil && $0.workspace?.workspaceId == selectedWorkspaceID)
+            if sameRows {
+                // Do not reset the native range anchor on title/runtime observations.
+                // Keep tree items alive and reload changed cells, not the whole outline.
+                let currentWorkspaces = workspaces.reduce(into: [UUID: WorkWorkspaceRecord]()) { $0[$1.workspaceId] = $1 }
+                let currentSessions = sessions.reduce(into: [UUID: WorkSessionRecord]()) { $0[$1.sessionId] = $1 }
+                for item in sidebarItems.flatMap({ [$0] + $0.children }) {
+                    let workspace = item.workspace.flatMap { currentWorkspaces[$0.workspaceId] }
+                    let session = item.session.flatMap { currentSessions[$0.sessionId] }
+                    guard workspace != item.workspace || session != item.session else { continue }
+                    item.workspace = workspace
+                    item.session = session
+                    outline.reloadItem(item)
                 }
-            if let selectedItem {
-                let row = outline.row(forItem: selectedItem)
-                if row >= 0 { outline.selectRowIndexes(IndexSet(integer: row), byExtendingSelection: false) }
             } else {
-                outline.deselectAll(nil)
+                sidebarItems = [Item(heading: "Standalone Sessions")]
+                sidebarItems.append(contentsOf: sessions.filter { $0.workspaceId == nil }.map(Item.init(session:)))
+                sidebarItems.append(Item(heading: "Workspaces"))
+                for workspace in workspaces {
+                    let item = Item(workspace: workspace)
+                    item.children = sessions
+                        .filter { $0.workspaceId == workspace.workspaceId }
+                        .map(Item.init(session:))
+                    sidebarItems.append(item)
+                }
+                outline.reloadData()
+            }
+            for item in sidebarItems {
+                guard let workspaceID = item.workspace?.workspaceId else { continue }
+                if expandedWorkspaces.contains(workspaceID) || workspaceID == selectedWorkspaceID ||
+                    item.children.contains(where: { $0.session.map { sidebarSelection.sessionIDs.contains($0.sessionId) } ?? false }) {
+                    outline.expandItem(item)
+                }
+            }
+            let selectedRows = IndexSet(sidebarItems.flatMap { [$0] + $0.children }.compactMap { item in
+                let selected = item.session.map { sidebarSelection.sessionIDs.contains($0.sessionId) } ??
+                    (selectedSessionID == nil && item.workspace?.workspaceId == selectedWorkspaceID && selectedWorkspaceID != nil)
+                let row = outline.row(forItem: item)
+                return selected && row >= 0 ? row : nil
+            })
+            if outline.selectedRowIndexes != selectedRows {
+                outline.selectRowIndexes(selectedRows, byExtendingSelection: false)
             }
         }
 
@@ -426,7 +466,13 @@ struct AxodNativeWorkbenchSplitView: NSViewRepresentable {
         }
 
         func outlineView(_ outlineView: NSOutlineView, rowViewForItem item: Any) -> NSTableRowView? {
-            WorkspaceSidebarRowView()
+            let row = WorkspaceSidebarRowView()
+            if let session = (item as? Item)?.session {
+                row.setAccessibilityIdentifier("session-row.\(session.sessionId.uuidString.lowercased())")
+            } else if let workspace = (item as? Item)?.workspace {
+                row.setAccessibilityIdentifier("workspace-row.\(workspace.workspaceId.uuidString.lowercased())")
+            }
+            return row
         }
 
         func outlineView(_ outlineView: NSOutlineView, viewFor tableColumn: NSTableColumn?, item value: Any) -> NSView? {
@@ -444,6 +490,7 @@ struct AxodNativeWorkbenchSplitView: NSViewRepresentable {
                     canBeginRename: { [weak workbench = workbench] in rename = workbench?.beginWorkRename(workspace: workspace); return rename != nil },
                     finishRename: { [weak workbench = workbench] name in if let rename { workbench?.finishWorkRename(rename, name: name) } }
                 )
+                row.textField?.setAccessibilityIdentifier("workspace.\(workspace.workspaceId.uuidString.lowercased())")
                 addRenameAction(to: row, menu: actions, enabled: workbench.canEditWork)
                 return row
             }
@@ -459,6 +506,7 @@ struct AxodNativeWorkbenchSplitView: NSViewRepresentable {
                     canBeginRename: { [weak workbench = workbench] in rename = workbench?.beginWorkRename(session: session); return rename != nil },
                     finishRename: { [weak workbench = workbench] name in if let rename { workbench?.finishWorkRename(rename, name: name) } }
                 )
+                row.textField?.setAccessibilityIdentifier("session.\(session.sessionId.uuidString.lowercased())")
                 addRenameAction(to: row, menu: actions, enabled: workbench.canEditWork && session.manualName != nil)
                 return row
             }
@@ -471,13 +519,26 @@ struct AxodNativeWorkbenchSplitView: NSViewRepresentable {
             action.isEnabled = enabled
         }
 
+        func outlineView(_ outlineView: NSOutlineView, selectionIndexesForProposedSelection proposedSelectionIndexes: IndexSet) -> IndexSet {
+            let sessionRows = IndexSet(proposedSelectionIndexes.filter { (outline.item(atRow: $0) as? Item)?.session != nil })
+            if !sessionRows.isEmpty { return sessionRows }
+            let workspaceRows = proposedSelectionIndexes.filter { (outline.item(atRow: $0) as? Item)?.workspace != nil }
+            return workspaceRows.first.map { IndexSet(integer: $0) } ?? []
+        }
+
         func outlineViewSelectionDidChange(_ notification: Notification) {
-            guard !refreshingSidebar,
-                  outline.selectedRow >= 0,
-                  let item = outline.item(atRow: outline.selectedRow) as? Item else { return }
-            if let session = item.session {
-                workbench.selectSession(session.sessionId)
-            } else if let workspace = item.workspace {
+            guard !refreshingSidebar else { return }
+            let items = outline.selectedRowIndexes.compactMap { outline.item(atRow: $0) as? Item }
+            let sessionIDs = Set(items.compactMap { $0.session?.sessionId })
+            sidebarSelection.select(sessionIDs)
+            if !sessionIDs.isEmpty {
+                // Adding a range does not replace the active detail or move terminal focus.
+                if let active = workbench.selectedSessionID, sessionIDs.contains(active) { return }
+                let clicked = (outline.item(atRow: outline.clickedRow) as? Item)?.session?.sessionId
+                if let destination = clicked.flatMap({ sessionIDs.contains($0) ? $0 : nil }) ?? items.first?.session?.sessionId {
+                    workbench.selectSession(destination)
+                }
+            } else if let workspace = items.first?.workspace {
                 workbench.selectWorkspace(workspace.workspaceId)
             }
         }

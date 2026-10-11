@@ -164,7 +164,7 @@ import GhosttyKit
         // Report through the private result, not LaunchServices-managed stdio.
         exit(status)
     }
-    private func checkpoint(_ stage: String) {
+    func checkpoint(_ stage: String) {
         let descriptor = open(root.appendingPathComponent("progress").path, O_WRONLY | O_CREAT | O_APPEND | O_NOFOLLOW, 0o600)
         guard descriptor >= 0 else { return }
         var attributes = stat()
