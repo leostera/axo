@@ -1,5 +1,7 @@
 # Private draft storage foundation — build140 (not editor persistence)
 
+> Historical build140 scope. Production wiring is recorded separately in [build142 scoped draft persistence](durable-chat-drafts.md); statements below describe the dormant foundation at its owning version, not current editor behavior.
+
 ## Exact delivery
 
 Source **`60079ee5d3489cd99df7ceb6bba4c20e7250db0c`**, `dist/Axo.app` **build140**, helper **`0.1.0 (60079ee5)`**, exact `AxoBuildCommit`, deep strict signature verified. This adds dormant native storage primitives plus a named logical-conversation constructor; no coordinator/editor instantiates the store or writes a production draft file. Workbench drafts remain in-process. No live app/helper restart, API deployment, device installation or user-data mutation occurred. The [build138 actual native chat-action checkpoint](native-chat-actions.md) remains the owning action evidence; build140 regressions are not durable-editor acceptance.
@@ -22,6 +24,6 @@ Retained failures: the first compiler rejected an actor-isolated pure UUID predi
 
 Logs: `/tmp/axo-draft-storage-{initial,compile-rerun,rerun,diagnostic,path-rerun,canonical,expanded,drafts,build,native,protocol,core,precommit,package-exact,exact,exact-native}.log`, `/tmp/axo-draft-storage-140-{core,cli}.log`.
 
-## Integration still required
+## Integration required at this checkpoint (historical)
 
 **M13/A10 remain incomplete.** Wire transactional snapshots to captured editor revisions and original submissions/pending hints, preserve unavailable/opaque data without loading an empty replacement, keep filesystem work off the typing path, and handle multiple app processes without overwriting text. Prove fresh coordinator/app exit/crash recovery, later/ABA edits, known rejected/unknown/reconciled receipts and storage faults on actual surfaces. Branch identity/policy, bounded history/tool/reading lifecycle and deployed/phone routes remain separate open requirements. This foundation closes no workflow gate and authorizes no live handoff or scope change.
