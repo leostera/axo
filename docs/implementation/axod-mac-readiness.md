@@ -1,5 +1,7 @@
 # Non-Mac work before the axod client handoff
 
+**Historical owning-slice checklist:** its original non-Mac-only authorization and method counts are not the current goal scope. The [supported-workflow inventory](supported-workflow-inventory.md) is the current cross-surface acceptance ledger. [Build133 native split evidence](evidence/native-pane-splits.md) records subsequent captured shell actions/geometry and bounded control dispatch; no full workflow, live service handoff or daemon operational gate is thereby closed.
+
 This is the execution checklist for the user's request to complete the non-Mac foundation before handing macOS work to another agent. It does not authorize editing the application, packaging, restarting live work, importing registries, changing file authority, startup registration or deployment. RFD0009 remains the contract authority.
 
 ## Acceptance milestone

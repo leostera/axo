@@ -44,7 +44,7 @@ The first three modes check retained surface identity on selection/refresh/recon
 [Build131 bounded-delivery evidence](bounded-terminal-delivery.md) subsequently
 reproduces presentation close, corrects per-read queue fragmentation with bounded
 coalescing and adds precise first-loss reasons. Its exact packaged-helper
-20-round/80-scenario campaign passes. The old aggregate disconnected flag was not
+20-round/80-scenario campaign passes. [Build133 captured pane/control evidence](native-pane-splits.md) subsequently adds a fifth mode for right/down fresh shells, exact saved geometry, bounded control-burst dispatch and observed queued cancellation, with five rounds/25 fresh-root scenarios. It still closes no full workflow gate. The old aggregate disconnected flag was not
 sufficient to attribute every historical failure exclusively to capacity; the
 failed evidence below remains historical, and full actual-surface robustness is
 still open.
