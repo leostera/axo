@@ -62,10 +62,32 @@ impl Fixture {
     fn add(&self) -> Intent {
         Intent::AddPane {
             target: self.target,
-            profile_id: "shell".into(),
+            profile_id: crate::user_shell::ShellSource::try_from(Some("shell".into())).unwrap(),
         }
     }
 }
+#[test]
+fn default_shell_receipts_reopen_without_configured_profile_aliasing_or_replay() {
+    let fixture = Fixture::new();
+    let mut store = Store::open(fixture.root.path(), &fixture.work).unwrap();
+    let command = CommandId::new();
+    let intent = Intent::AddPane {
+        target: fixture.target,
+        profile_id: crate::user_shell::ShellSource::UserLogin,
+    };
+    store.prepare(command, intent.clone()).unwrap();
+    let original = store
+        .finish_add(command, None, Some(ErrorCode::LaunchFailed))
+        .unwrap();
+    drop(store);
+    let store = Store::open(fixture.root.path(), &fixture.work).unwrap();
+    assert_eq!(store.reconcile(command, &intent).unwrap(), Some(original));
+    assert!(matches!(
+        store.reconcile(command, &fixture.add()),
+        Err(Error::Conflict)
+    ));
+}
+
 #[test]
 fn original_add_and_remove_receipts_survive_tombstones_and_reopen_without_reexecution() {
     let fixture = Fixture::new();
@@ -196,7 +218,7 @@ fn pane_reservations_share_command_identity_and_global_admission_fences() {
     let command = CommandId::new();
     let intent = Intent::AddPane {
         target,
-        profile_id: "shell".into(),
+        profile_id: crate::user_shell::ShellSource::try_from(Some("shell".into())).unwrap(),
     };
     let receipt = manager.prepare_pane(command, intent.clone()).unwrap();
     let launch = TerminalLaunch {

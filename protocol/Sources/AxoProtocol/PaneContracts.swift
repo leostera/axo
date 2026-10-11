@@ -10,7 +10,8 @@ public struct ShellPaneRecord: Decodable, Equatable, Sendable, Identifiable {
     public var id: UUID { paneId }
     public let paneId: UUID
     public let kind: ShellPaneKind
-    public let profileId: String
+    /// nil means the daemon-captured user login shell, never caller-selected argv.
+    public let profileId: String?
     public let state: ShellPaneState
     public let runtime: TerminalRuntime?
     public let terminal: TerminalSnapshot?

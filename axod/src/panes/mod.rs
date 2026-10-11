@@ -12,7 +12,7 @@ use store::{PaneRecord, PaneState};
 pub struct PaneView {
     pane_id: PaneId,
     kind: &'static str,
-    profile_id: String,
+    profile_id: crate::user_shell::ShellSource,
     state: PaneState,
     runtime: Option<RuntimeRef>,
     terminal: Option<TerminalSnapshot>,

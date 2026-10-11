@@ -1782,8 +1782,15 @@
                       "const": "shell"
                     },
                     "profileId": {
-                      "type": "string",
-                      "pattern": "^[a-zA-Z0-9_-]{1,64}$"
+                      "anyOf": [
+                        {
+                          "type": "string",
+                          "pattern": "^[a-zA-Z0-9_-]{1,64}$"
+                        },
+                        {
+                          "type": "null"
+                        }
+                      ]
                     },
                     "state": {
                       "type": "string",
@@ -2396,8 +2403,15 @@
                     "const": "shell"
                   },
                   "profileId": {
-                    "type": "string",
-                    "pattern": "^[a-zA-Z0-9_-]{1,64}$"
+                    "anyOf": [
+                      {
+                        "type": "string",
+                        "pattern": "^[a-zA-Z0-9_-]{1,64}$"
+                      },
+                      {
+                        "type": "null"
+                      }
+                    ]
                   },
                   "state": {
                     "type": "string",
@@ -2933,8 +2947,15 @@
                     "const": "shell"
                   },
                   "profileId": {
-                    "type": "string",
-                    "pattern": "^[a-zA-Z0-9_-]{1,64}$"
+                    "anyOf": [
+                      {
+                        "type": "string",
+                        "pattern": "^[a-zA-Z0-9_-]{1,64}$"
+                      },
+                      {
+                        "type": "null"
+                      }
+                    ]
                   },
                   "state": {
                     "type": "string",
@@ -3470,8 +3491,15 @@
                     "const": "shell"
                   },
                   "profileId": {
-                    "type": "string",
-                    "pattern": "^[a-zA-Z0-9_-]{1,64}$"
+                    "anyOf": [
+                      {
+                        "type": "string",
+                        "pattern": "^[a-zA-Z0-9_-]{1,64}$"
+                      },
+                      {
+                        "type": "null"
+                      }
+                    ]
                   },
                   "state": {
                     "type": "string",
@@ -3806,8 +3834,15 @@
                                   "additionalProperties": false
                                 },
                                 "profileId": {
-                                  "type": "string",
-                                  "pattern": "^[a-zA-Z0-9_-]{1,64}$"
+                                  "anyOf": [
+                                    {
+                                      "type": "string",
+                                      "pattern": "^[a-zA-Z0-9_-]{1,64}$"
+                                    },
+                                    {
+                                      "type": "null"
+                                    }
+                                  ]
                                 }
                               },
                               "required": [
@@ -5244,8 +5279,15 @@
                     "const": "shell"
                   },
                   "profileId": {
-                    "type": "string",
-                    "pattern": "^[a-zA-Z0-9_-]{1,64}$"
+                    "anyOf": [
+                      {
+                        "type": "string",
+                        "pattern": "^[a-zA-Z0-9_-]{1,64}$"
+                      },
+                      {
+                        "type": "null"
+                      }
+                    ]
                   },
                   "state": {
                     "type": "string",
@@ -9484,14 +9526,21 @@
           "pattern": "^([0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[1-8][0-9a-fA-F]{3}-[89abAB][0-9a-fA-F]{3}-[0-9a-fA-F]{12}|00000000-0000-0000-0000-000000000000|ffffffff-ffff-ffff-ffff-ffffffffffff)$"
         },
         "profileId": {
-          "type": "string",
-          "pattern": "^[a-zA-Z0-9_-]{1,64}$"
+          "default": null,
+          "anyOf": [
+            {
+              "type": "string",
+              "pattern": "^[a-zA-Z0-9_-]{1,64}$"
+            },
+            {
+              "type": "null"
+            }
+          ]
         }
       },
       "required": [
         "target",
-        "commandId",
-        "profileId"
+        "commandId"
       ],
       "additionalProperties": false
     },
@@ -9669,8 +9718,15 @@
                       "additionalProperties": false
                     },
                     "profileId": {
-                      "type": "string",
-                      "pattern": "^[a-zA-Z0-9_-]{1,64}$"
+                      "anyOf": [
+                        {
+                          "type": "string",
+                          "pattern": "^[a-zA-Z0-9_-]{1,64}$"
+                        },
+                        {
+                          "type": "null"
+                        }
+                      ]
                     }
                   },
                   "required": [
@@ -9943,8 +9999,15 @@
               "const": "shell"
             },
             "profileId": {
-              "type": "string",
-              "pattern": "^[a-zA-Z0-9_-]{1,64}$"
+              "anyOf": [
+                {
+                  "type": "string",
+                  "pattern": "^[a-zA-Z0-9_-]{1,64}$"
+                },
+                {
+                  "type": "null"
+                }
+              ]
             },
             "state": {
               "type": "string",
@@ -10256,8 +10319,15 @@
                       "additionalProperties": false
                     },
                     "profileId": {
-                      "type": "string",
-                      "pattern": "^[a-zA-Z0-9_-]{1,64}$"
+                      "anyOf": [
+                        {
+                          "type": "string",
+                          "pattern": "^[a-zA-Z0-9_-]{1,64}$"
+                        },
+                        {
+                          "type": "null"
+                        }
+                      ]
                     }
                   },
                   "required": [
@@ -10530,8 +10600,15 @@
               "const": "shell"
             },
             "profileId": {
-              "type": "string",
-              "pattern": "^[a-zA-Z0-9_-]{1,64}$"
+              "anyOf": [
+                {
+                  "type": "string",
+                  "pattern": "^[a-zA-Z0-9_-]{1,64}$"
+                },
+                {
+                  "type": "null"
+                }
+              ]
             },
             "state": {
               "type": "string",

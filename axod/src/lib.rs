@@ -30,6 +30,7 @@ mod test_support;
 mod upgrade;
 mod user_path;
 pub mod user_service;
+mod user_shell;
 pub mod work;
 #[cfg(test)]
 mod work_lifecycle_tests;

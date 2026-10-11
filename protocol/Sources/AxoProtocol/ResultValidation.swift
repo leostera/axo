@@ -537,7 +537,7 @@ public enum AxoProtocolResultValidator {
     private static func validShellPane(_ value: JSONValue, sessionID: UUID) -> Bool {
         guard let pane = object(value, keys: ["paneId", "kind", "profileId", "state", "runtime", "terminal"]),
               let paneID = uuid(pane["paneId"]), string(pane["kind"]) == "shell",
-              let profile = string(pane["profileId"]), validDirectoryID(profile),
+              let profile = pane["profileId"], profile.isNull || string(profile).map(validDirectoryID) == true,
               let state = string(pane["state"]), ShellPaneState(rawValue: state) != nil,
               let runtime = pane["runtime"], let terminal = pane["terminal"] else { return false }
         if !runtime.isNull {

@@ -14,6 +14,19 @@ test("pane add/remove are local-only, captured operations without geometry, arbi
   assert.equal(paneMethods["axo.session.pane.remove"].safeParse({ ...remove, runtime: undefined }).success, false);
   for (const method of paneMutationMethods) { assert.ok(method in localMethods); assert.equal(method in remoteMethods, false); }
 });
+test("default user shells are a distinct local-only choice with no path or argv authority", () => {
+  const add = { target: { ...target, workspaceId: null }, commandId: crypto.randomUUID(), profileId: null };
+  assert.ok(paneMethods["axo.session.pane.add"].safeParse(add).success);
+  const omitted = paneMethods["axo.session.pane.add"].parse({ target: add.target, commandId: add.commandId });
+  assert.equal(omitted.profileId, null);
+  assert.equal("axo.session.pane.add" in remoteMethods, false);
+  const receipt = { commandId: add.commandId, intent: { operation: "addPane", target: add.target, profileId: null }, paneId, runtime, disposition: { kind: "added" } };
+  assert.ok(paneReceiptSchema.safeParse(receipt).success);
+  assert.notDeepEqual(receipt.intent, { ...receipt.intent, profileId: "shell" });
+  for (const patch of [{ cwd: "/private" }, { directoryPath: "/private" }, { argv: ["/bin/sh"] }, { shell: "/bin/sh" }, { profileId: "" }]) {
+    assert.equal(paneMethods["axo.session.pane.add"].safeParse({ ...add, ...patch }).success, false);
+  }
+});
 test("pane command reconciliation exposes original disposition and identities, not a fabricated screen", () => {
   const receipt = { commandId: crypto.randomUUID(), intent: { operation: "addPane", target, profileId: "shell" }, paneId, runtime, disposition: { kind: "added" } };
   assert.ok(paneReceiptSchema.safeParse(receipt).success);

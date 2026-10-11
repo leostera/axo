@@ -28,7 +28,7 @@ pub struct SessionTarget {
 pub enum Intent {
     AddPane {
         target: SessionTarget,
-        profile_id: String,
+        profile_id: crate::user_shell::ShellSource,
     },
     RemovePane {
         target: SessionTarget,
@@ -58,7 +58,7 @@ pub struct PaneRecord {
     pub pane_id: PaneId,
     pub workspace_id: Option<WorkspaceId>,
     pub session_id: SessionId,
-    pub profile_id: String,
+    pub profile_id: crate::user_shell::ShellSource,
     pub add_command: CommandId,
     pub runtime: Option<RuntimeRef>,
     pub state: PaneState,
@@ -321,7 +321,6 @@ impl Store {
             if *id != pane.pane_id
                 || work.is_pi_pane(*id)
                 || self.session_panes(pane.session_id).len() > 32
-                || !crate::work::valid_directory_id(&pane.profile_id)
             {
                 return false;
             }

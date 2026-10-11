@@ -28,7 +28,8 @@ enum Method {
 struct AddPaneRequest {
     target: SessionTarget,
     command_id: CommandId,
-    profile_id: String,
+    #[serde(default)]
+    profile_id: crate::user_shell::ShellSource,
 }
 #[derive(Deserialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
@@ -93,9 +94,6 @@ fn add(
     profiles: &BTreeMap<String, TerminalLaunch>,
 ) -> Outcome {
     destination(request.target, manager, machine)?;
-    if !crate::work::valid_directory_id(&request.profile_id) {
-        return Err((-32602, "Invalid approved pane profile"));
-    }
     let intent = Intent::AddPane {
         target: request.target,
         profile_id: request.profile_id.clone(),
@@ -109,9 +107,6 @@ fn add(
     if let Some(receipt) = original {
         return result(receipt, manager);
     }
-    let launch = profiles
-        .get(&request.profile_id)
-        .ok_or((-32003, "Pane profile not approved"))?;
     let context = {
         let work = manager.work.lock().unwrap();
         let session = work
@@ -124,17 +119,7 @@ fn add(
         )
         .map_err(|_| (-32003, "Pane directory unavailable"))?
     };
-    if Path::new(&launch.directory).canonicalize().ok().as_ref() != Some(&context.directory) {
-        return Err((-32003, "Pane profile directory mismatch"));
-    }
-    let launch = TerminalLaunch {
-        directory: context
-            .directory
-            .to_str()
-            .ok_or((-32003, "Pane directory is not UTF-8"))?
-            .into(),
-        argv: launch.argv.clone(),
-    };
+    let launch = pane_launch(&request.profile_id, &context, manager, profiles)?;
     let receipt = manager
         .prepare_pane(request.command_id, intent)
         .map_err(failure)?;
@@ -161,6 +146,54 @@ fn add(
         .map_err(failure)?;
     result(receipt, manager)
 }
+fn pane_launch(
+    source: &crate::user_shell::ShellSource,
+    context: &crate::work::ExecutionContext,
+    manager: &Manager,
+    profiles: &BTreeMap<String, TerminalLaunch>,
+) -> Result<TerminalLaunch, (i32, &'static str)> {
+    use crate::{user_shell::ShellSource, work::DirectoryApproval};
+    match source {
+        ShellSource::UserLogin => {
+            // Local selections and captured HOME carry durable directory approval.
+            // Configured workspace authority still requires its current approval.
+            if let DirectoryApproval::Profile(id) = &context.approval {
+                let approved = profiles
+                    .get(id)
+                    .ok_or((-32003, "Workspace profile not approved"))?;
+                if Path::new(&approved.directory).canonicalize().ok().as_ref()
+                    != Some(&context.directory)
+                {
+                    return Err((-32003, "Workspace profile directory mismatch"));
+                }
+            }
+            manager
+                .user_shell
+                .as_ref()
+                .and_then(|shell| shell.launch(&context.directory))
+                .ok_or((-32003, "Captured user login shell unavailable"))
+        }
+        ShellSource::Approved(profile) => {
+            let approved = profiles
+                .get(profile.id())
+                .ok_or((-32003, "Pane profile not approved"))?;
+            if Path::new(&approved.directory).canonicalize().ok().as_ref()
+                != Some(&context.directory)
+            {
+                return Err((-32003, "Pane profile directory mismatch"));
+            }
+            Ok(TerminalLaunch {
+                directory: context
+                    .directory
+                    .to_str()
+                    .ok_or((-32003, "Pane directory is not UTF-8"))?
+                    .into(),
+                argv: approved.argv.clone(),
+            })
+        }
+    }
+}
+
 fn remove(request: RemovePaneRequest, manager: &Manager, machine: MachineId) -> Outcome {
     destination(request.target, manager, machine)?;
     let intent = Intent::RemovePane {

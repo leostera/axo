@@ -35,6 +35,18 @@ final class ShellPaneSessionTests: XCTestCase {
         XCTAssertEqual(parsed.shellPanes[0].state, .open)
         XCTAssertThrowsError(try AxoProtocolResultValidator.sessionGet(result(panes: [pane(sessionID: UUID())]), target: target))
     }
+    func testDefaultShellIsExplicitlyNullableWithoutPathAuthority() throws {
+        guard case .object(var fields) = pane() else { return XCTFail() }
+        fields["profileId"] = .null
+        let parsed = try AxoProtocolResultValidator.sessionGet(result(panes: [.object(fields)]), target: target).session
+        XCTAssertNil(parsed.shellPanes[0].profileId)
+        for invalid in [JSONValue.string(""), .string("../shell"), .object(["argv": .array([.string("/bin/sh")])])] {
+            fields["profileId"] = invalid
+            XCTAssertThrowsError(try AxoProtocolResultValidator.sessionGet(result(panes: [.object(fields)]), target: target))
+        }
+        fields.removeValue(forKey: "profileId")
+        XCTAssertThrowsError(try AxoProtocolResultValidator.sessionGet(result(panes: [.object(fields)]), target: target))
+    }
     func testDuplicatePaneIDsAndPiPaneCollisionsAreRejected() {
         let value = pane()
         XCTAssertThrowsError(try AxoProtocolResultValidator.sessionGet(result(panes: [value, value]), target: target))

@@ -1,6 +1,6 @@
 # Local shell panes: explicit add/remove
 
-`axo.session.pane.add` and `axo.session.pane.remove` are **local-only public JSON-RPC methods**, implemented in Rust through the same actual `axo` CLI/local WebSocket/Manager/native PTY path. The shared package exposes them in `localMethods`, not the cloud `remoteMethods` allowlist. The Rust relay dispatcher rejects them too. This does not wire shortcuts or attach Ghostty in the current Mac app.
+`axo.session.pane.add` and `axo.session.pane.remove` are **local-only public JSON-RPC methods**, implemented in Rust through the same actual `axo` CLI/local WebSocket/Manager/native PTY path. The shared package exposes them in `localMethods`, not the cloud `remoteMethods` allowlist. The Rust relay dispatcher rejects them too. The Mac now attaches assigned PTYs through a transport-only Ghostty child; automatic creation and native shortcuts remain separate, open workflow gates.
 
 ## Shortcut semantics selected by the operator
 
@@ -8,7 +8,7 @@
 - **Cmd+W → remove:** explicitly terminate the exact captured shell runtime, wait for verified ownership completion, then tombstone the pane. This is destructive intent, not just renderer detach.
 - Client quit, renderer detach, cloud loss and unrelated view closure do not invoke remove or terminate work. Pi's managed pane is not a shell pane and cannot be removed through these methods.
 
-Geometry, focus and terminal bytes are not RPC arguments/results. A public local terminal data plane and Ghostty external-PTY adoption remain separate gates.
+Geometry, focus and terminal bytes are not RPC arguments/results. The separate local terminal plane and pinned full Ghostty surface have component-fixture evidence; full screen recovery and actual workbench acceptance remain open.
 
 ## Configuration and wire shapes
 
@@ -18,7 +18,9 @@ Use the existing private approved profiles file with `axod serve ... --profiles-
 {"profiles":{"work":{"directory":"/absolute/approved/workspace","argv":["/bin/sh"]},"shell":{"directory":"/absolute/approved/workspace","argv":["/bin/zsh","-l"]}}}
 ```
 
-Create workspace/session metadata first. Add selects `shell` by operator-approved profile ID. Its canonical directory must match that work session's saved directory; the launch uses the captured canonical directory and approved argv. There is no caller argv/cwd/prompt or runtime fallback.
+Create workspace/session metadata first. **Default:** `profileId:null` (or an omitted request field) selects the daemon's boot-captured user login shell with `-l`. Standalone cwd is the HOME captured in the original session commit; project cwd is its approved canonical folder. No configured profile or Pi policy/admission is required. SHELL is captured if present; only absence consults the user account's shell. Invalid/unavailable/replaced executables fail before new pane intent, without fallback. Configured workspace approval still requires its current matching directory profile; locally selected folders and captured HOME retain their committed approval.
+
+**Configured:** a profile string such as `shell` selects operator-approved argv whose canonical directory must match that session. There is no caller argv/cwd/prompt or runtime fallback. Null and string are distinct typed intent choices, not an alias: existing string receipts keep their original JSON representation. This default-shell policy is available only through local pane add, never added to the generic cloud launch-profile map.
 
 ```json
 {
@@ -45,7 +47,7 @@ Remove takes the same captured parent `target`, fresh `commandId`, returned `pan
 
 ## Ownership, receipts and recovery
 
-Private mode-0600 `pane-state.json` v1 stores identities, approved profile IDs, lifecycle and original normalized operation receipts—not argv, terminal bodies, geometry, history or credentials. Caps: 32 active panes/session, 1,000 retained pane identities, 2,000 receipts and 4 MiB. Removed identities remain tombstones and cannot be replaced through generic runtime launch. There is no automatic eviction/import/migration or shell restoration after restart.
+Private mode-0600 `pane-state.json` v1 stores identities, the approved profile string or null user-shell choice, lifecycle and original normalized operation receipts—not argv, terminal bodies, geometry, history or credentials. Caps: 32 active panes/session, 1,000 retained pane identities, 2,000 receipts and 4 MiB. Removed identities remain tombstones and cannot be replaced through generic runtime launch. There is no automatic eviction/import/migration or shell restoration after restart.
 
 New command admission/collision/persistence fencing is shared across work/runtime/Pi/pane domains. Add durably reserves identity/intent before native launch; remove durably reserves captured intent and `closing` state before delivering a signal. Original command reconciliation never starts another shell or repeats a removal signal, even after removal or changed operator policy. `axo.command.get` returns `kind:"pane"` receipts; prepared start evidence can include the journal's original runtime when final binding was uncertain.
 
@@ -59,4 +61,6 @@ A five-second completion deadline or lost ownership produces truthful unknown/re
 
 `tests/public_cli.rs` now uses actual `axo`/`axod serve` to add two real shell PTYs, proves TTY execution through an approved shell effect, reconciles without another effect, rejects stale runtime/generic replacement, removes only one shell, verifies the sibling remains running, restarts without replay, removes a proven-stopped historical pane and reads original receipts. `tests/managed_public.rs` separately adds/removes a shell alongside actual ambient Pi and verifies Pi remains admitted with no provider replay; Pi persistence failure also fences new pane admission.
 
-Five store/admission tests cover tombstones/original dispositions, missing completion witness, wrong runtime/duplicate removal, exhaustive synthetic truncation/unreceipted edits, persistence fencing and cross-domain collision/fencing. Protocol tests cover closed local schemas, captured runtime, no geometry/argv/body leakage, typed client calls and nonexecuting notifications. The real local/cloud matrix tests malformed/stale local pane requests, idless nonexecution and rejection of valid pane requests at the cloud route. These are daemon/protocol facts, not native shortcut/rendering or live app acceptance.
+The default-shell actual CLI case additionally creates standalone and locally selected project work with an empty profile map and no Pi admission; regular native-PTY input verifies exact cwd and TTY effects. It checks receipt replay without another pane, default/configured intent collision, detach survival, captured completion-gated removal and the original receipt afterward. See [exact default-shell checkpoint evidence](../docs/implementation/evidence/default-user-shell.md). Native automatic two-pane creation remains unimplemented; this is not A03 acceptance.
+
+Six store/admission tests cover tombstones/original dispositions, missing completion witness, wrong runtime/duplicate removal, exhaustive synthetic truncation/unreceipted edits, persistence fencing and cross-domain collision/fencing. Protocol tests cover closed local schemas, captured runtime, no geometry/argv/body leakage, typed client calls and nonexecuting notifications. The real local/cloud matrix tests malformed/stale local pane requests, idless nonexecution and rejection of valid pane requests at the cloud route. These are daemon/protocol facts, not native shortcut/rendering or live app acceptance.

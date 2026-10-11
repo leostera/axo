@@ -11,6 +11,17 @@ use std::{
     time::{Duration, Instant},
 };
 
+fn daemon_program() -> PathBuf {
+    let path = std::env::var_os("AXO_LOCAL_DAEMON_BINARY")
+        .map(PathBuf::from)
+        .unwrap_or_else(|| PathBuf::from(env!("CARGO_BIN_EXE_axod")));
+    assert!(
+        path.is_absolute() && path.is_file(),
+        "Owned helper fixture requires an absolute executable"
+    );
+    path
+}
+
 struct Daemon {
     root: PathBuf,
     child: Child,
@@ -36,11 +47,16 @@ impl Daemon {
         };
         fs::write(&config, serde_json::to_vec(&profiles).unwrap()).unwrap();
         fs::set_permissions(&config, fs::Permissions::from_mode(0o600)).unwrap();
-        let child = Command::new(env!("CARGO_BIN_EXE_axod"))
+        let child = Command::new(daemon_program())
             .arg("serve")
             .arg(&root)
             .arg("--profiles-config")
             .arg(config)
+            .env("HOME", &root)
+            .env("SHELL", "/bin/sh")
+            .env_remove("ZDOTDIR")
+            .env_remove("ENV")
+            .env_remove("BASH_ENV")
             .stdout(Stdio::null())
             .stderr(Stdio::null())
             .spawn()
@@ -92,11 +108,16 @@ impl Daemon {
             assert!(Instant::now() < deadline, "Owned daemon stop deadline");
             thread::sleep(Duration::from_millis(25));
         }
-        self.child = Command::new(env!("CARGO_BIN_EXE_axod"))
+        self.child = Command::new(daemon_program())
             .arg("serve")
             .arg(&self.root)
             .arg("--profiles-config")
             .arg(self.root.join("profiles.json"))
+            .env("HOME", &self.root)
+            .env("SHELL", "/bin/sh")
+            .env_remove("ZDOTDIR")
+            .env_remove("ENV")
+            .env_remove("BASH_ENV")
             .stdout(Stdio::null())
             .stderr(Stdio::null())
             .spawn()
@@ -155,6 +176,101 @@ fn uuid_argument(id: impl serde::Serialize) -> String {
         .expect("Typed UUID argument")
         .to_owned()
 }
+#[test]
+fn actual_cli_default_shells_use_captured_home_or_approved_project_without_profiles_or_pi() {
+    use axod::{model::RuntimeRef, terminal_client::TerminalClient};
+    let daemon = Daemon::start_with_profiles(false);
+    let destination = daemon.target();
+    let standalone = daemon.call("axo.session.create", json!({"target":destination,"commandId":uuid::Uuid::new_v4(),"expectedRevision":0,"name":"Standalone"}));
+    assert!(standalone["session"]["workspaceId"].is_null());
+    assert!(
+        daemon.call("axo.workspace.list", json!({"target":destination}))["workspaces"]
+            .as_array()
+            .unwrap()
+            .is_empty()
+    );
+    let project = daemon.root.join("approved project");
+    fs::create_dir(&project).unwrap();
+    let project = fs::canonicalize(project).unwrap();
+    let workspace = daemon.call("axo.workspace.createLocal", json!({"target":destination,"commandId":uuid::Uuid::new_v4(),"expectedRevision":1,"directoryPath":project,"name":"Project"}));
+    let workspace_id = workspace["workspace"]["workspaceId"].clone();
+    let project_session = daemon.call("axo.session.create", json!({"target":{"machineId":destination["machineId"],"hostGeneration":destination["hostGeneration"],"workspaceId":workspace_id},"commandId":uuid::Uuid::new_v4(),"expectedRevision":2,"name":"Project shell"}));
+    let sessions = [
+        (
+            standalone["session"].clone(),
+            fs::canonicalize(&daemon.root).unwrap(),
+        ),
+        (project_session["session"].clone(), project),
+    ];
+    for (session, directory) in sessions {
+        let target = json!({"machineId":destination["machineId"],"hostGeneration":destination["hostGeneration"],"workspaceId":session["workspaceId"],"sessionId":session["sessionId"]});
+        let command = uuid::Uuid::new_v4();
+        let params = json!({"target":target,"commandId":command,"profileId":null});
+        let added = daemon.call("axo.session.pane.add", params.clone());
+        assert!(added["pane"]["profileId"].is_null());
+        assert_eq!(added["pane"]["state"], "open");
+        assert_eq!(added, daemon.call("axo.session.pane.add", params));
+        let conflicting = daemon.invoke(
+            "axo.session.pane.add",
+            json!({"target":target,"commandId":command,"profileId":"shell"}),
+        );
+        assert!(
+            !conflicting.status.success(),
+            "Configured/default intent collision was accepted"
+        );
+        let runtime: RuntimeRef = serde_json::from_value(added["pane"]["runtime"].clone()).unwrap();
+        let machine = Client::connect(&daemon.discovery())
+            .unwrap()
+            .discovery
+            .machine_id;
+        let (mut terminal, initial) =
+            TerminalClient::connect(&daemon.root, machine, runtime).unwrap();
+        let _observed_initial = initial.backlog.data();
+        terminal.acknowledge(&initial.backlog).unwrap();
+        terminal.input(b"pwd -P > cwd.txt; test -t 0 && test -t 1 && printf tty-ok > tty.txt; printf shell-complete\\n\n").unwrap();
+        let deadline = Instant::now() + Duration::from_secs(6);
+        while !fs::read(directory.join("tty.txt")).is_ok_and(|bytes| bytes == b"tty-ok") {
+            if let Some(axod::terminal_client::StreamEvent::Output(chunk)) =
+                terminal.read().unwrap()
+            {
+                let _observed = chunk.data();
+                terminal.acknowledge(&chunk).unwrap();
+            }
+            assert!(
+                Instant::now() < deadline,
+                "Owned regular-shell TTY effect deadline"
+            );
+        }
+        assert_eq!(fs::read(directory.join("tty.txt")).unwrap(), b"tty-ok");
+        assert_eq!(
+            fs::read_to_string(directory.join("cwd.txt"))
+                .unwrap()
+                .trim(),
+            directory.to_str().unwrap()
+        );
+        terminal.detach().unwrap();
+        let current = daemon.call("axo.session.get", json!({"target":target}));
+        assert_eq!(current["session"]["pi"]["admission"], "notAdmitted");
+        assert_eq!(
+            current["session"]["shellPanes"].as_array().unwrap().len(),
+            1
+        );
+        assert_eq!(
+            current["session"]["shellPanes"][0]["terminal"]["process"]["kind"],
+            "running"
+        );
+        let removed = daemon.call("axo.session.pane.remove", json!({"target":target,"commandId":uuid::Uuid::new_v4(),"paneId":added["pane"]["paneId"],"runtime":runtime}));
+        assert_eq!(removed["receipt"]["disposition"]["kind"], "removed");
+        assert_eq!(
+            daemon.call(
+                "axo.command.get",
+                json!({"target":destination,"commandId":command})
+            )["receipt"]["receipt"],
+            added["receipt"]
+        );
+    }
+}
+
 #[test]
 fn actual_frontend_child_forwards_pty_input_resize_and_quits_without_stopping_work() {
     use axod::{model::*, runtime::Sink, terminal::Frame};

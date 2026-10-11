@@ -32,7 +32,7 @@ The Swift surface includes JSON-RPC envelope/response types, a bounded envelope 
 swift test --package-path protocol
 ```
 
-The Codable contract models establish wire shapes, and `AxoProtocolResultValidator`, `AxoProtocolWorkRequestValidator`, and `AxoProtocolPiRequest/ResultValidator` provide method-boundary validation. `AxoCore.AxoJSONRPCClient` opens credential-free local WebSockets only from a strictly validated private discovery descriptor; cloud calls still require the existing Access cookie. The new Axod-only Mac app uses this client for local work/runtime metadata and managed Pi admission, canonical chat/history, message/steering/cancel, and question answers. Terminal attachment remains unavailable. The private API end-to-end harness exercises negotiation/runtime methods; Pi request/result contracts have Swift unit coverage.
+The Codable contract models establish wire shapes, and `AxoProtocolResultValidator`, `AxoProtocolWorkRequestValidator`, and `AxoProtocolPiRequest/ResultValidator` provide method-boundary validation. `AxoCore.AxoJSONRPCClient` opens credential-free local WebSockets only from a strictly validated private discovery descriptor; cloud calls still require the existing Access cookie. The new Axod-only Mac app uses this client for local work/runtime metadata and managed Pi admission, canonical chat/history, message/steering/cancel, and question answers. Native terminal attachment uses a separate bounded local data plane and transport-only frontend child, not these JSON-RPC methods; full VT recovery remains unavailable. The private API end-to-end harness exercises negotiation/runtime methods; Pi request/result contracts have Swift unit coverage.
 
 ## Typed use
 
