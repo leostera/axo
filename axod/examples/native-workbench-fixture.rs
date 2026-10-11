@@ -134,6 +134,8 @@ fn main() {
                     repo.join("pi-axo/tests/fixtures/native-start-delay.ts"),
                     "--extension",
                     repo.join("pi-axo/tests/fixtures/provider.ts"),
+                    "--extension",
+                    repo.join("pi-axo/tests/fixtures/native-chat-events.ts"),
                     "--model",
                     "axo-interactive-fixture/fixture",
                     "--tools",

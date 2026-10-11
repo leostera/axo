@@ -234,11 +234,6 @@ struct NativeWorkbenchFixtureChecks {
         guard let ready = coordinator.chatSnapshot else { throw Failure.missing("captured native chat") }
         let target = ready.target
         let originalPi = coordinator.selectedSession?.runtime?.runtime
-        guard let session = coordinator.selectedSession, let piSnapshot = coordinator.presentationSnapshot(for: session) else {
-            throw Failure.missing("native chat Pi surface identity")
-        }
-        let piLaunch = try coordinator.terminalLaunch(for: piSnapshot, sessionID: session.sessionId)
-        let piView = try coordinator.terminalSurfaces.view(for: piLaunch)
         precondition(coordinator.chatDrafts.edit("TITLE_AND_ACTUAL_TOOL", for: target))
         coordinator.submitChatDraft(snapshot: ready)
         precondition(coordinator.isSendingPiMessage && coordinator.pendingChatCommandId != nil)
@@ -287,10 +282,10 @@ struct NativeWorkbenchFixtureChecks {
             !coordinator.isSendingPiMessage && coordinator.pendingChatCommandId == nil &&
             coordinator.chatSnapshot?.busy == true && coordinator.chatSnapshot?.interactionId != nil
         }
-        // Only a controlled synthetic progress predicate, never run/binding
-        // authority: the addressed interaction remains the typed snapshot above.
-        try await wait("owned first provider stream actually visible in native Pi") {
-            visibleText(piView).contains("native-stream-started-5")
+        // Only controlled public-Pi progress, never run/binding authority. The
+        // addressed interaction remains the typed snapshot, not a marker file.
+        try await wait("owned first provider stream consumed by public Pi observer") {
+            (try? Data(contentsOf: home.appendingPathComponent("native-provider-stream-5"))) == Data("started".utf8)
         }
         guard let active = coordinator.chatSnapshot else { throw Failure.missing("native active source") }
         coordinator.cancelChatTurn(snapshot: active)
@@ -307,8 +302,8 @@ struct NativeWorkbenchFixtureChecks {
             !coordinator.isSendingPiMessage && coordinator.pendingChatCommandId == nil &&
             coordinator.chatSnapshot?.busy == true && coordinator.chatSnapshot?.interactionId != nil
         }
-        try await wait("owned second provider stream actually visible in native Pi") {
-            visibleText(piView).contains("native-stream-started-6")
+        try await wait("owned second provider stream consumed by public Pi observer") {
+            (try? Data(contentsOf: home.appendingPathComponent("native-provider-stream-6"))) == Data("started".utf8)
         }
         guard let steering = coordinator.chatSnapshot else { throw Failure.missing("native captured steering") }
         coordinator.chatDrafts.edit("NATIVE_STEER_TOOL", for: target)
