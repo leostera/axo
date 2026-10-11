@@ -402,6 +402,27 @@ struct NativeWorkbenchFixtureChecks {
         try await wait("normal-turn canonical title in native catalog") { coordinator.selectedSession?.pi.title == "Axo Workbench" }
         precondition(coordinator.selectedSession?.displayName == "Daily work" && coordinator.selectedSession?.manualName == true)
         print("PASS: owned native inline sidebar rename, durable protected name, later actual Pi canonical title kept separately, unchanged Pi/shell execution")
+        try await wait("rendered canonical tool source after catalog observation") {
+            coordinator.chatSnapshot != nil && coordinator.chatEntries.contains(where: { $0.role == "toolResult" && $0.toolName == "bash" })
+        }
+        guard let toolSnapshot = coordinator.chatSnapshot,
+              let output = coordinator.chatEntries.first(where: { $0.role == "toolResult" && $0.toolName == "bash" }),
+              let toolSource = AxodToolOutput.Source(entry: output, snapshot: toolSnapshot) else { throw Failure.missing("recorded tool detail source") }
+        precondition(output.truncated)
+        coordinator.openToolOutput(entry: output, snapshot: toolSnapshot)
+        try await wait("first canonical tool output page") { !coordinator.toolOutput.isLoading && coordinator.toolOutput.page?.offset == 0 }
+        guard let first = coordinator.toolOutput.page, let next = first.nextOffset else { throw Failure.missing("bounded canonical first page") }
+        precondition(first.totalBytes == 15000 && first.text.utf8.count <= 8192 && first.text.hasPrefix("λ界"))
+        coordinator.loadToolOutput(source: toolSource, movement: .next)
+        try await wait("next canonical UTF-8 tool output page") { !coordinator.toolOutput.isLoading && coordinator.toolOutput.page?.offset == next }
+        guard let last = coordinator.toolOutput.page else { throw Failure.missing("bounded canonical last page") }
+        precondition(last.nextOffset == nil && first.text + last.text == String(repeating: "λ界", count: 3000))
+        coordinator.loadToolOutput(source: toolSource, movement: .previous)
+        try await wait("previous canonical tool output page") { !coordinator.toolOutput.isLoading && coordinator.toolOutput.page?.offset == 0 }
+        precondition(coordinator.toolOutput.page == first && coordinator.selectedSession?.runtime?.runtime == originalPi)
+        coordinator.closeToolOutput()
+        precondition(coordinator.toolOutput.source == nil && coordinator.toolOutput.page == nil)
+        print("PASS: owned native canonical tool reader pages actual Pi Unicode output forward/backward with exact byte offsets, one bounded page and unchanged execution")
         try await wait("canonical chat reload after title catalog refresh") {
             coordinator.chatSnapshot?.target == target && coordinator.chatSnapshot?.busy == false
         }

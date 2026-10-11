@@ -131,23 +131,7 @@ struct AxodWorkbenchView: View {
                 ScrollView {
                     LazyVStack(alignment: .leading, spacing: 12) {
                         ForEach(coordinator.chatEntries, id: \.entryId) { entry in
-                            VStack(alignment: .leading, spacing: 4) {
-                                Text(entry.role ?? entry.toolName ?? entry.kind.capitalized)
-                                    .font(.system(size: 11, weight: .semibold))
-                                    .foregroundStyle(Color.white.opacity(0.55))
-                                Text(entry.text.isEmpty ? "[No text content]" : entry.text)
-                                    .font(.system(size: 12, design: .monospaced))
-                                    .foregroundStyle(Color.white.opacity(0.88))
-                                    .textSelection(.enabled)
-                                if entry.truncated {
-                                    Text("Entry truncated by Axod's bounded history projection.")
-                                        .font(.system(size: 10))
-                                        .foregroundStyle(Color.orange.opacity(0.78))
-                                }
-                            }
-                            .frame(maxWidth: .infinity, alignment: .leading)
-                            .padding(10)
-                            .background(Color.white.opacity(0.035), in: RoundedRectangle(cornerRadius: 6))
+                            AxodCanonicalHistoryEntryRow(entry: entry, snapshot: snapshot, coordinator: coordinator)
                         }
                     }
                     .padding(12)

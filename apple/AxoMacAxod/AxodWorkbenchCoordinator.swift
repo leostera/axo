@@ -55,6 +55,8 @@ final class AxodWorkbenchCoordinator {
     private(set) var chatSnapshot: PiChatSnapshot?
     private(set) var chatEntries: [PiCanonicalProjection] = []
     private(set) var nextChatCursor: PiHistoryCursor?
+    let toolOutput = AxodToolOutput()
+    @ObservationIgnored private var toolOutputTask: Task<Void, Never>?
     private(set) var chatStatusMessage = "Select an admitted Pi session to view its canonical conversation."
     private(set) var pendingChatCommandId: UUID?
     private(set) var pendingPiStartCommandID: UUID?
@@ -1253,6 +1255,61 @@ final class AxodWorkbenchCoordinator {
         }
     }
 
+    func openToolOutput(entry: PiCanonicalProjection, snapshot: PiChatSnapshot) {
+        guard let source = AxodToolOutput.Source(entry: entry, snapshot: snapshot),
+              chatSnapshot?.target == snapshot.target, chatSnapshot?.readMode == snapshot.readMode,
+              chatEntries.contains(where: { $0.entryId == source.entryID && $0.toolCallId == source.toolCallID && $0.role == "toolResult" }),
+              canReadToolOutput(source), let ticket = toolOutput.open(source) else { return }
+        readToolOutput(ticket)
+    }
+
+    func loadToolOutput(source: AxodToolOutput.Source, movement: AxodToolOutput.Movement) {
+        guard toolOutput.source == source else { return }
+        guard canReadToolOutput(source) else { toolOutput.invalidateSource(); return }
+        guard let ticket = toolOutput.begin(movement) else { return }
+        readToolOutput(ticket)
+    }
+
+    func closeToolOutput() {
+        toolOutput.close()
+        toolOutputTask?.cancel()
+    }
+
+    private func canReadToolOutput(_ source: AxodToolOutput.Source) -> Bool {
+        guard connectionState == .connected, let endpoint, let session = selectedSession,
+              endpoint.machineId == source.target.machineId, endpoint.hostGeneration == source.target.hostGeneration,
+              session.sessionId == source.target.sessionId, session.workspaceId == source.target.workspaceId,
+              session.pi.paneId == source.target.paneId, session.pi.chatId == source.target.chatId,
+              session.runtime?.runtime == source.target.runtime else { return false }
+        switch (source.readMode, session.pi.admission) {
+        case (.live, .ready), (.stopped, .stopped), (.stopped, .failed): return true
+        default: return false
+        }
+    }
+
+    private func readToolOutput(_ ticket: AxodToolOutput.Ticket) {
+        guard let connection, let endpoint else { toolOutput.fail(ticket, issue: .unavailable); return }
+        let operation = operationGeneration
+        toolOutputTask = Task { [weak self] in
+            guard let self else { return }
+            defer { self.toolOutputTask = nil }
+            do {
+                try Task.checkCancellation()
+                guard self.canReadToolOutput(ticket.source) else { throw CancellationError() }
+                try self.stateDirectory?.requireCurrentEndpoint(endpoint)
+                let value = try await connection.request(method: AxoProtocol.Method.getToolOutput, parameters: ticket.parameters)
+                let page = try PiProtocolValidator.toolOutput(value, target: ticket.source.target, readMode: ticket.source.readMode,
+                    entryId: ticket.source.entryID, toolCallId: ticket.source.toolCallID, offset: ticket.offset)
+                try Task.checkCancellation()
+                guard self.isCurrent(operation, connection: connection, endpoint: endpoint), self.canReadToolOutput(ticket.source) else { self.toolOutput.fail(ticket, issue: .unavailable); return }
+                try self.stateDirectory?.requireCurrentEndpoint(endpoint)
+                self.toolOutput.complete(ticket, page: page)
+            } catch {
+                self.toolOutput.fail(ticket, issue: error is CancellationError ? .unavailable : .failed)
+            }
+        }
+    }
+
     func submitChatDraft(snapshot: PiChatSnapshot) {
         guard snapshot.readMode == .live, snapshot.admission == .ready,
               !snapshot.recovery, snapshot.uiWaits == 0, snapshot.question == nil,
@@ -1696,7 +1753,9 @@ final class AxodWorkbenchCoordinator {
     }
 
     private func activateSelectedSession() {
-        stopChatObservation()
+        // An immutable tool entry is not a branch-page cursor. Keep its explicit reader
+        // across metadata-only refresh while the full selected writer/read mode is unchanged.
+        stopChatObservation(preservingToolOutput: toolOutput.source.map(canReadToolOutput) ?? false)
         chatTarget = nil
         chatSnapshot = nil
         chatEntries = []
@@ -1980,7 +2039,8 @@ final class AxodWorkbenchCoordinator {
         }
     }
 
-    private func stopChatObservation() {
+    private func stopChatObservation(preservingToolOutput: Bool = false) {
+        if !preservingToolOutput { closeToolOutput() }
         chatObservationTask?.cancel()
         chatObservationTask = nil
         chatLoadGeneration = UUID()

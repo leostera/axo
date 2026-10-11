@@ -175,7 +175,7 @@ fn serve(mut stream: TcpStream, requests: &AtomicUsize) {
         })
     {
         json!({"tool_calls":[
-            {"index":0,"id":format!("bash-{count}"),"type":"function","function":{"name":"bash","arguments":"{\"command\":\"printf Pi-owned-tool > marker.txt\"}"}},
+            {"index":0,"id":format!("bash-{count}"),"type":"function","function":{"name":"bash","arguments":"{\"command\":\"printf Pi-owned-tool > marker.txt; i=0; while [ \\\"$i\\\" -lt 3000 ]; do printf 'λ界'; i=$((i+1)); done\"}"}},
             {"index":1,"id":format!("title-{count}"),"type":"function","function":{"name":"axo_set_title","arguments":"{\"title\":\"Axo Workbench\"}"}}
         ]})
     } else if body["messages"]
