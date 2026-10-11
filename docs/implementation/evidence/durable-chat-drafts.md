@@ -1,5 +1,7 @@
 # Scoped draft persistence integration — build144
 
+> Owning integration/fence checkpoint. Separate native fixture-client process exit/crash evidence follows in [build146](native-draft-process-recovery.md); packaged-app/OS-editor and power-loss gates remain incomplete.
+
 ## Exact delivery and scope
 
 Implementation **`2c6b1c970d570f970b917bf905f5d1d489e647d0`**, `dist/Axo.app` **build144**, bundled helper **`0.1.0 (2c6b1c97)`**, matching `AxoBuildCommit`; `codesign --verify --deep --strict` passes. This connects the [build140 dormant storage foundation](private-draft-storage.md) to production editor/coordinator state. It does **not** close M12/M13, A09/A10 or any full workflow gate. The running app/helper, live data, API deployment and physical phone were left untouched. An exact package is not a live helper upgrade.
