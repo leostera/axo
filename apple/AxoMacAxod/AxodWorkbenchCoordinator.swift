@@ -1756,6 +1756,8 @@ final class AxodWorkbenchCoordinator {
                 try self.requireCurrent(operation)
                 try stateDirectory.requireCurrentEndpoint(endpoint)
             })
+        try requireCurrent(operation)
+        try stateDirectory.requireCurrentEndpoint(endpoint)
         switch decision {
         case .keepCurrent: needsLegacyDaemonReplacement = false
         case .legacyAwaitingSafeStop:
@@ -1764,6 +1766,9 @@ final class AxodWorkbenchCoordinator {
         case .deferredActiveWork:
             needsLegacyDaemonReplacement = true
             daemonServiceMessage = "This app is connected to an older helper. New work is disabled until a safe helper update; retained runtime completion is uncertain. Existing work was not stopped."
+        case .awaitingOriginalHandoff:
+            needsLegacyDaemonReplacement = true
+            daemonServiceMessage = "An earlier helper update is unresolved. This app remains connected read-only; the original handoff is preserved and no work was restarted."
         case .quiesced:
             try await replaceDaemonRegistration(in: stateDirectory, replacing: endpoint, operation: operation)
         }

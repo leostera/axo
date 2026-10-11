@@ -5,7 +5,7 @@ import Foundation
 /// Planning may freeze an idle helper, but only the coordinator's captured registration
 /// operation performs the handoff. A lost acknowledgement retains the same plan.
 @MainActor enum AxodDaemonUpgrade {
-    enum Decision { case keepCurrent, legacyAwaitingSafeStop, deferredActiveWork, quiesced }
+    enum Decision { case keepCurrent, legacyAwaitingSafeStop, deferredActiveWork, awaitingOriginalHandoff, quiesced }
     static func pendingKey(_ machineID: UUID) -> String { "Axo.axod.pendingUpgrade.\(machineID.uuidString)" }
 
     static func prepare(over connection: AxoJSONRPCWebSocketConnection, endpoint: LocalDaemonEndpoint,
@@ -18,25 +18,14 @@ import Foundation
               let buildString = info["CFBundleVersion"] as? String, let build = UInt64(buildString),
               build > 0, build <= WorkRevision.maximumSafeInteger else { return .keepCurrent }
         let key = pendingKey(endpoint.machineId)
-        if running.daemonVersion == version {
-            preferences.removeObject(forKey: key)
-            return .keepCurrent
-        }
+        let choice = AxodDaemonUpgradePlan.choose(target: target, runningVersion: running.daemonVersion,
+            replacementVersion: version, replacementBuild: build,
+            pending: .init(stored: preferences.object(forKey: key)))
         let parameters: HostUpgradeParameters
-        if let saved = preferences.data(forKey: key) {
-            let captured = try JSONDecoder().decode(HostUpgradeParameters.self, from: saved)
-            if captured.target == target {
-                guard captured.plan.replacementVersion == version, captured.plan.replacementBuildNumber == build else {
-                    throw AxoProtocolValidationError.invalidParameters(method: AxoProtocol.Method.prepareHostUpgrade)
-                }
-                parameters = captured
-            } else {
-                parameters = HostUpgradeParameters(target: target, plan: HostUpgradePlan(handoffId: UUID(),
-                    expectedVersion: running.daemonVersion, replacementVersion: version, replacementBuildNumber: build))
-            }
-        } else {
-            parameters = HostUpgradeParameters(target: target, plan: HostUpgradePlan(handoffId: UUID(),
-                expectedVersion: running.daemonVersion, replacementVersion: version, replacementBuildNumber: build))
+        switch choice {
+        case .keepCurrent: return .keepCurrent
+        case .awaitOriginalHandoff: return .awaitingOriginalHandoff
+        case .prepare(let captured): parameters = captured
         }
         try validate()
         preferences.set(try JSONEncoder().encode(parameters), forKey: key)
