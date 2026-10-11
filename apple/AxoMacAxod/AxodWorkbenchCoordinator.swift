@@ -83,6 +83,7 @@ final class AxodWorkbenchCoordinator {
     @ObservationIgnored private var preferredMachineID: UUID?
     @ObservationIgnored private var preferredWorkspaceID: UUID?
     @ObservationIgnored private var preferredSessionID: UUID?
+    @ObservationIgnored private var initialTerminalFocus: WorkSessionTarget?
     let terminalSurfaces = AxodTerminalSurfaces()
     let shellCreation: AxodShellCreation
     let paneLayouts: AxodPaneLayouts
@@ -97,6 +98,7 @@ final class AxodWorkbenchCoordinator {
     private var chatObservationTask: Task<Void, Never>?
     private var hostObservationTask: Task<Void, Never>?
     private var connectTask: Task<Void, Never>?
+    private let bundledDaemon = AxodBundledDaemon()
     let voice: MacVoiceCoordinator
 #if AXO_NATIVE_FIXTURE
     @ObservationIgnored private var fixtureAttachmentHelper: URL?
@@ -587,13 +589,18 @@ final class AxodWorkbenchCoordinator {
                 self.activeCreationContext = nil
                 self.selectedWorkspaceID = session.workspaceId
                 self.selectedSessionID = session.sessionId
+                self.initialTerminalFocus = WorkSessionTarget(machineId: context.target.machineId, hostGeneration: context.target.hostGeneration,
+                    workspaceId: session.workspaceId, sessionId: session.sessionId)
                 self.preferredWorkspaceID = session.workspaceId
                 self.preferredSessionID = session.sessionId
                 self.saveSelection()
                 if context.authority == .emptyAppLaunch { self.emptyStartupMessage = nil }
                 self.workEditMessage = "Session created. Starting its independent terminals…"
+                // Reserve the startup UI immediately. Shell admission is committed first;
+                // its process remains independent while Pi starts and waits for readiness.
+                self.isStartingPi = true
                 let shell = await self.shellCreation.start(session: session, source: context.target, send: { parameters in
-                    try await connection.request(method: AxoProtocol.Method.addShellPane, parameters: parameters)
+                        try await connection.request(method: AxoProtocol.Method.addShellPane, parameters: parameters)
                 }) {
                     guard self.isCurrent(operation, connection: connection, endpoint: endpoint),
                           let directory = self.stateDirectory else { throw CancellationError() }
@@ -611,6 +618,7 @@ final class AxodWorkbenchCoordinator {
                                                           endpoint: endpoint, operation: operation)
                 guard self.isCurrent(operation, connection: connection, endpoint: endpoint),
                       self.selectedSessionID == session.sessionId else { return }
+                self.isStartingPi = false
                 if ready {
                     self.workEditor = nil
                     self.createdSessionForEditor = nil
@@ -876,6 +884,19 @@ final class AxodWorkbenchCoordinator {
     func preparePaneLayout(_ session: WorkSessionRecord) {
         guard selectedSessionID == session.sessionId, let machineID else { return }
         paneLayouts.observe(session, machineID: machineID)
+    }
+
+    func terminalBecameAvailable(_ key: TerminalLaunch.Key, in window: NSWindow) {
+        guard let intent = initialTerminalFocus, let session = selectedSession,
+              intent.machineId == key.machineID, intent.sessionId == key.sessionID,
+              intent.hostGeneration == key.hostGeneration, session.sessionId == intent.sessionId,
+              session.workspaceId == intent.workspaceId, session.shellPanes.first?.paneId == key.paneID,
+              currentTerminalKey(key.paneID, in: session) == key,
+              let presentation = terminalSurfaces.presentation(for: key), presentation.window === window else { return }
+        initialTerminalFocus = nil
+        // Do not interrupt an editor or a terminal the user chose during startup.
+        if window.firstResponder is NSTextView || window.firstResponder is TerminalView { return }
+        _ = window.makeFirstResponder(presentation.view)
     }
 
     func focusTerminal(_ key: TerminalLaunch.Key) {
@@ -1568,6 +1589,10 @@ final class AxodWorkbenchCoordinator {
                 }
             }
 
+            // Cold startup must not wait for launchd/BTM to decide when to spawn.
+            // A current owner remains untouched; only an exclusively ownerless
+            // root may start this bundle's helper directly.
+            try bundledDaemon.startIfOwnerAbsent(in: stateDirectory)
             let discovered: LocalDaemonEndpoint
             do {
                 discovered = try await waitForEndpoint(in: stateDirectory, replacing: previous, operation: operation)
@@ -1600,8 +1625,8 @@ final class AxodWorkbenchCoordinator {
             needsLegacyDaemonReplacement = true
             daemonServiceMessage = "Automatic helper update is waiting for the older daemon to stop safely. This version cannot prove an idle handoff; running or uncertain work is preserved."
         case .deferredActiveWork:
-            needsLegacyDaemonReplacement = false
-            daemonServiceMessage = "Helper update deferred: an owned runtime is still running or its completion is uncertain. Your work was left untouched."
+            needsLegacyDaemonReplacement = true
+            daemonServiceMessage = "This app is connected to an older helper. New work is disabled until a safe helper update; retained runtime completion is uncertain. Existing work was not stopped."
         case .quiesced:
             try await replaceDaemonRegistration(in: stateDirectory, replacing: endpoint, operation: operation)
         }

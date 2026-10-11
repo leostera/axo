@@ -41,6 +41,11 @@ struct AxodWorkbenchView: View {
             paneBackground
             if let session = selectedSession {
                 VStack(spacing: 0) {
+                    if coordinator.needsLegacyDaemonReplacement {
+                        Text(coordinator.daemonServiceMessage)
+                            .font(.callout).foregroundStyle(Color.orange)
+                            .frame(maxWidth: .infinity, alignment: .leading).padding(12)
+                    }
                     HStack(alignment: .top, spacing: 12) {
                         VStack(alignment: .leading, spacing: 5) {
                             Text(session.displayName)

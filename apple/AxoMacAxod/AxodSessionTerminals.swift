@@ -116,7 +116,8 @@ private struct AxodRuntimeTerminalPane: View {
                         .frame(maxWidth: .infinity, alignment: .leading).padding(8)
                 }
                 AxodTerminalHost(launch: launch, surfaces: coordinator.terminalSurfaces, inputEnabled: isRunning,
-                    viewportID: viewportID, onFocus: { [weak coordinator] in coordinator?.focusTerminal(launch.key) })
+                    viewportID: viewportID, onFocus: { [weak coordinator] in coordinator?.focusTerminal(launch.key) },
+                    onAvailable: { [weak coordinator] window in coordinator?.terminalBecameAvailable(launch.key, in: window) })
                     .id(launch.key)
             } else {
                 AxodTerminalInlineState(title: nil, message: failure ?? pendingMessage)

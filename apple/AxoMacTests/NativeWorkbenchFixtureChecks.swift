@@ -139,8 +139,12 @@ struct NativeWorkbenchFixtureChecks {
         }
         precondition(shellView.inputEnabled && !shellView.childExited)
         // One intentional synthetic command, never resent after unknown input.
-        precondition(window.makeFirstResponder(shellView))
-        shellView.insertText("printf native-shell-ready > \"$HOME/native-shell-ready\"", replacementRange: NSRange(location: NSNotFound, length: 0))
+        try await wait("new session automatically focuses its usable shell") { window.firstResponder === shellView }
+        let letter = NSEvent.keyEvent(with: .keyDown, location: .zero, modifierFlags: [], timestamp: 0,
+            windowNumber: window.windowNumber, context: nil, characters: "a", charactersIgnoringModifiers: "a", isARepeat: false, keyCode: 0)!
+        window.sendEvent(letter)
+        precondition(coordinator.selectedSessionID == session.sessionId && window.firstResponder === shellView)
+        shellView.insertText("xo_native_ready=1; printf native-shell-ready > \"$HOME/native-shell-ready\"", replacementRange: NSRange(location: NSNotFound, length: 0))
         let enter = NSEvent.keyEvent(with: .keyDown, location: .zero, modifierFlags: [], timestamp: 0,
             windowNumber: window.windowNumber, context: nil, characters: "\r", charactersIgnoringModifiers: "\r", isARepeat: false, keyCode: 36)!
         shellView.keyDown(with: enter)

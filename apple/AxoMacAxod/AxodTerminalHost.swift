@@ -7,10 +7,11 @@ struct AxodTerminalHost: NSViewRepresentable {
     let inputEnabled: Bool
     let viewportID: UUID
     let onFocus: () -> Void
+    var onAvailable: ((NSWindow) -> Void)? = nil
 
     func makeNSView(context: Context) -> AxodTerminalHostView { AxodTerminalHostView() }
     func updateNSView(_ host: AxodTerminalHostView, context: Context) {
-        host.install(launch: launch, surfaces: surfaces, inputEnabled: inputEnabled, viewportID: viewportID, onFocus: onFocus)
+        host.install(launch: launch, surfaces: surfaces, inputEnabled: inputEnabled, viewportID: viewportID, onFocus: onFocus, onAvailable: onAvailable)
     }
     static func dismantleNSView(_ host: AxodTerminalHostView, coordinator: ()) { host.releaseViewport() }
 }
@@ -22,6 +23,8 @@ final class AxodTerminalHostView: NSView {
     private weak var terminal: TerminalView?
     private var viewportID: UUID?
     private weak var restoreFocusWindow: NSWindow?
+    private var onAvailable: ((NSWindow) -> Void)?
+    private var availabilityScheduled = false
     private let failure = NSTextField(wrappingLabelWithString: "")
 
     override init(frame: NSRect) {
@@ -41,9 +44,10 @@ final class AxodTerminalHostView: NSView {
     required init?(coder: NSCoder) { fatalError("Programmatic terminal viewport") }
 
     func install(launch: TerminalLaunch, surfaces: AxodTerminalSurfaces, inputEnabled: Bool,
-                 viewportID: UUID, onFocus: @escaping () -> Void) {
+                 viewportID: UUID, onFocus: @escaping () -> Void, onAvailable: ((NSWindow) -> Void)? = nil) {
+        self.onAvailable = onAvailable
         if key == launch.key, self.viewportID == viewportID, let terminal {
-            terminal.inputEnabled = inputEnabled; terminal.onFocus = onFocus; return
+            terminal.inputEnabled = inputEnabled; terminal.onFocus = onFocus; notifyAvailability(); return
         }
         releaseViewport()
         do {
@@ -72,6 +76,7 @@ final class AxodTerminalHostView: NSView {
             ])
             view.setVisible(window?.occlusionState.contains(.visible) ?? false)
             restoreFocusIfAttached()
+            notifyAvailability()
         } catch {
             showFailure(error.localizedDescription)
         }
@@ -80,7 +85,18 @@ final class AxodTerminalHostView: NSView {
         guard terminal === view, self.key == key, view.superview === self else { return nil }
         return viewportID
     }
-    override func viewDidMoveToWindow() { super.viewDidMoveToWindow(); restoreFocusIfAttached() }
+    override func viewDidMoveToWindow() { super.viewDidMoveToWindow(); restoreFocusIfAttached(); notifyAvailability() }
+    private func notifyAvailability() {
+        guard !availabilityScheduled, let key, let window, let terminal, onAvailable != nil else { return }
+        availabilityScheduled = true
+        DispatchQueue.main.async { [weak self, weak terminal, weak window] in
+            guard let self else { return }
+            self.availabilityScheduled = false
+            guard let terminal, let window, self.key == key, self.terminal === terminal,
+                  terminal.window === window, self.window === window else { return }
+            self.onAvailable?(window)
+        }
+    }
     private func restoreFocusIfAttached() {
         guard let window, let original = restoreFocusWindow else { return }
         if window === original, let terminal { window.makeFirstResponder(terminal) }
