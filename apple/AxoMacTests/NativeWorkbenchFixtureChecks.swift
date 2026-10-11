@@ -13,10 +13,16 @@ struct NativeWorkbenchFixtureChecks {
         var success = false
         Task { @MainActor in
             do { try await check(); success = true }
-            catch { fputs("Owned native workbench check failed: \(error)\n", stderr) }
+            catch {
+                if case Failure.missing(let stage) = error {
+                    fputs("Owned native workbench check failed: stage=\(stage)\n", stderr)
+                } else {
+                    fputs("Owned native workbench check failed: class=Other\n", stderr)
+                }
+            }
             finished = true
         }
-        let deadline = Date().addingTimeInterval(40)
+        let deadline = Date().addingTimeInterval(CommandLine.arguments.last == "chat" ? 75 : 40)
         while !finished && Date() < deadline { RunLoop.current.run(until: Date().addingTimeInterval(0.01)) }
         if !finished || !success { exit(1) }
     }
@@ -163,6 +169,11 @@ struct NativeWorkbenchFixtureChecks {
         if mode == .panes {
             try await checkSplits(coordinator: coordinator, window: window, home: home, session: session, shell: shell, shellView: shellView)
         }
+        if mode == .chat {
+            try await checkChat(coordinator: coordinator, window: window, home: home, shellView: shellView)
+        }
+        let draftTarget = coordinator.chatTarget
+        let retainedDraft = draftTarget.map { coordinator.chatDrafts.text(for: $0) }
         // Native reload/reselection preserves the exact frontend/surface. It is
         // not a new writer, and retained rendering is not a VT recovery claim.
         let originalSession = coordinator.selectedSessionID
@@ -184,6 +195,10 @@ struct NativeWorkbenchFixtureChecks {
         precondition(reconnected === shellView)
         precondition(coordinator.selectedSession?.shellPanes.first(where: { $0.paneId == shell.paneId })?.runtime == snapshot.runtime)
         precondition(!coordinator.isStartingPi, "Restoration/reconnect dispatched another start")
+        if mode == .chat, let draftTarget {
+            precondition(retainedDraft == "preserved after actual steering")
+            precondition(coordinator.chatDrafts.text(for: draftTarget) == retainedDraft)
+        }
         for pane in coordinator.selectedSession?.shellPanes ?? [] {
             if let snapshot = pane.terminal, let launch = try? coordinator.terminalLaunch(for: snapshot, sessionID: session.sessionId) {
                 try coordinator.terminalSurfaces.view(for: launch).detachPresentation()
@@ -208,6 +223,114 @@ struct NativeWorkbenchFixtureChecks {
             precondition(savedLayout != nil && restoredLayout == savedLayout)
         }
         print("PASS: owned production native creation, immediate selection/no modal, captured PTY surfaces, independent shell input, retained restoration/reconnect/later-launch (\(mode.rawValue)); not Finder/service/live acceptance")
+    }
+
+    @MainActor private static func checkChat(coordinator: AxodWorkbenchCoordinator, window: NSWindow,
+                                           home: URL, shellView: TerminalView) async throws {
+        coordinator.refreshChat()
+        try await wait("native canonical chat ready") {
+            coordinator.chatSnapshot?.admission == .ready && coordinator.chatSnapshot?.busy == false
+        }
+        guard let ready = coordinator.chatSnapshot else { throw Failure.missing("captured native chat") }
+        let target = ready.target
+        let originalPi = coordinator.selectedSession?.runtime?.runtime
+        guard let session = coordinator.selectedSession, let piSnapshot = coordinator.presentationSnapshot(for: session) else {
+            throw Failure.missing("native chat Pi surface identity")
+        }
+        let piLaunch = try coordinator.terminalLaunch(for: piSnapshot, sessionID: session.sessionId)
+        let piView = try coordinator.terminalSurfaces.view(for: piLaunch)
+        precondition(coordinator.chatDrafts.edit("TITLE_AND_ACTUAL_TOOL", for: target))
+        coordinator.submitChatDraft(snapshot: ready)
+        precondition(coordinator.isSendingPiMessage && coordinator.pendingChatCommandId != nil)
+        coordinator.chatDrafts.edit("edited during real normal submission", for: target)
+        try await wait("native normal receipt and actual Pi tool/history") {
+            !coordinator.isSendingPiMessage && coordinator.pendingChatCommandId == nil &&
+            coordinator.chatSnapshot?.busy == false &&
+            coordinator.chatEntries.contains(where: { $0.role == "assistant" && $0.text.contains("Actual public RPC tool complete") }) &&
+            (try? Data(contentsOf: home.appendingPathComponent("marker.txt"))) == Data("Pi-owned-tool".utf8)
+        }
+        precondition(coordinator.chatDrafts.text(for: target) == "edited during real normal submission")
+        coordinator.refresh()
+        try await wait("normal-turn canonical title in native catalog") { coordinator.selectedSession?.pi.title == "Axo Workbench" }
+        try await wait("canonical chat reload after title catalog refresh") {
+            coordinator.chatSnapshot?.target == target && coordinator.chatSnapshot?.busy == false
+        }
+        guard let settled = coordinator.chatSnapshot, settled.target == target else { throw Failure.missing("native settled source") }
+        coordinator.chatDrafts.edit("ASK_OWNED_QUESTION", for: target)
+        coordinator.submitChatDraft(snapshot: settled)
+        try await wait("native question and unchanged draft acknowledged") {
+            !coordinator.isSendingPiMessage && coordinator.pendingChatCommandId == nil && coordinator.chatSnapshot?.question != nil
+        }
+        precondition(coordinator.chatDrafts.text(for: target).isEmpty)
+        guard let waiting = coordinator.chatSnapshot, let question = waiting.question,
+              let option = question.options.first else { throw Failure.missing("captured native owned question") }
+        coordinator.chatDrafts.edit("must stay local during owned question", for: target)
+        coordinator.submitChatDraft(snapshot: waiting)
+        precondition(!coordinator.isSendingPiMessage && coordinator.pendingChatCommandId == nil)
+        precondition(coordinator.chatDrafts.text(for: target) == "must stay local during owned question")
+        try await shellEffect(shellView, window: window, home: home, marker: "native-question-shell")
+        precondition(coordinator.chatSnapshot?.question?.id == question.id)
+        coordinator.answerChatQuestion(question, option: option, snapshot: waiting)
+        try await wait("native offered answer and canonical settlement") {
+            !coordinator.isSendingPiMessage && coordinator.pendingChatCommandId == nil &&
+            coordinator.chatSnapshot?.busy == false && coordinator.chatSnapshot?.question == nil &&
+            coordinator.chatEntries.contains(where: { $0.toolName == "axo_ask" && $0.text == "User chose: Allow" })
+        }
+        coordinator.answerChatQuestion(question, option: option, snapshot: waiting)
+        precondition(!coordinator.isSendingPiMessage && coordinator.pendingChatCommandId == nil)
+        precondition(coordinator.chatDrafts.text(for: target) == "must stay local during owned question")
+
+        guard let idle = coordinator.chatSnapshot else { throw Failure.missing("native cancel source") }
+        coordinator.chatDrafts.edit("BLOCK_PUBLIC_STREAM", for: target)
+        coordinator.submitChatDraft(snapshot: idle)
+        try await wait("native active cancellable interaction") {
+            !coordinator.isSendingPiMessage && coordinator.pendingChatCommandId == nil &&
+            coordinator.chatSnapshot?.busy == true && coordinator.chatSnapshot?.interactionId != nil
+        }
+        // Only a controlled synthetic progress predicate, never run/binding
+        // authority: the addressed interaction remains the typed snapshot above.
+        try await wait("owned first provider stream actually visible in native Pi") {
+            visibleText(piView).contains("native-stream-started-5")
+        }
+        guard let active = coordinator.chatSnapshot else { throw Failure.missing("native active source") }
+        coordinator.cancelChatTurn(snapshot: active)
+        try await wait("native cancellation acknowledged and settled") {
+            !coordinator.isSendingPiMessage && coordinator.pendingChatCommandId == nil && coordinator.chatSnapshot?.busy == false
+        }
+        coordinator.cancelChatTurn(snapshot: active)
+        precondition(!coordinator.isSendingPiMessage && coordinator.pendingChatCommandId == nil)
+
+        guard let afterCancel = coordinator.chatSnapshot else { throw Failure.missing("native steering source") }
+        coordinator.chatDrafts.edit("BLOCK_PUBLIC_STREAM", for: target)
+        coordinator.submitChatDraft(snapshot: afterCancel)
+        try await wait("native active steerable interaction") {
+            !coordinator.isSendingPiMessage && coordinator.pendingChatCommandId == nil &&
+            coordinator.chatSnapshot?.busy == true && coordinator.chatSnapshot?.interactionId != nil
+        }
+        try await wait("owned second provider stream actually visible in native Pi") {
+            visibleText(piView).contains("native-stream-started-6")
+        }
+        guard let steering = coordinator.chatSnapshot else { throw Failure.missing("native captured steering") }
+        coordinator.chatDrafts.edit("NATIVE_STEER_TOOL", for: target)
+        coordinator.submitChatDraft(snapshot: steering)
+        precondition(coordinator.isSendingPiMessage && coordinator.pendingChatCommandId != nil)
+        coordinator.chatDrafts.edit("preserved after actual steering", for: target)
+        do {
+            try await wait("native steering receipt and actual subsequent tool", seconds: 24) {
+                !coordinator.isSendingPiMessage && coordinator.pendingChatCommandId == nil &&
+                coordinator.chatSnapshot?.busy == false &&
+                (try? Data(contentsOf: home.appendingPathComponent("native-steer-marker.txt"))) == Data("Native-steered".utf8)
+            }
+        } catch {
+            let marker = FileManager.default.fileExists(atPath: home.appendingPathComponent("native-steer-marker.txt").path)
+            let canonicalInput = coordinator.chatEntries.contains(where: { $0.role == "user" && $0.text.contains("NATIVE_STEER_TOOL") })
+            fputs("Owned native steering diagnostic: sending=\(coordinator.isSendingPiMessage) pending=\(coordinator.pendingChatCommandId != nil) busy=\(coordinator.chatSnapshot?.busy == true) recovery=\(coordinator.chatSnapshot?.recovery == true) marker=\(marker) canonicalInput=\(canonicalInput)\n", stderr)
+            throw error
+        }
+        precondition(coordinator.chatDrafts.text(for: target) == "preserved after actual steering")
+        precondition(coordinator.selectedSession?.runtime?.runtime == originalPi)
+        precondition(coordinator.selectedSession?.shellPanes.count == 1 && !shellView.childExited && shellView.inputEnabled)
+        print("PASS: owned production native chat actions, actual Pi tool/title/history, original draft revision, owned question with usable shell, offered/stale answer, captured cancel/steer and exact runtime survival; not real OS composer/IME or deployed/phone acceptance")
     }
 
     @MainActor private static func checkControlBurst(root: URL) async throws {
@@ -316,13 +439,13 @@ struct NativeWorkbenchFixtureChecks {
         return String(decoding: UnsafeRawBufferPointer(start: pointer, count: Int(text.text_len)), as: UTF8.self)
     }
 
-    @MainActor private static func wait(_ stage: String, _ predicate: () -> Bool) async throws {
-        let deadline = Date().addingTimeInterval(12)
+    @MainActor private static func wait(_ stage: String, seconds: TimeInterval = 12, _ predicate: () -> Bool) async throws {
+        let deadline = Date().addingTimeInterval(seconds)
         while !predicate() {
             guard Date() < deadline else { throw Failure.missing(stage) }
             try await Task.sleep(for: .milliseconds(10))
         }
     }
-    private enum Mode: String { case delayed, unavailable, automatic, pending, panes }
+    private enum Mode: String { case delayed, unavailable, automatic, pending, panes, chat }
     private enum Failure: Error { case missing(String) }
 }

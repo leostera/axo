@@ -4,8 +4,8 @@ import { writeFileSync } from "node:fs";
 import { join } from "node:path";
 
 export default function fixture(pi: ExtensionAPI) {
-  // No model request is made by this fixture. This metadata keeps startup independent
-  // of the operator's real provider credentials in the disposable HOME.
+  // Baseline modes make no model request. The chat mode loads a separate controlled
+  // provider for explicit native actions; neither uses the operator's credentials.
   pi.registerProvider("axo-native-fixture", {
     baseUrl: "http://127.0.0.1:1", apiKey: "unused-owned-fixture", api: "openai-completions",
     models: [{ id: "fixture", name: "Native workbench fixture", reasoning: false,

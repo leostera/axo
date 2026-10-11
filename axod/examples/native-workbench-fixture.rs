@@ -1,5 +1,7 @@
 //! Rust owns disposable daemon/Pi fixtures. The Swift child uses production native
 //! coordinator/view/terminal code, with compile-only service/history isolation.
+#[path = "../tests/support/model_fixture.rs"]
+mod model_fixture;
 use axod::{ambient_pi::AmbientPi, client::Client};
 use serde_json::{Value, json};
 use std::{
@@ -39,8 +41,8 @@ fn private_file(path: &Path, value: &Value) {
 fn main() {
     let args: Vec<_> = std::env::args_os().collect();
     assert!(
-        (3..=4).contains(&args.len()),
-        "Usage: native-workbench-fixture native-check helper [repetitions]"
+        (3..=5).contains(&args.len()),
+        "Usage: native-workbench-fixture native-check helper [repetitions] [all|chat]"
     );
     let repetitions = args.get(3).map_or(1, |value| {
         let value = value.to_str().expect("ASCII repetition count");
@@ -49,6 +51,14 @@ fn main() {
         assert!((1..=20).contains(&count), "Repetitions must be 1–20");
         count
     });
+    let only_chat = match args.get(4) {
+        None => false,
+        Some(value) => match value.to_str() {
+            Some("all") => false,
+            Some("chat") => true,
+            _ => panic!("Owned campaign mode must be all or chat"),
+        },
+    };
     let check = PathBuf::from(&args[1]);
     let helper = PathBuf::from(&args[2]);
     assert!(check.is_absolute() && check.is_file() && helper.is_absolute() && helper.is_file());
@@ -68,7 +78,23 @@ fn main() {
         AmbientPi::find(None).expect("Actual ambient Pi required; no repository fallback");
     for repetition in 1..=repetitions {
         println!("Owned native campaign repetition={repetition}/{repetitions}");
-        for mode in ["delayed", "unavailable", "automatic", "pending", "panes"] {
+        for mode in [
+            "delayed",
+            "unavailable",
+            "automatic",
+            "pending",
+            "panes",
+            "chat",
+        ] {
+            if only_chat && mode != "chat" {
+                continue;
+            }
+            let model = (mode == "chat").then(model_fixture::Fixture::new);
+            let provider = model.as_ref().map(|model| {
+                let path = model.root().join("provider.json");
+                private_file(&path, &json!({"baseUrl":model.url()}));
+                path
+            });
             let temporary =
                 std::env::temp_dir().join(format!("axo-native-workbench-{}", uuid::Uuid::new_v4()));
             fs::DirBuilder::new()
@@ -96,6 +122,23 @@ fn main() {
             };
             let arguments = if mode == "unavailable" {
                 json!(["--no-approve"])
+            } else if mode == "chat" {
+                json!([
+                    "--no-approve",
+                    "--offline",
+                    "--no-skills",
+                    "--no-themes",
+                    "--no-context-files",
+                    "--no-prompt-templates",
+                    "--extension",
+                    repo.join("pi-axo/tests/fixtures/native-start-delay.ts"),
+                    "--extension",
+                    repo.join("pi-axo/tests/fixtures/provider.ts"),
+                    "--model",
+                    "axo-interactive-fixture/fixture",
+                    "--tools",
+                    "bash,fixture_ask,axo_ask,axo_set_title"
+                ])
             } else {
                 json!([
                     "--no-approve",
@@ -117,7 +160,11 @@ fn main() {
                 .mode(0o600)
                 .open(root.join("daemon.stderr"))
                 .unwrap();
-            let child = Command::new(&helper)
+            let mut command = Command::new(&helper);
+            if let Some(provider) = &provider {
+                command.env("PI_AXO_INTERACTIVE_FIXTURE_CONFIG", provider);
+            }
+            let child = command
                 .arg("serve")
                 .arg(&state)
                 .arg("--profiles-config")
@@ -152,7 +199,8 @@ fn main() {
                 .arg(mode)
                 .spawn()
                 .unwrap();
-            let deadline = Instant::now() + Duration::from_secs(45);
+            let deadline =
+                Instant::now() + Duration::from_secs(if mode == "chat" { 80 } else { 45 });
             let status = loop {
                 if let Some(status) = native.try_wait().unwrap() {
                     break status;
@@ -164,6 +212,14 @@ fn main() {
                 }
                 thread::sleep(Duration::from_millis(20));
             };
+            if !status.success()
+                && let Some(model) = &model
+            {
+                eprintln!(
+                    "Owned native model failure diagnostic: requestCount={}",
+                    model.requests()
+                );
+            }
             assert!(status.success(), "Owned native workbench check failed");
             let mut client = Client::connect(&discovery).unwrap();
             let target = json!({"machineId":client.discovery.machine_id,"hostGeneration":client.discovery.host_generation});
@@ -198,6 +254,18 @@ fn main() {
                 assert_eq!(
                     fs::read(home.join("native-shell-ready")).unwrap(),
                     b"native-shell-ready"
+                );
+            }
+            if let Some(model) = &model {
+                assert_eq!(
+                    model.requests(),
+                    8,
+                    "Owned native chat model request count; no replay or duplicate execution"
+                );
+                assert_eq!(fs::read(home.join("marker.txt")).unwrap(), b"Pi-owned-tool");
+                assert_eq!(
+                    fs::read(home.join("native-steer-marker.txt")).unwrap(),
+                    b"Native-steered"
                 );
             }
             println!(

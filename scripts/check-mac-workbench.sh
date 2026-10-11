@@ -26,4 +26,4 @@ env -u LIBRARY_PATH xcrun swiftc -swift-version 5 -D AXO_NATIVE_FIXTURE -parse-a
   -framework CoreGraphics -framework IOSurface -framework Carbon -framework IOKit -framework ServiceManagement \
   -o "$TMP/native-workbench-check"
 cargo build --manifest-path "$ROOT/axod/Cargo.toml" --locked --offline --example native-workbench-fixture
-"$ROOT/axod/target/debug/examples/native-workbench-fixture" "$TMP/native-workbench-check" "$HELPER" "${AXO_NATIVE_WORKBENCH_REPETITIONS:-1}"
+"$ROOT/axod/target/debug/examples/native-workbench-fixture" "$TMP/native-workbench-check" "$HELPER" "${AXO_NATIVE_WORKBENCH_REPETITIONS:-1}" "${AXO_NATIVE_WORKBENCH_MODE:-all}"

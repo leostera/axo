@@ -147,7 +147,7 @@ fn serve(mut stream: TcpStream, requests: &AtomicUsize) {
         }
         for index in 0..200 {
             let delta = if index == 0 {
-                json!({"role":"assistant","content":"stream"})
+                json!({"role":"assistant","content":format!("native-stream-started-{count}")})
             } else {
                 json!({"content":"."})
             };
@@ -188,6 +188,12 @@ fn serve(mut stream: TcpStream, requests: &AtomicUsize) {
         })
     {
         json!({"tool_calls":[{"index":0,"id":format!("call-{count}"),"type":"function","function":{"name":"axo_ask","arguments":"{\"title\":\"Approve fixture?\",\"options\":[\"Allow\",\"Deny\"]}"}}]})
+    } else if body["messages"]
+        .as_array()
+        .and_then(|messages| messages.last())
+        .is_some_and(|message| message["content"].to_string().contains("NATIVE_STEER_TOOL"))
+    {
+        json!({"tool_calls":[{"index":0,"id":format!("call-{count}"),"type":"function","function":{"name":"bash","arguments":"{\"command\":\"printf Native-steered > native-steer-marker.txt\"}"}}]})
     } else if body["messages"]
         .as_array()
         .and_then(|messages| messages.last())
