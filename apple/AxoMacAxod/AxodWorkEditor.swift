@@ -37,6 +37,7 @@ struct AxodWorkEditor: View {
             Text(context.title).font(.headline)
             if case .workspace = context.kind, coordinator.createdSessionForEditor == nil {
                 TextField("Workspace name", text: $name).textFieldStyle(.roundedBorder)
+                    .accessibilityIdentifier("Axo.Workspace.Name")
             }
             if case .session(let workspaceID) = context.kind {
                 Text(workspaceID == nil ? "Starts in your home folder ($HOME)." : "Starts in this workspace’s folder.")
@@ -44,6 +45,7 @@ struct AxodWorkEditor: View {
             }
             if case .workspace = context.kind, coordinator.createdSessionForEditor == nil {
                 Button(directory == nil ? "Choose Folder…" : "Change Folder…", systemImage: "folder") { choosingFolder = true }
+                    .accessibilityIdentifier("Axo.Workspace.ChooseFolder")
                 if let directory {
                     Text(directory.rawValue).font(.callout).foregroundStyle(.secondary).textSelection(.enabled)
                 }
@@ -59,7 +61,8 @@ struct AxodWorkEditor: View {
                     Button("Cancel") { coordinator.workEditor = nil }
                         .keyboardShortcut(.cancelAction)
                     if case .workspace = context.kind {
-                        Button("Create & Start") { coordinator.createWork(context, name: name, directory: directory) }
+                        Button("Create Workspace") { coordinator.createWork(context, name: name, directory: directory) }
+                            .accessibilityIdentifier("Axo.Workspace.Create")
                             .keyboardShortcut(.defaultAction)
                             .disabled(!canCreate || coordinator.isEditingWork || coordinator.pendingWorkCommandID != nil)
                     }

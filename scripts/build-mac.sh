@@ -52,6 +52,8 @@ if [[ "$(/usr/libexec/PlistBuddy -c 'Print :BundleProgram' "$AGENT_PLIST")" != "
 fi
 BUNDLED_AXOD_VERSION="$("$APP/Contents/Helpers/axod" --version)"
 plutil -insert AxoBundledAxodVersion -string "$BUNDLED_AXOD_VERSION" "$APP/Contents/Info.plist"
+COMPATIBLE_AXOD_VERSIONS="$(python3 "$ROOT/scripts/helper-compatible-versions.py" "$ROOT" "$BUNDLED_AXOD_VERSION")"
+plutil -insert AxoCompatibleAxodVersions -json "$COMPATIBLE_AXOD_VERSIONS" "$APP/Contents/Info.plist"
 BUILD_COMMIT="$(git -C "$ROOT" rev-parse HEAD)"
 BUILD_NUMBER="$(git -C "$ROOT" rev-list --count HEAD)"
 plutil -insert AxoBuildCommit -string "$BUILD_COMMIT" "$APP/Contents/Info.plist"

@@ -1,4 +1,9 @@
 import Foundation
+#if canImport(Darwin)
+import Darwin
+#else
+import Glibc
+#endif
 
 /// Parsed absolute local path; filesystem usability remains the daemon's responsibility.
 public struct LocalDirectoryPath: Encodable, Equatable, Sendable {
@@ -11,7 +16,13 @@ public struct LocalDirectoryPath: Encodable, Equatable, Sendable {
 
     public init?(selectedURL: URL) {
         guard selectedURL.isFileURL else { return nil }
-        self.init(rawValue: selectedURL.resolvingSymlinksInPath().standardizedFileURL.path)
+        let canonical = selectedURL.withUnsafeFileSystemRepresentation { path -> String? in
+            guard let path, let resolved = realpath(path, nil) else { return nil }
+            defer { free(resolved) }
+            return String(validatingCString: resolved)
+        }
+        guard let canonical else { return nil }
+        self.init(rawValue: canonical)
     }
 
     public func encode(to encoder: Encoder) throws {

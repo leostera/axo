@@ -20,7 +20,14 @@ struct DaemonUpgradePlanChecks {
         precondition(choose(.encoded(bytes)) == .prepare(captured), "Exact original handoff changed")
         precondition(choose(.encoded(bytes), build: 173) == .awaitOriginalHandoff, "New package must not invalidate the read-only connection")
         precondition(choose(.encoded(bytes), replacement: "later-helper") == .awaitOriginalHandoff)
-        precondition(choose(.encoded(bytes), running: "new-helper") == .awaitOriginalHandoff, "Matching installed version is not original receipt reconciliation")
+        precondition(choose(.encoded(bytes), running: "new-helper") == .keepCurrent, "An old capture must not block a verified-current helper")
+        precondition(choose(.opaque, running: "new-helper") == .keepCurrent, "Opaque historical handoff cannot disable current helper capabilities")
+        precondition(AxodDaemonUpgradePlan.choose(target: target, runningVersion: "old-helper",
+            replacementVersion: "frontend-only-build", replacementBuild: 173, pending: .encoded(bytes),
+            compatibleVersions: ["old-helper"]) == .keepCurrent, "Identical execution code must remain usable across frontend-only builds")
+        precondition(AxodDaemonUpgradePlan.choose(target: target, runningVersion: "unknown-helper",
+            replacementVersion: "frontend-only-build", replacementBuild: 173, pending: .encoded(bytes),
+            compatibleVersions: ["old-helper"]) == .awaitOriginalHandoff, "Unknown helper compatibility must not be invented")
         precondition(choose(.encoded(bytes), source: MachineTarget(machineId: target.machineId, hostGeneration: UUID())) == .awaitOriginalHandoff)
         precondition(choose(.encoded(bytes), source: MachineTarget(machineId: UUID(), hostGeneration: target.hostGeneration)) == .awaitOriginalHandoff)
         precondition(choose(.init(stored: "opaque")) == .awaitOriginalHandoff)
@@ -35,6 +42,7 @@ struct DaemonUpgradePlanChecks {
         defer { preferences.removePersistentDomain(forName: suite) }
         preferences.set(bytes, forKey: "original")
         precondition(choose(.init(stored: preferences.object(forKey: "original")), build: 173) == .awaitOriginalHandoff)
+        precondition(choose(.init(stored: preferences.object(forKey: "original")), running: "new-helper") == .keepCurrent)
         precondition(preferences.data(forKey: "original") == bytes, "Original intent was discarded or replaced")
         print("PASS: exact helper handoff capture, changed package/source and opaque intent stay fenced without losing read-only connectivity or replacing original bytes")
     }

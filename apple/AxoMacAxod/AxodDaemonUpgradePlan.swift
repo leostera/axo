@@ -21,7 +21,10 @@ enum AxodDaemonUpgradePlan {
     }
 
     static func choose(target: MachineTarget, runningVersion: String, replacementVersion: String,
-                       replacementBuild: UInt64, pending: Pending) -> Choice {
+                       replacementBuild: UInt64, pending: Pending, compatibleVersions: Set<String> = []) -> Choice {
+        // Current helper capability is independent of an older unresolved handoff.
+        // Preserve the capture, but do not fence unrelated fresh work on this host.
+        if runningVersion == replacementVersion || compatibleVersions.contains(runningVersion) { return .keepCurrent }
         switch pending {
         case .opaque:
             return .awaitOriginalHandoff
@@ -29,11 +32,9 @@ enum AxodDaemonUpgradePlan {
             guard let captured = decode(data), captured.target == target,
                   captured.plan.expectedVersion == runningVersion,
                   captured.plan.replacementVersion == replacementVersion,
-                  captured.plan.replacementBuildNumber == replacementBuild,
-                  runningVersion != replacementVersion else { return .awaitOriginalHandoff }
+                  captured.plan.replacementBuildNumber == replacementBuild else { return .awaitOriginalHandoff }
             return .prepare(captured)
         case .absent:
-            guard runningVersion != replacementVersion else { return .keepCurrent }
             return .prepare(HostUpgradeParameters(target: target, plan: HostUpgradePlan(handoffId: UUID(),
                 expectedVersion: runningVersion, replacementVersion: replacementVersion,
                 replacementBuildNumber: replacementBuild)))

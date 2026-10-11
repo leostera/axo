@@ -73,7 +73,7 @@ fn main() {
             .output()
             .unwrap();
         assert!(
-            capability.status.success() && capability.stdout == b"2\n",
+            capability.status.success() && capability.stdout == b"3\n",
             "Bundle must explicitly support isolated UI testing before launch"
         );
     }
@@ -148,7 +148,7 @@ fn main() {
         );
         fs::remove_dir_all(&root).unwrap();
         println!(
-            "PASS: Xcode UI automation of packaged app selection/rename/Command-T, UI-typed Pi turn, cancel/exact-row/cross-workspace batch deletion and retained canonical history; one model request, isolated state and owned helper cleanup"
+            "PASS: Xcode UI automation of packaged app selection/rename, native folder-picker workspace creation with initialized first session/real Pi turn before separate Command-T, cancel/exact-row/cross-workspace batch deletion and retained initial-session canonical history; one model request, isolated state and owned helper cleanup"
         );
         return;
     }
@@ -224,9 +224,14 @@ struct UiWorkspace {
     record: axod::work::WorkspaceRecord,
 }
 #[derive(serde::Deserialize)]
+struct UiReceipt {
+    committed: axod::work::CommittedWork,
+}
+#[derive(serde::Deserialize)]
 struct UiRecords {
     workspaces: std::collections::BTreeMap<axod::model::WorkspaceId, UiWorkspace>,
     sessions: std::collections::BTreeMap<axod::model::SessionId, axod::work::SessionRecord>,
+    receipts: std::collections::BTreeMap<axod::model::CommandId, UiReceipt>,
     #[serde(default)]
     deletions:
         std::collections::BTreeMap<axod::model::CommandId, axod::work::SessionDeletionReceipt>,
@@ -249,6 +254,19 @@ fn read_ui_records(root: &Path) -> Option<UiRecords> {
     }
     serde_json::from_reader(file.take(4 * 1024 * 1024 + 1)).ok()
 }
+fn ui_initial_workspace_session(records: &UiRecords) -> Option<&axod::work::SessionRecord> {
+    records
+        .receipts
+        .values()
+        .find_map(|receipt| match &receipt.committed.record {
+            axod::work::WorkRecord::WorkspaceSession { workspace, session }
+                if workspace.name == "UI Workspace" =>
+            {
+                Some(session)
+            }
+            _ => None,
+        })
+}
 fn verify_ui_workspace_history(root: &Path) {
     let records = read_ui_records(root).expect("Owned committed UI records");
     let workspace = records
@@ -266,10 +284,13 @@ fn verify_ui_workspace_history(root: &Path) {
         2,
         "Command-T must add exactly one session to the owned workspace"
     );
-    let session = sessions
-        .iter()
-        .find(|session| session.name == "New Session")
-        .expect("Command-T workspace membership");
+    let session = ui_initial_workspace_session(&records)
+        .expect("Workspace creation's own initial session, not a Command-T replacement");
+    assert!(
+        sessions
+            .iter()
+            .any(|record| record.session_id == session.session_id)
+    );
     assert_eq!(
         records.deletions.len(),
         2,
@@ -334,10 +355,7 @@ fn verify_ui_workspace_history(root: &Path) {
 fn ui_history_snapshot(root: &Path) -> Option<(PathBuf, Vec<u8>)> {
     use std::os::unix::fs::MetadataExt;
     let records = read_ui_records(root)?;
-    let session = records
-        .sessions
-        .values()
-        .find(|session| session.workspace_id.is_some() && session.name == "New Session")?;
+    let session = ui_initial_workspace_session(&records)?;
     let id = serde_json::to_value(session.session_id).ok()?;
     let directory = root.join("workspace/.axo/sessions").join(id.as_str()?);
     let entry = fs::read_dir(directory)
@@ -416,34 +434,10 @@ fn run_ui_tests(app: &Path, root: &Path, repo: &Path) {
         .spawn()
         .unwrap();
     let deadline = Instant::now() + Duration::from_secs(600);
-    let mut workspace_prepared = false;
     let mut history_snapshot = None;
     loop {
         if history_snapshot.is_none() {
             history_snapshot = ui_history_snapshot(root);
-        }
-        if !workspace_prepared
-            && read_ui_records(root).is_some_and(|records| {
-                records
-                    .sessions
-                    .values()
-                    .any(|session| session.name == "UI renamed")
-            })
-        {
-            workspace_prepared = true;
-            let mut client = axod::client::Client::connect(
-                &root.join("home/Library/Application Support/Axo/Axod/local-endpoint.json"),
-            )
-            .unwrap();
-            let target = json!({"machineId": client.discovery.machine_id, "hostGeneration": client.discovery.host_generation});
-            let page = client
-                .call("axo.workspace.list", json!({"target": target, "limit": 50}))
-                .unwrap();
-            let revision = page["revision"].as_u64().expect("Typed workspace revision");
-            client.call("axo.workspace.createLocal", json!({
-                "target": target, "commandId": uuid::Uuid::new_v4(), "expectedRevision": revision,
-                "directoryPath": root.join("workspace"), "name": "UI Workspace", "initialSessionName": "UI workspace initial"
-            })).expect("Owned workspace setup via public RPC, never a work-store edit or replay");
         }
         if let Some(status) = child.try_wait().unwrap() {
             assert!(

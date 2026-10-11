@@ -18,9 +18,11 @@ import Foundation
               let buildString = info["CFBundleVersion"] as? String, let build = UInt64(buildString),
               build > 0, build <= WorkRevision.maximumSafeInteger else { return .keepCurrent }
         let key = pendingKey(endpoint.machineId)
+        let declared = info["AxoCompatibleAxodVersions"] as? [String] ?? []
+        let compatible = declared.count <= 64 ? Set(declared) : []
         let choice = AxodDaemonUpgradePlan.choose(target: target, runningVersion: running.daemonVersion,
             replacementVersion: version, replacementBuild: build,
-            pending: .init(stored: preferences.object(forKey: key)))
+            pending: .init(stored: preferences.object(forKey: key)), compatibleVersions: compatible)
         let parameters: HostUpgradeParameters
         switch choice {
         case .keepCurrent: return .keepCurrent

@@ -42,6 +42,23 @@ final class LocalWorkContractTests: XCTestCase {
         XCTAssertNil(object["directoryId"])
     }
 
+    func testPickedDirectoryUsesPhysicalPathRatherThanFoundationPrivatePrefixAlias() throws {
+#if canImport(Darwin)
+        let name = "axo-picked-directory-\(UUID().uuidString)"
+        let selected = URL(fileURLWithPath: "/tmp", isDirectory: true).appendingPathComponent(name, isDirectory: true)
+        try FileManager.default.createDirectory(at: selected, withIntermediateDirectories: false, attributes: [.posixPermissions: 0o700])
+        defer { try? FileManager.default.removeItem(at: selected) }
+        let parsed = try XCTUnwrap(LocalDirectoryPath(selectedURL: selected))
+        XCTAssertEqual(parsed.rawValue, "/private/tmp/" + name)
+        let alias = selected.appendingPathComponent("alias", isDirectory: true)
+        let directory = selected.appendingPathComponent("real", isDirectory: true)
+        try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: false, attributes: [.posixPermissions: 0o700])
+        try FileManager.default.createSymbolicLink(at: alias, withDestinationURL: directory)
+        XCTAssertEqual(LocalDirectoryPath(selectedURL: alias)?.rawValue, "/private/tmp/" + name + "/real")
+        XCTAssertNil(LocalDirectoryPath(selectedURL: selected.appendingPathComponent("missing")))
+#endif
+    }
+
     func testLocalCreateResponseIsRevisionNameAndLocalIdentityBound() throws {
         let generation = UUID(), workspace = UUID()
         let target = MachineTarget(machineId: UUID(), hostGeneration: generation)

@@ -63,28 +63,17 @@ final class SessionSidebarUITests: XCTestCase {
         app.typeText("UI renamed\n")
         wait { (outline.descendants(matching: .any).matching(identifier: ids[1]).firstMatch.value as? String) == "UI renamed" }
 
-        // Rust observes the owned rename receipt and sets up a workspace through
-        // public RPC. This UI-only case does not read/write another process's files
-        // or claim to test the system folder picker.
-        let refresh = app.menuBars.menuBarItems["Workspace"]
-        wait {
-            refresh.click()
-            app.menuItems["Refresh"].click()
-            return outline.descendants(matching: .any).matching(NSPredicate(format: "identifier BEGINSWITH 'workspace.'")).count == 1
-        }
-        let workspace = outline.descendants(matching: .any).matching(NSPredicate(format: "identifier BEGINSWITH 'workspace.'")).firstMatch
-        XCTAssertTrue(workspace.waitForExistence(timeout: 30))
-        workspace.click()
-        let workspaceRow = outline.outlineRows.containing(.any, identifier: workspace.identifier).firstMatch
-        if !workspaceRow.isSelected { workspaceRow.click() }
-        wait { labels.count == 5 }
         let existing = Set(labels.allElementsBoundByIndex.map(\.identifier))
-        waitForNewSession(app)
-        app.typeKey("t", modifierFlags: .command)
-        wait { labels.count == 6 }
+        createWorkspace(app, folder: root + "/workspace")
+        wait { labels.count == 5 }
+        let workspace = outline.descendants(matching: .any).matching(NSPredicate(format: "identifier BEGINSWITH 'workspace.'")).firstMatch
+        XCTAssertTrue(workspace.exists, "Creating a workspace must update the sidebar without Refresh")
+        let workspaceID = workspace.identifier
+        let workspaceRow = outline.outlineRows.containing(.any, identifier: workspaceID).firstMatch
         let createdID = try XCTUnwrap(labels.allElementsBoundByIndex.first { !existing.contains($0.identifier) }).identifier
-        XCTAssertTrue(workspaceRow.disclosedChildRows.containing(.any, identifier: createdID).firstMatch.exists,
-            "Command-T escaped the active workspace's sidebar group")
+        XCTAssertTrue(workspaceRow.disclosedChildRows.containing(.any, identifier: createdID).firstMatch.exists)
+        XCTAssertTrue(outline.outlineRows.containing(.any, identifier: createdID).firstMatch.isSelected,
+            "Creating a workspace must immediately select its initial session")
         waitForNewSession(app)
         assertMinimalChrome(app)
         wait { app.textViews.count == 2 }
@@ -95,6 +84,17 @@ final class SessionSidebarUITests: XCTestCase {
         terminal.click()
         terminal.typeText("APP_STARTUP_TYPED_MESSAGE\n")
         wait { (terminal.value as? String)?.contains("Actual app Pi response") == true }
+
+        // Command-T is a separate membership check, never a workaround for an
+        // uninitialized first session. That session has already answered a turn.
+        let beforeSecond = Set(labels.allElementsBoundByIndex.map(\.identifier))
+        app.typeKey("t", modifierFlags: .command)
+        wait { labels.count == 6 }
+        let secondID = try XCTUnwrap(labels.allElementsBoundByIndex.first { !beforeSecond.contains($0.identifier) }).identifier
+        XCTAssertTrue(workspaceRow.disclosedChildRows.containing(.any, identifier: secondID).firstMatch.exists)
+        waitForNewSession(app)
+        outline.outlineRows.containing(.any, identifier: createdID).firstMatch.click()
+        wait { app.textViews.count == 2 && app.textViews.element(boundBy: 0).isEnabled }
 
         // Outside-selection Delete must target the clicked row, not this live Pi.
         let outside = outline.outlineRows.containing(.any, identifier: ids[0]).firstMatch
@@ -125,6 +125,32 @@ final class SessionSidebarUITests: XCTestCase {
         waitForNewSession(app)
         // Rust verifies exact committed membership and canonical file placement
         // after this app quits through its production save/owned-helper barrier.
+    }
+
+    private func createWorkspace(_ app: XCUIApplication, folder: String) {
+        app.menuBars.menuBarItems["Workspace"].click()
+        app.menuItems["New Workspace…"].click()
+        let name = app.textFields["Axo.Workspace.Name"]
+        XCTAssertTrue(name.waitForExistence(timeout: 10))
+        name.click(); name.typeText("UI Workspace")
+        app.buttons["Axo.Workspace.ChooseFolder"].click()
+        app.typeKey("g", modifierFlags: [.command, .shift])
+        let path = app.textFields["PathTextField"]
+        XCTAssertTrue(path.waitForExistence(timeout: 10))
+        path.click()
+        path.typeKey("a", modifierFlags: .command)
+        path.typeText(folder)
+        XCTAssertEqual(path.value as? String, folder, "Go to Folder must contain the exact owned directory")
+        path.typeKey(.return, modifierFlags: [])
+        wait { !app.textFields["PathTextField"].exists }
+        let open = app.sheets.buttons["OKButton"].firstMatch
+        XCTAssertTrue(open.waitForExistence(timeout: 10))
+        wait { open.isEnabled }
+        open.click()
+        wait { !app.sheets.matching(identifier: "open-panel").firstMatch.exists }
+        let create = app.buttons["Axo.Workspace.Create"]
+        wait { create.isEnabled }
+        create.click()
     }
 
     private func assertMinimalChrome(_ app: XCUIApplication) {
@@ -160,6 +186,13 @@ final class SessionSidebarUITests: XCTestCase {
 
     private func wait(_ condition: @escaping () -> Bool, file: StaticString = #filePath, line: UInt = #line) {
         let expectation = XCTNSPredicateExpectation(predicate: NSPredicate { _, _ in condition() }, object: nil)
-        XCTAssertEqual(XCTWaiter.wait(for: [expectation], timeout: 60), .completed, file: file, line: line)
+        let result = XCTWaiter.wait(for: [expectation], timeout: 60)
+        if result != .completed, let application {
+            let attachment = XCTAttachment(string: application.debugDescription)
+            attachment.name = "Owned fixture UI at timeout"
+            attachment.lifetime = .keepAlways
+            add(attachment)
+        }
+        XCTAssertEqual(result, .completed, file: file, line: line)
     }
 }
