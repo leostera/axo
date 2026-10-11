@@ -23,7 +23,8 @@ pub enum ErrorCode {
     InvalidSize,
     InvalidTransition,
 }
-#[derive(Clone)]
+#[derive(Clone, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct RawBacklog {
     pub start_offset: u64,
     pub next_offset: u64,

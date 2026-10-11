@@ -33,6 +33,7 @@ const REPLY_BYTES: usize = 131072;
 
 pub(crate) struct LocalServer {
     _publication: Publication,
+    _terminal: crate::terminal_transport::TerminalServer,
     stopping: Arc<AtomicBool>,
     worker: Option<JoinHandle<()>>,
 }
@@ -44,6 +45,12 @@ impl LocalServer {
         profiles: Profiles,
         stopping: Arc<AtomicBool>,
     ) -> io::Result<Self> {
+        let terminal = crate::terminal_transport::TerminalServer::start(
+            root,
+            machine,
+            manager.clone(),
+            stopping.clone(),
+        )?;
         let listener = TcpListener::bind((std::net::Ipv4Addr::LOCALHOST, 0))?;
         listener.set_nonblocking(true)?;
         let authority = listener.local_addr()?.to_string();
@@ -67,6 +74,7 @@ impl LocalServer {
             .spawn(move || accept_clients(listener, context))?;
         Ok(Self {
             _publication: publication,
+            _terminal: terminal,
             stopping,
             worker: Some(worker),
         })
@@ -128,9 +136,9 @@ fn accept_clients(listener: TcpListener, context: Arc<Context>) {
 
 // Read the HTTP header under an absolute deadline and byte budget before tungstenite's
 // parser. Replay preserves any pipelined frame prefix; no handwritten WebSocket framing.
-struct UpgradeStream {
+pub(crate) struct UpgradeStream {
     prefix: Cursor<Vec<u8>>,
-    tcp: TcpStream,
+    pub(crate) tcp: TcpStream,
 }
 impl Read for UpgradeStream {
     fn read(&mut self, buffer: &mut [u8]) -> io::Result<usize> {
@@ -149,7 +157,7 @@ impl Write for UpgradeStream {
         self.tcp.flush()
     }
 }
-fn bounded_upgrade(mut tcp: TcpStream) -> io::Result<UpgradeStream> {
+pub(crate) fn bounded_upgrade(mut tcp: TcpStream) -> io::Result<UpgradeStream> {
     tcp.set_nonblocking(false)?;
     tcp.set_write_timeout(Some(WRITE_DEADLINE))?;
     let deadline = Instant::now() + Duration::from_secs(2);
@@ -175,10 +183,10 @@ fn bounded_upgrade(mut tcp: TcpStream) -> io::Result<UpgradeStream> {
         tcp,
     })
 }
-fn native_upgrade(request: &Request, context: &Context) -> bool {
+pub(crate) fn native_upgrade(request: &Request, authority: &str, path: &str) -> bool {
     let headers = request.headers();
-    let native = request.method() == "GET"
-        && request.uri().path() == "/v1/rpc"
+    request.method() == "GET"
+        && request.uri().path() == path
         && request.uri().scheme().is_none()
         && request.uri().authority().is_none()
         && request.uri().query().is_none()
@@ -186,8 +194,7 @@ fn native_upgrade(request: &Request, context: &Context) -> bool {
         && headers.get_all("host").iter().count() == 1
         && headers
             .get("host")
-            .is_some_and(|value| value.as_bytes() == context.authority.as_bytes());
-    native && !context.stopping.load(Ordering::SeqCst)
+            .is_some_and(|value| value.as_bytes() == authority.as_bytes())
 }
 // tungstenite's Callback ABI requires an unboxed HTTP ErrorResponse.
 #[allow(clippy::result_large_err)]
@@ -201,7 +208,9 @@ fn client(stream: TcpStream, context: &Context) -> io::Result<()> {
     let mut socket = tungstenite::accept_hdr_with_config(
         stream,
         |request: &Request, response| -> Result<Response, ErrorResponse> {
-            if native_upgrade(request, context) {
+            if native_upgrade(request, &context.authority, "/v1/rpc")
+                && !context.stopping.load(Ordering::SeqCst)
+            {
                 Ok(response)
             } else {
                 Err(tungstenite::http::Response::builder()

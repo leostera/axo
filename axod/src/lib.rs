@@ -22,6 +22,7 @@ pub mod server;
 pub mod terminal;
 #[cfg(test)]
 mod terminal_lifecycle_tests;
+mod terminal_transport;
 #[cfg(test)]
 mod test_support;
 mod upgrade;

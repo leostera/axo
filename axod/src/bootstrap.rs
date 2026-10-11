@@ -27,7 +27,13 @@ pub(crate) struct Publication {
 }
 impl Publication {
     pub fn publish(root: &Path, discovery: &Discovery) -> io::Result<Self> {
-        let path = root.join("local-endpoint.json");
+        Self::publish_at(root, "local-endpoint.json", discovery)
+    }
+    pub fn publish_terminal(root: &Path, discovery: &Discovery) -> io::Result<Self> {
+        Self::publish_at(root, "terminal-endpoint.json", discovery)
+    }
+    fn publish_at(root: &Path, name: &'static str, discovery: &Discovery) -> io::Result<Self> {
+        let path = root.join(name);
         // A valid old private descriptor may remain after a crash. The journal owner lock
         // authorizes replacement, never unlinking another daemon's socket or adopting work.
         match read_private(&path, 4096) {
