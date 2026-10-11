@@ -44,8 +44,9 @@ final class TerminalView: NSView, NSTextInputClient {
         config.platform_tag = GHOSTTY_PLATFORM_MACOS
         config.platform.macos = ghostty_platform_macos_s(nsview: Unmanaged.passUnretained(self).toOpaque())
         config.userdata = Unmanaged.passUnretained(self).toOpaque()
-        // The actual owning window supplies backing scale after attachment.
-        config.scale_factor = 1
+        // Seed the renderer at screen resolution; attachment below synchronizes
+        // both Ghostty's glyph DPI and its layer to the actual owning window.
+        config.scale_factor = Double(NSScreen.main?.backingScaleFactor ?? 1)
         config.wait_after_command = true
         surface = launch.directory.withCString { directory in
             config.working_directory = directory
@@ -94,7 +95,14 @@ final class TerminalView: NSView, NSTextInputClient {
 
     private func resizeSurface() {
         guard let surface else { return }
-        let scale = window?.backingScaleFactor ?? 1
+        let scale = window?.backingScaleFactor ?? layer?.contentsScale ?? NSScreen.main?.backingScaleFactor ?? 1
+        // Match upstream SurfaceView_AppKit: the IOSurface layer is installed by
+        // Ghostty at creation. Updating only glyph DPI leaves the compositor at
+        // its old scale, causing blurry/rescaled text on Retina or display moves.
+        CATransaction.begin()
+        CATransaction.setDisableActions(true)
+        layer?.contentsScale = scale
+        CATransaction.commit()
         ghostty_surface_set_content_scale(surface, scale, scale)
         let width = bounds.width * scale, height = bounds.height * scale
         guard width.isFinite, height.isFinite, width <= CGFloat(UInt32.max), height <= CGFloat(UInt32.max) else { return }

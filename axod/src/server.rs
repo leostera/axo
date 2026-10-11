@@ -26,9 +26,38 @@ pub fn serve_configured(
 }
 pub fn serve_with_pi(
     root: &Path,
+    relay: Option<relay::Config>,
+    profiles: Option<Profiles>,
+    pi: Option<crate::PiPolicy>,
+) -> io::Result<()> {
+    serve_with_shell(
+        root,
+        relay,
+        profiles,
+        pi,
+        crate::user_shell::CapturedUserShell::capture(),
+    )
+}
+pub(crate) fn serve_for_user(
+    root: &Path,
+    relay: Option<relay::Config>,
+    profiles: Option<Profiles>,
+    pi: crate::PiPolicy,
+) -> io::Result<()> {
+    serve_with_shell(
+        root,
+        relay,
+        profiles,
+        Some(pi),
+        crate::user_shell::CapturedUserShell::capture_account(),
+    )
+}
+fn serve_with_shell(
+    root: &Path,
     mut relay: Option<relay::Config>,
     profiles: Option<Profiles>,
     pi: Option<crate::PiPolicy>,
+    user_shell: Option<crate::user_shell::CapturedUserShell>,
 ) -> io::Result<()> {
     let profiles = profiles.unwrap_or_else(|| {
         relay
@@ -47,6 +76,7 @@ pub fn serve_with_pi(
         return Err(io::Error::other("Pane state belongs to another machine"));
     }
     let mut manager = Manager::new(journal);
+    manager.user_shell = user_shell;
     manager.normal_path = pi.as_ref().and_then(|policy| policy.normal_path.clone());
     *manager.managed_policy.lock().unwrap() = pi;
     let manager = Arc::new(manager);

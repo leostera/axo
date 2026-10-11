@@ -2,6 +2,11 @@ import AppKit
 import AxoProtocol
 import GhosttyKit
 
+private final class BackingScaleWindow: NSWindow {
+    var simulatedScale: CGFloat = 2
+    override var backingScaleFactor: CGFloat { simulatedScale }
+}
+
 /// Owned offscreen-window smoke checks; not full native-workbench acceptance.
 @main
 struct TerminalSurfaceChecks {
@@ -22,11 +27,27 @@ struct TerminalSurfaceChecks {
         let terminal = try surfaces.view(for: launch)
         let sameSurface = try surfaces.view(for: launch)
         precondition(sameSurface === terminal, "Viewport reconstruction duplicated the frontend surface")
-        let window = NSWindow(contentRect: NSRect(x: -2000, y: -2000, width: 700, height: 450), styleMask: [.titled], backing: .buffered, defer: false)
+        let window = BackingScaleWindow(contentRect: NSRect(x: -2000, y: -2000, width: 700, height: 450), styleMask: [.titled], backing: .buffered, defer: false)
         window.isReleasedWhenClosed = false
         window.contentView = terminal
         terminal.layoutSubtreeIfNeeded()
         precondition(terminal.surface != nil, "Full Ghostty surface unavailable")
+        for scale in [CGFloat(2), 1, 2] {
+            window.simulatedScale = scale
+            terminal.viewDidChangeBackingProperties()
+            precondition(terminal.layer?.contentsScale == scale, "Glyph DPI and compositor scale diverged")
+            let size = ghostty_surface_size(terminal.surface!)
+            precondition(size.width_px == UInt32(terminal.bounds.width * scale))
+            precondition(size.height_px == UInt32(terminal.bounds.height * scale))
+        }
+        window.simulatedScale = 1
+        terminal.viewDidChangeBackingProperties()
+        window.contentView = NSView()
+        terminal.layoutSubtreeIfNeeded()
+        precondition(terminal.window == nil && terminal.layer?.contentsScale == 1, "Detached reflow reset retained scale")
+        window.simulatedScale = 2
+        window.contentView = terminal
+        precondition(terminal.layer?.contentsScale == 2, "Attachment did not adopt the owning window scale")
         _ = window.makeFirstResponder(terminal)
         if let event = NSEvent.keyEvent(with: .flagsChanged, location: .zero, modifierFlags: [.option], timestamp: 0,
                                        windowNumber: window.windowNumber, context: nil, characters: "", charactersIgnoringModifiers: "", isARepeat: false, keyCode: 61) {

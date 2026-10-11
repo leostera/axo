@@ -60,6 +60,14 @@ impl CapturedUserShell {
         };
         Self::parse(&selected)
     }
+    /// A LaunchAgent's SHELL may describe launchd or a GUI launcher, not the
+    /// user's configured login shell. serve-user captures the account authority.
+    pub(crate) fn capture_account() -> Option<Self> {
+        Self::parse(&account_shell()?)
+    }
+    pub(crate) fn executable(&self) -> &std::ffi::OsStr {
+        self.executable.as_os_str()
+    }
     fn parse(selected: &Path) -> Option<Self> {
         if !selected.is_absolute() {
             return None;
@@ -134,6 +142,12 @@ mod tests {
         for invalid in ["\"\"", "\"../shell\"", "42", "{\"argv\":[\"/bin/sh\"]}"] {
             assert!(serde_json::from_str::<ShellSource>(invalid).is_err());
         }
+    }
+    #[test]
+    fn account_shell_capture_matches_the_configured_login_executable() {
+        let expected = fs::canonicalize(account_shell().expect("account shell")).unwrap();
+        let captured = CapturedUserShell::capture_account().expect("usable account shell");
+        assert_eq!(captured.executable, expected);
     }
     #[test]
     fn captured_shell_rejects_missing_relative_nonexecutable_and_replaced_programs() {

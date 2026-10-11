@@ -101,7 +101,11 @@ final class AxodWorkbenchCoordinator {
     private let bundledDaemon = AxodBundledDaemon()
 #if DEBUG
     func configureSelfTest(_ context: AxodAppSelfTest) { bundledDaemon.selfTest = context }
-    func stopSelfTestDaemon() async { await bundledDaemon.stopSelfTestChild() }
+    func stopSelfTestDaemon() async {
+        // Cleanup remains runnable even when the app's diagnostic task is cancelled.
+        let cleanup = Task { @MainActor in await self.bundledDaemon.stopSelfTestChild() }
+        await cleanup.value
+    }
 #endif
     let voice: MacVoiceCoordinator
 #if AXO_NATIVE_FIXTURE

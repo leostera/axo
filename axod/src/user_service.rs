@@ -33,7 +33,7 @@ pub fn serve(instance_id: Option<&str>) -> io::Result<()> {
     };
     // Missing/unsupported Pi never takes the metadata daemon offline. Report it at admission.
     pi.normal_path = crate::user_path::CapturedPath::capture(&home).ok();
-    crate::server::serve_with_pi(&root, relay, profiles, Some(pi))
+    crate::server::serve_for_user(&root, relay, profiles, pi)
 }
 
 fn ensure_state_directory(home: &Path, instance_id: Option<&str>) -> io::Result<PathBuf> {

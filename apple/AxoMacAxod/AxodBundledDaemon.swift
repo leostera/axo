@@ -27,9 +27,12 @@ import Foundation
         environment["HOME"] = NSHomeDirectory()
 #if DEBUG
         if let selfTest {
-            process.arguments = ["serve", directory.root.path, "--profiles-config", selfTest.root.appendingPathComponent("profiles.json").path,
-                "--pi-config", selfTest.root.appendingPathComponent("pi.json").path]
+            // Exercise serve-user, including account-shell selection and its
+            // normal HOME/Application Support configuration, not a different server.
             environment["HOME"] = selfTest.home.path
+            environment["ZDOTDIR"] = selfTest.home.path
+            // Deliberately misleading launcher environment: serve-user must use
+            // the user's account shell, and export that captured identity to PTYs.
             environment["SHELL"] = "/bin/sh"
             environment["PI_CODING_AGENT_DIR"] = selfTest.root.appendingPathComponent("agent").path
             environment["PI_AXO_INTERACTIVE_FIXTURE_CONFIG"] = selfTest.root.appendingPathComponent("provider.json").path

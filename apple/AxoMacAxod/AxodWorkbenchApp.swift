@@ -16,6 +16,9 @@ final class AxodWorkbenchApp: NSObject, NSApplicationDelegate, NSWindowDelegate,
     private var sidebarToolbar: AxodSidebarToolbar?
     private var waitingForDraftSave = false
     private var savesWindowFrame = true
+#if DEBUG
+    private var selfTestTask: Task<Void, Never>?
+#endif
 
     static func main() {
         let application = NSApplication.shared
@@ -87,12 +90,20 @@ final class AxodWorkbenchApp: NSObject, NSApplicationDelegate, NSWindowDelegate,
         coordinator.connect(createInitialSession: true)
 #if DEBUG
         if let selfTest {
-            Task { await selfTest.run(coordinator: coordinator, window: window) }
+            selfTestTask = Task { await selfTest.run(coordinator: coordinator, window: window) }
         }
 #endif
     }
 
     func applicationShouldTerminate(_ sender: NSApplication) -> NSApplication.TerminateReply {
+#if DEBUG
+        if let selfTestTask {
+            // An interrupted diagnostic must fail and clean up its owned helper,
+            // not leave a test daemon behind or terminate normal user work.
+            selfTestTask.cancel()
+            return .terminateLater
+        }
+#endif
         guard let coordinator else { return .terminateNow }
         guard !waitingForDraftSave else { return .terminateLater }
         // Commit the field editor before freezing accepted draft edits. A failed

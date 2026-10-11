@@ -17,6 +17,28 @@ fn private_json(path: &Path, value: &serde_json::Value) {
     fs::write(path, serde_json::to_vec(value).unwrap()).unwrap();
     fs::set_permissions(path, fs::Permissions::from_mode(0o600)).unwrap();
 }
+fn account_shell() -> std::path::PathBuf {
+    let mut record: libc::passwd = unsafe { std::mem::zeroed() };
+    let mut result = std::ptr::null_mut();
+    let mut buffer = vec![0_u8; 65536];
+    let status = unsafe {
+        libc::getpwuid_r(
+            libc::geteuid(),
+            &mut record,
+            buffer.as_mut_ptr().cast(),
+            buffer.len(),
+            &mut result,
+        )
+    };
+    assert!(
+        status == 0 && !result.is_null() && !record.pw_shell.is_null(),
+        "Account shell unavailable"
+    );
+    let path = unsafe { std::ffi::CStr::from_ptr(record.pw_shell) }
+        .to_str()
+        .unwrap();
+    fs::canonicalize(path).unwrap()
+}
 fn main() {
     let unavailable = match std::env::var("AXO_APP_SELF_TEST_CASE").as_deref() {
         Ok("available") | Err(std::env::VarError::NotPresent) => false,
@@ -39,7 +61,7 @@ fn main() {
         .output()
         .unwrap();
     assert!(
-        capability.status.success() && capability.stdout == b"1\n",
+        capability.status.success() && capability.stdout == b"2\n",
         "Bundle must support isolated self-test before launch"
     );
     let repo = Path::new(env!("CARGO_MANIFEST_DIR")).parent().unwrap();
@@ -48,19 +70,48 @@ fn main() {
     let root = std::env::temp_dir().join(format!("axo-app-startup-{}", uuid::Uuid::new_v4()));
     fs::DirBuilder::new().mode(0o700).create(&root).unwrap();
     let root = fs::canonicalize(root).unwrap();
-    for name in ["state", "home", "sessions", "agent"] {
+    for name in ["home", "sessions", "agent"] {
         fs::DirBuilder::new()
             .mode(0o700)
             .create(root.join(name))
             .unwrap();
     }
+    let mut state = root.join("home");
+    for component in ["Library", "Application Support", "Axo", "Axod"] {
+        state.push(component);
+        fs::DirBuilder::new().mode(0o700).create(&state).unwrap();
+    }
+    let shell = account_shell();
+    fs::write(
+        root.join("expected-shell"),
+        shell.as_os_str().as_encoded_bytes(),
+    )
+    .unwrap();
+    fs::set_permissions(
+        root.join("expected-shell"),
+        fs::Permissions::from_mode(0o600),
+    )
+    .unwrap();
+    // Owned user startup files: prove the actual zsh login/interactive path loads
+    // them, without sourcing or copying the operator's real dotfiles/history.
+    for (name, contents) in [
+        (
+            ".zprofile",
+            "export PATH=/opt/homebrew/bin:/usr/local/bin:/usr/bin:/bin:/usr/sbin:/sbin\nexport AXO_TEST_ZPROFILE=loaded\n",
+        ),
+        (".zshrc", "export AXO_TEST_ZSHRC=loaded\n"),
+    ] {
+        let path = root.join("home").join(name);
+        fs::write(&path, contents).unwrap();
+        fs::set_permissions(path, fs::Permissions::from_mode(0o600)).unwrap();
+    }
     private_json(
         &root.join("provider.json"),
         &json!({"baseUrl": model.url()}),
     );
-    private_json(&root.join("profiles.json"), &json!({"profiles": {}}));
+    private_json(&state.join("profiles.json"), &json!({"profiles": {}}));
     private_json(
-        &root.join("pi.json"),
+        &state.join("pi.json"),
         &json!({"extension": adapter, "profiles": {}, "local": {
             "sessionDirectory": root.join("sessions"), "executable": if unavailable { root.join("missing-pi") } else { pi.executable },
             "arguments": ["--no-approve", "--offline", "--no-skills", "--no-themes", "--no-context-files", "--no-prompt-templates",
@@ -119,7 +170,7 @@ fn main() {
         );
     } else {
         println!(
-            "PASS: LaunchServices opened packaged Axo.app; actual delegate/window, bundled helper version, automatic single session, HOME cwd, Pi-left/shell-right, window A-key/mouse routing and visible shell/Pi responses"
+            "PASS: LaunchServices opened packaged Axo.app; actual delegate/window, bundled helper version, automatic single session, HOME cwd, account login shell/zsh startup files, Retina layer scale, Pi-left/shell-right, window A-key/mouse routing and visible shell/Pi responses"
         );
     }
     assert_eq!(
@@ -128,7 +179,7 @@ fn main() {
         "Exact typed Pi turn count; no startup model or replay"
     );
     assert!(
-        !root.join("state/local-endpoint.json").exists(),
+        !state.join("local-endpoint.json").exists(),
         "Owned app must release its test daemon discovery on exit"
     );
     fs::remove_dir_all(root).unwrap();

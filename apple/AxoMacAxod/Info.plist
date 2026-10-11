@@ -3,7 +3,7 @@
 <plist version="1.0">
 <dict>
   <key>AxoSelfTestProtocolVersion</key>
-  <integer>1</integer>
+  <integer>2</integer>
     <key>LSApplicationCategoryType</key>
     <string>public.app-category.developer-tools</string>
     <key>LSMultipleInstancesProhibited</key>

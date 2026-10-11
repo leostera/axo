@@ -50,8 +50,9 @@ impl CapturedPath {
     }
     pub(crate) fn capture(home: &Path) -> io::Result<Self> {
         let shell = login_shell()?;
-        let mut command = Command::new(shell);
+        let mut command = Command::new(&shell);
         command
+            .env("SHELL", &shell)
             .args([
                 "-l",
                 "-i",

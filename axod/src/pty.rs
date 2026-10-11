@@ -12,12 +12,17 @@ pub struct ChildTerminal {
     pub controller: File,
 }
 
+#[derive(Clone, Copy, Default)]
+pub(crate) struct CapturedEnvironment<'a> {
+    pub normal_path: Option<&'a std::ffi::OsStr>,
+    pub login_shell: Option<&'a std::ffi::OsStr>,
+}
 pub(crate) fn spawn_with_path(
     cwd: &str,
     argv: &[String],
-    path: Option<&std::ffi::OsStr>,
+    environment: CapturedEnvironment<'_>,
 ) -> io::Result<ChildTerminal> {
-    spawn_inner(cwd, argv, None, path)
+    spawn_inner(cwd, argv, None, environment)
 }
 
 /// Explicit managed launch only. The private worker endpoint becomes fd 3;
@@ -25,10 +30,10 @@ pub(crate) fn spawn_with_path(
 pub(crate) fn spawn_with_control_path(
     cwd: &str,
     argv: &[String],
-    path: Option<&std::ffi::OsStr>,
+    environment: CapturedEnvironment<'_>,
 ) -> io::Result<(ChildTerminal, UnixStream)> {
     let (controller, worker) = UnixStream::pair()?;
-    let child = spawn_inner(cwd, argv, Some(&worker), path)?;
+    let child = spawn_inner(cwd, argv, Some(&worker), environment)?;
     drop(worker);
     Ok((child, controller))
 }
@@ -36,7 +41,7 @@ fn spawn_inner(
     cwd: &str,
     argv: &[String],
     control: Option<&UnixStream>,
-    normal_path: Option<&std::ffi::OsStr>,
+    captured: CapturedEnvironment<'_>,
 ) -> io::Result<ChildTerminal> {
     validate_launch(cwd, argv)?;
     let directory = c_string(cwd)?;
@@ -45,7 +50,7 @@ fn spawn_inner(
         .map(|arg| c_string(arg))
         .collect::<io::Result<_>>()?;
     let argument_pointers = null_terminated_pointers(&arguments);
-    let environment = child_environment(normal_path)?;
+    let environment = child_environment(captured)?;
     let environment_pointers = null_terminated_pointers(&environment);
     let mut size = libc::winsize {
         ws_row: 30,
@@ -174,7 +179,7 @@ pub(crate) fn validate_launch(cwd: &str, argv: &[String]) -> io::Result<()> {
     Ok(())
 }
 
-fn child_environment(normal_path: Option<&std::ffi::OsStr>) -> io::Result<Vec<CString>> {
+fn child_environment(captured: CapturedEnvironment<'_>) -> io::Result<Vec<CString>> {
     // Bindings come from an explicit managed launch, never the parent's active turn.
     let mut environment: Vec<CString> = std::env::vars_os()
         .filter(|(key, _)| {
@@ -187,7 +192,14 @@ fn child_environment(normal_path: Option<&std::ffi::OsStr>) -> io::Result<Vec<CS
             CString::new(entry).map_err(|_| io::Error::other("Invalid child environment"))
         })
         .collect::<io::Result<_>>()?;
-    if let Some(path) = normal_path {
+    if let Some(shell) = captured.login_shell {
+        environment.retain(|entry| !entry.to_bytes().starts_with(b"SHELL="));
+        let mut value = b"SHELL=".to_vec();
+        value.extend_from_slice(shell.as_bytes());
+        environment
+            .push(CString::new(value).map_err(|_| io::Error::other("Invalid captured shell"))?);
+    }
+    if let Some(path) = captured.normal_path {
         environment.retain(|entry| !entry.to_bytes().starts_with(b"PATH="));
         let mut value = b"PATH=".to_vec();
         value.extend_from_slice(path.as_bytes());
@@ -250,7 +262,7 @@ mod tests {
         let (terminal, mut channel) = spawn_with_control_path(
             "/tmp",
             &["/usr/bin/python3".into(), "-c".into(), script],
-            None,
+            CapturedEnvironment::default(),
         )
         .unwrap();
         assert_ne!(
@@ -274,6 +286,25 @@ mod tests {
         drop(inherited);
     }
     #[test]
+    fn child_environment_uses_the_captured_login_shell_and_path() {
+        let environment = child_environment(CapturedEnvironment {
+            normal_path: Some(std::ffi::OsStr::new("/usr/bin:/bin")),
+            login_shell: Some(std::ffi::OsStr::new("/bin/zsh")),
+        })
+        .unwrap();
+        let shells: Vec<_> = environment
+            .iter()
+            .filter(|entry| entry.to_bytes().starts_with(b"SHELL="))
+            .collect();
+        assert_eq!(shells.len(), 1);
+        assert_eq!(shells[0].to_bytes(), b"SHELL=/bin/zsh");
+        assert!(
+            environment
+                .iter()
+                .any(|entry| entry.to_bytes() == b"PATH=/usr/bin:/bin")
+        );
+    }
+    #[test]
     fn child_closes_inheritable_descriptors_not_created_by_the_runtime() {
         let source = File::open("/dev/null").unwrap();
         let descriptor = unsafe { libc::fcntl(source.as_raw_fd(), libc::F_DUPFD, 200) };
@@ -285,7 +316,7 @@ mod tests {
         let terminal = spawn_with_path(
             "/tmp",
             &["/usr/bin/python3".into(), "-c".into(), script],
-            None,
+            CapturedEnvironment::default(),
         )
         .unwrap();
         let mut status = 0;

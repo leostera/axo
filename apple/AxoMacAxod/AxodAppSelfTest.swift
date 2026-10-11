@@ -8,22 +8,30 @@ import GhosttyKit
 /// Rust prepares private configuration and an owned model peer; the app starts axod.
 @MainActor struct AxodAppSelfTest {
     let root: URL
+    let expectedLoginShell: String
     private let deadline = ContinuousClock.now.advanced(by: .seconds(60))
-    var state: URL { root.appendingPathComponent("state") }
+    var state: URL { home.appendingPathComponent("Library/Application Support/Axo/Axod") }
     var home: URL { root.appendingPathComponent("home") }
     var preferences: UserDefaults { UserDefaults(suiteName: "Axo.AppSelfTest.\(root.lastPathComponent)")! }
     init(root: URL) throws {
         _ = try AxodStateDirectory.openExisting(root: root)
-        _ = try AxodStateDirectory.openExisting(root: root.appendingPathComponent("state"))
+        let state = root.appendingPathComponent("home/Library/Application Support/Axo/Axod")
+        _ = try AxodStateDirectory.openExisting(root: state)
         _ = try AxodStateDirectory.openExisting(root: root.appendingPathComponent("home"))
-        guard try FileManager.default.contentsOfDirectory(atPath: root.appendingPathComponent("state").path).isEmpty,
-              try FileManager.default.contentsOfDirectory(atPath: root.appendingPathComponent("home").path).isEmpty else {
-            throw Failure.failed("fixture must have empty owned state and HOME")
+        let files = try FileManager.default.contentsOfDirectory(atPath: state.path)
+        guard Set(files) == Set(["profiles.json", "pi.json"]) else {
+            throw Failure.failed("fixture must have fresh configured state without existing work")
         }
+        let expected = try String(contentsOf: root.appendingPathComponent("expected-shell"), encoding: .utf8)
+        guard expected.hasPrefix("/"), expected.utf8.count <= 4096, !expected.contains("\n"), !expected.contains("\u{0}") else {
+            throw Failure.failed("fixture account shell expectation")
+        }
+        self.expectedLoginShell = expected
         self.root = root
     }
     enum Failure: Error { case failed(String) }
     func run(coordinator: AxodWorkbenchCoordinator, window: NSWindow) async {
+        checkpoint("started")
         var status: Int32 = 1
         var failureStage = "setup or protocol failure"
         do {
@@ -38,9 +46,15 @@ import GhosttyKit
                 coordinator.terminalSurfaces.presentation(for: shellLaunch.key)?.view === window.firstResponder &&
                 coordinator.hostStatus?.daemonVersion == Bundle.main.infoDictionary?["AxoBundledAxodVersion"] as? String
             }
+            window.makeKeyAndOrderFront(nil)
+            NSApp.activate(ignoringOtherApps: true)
+            try await wait("actual app foreground window") { NSApp.isActive && NSApp.keyWindow === window }
             guard let right = coordinator.terminalSurfaces.presentation(for: shellLaunch.key),
-                  window.isVisible, NSApp.isActive, NSApp.keyWindow === window else {
+                  window.isVisible else {
                 throw Failure.failed("actual app window/helper version")
+            }
+            guard right.view.layer?.contentsScale == window.backingScaleFactor else {
+                throw Failure.failed("Ghostty Retina compositor scale")
             }
             // No manual first-responder assignment: this tests default app keyboard routing.
             type("axo_app_test=1; pwd > \"$HOME/app-shell-cwd\"; printf app-shell-input > \"$HOME/app-shell-input\"; printf '\\101PP_SHELL_RESPONSE\\n'", in: window)
@@ -52,6 +66,19 @@ import GhosttyKit
             guard (try? String(contentsOf: home.appendingPathComponent("app-shell-cwd"), encoding: .utf8)) == home.path + "\n" else {
                 throw Failure.failed("captured standalone HOME cwd")
             }
+            type("printf '%s' \"$SHELL\" > \"$HOME/app-login-shell\"", in: window)
+            enter(in: window)
+            try await wait("account login shell environment") {
+                (try? String(contentsOf: home.appendingPathComponent("app-login-shell"), encoding: .utf8)) == expectedLoginShell
+            }
+            if URL(fileURLWithPath: expectedLoginShell).lastPathComponent == "zsh" {
+                type("printf '%s\\n' \"$options[login]\" \"$options[interactive]\" \"$AXO_TEST_ZPROFILE\" \"$AXO_TEST_ZSHRC\" > \"$HOME/app-zsh-startup\"", in: window)
+                enter(in: window)
+                try await wait("zsh login, interactive and user startup files") {
+                    (try? String(contentsOf: home.appendingPathComponent("app-zsh-startup"), encoding: .utf8)) == "on\non\nloaded\nloaded\n"
+                }
+            }
+            checkpoint("shell-and-startup-files")
             guard coordinator.selectedSessionID == session.sessionId else { throw Failure.failed("letter navigated sidebar") }
             try await wait("Pi admission after independent shell input") { coordinator.selectedSession?.pi.admission == .ready }
             guard let admitted = coordinator.selectedSession, admitted.sessionId == session.sessionId,
@@ -61,7 +88,8 @@ import GhosttyKit
             guard let left = coordinator.terminalSurfaces.presentation(for: piLaunch.key) else { throw Failure.failed("missing Pi surface") }
             let leftFrame = left.view.convert(left.view.bounds, to: window.contentView)
             let rightFrame = right.view.convert(right.view.bounds, to: window.contentView)
-            guard leftFrame.width > 0, rightFrame.width > 0, leftFrame.minX < rightFrame.minX else {
+            guard left.view.layer?.contentsScale == window.backingScaleFactor,
+                  leftFrame.width > 0, rightFrame.width > 0, leftFrame.minX < rightFrame.minX else {
                 throw Failure.failed("Pi-left/shell-right geometry")
             }
             // A real window mouse event selects the Pi pane before normal typing.
@@ -84,15 +112,17 @@ import GhosttyKit
                   coordinator.selectedSession?.shellPanes.first?.terminal?.runtime == shell.runtime else {
                 throw Failure.failed("default identity changed or duplicate work")
             }
-            print("PASS: packaged Axo.app delegate/window, app-launched bundled axod, automatic single empty-startup session, Pi-left/shell-right, default A-key routing, shell effect and actual Pi canonical user/model response")
+            checkpoint("passed")
             status = 0
         } catch {
+            checkpoint("failed")
             // Only closed synthetic stage names, never terminal or model bodies.
-            if case Failure.failed(let stage) = error { failureStage = stage; fputs("Axo app self-test failed: \(stage)\n", stderr) }
-            else { fputs("Axo app self-test failed: setup or protocol failure\n", stderr) }
+            if case Failure.failed(let stage) = error { failureStage = stage }
         }
+        checkpoint("cleanup-started")
         coordinator.disconnect()
         await coordinator.stopSelfTestDaemon()
+        checkpoint("daemon-stopped")
         preferences.removePersistentDomain(forName: "Axo.AppSelfTest.\(root.lastPathComponent)")
         // LaunchServices does not propagate the app's exit code to `open -W`.
         // An exclusive private result is required; absence never counts as success.
@@ -104,8 +134,19 @@ import GhosttyKit
             if written != bytes.count { status = 1; _ = unlink(root.appendingPathComponent("result").path) }
             close(descriptor)
         } else { status = 1 }
-        fflush(stdout); fflush(stderr)
+        // Report through the private result, not LaunchServices-managed stdio.
         exit(status)
+    }
+    private func checkpoint(_ stage: String) {
+        let descriptor = open(root.appendingPathComponent("progress").path, O_WRONLY | O_CREAT | O_APPEND | O_NOFOLLOW, 0o600)
+        guard descriptor >= 0 else { return }
+        var attributes = stat()
+        guard fstat(descriptor, &attributes) == 0, attributes.st_uid == geteuid(), attributes.st_nlink == 1,
+              attributes.st_mode & mode_t(S_IFMT) == mode_t(S_IFREG), attributes.st_mode & 0o777 == 0o600,
+              attributes.st_size < 1024 else { close(descriptor); return }
+        let bytes = Array((stage + "\n").utf8)
+        _ = bytes.withUnsafeBytes { write(descriptor, $0.baseAddress, $0.count) }
+        close(descriptor)
     }
     private func wait(_ stage: String, _ condition: () -> Bool) async throws {
         let deadline = min(self.deadline, ContinuousClock.now.advanced(by: .seconds(45)))

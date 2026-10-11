@@ -735,20 +735,16 @@ impl Manager {
         launch: &TerminalLaunch,
         controlled: bool,
     ) -> Result<(SpawnedTerminal, Option<UnixStream>), ErrorCode> {
+        let environment = pty::CapturedEnvironment {
+            normal_path: self.normal_path.as_ref().map(|path| path.as_os_str()),
+            login_shell: self.user_shell.as_ref().map(|shell| shell.executable()),
+        };
         let child = if controlled {
-            pty::spawn_with_control_path(
-                &launch.directory,
-                &launch.argv,
-                self.normal_path.as_ref().map(|path| path.as_os_str()),
-            )
-            .map(|(child, channel)| (child, Some(channel)))
+            pty::spawn_with_control_path(&launch.directory, &launch.argv, environment)
+                .map(|(child, channel)| (child, Some(channel)))
         } else {
-            pty::spawn_with_path(
-                &launch.directory,
-                &launch.argv,
-                self.normal_path.as_ref().map(|path| path.as_os_str()),
-            )
-            .map(|child| (child, None))
+            pty::spawn_with_path(&launch.directory, &launch.argv, environment)
+                .map(|child| (child, None))
         };
         match child {
             Ok((child, channel)) => Ok((
