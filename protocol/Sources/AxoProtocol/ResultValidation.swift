@@ -187,7 +187,7 @@ public enum AxoProtocolResultValidator {
         var seen = Set<UUID>()
         for item in sessionValues {
             guard validWorkSession(item),
-                  let session = object(item, keys: ["sessionId", "workspaceId", "name", "nameSource", "pi", "runtime"]),
+                  let session = workSessionFields(item),
                   let id = uuid(session["sessionId"]), seen.insert(id).inserted,
                   workspaceID == nil || uuid(session["workspaceId"]) == workspaceID
             else { throw invalid(method) }

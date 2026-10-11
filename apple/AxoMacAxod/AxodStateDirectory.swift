@@ -39,6 +39,14 @@ struct AxodStateDirectory {
         )
     }
 
+#if AXO_NATIVE_FIXTURE
+    /// The fixture already owns the selected root; never creates or imports state.
+    static func openExisting(root: URL) throws -> AxodStateDirectory {
+        try requireOwnedDirectory(root, privatePermissions: true)
+        return AxodStateDirectory(root: root, endpointFile: root.appendingPathComponent("local-endpoint.json"))
+    }
+#endif
+
     static func instanceID(for bundleIdentifier: String) throws -> String? {
         let base = "dev.leostera.axo.mac"
         if bundleIdentifier == base { return nil }

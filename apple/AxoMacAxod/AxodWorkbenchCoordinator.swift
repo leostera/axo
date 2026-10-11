@@ -88,7 +88,10 @@ final class AxodWorkbenchCoordinator {
     private var chatObservationTask: Task<Void, Never>?
     private var hostObservationTask: Task<Void, Never>?
     private var connectTask: Task<Void, Never>?
-    let voice = MacVoiceCoordinator(historyURL: URL(fileURLWithPath: NSHomeDirectory(), isDirectory: true).appendingPathComponent("Library/Application Support/Axo/voice-transcripts.json"))
+    let voice: MacVoiceCoordinator
+#if AXO_NATIVE_FIXTURE
+    @ObservationIgnored private var fixtureAttachmentHelper: URL?
+#endif
     @ObservationIgnored private var settingsWindow: NSWindow?
     @ObservationIgnored private var aboutWindow: NSWindow?
     private var catalogRevision: WorkRevision?
@@ -101,7 +104,12 @@ final class AxodWorkbenchCoordinator {
               snapshot.runtime.hostGeneration == endpoint.hostGeneration,
               case .running = snapshot.process else { throw LaunchError.surfaceCreation }
         try stateDirectory.requireCurrentEndpoint(endpoint)
-        let helper = Bundle.main.bundleURL.appendingPathComponent("Contents/Helpers/axod")
+        let helper: URL
+#if AXO_NATIVE_FIXTURE
+        helper = fixtureAttachmentHelper ?? Bundle.main.bundleURL.appendingPathComponent("Contents/Helpers/axod")
+#else
+        helper = Bundle.main.bundleURL.appendingPathComponent("Contents/Helpers/axod")
+#endif
         return try TerminalLaunch.attachment(root: stateDirectory.root, machineID: endpoint.machineId,
                                              runtime: snapshot.runtime, helper: helper)
     }
@@ -109,6 +117,12 @@ final class AxodWorkbenchCoordinator {
     init(preferences: UserDefaults = .standard) {
         self.preferences = preferences
         self.shellCreation = AxodShellCreation(preferences: preferences)
+#if AXO_NATIVE_FIXTURE
+        // Owned checks neither load live voice history nor request microphone access.
+        self.voice = MacVoiceCoordinator()
+#else
+        self.voice = MacVoiceCoordinator(historyURL: URL(fileURLWithPath: NSHomeDirectory(), isDirectory: true).appendingPathComponent("Library/Application Support/Axo/voice-transcripts.json"))
+#endif
         preferredMachineID = UUID(uuidString: preferences.string(forKey: PreferenceKey.machineID) ?? "")
         preferredWorkspaceID = UUID(uuidString: preferences.string(forKey: PreferenceKey.workspaceID) ?? "")
         preferredSessionID = UUID(uuidString: preferences.string(forKey: PreferenceKey.sessionID) ?? "")
@@ -310,27 +324,47 @@ final class AxodWorkbenchCoordinator {
             guard let self else { return }
             await oldConnection?.close()
             await self.bootstrapAndConnect(operation: operation)
-            if allowEmptyLaunch, self.operationGeneration == operation, self.canEditWork,
-               self.workspaces.isEmpty, self.sessions.isEmpty, self.runtimes.isEmpty,
-               self.nextWorkspaceCursor == nil, self.nextSessionCursor == nil, self.nextRuntimeID == nil,
-               let revision = self.catalogRevision, let endpoint = self.endpoint,
-               !AxodEmptyStartupPolicy.hasPendingIntent(in: self.preferences, machineID: endpoint.machineId) {
-                let context = AxodWorkEditorContext(kind: .session(workspaceID: nil),
-                    target: MachineTarget(machineId: endpoint.machineId, hostGeneration: endpoint.hostGeneration),
-                    revision: revision, authority: .emptyAppLaunch)
-                self.createdSessionForEditor = nil
-                self.activeCreationContext = context
-                self.emptyStartupMessage = "Creating an empty-startup session. No work will be replayed."
-                self.createWork(context, name: "New Session", directory: nil)
-            } else if allowEmptyLaunch, self.operationGeneration == operation,
-                      self.connectionState == .connected, self.sessions.isEmpty, self.workspaces.isEmpty,
-                      let endpoint = self.endpoint,
-                      AxodEmptyStartupPolicy.hasPendingIntent(in: self.preferences, machineID: endpoint.machineId) {
-                self.emptyStartupMessage = "Automatic startup was not sent: saved unresolved intent requires reconciliation. The saved command and existing work were preserved."
-            }
+            self.finishInitialConnection(operation: operation, allowEmptyLaunch: allowEmptyLaunch)
             if self.operationGeneration == operation { self.connectTask = nil }
         }
     }
+
+    private func finishInitialConnection(operation: UUID, allowEmptyLaunch: Bool) {
+        guard allowEmptyLaunch, operationGeneration == operation, connectionState == .connected else { return }
+        if canEditWork, workspaces.isEmpty, sessions.isEmpty, runtimes.isEmpty,
+           nextWorkspaceCursor == nil, nextSessionCursor == nil, nextRuntimeID == nil,
+           let revision = catalogRevision, let endpoint,
+           !AxodEmptyStartupPolicy.hasPendingIntent(in: preferences, machineID: endpoint.machineId) {
+            let context = AxodWorkEditorContext(kind: .session(workspaceID: nil),
+                target: MachineTarget(machineId: endpoint.machineId, hostGeneration: endpoint.hostGeneration),
+                revision: revision, authority: .emptyAppLaunch)
+            createdSessionForEditor = nil
+            activeCreationContext = context
+            emptyStartupMessage = "Creating an empty-startup session. No work will be replayed."
+            createWork(context, name: "New Session", directory: nil)
+        } else if sessions.isEmpty, workspaces.isEmpty, let endpoint,
+                  AxodEmptyStartupPolicy.hasPendingIntent(in: preferences, machineID: endpoint.machineId) {
+            emptyStartupMessage = "Automatic startup was not sent: saved unresolved intent requires reconciliation. The saved command and existing work were preserved."
+        }
+    }
+
+#if AXO_NATIVE_FIXTURE
+    /// Compile-only isolation seam: absent from the shipped app. Rust owns the
+    /// disposable daemon/root; this skips service registration, not protocol/UI paths.
+    func connectOwnedFixture(root: URL, helper: URL, appLaunch: Bool = false) async throws {
+        guard connection == nil else { throw AxodWorkbenchError.superseded }
+        let directory = try AxodStateDirectory.openExisting(root: root)
+        guard let discovered = try directory.readEndpoint() else { throw AxodWorkbenchError.startupTimedOut }
+        stateDirectory = directory
+        fixtureAttachmentHelper = helper
+        let operation = UUID()
+        operationGeneration = operation
+        let allowed = appLaunch && !consumedEmptyLaunch
+        if appLaunch { consumedEmptyLaunch = true }
+        try await connect(to: discovered, stateDirectory: directory, operation: operation)
+        finishInitialConnection(operation: operation, allowEmptyLaunch: allowed)
+    }
+#endif
 
     func disconnect() {
         operationGeneration = UUID()
@@ -698,7 +732,7 @@ final class AxodWorkbenchCoordinator {
                 let observer = try self.rpc.openLocalWebSocket(endpoint: endpoint)
                 defer { Task { await observer.close() } }
                 let negotiation = try await observer.request(method: AxoProtocol.Method.negotiate, parameters: NegotiationParameters())
-                _ = try AxoProtocolResultValidator.negotiation(negotiation)
+                _ = try AxoProtocolResultValidator.localNegotiation(negotiation)
                 while !Task.isCancelled {
                     var after: UUID?
                     var cursors = Set<UUID>()

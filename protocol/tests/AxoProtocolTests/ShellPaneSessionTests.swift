@@ -58,6 +58,37 @@ final class ShellPaneSessionTests: XCTestCase {
         fields["argv"] = .array([.string("not execution authority")])
         XCTAssertThrowsError(try AxoProtocolResultValidator.sessionGet(result(panes: [.object(fields)]), target: target))
     }
+    func testSessionCatalogUsesTheSameClosedPaneAwareRecordParser() throws {
+        let source = MachineTarget(machineId: machine, hostGeneration: host)
+        func catalog(panes: [JSONValue]?) -> JSONValue {
+            guard case .object(let fields) = result(panes: panes), let record = fields["session"] else {
+                preconditionFailure("Synthetic session shape")
+            }
+            return .object(["hostGeneration": .string(host.uuidString), "revision": .number(1),
+                            "sessions": .array([record]), "next": .null])
+        }
+        for panes in [nil, [], [pane()]] as [[JSONValue]?] {
+            let parsed = try AxoProtocolResultValidator.sessionList(catalog(panes: panes), target: source)
+            XCTAssertEqual(parsed.sessions.count, 1)
+            XCTAssertEqual(parsed.sessions[0].shellPanes.count, panes?.count ?? 0)
+        }
+        guard case .object(var shell) = pane(), case .object(var fields) = result(panes: []) else { return XCTFail() }
+        shell["profileId"] = .null
+        guard case .object(var standalone)? = fields["session"] else { return XCTFail() }
+        standalone["workspaceId"] = .null
+        standalone["shellPanes"] = .array([.object(shell)])
+        fields.removeValue(forKey: "session")
+        fields["sessions"] = .array([.object(standalone)])
+        fields["next"] = .null
+        let parsed = try AxoProtocolResultValidator.sessionList(.object(fields), target: source)
+        XCTAssertNil(parsed.sessions[0].workspaceId)
+        XCTAssertNil(parsed.sessions[0].shellPanes[0].profileId)
+        standalone["argv"] = .array([.string("not catalog authority")])
+        fields["sessions"] = .array([.object(standalone)])
+        XCTAssertThrowsError(try AxoProtocolResultValidator.sessionList(.object(fields), target: source))
+        XCTAssertThrowsError(try AxoProtocolResultValidator.sessionList(catalog(panes: [pane(sessionID: UUID())]), target: source))
+        XCTAssertThrowsError(try AxoProtocolResultValidator.sessionList(catalog(panes: [pane(), pane()]), target: source))
+    }
     func testTerminalReferenceCannotDivergeFromItsPane() {
         guard case .object(var fields) = pane(), case .object(var terminal)? = fields["terminal"] else { return XCTFail() }
         terminal["runtime"] = .object([:]); fields["terminal"] = .object(terminal)
