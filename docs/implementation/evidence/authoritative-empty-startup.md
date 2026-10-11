@@ -1,7 +1,19 @@
 # Admission-fenced empty startup checkpoint
 
 **Source + owned daemon/CLI/client-state evidence, not actual packaged-app A02/A03/A07 acceptance.**
-Exact committed/package versions will be recorded after packaging.
+
+## Exact versions
+
+- Implementation **`13c1e2da7b48c5c021db38c9239f0a11e64c59d2`**, committed/pushed
+  on `main`.
+- Signature-verified **`dist/Axo.app` build124**, `AxoBuildCommit` exactly that source;
+  helper **`0.1.0 (13c1e2da)`**. Atomic packaging retains the prior signed bundle.
+- Actual build124 helper: **8 public CLI cases** (including concurrent empty
+  startup/reboot/original receipt), **81 AxoCore cases**, zero skips/failures.
+  Packaged full-surface Ghostty Unicode/geometry/non-destructive disposal component
+  checks also pass. They do not validate a packaged app's startup/New Session click.
+- Documentation-only recording after this source does not change the bundled code
+  or running app/helper.
 
 ## Authority and behavior
 
@@ -65,4 +77,4 @@ close no complete workflow gate. Full VT recovery and other inventory gaps remai
 No live app/helper restart, credentials/deployment mutation or device install was
 performed. Owned fixture restart never signals historical/unowned PIDs.
 
-Logs: `/tmp/axo-empty-start-{unit,cli,rust,clippy,ts-build,schema,protocol-ts,protocol-properties,api-properties,swift,mac,ios,client}.log`.
+Logs: `/tmp/axo-empty-start-{unit,cli,rust,clippy,ts-build,schema,protocol-ts,protocol-properties,api-properties,swift,mac,ios,client,sidebar,owner,voice,package,packaged-cli,packaged-core,packaged-native}.log`.
