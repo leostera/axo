@@ -1,7 +1,16 @@
 # Default user-shell policy checkpoint
 
 **Component evidence only; no supported-workflow acceptance gate is closed.**
-Exact committed implementation/package versions are recorded after packaging.
+
+## Exact versions
+
+- Implementation: **`00ecf633171c1450bb0fc4567942422ce48c4e90`**, committed/pushed
+  on `main`.
+- Package: **`dist/Axo.app` build120**, `AxoBuildCommit` exactly the implementation
+  above; bundled helper **`0.1.0 (00ecf633)`**.
+- Strict deep code-signature verification passes; atomic packaging retains the
+  previous signed bundle for rollback. Version-recording docs afterward do not
+  change bundled code or the live app/helper.
 
 ## Contract
 
@@ -44,6 +53,14 @@ fences, exact runtime binding and completion-gated tombstones.
   Nullable shell metadata is parsed strictly; missing/invalid profiles reject.
   The skipped actual relay contract is not passing evidence.
 - Both Mac and iOS targets compile with the existing macOS26/iOS18/Swift5 baseline.
+- **Actual build120 bundled-helper** runs: all **7 public CLI cases**, including
+  default HOME/project shell execution/removal, pass with zero skips/failures.
+  `AXO_LOCAL_DAEMON_BINARY` selects that exact helper only in owned fixture roots;
+  it does not start/restart the registered live daemon.
+- Packaged-helper native Ghostty component checks also pass. The actual full
+  surface/transport fixture retains the same single accepted runtime after
+  disposal. These remain component checks, not automatic two-pane acceptance.
+- Packaged-helper AxoCore: **81 tests, zero skips/failures**.
 
 ## Remaining work
 
@@ -57,4 +74,4 @@ physical device installation occurred. Protocol changes are not a claim that the
 historical deployed API or installed phone has been updated.
 
 Temporary logs (not acceptance archives):
-`/tmp/axo-default-shell-{unit,cli,rust,clippy,protocol-build,protocol-tests,protocol-properties,api-properties,swift,mac,ios}.log`.
+`/tmp/axo-default-shell-{unit,cli,rust,clippy,protocol-build,protocol-tests,protocol-properties,api-properties,swift,mac,ios,package,packaged-cli,packaged-native,packaged-core}.log`.
