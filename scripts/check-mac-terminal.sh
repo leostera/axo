@@ -14,6 +14,9 @@ compile_check() {
     -I "$PRODUCTS" -I "$GHOSTTY/Headers" \
     "$ROOT/apple/AxoMac/GhosttyRuntime.swift" "$ROOT/apple/AxoMac/TerminalView.swift" \
     "$ROOT/apple/AxoMacAxod/TerminalLaunch.swift" "$ROOT/apple/AxoMacAxod/AxodTerminalSurfaces.swift" \
+    "$ROOT/apple/AxoMacAxod/AxodTerminalHost.swift" "$ROOT/apple/AxoMacAxod/AxodPaneFocusDirection.swift" \
+    "$ROOT/apple/AxoMacAxod/AxodPaneLayoutLeaf.swift" "$ROOT/apple/AxoMac/Ghostty/SplitTree.swift" \
+    "$ROOT/apple/AxoMac/Ghostty/Array+Extension.swift" "$ROOT/apple/AxoMac/Ghostty/PointerBackport.swift" \
     "$ROOT/apple/AxoMacTests/$1.swift" \
     "$PRODUCTS/AxoProtocol.o" "$GHOSTTY/ghostty-internal.a" \
     -lc++ -framework AppKit -framework Metal -framework QuartzCore -framework CoreText \

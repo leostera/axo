@@ -136,6 +136,11 @@ final class AxodWorkbenchCoordinator {
         preferredMachineID = UUID(uuidString: preferences.string(forKey: PreferenceKey.machineID) ?? "")
         preferredWorkspaceID = UUID(uuidString: preferences.string(forKey: PreferenceKey.workspaceID) ?? "")
         preferredSessionID = UUID(uuidString: preferences.string(forKey: PreferenceKey.sessionID) ?? "")
+        terminalSurfaces.onMoveFocus = { [weak self] view, direction in
+            guard let self, let window = view.window, NSApp.keyWindow === window,
+                  window.firstResponder === view else { return false }
+            return self.focusPane(direction, in: window)
+        }
     }
 
     func registerForStartup() {
@@ -880,6 +885,37 @@ final class AxodWorkbenchCoordinator {
         guard let snapshot, let current = try? terminalLaunch(for: snapshot, sessionID: session.sessionId),
               current.key == key else { return }
         paneLayouts.focus(key.paneID, in: .init(machineID: key.machineID, sessionID: key.sessionID))
+    }
+
+    func capturePaneFocus(_ direction: AxodPaneFocusDirection, in window: NSWindow) -> AxodPaneFocus? {
+        guard let view = window.firstResponder as? TerminalView, let source = terminalSurfaces.presentation(for: view),
+              source.window === window, let session = selectedSession,
+              currentTerminalKey(source.key.paneID, in: session) == source.key else { return nil }
+        let identity = AxodPaneLayouts.Session(machineID: source.key.machineID, sessionID: session.sessionId)
+        guard let move = paneLayouts.captureFocus(from: source.key.paneID, direction: direction, in: identity),
+              let destinationKey = currentTerminalKey(move.destination, in: session),
+              let destination = terminalSurfaces.presentation(for: destinationKey), destination.window === window,
+              destination.viewportID == source.viewportID else { return nil }
+        return AxodPaneFocus(move: move, source: source.key, destination: destinationKey, viewportID: source.viewportID, window: window)
+    }
+    @discardableResult func focusPane(_ direction: AxodPaneFocusDirection, in window: NSWindow) -> Bool {
+        guard let request = capturePaneFocus(direction, in: window) else { return false }
+        return applyPaneFocus(request)
+    }
+    @discardableResult func applyPaneFocus(_ request: AxodPaneFocus) -> Bool {
+        guard let window = request.window, let session = selectedSession, paneLayouts.isCurrent(request.move),
+              currentTerminalKey(request.source.paneID, in: session) == request.source,
+              currentTerminalKey(request.destination.paneID, in: session) == request.destination,
+              let source = terminalSurfaces.presentation(for: request.source), let destination = terminalSurfaces.presentation(for: request.destination),
+              source.window === window, destination.window === window, window.firstResponder === source.view,
+              source.viewportID == request.viewportID, destination.viewportID == request.viewportID else { return false }
+        return window.makeFirstResponder(destination.view)
+    }
+    private func currentTerminalKey(_ paneID: UUID, in session: WorkSessionRecord) -> TerminalLaunch.Key? {
+        let snapshot = paneID == session.pi.paneId ? presentationSnapshot(for: session)
+            : session.shellPanes.first(where: { $0.paneId == paneID })?.terminal
+        guard let snapshot else { return nil }
+        return try? terminalLaunch(for: snapshot, sessionID: session.sessionId).key
     }
 
     var canSplitPane: Bool {
@@ -1772,11 +1808,14 @@ final class AxodWorkbenchCoordinator {
     private func activateSelectedSession() {
         // An immutable tool entry is not a branch-page cursor. Keep its explicit reader
         // across metadata-only refresh while the full selected writer/read mode is unchanged.
+        let preserveSnapshot = chatSnapshot.map {
+            chatTarget == $0.target && canReadSelectedChat(target: $0.target, readMode: $0.readMode)
+        } ?? false
         stopChatObservation(preservingToolOutput: toolOutput.source.map(canReadToolOutput) ?? false,
             preservingHistory: historyWindow.source.map { canReadSelectedChat(target: $0.target, readMode: $0.readMode) } ?? false)
-        chatTarget = nil
-        chatSnapshot = nil
-        chatEntries = []
+        // Metadata-only refresh must not blank an unchanged rendered binding/editor.
+        // A changed namespace/admission still clears it before any async read.
+        if !preserveSnapshot { chatTarget = nil; chatSnapshot = nil; chatEntries = [] }
         guard let session = selectedSession, let endpoint else {
             stopChatObservation()
             chatTarget = nil

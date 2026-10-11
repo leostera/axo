@@ -76,6 +76,10 @@ final class AxodTerminalHostView: NSView {
             showFailure(error.localizedDescription)
         }
     }
+    func viewport(for view: TerminalView, key: TerminalLaunch.Key) -> UUID? {
+        guard terminal === view, self.key == key, view.superview === self else { return nil }
+        return viewportID
+    }
     override func viewDidMoveToWindow() { super.viewDidMoveToWindow(); restoreFocusIfAttached() }
     private func restoreFocusIfAttached() {
         guard let window, let original = restoreFocusWindow else { return }

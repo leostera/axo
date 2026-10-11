@@ -36,6 +36,14 @@ struct PaneLayoutChecks {
               case .split(let shellSplit) = divided.right else { preconditionFailure() }
         precondition(shellSplit.direction == .vertical)
         precondition(shellSplit.left.leaves().map(\.id) == [firstPane] && shellSplit.right.leaves().map(\.id) == [secondPane])
+        layouts.focus(firstPane, in: identity)
+        let downward = layouts.captureFocus(from: firstPane, direction: .down, in: identity)!
+        precondition(downward.destination == secondPane && layouts.isCurrent(downward))
+        layouts.focus(secondPane, in: identity); layouts.focus(firstPane, in: identity)
+        precondition(!layouts.isCurrent(downward)) // Equal-looking focus ABA cannot revive a captured move.
+        precondition(layouts.captureFocus(from: firstPane, direction: .right, in: identity) == nil)
+        let beforeResize = layouts.captureFocus(from: firstPane, direction: .left, in: identity)!
+        precondition(beforeResize.destination == pi)
         let oldRoot = layouts.trees[identity]!.root!, oldGeneration = layouts.generations[identity]!
         layouts.resize(oldRoot, ratio: 0.65, in: identity, generation: oldGeneration)
         layouts.resize(oldRoot, ratio: 0.2, in: identity, generation: oldGeneration) // stale node rejected
@@ -44,7 +52,7 @@ struct PaneLayoutChecks {
         layouts.resize(layouts.trees[identity]!.root!, ratio: 0.5, in: identity, generation: layouts.generations[identity]!)
         layouts.resize(oldRoot, ratio: 0.2, in: identity, generation: oldGeneration) // equal-looking ABA rejected
         guard case .split(let roundTrip)? = layouts.trees[identity]?.root else { preconditionFailure() }
-        precondition(roundTrip.ratio == 0.5)
+        precondition(roundTrip.ratio == 0.5 && !layouts.isCurrent(beforeResize))
         layouts.resize(layouts.trees[identity]!.root!, ratio: 0.65, in: identity, generation: layouts.generations[identity]!)
         let restored = AxodPaneLayouts(preferences: preferences)
         restored.observe(session, machineID: machine)
@@ -106,6 +114,6 @@ struct PaneLayoutChecks {
                 return .object(["hostGeneration": .string(host.uuidString), "receipt": .null])
             }, validate: {})
         precondition(receipt == nil && sends == 1 && reread.pendingParameters(identity) == uncertain)
-        print("PASS: captured right/down geometry, stale resize refusal, bounded closed layout restoration, opaque hint preservation and original split command/no-replay (local state only)")
+        print("PASS: captured right/down geometry, pinned spatial focus targets, focus/layout ABA refusal, stale resize refusal, bounded closed layout restoration, opaque hint preservation and original split command/no-replay (local state only)")
     }
 }

@@ -16,6 +16,14 @@ final class AxodPaneLayouts {
         let anchor: UUID
         let direction: AxodPaneSplitDirection
     }
+    struct FocusMove {
+        let session: Session
+        let source: UUID
+        let destination: UUID
+        let layoutGeneration: UUID
+        let focusGeneration: UUID
+    }
+    private var focusGenerations: [Session: UUID] = [:]
     static let maximumPanes = 32 // Same presentation capacity, including Pi.
     @ObservationIgnored private let preferences: UserDefaults
     private(set) var trees: [Session: Tree] = [:]
@@ -65,8 +73,21 @@ final class AxodPaneLayouts {
     }
 
     func focus(_ paneID: UUID, in session: Session) {
-        guard trees[session]?.find(id: paneID) != nil else { return }
+        guard trees[session]?.find(id: paneID) != nil, focusedPanes[session] != paneID else { return }
         focusedPanes[session] = paneID
+        focusGenerations[session] = UUID()
+    }
+
+    func captureFocus(from paneID: UUID, direction: AxodPaneFocusDirection, in session: Session) -> FocusMove? {
+        guard focusedPanes[session] == paneID, let focusGeneration = focusGenerations[session],
+              let layoutGeneration = generations[session], let tree = trees[session], let node = tree.find(id: paneID),
+              let destination = tree.focusTarget(for: direction.treeDirection, from: node), destination.id != paneID else { return nil }
+        return FocusMove(session: session, source: paneID, destination: destination.id,
+            layoutGeneration: layoutGeneration, focusGeneration: focusGeneration)
+    }
+    func isCurrent(_ move: FocusMove) -> Bool {
+        generations[move.session] == move.layoutGeneration && focusGenerations[move.session] == move.focusGeneration &&
+            focusedPanes[move.session] == move.source && trees[move.session]?.find(id: move.destination) != nil
     }
 
     /// Save the captured placement before the original explicit pane command.

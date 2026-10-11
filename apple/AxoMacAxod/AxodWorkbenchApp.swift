@@ -112,12 +112,37 @@ final class AxodWorkbenchApp: NSObject, NSApplicationDelegate, NSWindowDelegate,
         guard let window, NSApp.keyWindow === window else { return }
         coordinator?.splitDown(sender)
     }
+    @objc private func focusLeft(_ sender: Any?) { movePaneFocus(.left) }
+    @objc private func focusRight(_ sender: Any?) { movePaneFocus(.right) }
+    @objc private func focusUp(_ sender: Any?) { movePaneFocus(.up) }
+    @objc private func focusDown(_ sender: Any?) { movePaneFocus(.down) }
+    @objc private func focusPrevious(_ sender: Any?) { movePaneFocus(.previous) }
+    @objc private func focusNext(_ sender: Any?) { movePaneFocus(.next) }
+    private func movePaneFocus(_ direction: AxodPaneFocusDirection) {
+        guard let window, NSApp.keyWindow === window else { return }
+        coordinator?.focusPane(direction, in: window)
+    }
+    private func focusDirection(for action: Selector?) -> AxodPaneFocusDirection? {
+        switch action {
+        case #selector(focusLeft(_:)): return .left
+        case #selector(focusRight(_:)): return .right
+        case #selector(focusUp(_:)): return .up
+        case #selector(focusDown(_:)): return .down
+        case #selector(focusPrevious(_:)): return .previous
+        case #selector(focusNext(_:)): return .next
+        default: return nil
+        }
+    }
     @objc private func toggleSidebar(_ sender: Any?) {
         guard let window, NSApp.keyWindow === window else { return }
         sidebarToolbar?.toggleSidebar(sender)
     }
 
     func validateMenuItem(_ menuItem: NSMenuItem) -> Bool {
+        if let direction = focusDirection(for: menuItem.action) {
+            guard let window, NSApp.keyWindow === window else { return false }
+            return coordinator?.capturePaneFocus(direction, in: window) != nil
+        }
         if menuItem.action == #selector(toggleSidebar(_:)) {
             return window != nil && NSApp.keyWindow === window
         }
@@ -133,6 +158,11 @@ final class AxodWorkbenchApp: NSObject, NSApplicationDelegate, NSWindowDelegate,
         return true
     }
 
+    private struct PaneFocusMenuItem {
+        let title: String
+        let action: Selector
+        let key: String
+    }
     private func installMenu() {
         let menu = NSMenu()
         let applicationItem = NSMenuItem(title: Self.applicationName, action: nil, keyEquivalent: "")
@@ -171,6 +201,20 @@ final class AxodWorkbenchApp: NSObject, NSApplicationDelegate, NSWindowDelegate,
         let down = paneMenu.addItem(withTitle: "Split Down", action: #selector(splitDown(_:)), keyEquivalent: "d")
         down.target = self
         down.keyEquivalentModifierMask = [.command, .shift]
+        paneMenu.addItem(.separator())
+        let focusItems: [PaneFocusMenuItem] = [
+            .init(title: "Focus Left", action: #selector(focusLeft(_:)), key: "\u{F702}"),
+            .init(title: "Focus Right", action: #selector(focusRight(_:)), key: "\u{F703}"),
+            .init(title: "Focus Up", action: #selector(focusUp(_:)), key: "\u{F700}"),
+            .init(title: "Focus Down", action: #selector(focusDown(_:)), key: "\u{F701}"),
+            .init(title: "Focus Previous Pane", action: #selector(focusPrevious(_:)), key: ""),
+            .init(title: "Focus Next Pane", action: #selector(focusNext(_:)), key: ""),
+        ]
+        for descriptor in focusItems {
+            let item = paneMenu.addItem(withTitle: descriptor.title, action: descriptor.action, keyEquivalent: descriptor.key)
+            item.target = self
+            item.keyEquivalentModifierMask = [.command, .option]
+        }
         paneItem.submenu = paneMenu
 
         let viewItem = NSMenuItem()

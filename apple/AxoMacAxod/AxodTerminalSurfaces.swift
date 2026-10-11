@@ -8,6 +8,26 @@ final class AxodTerminalSurfaces {
     @ObservationIgnored private var runtime: GhosttyRuntime?
     @ObservationIgnored private var views: [TerminalLaunch.Key: TerminalView] = [:]
     private(set) var notices: [TerminalLaunch.Key: String] = [:]
+    @ObservationIgnored var onMoveFocus: ((TerminalView, AxodPaneFocusDirection) -> Bool)?
+    struct Presentation {
+        let key: TerminalLaunch.Key
+        let view: TerminalView
+        let viewportID: UUID
+        let window: NSWindow
+    }
+#if AXO_NATIVE_FIXTURE
+    func cachedView(for key: TerminalLaunch.Key) -> TerminalView? { views[key] }
+#endif
+    func presentation(for key: TerminalLaunch.Key) -> Presentation? {
+        guard let view = views[key], !view.childExited, view.surface != nil,
+              let host = view.superview as? AxodTerminalHostView, let viewportID = host.viewport(for: view, key: key),
+              let window = view.window else { return nil }
+        return Presentation(key: key, view: view, viewportID: viewportID, window: window)
+    }
+    func presentation(for view: TerminalView) -> Presentation? {
+        guard let key = views.first(where: { $0.value === view })?.key else { return nil }
+        return presentation(for: key)
+    }
 
     func view(for launch: TerminalLaunch) throws -> TerminalView {
         if let view = views[launch.key] { return view }
@@ -35,6 +55,19 @@ final class AxodTerminalSurfaces {
 
     private func handle(view: TerminalView?, action: ghostty_action_s) -> Bool {
         switch action.tag {
+        case GHOSTTY_ACTION_GOTO_SPLIT:
+            guard let view else { return false }
+            let direction: AxodPaneFocusDirection
+            switch action.action.goto_split {
+            case GHOSTTY_GOTO_SPLIT_LEFT: direction = .left
+            case GHOSTTY_GOTO_SPLIT_RIGHT: direction = .right
+            case GHOSTTY_GOTO_SPLIT_UP: direction = .up
+            case GHOSTTY_GOTO_SPLIT_DOWN: direction = .down
+            case GHOSTTY_GOTO_SPLIT_PREVIOUS: direction = .previous
+            case GHOSTTY_GOTO_SPLIT_NEXT: direction = .next
+            default: return false
+            }
+            return onMoveFocus?(view, direction) ?? false
         case GHOSTTY_ACTION_MOUSE_OVER_LINK:
             guard let view else { return false }
             let link = action.action.mouse_over_link

@@ -7,7 +7,7 @@ export DEVELOPER_DIR="${DEVELOPER_DIR:-/Applications/Xcode.app/Contents/Develope
 PRODUCTS="$ROOT/apple/DerivedData/Build/Products/Debug"
 [[ -f "$PRODUCTS/AxoProtocol.o" && -f "$PRODUCTS/AxoCore.o" ]] || { echo 'Build the Mac target before pane-layout checks.' >&2; exit 1; }
 SOURCES=()
-for name in AxodPaneLayouts AxodPaneLayoutPersistence AxodPaneLayoutLeaf AxodPaneSplitDirection AxodShellCreation AxodEmptyStartupPolicy; do
+for name in AxodPaneLayouts AxodPaneLayoutPersistence AxodPaneLayoutLeaf AxodPaneSplitDirection AxodPaneFocusDirection AxodShellCreation AxodEmptyStartupPolicy; do
   SOURCES+=("$ROOT/apple/AxoMacAxod/$name.swift")
 done
 for name in SplitTree Array+Extension PointerBackport; do

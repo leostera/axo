@@ -598,6 +598,41 @@ struct NativeWorkbenchFixtureChecks {
         precondition(topFrame.height > 0 && downFrame.height > 0 && abs(topFrame.midX - downFrame.midX) < 2)
         precondition(window.contentView!.isFlipped ? downFrame.midY > topFrame.midY : downFrame.midY < topFrame.midY)
         try await shellEffect(downView, window: window, home: home, marker: "native-pane-down")
+        guard let upward = coordinator.capturePaneFocus(.up, in: window) else { throw Failure.missing("captured upward native pane focus") }
+        precondition(upward.destination.paneID == right.paneId && coordinator.applyPaneFocus(upward))
+        precondition(window.firstResponder === rightView && coordinator.focusPane(.down, in: window))
+        precondition(window.firstResponder === downView && !coordinator.applyPaneFocus(upward)) // Focus ABA.
+        precondition(coordinator.focusPane(.left, in: window) && window.firstResponder === shellView)
+        guard let staleLayout = coordinator.capturePaneFocus(.right, in: window),
+              case .split(let originalRoot)? = coordinator.paneLayouts.trees[identity]?.root else { throw Failure.missing("captured focus geometry") }
+        coordinator.paneLayouts.resize(coordinator.paneLayouts.trees[identity]!.root!, ratio: 0.6, in: identity, generation: coordinator.paneLayouts.generations[identity]!)
+        coordinator.paneLayouts.resize(coordinator.paneLayouts.trees[identity]!.root!, ratio: originalRoot.ratio, in: identity, generation: coordinator.paneLayouts.generations[identity]!)
+        precondition(!coordinator.applyPaneFocus(staleLayout) && window.firstResponder === shellView)
+        do {
+            try await wait("Pi focus target after geometry reflow") { coordinator.capturePaneFocus(.left, in: window) != nil }
+        } catch {
+            let record = coordinator.selectedSession!
+            if let piSnapshot = coordinator.presentationSnapshot(for: record), let launch = try? coordinator.terminalLaunch(for: piSnapshot, sessionID: record.sessionId) {
+                let cached = coordinator.terminalSurfaces.cachedView(for: launch.key)
+                let shown = coordinator.terminalSurfaces.presentation(for: launch.key)
+                fputs("Pane-focus diagnostic: cached=\(cached != nil) surface=\(cached?.surface != nil) ended=\(cached?.childExited ?? false) hosted=\(cached?.window === window) presentation=\(shown != nil) sourceShell=\(window.firstResponder === shellView) logicalShell=\(coordinator.paneLayouts.focusedPanes[identity] == shell.paneId)\n", stderr)
+            }
+            throw error
+        }
+        precondition(coordinator.focusPane(.left, in: window))
+        guard let piPresentation = coordinator.terminalSurfaces.presentation(for: window.firstResponder as! TerminalView) else { throw Failure.missing("focused Pi presentation") }
+        precondition(piPresentation.key.paneID == session.pi.paneId && !coordinator.focusPane(.left, in: window))
+        precondition(coordinator.focusPane(.next, in: window) && window.firstResponder === shellView)
+        precondition(coordinator.focusPane(.previous, in: window) && window.firstResponder === piPresentation.view)
+        let editor = NSTextView(frame: .zero)
+        window.contentView!.addSubview(editor)
+        precondition(window.makeFirstResponder(editor) && !coordinator.focusPane(.right, in: window))
+        precondition(window.firstResponder === editor && window.makeFirstResponder(shellView))
+        editor.removeFromSuperview()
+        let competing = AxodTerminalHostView()
+        competing.install(launch: rightLaunch, surfaces: coordinator.terminalSurfaces, inputEnabled: true, viewportID: UUID(), onFocus: {})
+        precondition(rightView.window === window && competing.subviews.allSatisfy { $0 !== rightView })
+        print("PASS: owned native spatial/previous/next first-responder pane focus, Pi/shell destinations, focus/layout ABA refusal, non-terminal focus and competing viewport preservation; not real OS shortcuts/multiwindow acceptance")
         precondition(coordinator.selectedSession?.runtime?.runtime == originalPi)
         precondition(Set(coordinator.selectedSession!.shellPanes.compactMap { $0.runtime?.runtimeGeneration }).count == 3)
         precondition(!shellView.childExited && !rightView.childExited && !downView.childExited)
