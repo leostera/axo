@@ -22,7 +22,7 @@ struct AxodSessionTerminals: View {
                 // The initial shell has no committed identity yet. Geometry is
                 // only a placeholder here, never a fabricated PTY or add intent.
                 SplitView(.horizontal, $initialFraction, dividerColor: Color(nsColor: .separatorColor), left: {
-                    AxodRuntimeTerminalPane(title: "Pi", sessionID: session.sessionId,
+                    AxodRuntimeTerminalPane(sessionID: session.sessionId,
                         snapshot: coordinator.presentationSnapshot(for: session), viewportID: viewportID, coordinator: coordinator)
                 }, right: {
                     AxodTerminalInlineState(title: "Shell", message: coordinator.shellStartupState(for: session.sessionId)?.message
@@ -75,7 +75,7 @@ private struct AxodPaneSubtree: View {
         switch node {
         case .leaf(let leaf):
             let isPi = leaf.id == session.pi.paneId
-            AxodRuntimeTerminalPane(title: isPi ? "Pi" : "Shell", sessionID: session.sessionId,
+            AxodRuntimeTerminalPane(sessionID: session.sessionId,
                 snapshot: isPi ? coordinator.presentationSnapshot(for: session) : session.shellPanes.first(where: { $0.paneId == leaf.id })?.terminal,
                 viewportID: viewportID, coordinator: coordinator)
                 .id(leaf.id)
@@ -93,7 +93,6 @@ private struct AxodPaneSubtree: View {
 }
 
 private struct AxodRuntimeTerminalPane: View {
-    let title: String
     let sessionID: UUID
     let snapshot: TerminalSnapshot?
     let viewportID: UUID
@@ -107,9 +106,6 @@ private struct AxodRuntimeTerminalPane: View {
     }
     var body: some View {
         VStack(spacing: 0) {
-            Text(title).font(.system(size: 11, weight: .medium))
-                .foregroundStyle(.secondary)
-                .frame(maxWidth: .infinity, alignment: .leading).padding(.horizontal, 10).padding(.vertical, 5)
             if let launch = currentLaunch {
                 if let notice = coordinator.terminalSurfaces.notices[launch.key] {
                     Text(notice).font(.system(size: 11)).foregroundStyle(.secondary)

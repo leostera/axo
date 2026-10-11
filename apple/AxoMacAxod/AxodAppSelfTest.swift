@@ -92,11 +92,28 @@ import GhosttyKit
                   leftFrame.width > 0, rightFrame.width > 0, leftFrame.minX < rightFrame.minX else {
                 throw Failure.failed("Pi-left/shell-right geometry")
             }
+            try await wait("header-free terminal detail") {
+                var ancestor = right.view.superview
+                while let view = ancestor, view.identifier?.rawValue != "Axo.SessionDetail" { ancestor = view.superview }
+                guard let detail = ancestor else { return false }
+                let detailFrame = detail.convert(detail.bounds, to: window.contentView)
+                let piFrame = left.view.convert(left.view.bounds, to: window.contentView)
+                let shellFrame = right.view.convert(right.view.bounds, to: window.contentView)
+                return abs(piFrame.maxY - detailFrame.maxY) <= 1 && abs(shellFrame.maxY - detailFrame.maxY) <= 1
+            }
+            // Restore the diagnostic window after the asynchronous Pi admission wait.
+            // In-process events cannot perform the OS activation of a physical click.
+            window.makeKeyAndOrderFront(nil)
+            NSApp.activate()
+            try await wait("Pi input key window") { window.isKeyWindow && NSApp.isActive }
             // A real window mouse event selects the Pi pane before normal typing.
-            let point = left.view.convert(NSPoint(x: 20, y: 20), to: nil)
+            let point = left.view.convert(NSPoint(x: left.view.bounds.midX, y: left.view.bounds.midY), to: nil)
             let click = NSEvent.mouseEvent(with: .leftMouseDown, location: point, modifierFlags: [], timestamp: 0,
                 windowNumber: window.windowNumber, context: nil, eventNumber: 0, clickCount: 1, pressure: 1)!
             window.sendEvent(click)
+            let release = NSEvent.mouseEvent(with: .leftMouseUp, location: point, modifierFlags: [], timestamp: 0,
+                windowNumber: window.windowNumber, context: nil, eventNumber: 1, clickCount: 1, pressure: 0)!
+            window.sendEvent(release)
             guard window.firstResponder === left.view else { throw Failure.failed("Pi pane mouse focus") }
             type("APP_STARTUP_TYPED_MESSAGE", in: window)
             enter(in: window)
@@ -104,7 +121,17 @@ import GhosttyKit
                 coordinator.chatEntries.filter { $0.role == "user" && $0.text.contains("APP_STARTUP_TYPED_MESSAGE") }.count == 1 &&
                 coordinator.chatEntries.contains { $0.role == "assistant" && $0.text.contains("Actual app Pi response") }
             }
-            try await wait("Pi response on presented Ghostty viewport") { visibleText(left.view).contains("Actual app Pi response") }
+            do {
+                try await wait("Pi response on presented Ghostty viewport") { visibleText(left.view).contains("Actual app Pi response") }
+            } catch {
+                let text = visibleText(left.view)
+                checkpoint(left.view.childExited ? "pi-frontend-exited" : "pi-frontend-live")
+                checkpoint(left.view.window === window ? "pi-owning-window" : "pi-other-window")
+                checkpoint(text.contains("APP_STARTUP_TYPED_MESSAGE") ? "pi-input-visible" : "pi-input-not-visible")
+                checkpoint(text.contains("Actual app") ? "pi-response-prefix-visible" : "pi-response-prefix-not-visible")
+                checkpoint(text.contains("response") ? "pi-response-suffix-visible" : "pi-response-suffix-not-visible")
+                throw error
+            }
             try await wait("complete exact two-runtime catalog") { coordinator.runtimes.count == 2 && coordinator.nextRuntimeID == nil }
             guard coordinator.sessions.count == 1, coordinator.workspaces.isEmpty,
                   coordinator.nextSessionCursor == nil, coordinator.nextWorkspaceCursor == nil,

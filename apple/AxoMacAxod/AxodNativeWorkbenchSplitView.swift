@@ -127,6 +127,7 @@ struct AxodNativeWorkbenchSplitView: NSViewRepresentable {
         func makeView(detail: AnyView) -> NSView {
             configureSidebar()
             detailHost.rootView = detail
+            detailHost.identifier = NSUserInterfaceItemIdentifier("Axo.SessionDetail")
             detailHost.translatesAutoresizingMaskIntoConstraints = false
             content.addSubview(detailHost)
             NSLayoutConstraint.activate([

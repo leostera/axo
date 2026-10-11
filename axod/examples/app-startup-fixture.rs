@@ -170,7 +170,7 @@ fn main() {
         );
     } else {
         println!(
-            "PASS: LaunchServices opened packaged Axo.app; actual delegate/window, bundled helper version, automatic single session, HOME cwd, account login shell/zsh startup files, Retina layer scale, Pi-left/shell-right, window A-key/mouse routing and visible shell/Pi responses"
+            "PASS: LaunchServices opened packaged Axo.app; actual delegate/window, bundled helper version, automatic single session, HOME cwd, account login shell/zsh startup files, Retina layer scale, header-free Pi-left/shell-right, window A-key/mouse routing and visible shell/Pi responses"
         );
     }
     assert_eq!(

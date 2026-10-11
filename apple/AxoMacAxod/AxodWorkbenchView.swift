@@ -46,44 +46,6 @@ struct AxodWorkbenchView: View {
                             .font(.callout).foregroundStyle(Color.orange)
                             .frame(maxWidth: .infinity, alignment: .leading).padding(12)
                     }
-                    HStack(alignment: .top, spacing: 12) {
-                        VStack(alignment: .leading, spacing: 5) {
-                            Text(session.displayName)
-                                .font(.system(size: 14, weight: .medium))
-                                .foregroundStyle(Color.white.opacity(0.9))
-                            Text("Axod work record · Pi admission: \(session.pi.admission.rawValue)")
-                                .font(.system(size: 12))
-                                .foregroundStyle(Color.white.opacity(0.58))
-                            if let runtime = session.runtime {
-                                Text("Runtime: \(runtime.process.axodDescription) · \(runtime.backlogBytes) bytes buffered")
-                                    .font(.system(size: 12))
-                                    .foregroundStyle(Color.white.opacity(0.58))
-                            }
-                        }
-                        Spacer()
-                        Button(showsConversation ? "Terminals" : "Conversation") { showsConversation.toggle() }
-                        if let title = piStartActionTitle(for: session) {
-                            Button {
-                                if coordinator.pendingPiStartCommandID == nil {
-                                    coordinator.startOrResumePi()
-                                } else {
-                                    coordinator.reconcilePendingPiStart()
-                                }
-                            } label: {
-                                if coordinator.isStartingPi || coordinator.isReconcilingPiCommand {
-                                    ProgressView().controlSize(.small)
-                                } else {
-                                    Text(coordinator.pendingPiStartCommandID == nil ? title : "Reconcile start")
-                                }
-                            }
-                            .disabled(coordinator.connectionState != .connected || coordinator.isStartingPi || coordinator.isReconcilingPiCommand)
-                        } else if coordinator.pendingPiStartCommandID != nil {
-                            Button("Reconcile start") { coordinator.reconcilePendingPiStart() }
-                                .disabled(coordinator.connectionState != .connected || coordinator.isReconcilingPiCommand)
-                        }
-                    }
-                    .padding(12)
-                    Divider().overlay(Color.white.opacity(0.08))
                     if showsConversation {
                         chatContent
                     } else {
@@ -198,6 +160,23 @@ struct AxodWorkbenchView: View {
                 .lineLimit(1)
                 .truncationMode(.middle)
             Spacer(minLength: 12)
+            if let session = selectedSession {
+                Button(showsConversation ? "Terminals" : "Conversation") { showsConversation.toggle() }
+                    .buttonStyle(.plain)
+                if let title = piStartActionTitle(for: session) {
+                    Button(coordinator.pendingPiStartCommandID == nil ? title : "Reconcile start") {
+                        if coordinator.pendingPiStartCommandID == nil {
+                            coordinator.startOrResumePi()
+                        } else {
+                            coordinator.reconcilePendingPiStart()
+                        }
+                    }
+                    .disabled(coordinator.connectionState != .connected || coordinator.isStartingPi || coordinator.isReconcilingPiCommand)
+                } else if coordinator.pendingPiStartCommandID != nil {
+                    Button("Reconcile start") { coordinator.reconcilePendingPiStart() }
+                        .disabled(coordinator.connectionState != .connected || coordinator.isReconcilingPiCommand)
+                }
+            }
             if coordinator.needsLoginItemsReview || coordinator.needsDaemonServiceReview {
                 Button("Review Login Items…") { coordinator.openLoginItemsSettings() }
                     .buttonStyle(.plain)
