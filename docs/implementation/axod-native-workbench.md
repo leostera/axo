@@ -4,6 +4,10 @@
 
 The operator wants `dist/Axo.app` to replace the former daily workbench so Axo can be used to develop Axo. Source builds, metadata browsing, and cloud registration do not establish that parity. Never retire a working client merely because its replacement builds. Repackaging does not authorize stopping accepted daemon/Pi work.
 
+## Current workflow audit
+
+The [supported-workflow inventory and acceptance plan](supported-workflow-inventory.md) audits source `23be4c9`, traces native/local/cloud/phone workflows and existing file authority, distinguishes component evidence from actual-surface acceptance, and records scope questions that must be resolved before new implementation. Its source baseline is not a claim that the live helper or deployed API matches the packaged app.
+
 ## Ordered implementation
 
 1. **Native work records:** workspace/session create and rename, captured destinations and revision, durable command reconciliation without redispatch. New workspace uses the standard macOS directory picker: selection by the local user is approval, not a daemon profile allowlist. Persist the selected directory through a local-only typed boundary; cloud callers must not acquire arbitrary-path authority. Support standalone sessions with no workspace, starting at the user's captured home directory and grouped separately in the sidebar; never synthesize a hidden workspace. Wire menu, toolbar and sidebar actions through one path. Installed ambient Pi remains the runtime dependency, not a bundled engine.
