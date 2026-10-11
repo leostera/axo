@@ -22,7 +22,7 @@ final class AxodWorkbenchApp: NSObject, NSApplicationDelegate, NSWindowDelegate,
 
     static func main() {
 #if DEBUG
-        if CommandLine.arguments == [CommandLine.arguments[0], "-repair-stopped-service"] {
+        if CommandLine.arguments.count == 2, ["-repair-stopped-service", "-repair-stopped-service-parent"].contains(CommandLine.arguments[1]) {
             // Explicit operator action in the actual signed app's Bundle.main
             // context. Never a connection fallback or a hidden execution command.
             let application = NSApplication.shared
@@ -31,9 +31,12 @@ final class AxodWorkbenchApp: NSObject, NSApplicationDelegate, NSWindowDelegate,
                 $0.bundleIdentifier == "dev.leostera.axo.mac" && $0.processIdentifier != ProcessInfo.processInfo.processIdentifier
             }) else { fputs("Quit Axo frontends before stopped-service maintenance\n", stderr); exit(2) }
             Task { @MainActor in
-                do { try await AxodStoppedServiceRepair.run(); exit(0) }
+                do { try await AxodStoppedServiceRepair.run(refreshParent: CommandLine.arguments[1] == "-repair-stopped-service-parent"); exit(0) }
                 catch {
-                    fputs("Stopped-service maintenance was not confirmed. Its original ticket is preserved; no retry or state reset was performed.\n", stderr)
+                    if let failure = error as? AxodStoppedServiceRepair.Failure {
+                        fputs("Stopped-service maintenance failure: \(failure)\n", stderr)
+                    } else { fputs("Stopped-service platform error code: \((error as NSError).code)\n", stderr) }
+                    fputs("Its original ticket is preserved; no retry or state reset was performed.\n", stderr)
                     exit(3)
                 }
             }
@@ -69,7 +72,7 @@ final class AxodWorkbenchApp: NSObject, NSApplicationDelegate, NSWindowDelegate,
             if uiTest { uiTestContext = selfTest }
         }
 #else
-        if CommandLine.arguments.contains("-self-test") || CommandLine.arguments.contains("-ui-test") || CommandLine.arguments.contains("-repair-stopped-service") {
+        if CommandLine.arguments.contains("-self-test") || CommandLine.arguments.contains("-ui-test") || CommandLine.arguments.contains("-repair-stopped-service") || CommandLine.arguments.contains("-repair-stopped-service-parent") {
             fputs("Axo diagnostic flags require a development build\n", stderr); exit(2)
         }
         let coordinator = AxodWorkbenchCoordinator()

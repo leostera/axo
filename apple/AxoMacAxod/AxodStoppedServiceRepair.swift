@@ -16,6 +16,8 @@ import ServiceManagement
         let replacementBuild: String
         let rootDevice: UInt64
         let rootInode: UInt64
+        let refreshParent: Bool
+        let restoreFrontendAtLogin: Bool
     }
     private struct Confirmation: Codable {
         let operationID: UUID
@@ -24,7 +26,7 @@ import ServiceManagement
     }
     enum Failure: Error { case unsafeStorage, unresolvedOperation, liveOwner, installation, notReady }
 
-    static func run() async throws {
+    static func run(refreshParent: Bool = false) async throws {
         guard Bundle.main.bundleIdentifier == "dev.leostera.axo.mac",
               let version = Bundle.main.infoDictionary?["AxoBundledAxodVersion"] as? String,
               let build = Bundle.main.infoDictionary?["CFBundleVersion"] as? String else { throw Failure.installation }
@@ -37,10 +39,13 @@ import ServiceManagement
         var rootMetadata = stat()
         guard fstat(root, &rootMetadata) == 0, rootMetadata.st_uid == geteuid(),
               rootMetadata.st_mode & 0o077 == 0 else { throw Failure.unsafeStorage }
+        let login = SMAppService.mainApp
+        let restoreLogin = login.status == .enabled || login.status == .requiresApproval
         let intent = Intent(operationID: UUID(), serviceLabel: "dev.leostera.axo.axod",
             bundleIdentifier: "dev.leostera.axo.mac", replacementVersion: version, replacementBuild: build,
-            rootDevice: UInt64(rootMetadata.st_dev), rootInode: UInt64(rootMetadata.st_ino))
-        let pending = "agent-service-repair.pending.json"
+            rootDevice: UInt64(rootMetadata.st_dev), rootInode: UInt64(rootMetadata.st_ino),
+            refreshParent: refreshParent, restoreFrontendAtLogin: restoreLogin)
+        let pending = refreshParent ? "agent-parent-repair.pending.json" : "agent-service-repair.pending.json"
         let fd = openat(root, pending, O_WRONLY | O_CREAT | O_EXCL | O_NOFOLLOW | O_CLOEXEC, 0o600)
         guard fd >= 0 else { throw errno == EEXIST ? Failure.unresolvedOperation : Failure.unsafeStorage }
         defer { close(fd) }
@@ -63,6 +68,15 @@ import ServiceManagement
         @unknown default: throw Failure.installation
         }
         try requireSameRoot(directory.root, rootMetadata)
+        if refreshParent {
+            // Explicit repair of this bundle's parent registration only. Preserve
+            // its existing login preference; never reset global BTM state.
+            if restoreLogin {
+                try await login.unregister()
+                try requireSameRoot(directory.root, rootMetadata)
+                try login.register()
+            }
+        }
         absence.release()
         try service.register()
 
