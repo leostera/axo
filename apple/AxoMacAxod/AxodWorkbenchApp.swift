@@ -13,7 +13,6 @@ final class AxodWorkbenchApp: NSObject, NSApplicationDelegate, NSWindowDelegate,
     }()
     private var coordinator: AxodWorkbenchCoordinator?
     private var window: NSWindow?
-    private var sidebarToolbar: AxodSidebarToolbar?
     private var waitingForDraftSave = false
     private var savesWindowFrame = true
 #if DEBUG
@@ -66,14 +65,6 @@ final class AxodWorkbenchApp: NSObject, NSApplicationDelegate, NSWindowDelegate,
         window.title = Self.applicationName
         window.identifier = NSUserInterfaceItemIdentifier(Self.mainWindowFrameAutosaveName)
         window.delegate = self
-        let sidebarToolbar = AxodSidebarToolbar {
-            let preferences = UserDefaults.standard
-            let key = AxodSidebarToolbar.collapsedPreferenceKey
-            preferences.set(!preferences.bool(forKey: key), forKey: key)
-        }
-        self.sidebarToolbar = sidebarToolbar
-        window.toolbarStyle = .unifiedCompact
-        window.toolbar = sidebarToolbar.makeToolbar()
         window.contentViewController = NSHostingController(rootView: AxodWorkbenchView(coordinator: coordinator))
         let restoredFrame = savesWindowFrame && window.setFrameUsingName(Self.mainWindowFrameAutosaveName)
         if savesWindowFrame { window.setFrameAutosaveName(Self.mainWindowFrameAutosaveName) }
@@ -200,7 +191,8 @@ final class AxodWorkbenchApp: NSObject, NSApplicationDelegate, NSWindowDelegate,
     }
     @objc private func toggleSidebar(_ sender: Any?) {
         guard let window, NSApp.keyWindow === window else { return }
-        sidebarToolbar?.toggleSidebar(sender)
+        guard let coordinator else { return }
+        AxodSidebarPreferences.toggle(in: coordinator.preferences)
     }
 
     func validateMenuItem(_ menuItem: NSMenuItem) -> Bool {

@@ -285,6 +285,8 @@ impl RuntimeCompletion {
         self.0
     }
 }
+mod deletion;
+
 pub struct Manager {
     pub generation: HostGeneration,
     pub host: crate::host::HostStatus,
@@ -387,6 +389,9 @@ impl Manager {
                 receipt.runtime = self.journal.lock().unwrap().command_runtime(command);
             }
             return Some(crate::work::CommandReceipt::Pane { receipt });
+        }
+        if let Some(receipt) = self.settle_session_deletion(command) {
+            return Some(crate::work::CommandReceipt::Deletion { receipt });
         }
         if let Some(committed) = self.work.lock().unwrap().receipt(command) {
             return Some(crate::work::CommandReceipt::Work { committed });
@@ -677,6 +682,15 @@ impl Manager {
                 .is_some_and(|binding| binding.pane_id == target.pane_id)
         {
             return Err(ErrorCode::Conflict);
+        }
+        {
+            let work = self.work.lock().unwrap();
+            if work.session_deleted(target.session_id)
+                || work.session_deletion_pending(target.session_id)
+                || work.deletion_reserves_pane(target.pane_id)
+            {
+                return Err(ErrorCode::Conflict);
+            }
         }
         check_launch_admission(&terminals, target)?;
         let reference = RuntimeRef {

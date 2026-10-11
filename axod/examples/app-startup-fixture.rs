@@ -8,7 +8,7 @@ use std::{
     fs,
     io::Read,
     os::unix::fs::{DirBuilderExt, OpenOptionsExt, PermissionsExt},
-    path::Path,
+    path::{Path, PathBuf},
     process::{Command, Stdio},
     thread,
     time::{Duration, Instant},
@@ -73,7 +73,7 @@ fn main() {
             .output()
             .unwrap();
         assert!(
-            capability.status.success() && capability.stdout == b"1\n",
+            capability.status.success() && capability.stdout == b"2\n",
             "Bundle must explicitly support isolated UI testing before launch"
         );
     }
@@ -148,7 +148,7 @@ fn main() {
         );
         fs::remove_dir_all(&root).unwrap();
         println!(
-            "PASS: Xcode UI automation of packaged app sidebar selection, exact-row rename, workspace Command-T, UI-typed Pi turn and workspace-local canonical history; one model request, isolated state and owned helper cleanup"
+            "PASS: Xcode UI automation of packaged app selection/rename/Command-T, UI-typed Pi turn, cancel/exact-row/cross-workspace batch deletion and retained canonical history; one model request, isolated state and owned helper cleanup"
         );
         return;
     }
@@ -227,6 +227,9 @@ struct UiWorkspace {
 struct UiRecords {
     workspaces: std::collections::BTreeMap<axod::model::WorkspaceId, UiWorkspace>,
     sessions: std::collections::BTreeMap<axod::model::SessionId, axod::work::SessionRecord>,
+    #[serde(default)]
+    deletions:
+        std::collections::BTreeMap<axod::model::CommandId, axod::work::SessionDeletionReceipt>,
 }
 fn read_ui_records(root: &Path) -> Option<UiRecords> {
     use std::os::unix::fs::MetadataExt;
@@ -267,6 +270,44 @@ fn verify_ui_workspace_history(root: &Path) {
         .iter()
         .find(|session| session.name == "New Session")
         .expect("Command-T workspace membership");
+    assert_eq!(
+        records.deletions.len(),
+        2,
+        "Cancel must not dispatch; single and batch deletion each commit once"
+    );
+    assert!(
+        records
+            .deletions
+            .values()
+            .all(|receipt| receipt.revision.is_some())
+    );
+    let deleted: std::collections::BTreeSet<_> = records
+        .deletions
+        .values()
+        .flat_map(|receipt| {
+            receipt
+                .intent
+                .sessions
+                .iter()
+                .map(|address| address.session_id)
+        })
+        .collect();
+    assert_eq!(
+        deleted.len(),
+        3,
+        "One clicked outside row and one selected cross-workspace pair"
+    );
+    assert!(
+        deleted.contains(&session.session_id),
+        "Workspace Pi was not part of the confirmed selected batch"
+    );
+    assert!(
+        !records
+            .sessions
+            .values()
+            .any(|record| record.name == "UI renamed" && deleted.contains(&record.session_id)),
+        "Deletion retargeted the retained manual name"
+    );
     let session_id = serde_json::to_value(session.session_id).unwrap();
     let directory = root
         .join("workspace/.axo/sessions")
@@ -288,6 +329,50 @@ fn verify_ui_workspace_history(root: &Path) {
         histories, 1,
         "Exactly one ambient-Pi canonical history in the work-session UUID folder"
     );
+}
+
+fn ui_history_snapshot(root: &Path) -> Option<(PathBuf, Vec<u8>)> {
+    use std::os::unix::fs::MetadataExt;
+    let records = read_ui_records(root)?;
+    let session = records
+        .sessions
+        .values()
+        .find(|session| session.workspace_id.is_some() && session.name == "New Session")?;
+    let id = serde_json::to_value(session.session_id).ok()?;
+    let directory = root.join("workspace/.axo/sessions").join(id.as_str()?);
+    let entry = fs::read_dir(directory)
+        .ok()?
+        .filter_map(Result::ok)
+        .find(|entry| {
+            entry
+                .path()
+                .extension()
+                .is_some_and(|extension| extension == "jsonl")
+        })?;
+    let file = fs::OpenOptions::new()
+        .read(true)
+        .custom_flags(libc::O_NOFOLLOW | libc::O_CLOEXEC)
+        .open(entry.path())
+        .ok()?;
+    let metadata = file.metadata().ok()?;
+    if !metadata.is_file()
+        || metadata.nlink() != 1
+        || metadata.uid() != unsafe { libc::geteuid() }
+        || metadata.permissions().mode() & 0o077 != 0
+        || metadata.len() > 65536
+    {
+        return None;
+    }
+    let mut bytes = Vec::new();
+    file.take(65537).read_to_end(&mut bytes).ok()?;
+    if bytes.len() > 65536
+        || !std::str::from_utf8(&bytes)
+            .ok()?
+            .contains("Actual app Pi response")
+    {
+        return None;
+    }
+    Some((entry.path(), bytes))
 }
 
 fn run_ui_tests(app: &Path, root: &Path, repo: &Path) {
@@ -332,7 +417,11 @@ fn run_ui_tests(app: &Path, root: &Path, repo: &Path) {
         .unwrap();
     let deadline = Instant::now() + Duration::from_secs(600);
     let mut workspace_prepared = false;
+    let mut history_snapshot = None;
     loop {
+        if history_snapshot.is_none() {
+            history_snapshot = ui_history_snapshot(root);
+        }
         if !workspace_prepared
             && read_ui_records(root).is_some_and(|records| {
                 records
@@ -361,6 +450,12 @@ fn run_ui_tests(app: &Path, root: &Path, repo: &Path) {
                 status.success(),
                 "Xcode UI test failed; private fixture and xcresult retained at {}",
                 root.display()
+            );
+            let (path, bytes) =
+                history_snapshot.expect("Canonical Pi response captured before UI deletion");
+            assert!(
+                fs::read(path).unwrap() == bytes,
+                "Deletion changed retained canonical history bytes"
             );
             break;
         }

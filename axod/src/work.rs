@@ -9,6 +9,9 @@ use std::{
     path::{Path, PathBuf},
 };
 
+mod deletion;
+pub use deletion::{DeletionTarget, SessionAddress, SessionDeletionIntent, SessionDeletionReceipt};
+
 const MAX_BYTES: usize = 4 * 1024 * 1024;
 const MAX_WORKSPACES: usize = 128;
 const MAX_SESSIONS: usize = 1000;
@@ -233,6 +236,8 @@ struct Saved {
     #[serde(default)]
     standalone_directories: BTreeMap<SessionId, LocalDirectoryPath>,
     receipts: BTreeMap<CommandId, Receipt>,
+    #[serde(default)]
+    deletions: BTreeMap<CommandId, SessionDeletionReceipt>,
 }
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum WorkError {
@@ -248,6 +253,9 @@ pub enum WorkError {
 #[derive(Clone, Serialize)]
 #[serde(tag = "kind", rename_all = "camelCase")]
 pub enum CommandReceipt {
+    Deletion {
+        receipt: SessionDeletionReceipt,
+    },
     Pane {
         receipt: crate::panes::store::Receipt,
     },
@@ -281,6 +289,7 @@ impl WorkStore {
                 sessions: BTreeMap::new(),
                 standalone_directories: BTreeMap::new(),
                 receipts: BTreeMap::new(),
+                deletions: BTreeMap::new(),
             },
             Err(error) => return Err(error),
         };
@@ -310,7 +319,7 @@ impl WorkStore {
             .map(|r| r.committed.clone())
     }
     pub fn contains_command(&self, command: CommandId) -> bool {
-        self.saved.receipts.contains_key(&command)
+        self.saved.receipts.contains_key(&command) || self.saved.deletions.contains_key(&command)
     }
     pub(crate) fn startup_directory(&self, command: CommandId) -> Option<LocalDirectoryPath> {
         match &self.saved.receipts.get(&command)?.intent {
@@ -339,11 +348,25 @@ impl WorkStore {
             .saved
             .sessions
             .values()
-            .filter(|s| workspace.is_none_or(|id| s.workspace_id == Some(id)))
+            .filter(|s| {
+                !self.session_deleted(s.session_id)
+                    && workspace.is_none_or(|id| s.workspace_id == Some(id))
+            })
             .cloned()
             .collect())
     }
     pub fn session(
+        &self,
+        workspace: impl Into<Option<WorkspaceId>>,
+        session: SessionId,
+    ) -> Result<SessionRecord, WorkError> {
+        if self.session_deleted(session) {
+            return Err(WorkError::NotFound);
+        }
+        self.recorded_session(workspace, session)
+    }
+    /// Retained records validate immutable pane/Pi receipts; they are not execution authority.
+    pub(crate) fn recorded_session(
         &self,
         workspace: impl Into<Option<WorkspaceId>>,
         session: SessionId,
@@ -363,6 +386,9 @@ impl WorkStore {
         pane: PaneId,
     ) -> Result<ExecutionContext, WorkError> {
         let workspace = workspace.into();
+        if self.session_deletion_pending(session) {
+            return Err(WorkError::Rejected);
+        }
         let record = self.session(workspace, session)?;
         if record.pi_pane_id != pane {
             return Err(WorkError::NotFound);
@@ -418,10 +444,22 @@ impl WorkStore {
                 Err(WorkError::Conflict)
             };
         }
+        if self.saved.deletions.contains_key(&command)
+            || self.saved.deletions.values().any(|r| r.revision.is_none())
+        {
+            return Err(WorkError::Conflict);
+        }
+        if let WorkIntent::RenameSession { session_id, .. } = &intent
+            && self.session_deleted(*session_id)
+        {
+            return Err(WorkError::NotFound);
+        }
         if intent.expected_revision() != self.saved.revision {
             return Err(WorkError::Conflict);
         }
-        if self.saved.receipts.len() >= MAX_RECEIPTS || self.saved.revision == MAX_REVISION {
+        if self.saved.receipts.len() + self.saved.deletions.len() >= MAX_RECEIPTS
+            || self.saved.revision == MAX_REVISION
+        {
             return Err(WorkError::Capacity);
         }
         let mut next = self.saved.clone();
@@ -620,8 +658,15 @@ impl Saved {
             && self.revision <= MAX_REVISION
             && self.workspaces.len() <= MAX_WORKSPACES
             && self.sessions.len() <= MAX_SESSIONS
-            && self.receipts.len() <= MAX_RECEIPTS
-            && self.revision == self.receipts.len() as u64
+            && self.receipts.len() + self.deletions.len() <= MAX_RECEIPTS
+            && self.revision
+                == (self.receipts.len()
+                    + self
+                        .deletions
+                        .values()
+                        .filter(|r| r.revision.is_some())
+                        .count()) as u64
+            && self.valid_deletions()
             && self.workspaces.iter().all(|(id, w)| {
                 *id == w.record.workspace_id
                     && valid_name(&w.record.name)
@@ -650,6 +695,7 @@ impl Saved {
             .receipts
             .values()
             .map(|r| r.committed.revision)
+            .chain(self.deletions.values().filter_map(|r| r.revision))
             .collect();
         revisions.sort_unstable();
         let mut panes: Vec<_> = self.sessions.values().map(|s| s.pi_pane_id).collect();

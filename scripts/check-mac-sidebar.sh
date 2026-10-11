@@ -5,8 +5,8 @@ TMP="$(mktemp -d "${TMPDIR:-/tmp}/axo-sidebar.XXXXXX")"
 trap 'rm -rf "$TMP"' EXIT
 export DEVELOPER_DIR="${DEVELOPER_DIR:-/Applications/Xcode.app/Contents/Developer}"
 xcrun swiftc -parse-as-library \
-  "$ROOT/apple/AxoMacAxod/AxodSidebarToolbar.swift" \
-  "$ROOT/apple/AxoMacTests/SidebarToolbarChecks.swift" \
+  "$ROOT/apple/AxoMacAxod/AxodSidebarPreferences.swift" \
+  "$ROOT/apple/AxoMacTests/SidebarPreferencesChecks.swift" \
   -o "$TMP/check-sidebar"
 "$TMP/check-sidebar"
 xcrun swiftc -parse-as-library \

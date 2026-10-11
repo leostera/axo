@@ -12,17 +12,17 @@ Resolve paths from the Axo root (`../../..`). Follow [development](../axo-develo
 - Preserve the AppKit application delegate, primary `NSWindow`, native split/outline and hosted detail. Do not replace a working source list with SwiftUI solely to change frameworks.
 - Window/viewport/layout ownership is presentation state. Workspace/session catalog, runtime ownership and canonical Pi state are separate. Creating/closing/restoring/reflowing a view never admits, clones, stops or retargets a runtime.
 - Settings and About are dedicated utility windows with hosted content. Respect content/toolbar safe areas; settings is not a sidebar destination or session detail.
-- Expanded rows are light: folder headers, session status icon and title. Use system materials, semantic colors and standard controls. Flat nonselectable Workspaces/Sessions headings do not add hierarchy levels. Use Sessions terminology and standalone for records without a workspace.
+- Expanded sidebar is minimal: bold nonselectable Workspaces heading, folders with nested session rows, one divider, then bold Sessions heading and standalone rows. Folder/hammer glyphs identify records; the hammer does not claim busy-state telemetry. No Axo/plus header, Settings row or extra section separators. The only footer control collapses navigation. Use system materials, semantic colors and standard controls; headings do not add hierarchy levels.
 - Multi-selection uses native `NSOutlineView` Shift/Command behavior and identity sets separate from the one displayed session. Adding selected rows/ranges must not unnecessarily replace detail or steal terminal focus. Metadata refresh preserves visible row order, expansion, selected IDs and range anchor.
-- Context actions target the clicked row outside selection or the selected set inside it. Rename is single-target only; it captures original target/revision/endpoint. Missing manual-name capability disables unsupported editing. Move/delete require daemon lifecycle support, not local hiding or bypassing records.
-- Main-sidebar collapse is a usable 56-point icon rail, not zero-width navigation. Keep accessible destinations, selection cues, Create and a bottom expand control; preserve expanded width separately. View → Toggle Sidebar (Control-Command-S) and the ordinary explicitly routed toolbar item share the same preference. Settings has its own independent rail/width state. AppKit's reserved `.toggleSidebar` item has framework routing unsuitable for the custom split.
+- Context actions target the clicked row outside selection or the selected set inside it. Rename is single-target only; it captures original target/revision/endpoint. Missing manual-name capability disables unsupported editing. Delete confirms a frozen set of up to 32 session identities, durably reserves the daemon intent, stops exact owned runtimes and tombstones the entire batch only after completion proof. Preserve histories/drafts and original receipts. Unknown/prepared results permit exact read-only reconciliation, never another stop; uncertain runtime ownership is refused. Release only confirmed-deleted presentation surfaces. Move remains unavailable until its daemon lifecycle exists.
+- Main-sidebar collapse is a usable 56-point icon rail with accessible destinations, selection cues and a bottom expand control; no inline Create/Settings. Preserve expanded width separately. View → Toggle Sidebar (Control-Command-S) shares the same scoped preference; the main window has no toolbar/sidebar titlebar item. Creation/Settings stay in menus/shortcuts. Diagnostic preference stores must be injected, never mutate normal sidebar preferences. Settings has its own independent rail/width state.
 
 ## Creation and session detail
 
 - New Session is direct, one click, no name/progress modal. Command-T uses the active workspace; standalone uses captured HOME. Workspace creation uses the native folder picker and commits its first session atomically.
 - Select committed work immediately. Admit the shell before awaiting Pi readiness so shell input remains usable during delayed/unavailable Pi. Keep failures, recovery and unknown outcomes scoped and actionable inline.
 - Automatic empty launch requires complete authoritative empty catalogs plus pending/draft/admission fences and the atomic `createIfEmpty` command. Restoration/reconnect does not create work.
-- Healthy detail is only the split tree: Pi left, independent shell right, no session/admission/PID/backlog header or pane title strips. Identity belongs in sidebar/window title; conversation/start/reconcile controls belong in the bottom bar. Genuine failure/recovery notices remain visible.
+- Healthy detail is only the split tree: Pi left, independent shell right, no session/admission/PID/backlog header or pane title strips. Identity belongs in sidebar/window title. No healthy connection status bar, Conversation toggle or Start Pi button; the normal view is terminal-only. Genuine failure/recovery and unknown-command notices remain actionable inline.
 - Native manual names and canonical Pi titles are separate. Metadata-only updates with unchanged bindings preserve readers, terminals, chat and field editors.
 
 ## Terminal and AppKit boundary
@@ -38,6 +38,8 @@ Resolve paths from the Axo root (`../../..`). Follow [development](../axo-develo
 
 ## Chat, history and drafts
 
+These coordinator/reader/storage capabilities remain exercised by owned native component fixtures; the normal window does not expose a Conversation switch.
+
 - Bind editor callbacks to the rendered machine/workspace/session/pane/chat, with runtime/host dispatch authority captured separately. Revalidate operation/source/endpoint after awaits; do not select a destination globally.
 - Preserve bounded single-page history/tool readers, immutable source/read-mode and presentation generations. Do not accumulate pages or infer canonical history from terminal output. A source/head/branch change invalidates captured reads, including equal-looking ABA changes.
 - Draft text and original send/steer tickets live in the private versioned archive. Limits are 32 conversations, 64 KiB each, 1 MiB aggregate text, 32 pending tickets and 2 MiB archive; reject capacity without eviction/truncation or stale submission.
@@ -52,7 +54,7 @@ Build and compile fixtures sequentially against shared DerivedData. Use Xcode fo
 
 | Lane | Command | Scope |
 | --- | --- | --- |
-| Xcode UI | `bash scripts/check-mac-ui.sh` | Packaged app; OS-routed Command-T, native range/multi-selection, refresh retention, clicked-row rename, workspace membership, UI-typed Pi response and canonical workspace history |
+| Xcode UI | `bash scripts/check-mac-ui.sh` | Packaged app; OS-routed Command-T, native range/multi-selection, refresh retention, clicked-row rename, workspace membership, UI-typed Pi response, Cancel/exact-row/cross-workspace batch Delete and unchanged retained canonical history |
 | Packaged startup | `bash scripts/check-mac-app-startup.sh` | LaunchServices/delegate/window/bootstrap, exact bundled helper, one empty-launch session, shell/Pi input/output, account login shell, owning-window scale and header-free geometry |
 | Unavailable Pi | `AXO_APP_SELF_TEST_CASE=unavailable bash scripts/check-mac-app-startup.sh` | Real app must retain shell usability and refuse success with missing Pi |
 | Native workbench | `bash scripts/check-mac-workbench.sh` | Production coordinator/views/PTYs in private owned native fixtures: creation, delayed/failing Pi, restore, chat/drafts and process recovery |
@@ -63,7 +65,7 @@ Build and compile fixtures sequentially against shared DerivedData. Use Xcode fo
 - Xcode UI testing refuses while any Axo frontend is open: `XCUIApplication.launch()` can terminate same-bundle applications. Recheck before running and never implicitly close discovered frontends. Test windows are marked temporary and placed on the primary display. Reopen native menus when polling enabled state; an open menu does not revalidate asynchronous admission changes.
 - Packaged self-test flags require fresh Rust-prepared private roots and exact capability versions; release apps reject diagnostic flags. The diagnostic app stops only its owned fixture helper on exit. Normal app quit remains non-destructive.
 - Native process-crash checks may signal only the fixture's still-unreaped child handle after its durable checkpoint. Preserve exact daemon PTYs and original unknown tickets; do not replay hints/messages.
-- Match claims to the lane: folder-picker UI, normal ServiceManagement/helper handoff, argument-free Finder launch, physical keyboard/IME, independent windows, notifications, power loss and batch move/delete are separate acceptance boundaries. A busy snapshot or rendered text cannot become execution/completion authority.
+- Match claims to the lane: folder-picker UI, normal ServiceManagement/helper handoff, argument-free Finder launch, physical keyboard/IME, independent windows, notifications, power loss and move are separate acceptance boundaries. A busy snapshot or rendered text cannot become execution/completion authority.
 
 ## Delivery and diagnostics
 

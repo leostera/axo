@@ -7,11 +7,9 @@ struct CompactSidebarChecks {
     @MainActor static func main() throws {
         _ = NSApplication.shared
         var expanded = false
-        var created = false
         var selected: AxodCompactSidebarView.Destination?
         let workspace = UUID(), session = UUID()
-        let rail = AxodCompactSidebarView(onSelect: { selected = $0 }, onExpand: { expanded = true },
-                                         onCreate: { created = true })
+        let rail = AxodCompactSidebarView(onSelect: { selected = $0 }, onExpand: { expanded = true })
         let window = NSWindow(contentRect: NSRect(x: 0, y: 0, width: 56, height: 520),
                               styleMask: [.titled, .resizable], backing: .buffered, defer: false)
         window.contentView = rail
@@ -44,16 +42,16 @@ struct CompactSidebarChecks {
         try check(selected == .workspace(workspace), "Wrong workspace destination")
         try click("Session: Fix sidebar")
         try check(selected == .session(session), "Wrong session destination")
-        try click("Create workspace or session")
         try click("Expand sidebar")
-        try check(created && expanded, "Compact actions must remain functional")
+        try check(expanded, "Expand must remain functional")
+        try check(!buttons(in: rail).contains { $0.accessibilityLabel() == "Create workspace or session" }, "Creation belongs in menus/shortcuts")
         try check(!buttons(in: rail).contains { $0.accessibilityLabel() == "Settings" }, "Settings belongs in the app menu")
         let expand = buttons(in: rail).first { $0.accessibilityLabel() == "Expand sidebar" }!
         try check(expand.convert(expand.bounds, to: rail).minY < 20, "Expand control belongs at the bottom")
 
         rail.update(items: (0..<100).map { .init(destination: .session(UUID()), name: "Session \($0)", selected: false) })
         rail.layoutSubtreeIfNeeded()
-        try check(buttons(in: rail).count == 102, "Navigation must not be truncated")
+        try check(buttons(in: rail).count == 101, "Navigation must not be truncated")
         guard let scroll = rail.subviews.first(where: { $0 is NSScrollView }) as? NSScrollView,
               let document = scroll.documentView else { throw Failure.failed("Missing scrollable navigation") }
         try check(document.bounds.height > scroll.contentView.bounds.height, "Long navigation must scroll")

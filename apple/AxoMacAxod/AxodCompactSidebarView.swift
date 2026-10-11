@@ -20,14 +20,12 @@ final class AxodCompactSidebarView: NSView {
     private let onSelect: (Destination) -> Void
     private var items: [Item] = []
 
-    init(onSelect: @escaping (Destination) -> Void, onExpand: @escaping () -> Void,
-         onCreate: @escaping () -> Void) {
+    init(onSelect: @escaping (Destination) -> Void, onExpand: @escaping () -> Void) {
         self.onSelect = onSelect
         super.init(frame: .zero)
         setAccessibilityLabel("Compact workspace and session sidebar")
 
         let expand = actionButton(symbol: "sidebar.left", label: "Expand sidebar", action: onExpand)
-        let create = actionButton(symbol: "plus", label: "Create workspace or session", action: onCreate)
         let scroll = NSScrollView()
         scroll.drawsBackground = false
         scroll.hasVerticalScroller = true
@@ -38,18 +36,16 @@ final class AxodCompactSidebarView: NSView {
         navigation.translatesAutoresizingMaskIntoConstraints = false
         scroll.documentView = navigation
 
-        for child in [create, scroll, expand] {
+        for child in [scroll, expand] {
             child.translatesAutoresizingMaskIntoConstraints = false
             addSubview(child)
         }
         NSLayoutConstraint.activate([
             expand.centerXAnchor.constraint(equalTo: centerXAnchor),
             expand.bottomAnchor.constraint(equalTo: bottomAnchor, constant: -10),
-            create.centerXAnchor.constraint(equalTo: centerXAnchor),
-            create.topAnchor.constraint(equalTo: topAnchor, constant: 10),
             scroll.leadingAnchor.constraint(equalTo: leadingAnchor),
             scroll.trailingAnchor.constraint(equalTo: trailingAnchor),
-            scroll.topAnchor.constraint(equalTo: create.bottomAnchor, constant: 12),
+            scroll.topAnchor.constraint(equalTo: topAnchor, constant: 12),
             scroll.bottomAnchor.constraint(equalTo: expand.topAnchor, constant: -12),
             navigation.leadingAnchor.constraint(equalTo: scroll.contentView.leadingAnchor),
             navigation.trailingAnchor.constraint(equalTo: scroll.contentView.trailingAnchor),
@@ -71,7 +67,7 @@ final class AxodCompactSidebarView: NSView {
                 button.font = .systemFont(ofSize: 14, weight: .semibold)
                 button.setAccessibilityLabel("Workspace: \(item.name)")
             case .session:
-                button.image = NSImage(systemSymbolName: "terminal", accessibilityDescription: item.name)
+                button.image = NSImage(systemSymbolName: "hammer", accessibilityDescription: item.name)
                 button.setAccessibilityLabel("Session: \(item.name)")
             }
             button.toolTip = item.name
@@ -103,6 +99,9 @@ private final class AxodRailButton: NSButton {
         self.onPress = action
         super.init(frame: .zero)
         isBordered = false
+        bezelStyle = .inline
+        imageScaling = .scaleProportionallyDown
+        symbolConfiguration = NSImage.SymbolConfiguration(pointSize: 14, weight: .regular)
         target = self
         self.action = #selector(press(_:))
         translatesAutoresizingMaskIntoConstraints = false
@@ -111,6 +110,10 @@ private final class AxodRailButton: NSButton {
             heightAnchor.constraint(equalToConstant: 36),
         ])
     }
+
+    // Borderless glyph targets fill their 36-point boxes. Bezel alignment
+    // insets otherwise enlarge frames into neighboring rail controls.
+    override var alignmentRectInsets: NSEdgeInsets { NSEdgeInsets(top: 0, left: 0, bottom: 0, right: 0) }
 
     required init?(coder: NSCoder) { fatalError("Programmatic control only") }
     @objc private func press(_ sender: Any?) { onPress() }

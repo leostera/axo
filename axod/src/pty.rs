@@ -84,6 +84,11 @@ fn spawn_inner(
             {
                 libc::_exit(126);
             }
+            if control_fd.is_some() {
+                // Ambient Pi is the canonical writer. Make its newly created files
+                // private without touching existing history or the parent's umask.
+                libc::umask(0o077);
+            }
             let first_closed = if control_fd.is_some() { 4 } else { 3 };
             for descriptor in first_closed..descriptor_ceiling {
                 while libc::close(descriptor) < 0 {
@@ -257,7 +262,7 @@ mod tests {
         assert!(descriptor >= 200);
         let inherited = unsafe { File::from_raw_fd(descriptor) };
         let script = format!(
-            "import os,sys\nassert os.isatty(0) and os.isatty(1) and os.isatty(2)\ntry: os.fstat({descriptor})\nexcept OSError: pass\nelse: sys.exit(9)\nos.write(3,b'ready')\nsys.exit(0 if os.read(3,1)==b'x' else 8)\n"
+            "import os,sys\nassert os.umask(0o077)==0o077\nassert os.isatty(0) and os.isatty(1) and os.isatty(2)\ntry: os.fstat({descriptor})\nexcept OSError: pass\nelse: sys.exit(9)\nos.write(3,b'ready')\nsys.exit(0 if os.read(3,1)==b'x' else 8)\n"
         );
         let (terminal, mut channel) = spawn_with_control_path(
             "/tmp",

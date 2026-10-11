@@ -82,10 +82,11 @@ final class SessionSidebarUITests: XCTestCase {
         waitForNewSession(app)
         app.typeKey("t", modifierFlags: .command)
         wait { labels.count == 6 }
-        let created = try XCTUnwrap(labels.allElementsBoundByIndex.first { !existing.contains($0.identifier) })
-        XCTAssertTrue(workspaceRow.disclosedChildRows.containing(.any, identifier: created.identifier).firstMatch.exists,
+        let createdID = try XCTUnwrap(labels.allElementsBoundByIndex.first { !existing.contains($0.identifier) }).identifier
+        XCTAssertTrue(workspaceRow.disclosedChildRows.containing(.any, identifier: createdID).firstMatch.exists,
             "Command-T escaped the active workspace's sidebar group")
         waitForNewSession(app)
+        assertMinimalChrome(app)
         wait { app.textViews.count == 2 }
         let terminals = app.textViews.allElementsBoundByIndex.sorted { $0.frame.minX < $1.frame.minX }
         let terminal = try XCTUnwrap(terminals.first)
@@ -94,8 +95,56 @@ final class SessionSidebarUITests: XCTestCase {
         terminal.click()
         terminal.typeText("APP_STARTUP_TYPED_MESSAGE\n")
         wait { (terminal.value as? String)?.contains("Actual app Pi response") == true }
+
+        // Outside-selection Delete must target the clicked row, not this live Pi.
+        let outside = outline.outlineRows.containing(.any, identifier: ids[0]).firstMatch
+        outside.rightClick(); app.menuItems["Delete…"].click()
+        XCTAssertTrue(app.sheets.buttons["Cancel"].waitForExistence(timeout: 10))
+        app.sheets.buttons["Cancel"].click()
+        XCTAssertEqual(labels.count, 6)
+        XCTAssertTrue(outline.outlineRows.containing(.any, identifier: createdID).firstMatch.isSelected)
+        outside.rightClick(); app.menuItems["Delete…"].click()
+        XCTAssertTrue(app.sheets.buttons["Delete"].waitForExistence(timeout: 10))
+        app.sheets.buttons["Delete"].click()
+        wait { labels.count == 5 && !outline.descendants(matching: .any).matching(identifier: ids[0]).firstMatch.exists }
+        XCTAssertTrue(terminal.isEnabled, "Deleting an outside row stopped the displayed Pi")
+
+        // A selected cross-workspace pair is one confirmed batch, not two global-current actions.
+        let selected = outline.outlineRows.containing(.any, identifier: ids[2]).firstMatch
+        let project = outline.outlineRows.containing(.any, identifier: createdID).firstMatch
+        selected.click()
+        XCUIElement.perform(withKeyModifiers: .command) { project.click() }
+        XCTAssertTrue(selected.isSelected && project.isSelected)
+        project.rightClick(); app.menuItems["Delete…"].click()
+        XCTAssertTrue(app.sheets.buttons["Delete"].waitForExistence(timeout: 10))
+        app.sheets.buttons["Delete"].click()
+        wait { labels.count == 3 && !outline.descendants(matching: .any).matching(identifier: ids[2]).firstMatch.exists
+            && !outline.descendants(matching: .any).matching(identifier: createdID).firstMatch.exists }
+        XCTAssertTrue(outline.descendants(matching: .any).matching(identifier: ids[1]).firstMatch.exists)
+        XCTAssertTrue(outline.descendants(matching: .any).matching(identifier: ids[3]).firstMatch.exists)
+        waitForNewSession(app)
         // Rust verifies exact committed membership and canonical file placement
         // after this app quits through its production save/owned-helper barrier.
+    }
+
+    private func assertMinimalChrome(_ app: XCUIApplication) {
+        let window = app.windows.firstMatch
+        XCTAssertEqual(window.toolbars.count, 0, "The titlebar must not contain a sidebar toolbar")
+        for label in ["Settings", "Create workspace or session", "Conversation", "Start Pi"] {
+            XCTAssertFalse(window.buttons[label].exists, "Unexpected healthy chrome: \(label)")
+        }
+        XCTAssertFalse(window.staticTexts.matching(NSPredicate(format: "label CONTAINS[c] 'connected locally'")).firstMatch.exists)
+        let headings = window.descendants(matching: .any)
+        let workspaces = headings.matching(identifier: "Axo.Sidebar.Heading.workspaces").firstMatch
+        let sessions = headings.matching(identifier: "Axo.Sidebar.Heading.sessions").firstMatch
+        XCTAssertTrue(workspaces.exists && sessions.exists)
+        XCTAssertLessThan(workspaces.frame.minY, sessions.frame.minY, "Workspaces must precede standalone Sessions")
+        window.buttons["Collapse sidebar"].click()
+        XCTAssertTrue(window.buttons["Expand sidebar"].waitForExistence(timeout: 10))
+        XCTAssertFalse(window.buttons["Create workspace or session"].exists)
+        window.buttons["Expand sidebar"].click()
+        XCTAssertTrue(window.buttons["Collapse sidebar"].waitForExistence(timeout: 10))
+        XCTAssertTrue(window.outlines.firstMatch.exists)
     }
 
     private func waitForNewSession(_ app: XCUIApplication) {

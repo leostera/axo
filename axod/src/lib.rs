@@ -19,6 +19,9 @@ pub mod relay;
 pub mod rpc;
 pub mod runtime;
 pub mod server;
+mod session_deletion;
+#[cfg(test)]
+mod session_deletion_tests;
 pub mod terminal;
 pub mod terminal_client;
 pub mod terminal_frontend;

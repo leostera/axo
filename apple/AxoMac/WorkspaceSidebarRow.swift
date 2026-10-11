@@ -104,10 +104,10 @@ final class WorkspaceSidebarHeading: NSTableCellView {
 
 final class WorkspaceOutlineView: NSOutlineView {
     var itemMenu: ((Any) -> NSMenu)?
-    var isStandaloneSession: ((Any) -> Bool)?
+    var reclaimsOutlineGutter: ((Any) -> Bool)?
     override func frameOfCell(atColumn column: Int, row: Int) -> NSRect {
         var frame = super.frameOfCell(atColumn: column, row: row)
-        if let item = item(atRow: row), isStandaloneSession?(item) == true {
+        if let item = item(atRow: row), reclaimsOutlineGutter?(item) == true {
             // Root leaves have no disclosure control; reclaim only the reserved gutter.
             let gutter = min(indentationPerLevel, frame.minX)
             frame.origin.x -= gutter; frame.size.width += gutter

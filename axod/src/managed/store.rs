@@ -395,7 +395,7 @@ impl Saved {
                 }
             };
             if !work
-                .session(workspace, session)
+                .recorded_session(workspace, session)
                 .is_ok_and(|record| record.pi_pane_id == pane)
             {
                 return false;

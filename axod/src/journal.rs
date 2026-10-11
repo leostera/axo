@@ -107,6 +107,12 @@ impl Journal {
             }
         }
         let work = crate::work::WorkStore::open(root)?;
+        if !work.validate_deletion_runtimes(&saved.terminals.values().cloned().collect::<Vec<_>>())
+        {
+            return Err(io::Error::other(
+                "Session deletion lacks exact recorded runtime completion",
+            ));
+        }
         if saved.receipts.keys().any(|id| work.contains_command(*id)) {
             return Err(io::Error::other(
                 "Conflicting command identities across journals",

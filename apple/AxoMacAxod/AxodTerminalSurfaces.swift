@@ -1,6 +1,7 @@
 import AppKit
 import GhosttyKit
 import Observation
+import AxoProtocol
 
 /// Presentation cache only. The daemon remains the sole Pi/shell process owner.
 @MainActor @Observable
@@ -43,6 +44,16 @@ final class AxodTerminalSurfaces {
         }
         views[launch.key] = view
         return view
+    }
+
+    func releaseDeletedSessions(_ receipt: SessionDeletionReceipt) {
+        guard receipt.revision != nil else { return }
+        let sessions = Set(receipt.intent.sessions.map(\.sessionId))
+        let keys = views.keys.filter { $0.machineID == receipt.intent.target.machineId && sessions.contains($0.sessionID) }
+        for key in keys {
+            views.removeValue(forKey: key)?.detachPresentation()
+            notices.removeValue(forKey: key)
+        }
     }
 
     private func requireRuntime() throws -> GhosttyRuntime {

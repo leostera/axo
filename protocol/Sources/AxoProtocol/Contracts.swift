@@ -31,6 +31,7 @@ public enum AxoProtocol {
         public static let createSession = "axo.session.create"
         public static let createEmptyStartupSession = "axo.session.createIfEmpty"
         public static let renameSession = "axo.session.rename"
+        public static let deleteSessions = "axo.session.delete"
         public static let getCommand = "axo.command.get"
         public static let addShellPane = "axo.session.pane.add"
         public static let removeShellPane = "axo.session.pane.remove"
@@ -672,17 +673,23 @@ public struct CommittedWork: Decodable, Equatable, Sendable {
 }
 
 public enum CommandReceipt: Decodable, Equatable, Sendable {
+    case deletion(SessionDeletionReceipt)
     case pane(ShellPaneReceipt)
     case pi(PiCommandReceipt)
     case work(committed: CommittedWork)
     case runtime(runtime: TerminalRuntime, terminal: TerminalSnapshot?)
 
     private enum CodingKeys: String, CodingKey { case kind, receipt, committed, runtime, terminal }
-    private enum Kind: String, Decodable { case pi, pane, work, runtime }
+    private enum Kind: String, Decodable { case deletion, pi, pane, work, runtime }
 
     public init(from decoder: Decoder) throws {
         let container = try decoder.container(keyedBy: CodingKeys.self)
         switch try container.decode(Kind.self, forKey: .kind) {
+        case .deletion:
+            guard Set(container.allKeys) == [.kind, .receipt] else {
+                throw DecodingError.dataCorruptedError(forKey: .kind, in: container, debugDescription: "Invalid deletion receipt.")
+            }
+            self = .deletion(try container.decode(SessionDeletionReceipt.self, forKey: .receipt))
         case .pane:
             guard Set(container.allKeys) == [.kind, .receipt] else {
                 throw DecodingError.dataCorruptedError(forKey: .kind, in: container, debugDescription: "Invalid pane receipt.")

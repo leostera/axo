@@ -979,7 +979,7 @@ final class WorkspaceController: NSObject, NSOutlineViewDataSource, NSOutlineVie
         sidebar.indentationPerLevel = 12; sidebar.backgroundColor = .clear
         sidebar.dataSource = self; sidebar.delegate = self
         sidebar.target = self; sidebar.doubleAction = #selector(renameClickedItem(_:))
-        sidebar.isStandaloneSession = { [weak sidebar] value in
+        sidebar.reclaimsOutlineGutter = { [weak sidebar] value in
             (value as? SidebarItem)?.session != nil && sidebar?.parent(forItem: value) == nil
         }
         sidebar.itemMenu = { [weak self] value in

@@ -10,15 +10,11 @@ struct AxodNativeWorkbenchSplitView: NSViewRepresentable {
     let selectedSessionID: UUID?
     @Binding var sidebarCollapsed: Bool
     let detail: AnyView
-    let openSettings: () -> Void
-    let createWork: () -> Void
 
     func makeCoordinator() -> SidebarController {
         SidebarController(
             workbench: workbench,
-            sidebarCollapsed: $sidebarCollapsed,
-            openSettings: openSettings,
-            createWork: createWork
+            sidebarCollapsed: $sidebarCollapsed
         )
     }
 
@@ -34,9 +30,7 @@ struct AxodNativeWorkbenchSplitView: NSViewRepresentable {
             selectedWorkspaceID: selectedWorkspaceID,
             selectedSessionID: selectedSessionID,
             sidebarCollapsed: $sidebarCollapsed,
-            detail: detail,
-            openSettings: openSettings,
-            createWork: createWork
+            detail: detail
         )
     }
 
@@ -52,6 +46,15 @@ struct AxodNativeWorkbenchSplitView: NSViewRepresentable {
                 self.workspace = nil
                 self.session = nil
                 self.heading = heading
+            }
+
+            var isDivider = false
+
+            init(divider: Void) {
+                self.workspace = nil
+                self.session = nil
+                self.heading = nil
+                self.isDivider = true
             }
 
             init(workspace: WorkWorkspaceRecord) {
@@ -87,13 +90,12 @@ struct AxodNativeWorkbenchSplitView: NSViewRepresentable {
                 case .session(let id): self?.workbench.selectSession(id)
                 }
             },
-            onExpand: { [weak self] in self?.sidebarCollapsed.wrappedValue = false },
-            onCreate: { [weak self] in self?.createWork() }
+            onExpand: { [weak self] in self?.sidebarCollapsed.wrappedValue = false }
         )
         private let content = NSView()
         private let outline = WorkspaceOutlineView()
         private let detailHost: NSHostingView<AnyView>
-        private let preferences = UserDefaults.standard
+        private let preferences: UserDefaults
         private var sidebarMinimumWidth: NSLayoutConstraint?
         private var compactSidebarWidth: NSLayoutConstraint?
         private var displayedCollapsed: Bool?
@@ -105,22 +107,17 @@ struct AxodNativeWorkbenchSplitView: NSViewRepresentable {
         private var sidebarSelection = AxodSidebarSelection()
         private var workbench: AxodWorkbenchCoordinator
         private var sidebarCollapsed: Binding<Bool>
-        private var openSettings: () -> Void
-        private var createWork: () -> Void
         private var sidebarStateSaveWork: DispatchWorkItem?
 
         init(
             workbench: AxodWorkbenchCoordinator,
-            sidebarCollapsed: Binding<Bool>,
-            openSettings: @escaping () -> Void,
-            createWork: @escaping () -> Void
+            sidebarCollapsed: Binding<Bool>
         ) {
             self.workbench = workbench
+            self.preferences = workbench.preferences
             self.sidebarCollapsed = sidebarCollapsed
-            self.openSettings = openSettings
-            self.createWork = createWork
             self.sidebarWidth = Self.validatedSidebarWidth(
-                storedValue: UserDefaults.standard.object(forKey: Self.sidebarWidthKey) as? NSNumber
+                storedValue: workbench.preferences.object(forKey: Self.sidebarWidthKey) as? NSNumber
             )
             self.detailHost = NSHostingView(rootView: AnyView(EmptyView()))
             super.init()
@@ -164,14 +161,10 @@ struct AxodNativeWorkbenchSplitView: NSViewRepresentable {
             selectedWorkspaceID: UUID?,
             selectedSessionID: UUID?,
             sidebarCollapsed: Binding<Bool>,
-            detail: AnyView,
-            openSettings: @escaping () -> Void,
-            createWork: @escaping () -> Void
+            detail: AnyView
         ) {
             self.workbench = workbench
             self.sidebarCollapsed = sidebarCollapsed
-            self.openSettings = openSettings
-            self.createWork = createWork
             detailHost.rootView = detail
             refreshSidebar(
                 workspaces: workspaces,
@@ -225,47 +218,30 @@ struct AxodNativeWorkbenchSplitView: NSViewRepresentable {
                     let targets = self.sidebarSelection.targets(clickedSessionID: session.sessionId)
                     menu.items.first { $0.action == #selector(WorkspaceSidebarRow.renameFromMenu(_:)) }?.isEnabled =
                         targets.count == 1 && self.workbench.canEditWork && session.manualName != nil
+                    for action in menu.items.filter({ $0.action == #selector(self.deleteSessionsFromMenu(_:)) }) { menu.removeItem(action) }
+                    let deletion = self.workbench.captureSessionDeletion(targets)
+                    let action = menu.addItem(withTitle: "Delete…", action: #selector(self.deleteSessionsFromMenu(_:)), keyEquivalent: "")
+                    action.target = self; action.representedObject = deletion; action.isEnabled = deletion != nil
                 }
                 return menu
+            }
+            outline.reclaimsOutlineGutter = { value in
+                guard let item = value as? Item else { return false }
+                return item.heading != nil || item.isDivider || item.session?.workspaceId == nil && item.session != nil
             }
             outline.setAccessibilityLabel("Workspaces and sessions")
             scroll.documentView = outline
 
-            let heading = NSTextField(labelWithString: "Axo")
-            heading.font = .systemFont(ofSize: 13, weight: .semibold)
-            heading.textColor = .secondaryLabelColor
-            let create = sidebarButton(symbol: "plus", label: "Create workspace or session", action: #selector(createWorkspaceOrSession(_:)))
             let collapse = sidebarButton(symbol: "sidebar.left", label: "Collapse sidebar", action: #selector(collapseSidebar(_:)))
-            let settings = NSButton(title: "Settings", target: self, action: #selector(showSettings(_:)))
-            settings.isBordered = false
-            settings.font = .systemFont(ofSize: 12)
-            settings.contentTintColor = .secondaryLabelColor
-            let headerLine = NSBox()
-            let footerLine = NSBox()
-            headerLine.boxType = .separator
-            footerLine.boxType = .separator
-
-            for child in [scroll, heading, create, collapse, settings, headerLine, footerLine] {
+            for child in [scroll, collapse] {
                 child.translatesAutoresizingMaskIntoConstraints = false
                 expandedSidebar.addSubview(child)
             }
             NSLayoutConstraint.activate([
-                heading.leadingAnchor.constraint(equalTo: expandedSidebar.leadingAnchor, constant: 16),
-                heading.topAnchor.constraint(equalTo: expandedSidebar.topAnchor, constant: 14),
-                create.trailingAnchor.constraint(equalTo: expandedSidebar.trailingAnchor, constant: -10),
-                create.centerYAnchor.constraint(equalTo: heading.centerYAnchor),
-                headerLine.leadingAnchor.constraint(equalTo: expandedSidebar.leadingAnchor, constant: 12),
-                headerLine.trailingAnchor.constraint(equalTo: expandedSidebar.trailingAnchor, constant: -12),
-                headerLine.topAnchor.constraint(equalTo: heading.bottomAnchor, constant: 12),
-                scroll.topAnchor.constraint(equalTo: headerLine.bottomAnchor, constant: 8),
+                scroll.topAnchor.constraint(equalTo: expandedSidebar.topAnchor, constant: 12),
                 scroll.leadingAnchor.constraint(equalTo: expandedSidebar.leadingAnchor, constant: 6),
                 scroll.trailingAnchor.constraint(equalTo: expandedSidebar.trailingAnchor, constant: -6),
-                scroll.bottomAnchor.constraint(equalTo: footerLine.topAnchor, constant: -8),
-                footerLine.leadingAnchor.constraint(equalTo: headerLine.leadingAnchor),
-                footerLine.trailingAnchor.constraint(equalTo: headerLine.trailingAnchor),
-                footerLine.bottomAnchor.constraint(equalTo: collapse.topAnchor, constant: -10),
-                settings.leadingAnchor.constraint(equalTo: expandedSidebar.leadingAnchor, constant: 12),
-                settings.centerYAnchor.constraint(equalTo: collapse.centerYAnchor),
+                scroll.bottomAnchor.constraint(equalTo: collapse.topAnchor, constant: -12),
                 collapse.trailingAnchor.constraint(equalTo: expandedSidebar.trailingAnchor, constant: -10),
                 collapse.bottomAnchor.constraint(equalTo: expandedSidebar.bottomAnchor, constant: -10),
             ])
@@ -331,9 +307,7 @@ struct AxodNativeWorkbenchSplitView: NSViewRepresentable {
                     outline.reloadItem(item)
                 }
             } else {
-                sidebarItems = [Item(heading: "Standalone Sessions")]
-                sidebarItems.append(contentsOf: sessions.filter { $0.workspaceId == nil }.map(Item.init(session:)))
-                sidebarItems.append(Item(heading: "Workspaces"))
+                sidebarItems = [Item(heading: "Workspaces")]
                 for workspace in workspaces {
                     let item = Item(workspace: workspace)
                     item.children = sessions
@@ -341,6 +315,9 @@ struct AxodNativeWorkbenchSplitView: NSViewRepresentable {
                         .map(Item.init(session:))
                     sidebarItems.append(item)
                 }
+                sidebarItems.append(Item(divider: ()))
+                sidebarItems.append(Item(heading: "Sessions"))
+                sidebarItems.append(contentsOf: sessions.filter { $0.workspaceId == nil }.map(Item.init(session:)))
                 outline.reloadData()
             }
             for item in sidebarItems {
@@ -454,15 +431,17 @@ struct AxodNativeWorkbenchSplitView: NSViewRepresentable {
         }
 
         func outlineView(_ outlineView: NSOutlineView, isGroupItem item: Any) -> Bool {
-            (item as? Item)?.heading != nil
+            false // Headings are custom rows; AppKit must not add section chrome.
         }
 
         func outlineView(_ outlineView: NSOutlineView, shouldSelectItem item: Any) -> Bool {
-            (item as? Item)?.heading == nil
+            guard let item = item as? Item else { return false }
+            return item.workspace != nil || item.session != nil
         }
 
         func outlineView(_ outlineView: NSOutlineView, heightOfRowByItem item: Any) -> CGFloat {
-            (item as? Item)?.heading == nil ? 28 : 20
+            guard let item = item as? Item else { return 28 }
+            return item.isDivider ? 24 : item.heading != nil ? 32 : 28
         }
 
         func outlineView(_ outlineView: NSOutlineView, rowViewForItem item: Any) -> NSTableRowView? {
@@ -477,7 +456,26 @@ struct AxodNativeWorkbenchSplitView: NSViewRepresentable {
 
         func outlineView(_ outlineView: NSOutlineView, viewFor tableColumn: NSTableColumn?, item value: Any) -> NSView? {
             guard let item = value as? Item else { return nil }
-            if let heading = item.heading { return WorkspaceSidebarHeading(title: heading) }
+            if item.isDivider {
+                let container = NSView()
+                let line = NSBox()
+                line.boxType = .separator
+                line.translatesAutoresizingMaskIntoConstraints = false
+                container.addSubview(line)
+                NSLayoutConstraint.activate([
+                    line.leadingAnchor.constraint(equalTo: container.leadingAnchor, constant: 2),
+                    line.trailingAnchor.constraint(equalTo: container.trailingAnchor, constant: -6),
+                    line.centerYAnchor.constraint(equalTo: container.centerYAnchor),
+                ])
+                return container
+            }
+            if let heading = item.heading {
+                let row = WorkspaceSidebarHeading(title: heading)
+                row.textField?.font = .systemFont(ofSize: 13, weight: .bold)
+                row.textField?.textColor = .labelColor
+                row.textField?.setAccessibilityIdentifier("Axo.Sidebar.Heading.\(heading.lowercased())")
+                return row
+            }
             let actions = NSMenu()
             actions.autoenablesItems = false
             var rename: AxodWorkRename?
@@ -490,6 +488,7 @@ struct AxodNativeWorkbenchSplitView: NSViewRepresentable {
                     canBeginRename: { [weak workbench = workbench] in rename = workbench?.beginWorkRename(workspace: workspace); return rename != nil },
                     finishRename: { [weak workbench = workbench] name in if let rename { workbench?.finishWorkRename(rename, name: name) } }
                 )
+                row.textField?.font = .systemFont(ofSize: 13)
                 row.textField?.setAccessibilityIdentifier("workspace.\(workspace.workspaceId.uuidString.lowercased())")
                 addRenameAction(to: row, menu: actions, enabled: workbench.canEditWork)
                 return row
@@ -506,11 +505,20 @@ struct AxodNativeWorkbenchSplitView: NSViewRepresentable {
                     canBeginRename: { [weak workbench = workbench] in rename = workbench?.beginWorkRename(session: session); return rename != nil },
                     finishRename: { [weak workbench = workbench] name in if let rename { workbench?.finishWorkRename(rename, name: name) } }
                 )
+                // This glyph identifies a session; it does not claim agent busy state.
+                row.imageView?.image = NSImage(systemSymbolName: "hammer", accessibilityDescription: "Session")
+                row.imageView?.contentTintColor = .secondaryLabelColor
+                row.imageView?.symbolConfiguration = NSImage.SymbolConfiguration(pointSize: 13, weight: .regular)
                 row.textField?.setAccessibilityIdentifier("session.\(session.sessionId.uuidString.lowercased())")
                 addRenameAction(to: row, menu: actions, enabled: workbench.canEditWork && session.manualName != nil)
                 return row
             }
             return nil
+        }
+
+        @objc private func deleteSessionsFromMenu(_ sender: NSMenuItem) {
+            guard let context = sender.representedObject as? AxodSessionDeletion, let window = outline.window else { return }
+            workbench.confirmSessionDeletion(context, in: window)
         }
 
         private func addRenameAction(to row: WorkspaceSidebarRow, menu: NSMenu, enabled: Bool) {
@@ -543,8 +551,6 @@ struct AxodNativeWorkbenchSplitView: NSViewRepresentable {
             }
         }
 
-        @objc private func showSettings(_ sender: Any?) { openSettings() }
-        @objc private func createWorkspaceOrSession(_ sender: Any?) { createWork() }
 
         @objc private func collapseSidebar(_ sender: Any?) {
             sidebarCollapsed.wrappedValue = true

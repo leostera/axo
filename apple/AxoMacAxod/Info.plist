@@ -3,7 +3,7 @@
 <plist version="1.0">
 <dict>
   <key>AxoUITestProtocolVersion</key>
-  <integer>1</integer>
+  <integer>2</integer>
   <key>AxoSelfTestProtocolVersion</key>
   <integer>2</integer>
     <key>LSApplicationCategoryType</key>

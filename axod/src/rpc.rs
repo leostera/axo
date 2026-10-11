@@ -205,6 +205,13 @@ fn dispatch_route(
                 Err((-32601, "Method not found"))
             }
         }
+        "axo.session.delete" => {
+            if local {
+                crate::session_deletion::delete(call.params, manager, machine)
+            } else {
+                Err((-32601, "Method not found"))
+            }
+        }
         "axo.runtime.list" => list(call.params, manager, machine),
         "axo.runtime.startApproved" => start(call.params, manager, machine, profiles),
         "axo.session.pane.add" | "axo.session.pane.remove" if local => {

@@ -315,7 +315,7 @@ impl Store {
             return false;
         }
         for (id, pane) in &self.saved.panes {
-            let Ok(_session) = work.session(pane.workspace_id, pane.session_id) else {
+            let Ok(_session) = work.recorded_session(pane.workspace_id, pane.session_id) else {
                 return false;
             };
             if *id != pane.pane_id

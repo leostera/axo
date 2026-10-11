@@ -102,7 +102,21 @@ export const localDirectoryPathSchema = z.string().min(1).max(16384)
   .regex(/^\/[^\0]*$/u)
   .refine(path => new TextEncoder().encode(path).length <= 16384)
   .brand<"LocalDirectoryPath">();
+export const sessionAddressSchema = z.object({ workspaceId: uuid.nullable(), sessionId: uuid }).strict();
+export const deletionSessionsSchema = z.array(sessionAddressSchema).min(1).max(32)
+  .refine(sessions => new Set(sessions.map(session => session.sessionId.toLowerCase())).size === sessions.length);
+export const sessionDeletionIntentSchema = z.object({
+  target: destinationSchema, sessions: deletionSessionsSchema, expectedRevision: workRevisionSchema.max(Number.MAX_SAFE_INTEGER - 1),
+}).strict();
+export const sessionDeletionReceiptSchema = z.object({
+  commandId: uuid, intent: sessionDeletionIntentSchema,
+  runtimes: z.array(runtimeRefSchema).max(256), revision: workRevisionSchema.nullable(),
+}).strict().refine(receipt => (receipt.revision === null || receipt.revision === receipt.intent.expectedRevision + 1)
+  && receipt.runtimes.every(runtime => receipt.intent.sessions.some(session => session.sessionId.toLowerCase() === runtime.target.session_id.toLowerCase()))
+  && new Set(receipt.runtimes.map(runtime => [runtime.host_generation, runtime.runtime_generation, runtime.target.session_id, runtime.target.pane_id].map(id => id.toLowerCase()).join("/"))).size === receipt.runtimes.length);
 export const localWorkMethods = {
+  "axo.session.delete": z.object({ target: destinationSchema, commandId: uuid, sessions: deletionSessionsSchema,
+    expectedRevision: workRevisionSchema.max(Number.MAX_SAFE_INTEGER - 1) }).strict(),
   "axo.session.createIfEmpty": z.object({ target: destinationSchema, ...mutationFields }).strict(),
   "axo.workspace.createLocal": z.object({
     target: destinationSchema,
@@ -138,6 +152,7 @@ const committedSchema = z.object({
   ]),
 }).strict();
 export const commandReceiptSchema = z.discriminatedUnion("kind", [
+  z.object({ kind: z.literal("deletion"), receipt: sessionDeletionReceiptSchema }).strict(),
   z.object({ kind: z.literal("pane"), receipt: paneReceiptSchema }).strict(),
   z.object({ kind: z.literal("pi"), receipt: piReceiptSchema }).strict(),
   z.object({ kind: z.literal("work"), committed: committedSchema }).strict(),
@@ -148,6 +163,7 @@ export const commandReceiptSchema = z.discriminatedUnion("kind", [
   }).strict(),
 ]);
 export const localWorkResults = {
+  "axo.session.delete": z.object({ hostGeneration: uuid, receipt: sessionDeletionReceiptSchema }).strict(),
   "axo.workspace.createLocal": workspaceResult.extend({ session: workSessionSchema.optional() }).strict(),
   "axo.session.createIfEmpty": sessionResult,
 } as const;
