@@ -32,6 +32,11 @@ public enum AxoProtocolWorkRequestValidator {
         else { throw invalid(AxoProtocol.Method.renameWorkspace) }
     }
 
+    public static func validate(_ parameters: EmptyStartupSessionParameters) throws {
+        guard validName(parameters.name), parameters.expectedRevision.rawValue < WorkRevision.maximumSafeInteger
+        else { throw invalid(AxoProtocol.Method.createEmptyStartupSession) }
+    }
+
     public static func validate(_ parameters: SessionCreateParameters) throws {
         guard validName(parameters.name), parameters.expectedRevision.rawValue < WorkRevision.maximumSafeInteger
         else { throw invalid(AxoProtocol.Method.createSession) }

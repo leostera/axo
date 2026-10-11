@@ -7,6 +7,7 @@ export DEVELOPER_DIR="${DEVELOPER_DIR:-/Applications/Xcode.app/Contents/Develope
 PRODUCTS="$ROOT/apple/DerivedData/Build/Products/Debug"
 [[ -f "$PRODUCTS/AxoProtocol.o" && -f "$PRODUCTS/AxoCore.o" ]] || { echo 'Build the Mac target before client-state checks.' >&2; exit 1; }
 env -u LIBRARY_PATH xcrun swiftc -swift-version 5 -parse-as-library -I "$PRODUCTS" \
-  "$ROOT/apple/AxoMacAxod/AxodShellCreation.swift" "$ROOT/apple/AxoMacTests/ShellCreationChecks.swift" \
+  "$ROOT/apple/AxoMacAxod/AxodShellCreation.swift" "$ROOT/apple/AxoMacAxod/AxodEmptyStartupPolicy.swift" \
+  "$ROOT/apple/AxoMacTests/ShellCreationChecks.swift" \
   "$PRODUCTS/AxoProtocol.o" "$PRODUCTS/AxoCore.o" -framework AppKit -o "$TMP/check-shell-creation"
 "$TMP/check-shell-creation"

@@ -88,6 +88,14 @@ struct CreateLocalWorkspace {
 }
 #[derive(Deserialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
+struct CreateStartupSession {
+    target: Destination,
+    command_id: CommandId,
+    expected_revision: u64,
+    name: String,
+}
+#[derive(Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
 struct RenameWorkspace {
     target: WorkspaceTarget,
     command_id: CommandId,
@@ -181,6 +189,7 @@ pub(crate) fn dispatch(
         "axo.command.get" => command_get(params, manager, machine),
         "axo.workspace.create"
         | "axo.workspace.createLocal"
+        | "axo.session.createIfEmpty"
         | "axo.workspace.rename"
         | "axo.session.create"
         | "axo.session.rename" => mutate(method, params, manager, machine, profiles),
@@ -428,6 +437,21 @@ fn work_command(
                     directory: LocalDirectoryPath::parse(p.directory_path).map_err(failure)?,
                     name: p.name,
                     initial_session_name: p.initial_session_name,
+                    expected_revision: p.expected_revision,
+                },
+            }
+        }
+        "axo.session.createIfEmpty" => {
+            let p: CreateStartupSession = parse(params)?;
+            let original_directory = manager.work.lock().unwrap().startup_directory(p.command_id);
+            WorkCommand {
+                target: p.target,
+                command: p.command_id,
+                intent: WorkIntent::CreateStartupSession {
+                    directory: original_directory
+                        .or_else(|| manager.user_home.clone())
+                        .ok_or((-32003, "Captured user home unavailable"))?,
+                    name: p.name,
                     expected_revision: p.expected_revision,
                 },
             }

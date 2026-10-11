@@ -177,6 +177,63 @@ fn uuid_argument(id: impl serde::Serialize) -> String {
         .to_owned()
 }
 #[test]
+fn actual_cli_empty_startup_is_atomic_metadata_and_preserves_original_receipt() {
+    let mut daemon = Daemon::start_with_profiles(false);
+    let destination = daemon.target();
+    let first_id = uuid::Uuid::new_v4();
+    let second_id = uuid::Uuid::new_v4();
+    let request = |command| json!({"target":destination,"commandId":command,"expectedRevision":0,"name":"New Session"});
+    let replies = thread::scope(|scope| {
+        let first = scope.spawn(|| daemon.invoke("axo.session.createIfEmpty", request(first_id)));
+        let second = scope.spawn(|| daemon.invoke("axo.session.createIfEmpty", request(second_id)));
+        [first.join().unwrap(), second.join().unwrap()]
+    });
+    assert_eq!(
+        replies
+            .iter()
+            .filter(|reply| reply.status.success())
+            .count(),
+        1
+    );
+    let winner = if replies[0].status.success() {
+        first_id
+    } else {
+        second_id
+    };
+    let original = daemon.call("axo.session.createIfEmpty", request(winner));
+    assert_eq!(original["revision"], 1);
+    assert!(original["session"]["workspaceId"].is_null());
+    assert_eq!(original["session"]["pi"]["admission"], "notAdmitted");
+    assert!(
+        daemon.call("axo.runtime.list", json!({"target":destination}))["terminals"]
+            .as_array()
+            .unwrap()
+            .is_empty()
+    );
+    let nonempty = daemon.invoke("axo.session.createIfEmpty", json!({"target":destination,"commandId":uuid::Uuid::new_v4(),"expectedRevision":1,"name":"New Session"}));
+    assert!(
+        !nonempty.status.success(),
+        "Matching revision must not bypass the empty predicate"
+    );
+    let catalog = daemon.call("axo.session.list", json!({"target":destination}));
+    assert_eq!(catalog["sessions"].as_array().unwrap().len(), 1);
+    daemon.restart();
+    let current = daemon.target();
+    let restored = daemon.call(
+        "axo.session.createIfEmpty",
+        json!({"target":current,"commandId":winner,"expectedRevision":0,"name":"New Session"}),
+    );
+    assert_eq!(restored["session"], original["session"]);
+    assert_eq!(restored["revision"], 1);
+    assert!(
+        daemon.call("axo.runtime.list", json!({"target":current}))["terminals"]
+            .as_array()
+            .unwrap()
+            .is_empty()
+    );
+}
+
+#[test]
 fn actual_cli_default_shells_use_captured_home_or_approved_project_without_profiles_or_pi() {
     use axod::{model::RuntimeRef, terminal_client::TerminalClient};
     let daemon = Daemon::start_with_profiles(false);

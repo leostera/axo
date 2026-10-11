@@ -276,6 +276,7 @@ struct AxodWorkbenchView: View {
 
     private var emptyDetailMessage: String {
         if coordinator.connectionState != .connected { return coordinator.message }
+        if let startup = coordinator.emptyStartupMessage { return startup }
         if coordinator.workspaces.isEmpty {
             return "No legacy workspace data was imported. Workspaces appear here when owned by the local daemon."
         }

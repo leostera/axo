@@ -198,7 +198,7 @@ fn dispatch_route(
         "axo.host.prepareUpgrade" if local => {
             crate::upgrade::prepare(call.params, manager, machine)
         }
-        "axo.workspace.createLocal" => {
+        "axo.workspace.createLocal" | "axo.session.createIfEmpty" => {
             if local {
                 crate::work_rpc::dispatch(&call.method, call.params, manager, machine, profiles)
             } else {

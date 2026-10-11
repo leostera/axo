@@ -101,6 +101,7 @@ export const localDirectoryPathSchema = z.string().min(1).max(16384)
   .refine(path => new TextEncoder().encode(path).length <= 16384)
   .brand<"LocalDirectoryPath">();
 export const localWorkMethods = {
+  "axo.session.createIfEmpty": z.object({ target: destinationSchema, ...mutationFields }).strict(),
   "axo.workspace.createLocal": z.object({
     target: destinationSchema,
     ...mutationFields,
@@ -144,7 +145,10 @@ export const commandReceiptSchema = z.discriminatedUnion("kind", [
     terminal: terminalSchema.nullable(),
   }).strict(),
 ]);
-export const localWorkResults = { "axo.workspace.createLocal": workspaceResult.extend({ session: workSessionSchema.optional() }).strict() } as const;
+export const localWorkResults = {
+  "axo.workspace.createLocal": workspaceResult.extend({ session: workSessionSchema.optional() }).strict(),
+  "axo.session.createIfEmpty": sessionResult,
+} as const;
 export const workResults = {
   "axo.workspace.directories": z.object({
     hostGeneration: uuid,

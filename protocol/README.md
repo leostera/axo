@@ -17,6 +17,17 @@ npm --prefix protocol test
 npm --prefix protocol run schema:check
 ```
 
+## Empty native startup
+
+Local-only `axo.session.createIfEmpty` accepts machine/current-host, command ID,
+expected work revision and name. It grants no workspace, directory, argv or profile
+authority. The daemon's admission-time empty-work/runtime/receipt predicate commits
+standalone HOME session metadata atomically; it does not launch Pi or a shell.
+Original command reconciliation preserves its distinct immutable startup intent.
+Cloud exposure remains denied. Client empty pages are observations, not the fence;
+pending/uncertain hints block native automation and ordinary reconnect never calls
+this method. See [checkpoint evidence](../docs/implementation/evidence/authoritative-empty-startup.md).
+
 ## Swift package
 
 `Package.swift` exposes the `AxoProtocol` library for macOS 14+ and iOS 17+, with no external dependencies. Add this directory as a local Swift package in Xcode, or use it from another Swift package:

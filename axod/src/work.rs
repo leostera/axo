@@ -113,6 +113,12 @@ pub enum WorkIntent {
         expected_revision: u64,
     },
     #[serde(rename_all = "camelCase")]
+    CreateStartupSession {
+        directory: LocalDirectoryPath,
+        name: String,
+        expected_revision: u64,
+    },
+    #[serde(rename_all = "camelCase")]
     RenameSession {
         workspace_id: Option<WorkspaceId>,
         session_id: SessionId,
@@ -128,6 +134,7 @@ impl WorkIntent {
             | Self::RenameWorkspace { name, .. }
             | Self::CreateSession { name, .. }
             | Self::CreateStandaloneSession { name, .. }
+            | Self::CreateStartupSession { name, .. }
             | Self::RenameSession { name, .. } => name,
         }
     }
@@ -146,6 +153,9 @@ impl WorkIntent {
                 expected_revision, ..
             }
             | Self::CreateStandaloneSession {
+                expected_revision, ..
+            }
+            | Self::CreateStartupSession {
                 expected_revision, ..
             }
             | Self::RenameSession {
@@ -289,6 +299,15 @@ impl WorkStore {
     }
     pub fn contains_command(&self, command: CommandId) -> bool {
         self.saved.receipts.contains_key(&command)
+    }
+    pub(crate) fn startup_directory(&self, command: CommandId) -> Option<LocalDirectoryPath> {
+        match &self.saved.receipts.get(&command)?.intent {
+            WorkIntent::CreateStartupSession { directory, .. } => Some(directory.clone()),
+            _ => None,
+        }
+    }
+    pub(crate) fn is_empty(&self) -> bool {
+        self.saved.workspaces.is_empty() && self.saved.sessions.is_empty()
     }
     pub fn workspaces(&self) -> Vec<WorkspaceRecord> {
         self.saved
@@ -535,7 +554,15 @@ impl Saved {
             }
             WorkIntent::CreateStandaloneSession {
                 directory, name, ..
+            }
+            | WorkIntent::CreateStartupSession {
+                directory, name, ..
             } => {
+                if matches!(intent, WorkIntent::CreateStartupSession { .. })
+                    && (!self.workspaces.is_empty() || !self.sessions.is_empty())
+                {
+                    return Err(WorkError::Conflict);
+                }
                 if self.sessions.len() >= MAX_SESSIONS {
                     return Err(WorkError::Capacity);
                 }
@@ -670,7 +697,16 @@ impl Saved {
                         return false;
                     }
                 }
-                (WorkIntent::CreateStandaloneSession { .. }, WorkRecord::Session(record)) => {
+                (
+                    WorkIntent::CreateStandaloneSession { .. }
+                    | WorkIntent::CreateStartupSession { .. },
+                    WorkRecord::Session(record),
+                ) => {
+                    if matches!(receipt.intent, WorkIntent::CreateStartupSession { .. })
+                        && (!workspaces.is_empty() || !sessions.is_empty())
+                    {
+                        return false;
+                    }
                     if sessions.insert(record.session_id, record.clone()).is_some() {
                         return false;
                     }
@@ -769,6 +805,9 @@ impl Saved {
             }
             (
                 WorkIntent::CreateStandaloneSession {
+                    directory, name, ..
+                }
+                | WorkIntent::CreateStartupSession {
                     directory, name, ..
                 },
                 WorkRecord::Session(record),

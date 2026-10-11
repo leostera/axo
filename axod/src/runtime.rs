@@ -445,6 +445,22 @@ impl Manager {
                 return Err(crate::work::WorkError::Conflict);
             }
         }
+        if matches!(intent, crate::work::WorkIntent::CreateStartupSession { .. })
+            && !self.work.lock().unwrap().contains_command(command)
+        {
+            // The same admission fence covers metadata, generic starts, Pi and panes.
+            // A cached empty catalog is never sufficient. Keep old/uncertain domain
+            // hints and retained runtime records out of auto-start. "Empty" means
+            // genuinely empty, not merely no running PID or a completed history.
+            let snapshots = self.journal.lock().unwrap().snapshots();
+            if !self.work.lock().unwrap().is_empty()
+                || self.managed.lock().unwrap().commands().next().is_some()
+                || self.panes.lock().unwrap().commands().next().is_some()
+                || !snapshots.is_empty()
+            {
+                return Err(crate::work::WorkError::Conflict);
+            }
+        }
         self.work.lock().unwrap().apply(command, intent, profiles)
     }
     pub(crate) fn prepare_managed(

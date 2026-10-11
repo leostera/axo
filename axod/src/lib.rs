@@ -39,3 +39,5 @@ mod work_local_tests;
 mod work_rpc;
 #[cfg(test)]
 mod work_standalone_tests;
+#[cfg(test)]
+mod work_startup_tests;

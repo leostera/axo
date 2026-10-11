@@ -62,6 +62,7 @@ final class AxodWorkbenchCoordinator {
     private var activeCreationContext: AxodWorkEditorContext?
     private(set) var isEditingWork = false
     private(set) var workEditMessage = "Create a session and start your ambient Pi."
+    private(set) var emptyStartupMessage: String?
     private(set) var createdSessionForEditor: WorkSessionRecord?
     private(set) var pendingWorkCommandID: UUID?
     private(set) var pendingWorkIsUnreadable = false
@@ -285,8 +286,12 @@ final class AxodWorkbenchCoordinator {
         }
     }
 
+    @ObservationIgnored private var consumedEmptyLaunch = false
+
     func connect(createInitialSession: Bool = false) {
         guard connectTask == nil, !isUpgradingDaemon else { return }
+        let allowEmptyLaunch = createInitialSession && !consumedEmptyLaunch
+        if createInitialSession { consumedEmptyLaunch = true }
         guard SMAppService.agent(plistName: Self.axodAgentPlistName).status != .requiresApproval else {
             connectionState = .failed(daemonServiceMessage)
             message = daemonServiceMessage
@@ -305,14 +310,23 @@ final class AxodWorkbenchCoordinator {
             guard let self else { return }
             await oldConnection?.close()
             await self.bootstrapAndConnect(operation: operation)
-            if createInitialSession, self.operationGeneration == operation, self.canEditWork,
+            if allowEmptyLaunch, self.operationGeneration == operation, self.canEditWork,
                self.workspaces.isEmpty, self.sessions.isEmpty, self.runtimes.isEmpty,
-               let revision = self.catalogRevision, let endpoint = self.endpoint {
+               self.nextWorkspaceCursor == nil, self.nextSessionCursor == nil, self.nextRuntimeID == nil,
+               let revision = self.catalogRevision, let endpoint = self.endpoint,
+               !AxodEmptyStartupPolicy.hasPendingIntent(in: self.preferences, machineID: endpoint.machineId) {
                 let context = AxodWorkEditorContext(kind: .session(workspaceID: nil),
-                    target: MachineTarget(machineId: endpoint.machineId, hostGeneration: endpoint.hostGeneration), revision: revision)
+                    target: MachineTarget(machineId: endpoint.machineId, hostGeneration: endpoint.hostGeneration),
+                    revision: revision, authority: .emptyAppLaunch)
                 self.createdSessionForEditor = nil
                 self.activeCreationContext = context
+                self.emptyStartupMessage = "Creating an empty-startup session. No work will be replayed."
                 self.createWork(context, name: "New Session", directory: nil)
+            } else if allowEmptyLaunch, self.operationGeneration == operation,
+                      self.connectionState == .connected, self.sessions.isEmpty, self.workspaces.isEmpty,
+                      let endpoint = self.endpoint,
+                      AxodEmptyStartupPolicy.hasPendingIntent(in: self.preferences, machineID: endpoint.machineId) {
+                self.emptyStartupMessage = "Automatic startup was not sent: saved unresolved intent requires reconciliation. The saved command and existing work were preserved."
             }
             if self.operationGeneration == operation { self.connectTask = nil }
         }
@@ -431,6 +445,7 @@ final class AxodWorkbenchCoordinator {
                 self.preferredWorkspaceID = session.workspaceId
                 self.preferredSessionID = session.sessionId
                 self.saveSelection()
+                if context.authority == .emptyAppLaunch { self.emptyStartupMessage = nil }
                 self.workEditMessage = "Session created. Starting its independent terminals…"
                 let shell = await self.shellCreation.start(session: session, source: context.target, send: { parameters in
                     try await connection.request(method: AxoProtocol.Method.addShellPane, parameters: parameters)
@@ -482,6 +497,7 @@ final class AxodWorkbenchCoordinator {
                 } else {
                     self.workEditMessage = "The name or request is invalid. No command was dispatched."
                 }
+                if context.authority == .emptyAppLaunch { self.emptyStartupMessage = self.workEditMessage }
                 self.message = self.workEditMessage
             }
         }
@@ -494,6 +510,19 @@ final class AxodWorkbenchCoordinator {
 
     private func dispatchWorkCreation(_ context: AxodWorkEditorContext, name: String, directory: LocalDirectoryPath?,
                                       command: UUID, over connection: AxoJSONRPCWebSocketConnection) async throws -> CreatedWorkSelection {
+        if context.authority == .emptyAppLaunch {
+            guard case .session(workspaceID: nil) = context.kind,
+                  !AxodEmptyStartupPolicy.hasPendingIntent(in: preferences, machineID: context.target.machineId) else {
+                throw AxoProtocolValidationError.invalidParameters(method: AxoProtocol.Method.createEmptyStartupSession)
+            }
+            let parameters = EmptyStartupSessionParameters(target: context.target, commandId: command,
+                expectedRevision: context.revision, name: name)
+            try AxoProtocolWorkRequestValidator.validate(parameters)
+            savePendingWork(command, machineID: context.target.machineId)
+            let value = try await connection.request(method: AxoProtocol.Method.createEmptyStartupSession, parameters: parameters)
+            let result = try AxoProtocolResultValidator.emptyStartupSession(value, parameters: parameters)
+            return .session(result.session)
+        }
         switch context.kind {
         case .workspace:
             guard let directory else { throw AxoProtocolValidationError.invalidParameters(method: AxoProtocol.Method.createLocalWorkspace) }

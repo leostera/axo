@@ -15,6 +15,13 @@ struct ShellCreationChecks {
             pi: .init(paneId: UUID(), chatId: nil, admission: .notAdmitted), runtime: nil)
         let key = "Axo.axod.pendingShellAdd." + machine.uuidString + "." + sessionID.uuidString
         let identity = AxodShellCreation.Session(machineID: machine, sessionID: sessionID)
+        let opaqueKey = "Axo.axod.pendingPiStart." + machine.uuidString + "." + sessionID.uuidString
+        preferences.set("unreadable", forKey: opaqueKey)
+        precondition(AxodEmptyStartupPolicy.hasPendingIntent(in: preferences, machineID: machine))
+        precondition(!AxodEmptyStartupPolicy.hasPendingIntent(in: preferences, machineID: UUID()))
+        precondition(preferences.string(forKey: opaqueKey) == "unreadable")
+        preferences.removeObject(forKey: opaqueKey)
+        precondition(!AxodEmptyStartupPolicy.hasPendingIntent(in: preferences, machineID: machine))
         let service = AxodShellCreation(preferences: preferences)
         var sends = 0
         let failed = await service.start(session: session, source: source, send: { _ in sends += 1; return .null }, validate: { throw CancellationError() })
