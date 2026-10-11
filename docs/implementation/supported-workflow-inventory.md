@@ -10,6 +10,8 @@ This is the working inventory for goal `mv34c0a3-j46naf`, **not a completion rep
 
 **Historical live evidence, not a fresh observation:** the last recorded API deployment was `7dfb819c-6790-4909-9379-e8c6ebd25eec`, source `7efd043`, at `api.axo.leostera.dev`; the corresponding phone build was installed on iPhone 15 Pro `00008130-00041CE83EFA001C`. The last recorded live helper was `e1850b94-dirty`, with prepared/unadmitted work. This audit has not established its current version or resolved those starts. Historical PIDs are never signaling authority. Packaged build 111 is not evidence of a live helper upgrade.
 
+**Post-audit component checkpoint:** [terminal-plane a6765aa evidence](evidence/terminal-plane-a6765aa.md) records the new separate local transport, five real-PTY listener tests, pinned public VT snapshot characterization, packaged build **114** / helper `a6765aaf`, signature verification, and an actual packaged-helper AxoCore fixture with zero skips. Native terminals and every full workflow gate remain open. Build111 above remains the original audit observation, not the current package claim.
+
 ### Evidence labels
 
 Implementation and validation are separate axes:

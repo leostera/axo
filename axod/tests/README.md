@@ -119,3 +119,9 @@ The RFD catalogue is used to exercise **explicit unsupported errors** for method
 Local and cloud transport policies may differ; shared domain semantics must not. For example, optional paging fields may be omitted but not explicitly null unless their schema is nullable. A missing command receipt means unknown knowledge, never safe replay or confirmed rejection.
 
 The dedicated command serializes test files to bound compiler/Worker fixture contention; its concurrent-client cases still send real simultaneous requests. The complete API suite remains available with `npm --prefix sites/api.axo.leostera.dev test`; it additionally tests service JWT roles, directory admission, hibernation/deadlines and relay recovery. Tests deliberately respect ingress/credit limits rather than disabling guards, and cleanup signals only owned child handles.
+
+## Native local terminal plane (component evidence)
+
+`cargo test --manifest-path axod/Cargo.toml --locked --offline --lib terminal_transport -- --test-threads=1` exercises both production local listeners with owned real synthetic PTYs. Five tests cover the versioned terminal wire boundary, browser/cross-plane rejection, attachment/input/resize, stale/second-owner rejection, non-destructive detach/reconnect, output/EOF, slow-reader loss with continued process/control availability, private discovery and delivery-credit bounds. These are not fake Pi sessions or native Ghostty acceptance. See [terminal contract](../TERMINALS.md) and [versioned checkpoint](../../docs/implementation/evidence/terminal-plane-a6765aa.md).
+
+`bash scripts/check-ghostty-vt-snapshot.sh` characterizes the clean pinned public VT C API against an existing local dylib using synthetic bytes only. Snapshot continuation/text restoration and malformed-data rejection are tested; total decoder allocation bounds, complete styled replay, graphics, headless query behavior, native surface attachment and actual workbench acceptance remain open.
