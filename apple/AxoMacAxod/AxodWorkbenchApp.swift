@@ -81,15 +81,7 @@ final class AxodWorkbenchApp: NSObject, NSApplicationDelegate, NSWindowDelegate,
         window.makeKeyAndOrderFront(nil)
         NSApp.activate(ignoringOtherApps: true)
 
-#if DEBUG
-        if selfTest == nil {
-            coordinator.registerForStartup()
-            coordinator.registerDaemonService()
-        }
-#else
-        coordinator.registerForStartup()
-        coordinator.registerDaemonService()
-#endif
+        // Registration is explicit setup, not an app/window lifecycle effect.
         coordinator.connect(createInitialSession: true)
 #if DEBUG
         if let selfTest, !uiTest {
@@ -156,6 +148,7 @@ final class AxodWorkbenchApp: NSObject, NSApplicationDelegate, NSWindowDelegate,
         coordinator?.showSettingsWindow()
     }
 
+    @objc private func serviceSettings(_ sender: Any?) { coordinator?.showServiceSettingsWindow() }
     @objc private func refresh(_ sender: Any?) { coordinator?.refresh() }
     @objc private func connect(_ sender: Any?) { coordinator?.connect() }
     @objc private func newWorkspace(_ sender: Any?) { coordinator?.newWorkspace() }
@@ -230,6 +223,8 @@ final class AxodWorkbenchApp: NSObject, NSApplicationDelegate, NSWindowDelegate,
         applicationMenu.addItem(.separator())
         let settings = applicationMenu.addItem(withTitle: "Settings…", action: #selector(showSettings(_:)), keyEquivalent: ",")
         settings.target = self
+        let service = applicationMenu.addItem(withTitle: "Background Service…", action: #selector(serviceSettings(_:)), keyEquivalent: "")
+        service.target = self
         applicationMenu.addItem(.separator())
         let quit = applicationMenu.addItem(withTitle: "Quit \(Self.applicationName)", action: #selector(NSApplication.terminate(_:)), keyEquivalent: "q")
         quit.target = NSApp

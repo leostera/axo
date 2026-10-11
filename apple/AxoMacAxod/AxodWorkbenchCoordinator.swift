@@ -3,7 +3,6 @@ import AxoCore
 import AxoProtocol
 import Darwin
 import Observation
-import ServiceManagement
 import SwiftUI
 import UserNotifications
 
@@ -16,8 +15,6 @@ final class AxodWorkbenchCoordinator {
         static let pendingStartPrefix = "Axo.axod.pendingStart."
         static let pendingChatPrefix = "Axo.axod.pendingChat."
     }
-
-    private static let axodAgentPlistName = "dev.leostera.axo.axod.plist"
 
     enum ConnectionState: Equatable {
         case starting
@@ -45,12 +42,16 @@ final class AxodWorkbenchCoordinator {
     private(set) var nextSessionCursor: WorkPageCursor?
     private(set) var nextRuntimeID: UUID?
     private(set) var message = "Connecting to the Axod background service."
-    private(set) var startupMessage = "Registering Axo to open at login."
-    private(set) var daemonServiceMessage = "Registering the bundled axod service."
-    private(set) var needsLoginItemsReview = false
-    private(set) var needsDaemonServiceReview = false
-    private(set) var needsLegacyDaemonReplacement = false
-    private(set) var isUpgradingDaemon = false
+    let serviceLifecycle: AxodServiceLifecycle
+    var daemonServiceMessage: String { serviceLifecycle.failureMessage ?? serviceLifecycle.registration.message }
+    var needsLoginItemsReview: Bool { serviceLifecycle.loginRegistration == .requiresApproval }
+    var needsDaemonServiceReview: Bool { !usesFixtureDaemon && serviceLifecycle.registration != .enabled }
+    @ObservationIgnored private var usesFixtureDaemon = false
+    private(set) var helperUpdateAvailable = false
+    private(set) var serviceSetupFailure: String?
+    var hasUnresolvedHelperHandoff: Bool {
+        machineID.map { preferences.object(forKey: "Axo.axod.pendingUpgrade.\($0.uuidString)") != nil } ?? false
+    }
     private(set) var chatTarget: PiChatTarget?
     private(set) var chatSnapshot: PiChatSnapshot?
     private(set) var chatEntries: [PiCanonicalProjection] = []
@@ -73,7 +74,7 @@ final class AxodWorkbenchCoordinator {
     private(set) var pendingWorkCommandID: UUID?
     private(set) var pendingWorkIsUnreadable = false
     private(set) var sessionDeletionConfirmation: AxodSessionDeletion?
-    var canEditWork: Bool { connectionState == .connected && !isEditingWork && !isRenamingWork && !isUpgradingDaemon && !needsLegacyDaemonReplacement && pendingWorkCommandID == nil && !pendingWorkIsUnreadable && sessionDeletionConfirmation == nil && !hasPendingSessionDeletion }
+    var canEditWork: Bool { connectionState == .connected && !isEditingWork && !isRenamingWork && pendingWorkCommandID == nil && !pendingWorkIsUnreadable && sessionDeletionConfirmation == nil && !hasPendingSessionDeletion }
     private var hasPendingSessionDeletion: Bool { machineID.map { preferences.object(forKey: pendingDeletionKey($0)) != nil } ?? false }
     private(set) var isStartingPi = false
     private(set) var isSendingPiMessage = false
@@ -100,9 +101,10 @@ final class AxodWorkbenchCoordinator {
     private var chatObservationTask: Task<Void, Never>?
     private var hostObservationTask: Task<Void, Never>?
     private var connectTask: Task<Void, Never>?
-    private let bundledDaemon = AxodBundledDaemon()
+    @ObservationIgnored private var serviceObservation: UUID?
 #if DEBUG
-    func configureSelfTest(_ context: AxodAppSelfTest) { bundledDaemon.selfTest = context }
+    private let bundledDaemon = AxodBundledDaemon()
+    func configureSelfTest(_ context: AxodAppSelfTest) { bundledDaemon.selfTest = context; usesFixtureDaemon = true }
     func stopSelfTestDaemon() async {
         // Cleanup remains runnable even when the app's diagnostic task is cancelled.
         let cleanup = Task { @MainActor in await self.bundledDaemon.stopSelfTestChild() }
@@ -115,9 +117,8 @@ final class AxodWorkbenchCoordinator {
 #endif
     @ObservationIgnored private var settingsWindow: NSWindow?
     @ObservationIgnored private var aboutWindow: NSWindow?
+    @ObservationIgnored private var serviceSettingsWindow: NSWindow?
     private var catalogRevision: WorkRevision?
-    private var didCheckStartupRegistration = false
-    private var didCheckDaemonService = false
 
     func terminalLaunch(for snapshot: TerminalSnapshot, sessionID: UUID) throws -> TerminalLaunch {
         guard connectionState == .connected, let endpoint, let stateDirectory,
@@ -135,7 +136,9 @@ final class AxodWorkbenchCoordinator {
                                              runtime: snapshot.runtime, helper: helper)
     }
 
-    init(preferences: UserDefaults = .standard, voiceHistoryURL: URL? = nil) {
+    init(preferences: UserDefaults = .standard, voiceHistoryURL: URL? = nil,
+         serviceLifecycle: AxodServiceLifecycle? = nil) {
+        self.serviceLifecycle = serviceLifecycle ?? .shared
         self.preferences = preferences
         self.shellCreation = AxodShellCreation(preferences: preferences)
         self.paneLayouts = AxodPaneLayouts(preferences: preferences)
@@ -155,79 +158,37 @@ final class AxodWorkbenchCoordinator {
         }
     }
 
-    func registerForStartup() {
-        guard !didCheckStartupRegistration else { return }
-        didCheckStartupRegistration = true
-        let service = SMAppService.mainApp
-        switch service.status {
-        case .enabled:
-            startupMessage = "Axo is registered to open at login."
-        case .notRegistered:
-            do {
-                try service.register()
-                updateStartupMessage(for: service.status)
-            } catch {
-                updateStartupMessage(for: service.status, registrationFailed: true)
-                startupMessage = "Axo could not register for login startup: \(error.localizedDescription)"
-            }
-        case .requiresApproval:
-            updateStartupMessage(for: service.status)
-        case .notFound:
-            do {
-                try service.register()
-                updateStartupMessage(for: service.status)
-            } catch {
-                startupMessage = "Axo could not register for login startup: \(error.localizedDescription)"
-                needsLoginItemsReview = true
-            }
-        @unknown default:
-            startupMessage = "Axo's login startup status is unavailable."
-            needsLoginItemsReview = true
-        }
+    func enableBackgroundService() {
+        let alert = NSAlert()
+        alert.messageText = "Enable the Axod background service?"
+        alert.informativeText = "macOS will run Axod for your user so work can continue after you quit Axo. This does not enable opening the frontend at login, replace a running helper, or restart existing sessions."
+        alert.addButton(withTitle: "Enable Background Service")
+        alert.addButton(withTitle: "Cancel")
+        guard alert.runModal() == .alertFirstButtonReturn else { return }
+        serviceSetupFailure = nil
+        do {
+            let directory = try AxodStateDirectory.prepare()
+            try serviceLifecycle.enableAgent(in: directory.root)
+            connect()
+        } catch { serviceSetupFailure = error.localizedDescription }
     }
 
-    func registerDaemonService() {
-        guard !didCheckDaemonService else { return }
-        didCheckDaemonService = true
-        do {
-            // Create and validate the shared private root before launchd can start axod.
-            stateDirectory = try AxodStateDirectory.prepare()
-        } catch {
-            daemonServiceMessage = error.localizedDescription
-            needsDaemonServiceReview = true
+    func openLoginItemsSettings() { serviceLifecycle.openApprovalSettings() }
+
+    func showServiceSettingsWindow() {
+        serviceLifecycle.observeRegistration()
+        if let serviceSettingsWindow {
+            serviceSettingsWindow.makeKeyAndOrderFront(nil)
             return
         }
-
-        let service = SMAppService.agent(plistName: Self.axodAgentPlistName)
-        switch service.status {
-        case .enabled:
-            updateDaemonServiceMessage(for: service.status)
-        case .notRegistered:
-            do {
-                try service.register()
-                updateDaemonServiceMessage(for: service.status)
-            } catch {
-                updateDaemonServiceMessage(for: service.status, registrationFailed: true)
-                daemonServiceMessage = "Axo could not register the axod LaunchAgent: \(error.localizedDescription)"
-            }
-        case .requiresApproval:
-            updateDaemonServiceMessage(for: service.status)
-        case .notFound:
-            do {
-                try service.register()
-                updateDaemonServiceMessage(for: service.status)
-            } catch {
-                daemonServiceMessage = "Axo could not register the axod LaunchAgent: \(error.localizedDescription)"
-                needsDaemonServiceReview = true
-            }
-        @unknown default:
-            daemonServiceMessage = "The axod LaunchAgent status is unavailable."
-            needsDaemonServiceReview = true
-        }
-    }
-
-    func openLoginItemsSettings() {
-        SMAppService.openSystemSettingsLoginItems()
+        let window = NSWindow(contentRect: NSRect(x: 0, y: 0, width: 600, height: 400),
+            styleMask: [.titled, .closable], backing: .buffered, defer: false)
+        window.title = "Background Service"
+        window.isReleasedWhenClosed = false
+        window.contentViewController = NSHostingController(rootView: AxodServiceSettingsView(coordinator: self))
+        window.center()
+        serviceSettingsWindow = window
+        window.makeKeyAndOrderFront(nil)
     }
 
     func showSettingsWindow() {
@@ -283,61 +244,13 @@ final class AxodWorkbenchCoordinator {
         if let url = components.url { NSWorkspace.shared.open(url) }
     }
 
-    private func updateDaemonServiceMessage(for status: SMAppService.Status, registrationFailed: Bool = false) {
-        switch status {
-        case .enabled:
-            daemonServiceMessage = "Bundled axod is registered as a per-user LaunchAgent."
-            needsDaemonServiceReview = false
-        case .requiresApproval:
-            daemonServiceMessage = "Approve the axod background service in System Settings Login Items."
-            needsDaemonServiceReview = true
-        case .notRegistered:
-            daemonServiceMessage = registrationFailed
-                ? "Axo could not register the axod background service. Review Login Items in System Settings."
-                : "The axod background service is not registered."
-            needsDaemonServiceReview = true
-        case .notFound:
-            daemonServiceMessage = "The bundled axod LaunchAgent plist was not found."
-            needsDaemonServiceReview = true
-        @unknown default:
-            daemonServiceMessage = "The axod LaunchAgent status is unavailable."
-            needsDaemonServiceReview = true
-        }
-    }
-
-    private func updateStartupMessage(for status: SMAppService.Status, registrationFailed: Bool = false) {
-        switch status {
-        case .enabled:
-            startupMessage = "Axo is registered to open at login."
-            needsLoginItemsReview = false
-        case .requiresApproval:
-            startupMessage = "Approve Axo in System Settings to open it automatically at login."
-            needsLoginItemsReview = true
-        case .notRegistered:
-            startupMessage = registrationFailed
-                ? "Axo could not register for login startup. Review Login Items in System Settings."
-                : "Axo is not registered to open at login."
-            needsLoginItemsReview = true
-        case .notFound:
-            startupMessage = "Axo's app bundle was not found for login startup."
-            needsLoginItemsReview = true
-        @unknown default:
-            startupMessage = "Axo's login startup status is unavailable."
-            needsLoginItemsReview = true
-        }
-    }
-
     @ObservationIgnored private var consumedEmptyLaunch = false
+    @ObservationIgnored private var requestedEmptyLaunch = false
 
     func connect(createInitialSession: Bool = false) {
-        guard connectTask == nil, !isUpgradingDaemon else { return }
-        let allowEmptyLaunch = createInitialSession && !consumedEmptyLaunch
-        if createInitialSession { consumedEmptyLaunch = true }
-        guard SMAppService.agent(plistName: Self.axodAgentPlistName).status != .requiresApproval else {
-            connectionState = .failed(daemonServiceMessage)
-            message = daemonServiceMessage
-            return
-        }
+        if createInitialSession { requestedEmptyLaunch = true }
+        guard connectTask == nil else { return }
+        let allowEmptyLaunch = requestedEmptyLaunch && !consumedEmptyLaunch
         let operation = UUID()
         operationGeneration = operation
         let oldConnection = connection
@@ -353,7 +266,10 @@ final class AxodWorkbenchCoordinator {
             guard let self else { return }
             await oldConnection?.close()
             await self.bootstrapAndConnect(operation: operation)
-            self.finishInitialConnection(operation: operation, allowEmptyLaunch: allowEmptyLaunch)
+            if self.operationGeneration == operation, self.connectionState == .connected {
+                if allowEmptyLaunch { self.consumedEmptyLaunch = true; self.requestedEmptyLaunch = false }
+                self.finishInitialConnection(operation: operation, allowEmptyLaunch: allowEmptyLaunch)
+            }
             if self.operationGeneration == operation { self.connectTask = nil }
         }
     }
@@ -384,6 +300,7 @@ final class AxodWorkbenchCoordinator {
     /// disposable daemon/root; this skips service registration, not protocol/UI paths.
     func connectOwnedFixture(root: URL, helper: URL, appLaunch: Bool = false) async throws {
         guard connection == nil else { throw AxodWorkbenchError.superseded }
+        usesFixtureDaemon = true
         let directory = try AxodStateDirectory.openExisting(root: root)
         guard let discovered = try directory.readEndpoint() else { throw AxodWorkbenchError.startupTimedOut }
         stateDirectory = directory
@@ -458,7 +375,7 @@ final class AxodWorkbenchCoordinator {
         guard canEditWork, let endpoint, let revision = catalogRevision,
               let current = sessions.first(where: { $0.sessionId == session.sessionId && $0.workspaceId == session.workspaceId && $0.name == session.name && $0.manualName == session.manualName }) else { return nil }
         guard current.manualName != nil else {
-            message = "The running helper cannot protect manual session names yet. Rename needs a safe automatic helper upgrade."
+            message = "The running helper cannot protect manual session names yet. Rename needs a separately coordinated safe helper update."
             return nil
         }
         let source = MachineTarget(machineId: endpoint.machineId, hostGeneration: endpoint.hostGeneration)
@@ -1060,7 +977,7 @@ final class AxodWorkbenchCoordinator {
     }
 
     var canSplitPane: Bool {
-        guard connectionState == .connected, !isUpgradingDaemon, !needsLegacyDaemonReplacement,
+        guard connectionState == .connected,
               let session = selectedSession, let machineID,
               session.shellPanes.count + 1 < AxodPaneLayouts.maximumPanes else { return false }
         switch shellStartupState(for: session.sessionId) {
@@ -1216,7 +1133,7 @@ final class AxodWorkbenchCoordinator {
     }
 
     func startOrResumePi() {
-        guard connectionState == .connected, !isUpgradingDaemon, let session = selectedSession,
+        guard connectionState == .connected, let session = selectedSession,
               let connection, let endpoint else { return }
         let target = PiSessionTarget(
             machineId: endpoint.machineId,
@@ -1686,171 +1603,61 @@ final class AxodWorkbenchCoordinator {
     }
 
     private func bootstrapAndConnect(operation: UUID) async {
+        let observation = serviceLifecycle.beginObservation()
+        serviceObservation = observation
         do {
-            let stateDirectory: AxodStateDirectory
+            let directory: AxodStateDirectory
 #if DEBUG
-            if let context = bundledDaemon.selfTest { stateDirectory = try AxodStateDirectory.openExisting(root: context.state) }
-            else { stateDirectory = try AxodStateDirectory.prepare() }
+            if let context = bundledDaemon.selfTest {
+                directory = try AxodStateDirectory.openExisting(root: context.state)
+                try bundledDaemon.startSelfTest(in: directory)
+            } else { directory = try AxodStateDirectory.prepare() }
 #else
-            stateDirectory = try AxodStateDirectory.prepare()
+            directory = try AxodStateDirectory.prepare()
 #endif
             try requireCurrent(operation)
-            self.stateDirectory = stateDirectory
-
-            let previous = try stateDirectory.readEndpoint()
-            var repairedRegistration = false
-            if let previous {
-                do {
-                    try await connect(to: previous, stateDirectory: stateDirectory, operation: operation)
-                    try await upgradeConnectedDaemon(in: stateDirectory, operation: operation)
-                    return
-                } catch AxodWorkbenchError.protocolMismatch {
-                    throw AxodWorkbenchError.protocolMismatch
-                } catch {
-                    try requireCurrent(operation)
-                    // A live owner is not a stale-file problem and must never be unregistered here.
-                    guard try await repairOwnerlessDaemonService(in: stateDirectory, operation: operation) else { throw error }
-                    repairedRegistration = true
+            stateDirectory = directory
+            // Draft safety is independent of service approval. Opening setup must
+            // still load saved tickets and allow a safe normal quit before enabling.
+            await chatDrafts.openStorage(in: directory.root)
+            try requireCurrent(operation)
+            if !usesFixtureDaemon { try serviceLifecycle.requireEnabled() }
+            let deadline = ContinuousClock.now.advanced(by: .seconds(10))
+            var delay = 100
+            while ContinuousClock.now < deadline {
+                try requireCurrent(operation)
+                if let discovered = try directory.readEndpoint() {
+                    do {
+                        try await connect(to: discovered, stateDirectory: directory, operation: operation, readinessDeadline: deadline)
+                        try requireCurrent(operation)
+                        return
+                    } catch AxodWorkbenchError.protocolMismatch { throw AxodWorkbenchError.protocolMismatch }
+                    catch {
+                        try requireCurrent(operation)
+                        // Read-only discovery/negotiation retries. No register,
+                        // unregister, spawn, handoff or command replay is reachable.
+                    }
                 }
+                let remaining = ContinuousClock.now.duration(to: deadline)
+                guard remaining > .zero else { break }
+                let jittered = min(2000, delay * Int.random(in: 80...120) / 100)
+                try await Task.sleep(for: min(.milliseconds(jittered), remaining))
+                delay = min(2000, delay * 2)
             }
-
-            // Cold startup must not wait for launchd/BTM to decide when to spawn.
-            // A current owner remains untouched; only an exclusively ownerless
-            // root may start this bundle's helper directly.
-            try bundledDaemon.startIfOwnerAbsent(in: stateDirectory)
-            let discovered: LocalDaemonEndpoint
-            do {
-                discovered = try await waitForEndpoint(in: stateDirectory, replacing: previous, operation: operation)
-            } catch {
-                guard !repairedRegistration,
-                      try await repairOwnerlessDaemonService(in: stateDirectory, operation: operation) else { throw error }
-                discovered = try await waitForEndpoint(in: stateDirectory, replacing: previous, operation: operation)
-            }
-            try await connect(to: discovered, stateDirectory: stateDirectory, operation: operation)
-            try await upgradeConnectedDaemon(in: stateDirectory, operation: operation)
+            throw AxodWorkbenchError.startupTimedOut
         } catch {
             guard operationGeneration == operation else { return }
+            serviceLifecycle.observedUnavailable(observation: observation)
             connectionState = .failed(error.localizedDescription)
             message = error.localizedDescription
         }
     }
 
-    private func upgradeConnectedDaemon(in stateDirectory: AxodStateDirectory, operation: UUID) async throws {
-#if DEBUG
-        if bundledDaemon.selfTest != nil, let connection, let endpoint {
-            let target = MachineTarget(machineId: endpoint.machineId, hostGeneration: endpoint.hostGeneration)
-            let value = try await connection.request(method: AxoProtocol.Method.getHost, parameters: HostGetParameters(target: target))
-            try requireCurrent(operation)
-            try stateDirectory.requireCurrentEndpoint(endpoint)
-            let status = try AxoProtocolResultValidator.host(value, target: target)
-            guard status.daemonVersion == Bundle.main.infoDictionary?["AxoBundledAxodVersion"] as? String else {
-                throw AxoProtocolValidationError.invalidResult(method: AxoProtocol.Method.getHost)
-            }
-        }
-#endif
-        guard !isUpgradingDaemon, let connection, let endpoint, Bundle.main.bundleIdentifier == "dev.leostera.axo.mac" else { return }
-        isUpgradingDaemon = true
-        defer { isUpgradingDaemon = false }
-        let decision = try await AxodDaemonUpgrade.prepare(over: connection, endpoint: endpoint, preferences: preferences,
-            info: Bundle.main.infoDictionary ?? [:], validate: {
-                try self.requireCurrent(operation)
-                try stateDirectory.requireCurrentEndpoint(endpoint)
-            })
-        try requireCurrent(operation)
-        try stateDirectory.requireCurrentEndpoint(endpoint)
-        switch decision {
-        case .keepCurrent: needsLegacyDaemonReplacement = false
-        case .legacyAwaitingSafeStop:
-            needsLegacyDaemonReplacement = true
-            daemonServiceMessage = "Automatic helper update is waiting for the older daemon to stop safely. This version cannot prove an idle handoff; running or uncertain work is preserved."
-        case .deferredActiveWork:
-            needsLegacyDaemonReplacement = true
-            daemonServiceMessage = "This app is connected to an older helper. New work is disabled until a safe helper update; retained runtime completion is uncertain. Existing work was not stopped."
-        case .awaitingOriginalHandoff:
-            needsLegacyDaemonReplacement = true
-            daemonServiceMessage = "An earlier helper update is unresolved. This app remains connected read-only; the original handoff is preserved and no work was restarted."
-        case .quiesced:
-            try await replaceDaemonRegistration(in: stateDirectory, replacing: endpoint, operation: operation)
-        }
-    }
-
-    private func replaceDaemonRegistration(in stateDirectory: AxodStateDirectory, replacing previous: LocalDaemonEndpoint,
-                                            operation: UUID) async throws {
-        try requireCurrent(operation)
-        try stateDirectory.requireCurrentEndpoint(previous)
-        connectionState = .starting
-        hostObservationTask?.cancel()
-        hostStatus = nil
-        message = "Installing this app’s axod helper. Work and Pi history are preserved."
-        let service = SMAppService.agent(plistName: Self.axodAgentPlistName)
-        // An unstructured MainActor task completes the captured registration operation
-        // even if the connect task is canceled after unregistering the old job.
-        let registration = Task { @MainActor in
-            try await service.unregister()
-            let deadline = ContinuousClock.now.advanced(by: .seconds(8))
-            var absence: AxodOwnerAbsenceLease?
-            repeat {
-                absence = try AxodOwnerAbsenceLease.acquire(in: stateDirectory.root)
-                if absence != nil { break }
-                try await Task.sleep(for: .milliseconds(100))
-            } while ContinuousClock.now < deadline
-            guard let absence else { throw AxodWorkbenchError.startupTimedOut }
-            defer { absence.release() }
-            absence.release()
-            try service.register()
-        }
-        try await registration.value
-        try requireCurrent(operation)
-        let oldConnection = connection
-        connection = nil
-        await oldConnection?.close()
-        let fresh = try await waitForEndpoint(in: stateDirectory, replacing: previous, operation: operation)
-        try await connect(to: fresh, stateDirectory: stateDirectory, operation: operation)
-        guard let connection else { throw AxodWorkbenchError.startupTimedOut }
-        let target = MachineTarget(machineId: fresh.machineId, hostGeneration: fresh.hostGeneration)
-        let value = try await connection.request(method: AxoProtocol.Method.getHost, parameters: HostGetParameters(target: target))
-        try requireCurrent(operation)
-        try stateDirectory.requireCurrentEndpoint(fresh)
-        let running = try AxoProtocolResultValidator.host(value, target: target)
-        guard running.daemonVersion == Bundle.main.infoDictionary?["AxoBundledAxodVersion"] as? String else {
-            throw AxoProtocolValidationError.invalidResult(method: AxoProtocol.Method.getHost)
-        }
-        preferences.removeObject(forKey: AxodDaemonUpgrade.pendingKey(fresh.machineId))
-        needsLegacyDaemonReplacement = false
-        daemonServiceMessage = "The current bundled axod helper is running."
-    }
-
-    private func repairOwnerlessDaemonService(in stateDirectory: AxodStateDirectory, operation: UUID) async throws -> Bool {
-#if DEBUG
-        if bundledDaemon.selfTest != nil { return false }
-#endif
-        try requireCurrent(operation)
-        let service = SMAppService.agent(plistName: Self.axodAgentPlistName)
-        guard Bundle.main.bundleIdentifier == "dev.leostera.axo.mac" else { return false }
-        let needsRemoval: Bool
-        switch service.status {
-        case .enabled, .notFound: needsRemoval = true
-        case .notRegistered: needsRemoval = false
-        case .requiresApproval: return false
-        @unknown default: return false
-        }
-        guard let absence = try AxodOwnerAbsenceLease.acquire(in: stateDirectory.root) else { return false }
-        defer { absence.release() }
-        message = "Repairing the stopped axod service registration for this app bundle."
-        if needsRemoval { try await service.unregister() }
-        // Finish the captured registration repair even if a newer connect supersedes its UI.
-        // Registration may launch immediately. Release only after the old job is removed.
-        absence.release()
-        try service.register()
-        try requireCurrent(operation)
-        updateDaemonServiceMessage(for: service.status)
-        return true
-    }
-
     private func connect(
         to endpoint: LocalDaemonEndpoint,
         stateDirectory: AxodStateDirectory,
-        operation: UUID
+        operation: UUID,
+        readinessDeadline: ContinuousClock.Instant? = nil
     ) async throws {
         try requireCurrent(operation)
         let connection = try rpc.openLocalWebSocket(endpoint: endpoint)
@@ -1859,12 +1666,26 @@ final class AxodWorkbenchCoordinator {
         do {
             let negotiation = try await connection.request(
                 method: AxoProtocol.Method.negotiate,
-                parameters: NegotiationParameters()
+                parameters: NegotiationParameters(), timeout: try readinessTimeout(until: readinessDeadline)
             )
             do { _ = try AxoProtocolResultValidator.localNegotiation(negotiation) }
             catch { throw AxodWorkbenchError.protocolMismatch }
+            let source = MachineTarget(machineId: endpoint.machineId, hostGeneration: endpoint.hostGeneration)
+            let hostValue = try await connection.request(method: AxoProtocol.Method.getHost,
+                parameters: HostGetParameters(target: source), timeout: try readinessTimeout(until: readinessDeadline))
+            let status = try AxoProtocolResultValidator.host(hostValue, target: source)
             try requireCurrent(operation)
             try stateDirectory.requireCurrentEndpoint(endpoint)
+#if DEBUG
+            if bundledDaemon.selfTest != nil {
+                guard status.daemonVersion == Bundle.main.infoDictionary?["AxoBundledAxodVersion"] as? String else {
+                    throw AxoProtocolValidationError.invalidResult(method: AxoProtocol.Method.getHost)
+                }
+            }
+#endif
+            hostStatus = status
+            updateHelperObservation(status)
+            if let serviceObservation { serviceLifecycle.observedReady(source, observation: serviceObservation) }
             await chatDrafts.openStorage(in: stateDirectory.root)
             guard isCurrent(operation, connection: connection, endpoint: endpoint) else { throw AxodWorkbenchError.superseded }
             try stateDirectory.requireCurrentEndpoint(endpoint)
@@ -2422,17 +2243,18 @@ final class AxodWorkbenchCoordinator {
         return result
     }
 
-    private func waitForEndpoint(
-        in stateDirectory: AxodStateDirectory,
-        replacing previous: LocalDaemonEndpoint?,
-        operation: UUID
-    ) async throws -> LocalDaemonEndpoint {
-        for _ in 0..<100 {
-            try requireCurrent(operation)
-            if let endpoint = try stateDirectory.readEndpoint(), endpoint != previous { return endpoint }
-            try await Task.sleep(for: .milliseconds(100))
-        }
-        throw AxodWorkbenchError.startupTimedOut
+    private func readinessTimeout(until deadline: ContinuousClock.Instant?) throws -> TimeInterval {
+        guard let deadline else { return 2 }
+        let remaining = ContinuousClock.now.duration(to: deadline).components
+        let seconds = Double(remaining.seconds) + Double(remaining.attoseconds) / 1e18
+        guard seconds > 0 else { throw AxodWorkbenchError.startupTimedOut }
+        return min(2, seconds)
+    }
+
+    private func updateHelperObservation(_ status: HostStatusResult) {
+        // Build mismatch is metadata, not permission to freeze or replace work.
+        // The negotiated protocol and each method's validator determine support.
+        helperUpdateAvailable = status.daemonVersion != Bundle.main.infoDictionary?["AxoBundledAxodVersion"] as? String
     }
 
     private func isCurrent(
@@ -2460,7 +2282,9 @@ final class AxodWorkbenchCoordinator {
                     let value = try await connection.request(method: AxoProtocol.Method.getHost, parameters: HostGetParameters(target: MachineTarget(machineId: endpoint.machineId, hostGeneration: endpoint.hostGeneration)))
                     guard let self, self.isCurrent(operation, connection: connection, endpoint: endpoint) else { return }
                     try self.stateDirectory?.requireCurrentEndpoint(endpoint)
-                    self.hostStatus = try AxoProtocolResultValidator.host(value, target: MachineTarget(machineId: endpoint.machineId, hostGeneration: endpoint.hostGeneration))
+                    let status = try AxoProtocolResultValidator.host(value, target: MachineTarget(machineId: endpoint.machineId, hostGeneration: endpoint.hostGeneration))
+                    self.hostStatus = status
+                    self.updateHelperObservation(status)
                     if !self.isEditingWork, let selected = self.selectedSessionID,
                        let record = self.sessions.first(where: { $0.sessionId == selected }) {
                         let destination = WorkSessionTarget(machineId: endpoint.machineId, hostGeneration: endpoint.hostGeneration,
@@ -2472,19 +2296,6 @@ final class AxodWorkbenchCoordinator {
                         try self.stateDirectory?.requireCurrentEndpoint(endpoint)
                         if let index = self.sessions.firstIndex(where: { $0.sessionId == selected }) {
                             self.sessions[index] = updated
-                        }
-                    }
-                    if self.connectTask == nil, !self.isUpgradingDaemon, !self.isEditingWork,
-                       self.hostStatus?.daemonVersion != Bundle.main.infoDictionary?["AxoBundledAxodVersion"] as? String,
-                       let directory = self.stateDirectory {
-                        // A separate task survives cancellation of this observation loop during handoff.
-                        Task { [weak self] in
-                            guard let self else { return }
-                            do { try await self.upgradeConnectedDaemon(in: directory, operation: operation) }
-                            catch {
-                                guard self.operationGeneration == operation else { return }
-                                self.daemonServiceMessage = "Automatic helper update could not be confirmed. Its captured handoff will be reconciled; no work was replayed."
-                            }
                         }
                     }
                 } catch {
@@ -2539,6 +2350,7 @@ final class AxodWorkbenchCoordinator {
         selectedWorkspaceID = nil; selectedSessionID = nil
         stopChatObservation()
         chatTarget = nil; chatSnapshot = nil; chatEntries = []
+        if let serviceObservation { serviceLifecycle.observedUnavailable(observation: serviceObservation) }
         connectionState = .failed("Local daemon connection lost")
         message = "Connection lost. Reconnect to inspect the daemon; no work was replayed."
         Task { await connection.close() }
@@ -2558,7 +2370,7 @@ private enum AxodWorkbenchError: Error, LocalizedError {
         switch self {
         case .protocolMismatch: "The discovered daemon speaks an incompatible local protocol. It was left untouched."
         case .superseded: "A newer connection operation replaced this result."
-        case .startupTimedOut: "The registered axod LaunchAgent did not publish a fresh discovery endpoint in time."
+        case .startupTimedOut: "The registered Axod service did not become ready. Check Background Service settings and startup diagnostics. Reconnect did not launch, replace, or restart any work."
         }
     }
 }

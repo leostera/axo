@@ -67,7 +67,7 @@ struct AxodWorkbenchView: View {
             if coordinator.needsLoginItemsReview || coordinator.needsDaemonServiceReview {
                 HStack {
                     Text(coordinator.daemonServiceMessage).frame(maxWidth: .infinity, alignment: .leading)
-                    Button("Review Login Items…") { coordinator.openLoginItemsSettings() }
+                    Button("Background Service…") { coordinator.showServiceSettingsWindow() }
                 }.padding(10)
             }
         }
@@ -80,11 +80,6 @@ struct AxodWorkbenchView: View {
             paneBackground
             if let session = selectedSession {
                 VStack(spacing: 0) {
-                    if coordinator.needsLegacyDaemonReplacement {
-                        Text(coordinator.daemonServiceMessage)
-                            .font(.callout).foregroundStyle(Color.orange)
-                            .frame(maxWidth: .infinity, alignment: .leading).padding(12)
-                    }
                     AxodSessionTerminals(session: session, coordinator: coordinator).id(session.sessionId)
                 }
                 .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
