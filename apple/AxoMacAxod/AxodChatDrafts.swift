@@ -14,12 +14,13 @@ final class AxodChatDrafts {
         let sessionID: UUID
         let paneID: UUID
         let chatID: UUID
+        init(machineID: UUID, workspaceID: UUID?, sessionID: UUID, paneID: UUID, chatID: UUID) {
+            self.machineID = machineID; self.workspaceID = workspaceID; self.sessionID = sessionID
+            self.paneID = paneID; self.chatID = chatID
+        }
         init(_ target: PiChatTarget) {
-            machineID = target.machineId
-            workspaceID = target.workspaceId
-            sessionID = target.sessionId
-            paneID = target.paneId
-            chatID = target.chatId
+            self.init(machineID: target.machineId, workspaceID: target.workspaceId, sessionID: target.sessionId,
+                      paneID: target.paneId, chatID: target.chatId)
         }
     }
     struct Submission {
