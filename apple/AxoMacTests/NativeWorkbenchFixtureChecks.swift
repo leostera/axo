@@ -36,10 +36,25 @@ struct NativeWorkbenchFixtureChecks {
         let home = URL(fileURLWithPath: CommandLine.arguments[3], isDirectory: true)
         guard let mode = Mode(rawValue: CommandLine.arguments[4]) else { throw Failure.missing("known fixture mode") }
         let began = Date()
-        let suite = "Axo.NativeWorkbenchFixture.\(UUID().uuidString)"
+        let crashSuite = "Axo.NativeWorkbenchCrashFixture.\(home.deletingLastPathComponent().lastPathComponent)"
+        let suite = mode == .draftCrash ? crashSuite : "Axo.NativeWorkbenchFixture.\(UUID().uuidString)"
         let preferences = UserDefaults(suiteName: suite)!
         defer { preferences.removePersistentDomain(forName: suite) }
         let coordinator = AxodWorkbenchCoordinator(preferences: preferences)
+        if mode == .draftCrash || mode == .draftRecover {
+            defer { coordinator.disconnect(); coordinator.voice.shutdown() }
+            if mode == .draftRecover {
+                // This exact synthetic suite belongs to the preceding owned
+                // killed child. No production preference namespace is removed.
+                defer { UserDefaults(suiteName: crashSuite)?.removePersistentDomain(forName: crashSuite) }
+                try await checkDraftRecovery(coordinator: coordinator, root: root, helper: helper, home: home,
+                                             preferences: preferences, mode: mode)
+            } else {
+                try await checkDraftRecovery(coordinator: coordinator, root: root, helper: helper, home: home,
+                                             preferences: preferences, mode: mode)
+            }
+            return
+        }
         func phase(_ name: String) {
             fputs("Native fixture phase=\(name) elapsedMs=\(Int(Date().timeIntervalSince(began) * 1000)) starting=\(coordinator.isStartingPi) admission=\(coordinator.selectedSession?.pi.admission.rawValue ?? "none")\n", stderr)
         }
@@ -175,6 +190,18 @@ struct NativeWorkbenchFixtureChecks {
             precondition(coordinator.selectedSession?.pi.admission != .ready)
             precondition(coordinator.workEditor == nil)
         }
+        if mode == .draftExit {
+            // An intentional bounded foreground job in the same owned shell
+            // runtime, not a detached descendant or restore-time command.
+            precondition(window.makeFirstResponder(shellView) && shellView.inputEnabled)
+            shellView.insertText("exec /bin/sh -c 'umask 077; i=0; while [ $i -lt 800 ]; do printf . >> native-draft-heartbeat; i=$((i+1)); sleep 0.1; done'", replacementRange: NSRange(location: NSNotFound, length: 0))
+            let enter = NSEvent.keyEvent(with: .keyDown, location: .zero, modifierFlags: [], timestamp: 0,
+                windowNumber: window.windowNumber, context: nil, characters: "\r", charactersIgnoringModifiers: "\r", isARepeat: false, keyCode: 36)!
+            shellView.keyDown(with: enter)
+            try await wait("actual shell work before native client exit") {
+                ((try? Data(contentsOf: home.appendingPathComponent("native-draft-heartbeat")).count) ?? 0) > 0
+            }
+        }
         if mode == .panes {
             try await checkSplits(coordinator: coordinator, window: window, home: home, session: session, shell: shell, shellView: shellView)
         }
@@ -264,7 +291,55 @@ struct NativeWorkbenchFixtureChecks {
             let restoredLayout = restored.paneLayouts.trees[identity].flatMap { AxodPaneLayoutPersistence.write($0, session: identity) }
             precondition(savedLayout != nil && restoredLayout == savedLayout)
         }
+        if mode == .draftExit {
+            try await wait("original native draft-exit binding") { restored.chatSnapshot?.admission == .ready }
+            guard let target = restored.chatTarget else { throw Failure.missing("original draft-exit target") }
+            precondition(restored.chatDrafts.edit(exitDraftText, for: target))
+            let saved = await restored.chatDrafts.prepareToQuit()
+            precondition(saved && !restored.chatDrafts.canEdit && restored.chatDrafts.text(for: target) == exitDraftText)
+            print("PASS: owned native client normal process exit follows production draft quit-cache barrier; not actual application-delegate/Cmd+Q/IME acceptance")
+        }
         print("PASS: owned production native creation, immediate selection/no modal, captured PTY surfaces, independent shell input, retained restoration/reconnect/later-launch (\(mode.rawValue)); not Finder/service/live acceptance")
+    }
+
+    private static let exitDraftText = "owned unsent draft after normal exit 🦊\nsecond line"
+    private static let crashDraftText = "owned original draft before forced client crash 🦊\nsecond line"
+    @MainActor private static func checkDraftRecovery(coordinator: AxodWorkbenchCoordinator, root: URL, helper: URL,
+                                                     home: URL, preferences: UserDefaults, mode: Mode) async throws {
+        try await coordinator.connectOwnedFixture(root: root, helper: helper, appLaunch: true)
+        try await wait("existing owned Pi binding after native process exit") { coordinator.chatSnapshot?.admission == .ready }
+        guard let target = coordinator.chatTarget else { throw Failure.missing("recovered native draft target") }
+        precondition(coordinator.sessions.count == 1 && coordinator.runtimes.count == 2 && !coordinator.isStartingPi)
+        let key = "Axo.axod.pendingChat.\(target.machineId.uuidString).\(target.sessionId.uuidString)"
+        precondition(preferences.object(forKey: key) == nil)
+        if mode == .draftCrash {
+            precondition(coordinator.chatDrafts.text(for: target) == exitDraftText)
+            precondition(coordinator.chatDrafts.pending(for: target) == nil)
+            precondition(coordinator.chatDrafts.edit(crashDraftText, for: target))
+            guard let original = coordinator.chatDrafts.capture(for: target) else { throw Failure.missing("owned pre-hint crash ticket") }
+            let saved = await coordinator.chatDrafts.persist(original)
+            precondition(saved && preferences.object(forKey: key) == nil)
+            let temporary = home.appendingPathComponent(".native-draft-ready-\(UUID().uuidString)")
+            guard FileManager.default.createFile(atPath: temporary.path, contents: Data("ready".utf8), attributes: [.posixPermissions: 0o600]) else {
+                throw Failure.missing("owned crash checkpoint marker")
+            }
+            try FileManager.default.moveItem(at: temporary, to: home.appendingPathComponent("native-draft-crash-ready"))
+            // Rust kills only this owned native client after the durable archive
+            // boundary. No Pi dispatch/hint/termination or process adoption.
+            while true { try await Task.sleep(for: .seconds(1)) }
+        }
+        precondition(coordinator.chatDrafts.text(for: target) == crashDraftText)
+        guard let original = coordinator.chatDrafts.pending(for: target) else { throw Failure.missing("original ticket after client crash") }
+        precondition(original.target == target && original.operation == .sendMessage)
+        precondition(coordinator.pendingChatCommandId == original.commandID && coordinator.chatDrafts.capture(for: target) == nil)
+        coordinator.reconcilePendingPiCommand()
+        try await wait("read-only original lookup after actual native client crash") {
+            !coordinator.isReconcilingPiCommand && coordinator.chatStatusMessage == "No matching durable Pi command receipt is visible. It was not replayed."
+        }
+        precondition(coordinator.chatDrafts.text(for: target) == crashDraftText)
+        precondition(coordinator.chatDrafts.pending(for: target)?.commandID == original.commandID && coordinator.pendingChatCommandId == original.commandID)
+        precondition(preferences.object(forKey: key) == nil && !coordinator.isStartingPi)
+        print("PASS: separate fresh native process restores saved text/original pre-hint crash ticket, preserves unknown on actual lookup without hint/message replay; not lost dispatched reply or power-loss proof")
     }
 
     @MainActor private static func checkChat(coordinator: AxodWorkbenchCoordinator, window: NSWindow,
@@ -483,6 +558,9 @@ struct NativeWorkbenchFixtureChecks {
             try await Task.sleep(for: .milliseconds(10))
         }
     }
-    private enum Mode: String { case delayed, unavailable, automatic, pending, panes, chat, storage }
+    private enum Mode: String {
+        case delayed, unavailable, automatic, pending, panes, chat, storage
+        case draftExit = "draft-exit", draftCrash = "draft-crash", draftRecover = "draft-recover"
+    }
     private enum Failure: Error { case missing(String) }
 }
