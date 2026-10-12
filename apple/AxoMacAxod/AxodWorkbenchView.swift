@@ -53,12 +53,6 @@ struct AxodWorkbenchView: View {
                         .disabled(coordinator.connectionState != .connected)
                 }
             }
-            if coordinator.pendingPiStartCommandID != nil && !coordinator.isStartingPi {
-                AxodStatusNotice("Start unconfirmed") {
-                    Button("Check Status") { coordinator.reconcilePendingPiStart() }
-                        .disabled(coordinator.connectionState != .connected || coordinator.isReconcilingPiCommand)
-                }
-            }
             if coordinator.needsLoginItemsReview || coordinator.needsDaemonServiceReview {
                 AxodStatusNotice(coordinator.needsLoginItemsReview || coordinator.serviceLifecycle.registration == .requiresApproval
                     ? "Approval needed" : "Background service unavailable") {
