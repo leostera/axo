@@ -12,7 +12,6 @@ final class AxodWorkbenchCoordinator {
         static let machineID = "Axo.axod.selection.machineID"
         static let workspaceID = "Axo.axod.selection.workspaceID"
         static let sessionID = "Axo.axod.selection.sessionID"
-        static let pendingStartPrefix = "Axo.axod.pendingStart."
         static let pendingChatPrefix = "Axo.axod.pendingChat."
     }
 
@@ -85,20 +84,18 @@ final class AxodWorkbenchCoordinator {
     private(set) var daemonKeepsSessionsAlive = false
     @ObservationIgnored private var sessionLivenessTask: Task<Void, Never>?
     @ObservationIgnored private var sessionLivenessIdentity: UUID?
-    private(set) var pendingPiStartCommandID: UUID?
     var workEditor: AxodWorkEditorContext?
     private var activeCreationContext: AxodWorkEditorContext?
     private(set) var isEditingWork = false
     private(set) var activeWorkRename: AxodWorkRename?
     var isRenamingWork: Bool { activeWorkRename != nil }
-    private(set) var workEditMessage = "Create a session and start your ambient Pi."
+    private(set) var workEditMessage = "Create a session."
     private(set) var createdSessionForEditor: WorkSessionRecord?
     private(set) var pendingWorkCommandID: UUID?
     private(set) var pendingWorkIsUnreadable = false
     private(set) var sessionDeletionConfirmation: AxodSessionDeletion?
     var canEditWork: Bool { connectionState == .connected && !isEditingWork && !isRenamingWork && pendingWorkCommandID == nil && !pendingWorkIsUnreadable && sessionDeletionConfirmation == nil && !hasPendingSessionDeletion }
     private var hasPendingSessionDeletion: Bool { machineID.map { preferences.object(forKey: pendingDeletionKey($0)) != nil } ?? false }
-    private(set) var isStartingPi = false
     private(set) var isSendingPiMessage = false
     private var piMutationGeneration: UUID?
     let chatDrafts = AxodChatDrafts()
@@ -651,46 +648,11 @@ final class AxodWorkbenchCoordinator {
                 self.preferredWorkspaceID = session.workspaceId
                 self.preferredSessionID = session.sessionId
                 self.saveSelection()
-                self.workEditMessage = "Session created. Starting its independent terminals…"
-                // Reserve the startup UI immediately. Shell admission is committed first;
-                // its process remains independent while Pi starts and waits for readiness.
-                self.isStartingPi = true
-                let ready: Bool
-                if self.daemonKeepsSessionsAlive {
-                    ready = await self.awaitDaemonSession(session, over: connection, endpoint: endpoint, operation: operation)
-                } else {
-                // Owned DEBUG fixtures deliberately exercise isolated explicit admission.
-                // Production creation never falls back to client-owned startup.
-                let shell = await self.shellCreation.start(session: session, source: context.target, send: { parameters in
-                        try await connection.request(method: AxoProtocol.Method.addShellPane, parameters: parameters)
-                }) {
-                    guard self.isCurrent(operation, connection: connection, endpoint: endpoint),
-                          let directory = self.stateDirectory else { throw CancellationError() }
-                    try directory.requireCurrentEndpoint(endpoint)
-                }
-                guard self.isCurrent(operation, connection: connection, endpoint: endpoint) else { return }
-                if let shell, let index = self.sessions.firstIndex(where: { $0.sessionId == session.sessionId && $0.workspaceId == session.workspaceId }) {
-                    let existing = self.sessions[index]
-                    self.sessions[index] = WorkSessionRecord(sessionId: existing.sessionId, workspaceId: existing.workspaceId,
-                        name: existing.name, nameSource: existing.nameSource, pi: existing.pi, runtime: existing.runtime,
-                        shellPanes: existing.shellPanes.filter { $0.paneId != shell.paneId } + [shell], manualName: existing.manualName)
-                    self.paneLayouts.observe(self.sessions[index], machineID: context.target.machineId)
-                }
-                ready = await self.startCreatedSession(session, target: context.target, over: connection,
-                                                          endpoint: endpoint, operation: operation)
-                }
-                guard self.isCurrent(operation, connection: connection, endpoint: endpoint),
-                      self.selectedSessionID == session.sessionId else { return }
-                self.isStartingPi = false
-                if ready {
-                    self.workEditor = nil
-                    self.createdSessionForEditor = nil
-                    self.message = "Session created and Pi is ready."
-                    self.refresh()
-                } else {
-                    self.workEditMessage = self.chatStatusMessage
-                    self.message = self.chatStatusMessage
-                }
+                self.createdSessionForEditor = nil
+                self.workEditMessage = "Session created."
+                self.message = self.workEditMessage
+                self.activateSelectedSession()
+                self.refresh()
             } catch {
                 guard self.isCurrent(operation, connection: connection, endpoint: endpoint) else { return }
                 if let pending = self.pendingWorkCommandID {
@@ -902,46 +864,6 @@ final class AxodWorkbenchCoordinator {
         }
     }
 
-    private func observeStartingTerminal(session: WorkSessionRecord, endpoint: LocalDaemonEndpoint,
-                                         operation: UUID, control: AxoJSONRPCWebSocketConnection) -> Task<Void, Never> {
-        Task { [weak self] in
-            guard let self, let directory = self.stateDirectory else { return }
-            let source = MachineTarget(machineId: endpoint.machineId, hostGeneration: endpoint.hostGeneration)
-            do {
-                try directory.requireCurrentEndpoint(endpoint)
-                let observer = try self.rpc.openLocalWebSocket(endpoint: endpoint)
-                defer { Task { await observer.close() } }
-                let negotiation = try await observer.request(method: AxoProtocol.Method.negotiate, parameters: NegotiationParameters())
-                _ = try AxoProtocolResultValidator.localNegotiation(negotiation)
-                while !Task.isCancelled {
-                    var after: UUID?
-                    var cursors = Set<UUID>()
-                    for _ in 0..<20 {
-                        let value = try await observer.request(method: AxoProtocol.Method.listRuntimes,
-                            parameters: RuntimeListParameters(target: source, after: after))
-                        let page = try AxoProtocolResultValidator.runtimeList(value, target: source)
-                        guard !Task.isCancelled, self.isCurrent(operation, connection: control, endpoint: endpoint) else { return }
-                        try directory.requireCurrentEndpoint(endpoint)
-                        if let snapshot = page.terminals.first(where: {
-                            $0.runtime.hostGeneration == source.hostGeneration &&
-                            $0.runtime.target.sessionId == session.sessionId &&
-                            $0.runtime.target.paneId == session.pi.paneId
-                        }) {
-                            self.runtimes.removeAll { $0.runtime.target.paneId == session.pi.paneId }
-                            self.runtimes.append(snapshot)
-                            break
-                        }
-                        guard let next = page.next, cursors.insert(next).inserted else { break }
-                        after = next
-                    }
-                    try await Task.sleep(for: .milliseconds(200))
-                }
-            } catch {
-                // Read-only observer failure never retries a start or changes its receipt.
-            }
-        }
-    }
-
     func preparePaneLayout(_ session: WorkSessionRecord) {
         guard selectedSessionID == session.sessionId, let machineID else { return }
         paneLayouts.observe(session, machineID: machineID)
@@ -1092,223 +1014,6 @@ final class AxodWorkbenchCoordinator {
                 self.paneLayouts.adopt(receipt, in: .init(machineID: source.machineId, sessionID: session.sessionId))
             }
             self.refresh()
-        }
-    }
-
-    /// Creation is explicit launch intent. Catalog reads and restoration never call this.
-    private func startCreatedSession(_ session: WorkSessionRecord, target: MachineTarget,
-                                     over connection: AxoJSONRPCWebSocketConnection,
-                                     endpoint: LocalDaemonEndpoint, operation: UUID) async -> Bool {
-        let destination = PiSessionTarget(machineId: target.machineId, hostGeneration: target.hostGeneration,
-            workspaceId: session.workspaceId, sessionId: session.sessionId, paneId: session.pi.paneId)
-        let key = pendingStartKey(machineID: target.machineId, sessionID: session.sessionId)
-        guard preferences.data(forKey: key) == nil else {
-            chatStatusMessage = "A previous start is unresolved. Reconcile it; no second start was sent."
-            return false
-        }
-        let pending = PendingPiStart(target: destination, commandId: UUID(), persistence: .fresh)
-        do { preferences.set(try JSONEncoder().encode(pending), forKey: key) }
-        catch {
-            chatStatusMessage = "The session was created, but its start intent could not be saved. No Pi start was sent."
-            return false
-        }
-        pendingPiStartCommandID = pending.commandId
-        isStartingPi = true
-        let observer = observeStartingTerminal(session: session, endpoint: endpoint, operation: operation, control: connection)
-        defer { observer.cancel(); isStartingPi = false }
-        do {
-            try stateDirectory?.requireCurrentEndpoint(endpoint)
-            let value = try await connection.request(method: AxoProtocol.Method.startSession,
-                parameters: PiSessionStartParameters(target: destination, commandId: pending.commandId, persistence: .fresh))
-            let result = try PiProtocolValidator.sessionStart(value, target: destination,
-                commandId: pending.commandId, persistence: .fresh)
-            guard isCurrent(operation, connection: connection, endpoint: endpoint), selectedSessionID == session.sessionId else { return false }
-            try stateDirectory?.requireCurrentEndpoint(endpoint)
-            switch result.receipt.disposition {
-            case .prepared:
-                chatStatusMessage = "Session created; Pi start remains uncertain. Reconcile the saved start, do not create another session."
-            case .rejected(let code):
-                preferences.removeObject(forKey: key)
-                pendingPiStartCommandID = nil
-                chatStatusMessage = "Session created, but Pi startup was rejected before execution (\(code)). Open the session to retry its start."
-            case .dispatched:
-                guard result.admission == .ready, let chat = result.chat else {
-                    chatStatusMessage = "Session created; Pi did not confirm readiness. Reconcile its saved start before retrying."
-                    return false
-                }
-                preferences.removeObject(forKey: key)
-                pendingPiStartCommandID = nil
-                chatTarget = chat
-                chatStatusMessage = "Pi is ready."
-                return true
-            }
-        } catch {
-            guard isCurrent(operation, connection: connection, endpoint: endpoint), selectedSessionID == session.sessionId else { return false }
-            if let code = Self.knownNoEffectCode(error) {
-                preferences.removeObject(forKey: key)
-                pendingPiStartCommandID = nil
-                chatStatusMessage = code == -32003
-                    ? "Session created, but the running daemon cannot launch Pi. It needs the current app's adapter and local launch policy; ambient Pi must be installed. No execution was started."
-                    : "Session created, but Pi start was rejected before execution (\(code)). Open the session to retry its start."
-            } else {
-                chatStatusMessage = "Session created; Pi start outcome is unknown. Its saved command must be reconciled before any new start."
-            }
-        }
-        return false
-    }
-
-    func startOrResumePi() {
-        if daemonKeepsSessionsAlive { refresh(); return }
-        guard connectionState == .connected, let session = selectedSession,
-              let connection, let endpoint else { return }
-        let target = PiSessionTarget(
-            machineId: endpoint.machineId,
-            hostGeneration: endpoint.hostGeneration,
-            workspaceId: session.workspaceId,
-            sessionId: session.sessionId,
-            paneId: session.pi.paneId
-        )
-
-        let pendingKey = pendingStartKey(machineID: endpoint.machineId, sessionID: session.sessionId)
-        let pending: PendingPiStart
-        if let data = preferences.data(forKey: pendingKey) {
-            guard let decoded = try? JSONDecoder().decode(PendingPiStart.self, from: data),
-                  decoded.target.workspaceId == target.workspaceId,
-                  decoded.target.sessionId == target.sessionId,
-                  decoded.target.paneId == target.paneId else {
-                chatStatusMessage = "A previous start intent could not be validated. No new start was sent."
-                return
-            }
-            guard decoded.target == target else {
-                pendingPiStartCommandID = decoded.commandId
-                reconcilePendingPiStart()
-                return
-            }
-            pending = decoded
-        } else {
-            let persistence: PiPersistence
-            switch session.pi.admission {
-            case .notAdmitted:
-                persistence = .fresh
-            case .stopped, .failed:
-                guard let chatId = session.pi.chatId, let runtime = session.runtime?.runtime else {
-                    chatStatusMessage = "This stopped Pi session is missing its exact resume binding. No new chat was created."
-                    return
-                }
-                persistence = .resume(chatId: chatId, previousRuntime: runtime)
-            case .ready:
-                chatStatusMessage = "This session already has an admitted Pi runtime. Refresh its chat instead of starting another."
-                activateSelectedSession()
-                return
-            case .recoveryRequired:
-                chatStatusMessage = "Axod cannot prove this Pi writer is safe to resume. Recovery is required; no new runtime was started."
-                return
-            }
-            pending = PendingPiStart(target: target, commandId: UUID(), persistence: persistence)
-            do { preferences.set(try JSONEncoder().encode(pending), forKey: pendingKey) }
-            catch {
-                chatStatusMessage = "The start reconciliation ID could not be saved. No start was sent."
-                return
-            }
-        }
-
-        let parameters = PiSessionStartParameters(
-            target: pending.target,
-            commandId: pending.commandId,
-            persistence: pending.persistence
-        )
-        let operation = operationGeneration
-        isStartingPi = true
-        pendingPiStartCommandID = pending.commandId
-        chatStatusMessage = "Submitting an explicit \(pending.persistence == .fresh ? "fresh" : "exact resume") request to axod."
-        Task { [weak self] in
-            guard let self else { return }
-            defer { self.isStartingPi = false }
-            do {
-                let value = try await connection.request(method: AxoProtocol.Method.startSession, parameters: parameters)
-                let result = try PiProtocolValidator.sessionStart(
-                    value, target: pending.target, commandId: pending.commandId, persistence: pending.persistence
-                )
-                guard self.isCurrent(operation, connection: connection, endpoint: endpoint),
-                      self.selectedSessionID == pending.target.sessionId else { return }
-                switch result.receipt.disposition {
-                case .prepared:
-                    self.chatStatusMessage = "Start remains prepared or uncertain. Reconcile this same command; do not create another start."
-                case .rejected(let code):
-                    self.preferences.removeObject(forKey: pendingKey)
-                    self.pendingPiStartCommandID = nil
-                    self.chatStatusMessage = "Axod rejected the start before dispatch (\(code)). No Pi execution was confirmed."
-                case .dispatched:
-                    self.preferences.removeObject(forKey: pendingKey)
-                    self.pendingPiStartCommandID = nil
-                    self.chatStatusMessage = result.admission == .ready
-                        ? "Pi is admitted to the captured Axod session."
-                        : "The start disposition is recorded; Pi admission is \(result.admission.rawValue)."
-                    self.refresh()
-                    if let chat = result.chat, result.admission == .ready {
-                        self.chatTarget = chat
-                        self.refreshChat()
-                    }
-                }
-            } catch {
-                guard self.operationGeneration == operation,
-                      self.selectedSessionID == pending.target.sessionId else { return }
-                if let code = Self.knownNoEffectCode(error) {
-                    self.preferences.removeObject(forKey: pendingKey)
-                    self.pendingPiStartCommandID = nil
-                    self.chatStatusMessage = "Axod rejected the Pi start before dispatch (\(code)). No execution was started."
-                } else {
-                    self.pendingPiStartCommandID = pending.commandId
-                    self.chatStatusMessage = "Pi start outcome may be unknown. Its command ID is retained; reconcile it before any new start."
-                }
-            }
-        }
-    }
-
-    func reconcilePendingPiStart() {
-        guard let session = selectedSession, let endpoint, let connection else { return }
-        let key = pendingStartKey(machineID: endpoint.machineId, sessionID: session.sessionId)
-        guard let data = preferences.data(forKey: key),
-              let pending = try? JSONDecoder().decode(PendingPiStart.self, from: data) else {
-            chatStatusMessage = "No validated pending start intent is available to reconcile."
-            return
-        }
-        let target = MachineTarget(machineId: endpoint.machineId, hostGeneration: endpoint.hostGeneration)
-        let parameters = CommandGetParameters(target: target, commandId: pending.commandId)
-        let operation = operationGeneration
-        isReconcilingPiCommand = true
-        Task { [weak self] in
-            guard let self else { return }
-            defer { self.isReconcilingPiCommand = false }
-            do {
-                let value = try await connection.request(method: AxoProtocol.Method.getCommand, parameters: parameters)
-                let result = try AxoProtocolResultValidator.commandGet(value, target: target)
-                guard self.isCurrent(operation, connection: connection, endpoint: endpoint),
-                      self.selectedSessionID == pending.target.sessionId else { return }
-                guard case .pi(let receipt)? = result.receipt,
-                      receipt.commandId == pending.commandId,
-                      receipt.intent == .start(target: pending.target, persistence: pending.persistence) else {
-                    self.chatStatusMessage = "No matching durable Pi start receipt is visible yet. It was not replayed."
-                    return
-                }
-                switch receipt.disposition {
-                case .prepared:
-                    self.chatStatusMessage = "Axod still records this start as prepared. Its outcome is uncertain; no retry was sent."
-                case .rejected(let code):
-                    self.preferences.removeObject(forKey: key)
-                    self.pendingPiStartCommandID = nil
-                    self.chatStatusMessage = "The original start was rejected before dispatch (\(code))."
-                case .dispatched:
-                    self.preferences.removeObject(forKey: key)
-                    self.pendingPiStartCommandID = nil
-                    self.chatStatusMessage = "The original start was dispatched. Refreshing Axod's session binding; dispatch is not Pi-turn completion."
-                    self.refresh()
-                }
-            } catch {
-                guard self.operationGeneration == operation,
-                      self.selectedSessionID == pending.target.sessionId else { return }
-                self.chatStatusMessage = "Could not reconcile the original start receipt. No start was repeated."
-            }
         }
     }
 
@@ -1836,32 +1541,6 @@ final class AxodWorkbenchCoordinator {
         }
     }
 
-    private func awaitDaemonSession(_ session: WorkSessionRecord, over connection: AxoJSONRPCWebSocketConnection,
-                                    endpoint: LocalDaemonEndpoint, operation: UUID) async -> Bool {
-        let target = WorkSessionTarget(machineId: endpoint.machineId, hostGeneration: endpoint.hostGeneration,
-            workspaceId: session.workspaceId, sessionId: session.sessionId)
-        let deadline = ContinuousClock.now.advanced(by: .seconds(45))
-        do {
-            while ContinuousClock.now < deadline {
-                let value = try await connection.request(method: AxoProtocol.Method.getSession,
-                    parameters: SessionGetParameters(target: target), timeout: 2)
-                let current = try AxoProtocolResultValidator.sessionGet(value, target: target).session
-                guard isCurrent(operation, connection: connection, endpoint: endpoint),
-                      selectedSessionID == session.sessionId, selectedWorkspaceID == session.workspaceId else { return false }
-                try stateDirectory?.requireCurrentEndpoint(endpoint)
-                if let index = sessions.firstIndex(where: { $0.sessionId == session.sessionId }) {
-                    sessions[index] = current
-                    preparePaneLayout(current)
-                }
-                if current.pi.admission == .ready { activateSelectedSession(); return true }
-                try await Task.sleep(for: .milliseconds(250))
-            }
-            chatStatusMessage = "Session is opening."
-        } catch { chatStatusMessage = "Session unavailable." }
-        activateSelectedSession()
-        return false
-    }
-
     /// Read-only observation. Backend lifecycle transitions are never client retries.
     private func observeSessionLiveness(_ session: WorkSessionRecord, endpoint: LocalDaemonEndpoint) {
         let selection = sessionLoadGeneration
@@ -1938,16 +1617,12 @@ final class AxodWorkbenchCoordinator {
             chatTarget = nil
             chatSnapshot = nil
             chatEntries = []
-            pendingPiStartCommandID = nil
             pendingChatCommandId = nil
             chatStatusMessage = "Select an admitted Pi session to view its canonical conversation."
             return
         }
         shellCreation.restore(session: session, machineID: endpoint.machineId)
         paneLayouts.observe(session, machineID: endpoint.machineId)
-        let startKey = pendingStartKey(machineID: endpoint.machineId, sessionID: session.sessionId)
-        pendingPiStartCommandID = (preferences.data(forKey: startKey)
-            .flatMap { try? JSONDecoder().decode(PendingPiStart.self, from: $0) })?.commandId
         let pending = readPendingChatCommand(machineID: endpoint.machineId, sessionID: session.sessionId)
         pendingChatCommandId = pending?.commandId
         if daemonKeepsSessionsAlive { observeSessionLiveness(session, endpoint: endpoint) }
@@ -1957,7 +1632,7 @@ final class AxodWorkbenchCoordinator {
             chatTarget = nil
             chatSnapshot = nil
             chatEntries = []
-            chatStatusMessage = "This session has no Pi conversation yet. Start Pi explicitly to create one."
+            chatStatusMessage = "This session has no admitted Pi conversation yet."
             return
         case .recoveryRequired:
             chatTarget = nil
@@ -2221,10 +1896,6 @@ final class AxodWorkbenchCoordinator {
         // The in-memory capture enables only original read-only receipt lookup,
         // never dispatch. It is not restored after client restart.
         return PendingPiCommand(target: saved.target, commandId: saved.commandID, operation: saved.operation)
-    }
-
-    private func pendingStartKey(machineID: UUID, sessionID: UUID) -> String {
-        PreferenceKey.pendingStartPrefix + machineID.uuidString + "." + sessionID.uuidString
     }
 
     private func pendingChatKey(machineID: UUID, sessionID: UUID) -> String {
