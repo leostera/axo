@@ -4,12 +4,14 @@ public enum AxoProtocolValidationError: Error, Equatable, Sendable, LocalizedErr
     case invalidResult(method: String)
     case invalidParameters(method: String)
     case staleHost(expected: UUID, actual: UUID)
+    case staleStore(expected: UUID, actual: UUID)
 
     public var errorDescription: String? {
         switch self {
         case .invalidResult(let method): "Invalid result for \(method)."
         case .invalidParameters(let method): "Invalid parameters for \(method)."
         case .staleHost: "The machine restarted. Refresh discovery and runtimes."
+        case .staleStore: "The central store changed. Discard cached session state and reconnect."
         }
     }
 }
@@ -26,7 +28,6 @@ public enum AxoProtocolResultValidator {
               let methods = methodsValue.asStrings,
               methods.allSatisfy({ $0.hasPrefix("axo.") && $0.utf16.count <= 128 }),
               Set(methods).count == methods.count,
-              methods.contains(AxoProtocol.Method.listRuntimes),
               let credits = object(fields["deliveryCredits"], keys: ["frames", "bytes"]),
               let frames = integer(credits["frames"]), frames == AxoProtocol.deliveryCreditFrameCount,
               let bytes = integer(credits["bytes"]), bytes == AxoProtocol.deliveryCreditBytes
