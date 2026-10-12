@@ -11,6 +11,7 @@ serde = { version = "1", features = ["derive"] }
 serde_json = { version = "1", features = ["float_roundtrip", "raw_value"] }
 uuid = { version = "1", features = ["v4", "serde"] }
 sha2 = "0.10"
+rusqlite = { version = "=0.39.0", features = ["bundled", "serialize", "limits"] }
 signal-hook = "0.3"
 tungstenite = { version = "0.30.0", features = ["rustls-tls-native-roots"] }
 url = "2.5.8"
