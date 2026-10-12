@@ -5,13 +5,14 @@ description: Build, validate, and deliver Axo's Finder-launchable Mac app. Use a
 
 # Axo macOS packaging
 
-Resolve the Axo root from `../../..` relative to this skill. **Always repackage `dist/Axo.app` after validated Mac changes.** A DerivedData build is not delivery. Follow the sibling [development](../axo-development/SKILL.md) and [native Mac](../axo-macos-native-apps/SKILL.md) skills.
+Resolve the Axo root from `../../..` relative to this skill. **Always repackage `dist/Axo.app` after validated Mac changes.** A DerivedData build is not delivery. Follow the sibling [native Mac](../axo-macos-native-apps/SKILL.md) skill.
 
 ## Current package
 
-- The development artifact is one self-contained, ad-hoc-signed `dist/Axo.app`, not a notarized distribution.
+- The development artifact is one self-contained `dist/Axo.app`, signed with an existing Apple Development or Developer ID Application identity. It is not a notarized distribution. Ad-hoc signing is not supported for installed-service packages: deep/strict verification alone does not prove launchd will accept a helper.
+- `scripts/mac-signing.py` selects a single valid identity, or requires its explicit fingerprint in `AXO_MAC_SIGNING_IDENTITY` when ambiguous. It never installs certificates or falls back to ad hoc. The helper and outer app must have the same actual CodeDirectory team; a development certificate’s display-name suffix is not necessarily its team.
 - The app embeds `Contents/Helpers/axod`, its installed Pi extension/resources and per-user LaunchAgent plist. Ambient vanilla Pi remains an external runtime dependency.
-- Axo registers as a login item; `SMAppService` registers the bundled daemon as a per-user LaunchAgent. System Settings approval may be required. The app can start its captured helper when validated ownership permits it.
+- Explicit setup uses `SMAppService` to register the bundled daemon as a per-user LaunchAgent. System Settings approval may be required. Launchd alone starts the production helper; reconnect never registers, repairs or directly starts it. Frontend login startup is independently opt-in.
 - State is `~/Library/Application Support/Axo/Axod`. Multiple processes of the same bundle share daemon, preferences and state (`LSMultipleInstancesProhibited=false`). Do not create named/versioned app variants or concurrently test different daemon versions against that shared state.
 - Phone builds/routing/deployments are independent. Local packaging does not authorize changing or installing them.
 

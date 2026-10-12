@@ -24,6 +24,19 @@ import Foundation
             precondition(AxodSetupPolicy.stage(installed: true, registration: registration, availability: .ready(target), connection: .loaded(target)) == .unavailable)
         }
 
+        for stage in [AxodSetupPolicy.Stage.installation, .enableService, .approval, .checking, .unavailable, .ready(target)] {
+            let steps = AxodSetupPolicy.steps(for: stage, registration: .enabled)
+            precondition(steps.map(\.number) == [1, 2, 3], "Setup is exactly three stable steps")
+            precondition(steps.map(\.title) == ["Install in Applications", "Allow background activity", "Open Axo"])
+            precondition(steps[0].complete == (stage != .installation))
+            precondition(steps[1].complete == (stage != .installation), "Confirmed permission is separate from daemon readiness")
+            precondition(!steps[2].complete, "Only Finish opens the workbench")
+        }
+        for registration in [AxodServiceLifecycle.Registration.notRegistered, .requiresApproval, .notFound, .unavailable] {
+            precondition(!AxodSetupPolicy.steps(for: .unavailable, registration: registration)[1].complete)
+        }
+        precondition(!AxodServiceLifecycle.Registration.enabled.message.contains("eligible"))
+
         let domain = "Axo.ResidentSetupFixture.\(UUID().uuidString)"
         let preferences = UserDefaults(suiteName: domain)!
         defer { preferences.removePersistentDomain(forName: domain) }

@@ -14,7 +14,7 @@ final class AxodServiceLifecycle {
         var message: String {
             switch self {
             case .notRegistered: "The Axod background service is not enabled."
-            case .enabled: "Axod is registered and eligible to run. Registration is not a readiness check."
+            case .enabled: "Registered with macOS."
             case .requiresApproval: "Approve Axod in System Settings → General → Login Items & Extensions."
             case .notFound: "macOS cannot find the registered service. Check the installed app location; no service was replaced."
             case .unavailable: "macOS service registration status is unavailable."

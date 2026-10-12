@@ -7,6 +7,21 @@ enum AxodSetupPolicy {
     enum Connection: Equatable { case checking, unavailable, loaded(MachineTarget) }
     enum Stage: Equatable { case installation, enableService, approval, checking, unavailable, ready(MachineTarget) }
 
+    struct Step: Identifiable, Equatable {
+        let number: Int
+        let title: String
+        let complete: Bool
+        var id: Int { number }
+    }
+
+    static func steps(for stage: Stage, registration: AxodServiceLifecycle.Registration) -> [Step] {
+        return [
+            Step(number: 1, title: "Install in Applications", complete: stage != .installation),
+            Step(number: 2, title: "Allow background activity", complete: stage != .installation && registration == .enabled),
+            Step(number: 3, title: "Open Axo", complete: false),
+        ]
+    }
+
     static func isInstalled(bundle: URL, home: URL) -> Bool {
         let path = bundle.standardizedFileURL.resolvingSymlinksInPath().path
         let applications = home.appendingPathComponent("Applications", isDirectory: true)

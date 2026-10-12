@@ -8,73 +8,75 @@ struct AxodSetupView: View {
             VStack(alignment: .leading, spacing: 24) {
                 Label("Welcome to Axo", systemImage: "hammer")
                     .font(.largeTitle.bold())
-                Text("Axo lives in your menu bar. Open its workbench whenever you need it; closing the window leaves Axo available there.")
-                Text("The separate Axod background service owns Pi and shell sessions. Quitting Axo does not stop that service or its work.")
-                    .foregroundStyle(.secondary)
-                Divider()
+                VStack(alignment: .leading, spacing: 16) {
+                    ForEach(AxodSetupPolicy.steps(for: coordinator.setupStage, registration: coordinator.serviceLifecycle.registration)) { step in
+                        AxodSetupStep(number: step.number, title: step.title, complete: step.complete)
+                    }
+                }
                 stageContent
-                if let failure = coordinator.setupPresentation.failure ?? coordinator.serviceSetupFailure {
-                    Text(failure).foregroundStyle(.red).textSelection(.enabled)
+                if coordinator.setupPresentation.failure != nil {
+                    Label("Setup couldn’t finish.", systemImage: "exclamationmark.circle")
+                        .foregroundStyle(.orange)
                 }
-                if let message = coordinator.chatDrafts.quitMessage {
-                    Text(message).foregroundStyle(.secondary)
+                if coordinator.chatDrafts.quitMessage != nil {
+                    Label("Changes couldn’t be saved.", systemImage: "exclamationmark.circle")
+                        .foregroundStyle(.orange)
                 }
+                DisclosureGroup("Details") {
+                    VStack(alignment: .leading, spacing: 8) {
+                        Text(coordinator.daemonServiceMessage)
+                        Text(coordinator.message)
+                        if let failure = coordinator.setupPresentation.failure ?? coordinator.serviceSetupFailure {
+                            Text(failure)
+                        }
+                        if let message = coordinator.chatDrafts.quitMessage { Text(message) }
+                        Button("Background Service Settings…", action: coordinator.showServiceSettingsWindow)
+                    }
+                    .font(.callout)
+                    .foregroundStyle(.secondary)
+                    .textSelection(.enabled)
+                    .padding(.top, 8)
+                }
+                .accessibilityIdentifier("Axo.Setup.Details")
             }
-            .padding(40)
-            .frame(maxWidth: 620, alignment: .leading)
+            .padding(32)
+            .frame(maxWidth: 480, alignment: .leading)
             .frame(maxWidth: .infinity)
         }
-        .frame(minWidth: 760, minHeight: 520)
+        .frame(minWidth: 560, minHeight: 360)
         .accessibilityIdentifier("Axo.Setup")
     }
 
     @ViewBuilder private var stageContent: some View {
         switch coordinator.setupStage {
         case .installation:
-            Text("1. Install Axo").font(.title2.bold())
-            Text("Quit Axo, move Axo.app into Applications (or your user’s Applications folder) in Finder, then open it from there. Setup will continue from that stable location.")
-            Text("This step does not overwrite an installed app, enable a service, or change your session data.")
-                .foregroundStyle(.secondary)
             HStack {
-                Button("Show Axo in Finder", action: coordinator.revealInstallationSource)
+                Button("Show App", action: coordinator.revealInstallationSource)
                     .accessibilityIdentifier("Axo.Setup.ShowApp")
                 Button("Open Applications", action: coordinator.openApplicationsFolder)
                     .accessibilityIdentifier("Axo.Setup.Applications")
             }
         case .enableService:
-            Text("2. Enable the background service").font(.title2.bold())
-            Text("Allow macOS to run Axod for your user, independently of this window. This does not turn on opening Axo at login.")
-            Button("Enable Background Service", action: coordinator.enableBackgroundService)
+            Button("Enable Background Activity", action: coordinator.enableBackgroundService)
                 .buttonStyle(.borderedProminent)
                 .disabled(coordinator.serviceLifecycle.operation != .idle)
                 .accessibilityIdentifier("Axo.Setup.EnableService")
         case .approval:
-            Text("2. Approve the background service").font(.title2.bold())
-            Text(coordinator.daemonServiceMessage)
+            Text("Allow Axo in Login Items & Extensions.")
+                .foregroundStyle(.secondary)
             serviceActions
         case .checking:
-            Text("3. Check the background service").font(.title2.bold())
-            ProgressView("Waiting for a responding Axod and its session catalog…")
+            ProgressView("Checking background service…")
                 .accessibilityIdentifier("Axo.Setup.Checking")
-            Text("Registration alone is not readiness. No session or service is restarted by this check.")
-                .foregroundStyle(.secondary)
         case .unavailable:
-            Text("The background service is unavailable").font(.title2.bold())
-            Text(coordinator.message).textSelection(.enabled)
-            Text(coordinator.daemonServiceMessage).foregroundStyle(.secondary)
-            Text("Your records are preserved. A disabled, missing, or broken service must be resolved before setup can finish; this is not an empty session catalog.")
-                .foregroundStyle(.secondary)
+            Label("Background service unavailable.", systemImage: "exclamationmark.circle")
+                .foregroundStyle(.orange)
             serviceActions
-            Button("Background Service Details…", action: coordinator.showServiceSettingsWindow)
         case .ready:
-            Text("4. Axod is responding").font(.title2.bold())
-            Text("The local connection and session catalog are available. Opening the workbench restores existing work; a first session is created only for an authoritatively empty profile.")
-            Toggle("Keep Axo in the menu bar at login", isOn: $coordinator.setupLoginStartup)
+            Toggle("Open at login", isOn: $coordinator.setupLoginStartup)
                 .accessibilityIdentifier("Axo.Setup.LoginStartup")
                 .disabled(coordinator.setupPresentation.isFinishing)
-            Text("This starts the menu-bar frontend at login. It is separate from enabling the Axod background service.")
-                .foregroundStyle(.secondary)
-            Button("Open Axo") { Task { await coordinator.finishSetup() } }
+            Button("Done") { Task { await coordinator.finishSetup() } }
                 .buttonStyle(.borderedProminent)
                 .disabled(coordinator.setupPresentation.isFinishing || coordinator.serviceLifecycle.operation != .idle)
                 .accessibilityIdentifier("Axo.Setup.Finish")
@@ -83,10 +85,22 @@ struct AxodSetupView: View {
 
     private var serviceActions: some View {
         HStack {
-            Button("Open Login Items & Extensions", action: coordinator.openLoginItemsSettings)
+            Button("Open Settings", action: coordinator.openLoginItemsSettings)
                 .accessibilityIdentifier("Axo.Setup.ApprovalSettings")
             Button("Check Service") { coordinator.connect() }
                 .accessibilityIdentifier("Axo.Setup.CheckService")
         }
+    }
+}
+
+private struct AxodSetupStep: View {
+    let number: Int
+    let title: String
+    let complete: Bool
+
+    var body: some View {
+        Label(title, systemImage: complete ? "checkmark.circle.fill" : "\(number).circle")
+            .foregroundStyle(complete ? .secondary : .primary)
+            .accessibilityLabel("Step \(number): \(title)\(complete ? ", complete" : "")")
     }
 }

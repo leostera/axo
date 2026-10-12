@@ -18,6 +18,9 @@ fi
 
 command -v xcodegen >/dev/null || { echo 'Install XcodeGen, then rerun this script.' >&2; exit 1; }
 command -v cargo >/dev/null || { echo 'Install Rust and Cargo, then rerun this script.' >&2; exit 1; }
+# launchd can reject an ad-hoc helper even when deep/strict signature checks pass.
+# Use an existing real identity; no certificate installation or approval bypass.
+python3 "$ROOT/scripts/mac-signing.py" check
 cargo build --manifest-path "$ROOT/axod/Cargo.toml" --locked
 (cd "$ROOT/apple" && xcodegen generate)
 xcodebuild -project "$ROOT/apple/Axo.xcodeproj" -scheme AxoMac -configuration Debug \
@@ -65,8 +68,7 @@ if [[ "$STAGED_BUNDLE_ID" != "$BUNDLE_ID" ]]; then
 fi
 /usr/libexec/PlistBuddy -c "Set :CFBundleDisplayName \"$DISPLAY_NAME\"" "$APP/Contents/Info.plist"
 /usr/libexec/PlistBuddy -c "Set :CFBundleName \"$DISPLAY_NAME\"" "$APP/Contents/Info.plist"
-codesign --force --deep --sign - "$APP"
-codesign --verify --deep --strict "$APP"
+python3 "$ROOT/scripts/mac-signing.py" sign "$APP"
 
 # ditto preserves Xcode's original bundle-directory dates, even after fresh builds.
 # Stamp only the new outer bundle, not its contents or the retained previous package.
