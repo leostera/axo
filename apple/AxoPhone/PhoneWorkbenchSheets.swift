@@ -5,11 +5,9 @@ struct CreateWorkspaceSheet: View {
     @Environment(\.dismiss) private var dismiss
     @State private var name = ""
     let canCreate: Bool
-    let create: (String) -> Void
+    let create: (WorkbenchName) -> Void
 
-    private var validName: Bool {
-        (try? WorkspaceStore.validName(name)) != nil
-    }
+    private var parsedName: WorkbenchName? { try? WorkbenchName(name) }
 
     var body: some View {
         NavigationStack {
@@ -31,8 +29,8 @@ struct CreateWorkspaceSheet: View {
             .toolbar {
                 ToolbarItem(placement: .cancellationAction) { Button("Cancel") { dismiss() } }
                 ToolbarItem(placement: .confirmationAction) {
-                    Button("Create") { create(name) }
-                        .disabled(!canCreate || !validName)
+                    Button("Create") { if let parsedName { create(parsedName) } }
+                        .disabled(!canCreate || parsedName == nil)
                 }
             }
         }
@@ -47,11 +45,11 @@ struct CreateSessionSheet: View {
     @State private var name = ""
     let workspaces: [CatalogWorkspace]
     let canCreate: Bool
-    let create: (WorkspaceID, String) -> Void
+    let create: (WorkspaceID, WorkbenchName) -> Void
 
-    private var validName: Bool { (try? WorkspaceStore.validName(name)) != nil }
+    private var parsedName: WorkbenchName? { try? WorkbenchName(name) }
 
-    init(workspaces: [CatalogWorkspace], canCreate: Bool, create: @escaping (WorkspaceID, String) -> Void) {
+    init(workspaces: [CatalogWorkspace], canCreate: Bool, create: @escaping (WorkspaceID, WorkbenchName) -> Void) {
         self.workspaces = workspaces
         self.canCreate = canCreate
         self.create = create
@@ -84,8 +82,10 @@ struct CreateSessionSheet: View {
             .toolbar {
                 ToolbarItem(placement: .cancellationAction) { Button("Cancel") { dismiss() } }
                 ToolbarItem(placement: .confirmationAction) {
-                    Button("Create") { if let workspaceID { create(workspaceID, name) } }
-                        .disabled(!canCreate || !validName || workspaceID == nil)
+                    Button("Create") {
+                        if let workspaceID, let parsedName { create(workspaceID, parsedName) }
+                    }
+                    .disabled(!canCreate || parsedName == nil || workspaceID == nil)
                 }
             }
         }

@@ -221,11 +221,11 @@ public struct CatalogWorkspace: Codable, Equatable, Identifiable, Sendable {
 
     public init(from decoder: Decoder) throws {
         let wire = try WireValue(from: decoder)
-        guard (try? WorkspaceStore.validName(wire.name)) == wire.name else {
+        guard let parsedName = try? WorkbenchName(wire.name), parsedName.value == wire.name else {
             throw DecodingError.dataCorrupted(.init(codingPath: decoder.codingPath, debugDescription: "Invalid workspace name"))
         }
         id = WorkspaceID(wire.id)
-        name = wire.name
+        name = parsedName.value
         kind = wire.kind
     }
 
@@ -258,13 +258,13 @@ public struct CatalogSession: Codable, Equatable, Identifiable, Sendable {
 
     public init(from decoder: Decoder) throws {
         let wire = try WireValue(from: decoder)
-        guard (try? WorkspaceStore.validName(wire.name)) == wire.name,
+        guard let parsedName = try? WorkbenchName(wire.name), parsedName.value == wire.name,
               wire.conversationId.map({ !$0.isEmpty && $0.utf8.count <= 128 }) ?? true else {
             throw DecodingError.dataCorrupted(.init(codingPath: decoder.codingPath, debugDescription: "Invalid session catalog entry"))
         }
         id = AxoSessionID(wire.id)
         workspaceId = WorkspaceID(wire.workspaceId)
-        name = wire.name
+        name = parsedName.value
         conversationId = wire.conversationId
         availability = wire.availability
     }

@@ -199,11 +199,6 @@ struct PhoneWorkbenchView: View {
                         .foregroundStyle(.secondary)
                 }
 
-                if let persistenceError = model.persistenceError {
-                    Text(persistenceError)
-                        .font(.caption)
-                        .foregroundStyle(.secondary)
-                }
                 if let pageError = model.pageError {
                     Text(pageError)
                         .font(.caption)

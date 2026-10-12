@@ -54,14 +54,11 @@ npm run typecheck
 npm test
 npm run build:bridge
 npm run build:service
-./scripts/check-swift.sh
-```
-
-`check-swift.sh` builds the Swift package, runs dependency-free protocol checks, and downloads **one pinned Ghostty header** into a temporary directory to type-check the Mac sources. It does not link or run a terminal. With full Xcode available, also run:
-
-```sh
+swift test --package-path protocol
 swift test --package-path apple/AxoCore
 ```
+
+The shared Swift suites exercise parsed protocol boundaries and bounded client state. Validate the production Mac and phone targets with Xcode as described below; compiling the old `apple/AxoMac/*.swift` glob is not an application validation lane.
 
 `npm test` creates temporary certificates, starts local test servers, and runs an isolated Pi TUI against a deterministic local model. It does not use your Pi configuration or model credentials. The test fixtures are not production authentication shortcuts.
 

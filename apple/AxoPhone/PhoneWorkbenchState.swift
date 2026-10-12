@@ -34,7 +34,6 @@ final class PhoneWorkbenchState {
     let client: ConversationClient
     let voice: VoicePrompt
     private(set) var catalog = WorkbenchCatalog()
-    private(set) var persistenceError: String?
     var route: Route? = .preview
     var sheet: Sheet?
     var notice: String?
@@ -47,7 +46,6 @@ final class PhoneWorkbenchState {
     private var pendingCreatedSessionID: AxoSessionID?
     private var hasUserNavigated = false
     private var hasStarted = false
-    private let catalogCache = WorkbenchCatalogCache()
     private var drafts: [AxoSessionID: String] = [:]
     private var submittedDrafts: [String: SubmittedDraft] = [:]
     private var savedEndpoint: String
@@ -60,18 +58,6 @@ final class PhoneWorkbenchState {
         self.client = client
         self.voice = VoicePromptFactory.make()
         self.savedEndpoint = RelayEndpoint.restoredOrigin(UserDefaults.standard.string(forKey: "relayEndpoint"))
-        #if DEBUG
-        let usesPreviewData = ChatPreviewData.enabled || ProcessInfo.processInfo.arguments.contains("--axo-workbench-preview")
-        #else
-        let usesPreviewData = false
-        #endif
-        if !usesPreviewData {
-            do {
-                if let cachedCatalog = try catalogCache.load() { self.catalog = cachedCatalog }
-            } catch {
-                persistenceError = "Saved session list could not be read. It will refresh when available."
-            }
-        }
         if UserDefaults.standard.string(forKey: "relayEndpoint") != savedEndpoint {
             UserDefaults.standard.set(savedEndpoint, forKey: "relayEndpoint")
         }
@@ -233,10 +219,7 @@ final class PhoneWorkbenchState {
             removeMissingSelectionIfCatalogIsComplete()
             selectCreatedSessionIfAvailable()
             if catalog.nextCursor != nil { loadNextPage() }
-            else {
-                persistCatalog()
-                finishCatalogRefresh()
-            }
+            else { finishCatalogRefresh() }
         } catch {
             isLoadingPage = false
             pageError = "The relay returned an inconsistent catalog. Refresh and try again."
@@ -302,15 +285,6 @@ final class PhoneWorkbenchState {
         catalogRefreshContinuation = nil
     }
 
-    private func persistCatalog() {
-        do {
-            try catalogCache.save(catalog)
-            persistenceError = nil
-        } catch {
-            persistenceError = "Saved session list could not be updated on this device."
-        }
-    }
-
     private func selectCreatedSessionIfAvailable() {
         guard let id = pendingCreatedSessionID, catalog.session(id: id) != nil else {
             guard pendingCreatedSessionID != nil, catalog.nextCursor != nil else { return }
@@ -322,36 +296,30 @@ final class PhoneWorkbenchState {
         select(.conversation(id))
     }
 
-    func createWorkspace(name rawName: String) {
+    func createWorkspace(name: WorkbenchName) {
         guard canCreate else { notice = "Axo is reconnecting. Nothing was queued."; return }
-        do {
-            let name = try WorkspaceStore.validName(rawName)
-            let id = UUID().uuidString
-            createRequests[id] = "workspace"
-            guard client.sendWorkbenchCommand(.createWorkspace(id: id, name: name)) else {
-                createRequests.removeValue(forKey: id)
-                notice = "Axo is reconnecting. Nothing was queued."
-                return
-            }
-            sheet = nil
-            notice = "Waiting for the Mac to confirm workspace creation…"
-        } catch { notice = "Workspace names must be nonempty and at most 120 UTF-8 bytes." }
+        let id = UUID().uuidString
+        createRequests[id] = "workspace"
+        guard client.sendWorkbenchCommand(.createWorkspace(id: id, name: name.value)) else {
+            createRequests.removeValue(forKey: id)
+            notice = "Axo is reconnecting. Nothing was queued."
+            return
+        }
+        sheet = nil
+        notice = "Waiting for the Mac to confirm workspace creation…"
     }
 
-    func createSession(workspaceID: WorkspaceID, name rawName: String) {
+    func createSession(workspaceID: WorkspaceID, name: WorkbenchName) {
         guard canCreate else { notice = "Axo is reconnecting. Nothing was queued."; return }
-        do {
-            let name = try WorkspaceStore.validName(rawName)
-            let id = UUID().uuidString
-            createRequests[id] = "session"
-            guard client.sendWorkbenchCommand(.createSession(id: id, workspaceID: workspaceID, name: name)) else {
-                createRequests.removeValue(forKey: id)
-                notice = "Axo is reconnecting. Nothing was queued."
-                return
-            }
-            sheet = nil
-            notice = "Waiting for the Mac to confirm session creation…"
-        } catch { notice = "Session names must be nonempty and at most 120 UTF-8 bytes." }
+        let id = UUID().uuidString
+        createRequests[id] = "session"
+        guard client.sendWorkbenchCommand(.createSession(id: id, workspaceID: workspaceID, name: name.value)) else {
+            createRequests.removeValue(forKey: id)
+            notice = "Axo is reconnecting. Nothing was queued."
+            return
+        }
+        sheet = nil
+        notice = "Waiting for the Mac to confirm session creation…"
     }
 
     private func receive(_ acknowledgement: SubscriptionAcknowledgement) {
