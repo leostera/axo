@@ -1,6 +1,6 @@
-# RFD0012 - Axo: SQLite desired state, session materialization, and thin clients
+# RFD0012 - Axo: Central session management in axod
 
-- Feature Name: `axo-sqlite-desired-state-and-session-materialization`
+- Feature Name: `axo-central-session-management-in-axod`
 - Status: Proposal
 - Start Date: 2026-10-12
 - Updated: 2026-10-12
@@ -8,11 +8,13 @@
 
 ## Summary
 
-Make Axod the sole owner of a small SQLite database describing the workspaces, sessions, and panes the user wants. On startup, Axod reads that desired graph, reconciles original operations and execution ownership, and materializes every effectively open session and pane. It then continuously reconciles desired state with actual PTY lifecycle, without depending on an attached client. Creating a workspace is one backend operation that initializes its session and panes, not a frontend sequence of catalog creation, shell creation, and Pi startup. Make `Axo.app` as thin as possible: macOS daemon management, presentation, and user input, including voice capture/transcription and drafts. It neither owns a competing catalog nor decides how to launch, restart, resume, or recover execution. SQLite owns Axo metadata, not Pi's canonical history or kernel resources. This is a proposed architecture, not a description of the current implementation or a claim of deployment, crash survival, or terminal-screen recovery. Writing it authorizes no live storage cutover, service handoff, or activation.
+I want Axod to centrally own workspace, session, and pane state and their complete execution lifecycle. I propose a SQLite-backed desired-state store as the persistence mechanism, not as the architectural goal. On startup, Axod reads that desired graph, reconciles original operations and execution ownership, and materializes every effectively open session and pane. It then continuously reconciles desired state with actual PTY lifecycle, without depending on an attached client. Creating a workspace is one backend operation that initializes its session and panes, not a frontend sequence of catalog creation, shell creation, and Pi startup. Make `Axo.app` as thin as possible: macOS daemon management, presentation, and user input, including voice capture/transcription and drafts. It neither owns a competing catalog nor decides how to launch, restart, resume, or recover execution. SQLite owns Axo metadata, not Pi's canonical history or kernel resources. This is a proposed architecture, not a description of the current implementation or a claim of deployment, crash survival, or terminal-screen recovery. Writing it authorizes no live storage cutover, service handoff, or activation.
 
 ## Motivation
 
-The user expects a session to have backing terminals because it is open in Axod's model, not because a particular Mac view happened to initialize it. If persisted state describes three open workspaces with four sessions each and three panes per session, the daemon should materialize that graph without a frontend selecting twelve sessions or issuing thirty-six follow-up starts.
+When using Axo, pressing ⌘T should immediately show a new session, and creating a workspace should immediately show Pi and zsh side by side. I want Axod to own the complete session lifecycle so those experiences do not depend on frontend orchestration.
+
+If persisted state contains three open workspaces with four sessions each and three panes per session, I want Axod to materialize all twelve sessions and thirty-six panes without frontend selection or follow-up startup requests.
 
 The current split between catalog creation and frontend startup makes the client more than a client. A durable session can be selected while its shell is absent or its Pi start remains prepared. Reopening a window does not reliably repair that gap, and hiding a recovery banner does not restore a PTY. Adding frontend restart heuristics would further entangle selection, process ownership, command uncertainty, and history preservation.
 
