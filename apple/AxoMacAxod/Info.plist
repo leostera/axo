@@ -4,6 +4,8 @@
 <dict>
   <key>AxoUITestProtocolVersion</key>
   <integer>3</integer>
+  <key>AxoCrossClientTestProtocolVersion</key>
+  <integer>1</integer>
   <key>AxoSelfTestProtocolVersion</key>
   <integer>2</integer>
     <key>LSApplicationCategoryType</key>

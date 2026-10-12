@@ -9,6 +9,7 @@ import GhosttyKit
 @MainActor struct AxodAppSelfTest {
     let root: URL
     let expectedLoginShell: String
+    private let crossClient: Bool
     private let deadline = ContinuousClock.now.advanced(by: .seconds(60))
     var state: URL { home.appendingPathComponent("Library/Application Support/Axo/Axod") }
     var home: URL { root.appendingPathComponent("home") }
@@ -18,8 +19,14 @@ import GhosttyKit
         let state = root.appendingPathComponent("home/Library/Application Support/Axo/Axod")
         _ = try AxodStateDirectory.openExisting(root: state)
         _ = try AxodStateDirectory.openExisting(root: root.appendingPathComponent("home"))
+        let marker = root.appendingPathComponent("cross-client")
+        let crossClient = FileManager.default.fileExists(atPath: marker.path)
+        if crossClient, try Self.privateBytes(marker, limit: 2) != Data("1\n".utf8) {
+            throw Failure.failed("cross-client marker refused")
+        }
         let files = try FileManager.default.contentsOfDirectory(atPath: state.path)
-        guard Set(files) == Set(["profiles.json", "pi.json"]) else {
+        let expectedFiles = crossClient ? ["profiles.json", "pi.json", "relay.json"] : ["profiles.json", "pi.json"]
+        guard Set(files) == Set(expectedFiles) else {
             throw Failure.failed("fixture must have fresh configured state without existing work")
         }
         let expected = try String(contentsOf: root.appendingPathComponent("expected-shell"), encoding: .utf8)
@@ -27,6 +34,7 @@ import GhosttyKit
             throw Failure.failed("fixture account shell expectation")
         }
         self.expectedLoginShell = expected
+        self.crossClient = crossClient
         self.root = root
     }
     enum Failure: Error { case failed(String) }
@@ -46,8 +54,7 @@ import GhosttyKit
                 coordinator.terminalSurfaces.presentation(for: shellLaunch.key)?.view === window.firstResponder &&
                 coordinator.hostStatus?.daemonVersion == Bundle.main.infoDictionary?["AxoBundledAxodVersion"] as? String
             }
-            window.makeKeyAndOrderFront(nil)
-            NSApp.activate(ignoringOtherApps: true)
+            AxodResidentPresentation.show(window)
             try await wait("actual app foreground window") { NSApp.isActive && NSApp.keyWindow === window }
             guard let right = coordinator.terminalSurfaces.presentation(for: shellLaunch.key),
                   window.isVisible else {
@@ -80,7 +87,13 @@ import GhosttyKit
             }
             checkpoint("shell-and-startup-files")
             guard coordinator.selectedSessionID == session.sessionId else { throw Failure.failed("letter navigated sidebar") }
-            try await wait("Pi admission after independent shell input") { coordinator.selectedSession?.pi.admission == .ready }
+            try await wait("Pi admission after independent shell input") {
+                let admission = coordinator.selectedSession?.pi.admission
+                return admission == .ready || admission == .failed
+            }
+            guard coordinator.selectedSession?.pi.admission == .ready else {
+                throw Failure.failed("Pi admission after independent shell input")
+            }
             guard let admitted = coordinator.selectedSession, admitted.sessionId == session.sessionId,
                   let pi = coordinator.presentationSnapshot(for: admitted) else { throw Failure.failed("missing admitted Pi") }
             let piLaunch = try coordinator.terminalLaunch(for: pi, sessionID: session.sessionId)
@@ -103,8 +116,7 @@ import GhosttyKit
             }
             // Restore the diagnostic window after the asynchronous Pi admission wait.
             // In-process events cannot perform the OS activation of a physical click.
-            window.makeKeyAndOrderFront(nil)
-            NSApp.activate()
+            AxodResidentPresentation.show(window)
             try await wait("Pi input key window") { window.isKeyWindow && NSApp.isActive }
             // A real window mouse event selects the Pi pane before normal typing.
             let point = left.view.convert(NSPoint(x: left.view.bounds.midX, y: left.view.bounds.midY), to: nil)
@@ -139,12 +151,46 @@ import GhosttyKit
                   coordinator.selectedSession?.shellPanes.first?.terminal?.runtime == shell.runtime else {
                 throw Failure.failed("default identity changed or duplicate work")
             }
+            if crossClient {
+                guard let endpoint = coordinator.hostStatus else { throw Failure.failed("cross-client source unavailable") }
+                struct Observation: Encodable {
+                    let target: MachineTarget
+                    let sessionId: UUID
+                    let runtimeGenerations: [UUID]
+                }
+                let observation = Observation(target: MachineTarget(machineId: endpoint.machineId, hostGeneration: endpoint.hostGeneration),
+                    sessionId: session.sessionId, runtimeGenerations: [pi.runtime.runtimeGeneration, shell.runtime.runtimeGeneration])
+                let bytes = try JSONEncoder().encode(observation)
+                let descriptor = open(root.appendingPathComponent("cross-client-ready.json").path, O_WRONLY | O_CREAT | O_EXCL | O_NOFOLLOW, 0o600)
+                guard descriptor >= 0 else { throw Failure.failed("cross-client observation refused") }
+                let written = bytes.withUnsafeBytes { write(descriptor, $0.baseAddress, $0.count) }
+                let synced = fsync(descriptor)
+                close(descriptor)
+                guard written == bytes.count, synced == 0 else { throw Failure.failed("cross-client observation write") }
+                checkpoint("cross-client-held")
+                // Keep the tested workbench/surfaces retained without monopolizing
+                // the operator's desktop while XCTest drives its owned simulator.
+                NSApp.hide(nil)
+                let release = root.appendingPathComponent("cross-client-release")
+                let holdDeadline = ContinuousClock.now.advanced(by: .seconds(180))
+                while !FileManager.default.fileExists(atPath: release.path) {
+                    guard ContinuousClock.now < holdDeadline else { throw Failure.failed("cross-client release deadline") }
+                    try await Task.sleep(for: .milliseconds(100))
+                }
+                guard try Self.privateBytes(release, limit: 1).isEmpty,
+                      coordinator.hostStatus?.machineId == endpoint.machineId,
+                      coordinator.hostStatus?.hostGeneration == endpoint.hostGeneration,
+                      coordinator.sessions.count == 1, coordinator.runtimes.count == 2 else {
+                    throw Failure.failed("cross-client source changed")
+                }
+            }
             checkpoint("passed")
             status = 0
         } catch {
             checkpoint("failed")
             // Only closed synthetic stage names, never terminal or model bodies.
             if case Failure.failed(let stage) = error { failureStage = stage }
+            else if error is CancellationError { failureStage = "diagnostic frontend quit requested" }
         }
         checkpoint("cleanup-started")
         coordinator.disconnect()
@@ -163,6 +209,18 @@ import GhosttyKit
         } else { status = 1 }
         // Report through the private result, not LaunchServices-managed stdio.
         exit(status)
+    }
+    private static func privateBytes(_ path: URL, limit: Int) throws -> Data {
+        let descriptor = open(path.path, O_RDONLY | O_NOFOLLOW | O_CLOEXEC)
+        guard descriptor >= 0 else { throw Failure.failed("cross-client private file absent") }
+        defer { close(descriptor) }
+        var attributes = stat()
+        guard fstat(descriptor, &attributes) == 0, attributes.st_uid == geteuid(), attributes.st_nlink == 1,
+              attributes.st_mode & mode_t(S_IFMT) == mode_t(S_IFREG), attributes.st_mode & 0o777 == 0o600,
+              attributes.st_size >= 0, attributes.st_size <= limit else { throw Failure.failed("cross-client private file refused") }
+        let bytes = try FileHandle(fileDescriptor: descriptor, closeOnDealloc: false).read(upToCount: limit + 1) ?? Data()
+        guard bytes.count == Int(attributes.st_size) else { throw Failure.failed("cross-client private file changed") }
+        return bytes
     }
     func checkpoint(_ stage: String) {
         let descriptor = open(root.appendingPathComponent("progress").path, O_WRONLY | O_CREAT | O_APPEND | O_NOFOLLOW, 0o600)

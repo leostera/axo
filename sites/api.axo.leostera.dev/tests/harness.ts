@@ -13,7 +13,8 @@ export { Peer } from "../testing/client";
 
 export const root = fileURLToPath(new URL("../../../", import.meta.url));
 export const issuer = "https://private-test.cloudflareaccess.com";
-export async function harness() {
+export async function harness(configuration: { audience?: string } = {}) {
+  const audience = configuration.audience ?? "private-test";
   const directory = await mkdtemp(join(tmpdir(), "axo-api-"));
   const bundle = join(directory, "worker.mjs");
   await build({
@@ -51,7 +52,7 @@ export async function harness() {
     },
     bindings: {
       ACCESS_TEAM_URL: issuer,
-      ACCESS_AUD: "private-test",
+      ACCESS_AUD: audience,
       ACCESS_USER_EMAIL: "human@example.com",
       ACCESS_HOST_CLIENT_ID: "daemon.access",
     },
@@ -79,7 +80,7 @@ export async function harness() {
     })
       .setProtectedHeader({ alg: "RS256", kid: "test-key" })
       .setIssuer(issuer)
-      .setAudience("private-test")
+      .setAudience(audience)
       .setExpirationTime(expiration)
       .sign(keys.privateKey);
   }

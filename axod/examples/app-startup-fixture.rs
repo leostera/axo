@@ -1,4 +1,6 @@
 //! Launches the actual packaged Mac application. The app, not this runner, starts axod.
+#[path = "support/cross_client.rs"]
+mod cross_client_fixture;
 #[allow(dead_code)] // Shared fixture exposes helpers used by other campaigns.
 #[path = "../tests/support/model_fixture.rs"]
 mod model_fixture;
@@ -7,7 +9,7 @@ use serde_json::json;
 use std::{
     fs,
     io::Read,
-    os::unix::fs::{DirBuilderExt, OpenOptionsExt, PermissionsExt},
+    os::unix::fs::{DirBuilderExt, MetadataExt, OpenOptionsExt, PermissionsExt},
     path::{Path, PathBuf},
     process::{Command, Stdio},
     thread,
@@ -42,10 +44,13 @@ fn account_shell() -> std::path::PathBuf {
 }
 fn main() {
     let ui_test = std::env::var("AXO_APP_SELF_TEST_CASE").as_deref() == Ok("ui");
+    let cross_client = std::env::var("AXO_APP_SELF_TEST_CASE").as_deref() == Ok("cross-client");
     let unavailable = match std::env::var("AXO_APP_SELF_TEST_CASE").as_deref() {
-        Ok("available") | Ok("ui") | Err(std::env::VarError::NotPresent) => false,
+        Ok("available") | Ok("ui") | Ok("cross-client") | Err(std::env::VarError::NotPresent) => {
+            false
+        }
         Ok("unavailable") => true,
-        _ => panic!("AXO_APP_SELF_TEST_CASE must be available, unavailable or ui"),
+        _ => panic!("AXO_APP_SELF_TEST_CASE must be available, unavailable, ui or cross-client"),
     };
     let app = std::env::args_os()
         .nth(1)
@@ -66,6 +71,23 @@ fn main() {
         capability.status.success() && capability.stdout == b"2\n",
         "Bundle must support isolated self-test before launch"
     );
+    if cross_client {
+        let capability = Command::new("/usr/bin/plutil")
+            .args([
+                "-extract",
+                "AxoCrossClientTestProtocolVersion",
+                "raw",
+                "-o",
+                "-",
+            ])
+            .arg(app.join("Contents/Info.plist"))
+            .output()
+            .unwrap();
+        assert!(
+            capability.status.success() && capability.stdout == b"1\n",
+            "Cross-client capable bundle required"
+        );
+    }
     if ui_test {
         let capability = Command::new("/usr/bin/plutil")
             .args(["-extract", "AxoUITestProtocolVersion", "raw", "-o", "-"])
@@ -94,6 +116,51 @@ fn main() {
         state.push(component);
         fs::DirBuilder::new().mode(0o700).create(&state).unwrap();
     }
+    let coordination = if cross_client {
+        let coordination = PathBuf::from(
+            std::env::var_os("AXO_CROSS_CLIENT_ROOT").expect("Private coordination root required"),
+        );
+        let metadata = fs::symlink_metadata(&coordination).unwrap();
+        assert!(
+            coordination.is_absolute()
+                && fs::canonicalize(&coordination).unwrap() == coordination
+                && metadata.is_dir()
+                && metadata.mode() & 0o777 == 0o700
+                && metadata.uid() == unsafe { libc::geteuid() },
+            "Owned private coordination root required"
+        );
+        let bytes = cross_client_fixture::private_bytes(&coordination.join("relay.json"), 32768);
+        let relay: serde_json::Value = serde_json::from_slice(&bytes).unwrap();
+        let address =
+            url::Url::parse(relay["relay_url"].as_str().expect("Relay URL required")).unwrap();
+        assert!(
+            address.scheme() == "ws"
+                && address.host_str() == Some("127.0.0.1")
+                && address.port().is_some()
+                && relay["allow_insecure_loopback"] == true
+                && relay["credentials"]["kind"] == "access_assertion",
+            "Cross-client fixture requires isolated numeric loopback relay"
+        );
+        private_json(&state.join("relay.json"), &relay);
+        axod::relay::Config::read(&state.join("relay.json"))
+            .expect("Valid isolated relay configuration required");
+        fs::write(root.join("cross-client"), b"1\n").unwrap();
+        fs::set_permissions(root.join("cross-client"), fs::Permissions::from_mode(0o600)).unwrap();
+        let mut published = fs::OpenOptions::new()
+            .write(true)
+            .create_new(true)
+            .mode(0o600)
+            .open(coordination.join("mac-root.json"))
+            .unwrap();
+        use std::io::Write;
+        published
+            .write_all(&serde_json::to_vec(&json!({"root": root})).unwrap())
+            .unwrap();
+        published.sync_all().unwrap();
+        Some(coordination)
+    } else {
+        None
+    };
     let shell = account_shell();
     fs::write(
         root.join("expected-shell"),
@@ -132,6 +199,9 @@ fn main() {
                 "--tools", "bash,axo_ask,axo_set_title"]
         }}),
     );
+    let phone = coordination
+        .as_ref()
+        .map(|coordination| cross_client_fixture::Phone::prepare(&root, repo, coordination));
     let output = fs::File::create(root.join("app.log")).unwrap();
     fs::set_permissions(root.join("app.log"), fs::Permissions::from_mode(0o600)).unwrap();
     if ui_test {
@@ -152,6 +222,16 @@ fn main() {
         );
         return;
     }
+    if cross_client {
+        // Recheck after simulator/build preparation, immediately before GUI launch.
+        let existing = Command::new("/usr/bin/xcrun").args(["swift", "-e",
+            "import AppKit; print(NSWorkspace.shared.runningApplications.filter { $0.bundleIdentifier == \"dev.leostera.axo.mac\" }.count)"])
+            .output().unwrap();
+        assert!(
+            existing.status.success() && existing.stdout == b"0\n",
+            "Another Axo frontend is open; no application was closed"
+        );
+    }
     // LaunchServices opens the signed bundle as a fresh application instance.
     let mut child = Command::new("/usr/bin/open")
         .args(["-n", "-W"])
@@ -163,6 +243,19 @@ fn main() {
         .stderr(output)
         .spawn()
         .unwrap();
+    let phone_outcome = phone.as_ref().map(|phone| {
+        let outcome = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| phone.check(&root)));
+        let release = fs::OpenOptions::new()
+            .write(true)
+            .create_new(true)
+            .mode(0o600)
+            .custom_flags(libc::O_NOFOLLOW)
+            .open(root.join("cross-client-release"))
+            .unwrap();
+        release.sync_all().unwrap();
+        outcome
+    });
+    drop(phone);
     let deadline = Instant::now() + Duration::from_secs(120);
     let status = loop {
         if let Some(status) = child.try_wait().unwrap() {
@@ -213,6 +306,9 @@ fn main() {
         !state.join("local-endpoint.json").exists(),
         "Owned app must release its test daemon discovery on exit"
     );
+    if let Some(Err(failure)) = phone_outcome {
+        std::panic::resume_unwind(failure);
+    }
     fs::remove_dir_all(root).unwrap();
     println!(
         "PASS: actual app exit and owned daemon cleanup; no normal-service registration or live-state changes"

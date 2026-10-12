@@ -21,14 +21,19 @@ final class PrivateMachineBrowserModel {
     private(set) var isLoadingWork = false
     private(set) var workNotice: String?
 
-    private let endpoint = AxoControlPlaneEndpoint.production
+    private let endpoint: AxoControlPlaneEndpoint
+    private let persistsCredentials: Bool
     private var accessCookie: AxoControlPlaneAccessCookie?
     private var controlPlane: AxoControlPlaneSession?
     private var discoveryOperation = UUID()
     private var selectionOperation = UUID()
     private var connectedMachineID: UUID?
 
-    init() {
+    init(endpoint: AxoControlPlaneEndpoint = .production,
+         credential: AxoControlPlaneAccessCookie? = nil, persistsCredentials: Bool = true) {
+        self.endpoint = endpoint
+        self.persistsCredentials = persistsCredentials
+        if let credential { use(credential); return }
         #if DEBUG
         if ProcessInfo.processInfo.arguments.contains("--axo-control-plane-preview") {
             loadPreview()
@@ -79,7 +84,7 @@ final class PrivateMachineBrowserModel {
     func signIn(_ credential: AxoControlPlaneAccessCookie) async {
         guard let host = endpoint.baseURL.host else { return }
         do {
-            try ControlPlaneAccessCredential.save(credential, host: host)
+            if persistsCredentials { try ControlPlaneAccessCredential.save(credential, host: host) }
             use(credential)
             accessMessage = nil
             await refreshMachines()
@@ -89,7 +94,7 @@ final class PrivateMachineBrowserModel {
     }
 
     func signOut() async {
-        if let host = endpoint.baseURL.host { ControlPlaneAccessCredential.remove(host: host) }
+        if persistsCredentials, let host = endpoint.baseURL.host { ControlPlaneAccessCredential.remove(host: host) }
         await controlPlane?.disconnect()
         controlPlane = nil
         accessCookie = nil
@@ -342,6 +347,7 @@ final class PrivateMachineBrowserModel {
         selectionOperation = UUID()
         isConnected = false
         connectedMachineID = nil
+        isLoadingRuntimes = false
         isLoadingWork = false
         if let selectedMachineID { clearMachineMetadata(for: selectedMachineID) }
         await controlPlane?.disconnect()

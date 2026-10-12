@@ -4,7 +4,10 @@ import SwiftUI
 
 @MainActor
 struct PrivateMachineBrowserView: View {
-    @State private var model = PrivateMachineBrowserModel()
+    @State private var model: PrivateMachineBrowserModel
+
+    init() { _model = State(initialValue: PrivateMachineBrowserModel()) }
+    init(model: PrivateMachineBrowserModel) { _model = State(initialValue: model) }
     @State private var isShowingLogin = false
     @State private var loginError: String?
     @Environment(\.dismiss) private var dismiss
@@ -161,6 +164,7 @@ struct PrivateMachineBrowserView: View {
             }
             .accessibilityElement(children: .combine)
             .accessibilityIdentifier(machine.online ? "machine-online-status" : "machine-offline-status")
+            .accessibilityValue(machine.hostGeneration?.uuidString.lowercased() ?? "none")
 
             if model.isLoadingRuntimes {
                 ProgressView("Negotiating and loading runtimes…")
@@ -181,6 +185,8 @@ struct PrivateMachineBrowserView: View {
                     }
                     .accessibilityIdentifier("control-plane-disconnect")
                 }
+                // Each control is independent, not an automatic List row action.
+                .buttonStyle(.borderless)
             }
         } header: {
             Text("Runtime metadata")
@@ -224,8 +230,8 @@ struct PrivateMachineBrowserView: View {
             } else if let workNotice = model.workNotice {
                 Label(workNotice, systemImage: "exclamationmark.triangle")
                     .font(.caption).foregroundStyle(.orange)
-            } else if model.selectedWorkspaces.isEmpty {
-                Text(model.isConnected ? "No workspaces on this machine." : "Connect to load work records.")
+            } else if model.selectedWorkspaces.isEmpty && model.selectedWorkSessions.isEmpty {
+                Text(model.isConnected ? "No work records on this machine." : "Connect to load work records.")
                     .font(.subheadline).foregroundStyle(.secondary)
             } else {
                 ForEach(model.selectedWorkspaces) { workspace in
@@ -236,6 +242,9 @@ struct PrivateMachineBrowserView: View {
                         }
                     }
                     .padding(.vertical, 4)
+                }
+                ForEach(model.selectedWorkSessions.filter { $0.workspaceId == nil }) { session in
+                    WorkRecordRow(session: session)
                 }
             }
         } header: {
@@ -296,6 +305,7 @@ private struct WorkRecordRow: View {
                 .foregroundStyle(.secondary)
         }
         .accessibilityElement(children: .combine)
+        .accessibilityIdentifier("control-plane-session-\(session.sessionId.uuidString.lowercased())")
     }
 }
 
@@ -375,6 +385,7 @@ private struct MachineRuntimeRow: View {
         .padding(.vertical, 4)
         .accessibilityElement(children: .combine)
         .accessibilityIdentifier(isHistorical ? "machine-runtime-historical" : "machine-runtime-current")
+        .accessibilityValue("\(terminal.runtime.runtimeGeneration.uuidString.lowercased())|\(terminal.runtime.hostGeneration.uuidString.lowercased())")
     }
 
     private func shortID(_ id: UUID) -> String { String(id.uuidString.prefix(8)).lowercased() }
