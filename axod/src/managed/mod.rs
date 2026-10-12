@@ -50,6 +50,15 @@ fn start(
     persistence: Persistence,
 ) -> crate::rpc::Outcome {
     let _starting = manager.managed_start.lock().unwrap();
+    start_locked(manager, machine, command, target, persistence)
+}
+fn start_locked(
+    manager: &Manager,
+    machine: MachineId,
+    command: CommandId,
+    target: SessionTarget,
+    persistence: Persistence,
+) -> crate::rpc::Outcome {
     discard_completed_controls(manager);
     let context = manager
         .work
@@ -231,6 +240,69 @@ fn start(
         .map_err(failure)?;
     start_result(manager, machine, receipt)
 }
+pub(crate) fn ensure_live(
+    manager: &Manager,
+    machine: MachineId,
+    session: &crate::work::SessionRecord,
+) -> Result<crate::session_lifecycle::Availability, (i32, &'static str)> {
+    use crate::session_lifecycle::{Availability, command};
+    let _starting = manager.managed_start.lock().unwrap();
+    let (binding, pending) = {
+        let store = manager.managed.lock().unwrap();
+        if store.is_fenced() {
+            return Ok(Availability::Blocked);
+        }
+        let pending = store.commands().filter_map(|id| store.receipt(id)).any(|receipt| {
+            matches!(receipt.intent, Intent::Start { target, .. } if target.session_id == session.session_id)
+                && receipt.disposition == Disposition::Prepared
+        });
+        (store.binding(session.session_id), pending)
+    };
+    if let Some(binding) = &binding {
+        if admission(manager, session.session_id, Some(binding.runtime)) == Admission::Ready {
+            return Ok(Availability::Live);
+        }
+        if !manager.runtime_completed(binding.runtime) {
+            return Ok(Availability::Blocked);
+        }
+    }
+    // A prepared original may have launched a writer without committing its
+    // binding. Never substitute a fresh conversation or replay that original.
+    if pending {
+        return Ok(Availability::Blocked);
+    }
+    let snapshots = manager.list();
+    if snapshots.iter().any(|snapshot| {
+        snapshot.runtime.target.pane_id == session.pi_pane_id
+            && (binding.is_none() || !manager.runtime_completed(snapshot.runtime))
+    }) {
+        return Ok(Availability::Blocked);
+    }
+    let persistence = binding
+        .as_ref()
+        .map_or(Persistence::Fresh, |binding| Persistence::Resume {
+            chat_id: binding.chat_id,
+            previous_runtime: binding.runtime,
+        });
+    let command_id = command("pi-backing", &(machine, session.session_id, &persistence))?;
+    let target = SessionTarget {
+        machine_id: machine,
+        host_generation: manager.generation,
+        workspace_id: session.workspace_id,
+        session_id: session.session_id,
+        pane_id: session.pi_pane_id,
+    };
+    start_locked(manager, machine, command_id, target, persistence)?;
+    let binding = manager.managed.lock().unwrap().binding(session.session_id);
+    if binding.is_some_and(|binding| {
+        admission(manager, session.session_id, Some(binding.runtime)) == Admission::Ready
+    }) {
+        Ok(Availability::Restored)
+    } else {
+        Ok(Availability::Waiting)
+    }
+}
+
 fn discard_completed_controls(manager: &Manager) {
     // Never drop a live/uncertain execution endpoint merely because a client or storage failed.
     // Completed native ownership has already proved reap + EOF + original group absence.

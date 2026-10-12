@@ -4,17 +4,20 @@ import SwiftUI
 struct AxodSessionTerminals: View {
     let session: WorkSessionRecord
     let coordinator: AxodWorkbenchCoordinator
-    @State private var initialFraction: CGFloat = 0.5
     // One viewport owner per scene/session presentation, not per split branch.
     @State private var viewportID = UUID()
 
-    private var shellPlaceholder: String {
-        switch coordinator.shellStartupState(for: session.sessionId) {
-        case .starting?: "Starting…"
-        case .unresolved?: "Start unconfirmed"
-        case .ready?: "Connecting…"
-        case .unavailable?, .rejected?, nil: "Shell unavailable"
+    private var runningPaneIDs: [UUID] {
+        guard coordinator.connectionState == .connected, let source = coordinator.hostStatus else { return [] }
+        func running(_ snapshot: TerminalSnapshot?) -> Bool {
+            guard let snapshot, snapshot.runtime.hostGeneration == source.hostGeneration,
+                  case .running = snapshot.process else { return false }
+            return true
         }
+        let shells = session.shellPanes.filter { running($0.terminal) }
+        guard !shells.isEmpty else { return [] }
+        let pi = running(coordinator.presentationSnapshot(for: session)) ? [session.pi.paneId] : []
+        return pi + shells.map(\.paneId)
     }
 
     private var identity: AxodPaneLayouts.Session? {
@@ -22,51 +25,18 @@ struct AxodSessionTerminals: View {
     }
     var body: some View {
         VStack(spacing: 0) {
-            AxodShellSplitNotice(sessionID: session.sessionId, identity: identity, coordinator: coordinator)
-            if !session.shellPanes.isEmpty, let identity, let root = coordinator.paneLayouts.trees[identity]?.root,
+            if let identity, let saved = coordinator.paneLayouts.trees[identity]?.root,
+               let root = AxodLivePaneTree.presenting(saved, paneIDs: runningPaneIDs),
                let generation = coordinator.paneLayouts.generations[identity] {
                 AxodPaneSubtree(node: root, session: session, identity: identity, generation: generation, viewportID: viewportID, coordinator: coordinator)
                     .id(root.structuralIdentity)
             } else {
-                // The initial shell has no committed identity yet. Geometry is
-                // only a placeholder here, never a fabricated PTY or add intent.
-                SplitView(.horizontal, $initialFraction, dividerColor: Color(nsColor: .separatorColor), left: {
-                    AxodRuntimeTerminalPane(sessionID: session.sessionId,
-                        snapshot: coordinator.presentationSnapshot(for: session), viewportID: viewportID, coordinator: coordinator)
-                }, right: {
-                    AxodTerminalInlineState(title: "Shell", message: shellPlaceholder)
-                }, onEqualize: { initialFraction = 0.5 })
+                ProgressView("Opening session…")
+                    .frame(maxWidth: .infinity, maxHeight: .infinity)
             }
         }
         .frame(maxWidth: .infinity, maxHeight: .infinity)
         .task(id: session.shellPanes.map(\.paneId)) { coordinator.preparePaneLayout(session) }
-    }
-}
-
-private struct AxodShellSplitNotice: View {
-    let sessionID: UUID
-    let identity: AxodPaneLayouts.Session?
-    let coordinator: AxodWorkbenchCoordinator
-    var body: some View {
-        let state = coordinator.shellStartupState(for: sessionID)
-        let notice = identity.flatMap { coordinator.paneLayouts.notices[$0] }
-        let placement = identity.flatMap { coordinator.paneLayouts.pendingCommand($0) }
-        let canCheckPlacement = placement.map { state != .starting($0) } ?? false
-        let title: String? = switch state {
-        case .starting?: "Starting shell…"
-        case .unresolved?: "Shell start unconfirmed"
-        case .unavailable?, .rejected?: "Shell unavailable"
-        case .ready?, nil: canCheckPlacement ? "Split unconfirmed" : (notice == nil ? nil : "Layout needs attention")
-        }
-        if let title {
-            AxodStatusNotice(title) {
-                if case .unresolved? = state {
-                    Button("Check Status") { coordinator.reconcileSelectedShell() }
-                } else if canCheckPlacement {
-                    Button("Check Status") { coordinator.reconcileSelectedShell() }
-                }
-            }
-        }
     }
 }
 
@@ -136,7 +106,7 @@ private struct AxodRuntimeTerminalPane: View {
         return false
     }
     private var currentLaunch: TerminalLaunch? {
-        guard let launch, let runtime = snapshot?.runtime,
+        guard isRunning, let launch, let runtime = snapshot?.runtime,
               launch.key.machineID == coordinator.machineID,
               launch.key.sessionID == sessionID,
               launch.key.hostGeneration == runtime.hostGeneration,

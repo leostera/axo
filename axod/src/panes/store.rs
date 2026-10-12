@@ -138,6 +138,15 @@ impl Store {
     pub fn contains_pane(&self, pane: PaneId) -> bool {
         self.saved.panes.contains_key(&pane)
     }
+    pub(crate) fn session_lineage(&self, session: SessionId) -> Vec<PaneRecord> {
+        self.saved
+            .panes
+            .values()
+            .filter(|pane| pane.session_id == session)
+            .cloned()
+            .collect()
+    }
+
     pub fn pane(&self, pane: PaneId) -> Option<PaneRecord> {
         self.saved.panes.get(&pane).cloned()
     }

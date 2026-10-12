@@ -123,6 +123,16 @@ final class AxodPaneLayouts {
         finishKnownCommand(placement)
     }
 
+    func adoptRetirement(_ receipt: ShellPaneReceipt) {
+        guard receipt.disposition == .removed, case .remove(let target, let paneID, _) = receipt.intent else { return }
+        let session = Session(machineID: target.machineId, sessionID: target.sessionId)
+        guard !unreadableLayouts.contains(session), let tree = trees[session], let node = tree.find(id: paneID) else { return }
+        let updated = tree.removing(node)
+        replaceTree(updated, in: session)
+        save(updated, session: session)
+        if focusedPanes[session] == paneID, let remaining = updated.root?.leaves().first { focus(remaining.id, in: session) }
+    }
+
     func adopt(_ receipt: ShellPaneReceipt, in session: Session) {
         guard let placement = pendingPlacement(session), receipt.commandId == placement.parameters.commandId,
               receipt.intent == .add(target: placement.parameters.target, profileId: placement.parameters.profileId) else { return }

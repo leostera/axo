@@ -30,9 +30,13 @@ export const shellPaneSchema = z.object({
   terminal: terminalSchema.nullable(),
 }).strict();
 export const paneMethods = {
+  "axo.session.completion": z.object({ target: paneSessionTargetSchema, runtimes: z.array(runtimeRefSchema).min(1).max(32) }).strict(),
   "axo.session.pane.add": z.object({ target: paneSessionTargetSchema, commandId: uuid, profileId: profileId.nullable().default(null) }).strict(),
   "axo.session.pane.remove": z.object({ target: paneSessionTargetSchema, commandId: uuid, paneId: uuid, runtime: runtimeRefSchema.nullable() }).strict(),
 } as const;
 export const paneMutationMethods = ["axo.session.pane.add", "axo.session.pane.remove"] as const;
 const paneResult = z.object({ hostGeneration: uuid, receipt: paneReceiptSchema, pane: shellPaneSchema }).strict();
-export const paneResults = { "axo.session.pane.add": paneResult, "axo.session.pane.remove": paneResult } as const;
+export const paneResults = {
+  "axo.session.completion": z.object({ hostGeneration: uuid, completed: z.array(runtimeRefSchema).max(32), retiredShellReceipts: z.array(paneReceiptSchema).max(32) }).strict(),
+  "axo.session.pane.add": paneResult, "axo.session.pane.remove": paneResult,
+} as const;

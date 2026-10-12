@@ -82,6 +82,9 @@ final class AxodWorkbenchCoordinator {
     @ObservationIgnored private var toolOutputTask: Task<Void, Never>?
     private(set) var chatStatusMessage = "Select an admitted Pi session to view its canonical conversation."
     private(set) var pendingChatCommandId: UUID?
+    private(set) var daemonKeepsSessionsAlive = false
+    @ObservationIgnored private var sessionLivenessTask: Task<Void, Never>?
+    @ObservationIgnored private var sessionLivenessIdentity: UUID?
     private(set) var pendingPiStartCommandID: UUID?
     var workEditor: AxodWorkEditorContext?
     private var activeCreationContext: AxodWorkEditorContext?
@@ -622,6 +625,7 @@ final class AxodWorkbenchCoordinator {
     }
 
     private func prepareWorkEditor(_ kind: AxodWorkEditorContext.Kind) {
+        guard daemonKeepsSessionsAlive || usesFixtureDaemon else { message = "Background service needs updating."; return }
         guard canEditWork, workEditor == nil, let connection, let endpoint else { return }
         let operation = operationGeneration
         let target = MachineTarget(machineId: endpoint.machineId, hostGeneration: endpoint.hostGeneration)
@@ -650,6 +654,7 @@ final class AxodWorkbenchCoordinator {
     }
 
     func createWork(_ context: AxodWorkEditorContext, name: String, directory: LocalDirectoryPath?) {
+        guard daemonKeepsSessionsAlive || usesFixtureDaemon else { message = "Background service needs updating."; return }
         guard canEditWork, createdSessionForEditor == nil, (workEditor?.id ?? activeCreationContext?.id) == context.id, let connection, let endpoint,
               endpoint.machineId == context.target.machineId, endpoint.hostGeneration == context.target.hostGeneration else { return }
         let operation = operationGeneration
@@ -690,6 +695,12 @@ final class AxodWorkbenchCoordinator {
                 // Reserve the startup UI immediately. Shell admission is committed first;
                 // its process remains independent while Pi starts and waits for readiness.
                 self.isStartingPi = true
+                let ready: Bool
+                if self.daemonKeepsSessionsAlive {
+                    ready = await self.awaitDaemonSession(session, over: connection, endpoint: endpoint, operation: operation)
+                } else {
+                // Owned DEBUG fixtures deliberately exercise isolated explicit admission.
+                // Production creation never falls back to client-owned startup.
                 let shell = await self.shellCreation.start(session: session, source: context.target, send: { parameters in
                         try await connection.request(method: AxoProtocol.Method.addShellPane, parameters: parameters)
                 }) {
@@ -705,8 +716,9 @@ final class AxodWorkbenchCoordinator {
                         shellPanes: existing.shellPanes.filter { $0.paneId != shell.paneId } + [shell], manualName: existing.manualName)
                     self.paneLayouts.observe(self.sessions[index], machineID: context.target.machineId)
                 }
-                let ready = await self.startCreatedSession(session, target: context.target, over: connection,
+                ready = await self.startCreatedSession(session, target: context.target, over: connection,
                                                           endpoint: endpoint, operation: operation)
+                }
                 guard self.isCurrent(operation, connection: connection, endpoint: endpoint),
                       self.selectedSessionID == session.sessionId else { return }
                 self.isStartingPi = false
@@ -1201,6 +1213,7 @@ final class AxodWorkbenchCoordinator {
     }
 
     func startOrResumePi() {
+        if daemonKeepsSessionsAlive { refresh(); return }
         guard connectionState == .connected, let session = selectedSession,
               let connection, let endpoint else { return }
         let target = PiSessionTarget(
@@ -1751,6 +1764,17 @@ final class AxodWorkbenchCoordinator {
                 }
             }
 #endif
+            let keepsSessionsAlive: Bool
+            do {
+                let value = try await connection.request(method: "axo.host.lifecycle", parameters: HostGetParameters(target: source),
+                    timeout: try readinessTimeout(until: readinessDeadline))
+                keepsSessionsAlive = try AxoProtocolResultValidator.hostLifecycle(value, target: source).sessionKeepAlive
+            } catch AxoJSONRPCClientError.remote(let code, _) where code == -32601 {
+                keepsSessionsAlive = false
+            }
+            try requireCurrent(operation)
+            try stateDirectory.requireCurrentEndpoint(endpoint)
+            daemonKeepsSessionsAlive = keepsSessionsAlive
             hostStatus = status
             updateHelperObservation(status)
             if let serviceObservation { serviceLifecycle.observedReady(source, observation: serviceObservation) }
@@ -1871,6 +1895,92 @@ final class AxodWorkbenchCoordinator {
         }
     }
 
+    private func awaitDaemonSession(_ session: WorkSessionRecord, over connection: AxoJSONRPCWebSocketConnection,
+                                    endpoint: LocalDaemonEndpoint, operation: UUID) async -> Bool {
+        let target = WorkSessionTarget(machineId: endpoint.machineId, hostGeneration: endpoint.hostGeneration,
+            workspaceId: session.workspaceId, sessionId: session.sessionId)
+        let deadline = ContinuousClock.now.advanced(by: .seconds(45))
+        do {
+            while ContinuousClock.now < deadline {
+                let value = try await connection.request(method: AxoProtocol.Method.getSession,
+                    parameters: SessionGetParameters(target: target), timeout: 2)
+                let current = try AxoProtocolResultValidator.sessionGet(value, target: target).session
+                guard isCurrent(operation, connection: connection, endpoint: endpoint),
+                      selectedSessionID == session.sessionId, selectedWorkspaceID == session.workspaceId else { return false }
+                try stateDirectory?.requireCurrentEndpoint(endpoint)
+                if let index = sessions.firstIndex(where: { $0.sessionId == session.sessionId }) {
+                    sessions[index] = current
+                    preparePaneLayout(current)
+                }
+                if current.pi.admission == .ready { activateSelectedSession(); return true }
+                try await Task.sleep(for: .milliseconds(250))
+            }
+            chatStatusMessage = "Session is opening."
+        } catch { chatStatusMessage = "Session unavailable." }
+        activateSelectedSession()
+        return false
+    }
+
+    /// Read-only observation. Backend lifecycle transitions are never client retries.
+    private func observeSessionLiveness(_ session: WorkSessionRecord, endpoint: LocalDaemonEndpoint) {
+        let selection = sessionLoadGeneration
+        guard sessionLivenessIdentity != selection, let control = connection, let directory = stateDirectory else { return }
+        sessionLivenessTask?.cancel()
+        sessionLivenessIdentity = selection
+        let operation = operationGeneration
+        let target = WorkSessionTarget(machineId: endpoint.machineId, hostGeneration: endpoint.hostGeneration,
+            workspaceId: session.workspaceId, sessionId: session.sessionId)
+        sessionLivenessTask = Task { [weak self] in
+            guard let self else { return }
+            defer { if self.sessionLivenessIdentity == selection { self.sessionLivenessIdentity = nil } }
+            do {
+                let peer = try self.rpc.openLocalWebSocket(endpoint: endpoint)
+                defer { Task { await peer.close() } }
+                let negotiation = try await peer.request(method: AxoProtocol.Method.negotiate, parameters: NegotiationParameters(), timeout: 2)
+                _ = try AxoProtocolResultValidator.localNegotiation(negotiation)
+                while !Task.isCancelled, self.isCurrent(operation, connection: control, endpoint: endpoint),
+                      self.sessionLoadGeneration == selection, self.selectedSessionID == session.sessionId {
+                    try await Task.sleep(for: .seconds(1))
+                    let value = try await peer.request(method: AxoProtocol.Method.getSession,
+                        parameters: SessionGetParameters(target: target), timeout: 2)
+                    let current = try AxoProtocolResultValidator.sessionGet(value, target: target).session
+                    guard !Task.isCancelled, self.isCurrent(operation, connection: control, endpoint: endpoint),
+                          self.sessionLoadGeneration == selection, self.selectedSessionID == session.sessionId,
+                          self.selectedWorkspaceID == session.workspaceId else { return }
+                    try directory.requireCurrentEndpoint(endpoint)
+                    if let index = self.sessions.firstIndex(where: { $0.sessionId == session.sessionId }) {
+                        let previous = self.sessions[index]
+                        let candidates = self.terminalSurfaces.capturedRuntimes(machineID: endpoint.machineId, sessionID: session.sessionId)
+                            .filter { runtime in current.runtime?.runtime != runtime && !current.shellPanes.contains(where: { $0.runtime == runtime }) }
+                        if !candidates.isEmpty {
+                            let parameters = SessionCompletionParameters(target: target, runtimes: Array(candidates.prefix(32)))
+                            let proof = try await peer.request(method: "axo.session.completion", parameters: parameters, timeout: 2)
+                            let completion = try AxoProtocolResultValidator.sessionCompletion(proof, parameters: parameters)
+                            guard !Task.isCancelled, self.isCurrent(operation, connection: control, endpoint: endpoint),
+                                  self.sessionLoadGeneration == selection, self.selectedSessionID == session.sessionId,
+                                  self.selectedWorkspaceID == session.workspaceId else { return }
+                            guard let destination = self.sessions.firstIndex(where: { $0.sessionId == session.sessionId }),
+                                  self.sessions[destination] == previous else { continue }
+                            try directory.requireCurrentEndpoint(endpoint)
+                            self.terminalSurfaces.releaseCompleted(completion.completed, machineID: endpoint.machineId)
+                            for receipt in completion.retiredShellReceipts { self.paneLayouts.adoptRetirement(receipt) }
+                            self.preparePaneLayout(current)
+                        }
+                        if previous != current, let destination = self.sessions.firstIndex(where: { $0.sessionId == session.sessionId }) {
+                            self.sessions[destination] = current
+                            let executionChanged = previous.pi != current.pi || previous.runtime?.runtime != current.runtime?.runtime
+                                || previous.runtime?.process != current.runtime?.process
+                                || previous.shellPanes.map(\.paneId) != current.shellPanes.map(\.paneId)
+                                || previous.shellPanes.map(\.runtime) != current.shellPanes.map(\.runtime)
+                                || previous.shellPanes.map { $0.terminal?.process } != current.shellPanes.map { $0.terminal?.process }
+                            if executionChanged { self.activateSelectedSession() }
+                        }
+                    }
+                }
+            } catch { /* Reconnection is separate and read-only; no start/replay fallback. */ }
+        }
+    }
+
     private func activateSelectedSession() {
         // An immutable tool entry is not a branch-page cursor. Keep its explicit reader
         // across metadata-only refresh while the full selected writer/read mode is unchanged.
@@ -1899,6 +2009,7 @@ final class AxodWorkbenchCoordinator {
             .flatMap { try? JSONDecoder().decode(PendingPiStart.self, from: $0) })?.commandId
         let pending = readPendingChatCommand(machineID: endpoint.machineId, sessionID: session.sessionId)
         pendingChatCommandId = pending?.commandId
+        if daemonKeepsSessionsAlive { observeSessionLiveness(session, endpoint: endpoint) }
 
         switch session.pi.admission {
         case .notAdmitted:

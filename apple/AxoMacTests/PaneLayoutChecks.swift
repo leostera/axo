@@ -60,6 +60,17 @@ struct PaneLayoutChecks {
         guard case .split(let restoredRoot)? = restored.trees[identity]?.root else { preconditionFailure() }
         precondition(restoredRoot.ratio == 0.65)
         // Restore preserved missing leaves as inert geometry, never launched work.
+        let originalTree = restored.trees[identity]!
+        precondition(AxodLivePaneTree.keeping(originalTree.root!, paneIDs: []) == nil)
+        let liveShell = AxodLivePaneTree.keeping(originalTree.root!, paneIDs: [firstPane])!
+        precondition(liveShell.leaves().map(\.id) == [firstPane])
+        let liveShells = AxodLivePaneTree.keeping(originalTree.root!, paneIDs: [firstPane, secondPane])!
+        precondition(liveShells.leaves().map(\.id) == [firstPane, secondPane])
+        guard case .split(let liveSplit) = liveShells else { preconditionFailure() }
+        precondition(liveSplit.direction == .vertical)
+        let restarted = UUID()
+        precondition(AxodLivePaneTree.presenting(originalTree.root!, paneIDs: [restarted])!.leaves().map(\.id) == [restarted])
+        precondition(restored.trees[identity]!.root == originalTree.root, "Presentation pruning rewrote a saved layout")
         let data = AxodPaneLayoutPersistence.write(restored.trees[identity]!, session: identity)!
         precondition(AxodPaneLayoutPersistence.read(data, session: .init(machineID: UUID(), sessionID: sessionID)) == nil)
         func saved(_ root: JSONValue) throws -> Data {

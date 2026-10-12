@@ -36,6 +36,7 @@ pub fn serve_with_pi(
         profiles,
         pi,
         crate::user_shell::CapturedUserShell::capture(),
+        false,
     )
 }
 pub(crate) fn serve_for_user(
@@ -50,6 +51,7 @@ pub(crate) fn serve_for_user(
         profiles,
         Some(pi),
         crate::user_shell::CapturedUserShell::capture_account(),
+        true,
     )
 }
 fn serve_with_shell(
@@ -58,6 +60,7 @@ fn serve_with_shell(
     profiles: Option<Profiles>,
     pi: Option<crate::PiPolicy>,
     user_shell: Option<crate::user_shell::CapturedUserShell>,
+    session_keep_alive: bool,
 ) -> io::Result<()> {
     let profiles = profiles.unwrap_or_else(|| {
         relay
@@ -77,6 +80,7 @@ fn serve_with_shell(
     }
     let mut manager = Manager::new(journal);
     manager.user_shell = user_shell;
+    manager.session_keep_alive = session_keep_alive;
     manager.normal_path = pi.as_ref().and_then(|policy| policy.normal_path.clone());
     *manager.managed_policy.lock().unwrap() = pi;
     let manager = Arc::new(manager);
@@ -111,7 +115,18 @@ fn run(
     manager: Arc<Manager>,
     stopping: Arc<AtomicBool>,
 ) -> io::Result<()> {
+    let lifecycle_profiles = profiles.0.clone();
     let local = LocalServer::start(root, machine, manager.clone(), profiles, stopping.clone())?;
+    let lifecycle = if manager.session_keep_alive {
+        Some(crate::session_lifecycle::spawn(
+            manager.clone(),
+            machine,
+            lifecycle_profiles,
+            stopping.clone(),
+        )?)
+    } else {
+        None
+    };
     if let Some(config) = relay {
         let manager = manager.clone();
         let stopping = stopping.clone();
@@ -120,7 +135,22 @@ fn run(
             .spawn(move || relay::run(config, machine, manager, stopping))?;
     }
     while !stopping.load(Ordering::SeqCst) {
+        if lifecycle
+            .as_ref()
+            .is_some_and(|worker| worker.is_finished())
+        {
+            stopping.store(true, Ordering::SeqCst);
+            return Err(io::Error::other(
+                "Session lifecycle worker stopped unexpectedly",
+            ));
+        }
         thread::sleep(Duration::from_millis(10));
+    }
+    manager.stop_admitting();
+    if let Some(worker) = lifecycle {
+        worker
+            .join()
+            .map_err(|_| io::Error::other("Session lifecycle worker failed"))?;
     }
     drop(local);
     Ok(())

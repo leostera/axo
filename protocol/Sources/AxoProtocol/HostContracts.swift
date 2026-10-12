@@ -4,6 +4,10 @@ public struct HostGetParameters: Encodable, Sendable {
     public let target: MachineTarget
     public init(target: MachineTarget) { self.target = target }
 }
+public struct HostLifecycleResult: Decodable, Equatable, Sendable {
+    public let hostGeneration: UUID
+    public let sessionKeepAlive: Bool
+}
 public struct HostStatusResult: Decodable, Equatable, Sendable {
     public struct Cloud: Decodable, Equatable, Sendable {
         public enum Kind: String, Decodable, Sendable { case notConfigured, connecting, offline, online }
@@ -21,6 +25,16 @@ public struct HostStatusResult: Decodable, Equatable, Sendable {
 }
 
 public extension AxoProtocolResultValidator {
+    static func hostLifecycle(_ value: JSONValue, target: MachineTarget) throws -> HostLifecycleResult {
+        let method = "axo.host.lifecycle"
+        guard case .object(let fields) = value, Set(fields.keys) == ["hostGeneration", "sessionKeepAlive"],
+              case .bool = fields["sessionKeepAlive"] else { throw AxoProtocolValidationError.invalidResult(method: method) }
+        let result = try JSONDecoder().decode(HostLifecycleResult.self, from: JSONEncoder().encode(value))
+        guard result.hostGeneration == target.hostGeneration else {
+            throw AxoProtocolValidationError.staleHost(expected: target.hostGeneration, actual: result.hostGeneration)
+        }
+        return result
+    }
     static func host(_ value: JSONValue, target: MachineTarget) throws -> HostStatusResult {
         let method = AxoProtocol.Method.getHost
         guard case .object(let fields) = value,

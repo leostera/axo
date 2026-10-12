@@ -195,6 +195,8 @@ fn dispatch_route(
     let id = call.id?; // Execution notifications are never admitted.
     let result = match call.method.as_str() {
         "axo.host.get" if local => crate::host::get(call.params, manager, machine),
+        "axo.host.lifecycle" if local => lifecycle(call.params, manager, machine),
+        "axo.session.completion" if local => completion(call.params, manager, machine),
         "axo.host.prepareUpgrade" if local => {
             crate::upgrade::prepare(call.params, manager, machine)
         }
@@ -231,6 +233,79 @@ fn dispatch_route(
     })
 }
 pub(crate) type Outcome = Result<Value, (i32, &'static str)>;
+fn completion(params: Option<Value>, manager: &Manager, machine: MachineId) -> Outcome {
+    #[derive(Deserialize)]
+    #[serde(rename_all = "camelCase", deny_unknown_fields)]
+    struct Request {
+        target: crate::panes::store::SessionTarget,
+        runtimes: Vec<RuntimeRef>,
+    }
+    let request: Request = serde_json::from_value(params.unwrap_or(Value::Null))
+        .map_err(|_| (-32602, "Invalid params"))?;
+    validate_target(
+        request.target.machine_id,
+        request.target.host_generation,
+        manager,
+        machine,
+    )?;
+    if request.runtimes.is_empty()
+        || request.runtimes.len() > 32
+        || request
+            .runtimes
+            .iter()
+            .any(|runtime| runtime.target.session_id != request.target.session_id)
+        || request
+            .runtimes
+            .iter()
+            .enumerate()
+            .any(|(index, runtime)| request.runtimes[..index].contains(runtime))
+    {
+        return Err((-32602, "Invalid completion scope"));
+    }
+    manager
+        .work
+        .lock()
+        .unwrap()
+        .session(request.target.workspace_id, request.target.session_id)
+        .map_err(|_| (-32010, "Session not found"))?;
+    let completed = request
+        .runtimes
+        .into_iter()
+        .filter(|runtime| manager.runtime_completed(*runtime))
+        .collect::<Vec<_>>();
+    let store = manager.panes.lock().unwrap();
+    let retired = completed
+        .iter()
+        .filter_map(|runtime| {
+            let pane = store.pane(runtime.target.pane_id)?;
+            let receipt = store.receipt(pane.remove_command?)?;
+            (receipt.runtime == Some(*runtime)
+                && receipt.disposition == crate::panes::store::Disposition::Removed)
+                .then_some(receipt)
+        })
+        .collect::<Vec<_>>();
+    Ok(
+        json!({"hostGeneration": manager.generation, "completed": completed, "retiredShellReceipts": retired}),
+    )
+}
+fn lifecycle(params: Option<Value>, manager: &Manager, machine: MachineId) -> Outcome {
+    #[derive(Deserialize)]
+    #[serde(deny_unknown_fields)]
+    struct Request {
+        target: Destination,
+    }
+    let request: Request = serde_json::from_value(params.unwrap_or(Value::Null))
+        .map_err(|_| (-32602, "Invalid params"))?;
+    validate_target(
+        request.target.machine_id,
+        request.target.host_generation,
+        manager,
+        machine,
+    )?;
+    Ok(
+        json!({"hostGeneration": manager.generation, "sessionKeepAlive": manager.session_keep_alive}),
+    )
+}
 fn list(params: Option<Value>, manager: &Manager, machine: MachineId) -> Outcome {
     let params: List = serde_json::from_value(params.unwrap_or(Value::Null))
         .map_err(|_| (-32602, "Invalid params"))?;

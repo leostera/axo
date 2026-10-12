@@ -46,6 +46,26 @@ final class AxodTerminalSurfaces {
         return view
     }
 
+    func capturedRuntimes(machineID: UUID, sessionID: UUID) -> [TerminalRuntime] {
+        views.keys.filter { $0.machineID == machineID && $0.sessionID == sessionID }.map {
+            TerminalRuntime(hostGeneration: $0.hostGeneration, target: .init(sessionId: $0.sessionID, paneId: $0.paneID),
+                runtimeGeneration: $0.runtimeGeneration)
+        }
+    }
+
+    func releaseCompleted(_ runtimes: [TerminalRuntime], machineID: UUID) {
+        let keys = views.keys.filter { key in
+            key.machineID == machineID && runtimes.contains {
+                $0.hostGeneration == key.hostGeneration && $0.target.sessionId == key.sessionID &&
+                $0.target.paneId == key.paneID && $0.runtimeGeneration == key.runtimeGeneration
+            }
+        }
+        for key in keys {
+            views.removeValue(forKey: key)?.detachPresentation()
+            notices.removeValue(forKey: key)
+        }
+    }
+
     func releaseDeletedSessions(_ receipt: SessionDeletionReceipt) {
         guard receipt.revision != nil else { return }
         let sessions = Set(receipt.intent.sessions.map(\.sessionId))

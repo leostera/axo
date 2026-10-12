@@ -64,6 +64,136 @@ pub(crate) fn dispatch(
         Method::RemovePane => remove(parse(params)?, manager, machine),
     }
 }
+/// One serialized daemon transition. Missing attachment is never stop authority.
+pub(crate) fn ensure_backing(
+    manager: &Manager,
+    machine: MachineId,
+    session: &crate::work::SessionRecord,
+    profiles: &BTreeMap<String, TerminalLaunch>,
+) -> Result<crate::session_lifecycle::Availability, (i32, &'static str)> {
+    use crate::session_lifecycle::{Availability, command};
+    use store::{Disposition, PaneState};
+    let _operation = manager.pane_operation.lock().unwrap();
+    let target = SessionTarget {
+        machine_id: machine,
+        host_generation: manager.generation,
+        workspace_id: session.workspace_id,
+        session_id: session.session_id,
+    };
+    destination(target, manager, machine)?;
+    {
+        let work = manager.work.lock().unwrap();
+        if work.is_fenced() || work.session_deletion_pending(session.session_id) {
+            return Ok(Availability::Blocked);
+        }
+    }
+    let panes = {
+        let store = manager.panes.lock().unwrap();
+        if store.is_fenced() {
+            return Ok(Availability::Blocked);
+        }
+        store.session_panes(session.session_id)
+    };
+    for pane in &panes {
+        let runtime = pane
+            .runtime
+            .or_else(|| manager.pane_command_runtime(pane.add_command));
+        if let Some(runtime) = runtime {
+            if manager.owns_running_runtime(runtime) && pane.state != PaneState::Closing {
+                if pane.state == PaneState::Adding {
+                    // Reconcile the accepted original launch, never dispatch another.
+                    manager
+                        .panes
+                        .lock()
+                        .unwrap()
+                        .finish_add(pane.add_command, Some(runtime), None)
+                        .map_err(failure)?;
+                }
+                return Ok(Availability::Live);
+            }
+            if !manager.runtime_completed(runtime) {
+                return Ok(Availability::Blocked);
+            }
+        }
+        if pane.state == PaneState::Adding {
+            return Ok(Availability::Blocked);
+        }
+    }
+    // Retire only completion-proven backing. Independent extra panes remain
+    // separate identities; automatic keep-alive guarantees at least one shell.
+    let source = if let Some(pane) = panes.first() {
+        let runtime = pane
+            .runtime
+            .or_else(|| manager.pane_command_runtime(pane.add_command));
+        if let Some(original) = pane.remove_command {
+            let receipt = manager
+                .panes
+                .lock()
+                .unwrap()
+                .receipt(original)
+                .ok_or((-32008, "Original pane removal unavailable"))?;
+            if receipt.disposition == Disposition::Prepared {
+                let proof = runtime.and_then(|value| manager.completion_evidence(value));
+                manager
+                    .panes
+                    .lock()
+                    .unwrap()
+                    .finish_remove(original, proof)
+                    .map_err(failure)?;
+            } else if receipt.disposition != Disposition::Removed {
+                return Ok(Availability::Blocked);
+            }
+        } else {
+            let command_id = command(
+                "shell-retire",
+                &(machine, session.session_id, pane.pane_id, runtime),
+            )?;
+            remove(
+                RemovePaneRequest {
+                    target,
+                    command_id,
+                    pane_id: pane.pane_id,
+                    runtime,
+                },
+                manager,
+                machine,
+            )?;
+        }
+        pane.profile_id.clone()
+    } else {
+        crate::user_shell::ShellSource::UserLogin
+    };
+    let lineage = manager
+        .panes
+        .lock()
+        .unwrap()
+        .session_lineage(session.session_id);
+    let command_id = command("shell-backing", &(machine, session.session_id, &lineage))?;
+    add(
+        AddPaneRequest {
+            target,
+            command_id,
+            profile_id: source,
+        },
+        manager,
+        machine,
+        profiles,
+    )?;
+    let panes = manager
+        .panes
+        .lock()
+        .unwrap()
+        .session_panes(session.session_id);
+    if panes.iter().any(|pane| {
+        pane.runtime
+            .is_some_and(|value| manager.owns_running_runtime(value))
+    }) {
+        Ok(Availability::Restored)
+    } else {
+        Ok(Availability::Waiting)
+    }
+}
+
 fn destination(
     target: SessionTarget,
     manager: &Manager,

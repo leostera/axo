@@ -22,6 +22,7 @@ pub mod server;
 mod session_deletion;
 #[cfg(test)]
 mod session_deletion_tests;
+mod session_lifecycle;
 pub mod state;
 pub mod terminal;
 pub mod terminal_client;

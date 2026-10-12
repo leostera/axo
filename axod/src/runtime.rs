@@ -290,6 +290,7 @@ mod deletion;
 pub struct Manager {
     pub generation: HostGeneration,
     pub host: crate::host::HostStatus,
+    pub(crate) session_keep_alive: bool,
     pub(crate) user_home: Option<crate::work::LocalDirectoryPath>,
     pub(crate) normal_path: Option<crate::user_path::CapturedPath>,
     pub(crate) user_shell: Option<crate::user_shell::CapturedUserShell>,
@@ -311,6 +312,7 @@ impl Manager {
         Self {
             generation: HostGeneration::new(),
             host: crate::host::HostStatus::default(),
+            session_keep_alive: false,
             user_home: crate::work::capture_user_home(),
             normal_path: None,
             user_shell: crate::user_shell::CapturedUserShell::capture(),
@@ -1166,6 +1168,7 @@ mod tests {
             Manager {
                 generation: self.terminal.reference.host_generation,
                 host: crate::host::HostStatus::default(),
+                session_keep_alive: false,
                 user_home: crate::work::capture_user_home(),
                 user_shell: crate::user_shell::CapturedUserShell::capture(),
                 normal_path: None,
