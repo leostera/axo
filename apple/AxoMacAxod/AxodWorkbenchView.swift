@@ -16,8 +16,7 @@ struct AxodWorkbenchView: View {
     var body: some View {
         VStack(spacing: 0) {
             if let message = coordinator.chatDrafts.quitMessage {
-                Text(message).font(.system(size: 12)).foregroundStyle(.secondary)
-                    .frame(maxWidth: .infinity, alignment: .leading).padding(10)
+                AxodStatusNotice("Changes couldn’t be saved", details: message) { EmptyView() }
             }
             recoveryNotices
             AxodNativeWorkbenchSplitView(
@@ -44,31 +43,27 @@ struct AxodWorkbenchView: View {
     private var recoveryNotices: some View {
         VStack(alignment: .leading, spacing: 8) {
             if connectionNeedsRecovery {
-                HStack {
-                    Text(coordinator.message).frame(maxWidth: .infinity, alignment: .leading)
+                AxodStatusNotice("Disconnected", details: coordinator.message) {
                     Button("Reconnect") { coordinator.connect() }
-                }.padding(10)
+                }
             }
             if coordinator.pendingWorkCommandID != nil && !coordinator.isEditingWork {
-                HStack {
-                    Text(coordinator.message).frame(maxWidth: .infinity, alignment: .leading)
-                    Button("Reconcile work command") { coordinator.reconcilePendingWork() }
+                AxodStatusNotice("Change unconfirmed", details: coordinator.message) {
+                    Button("Check Status") { coordinator.reconcilePendingWork() }
                         .disabled(coordinator.connectionState != .connected)
-                }.padding(10)
+                }
             }
             if coordinator.pendingPiStartCommandID != nil && !coordinator.isStartingPi {
-                HStack {
-                    Text("Pi admission outcome is unknown; reconcile the original command.")
-                        .frame(maxWidth: .infinity, alignment: .leading)
-                    Button("Reconcile start") { coordinator.reconcilePendingPiStart() }
+                AxodStatusNotice("Start unconfirmed", details: "Pi admission outcome is unknown; checking reconciles the original command without starting it again.") {
+                    Button("Check Status") { coordinator.reconcilePendingPiStart() }
                         .disabled(coordinator.connectionState != .connected || coordinator.isReconcilingPiCommand)
-                }.padding(10)
+                }
             }
             if coordinator.needsLoginItemsReview || coordinator.needsDaemonServiceReview {
-                HStack {
-                    Text(coordinator.serviceReviewMessage).frame(maxWidth: .infinity, alignment: .leading)
-                    Button("Background Service…") { coordinator.showServiceSettingsWindow() }
-                }.padding(10)
+                AxodStatusNotice(coordinator.needsLoginItemsReview || coordinator.serviceLifecycle.registration == .requiresApproval
+                    ? "Approval needed" : "Background service unavailable", details: coordinator.serviceReviewMessage) {
+                    Button("Settings…") { coordinator.showServiceSettingsWindow() }
+                }
             }
         }
         .font(.system(size: 12))
@@ -88,9 +83,17 @@ struct AxodWorkbenchView: View {
                     Text(coordinator.connectionState == .connected ? "Select or create a session" : "Background service unavailable")
                         .font(.system(size: 14, weight: .medium))
                         .foregroundStyle(Color.white.opacity(0.88))
-                    Text(emptyDetailMessage)
+                    if coordinator.connectionState == .connected, coordinator.emptyStartupMessage == nil {
+                        Text("Press ⌘T to create a session.")
+                            .font(.system(size: 12))
+                            .foregroundStyle(Color.white.opacity(0.58))
+                    } else {
+                        DisclosureGroup("Details") {
+                            Text(emptyDetailMessage).textSelection(.enabled)
+                        }
                         .font(.system(size: 12))
                         .foregroundStyle(Color.white.opacity(0.58))
+                    }
                 }
                 .padding(12)
                 .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
@@ -133,6 +136,17 @@ struct AxodWorkbenchView: View {
 }
 
 extension TerminalProcess {
+    var axodStatusTitle: String {
+        switch self {
+        case .starting: "Starting…"
+        case .running: "Connecting…"
+        case .stopping: "Stopping…"
+        case .exited: "Session ended"
+        case .failed: "Session unavailable"
+        case .recoveryRequired: "Session needs recovery"
+        }
+    }
+
     var axodDescription: String {
         switch self {
         case .starting: "Starting"

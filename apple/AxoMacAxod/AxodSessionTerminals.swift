@@ -8,6 +8,15 @@ struct AxodSessionTerminals: View {
     // One viewport owner per scene/session presentation, not per split branch.
     @State private var viewportID = UUID()
 
+    private var shellPlaceholder: String {
+        switch coordinator.shellStartupState(for: session.sessionId) {
+        case .starting?: "Starting…"
+        case .unresolved?: "Start unconfirmed"
+        case .ready?: "Connecting…"
+        case .unavailable?, .rejected?, nil: "Shell unavailable"
+        }
+    }
+
     private var identity: AxodPaneLayouts.Session? {
         coordinator.machineID.map { .init(machineID: $0, sessionID: session.sessionId) }
     }
@@ -25,8 +34,8 @@ struct AxodSessionTerminals: View {
                     AxodRuntimeTerminalPane(sessionID: session.sessionId,
                         snapshot: coordinator.presentationSnapshot(for: session), viewportID: viewportID, coordinator: coordinator)
                 }, right: {
-                    AxodTerminalInlineState(title: "Shell", message: coordinator.shellStartupState(for: session.sessionId)?.message
-                        ?? "An independent regular shell has not been created for this session.")
+                    AxodTerminalInlineState(title: "Shell", message: shellPlaceholder,
+                        details: coordinator.shellStartupState(for: session.sessionId)?.message)
                 }, onEqualize: { initialFraction = 0.5 })
             }
         }
@@ -40,24 +49,25 @@ private struct AxodShellSplitNotice: View {
     let identity: AxodPaneLayouts.Session?
     let coordinator: AxodWorkbenchCoordinator
     var body: some View {
-        VStack(alignment: .leading, spacing: 4) {
-            switch coordinator.shellStartupState(for: sessionID) {
-            case .starting?, .unresolved?, .unavailable?, .rejected?:
-                Text(coordinator.shellStartupState(for: sessionID)?.message ?? "").font(.system(size: 12))
-            case .ready?, nil: EmptyView()
-            }
-            if let identity, let notice = coordinator.paneLayouts.notices[identity] {
-                Text(notice).font(.system(size: 12))
-            }
-            if case .unresolved? = coordinator.shellStartupState(for: sessionID) {
-                Button("Reconcile shell start") { coordinator.reconcileSelectedShell() }
-            } else if let identity, let command = coordinator.paneLayouts.pendingCommand(identity),
-                      coordinator.shellStartupState(for: sessionID) != .starting(command) {
-                Button("Reconcile split placement") { coordinator.reconcileSelectedShell() }
+        let state = coordinator.shellStartupState(for: sessionID)
+        let notice = identity.flatMap { coordinator.paneLayouts.notices[$0] }
+        let placement = identity.flatMap { coordinator.paneLayouts.pendingCommand($0) }
+        let canCheckPlacement = placement.map { state != .starting($0) } ?? false
+        let title: String? = switch state {
+        case .starting?: "Starting shell…"
+        case .unresolved?: "Shell start unconfirmed"
+        case .unavailable?, .rejected?: "Shell unavailable"
+        case .ready?, nil: canCheckPlacement ? "Split unconfirmed" : (notice == nil ? nil : "Layout needs attention")
+        }
+        if let title {
+            AxodStatusNotice(title, details: [state?.message, notice].compactMap { $0 }.joined(separator: "\n")) {
+                if case .unresolved? = state {
+                    Button("Check Status") { coordinator.reconcileSelectedShell() }
+                } else if canCheckPlacement {
+                    Button("Check Status") { coordinator.reconcileSelectedShell() }
+                }
             }
         }
-        .foregroundStyle(.secondary)
-        .frame(maxWidth: .infinity, alignment: .leading)
     }
 }
 
@@ -108,15 +118,15 @@ private struct AxodRuntimeTerminalPane: View {
         VStack(spacing: 0) {
             if let launch = currentLaunch {
                 if let notice = coordinator.terminalSurfaces.notices[launch.key] {
-                    Text(notice).font(.system(size: 11)).foregroundStyle(.secondary)
-                        .frame(maxWidth: .infinity, alignment: .leading).padding(8)
+                    AxodStatusNotice("Terminal needs attention", details: notice) { EmptyView() }
                 }
                 AxodTerminalHost(launch: launch, surfaces: coordinator.terminalSurfaces, inputEnabled: isRunning,
                     viewportID: viewportID, onFocus: { [weak coordinator] in coordinator?.focusTerminal(launch.key) },
                     onAvailable: { [weak coordinator] window in coordinator?.terminalBecameAvailable(launch.key, in: window) })
                     .id(launch.key)
             } else {
-                AxodTerminalInlineState(title: nil, message: failure ?? pendingMessage)
+                AxodTerminalInlineState(title: nil, message: failure == nil ? pendingMessage : "Terminal unavailable",
+                    details: failure ?? snapshot?.process.axodDescription)
             }
         }
         .frame(maxWidth: .infinity, maxHeight: .infinity)
@@ -137,8 +147,7 @@ private struct AxodRuntimeTerminalPane: View {
         return launch
     }
     private var pendingMessage: String {
-        if let snapshot { return "Runtime \(snapshot.process.axodDescription); no process was started by this viewport." }
-        return "Waiting for the daemon-owned PTY. Startup and uncertainty remain inline."
+        snapshot?.process.axodStatusTitle ?? "Starting…"
     }
     private func prepareAttachment() {
         guard !Task.isCancelled else { return }
@@ -155,10 +164,22 @@ private struct AxodRuntimeTerminalPane: View {
 private struct AxodTerminalInlineState: View {
     let title: String?
     let message: String
+    let details: String?
+
+    init(title: String?, message: String, details: String? = nil) {
+        self.title = title
+        self.message = message
+        self.details = details
+    }
+
     var body: some View {
         VStack(alignment: .leading, spacing: 8) {
             if let title { Text(title).font(.system(size: 11, weight: .medium)) }
             Text(message).font(.system(size: 12)).foregroundStyle(.secondary)
+            if let details {
+                DisclosureGroup("Details") { Text(details).textSelection(.enabled) }
+                    .font(.system(size: 12)).foregroundStyle(.secondary)
+            }
             Spacer()
         }
         .padding(12)
