@@ -1,10 +1,10 @@
 //! Managed ambient Pi authority; work records and canonical Pi files keep distinct owners.
 mod history;
-mod persistence;
+pub(crate) mod persistence;
 pub(crate) mod policy;
 mod projection;
 mod rpc;
-mod session_directory;
+pub(crate) mod session_directory;
 pub(crate) mod store;
 #[cfg(test)]
 mod tests;
@@ -17,8 +17,8 @@ use store::*;
 pub(crate) struct Running {
     pub binding: Binding,
     pub control: Control,
-    _lease: WriterLease,
-    viewing: std::sync::Mutex<std::collections::BTreeMap<uuid::Uuid, std::time::Instant>>,
+    pub(crate) _lease: WriterLease,
+    pub(crate) viewing: std::sync::Mutex<std::collections::BTreeMap<uuid::Uuid, std::time::Instant>>,
 }
 pub(crate) enum Reservation {
     Existing(Box<Receipt>),

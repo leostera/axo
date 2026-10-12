@@ -532,6 +532,21 @@ impl Manager {
         self.runtime_completed(runtime)
             .then_some(RuntimeCompletion(runtime))
     }
+    pub(crate) fn owns_running_runtime(&self, runtime: RuntimeRef) -> bool {
+        let terminals = self.terminals.lock().unwrap();
+        terminals
+            .get(&runtime.target.pane_id)
+            .is_some_and(|terminal| {
+                terminal.reference == runtime
+                    && runtime.host_generation == self.generation
+                    && terminal.owns_live_resources()
+                    && matches!(
+                        terminal.state.lock().unwrap().process,
+                        ProcessState::Running { .. }
+                    )
+            })
+    }
+
     pub(crate) fn runtime_completed(&self, runtime: RuntimeRef) -> bool {
         let terminals = self.terminals.lock().unwrap();
         if terminals
@@ -605,12 +620,44 @@ impl Manager {
         self.start_inner(command, target, launch, LaunchControl::ReservedPane)
             .map(|(terminal, _)| terminal)
     }
+    pub(crate) fn start_materialized(
+        &self,
+        command: CommandId,
+        reference: RuntimeRef,
+        launch: &TerminalLaunch,
+        controlled: bool,
+    ) -> Result<(TerminalSnapshot, Option<UnixStream>), ErrorCode> {
+        if reference.host_generation != self.generation {
+            return Err(ErrorCode::StaleRuntime);
+        }
+        self.start_inner_at(
+            command,
+            reference.target,
+            launch,
+            if controlled {
+                LaunchControl::Controlled
+            } else {
+                LaunchControl::Ordinary
+            },
+            Some(reference),
+        )
+    }
     fn start_inner(
         &self,
         command: CommandId,
         target: TerminalTarget,
         launch: &TerminalLaunch,
         mode: LaunchControl,
+    ) -> Result<(TerminalSnapshot, Option<UnixStream>), ErrorCode> {
+        self.start_inner_at(command, target, launch, mode, None)
+    }
+    fn start_inner_at(
+        &self,
+        command: CommandId,
+        target: TerminalTarget,
+        launch: &TerminalLaunch,
+        mode: LaunchControl,
+        reserved: Option<RuntimeRef>,
     ) -> Result<(TerminalSnapshot, Option<UnixStream>), ErrorCode> {
         let controlled = mode.controlled();
         let _admission = self.admission.lock().unwrap();
@@ -669,6 +716,9 @@ impl Manager {
             .unwrap()
             .lookup_mode(command, target, launch, controlled)?;
         if let Some(previous) = previous {
+            if reserved.is_some_and(|reference| reference != previous) {
+                return Err(ErrorCode::Conflict);
+            }
             return self
                 .reconcile_start(previous, &terminals)
                 .map(|terminal| (terminal, None));
@@ -693,11 +743,11 @@ impl Manager {
             }
         }
         check_launch_admission(&terminals, target)?;
-        let reference = RuntimeRef {
+        let reference = reserved.unwrap_or_else(|| RuntimeRef {
             host_generation: self.generation,
             target,
             runtime_generation: RuntimeGeneration::new(),
-        };
+        });
         self.journal
             .lock()
             .unwrap()
@@ -918,8 +968,11 @@ impl Manager {
         });
         Ok(())
     }
-    pub fn shutdown(&self) {
+    pub(crate) fn stop_admitting(&self) {
         self.stopping.store(true, Ordering::SeqCst);
+    }
+    pub fn shutdown(&self) {
+        self.stop_admitting();
         let owned: Vec<_> = self.terminals.lock().unwrap().values().cloned().collect();
         if owned.is_empty() {
             return;

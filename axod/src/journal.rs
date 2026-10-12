@@ -37,6 +37,15 @@ pub struct Journal {
     _owner_lock: File,
     poisoned: bool,
 }
+impl Drop for Journal {
+    fn drop(&mut self) {
+        // Concurrent PTY forks can temporarily retain this open description.
+        // Releasing the actual owner must not wait for their CLOEXEC boundary.
+        unsafe {
+            libc::flock(self._owner_lock.as_raw_fd(), libc::LOCK_UN);
+        }
+    }
+}
 impl Journal {
     pub fn open(root: &Path) -> io::Result<Self> {
         let metadata = fs::symlink_metadata(root)?;
@@ -399,6 +408,18 @@ mod tests {
         }
     }
 
+    #[test]
+    fn owner_release_does_not_wait_for_a_forked_description_to_close() {
+        let directory = TestDirectory::new();
+        let journal = Journal::open(directory.path()).unwrap();
+        let inherited = journal._owner_lock.try_clone().unwrap();
+        drop(journal);
+        let successor = Journal::open(directory.path()).unwrap();
+        drop(inherited);
+        assert!(Journal::open(directory.path()).is_err());
+        drop(successor);
+        Journal::open(directory.path()).unwrap();
+    }
     #[test]
     fn prepare_cannot_reassign_a_command_receipt_or_change_its_arguments() {
         let directory = TestDirectory::new();

@@ -43,6 +43,15 @@ pub(super) struct Root {
     current: Option<Identity>,
     authority: Option<Identity>,
 }
+impl Drop for Root {
+    fn drop(&mut self) {
+        // Another thread may fork while this lease is open. CLOEXEC closes the
+        // child's copy later; explicit unlock ends this owner's lease now.
+        unsafe {
+            libc::flock(self._owner.as_raw_fd(), libc::LOCK_UN);
+        }
+    }
+}
 impl Root {
     pub(super) fn acquire(path: &Path) -> Result<Self, Error> {
         if !path.is_absolute() {
@@ -213,6 +222,28 @@ impl Root {
             bytes,
         }))
     }
+    pub(super) fn runtime_directory(&self) -> Result<PathBuf, Error> {
+        self.check_directory()?;
+        let name = CString::new("Runtime").map_err(|_| Error::Storage)?;
+        if unsafe { libc::mkdirat(self.directory.as_raw_fd(), name.as_ptr(), 0o700) } < 0
+            && io::Error::last_os_error().kind() != io::ErrorKind::AlreadyExists
+        {
+            return Err(Error::Storage);
+        }
+        let directory = self
+            .open("Runtime", libc::O_RDONLY | libc::O_DIRECTORY)
+            .map_err(|_| Error::UnsafeStorage)?;
+        let metadata = directory.metadata().map_err(|_| Error::UnsafeStorage)?;
+        if !metadata.is_dir()
+            || metadata.uid() != unsafe { libc::geteuid() }
+            || metadata.mode() & 0o777 != 0o700
+        {
+            return Err(Error::UnsafeStorage);
+        }
+        self.directory.sync_all().map_err(|_| Error::Storage)?;
+        self.check_directory()?;
+        Ok(self.path.join("Runtime"))
+    }
     pub(super) fn load(&mut self) -> Result<Option<Vec<u8>>, Error> {
         self.check_directory()?;
         let image = self.read(NAME)?;
@@ -349,6 +380,21 @@ mod tests {
             let result = Root::acquire(directory.path()).and_then(|mut root| root.load());
             assert!(matches!(result, Err(Error::UnsafeStorage)), "{kind}");
         }
+    }
+    #[test]
+    fn owner_drop_unlocks_even_if_a_fork_temporarily_retains_the_description() {
+        let directory = TestDirectory::new();
+        let root = Root::acquire(directory.path()).unwrap();
+        let inherited = root._owner.try_clone().unwrap();
+        drop(root);
+        let successor = Root::acquire(directory.path()).unwrap();
+        drop(inherited);
+        assert!(matches!(
+            Root::acquire(directory.path()),
+            Err(Error::OwnerConflict)
+        ));
+        drop(successor);
+        Root::acquire(directory.path()).unwrap();
     }
     #[test]
     fn root_lease_and_directory_identity_are_required() {

@@ -1,0 +1,281 @@
+//! Actual ambient interactive Pi and an owned HTTP model, isolated HOME/agent
+//! configuration. One explicit submission tests persisted resume without replay;
+//! this is not installed-service or frontend acceptance.
+use super::*;
+use crate::{ambient_pi::AmbientPi, test_support::TestDirectory};
+use serde_json::json;
+use std::{fs, os::unix::fs::PermissionsExt, path::PathBuf};
+#[track_caller]
+fn wait(condition: impl Fn() -> bool) {
+    let deadline = Instant::now() + Duration::from_secs(45);
+    while !condition() {
+        assert!(
+            Instant::now() < deadline,
+            "Actual Pi graph admission deadline elapsed"
+        );
+        thread::sleep(Duration::from_millis(50));
+    }
+}
+fn policy(root: &TestDirectory, model: &super::model_fixture::Model) -> crate::PiPolicy {
+    let ambient = AmbientPi::find(None).expect("Ambient Pi dependency unavailable");
+    let agent = root.path().join("agent");
+    let sessions = root.path().join("sessions");
+    for directory in [&agent, &sessions] {
+        fs::create_dir(directory).unwrap();
+        fs::set_permissions(directory, fs::Permissions::from_mode(0o700)).unwrap();
+    }
+    fs::write(agent.join("settings.json"),br#"{"quietStartup":true,"packages":[],"compaction":{"enabled":false},"retry":{"enabled":false}}"#).unwrap();
+    let config = root.path().join("provider.json");
+    fs::write(
+        &config,
+        serde_json::to_vec(&json!({"baseUrl":format!("http://127.0.0.1:{}/v1", model.port)}))
+            .unwrap(),
+    )
+    .unwrap();
+    fs::set_permissions(&config, fs::Permissions::from_mode(0o600)).unwrap();
+    let executable = root.path().join("private-pi");
+    fs::write(
+        &executable,
+        format!(
+            "#!/bin/sh\nexport HOME='{}' PI_CODING_AGENT_DIR='{}' PI_OFFLINE=1 PI_AXO_INTERACTIVE_FIXTURE_CONFIG='{}'\nexec '{}' \"$@\"\n",
+            root.path().display(),
+            agent.display(),
+            config.display(),
+            ambient.executable.display()
+        ),
+    )
+    .unwrap();
+    fs::set_permissions(&executable, fs::Permissions::from_mode(0o700)).unwrap();
+    let manifest = root.path().join("policy.json");
+    let repo = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+        .parent()
+        .unwrap()
+        .to_path_buf();
+    fs::write(&manifest,serde_json::to_vec(&json!({"extension":repo.join("pi-axo/index.ts"),"profiles":{},"local":{"executable":executable,"sessionDirectory":sessions,"arguments":["--offline","--no-extensions","--no-skills","--no-themes","--no-context-files","--no-prompt-templates","--no-approve","--extension",repo.join("pi-axo/tests/fixtures/provider.ts"),"--provider","axo-interactive-fixture","--model","fixture"]}})).unwrap()).unwrap();
+    fs::set_permissions(&manifest, fs::Permissions::from_mode(0o600)).unwrap();
+    crate::PiPolicy::read(&manifest).unwrap()
+}
+#[test]
+fn actual_three_by_four_by_three_graph_admits_every_pane_and_resumes_exact_pi_file() {
+    let root = TestDirectory::new();
+    let model = super::model_fixture::Model::new();
+    let mut owner =
+        Controller::open(root.path(), MachineId::new(), Some(policy(&root, &model))).unwrap();
+    let shell = root.path().join("private-zsh");
+    fs::write(
+        &shell,
+        format!(
+            "#!/bin/sh\nexport HOME='{}' ZDOTDIR='{}'\nexec /bin/zsh -f -i\n",
+            root.path().display(),
+            root.path().display()
+        ),
+    )
+    .unwrap();
+    fs::set_permissions(&shell, fs::Permissions::from_mode(0o700)).unwrap();
+    Arc::get_mut(&mut owner.native).unwrap().user_shell =
+        crate::user_shell::CapturedUserShell::parse(&shell);
+    let controller = Arc::new(owner);
+    let approval = ApprovedDirectory::local_selection(root.path()).unwrap();
+    let mut pi_session = None;
+    for _ in 0..3 {
+        let graph = controller
+            .create_workspace(
+                CommandId::new(),
+                controller.revision().unwrap(),
+                "Workspace",
+                &approval,
+            )
+            .unwrap()
+            .graph;
+        pi_session.get_or_insert(graph.initial_session.session.session_id);
+        let mut sessions = vec![graph.initial_session.session.session_id];
+        for _ in 1..4 {
+            sessions.push(
+                controller
+                    .create_session(
+                        CommandId::new(),
+                        controller.revision().unwrap(),
+                        graph.workspace.workspace_id,
+                        "Session",
+                    )
+                    .unwrap()
+                    .graph
+                    .session
+                    .session_id,
+            );
+        }
+        for session in sessions {
+            controller
+                .add_shell(CommandId::new(), controller.revision().unwrap(), session)
+                .unwrap();
+        }
+    }
+    let workers = controller.supervise().unwrap();
+    wait(|| {
+        controller
+            .observations()
+            .unwrap()
+            .iter()
+            .filter(|observation| observation.availability == Availability::Live)
+            .count()
+            == 36
+    });
+    assert_eq!(controller.native.managed_live.lock().unwrap().len(), 12);
+    assert_eq!(
+        controller
+            .native
+            .list()
+            .iter()
+            .filter(|snapshot| matches!(snapshot.process, ProcessState::Running { .. }))
+            .count(),
+        36
+    );
+    let session = pi_session.unwrap();
+    let binding = controller
+        .database
+        .lock()
+        .unwrap()
+        .binding(session)
+        .unwrap()
+        .unwrap();
+    assert_eq!(model.requests.load(Ordering::SeqCst), 0);
+    let running = controller
+        .native
+        .managed_live
+        .lock()
+        .unwrap()
+        .get(&session)
+        .unwrap()
+        .clone();
+    let selected_model = running.control.get().unwrap().model.unwrap();
+    assert_eq!(selected_model.provider, "axo-interactive-fixture");
+    assert_eq!(selected_model.id, "fixture");
+    running
+        .control
+        .send("Owned central fixture request")
+        .unwrap();
+    let deadline = Instant::now() + Duration::from_secs(45);
+    loop {
+        let requests = model.requests.load(Ordering::SeqCst);
+        let persisted = binding.file.exists();
+        let busy = running.control.get().map(|state| state.busy);
+        if requests == 1 && persisted && busy == Ok(false) {
+            break;
+        }
+        if Instant::now() >= deadline {
+            let error = fs::read_to_string(&binding.file)
+                .unwrap_or_default()
+                .lines()
+                .filter_map(|line| serde_json::from_str::<serde_json::Value>(line).ok())
+                .filter_map(|value| {
+                    value
+                        .pointer("/message/errorMessage")
+                        .and_then(|message| message.as_str())
+                        .map(str::to_owned)
+                })
+                .next_back()
+                .unwrap_or_default();
+            let categories: Vec<_> = [
+                "key",
+                "connection",
+                "ECONN",
+                "timeout",
+                "context",
+                "fetch",
+                "request",
+                "JSON",
+                "provider",
+                "model",
+                "header",
+            ]
+            .into_iter()
+            .filter(|category| error.to_lowercase().contains(&category.to_lowercase()))
+            .collect();
+            panic!(
+                "Owned turn timed out: requests={requests}, persisted={persisted}, busy={busy:?}, error_categories={categories:?}"
+            );
+        }
+        thread::sleep(Duration::from_millis(50));
+    }
+    let original_bytes = fs::read(&binding.file).unwrap();
+    drop(running);
+    controller.native.stop(binding.runtime).unwrap();
+    wait(|| {
+        controller
+            .database
+            .lock()
+            .unwrap()
+            .binding(session)
+            .unwrap()
+            .is_some_and(|current| current.runtime != binding.runtime)
+    });
+    let resumed = controller
+        .database
+        .lock()
+        .unwrap()
+        .binding(session)
+        .unwrap()
+        .unwrap();
+    assert_eq!(resumed.pane_id, binding.pane_id);
+    assert_eq!(resumed.chat_id, binding.chat_id);
+    assert_eq!(resumed.file, binding.file);
+    assert_ne!(
+        resumed.runtime.runtime_generation,
+        binding.runtime.runtime_generation
+    );
+    assert_eq!(fs::read(&binding.file).unwrap(), original_bytes);
+    wait(|| {
+        controller
+            .observations()
+            .unwrap()
+            .iter()
+            .all(|observation| observation.availability == Availability::Live)
+    });
+    // Vanilla Pi names an unsaved file before its first assistant turn. Missing
+    // history is not authority to replace that already-admitted chat identity.
+    let empty = controller
+        .native
+        .managed_live
+        .lock()
+        .unwrap()
+        .values()
+        .find(|running| running.binding.session_id != session)
+        .unwrap()
+        .binding
+        .clone();
+    assert!(!empty.file.exists());
+    controller.native.stop(empty.runtime).unwrap();
+    wait(|| {
+        controller
+            .observations()
+            .unwrap()
+            .iter()
+            .any(|observation| {
+                observation.pane_id == empty.pane_id
+                    && observation.availability == Availability::Blocked
+            })
+            && controller.native.runtime_completed(empty.runtime)
+            && controller
+                .database
+                .lock()
+                .unwrap()
+                .attempt(empty.pane_id)
+                .unwrap()
+                .is_some_and(|attempt| attempt.phase == AttemptPhase::CompletionProven)
+    });
+    assert!(controller.native.runtime_completed(empty.runtime));
+    assert_eq!(
+        controller
+            .database
+            .lock()
+            .unwrap()
+            .binding(empty.session_id)
+            .unwrap()
+            .unwrap()
+            .runtime,
+        empty.runtime
+    );
+    assert!(!empty.file.exists());
+    assert_eq!(model.requests.load(Ordering::SeqCst), 1);
+    workers.shutdown().unwrap();
+}

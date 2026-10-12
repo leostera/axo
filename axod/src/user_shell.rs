@@ -68,7 +68,7 @@ impl CapturedUserShell {
     pub(crate) fn executable(&self) -> &std::ffi::OsStr {
         self.executable.as_os_str()
     }
-    fn parse(selected: &Path) -> Option<Self> {
+    pub(crate) fn parse(selected: &Path) -> Option<Self> {
         if !selected.is_absolute() {
             return None;
         }

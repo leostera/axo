@@ -1,8 +1,13 @@
 //! Central desired-state authority. The graph persists user intent; it makes no
 //! assertion that a database row owns a PTY or that a previous writer completed.
+pub mod controller;
+mod execution;
+#[cfg(test)]
+mod execution_tests;
 mod image;
 mod input;
 use crate::model::*;
+pub use execution::{Attempt, AttemptPhase, Configuration};
 pub use input::{Draft, DraftAddress, DraftRevision};
 use rusqlite::{Connection, MAIN_DB, OptionalExtension, Transaction, params};
 use serde::{Deserialize, Serialize, de::DeserializeOwned};
@@ -11,7 +16,7 @@ use std::path::{Path, PathBuf};
 
 const MAX_REVISION: u64 = 9_007_199_254_740_991;
 const MAX_OPERATIONS: u32 = 2000;
-const SCHEMA_VERSION: i64 = 1;
+const SCHEMA_VERSION: i64 = 2;
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Error {
@@ -257,6 +262,17 @@ impl Database {
             8 * 1024 * 1024,
         )?;
         connection.set_limit(rusqlite::limits::Limit::SQLITE_LIMIT_SQL_LENGTH, 128 * 1024)?;
+        let version: i64 = connection
+            .pragma_query_value(None, "user_version", |row| row.get(0))
+            .map_err(|_| Error::Corrupt)?;
+        let migrated = bytes.is_some() && version == 1;
+        if migrated {
+            let transaction = connection.transaction()?;
+            transaction.execute_batch(
+                "ALTER TABLE pi_bindings ADD COLUMN runtime_binding BLOB; ALTER TABLE runtime_attempts ADD COLUMN config_capture BLOB; PRAGMA user_version=2;",
+            )?;
+            transaction.commit()?;
+        }
         if bytes.is_none() {
             let transaction = connection.transaction()?;
             transaction.execute_batch(include_str!("schema.sql"))?;
@@ -272,7 +288,7 @@ impl Database {
             fenced: false,
         };
         database.validate(machine)?;
-        if bytes.is_none() {
+        if bytes.is_none() || migrated {
             database.publish()?;
         }
         Ok(database)
@@ -1287,7 +1303,7 @@ mod tests {
         let mut database = Database::open(root.path(), machine).unwrap();
         database
             .mutate(|tx| {
-                tx.execute_batch("PRAGMA user_version=2")?;
+                tx.execute_batch("PRAGMA user_version=3")?;
                 Ok(())
             })
             .unwrap();

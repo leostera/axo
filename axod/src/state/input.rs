@@ -188,7 +188,7 @@ mod tests {
             .unwrap()
             .to_owned();
         // Fixture binding metadata only: this test makes no admission/writer claim.
-        database.mutate(|tx| { tx.execute("INSERT INTO pi_bindings VALUES(?1, ?2, ?3, '/fixture/session.jsonl', '/fixture', ?4)", params![address.session_id.to_string(), address.pane_id.to_string(), text, CommandId::new().to_string()])?; Ok(()) }).unwrap();
+        database.mutate(|tx| { tx.execute("INSERT INTO pi_bindings VALUES(?1, ?2, ?3, '/fixture/session.jsonl', '/fixture', ?4, NULL)", params![address.session_id.to_string(), address.pane_id.to_string(), text, CommandId::new().to_string()])?; Ok(()) }).unwrap();
         address
     }
     #[test]

@@ -14,7 +14,7 @@ use std::{
     path::{Component, Path, PathBuf},
 };
 
-pub(super) fn path(workspace: &Path, session: SessionId) -> PathBuf {
+pub(crate) fn path(workspace: &Path, session: SessionId) -> PathBuf {
     workspace
         .join(".axo")
         .join("sessions")
@@ -37,7 +37,7 @@ fn open_directory(parent: &File, name: &OsStr) -> io::Result<File> {
     Ok(unsafe { File::from_raw_fd(descriptor) })
 }
 
-pub(super) fn prepare(workspace: &Path, session: SessionId, create: bool) -> io::Result<PathBuf> {
+pub(crate) fn prepare(workspace: &Path, session: SessionId, create: bool) -> io::Result<PathBuf> {
     if !workspace.is_absolute() {
         return Err(io::Error::other("Workspace must be absolute"));
     }

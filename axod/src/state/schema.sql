@@ -1,5 +1,5 @@
 -- The image is published atomically only after the entire SQLite transaction.
-PRAGMA user_version = 1;
+PRAGMA user_version = 2;
 CREATE TABLE metadata (
     singleton INTEGER PRIMARY KEY CHECK (singleton = 1),
     machine_id TEXT NOT NULL CHECK (length(machine_id) = 36),
@@ -63,6 +63,7 @@ CREATE TABLE runtime_attempts (
     predecessor TEXT REFERENCES runtime_attempts(attempt_id),
     phase TEXT NOT NULL CHECK (phase IN ('reserved', 'launched', 'admitted', 'completionProven', 'blocked')),
     completion BLOB,
+    config_capture BLOB,
     CHECK ((phase = 'completionProven') = (completion IS NOT NULL))
 ) STRICT;
 CREATE UNIQUE INDEX one_active_attempt ON runtime_attempts(pane_id) WHERE phase != 'completionProven';
@@ -73,6 +74,7 @@ CREATE TABLE pi_bindings (
     canonical_file TEXT NOT NULL,
     canonical_directory TEXT NOT NULL,
     original_start TEXT NOT NULL CHECK (length(original_start) = 36),
+    runtime_binding BLOB,
     FOREIGN KEY (session_id, pane_id) REFERENCES panes(session_id, pane_id)
 ) STRICT;
 -- Unsent input is a separate bounded domain, never canonical history or a
