@@ -8,7 +8,7 @@
 
 ## Summary
 
-I want Axod to centrally own workspace, session, and pane state and their complete execution lifecycle. I propose a SQLite-backed desired-state store as the persistence mechanism, not as the architectural goal. On startup, Axod reads that desired graph, reconciles original operations and execution ownership, and materializes every effectively open session and pane. It then continuously reconciles desired state with actual PTY lifecycle, without depending on an attached client. Creating a workspace is one backend operation that initializes its session and panes, not a frontend sequence of catalog creation, shell creation, and Pi startup. Make `Axo.app` as thin as possible: macOS daemon management, presentation, and user input, including voice capture/transcription and an in-memory editing buffer. Axod owns durable drafts and original submission captures. It neither owns a competing catalog nor decides how to launch, restart, resume, or recover execution. SQLite owns Axo metadata, not Pi's canonical history or kernel resources. This is an accepted design, not a description of the current implementation or a claim of deployment, crash survival, or terminal-screen recovery. Writing it authorizes no live storage cutover, service handoff, or activation.
+I want Axod to centrally own workspace, session, and pane state and their complete execution lifecycle. I propose a SQLite-backed desired-state store as the persistence mechanism, not as the architectural goal. On startup, Axod reads that desired graph, reconciles original operations and execution ownership, and materializes every effectively open session and pane. It then continuously reconciles desired state with actual PTY lifecycle, without depending on an attached client. Creating a workspace is one backend operation that initializes its session and panes, not a frontend sequence of catalog creation, shell creation, and Pi startup. Make `Axo.app` as thin as possible: macOS daemon management, presentation, and user input, including voice capture/transcription and an in-memory editing buffer. Axod owns durable drafts and original submission captures. It neither owns a competing catalog nor decides how to launch, restart, resume, or recover execution. SQLite owns Axo metadata, not Pi's canonical history or kernel resources. This is an accepted design, not a description of the current implementation or a claim of deployment, crash survival, or terminal-screen recovery. I start over with a fresh central store; I do not import the legacy catalogs, pane layouts, Pi bindings, operation receipts, or frontend drafts. Old data remains untouched and outside the new authority. Writing it authorizes no live service handoff, activation, or deletion of old data.
 
 ## Motivation
 
@@ -32,7 +32,7 @@ The committed baseline is `5c895107d6c21711b2808ca607f1f5c817787642`. Relevant b
 - [`AxodPaneLayouts.swift`](../../apple/AxoMacAxod/AxodPaneLayouts.swift): client-side saved split geometry and pane identities.
 - [`Cargo.toml`](../../axod/Cargo.toml): no SQLite dependency at the committed baseline.
 
-Uncommitted work preceding this proposal experiments with daemon keep-alive loops, live-pane projection, and read-only completion observations. Those experiments are not this architecture: they still use the existing stores, do not define complete desired-state materialization or archival, and are not a delivered SQLite migration. In particular, keeping one backing shell alive is not the same as materializing every desired pane.
+Uncommitted work preceding this proposal experiments with daemon keep-alive loops, live-pane projection, and read-only completion observations. Those experiments are not this architecture: they still use the existing stores, do not define complete desired-state materialization or archival, and are not the central-store cutover. In particular, keeping one backing shell alive is not the same as materializing every desired pane.
 
 ### Relationship to existing RFDs
 
@@ -51,10 +51,12 @@ If accepted, conflicting startup and restart clauses in those proposals are supe
 - Stable workspace/session/pane identities across runtime replacement and client reconnect.
 - Backend-complete workspace/session/pane creation with no client startup choreography.
 - A thin Mac client limited to platform daemon management, presentation, and user input; durable draft storage belongs to Axod.
-- Preserve original operations, canonical histories, drafts, credentials, unsafe/opaque evidence, and existing security/resource bounds.
+- Preserve new-store original operations, canonical histories and drafts, plus existing security/resource bounds. Leave legacy data, credentials and unrelated configuration untouched; do not import legacy session state.
 
 ## Non-goals
 
+- Importing legacy JSON catalogs, pane layouts, Pi bindings, operation receipts, or frontend draft archives into the central store.
+- Deleting old histories, drafts, credentials, archives, or unrelated workspace data as a side effect of starting fresh.
 - Putting Pi transcripts, terminal output, voice recordings, secrets, or arbitrary shell-command history into SQLite.
 - Replaying prompts, tool calls, shell input, or unfinished model turns to simulate continuity.
 - Treating persisted runtime rows as restored processes, or promising uninterrupted execution after coordinator/OS termination.
@@ -95,7 +97,7 @@ An exit changes observed state to restarting; it does not archive the session or
 ### Example: daemon startup
 
 1. Acquire exclusive state-root ownership and open the existing database safely. Never replace an unreadable database with an empty one.
-2. Apply supported transactional schema migrations before allowing new effects. If legacy stores exist without a completed database cutover, use the explicit migration path rather than initializing a blank catalog.
+2. Apply supported transactional schema upgrades for the central database before allowing new effects. On the initial cutover, initialize a dedicated fresh private root; do not read or import the legacy stores. Reject a mixed legacy root rather than overwriting it or treating it as an empty central store.
 3. Read the complete desired graph and original pending operations. Reconcile earlier runtime ownership and completion before considering replacement.
 4. Materialize all effectively open workspaces, sessions, and panes—not only the last selected session. Start independent shells without waiting for unrelated Pi admission.
 5. Publish bounded, revisioned observations. Continue supervising without any frontend connection.
@@ -136,7 +138,7 @@ If stopping is uncertain, the desired state can already be archived while observ
 | Phone client | Its presentation/input and permitted addressed backend operations; no dependence on Mac frontend orchestration |
 | Relay/API | Existing authenticated routing and role enforcement; no competing desired-state store or materializer |
 
-The frontend may persist view preferences, but holds unsent input only in its editing buffer. Axod durably stores bounded drafts and original submission captures. Draft saves use captured logical conversation identity and compare-and-swap revision; acknowledgement clears only the exact unchanged draft. Voice transcription produces user input for a captured destination; it does not select a global session, launch an agent, or replay an uncertain submission. Existing draft-save, quit-save and original-send-ticket barriers remain in force through daemon RPC. An unavailable save cannot be reported as durable or silently fall back to a frontend-owned archive.
+The frontend may persist view preferences, but holds unsent input only in its editing buffer. Axod durably stores bounded drafts and original submission captures. Draft saves use captured logical conversation identity and compare-and-swap revision; acknowledgement clears only the exact unchanged draft. Voice transcription produces user input for a captured destination; it does not select a global session, launch an agent, or replay an uncertain submission. Draft-save, quit-save and original-send-ticket barriers apply to the new store through daemon RPC. Legacy draft archives and pending submissions are not restored, attached to new identities, or replayed; their old files remain untouched. An unavailable save cannot be reported as durable or silently fall back to a frontend-owned archive.
 
 The client can own UI validation and confirmation, not backend authority. Axod must independently validate target, revision, approval, capacity, and lifecycle even if a menu item was enabled. No create/start/recovery fallback invokes Pi or a shell from the Mac app.
 
@@ -163,7 +165,7 @@ Use one private SQLite database within the owned Axod state root. Table names be
 
 | Data | Required meaning |
 | --- | --- |
-| Storage metadata | Schema version, machine identity, catalog revision, migration/cutover identity and provenance |
+| Storage metadata | Schema version, machine identity, catalog revision, central-store generation and authority provenance |
 | Workspaces | Stable ID, name, approved canonical directory reference, desired lifecycle and configuration revision |
 | Sessions | Stable ID, workspace membership, naming protection, desired lifecycle and configuration revision |
 | Panes / topology | Stable IDs, session membership, desired presence, role, validated execution specification/reference, shared topology and configuration revision |
@@ -179,7 +181,7 @@ Keep SQLite operations behind the daemon's storage owner. Clients receive typed 
 
 For the initial single-writer design, use SQLite transactions in a bounded in-memory database and atomically publish the complete SQLite image through Rust's pinned private-directory file descriptors. The durable commit boundary is successful file fsync, exclusive publication/exchange, and directory fsync—not the preceding SQLite memory commit. Clients and SQLite never open the disk image directly. This avoids uncontrolled SQLite sidecar opens while enforcing no-follow, ownership, single-link and mode checks at actual I/O. A publication error fences the owner without exposing new spawn authority. This deliberately trades full-image write amplification for a simple, bounded private-storage boundary. An on-disk VFS/WAL replacement requires equivalent privacy, commit, backup and interruption acceptance.
 
-The database is not a second transcript store. Preserve existing canonical files, locations and ownership; keep bounded unsent input drafts and their submission evidence at a dedicated daemon-owned input-storage boundary. Unsent draft text is permitted there; it is not canonical Pi history or a replay queue. Do not persist arbitrary argv, environment values, prompts, terminal output, audio or credentials as operation payloads. Persist approved specification references and fingerprints instead.
+The database is not a second transcript store. Preserve canonical files, locations and ownership within the central store, and leave legacy histories untouched and unbound; keep bounded unsent input drafts and their submission evidence at a dedicated daemon-owned input-storage boundary. Unsent draft text is permitted there; it is not canonical Pi history or a replay queue. Do not persist arbitrary argv, environment values, prompts, terminal output, audio or credentials as operation payloads. Persist approved specification references and fingerprints instead.
 
 ### Materializer and runtime lifecycle
 
@@ -217,11 +219,11 @@ Pi is ambient interactive vanilla Pi on a daemon-owned native PTY, with the inst
 - An unresolved writer or storage outcome remains blocked. Preserve the original evidence and expose a metadata-only diagnostic; do not discard it to satisfy a keep-alive predicate.
 - Restoring a conversation loads its history; it never resubmits a prompt, replays a tool call, or restarts the last model turn implicitly.
 
-New workspace histories remain under `<workspace>/.axo/sessions/<work-session UUID>/`. Existing bindings keep their original locations. Pi alone writes JSONL. No migration copies or rewrites canonical history to make a database relationship fit.
+New workspace histories remain under `<workspace>/.axo/sessions/<work-session UUID>/`. Bindings created by the central store keep their original locations. Legacy bindings are not imported or resumed. Pi alone writes JSONL; the fresh start neither copies nor rewrites old canonical histories.
 
 ### Startup, crash and shutdown boundaries
 
-Database initialization means safely creating a fresh database only for a genuinely fresh root, or opening and migrating a supported existing database. Integrity failures, unsupported versions, unsafe files, ambiguous migration, or disk failure fence effects; they never trigger an empty-database fallback.
+Database initialization means safely creating the initial central database in a dedicated fresh root, or opening and upgrading a supported existing central database. Starting fresh is an explicit architecture cutover, not a corruption-recovery policy. Integrity failures, unsupported versions, unsafe files, mixed legacy state, or disk failure fence effects; they never trigger an empty-database fallback.
 
 A daemon epoch change invalidates old live observations and input authority. SQLite cannot restore a PTY descriptor or prove that an old writer died. Materialization after restart therefore begins with ownership reconciliation:
 
@@ -263,7 +265,7 @@ Output gaps and unavailable authoritative VT state are presentation problems whe
 
 ### Security and privacy
 
-Retain exclusive per-user root ownership and private storage. The database, journal/sidecars, migration files, backups, and any temporary SQLite files must satisfy owned-directory and regular single-link private-file requirements. Enforce no-follow opening and identity checks at the actual I/O boundary; preflight path checks alone do not protect later SQLite/VFS opens. SQLite integration cannot ship until those guarantees are demonstrated, including failure/collision cases. Do not chmod existing histories or weaken permissions to complete a migration.
+Retain exclusive per-user root ownership and private storage. The database, journal/sidecars, backups, and any temporary SQLite files must satisfy owned-directory and regular single-link private-file requirements. Enforce no-follow opening and identity checks at the actual I/O boundary; preflight path checks alone do not protect later SQLite/VFS opens. SQLite integration cannot ship until those guarantees are demonstrated, including failure/collision cases. Do not chmod old histories or weaken permissions to complete the cutover.
 
 Use a reviewed Rust SQLite dependency/VFS configuration, foreign-key enforcement, explicit transactions, bounded busy handling, and private bounded backup/compaction behavior. Preserve the current exclusive owner lock in addition to SQLite transaction locks. Missing database locks or corruption are not recovery permission.
 
@@ -271,22 +273,17 @@ Retain approved directory/launch authority and current local/remote role checks.
 
 Diagnostics include only bounded operation/lifecycle categories, revision/epoch, and failure facts. Never log SQL parameter values, prompt/terminal/audio content, secrets, argv, arbitrary RPC bodies, or sensitive paths. Support export is separately explicit and metadata-only.
 
-### Migration and clean cutover
+### Fresh start and clean cutover
 
-Replace the JSON-backed desired/runtime-operation storage with SQLite through one controlled authority transition; do not maintain two authoritative writers.
+I replace the legacy session-state model with a fresh central store, not a data importer. The initial catalog, pane graph, shared topology, drafts and submission records are empty. New explicit creation intents allocate new workspace/session/pane identities. Legacy catalog entries, history bindings, tombstones, pending operations, layout hints and drafts do not seed the new store or appear as recovered central sessions.
 
-1. Establish migration authority and freeze old admission. Defer incompatible handoff while accepted work or unknown operations prevent safe transition, unless separately scoped operator consent and reconciliation permit it.
-2. Validate legacy roots/files and all cross-store invariants without altering their original bytes. Import stable IDs, revision/naming protection, directory approvals, panes, canonical bindings, original receipts and completion evidence into a staged database.
-3. Preserve raw original evidence where normalization would lose meaning. Unknown/opaque records remain opaque or fence the affected migration; they are never reclassified as failed or silently omitted.
-4. Existing completion-proven deletion tombstones import as non-live retained records. Other supported catalog records become desired-open under the new policy, with old stopped/uncertain runtime observations preserved separately. Existing IDs are not regenerated. Missing standalone/home or history authority is not guessed.
-5. Commit and verify the complete imported graph, operation provenance, and storage-authority marker before enabling materialization. A crash before/after publication must identify one committed authority, not choose whichever file looks newer.
-6. Retain the original files privately as migration evidence, not a reconnect fallback. Normal reads/mutations use SQLite after cutover. Rollback cannot ignore post-cutover intents and reopen a stale JSON catalog.
+Use a dedicated fresh private root. Leave the old roots, canonical histories, draft archives, opaque originals, attachments, credentials, service-operation originals, unrelated preferences and untracked workspace `.axo` data untouched. No old file becomes a fallback authority. Ordinary central-database schema upgrades remain supported; they are not legacy import.
 
-A marker by itself does not prevent an older binary that ignores it from opening legacy files. The cutover must include a tested downgrade fence against supported old helpers, or defer publication until the distribution/ownership procedure enforces that exclusion. Do not rewrite or delete the only original evidence to create the fence. Arbitrary old binaries are not supported rollback targets.
+The service handoff still obeys RFD0010: freeze old admission and reconcile exactly owned work before an authorized helper replacement. A fresh catalog does not prove old writers have stopped, permit historical PID signaling, authorize orphan adoption, or repair registrations. Unknown old execution remains separately fenced; it is never attached to newly allocated identities.
 
-Client layout hints are migration input, not backend authority. Preserve opaque hints. When recognized geometry can be unambiguously associated with the same machine/session/panes, import it once under captured revision; conflicting hints require a defined choice rather than last-window-wins. Frontend focus/selection/zoom remain local and are not imported as desired execution state. Existing frontend draft archives are imported into daemon-owned input storage only through a bounded, revision-fenced operation with immutable import evidence. Preserve the original archive until exact backend acknowledgement; opaque or unsafe originals remain preserved and blocked, not replaced by empty input state.
+Move all session-state callers directly to the central operations and remove obsolete catalog/start choreography and frontend durable-storage paths. Negotiate the central capability and store generation so old cached revisions, pane selections, pending commands and draft destinations cannot become new-store input authority. Legacy pending submissions are never replayed. An old helper cannot serve the new store; incompatible clients/helpers block rather than reopen the old catalog or run a compatibility importer.
 
-Migration preserves histories, drafts, attachments, credentials, service-operation originals, unrelated preferences, archived roots, and untracked workspace `.axo` data. It does not repair registrations, reset background items, stop an unrelated helper, or activate a newly packaged app.
+The fresh start is not permission to delete old data, reset background items, stop unrelated work, or activate a packaged app. Those remain separately scoped operations.
 
 ### Validation and acceptance
 
@@ -294,7 +291,7 @@ These are contract gates, not an implementation progress ledger:
 
 | Scenario | Required result |
 | --- | --- |
-| Fresh and existing database startup | Safe initialization/migration or complete read; no empty fallback on failure; no frontend needed for existing desired work |
+| Fresh and existing database startup | Safe fresh-root initialization/schema upgrade or complete central-store read; no empty fallback on failure; no frontend needed for existing desired work |
 | Three open workspaces × four sessions × three panes | The complete graph materializes within admitted capacity; stable identities; no selection-dependent launches |
 | Workspace creation, session creation and pane addition | Backend-owned graph reservation and initialization; ready/pending truth; zero follow-up client starts |
 | Lost replies, retries and concurrent clients | Original operation reconciliation; no duplicate graph, PTY, Pi writer or prompt |
@@ -304,12 +301,12 @@ These are contract gates, not an implementation progress ledger:
 | Workspace archive/reopen | Descendant effective intent follows the documented hierarchy; individually archived sessions stay archived |
 | Frontend quit/crash/hide/reflow, phone-only use | Daemon policy unchanged; actual runtime continuity; input/draft barriers and viewport ownership preserved |
 | Coordinator crash before/after reservation, spawn, Pi admission and completion commit | Old epoch invalidated; exact original evidence retained; no unsupported adoption or duplicate writer |
-| JSON-to-SQLite interruption, unsafe files, malformed/opaque data and attempted downgrade | One authority or explicit fenced state; recoverable original bytes; no silent fallback/reset |
+| Fresh cutover with legacy data, stale clients, unsafe files and attempted downgrade | New empty authority without import; old bytes untouched; old captures never retargeted/replayed; mixed roots and incompatible helpers fenced |
 | Reattachment beyond raw backlog and repeated runtime replacement | Real VT/attachment gate distinguished; completion-authorized surface release; no eviction or fake screen recovery |
 
-Rust owns disposable process/filesystem/model assertions. Native UI testing uses actual authorized XCTest actions and refuses another same-bundle frontend. SQLite unit tests alone do not establish real Pi readiness, launchd acceptance, crash ownership, terminal fidelity, or installed-user migration.
+Rust owns disposable process/filesystem/model assertions. Native UI testing uses actual authorized XCTest actions and refuses another same-bundle frontend. SQLite unit tests alone do not establish real Pi readiness, launchd acceptance, crash ownership, terminal fidelity, or installed-user cutover.
 
-Delivery requires the exact committed source, packaged `dist/Axo.app`, matching app/helper team and strict/deep signatures, and the applicable native/protocol/storage lanes. Packaging is not activation; normal-profile migration, service handoff, cloud changes, and physical-device installation retain their separate consent and evidence boundaries.
+Delivery requires the exact committed source, packaged `dist/Axo.app`, matching app/helper team and strict/deep signatures, and the applicable native/protocol/storage lanes. Packaging is not activation; normal-profile cutover, service handoff, cloud changes, and physical-device installation retain their separate consent and evidence boundaries.
 
 ## Drawbacks
 
@@ -318,7 +315,7 @@ Delivery requires the exact committed source, packaged `dist/Axo.app`, matching 
 - Moving shared topology and creation policy out of the Mac coordinator requires a real frontend cutover, not a new database behind the same choreography.
 - Desired and observed state are necessarily different during startup, failure and shutdown; the API must expose that without bloated UI.
 - Old runtime ownership and unfinished admission remain difficult. A desired-state database cannot guarantee unattended recovery of every old writer.
-- Migration/downgrade fencing is more involved than retaining the JSON files as a fallback; that fallback would reintroduce competing authority.
+- Starting fresh deliberately excludes old sessions, layouts and drafts from the new workbench. Their retained files are not automatic recovery or fallback authority.
 
 ## Rationale and alternatives
 
@@ -328,7 +325,7 @@ Selected proposal because the user wants durable open workspace/session/pane int
 
 ### Keep JSON and add restart loops
 
-A simpler local solution can restart known-stopped backing resources and improve availability. It does not by itself define complete desired pane topology, archival hierarchy, atomic multi-entity creation, migration, or client removal. The current experiments are useful characterization, not the selected final architecture. JSON could encode desired state, but retaining the same fragmented model would not satisfy this decision.
+A simpler local solution can restart known-stopped backing resources and improve availability. It does not by itself define complete desired pane topology, archival hierarchy, atomic multi-entity creation or client removal. The current experiments are useful characterization, not the selected final architecture. JSON could encode desired state, but retaining the same fragmented model would not satisfy this decision.
 
 ### SQLite as an observed-process catalog only
 
@@ -336,7 +333,7 @@ Changing storage format while continuing to let the frontend launch resources le
 
 ### Thin frontend over an external multiplexer
 
-An existing terminal server provides a useful owner/client pattern, but delegating execution ownership to tmux/screen/Zellij is not the selected Axo direction and does not supply exact Pi binding, operation or migration contracts automatically.
+An existing terminal server provides a useful owner/client pattern, but delegating execution ownership to tmux/screen/Zellij is not the selected Axo direction and does not supply exact Pi binding, operation or fresh-cutover contracts automatically.
 
 ### Introduce independently surviving execution workers now
 
@@ -357,6 +354,7 @@ Keep the existing frontend startup sequence and manual recovery. This preserves 
 
 ### Accepted policy
 
+- Start with an empty central session store. Do not import legacy catalogs, layouts, bindings, receipts or drafts; leave old data untouched and unreferenced.
 - Archive is explicit desired-state intent, distinct from the existing Delete/tombstone contract. Parent archive/reopen preserves child choices.
 - A new open session has Pi plus an independent account shell. Reject removing its final required shell rather than implicitly archiving the session.
 - Safe eventual materialization with blocked unknown ownership is the initial contract; transparent coordinator-crash survival requires a separately accepted execution-owner design.
@@ -365,10 +363,10 @@ Keep the existing frontend startup sequence and manual recovery. This preserves 
 ### During implementation
 
 - Exact SQLite dependency/version, private VFS/open policy, rollback-journal configuration, physical database budgets and backup/compaction limits.
-- Schema and operation-phase encoding, including preserved legacy opaque originals and interrupted migration publication.
+- Central schema and operation-phase encoding, with no legacy-state import.
 - Exact bounded creation/observation API and negotiated capabilities; readiness deadlines and scheduling fairness.
-- Tested legacy-helper downgrade fence and supported rollback path without losing post-cutover intent.
-- Import policy for recognized/conflicting client layout hints and incomplete canonical Pi admission evidence.
+- Fresh-root placement, store-generation negotiation and incompatible-helper exclusion without stale-catalog fallback.
+- Exact original admission reconciliation for conversations created by the central store.
 
 ### Out of scope
 

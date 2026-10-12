@@ -88,8 +88,3 @@ CREATE TABLE drafts (
     text TEXT NOT NULL CHECK (length(CAST(text AS BLOB)) <= 65536),
     FOREIGN KEY (session_id, pane_id) REFERENCES panes(session_id, pane_id)
 ) STRICT;
-CREATE TABLE legacy_originals (
-    source_name TEXT PRIMARY KEY,
-    digest BLOB NOT NULL CHECK (length(digest) = 32),
-    original BLOB NOT NULL CHECK (length(original) <= 4194304)
-) STRICT;

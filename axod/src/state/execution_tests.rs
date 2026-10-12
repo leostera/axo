@@ -1,6 +1,51 @@
 use super::*;
 use crate::test_support::TestDirectory;
 #[test]
+fn fresh_central_root_is_empty_and_never_imports_or_changes_legacy_bytes() {
+    use std::os::unix::fs::DirBuilderExt;
+    let root = TestDirectory::new();
+    for name in [
+        "work-records.json",
+        "pane-state.json",
+        "pi-state.json",
+        "runtime-state.json",
+        "old-drafts",
+    ] {
+        std::fs::write(root.path().join(name), b"retained opaque original").unwrap();
+    }
+    let central = root.path().join("central");
+    std::fs::DirBuilder::new()
+        .mode(0o700)
+        .create(&central)
+        .unwrap();
+    let database = Database::open(&central, MachineId::new()).unwrap();
+    assert_eq!(database.revision().unwrap(), 0);
+    assert!(database.workspaces().unwrap().is_empty());
+    assert!(database.sessions().unwrap().is_empty());
+    assert!(database.desired_panes().unwrap().is_empty());
+    let import_tables: u32 = database
+        .connection
+        .query_row(
+            "SELECT count(*) FROM sqlite_schema WHERE name='legacy_originals'",
+            [],
+            |row| row.get(0),
+        )
+        .unwrap();
+    assert_eq!(import_tables, 0);
+    for name in [
+        "work-records.json",
+        "pane-state.json",
+        "pi-state.json",
+        "runtime-state.json",
+        "old-drafts",
+    ] {
+        assert_eq!(
+            std::fs::read(root.path().join(name)).unwrap(),
+            b"retained opaque original"
+        );
+    }
+}
+#[test]
 fn schema_one_upgrade_preserves_graph_and_original_receipt() {
     let root = TestDirectory::new();
     let machine = MachineId::new();

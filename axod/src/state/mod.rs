@@ -30,7 +30,7 @@ pub enum Error {
     OwnerConflict,
     Corrupt,
     UnsupportedVersion,
-    MigrationRequired,
+    LegacyState,
 }
 impl From<rusqlite::Error> for Error {
     fn from(_: rusqlite::Error) -> Self {
@@ -239,7 +239,7 @@ impl Database {
                 return Err(Error::Corrupt);
             }
             if root.has_legacy()? {
-                return Err(Error::MigrationRequired);
+                return Err(Error::LegacyState);
             }
         }
         let mut connection = Connection::open_in_memory()?;
@@ -1149,7 +1149,7 @@ mod tests {
         std::fs::write(root.path().join("work-records.json"), b"opaque original").unwrap();
         assert!(matches!(
             Database::open(root.path(), MachineId::new()),
-            Err(Error::MigrationRequired)
+            Err(Error::LegacyState)
         ));
         assert_eq!(
             std::fs::read(root.path().join("work-records.json")).unwrap(),

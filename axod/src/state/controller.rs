@@ -77,7 +77,7 @@ impl Controller {
             || journal.managed.lock().unwrap().commands().next().is_some()
             || journal.panes.lock().unwrap().commands().next().is_some()
         {
-            return Err(Error::MigrationRequired);
+            return Err(Error::LegacyState);
         }
         let mut native = Manager::new(journal);
         native.user_shell = crate::user_shell::CapturedUserShell::capture_account();
