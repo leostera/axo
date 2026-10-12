@@ -8,7 +8,7 @@
 
 ## Summary
 
-I want Axod to centrally own workspace, session, and pane state and their complete execution lifecycle. I propose a SQLite-backed desired-state store as the persistence mechanism, not as the architectural goal. On startup, Axod reads that desired graph, reconciles original operations and execution ownership, and materializes every effectively open session and pane. It then continuously reconciles desired state with actual PTY lifecycle, without depending on an attached client. Creating a workspace is one backend operation that initializes its session and panes, not a frontend sequence of catalog creation, shell creation, and Pi startup. Make `Axo.app` as thin as possible: macOS daemon management, presentation, and user input, including voice capture/transcription and an in-memory editing buffer. Axod owns durable drafts and original submission captures. It neither owns a competing catalog nor decides how to launch, restart, resume, or recover execution. SQLite owns Axo metadata, not Pi's canonical history or kernel resources. This is an accepted design, not a description of the current implementation or a claim of deployment, crash survival, or terminal-screen recovery. I start over with a fresh central store; I do not import the legacy catalogs, pane layouts, Pi bindings, operation receipts, or frontend drafts. Old data remains untouched and outside the new authority. Writing it authorizes no live service handoff, activation, or deletion of old data.
+I want Axod to centrally own workspace, session, and pane state and their complete execution lifecycle. I propose a SQLite-backed desired-state store as the persistence mechanism, not as the architectural goal. On startup, Axod reads that desired graph, reconciles original operations and execution ownership, and materializes every effectively open session and pane. It then continuously reconciles desired state with actual PTY lifecycle, without depending on an attached client. Creating a workspace is one backend operation that initializes its session and panes, not a frontend sequence of catalog creation, shell creation, and Pi startup. Make `Axo.app` as thin as possible: macOS daemon management, presentation, and user input, including voice capture/transcription and an in-memory editing buffer. I keep unsent drafts only in volatile client editing buffers; I do not persist or restore them. Axod owns original submission captures once input is submitted. The app neither owns a competing catalog nor decides how to launch, restart, resume, or recover execution. SQLite owns Axo metadata, not Pi's canonical history or kernel resources. This is an accepted design, not a description of the current implementation or a claim of deployment, crash survival, or terminal-screen recovery. I start over with a fresh central store; I do not import the legacy catalogs, pane layouts, Pi bindings, operation receipts, or frontend drafts. Old data remains untouched and outside the new authority. Writing it authorizes no live service handoff, activation, or deletion of old data.
 
 ## Motivation
 
@@ -38,7 +38,7 @@ Uncommitted work preceding this proposal experiments with daemon keep-alive loop
 
 - [RFD0007](RFD0007-mac-session-manager.md) establishes independent host/client lifetimes and native PTY ownership. This proposal replaces its metadata-only cold-start and explicit-restart policy with reconciliation of persisted desired-live intent. It retains the prohibition on replaying user commands and on inventing orphan ownership.
 - [RFD0010](RFD0010-macos-daemon-lifecycle-and-recovery.md) retains authority over launchd supervision, service registration, readiness, stop/update handoffs, and ownership safety. This proposal changes the session materialization policy, not the production launcher. Transparent crash survival and authoritative VT recovery remain separate guarantees.
-- [RFD0011](RFD0011-menu-bar-residency-and-first-launch-setup.md) retains one resident frontend, an optional workbench, independently opt-in frontend login startup, and draft-safe quit that leaves Axod alone.
+- [RFD0011](RFD0011-menu-bar-residency-and-first-launch-setup.md) retains one resident frontend, an optional workbench, independently opt-in frontend login startup, and quit that leaves Axod alone. I supersede its earlier draft-save barrier: unsent text is discarded when the frontend exits.
 - [RFD0008](RFD0008-private-multi-machine-control-plane.md) and [RFD0009](RFD0009-protocol-capability-parity.md) retain addressed local/remote RPC, role checks, bounded observation, and separate work/chat/runtime authority. Local and phone clients must converge on the same backend operations rather than forwarding orchestration to the Mac UI.
 
 If accepted, conflicting startup and restart clauses in those proposals are superseded by this RFD. Their historical checkpoints do not become current implementation claims.
@@ -50,8 +50,8 @@ If accepted, conflicting startup and restart clauses in those proposals are supe
 - Automatic safe restoration on daemon startup and replacement after completion-proven runtime exit.
 - Stable workspace/session/pane identities across runtime replacement and client reconnect.
 - Backend-complete workspace/session/pane creation with no client startup choreography.
-- A thin Mac client limited to platform daemon management, presentation, and user input; durable draft storage belongs to Axod.
-- Preserve new-store original operations, canonical histories and drafts, plus existing security/resource bounds. Leave legacy data, credentials and unrelated configuration untouched; do not import legacy session state.
+- A thin Mac client limited to platform daemon management, presentation, and user input, with bounded in-memory editing buffers and no durable draft storage.
+- Preserve new-store original operations and canonical histories, plus existing security/resource bounds. Leave legacy data, credentials and unrelated configuration untouched; do not import legacy session state.
 
 ## Non-goals
 
@@ -132,13 +132,13 @@ If stopping is uncertain, the desired state can already be archived while observ
 
 | Owner | Responsibilities |
 | --- | --- |
-| Axod | Desired graph, shared pane topology, approvals, revisions, command deduplication, materialization, PTYs, Pi admission/bindings, restart/resume, archival, execution recovery, backend capacity, runtime observations, durable drafts and original input-submission captures |
+| Axod | Desired graph, shared pane topology, approvals, revisions, command deduplication, materialization, PTYs, Pi admission/bindings, restart/resume, archival, execution recovery, backend capacity, runtime observations and original input-submission captures |
 | Pi | Agent execution, model/tools, conversation/branch state, and canonical JSONL history through public vanilla Pi APIs |
-| Axo.app | `SMAppService` setup/status and separately authorized service operations; AppKit/Ghostty presentation; selection, focus, sizing, scrolling, accessibility and IME; keyboard/paste/voice input and in-memory editing buffers; submitting typed user intent and draft saves through RPC |
+| Axo.app | `SMAppService` setup/status and separately authorized service operations; AppKit/Ghostty presentation; selection, focus, sizing, scrolling, accessibility and IME; keyboard/paste/voice input and in-memory editing buffers; submitting typed user intent through RPC |
 | Phone client | Its presentation/input and permitted addressed backend operations; no dependence on Mac frontend orchestration |
 | Relay/API | Existing authenticated routing and role enforcement; no competing desired-state store or materializer |
 
-The frontend may persist view preferences, but holds unsent input only in its editing buffer. Axod durably stores bounded drafts and original submission captures. Draft saves use captured logical conversation identity and compare-and-swap revision; acknowledgement clears only the exact unchanged draft. Voice transcription produces user input for a captured destination; it does not select a global session, launch an agent, or replay an uncertain submission. Draft-save, quit-save and original-send-ticket barriers apply to the new store through daemon RPC. Legacy draft archives and pending submissions are not restored, attached to new identities, or replayed; their old files remain untouched. An unavailable save cannot be reported as durable or silently fall back to a frontend-owned archive.
+I allow the frontend to persist view preferences, but unsent input lives only in its bounded in-memory editing buffers. I do not provide durable draft files, daemon draft tables/APIs, draft-save barriers or draft restoration. Attachment selections are volatile too; file transfer may use a fresh private temporary staging directory, never a restorable archive. Quitting or crashing the client discards unsent text without stopping Axod; hide/reflow preserves the live buffer. Acknowledgement clears only the exact unchanged editing revision. Voice transcription produces user input for a captured destination; it does not select a global session, launch an agent, or replay an uncertain submission. Axod's original submission capture and command deduplication remain separate from unsent drafts: removing draft persistence never authorizes replay of an uncertain send. Legacy draft archives and pending submissions are not restored, attached to new identities, or replayed; their old files remain untouched and unread.
 
 The client can own UI validation and confirmation, not backend authority. Axod must independently validate target, revision, approval, capacity, and lifecycle even if a menu item was enabled. No create/start/recovery fallback invokes Pi or a shell from the Mac app.
 
@@ -181,7 +181,7 @@ Keep SQLite operations behind the daemon's storage owner. Clients receive typed 
 
 For the initial single-writer design, use SQLite transactions in a bounded in-memory database and atomically publish the complete SQLite image through Rust's pinned private-directory file descriptors. The durable commit boundary is successful file fsync, exclusive publication/exchange, and directory fsync—not the preceding SQLite memory commit. Clients and SQLite never open the disk image directly. This avoids uncontrolled SQLite sidecar opens while enforcing no-follow, ownership, single-link and mode checks at actual I/O. A publication error fences the owner without exposing new spawn authority. This deliberately trades full-image write amplification for a simple, bounded private-storage boundary. An on-disk VFS/WAL replacement requires equivalent privacy, commit, backup and interruption acceptance.
 
-The database is not a second transcript store. Preserve canonical files, locations and ownership within the central store, and leave legacy histories untouched and unbound; keep bounded unsent input drafts and their submission evidence at a dedicated daemon-owned input-storage boundary. Unsent draft text is permitted there; it is not canonical Pi history or a replay queue. Do not persist arbitrary argv, environment values, prompts, terminal output, audio or credentials as operation payloads. Persist approved specification references and fingerprints instead.
+The database is not a second transcript store. Preserve canonical files, locations and ownership within the central store, and leave legacy histories untouched and unbound; keep original submission evidence at a dedicated daemon-owned input-storage boundary. I do not store unsent drafts there or treat a client editing buffer as canonical Pi history or a replay queue. Do not persist arbitrary argv, environment values, prompts, terminal output, audio or credentials as operation payloads. Persist approved specification references and fingerprints instead.
 
 ### Materializer and runtime lifecycle
 
@@ -204,7 +204,7 @@ Persist attempt identity, target, desired configuration revision and predecessor
 
 Distinguish at least desired state, materialization phase, native ownership, Pi readiness, and presentation. Conceptual observed phases are `materializing`, `live`, `restarting`, `stopping`, `stopped`, and `blocked`; bounded reason codes distinguish dependency, capacity, storage and ownership failures. A session is fully ready only when all its required desired panes satisfy their role-specific readiness.
 
-Restart scheduling uses bounded backoff and concurrency. Repeated short-lived launches must not spin or consume unlimited operation history. Existing per-session/global execution, transport, control, history, draft and presentation limits remain enforced. Reserve capacity for the complete requested graph before accepting a new graph that cannot fit. Never evict unrelated live work or silently materialize fewer panes to claim readiness.
+Restart scheduling uses bounded backoff and concurrency. Repeated short-lived launches must not spin or consume unlimited operation history. Existing per-session/global execution, transport, control, history, in-memory editing and presentation limits remain enforced. Reserve capacity for the complete requested graph before accepting a new graph that cannot fit. Never evict unrelated live work or silently materialize fewer panes to claim readiness.
 
 A runtime's exit does not update desired lifecycle to archived. Only explicit user intent changes that policy. A user intentionally leaving a shell must archive/remove the corresponding desired resource rather than rely on exiting its current process to permanently suppress keep-alive.
 
@@ -275,13 +275,13 @@ Diagnostics include only bounded operation/lifecycle categories, revision/epoch,
 
 ### Fresh start and clean cutover
 
-I replace the legacy session-state model with a fresh central store, not a data importer. The initial catalog, pane graph, shared topology, drafts and submission records are empty. New explicit creation intents allocate new workspace/session/pane identities. Legacy catalog entries, history bindings, tombstones, pending operations, layout hints and drafts do not seed the new store or appear as recovered central sessions.
+I replace the legacy session-state model with a fresh central store, not a data importer. The initial catalog, pane graph, shared topology and submission records are empty; client editing buffers start empty and are never restored. New explicit creation intents allocate new workspace/session/pane identities. Legacy catalog entries, history bindings, tombstones, pending operations, layout hints and drafts do not seed the new store or appear as recovered central sessions.
 
 Use a dedicated fresh private root. Leave the old roots, canonical histories, draft archives, opaque originals, attachments, credentials, service-operation originals, unrelated preferences and untracked workspace `.axo` data untouched. No old file becomes a fallback authority. Ordinary central-database schema upgrades remain supported; they are not legacy import.
 
 The service handoff still obeys RFD0010: freeze old admission and reconcile exactly owned work before an authorized helper replacement. A fresh catalog does not prove old writers have stopped, permit historical PID signaling, authorize orphan adoption, or repair registrations. Unknown old execution remains separately fenced; it is never attached to newly allocated identities.
 
-Move all session-state callers directly to the central operations and remove obsolete catalog/start choreography and frontend durable-storage paths. Negotiate the central capability and store generation so old cached revisions, pane selections, pending commands and draft destinations cannot become new-store input authority. Legacy pending submissions are never replayed. An old helper cannot serve the new store; incompatible clients/helpers block rather than reopen the old catalog or run a compatibility importer.
+Move all session-state callers directly to the central operations and remove obsolete catalog/start choreography and frontend durable-storage paths. Negotiate the central capability and store generation so old cached revisions, pane selections, pending commands and input destinations cannot become new-store input authority. Legacy pending submissions are never replayed. An old helper cannot serve the new store; incompatible clients/helpers block rather than reopen the old catalog or run a compatibility importer.
 
 The fresh start is not permission to delete old data, reset background items, stop unrelated work, or activate a packaged app. Those remain separately scoped operations.
 
@@ -299,7 +299,7 @@ These are contract gates, not an implementation progress ledger:
 | Slow/missing Pi, bad directory, capacity or disk failure | Independent shells progress where safe; bounded retries and truthful partial/blocked state |
 | Archive/remove races with materialization | Intent persists before effects; owned late child reconciled/stopped; no resurrection after withdrawal |
 | Workspace archive/reopen | Descendant effective intent follows the documented hierarchy; individually archived sessions stay archived |
-| Frontend quit/crash/hide/reflow, phone-only use | Daemon policy unchanged; actual runtime continuity; input/draft barriers and viewport ownership preserved |
+| Frontend quit/crash/hide/reflow, phone-only use | Daemon policy unchanged; actual runtime continuity; original-submission fences and viewport ownership preserved; unsent text intentionally lost on frontend exit |
 | Coordinator crash before/after reservation, spawn, Pi admission and completion commit | Old epoch invalidated; exact original evidence retained; no unsupported adoption or duplicate writer |
 | Fresh cutover with legacy data, stale clients, unsafe files and attempted downgrade | New empty authority without import; old bytes untouched; old captures never retargeted/replayed; mixed roots and incompatible helpers fenced |
 | Reattachment beyond raw backlog and repeated runtime replacement | Real VT/attachment gate distinguished; completion-authorized surface release; no eviction or fake screen recovery |
@@ -358,7 +358,7 @@ Keep the existing frontend startup sequence and manual recovery. This preserves 
 - Archive is explicit desired-state intent, distinct from the existing Delete/tombstone contract. Parent archive/reopen preserves child choices.
 - A new open session has Pi plus an independent account shell. Reject removing its final required shell rather than implicitly archiving the session.
 - Safe eventual materialization with blocked unknown ownership is the initial contract; transparent coordinator-crash survival requires a separately accepted execution-owner design.
-- Shared pane topology and durable input drafts belong in Axod. Per-window presentation and in-memory input editing remain client-owned.
+- Shared pane topology and original submission captures belong in Axod. Per-window presentation and bounded volatile input editing remain client-owned. I do not persist unsent drafts in either process.
 
 ### During implementation
 

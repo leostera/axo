@@ -13,7 +13,9 @@ final class AxodWorkbenchApp: NSObject, NSApplicationDelegate, NSWindowDelegate,
     }()
     private var coordinator: AxodWorkbenchCoordinator?
     private var window: NSWindow?
-    private var waitingForDraftSave = false
+#if DEBUG
+    private var waitingForFixtureStop = false
+#endif
     private var savesWindowFrame = true
     private var menuBar: AxodMenuBarController?
 #if DEBUG
@@ -136,27 +138,23 @@ final class AxodWorkbenchApp: NSObject, NSApplicationDelegate, NSWindowDelegate,
             return .terminateLater
         }
 #endif
-        guard let coordinator else { return .terminateNow }
-        guard !waitingForDraftSave else { return .terminateLater }
-        // Commit the field editor before freezing accepted draft edits. A failed
-        // responder transfer cancels quit rather than silently dropping input.
+        // Unsent input is in-memory only. Quit has no storage barrier and never
+        // stops daemon work; only an explicitly owned diagnostic child is cleaned up.
         if let window = NSApp.keyWindow ?? window, !window.makeFirstResponder(nil) { return .terminateCancel }
-        waitingForDraftSave = true
-        Task { [weak self] in
-            let saved = await coordinator.chatDrafts.prepareToQuit()
-            guard let self else { sender.reply(toApplicationShouldTerminate: false); return }
-            self.waitingForDraftSave = false
-            if !saved { self.showWorkbench(nil) }
 #if DEBUG
-            if saved, let context = self.uiTestContext {
+        guard !waitingForFixtureStop else { return .terminateLater }
+        if let coordinator, let context = uiTestContext {
+            waitingForFixtureStop = true
+            Task {
                 coordinator.disconnect()
                 await coordinator.stopSelfTestDaemon()
                 context.preferences.removePersistentDomain(forName: "Axo.AppSelfTest.\(context.root.lastPathComponent)")
+                sender.reply(toApplicationShouldTerminate: true)
             }
-#endif
-            sender.reply(toApplicationShouldTerminate: saved)
+            return .terminateLater
         }
-        return .terminateLater
+#endif
+        return .terminateNow
     }
 
     func applicationWillTerminate(_ notification: Notification) {

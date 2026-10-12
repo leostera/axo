@@ -6,7 +6,7 @@ Axo's per-user Rust daemon owns durable session intent and native PTYs. The arch
 
 The bundled LaunchAgent uses `axod serve-user [--instance-id safe-id]`. Launchd alone supervises the production helper; opening a client never registers, repairs, upgrades or directly launches it.
 
-The service claims the existing private top-level `owner.lock`, preserves the stable machine identity and opens a dedicated `CentralSessions` directory. Its private SQLite image contains the desired workspace/session/pane graph, original operations, configuration captures, runtime attempts, Pi bindings and drafts. The auxiliary `CentralSessions/Runtime` journal holds native execution/completion evidence only: it does not open a second catalog.
+The service claims the existing private top-level `owner.lock`, preserves the stable machine identity and opens a dedicated `CentralSessions` directory. Its private SQLite image contains the desired workspace/session/pane graph, original operations, configuration captures, runtime attempts and Pi bindings. Unsent drafts are volatile client editing buffers, never daemon storage; existing retired draft data stays unread and untouched. The auxiliary `CentralSessions/Runtime` journal holds native execution/completion evidence only: it does not open a second catalog.
 
 This is a fresh authority, not a legacy importer. Old work catalogs, bindings, receipts, layouts, drafts and canonical histories are left untouched and unbound. Mixed storage fails closed. Supported central database schema upgrades are not legacy migration. A database cannot restore a PTY, prove an unknown writer's completion or authorize historical PID signaling.
 

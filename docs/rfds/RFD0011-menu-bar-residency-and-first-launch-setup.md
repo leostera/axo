@@ -8,7 +8,7 @@
 
 ## Summary
 
-Make Axo one menu-bar-resident Mac application whose workbench is an optional window, alongside the separate headless Axod LaunchAgent. First visible onboarding requests bundled LaunchAgent registration through Apple's `SMAppService`, rather than blocking on Finder installation or showing an empty session catalog. macOS owns approval; Axo exposes its native Login Items settings action when needed, verifies the real daemon connection, and offers independently opt-in menu-bar startup at login. The user's 2026-10-12 direction supersedes the earlier Applications-folder gate and custom service confirmation. Closing a window hides presentation; quitting Axo saves drafts and removes the frontend without stopping Axod. This decision is accepted by the user's request to document and implement the agreed product model; it does not assert that installed-service or terminal-recovery acceptance has passed.
+Make Axo one menu-bar-resident Mac application whose workbench is an optional window, alongside the separate headless Axod LaunchAgent. First visible onboarding requests bundled LaunchAgent registration through Apple's `SMAppService`, rather than blocking on Finder installation or showing an empty session catalog. macOS owns approval; Axo exposes its native Login Items settings action when needed, verifies the real daemon connection, and offers independently opt-in menu-bar startup at login. The user's 2026-10-12 direction supersedes the earlier Applications-folder gate and custom service confirmation. Closing a window hides presentation; quitting Axo discards unsent in-memory text and removes the frontend without stopping Axod. RFD0012 and the user's subsequent direction supersede durable drafts and the former draft-save quit barrier. This decision is accepted by the user's request to document and implement the agreed product model; it does not assert that installed-service or terminal-recovery acceptance has passed.
 
 ## Motivation
 
@@ -18,7 +18,7 @@ Axo's value includes work continuing without a visible window. A resident menu-b
 
 The source baseline is `c99896d`. Relevant boundaries are:
 
-- [`AxodWorkbenchApp.swift`](../../apple/AxoMacAxod/AxodWorkbenchApp.swift): AppKit delegate, singleton retained workbench window, menus, hide-on-close, draft-safe quit.
+- [`AxodWorkbenchApp.swift`](../../apple/AxoMacAxod/AxodWorkbenchApp.swift): AppKit delegate, singleton retained workbench window, menus, hide-on-close, non-destructive daemon-independent quit.
 - [`AxodWorkbenchView.swift`](../../apple/AxoMacAxod/AxodWorkbenchView.swift): sidebar/detail and the misleading empty-state heading during disconnected startup.
 - [`AxodServiceLifecycle.swift`](../../apple/AxoMacAxod/AxodServiceLifecycle.swift): application-scoped registration/readiness observations and explicit setup.
 - [`AxodWorkbenchCoordinator.swift`](../../apple/AxoMacAxod/AxodWorkbenchCoordinator.swift): bounded read-only connection, authoritative catalogs, empty-startup intent, selection, and presentation resources.
@@ -32,7 +32,7 @@ The real current-profile service remains unproven: launchd has reported `copy_bu
 - An understandable first-opening path to installed, approved, responding background service.
 - No empty-catalog claim before authoritative catalog reads.
 - Separate GUI residency, frontend-at-login, daemon supervision, and runtime ownership.
-- Preserve native workbench composition, selection, terminal resources, drafts, histories, and original operation records.
+- Preserve native workbench composition, selection, terminal resources, live editing buffers, histories, and original operation records.
 - Keep denial, incomplete setup, missing installation, and failed readiness actionable.
 
 ## Non-goals
@@ -56,12 +56,12 @@ Axo.app — one frontend process
     Open Axo → setup or retained workbench window
     Settings
     Background Service
-    Quit Axo → save drafts, remove frontend; leave Axod alone
+    Quit Axo → discard unsent text, remove frontend; leave Axod alone
 
 macOS launchd → Axod → owned Pi and shell executions
 ```
 
-The menu-bar item remains present when all Axo windows are hidden. The workbench may use a Dock presence while visible; hiding the last application window returns to accessory/menu-bar presentation. Showing, hiding, or activating a window never launches or stops work. Explicit Quit remains available and is subject to the existing draft-save barrier.
+The menu-bar item remains present when all Axo windows are hidden. The workbench may use a Dock presence while visible; hiding the last application window returns to accessory/menu-bar presentation. Showing, hiding, or activating a window never launches or stops work. Explicit Quit remains available without a draft-save barrier; unsent text is volatile.
 
 ### First opening
 
@@ -71,7 +71,7 @@ The menu-bar item remains present when all Axo windows are hidden. The workbench
 4. When macOS requires approval, show **Open Settings** using `SMAppService.openSystemSettingsLoginItems()`. macOS controls its notification/approval presentation; Axo does not promise a modal prompt or bypass consent. Returning to Axo only observes status and performs bounded read-only readiness checks.
 5. A responding endpoint, validated epoch and negotiation, and successful catalog loading establish usable local connection. “Enabled” alone is insufficient. Failure remains in setup with the actual error and recovery links.
 6. Offer **Keep Axo in the menu bar at login** independently. Preserve an existing choice unless the user explicitly changes it. Pending frontend login approval need not block an otherwise usable workbench.
-7. **Open Axo** finishes setup and presents the workbench. The original authoritative-empty app-start intent may create its first session; an existing catalog, pending command, or unavailable draft store prevents automatic empty startup as before.
+7. **Open Axo** finishes setup and presents the workbench. The original authoritative-empty app-start intent may create its first session; an existing catalog or pending command prevents automatic empty startup as before. Draft storage is no longer a startup prerequisite.
 
 The setup-completion preference is a presentation hint, not registration or execution authority. Subsequent launches revalidate registration and connection before restoring the workbench. Once the workbench has been entered in this process, connection loss uses its recovery UI rather than repeatedly replacing an active viewport with onboarding.
 
@@ -79,7 +79,7 @@ The setup-completion preference is a presentation hint, not registration or exec
 
 Closing the primary window orders it out without disposing its retained surfaces. The menu-bar **Open Axo** item restores that same window, selection, and viewport. It does not request another create-if-empty operation or connect merely because a window is shown.
 
-**Quit Axo** commits the field editor and waits for the draft persistence barrier. Failure refuses quit and reveals the window with an explanation. Successful quit removes the status item but does not unregister or terminate Axod. Starting again from Finder or a separately approved login item revalidates the service; it does not replay unknown work.
+**Quit Axo** commits the field editor and discards unsent in-memory text, with no storage work or save barrier. Successful quit removes the status item but does not unregister or terminate Axod. Starting again from Finder or a separately approved login item revalidates the service; it does not replay unknown work.
 
 ## Reference-level explanation
 
@@ -120,7 +120,7 @@ Login launches should be identified through the macOS login-item launch event an
 
 ### Completion, persistence, and concurrency
 
-A versioned setup-completion hint uses the injected frontend preferences; disposable tests never write normal preferences. Unknown future preference values are not silently downgraded. Registration, actual endpoint/epoch, private draft readiness, and authoritative catalogs are revalidated regardless of the hint.
+A versioned setup-completion hint uses the injected frontend preferences; disposable tests never write normal preferences. Unknown future preference values are not silently downgraded. Registration, actual endpoint/epoch, and authoritative catalogs are revalidated regardless of the hint.
 
 Before awaiting a login-setting change or finishing setup, capture the current source/connection identity. Revalidate afterward; a stale ready screen cannot complete setup against a different daemon. Present failures from the shared lifecycle without clearing original tickets or changing canonical bytes. Prevent duplicate Finish actions while an operation is pending.
 
@@ -134,7 +134,7 @@ Service enablement retains the owner-absence fence and a private durable origina
 - Setup cannot display “No sessions yet” without authoritative reads.
 - Setup completion is not a substitute for readiness or service-operation authority.
 - Login startup remains separate and explicit; no unrelated service or global database is modified.
-- Closing hides the retained window; real quit retains the draft barrier and leaves Axod alone.
+- Closing hides the retained window; real quit discards unsent text and leaves Axod alone.
 - Current manual disablement and original uncertain operations survive packaging and presentation changes.
 
 ### Compatibility and migration

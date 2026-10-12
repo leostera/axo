@@ -4,7 +4,7 @@ The architectural contract is [RFD0012](../docs/rfds/RFD0012-sqlite-desired-stat
 
 ## One session authority
 
-- The central store owns workspace/session/pane intent, immutable original operations, configuration revisions, runtime attempts, canonical bindings and drafts. Neither the runtime journal nor a frontend is a competing catalog.
+- The central store owns workspace/session/pane intent, immutable original operations, configuration revisions, runtime attempts and canonical bindings. Unsent drafts are bounded volatile client buffers, never persisted/restored by either process; removing draft storage does not remove original command receipts. Neither the runtime journal nor a frontend is a competing catalog.
 - The service claims the top-level helper lease without reading legacy catalogs, then opens its dedicated central directory. Old bytes remain unimported. Unsafe/mixed roots fail closed; supported central schema upgrades are separate from legacy migration.
 - Machine, host, store, session, pane, runtime, attachment and command identities have distinct meanings. Central addresses capture store generation as well as machine/boot identity. Session addresses include explicit parent membership.
 - Publication of the complete graph/original precedes effects. A reserved attempt has an exact runtime and captures pane/session/workspace revisions individually. Unknown reservations or admission cannot be issued as another spawn.

@@ -177,7 +177,7 @@ flowchart LR
 - **R2** holds uploaded bytes. A published key is never overwritten with a different snapshot.
 - **The Durable Object** owns file availability, session association, quotas, upload reservations, idempotency records, and deletion/cleanup state. These records must survive restart and WebSocket hibernation.
 - **The Worker** authenticates/authorizes each operation and streams bytes using an R2 binding. It never accepts a client-selected bucket key or local path.
-- **Native clients** own drafts, bounded caches, and presentation. A local cache is not authoritative availability or a conversation backup.
+- **Native clients** own volatile draft selections, bounded caches, and presentation. I no longer persist or restore unsent drafts. Attachment bytes are staged in a fresh private temporary directory for the live client's transfer, with cleanup on release; a restart starts with no selections and never reads the retired `AxoDraftFiles` registry. Already published shared files remain in the explicit cloud inventory. A local cache is not authoritative availability or a conversation backup.
 
 No D1, KV, Queues, or additional Durable Object is required initially. Bulk file bytes do not enter Durable Object storage or WebSocket messages. The existing single-workbench object is a deliberate prototype scope, not a multi-user partitioning design.
 
@@ -309,7 +309,7 @@ Proposed first-version defaults, subject to acceptance:
 | File-list page | At most 80 bounded metadata records, with an encoded-response budget; additional pages only on list-scroll demand |
 | Pending reservation | 24-hour expiry; release capacity and remove staged/orphan bytes through retryable cleanup |
 | Ready files | Retain until explicit deletion; no silent age-based expiry in the initial design |
-| Local preview/materialization caches | Explicit byte limits and eviction; retain unsent draft sources until sent or discarded |
+| Local preview/materialization caches | Explicit byte limits and eviction; retain unsent temporary attachment sources only for the live client, until sent, discarded or released |
 
 Also cap file/reservation counts, metadata lengths, in-flight uploads, and request rates; a byte quota alone does not bound zero-byte files, tombstones, or operation charges. Exact count/rate/model/cache limits must be documented and tested before rollout. Verify the actual Cloudflare account request-body limits and the pinned `cf` binding/configuration API; do not equate R2's object limit with the HTTP ingress limit.
 

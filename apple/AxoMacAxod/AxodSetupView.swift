@@ -18,10 +18,6 @@ struct AxodSetupView: View {
                     Label("Setup couldn’t finish.", systemImage: "exclamationmark.circle")
                         .foregroundStyle(.orange)
                 }
-                if coordinator.chatDrafts.quitMessage != nil {
-                    Label("Changes couldn’t be saved.", systemImage: "exclamationmark.circle")
-                        .foregroundStyle(.orange)
-                }
                 DisclosureGroup("Details") {
                     VStack(alignment: .leading, spacing: 8) {
                         Text(coordinator.daemonServiceMessage)
@@ -29,7 +25,6 @@ struct AxodSetupView: View {
                         if let failure = coordinator.setupPresentation.failure ?? coordinator.serviceSetupFailure {
                             Text(failure)
                         }
-                        if let message = coordinator.chatDrafts.quitMessage { Text(message) }
                         Button("Background Service Settings…", action: coordinator.showServiceSettingsWindow)
                     }
                     .font(.callout)

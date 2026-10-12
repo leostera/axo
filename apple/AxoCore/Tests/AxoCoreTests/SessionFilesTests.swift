@@ -88,6 +88,23 @@ final class SessionFilesTests: XCTestCase {
         XCTAssertFalse(metadata.contains { $0.httpMethod == "PUT" })
     }
 
+    @MainActor
+    func testReleasingClientCleansOnlyItsOwnedTemporaryAttachmentDirectory() async throws {
+        let endpoint = try RelayEndpoint("https://\(UUID().uuidString.lowercased()).test")
+        let source = FileManager.default.temporaryDirectory.appendingPathComponent("selection-\(UUID().uuidString).md")
+        try Data("Temporary attachment".utf8).write(to: source)
+        defer { try? FileManager.default.removeItem(at: source) }
+        var client: SessionFilesClient? = SessionFilesClient(endpoint: endpoint, cookie: "test-cookie", configuration: configuration())
+        client?.selectSession("session")
+        let staged = await client?.addFile(source)
+        XCTAssertNotNil(staged)
+        let stagedURL = try XCTUnwrap(client?.drafts.first?.source)
+        XCTAssertTrue(FileManager.default.fileExists(atPath: stagedURL.path))
+        client = nil
+        XCTAssertFalse(FileManager.default.fileExists(atPath: stagedURL.deletingLastPathComponent().path))
+        XCTAssertEqual(try Data(contentsOf: source), Data("Temporary attachment".utf8))
+    }
+
     func testAttachmentWireMetadataAndOnlyFileIDsInPrompts() throws {
         let file = try JSONDecoder().decode(SharedFile.self, from: JSONSerialization.data(withJSONObject: fileRecord))
         try file.validate()
@@ -129,24 +146,22 @@ final class SessionFilesTests: XCTestCase {
         XCTAssertTrue(client.isStale)
     }
 
-    func testDraftMigrationPreservesInterruptedUploadsWithoutMakingThemReady() throws {
-        let record: [String: Any] = ["id": UUID().uuidString, "sessionId": "session", "filename": "report.md", "source": "file:///tmp/report.md",
-            "isUploading": true, "progress": 0.5]
-        let draft = try JSONDecoder().decode(DraftFile.self, from: JSONSerialization.data(withJSONObject: record))
-        guard case .uploading(let progress, nil) = draft.transfer else { return XCTFail("Expected preserved interrupted transfer") }
-        XCTAssertEqual(progress, 0.5)
-        XCTAssertNil(draft.readyFile)
-    }
-
-    func testSavedReadyStateCannotWrapAnUnpublishedReservation() throws {
+    func testVolatileTransferFailurePreservesReservationWithoutInventingReadiness() throws {
         let pending = try JSONDecoder().decode(SharedFile.self, from: JSONSerialization.data(withJSONObject: fileRecord.merging(["state": "pending"]) { _, new in new }))
         var draft = DraftFile(id: UUID(), sessionId: "session", filename: "report.md", source: URL(fileURLWithPath: "/tmp/report.md"))
-        draft.transfer = .ready(pending)
-        XCTAssertThrowsError(try JSONDecoder().decode(DraftFile.self, from: JSONEncoder().encode(draft)))
+        draft.transfer = .uploading(progress: 0.5, reservation: pending)
+        draft.reportProgress(2)
+        XCTAssertEqual(draft.progress, 1)
+        XCTAssertNil(draft.readyFile)
+        draft.fail("Upload interrupted")
+        XCTAssertEqual(draft.file, pending)
+        XCTAssertNil(draft.readyFile)
+        XCTAssertFalse(draft.isUploading)
+        XCTAssertEqual(draft.error, "Upload interrupted")
     }
 
     @MainActor
-    func testSelectingFileOnlyStagesADurableLocalDraftWithoutPublishing() async throws {
+    func testSelectingFileOnlyStagesATemporaryAttachmentWithoutPublishing() async throws {
         let host = "\(UUID().uuidString.lowercased()).test"
         await FilesURLProtocol.replies.register(host, status: 503, body: Data())
         let client = SessionFilesClient(endpoint: try RelayEndpoint("https://\(host)"), cookie: "test-cookie", configuration: configuration())
@@ -162,7 +177,20 @@ final class SessionFilesTests: XCTestCase {
         XCTAssertNil(client.currentDrafts.first?.file)
         XCTAssertFalse(client.currentDrafts[0].isUploading)
         XCTAssertFalse(client.canSubmitDrafts)
+        let stagedURL = try XCTUnwrap(client.currentDrafts.first?.source)
+        let temporary = FileManager.default.temporaryDirectory.resolvingSymlinksInPath()
+        XCTAssertEqual(stagedURL.deletingLastPathComponent().deletingLastPathComponent().resolvingSymlinksInPath(), temporary)
+        XCTAssertFalse(FileManager.default.fileExists(atPath: stagedURL.deletingLastPathComponent().appendingPathComponent("drafts.json").path))
+        let permissions = try FileManager.default.attributesOfItem(atPath: stagedURL.deletingLastPathComponent().path)[.posixPermissions] as? NSNumber
+        XCTAssertEqual(permissions?.intValue, 0o700)
+        // Staging another input uses the same owned directory, not a new archive.
+        let second = await client.addFile(source)
+        let secondID = try XCTUnwrap(second)
+        XCTAssertEqual(client.currentDrafts.count, 2)
+        client.removeDraft(secondID)
         client.removeDraft(id)
+        XCTAssertFalse(FileManager.default.fileExists(atPath: stagedURL.path))
+        XCTAssertTrue(FileManager.default.fileExists(atPath: source.path))
     }
 
     @MainActor
@@ -184,7 +212,7 @@ final class SessionFilesTests: XCTestCase {
     }
 
     @MainActor
-    func testFailedUploadKeepsDraftSourceAcrossClientRecreationWithoutAutoReplay() async throws {
+    func testFailedUploadRetainsOnlyLiveClientInputAndFreshClientNeverRestoresOrReplays() async throws {
         let host = "\(UUID().uuidString.lowercased()).test"
         let endpoint = try RelayEndpoint("https://\(host)")
         await FilesURLProtocol.replies.register(host, status: 503, body: Data(#"{"message":"Storage disabled for test"}"#.utf8))
@@ -204,13 +232,15 @@ final class SessionFilesTests: XCTestCase {
         let sourceCopy = try XCTUnwrap(client.currentDrafts.first?.source)
         XCTAssertEqual(try String(contentsOf: sourceCopy, encoding: .utf8), "Unsent document")
         let restored = SessionFilesClient(endpoint: endpoint, cookie: "test-cookie", configuration: configuration())
-        XCTAssertEqual(restored.currentDrafts.count, 1)
-        XCTAssertFalse(restored.currentDrafts[0].isUploading)
+        restored.selectSession("session")
+        XCTAssertTrue(restored.drafts.isEmpty)
+        XCTAssertTrue(restored.currentDrafts.isEmpty)
         let count = await FilesURLProtocol.replies.received(host).count
         try await Task.sleep(for: .milliseconds(100))
         let after = await FilesURLProtocol.replies.received(host).count
         XCTAssertEqual(after, count)
-        restored.removeDraft(restored.currentDrafts[0].id)
+        XCTAssertEqual(client.currentDrafts.count, 1)
+        client.removeDraft(id)
         XCTAssertFalse(FileManager.default.fileExists(atPath: sourceCopy.path))
     }
 }

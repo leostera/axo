@@ -15,9 +15,6 @@ struct AxodWorkbenchView: View {
 
     var body: some View {
         VStack(spacing: 0) {
-            if coordinator.chatDrafts.quitMessage != nil {
-                AxodStatusNotice("Changes couldn’t be saved") { EmptyView() }
-            }
             recoveryNotices
             AxodNativeWorkbenchSplitView(
                 workbench: coordinator,

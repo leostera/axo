@@ -69,7 +69,7 @@ public struct FilePage: Decodable, Sendable {
     }
 }
 
-public enum DraftTransfer: Codable, Equatable, Sendable {
+public enum DraftTransfer: Equatable, Sendable {
     case staged
     case queued
     case uploading(progress: Double, reservation: SharedFile?)
@@ -77,11 +77,11 @@ public enum DraftTransfer: Codable, Equatable, Sendable {
     case failed(message: String, reservation: SharedFile?)
 }
 
-public struct DraftFile: Codable, Identifiable, Sendable {
+public struct DraftFile: Identifiable, Sendable {
     public let id: UUID
     public let sessionId: String
     public let filename: String
-    public internal(set) var source: URL
+    public let source: URL
     public internal(set) var transfer: DraftTransfer = .staged
     public var file: SharedFile? {
         switch transfer { case .ready(let file): file; case .uploading(_, let file), .failed(_, let file): file; default: nil }
@@ -99,37 +99,6 @@ public struct DraftFile: Codable, Identifiable, Sendable {
     mutating func reportProgress(_ fraction: Double) {
         guard case .uploading(_, let reservation) = transfer else { return }
         transfer = .uploading(progress: min(1, max(0, fraction)), reservation: reservation)
-    }
-    private enum CodingKeys: String, CodingKey { case id, sessionId, filename, source, transfer }
-    private enum LegacyKeys: String, CodingKey { case file, progress, isUploading, error }
-    public init(from decoder: Decoder) throws {
-        let values = try decoder.container(keyedBy: CodingKeys.self)
-        id = try values.decode(UUID.self, forKey: .id)
-        sessionId = try values.decode(String.self, forKey: .sessionId)
-        filename = try values.decode(String.self, forKey: .filename)
-        source = try values.decode(URL.self, forKey: .source)
-        if values.contains(.transfer) {
-            transfer = try values.decode(DraftTransfer.self, forKey: .transfer)
-            try validateTransfer()
-            return
-        }
-        // Local storage migration preserves selections made by the initial prototype.
-        let legacy = try decoder.container(keyedBy: LegacyKeys.self)
-        let file = try legacy.decodeIfPresent(SharedFile.self, forKey: .file)
-        if try legacy.decodeIfPresent(Bool.self, forKey: .isUploading) == true {
-            transfer = .uploading(progress: try legacy.decodeIfPresent(Double.self, forKey: .progress) ?? 0, reservation: file)
-        } else if let error = try legacy.decodeIfPresent(String.self, forKey: .error) {
-            transfer = .failed(message: error, reservation: file)
-        } else if let file, file.state == .ready { transfer = .ready(file) }
-        try validateTransfer()
-    }
-    private func validateTransfer() throws {
-        guard source.isFileURL, sessionId.range(of: "^[a-zA-Z0-9_.:-]{1,128}$", options: .regularExpression) != nil,
-              file.map({ $0.sessionId == sessionId }) ?? true else { throw FileTransferError.message("Invalid saved attachment destination.") }
-        if case .ready(let file) = transfer, file.state != .ready { throw FileTransferError.message("Saved attachment was not ready.") }
-        if case .uploading(let fraction, _) = transfer, !fraction.isFinite || !(0...1).contains(fraction) {
-            throw FileTransferError.message("Invalid saved upload progress.")
-        }
     }
 }
 

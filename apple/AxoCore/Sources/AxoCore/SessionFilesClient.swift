@@ -22,6 +22,8 @@ public final class SessionFilesClient {
     private var loadedRevision = 0
     private var forcedRefresh = 0
     private let cache: URL
+    // A fresh per-client temporary directory, never a restorable draft archive.
+    private let staging = TemporaryAttachmentDirectory()
 
     public init(endpoint: RelayEndpoint, cookie: String, configuration: URLSessionConfiguration = .ephemeral) {
         self.endpoint = endpoint
@@ -30,16 +32,6 @@ public final class SessionFilesClient {
         self.session = URLSession(configuration: configuration, delegate: PrivateTransferDelegate(), delegateQueue: nil)
         self.cache = FileManager.default.urls(for: .cachesDirectory, in: .userDomainMask)[0].appendingPathComponent("AxoFiles", isDirectory: true)
         sessionId = UserDefaults.standard.string(forKey: "axo.fileSession.\(endpoint.baseURL.absoluteString)")
-        if let directory = try? draftDirectory(), let data = try? Data(contentsOf: directory.appendingPathComponent("drafts.json")),
-           let saved = try? JSONDecoder().decode([DraftFile].self, from: data) {
-            drafts = saved.compactMap { original in
-                var draft = original
-                draft.source = directory.appendingPathComponent(draft.id.uuidString)
-                guard FileManager.default.fileExists(atPath: draft.source.path) else { return nil }
-                if draft.isUploading { draft.fail("Upload interrupted. Check/retry when ready.") }
-                return draft
-            }
-        }
     }
     public var storageOrigin: URL { endpoint.baseURL }
     public func matches(_ endpoint: RelayEndpoint) -> Bool { self.endpoint.baseURL == endpoint.baseURL }
@@ -121,12 +113,11 @@ public final class SessionFilesClient {
             let allBytes = drafts.reduce(0) { total, draft in total + ((try? draft.source.resourceValues(forKeys: [.fileSizeKey]).fileSize) ?? 0) }
             guard allBytes + bytes <= 200 * 1024 * 1024 else { throw FileTransferError.message("Unsent attachment storage reached 200 MiB. Discard old drafts before adding more.") }
             guard used + bytes <= 50 * 1024 * 1024 else { throw FileTransferError.message("Prompt attachments exceed 50 MiB.") }
-            let directory = try draftDirectory()
+            let directory = try staging.requireURL()
             let id = UUID()
             let staged = directory.appendingPathComponent(id.uuidString)
             try FileManager.default.copyItem(at: url, to: staged)
             drafts.append(DraftFile(id: id, sessionId: selected, filename: url.lastPathComponent, source: staged))
-            persistDrafts()
             return id
         } catch { notice = error.localizedDescription; return nil }
     }
@@ -227,7 +218,6 @@ public final class SessionFilesClient {
         uploads[id]?.cancel()
         uploadQueue.removeAll { $0 == id }
         drafts.removeAll { $0.id == id }
-        persistDrafts()
         try? FileManager.default.removeItem(at: draft.source)
         if let file = draft.file, file.state == .pending {
             Task { [weak self] in await self?.delete(file) }
@@ -298,23 +288,7 @@ public final class SessionFilesClient {
     }
     private func updateDraft(_ id: UUID, _ update: (inout DraftFile) -> Void) {
         guard let index = drafts.firstIndex(where: { $0.id == id }) else { return }
-        let previous = drafts[index]
         update(&drafts[index])
-        let current = drafts[index]
-        if previous.file != current.file || previous.isUploading != current.isUploading || previous.isQueued != current.isQueued || previous.error != current.error { persistDrafts() }
-    }
-    private func persistDrafts() {
-        do {
-            let directory = try draftDirectory()
-            let data = try JSONEncoder().encode(drafts)
-            try data.write(to: directory.appendingPathComponent("drafts.json"), options: .atomic)
-        } catch { notice = "Could not save attachment drafts: \(error.localizedDescription)" }
-    }
-    private func draftDirectory() throws -> URL {
-        let origin = digest(Data(endpoint.baseURL.absoluteString.utf8))
-        let root = FileManager.default.urls(for: .applicationSupportDirectory, in: .userDomainMask)[0].appendingPathComponent("AxoDraftFiles/\(origin)", isDirectory: true)
-        try FileManager.default.createDirectory(at: root, withIntermediateDirectories: true)
-        return root
     }
     private func cachedURL(_ file: SharedFile) -> URL {
         return cache.appendingPathComponent("\(file.id).\(file.mediaType.fileExtension)")

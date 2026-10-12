@@ -78,14 +78,3 @@ CREATE TABLE pi_bindings (
     runtime_binding BLOB,
     FOREIGN KEY (session_id, pane_id) REFERENCES panes(session_id, pane_id)
 ) STRICT;
--- Unsent input is a separate bounded domain, never canonical history or a
--- command replay queue. Editing does not advance the workspace catalog revision.
-CREATE TABLE drafts (
-    address BLOB PRIMARY KEY CHECK (length(address) = 32),
-    scope BLOB NOT NULL CHECK (length(scope) <= 1024),
-    session_id TEXT NOT NULL,
-    pane_id TEXT NOT NULL,
-    revision TEXT NOT NULL CHECK (length(revision) = 36),
-    text TEXT NOT NULL CHECK (length(CAST(text AS BLOB)) <= 65536),
-    FOREIGN KEY (session_id, pane_id) REFERENCES panes(session_id, pane_id)
-) STRICT;

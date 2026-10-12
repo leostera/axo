@@ -42,11 +42,10 @@ These coordinator/reader/storage capabilities remain exercised by owned native c
 
 - Bind editor callbacks to the rendered machine/workspace/session/pane/chat, with runtime/host dispatch authority captured separately. Revalidate operation/source/endpoint after awaits; do not select a destination globally.
 - Preserve bounded single-page history/tool readers, immutable source/read-mode and presentation generations. Do not accumulate pages or infer canonical history from terminal output. A source/head/branch change invalidates captured reads, including equal-looking ABA changes.
-- Draft text and original send/steer tickets live in the private versioned archive. Limits are 32 conversations, 64 KiB each, 1 MiB aggregate text, 32 pending tickets and 2 MiB archive; reject capacity without eviction/truncation or stale submission.
-- Parse the closed operation and complete wire frame before marking dispatch uncertain. Persist original capture before preference hint/RPC. Prepared/null/unknown results allow original read-only reconciliation only.
-- Acknowledgement clears only the exact unchanged revision. Settle durable tickets before clearing matching text/hints; a dispatched receipt is not execution proof.
-- `AxodDraftPersistence` performs load/encoding/CAS/flock/save off the main actor, with one active save and one latest queued snapshot. Recheck lifecycle/root after awaits. Preserve unsafe/opaque data and fence uncertain I/O; no auto-merge or implicit retry.
-- Quit commits the field editor, freezes edits and awaits the save barrier. Failure/capacity rejection cancels quit with explanation, without stopping daemon work. Loading/unsafe drafts and pending tickets block automatic empty launch, not independently requested work or running shells.
+- Drafts and local send/steer captures are in-memory only. Limits are 32 conversations, 64 KiB each, 1 MiB aggregate text and 32 pending captures; reject capacity without eviction/truncation or stale submission. Neither app nor daemon persists/restores unsent drafts. Existing retired archives remain untouched and unread.
+- Parse the closed operation and complete wire frame before marking dispatch uncertain. Capture exact input authority before preference hint/RPC. Prepared/null/unknown results allow original read-only reconciliation only; the editing buffer is not an outbox or daemon original receipt.
+- Acknowledgement clears only the exact unchanged editing revision. Validate original receipts before clearing matching text/hints; a dispatched receipt is not execution proof.
+- Quit commits the field editor and discards unsent buffers without a save barrier or daemon stop. Hide/reflow retains the live buffers. Pending commands still fence automatic empty launch; draft storage readiness is no longer a prerequisite.
 
 ## Validation lanes
 
@@ -58,7 +57,7 @@ Build and compile fixtures sequentially against shared DerivedData. Use Xcode fo
 | Packaged startup | `bash scripts/check-mac-app-startup.sh` | LaunchServices/delegate/window/bootstrap, exact bundled helper, one empty-launch session, shell/Pi input/output, account login shell, owning-window scale and header-free geometry |
 | Unavailable Pi | `AXO_APP_SELF_TEST_CASE=unavailable bash scripts/check-mac-app-startup.sh` | Real app must retain shell usability and refuse success with missing Pi |
 | Native workbench | `bash scripts/check-mac-workbench.sh` | Production coordinator/views/PTYs in private owned native fixtures: creation, delayed/failing Pi, restore, chat/drafts and process recovery |
-| Focused checks | `scripts/check-mac-{sidebar,terminal,pane-layout,shell-creation,chat-history,tool-output,chat-drafts,draft-storage,draft-persistence,owner-lease,voice-keybinding}.sh` | Local state/storage/rendering/control regressions for the affected component |
+| Focused checks | `scripts/check-mac-{sidebar,terminal,pane-layout,shell-creation,chat-history,tool-output,chat-drafts,owner-lease,voice-keybinding}.sh` | Local state/storage/rendering/control regressions for the affected component |
 
 - `AXO_LOCAL_DAEMON_BINARY` selects the packaged helper for native fixtures. Workbench modes are `AXO_NATIVE_WORKBENCH_MODE=all|chat|drafts`; bounded fresh-root repetitions use `AXO_NATIVE_WORKBENCH_REPETITIONS=1..20`, not same-command retries.
 - Rust owns private roots, daemon/process/model setup, public-RPC fixture metadata and filesystem assertions. XCTest uses UI actions/observations only; do not bypass sandbox or Accessibility denials.

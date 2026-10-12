@@ -102,7 +102,7 @@ final class AxodWorkbenchCoordinator {
     private(set) var isStartingPi = false
     private(set) var isSendingPiMessage = false
     private var piMutationGeneration: UUID?
-    let chatDrafts = AxodChatDrafts(requiresPersistence: true)
+    let chatDrafts = AxodChatDrafts()
     private(set) var isReconcilingPiCommand = false
 
     @ObservationIgnored let preferences: UserDefaults
@@ -351,7 +351,7 @@ final class AxodWorkbenchCoordinator {
            nextWorkspaceCursor == nil, nextSessionCursor == nil, nextRuntimeID == nil,
            let revision = catalogRevision, let endpoint,
            !AxodEmptyStartupPolicy.hasPendingIntent(in: preferences, machineID: endpoint.machineId),
-           !chatDrafts.blocksAutomaticStartup, !chatDrafts.hasPending(machineID: endpoint.machineId) {
+           !chatDrafts.hasPending(machineID: endpoint.machineId) {
             let context = AxodWorkEditorContext(kind: .session(workspaceID: nil),
                 target: MachineTarget(machineId: endpoint.machineId, hostGeneration: endpoint.hostGeneration),
                 revision: revision, authority: .emptyAppLaunch)
@@ -361,8 +361,8 @@ final class AxodWorkbenchCoordinator {
             createWork(context, name: "New Session", directory: nil)
         } else if sessions.isEmpty, workspaces.isEmpty, let endpoint,
                   AxodEmptyStartupPolicy.hasPendingIntent(in: preferences, machineID: endpoint.machineId) ||
-                  chatDrafts.blocksAutomaticStartup || chatDrafts.hasPending(machineID: endpoint.machineId) {
-            emptyStartupMessage = "Automatic startup was not sent: saved unresolved intent or unavailable draft storage requires reconciliation. Existing data and work were preserved."
+                  chatDrafts.hasPending(machineID: endpoint.machineId) {
+            emptyStartupMessage = "Automatic startup was not sent: an unresolved intent requires reconciliation. Existing data and work were preserved."
         }
     }
 
@@ -538,7 +538,7 @@ final class AxodWorkbenchCoordinator {
         let alert = NSAlert()
         alert.alertStyle = .warning
         alert.messageText = context.names.count == 1 ? "Delete “\(context.names[0])”?" : "Delete \(context.names.count) Sessions?"
-        alert.informativeText = "This stops Pi and every shell in these sessions, including running commands, and removes the sessions from Axo. Conversation histories and drafts remain on disk."
+        alert.informativeText = "This stops Pi and every shell in these sessions, including running commands, and removes the sessions from Axo. Conversation histories remain on disk."
         alert.addButton(withTitle: "Delete").hasDestructiveAction = true
         alert.addButton(withTitle: "Cancel")
         alert.beginSheetModal(for: window) { [weak self] response in
@@ -613,7 +613,7 @@ final class AxodWorkbenchCoordinator {
             if let next = sessions.first(where: { $0.workspaceId == selectedWorkspaceID }) ?? sessions.first { selectSession(next.sessionId) }
             else { saveSelection() }
         }
-        message = "Sessions deleted. Conversation histories and drafts were retained."
+        message = "Sessions deleted. Conversation histories were retained."
         refresh()
     }
 
@@ -770,7 +770,7 @@ final class AxodWorkbenchCoordinator {
         if context.authority == .emptyAppLaunch {
             guard case .session(workspaceID: nil) = context.kind,
                   !AxodEmptyStartupPolicy.hasPendingIntent(in: preferences, machineID: context.target.machineId),
-                  !chatDrafts.blocksAutomaticStartup, !chatDrafts.hasPending(machineID: context.target.machineId) else {
+                  !chatDrafts.hasPending(machineID: context.target.machineId) else {
                 throw AxoProtocolValidationError.invalidParameters(method: AxoProtocol.Method.createEmptyStartupSession)
             }
             let parameters = EmptyStartupSessionParameters(target: context.target, commandId: command,
@@ -1576,8 +1576,8 @@ final class AxodWorkbenchCoordinator {
                     self.chatStatusMessage = "No matching durable Pi command receipt is visible. It was not replayed."
                     return
                 }
-                guard await self.resolveChatDraft(receipt: receipt) else {
-                    self.chatStatusMessage = "The receipt is known, but the draft update could not be saved. The original hint and text were preserved; do not resend."
+                guard self.resolveChatDraft(receipt: receipt) else {
+                    self.chatStatusMessage = "The receipt does not match the captured input. The original hint and text were preserved; do not resend."
                     return
                 }
                 guard self.isCurrent(operation, connection: connection, endpoint: endpoint),
@@ -1698,9 +1698,6 @@ final class AxodWorkbenchCoordinator {
 #endif
             try requireCurrent(operation)
             stateDirectory = directory
-            // Draft safety is independent of service approval. Opening setup must
-            // still load saved tickets and allow a safe normal quit before enabling.
-            await chatDrafts.openStorage(in: directory.root)
             try requireCurrent(operation)
             if !usesFixtureDaemon { try serviceLifecycle.requireEnabled() }
             let deadline = ContinuousClock.now.advanced(by: .seconds(10))
@@ -1778,7 +1775,6 @@ final class AxodWorkbenchCoordinator {
             hostStatus = status
             updateHelperObservation(status)
             if let serviceObservation { serviceLifecycle.observedReady(source, observation: serviceObservation) }
-            await chatDrafts.openStorage(in: stateDirectory.root)
             guard isCurrent(operation, connection: connection, endpoint: endpoint) else { throw AxodWorkbenchError.superseded }
             try stateDirectory.requireCurrentEndpoint(endpoint)
 
@@ -2110,16 +2106,8 @@ final class AxodWorkbenchCoordinator {
                     self.isSendingPiMessage = false
                 }
             }
-            if let draft, !(await self.chatDrafts.persist(draft)) {
-                self.chatDrafts.resolve(commandID: draft.commandID, target: draft.target, outcome: .rejected)
-                if self.chatTarget == target {
-                    self.pendingChatCommandId = nil
-                    self.chatStatusMessage = "The captured draft could not be saved safely. Its text was preserved; nothing was sent."
-                }
-                return
-            }
-            // Storage is not permission: recheck the captured operation/peer and
-            // private endpoint after its await, before creating a dispatch hint.
+            // Recheck the captured operation/peer and private endpoint before
+            // creating a dispatch hint. The editing buffer is only in memory.
             guard !Task.isCancelled, self.isCurrent(operationID, connection: connection, endpoint: endpoint) else {
                 if let draft { self.chatDrafts.resolve(commandID: draft.commandID, target: draft.target, outcome: .rejected) }
                 self.clearPendingChatCommand(pending)
@@ -2153,8 +2141,8 @@ final class AxodWorkbenchCoordinator {
                 )
                 guard self.isCurrent(operationID, connection: connection, endpoint: endpoint) else { return }
                 try directory.requireCurrentEndpoint(endpoint)
-                guard await self.resolveChatDraft(receipt: result.receipt) else {
-                    self.chatStatusMessage = "The original Pi receipt is known, but its draft update could not be saved. The original hint and text were preserved; do not resend."
+                guard self.resolveChatDraft(receipt: result.receipt) else {
+                    self.chatStatusMessage = "The original Pi receipt does not match the captured input. The original hint and text were preserved; do not resend."
                     return
                 }
                 guard self.isCurrent(operationID, connection: connection, endpoint: endpoint) else { return }
@@ -2183,8 +2171,8 @@ final class AxodWorkbenchCoordinator {
                 guard self.isCurrent(operationID, connection: connection, endpoint: endpoint) else { return }
                 let noEffectCode = Self.knownNoEffectCode(error)
                 if noEffectCode != nil {
-                    guard await self.chatDrafts.settle(commandID: pending.commandId, target: target, outcome: .rejected) else {
-                        self.chatStatusMessage = "The known no-effect result could not be saved with the draft. Original data was preserved; nothing was replayed."
+                    guard self.chatDrafts.resolve(commandID: pending.commandId, target: target, outcome: .rejected) else {
+                        self.chatStatusMessage = "The known no-effect result does not match the captured input. Original data was preserved; nothing was replayed."
                         return
                     }
                     guard self.isCurrent(operationID, connection: connection, endpoint: endpoint) else { return }
@@ -2285,8 +2273,8 @@ final class AxodWorkbenchCoordinator {
         }
         guard let target = chatTarget, target.machineId == machineID, target.sessionId == sessionID,
               let saved = chatDrafts.pending(for: target) else { return nil }
-        // An archive ticket enables only original read-only receipt lookup, not
-        // dispatch. It also covers a crash between archive save and hint save.
+        // The in-memory capture enables only original read-only receipt lookup,
+        // never dispatch. It is not restored after client restart.
         return PendingPiCommand(target: saved.target, commandId: saved.commandID, operation: saved.operation)
     }
 
@@ -2307,7 +2295,7 @@ final class AxodWorkbenchCoordinator {
         preferences.removeObject(forKey: pendingChatKey(machineID: expected.target.machineId, sessionID: expected.target.sessionId))
     }
 
-    private func resolveChatDraft(receipt: PiCommandReceipt) async -> Bool {
+    private func resolveChatDraft(receipt: PiCommandReceipt) -> Bool {
         guard case .chat(let target, let operation) = receipt.intent else { return false }
         guard operation == .sendMessage || operation == .sendSteeringMessage else { return true }
         if let captured = chatDrafts.pending(for: target), captured.commandID == receipt.commandId,
@@ -2318,7 +2306,7 @@ final class AxodWorkbenchCoordinator {
         case .rejected: outcome = .rejected
         case .dispatched: outcome = .dispatched
         }
-        return await chatDrafts.settle(commandID: receipt.commandId, target: target, outcome: outcome)
+        return chatDrafts.resolve(commandID: receipt.commandId, target: target, outcome: outcome)
     }
 
     private static func knownNoEffectCode(_ error: Error) -> Int? {

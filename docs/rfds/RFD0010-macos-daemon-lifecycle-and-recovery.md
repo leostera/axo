@@ -97,7 +97,7 @@ The lifecycle coordinator observes facts and carries explicit setup/stop/update 
 
 ### Example: quit and reopen
 
-Quitting the frontend saves drafts and releases presentation/input leases. It neither unregisters nor stops the host. Axod continues draining PTYs without a renderer. Reopening validates the same live runtime and attaches to it without replaying work. Complete screen reconstruction is required for this experience; a raw backlog is not sufficient.
+Quitting the frontend discards unsent in-memory text and releases presentation/input leases. RFD0012 and the subsequent removal of durable drafts supersede the earlier draft-save requirement. It neither unregisters nor stops the host. Axod continues draining PTYs without a renderer. Reopening validates the same live runtime and attaches to it without replaying work. Complete screen reconstruction is required for this experience; a raw backlog is not sufficient.
 
 If Axod itself restarted, the app instead shows interrupted/uncertain executions. A restored sidebar row is not a running-process claim. The user can inspect preserved history, create separately addressed new work where safe, or enter the explicit recovery flow.
 
@@ -244,7 +244,7 @@ Required acceptance includes:
 | Approval denied or background item disabled | Actionable setup state; no direct-launch bypass and no execution replay. |
 | Concurrent windows/frontends | One registered service owner and no competing process launcher; window-local selection remains independent. |
 | Slow launch, missing executable, malformed config, unsafe storage, lock contention | Distinct bounded failure with retained diagnostic reason; no repeated destructive registration repair. |
-| Frontend quit/crash and reopen during work | Same daemon/runtime and no additional Pi writer/message; drafts and original receipts retained; actual viewport restored under the terminal gate. |
+| Frontend quit/crash and reopen during work | Same daemon/runtime and no additional Pi writer/message; unsent text intentionally discarded, original receipts retained; actual viewport restored under the terminal gate. |
 | Representative ambient Pi startup output beyond 8 KiB | Real TUI attaches correctly without disabling installed behavior to shrink output; no false success based only on admission. |
 | Helper crash/restart | New epoch; no prompt/start replay or historical PID signal; uncertain prior executions displayed truthfully. |
 | Compatible frontend update during a Pi turn | Existing runtime continues; supported commands remain usable; no service unregister. |

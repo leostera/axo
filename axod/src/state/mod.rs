@@ -7,8 +7,9 @@ mod execution;
 #[cfg(test)]
 mod execution_tests;
 mod image;
-mod input;
 mod operation;
+#[cfg(test)]
+mod retired_input_tests;
 #[cfg(test)]
 mod schema_upgrade_tests;
 pub use operation::Operation;
@@ -16,7 +17,6 @@ pub(crate) mod rpc;
 pub(crate) const SERVICE_DIRECTORY: &str = "CentralSessions";
 use crate::model::*;
 pub use execution::{Attempt, AttemptPhase, Configuration};
-pub use input::{Draft, DraftAddress, DraftRevision};
 use rusqlite::{Connection, MAIN_DB, OptionalExtension, Transaction, params};
 use serde::{Deserialize, Serialize, de::DeserializeOwned};
 use sha2::{Digest, Sha256};

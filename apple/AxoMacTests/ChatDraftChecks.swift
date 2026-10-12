@@ -21,10 +21,17 @@ import Foundation
         }
         let submission = drafts.capture(for: original)!
         precondition(submission.target == original && submission.text == "synthetic draft 🦊")
+        // A new client starts empty: neither unsent text nor pending captures
+        // are restored, even while the first client's command remains unknown.
+        let reopened = AxodChatDrafts()
+        precondition(reopened.text(for: original).isEmpty && reopened.pending(for: original) == nil)
+        precondition(!reopened.hasPending(machineID: machine))
+        precondition(drafts.pending(for: original)?.commandID == submission.commandID)
+        precondition(drafts.hasPending(machineID: machine))
         drafts.resolve(commandID: submission.commandID, target: original, outcome: .unknown)
         precondition(drafts.capture(for: resumed) == nil)
         precondition(drafts.text(for: original) == "  synthetic draft 🦊  ")
-        drafts.resolve(commandID: submission.commandID, target: resumed, outcome: .dispatched)
+        precondition(!drafts.resolve(commandID: submission.commandID, target: resumed, outcome: .dispatched))
         precondition(drafts.text(for: original) == "  synthetic draft 🦊  ")
         drafts.resolve(commandID: UUID(), target: original, outcome: .dispatched)
         precondition(drafts.text(for: original) == "  synthetic draft 🦊  ")
@@ -93,7 +100,7 @@ import Foundation
         precondition(parsed(.answerQuestion, interaction: UUID(), question: UUID(), option: nilID) == nil)
         precondition(parsed(.answerQuestion, interaction: UUID(), question: UUID(), option: UUID()) != nil)
         precondition(parsed(.setViewing) == nil)
-        print("PASS bounded conversation-scoped draft identity, exact resume, receipt/unknown rejection, ABA and capacity checks")
+        print("PASS volatile conversation-scoped editing: fresh clients empty, exact resume, receipt/unknown rejection, ABA and capacity checks")
         print("PASS closed Pi mutation preflight: plain text, exact interactions, zero IDs and encoded frame capacity")
     }
 }
