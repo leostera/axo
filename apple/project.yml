@@ -33,6 +33,7 @@ targets:
           - Info.plist
           - dev.leostera.axo.axod.plist
       - path: AxoMac/WorkspaceSidebarRow.swift
+      - path: AxoMac/NativeAgentActivity.swift
       - path: AxoMac/WorkspaceWindowState.swift
       - path: AxoMac/MacSettingsView.swift
       - path: AxoMac/MacSettingsNavigation.swift

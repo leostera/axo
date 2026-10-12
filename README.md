@@ -1,23 +1,21 @@
 # Axo
 
-One Pi conversation, a native Mac terminal, and a native iPhone companion.
+Daemon-owned Pi sessions, native Mac terminals, and a native iPhone companion.
 
-This is the **single-workbench prototype**, not the complete [RFD](docs/rfds/RFD0001-axo-continuous-agent-workspaces.md). The narrower implementation contract and limitations are in [the first-slice notes](docs/first-slice.md).
+[Accepted RFD0012](docs/rfds/RFD0012-sqlite-desired-state-and-session-materialization.md) defines central session management in Axod. The [first-slice notes](docs/first-slice.md) describe the historical single-workbench prototype, not a production fallback or permission to import its state.
 
 [RFD0002: shared session files](docs/rfds/RFD0002-shared-session-files.md) defines explicit Mac/iPhone attachments, private R2 storage, and demand-driven history. Storage is now enabled for approved non-sensitive prototype use with direct signed uploads; the RFD's original checkpoint/deployment descriptions are historical and still need reconciliation. Physical phone paste/upload/send/Mac-read has been verified; deletion and other acceptance drills remain open.
 
 [RFD0003: workspaces, sessions, splits, and search](docs/rfds/RFD0003-workspaces-sessions-and-search.md) records the next priority: complete and validate parallel workbenches, Mac vertical navigation and Ghostty splits, iPhone workspace/session navigation, and explicit relay routing **before** revisiting search, FFF, or the command palette. This takes precedence over executor-style service/tool integrations. The Mac foundation is implemented locally using Ghostty's Swift split primitives, with [provenance and reuse notes](apple/AxoMac/Ghostty/README.md). Broker/relay/phone integration and end-to-end acceptance remain incomplete; this is not yet a deployed multi-session feature.
 
-[RFD0008: private multi-machine control plane](docs/rfds/RFD0008-private-multi-machine-control-plane.md) describes the next iteration of the Access-protected relay. Its [isolated API/daemon slice](sites/api.axo.leostera.dev/README.md) implements automatic authenticated machine registration and bounded runtime metadata/approved-profile control through the proper [`@axo/protocol` package](protocol/README.md), using `json-rpc-2.0`. A dummy network client tests a real local Worker with two actual `axod`/PTY owners. It adds no accounts or enrollment flow; local WebSocket bootstrap and local/cloud runtime RPC parity are implemented; richer Pi/session APIs and native wiring remain unfinished. The existing `service/` and current Mac compatibility lane retain their owners; the new API is deployed as a private Cloudflare canary, with the normal-DNS live daemon/client route validated through an approved fixture PTY launch, receipt reconciliation, client reconnect and cold-restart fencing. This is supervised connectivity evidence, not unattended operation or native/Pi acceptance.
+[RFD0008: private multi-machine control plane](docs/rfds/RFD0008-private-multi-machine-control-plane.md) describes the next iteration of the Access-protected relay. Its [isolated API/daemon boundary](sites/api.axo.leostera.dev/README.md) routes addressed requests through [`@axo/protocol`](protocol/README.md), with authenticated machine registration and role enforcement. The legacy `service/` prototype is not a central session authority or Mac startup fallback. Historical canary/PTY connectivity checks are not native/Pi acceptance, and repository changes do not authorize deployment.
 
 [RFD0009: protocol capability parity and native adoption](docs/rfds/RFD0009-protocol-capability-parity.md) maps the legacy/native capabilities against the new daemon route, with ownership, missing contracts and per-capability acceptance gates. It defines the next Pi/session and native-adoption slices without treating working transport as application parity.
 
 ```text
-Mac: libghostty → interactive Pi + Axo extension
-                              ↕ WSS / Access service identity
-                    Cloudflare Worker + Durable Object
-                              ↕ WSS / Access user identity
-                       Native Swift iPhone client
+Mac / phone → addressed RPC → Axod → owned PTY → vanilla Pi + pi-axo
+                local / authenticated relay
+Mac libghostty ← exact terminal attachment ← Axod
 ```
 
 ## Pi integration boundary
@@ -26,19 +24,17 @@ Axo must work with **vanilla Pi plus an installable Axo extension**. The reposit
 
 Pi owns steering/follow-up queues, execution, session persistence, and the authoritative transcript. The extension must use supported public APIs and retain stable command/attachment identity without guessing anchors from text or timestamps. If an API cannot express a required guarantee, document the limitation and seek an upstream extension-API improvement rather than silently bypassing it.
 
-## Current status
+## Evidence boundaries
 
-- The real Pi **interactive TUI** has been exercised on a PTY with a local deterministic model: a remote prompt arrives, Pi asks a question, a remote answer resolves its local dialog, and its result returns to the phone-side connection. No paid model is used in tests.
-- The relay builds with `cf`; Workers-runtime tests cover bidirectional forwarding, offline rejection, duplicate host rejection, and unauthenticated access. JWT tests cover signature, issuer, audience, expiry, and identity restrictions.
-- **Native builds pass with Xcode 27:** the Mac app links the pinned full Ghostty framework; the iPhone app builds for both simulator architectures and as an unsigned device app. All fourteen shared Swift package tests pass. A signed device build is installed on Leandro's iPhone.
-- **The complete Mac/iPhone UI demo is not yet verified.** The Mac launches Pi and the signed iPhone app launches. The iOS 27 simulator runtime is installed. Complete phone login and the cross-device conversation loop still need user validation.
-- **The relay is deployed** at `https://bridge.axo.leostera.dev` in the `leostera` Cloudflare account. HTTPS is verified and unauthenticated requests redirect to Access. User access allows only `leandro@abstractmachines.dev`, and the Worker's email check matches. A separate Mac Service Auth policy is configured; a live host WebSocket upgrade succeeded, and that token is correctly rejected for phone login.
+Source builds, disposable process/model fixtures, packaged native UI tests, installed launchd/service approval, deployed routing and physical-device input establish different guarantees. Historical prototype or cloud evidence is not central-client acceptance. See the [daemon test boundary](axod/tests/README.md); activation, deployment and registration repair require separate authorization.
 
 ## Layout
 
 | Path | Purpose |
 | --- | --- |
-| `apple/AxoMac/` | AppKit application hosting one full libghostty surface |
+| `axod/` | Rust central desired-state authority, materializer and native PTY owner |
+| `apple/AxoMacAxod/` | Production Mac delegate, service management and workbench presentation |
+| `apple/AxoMac/` | Shared native terminal, sidebar, settings and voice views |
 | `apple/AxoPhone/` | SwiftUI conversation and WebKit Access login |
 | `apple/AxoCore/` | Shared wire types and native WebSocket client |
 | `apple/AxoVoice/` | Apple on-device speech recognition and voice workflow |
@@ -88,26 +84,13 @@ The first Ghostty build encountered Zig's `TlsInitializationFailed` while downlo
 
 The build script fetches Ghostty commit `7ec9e26a29399b30ef78f06985fc75045b3cecb6` into ignored `vendor/ghostty/` and builds its full `GhosttyKit.xcframework`, not the VT-only library. Retain upstream and dependency licenses when distributing a built application.
 
-**Double-click `dist/Axo.app` in Finder to launch Axo.** No launcher script, terminal setup, or environment variables are required. `build-mac.sh` only builds and packages the ad-hoc-signed app; it does not launch it or stop/restart running Pi sessions.
+`build-mac.sh` packages `dist/Axo.app` with the required signing identity and matching app/helper teams; no ad-hoc fallback is accepted. It does not launch the app, activate or replace an installed service, or stop running work. Package only coherent committed app/helper source after the central consumer cutover; a successful DerivedData build is not delivery or functional acceptance. See [packaging](.agents/skills/axo-macos-packaging/SKILL.md).
 
-Every Xcode build embeds this checkout's location in `AxoRepositoryPath` through `apple/AxoMac/Info.plist`. The build script validates that location and the signature before atomically replacing `dist/Axo.app` and retains the previous bundle for rollback. Always repackage after validated Mac/bridge changes; a DerivedData build alone is not delivery. See [.agents/skills/axo-macos-packaging/SKILL.md](.agents/skills/axo-macos-packaging/SKILL.md). Axo-specific development guidance lives in [.agents/skills/axo-development/SKILL.md](.agents/skills/axo-development/SKILL.md), not the personal memory repository.
+The production application is `apple/AxoMacAxod/`, configured by `apple/project.yml` and `apple/AxoMacAxod/Info.plist`. The obsolete pre-daemon Mac application and its frontend process/registry controllers have been removed; they are not an alternative build or runtime path. Native views and the pinned Ghostty primitives remain shared with the production target.
 
-This remains a **checkout-bound development app**, not a standalone distribution: keep this repository and its Ghostty resources in place. If you move the checkout, rebuild the app from its new location.
+Axod owns the fresh central desired graph and materializes effectively open panes independently of frontend selection. Production supervision belongs to launchd. Pi is ambient interactive vanilla Pi with the installed public `pi-axo` extension; the app never launches execution or falls back to repository Pi/bridge scripts. Canonical histories remain Pi-owned. Legacy catalogs, layouts, bindings, receipts and drafts are neither imported nor used as fallback authority.
 
-Each activated Axo session lazily opens its saved managed Pi and ordinary shell panes through `scripts/run-pi.sh` and login shells. New conversations have unique private Axo storage, independent of their project working directories; legacy session history is imported by reference from `local/playground/session.jsonl`, with an explicit guard against an uncertain old writer. No prompts or shell commands are replayed. Pi uses your normal model credentials/settings. Without relay credentials it runs locally. Multiple local sessions do **not yet** imply safely addressed multi-session phone routing; that broker/relay work remains in RFD0003.
-
-Closing the window hides it and retains the terminal. Reopen through the Dock. **Quitting stops Pi** after confirmation; reopening resumes its saved history. This slice has no independently managed background daemon.
-
-You can exercise the Pi bridge before the native build is available:
-
-```sh
-npm run build:bridge
-./scripts/run-pi.sh
-```
-
-This fallback runs in your current terminal; it is not presented as the native Axo app.
-
-For bridge updates, run `npm run build:bridge`, then `/reload` in the existing Pi terminal and reconnect the phone. **Do not quit Pi.** The build emits `bridge/dist/extension.ts`: Pi's loader refreshes TypeScript modules, whereas a native `.mjs` import can remain cached across `/reload`. The build also migrates the old `bridge/dist/extension.mjs` CLI path into a directory containing `index.ts`, so already-running Mac sessions can adopt the updated bridge without restarting. Do not replace that directory with a native `.mjs` bundle.
+The resident frontend may hide or quit without stopping daemon work. Unsent text and attachment selections are volatile; quitting discards them. Reconnect is read-only, not service repair, installation or replay. Native/phone consumers are undergoing the central cutover, so source builds and historical prototype/cloud evidence do not establish end-to-end central application acceptance.
 
 ## Cloudflare relay and Access
 

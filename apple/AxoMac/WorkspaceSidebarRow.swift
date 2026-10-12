@@ -1,5 +1,4 @@
 import AppKit
-import AxoCore
 
 /// Draws source-list selection behind the whole row, including the icon gutter.
 final class WorkspaceSidebarRowView: NSTableRowView {
@@ -27,7 +26,7 @@ final class WorkspaceSidebarRow: NSTableCellView, NSTextFieldDelegate {
     private let canBeginRename: () -> Bool
     private var cancelled = false
     private var editing = false
-    init(name: String, workspace: Bool, running: Bool, activity: MacAgentState? = nil, loading: Bool = false,
+    init(name: String, workspace: Bool, running: Bool, activity: NativeAgentActivity? = nil, loading: Bool = false,
          voiceRecording: Bool = false, actions: NSMenu, canBeginRename: @escaping () -> Bool = { true }, finishRename: @escaping (String?) -> Void) {
         originalName = name; self.finishRename = finishRename; self.canBeginRename = canBeginRename
         super.init(frame: .zero); menu = actions
