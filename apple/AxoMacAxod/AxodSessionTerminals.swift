@@ -34,8 +34,7 @@ struct AxodSessionTerminals: View {
                     AxodRuntimeTerminalPane(sessionID: session.sessionId,
                         snapshot: coordinator.presentationSnapshot(for: session), viewportID: viewportID, coordinator: coordinator)
                 }, right: {
-                    AxodTerminalInlineState(title: "Shell", message: shellPlaceholder,
-                        details: coordinator.shellStartupState(for: session.sessionId)?.message)
+                    AxodTerminalInlineState(title: "Shell", message: shellPlaceholder)
                 }, onEqualize: { initialFraction = 0.5 })
             }
         }
@@ -60,7 +59,7 @@ private struct AxodShellSplitNotice: View {
         case .ready?, nil: canCheckPlacement ? "Split unconfirmed" : (notice == nil ? nil : "Layout needs attention")
         }
         if let title {
-            AxodStatusNotice(title, details: [state?.message, notice].compactMap { $0 }.joined(separator: "\n")) {
+            AxodStatusNotice(title) {
                 if case .unresolved? = state {
                     Button("Check Status") { coordinator.reconcileSelectedShell() }
                 } else if canCheckPlacement {
@@ -117,16 +116,15 @@ private struct AxodRuntimeTerminalPane: View {
     var body: some View {
         VStack(spacing: 0) {
             if let launch = currentLaunch {
-                if let notice = coordinator.terminalSurfaces.notices[launch.key] {
-                    AxodStatusNotice("Terminal needs attention", details: notice) { EmptyView() }
+                if coordinator.terminalSurfaces.notices[launch.key] != nil {
+                    AxodStatusNotice("Terminal needs attention") { EmptyView() }
                 }
                 AxodTerminalHost(launch: launch, surfaces: coordinator.terminalSurfaces, inputEnabled: isRunning,
                     viewportID: viewportID, onFocus: { [weak coordinator] in coordinator?.focusTerminal(launch.key) },
                     onAvailable: { [weak coordinator] window in coordinator?.terminalBecameAvailable(launch.key, in: window) })
                     .id(launch.key)
             } else {
-                AxodTerminalInlineState(title: nil, message: failure == nil ? pendingMessage : "Terminal unavailable",
-                    details: failure ?? snapshot?.process.axodDescription)
+                AxodTerminalInlineState(title: nil, message: failure == nil ? pendingMessage : "Terminal unavailable")
             }
         }
         .frame(maxWidth: .infinity, maxHeight: .infinity)
@@ -164,22 +162,10 @@ private struct AxodRuntimeTerminalPane: View {
 private struct AxodTerminalInlineState: View {
     let title: String?
     let message: String
-    let details: String?
-
-    init(title: String?, message: String, details: String? = nil) {
-        self.title = title
-        self.message = message
-        self.details = details
-    }
-
     var body: some View {
         VStack(alignment: .leading, spacing: 8) {
             if let title { Text(title).font(.system(size: 11, weight: .medium)) }
             Text(message).font(.system(size: 12)).foregroundStyle(.secondary)
-            if let details {
-                DisclosureGroup("Details") { Text(details).textSelection(.enabled) }
-                    .font(.system(size: 12)).foregroundStyle(.secondary)
-            }
             Spacer()
         }
         .padding(12)

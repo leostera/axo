@@ -15,8 +15,8 @@ struct AxodWorkbenchView: View {
 
     var body: some View {
         VStack(spacing: 0) {
-            if let message = coordinator.chatDrafts.quitMessage {
-                AxodStatusNotice("Changes couldn’t be saved", details: message) { EmptyView() }
+            if coordinator.chatDrafts.quitMessage != nil {
+                AxodStatusNotice("Changes couldn’t be saved") { EmptyView() }
             }
             recoveryNotices
             AxodNativeWorkbenchSplitView(
@@ -43,25 +43,25 @@ struct AxodWorkbenchView: View {
     private var recoveryNotices: some View {
         VStack(alignment: .leading, spacing: 8) {
             if connectionNeedsRecovery {
-                AxodStatusNotice("Disconnected", details: coordinator.message) {
+                AxodStatusNotice("Disconnected") {
                     Button("Reconnect") { coordinator.connect() }
                 }
             }
             if coordinator.pendingWorkCommandID != nil && !coordinator.isEditingWork {
-                AxodStatusNotice("Change unconfirmed", details: coordinator.message) {
+                AxodStatusNotice("Change unconfirmed") {
                     Button("Check Status") { coordinator.reconcilePendingWork() }
                         .disabled(coordinator.connectionState != .connected)
                 }
             }
             if coordinator.pendingPiStartCommandID != nil && !coordinator.isStartingPi {
-                AxodStatusNotice("Start unconfirmed", details: "Pi admission outcome is unknown; checking reconciles the original command without starting it again.") {
+                AxodStatusNotice("Start unconfirmed") {
                     Button("Check Status") { coordinator.reconcilePendingPiStart() }
                         .disabled(coordinator.connectionState != .connected || coordinator.isReconcilingPiCommand)
                 }
             }
             if coordinator.needsLoginItemsReview || coordinator.needsDaemonServiceReview {
                 AxodStatusNotice(coordinator.needsLoginItemsReview || coordinator.serviceLifecycle.registration == .requiresApproval
-                    ? "Approval needed" : "Background service unavailable", details: coordinator.serviceReviewMessage) {
+                    ? "Approval needed" : "Background service unavailable") {
                     Button("Settings…") { coordinator.showServiceSettingsWindow() }
                 }
             }
@@ -87,12 +87,10 @@ struct AxodWorkbenchView: View {
                         Text("Press ⌘T to create a session.")
                             .font(.system(size: 12))
                             .foregroundStyle(Color.white.opacity(0.58))
-                    } else {
-                        DisclosureGroup("Details") {
-                            Text(emptyDetailMessage).textSelection(.enabled)
-                        }
-                        .font(.system(size: 12))
-                        .foregroundStyle(Color.white.opacity(0.58))
+                    } else if coordinator.emptyStartupMessage != nil {
+                        Text("Automatic session creation unavailable")
+                            .font(.system(size: 12))
+                            .foregroundStyle(Color.white.opacity(0.58))
                     }
                 }
                 .padding(12)
@@ -110,12 +108,6 @@ struct AxodWorkbenchView: View {
 
     private var selectedSession: WorkSessionRecord? {
         coordinator.sessions.first { $0.sessionId == coordinator.selectedSessionID }
-    }
-
-    private var emptyDetailMessage: String {
-        if coordinator.connectionState != .connected { return coordinator.message }
-        if let startup = coordinator.emptyStartupMessage { return startup }
-        return "Press ⌘T to create a session."
     }
 
     private func updateWindowTitle() {
