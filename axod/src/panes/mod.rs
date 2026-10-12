@@ -5,6 +5,7 @@ pub(crate) mod store;
 mod tests;
 use crate::{model::*, runtime::Manager};
 pub(crate) use rpc::dispatch;
+#[cfg(test)]
 pub(crate) use rpc::ensure_backing;
 use serde::Serialize;
 use store::{PaneRecord, PaneState};
@@ -37,6 +38,7 @@ pub(crate) fn view(pane: PaneRecord, manager: &Manager) -> PaneView {
         terminal,
     }
 }
+#[cfg(test)]
 pub(crate) fn has_backing(manager: &Manager, session: SessionId) -> bool {
     let panes = manager.panes.lock().unwrap().session_panes(session);
     panes.iter().any(|pane| {

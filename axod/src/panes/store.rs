@@ -138,6 +138,7 @@ impl Store {
     pub fn contains_pane(&self, pane: PaneId) -> bool {
         self.saved.panes.contains_key(&pane)
     }
+    #[cfg(test)]
     pub(crate) fn session_lineage(&self, session: SessionId) -> Vec<PaneRecord> {
         self.saved
             .panes

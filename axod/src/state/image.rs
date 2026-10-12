@@ -167,7 +167,7 @@ impl Root {
         }
         Ok(false)
     }
-    fn check_directory(&self) -> Result<(), Error> {
+    pub(super) fn check_directory(&self) -> Result<(), Error> {
         let held = self
             .directory
             .metadata()
@@ -223,15 +223,21 @@ impl Root {
         }))
     }
     pub(super) fn runtime_directory(&self) -> Result<PathBuf, Error> {
+        self.child_directory("Runtime")
+    }
+    pub(super) fn central_directory(&self) -> Result<PathBuf, Error> {
+        self.child_directory(super::SERVICE_DIRECTORY)
+    }
+    fn child_directory(&self, name: &str) -> Result<PathBuf, Error> {
         self.check_directory()?;
-        let name = CString::new("Runtime").map_err(|_| Error::Storage)?;
-        if unsafe { libc::mkdirat(self.directory.as_raw_fd(), name.as_ptr(), 0o700) } < 0
+        let c_name = CString::new(name).map_err(|_| Error::Storage)?;
+        if unsafe { libc::mkdirat(self.directory.as_raw_fd(), c_name.as_ptr(), 0o700) } < 0
             && io::Error::last_os_error().kind() != io::ErrorKind::AlreadyExists
         {
             return Err(Error::Storage);
         }
         let directory = self
-            .open("Runtime", libc::O_RDONLY | libc::O_DIRECTORY)
+            .open(name, libc::O_RDONLY | libc::O_DIRECTORY)
             .map_err(|_| Error::UnsafeStorage)?;
         let metadata = directory.metadata().map_err(|_| Error::UnsafeStorage)?;
         if !metadata.is_dir()
@@ -242,7 +248,7 @@ impl Root {
         }
         self.directory.sync_all().map_err(|_| Error::Storage)?;
         self.check_directory()?;
-        Ok(self.path.join("Runtime"))
+        Ok(self.path.join(name))
     }
     pub(super) fn load(&mut self) -> Result<Option<Vec<u8>>, Error> {
         self.check_directory()?;

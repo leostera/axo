@@ -6,6 +6,12 @@ mod execution;
 mod execution_tests;
 mod image;
 mod input;
+mod operation;
+#[cfg(test)]
+mod schema_upgrade_tests;
+pub use operation::Operation;
+pub(crate) mod rpc;
+pub(crate) const SERVICE_DIRECTORY: &str = "CentralSessions";
 use crate::model::*;
 pub use execution::{Attempt, AttemptPhase, Configuration};
 pub use input::{Draft, DraftAddress, DraftRevision};
@@ -16,7 +22,7 @@ use std::path::{Path, PathBuf};
 
 const MAX_REVISION: u64 = 9_007_199_254_740_991;
 const MAX_OPERATIONS: u32 = 2000;
-const SCHEMA_VERSION: i64 = 2;
+const SCHEMA_VERSION: i64 = 3;
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Error {
@@ -31,6 +37,7 @@ pub enum Error {
     Corrupt,
     UnsupportedVersion,
     LegacyState,
+    Stopping,
 }
 impl From<rusqlite::Error> for Error {
     fn from(_: rusqlite::Error) -> Self {
@@ -265,20 +272,26 @@ impl Database {
         let version: i64 = connection
             .pragma_query_value(None, "user_version", |row| row.get(0))
             .map_err(|_| Error::Corrupt)?;
-        let migrated = bytes.is_some() && version == 1;
+        let migrated = bytes.is_some() && (1..SCHEMA_VERSION).contains(&version);
         if migrated {
             let transaction = connection.transaction()?;
-            transaction.execute_batch(
-                "ALTER TABLE pi_bindings ADD COLUMN runtime_binding BLOB; ALTER TABLE runtime_attempts ADD COLUMN config_capture BLOB; PRAGMA user_version=2;",
+            if version == 1 {
+                transaction.execute_batch("ALTER TABLE pi_bindings ADD COLUMN runtime_binding BLOB; ALTER TABLE runtime_attempts ADD COLUMN config_capture BLOB;")?;
+            }
+            transaction.execute_batch("ALTER TABLE metadata ADD COLUMN store_generation TEXT;")?;
+            transaction.execute(
+                "UPDATE metadata SET store_generation=?1 WHERE singleton=1",
+                [StoreGeneration::new().to_string()],
             )?;
+            transaction.execute_batch("PRAGMA user_version=3;")?;
             transaction.commit()?;
         }
         if bytes.is_none() {
             let transaction = connection.transaction()?;
             transaction.execute_batch(include_str!("schema.sql"))?;
             transaction.execute(
-                "INSERT INTO metadata VALUES(1, ?1, 0)",
-                [machine.to_string()],
+                "INSERT INTO metadata(singleton,machine_id,revision,store_generation) VALUES(1, ?1, 0, ?2)",
+                [machine.to_string(), StoreGeneration::new().to_string()],
             )?;
             transaction.commit()?;
         }
@@ -329,6 +342,7 @@ impl Database {
             return Err(Error::Conflict);
         }
         self.revision()?;
+        self.generation()?;
         // Validate application invariants that cannot be expressed as a local
         // CHECK while inserting the whole graph in one transaction.
         let invalid: bool = self.connection.query_row("SELECT EXISTS(SELECT 1 FROM sessions s WHERE s.tombstoned=0 AND ((SELECT count(*) FROM panes p WHERE p.session_id=s.session_id AND p.role='pi' AND p.desired_present=1)!=1 OR (SELECT count(*) FROM panes p WHERE p.session_id=s.session_id AND p.role!='pi' AND p.desired_present=1)<1 OR (SELECT count(*) FROM panes p WHERE p.session_id=s.session_id AND p.desired_present=1)>32))", [], |row| row.get(0)).map_err(|_| Error::Corrupt)?;
@@ -380,6 +394,18 @@ impl Database {
         // No result, identity or spawn authority escapes before publication.
         self.publish()?;
         Ok(result)
+    }
+    pub fn generation(&self) -> Result<StoreGeneration, Error> {
+        self.available()?;
+        let value: String = self
+            .connection
+            .query_row(
+                "SELECT store_generation FROM metadata WHERE singleton=1",
+                [],
+                |row| row.get(0),
+            )
+            .map_err(|_| Error::Corrupt)?;
+        parse_id(&value)
     }
     pub fn revision(&self) -> Result<u64, Error> {
         self.available()?;
@@ -497,8 +523,8 @@ impl Database {
                     .filter(|pane| pane.present),
             );
         }
-        // Imported intent can exceed today's execution budget. Preserve and
-        // observe it; admission/reconciliation reports capacity, not corruption.
+        // Existing central intent can exceed a later execution budget. Preserve
+        // and observe it; admission reports capacity, not corruption.
         Ok(desired)
     }
     pub fn create_workspace(
@@ -1303,7 +1329,7 @@ mod tests {
         let mut database = Database::open(root.path(), machine).unwrap();
         database
             .mutate(|tx| {
-                tx.execute_batch("PRAGMA user_version=3")?;
+                tx.execute_batch("PRAGMA user_version=4")?;
                 Ok(())
             })
             .unwrap();

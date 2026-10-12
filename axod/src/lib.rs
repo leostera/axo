@@ -17,11 +17,13 @@ pub mod profiles;
 mod pty;
 pub mod relay;
 pub mod rpc;
+mod rpc_owner;
 pub mod runtime;
 pub mod server;
 mod session_deletion;
 #[cfg(test)]
 mod session_deletion_tests;
+#[cfg(test)]
 mod session_lifecycle;
 pub mod state;
 pub mod terminal;

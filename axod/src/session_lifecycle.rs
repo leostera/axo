@@ -296,6 +296,7 @@ mod tests {
             stopping.clone(),
         )
         .unwrap();
+        assert!(!workers.is_finished());
         let deadline = Instant::now() + Duration::from_secs(5);
         while !crate::panes::has_backing(&fixture.manager, fixture.session.session_id) {
             assert!(Instant::now() < deadline);

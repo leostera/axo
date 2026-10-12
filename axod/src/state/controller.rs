@@ -54,13 +54,16 @@ pub struct Observation {
 }
 
 pub struct Controller {
-    database: Mutex<Database>,
-    native: Arc<Manager>,
+    pub(super) database: Mutex<Database>,
+    service_root: Option<super::image::Root>,
+    pub(super) native: Arc<Manager>,
     policy: Option<crate::PiPolicy>,
     shells: Mutex<()>,
     pi: Mutex<()>,
     supervising: AtomicBool,
     stopped: AtomicBool,
+    admitting: AtomicBool,
+    pub(super) admission: Mutex<()>,
     failures: Mutex<BTreeMap<PaneId, Error>>,
 }
 impl Controller {
@@ -86,14 +89,50 @@ impl Controller {
             .and_then(|policy| policy.normal_path.clone());
         Ok(Self {
             database: Mutex::new(database),
+            service_root: None,
             native: Arc::new(native),
             policy,
             shells: Mutex::new(()),
             pi: Mutex::new(()),
             supervising: AtomicBool::new(false),
             stopped: AtomicBool::new(false),
+            admitting: AtomicBool::new(true),
+            admission: Mutex::new(()),
             failures: Mutex::new(BTreeMap::new()),
         })
+    }
+    pub(crate) fn for_service(
+        root: &Path,
+        policy: Option<crate::PiPolicy>,
+    ) -> Result<(MachineId, Self), Error> {
+        // Claim the same top-level lease as an old helper, without opening any
+        // legacy catalog. Never interpret old session data as fresh authority.
+        let lease = super::image::Root::acquire(root)?;
+        let machine = crate::relay::machine_id(root).map_err(|_| Error::UnsafeStorage)?;
+        let mut controller = Self::open(&lease.central_directory()?, machine, policy)?;
+        controller.service_root = Some(lease);
+        Ok((machine, controller))
+    }
+    pub(super) fn ensure_owner(&self) -> Result<(), Error> {
+        if let Some(root) = &self.service_root {
+            root.check_directory()?;
+        }
+        if !self.admitting.load(Ordering::SeqCst) || self.stopped.load(Ordering::SeqCst) {
+            return Err(Error::Stopping);
+        }
+        Ok(())
+    }
+    pub(crate) fn runtime_owner(&self) -> Arc<Manager> {
+        self.native.clone()
+    }
+    pub(crate) fn freeze_admission(&self) {
+        let _gate = self.admission.lock().unwrap();
+        self.admitting.store(false, Ordering::SeqCst);
+        self.native.stop_admitting();
+    }
+    pub fn generation(&self) -> Result<StoreGeneration, Error> {
+        self.ensure_owner()?;
+        self.database.lock().unwrap().generation()
     }
     pub fn create_workspace(
         &self,
@@ -175,17 +214,29 @@ impl Controller {
         for session in database.sessions()? {
             for pane in database.panes(session.session_id)? {
                 let attempt = database.attempt(pane.pane_id)?;
-                let desired = database.specification(pane.pane_id).is_ok();
-                let live = attempt
+                let specification = match database.specification(pane.pane_id) {
+                    Ok(specification) => Some(specification),
+                    Err(Error::NotFound) => None,
+                    Err(error) => return Err(error),
+                };
+                let desired = specification.is_some();
+                let owned_live = attempt
                     .as_ref()
                     .is_some_and(|attempt| self.live(attempt, &pane.role));
-                let availability = if live && desired {
-                    Availability::Live
-                } else if !desired
+                let live = owned_live
+                    && attempt.as_ref().is_some_and(|attempt| {
+                        specification.as_ref().is_some_and(|spec| {
+                            attempt.configuration.as_ref() == Some(&spec.configuration)
+                        })
+                    });
+                let withdrawing = !desired
                     && attempt
                         .as_ref()
-                        .is_some_and(|attempt| attempt.phase != AttemptPhase::CompletionProven)
-                {
+                        .is_some_and(|attempt| attempt.phase != AttemptPhase::CompletionProven);
+                let outdated_live = owned_live && desired && !live;
+                let availability = if live {
+                    Availability::Live
+                } else if outdated_live || withdrawing {
                     Availability::Stopping
                 } else if !desired {
                     Availability::Stopped
@@ -229,7 +280,7 @@ impl Controller {
                 })
     }
     fn current(&self, spec: &Specification) -> bool {
-        if self.stopped.load(Ordering::SeqCst) {
+        if self.ensure_owner().is_err() {
             return false;
         }
         self.database
@@ -238,7 +289,8 @@ impl Controller {
             .specification(spec.pane.pane_id)
             .is_ok_and(|current| current.configuration == spec.configuration)
     }
-    fn reconcile_pane(&self, pane: PaneId) -> Result<Availability, Error> {
+    pub(super) fn reconcile_pane(&self, pane: PaneId) -> Result<Availability, Error> {
+        self.ensure_owner()?;
         let (spec, previous) = {
             let database = self.database.lock().unwrap();
             (database.specification(pane)?, database.attempt(pane)?)
@@ -473,6 +525,7 @@ impl Controller {
         Ok(())
     }
     pub fn supervise(self: &Arc<Self>) -> Result<Supervision, Error> {
+        self.ensure_owner()?;
         if self.supervising.swap(true, Ordering::SeqCst) {
             return Err(Error::Conflict);
         }
@@ -521,19 +574,19 @@ impl Controller {
                 let mut retries = BTreeMap::<PaneId, (Instant, u32)>::new();
                 while !stopping.load(Ordering::SeqCst) && !controller.stopped.load(Ordering::SeqCst)
                 {
-                    let panes = controller
-                        .database
-                        .lock()
-                        .unwrap()
-                        .desired_panes()
-                        .unwrap_or_default();
+                    let panes = match controller.database.lock().unwrap().desired_panes() {
+                        Ok(panes) => panes,
+                        Err(_) => return, // Never turn a fenced catalog into empty intent.
+                    };
                     retries.retain(|id, _| panes.iter().any(|pane| pane.pane_id == *id));
                     controller
                         .failures
                         .lock()
                         .unwrap()
                         .retain(|id, _| panes.iter().any(|pane| pane.pane_id == *id));
-                    let _ = controller.reconcile_withdrawn();
+                    if controller.reconcile_withdrawn().is_err() {
+                        return;
+                    }
                     for pane in panes
                         .into_iter()
                         .filter(|pane| (pane.role == PaneRole::Pi) == pi)
@@ -569,6 +622,7 @@ impl Controller {
         if self.stopped.swap(true, Ordering::SeqCst) {
             return;
         }
+        self.freeze_admission();
         self.native.shutdown();
         let Ok(mut database) = self.database.lock() else {
             return;
@@ -604,6 +658,12 @@ pub struct Supervision {
     pi: Option<thread::JoinHandle<()>>,
 }
 impl Supervision {
+    pub(crate) fn is_finished(&self) -> bool {
+        self.shell
+            .as_ref()
+            .is_some_and(|worker| worker.is_finished())
+            || self.pi.as_ref().is_some_and(|worker| worker.is_finished())
+    }
     pub fn shutdown(mut self) -> Result<(), Error> {
         self.finish()
     }
@@ -612,7 +672,7 @@ impl Supervision {
             return Ok(());
         }
         self.stopping.store(true, Ordering::SeqCst);
-        self.controller.native.stop_admitting();
+        self.controller.freeze_admission();
         let shell = self.shell.take().map(|worker| worker.join());
         let pi = self.pi.take().map(|worker| worker.join());
         self.controller.shutdown();

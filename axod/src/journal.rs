@@ -78,6 +78,16 @@ impl Journal {
                 "Another axod owns this state directory",
             ));
         }
+        // Explicit native harnesses cannot reopen a central service root as a
+        // legacy catalog, even after its owner has stopped. Do not read old data.
+        match fs::symlink_metadata(root.join(crate::state::SERVICE_DIRECTORY)) {
+            Err(error) if error.kind() == io::ErrorKind::NotFound => {}
+            _ => {
+                return Err(io::Error::other(
+                    "Central service root requires central authority",
+                ));
+            }
+        }
         let path = root.join("runtime-state.json");
         let mut saved = match read_saved(&path) {
             Ok(value) => value,

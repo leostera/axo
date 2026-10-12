@@ -5,12 +5,14 @@ import { workMethods, workResults, localWorkMethods, localWorkResults } from "./
 import { piMethods, piResults } from "./pi-contracts.js";
 import { paneMethods, paneResults } from "./pane-contracts.js";
 import { hostMethods, hostResults } from "./host-contracts.js";
+import { stateRemoteMethods, stateLocalMethods, stateResults } from "./state-contracts.js";
 export { uuid, destinationSchema } from "./identity.js";
 export * from "./runtime-contracts.js";
 export * from "./work-contracts.js";
 export * from "./pi-contracts.js";
 export * from "./pane-contracts.js";
 export * from "./host-contracts.js";
+export * from "./state-contracts.js";
 import {
   createJSONRPCErrorResponse,
   createJSONRPCSuccessResponse,
@@ -190,6 +192,7 @@ export const startSchema = z
   })
   .strict();
 export const remoteMethods = {
+  ...stateRemoteMethods,
   ...workMethods,
   ...piMethods,
   "axo.runtime.list": listSchema,
@@ -198,9 +201,10 @@ export const remoteMethods = {
 export type RemoteMethod = keyof typeof remoteMethods;
 export const METHODS = Object.keys(remoteMethods) as RemoteMethod[];
 // Shell-pane lifecycle is local-only; layout/rendering and terminal bytes stay local too.
-export const localMethods = { ...remoteMethods, ...localWorkMethods, ...paneMethods, ...hostMethods } as const;
+export const localMethods = { ...remoteMethods, ...localWorkMethods, ...paneMethods, ...hostMethods, ...stateLocalMethods } as const;
 export type LocalMethod = keyof typeof localMethods;
 export const results = {
+  ...stateResults,
   ...workResults,
   ...localWorkResults,
   ...piResults,

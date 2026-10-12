@@ -4,6 +4,7 @@ use crate::{
     model::MachineId,
     profiles::Profiles,
     rpc,
+    rpc_owner::RpcOwner,
     runtime::Manager,
 };
 use serde::Deserialize;
@@ -45,6 +46,36 @@ impl LocalServer {
         profiles: Profiles,
         stopping: Arc<AtomicBool>,
     ) -> io::Result<Self> {
+        Self::start_owned(
+            root,
+            machine,
+            RpcOwner::NativeHarness(manager),
+            profiles,
+            stopping,
+        )
+    }
+    pub(crate) fn start_central(
+        root: &Path,
+        machine: MachineId,
+        controller: Arc<crate::state::controller::Controller>,
+        stopping: Arc<AtomicBool>,
+    ) -> io::Result<Self> {
+        Self::start_owned(
+            root,
+            machine,
+            RpcOwner::Central(controller),
+            Profiles::default(),
+            stopping,
+        )
+    }
+    fn start_owned(
+        root: &Path,
+        machine: MachineId,
+        owner: RpcOwner,
+        profiles: Profiles,
+        stopping: Arc<AtomicBool>,
+    ) -> io::Result<Self> {
+        let manager = owner.runtime();
         let terminal = crate::terminal_transport::TerminalServer::start(
             root,
             machine,
@@ -64,7 +95,7 @@ impl LocalServer {
         let publication = Publication::publish(root, &discovery)?;
         let context = Arc::new(Context {
             machine,
-            manager,
+            owner,
             profiles,
             authority,
             stopping: stopping.clone(),
@@ -90,7 +121,7 @@ impl Drop for LocalServer {
 }
 struct Context {
     machine: MachineId,
-    manager: Arc<Manager>,
+    owner: RpcOwner,
     profiles: Profiles,
     authority: String,
     stopping: Arc<AtomicBool>,
@@ -356,7 +387,9 @@ impl Connection {
         if !self.negotiated {
             return Some(rpc::error(id, -32001, "Negotiation required"));
         }
-        rpc::dispatch_local(call, &context.manager, context.machine, &context.profiles.0)
+        context
+            .owner
+            .dispatch(call, context.machine, &context.profiles.0, true)
     }
 }
 fn send(

@@ -19,6 +19,7 @@ import {
   workMutationMethods,
   piMutationMethods,
   paneMutationMethods,
+  stateMutationMethods,
   type LocalMethod,
   results,
   type Reply,
@@ -67,7 +68,7 @@ export function createProfileServer<Context = void>(): JSONRPCServer<Context> {
   server.applyMiddleware((next, request, context) => {
     if (
       request.id === undefined &&
-      [...workMutationMethods, ...piMutationMethods, ...paneMutationMethods, "axo.runtime.startApproved", "axo.machine.register"].includes(
+      [...workMutationMethods, ...piMutationMethods, ...paneMutationMethods, ...stateMutationMethods, "axo.runtime.startApproved", "axo.machine.register"].includes(
         request.method,
       )
     )

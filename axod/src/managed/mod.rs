@@ -18,7 +18,8 @@ pub(crate) struct Running {
     pub binding: Binding,
     pub control: Control,
     pub(crate) _lease: WriterLease,
-    pub(crate) viewing: std::sync::Mutex<std::collections::BTreeMap<uuid::Uuid, std::time::Instant>>,
+    pub(crate) viewing:
+        std::sync::Mutex<std::collections::BTreeMap<uuid::Uuid, std::time::Instant>>,
 }
 pub(crate) enum Reservation {
     Existing(Box<Receipt>),
@@ -240,6 +241,7 @@ fn start_locked(
         .map_err(failure)?;
     start_result(manager, machine, receipt)
 }
+#[cfg(test)]
 pub(crate) fn ensure_live(
     manager: &Manager,
     machine: MachineId,

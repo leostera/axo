@@ -142,6 +142,12 @@ impl Client {
                     {
                         return Err(ClientError::OutcomeUnknown);
                     }
+                    if let Ok(result) = &reply
+                        && let Some(expected) = request["params"]["target"].get("storeGeneration")
+                        && result.get("storeGeneration") != Some(expected)
+                    {
+                        return Err(ClientError::OutcomeUnknown);
+                    }
                     // Failure to return credit does not erase an already validated result.
                     let acknowledged = self.socket.send(Message::Text(
                         json!({"jsonrpc":"2.0","method":"axo.transport.ack","params":{"frames":1}}).to_string().into()

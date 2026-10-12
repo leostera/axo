@@ -237,7 +237,7 @@ fn actual_cli_starts_home_and_selected_folder_sessions_without_profiles() {
 
 #[cfg(target_os = "macos")]
 #[test]
-fn installed_helper_defaults_start_home_pi_from_captured_login_path_without_pi_config() {
+fn production_helper_policy_materializes_fresh_home_graph_without_client_starts_or_pi_config() {
     let model = model_fixture::Fixture::new();
     let root = model.root();
     let repo = Path::new(env!("CARGO_MANIFEST_DIR")).parent().unwrap();
@@ -298,12 +298,85 @@ fn installed_helper_defaults_start_home_pi_from_captured_login_path_without_pi_c
     let descriptor = Client::connect(&discovery).unwrap().discovery;
     let target =
         json!({"machineId":descriptor.machine_id,"hostGeneration":descriptor.host_generation});
+    let bootstrap = rpc(&discovery, "axo.state.get", json!({"target":target}));
+    assert_eq!(bootstrap["value"]["backendCompleteCreation"], true);
+    let mut source = target;
+    source["storeGeneration"] = bootstrap["storeGeneration"].clone();
+    let command = uuid::Uuid::new_v4();
     let created = rpc(
         &discovery,
-        "axo.session.create",
-        json!({"target":target,"commandId":uuid::Uuid::new_v4(),"expectedRevision":0,"name":"Default home"}),
+        "axo.state.session.create",
+        json!({"target":source,"commandId":command,"expectedRevision":0,"workspaceId":null,"name":"Default home"}),
     );
-    admit_and_execute(&discovery, &target, &created["session"], root);
+    let original = created["value"]["operation"].clone();
+    assert_eq!(original["kind"], "createStandalone");
+    assert!(original["accepted"]["graph"]["session"]["workspaceId"].is_null());
+    assert_eq!(
+        original["accepted"]["graph"]["panes"]
+            .as_array()
+            .unwrap()
+            .len(),
+        2
+    );
+    wait_until(|| {
+        assert!(daemon.0.try_wait().unwrap().is_none());
+        let state = rpc(
+            &discovery,
+            "axo.state.operation.get",
+            json!({"target":source,"commandId":command}),
+        );
+        assert_eq!(state["value"]["operation"], original);
+        if state["value"]["session"]["readiness"] != "ready" {
+            return false;
+        }
+        let panes = state["value"]["session"]["panes"].as_array().unwrap();
+        assert_eq!(panes.len(), 2);
+        assert!(
+            panes
+                .iter()
+                .all(|pane| pane["availability"] == "live" && pane["terminal"].is_object())
+        );
+        true
+    });
+    let selected = root.join("central-selected");
+    fs::create_dir(&selected).unwrap();
+    fs::set_permissions(&selected, fs::Permissions::from_mode(0o700)).unwrap();
+    let workspace_command = uuid::Uuid::new_v4();
+    let workspace = rpc(
+        &discovery,
+        "axo.state.workspace.create",
+        json!({"target":source,"commandId":workspace_command,"expectedRevision":1,"name":"Selected","directoryPath":selected}),
+    );
+    assert_eq!(workspace["value"]["operation"]["kind"], "createWorkspace");
+    let captured = workspace["value"]["operation"].clone();
+    wait_until(|| {
+        let state = rpc(
+            &discovery,
+            "axo.state.operation.get",
+            json!({"target":source,"commandId":workspace_command}),
+        );
+        assert_eq!(state["value"]["operation"], captured);
+        state["value"]["session"]["readiness"] == "ready"
+    });
+    assert_eq!(
+        model.requests(),
+        0,
+        "Metadata and admission must not replay or execute a prompt"
+    );
+    assert!(
+        discovery
+            .parent()
+            .unwrap()
+            .join("CentralSessions/session-state.sqlite3")
+            .is_file()
+    );
+    assert!(
+        !discovery
+            .parent()
+            .unwrap()
+            .join("work-records.json")
+            .exists()
+    );
     assert!(
         !root
             .join("Library/Application Support/Axo/Axod/pi.json")

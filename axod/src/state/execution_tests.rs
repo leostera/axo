@@ -55,7 +55,7 @@ fn schema_one_upgrade_preserves_graph_and_original_receipt() {
     let original = database
         .create_workspace(command, 0, "Original", &approval)
         .unwrap();
-    database.mutate(|tx|{tx.execute_batch("ALTER TABLE pi_bindings DROP COLUMN runtime_binding; ALTER TABLE runtime_attempts DROP COLUMN config_capture; PRAGMA user_version=1;")?;Ok(())}).unwrap();
+    database.mutate(|tx|{tx.execute_batch("ALTER TABLE pi_bindings DROP COLUMN runtime_binding; ALTER TABLE runtime_attempts DROP COLUMN config_capture; ALTER TABLE metadata DROP COLUMN store_generation; PRAGMA user_version=1;")?;Ok(())}).unwrap();
     drop(database);
     let mut database = Database::open(root.path(), machine).unwrap();
     assert_eq!(database.workspaces().unwrap()[0], original.graph.workspace);
@@ -80,7 +80,7 @@ fn schema_one_upgrade_preserves_graph_and_original_receipt() {
             .connection
             .pragma_query_value(None, "user_version", |row| row.get::<_, i64>(0))
             .unwrap(),
-        2
+        3
     );
 }
 #[test]

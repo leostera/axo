@@ -302,9 +302,7 @@ fn lifecycle(params: Option<Value>, manager: &Manager, machine: MachineId) -> Ou
         manager,
         machine,
     )?;
-    Ok(
-        json!({"hostGeneration": manager.generation, "sessionKeepAlive": manager.session_keep_alive}),
-    )
+    Ok(json!({"hostGeneration": manager.generation, "sessionKeepAlive": false}))
 }
 fn list(params: Option<Value>, manager: &Manager, machine: MachineId) -> Outcome {
     let params: List = serde_json::from_value(params.unwrap_or(Value::Null))

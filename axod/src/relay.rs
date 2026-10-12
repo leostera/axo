@@ -332,6 +332,7 @@ fn session(
     machine: MachineId,
     manager: &Manager,
     stopping: &AtomicBool,
+    owner: &crate::rpc_owner::RpcOwner,
 ) -> io::Result<()> {
     let mut socket = connect(config, machine)?;
     call(
@@ -420,7 +421,7 @@ fn session(
         for entry in message.entries {
             match entry {
                 Ok(call) => {
-                    if let Some(reply) = rpc::dispatch(call, manager, machine, &config.profiles) {
+                    if let Some(reply) = owner.dispatch(call, machine, &config.profiles, false) {
                         replies.push(reply);
                     }
                 }
@@ -435,11 +436,38 @@ fn session(
     Ok(())
 }
 pub fn run(config: Config, machine: MachineId, manager: Arc<Manager>, stopping: Arc<AtomicBool>) {
+    run_owned(
+        config,
+        machine,
+        crate::rpc_owner::RpcOwner::NativeHarness(manager),
+        stopping,
+    )
+}
+pub(crate) fn run_central(
+    config: Config,
+    machine: MachineId,
+    owner: Arc<crate::state::controller::Controller>,
+    stopping: Arc<AtomicBool>,
+) {
+    run_owned(
+        config,
+        machine,
+        crate::rpc_owner::RpcOwner::Central(owner),
+        stopping,
+    )
+}
+fn run_owned(
+    config: Config,
+    machine: MachineId,
+    owner: crate::rpc_owner::RpcOwner,
+    stopping: Arc<AtomicBool>,
+) {
+    let manager = owner.runtime();
     let mut last_failure = None;
     while !stopping.load(Ordering::SeqCst) {
         manager.host.connecting();
         // Only fixed classifications are logged, and only when the failure changes.
-        if let Err(error) = session(&config, machine, &manager, &stopping) {
+        if let Err(error) = session(&config, machine, &manager, &stopping, &owner) {
             let reason = match error.to_string().as_str() {
                 "Relay TLS failed" => "tls",
                 "Relay HTTP rejected" => "http_admission",

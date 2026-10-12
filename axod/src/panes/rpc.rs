@@ -65,6 +65,7 @@ pub(crate) fn dispatch(
     }
 }
 /// One serialized daemon transition. Missing attachment is never stop authority.
+#[cfg(test)]
 pub(crate) fn ensure_backing(
     manager: &Manager,
     machine: MachineId,
