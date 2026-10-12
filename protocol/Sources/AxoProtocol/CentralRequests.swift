@@ -8,6 +8,12 @@ public struct CentralRequest: Sendable {
     public let machine: MachineTarget
     public let source: CentralSource?
     let intent: Intent
+    /// Durable intent identity, distinct from the transport request ID. Reads
+    /// (including original-operation lookup and completion) carry no mutation.
+    public var commandId: UUID? {
+        if case .mutation(let id, _, _) = intent { return id }
+        return nil
+    }
     enum Intent: Sendable {
         case bootstrap
         case page(CentralPageDomain, CentralCursor?, Int)

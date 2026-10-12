@@ -8,26 +8,22 @@ import Observation
 final class PrivateMachineBrowserModel {
     private(set) var machines: [MachineSummary] = []
     private(set) var isDiscovering = false
-    private(set) var isLoadingRuntimes = false
+    private(set) var isLoadingCatalog = false
     private(set) var isConnected = false
-    private(set) var selectedMachineID: UUID?
-    private(set) var notice: String?
     private(set) var accessMessage: String?
-    private(set) var runtimeResults: [UUID: RuntimeListResult] = [:]
-    private(set) var runtimeCursors: [UUID: UUID] = [:]
-    private(set) var workspaces: [UUID: [ProtocolWorkspaceRecord]] = [:]
-    private(set) var workSessions: [UUID: [WorkSessionRecord]] = [:]
-    private(set) var workRevisions: [UUID: WorkRevision] = [:]
-    private(set) var isLoadingWork = false
-    private(set) var workNotice: String?
+    private(set) var notice: String?
+    private(set) var selectedMachineID: UUID?
+    private(set) var catalog: CentralCatalog?
+    private(set) var catalogNotice: String?
+    private var connectedMachineID: UUID?
+    private var controlPlane: AxoControlPlaneSession?
+    private var selectionOperation = UUID()
+    private var discoveryOperation = UUID()
+    private var authorizationOperation = UUID()
 
     private let endpoint: AxoControlPlaneEndpoint
     private let persistsCredentials: Bool
     private var accessCookie: AxoControlPlaneAccessCookie?
-    private var controlPlane: AxoControlPlaneSession?
-    private var discoveryOperation = UUID()
-    private var selectionOperation = UUID()
-    private var connectedMachineID: UUID?
 
     init(endpoint: AxoControlPlaneEndpoint = .production,
          credential: AxoControlPlaneAccessCookie? = nil, persistsCredentials: Bool = true) {
@@ -35,41 +31,33 @@ final class PrivateMachineBrowserModel {
         self.persistsCredentials = persistsCredentials
         if let credential { use(credential); return }
         #if DEBUG
-        if ProcessInfo.processInfo.arguments.contains("--axo-control-plane-preview") {
-            loadPreview()
-            return
-        }
+        if isPreview { loadPreview(); return }
         #endif
-
         guard let host = endpoint.baseURL.host,
               let credential = ControlPlaneAccessCredential.load(host: host) else { return }
         use(credential)
     }
 
-    var selectedMachine: MachineSummary? {
-        guard let selectedMachineID else { return nil }
-        return machines.first { $0.machineId == selectedMachineID }
-    }
-
-    var selectedRuntimeResult: RuntimeListResult? {
-        guard let machine = selectedMachine, machine.online,
-              let result = runtimeResults[machine.machineId], result.hostGeneration == machine.hostGeneration else { return nil }
-        return result
-    }
-
-    var selectedRuntimes: [TerminalSnapshot] { selectedRuntimeResult?.terminals ?? [] }
-    var selectedWorkspaces: [ProtocolWorkspaceRecord] { selectedMachineID.flatMap { workspaces[$0] } ?? [] }
-    var selectedWorkSessions: [WorkSessionRecord] { selectedMachineID.flatMap { workSessions[$0] } ?? [] }
-    var selectedWorkRevision: WorkRevision? { selectedMachineID.flatMap { workRevisions[$0] } }
-    var selectedRuntimeCursor: UUID? {
-        guard let selectedMachineID else { return nil }
-        return runtimeCursors[selectedMachineID]
-    }
     var isSignedIn: Bool { accessCookie != nil }
-    var isRuntimeGenerationStale: Bool {
-        guard let machine = selectedMachine, let result = selectedRuntimeResult else { return false }
-        return !machine.online || machine.hostGeneration != result.hostGeneration
+    var selectedMachine: MachineSummary? { machines.first { $0.machineId == selectedMachineID } }
+
+    /// One indivisible graph, scoped to the selected live host and store. Never
+    /// expose independently cached workspace/runtime pages or an offline graph.
+    var selectedCatalog: CentralCatalog? {
+        guard isConnected, let machine = selectedMachine, machine.online, let catalog,
+              catalog.source.machine.machineId == machine.machineId,
+              catalog.source.machine.hostGeneration == machine.hostGeneration else { return nil }
+        return catalog
     }
+    var isRuntimeGenerationStale: Bool {
+        guard let machine = selectedMachine, let catalog else { return false }
+        return !machine.online || catalog.source.machine.machineId != machine.machineId || catalog.source.machine.hostGeneration != machine.hostGeneration
+    }
+    var selectedRuntimes: [TerminalSnapshot] { selectedCatalog?.terminals ?? [] }
+    var selectedWorkspaces: [CentralWorkspace] { selectedCatalog?.workspaces ?? [] }
+    var selectedWorkSessions: [CentralSessionView] { selectedCatalog?.sessions ?? [] }
+    func sessions(in workspaceId: UUID?) -> [CentralSessionView] { selectedCatalog?.sessionsByWorkspace[workspaceId] ?? [] }
+    var selectedWorkRevision: CentralRevision? { selectedCatalog?.revision }
 
     func start() async {
         #if DEBUG
@@ -85,102 +73,72 @@ final class PrivateMachineBrowserModel {
         guard let host = endpoint.baseURL.host else { return }
         do {
             if persistsCredentials { try ControlPlaneAccessCredential.save(credential, host: host) }
+            let authorization = UUID()
+            authorizationOperation = authorization
+            discoveryOperation = UUID()
+            await disconnect()
+            guard authorizationOperation == authorization else { return }
             use(credential)
+            machines = []
             accessMessage = nil
             await refreshMachines()
-        } catch {
-            notice = "Cloudflare Access could not be saved securely on this device."
-        }
+        } catch { notice = "Cloudflare Access could not be saved securely on this device." }
     }
 
     func signOut() async {
-        if persistsCredentials, let host = endpoint.baseURL.host { ControlPlaneAccessCredential.remove(host: host) }
-        await controlPlane?.disconnect()
+        // Fence old callbacks before awaiting transport teardown.
+        authorizationOperation = UUID()
+        discoveryOperation = UUID()
+        selectionOperation = UUID()
+        let previous = controlPlane
         controlPlane = nil
+        if persistsCredentials, let host = endpoint.baseURL.host { ControlPlaneAccessCredential.remove(host: host) }
         accessCookie = nil
-        machines = []
-        runtimeResults = [:]
-        runtimeCursors = [:]
-        workspaces = [:]
-        workSessions = [:]
-        workRevisions = [:]
-        workNotice = nil
-        selectedMachineID = nil
-        connectedMachineID = nil
-        isConnected = false
+        machines = []; selectedMachineID = nil
+        clearCatalog()
+        isConnected = false; connectedMachineID = nil
+        isDiscovering = false; isLoadingCatalog = false
         accessMessage = nil
         notice = nil
-        selectionOperation = UUID()
-        discoveryOperation = UUID()
-        isDiscovering = false
-        isLoadingRuntimes = false
-        isLoadingWork = false
+        await previous?.disconnect()
     }
 
     func refreshMachines() async {
         #if DEBUG
         if isPreview { return }
         #endif
-        guard let controlPlane else { return }
+        guard let controlPlane else { accessMessage = "Cloudflare Access authorization is required."; return }
         let operation = UUID()
         discoveryOperation = operation
-        isDiscovering = true
-        notice = nil
-        defer {
-            if discoveryOperation == operation { isDiscovering = false }
-        }
-
+        isDiscovering = true; notice = nil
+        defer { if discoveryOperation == operation { isDiscovering = false } }
         do {
             let result = try await controlPlane.discoverMachines()
             guard discoveryOperation == operation else { return }
-            let previousMachines = machines
+            let previous = selectedMachine
             machines = result.machines
-            for machineID in Set(runtimeResults.keys).union(workspaces.keys) {
-                let knownGeneration = runtimeResults[machineID]?.hostGeneration ?? previousMachines.first { $0.machineId == machineID }?.hostGeneration
-                guard let current = result.machines.first(where: { $0.machineId == machineID }),
-                      current.online, current.hostGeneration == knownGeneration else {
-                    clearMachineMetadata(for: machineID)
-                    continue
-                }
-            }
-            if let selectedMachineID,
-               let selected = result.machines.first(where: { $0.machineId == selectedMachineID }) {
-                let knownGeneration = runtimeResults[selectedMachineID]?.hostGeneration ?? previousMachines.first { $0.machineId == selectedMachineID }?.hostGeneration
-                if !selected.online || selected.hostGeneration != knownGeneration {
+            if let machineID = selectedMachineID,
+               let current = machines.first(where: { $0.machineId == machineID }) {
+                if !current.online || current.hostGeneration == nil || current.hostGeneration != previous?.hostGeneration {
                     selectionOperation = UUID()
-                    isLoadingRuntimes = false
-                    isLoadingWork = false
-                    isConnected = false
-                    connectedMachineID = nil
-                    clearWorkRecords(for: selectedMachineID)
+                    clearCatalog()
+                    isConnected = false; connectedMachineID = nil; isLoadingCatalog = false
+                    notice = "The machine is offline or restarted. Reconnect to read its current central state."
                     await controlPlane.disconnect()
                 }
-            } else if let selectedMachineID {
+            } else if selectedMachineID != nil {
                 selectionOperation = UUID()
-                isLoadingRuntimes = false
-                isLoadingWork = false
-                isConnected = false
-                connectedMachineID = nil
-                notice = "This host is no longer in the authorized machine directory."
-                clearWorkRecords(for: selectedMachineID)
+                clearCatalog()
+                selectedMachineID = nil
+                isConnected = false; connectedMachineID = nil; isLoadingCatalog = false
                 await controlPlane.disconnect()
             }
         } catch {
             guard discoveryOperation == operation else { return }
-            // An unavailable directory is not a cached fleet. Keep credentials, not stale views.
             selectionOperation = UUID()
-            machines = []
-            runtimeResults = [:]
-            runtimeCursors = [:]
-            workspaces = [:]
-            workSessions = [:]
-            workRevisions = [:]
+            machines = []; clearCatalog()
             selectedMachineID = nil
-            connectedMachineID = nil
-            isConnected = false
-            isLoadingRuntimes = false
-            isLoadingWork = false
-            workNotice = nil
+            isConnected = false; connectedMachineID = nil; isLoadingCatalog = false
             await controlPlane.disconnect()
             guard discoveryOperation == operation else { return }
             await report(error)
@@ -189,250 +147,118 @@ final class PrivateMachineBrowserModel {
 
     func selectMachine(_ machineID: UUID) async {
         guard let machine = machines.first(where: { $0.machineId == machineID }) else { return }
-        selectedMachineID = machineID
-        workspaces[machineID] = nil
-        workSessions[machineID] = nil
-        workRevisions[machineID] = nil
-        workNotice = nil
-        isLoadingWork = false
-        let operation = UUID()
-        selectionOperation = operation
-        notice = nil
-        isConnected = false
-        connectedMachineID = nil
-
         #if DEBUG
         if isPreview {
-            isConnected = machine.online && runtimeResults[machineID]?.hostGeneration == machine.hostGeneration
+            selectedMachineID = machineID
+            isConnected = machine.online && catalog?.source.machine.machineId == machineID && catalog?.source.machine.hostGeneration == machine.hostGeneration
             connectedMachineID = isConnected ? machineID : nil
             return
         }
         #endif
-
-        guard machine.online, machine.hostGeneration != nil else {
-            clearMachineMetadata(for: machineID)
-            await controlPlane?.disconnect()
-            return
-        }
+        selectedMachineID = machineID
+        let operation = UUID()
+        selectionOperation = operation
+        clearCatalog()
+        notice = nil
+        isConnected = false; connectedMachineID = nil; isLoadingCatalog = false
+        guard machine.online, machine.hostGeneration != nil else { await controlPlane?.disconnect(); return }
         guard let controlPlane else { return }
-
-        isLoadingRuntimes = true
-        defer { if selectionOperation == operation { isLoadingRuntimes = false } }
+        isLoadingCatalog = true
+        defer { if selectionOperation == operation { isLoadingCatalog = false } }
         do {
-            let result = try await controlPlane.connect(to: machine)
+            _ = try await controlPlane.connect(to: machine)
             guard selectionOperation == operation, selectedMachineID == machineID else { return }
-            runtimeResults[machineID] = result
-            runtimeCursors[machineID] = result.next
             connectedMachineID = machineID
             isConnected = true
-            await refreshWorkRecords(for: machineID, operation: operation)
+            await loadCatalog(machineID: machineID, operation: operation)
         } catch {
             guard selectionOperation == operation, selectedMachineID == machineID else { return }
-            clearMachineMetadata(for: machineID)
+            clearCatalog()
             await report(error)
         }
     }
 
-    func refreshWorkRecords() async {
-        guard let machineID = selectedMachineID else { return }
-        await refreshWorkRecords(for: machineID, operation: selectionOperation)
-    }
-
-    private func refreshWorkRecords(for machineID: UUID, operation: UUID) async {
-        guard connectedMachineID == machineID, selectionOperation == operation,
-              let controlPlane else { return }
-        workspaces[machineID] = nil
-        workSessions[machineID] = nil
-        workRevisions[machineID] = nil
-        isLoadingWork = true
-        workNotice = nil
-        defer { if selectionOperation == operation { isLoadingWork = false } }
-
+    private func loadCatalog(machineID: UUID, operation: UUID) async {
+        guard connectedMachineID == machineID, selectionOperation == operation, let controlPlane else { return }
+        clearCatalog()
         do {
-            var workspaceRecords: [ProtocolWorkspaceRecord] = []
-            var workspaceCursor: WorkPageCursor?
-            var revision: WorkRevision?
-            repeat {
-                let page = try await controlPlane.listWorkspaces(cursor: workspaceCursor)
-                guard selectionOperation == operation, selectedMachineID == machineID else { return }
-                if let revision, revision != page.revision { throw AxoProtocolValidationError.invalidResult(method: AxoProtocol.Method.listWorkspaces) }
-                revision = page.revision
-                workspaceRecords.append(contentsOf: page.workspaces)
-                workspaceCursor = page.next
-            } while workspaceCursor != nil
-
-            var sessionRecords: [WorkSessionRecord] = []
-            var sessionCursor: WorkPageCursor?
-            repeat {
-                let page = try await controlPlane.listSessions(cursor: sessionCursor)
-                guard selectionOperation == operation, selectedMachineID == machineID else { return }
-                guard page.revision == revision else { throw AxoProtocolValidationError.invalidResult(method: AxoProtocol.Method.listSessions) }
-                sessionRecords.append(contentsOf: page.sessions)
-                sessionCursor = page.next
-            } while sessionCursor != nil
-
-            guard selectionOperation == operation, selectedMachineID == machineID,
-                  let revision,
-                  sessionRecords.allSatisfy({ session in session.workspaceId == nil || workspaceRecords.contains(where: { $0.workspaceId == session.workspaceId }) }) else {
-                throw AxoProtocolValidationError.invalidResult(method: AxoProtocol.Method.listSessions)
-            }
-            workspaces[machineID] = workspaceRecords
-            workSessions[machineID] = sessionRecords
-            workRevisions[machineID] = revision
+            let result = try await controlPlane.catalog()
+            guard selectionOperation == operation, selectedMachineID == machineID else { return }
+            catalog = result
         } catch {
             guard selectionOperation == operation, selectedMachineID == machineID else { return }
-            workspaces[machineID] = nil
-            workSessions[machineID] = nil
-            workRevisions[machineID] = nil
-            await reportWork(error)
+            clearCatalog()
+            isConnected = false; connectedMachineID = nil
+            await report(error)
+            guard selectionOperation == operation, selectedMachineID == machineID else { return }
+            catalogNotice = notice ?? "Central state is unavailable. No cached graph was applied."
         }
     }
 
-    func refreshRuntimes() async {
-        guard let machineID = selectedMachineID,
-              connectedMachineID == machineID,
-              let controlPlane else { return }
+    func refreshCatalog() async {
+        guard !isLoadingCatalog, let machineID = selectedMachineID, connectedMachineID == machineID else { return }
         let operation = selectionOperation
-        isLoadingRuntimes = true
-        notice = nil
-        defer { if selectionOperation == operation { isLoadingRuntimes = false } }
-        do {
-            let result = try await controlPlane.refreshRuntimes()
-            guard selectionOperation == operation, selectedMachineID == machineID else { return }
-            runtimeResults[machineID] = result
-            runtimeCursors[machineID] = result.next
-            await refreshWorkRecords(for: machineID, operation: operation)
-        } catch {
-            guard selectionOperation == operation else { return }
-            isConnected = false
-            connectedMachineID = nil
-            isLoadingWork = false
-            clearMachineMetadata(for: machineID)
-            await report(error)
-        }
-    }
-
-    func loadMoreRuntimes() async {
-        guard let machineID = selectedMachineID,
-              connectedMachineID == machineID,
-              let after = runtimeCursors[machineID],
-              let controlPlane else { return }
-        let operation = selectionOperation
-        isLoadingRuntimes = true
-        defer { if selectionOperation == operation { isLoadingRuntimes = false } }
-        do {
-            let page = try await controlPlane.refreshRuntimes(after: after)
-            guard selectionOperation == operation, selectedMachineID == machineID else { return }
-            let old = runtimeResults[machineID]
-            let known = Set(old?.terminals.map(\.runtime.runtimeGeneration) ?? [])
-            let additions = page.terminals.filter { !known.contains($0.runtime.runtimeGeneration) }
-            runtimeResults[machineID] = RuntimeListResult(
-                hostGeneration: page.hostGeneration,
-                terminals: (old?.terminals ?? []) + additions,
-                next: page.next
-            )
-            runtimeCursors[machineID] = page.next
-        } catch {
-            guard selectionOperation == operation else { return }
-            isConnected = false
-            connectedMachineID = nil
-            clearMachineMetadata(for: machineID)
-            await controlPlane.disconnect()
-            guard selectionOperation == operation else { return }
-            await report(error)
-        }
+        notice = nil; isLoadingCatalog = true
+        defer { if selectionOperation == operation { isLoadingCatalog = false } }
+        await loadCatalog(machineID: machineID, operation: operation)
     }
 
     func disconnect() async {
         selectionOperation = UUID()
-        isConnected = false
-        connectedMachineID = nil
-        isLoadingRuntimes = false
-        isLoadingWork = false
-        if let selectedMachineID { clearMachineMetadata(for: selectedMachineID) }
+        clearCatalog()
+        isConnected = false; connectedMachineID = nil; isLoadingCatalog = false
         await controlPlane?.disconnect()
     }
 
     func reconnect() async {
-        guard let machineID = selectedMachineID else {
-            await refreshMachines()
-            return
-        }
+        guard !isLoadingCatalog else { return }
+        guard let machineID = selectedMachineID else { await refreshMachines(); return }
+        let operation = UUID()
+        selectionOperation = operation
         await refreshMachines()
-        guard let refreshed = machines.first(where: { $0.machineId == machineID }), refreshed.online else { return }
+        guard selectionOperation == operation, selectedMachineID == machineID,
+              let machine = machines.first(where: { $0.machineId == machineID }), machine.online else { return }
         await selectMachine(machineID)
     }
 
-    private func clearMachineMetadata(for machineID: UUID) {
-        runtimeResults[machineID] = nil
-        runtimeCursors[machineID] = nil
-        clearWorkRecords(for: machineID)
-    }
-
-    private func clearWorkRecords(for machineID: UUID) {
-        workspaces[machineID] = nil
-        workSessions[machineID] = nil
-        workRevisions[machineID] = nil
-        workNotice = nil
-    }
-
+    private func clearCatalog() { catalog = nil; catalogNotice = nil }
     private func use(_ credential: AxoControlPlaneAccessCookie) {
         accessCookie = credential
         controlPlane = AxoControlPlaneSession(endpoint: endpoint, accessCookie: credential)
     }
 
     private func report(_ error: Error) async {
-        if let error = error as? AxoJSONRPCClientError,
-           case .unauthorized = error {
-            accessMessage = "Cloudflare Access expired or was denied. Sign in again."
+        if case AxoJSONRPCClientError.unauthorized = error {
             await signOut()
+            guard accessCookie == nil else { return }
             accessMessage = "Cloudflare Access expired or was denied. Sign in again."
             return
         }
-        if let error = error as? AxoControlPlaneSessionError {
+        if let error = error as? AxoJSONRPCClientError {
             switch error {
-            case .machineOffline:
-                notice = error.localizedDescription
-            case .noSelectedMachine, .superseded:
-                notice = "The machine selection changed. Refresh the list before continuing."
-            case .protocolMismatch:
-                notice = "This host uses an incompatible control protocol. No runtime data was applied."
-            case .unsupportedMethod(let method):
-                notice = "This host does not support \(method). No legacy data was loaded."
-            case .invalidPageRequest:
-                notice = "The work-record page no longer matches the selected host or revision. Refresh before continuing."
+            case .redirectRejected: notice = "The endpoint redirected to sign-in. Open Cloudflare Access and authorize again."
+            case .outcomeUnknown: notice = "Delivery is unknown. No mutation was replayed."
+            case .remote(code: -32002, message: _): notice = "The central source or revision changed. Reconnect."
+            case .remote(code: -32003, message: _): notice = "The selected machine is offline."
+            case .remote(code: -32001, message: _): notice = "The selected host requires compatible negotiation."
+            case .remote: notice = "The host rejected the request."
+            default: notice = error.localizedDescription
             }
-            return
-        }
-        if let error = error as? AxoProtocolValidationError {
-            if case .staleHost = error {
-                notice = "The host generation changed. Refresh machines, then reconnect to the current generation."
-            } else {
-                notice = "The host returned invalid runtime metadata. No data was applied."
+        } else if let error = error as? AxoProtocolValidationError {
+            switch error {
+            case .staleHost: notice = "The host restarted. Old cached sessions were discarded; reconnect."
+            case .staleStore: notice = "The central store changed. Old cached sessions were discarded; reconnect."
+            default: notice = "The host returned invalid central session metadata. No data was applied."
             }
-            return
-        }
-        notice = error.localizedDescription
-    }
-
-    private func reportWork(_ error: Error) async {
-        if let controlError = error as? AxoControlPlaneSessionError,
-           case .unsupportedMethod(let method) = controlError {
-            workNotice = "This daemon does not support \(method). No legacy or cached catalog was used."
-            return
-        }
-        if let validationError = error as? AxoProtocolValidationError,
-           case .staleHost = validationError {
-            workNotice = "The daemon restarted while loading work records. Refresh machines and try again."
-            return
-        }
-        if let rpcError = error as? AxoJSONRPCClientError,
-           case .remote(code: -32002, message: _) = rpcError {
-            workNotice = "The work-record page became stale. Refresh to load one current revision."
-            return
-        }
-        await report(error)
-        workNotice = notice ?? "Work records are unavailable. Nothing was loaded from a legacy catalog."
+        } else if let error = error as? AxoControlPlaneSessionError {
+            switch error {
+            case .machineOffline: notice = "The selected machine is offline."
+            case .superseded: return
+            case .noSelectedMachine: notice = "Select an online machine first."
+            case .outcomeUnknown: notice = "The original central command has an unknown outcome. No mutation was replayed."
+            case .unsupportedMethod, .protocolMismatch: notice = "This daemon does not support central session management. No legacy catalog was used."
+            }
+        } else { notice = "The private control plane is unavailable. Refresh or reconnect to the selected machine." }
     }
 
     #if DEBUG
@@ -440,57 +266,19 @@ final class PrivateMachineBrowserModel {
 
     private func loadPreview() {
         let onlineID = UUID(uuidString: "11111111-1111-4111-8111-111111111111")!
-        let currentGeneration = UUID(uuidString: "22222222-2222-4222-8222-222222222222")!
-        let oldGeneration = UUID(uuidString: "33333333-3333-4333-8333-333333333333")!
         let offlineID = UUID(uuidString: "44444444-4444-4444-8444-444444444444")!
         let restartedID = UUID(uuidString: "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa")!
-        let sessionID = UUID(uuidString: "55555555-5555-4555-8555-555555555555")!
-        let paneID = UUID(uuidString: "66666666-6666-4666-8666-666666666666")!
-        machines = [
-            MachineSummary(machineId: onlineID, label: "Studio Mac", online: true, hostGeneration: currentGeneration),
-            MachineSummary(machineId: offlineID, label: "Travel Mac", online: false, hostGeneration: nil),
-            MachineSummary(machineId: restartedID, label: "Restarted Mac", online: true, hostGeneration: currentGeneration),
-        ]
-        let current = TerminalSnapshot(
-            runtime: TerminalRuntime(
-                hostGeneration: currentGeneration,
-                target: .init(sessionId: sessionID, paneId: paneID),
-                runtimeGeneration: UUID(uuidString: "77777777-7777-4777-8777-777777777777")!
-            ),
-            process: .running(pid: 1234), attached: true, backlogBytes: 0
-        )
-        let historical = TerminalSnapshot(
-            runtime: TerminalRuntime(
-                hostGeneration: oldGeneration,
-                target: .init(sessionId: sessionID, paneId: UUID(uuidString: "88888888-8888-4888-8888-888888888888")!),
-                runtimeGeneration: UUID(uuidString: "99999999-9999-4999-8999-999999999999")!
-            ),
-            process: .exited(waitStatus: 0), attached: false, backlogBytes: 0
-        )
-        runtimeResults[onlineID] = RuntimeListResult(hostGeneration: currentGeneration, terminals: [current, historical], next: nil)
-        runtimeResults[offlineID] = RuntimeListResult(hostGeneration: oldGeneration, terminals: [current], next: nil)
-        runtimeResults[restartedID] = RuntimeListResult(hostGeneration: oldGeneration, terminals: [historical], next: nil)
-        let workspaceID = UUID(uuidString: "bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb")!
-        let workSessionID = UUID(uuidString: "cccccccc-cccc-4ccc-8ccc-cccccccccccc")!
-        workspaces[onlineID] = [ProtocolWorkspaceRecord(workspaceId: workspaceID, name: "Axo", directoryId: "project")]
-        workSessions[onlineID] = [WorkSessionRecord(
-            sessionId: workSessionID, workspaceId: workspaceID, name: "Build the phone app",
-            nameSource: .manual,
-            pi: WorkSessionPiBinding(paneId: UUID(uuidString: "dddddddd-dddd-4ddd-8ddd-dddddddddddd")!,
-                                     chatId: nil, admission: .notAdmitted),
-            runtime: nil
-        )]
-        workRevisions[onlineID] = WorkRevision(rawValue: 7)
-        selectedMachineID = onlineID
-        connectedMachineID = onlineID
-        isConnected = true
-        accessCookie = try? AxoControlPlaneAccessCookie(Self.previewToken())
-    }
-
-    private static func previewToken() -> String {
+        let generation = UUID(uuidString: "22222222-2222-4222-8222-222222222222")!
+        machines = [MachineSummary(machineId: onlineID, label: "Studio Mac", online: true, hostGeneration: generation),
+                    MachineSummary(machineId: offlineID, label: "Travel Mac", online: false, hostGeneration: nil),
+                    MachineSummary(machineId: restartedID, label: "Restarted Mac", online: true, hostGeneration: generation)]
+        let source = try! CentralSource(machine: .init(machineId: onlineID, hostGeneration: generation), storeGeneration: UUID(uuidString: "eeeeeeee-eeee-4eee-8eee-eeeeeeeeeeee")!)
+        let fixture = try! CentralBrowserPreview.records(source: source, piID: UUID(uuidString: "66666666-6666-4666-8666-666666666666")!)
+        catalog = try! CentralCatalog(source: source, revision: CentralRevision(rawValue: 7)!, workspaces: fixture.workspaces, sessions: fixture.sessions)
+        selectedMachineID = onlineID; connectedMachineID = onlineID; isConnected = true
         let header = Data(#"{"alg":"none"}"#.utf8).base64URL
         let payload = Data(#"{"aud":"\#(AxoControlPlaneEndpoint.accessAudience)","exp":4102444800,"type":"app"}"#.utf8).base64URL
-        return "\(header).\(payload).signature"
+        accessCookie = try? AxoControlPlaneAccessCookie("\(header).\(payload).signature")
     }
     #endif
 }

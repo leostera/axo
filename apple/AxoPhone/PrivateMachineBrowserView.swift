@@ -166,17 +166,17 @@ struct PrivateMachineBrowserView: View {
             .accessibilityIdentifier(machine.online ? "machine-online-status" : "machine-offline-status")
             .accessibilityValue(machine.hostGeneration?.uuidString.lowercased() ?? "none")
 
-            if model.isLoadingRuntimes {
-                ProgressView("Negotiating and loading runtimes…")
+            if model.isLoadingCatalog {
+                ProgressView("Loading central sessions…")
             } else if machine.online && !model.isConnected {
-                Button("Connect and list runtimes", systemImage: "arrow.trianglehead.2.clockwise.rotate.90") {
+                Button("Connect and list sessions", systemImage: "arrow.trianglehead.2.clockwise.rotate.90") {
                     Task { await model.reconnect() }
                 }
                 .accessibilityIdentifier("control-plane-reconnect")
             } else if model.isConnected {
                 HStack {
-                    Button("Refresh runtimes", systemImage: "arrow.clockwise") {
-                        Task { await model.refreshRuntimes() }
+                    Button("Refresh sessions", systemImage: "arrow.clockwise") {
+                        Task { await model.refreshCatalog() }
                     }
                     .accessibilityIdentifier("control-plane-refresh-runtimes")
                     Spacer()
@@ -196,8 +196,8 @@ struct PrivateMachineBrowserView: View {
 
         workRecordsSection(machine)
 
-        if let result = model.selectedRuntimeResult {
-            Section("Runtimes · source generation \(shortID(result.hostGeneration))") {
+        if let result = model.selectedCatalog {
+            Section("Runtimes · source generation \(shortID(result.source.machine.hostGeneration))") {
                 if result.terminals.isEmpty {
                     Text("No runtime records")
                         .foregroundStyle(.secondary)
@@ -205,15 +205,10 @@ struct PrivateMachineBrowserView: View {
                 ForEach(result.terminals, id: \.runtime.runtimeGeneration) { terminal in
                     MachineRuntimeRow(
                         terminal: terminal,
-                        sourceGeneration: result.hostGeneration,
+                        sourceGeneration: result.source.machine.hostGeneration,
                         currentGeneration: machine.hostGeneration,
                         hostOnline: machine.online
                     )
-                }
-                if model.selectedRuntimeCursor != nil && machine.online && model.isConnected {
-                    Button("Load more runtimes") { Task { await model.loadMoreRuntimes() } }
-                        .disabled(model.isLoadingRuntimes)
-                        .accessibilityIdentifier("control-plane-load-more-runtimes")
                 }
             }
         }
@@ -225,25 +220,25 @@ struct PrivateMachineBrowserView: View {
             if !machine.online {
                 Text("Runtime and work metadata are not shown while this machine is offline.")
                     .font(.caption).foregroundStyle(.secondary)
-            } else if model.isLoadingWork {
+            } else if model.isLoadingCatalog {
                 ProgressView("Loading workspaces and sessions…")
-            } else if let workNotice = model.workNotice {
-                Label(workNotice, systemImage: "exclamationmark.triangle")
+            } else if let catalogNotice = model.catalogNotice {
+                Label(catalogNotice, systemImage: "exclamationmark.triangle")
                     .font(.caption).foregroundStyle(.orange)
             } else if model.selectedWorkspaces.isEmpty && model.selectedWorkSessions.isEmpty {
                 Text(model.isConnected ? "No work records on this machine." : "Connect to load work records.")
                     .font(.subheadline).foregroundStyle(.secondary)
             } else {
-                ForEach(model.selectedWorkspaces) { workspace in
+                ForEach(model.selectedWorkspaces, id: \.workspaceId) { workspace in
                     VStack(alignment: .leading, spacing: 6) {
                         Text(workspace.name).font(.headline)
-                        ForEach(model.selectedWorkSessions.filter { $0.workspaceId == workspace.workspaceId }) { session in
+                        ForEach(model.sessions(in: workspace.workspaceId), id: \.session.sessionId) { session in
                             WorkRecordRow(session: session)
                         }
                     }
                     .padding(.vertical, 4)
                 }
-                ForEach(model.selectedWorkSessions.filter { $0.workspaceId == nil }) { session in
+                ForEach(model.sessions(in: nil), id: \.session.sessionId) { session in
                     WorkRecordRow(session: session)
                 }
             }
@@ -256,7 +251,7 @@ struct PrivateMachineBrowserView: View {
                 }
             }
         } footer: {
-            Text("A work session is not a Pi chat. This browser does not start work or load transcripts.")
+            Text("A work session is not a Pi chat. Axod owns startup; this browser only reads central state.")
         }
     }
 
@@ -264,48 +259,30 @@ struct PrivateMachineBrowserView: View {
 }
 
 private struct WorkRecordRow: View {
-    let session: WorkSessionRecord
+    let session: CentralSessionView
 
-    private var runtimeDescription: String {
-        let process: String
-        if let runtime = session.runtime {
-            switch runtime.process {
-            case .starting: process = "Starting process"
-            case .running: process = "Process running"
-            case .stopping: process = "Process stopping"
-            case .exited(let status): process = "Historical process · exit status \(status)"
-            case .failed: process = "Process failed"
-            case .recoveryRequired: process = "Process recovery required"
-            }
-        } else {
-            process = "No runtime observed"
-        }
-        return process
-    }
-
-    private var piAdmissionDescription: String {
-        switch session.pi.admission {
-        case .notAdmitted: "Pi not admitted"
-        case .ready: "Pi ready"
-        case .stopped: "Pi stopped"
-        case .failed: "Pi failed"
-        case .recoveryRequired: "Pi recovery required"
+    private var readiness: String {
+        switch session.readiness {
+        case .ready: "Ready"
+        case .materializing: "Materializing"
+        case .blocked: "Blocked"
+        case .stopped: "Stopped"
         }
     }
 
     var body: some View {
         Label {
             VStack(alignment: .leading, spacing: 2) {
-                Text(session.displayName).font(.subheadline)
-                Text(runtimeDescription).font(.caption).foregroundStyle(.secondary)
-                Text(piAdmissionDescription).font(.caption2).foregroundStyle(.tertiary)
+                Text(session.session.name).font(.subheadline)
+                Text(readiness).font(.caption).foregroundStyle(.secondary)
+                Text("\(session.panes.count) desired panes").font(.caption2).foregroundStyle(.tertiary)
             }
         } icon: {
             Image(systemName: "square.stack.3d.up")
                 .foregroundStyle(.secondary)
         }
         .accessibilityElement(children: .combine)
-        .accessibilityIdentifier("control-plane-session-\(session.sessionId.uuidString.lowercased())")
+        .accessibilityIdentifier("control-plane-session-\(session.session.sessionId.uuidString.lowercased())")
     }
 }
 

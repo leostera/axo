@@ -18,8 +18,8 @@ final class PrivateMachineBrowserUITests: XCTestCase {
         XCTAssertTrue(studio.exists)
         XCTAssertTrue(studio.label.contains("Studio Mac"))
         XCTAssertTrue(app.staticTexts["Build the phone app"].exists)
-        XCTAssertTrue(app.staticTexts["No runtime observed"].exists)
-        XCTAssertTrue(app.staticTexts["Pi not admitted"].exists)
+        XCTAssertTrue(app.staticTexts["Materializing"].exists)
+        XCTAssertTrue(app.staticTexts["2 desired panes"].exists)
         XCTAssertTrue(app.staticTexts.matching(NSPredicate(format: "label CONTAINS 'not a Pi chat'")).firstMatch.exists)
 
         app.buttons["machine-aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa"].tap()

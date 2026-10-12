@@ -119,6 +119,9 @@ final class CentralContractTests: XCTestCase {
     }
     func testOriginalCreationGraphIsIndependentOfCurrentObservation() throws {
         let request = try CentralRequest.createSession(source: source, workspaceId: nil, commandId: command, expectedRevision: CentralRevision(rawValue: 0)!)
+        XCTAssertEqual(request.commandId, command)
+        XCTAssertNil(try CentralRequest.operation(source: source, commandId: command).commandId)
+        XCTAssertNil(try CentralRequest.bootstrap(machine: machine).commandId)
         let graph: [String: Any] = ["session": session(), "panes": [pane(piID, ordinal: 0, role: "pi"), pane(shellID, ordinal: 1, role: "accountShell")]]
         let accepted: [String: Any] = ["commandId": command.uuidString, "revision": 1, "graph": graph]
         let operation: [String: Any] = ["kind": "createStandalone", "accepted": accepted]
@@ -141,6 +144,7 @@ final class CentralContractTests: XCTestCase {
         let jsonParser = CentralJSON(method: "fixture")
         let captured = try jsonParser.runtime(json(runtime(shellID)))
         let request = try CentralRequest.completion(source: source, workspaceId: nil, sessionId: sessionID, runtimes: [captured])
+        XCTAssertNil(request.commandId)
         let encoded = try JSONSerialization.jsonObject(with: JSONEncoder().encode(captured))
         XCTAssertNoThrow(try request.parseResult(json(envelope(["completed": [encoded]]))))
         XCTAssertNoThrow(try request.parseResult(json(envelope(["completed": []]))))
