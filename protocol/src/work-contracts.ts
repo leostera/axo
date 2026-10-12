@@ -117,7 +117,6 @@ export const sessionDeletionReceiptSchema = z.object({
 export const localWorkMethods = {
   "axo.session.delete": z.object({ target: destinationSchema, commandId: uuid, sessions: deletionSessionsSchema,
     expectedRevision: workRevisionSchema.max(Number.MAX_SAFE_INTEGER - 1) }).strict(),
-  "axo.session.createIfEmpty": z.object({ target: destinationSchema, ...mutationFields }).strict(),
   "axo.workspace.createLocal": z.object({
     target: destinationSchema,
     ...mutationFields,
@@ -165,7 +164,6 @@ export const commandReceiptSchema = z.discriminatedUnion("kind", [
 export const localWorkResults = {
   "axo.session.delete": z.object({ hostGeneration: uuid, receipt: sessionDeletionReceiptSchema }).strict(),
   "axo.workspace.createLocal": workspaceResult.extend({ session: workSessionSchema.optional() }).strict(),
-  "axo.session.createIfEmpty": sessionResult,
 } as const;
 export const workResults = {
   "axo.workspace.directories": z.object({

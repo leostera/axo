@@ -29,7 +29,6 @@ public enum AxoProtocol {
         public static let listSessions = "axo.session.list"
         public static let getSession = "axo.session.get"
         public static let createSession = "axo.session.create"
-        public static let createEmptyStartupSession = "axo.session.createIfEmpty"
         public static let renameSession = "axo.session.rename"
         public static let deleteSessions = "axo.session.delete"
         public static let getCommand = "axo.command.get"

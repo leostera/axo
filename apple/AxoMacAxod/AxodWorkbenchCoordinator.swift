@@ -92,7 +92,6 @@ final class AxodWorkbenchCoordinator {
     private(set) var activeWorkRename: AxodWorkRename?
     var isRenamingWork: Bool { activeWorkRename != nil }
     private(set) var workEditMessage = "Create a session and start your ambient Pi."
-    private(set) var emptyStartupMessage: String?
     private(set) var createdSessionForEditor: WorkSessionRecord?
     private(set) var pendingWorkCommandID: UUID?
     private(set) var pendingWorkIsUnreadable = false
@@ -233,11 +232,6 @@ final class AxodWorkbenchCoordinator {
             setupPresentation.failure = "The service changed during setup. Check its current readiness before opening Axo."
             return
         }
-        if requestedEmptyLaunch && !consumedEmptyLaunch {
-            requestedEmptyLaunch = false
-            consumedEmptyLaunch = true
-            finishInitialConnection(operation: operation, allowEmptyLaunch: true)
-        }
     }
 
     func openLoginItemsSettings() { serviceLifecycle.openApprovalSettings() }
@@ -311,13 +305,8 @@ final class AxodWorkbenchCoordinator {
         if let url = components.url { NSWorkspace.shared.open(url) }
     }
 
-    @ObservationIgnored private var consumedEmptyLaunch = false
-    @ObservationIgnored private var requestedEmptyLaunch = false
-
-    func connect(createInitialSession: Bool = false) {
-        if createInitialSession { requestedEmptyLaunch = true }
+    func connect() {
         guard connectTask == nil else { return }
-        let allowEmptyLaunch = requestedEmptyLaunch && !consumedEmptyLaunch
         let operation = UUID()
         operationGeneration = operation
         let oldConnection = connection
@@ -337,39 +326,14 @@ final class AxodWorkbenchCoordinator {
             self.connectTask = nil
             if self.connectionState == .connected {
                 self.setupPresentation.restoreIfKnownReady(self.setupStage)
-                if !self.showsSetup {
-                    if allowEmptyLaunch { self.consumedEmptyLaunch = true; self.requestedEmptyLaunch = false }
-                    self.finishInitialConnection(operation: operation, allowEmptyLaunch: allowEmptyLaunch)
-                }
             }
-        }
-    }
-
-    private func finishInitialConnection(operation: UUID, allowEmptyLaunch: Bool) {
-        guard allowEmptyLaunch, operationGeneration == operation, connectionState == .connected else { return }
-        if canEditWork, workspaces.isEmpty, sessions.isEmpty, runtimes.isEmpty,
-           nextWorkspaceCursor == nil, nextSessionCursor == nil, nextRuntimeID == nil,
-           let revision = catalogRevision, let endpoint,
-           !AxodEmptyStartupPolicy.hasPendingIntent(in: preferences, machineID: endpoint.machineId),
-           !chatDrafts.hasPending(machineID: endpoint.machineId) {
-            let context = AxodWorkEditorContext(kind: .session(workspaceID: nil),
-                target: MachineTarget(machineId: endpoint.machineId, hostGeneration: endpoint.hostGeneration),
-                revision: revision, authority: .emptyAppLaunch)
-            createdSessionForEditor = nil
-            activeCreationContext = context
-            emptyStartupMessage = "Creating an empty-startup session. No work will be replayed."
-            createWork(context, name: "New Session", directory: nil)
-        } else if sessions.isEmpty, workspaces.isEmpty, let endpoint,
-                  AxodEmptyStartupPolicy.hasPendingIntent(in: preferences, machineID: endpoint.machineId) ||
-                  chatDrafts.hasPending(machineID: endpoint.machineId) {
-            emptyStartupMessage = "Automatic startup was not sent: an unresolved intent requires reconciliation. Existing data and work were preserved."
         }
     }
 
 #if AXO_NATIVE_FIXTURE
     /// Compile-only isolation seam: absent from the shipped app. Rust owns the
     /// disposable daemon/root; this skips service registration, not protocol/UI paths.
-    func connectOwnedFixture(root: URL, helper: URL, appLaunch: Bool = false) async throws {
+    func connectOwnedFixture(root: URL, helper: URL) async throws {
         guard connection == nil else { throw AxodWorkbenchError.superseded }
         usesFixtureDaemon = true
         let directory = try AxodStateDirectory.openExisting(root: root)
@@ -378,10 +342,7 @@ final class AxodWorkbenchCoordinator {
         fixtureAttachmentHelper = helper
         let operation = UUID()
         operationGeneration = operation
-        let allowed = appLaunch && !consumedEmptyLaunch
-        if appLaunch { consumedEmptyLaunch = true }
         try await connect(to: discovered, stateDirectory: directory, operation: operation)
-        finishInitialConnection(operation: operation, allowEmptyLaunch: allowed)
     }
 #endif
 
@@ -671,7 +632,7 @@ final class AxodWorkbenchCoordinator {
                 guard self.isCurrent(operation, connection: connection, endpoint: endpoint) else { return }
                 try self.stateDirectory?.requireCurrentEndpoint(endpoint)
                 self.clearPendingWork(command, machineID: context.target.machineId)
-                // The immediately displayed creation must not borrow the empty startup revision.
+                // The immediately displayed creation carries its committed revision.
                 self.catalogRevision = WorkRevision(rawValue: max(self.catalogRevision?.rawValue ?? 0, context.revision.rawValue + 1))
                 let session: WorkSessionRecord
                 switch selection {
@@ -690,7 +651,6 @@ final class AxodWorkbenchCoordinator {
                 self.preferredWorkspaceID = session.workspaceId
                 self.preferredSessionID = session.sessionId
                 self.saveSelection()
-                if context.authority == .emptyAppLaunch { self.emptyStartupMessage = nil }
                 self.workEditMessage = "Session created. Starting its independent terminals…"
                 // Reserve the startup UI immediately. Shell admission is committed first;
                 // its process remains independent while Pi starts and waits for readiness.
@@ -754,7 +714,6 @@ final class AxodWorkbenchCoordinator {
                 } else {
                     self.workEditMessage = "The name or request is invalid. No command was dispatched."
                 }
-                if context.authority == .emptyAppLaunch { self.emptyStartupMessage = self.workEditMessage }
                 self.message = self.workEditMessage
             }
         }
@@ -767,20 +726,6 @@ final class AxodWorkbenchCoordinator {
 
     private func dispatchWorkCreation(_ context: AxodWorkEditorContext, name: String, directory: LocalDirectoryPath?,
                                       command: UUID, over connection: AxoJSONRPCWebSocketConnection) async throws -> CreatedWorkSelection {
-        if context.authority == .emptyAppLaunch {
-            guard case .session(workspaceID: nil) = context.kind,
-                  !AxodEmptyStartupPolicy.hasPendingIntent(in: preferences, machineID: context.target.machineId),
-                  !chatDrafts.hasPending(machineID: context.target.machineId) else {
-                throw AxoProtocolValidationError.invalidParameters(method: AxoProtocol.Method.createEmptyStartupSession)
-            }
-            let parameters = EmptyStartupSessionParameters(target: context.target, commandId: command,
-                expectedRevision: context.revision, name: name)
-            try AxoProtocolWorkRequestValidator.validate(parameters)
-            savePendingWork(command, machineID: context.target.machineId)
-            let value = try await connection.request(method: AxoProtocol.Method.createEmptyStartupSession, parameters: parameters)
-            let result = try AxoProtocolResultValidator.emptyStartupSession(value, parameters: parameters)
-            return .session(result.session)
-        }
         switch context.kind {
         case .workspace:
             guard let directory else { throw AxoProtocolValidationError.invalidParameters(method: AxoProtocol.Method.createLocalWorkspace) }

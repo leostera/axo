@@ -118,9 +118,8 @@ final class AxodWorkbenchApp: NSObject, NSApplicationDelegate, NSWindowDelegate,
         if loginLaunch { NSApp.setActivationPolicy(.accessory) }
         else { showWorkbench(nil) }
 
-        // Login-only residency never creates work. An explicit initial app
-        // opening retains its fenced empty-start intent until setup completes.
-        coordinator.connect(createInitialSession: !loginLaunch)
+        // Neither foreground nor login-only connection creates work.
+        coordinator.connect()
 #if DEBUG
         if let selfTest, !uiTest {
             selfTestTask = Task { await selfTest.run(coordinator: coordinator, window: window) }

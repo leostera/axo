@@ -31,18 +31,6 @@ public struct LocalDirectoryPath: Encodable, Equatable, Sendable {
     }
 }
 
-/// Local-only admission-time empty-work predicate; no directory/argv/workspace authority.
-public struct EmptyStartupSessionParameters: Encodable, Sendable {
-    public let target: MachineTarget
-    public let commandId: UUID
-    public let expectedRevision: WorkRevision
-    public let name: String
-    public init(target: MachineTarget, commandId: UUID, expectedRevision: WorkRevision, name: String) {
-        self.target = target; self.commandId = commandId
-        self.expectedRevision = expectedRevision; self.name = name
-    }
-}
-
 /// Local-only folder selection authority; cloud requests never accept filesystem paths.
 public struct LocalWorkspaceCreateParameters: Encodable, Sendable {
     public let target: MachineTarget

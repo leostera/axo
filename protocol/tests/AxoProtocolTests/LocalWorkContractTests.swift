@@ -2,31 +2,6 @@ import XCTest
 @testable import AxoProtocol
 
 final class LocalWorkContractTests: XCTestCase {
-    func testEmptyStartupParametersHaveOnlyCapturedDestinationAndMetadata() throws {
-        let target = MachineTarget(machineId: UUID(), hostGeneration: UUID())
-        let parameters = EmptyStartupSessionParameters(target: target, commandId: UUID(), expectedRevision: WorkRevision(rawValue: 0)!, name: "New Session")
-        try AxoProtocolWorkRequestValidator.validate(parameters)
-        let object = try XCTUnwrap(JSONSerialization.jsonObject(with: JSONEncoder().encode(parameters)) as? [String: Any])
-        XCTAssertEqual(Set(object.keys), ["target", "commandId", "expectedRevision", "name"])
-        let destination = try XCTUnwrap(object["target"] as? [String: Any])
-        XCTAssertEqual(Set(destination.keys), ["machineId", "hostGeneration"])
-        XCTAssertThrowsError(try AxoProtocolWorkRequestValidator.validate(EmptyStartupSessionParameters(target: target, commandId: UUID(), expectedRevision: WorkRevision(rawValue: 0)!, name: " invalid ")))
-    }
-
-    func testEmptyStartupResponseRequiresStandaloneNameRevisionAndCurrentHost() throws {
-        let host = UUID(), target = MachineTarget(machineId: UUID(), hostGeneration: UUID())
-        let parameters = EmptyStartupSessionParameters(target: target, commandId: UUID(), expectedRevision: WorkRevision(rawValue: 0)!, name: "New Session")
-        func response(workspace: JSONValue = .null, revision: Double = 1, generation: UUID? = nil) -> JSONValue {
-            .object(["hostGeneration": .string((generation ?? target.hostGeneration).uuidString), "revision": .number(revision),
-                "session": .object(["sessionId": .string(UUID().uuidString), "workspaceId": workspace, "name": .string("New Session"), "nameSource": .string("manual"),
-                    "pi": .object(["paneId": .string(UUID().uuidString), "chatId": .null, "admission": .string("notAdmitted")]), "runtime": .null, "shellPanes": .array([])])])
-        }
-        XCTAssertNil(try AxoProtocolResultValidator.emptyStartupSession(response(), parameters: parameters).session.workspaceId)
-        XCTAssertThrowsError(try AxoProtocolResultValidator.emptyStartupSession(response(workspace: .string(UUID().uuidString)), parameters: parameters))
-        XCTAssertThrowsError(try AxoProtocolResultValidator.emptyStartupSession(response(revision: 2), parameters: parameters))
-        XCTAssertThrowsError(try AxoProtocolResultValidator.emptyStartupSession(response(generation: host), parameters: parameters))
-    }
-
     func testLocalDirectoryParsesAndEncodesAsPathNotProfileID() throws {
         XCTAssertNil(LocalDirectoryPath(rawValue: "relative"))
         XCTAssertNil(LocalDirectoryPath(rawValue: "/bad\0path"))

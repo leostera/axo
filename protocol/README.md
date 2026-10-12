@@ -17,16 +17,9 @@ npm --prefix protocol test
 npm --prefix protocol run schema:check
 ```
 
-## Empty native startup
+## Central creation
 
-Local-only `axo.session.createIfEmpty` accepts machine/current-host, command ID,
-expected work revision and name. It grants no workspace, directory, argv or profile
-authority. The daemon's admission-time empty-work/runtime/receipt predicate commits
-standalone HOME session metadata atomically; it does not launch Pi or a shell.
-Original command reconciliation preserves its distinct immutable startup intent.
-Cloud exposure remains denied. Client empty pages are observations, not the fence;
-pending/uncertain hints block native automation and ordinary reconnect never calls
-this method. See [checkpoint evidence](../docs/implementation/evidence/authoritative-empty-startup.md).
+[Accepted RFD0012](../docs/rfds/RFD0012-sqlite-desired-state-and-session-materialization.md) defines backend-complete workspace/session creation through `axo.state.workspace.create` and `axo.state.session.create`. Complete desired graphs are reserved before execution effects. Native launch, setup completion, selection and reconnect are not creation authority. The retired empty-startup mutation has no contract or compatibility alias.
 
 ## Swift package
 

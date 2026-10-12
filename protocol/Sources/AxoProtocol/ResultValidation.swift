@@ -275,14 +275,6 @@ public enum AxoProtocolResultValidator {
         return result
     }
 
-    public static func emptyStartupSession(_ value: JSONValue, parameters: EmptyStartupSessionParameters) throws -> SessionMutationResult {
-        try AxoProtocolWorkRequestValidator.validate(parameters)
-        let method = AxoProtocol.Method.createEmptyStartupSession
-        let result = try sessionMutationResult(value, method: method, target: parameters.target, expectedRevision: parameters.expectedRevision)
-        guard result.session.workspaceId == nil, result.session.name == parameters.name else { throw invalid(method) }
-        return result
-    }
-
     public static func sessionCreate(
         _ value: JSONValue,
         target: WorkSessionDestination,

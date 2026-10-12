@@ -74,12 +74,8 @@ struct AxodWorkbenchView: View {
                     Text(coordinator.connectionState == .connected ? "Select or create a session" : "Background service unavailable")
                         .font(.system(size: 14, weight: .medium))
                         .foregroundStyle(Color.white.opacity(0.88))
-                    if coordinator.connectionState == .connected, coordinator.emptyStartupMessage == nil {
+                    if coordinator.canEditWork {
                         Text("Press ⌘T to create a session.")
-                            .font(.system(size: 12))
-                            .foregroundStyle(Color.white.opacity(0.58))
-                    } else if coordinator.emptyStartupMessage != nil {
-                        Text("Automatic session creation unavailable")
                             .font(.system(size: 12))
                             .foregroundStyle(Color.white.opacity(0.58))
                     }

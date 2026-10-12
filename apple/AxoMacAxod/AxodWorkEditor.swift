@@ -4,14 +4,12 @@ import UniformTypeIdentifiers
 
 struct AxodWorkEditorContext: Identifiable {
     enum Kind { case workspace, session(workspaceID: UUID?) }
-    enum Authority { case explicitUser, emptyAppLaunch }
     let id = UUID()
     let kind: Kind
     let target: MachineTarget
     let revision: WorkRevision
-    let authority: Authority
-    init(kind: Kind, target: MachineTarget, revision: WorkRevision, authority: Authority = .explicitUser) {
-        self.kind = kind; self.target = target; self.revision = revision; self.authority = authority
+    init(kind: Kind, target: MachineTarget, revision: WorkRevision) {
+        self.kind = kind; self.target = target; self.revision = revision
     }
     var title: String {
         switch kind { case .workspace: "New workspace"; case .session: "New session" }
