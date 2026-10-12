@@ -1,5 +1,7 @@
 //! Central desired-state authority. The graph persists user intent; it makes no
 //! assertion that a database row owns a PTY or that a previous writer completed.
+#[cfg(test)]
+mod command_tests;
 pub mod controller;
 mod execution;
 #[cfg(test)]
@@ -19,6 +21,13 @@ use rusqlite::{Connection, MAIN_DB, OptionalExtension, Transaction, params};
 use serde::{Deserialize, Serialize, de::DeserializeOwned};
 use sha2::{Digest, Sha256};
 use std::path::{Path, PathBuf};
+
+#[derive(Clone, Debug)]
+pub(crate) enum DirectoryApproval {
+    Profile(String),
+    LocalSelection,
+    UserHome,
+}
 
 const MAX_REVISION: u64 = 9_007_199_254_740_991;
 const MAX_OPERATIONS: u32 = 2000;
@@ -343,6 +352,10 @@ impl Database {
         }
         self.revision()?;
         self.generation()?;
+        let duplicate_original: bool = self.connection.query_row("SELECT EXISTS(SELECT 1 FROM operations o JOIN runtime_attempts a ON o.command_id=a.attempt_id)",[],|row|row.get(0))?;
+        if duplicate_original {
+            return Err(Error::Corrupt);
+        }
         // Validate application invariants that cannot be expressed as a local
         // CHECK while inserting the whole graph in one transaction.
         let invalid: bool = self.connection.query_row("SELECT EXISTS(SELECT 1 FROM sessions s WHERE s.tombstoned=0 AND ((SELECT count(*) FROM panes p WHERE p.session_id=s.session_id AND p.role='pi' AND p.desired_present=1)!=1 OR (SELECT count(*) FROM panes p WHERE p.session_id=s.session_id AND p.role!='pi' AND p.desired_present=1)<1 OR (SELECT count(*) FROM panes p WHERE p.session_id=s.session_id AND p.desired_present=1)>32))", [], |row| row.get(0)).map_err(|_| Error::Corrupt)?;
@@ -813,6 +826,14 @@ fn original<T: DeserializeOwned>(
     command: CommandId,
     capture: &Capture,
 ) -> Result<Option<T>, Error> {
+    let runtime_original: bool = connection.query_row(
+        "SELECT EXISTS(SELECT 1 FROM runtime_attempts WHERE attempt_id=?1)",
+        [command.to_string()],
+        |row| row.get(0),
+    )?;
+    if runtime_original {
+        return Err(Error::Conflict);
+    }
     let row = connection
         .query_row(
             "SELECT fingerprint, capture, result FROM operations WHERE command_id=?1",

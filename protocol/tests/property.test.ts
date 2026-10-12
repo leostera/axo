@@ -170,17 +170,11 @@ test("read admission properties match Rust and shared schemas for UUID and numer
   const { oracle, target } = await fixture(t);
   const uuid = "12345678-1234-4234-8234-123456789abc";
   const ids = fc.constantFrom(uuid, uuid.toUpperCase(), uuid.replaceAll("-", ""), `{${uuid}}`, `urn:uuid:${uuid}`, "not-a-uuid", "00000000-0000-0000-0000-000000000000", "FFFFFFFF-FFFF-FFFF-FFFF-FFFFFFFFFFFF", "12345678-1234-0234-7234-123456789abc", null);
+  // This oracle exercises the native PTY harness, not a removed JSON catalog.
+  // Central address/cursor admission is covered by the central RPC fixtures.
   const entries = fc.oneof(
     ids.map(after => ({ method: "axo.runtime.list" as const, params: { target, after } })),
-    ids.map(commandId => ({ method: "axo.command.get" as const, params: { target, commandId } })),
-    ids.map(workspaceId => ({ method: "axo.session.list" as const, params: { target, workspaceId } })),
-    fc.integer({ min: -2, max: 53 }).map(limit => ({ method: "axo.workspace.list" as const, params: { target, limit } })),
-    fc.tuple(ids, fc.constantFrom(0, 1, -1, Number.MAX_SAFE_INTEGER + 1), fc.constantFrom({ kind: "workspaces" }, { kind: "sessions", workspaceId: null })).map(([after, revision, scope]) => ({
-      method: "axo.workspace.list" as const, params: { target, cursor: { target, after, revision, scope } },
-    })),
-    fc.constantFrom({ kind: "workspaces" }, { kind: "sessions" }, { kind: "sessions", workspaceId: null }).map(scope => ({
-      method: "axo.session.list" as const, params: { target, cursor: { target, after: uuid, revision: 0, scope } },
-    })),
+    fc.integer({ min: -2, max: 53 }).map(limit => ({ method: "axo.runtime.list" as const, params: { target, limit } })),
   );
   await check(fc.asyncProperty(entries, async ({ method, params }) => isDeepStrictEqual(
     { valid: remoteMethods[method].safeParse(params).success },

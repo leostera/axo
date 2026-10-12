@@ -116,17 +116,17 @@ impl Policy {
     }
     pub(crate) fn profile(
         &self,
-        approval: &crate::work::DirectoryApproval,
+        approval: &crate::state::DirectoryApproval,
         directory: &Path,
     ) -> io::Result<Profile> {
         match approval {
-            crate::work::DirectoryApproval::Profile(id) => self
+            crate::state::DirectoryApproval::Profile(id) => self
                 .profiles
                 .get(id)
                 .cloned()
                 .ok_or_else(|| io::Error::other("Pi directory profile unavailable")),
-            crate::work::DirectoryApproval::LocalSelection
-            | crate::work::DirectoryApproval::UserHome => {
+            crate::state::DirectoryApproval::LocalSelection
+            | crate::state::DirectoryApproval::UserHome => {
                 let local = self
                     .local
                     .as_ref()

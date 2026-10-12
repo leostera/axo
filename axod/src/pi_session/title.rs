@@ -14,7 +14,7 @@ struct Entry {
     name: Option<String>,
 }
 
-pub(crate) fn canonical_title(path: &Path) -> Option<String> {
+pub fn canonical_title(path: &Path) -> Option<String> {
     let file = OpenOptions::new()
         .read(true)
         .custom_flags(libc::O_NOFOLLOW | libc::O_NONBLOCK)

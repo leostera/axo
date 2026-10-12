@@ -51,11 +51,6 @@ identity!(AttachmentId);
 identity!(CommandId);
 identity!(StoreGeneration);
 
-impl WorkspaceId {
-    pub(crate) fn as_uuid(self) -> Uuid {
-        self.0
-    }
-}
 impl SessionId {
     pub(crate) fn as_uuid(self) -> Uuid {
         self.0

@@ -45,7 +45,7 @@ pub(crate) fn prepare(params: Option<Value>, manager: &Manager, machine: Machine
         || plan.replacement_version.len() > 128
         || plan.replacement_version.chars().any(char::is_control)
         || plan.replacement_build_number == 0
-        || plan.replacement_build_number > crate::work::MAX_REVISION
+        || plan.replacement_build_number > 9_007_199_254_740_991
     {
         return Err((-32602, "Invalid upgrade plan"));
     }
@@ -62,7 +62,7 @@ pub(crate) fn build_number() -> u64 {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::{journal::Journal, test_support::TestDirectory, work::WorkIntent};
+    use crate::{journal::Journal, test_support::TestDirectory};
     use std::collections::BTreeMap;
     fn plan() -> Plan {
         Plan {
@@ -92,14 +92,16 @@ mod tests {
         assert_eq!(manager.prepare_upgrade(&other).unwrap_err().0, -32007);
         assert!(
             manager
-                .mutate_work(
+                .start(
                     CommandId::new(),
-                    WorkIntent::CreateWorkspace {
-                        directory_id: "work".into(),
-                        name: "No admission".into(),
-                        expected_revision: 0,
+                    TerminalTarget {
+                        session_id: SessionId::new(),
+                        pane_id: PaneId::new()
                     },
-                    &BTreeMap::new()
+                    &TerminalLaunch {
+                        directory: root.path().to_str().unwrap().into(),
+                        argv: vec!["/bin/cat".into()]
+                    }
                 )
                 .is_err()
         );

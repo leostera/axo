@@ -28,23 +28,15 @@ struct Daemon {
 }
 impl Daemon {
     fn start() -> Self {
-        Self::start_with_profiles(true)
-    }
-    fn start_with_profiles(approved: bool) -> Self {
         let root = std::env::temp_dir().join(format!("axo-rust-cli-{}", uuid::Uuid::new_v4()));
         fs::create_dir(&root).unwrap();
         fs::set_permissions(&root, fs::Permissions::from_mode(0o700)).unwrap();
         let config = root.join("profiles.json");
-        let profiles = if approved {
-            json!({"profiles":{
-                "fixture":{"directory":root,"argv":["/bin/sh","-c","printf accepted > marker.txt"]},
-                "shell":{"directory":root,"argv":["/bin/sh","-c","trap '' TERM; test -t 0 && test -t 1 || exit 17; printf TTY >> shell-effects.txt; while :; do sleep 1; done"]},
-                "terminal":{"directory":root,"argv":["/bin/sh","-c","stty -echo; printf ready; while IFS= read -r line; do printf '%s\\n' \"$line\"; stty size > geometry.txt; done"]},
-                "flood":{"directory":root,"argv":["/bin/sh","-c","printf '%09000d' 0; printf ready > flood-ready.txt; sleep 30"]}
-            }})
-        } else {
-            json!({"profiles":{}})
-        };
+        let profiles = json!({"profiles":{
+            "fixture":{"directory":root,"argv":["/bin/sh","-c","printf accepted > marker.txt"]},
+            "terminal":{"directory":root,"argv":["/bin/sh","-c","stty -echo; printf ready; while IFS= read -r line; do printf '%s\\n' \"$line\"; stty size > geometry.txt; done"]},
+            "flood":{"directory":root,"argv":["/bin/sh","-c","printf '%09000d' 0; printf ready > flood-ready.txt; sleep 30"]}
+        }});
         fs::write(&config, serde_json::to_vec(&profiles).unwrap()).unwrap();
         fs::set_permissions(&config, fs::Permissions::from_mode(0o600)).unwrap();
         let child = Command::new(daemon_program())
@@ -99,34 +91,6 @@ impl Daemon {
         assert!(reply.status.success(), "Owned CLI operation failed");
         serde_json::from_slice(&reply.stdout).unwrap()
     }
-    fn restart(&mut self) {
-        unsafe {
-            libc::kill(self.child.id() as i32, libc::SIGTERM);
-        }
-        let deadline = Instant::now() + Duration::from_secs(5);
-        while self.child.try_wait().unwrap().is_none() {
-            assert!(Instant::now() < deadline, "Owned daemon stop deadline");
-            thread::sleep(Duration::from_millis(25));
-        }
-        self.child = Command::new(daemon_program())
-            .arg("serve")
-            .arg(&self.root)
-            .arg("--profiles-config")
-            .arg(self.root.join("profiles.json"))
-            .env("HOME", &self.root)
-            .env("SHELL", "/bin/sh")
-            .env_remove("ZDOTDIR")
-            .env_remove("ENV")
-            .env_remove("BASH_ENV")
-            .stdout(Stdio::null())
-            .stderr(Stdio::null())
-            .spawn()
-            .unwrap();
-        while Client::connect(&self.discovery()).is_err() {
-            assert!(Instant::now() < deadline, "Owned daemon restart deadline");
-            thread::sleep(Duration::from_millis(25));
-        }
-    }
     fn target(&self) -> Value {
         let descriptor = Client::connect(&self.discovery()).unwrap().discovery;
         json!({"machineId":descriptor.machine_id,"hostGeneration":descriptor.host_generation})
@@ -176,158 +140,6 @@ fn uuid_argument(id: impl serde::Serialize) -> String {
         .expect("Typed UUID argument")
         .to_owned()
 }
-#[test]
-fn actual_cli_empty_startup_is_atomic_metadata_and_preserves_original_receipt() {
-    let mut daemon = Daemon::start_with_profiles(false);
-    let destination = daemon.target();
-    let first_id = uuid::Uuid::new_v4();
-    let second_id = uuid::Uuid::new_v4();
-    let request = |command| json!({"target":destination,"commandId":command,"expectedRevision":0,"name":"New Session"});
-    let replies = thread::scope(|scope| {
-        let first = scope.spawn(|| daemon.invoke("axo.session.createIfEmpty", request(first_id)));
-        let second = scope.spawn(|| daemon.invoke("axo.session.createIfEmpty", request(second_id)));
-        [first.join().unwrap(), second.join().unwrap()]
-    });
-    assert_eq!(
-        replies
-            .iter()
-            .filter(|reply| reply.status.success())
-            .count(),
-        1
-    );
-    let winner = if replies[0].status.success() {
-        first_id
-    } else {
-        second_id
-    };
-    let original = daemon.call("axo.session.createIfEmpty", request(winner));
-    assert_eq!(original["revision"], 1);
-    assert!(original["session"]["workspaceId"].is_null());
-    assert_eq!(original["session"]["pi"]["admission"], "notAdmitted");
-    assert!(
-        daemon.call("axo.runtime.list", json!({"target":destination}))["terminals"]
-            .as_array()
-            .unwrap()
-            .is_empty()
-    );
-    let nonempty = daemon.invoke("axo.session.createIfEmpty", json!({"target":destination,"commandId":uuid::Uuid::new_v4(),"expectedRevision":1,"name":"New Session"}));
-    assert!(
-        !nonempty.status.success(),
-        "Matching revision must not bypass the empty predicate"
-    );
-    let catalog = daemon.call("axo.session.list", json!({"target":destination}));
-    assert_eq!(catalog["sessions"].as_array().unwrap().len(), 1);
-    daemon.restart();
-    let current = daemon.target();
-    let restored = daemon.call(
-        "axo.session.createIfEmpty",
-        json!({"target":current,"commandId":winner,"expectedRevision":0,"name":"New Session"}),
-    );
-    assert_eq!(restored["session"], original["session"]);
-    assert_eq!(restored["revision"], 1);
-    assert!(
-        daemon.call("axo.runtime.list", json!({"target":current}))["terminals"]
-            .as_array()
-            .unwrap()
-            .is_empty()
-    );
-}
-
-#[test]
-fn actual_cli_default_shells_use_captured_home_or_approved_project_without_profiles_or_pi() {
-    use axod::{model::RuntimeRef, terminal_client::TerminalClient};
-    let daemon = Daemon::start_with_profiles(false);
-    let destination = daemon.target();
-    let standalone = daemon.call("axo.session.create", json!({"target":destination,"commandId":uuid::Uuid::new_v4(),"expectedRevision":0,"name":"Standalone"}));
-    assert!(standalone["session"]["workspaceId"].is_null());
-    assert!(
-        daemon.call("axo.workspace.list", json!({"target":destination}))["workspaces"]
-            .as_array()
-            .unwrap()
-            .is_empty()
-    );
-    let project = daemon.root.join("approved project");
-    fs::create_dir(&project).unwrap();
-    let project = fs::canonicalize(project).unwrap();
-    let workspace = daemon.call("axo.workspace.createLocal", json!({"target":destination,"commandId":uuid::Uuid::new_v4(),"expectedRevision":1,"directoryPath":project,"name":"Project"}));
-    let workspace_id = workspace["workspace"]["workspaceId"].clone();
-    let project_session = daemon.call("axo.session.create", json!({"target":{"machineId":destination["machineId"],"hostGeneration":destination["hostGeneration"],"workspaceId":workspace_id},"commandId":uuid::Uuid::new_v4(),"expectedRevision":2,"name":"Project shell"}));
-    let sessions = [
-        (
-            standalone["session"].clone(),
-            fs::canonicalize(&daemon.root).unwrap(),
-        ),
-        (project_session["session"].clone(), project),
-    ];
-    for (session, directory) in sessions {
-        let target = json!({"machineId":destination["machineId"],"hostGeneration":destination["hostGeneration"],"workspaceId":session["workspaceId"],"sessionId":session["sessionId"]});
-        let command = uuid::Uuid::new_v4();
-        let params = json!({"target":target,"commandId":command,"profileId":null});
-        let added = daemon.call("axo.session.pane.add", params.clone());
-        assert!(added["pane"]["profileId"].is_null());
-        assert_eq!(added["pane"]["state"], "open");
-        assert_eq!(added, daemon.call("axo.session.pane.add", params));
-        let conflicting = daemon.invoke(
-            "axo.session.pane.add",
-            json!({"target":target,"commandId":command,"profileId":"shell"}),
-        );
-        assert!(
-            !conflicting.status.success(),
-            "Configured/default intent collision was accepted"
-        );
-        let runtime: RuntimeRef = serde_json::from_value(added["pane"]["runtime"].clone()).unwrap();
-        let machine = Client::connect(&daemon.discovery())
-            .unwrap()
-            .discovery
-            .machine_id;
-        let (mut terminal, initial) =
-            TerminalClient::connect(&daemon.root, machine, runtime).unwrap();
-        let _observed_initial = initial.backlog.data();
-        terminal.acknowledge(&initial.backlog).unwrap();
-        terminal.input(b"pwd -P > cwd.txt; test -t 0 && test -t 1 && printf tty-ok > tty.txt; printf shell-complete\\n\n").unwrap();
-        let deadline = Instant::now() + Duration::from_secs(6);
-        while !fs::read(directory.join("tty.txt")).is_ok_and(|bytes| bytes == b"tty-ok") {
-            if let Some(axod::terminal_client::StreamEvent::Output(chunk)) =
-                terminal.read().unwrap()
-            {
-                let _observed = chunk.data();
-                terminal.acknowledge(&chunk).unwrap();
-            }
-            assert!(
-                Instant::now() < deadline,
-                "Owned regular-shell TTY effect deadline"
-            );
-        }
-        assert_eq!(fs::read(directory.join("tty.txt")).unwrap(), b"tty-ok");
-        assert_eq!(
-            fs::read_to_string(directory.join("cwd.txt"))
-                .unwrap()
-                .trim(),
-            directory.to_str().unwrap()
-        );
-        terminal.detach().unwrap();
-        let current = daemon.call("axo.session.get", json!({"target":target}));
-        assert_eq!(current["session"]["pi"]["admission"], "notAdmitted");
-        assert_eq!(
-            current["session"]["shellPanes"].as_array().unwrap().len(),
-            1
-        );
-        assert_eq!(
-            current["session"]["shellPanes"][0]["terminal"]["process"]["kind"],
-            "running"
-        );
-        let removed = daemon.call("axo.session.pane.remove", json!({"target":target,"commandId":uuid::Uuid::new_v4(),"paneId":added["pane"]["paneId"],"runtime":runtime}));
-        assert_eq!(removed["receipt"]["disposition"]["kind"], "removed");
-        assert_eq!(
-            daemon.call(
-                "axo.command.get",
-                json!({"target":destination,"commandId":command})
-            )["receipt"]["receipt"],
-            added["receipt"]
-        );
-    }
-}
-
 #[test]
 fn actual_frontend_child_forwards_pty_input_resize_and_quits_without_stopping_work() {
     use axod::{model::*, runtime::Sink, terminal::Frame};
@@ -517,13 +329,9 @@ fn frontend_refuses_truncated_screen_replay_without_stopping_the_runtime() {
 }
 
 #[test]
-fn actual_cli_creates_addressed_metadata_and_reconciles_one_real_pty_launch() {
+fn actual_cli_observes_host_and_reconciles_one_owned_native_pty_launch() {
     let daemon = Daemon::start();
     let target = daemon.target();
-    let list = daemon.invoke("axo.workspace.list", json!({"target":target}));
-    assert!(list.status.success(), "CLI read failed");
-    let list: Value = serde_json::from_slice(&list.stdout).unwrap();
-    assert_eq!(list["revision"], 0);
     let host = daemon.call("axo.host.get", json!({"target":target}));
     assert_eq!(host["cloud"]["kind"], "notConfigured");
     assert_eq!(host["daemonVersion"], axod::host::VERSION);
@@ -531,12 +339,6 @@ fn actual_cli_creates_addressed_metadata_and_reconciles_one_real_pty_launch() {
     assert_eq!(host["hostGeneration"], target["hostGeneration"]);
     assert!(!host["hostname"].as_str().unwrap().is_empty());
     assert!(!host["machineType"].as_str().unwrap().is_empty());
-    let create = daemon.invoke("axo.workspace.create", json!({"target":target,"commandId":uuid::Uuid::new_v4(),"expectedRevision":0,"directoryId":"fixture","name":"Rust CLI"}));
-    assert!(create.status.success(), "CLI metadata mutation failed");
-    assert!(
-        !daemon.root.join("marker.txt").exists(),
-        "Metadata create executed a profile"
-    );
     let mut launch_target = target.clone();
     launch_target["sessionId"] = json!(uuid::Uuid::new_v4());
     launch_target["paneId"] = json!(uuid::Uuid::new_v4());
@@ -562,26 +364,13 @@ fn actual_cli_creates_addressed_metadata_and_reconciles_one_real_pty_launch() {
         first_runtime == again_runtime,
         "Reconciliation changed runtime identity"
     );
-    let receipt = daemon.invoke(
-        "axo.command.get",
-        json!({"target":target,"commandId":command}),
-    );
-    assert!(receipt.status.success(), "CLI receipt read failed");
-    let receipt: Value = serde_json::from_slice(&receipt.stdout).unwrap();
-    let receipt_runtime: axod::model::RuntimeRef =
-        serde_json::from_value(receipt["receipt"]["runtime"].clone())
-            .expect("Typed receipt result");
-    assert!(
-        receipt_runtime == first_runtime,
-        "Receipt lost original runtime identity"
-    );
 }
 #[test]
 fn actual_cli_preserves_stale_targets_and_never_dumps_request_bodies() {
     let daemon = Daemon::start();
     let mut target = daemon.target();
     target["hostGeneration"] = json!(uuid::Uuid::new_v4());
-    let rejected = daemon.invoke("axo.workspace.create", json!({"target":target,"commandId":uuid::Uuid::new_v4(),"expectedRevision":0,"directoryId":"fixture","name":"PAYLOAD_MUST_NOT_BE_DIAGNOSTICS"}));
+    let rejected = daemon.invoke("axo.runtime.startApproved", json!({"target":{"machineId":target["machineId"],"hostGeneration":target["hostGeneration"],"sessionId":uuid::Uuid::new_v4(),"paneId":uuid::Uuid::new_v4()},"commandId":uuid::Uuid::new_v4(),"profileId":"PAYLOAD_MUST_NOT_BE_DIAGNOSTICS"}));
     assert!(!rejected.status.success());
     assert_eq!(
         String::from_utf8(rejected.stderr).unwrap().trim(),
@@ -591,155 +380,12 @@ fn actual_cli_preserves_stale_targets_and_never_dumps_request_bodies() {
     assert!(!daemon.root.join("marker.txt").exists());
     let mut client = Client::connect(&daemon.discovery()).unwrap();
     assert_eq!(
-        client.call("axo.workspace.list", json!({"target":target})),
+        client.call("axo.runtime.list", json!({"target":target})),
         Err(ClientError::Rpc(-32002))
     );
     assert!(
         client
-            .call("axo.workspace.list", json!({"target":daemon.target()}))
+            .call("axo.runtime.list", json!({"target":daemon.target()}))
             .is_ok()
-    );
-}
-
-#[test]
-fn actual_cli_adds_independent_shell_ptys_and_remove_kills_only_the_captured_pane() {
-    let mut daemon = Daemon::start();
-    let destination = daemon.target();
-    let workspace = daemon.call("axo.workspace.create", json!({"target":destination,"commandId":uuid::Uuid::new_v4(),"expectedRevision":0,"directoryId":"fixture","name":"Shell work"}));
-    let workspace_id = workspace["workspace"]["workspaceId"].clone();
-    let session = daemon.call("axo.session.create", json!({"target":{"machineId":destination["machineId"],"hostGeneration":destination["hostGeneration"],"workspaceId":workspace_id},"commandId":uuid::Uuid::new_v4(),"expectedRevision":1,"name":"Shell session"}));
-    let mut target = json!({"machineId":destination["machineId"],"hostGeneration":destination["hostGeneration"],"workspaceId":workspace_id,"sessionId":session["session"]["sessionId"]});
-    assert!(
-        !daemon.root.join("shell-effects.txt").exists(),
-        "Metadata creation launched a shell"
-    );
-    let command = uuid::Uuid::new_v4();
-    let add = json!({"target":target,"commandId":command,"profileId":"shell"});
-    let first = daemon.call("axo.session.pane.add", add.clone());
-    let repeated = daemon.call("axo.session.pane.add", add.clone());
-    assert_eq!(first["receipt"], repeated["receipt"]);
-    let second = daemon.call(
-        "axo.session.pane.add",
-        json!({"target":target,"commandId":uuid::Uuid::new_v4(),"profileId":"shell"}),
-    );
-    assert!(first["pane"]["paneId"] != second["pane"]["paneId"]);
-    let deadline = Instant::now() + Duration::from_secs(5);
-    while !fs::read(daemon.root.join("shell-effects.txt")).is_ok_and(|bytes| bytes == b"TTYTTY") {
-        assert!(Instant::now() < deadline, "Owned shell TTY effect deadline");
-        thread::sleep(Duration::from_millis(25));
-    }
-    let live = daemon.call("axo.session.get", json!({"target":target}));
-    assert!(
-        live["session"]["shellPanes"].as_array().unwrap().len() == 2
-            && live["session"]["pi"]["chatId"].is_null()
-    );
-    let mut stale = first["pane"]["runtime"].clone();
-    stale["runtime_generation"] = json!(uuid::Uuid::new_v4());
-    let rejected = daemon.invoke("axo.session.pane.remove", json!({"target":target,"commandId":uuid::Uuid::new_v4(),"paneId":first["pane"]["paneId"],"runtime":stale}));
-    assert!(!rejected.status.success(), "Wrong runtime removed a shell");
-    let theft = daemon.invoke("axo.runtime.startApproved", json!({"target":{"machineId":target["machineId"],"hostGeneration":target["hostGeneration"],"sessionId":target["sessionId"],"paneId":first["pane"]["paneId"]},"commandId":uuid::Uuid::new_v4(),"profileId":"fixture"}));
-    assert!(
-        !theft.status.success(),
-        "Generic launch replaced a managed shell pane"
-    );
-    let remove_command = uuid::Uuid::new_v4();
-    let remove = json!({"target":target,"commandId":remove_command,"paneId":first["pane"]["paneId"],"runtime":first["pane"]["runtime"]});
-    let removed = daemon.call("axo.session.pane.remove", remove.clone());
-    assert!(
-        removed["receipt"]["disposition"]["kind"] == "removed"
-            && removed["pane"]["terminal"]["process"]["kind"] == "exited"
-    );
-    assert_eq!(
-        daemon.call("axo.session.pane.remove", remove)["receipt"],
-        removed["receipt"]
-    );
-    let current = daemon.call("axo.session.get", json!({"target":target}));
-    let panes = current["session"]["shellPanes"].as_array().unwrap();
-    assert!(
-        panes.len() == 1
-            && panes[0]["paneId"] == second["pane"]["paneId"]
-            && panes[0]["terminal"]["process"]["kind"] == "running",
-        "Removal stopped or retargeted the sibling"
-    );
-    assert_eq!(
-        daemon.call("axo.session.pane.add", add)["receipt"],
-        first["receipt"],
-        "Reconciliation replayed a removed pane's launch"
-    );
-    daemon.restart();
-    target["hostGeneration"] = daemon.target()["hostGeneration"].clone();
-    let stopped = daemon.call("axo.session.get", json!({"target":target}));
-    assert!(stopped["session"]["shellPanes"][0]["terminal"]["process"]["kind"] == "exited");
-    assert!(
-        fs::read(daemon.root.join("shell-effects.txt")).unwrap() == b"TTYTTY",
-        "Restart replayed shells"
-    );
-    let historical = daemon.call("axo.session.pane.remove", json!({"target":target,"commandId":uuid::Uuid::new_v4(),"paneId":second["pane"]["paneId"],"runtime":second["pane"]["runtime"]}));
-    assert!(historical["receipt"]["disposition"]["kind"] == "removed");
-    assert!(
-        daemon.call("axo.session.get", json!({"target":target}))["session"]["shellPanes"]
-            .as_array()
-            .unwrap()
-            .is_empty()
-    );
-    assert!(
-        daemon.call(
-            "axo.command.get",
-            json!({"target":daemon.target(),"commandId":remove_command})
-        )["receipt"]["kind"]
-            == "pane"
-    );
-}
-
-#[test]
-fn cli_creates_local_workspace_and_session_with_no_approved_profiles() {
-    let mut daemon = Daemon::start_with_profiles(false);
-    let selected = daemon.root.join("selected-project");
-    fs::create_dir(&selected).unwrap();
-    let selected = fs::canonicalize(selected).unwrap();
-    let target = daemon.target();
-    assert!(
-        daemon.call("axo.workspace.directories", json!({"target":target}))["directories"]
-            .as_array()
-            .unwrap()
-            .is_empty()
-    );
-    let command = uuid::Uuid::new_v4();
-    let params = json!({"target":target,"commandId":command,"expectedRevision":0,"directoryPath":selected,"name":"Project"});
-    let created = daemon.call("axo.workspace.createLocal", params.clone());
-    assert_eq!(created, daemon.call("axo.workspace.createLocal", params));
-    let mut workspace_target = target;
-    workspace_target["workspaceId"] = created["workspace"]["workspaceId"].clone();
-    let session = daemon.call("axo.session.create", json!({"target":workspace_target,"commandId":uuid::Uuid::new_v4(),"expectedRevision":1,"name":"Build Axo"}));
-    assert_eq!(
-        session["session"]["workspaceId"],
-        workspace_target["workspaceId"]
-    );
-    assert_eq!(session["session"]["pi"]["admission"], "notAdmitted");
-    assert!(
-        daemon.call("axo.runtime.list", json!({"target":daemon.target()}))["terminals"]
-            .as_array()
-            .unwrap()
-            .is_empty()
-    );
-    daemon.restart();
-    let receipt = daemon.call(
-        "axo.command.get",
-        json!({"target":daemon.target(),"commandId":command}),
-    );
-    assert_eq!(receipt["receipt"]["kind"], "work");
-    assert_eq!(
-        receipt["receipt"]["committed"]["record"]["record"],
-        created["workspace"]
-    );
-    assert_eq!(
-        daemon.call(
-            "axo.session.list",
-            json!({"target":daemon.target(),"workspaceId":workspace_target["workspaceId"]})
-        )["sessions"]
-            .as_array()
-            .unwrap()
-            .len(),
-        1
     );
 }

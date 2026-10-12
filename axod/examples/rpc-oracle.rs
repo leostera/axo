@@ -29,15 +29,7 @@ fn codec(raw: &str) -> Value {
 }
 fn params(method: String, raw: &str, manager: &Manager, machine: MachineId) -> Value {
     // An oracle input cannot reach either mutation dispatcher, even if test generators regress.
-    if ![
-        "axo.runtime.list",
-        "axo.workspace.list",
-        "axo.session.list",
-        "axo.session.get",
-        "axo.command.get",
-    ]
-    .contains(&method.as_str())
-    {
+    if method != "axo.runtime.list" {
         return json!({"error":"Oracle read policy"});
     }
     let value: Value = match serde_json::from_str(raw) {

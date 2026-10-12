@@ -28,14 +28,17 @@ pub fn serve_configured(
 ) -> io::Result<()> {
     serve_with_pi(root, relay, profiles, None)
 }
-/// Explicit operator/owned-fixture harness for existing native public-API tests.
-/// It does not run any session keep-alive policy and serve-user never calls it.
+/// Explicit operator/owned-fixture PTY harness. Session management always uses
+/// the central controller; no JSON catalog or frontend Pi startup route exists.
 pub fn serve_with_pi(
     root: &Path,
     mut relay: Option<relay::Config>,
     profiles: Option<Profiles>,
     pi: Option<crate::PiPolicy>,
 ) -> io::Result<()> {
+    if let Some(pi) = pi {
+        return serve_central(root, relay, Some(pi));
+    }
     let profiles = profiles.unwrap_or_else(|| {
         relay
             .as_ref()
@@ -46,17 +49,7 @@ pub fn serve_with_pi(
     }
     let journal = Journal::open(root)?;
     let machine = relay::machine_id(root)?;
-    if !journal.managed.lock().unwrap().belongs_to(machine)
-        || !journal.panes.lock().unwrap().belongs_to(machine)
-    {
-        return Err(io::Error::other(
-            "Native harness belongs to another machine",
-        ));
-    }
-    let mut manager = Manager::new(journal);
-    manager.normal_path = pi.as_ref().and_then(|policy| policy.normal_path.clone());
-    *manager.managed_policy.lock().unwrap() = pi;
-    let manager = Arc::new(manager);
+    let manager = Arc::new(Manager::new(journal));
     let stopping = Arc::new(AtomicBool::new(false));
     let _signals = Signals::register(stopping.clone())?;
     let result = run_native(

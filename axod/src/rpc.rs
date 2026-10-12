@@ -195,37 +195,12 @@ fn dispatch_route(
     let id = call.id?; // Execution notifications are never admitted.
     let result = match call.method.as_str() {
         "axo.host.get" if local => crate::host::get(call.params, manager, machine),
-        "axo.host.lifecycle" if local => lifecycle(call.params, manager, machine),
-        "axo.session.completion" if local => completion(call.params, manager, machine),
         "axo.host.prepareUpgrade" if local => {
             crate::upgrade::prepare(call.params, manager, machine)
         }
-        "axo.workspace.createLocal" | "axo.session.createIfEmpty" => {
-            if local {
-                crate::work_rpc::dispatch(&call.method, call.params, manager, machine, profiles)
-            } else {
-                Err((-32601, "Method not found"))
-            }
-        }
-        "axo.session.delete" => {
-            if local {
-                crate::session_deletion::delete(call.params, manager, machine)
-            } else {
-                Err((-32601, "Method not found"))
-            }
-        }
         "axo.runtime.list" => list(call.params, manager, machine),
         "axo.runtime.startApproved" => start(call.params, manager, machine, profiles),
-        "axo.session.pane.add" | "axo.session.pane.remove" if local => {
-            crate::panes::dispatch(&call.method, call.params, manager, machine, profiles)
-        }
-        "axo.session.start" => {
-            crate::managed::dispatch(&call.method, call.params, manager, machine)
-        }
-        method if method.starts_with("axo.chat.") => {
-            crate::managed::dispatch(method, call.params, manager, machine)
-        }
-        method => crate::work_rpc::dispatch(method, call.params, manager, machine, profiles),
+        _ => Err((-32601, "Method not found")),
     };
     Some(match result {
         Ok(result) => json!({"jsonrpc":"2.0", "id":id, "result":result}),
@@ -233,77 +208,6 @@ fn dispatch_route(
     })
 }
 pub(crate) type Outcome = Result<Value, (i32, &'static str)>;
-fn completion(params: Option<Value>, manager: &Manager, machine: MachineId) -> Outcome {
-    #[derive(Deserialize)]
-    #[serde(rename_all = "camelCase", deny_unknown_fields)]
-    struct Request {
-        target: crate::panes::store::SessionTarget,
-        runtimes: Vec<RuntimeRef>,
-    }
-    let request: Request = serde_json::from_value(params.unwrap_or(Value::Null))
-        .map_err(|_| (-32602, "Invalid params"))?;
-    validate_target(
-        request.target.machine_id,
-        request.target.host_generation,
-        manager,
-        machine,
-    )?;
-    if request.runtimes.is_empty()
-        || request.runtimes.len() > 32
-        || request
-            .runtimes
-            .iter()
-            .any(|runtime| runtime.target.session_id != request.target.session_id)
-        || request
-            .runtimes
-            .iter()
-            .enumerate()
-            .any(|(index, runtime)| request.runtimes[..index].contains(runtime))
-    {
-        return Err((-32602, "Invalid completion scope"));
-    }
-    manager
-        .work
-        .lock()
-        .unwrap()
-        .session(request.target.workspace_id, request.target.session_id)
-        .map_err(|_| (-32010, "Session not found"))?;
-    let completed = request
-        .runtimes
-        .into_iter()
-        .filter(|runtime| manager.runtime_completed(*runtime))
-        .collect::<Vec<_>>();
-    let store = manager.panes.lock().unwrap();
-    let retired = completed
-        .iter()
-        .filter_map(|runtime| {
-            let pane = store.pane(runtime.target.pane_id)?;
-            let receipt = store.receipt(pane.remove_command?)?;
-            (receipt.runtime == Some(*runtime)
-                && receipt.disposition == crate::panes::store::Disposition::Removed)
-                .then_some(receipt)
-        })
-        .collect::<Vec<_>>();
-    Ok(
-        json!({"hostGeneration": manager.generation, "completed": completed, "retiredShellReceipts": retired}),
-    )
-}
-fn lifecycle(params: Option<Value>, manager: &Manager, machine: MachineId) -> Outcome {
-    #[derive(Deserialize)]
-    #[serde(deny_unknown_fields)]
-    struct Request {
-        target: Destination,
-    }
-    let request: Request = serde_json::from_value(params.unwrap_or(Value::Null))
-        .map_err(|_| (-32602, "Invalid params"))?;
-    validate_target(
-        request.target.machine_id,
-        request.target.host_generation,
-        manager,
-        machine,
-    )?;
-    Ok(json!({"hostGeneration": manager.generation, "sessionKeepAlive": false}))
-}
 fn list(params: Option<Value>, manager: &Manager, machine: MachineId) -> Outcome {
     let params: List = serde_json::from_value(params.unwrap_or(Value::Null))
         .map_err(|_| (-32602, "Invalid params"))?;

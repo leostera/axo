@@ -1,7 +1,8 @@
 //! Durable materialization attempts. A reservation is not a PTY; an old or
 //! uncertain reservation can only be observed, never issued as another spawn.
+use super::DirectoryApproval;
 use super::{Database, DesiredPane, Error, PaneRole, parse_id, parse_revision};
-use crate::{model::*, runtime::RuntimeCompletion, work::DirectoryApproval};
+use crate::{model::*, runtime::RuntimeCompletion};
 use rusqlite::{OptionalExtension, params};
 use serde::{Deserialize, Serialize};
 use std::path::PathBuf;
@@ -161,6 +162,14 @@ impl Database {
             phase: AttemptPhase::Reserved,
         };
         self.mutate(|tx| {
+            let metadata_original: bool = tx.query_row(
+                "SELECT EXISTS(SELECT 1 FROM operations WHERE command_id=?1)",
+                [attempt.command_id.to_string()],
+                |row| row.get(0),
+            )?;
+            if metadata_original {
+                return Err(Error::Conflict);
+            }
             let count: u32 = tx.query_row("SELECT count(*) FROM runtime_attempts", [], |row| {
                 row.get(0)
             })?;
@@ -229,7 +238,7 @@ impl Database {
     pub(crate) fn binding(
         &self,
         session: SessionId,
-    ) -> Result<Option<crate::managed::store::Binding>, Error> {
+    ) -> Result<Option<crate::pi_session::Binding>, Error> {
         self.available()?;
         let bytes: Option<Option<Vec<u8>>> = self
             .connection
@@ -250,7 +259,7 @@ impl Database {
     pub(crate) fn admit_binding(
         &mut self,
         attempt: &Attempt,
-        binding: &crate::managed::store::Binding,
+        binding: &crate::pi_session::Binding,
     ) -> Result<(), Error> {
         self.exact_attempt(attempt)?;
         if binding.runtime != attempt.runtime

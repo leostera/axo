@@ -1,5 +1,5 @@
 //! Exact resume validation and cooperative managed-writer lease. No transcript writes.
-use super::store::Binding;
+use super::Binding;
 use crate::pi_control::ChatId;
 use serde::Deserialize;
 use std::{

@@ -7,9 +7,8 @@ pub mod client;
 pub mod host;
 pub mod journal;
 mod local;
-mod managed;
-mod panes;
-pub use managed::policy::Policy as PiPolicy;
+pub mod pi_session;
+pub use pi_session::policy::Policy as PiPolicy;
 pub mod model;
 pub mod pi_control;
 mod private_file;
@@ -20,11 +19,6 @@ pub mod rpc;
 mod rpc_owner;
 pub mod runtime;
 pub mod server;
-mod session_deletion;
-#[cfg(test)]
-mod session_deletion_tests;
-#[cfg(test)]
-mod session_lifecycle;
 pub mod state;
 pub mod terminal;
 pub mod terminal_client;
@@ -38,13 +32,3 @@ mod upgrade;
 mod user_path;
 pub mod user_service;
 mod user_shell;
-pub mod work;
-#[cfg(test)]
-mod work_lifecycle_tests;
-#[cfg(test)]
-mod work_local_tests;
-mod work_rpc;
-#[cfg(test)]
-mod work_standalone_tests;
-#[cfg(test)]
-mod work_startup_tests;

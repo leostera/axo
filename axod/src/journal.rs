@@ -29,9 +29,6 @@ struct Saved {
     receipts: BTreeMap<CommandId, Receipt>,
 }
 pub struct Journal {
-    pub(crate) work: std::sync::Arc<std::sync::Mutex<crate::work::WorkStore>>,
-    pub(crate) managed: std::sync::Arc<std::sync::Mutex<crate::managed::store::Store>>,
-    pub(crate) panes: std::sync::Arc<std::sync::Mutex<crate::panes::store::Store>>,
     root: PathBuf,
     saved: Saved,
     _owner_lock: File,
@@ -88,6 +85,16 @@ impl Journal {
                 ));
             }
         }
+        for name in ["work-records.json", "pane-state.json", "pi-state.json"] {
+            match fs::symlink_metadata(root.join(name)) {
+                Err(error) if error.kind() == io::ErrorKind::NotFound => {}
+                _ => {
+                    return Err(io::Error::other(
+                        "Legacy catalog is not a native runtime journal",
+                    ));
+                }
+            }
+        }
         let path = root.join("runtime-state.json");
         let mut saved = match read_saved(&path) {
             Ok(value) => value,
@@ -125,73 +132,7 @@ impl Journal {
                 terminal.process = ProcessState::RecoveryRequired {};
             }
         }
-        let work = crate::work::WorkStore::open(root)?;
-        if !work.validate_deletion_runtimes(&saved.terminals.values().cloned().collect::<Vec<_>>())
-        {
-            return Err(io::Error::other(
-                "Session deletion lacks exact recorded runtime completion",
-            ));
-        }
-        if saved.receipts.keys().any(|id| work.contains_command(*id)) {
-            return Err(io::Error::other(
-                "Conflicting command identities across journals",
-            ));
-        }
-        let managed = crate::managed::store::Store::open(root, &work)?;
-        for command in managed.commands() {
-            if work.contains_command(command) {
-                return Err(io::Error::other("Conflicting managed command identity"));
-            }
-            if let Some(runtime) = saved.receipts.get(&command).map(|receipt| receipt.runtime) {
-                let receipt = managed.receipt(command).expect("Stored managed receipt");
-                let crate::managed::store::Intent::Start { target, .. } = receipt.intent else {
-                    return Err(io::Error::other("Conflicting managed runtime receipt"));
-                };
-                if runtime.target.session_id != target.session_id
-                    || runtime.target.pane_id != target.pane_id
-                    || runtime.host_generation != target.host_generation
-                {
-                    return Err(io::Error::other("Conflicting managed runtime target"));
-                }
-            }
-        }
-        let panes = crate::panes::store::Store::open(root, &work)?;
-        let runtime_receipts = saved
-            .receipts
-            .iter()
-            .map(|(command, receipt)| (*command, receipt.runtime))
-            .collect();
-        if panes
-            .commands()
-            .any(|command| work.contains_command(command) || managed.contains_command(command))
-            || !panes.validate_runtime(&runtime_receipts)
-        {
-            return Err(io::Error::other(
-                "Conflicting pane command or runtime identity",
-            ));
-        }
-        for command in panes.commands() {
-            let receipt = panes.receipt(command).expect("Stored pane receipt");
-            if receipt.disposition == crate::panes::store::Disposition::Removed
-                && receipt.runtime.is_some_and(|runtime| {
-                    !saved.terminals.values().any(|terminal| {
-                        terminal.runtime == runtime
-                            && matches!(
-                                terminal.process,
-                                ProcessState::Exited { .. } | ProcessState::Failed { .. }
-                            )
-                    })
-                })
-            {
-                return Err(io::Error::other(
-                    "Pane removed without recorded runtime completion",
-                ));
-            }
-        }
         Ok(Self {
-            panes: std::sync::Arc::new(std::sync::Mutex::new(panes)),
-            managed: std::sync::Arc::new(std::sync::Mutex::new(managed)),
-            work: std::sync::Arc::new(std::sync::Mutex::new(work)),
             root: root.to_path_buf(),
             saved,
             _owner_lock: owner,
@@ -200,12 +141,6 @@ impl Journal {
     }
     pub(crate) fn is_fenced(&self) -> bool {
         self.poisoned
-    }
-    pub(crate) fn command_runtime(&self, command: CommandId) -> Option<RuntimeRef> {
-        self.saved.receipts.get(&command).map(|r| r.runtime)
-    }
-    pub(crate) fn contains_command(&self, command: CommandId) -> bool {
-        self.saved.receipts.contains_key(&command)
     }
     pub fn snapshots(&self) -> Vec<TerminalSnapshot> {
         self.saved.terminals.values().cloned().collect()
@@ -401,6 +336,17 @@ mod tests {
     use super::*;
     use crate::test_support::TestDirectory;
 
+    #[test]
+    fn legacy_catalog_bytes_are_never_opened_as_native_authority() {
+        for name in ["work-records.json", "pane-state.json", "pi-state.json"] {
+            let directory = TestDirectory::new();
+            let file = directory.path().join(name);
+            fs::write(&file, b"opaque legacy original").unwrap();
+            assert!(Journal::open(directory.path()).is_err());
+            assert_eq!(fs::read(file).unwrap(), b"opaque legacy original");
+            assert!(!directory.path().join("runtime-state.json").exists());
+        }
+    }
     fn runtime() -> RuntimeRef {
         RuntimeRef {
             host_generation: HostGeneration::new(),

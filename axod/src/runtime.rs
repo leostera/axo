@@ -271,12 +271,10 @@ impl SpawnedTerminal {
 enum LaunchControl {
     Ordinary,
     Controlled,
-    ReservedPi,
-    ReservedPane,
 }
 impl LaunchControl {
     fn controlled(&self) -> bool {
-        matches!(self, Self::Controlled | Self::ReservedPi)
+        matches!(self, Self::Controlled)
     }
 }
 pub(crate) struct RuntimeCompletion(RuntimeRef);
@@ -285,22 +283,14 @@ impl RuntimeCompletion {
         self.0
     }
 }
-mod deletion;
 
 pub struct Manager {
     pub generation: HostGeneration,
     pub host: crate::host::HostStatus,
-    pub(crate) user_home: Option<crate::work::LocalDirectoryPath>,
     pub(crate) normal_path: Option<crate::user_path::CapturedPath>,
     pub(crate) user_shell: Option<crate::user_shell::CapturedUserShell>,
     journal: Arc<Mutex<Journal>>,
-    pub(crate) work: Arc<Mutex<crate::work::WorkStore>>,
-    pub(crate) managed: Arc<Mutex<crate::managed::store::Store>>,
-    pub(crate) managed_policy: Mutex<Option<crate::managed::policy::Policy>>,
-    pub(crate) managed_live: Mutex<BTreeMap<SessionId, Arc<crate::managed::Running>>>,
-    pub(crate) managed_start: Mutex<()>,
-    pub(crate) panes: Arc<Mutex<crate::panes::store::Store>>,
-    pub(crate) pane_operation: Mutex<()>,
+    pub(crate) managed_live: Mutex<BTreeMap<SessionId, Arc<crate::pi_session::Running>>>,
     admission: Mutex<()>,
     upgrade: Mutex<Option<crate::upgrade::Plan>>,
     terminals: Mutex<BTreeMap<PaneId, Arc<Terminal>>>,
@@ -311,16 +301,9 @@ impl Manager {
         Self {
             generation: HostGeneration::new(),
             host: crate::host::HostStatus::default(),
-            user_home: crate::work::capture_user_home(),
             normal_path: None,
             user_shell: crate::user_shell::CapturedUserShell::capture(),
-            work: journal.work.clone(),
-            managed: journal.managed.clone(),
-            managed_policy: Mutex::new(None),
             managed_live: Mutex::new(BTreeMap::new()),
-            managed_start: Mutex::new(()),
-            panes: journal.panes.clone(),
-            pane_operation: Mutex::new(()),
             admission: Mutex::new(()),
             upgrade: Mutex::new(None),
             journal: Arc::new(Mutex::new(journal)),
@@ -333,10 +316,7 @@ impl Manager {
         plan: &crate::upgrade::Plan,
     ) -> Result<crate::upgrade::Disposition, (i32, &'static str)> {
         use crate::upgrade::Disposition;
-        // Lock in the same order as start/remove paths. No admission may slip between
-        // the resource proof and freeze, including a start still probing ambient Pi.
-        let _starting = self.managed_start.lock().unwrap();
-        let _panes = self.pane_operation.lock().unwrap();
+        // Native admission and completion proof share one fence.
         let _admission = self.admission.lock().unwrap();
         let mut upgrade = self.upgrade.lock().unwrap();
         if let Some(existing) = upgrade.as_ref() {
@@ -354,11 +334,7 @@ impl Manager {
         if self.stopping.load(Ordering::SeqCst) {
             return Err((-32010, "Daemon stopping"));
         }
-        if self.journal.lock().unwrap().is_fenced()
-            || self.work.lock().unwrap().is_fenced()
-            || self.managed.lock().unwrap().is_fenced()
-            || self.panes.lock().unwrap().is_fenced()
-        {
+        if self.journal.lock().unwrap().is_fenced() {
             return Err((-32008, "Storage fenced; upgrade refused"));
         }
         let snapshots = self.journal.lock().unwrap().snapshots();
@@ -371,162 +347,6 @@ impl Manager {
         self.stopping.store(true, Ordering::SeqCst);
         *upgrade = Some(plan.clone());
         Ok(Disposition::Quiesced)
-    }
-    pub(crate) fn command_receipt(
-        &self,
-        command: CommandId,
-    ) -> Option<crate::work::CommandReceipt> {
-        let _admission = self.admission.lock().unwrap();
-        if let Some(receipt) = self.managed.lock().unwrap().receipt(command) {
-            let mut view = receipt.view();
-            if view.runtime.is_none() {
-                view.runtime = self.journal.lock().unwrap().command_runtime(command);
-            }
-            return Some(crate::work::CommandReceipt::Pi { receipt: view });
-        }
-        if let Some(mut receipt) = self.panes.lock().unwrap().receipt(command) {
-            if receipt.runtime.is_none() {
-                receipt.runtime = self.journal.lock().unwrap().command_runtime(command);
-            }
-            return Some(crate::work::CommandReceipt::Pane { receipt });
-        }
-        if let Some(receipt) = self.settle_session_deletion(command) {
-            return Some(crate::work::CommandReceipt::Deletion { receipt });
-        }
-        if let Some(committed) = self.work.lock().unwrap().receipt(command) {
-            return Some(crate::work::CommandReceipt::Work { committed });
-        }
-        let runtime = self.journal.lock().unwrap().command_runtime(command)?;
-        let terminal = self.list().into_iter().find(|t| t.runtime == runtime);
-        Some(crate::work::CommandReceipt::Runtime { runtime, terminal })
-    }
-    pub(crate) fn mutate_work(
-        &self,
-        command: CommandId,
-        intent: crate::work::WorkIntent,
-        profiles: &BTreeMap<String, TerminalLaunch>,
-    ) -> Result<crate::work::CommittedWork, crate::work::WorkError> {
-        let _admission = self.admission.lock().unwrap();
-        if self.stopping.load(Ordering::SeqCst) {
-            return Err(crate::work::WorkError::Rejected);
-        }
-        {
-            let journal = self.journal.lock().unwrap();
-            if journal.is_fenced() {
-                return Err(crate::work::WorkError::StorageFailed);
-            }
-            if journal.contains_command(command) {
-                return Err(crate::work::WorkError::Conflict);
-            }
-        }
-        {
-            let managed = self.managed.lock().unwrap();
-            if managed.is_fenced() {
-                return Err(crate::work::WorkError::StorageFailed);
-            }
-            if managed.contains_command(command) {
-                return Err(crate::work::WorkError::Conflict);
-            }
-        }
-        {
-            let panes = self.panes.lock().unwrap();
-            if panes.is_fenced() {
-                return Err(crate::work::WorkError::StorageFailed);
-            }
-            if panes.contains_command(command) {
-                return Err(crate::work::WorkError::Conflict);
-            }
-        }
-        if matches!(intent, crate::work::WorkIntent::CreateStartupSession { .. })
-            && !self.work.lock().unwrap().contains_command(command)
-        {
-            // The same admission fence covers metadata, generic starts, Pi and panes.
-            // A cached empty catalog is never sufficient. Keep old/uncertain domain
-            // hints and retained runtime records out of auto-start. "Empty" means
-            // genuinely empty, not merely no running PID or a completed history.
-            let snapshots = self.journal.lock().unwrap().snapshots();
-            if !self.work.lock().unwrap().is_empty()
-                || self.managed.lock().unwrap().commands().next().is_some()
-                || self.panes.lock().unwrap().commands().next().is_some()
-                || !snapshots.is_empty()
-            {
-                return Err(crate::work::WorkError::Conflict);
-            }
-        }
-        self.work.lock().unwrap().apply(command, intent, profiles)
-    }
-    pub(crate) fn prepare_managed(
-        &self,
-        command: CommandId,
-        intent: crate::managed::store::Intent,
-        fingerprint: crate::managed::store::Fingerprint,
-    ) -> Result<crate::managed::Reservation, crate::managed::store::Error> {
-        use crate::managed::store::Error;
-        let _admission = self.admission.lock().unwrap();
-        let mut store = self.managed.lock().unwrap();
-        if let Some(receipt) = store.reconcile(command, &intent, &fingerprint)? {
-            return Ok(crate::managed::Reservation::Existing(Box::new(receipt)));
-        }
-        if self.stopping.load(Ordering::SeqCst) {
-            return Err(Error::Conflict);
-        }
-        let journal = self.journal.lock().unwrap();
-        let work = self.work.lock().unwrap();
-        let panes = self.panes.lock().unwrap();
-        if journal.is_fenced() || work.is_fenced() || store.is_fenced() || panes.is_fenced() {
-            return Err(Error::StorageFenced);
-        }
-        if journal.contains_command(command)
-            || work.contains_command(command)
-            || panes.contains_command(command)
-        {
-            return Err(Error::Conflict);
-        }
-        drop(journal);
-        drop(work);
-        drop(panes);
-        store
-            .prepare(command, intent, fingerprint)
-            .map(|_| crate::managed::Reservation::New)
-    }
-    pub(crate) fn prepare_pane(
-        &self,
-        command: CommandId,
-        intent: crate::panes::store::Intent,
-    ) -> Result<crate::panes::store::Receipt, crate::panes::store::Error> {
-        use crate::panes::store::Error;
-        let _admission = self.admission.lock().unwrap();
-        let mut panes = self.panes.lock().unwrap();
-        if let Some(receipt) = panes.reconcile(command, &intent)? {
-            return Ok(receipt);
-        }
-        let journal = self.journal.lock().unwrap();
-        let work = self.work.lock().unwrap();
-        let managed = self.managed.lock().unwrap();
-        if self.stopping.load(Ordering::SeqCst) {
-            return Err(Error::Conflict);
-        }
-        let target = intent.target();
-        if target.host_generation != self.generation
-            || work
-                .session(target.workspace_id, target.session_id)
-                .is_err()
-        {
-            return Err(Error::Conflict);
-        }
-        if panes.is_fenced() || journal.is_fenced() || work.is_fenced() || managed.is_fenced() {
-            return Err(Error::Fenced);
-        }
-        if journal.contains_command(command)
-            || work.contains_command(command)
-            || managed.contains_command(command)
-        {
-            return Err(Error::Conflict);
-        }
-        panes.prepare(command, intent)
-    }
-    pub(crate) fn pane_command_runtime(&self, command: CommandId) -> Option<RuntimeRef> {
-        self.journal.lock().unwrap().command_runtime(command)
     }
     pub(crate) fn completion_evidence(&self, runtime: RuntimeRef) -> Option<RuntimeCompletion> {
         self.runtime_completed(runtime)
@@ -601,25 +421,6 @@ impl Manager {
             self.start_inner(command, target, launch, LaunchControl::Controlled)?;
         Ok((terminal, channel.ok_or(ErrorCode::RecoveryRequired)?))
     }
-    pub(crate) fn start_reserved_pi(
-        &self,
-        command: CommandId,
-        target: TerminalTarget,
-        launch: &TerminalLaunch,
-    ) -> Result<(TerminalSnapshot, UnixStream), ErrorCode> {
-        let (terminal, channel) =
-            self.start_inner(command, target, launch, LaunchControl::ReservedPi)?;
-        Ok((terminal, channel.ok_or(ErrorCode::RecoveryRequired)?))
-    }
-    pub(crate) fn start_reserved_pane(
-        &self,
-        command: CommandId,
-        target: TerminalTarget,
-        launch: &TerminalLaunch,
-    ) -> Result<TerminalSnapshot, ErrorCode> {
-        self.start_inner(command, target, launch, LaunchControl::ReservedPane)
-            .map(|(terminal, _)| terminal)
-    }
     pub(crate) fn start_materialized(
         &self,
         command: CommandId,
@@ -661,51 +462,6 @@ impl Manager {
     ) -> Result<(TerminalSnapshot, Option<UnixStream>), ErrorCode> {
         let controlled = mode.controlled();
         let _admission = self.admission.lock().unwrap();
-        {
-            let panes = self.panes.lock().unwrap();
-            if panes.is_fenced() {
-                return Err(ErrorCode::StorageFailed);
-            }
-            if let Some(receipt) = panes.receipt(command) {
-                let permitted = matches!(mode, LaunchControl::ReservedPane)
-                    && matches!(receipt.intent, crate::panes::store::Intent::AddPane { target: destination, .. } if destination.session_id == target.session_id && destination.host_generation == self.generation)
-                    && receipt.pane_id == target.pane_id
-                    && receipt.disposition == crate::panes::store::Disposition::Prepared;
-                if !permitted {
-                    return Err(ErrorCode::Conflict);
-                }
-            } else if matches!(mode, LaunchControl::ReservedPane) {
-                return Err(ErrorCode::Conflict);
-            }
-            if !matches!(mode, LaunchControl::ReservedPane) && panes.contains_pane(target.pane_id) {
-                return Err(ErrorCode::Conflict);
-            }
-        }
-        {
-            let store = self.managed.lock().unwrap();
-            if store.is_fenced() {
-                return Err(ErrorCode::StorageFailed);
-            }
-            if let Some(receipt) = store.receipt(command) {
-                let permitted = matches!(mode, LaunchControl::ReservedPi)
-                    && matches!(receipt.intent, crate::managed::store::Intent::Start { target: destination, .. } if destination.session_id == target.session_id && destination.pane_id == target.pane_id && destination.host_generation == self.generation)
-                    && receipt.disposition == crate::managed::store::Disposition::Prepared;
-                if !permitted {
-                    return Err(ErrorCode::Conflict);
-                }
-            } else if matches!(mode, LaunchControl::ReservedPi) {
-                return Err(ErrorCode::Conflict);
-            }
-        }
-        {
-            let work = self.work.lock().unwrap();
-            if work.is_fenced() {
-                return Err(ErrorCode::StorageFailed);
-            }
-            if work.contains_command(command) {
-                return Err(ErrorCode::Conflict);
-            }
-        }
         let mut terminals = self.terminals.lock().unwrap();
         if self.stopping.load(Ordering::SeqCst) {
             return Err(ErrorCode::NotRunning);
@@ -722,25 +478,6 @@ impl Manager {
             return self
                 .reconcile_start(previous, &terminals)
                 .map(|terminal| (terminal, None));
-        }
-        if !matches!(mode, LaunchControl::ReservedPi)
-            && self
-                .managed
-                .lock()
-                .unwrap()
-                .binding(target.session_id)
-                .is_some_and(|binding| binding.pane_id == target.pane_id)
-        {
-            return Err(ErrorCode::Conflict);
-        }
-        {
-            let work = self.work.lock().unwrap();
-            if work.session_deleted(target.session_id)
-                || work.session_deletion_pending(target.session_id)
-                || work.deletion_reserves_pane(target.pane_id)
-            {
-                return Err(ErrorCode::Conflict);
-            }
         }
         check_launch_admission(&terminals, target)?;
         let reference = reserved.unwrap_or_else(|| RuntimeRef {
@@ -1162,21 +899,13 @@ mod tests {
         }
         fn observation_manager(&self) -> Manager {
             // Synthetic observation only. Never launch, stop, adopt or signal the fixture PID.
-            let journal = self.terminal.journal.lock().unwrap();
             Manager {
                 generation: self.terminal.reference.host_generation,
                 host: crate::host::HostStatus::default(),
-                user_home: crate::work::capture_user_home(),
                 user_shell: crate::user_shell::CapturedUserShell::capture(),
                 normal_path: None,
                 journal: self.terminal.journal.clone(),
-                work: journal.work.clone(),
-                managed: journal.managed.clone(),
-                panes: journal.panes.clone(),
-                managed_policy: Mutex::new(None),
                 managed_live: Mutex::new(BTreeMap::new()),
-                managed_start: Mutex::new(()),
-                pane_operation: Mutex::new(()),
                 admission: Mutex::new(()),
                 upgrade: Mutex::new(None),
                 terminals: Mutex::new(BTreeMap::from([(
@@ -1246,8 +975,6 @@ mod tests {
                 let expected = exited && output_finished && group_empty && clean_output && !faulted;
                 proptest::prop_assert_eq!(manager.runtime_completed(runtime), expected);
                 proptest::prop_assert_eq!(manager.completion_evidence(runtime).is_some(), expected);
-                let admission = crate::managed::admission(&manager, runtime.target.session_id, Some(runtime));
-                proptest::prop_assert_eq!(admission, if expected { crate::managed::Admission::Stopped } else { crate::managed::Admission::RecoveryRequired });
                 let mut stale = runtime; stale.runtime_generation = RuntimeGeneration::new();
                 proptest::prop_assert!(!manager.runtime_completed(stale));
             }
@@ -1266,10 +993,6 @@ mod tests {
         ));
         assert!(!manager.runtime_completed(runtime));
         assert!(manager.completion_evidence(runtime).is_none());
-        assert_eq!(
-            crate::managed::admission(&manager, runtime.target.session_id, Some(runtime)),
-            crate::managed::Admission::RecoveryRequired
-        );
         fixture.terminal.record_completion();
         assert!(!manager.runtime_completed(runtime));
         fixture.terminal.finish_output(OutputState::Closed);
@@ -1277,10 +1000,6 @@ mod tests {
         assert_eq!(
             manager.completion_evidence(runtime).unwrap().runtime(),
             runtime
-        );
-        assert_eq!(
-            crate::managed::admission(&manager, runtime.target.session_id, Some(runtime)),
-            crate::managed::Admission::Stopped
         );
         let mut stale = runtime;
         stale.runtime_generation = RuntimeGeneration::new();
@@ -1302,10 +1021,6 @@ mod tests {
             !manager.runtime_completed(runtime),
             "Unpersisted visible exit became a completion witness"
         );
-        assert_eq!(
-            crate::managed::admission(&manager, runtime.target.session_id, Some(runtime)),
-            crate::managed::Admission::RecoveryRequired
-        );
         fixture.terminal.record_completion();
         assert!(manager.runtime_completed(runtime));
     }
@@ -1324,10 +1039,6 @@ mod tests {
             ProcessState::Exited { .. }
         ));
         assert!(manager.completion_evidence(runtime).is_none());
-        assert_eq!(
-            crate::managed::admission(&manager, runtime.target.session_id, Some(runtime)),
-            crate::managed::Admission::RecoveryRequired
-        );
     }
     #[test]
     fn reaped_child_is_uncertain_until_terminal_eof_then_becomes_clean() {
@@ -1376,10 +1087,6 @@ mod tests {
         let manager = fixture.observation_manager();
         let runtime = fixture.terminal.reference;
         assert!(manager.completion_evidence(runtime).is_none());
-        assert_eq!(
-            crate::managed::admission(&manager, runtime.target.session_id, Some(runtime)),
-            crate::managed::Admission::RecoveryRequired
-        );
     }
 
     #[test]

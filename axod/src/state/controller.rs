@@ -13,14 +13,13 @@ use super::{
 };
 use crate::{
     journal::Journal,
-    managed::{
-        Running,
-        persistence::{WriterLease, validate_resume},
-        session_directory,
-        store::Binding,
-    },
     model::*,
     pi_control::Control,
+    pi_session::{
+        Binding, Running,
+        persistence::{WriterLease, validate_resume},
+        session_directory,
+    },
     runtime::Manager,
 };
 use serde::Serialize;
@@ -75,13 +74,7 @@ impl Controller {
         let database = Database::open(root, machine)?;
         let journal =
             Journal::open(&database.root.runtime_directory()?).map_err(|_| Error::UnsafeStorage)?;
-        // Never import an old catalog implicitly through the runtime owner.
-        if !journal.work.lock().unwrap().is_empty()
-            || journal.managed.lock().unwrap().commands().next().is_some()
-            || journal.panes.lock().unwrap().commands().next().is_some()
-        {
-            return Err(Error::LegacyState);
-        }
+        // The native journal holds only execution/completion evidence.
         let mut native = Manager::new(journal);
         native.user_shell = crate::user_shell::CapturedUserShell::capture_account();
         native.normal_path = policy
@@ -412,7 +405,6 @@ impl Controller {
                 binding: binding.clone(),
                 control,
                 _lease: lease,
-                viewing: Mutex::new(BTreeMap::new()),
             });
             self.native
                 .managed_live

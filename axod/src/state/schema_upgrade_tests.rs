@@ -1,5 +1,5 @@
-use super::*;
 use super::controller::Controller;
+use super::*;
 use crate::test_support::TestDirectory;
 #[test]
 fn schema_two_upgrade_mints_one_store_generation_and_preserves_original() {

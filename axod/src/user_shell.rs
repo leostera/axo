@@ -1,48 +1,11 @@
 //! Captured user-login shell policy. Local pane callers never supply cwd or argv.
-use crate::{model::TerminalLaunch, work::valid_directory_id};
-use serde::{Deserialize, Serialize};
+use crate::model::TerminalLaunch;
 use std::{
     ffi::{CStr, CString},
     fs,
     os::unix::fs::MetadataExt,
     path::{Path, PathBuf},
 };
-
-#[derive(Clone, Debug, PartialEq, Eq)]
-pub struct ApprovedShellProfile(String);
-
-/// Wire/storage representation remains an approved profile string, or null for
-/// the captured user login shell. These choices have distinct receipt intents.
-#[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(try_from = "Option<String>", into = "Option<String>")]
-pub enum ShellSource {
-    #[default]
-    UserLogin,
-    Approved(ApprovedShellProfile),
-}
-impl TryFrom<Option<String>> for ShellSource {
-    type Error = &'static str;
-    fn try_from(value: Option<String>) -> Result<Self, Self::Error> {
-        match value {
-            None => Ok(Self::UserLogin),
-            Some(id) if valid_directory_id(&id) => Ok(Self::Approved(ApprovedShellProfile(id))),
-            Some(_) => Err("Invalid approved shell profile"),
-        }
-    }
-}
-impl From<ShellSource> for Option<String> {
-    fn from(value: ShellSource) -> Self {
-        match value {
-            ShellSource::UserLogin => None,
-            ShellSource::Approved(ApprovedShellProfile(id)) => Some(id),
-        }
-    }
-}
-impl ApprovedShellProfile {
-    pub(crate) fn id(&self) -> &str {
-        &self.0
-    }
-}
 
 /// Boot-captured executable identity, not a request-selected command or fallback.
 pub(crate) struct CapturedUserShell {
@@ -130,19 +93,6 @@ mod tests {
     use crate::test_support::TestDirectory;
     use std::os::unix::fs::PermissionsExt;
 
-    #[test]
-    fn shell_sources_are_closed_distinct_and_preserve_existing_profile_encoding() {
-        let configured: ShellSource = serde_json::from_str("\"shell\"").unwrap();
-        assert_eq!(serde_json::to_string(&configured).unwrap(), "\"shell\"");
-        assert_eq!(
-            serde_json::from_str::<ShellSource>("null").unwrap(),
-            ShellSource::UserLogin
-        );
-        assert_ne!(configured, ShellSource::UserLogin);
-        for invalid in ["\"\"", "\"../shell\"", "42", "{\"argv\":[\"/bin/sh\"]}"] {
-            assert!(serde_json::from_str::<ShellSource>(invalid).is_err());
-        }
-    }
     #[test]
     fn account_shell_capture_matches_the_configured_login_executable() {
         let expected = fs::canonicalize(account_shell().expect("account shell")).unwrap();

@@ -1,4 +1,5 @@
 //! Demand-driven canonical projections. Never invents entries or transports image/file bodies.
+use super::CanonicalReadError as Error;
 use crate::pi_control::{CanonicalDocument, History};
 use serde::{Deserialize, Serialize};
 #[derive(Deserialize)]
@@ -76,8 +77,8 @@ pub fn clip(text: &str, bytes: usize) -> (&str, bool) {
     }
     (&text[..end], true)
 }
-pub fn project(document: &CanonicalDocument) -> Result<Projection, ()> {
-    let entry: Entry = serde_json::from_str(document.json()).map_err(|_| ())?;
+pub fn project(document: &CanonicalDocument) -> Result<Projection, Error> {
+    let entry: Entry = serde_json::from_str(document.json()).map_err(|_| Error::Invalid)?;
     let (role, text, call, tool, calls) = if let Some(message) = entry.message {
         let text = text(&message.content);
         let calls = match message.content {
@@ -116,7 +117,7 @@ pub fn project(document: &CanonicalDocument) -> Result<Projection, ()> {
             .iter()
             .any(|call| !bounded(&call.id, 128) || !bounded(&call.name, 128))
     {
-        return Err(());
+        return Err(Error::Invalid);
     }
     let (preview, truncated) = clip(&text, 2048);
     Ok(Projection {
@@ -132,12 +133,14 @@ pub fn project(document: &CanonicalDocument) -> Result<Projection, ()> {
         tool_calls: calls,
     })
 }
-pub fn recent(history: &History) -> Result<Vec<Projection>, ()> {
+pub fn recent(history: &History) -> Result<Vec<Projection>, Error> {
     let mut entries = Vec::new();
     let mut bytes = 0;
     for document in history.branch.iter().rev().take(10) {
         let entry = project(document)?;
-        let size = serde_json::to_vec(&entry).map_err(|_| ())?.len();
+        let size = serde_json::to_vec(&entry)
+            .map_err(|_| Error::Invalid)?
+            .len();
         // Reserve the public frame's remaining space for the bounded current question and source.
         if bytes + size > 32 * 1024 {
             break;
@@ -148,17 +151,17 @@ pub fn recent(history: &History) -> Result<Vec<Projection>, ()> {
     entries.reverse();
     Ok(entries)
 }
-pub fn tool_text(history: &History, entry_id: &str, tool_call_id: &str) -> Result<String, ()> {
+pub fn tool_text(history: &History, entry_id: &str, tool_call_id: &str) -> Result<String, Error> {
     for document in &history.entries {
-        let entry: Entry = serde_json::from_str(document.json()).map_err(|_| ())?;
+        let entry: Entry = serde_json::from_str(document.json()).map_err(|_| Error::Invalid)?;
         if entry.id == entry_id {
-            let message = entry.message.ok_or(())?;
+            let message = entry.message.ok_or(Error::Invalid)?;
             if message.role != "toolResult" || message.tool_call_id.as_deref() != Some(tool_call_id)
             {
-                return Err(());
+                return Err(Error::Invalid);
             }
             return Ok(text(&message.content));
         }
     }
-    Err(())
+    Err(Error::NotFound)
 }
