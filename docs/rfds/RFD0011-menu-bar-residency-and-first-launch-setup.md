@@ -3,12 +3,12 @@
 - Feature Name: `axo-menu-bar-residency-and-first-launch-setup`
 - Status: Accepted
 - Start Date: 2026-10-11
-- Updated: 2026-10-11
+- Updated: 2026-10-12
 - Document Type: Proposal
 
 ## Summary
 
-Make Axo one menu-bar-resident Mac application whose workbench is an optional window, alongside the separate headless Axod LaunchAgent. First opening presents guided installation/service setup rather than an empty session catalog. Setup explains the ownership model, guides installation into a stable Applications location, requests background-service enablement explicitly, handles macOS approval, verifies the real daemon connection, and offers independently opt-in menu-bar startup at login. Closing a window hides presentation; quitting Axo saves drafts and removes the frontend without stopping Axod. This decision is accepted by the user's request to document and implement the agreed product model; it does not assert that installed-service or terminal-recovery acceptance has passed.
+Make Axo one menu-bar-resident Mac application whose workbench is an optional window, alongside the separate headless Axod LaunchAgent. First visible onboarding requests bundled LaunchAgent registration through Apple's `SMAppService`, rather than blocking on Finder installation or showing an empty session catalog. macOS owns approval; Axo exposes its native Login Items settings action when needed, verifies the real daemon connection, and offers independently opt-in menu-bar startup at login. The user's 2026-10-12 direction supersedes the earlier Applications-folder gate and custom service confirmation. Closing a window hides presentation; quitting Axo saves drafts and removes the frontend without stopping Axod. This decision is accepted by the user's request to document and implement the agreed product model; it does not assert that installed-service or terminal-recovery acceptance has passed.
 
 ## Motivation
 
@@ -65,15 +65,15 @@ The menu-bar item remains present when all Axo windows are hidden. The workbench
 
 ### First opening
 
-1. Explain that Axo lives in the menu bar and Axod runs independently.
-2. If the bundle is not in `/Applications` or the user's `~/Applications`, show installation guidance. The initial implementation reveals the current app and opens the user's Applications folder in Finder; the user quits, moves the app, and reopens it there. No hidden copy, replacement, deletion, or duplicate app launch occurs.
-3. Offer **Enable Background Service** with an explicit explanation/confirmation. If already registered, check its actual availability rather than unregistering it.
-4. When macOS requires approval, link to Login Items & Extensions. Returning to Axo only observes status; **Check Service** performs bounded read-only connection attempts.
+1. Show **Welcome to Axo** and three short steps: **Register background service**, **Allow background activity**, **Open Axo**. Keep technical explanations under collapsed Details.
+2. On the first visible onboarding only, request `SMAppService.agent(plistName:).register()` if unregistered, no prior completion/registration receipt exists, and the owner-absence and original-operation fences allow it. No Axo confirmation dialog or mandatory Applications-folder detour precedes the request. Login-only launches do not register until the user explicitly opens Axo.
+3. Persist the original request before the SDK call. Already registered or `requiresApproval` states are observed, not re-registered. An unknown SDK outcome stays pending across launches. Previous completion or a registration receipt prevents silently re-registering a service later removed by the user; a fresh explicit enable action is then required.
+4. When macOS requires approval, show **Open Settings** using `SMAppService.openSystemSettingsLoginItems()`. macOS controls its notification/approval presentation; Axo does not promise a modal prompt or bypass consent. Returning to Axo only observes status and performs bounded read-only readiness checks.
 5. A responding endpoint, validated epoch and negotiation, and successful catalog loading establish usable local connection. “Enabled” alone is insufficient. Failure remains in setup with the actual error and recovery links.
 6. Offer **Keep Axo in the menu bar at login** independently. Preserve an existing choice unless the user explicitly changes it. Pending frontend login approval need not block an otherwise usable workbench.
 7. **Open Axo** finishes setup and presents the workbench. The original authoritative-empty app-start intent may create its first session; an existing catalog, pending command, or unavailable draft store prevents automatic empty startup as before.
 
-The setup-completion preference is a presentation hint, not registration or execution authority. Subsequent launches revalidate installation and connection before restoring the workbench. Once the workbench has been entered in this process, connection loss uses its recovery UI rather than repeatedly replacing an active viewport with onboarding.
+The setup-completion preference is a presentation hint, not registration or execution authority. Subsequent launches revalidate registration and connection before restoring the workbench. Once the workbench has been entered in this process, connection loss uses its recovery UI rather than repeatedly replacing an active viewport with onboarding.
 
 ### Close, reopen, and quit
 
@@ -86,7 +86,7 @@ Closing the primary window orders it out without disposing its retained surfaces
 ### Architecture and boundaries
 
 - The AppKit application delegate owns one `NSStatusItem`, its menu, activation policy, and the retained primary window. No SwiftUI-scene migration is required.
-- A small pure setup policy classifies installation and service/connection facts into a closed set of presentation stages. It owns no daemon or catalog.
+- A small pure setup policy classifies service registration and connection facts into a closed set of presentation stages. It owns no daemon or catalog.
 - A dedicated hosted setup view emits explicit actions to existing owners. It does not register services in `onAppear`, start Pi, or perform filesystem installation.
 - The application root chooses setup versus workbench. The native outline and terminal tree remain unchanged inside the workbench.
 - The application-scoped service lifecycle remains the only normal service-operation owner. Connection attempts are read-only; the development operator-maintenance modes remain separate explicit tools.
@@ -96,8 +96,7 @@ Closing the primary window orders it out without disposing its retained surfaces
 
 | Stage | Meaning / available action |
 | --- | --- |
-| Installation | Current bundle is outside a stable Applications location; explain and reveal in Finder. |
-| Enable service | No service is registered; offer explicit enablement. |
+| Enable service | Initial registration could not be confirmed, or previously completed setup was removed. Preserve an unknown request; offer read-only status checks or a fresh explicit enable action when safe. |
 | Approval | Background item requires user approval; open System Settings and check again. |
 | Checking | A current read-only connection attempt is running; no success claim or duplicate setup dispatch. |
 | Unavailable | Registration is missing/broken/unknown or connection failed; show actual error and supported recovery actions. |
@@ -107,7 +106,7 @@ A transient initial unknown registration may render a checking state. After obse
 
 ### Installation boundary
 
-The initial implementation deliberately uses native Finder guidance rather than a custom self-installer. Supported stable locations are the system and current user's Applications trees; translocated or development staging paths do not satisfy installation. Resolve filesystem aliases when checking the actual bundle location.
+Apple's LaunchAgent API requires a code-signed calling app containing the plist under `Contents/Library/LaunchAgents`, not a mandatory `/Applications` path. The SDK documents `BundleProgram` as supporting relocation of the app. A translocated source is refused for new registration until moved to a permanent location. Axo never silently copies, replaces, deletes, or launches another app bundle.
 
 Moving an app with live accepted work is not authorization to replace the helper. Existing owner/operation fences from [RFD0010](RFD0010-macos-daemon-lifecycle-and-recovery.md) remain in force. Original installation and service records are not discarded to make setup appear fresh. A future automatic installer must separately specify atomic signed-bundle copy, existing-destination collision, source/destination identity, privilege prompts, handoff, and rollback before being introduced.
 
@@ -125,7 +124,7 @@ A versioned setup-completion hint uses the injected frontend preferences; dispos
 
 Before awaiting a login-setting change or finishing setup, capture the current source/connection identity. Revalidate afterward; a stale ready screen cannot complete setup against a different daemon. Present failures from the shared lifecycle without clearing original tickets or changing canonical bytes. Prevent duplicate Finish actions while an operation is pending.
 
-Service enablement retains the owner-absence fence and existing platform-error semantics. An unknown setup outcome does not justify repeated unregister/register. Do not clear the existing failure latch simply on opening the view. OS approval requires user action, and a reconnect/check action only observes and negotiates.
+Service enablement retains the owner-absence fence and a private durable original request before SDK dispatch. Root identity and original bytes are revalidated before moving a confirmed registration into an immutable receipt. `requiresApproval` is successful registration awaiting consent, even if the SDK reports a launch-denied error. An unknown setup outcome does not justify repeated unregister/register. Do not clear the existing failure latch simply on opening the view. OS approval requires user action, and a reconnect/check action only observes and negotiates.
 
 ### Invariants
 
@@ -152,7 +151,7 @@ Display only bounded lifecycle/registration facts in the menu. No prompts, termi
 
 ### Validation and acceptance
 
-- Pure tests cover installation paths, all registration/connection combinations, unknown states, stale readiness, completion hints, and login preference preservation.
+- Pure and injected-platform tests cover once-only first registration, existing/revoked approval, prior completion/removal, SDK errors with and without confirmed registration, preserved opaque requests/repair tickets, owner-lock refusal, all registration/connection combinations, stale readiness, completion hints, and login preference preservation.
 - Native AppKit tests exercise one status item, menu actions, hide/reopen of the same window, activation, retained identities, and explicit quit versus window close without service calls.
 - Existing protocol/native/workbench tests continue to prove no duplicate work or altered history.
 - Actual packaged first-launch UI must show setup rather than false-empty sidebar. Testing uses owned fixtures and injected platform observations; it does not silently approve or register the user's service.
@@ -164,7 +163,7 @@ Display only bounded lifecycle/registration facts in the menu. No prompts, termi
 
 - Menu-bar residency retains frontend memory and cached terminal resources when the window is hidden; existing cache budgets still apply.
 - Activation/Dock policy and login-launch detection need real macOS acceptance beyond component checks.
-- Manual Finder installation is less seamless than a robust self-installer, but avoids a speculative destructive upgrade path.
+- First visible onboarding can initiate registration; its durable once-only fence must survive quit and ambiguous SDK results without overriding later removal or revoked consent.
 - Setup exposes real ServiceManagement failures and can prevent entering the workbench when macOS cannot launch the host.
 - A presentation hint and first-launch gate add another state boundary; they must not become daemon truth.
 
@@ -188,7 +187,7 @@ Hiding rather than quitting a frontend does not make it a suitable host. It viol
 
 ### Automatic self-install/repair
 
-Potentially smoother, but replacement of a signed running bundle and service has its own filesystem/platform ambiguity. Prefer bounded manual installation and explicit service consent first. Do not silently restart a host to finish an onboarding wizard.
+Potentially smoother, but replacement of a signed running bundle and service has its own filesystem/platform ambiguity. Use native bundled-agent registration and macOS consent, without conflating first setup with destructive installation repair. Do not silently restart a host to finish an onboarding wizard.
 
 ### Do nothing
 
@@ -210,7 +209,7 @@ The user accepted one resident app identity, a headless host, optional workbench
 ### During implementation
 
 - Exact login-item Apple Event delivery behavior and hidden-window activation on the supported macOS version.
-- OS background-item bundle resolution and stable-installation behavior for the development ad-hoc-signed artifact.
+- OS background-item bundle resolution and relocation behavior for the existing-identity-signed development artifact.
 - Accessibility and UI-test authorization for packaged activation/menu behavior.
 
 ### Out of scope
@@ -219,4 +218,4 @@ Automatic installer/updater, global background-item recovery, terminal snapshots
 
 ## Future possibilities
 
-A separately specified signed installer can automate the Finder step and a separately authorized update flow can replace an idle helper. The status menu may later route attention notifications to an existing session/window, without becoming another execution controller or implying work replay.
+A separately specified signed installer can manage app placement and a separately authorized update flow can replace an idle helper. The status menu may later route attention notifications to an existing session/window, without becoming another execution controller or implying work replay.

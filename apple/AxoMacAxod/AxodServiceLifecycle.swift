@@ -15,7 +15,7 @@ final class AxodServiceLifecycle {
             switch self {
             case .notRegistered: "The Axod background service is not enabled."
             case .enabled: "Registered with macOS."
-            case .requiresApproval: "Approve Axod in System Settings → General → Login Items & Extensions."
+            case .requiresApproval: "Allow Axo in System Settings → General → Login Items & Extensions."
             case .notFound: "macOS cannot find the registered service. Check the installed app location; no service was replaced."
             case .unavailable: "macOS service registration status is unavailable."
             }
@@ -46,6 +46,7 @@ final class AxodServiceLifecycle {
     private(set) var failureMessage: String?
     @ObservationIgnored private let platform: any AxodServicePlatform
     @ObservationIgnored private var observation = UUID()
+    @ObservationIgnored private var attemptedInitialRegistration = false
     @ObservationIgnored private let logger = Logger(subsystem: "dev.leostera.axo.mac", category: "axod-lifecycle")
 
     init(platform: any AxodServicePlatform) { self.platform = platform }
@@ -84,6 +85,16 @@ final class AxodServiceLifecycle {
         logger.error("Daemon readiness unavailable; service and work were not restarted")
     }
 
+    /// Called only by the first visible onboarding, never reconnect or login launch.
+    func registerForFirstLaunch(in root: URL) throws {
+        guard !attemptedInitialRegistration else { return }
+        attemptedInitialRegistration = true
+        observeRegistration()
+        guard registration == .notRegistered else { return }
+        guard try !AxodAgentRegistrationRequest.hasReceipt(in: root) else { return }
+        try enableAgent(in: root)
+    }
+
     /// Explicit non-destructive setup only. Hold the private root proof until
     /// immediately before registration, which may launch the agent synchronously.
     func enableAgent(in root: URL) throws {
@@ -101,15 +112,27 @@ final class AxodServiceLifecycle {
             throw Failure.liveOwner
         }
         defer { absence.release() }
-        absence.release()
-        do {
-            try platform.registerAgent()
-            logger.info("Explicit background service registration dispatched")
-        } catch {
-            failureMessage = "Background service registration could not be confirmed. Review its actual status before another setup attempt."
-            logger.error("Service registration failed; code \((error as NSError).code, privacy: .public)")
+        let request: AxodAgentRegistrationRequest
+        do { request = try AxodAgentRegistrationRequest.prepare(in: root) }
+        catch {
+            failureMessage = "An original service setup request needs review. Its evidence was preserved; registration was not repeated."
             throw error
         }
+        absence.release()
+        var sdkFailure: Error?
+        do { try platform.registerAgent() }
+        catch { sdkFailure = error }
+        observeRegistration()
+        // Apple documents requiresApproval as successful registration awaiting
+        // user consent; register() can also return a requires-approval error.
+        if registration == .enabled || registration == .requiresApproval {
+            try request.confirmRegistration()
+            logger.info("Background service registered; macOS approval and daemon readiness are separate")
+            return
+        }
+        failureMessage = "Background service registration could not be confirmed. Check its status; the original request was preserved."
+        logger.error("Service registration was not confirmed; no automatic retry")
+        throw sdkFailure ?? Failure.installation
     }
 
     /// Main-app login registration is independent from daemon supervision.

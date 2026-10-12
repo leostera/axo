@@ -9,7 +9,7 @@ struct AxodSetupView: View {
                 Label("Welcome to Axo", systemImage: "hammer")
                     .font(.largeTitle.bold())
                 VStack(alignment: .leading, spacing: 16) {
-                    ForEach(AxodSetupPolicy.steps(for: coordinator.setupStage, registration: coordinator.serviceLifecycle.registration)) { step in
+                    ForEach(AxodSetupPolicy.steps(registration: coordinator.serviceLifecycle.registration)) { step in
                         AxodSetupStep(number: step.number, title: step.title, complete: step.complete)
                     }
                 }
@@ -49,18 +49,20 @@ struct AxodSetupView: View {
 
     @ViewBuilder private var stageContent: some View {
         switch coordinator.setupStage {
-        case .installation:
-            HStack {
-                Button("Show App", action: coordinator.revealInstallationSource)
-                    .accessibilityIdentifier("Axo.Setup.ShowApp")
-                Button("Open Applications", action: coordinator.openApplicationsFolder)
-                    .accessibilityIdentifier("Axo.Setup.Applications")
-            }
         case .enableService:
-            Button("Enable Background Activity", action: coordinator.enableBackgroundService)
-                .buttonStyle(.borderedProminent)
-                .disabled(coordinator.serviceLifecycle.operation != .idle)
-                .accessibilityIdentifier("Axo.Setup.EnableService")
+            if coordinator.serviceSetupFailure != nil {
+                Label("Background service registration unavailable.", systemImage: "exclamationmark.circle")
+                    .foregroundStyle(.orange)
+                Button("Check Status") { coordinator.connect() }
+                    .accessibilityIdentifier("Axo.Setup.CheckService")
+            } else {
+                // Previously completed/removed setup requires a new user action,
+                // rather than an automatic registration on every app opening.
+                Button("Enable Background Activity", action: coordinator.enableBackgroundService)
+                    .buttonStyle(.borderedProminent)
+                    .disabled(coordinator.serviceLifecycle.operation != .idle)
+                    .accessibilityIdentifier("Axo.Setup.EnableService")
+            }
         case .approval:
             Text("Allow Axo in Login Items & Extensions.")
                 .foregroundStyle(.secondary)

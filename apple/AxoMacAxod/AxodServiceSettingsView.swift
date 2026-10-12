@@ -11,7 +11,7 @@ struct AxodServiceSettingsView: View {
                 Text("Axod owns Pi and shell processes. Quitting the frontend leaves their work running. Only macOS launches the production helper.")
                     .foregroundStyle(.secondary)
                 if lifecycle.registration == .notRegistered {
-                    Button("Enable Background Service…") { coordinator.enableBackgroundService() }
+                    Button("Enable Background Service") { coordinator.enableBackgroundService() }
                         .disabled(lifecycle.operation != .idle)
                 }
                 Button("Review macOS Background Items…") { coordinator.openLoginItemsSettings() }

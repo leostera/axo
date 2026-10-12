@@ -10,10 +10,13 @@ import Foundation
     var logoutCalls = 0
     var approvalCalls = 0
     var failAgent = false
+    var agentResult: AxodServiceLifecycle.Registration = .enabled
+    var approvalError = false
     func registerAgent() throws {
         agentCalls += 1
         if failAgent { throw NSError(domain: "fixture", code: 99) }
-        agentRegistration = .enabled
+        agentRegistration = agentResult
+        if approvalError { throw NSError(domain: "fixture", code: 100) }
     }
     func registerLogin() throws { loginCalls += 1; loginRegistration = .enabled }
     func unregisterLogin() async throws { logoutCalls += 1; loginRegistration = .notRegistered }
@@ -86,6 +89,84 @@ import Foundation
         let enabledUnavailableLogin = await lifecycle.setFrontendAtLogin(true)
         precondition(!enabledUnavailableLogin)
         precondition(lifecycle.failureMessage != nil && platform.agentCalls == 2)
-        print("PASS: registration/readiness separation, stale observation fencing, explicit ownerless setup, approval/installation refusal, no reconnect effects, and confirmed independent frontend login startup")
+        try checkFirstLaunchRegistration(in: root)
+        print("PASS: first-visible registration once, approval/error semantics, durable unknown/no replay, receipt and repair preservation, owner refusal, read-only reconnect, independent login, and stale readiness fencing")
+    }
+
+    @MainActor private static func checkFirstLaunchRegistration(in parent: URL) throws {
+        func privateRoot(_ name: String) throws -> URL {
+            let root = parent.appendingPathComponent(name, isDirectory: true)
+            try FileManager.default.createDirectory(at: root, withIntermediateDirectories: false,
+                attributes: [.posixPermissions: 0o700])
+            return root
+        }
+        let fresh = try privateRoot("fresh")
+        let platform = ServicePlatformFixture()
+        platform.agentResult = .requiresApproval
+        platform.approvalError = true
+        let lifecycle = AxodServiceLifecycle(platform: platform)
+        try lifecycle.registerForFirstLaunch(in: fresh)
+        precondition(platform.agentCalls == 1 && lifecycle.registration == .requiresApproval)
+        precondition(lifecycle.failureMessage == nil && lifecycle.availability == .unknown)
+        precondition(platform.loginCalls == 0 && platform.logoutCalls == 0, "Agent setup does not opt in frontend login")
+        precondition((try? AxodAgentRegistrationRequest.hasReceipt(in: fresh)) == true)
+        try lifecycle.registerForFirstLaunch(in: fresh)
+        precondition(platform.agentCalls == 1, "Repeated presentation is not another request")
+        platform.agentRegistration = .notRegistered
+        let reopened = AxodServiceLifecycle(platform: platform)
+        try reopened.registerForFirstLaunch(in: fresh)
+        precondition(platform.agentCalls == 1, "A recorded registration later removed by the user is not silently restored")
+
+        let unknown = try privateRoot("unknown")
+        let failurePlatform = ServicePlatformFixture()
+        failurePlatform.failAgent = true
+        let failureLifecycle = AxodServiceLifecycle(platform: failurePlatform)
+        do { try failureLifecycle.registerForFirstLaunch(in: unknown); preconditionFailure("SDK failure required") }
+        catch { }
+        let pending = unknown.appendingPathComponent("agent-registration.pending.json")
+        let original = try Data(contentsOf: pending)
+        let nextLaunch = AxodServiceLifecycle(platform: failurePlatform)
+        do { try nextLaunch.registerForFirstLaunch(in: unknown); preconditionFailure("Original pending request must block redispatch") }
+        catch AxodAgentRegistrationRequest.Failure.unresolved { }
+        precondition(failurePlatform.agentCalls == 1)
+        precondition((try? Data(contentsOf: pending)) == original)
+        var metadata = stat()
+        precondition(lstat(pending.path, &metadata) == 0 && metadata.st_mode & 0o777 == 0o600 && metadata.st_nlink == 1)
+
+        for name in ["agent-service-repair.pending.json", "agent-parent-repair.pending.json", "agent-registration.pending.json"] {
+            let blocked = try privateRoot("\(name)-fixture")
+            let evidence = blocked.appendingPathComponent(name)
+            let opaque = Data("opaque-original".utf8)
+            try opaque.write(to: evidence)
+            let refused = ServicePlatformFixture()
+            do { try AxodServiceLifecycle(platform: refused).registerForFirstLaunch(in: blocked); preconditionFailure("Opaque original must remain") }
+            catch AxodAgentRegistrationRequest.Failure.unresolved { }
+            precondition(refused.agentCalls == 0 && (try? Data(contentsOf: evidence)) == opaque)
+        }
+
+        let busy = try privateRoot("busy")
+        let owner = try AxodOwnerAbsenceLease.acquire(in: busy)!
+        defer { owner.release() }
+        let competing = ServicePlatformFixture()
+        do { try AxodServiceLifecycle(platform: competing).registerForFirstLaunch(in: busy); preconditionFailure("Live owner refusal required") }
+        catch AxodServiceLifecycle.Failure.liveOwner { }
+        precondition(competing.agentCalls == 0)
+        precondition(!FileManager.default.fileExists(atPath: busy.appendingPathComponent("agent-registration.pending.json").path))
+
+        for status in [AxodServiceLifecycle.Registration.enabled, .requiresApproval, .notFound, .unavailable] {
+            let registered = ServicePlatformFixture()
+            registered.agentRegistration = status
+            try AxodServiceLifecycle(platform: registered).registerForFirstLaunch(in: parent)
+            precondition(registered.agentCalls == 0, "Existing registration/approval is observation only")
+        }
+
+        let tampered = try privateRoot("tampered")
+        let request = try AxodAgentRegistrationRequest.prepare(in: tampered)
+        let changed = tampered.appendingPathComponent("agent-registration.pending.json")
+        let opaque = Data("changed".utf8)
+        try opaque.write(to: changed)
+        do { try request.confirmRegistration(); preconditionFailure("Changed original cannot become a receipt") }
+        catch AxodAgentRegistrationRequest.Failure.unsafeStorage { }
+        precondition((try? Data(contentsOf: changed)) == opaque)
     }
 }

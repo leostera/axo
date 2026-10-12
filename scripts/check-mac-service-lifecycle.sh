@@ -9,6 +9,7 @@ trap 'rm -rf "$SCRATCH"' EXIT
 # effects are fixture counters; these checks never register or stop a real service.
 env -u LIBRARY_PATH xcrun swiftc -swift-version 5 -parse-as-library \
   -I "$PRODUCTS" "$PRODUCTS/AxoProtocol.o" \
+  "$ROOT/apple/AxoMacAxod/AxodAgentRegistrationRequest.swift" \
   "$ROOT/apple/AxoMacAxod/AxodOwnerAbsenceLease.swift" \
   "$ROOT/apple/AxoMacAxod/AxodServiceLifecycle.swift" \
   "$ROOT/apple/AxoMacTests/ServiceLifecycleChecks.swift" \

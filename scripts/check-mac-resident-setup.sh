@@ -9,6 +9,7 @@ trap 'rm -rf "$SCRATCH"' EXIT
 # Never invokes real service registration, another frontend, or synthetic OS input.
 env -u LIBRARY_PATH xcrun swiftc -swift-version 5 -parse-as-library -D AXO_RESIDENT_FIXTURE \
   -I "$PRODUCTS" "$PRODUCTS/AxoProtocol.o" \
+  "$ROOT/apple/AxoMacAxod/AxodAgentRegistrationRequest.swift" \
   "$ROOT/apple/AxoMacAxod/AxodOwnerAbsenceLease.swift" \
   "$ROOT/apple/AxoMacAxod/AxodServiceLifecycle.swift" \
   "$ROOT/apple/AxoMacAxod/AxodSetupPolicy.swift" \

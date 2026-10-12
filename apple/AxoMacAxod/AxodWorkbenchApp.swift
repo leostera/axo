@@ -185,6 +185,14 @@ final class AxodWorkbenchApp: NSObject, NSApplicationDelegate, NSWindowDelegate,
 
     @objc private func showWorkbench(_ sender: Any?) {
         if let window { AxodResidentPresentation.show(window) }
+        // First visible onboarding asks macOS to register the bundled LaunchAgent.
+        // Login-only residency and subsequent reconnects never dispatch setup.
+        if coordinator?.beginFirstLaunchSetup() == true { coordinator?.connect() }
+    }
+
+    func applicationDidBecomeActive(_ notification: Notification) {
+        // Returning from macOS approval observes readiness; it cannot register again.
+        coordinator?.refreshSetupAfterActivation()
     }
 
     @objc private func windowPresentationChanged(_ notification: Notification) {

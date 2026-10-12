@@ -5,35 +5,25 @@ import Foundation
 
 @main struct ResidentSetupChecks {
     @MainActor static func main() throws {
-        let home = URL(fileURLWithPath: "/Users/owned-fixture", isDirectory: true)
-        precondition(AxodSetupPolicy.isInstalled(bundle: URL(fileURLWithPath: "/Applications/Axo.app"), home: home))
-        precondition(AxodSetupPolicy.isInstalled(bundle: home.appendingPathComponent("Applications/Axo.app"), home: home))
-        for path in ["/Applications-other/Axo.app", "/Applications/Axo.txt", "/tmp/AppTranslocation/Applications/Axo.app", "/Users/owned-fixture/Applications-other/Axo.app", "/tmp/dist/Axo.app"] {
-            precondition(!AxodSetupPolicy.isInstalled(bundle: URL(fileURLWithPath: path), home: home))
-        }
         let target = MachineTarget(machineId: UUID(), hostGeneration: UUID())
         let other = MachineTarget(machineId: target.machineId, hostGeneration: UUID())
-        precondition(AxodSetupPolicy.stage(installed: false, registration: .enabled, availability: .ready(target), connection: .loaded(target)) == .installation)
-        precondition(AxodSetupPolicy.stage(installed: true, registration: .notRegistered, availability: .unknown, connection: .unavailable) == .enableService)
-        precondition(AxodSetupPolicy.stage(installed: true, registration: .requiresApproval, availability: .unknown, connection: .checking) == .approval)
-        precondition(AxodSetupPolicy.stage(installed: true, registration: .enabled, availability: .unknown, connection: .unavailable) == .unavailable)
-        precondition(AxodSetupPolicy.stage(installed: true, registration: .enabled, availability: .ready(target), connection: .checking) == .checking)
-        precondition(AxodSetupPolicy.stage(installed: true, registration: .enabled, availability: .ready(other), connection: .loaded(target)) == .unavailable)
-        precondition(AxodSetupPolicy.stage(installed: true, registration: .enabled, availability: .ready(target), connection: .loaded(target)) == .ready(target))
+        precondition(AxodSetupPolicy.stage(registration: .notRegistered, availability: .unknown, connection: .unavailable) == .enableService)
+        precondition(AxodSetupPolicy.stage(registration: .requiresApproval, availability: .unknown, connection: .checking) == .approval)
+        precondition(AxodSetupPolicy.stage(registration: .enabled, availability: .unknown, connection: .unavailable) == .unavailable)
+        precondition(AxodSetupPolicy.stage(registration: .enabled, availability: .ready(target), connection: .checking) == .checking)
+        precondition(AxodSetupPolicy.stage(registration: .enabled, availability: .ready(other), connection: .loaded(target)) == .unavailable)
+        precondition(AxodSetupPolicy.stage(registration: .enabled, availability: .ready(target), connection: .loaded(target)) == .ready(target))
         for registration in [AxodServiceLifecycle.Registration.notFound, .unavailable] {
-            precondition(AxodSetupPolicy.stage(installed: true, registration: registration, availability: .ready(target), connection: .loaded(target)) == .unavailable)
+            precondition(AxodSetupPolicy.stage(registration: registration, availability: .ready(target), connection: .loaded(target)) == .unavailable)
         }
 
-        for stage in [AxodSetupPolicy.Stage.installation, .enableService, .approval, .checking, .unavailable, .ready(target)] {
-            let steps = AxodSetupPolicy.steps(for: stage, registration: .enabled)
+        for registration in [AxodServiceLifecycle.Registration.notRegistered, .requiresApproval, .notFound, .unavailable, .enabled] {
+            let steps = AxodSetupPolicy.steps(registration: registration)
             precondition(steps.map(\.number) == [1, 2, 3], "Setup is exactly three stable steps")
-            precondition(steps.map(\.title) == ["Install in Applications", "Allow background activity", "Open Axo"])
-            precondition(steps[0].complete == (stage != .installation))
-            precondition(steps[1].complete == (stage != .installation), "Confirmed permission is separate from daemon readiness")
+            precondition(steps.map(\.title) == ["Register background service", "Allow background activity", "Open Axo"])
+            precondition(steps[0].complete == (registration == .enabled || registration == .requiresApproval))
+            precondition(steps[1].complete == (registration == .enabled), "Confirmed permission is separate from daemon readiness")
             precondition(!steps[2].complete, "Only Finish opens the workbench")
-        }
-        for registration in [AxodServiceLifecycle.Registration.notRegistered, .requiresApproval, .notFound, .unavailable] {
-            precondition(!AxodSetupPolicy.steps(for: .unavailable, registration: registration)[1].complete)
         }
         precondition(!AxodServiceLifecycle.Registration.enabled.message.contains("eligible"))
 
@@ -107,6 +97,6 @@ import Foundation
         menu.fixtureMenu.performActionForItem(at: 4)
         precondition(settingsCalls == 1 && serviceCalls == 1)
         precondition(menu.fixtureMenu.item(at: 6)?.action == #selector(NSApplication.terminate(_:)))
-        print("PASS: setup installation/registration/readiness/epoch gates, preserved opaque/future hints, independent login choice, native status menu, retained hide/reopen and other-window activation; component checks, not installed service/login/authorized UI acceptance")
+        print("PASS: three-step native registration/approval/readiness/epoch gates, preserved opaque/future hints, independent login choice, native status menu, retained hide/reopen and other-window activation; component checks, not installed service/login/authorized UI acceptance")
     }
 }

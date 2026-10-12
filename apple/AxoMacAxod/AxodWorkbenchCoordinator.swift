@@ -46,14 +46,12 @@ final class AxodWorkbenchCoordinator {
     let setupPresentation: AxodSetupPresentation
     var showsSetup: Bool { !usesFixtureDaemon && !setupPresentation.enteredWorkbench }
     var setupStage: AxodSetupPolicy.Stage {
-        let installed = AxodSetupPolicy.isInstalled(bundle: Bundle.main.bundleURL,
-            home: URL(fileURLWithPath: NSHomeDirectory(), isDirectory: true))
         let fact: AxodSetupPolicy.Connection
         if connectTask != nil || connectionState == .starting { fact = .checking }
         else if connectionState == .connected, let endpoint {
             fact = .loaded(MachineTarget(machineId: endpoint.machineId, hostGeneration: endpoint.hostGeneration))
         } else { fact = .unavailable }
-        return AxodSetupPolicy.stage(installed: installed, registration: serviceLifecycle.registration,
+        return AxodSetupPolicy.stage(registration: serviceLifecycle.registration,
             availability: serviceLifecycle.availability, connection: fact)
     }
     var setupLoginStartup: Bool {
@@ -181,28 +179,38 @@ final class AxodWorkbenchCoordinator {
         }
     }
 
+    @discardableResult func beginFirstLaunchSetup() -> Bool {
+        guard !usesFixtureDaemon, !setupPresentation.enteredWorkbench,
+              preferences.object(forKey: AxodSetupPresentation.completionKey) == nil else { return false }
+        serviceLifecycle.observeRegistration()
+        guard serviceLifecycle.registration == .notRegistered else { return false }
+        guard !Bundle.main.bundleURL.pathComponents.contains("AppTranslocation") else {
+            serviceSetupFailure = "Move Axo to a permanent location and reopen it before registering its background service."
+            return false
+        }
+        do {
+            let directory = try AxodStateDirectory.prepare()
+            try serviceLifecycle.registerForFirstLaunch(in: directory.root)
+            return serviceLifecycle.registration == .enabled
+        } catch {
+            serviceSetupFailure = serviceLifecycle.failureMessage ?? error.localizedDescription
+            return false
+        }
+    }
+
+    func refreshSetupAfterActivation() {
+        guard showsSetup, connectTask == nil, serviceLifecycle.operation == .idle else { return }
+        serviceLifecycle.observeRegistration()
+        if serviceLifecycle.registration == .enabled, connectionState != .connected { connect() }
+    }
+
     func enableBackgroundService() {
-        let alert = NSAlert()
-        alert.messageText = "Enable the Axod background service?"
-        alert.informativeText = "macOS will run Axod for your user so work can continue after you quit Axo. This does not enable opening the frontend at login, replace a running helper, or restart existing sessions."
-        alert.addButton(withTitle: "Enable Background Service")
-        alert.addButton(withTitle: "Cancel")
-        guard alert.runModal() == .alertFirstButtonReturn else { return }
         serviceSetupFailure = nil
         do {
             let directory = try AxodStateDirectory.prepare()
             try serviceLifecycle.enableAgent(in: directory.root)
             connect()
         } catch { serviceSetupFailure = error.localizedDescription }
-    }
-
-    func revealInstallationSource() { NSWorkspace.shared.activateFileViewerSelecting([Bundle.main.bundleURL]) }
-
-    func openApplicationsFolder() {
-        let folder = URL(fileURLWithPath: NSHomeDirectory(), isDirectory: true).appendingPathComponent("Applications", isDirectory: true)
-        // Finder guidance, not an installer: never create/replace an application
-        // or transfer service ownership on behalf of a view callback.
-        NSWorkspace.shared.selectFile(nil, inFileViewerRootedAtPath: FileManager.default.fileExists(atPath: folder.path) ? folder.path : "/Applications")
     }
 
     func finishSetup() async {
