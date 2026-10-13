@@ -62,15 +62,20 @@ import SwiftUI
         coordinator.selectSession(sessionOriginal.graph.session.sessionId)
         precondition(coordinator.selectedWorkspaceID == original.graph.workspace.workspaceId && coordinator.selectedSessionID == sessionOriginal.graph.session.sessionId)
         try await refreshUntilNotAdmitted(coordinator)
-        precondition(coordinator.selectedPiObservation == .notAdmitted && coordinator.selectedPiHistory == nil && !coordinator.selectedPiReadUnavailable,
+        precondition(coordinator.selectedPiObservation == .notAdmitted && coordinator.selectedPiHistory == nil &&
+                     coordinator.selectedPiResponse?.payload == .piObservation(.notAdmitted) && !coordinator.selectedPiReadUnavailable,
             "A desired Pi pane without a committed admission is reported as not admitted, never as a fresh or empty conversation")
+        precondition((try? coordinator.selectedPiEditingCapture()) == nil,
+            "Input editing is unavailable until Axod publishes an admitted binding")
         coordinator.selectWorkspace(original.graph.workspace.workspaceId)
-        precondition(coordinator.selectedSessionID == original.graph.initialSession.session.sessionId)
+        precondition(coordinator.selectedSession?.workspaceId == original.graph.workspace.workspaceId,
+            "Selecting a workspace retains a session within that workspace, independent of page ordering")
         try checkNativeOutline(coordinator, source: bootstrap.source)
         precondition(preferences.data(forKey: retired) == opaque, "Retired selection preference bytes are neither imported nor changed")
         let captured = coordinator.runtimes.map(\.runtime)
         coordinator.disconnect()
-        precondition(coordinator.selectedPiObservation == nil && coordinator.selectedPiHistory == nil, "Disconnect fences central Pi presentation state")
+        precondition(coordinator.selectedPiObservation == nil && coordinator.selectedPiResponse == nil && coordinator.selectedPiHistory == nil,
+            "Disconnect fences central Pi presentation state")
         precondition(process.isRunning, "Client disconnect is not lifecycle intent")
         let catalog = try await CentralCatalogLoader.load(source: bootstrap.source) { request in try await call(request, peer) }
         precondition(catalog.terminals.count == captured.count && catalog.terminals.allSatisfy { captured.contains($0.runtime) })

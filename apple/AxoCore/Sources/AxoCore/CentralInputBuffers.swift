@@ -61,7 +61,9 @@ public enum CentralControlChoice: Equatable, Sendable {
     private var rejectedEdits: Set<CentralEditingTarget> = []
     public init() {}
     public func text(for target: CentralEditingTarget) -> String { entries[target]?.text ?? "" }
-    public var pendingTickets: [CentralInputTicket] { submissions.values.map(\.ticket) }
+    public var pendingTickets: [CentralInputTicket] {
+        submissions.values.map(\.ticket).sorted { $0.command.commandId.uuidString < $1.command.commandId.uuidString }
+    }
     public func hasPending(for target: CentralEditingTarget) -> Bool {
         submissions.values.contains { CentralEditingTarget($0.ticket.command.target) == target }
     }
@@ -169,19 +171,48 @@ public enum CentralControlChoice: Equatable, Sendable {
     }
     @discardableResult public func acknowledgeSubmission(_ ticket: CentralInputTicket, result: JSONValue) throws -> CentralInputResolution {
         guard try require(ticket).phase == .awaitingOriginal else { throw CentralInputIssue.invalidCapture }
-        return try acknowledge(ticket, response: CentralRequest.submitPi(ticket.command).parseResult(result))
+        return try acknowledgeSubmission(ticket, response: CentralRequest.submitPi(ticket.command).parseResult(result))
+    }
+    @discardableResult public func acknowledgeSubmission(_ ticket: CentralInputTicket, response: CentralResponse) throws -> CentralInputResolution {
+        guard try require(ticket).phase == .awaitingOriginal, response.source == ticket.command.target.source else { throw CentralInputIssue.invalidCapture }
+        return try acknowledge(ticket, response: response)
     }
     @discardableResult public func acknowledgeReconciliation(_ ticket: CentralInputTicket, source: CentralSource, result: JSONValue) throws -> CentralInputResolution {
         let request = try reconciliation(ticket, source: source)
-        return try acknowledge(ticket, response: request.parseResult(result))
+        return try acknowledgeReconciliation(ticket, source: source, response: request.parseResult(result))
+    }
+    @discardableResult public func acknowledgeReconciliation(_ ticket: CentralInputTicket, source: CentralSource, response: CentralResponse) throws -> CentralInputResolution {
+        let request = try reconciliation(ticket, source: source)
+        guard response.source == request.source else { throw CentralInputIssue.invalidCapture }
+        return try acknowledge(ticket, response: response)
     }
     private func require(_ ticket: CentralInputTicket) throws -> Pending {
         guard ticket.owner == owner, let pending = submissions[ticket.command.commandId], pending.ticket == ticket else { throw CentralInputIssue.invalidCapture }
         return pending
     }
     private func acknowledge(_ ticket: CentralInputTicket, response: CentralResponse) throws -> CentralInputResolution {
-        let pending = try require(ticket)
         guard case .piCommand(let original) = response.payload else { throw CentralInputIssue.invalidCapture }
+        if let original {
+            let capture = ticket.command
+            guard original.target == capture.target, original.commandId == capture.commandId,
+                  original.expectedRevision == capture.expectedRevision,
+                  original.action == actionDescriptor(capture.action),
+                  original.acceptedRevision.rawValue == capture.expectedRevision.rawValue + 1,
+                  original.acceptedRevision <= response.revision else { throw CentralInputIssue.invalidCapture }
+        }
+        return try acknowledge(ticket, original: original)
+    }
+    private func actionDescriptor(_ action: CentralPiAction) -> CentralPiActionDescriptor {
+        switch action {
+        case .send: .send
+        case .steer(let interactionId, _): .steer(interactionId: interactionId)
+        case .cancel(let interactionId): .cancel(interactionId: interactionId)
+        case .answer(let interactionId, let questionId, let optionId):
+            .answer(interactionId: interactionId, questionId: questionId, optionId: optionId)
+        }
+    }
+    private func acknowledge(_ ticket: CentralInputTicket, original: CentralPiOriginal?) throws -> CentralInputResolution {
+        let pending = try require(ticket)
         guard let original else { return .missing }
         switch original.disposition {
         case .unconfirmed: return .unconfirmed

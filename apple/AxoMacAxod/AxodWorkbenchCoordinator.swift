@@ -25,6 +25,7 @@ import UserNotifications
     private(set) var selectedWorkspaceID: UUID?
     private(set) var selectedSessionID: UUID?
     private(set) var selectedPiObservation: CentralPiObservation?
+    private(set) var selectedPiResponse: CentralResponse?
     private(set) var selectedPiState: CentralPiLiveState?
     private(set) var selectedPiHistory: CentralPiHistoryPage?
     private(set) var selectedPiReadUnavailable = false
@@ -56,6 +57,8 @@ import UserNotifications
     private var refreshGeneration = UUID()
     private var catalogLoadGeneration = UUID()
     private var reconcilingCreation: UUID?
+    @ObservationIgnored private var reconcilingPiInputs = Set<UUID>()
+    @ObservationIgnored private var nextPiInputReconciliation: UUID?
     private var creationRevisionFloor: (source: CentralSource, revision: CentralRevision)?
     private var serviceObservation: UUID?
     private var usesFixtureDaemon = false
@@ -324,6 +327,7 @@ import UserNotifications
                     try self.requireCurrent(captured, peer: peer, endpoint: endpoint)
                     self.hostStatus = try AxoProtocolResultValidator.host(value, target: source.machine)
                     await self.refreshSelectedPi()
+                    await self.reconcilePendingPiInputs()
                 } catch {
                     guard self.operation == captured, self.connection === peer else { return }
                     // A failed bounded read never publishes a partial catalog or
@@ -470,6 +474,7 @@ import UserNotifications
             guard piReadIsCurrent(generation, sessionID: sessionID, source: source, revision: catalogRevision, operation: capturedOperation, peer: peer) else { return }
             guard case .piObservation(let observation) = observed.payload else { throw AxodWorkbenchError.protocolMismatch }
             selectedPiObservation = observation
+            selectedPiResponse = observed
             selectedPiReadUnavailable = false
             switch observation {
             case .notAdmitted:
@@ -514,10 +519,131 @@ import UserNotifications
     private func clearSelectedPi() {
         piReadGeneration = UUID()
         selectedPiObservation = nil
+        selectedPiResponse = nil
         selectedPiState = nil
         selectedPiHistory = nil
         selectedPiReadUnavailable = false
         selectedPiTarget = nil
+    }
+    func selectedPiEditingCapture() throws -> CentralEditCapture {
+        guard let response = selectedPiResponse, !selectedPiReadUnavailable,
+              case .piObservation(.live(let target, _)) = response.payload,
+              selectedSessionID == target.sessionId, catalog?.source == target.source else {
+            throw CentralInputIssue.unavailable
+        }
+        return try inputBuffers.editingCapture(for: CentralEditingTarget(target))
+    }
+    func editSelectedPiInput(_ text: String) throws {
+        guard let response = selectedPiResponse, !selectedPiReadUnavailable,
+              case .piObservation(.live(let target, _)) = response.payload,
+              selectedSessionID == target.sessionId, catalog?.source == target.source else {
+            throw CentralInputIssue.unavailable
+        }
+        try inputBuffers.edit(text, in: CentralEditingTarget(target))
+    }
+    @discardableResult func applyPiInput(_ text: String, matching capture: CentralEditCapture) throws -> Bool {
+        try inputBuffers.apply(text, matching: capture)
+    }
+    func submitSelectedPiInput() {
+        guard let response = selectedPiResponse, !selectedPiReadUnavailable,
+              case .piObservation(.live(let target, _)) = response.payload,
+              selectedSessionID == target.sessionId, catalog?.source == target.source else {
+            message = "Pi input is unavailable until the selected central binding is observed."
+            return
+        }
+        do { dispatchPiInput(try inputBuffers.captureText(from: response)) }
+        catch { message = "Pi input could not be captured for the current interaction." }
+    }
+    func cancelSelectedPiInteraction() { submitSelectedPiControl(.cancel) }
+    func answerSelectedPiQuestion(optionId: UUID) { submitSelectedPiControl(.answer(optionId: optionId)) }
+    private func submitSelectedPiControl(_ choice: CentralControlChoice) {
+        guard let response = selectedPiResponse, !selectedPiReadUnavailable else { return }
+        do { dispatchPiInput(try inputBuffers.captureControl(choice, from: response)) }
+        catch { message = "That Pi control is no longer available for the observed interaction." }
+    }
+    private func dispatchPiInput(_ ticket: CentralInputTicket) {
+        guard let peer = connection, let endpoint else {
+            do { try inputBuffers.abandonBeforeSubmission(ticket) }
+            catch { message = "Pi input could not be released before submission."; return }
+            message = "Pi input was not sent because the central connection is unavailable."
+            return
+        }
+        let request: CentralRequest
+        do { request = try inputBuffers.beginSubmission(ticket) }
+        catch {
+            do { try inputBuffers.abandonBeforeSubmission(ticket) }
+            catch { message = "The Pi input reservation remains fenced and was not submitted."; return }
+            message = "The captured Pi command could not be submitted. No replacement command was sent."
+            return
+        }
+        let captured = operation
+        Task { [weak self] in
+            guard let self else { return }
+            do {
+                let response = try await self.perform(request, peer: peer, endpoint: endpoint, operation: captured)
+                let result = try self.inputBuffers.acknowledgeSubmission(ticket, response: response)
+                await self.finishPiInput(ticket, result: result, peer: peer, endpoint: endpoint, operation: captured)
+            } catch {
+                await self.reconcilePiInput(ticket, peer: peer, endpoint: endpoint, operation: captured)
+            }
+        }
+    }
+    private func finishPiInput(
+        _ ticket: CentralInputTicket, result: CentralInputResolution,
+        peer: AxoJSONRPCWebSocketConnection, endpoint: LocalDaemonEndpoint, operation captured: UUID
+    ) async {
+        guard captured == operation, connection === peer else { return }
+        switch result {
+        case .dispatched:
+            message = "Pi acknowledged the submitted command; execution is still observed separately."
+            await refreshSelectedPi()
+        case .rejected:
+            message = "Pi rejected the submitted command. Editing remains available for a new explicit submission."
+            await refreshSelectedPi()
+        case .missing, .unconfirmed, .outcomeUnknown:
+            await reconcilePiInput(ticket, peer: peer, endpoint: endpoint, operation: captured)
+        }
+    }
+    private func reconcilePendingPiInputs() async {
+        guard let peer = connection, let endpoint, catalog != nil else { return }
+        let captured = operation
+        let tickets = inputBuffers.pendingTickets
+        guard !tickets.isEmpty else { return }
+        let index = nextPiInputReconciliation.flatMap { last in
+            tickets.firstIndex { $0.command.commandId == last }.map { ($0 + 1) % tickets.count }
+        } ?? 0
+        let ticket = tickets[index]
+        nextPiInputReconciliation = ticket.command.commandId
+        await reconcilePiInput(ticket, peer: peer, endpoint: endpoint, operation: captured)
+    }
+    private func reconcilePiInput(
+        _ ticket: CentralInputTicket, peer: AxoJSONRPCWebSocketConnection,
+        endpoint: LocalDaemonEndpoint, operation captured: UUID
+    ) async {
+        let commandId = ticket.command.commandId
+        guard reconcilingPiInputs.insert(commandId).inserted else { return }
+        defer { reconcilingPiInputs.remove(commandId) }
+        guard captured == operation, connection === peer, let source = catalog?.source else { return }
+        do {
+            let request = try inputBuffers.reconciliation(ticket, source: source)
+            let response = try await perform(request, peer: peer, endpoint: endpoint, operation: captured)
+            guard captured == operation, connection === peer, catalog?.source == source else { return }
+            let result = try inputBuffers.acknowledgeReconciliation(ticket, source: source, response: response)
+            switch result {
+            case .dispatched:
+                message = "The original Pi command was acknowledged; execution is still observed separately."
+                await refreshSelectedPi()
+            case .rejected:
+                message = "The original Pi command was rejected. No replacement command was sent."
+                await refreshSelectedPi()
+            case .missing, .unconfirmed, .outcomeUnknown:
+                message = "The Pi command outcome remains unresolved. No replacement command was sent."
+            }
+        } catch {
+            guard captured == operation, connection === peer, catalog?.source == source else { return }
+            // The original capture stays fenced. Lookup failure is never permission to resend.
+            message = "The Pi command outcome remains unresolved. No replacement command was sent."
+        }
     }
     var selectedSessionView: CentralSessionView? { catalog?.sessions.first { $0.session.sessionId == selectedSessionID } }
     func sessionView(_ id: UUID) -> CentralSessionView? { catalog?.sessions.first { $0.session.sessionId == id } }

@@ -50,7 +50,9 @@ import XCTest
         XCTAssertThrowsError(try input.abandonBeforeSubmission(ticket))
         XCTAssertEqual(try input.acknowledgeSubmission(ticket, result: result(ticket, disposition: ["kind": "unconfirmed"])), .unconfirmed)
         XCTAssertThrowsError(try input.captureText(from: observed))
-        XCTAssertEqual(try input.acknowledgeSubmission(ticket, result: result(ticket, disposition: ["kind": "dispatched"])), .dispatched(clearedEditing: true))
+        let dispatched = try CentralRequest.submitPi(ticket.command).parseResult(
+            result(ticket, disposition: ["kind": "dispatched"]))
+        XCTAssertEqual(try input.acknowledgeSubmission(ticket, response: dispatched), .dispatched(clearedEditing: true))
         XCTAssertEqual(input.text(for: key), "")
         XCTAssertFalse(try input.apply("Late transcript", matching: delayed))
         XCTAssertThrowsError(try input.beginSubmission(ticket))
@@ -94,7 +96,23 @@ import XCTest
         XCTAssertNotEqual(try self.key(reset), key)
         XCTAssertEqual(input.text(for: try self.key(reset)), "")
         XCTAssertThrowsError(try input.reconciliation(ticket, source: reset.source))
-        XCTAssertEqual(try input.acknowledgeReconciliation(ticket, source: next.source, result: result(ticket, disposition: ["kind": "dispatched"], header: next.source)), .dispatched(clearedEditing: true))
+        let reconciled = try lookup.parseResult(result(ticket, disposition: ["kind": "dispatched"], header: next.source))
+        XCTAssertEqual(try input.acknowledgeReconciliation(ticket, source: next.source, response: reconciled), .dispatched(clearedEditing: true))
+    }
+    func testTypedAcknowledgementCannotReleaseAnotherCaptureWithTheSameBinding() async throws {
+        let observation = try observed(), key = try key(observation)
+        let first = CentralInputBuffers(), second = CentralInputBuffers()
+        try first.edit("first original", in: key)
+        try second.edit("second original", in: key)
+        let firstTicket = try first.captureText(from: observation)
+        let secondTicket = try second.captureText(from: observation)
+        _ = try first.beginSubmission(firstTicket)
+        _ = try second.beginSubmission(secondTicket)
+        let response = try CentralRequest.submitPi(secondTicket.command).parseResult(
+            result(secondTicket, disposition: ["kind": "dispatched"]))
+        XCTAssertThrowsError(try first.acknowledgeSubmission(firstTicket, response: response))
+        XCTAssertTrue(first.hasPending(for: key))
+        XCTAssertEqual(first.text(for: key), "first original")
     }
     func testRejectionPreservesTextAndAllowsOnlyANewExplicitCapture() async throws {
         let observed = try observed(), key = try key(observed), input = CentralInputBuffers()
