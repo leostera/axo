@@ -24,6 +24,12 @@ import UserNotifications
     var machineID: UUID? { catalog?.source.machine.machineId }
     private(set) var selectedWorkspaceID: UUID?
     private(set) var selectedSessionID: UUID?
+    private(set) var selectedPiObservation: CentralPiObservation?
+    private(set) var selectedPiState: CentralPiLiveState?
+    private(set) var selectedPiHistory: CentralPiHistoryPage?
+    private(set) var selectedPiReadUnavailable = false
+    @ObservationIgnored private var selectedPiTarget: CentralPiBindingTarget?
+    @ObservationIgnored private var piReadGeneration = UUID()
     var selectedSession: CentralSession? { sessions.first { $0.sessionId == selectedSessionID } }
     private(set) var hostStatus: HostStatusResult?
     private(set) var helperUpdateAvailable = false
@@ -173,6 +179,7 @@ import UserNotifications
         connection = nil
         endpoint = nil
         catalog = nil
+        clearSelectedPi()
         hostStatus = nil
         observationTask?.cancel()
         connectionState = .starting
@@ -284,7 +291,9 @@ import UserNotifications
         }
         let previous = catalog
         if let previous, previous.source == loaded.source, loaded.revision < previous.revision { return }
+        if previous?.source != loaded.source || previous?.revision != loaded.revision { clearSelectedPi() }
         catalog = loaded
+        let previousSelection = selectedSessionID
         if restoringSelection,
            preferences.string(forKey: PreferenceKey.machine) == loaded.source.machine.machineId.uuidString,
            preferences.string(forKey: PreferenceKey.store) == loaded.source.storeGeneration.uuidString {
@@ -296,6 +305,7 @@ import UserNotifications
             if !workspaces.contains(where: { $0.workspaceId == selectedWorkspaceID }) { selectedWorkspaceID = workspaces.first?.workspaceId }
             selectedSessionID = sessions.first(where: { $0.workspaceId == selectedWorkspaceID })?.sessionId
         }
+        if previousSelection != selectedSessionID { clearSelectedPi() }
         if let view = selectedSessionView { paneLayouts.observe(view, source: loaded.source) }
         saveSelection()
     }
@@ -313,6 +323,7 @@ import UserNotifications
                     let value = try await peer.request(method: AxoProtocol.Method.getHost, parameters: HostGetParameters(target: source.machine))
                     try self.requireCurrent(captured, peer: peer, endpoint: endpoint)
                     self.hostStatus = try AxoProtocolResultValidator.host(value, target: source.machine)
+                    await self.refreshSelectedPi()
                 } catch {
                     guard self.operation == captured, self.connection === peer else { return }
                     // A failed bounded read never publishes a partial catalog or
@@ -433,15 +444,80 @@ import UserNotifications
     }
     func selectWorkspace(_ id: UUID?) {
         guard id == nil || workspaces.contains(where: { $0.workspaceId == id }) else { return }
-        selectedWorkspaceID = id; selectedSessionID = sessions.first(where: { $0.workspaceId == id })?.sessionId
+        let nextSessionID = sessions.first(where: { $0.workspaceId == id })?.sessionId
+        if selectedSessionID != nextSessionID { clearSelectedPi() }
+        selectedWorkspaceID = id; selectedSessionID = nextSessionID
         if let view = selectedSessionView, let source = catalog?.source { paneLayouts.observe(view, source: source) }
         saveSelection()
     }
     func selectSession(_ id: UUID) {
         guard let session = sessions.first(where: { $0.sessionId == id }) else { return }
+        if selectedSessionID != id { clearSelectedPi() }
         selectedSessionID = id; selectedWorkspaceID = session.workspaceId
         if let view = selectedSessionView, let source = catalog?.source { paneLayouts.observe(view, source: source) }
         saveSelection()
+    }
+    func refreshSelectedPi() async {
+        guard let session = selectedSession, let source = catalog?.source, let catalogRevision = catalog?.revision,
+              let peer = connection, let endpoint else { return }
+        let sessionID = session.sessionId
+        let capturedOperation = operation
+        let generation = UUID()
+        piReadGeneration = generation
+        do {
+            let request = try CentralRequest.observePi(source: source, workspaceId: session.workspaceId, sessionId: sessionID)
+            let observed = try await perform(request, peer: peer, endpoint: endpoint, operation: capturedOperation)
+            guard piReadIsCurrent(generation, sessionID: sessionID, source: source, revision: catalogRevision, operation: capturedOperation, peer: peer) else { return }
+            guard case .piObservation(let observation) = observed.payload else { throw AxodWorkbenchError.protocolMismatch }
+            selectedPiObservation = observation
+            selectedPiReadUnavailable = false
+            switch observation {
+            case .notAdmitted:
+                selectedPiTarget = nil
+                selectedPiState = nil
+                selectedPiHistory = nil
+            case .stopped(let target):
+                selectedPiState = nil
+                if selectedPiTarget != target || selectedPiHistory == nil {
+                    selectedPiTarget = target
+                    let request = try CentralRequest.piHistory(target: target, readMode: .stopped, collection: .branch)
+                    let history = try await perform(request, peer: peer, endpoint: endpoint, operation: capturedOperation)
+                    guard piReadIsCurrent(generation, sessionID: sessionID, source: source, revision: catalogRevision, operation: capturedOperation, peer: peer),
+                          case .piHistory(let page) = history.payload else { return }
+                    selectedPiHistory = page
+                }
+            case .live(let target, _):
+                if selectedPiTarget != target {
+                    selectedPiTarget = target
+                    selectedPiState = nil
+                    selectedPiHistory = nil
+                }
+                let snapshotRequest = try CentralRequest.piSnapshot(target: target)
+                let snapshot = try await perform(snapshotRequest, peer: peer, endpoint: endpoint, operation: capturedOperation)
+                guard piReadIsCurrent(generation, sessionID: sessionID, source: source, revision: catalogRevision, operation: capturedOperation, peer: peer),
+                      case .piSnapshot(let snapshotTarget, let state) = snapshot.payload, snapshotTarget == target else { return }
+                selectedPiState = state
+                let historyRequest = try CentralRequest.piHistory(target: target, readMode: .live, collection: .branch)
+                let history = try await perform(historyRequest, peer: peer, endpoint: endpoint, operation: capturedOperation)
+                guard piReadIsCurrent(generation, sessionID: sessionID, source: source, revision: catalogRevision, operation: capturedOperation, peer: peer),
+                      case .piHistory(let page) = history.payload else { return }
+                selectedPiHistory = page
+            }
+        } catch {
+            guard piReadIsCurrent(generation, sessionID: sessionID, source: source, revision: catalogRevision, operation: capturedOperation, peer: peer) else { return }
+            selectedPiReadUnavailable = true
+        }
+    }
+    private func piReadIsCurrent(_ generation: UUID, sessionID: UUID, source: CentralSource, revision: CentralRevision, operation capturedOperation: UUID, peer: AxoJSONRPCWebSocketConnection) -> Bool {
+        piReadGeneration == generation && selectedSessionID == sessionID && catalog?.source == source && catalog?.revision == revision && operation == capturedOperation && connection === peer
+    }
+    private func clearSelectedPi() {
+        piReadGeneration = UUID()
+        selectedPiObservation = nil
+        selectedPiState = nil
+        selectedPiHistory = nil
+        selectedPiReadUnavailable = false
+        selectedPiTarget = nil
     }
     var selectedSessionView: CentralSessionView? { catalog?.sessions.first { $0.session.sessionId == selectedSessionID } }
     func sessionView(_ id: UUID) -> CentralSessionView? { catalog?.sessions.first { $0.session.sessionId == id } }
@@ -544,6 +620,7 @@ import UserNotifications
         hostStatus = nil
         selectedWorkspaceID = nil
         selectedSessionID = nil
+        clearSelectedPi()
         connectionState = .disconnected
         message = "Disconnected. The daemon and its work are left running."
         // Runtime absence does not release cached surfaces or remove layout leaves.

@@ -352,6 +352,8 @@ fn page<T: PageRecord>(
     if !(1..=50).contains(&limit) {
         return Err((-32602, "Invalid central page limit"));
     }
+    let mut records = records;
+    records.sort_by_key(|(id, _)| *id);
     if let Some(cursor) = &cursor
         && (cursor.target != target
             || cursor.revision != revision

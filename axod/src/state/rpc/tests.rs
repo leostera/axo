@@ -50,6 +50,44 @@ impl Fixture {
     }
 }
 #[test]
+fn central_session_pages_are_sorted_by_identity_not_insertion_order() {
+    let fixture = Fixture::new();
+    let created = fixture.create(CommandId::new());
+    let workspace_id =
+        created["result"]["value"]["operation"]["accepted"]["graph"]["workspace"]["workspaceId"]
+            .as_str()
+            .unwrap();
+    for index in 0..4 {
+        let expected_revision = fixture.owner.revision().unwrap();
+        let result = fixture.call(
+            "axo.state.session.create",
+            json!({"target":fixture.target(),"commandId":CommandId::new(),"expectedRevision":expected_revision,"workspaceId":workspace_id,"name":format!("Session {index}")}),
+            true,
+        );
+        assert!(
+            result.get("result").is_some(),
+            "session creation must succeed: {result}"
+        );
+    }
+    let sessions = fixture.call(
+        "axo.state.session.list",
+        json!({"target":fixture.target(),"workspaceId":workspace_id,"limit":50}),
+        false,
+    );
+    let ids: Vec<_> = sessions["result"]["value"]["records"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|record| record["session"]["sessionId"].as_str().unwrap().to_owned())
+        .collect();
+    let mut sorted = ids.clone();
+    sorted.sort();
+    assert_eq!(
+        ids, sorted,
+        "session list order must be stable by UUID across clients"
+    );
+}
+#[test]
 fn central_pi_observation_requires_closed_current_scope_and_never_starts_work() {
     let fixture = Fixture::new();
     let created = fixture.create(CommandId::new());

@@ -61,12 +61,16 @@ import SwiftUI
         precondition(coordinator.catalog?.sessions.allSatisfy { $0.readiness != .ready } == true, "No Pi policy cannot fabricate readiness")
         coordinator.selectSession(sessionOriginal.graph.session.sessionId)
         precondition(coordinator.selectedWorkspaceID == original.graph.workspace.workspaceId && coordinator.selectedSessionID == sessionOriginal.graph.session.sessionId)
+        try await refreshUntilNotAdmitted(coordinator)
+        precondition(coordinator.selectedPiObservation == .notAdmitted && coordinator.selectedPiHistory == nil && !coordinator.selectedPiReadUnavailable,
+            "A desired Pi pane without a committed admission is reported as not admitted, never as a fresh or empty conversation")
         coordinator.selectWorkspace(original.graph.workspace.workspaceId)
         precondition(coordinator.selectedSessionID == original.graph.initialSession.session.sessionId)
         try checkNativeOutline(coordinator, source: bootstrap.source)
         precondition(preferences.data(forKey: retired) == opaque, "Retired selection preference bytes are neither imported nor changed")
         let captured = coordinator.runtimes.map(\.runtime)
         coordinator.disconnect()
+        precondition(coordinator.selectedPiObservation == nil && coordinator.selectedPiHistory == nil, "Disconnect fences central Pi presentation state")
         precondition(process.isRunning, "Client disconnect is not lifecycle intent")
         let catalog = try await CentralCatalogLoader.load(source: bootstrap.source) { request in try await call(request, peer) }
         precondition(catalog.terminals.count == captured.count && catalog.terminals.allSatisfy { captured.contains($0.runtime) })
@@ -117,6 +121,14 @@ import SwiftUI
         precondition(controller.fixtureSelectedSessionIDs() == selected, "Metadata refresh preserves discontiguous session selection")
         precondition(controller.fixtureExpanded(workspace), "Metadata refresh preserves workspace expansion")
         window.close()
+    }
+    @MainActor private static func refreshUntilNotAdmitted(_ coordinator: AxodWorkbenchCoordinator) async throws {
+        let deadline = ContinuousClock.now.advanced(by: .seconds(10))
+        while coordinator.selectedPiObservation != .notAdmitted {
+            await coordinator.refreshSelectedPi()
+            guard ContinuousClock.now < deadline else { throw Failure.deadline }
+            if coordinator.selectedPiObservation != .notAdmitted { try await Task.sleep(for: .milliseconds(100)) }
+        }
     }
     private static func json(_ value: Any) throws -> JSONValue {
         try JSONDecoder().decode(JSONValue.self, from: JSONSerialization.data(withJSONObject: value))
