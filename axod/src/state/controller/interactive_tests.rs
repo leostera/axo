@@ -232,10 +232,66 @@ fn actual_three_by_four_by_three_graph_admits_every_pane_and_resumes_exact_pi_fi
     let selected_model = running.control.get().unwrap().model.unwrap();
     assert_eq!(selected_model.provider, "axo-interactive-fixture");
     assert_eq!(selected_model.id, "fixture");
-    running
+    let original_capture = {
+        let database = controller.database.lock().unwrap();
+        crate::state::submitted::PiCapture::parse(crate::state::submitted::PiCaptureInput {
+            command_id: CommandId::new(),
+            machine_id: machine,
+            host_generation: binding.runtime.host_generation,
+            store_generation: database.generation().unwrap(),
+            expected_revision: database.revision().unwrap(),
+            binding: binding.clone(),
+            configuration: database
+                .specification(binding.pane_id)
+                .unwrap()
+                .configuration,
+            action: crate::pi_control::Action::Send {
+                text: "Owned central fixture request".into(),
+            },
+        })
+        .unwrap()
+    };
+    let crate::state::submitted::PiPreparation::New(permit) = controller
+        .database
+        .lock()
+        .unwrap()
+        .prepare_pi(original_capture.clone())
+        .unwrap()
+    else {
+        panic!("Fresh original")
+    };
+    let proof = running
         .control
-        .send("Owned central fixture request")
+        .execute(
+            original_capture.input().command_id,
+            &original_capture.input().action,
+        )
         .unwrap();
+    let original = controller
+        .database
+        .lock()
+        .unwrap()
+        .finish_pi(
+            permit,
+            crate::state::submitted::PiTerminal::Dispatched(proof),
+        )
+        .unwrap();
+    assert_eq!(
+        original.disposition,
+        crate::state::submitted::PiDisposition::Dispatched
+    );
+    assert!(
+        matches!(
+            controller
+                .database
+                .lock()
+                .unwrap()
+                .prepare_pi(original_capture.clone())
+                .unwrap(),
+            crate::state::submitted::PiPreparation::Original(_)
+        ),
+        "Duplicate receipt lookup issues no second permit"
+    );
     let deadline = Instant::now() + Duration::from_secs(45);
     loop {
         let requests = model.requests.load(Ordering::SeqCst);
@@ -345,6 +401,17 @@ fn actual_three_by_four_by_three_graph_admits_every_pane_and_resumes_exact_pi_fi
         "Snapshot must not retarget the resumed runtime"
     );
     assert_eq!(model.requests.load(Ordering::SeqCst), 1);
+    assert!(
+        controller
+            .database
+            .lock()
+            .unwrap()
+            .pi_original(original_capture.input().command_id)
+            .unwrap()
+            .as_ref()
+            == Some(&original),
+        "Restart observes the immutable original; it does not replay input"
+    );
     wait(|| {
         controller
             .observations()
@@ -362,7 +429,12 @@ fn actual_three_by_four_by_three_graph_admits_every_pane_and_resumes_exact_pi_fi
         .clone();
     tool_running
         .control
-        .send("Owned central fixture tool request")
+        .execute(
+            CommandId::new(),
+            &crate::pi_control::Action::Send {
+                text: "Owned central fixture tool request".into(),
+            },
+        )
         .unwrap();
     wait(|| {
         model.requests.load(Ordering::SeqCst) == 3

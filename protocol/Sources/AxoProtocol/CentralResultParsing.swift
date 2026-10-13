@@ -182,7 +182,7 @@ struct CentralResultParser {
         switch request.intent {
         case .bootstrap:
             let b = try json.object(body, keys: ["backendCompleteCreation", "schemaVersion"])
-            guard try json.boolean(json.field(b, "backendCompleteCreation")), try json.integer(json.field(b, "schemaVersion")) == 3 else { throw json.failure }
+            guard try json.boolean(json.field(b, "backendCompleteCreation")), try json.integer(json.field(b, "schemaVersion")) == 4 else { throw json.failure }
             payload = .bootstrap
         case .session(let workspace, let id):
             let view = try json.view(body, source: source, revision: revision)

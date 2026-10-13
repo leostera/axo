@@ -89,7 +89,7 @@ export const stateMutationMethods = ["axo.state.workspace.create", "axo.state.se
 const envelope = <T extends z.ZodType>(value: T) => z.object({ hostGeneration: uuid, storeGeneration: uuid, revision, value }).strict();
 const operation = envelope(z.object({ operation: stateOperationSchema.nullable(), session: stateSessionViewSchema.nullable() }).strict());
 export const stateResults = {
-  "axo.state.get": envelope(z.object({ backendCompleteCreation: z.literal(true), schemaVersion: z.literal(3) }).strict()),
+  "axo.state.get": envelope(z.object({ backendCompleteCreation: z.literal(true), schemaVersion: z.literal(4) }).strict()),
   "axo.state.workspace.list": envelope(z.object({ records: z.array(desiredWorkspaceSchema).max(50), cursor: cursor.nullable() }).strict()),
   "axo.state.session.list": envelope(z.object({ records: z.array(stateSessionViewSchema).max(50), cursor: cursor.nullable() }).strict()),
   "axo.state.session.get": envelope(stateSessionViewSchema),

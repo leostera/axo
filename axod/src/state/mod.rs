@@ -12,6 +12,7 @@ mod operation;
 mod retired_input_tests;
 #[cfg(test)]
 mod schema_upgrade_tests;
+pub mod submitted;
 pub use operation::Operation;
 pub(crate) mod rpc;
 pub(crate) const SERVICE_DIRECTORY: &str = "CentralSessions";
@@ -31,7 +32,7 @@ pub(crate) enum DirectoryApproval {
 
 const MAX_REVISION: u64 = 9_007_199_254_740_991;
 const MAX_OPERATIONS: u32 = 2000;
-const SCHEMA_VERSION: i64 = 3;
+const SCHEMA_VERSION: i64 = 4;
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Error {
@@ -242,6 +243,7 @@ struct Capture {
 }
 
 pub struct Database {
+    submission_owner: std::sync::Arc<()>,
     connection: Connection,
     root: image::Root,
     fenced: bool,
@@ -287,17 +289,22 @@ impl Database {
             if version == 1 {
                 transaction.execute_batch("ALTER TABLE pi_bindings ADD COLUMN runtime_binding BLOB; ALTER TABLE runtime_attempts ADD COLUMN config_capture BLOB;")?;
             }
-            transaction.execute_batch("ALTER TABLE metadata ADD COLUMN store_generation TEXT;")?;
-            transaction.execute(
-                "UPDATE metadata SET store_generation=?1 WHERE singleton=1",
-                [StoreGeneration::new().to_string()],
-            )?;
-            transaction.execute_batch("PRAGMA user_version=3;")?;
+            if version < 3 {
+                transaction
+                    .execute_batch("ALTER TABLE metadata ADD COLUMN store_generation TEXT;")?;
+                transaction.execute(
+                    "UPDATE metadata SET store_generation=?1 WHERE singleton=1",
+                    [StoreGeneration::new().to_string()],
+                )?;
+            }
+            transaction.execute_batch(include_str!("submitted_schema.sql"))?;
+            transaction.execute_batch("PRAGMA user_version=4;")?;
             transaction.commit()?;
         }
         if bytes.is_none() {
             let transaction = connection.transaction()?;
             transaction.execute_batch(include_str!("schema.sql"))?;
+            transaction.execute_batch(include_str!("submitted_schema.sql"))?;
             transaction.execute(
                 "INSERT INTO metadata(singleton,machine_id,revision,store_generation) VALUES(1, ?1, 0, ?2)",
                 [machine.to_string(), StoreGeneration::new().to_string()],
@@ -305,6 +312,7 @@ impl Database {
             transaction.commit()?;
         }
         let mut database = Self {
+            submission_owner: std::sync::Arc::new(()),
             connection,
             root,
             fenced: false,
@@ -352,10 +360,11 @@ impl Database {
         }
         self.revision()?;
         self.generation()?;
-        let duplicate_original: bool = self.connection.query_row("SELECT EXISTS(SELECT 1 FROM operations o JOIN runtime_attempts a ON o.command_id=a.attempt_id)",[],|row|row.get(0))?;
+        let duplicate_original: bool = self.connection.query_row("SELECT EXISTS(SELECT 1 FROM operations o JOIN runtime_attempts a ON o.command_id=a.attempt_id) OR EXISTS(SELECT 1 FROM submitted_commands c JOIN operations o USING(command_id)) OR EXISTS(SELECT 1 FROM submitted_commands c JOIN runtime_attempts a ON c.command_id=a.attempt_id)",[],|row|row.get(0))?;
         if duplicate_original {
             return Err(Error::Corrupt);
         }
+        self.validate_pi_originals()?;
         // Validate application invariants that cannot be expressed as a local
         // CHECK while inserting the whole graph in one transaction.
         let invalid: bool = self.connection.query_row("SELECT EXISTS(SELECT 1 FROM sessions s WHERE s.tombstoned=0 AND ((SELECT count(*) FROM panes p WHERE p.session_id=s.session_id AND p.role='pi' AND p.desired_present=1)!=1 OR (SELECT count(*) FROM panes p WHERE p.session_id=s.session_id AND p.role!='pi' AND p.desired_present=1)<1 OR (SELECT count(*) FROM panes p WHERE p.session_id=s.session_id AND p.desired_present=1)>32))", [], |row| row.get(0)).map_err(|_| Error::Corrupt)?;
@@ -827,7 +836,7 @@ fn original<T: DeserializeOwned>(
     capture: &Capture,
 ) -> Result<Option<T>, Error> {
     let runtime_original: bool = connection.query_row(
-        "SELECT EXISTS(SELECT 1 FROM runtime_attempts WHERE attempt_id=?1)",
+        "SELECT EXISTS(SELECT 1 FROM runtime_attempts WHERE attempt_id=?1) OR EXISTS(SELECT 1 FROM submitted_commands WHERE command_id=?1)",
         [command.to_string()],
         |row| row.get(0),
     )?;
@@ -884,7 +893,7 @@ fn record<T: Serialize>(
     )?;
     Ok(())
 }
-fn reserve(tx: &Transaction<'_>, expected: u64, additional_panes: u32) -> Result<u64, Error> {
+fn advance_revision(tx: &Transaction<'_>, expected: u64) -> Result<u64, Error> {
     let stored: i64 = tx.query_row(
         "SELECT revision FROM metadata WHERE singleton=1",
         [],
@@ -897,18 +906,26 @@ fn reserve(tx: &Transaction<'_>, expected: u64, additional_panes: u32) -> Result
     if current >= MAX_REVISION {
         return Err(Error::Capacity);
     }
-    let operations: u32 = tx.query_row("SELECT count(*) FROM operations", [], |row| row.get(0))?;
+    tx.execute(
+        "UPDATE metadata SET revision=revision+1 WHERE singleton=1",
+        [],
+    )?;
+    Ok(current + 1)
+}
+fn reserve(tx: &Transaction<'_>, expected: u64, additional_panes: u32) -> Result<u64, Error> {
+    let revision = advance_revision(tx, expected)?;
+    let operations: u32 = tx.query_row(
+        "SELECT (SELECT count(*) FROM operations) + (SELECT count(*) FROM submitted_commands)",
+        [],
+        |row| row.get(0),
+    )?;
     if operations >= MAX_OPERATIONS {
         return Err(Error::Capacity);
     }
     if additional_panes != 0 {
         check_capacity(tx, additional_panes)?;
     }
-    tx.execute(
-        "UPDATE metadata SET revision=revision+1 WHERE singleton=1",
-        [],
-    )?;
-    Ok(current + 1)
+    Ok(revision)
 }
 fn check_capacity(tx: &Transaction<'_>, additional: u32) -> Result<(), Error> {
     let desired: u32 = tx.query_row("SELECT count(*) FROM panes p JOIN sessions s USING(session_id) LEFT JOIN workspaces w USING(workspace_id) WHERE p.desired_present=1 AND s.desired_open=1 AND s.tombstoned=0 AND (w.workspace_id IS NULL OR w.desired_open=1)", [], |row| row.get(0))?;
@@ -1350,7 +1367,7 @@ mod tests {
         let mut database = Database::open(root.path(), machine).unwrap();
         database
             .mutate(|tx| {
-                tx.execute_batch("PRAGMA user_version=4")?;
+                tx.execute_batch("PRAGMA user_version=5")?;
                 Ok(())
             })
             .unwrap();

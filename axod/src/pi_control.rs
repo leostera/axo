@@ -1,9 +1,11 @@
 //! Owner-only typed IPC to the public extension inside an already-owned Pi TUI.
 //! No listener, agent engine, terminal parser, persistence writer or automatic replay.
+mod action;
 #[cfg(test)]
 mod snapshot_tests;
 mod wire;
-use crate::model::{ChildPid, RuntimeRef};
+use crate::model::{ChildPid, CommandId, RuntimeRef};
+pub use action::{Action, Dispatched, ShutdownAcknowledged};
 use std::{
     collections::BTreeMap,
     io::{BufRead, BufReader, Read, Write},
@@ -34,9 +36,6 @@ pub enum ControlError {
     RecoveryRequired,
     OutcomeUnknown,
 }
-/// Only extension dispatch acknowledgement, never execution/delivery/settlement proof.
-#[derive(Clone, Copy, Debug)]
-pub struct Dispatched;
 struct Pending {
     expected: Expected,
     sender: mpsc::SyncSender<Result<Response, ControlError>>,
@@ -147,48 +146,52 @@ impl Control {
             _ => Err(ControlError::OutcomeUnknown),
         }
     }
-    pub fn send(&self, text: &str) -> Result<Dispatched, ControlError> {
-        self.dispatch_request(Request::Send {
-            id: RequestId::new(),
-            target: self.target(),
-            text,
-        })
+    pub fn execute(&self, command: CommandId, action: &Action) -> Result<Dispatched, ControlError> {
+        let digest = action.digest()?;
+        let id = RequestId::command(command);
+        let request = match action {
+            Action::Send { text } => Request::Send {
+                id,
+                target: self.target(),
+                text,
+            },
+            Action::Steer {
+                interaction_id,
+                text,
+            } => Request::Steer {
+                id,
+                target: self.interaction_target(*interaction_id),
+                text,
+            },
+            Action::Cancel { interaction_id } => Request::Cancel {
+                id,
+                target: self.interaction_target(*interaction_id),
+            },
+            Action::Answer {
+                interaction_id,
+                question_id,
+                option_id,
+            } => Request::Answer {
+                id,
+                target: self.interaction_target(*interaction_id),
+                question_id: *question_id,
+                option_id: *option_id,
+            },
+        };
+        self.dispatch_request(request)?;
+        Ok(Dispatched::acknowledged(
+            command,
+            self.runtime,
+            self.chat_id,
+            digest,
+        ))
     }
-    pub fn steer(
-        &self,
-        interaction: InteractionId,
-        text: &str,
-    ) -> Result<Dispatched, ControlError> {
-        self.dispatch_request(Request::Steer {
-            id: RequestId::new(),
-            target: self.interaction_target(interaction),
-            text,
-        })
-    }
-    pub fn cancel(&self, interaction: InteractionId) -> Result<Dispatched, ControlError> {
-        self.dispatch_request(Request::Cancel {
-            id: RequestId::new(),
-            target: self.interaction_target(interaction),
-        })
-    }
-    pub fn answer(
-        &self,
-        interaction: InteractionId,
-        question_id: QuestionId,
-        option_id: OptionId,
-    ) -> Result<Dispatched, ControlError> {
-        self.dispatch_request(Request::Answer {
-            id: RequestId::new(),
-            target: self.interaction_target(interaction),
-            question_id,
-            option_id,
-        })
-    }
-    pub fn shutdown(&self) -> Result<Dispatched, ControlError> {
+    pub fn shutdown(&self) -> Result<ShutdownAcknowledged, ControlError> {
         self.dispatch_request(Request::Shutdown {
             id: RequestId::new(),
             target: self.target(),
-        })
+        })?;
+        Ok(ShutdownAcknowledged { _ack: () })
     }
     fn snapshot_request(&self, request: Request<'_>) -> Result<State, ControlError> {
         match self.request(request)? {
@@ -196,9 +199,9 @@ impl Control {
             _ => Err(ControlError::OutcomeUnknown),
         }
     }
-    fn dispatch_request(&self, request: Request<'_>) -> Result<Dispatched, ControlError> {
+    fn dispatch_request(&self, request: Request<'_>) -> Result<(), ControlError> {
         match self.request(request)? {
-            Response::Dispatched => Ok(Dispatched),
+            Response::Dispatched => Ok(()),
             _ => Err(ControlError::OutcomeUnknown),
         }
     }
@@ -215,6 +218,9 @@ impl Control {
             let mut state = self.shared.state.lock().unwrap();
             if state.gap {
                 return Err(ControlError::OutcomeUnknown);
+            }
+            if state.calls.contains_key(&id) {
+                return Err(ControlError::Invalid);
             }
             if state.calls.len() >= 16 {
                 return Err(ControlError::Capacity);

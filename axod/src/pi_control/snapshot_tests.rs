@@ -38,6 +38,95 @@ fn snapshot(shared: &Shared, id: RequestId, state: State) -> bool {
     )
 }
 #[test]
+fn dispatch_acknowledgement_is_bound_to_command_runtime_chat_and_action() {
+    let shared = Arc::new(shared());
+    let chat_id = shared.state.lock().unwrap().ready.as_ref().unwrap().chat_id;
+    let (writer, peer) = UnixStream::pair().unwrap();
+    let runtime: RuntimeRef = serde_json::from_value(json!({"host_generation":uuid::Uuid::new_v4(),"runtime_generation":uuid::Uuid::new_v4(),"target":{"session_id":uuid::Uuid::new_v4(),"pane_id":uuid::Uuid::new_v4()}})).unwrap();
+    let command = CommandId::new();
+    let action = Action::Send {
+        text: "Owned acknowledgement fixture".into(),
+    };
+    let control = Control {
+        runtime,
+        chat_id,
+        writer: Mutex::new(writer),
+        shared: shared.clone(),
+    };
+    let observer = shared.clone();
+    let peer = thread::spawn(move || {
+        let mut bytes = Vec::new();
+        BufReader::new(peer).read_until(b'\n', &mut bytes).unwrap();
+        let request: Value = serde_json::from_slice(&bytes).unwrap();
+        assert_eq!(request["id"], json!(command));
+        assert_eq!(request["method"], "send");
+        assert!(route(
+            Record::Reply(wire::Reply {
+                id: Some(RequestId::command(command)),
+                response: Response::Dispatched
+            }),
+            &observer
+        ));
+    });
+    let proof = control.execute(command, &action).unwrap();
+    peer.join().unwrap();
+    assert!(proof.matches(command, runtime, chat_id, &action));
+    assert!(!proof.matches(CommandId::new(), runtime, chat_id, &action));
+    assert!(!proof.matches(
+        command,
+        runtime,
+        chat_id,
+        &Action::Send {
+            text: "Different bytes".into()
+        }
+    ));
+    let mut foreign = runtime;
+    foreign.runtime_generation = crate::model::RuntimeGeneration::new();
+    assert!(!proof.matches(command, foreign, chat_id, &action));
+}
+#[test]
+fn duplicate_pending_command_id_does_not_replace_waiter_or_write_again() {
+    let shared = Arc::new(shared());
+    let command = CommandId::new();
+    let id = RequestId::command(command);
+    let (sender, _receiver) = mpsc::sync_channel(1);
+    shared.state.lock().unwrap().calls.insert(
+        id,
+        Pending {
+            expected: Expected::Dispatched,
+            sender,
+        },
+    );
+    let chat_id = shared.state.lock().unwrap().ready.as_ref().unwrap().chat_id;
+    let (writer, mut peer) = UnixStream::pair().unwrap();
+    peer.set_nonblocking(true).unwrap();
+    let runtime = serde_json::from_value(json!({"host_generation":uuid::Uuid::new_v4(),"runtime_generation":uuid::Uuid::new_v4(),"target":{"session_id":uuid::Uuid::new_v4(),"pane_id":uuid::Uuid::new_v4()}})).unwrap();
+    let control = Control {
+        runtime,
+        chat_id,
+        writer: Mutex::new(writer),
+        shared: shared.clone(),
+    };
+    assert_eq!(
+        control
+            .execute(
+                command,
+                &Action::Send {
+                    text: "Owned pending fixture".into()
+                }
+            )
+            .err(),
+        Some(ControlError::Invalid)
+    );
+    let mut byte = [0];
+    assert_eq!(
+        peer.read(&mut byte).unwrap_err().kind(),
+        std::io::ErrorKind::WouldBlock
+    );
+    assert_eq!(shared.state.lock().unwrap().calls.len(), 1);
+    assert!(!shared.state.lock().unwrap().gap);
+}
+#[test]
 fn correlated_snapshot_updates_cache_without_overwriting_later_status() {
     let shared = shared();
     let (id, receiver) = pending(&shared);

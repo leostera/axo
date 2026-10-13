@@ -163,7 +163,7 @@ impl Database {
         };
         self.mutate(|tx| {
             let metadata_original: bool = tx.query_row(
-                "SELECT EXISTS(SELECT 1 FROM operations WHERE command_id=?1)",
+                "SELECT EXISTS(SELECT 1 FROM operations WHERE command_id=?1) OR EXISTS(SELECT 1 FROM submitted_commands WHERE command_id=?1)",
                 [attempt.command_id.to_string()],
                 |row| row.get(0),
             )?;

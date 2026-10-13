@@ -267,7 +267,14 @@ fn rust_orchestrates_actual_tui_pty_public_extension_real_bash_and_pi_history() 
     };
     assert!(state.pid == pid, "Extension is not in the owned child");
     assert!(fixture.requests.load(Ordering::SeqCst) == 0);
-    let _dispatched = control.send("Real Rust-owned test λ 界").unwrap(); // Typed dispatch only, not execution.
+    let _dispatched = control
+        .execute(
+            axod::model::CommandId::new(),
+            &axod::pi_control::Action::Send {
+                text: "Real Rust-owned test λ 界".into(),
+            },
+        )
+        .unwrap(); // Typed dispatch only, not execution.
     let state = settled(&control);
     let history = control.history().unwrap();
     // Canonical documents are Pi-owned payloads, not dynamic control routing.

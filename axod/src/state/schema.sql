@@ -1,5 +1,5 @@
 -- The image is published atomically only after the entire SQLite transaction.
-PRAGMA user_version = 3;
+PRAGMA user_version = 4;
 CREATE TABLE metadata (
     singleton INTEGER PRIMARY KEY CHECK (singleton = 1),
     store_generation TEXT NOT NULL CHECK (length(store_generation) = 36),

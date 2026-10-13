@@ -13,6 +13,11 @@ macro_rules! uuid_id {
 uuid_id!(ChatId);
 uuid_id!(InteractionId);
 uuid_id!(RequestId);
+impl RequestId {
+    pub(super) fn command(command: crate::model::CommandId) -> Self {
+        Self(command.as_uuid())
+    }
+}
 uuid_id!(QuestionId);
 uuid_id!(OptionId);
 #[derive(Clone, Debug, Serialize, Deserialize)]

@@ -32,16 +32,18 @@ final class CentralContractTests: XCTestCase {
     }
     func testBootstrapPinsHostStoreAndDoesNotRequireLegacyRuntimeCapability() throws {
         let request = try CentralRequest.bootstrap(machine: machine)
-        let value = try json(envelope(["backendCompleteCreation": true, "schemaVersion": 3]))
+        let value = try json(envelope(["backendCompleteCreation": true, "schemaVersion": 4]))
         let result = try request.parseResult(value)
         XCTAssertEqual(result.source, source); XCTAssertEqual(result.payload, .bootstrap)
         let negotiation = try json(["protocolVersion": 1, "methods": Array(CentralRequest.readMethods), "deliveryCredits": ["frames": 32, "bytes": 131072]])
         XCTAssertEqual(Set(try AxoProtocolResultValidator.negotiation(negotiation).methods), CentralRequest.readMethods)
-        var stale = envelope(["backendCompleteCreation": true, "schemaVersion": 3])
+        var stale = envelope(["backendCompleteCreation": true, "schemaVersion": 4])
         stale["hostGeneration"] = UUID().uuidString
         XCTAssertThrowsError(try request.parseResult(json(stale)))
-        stale = envelope(["backendCompleteCreation": true, "schemaVersion": 4])
-        XCTAssertThrowsError(try request.parseResult(json(stale)))
+        for version in [3, 5] {
+            stale = envelope(["backendCompleteCreation": true, "schemaVersion": version])
+            XCTAssertThrowsError(try request.parseResult(json(stale)))
+        }
     }
     func testRequestsCaptureExplicitScopeBoundsAndNeverEncodeNullCursor() throws {
         let request = try CentralRequest.sessions(source: source, workspaceId: nil)

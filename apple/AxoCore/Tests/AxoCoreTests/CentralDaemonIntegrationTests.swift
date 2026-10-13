@@ -21,14 +21,14 @@ final class CentralDaemonIntegrationTests: XCTestCase {
         _ = try AxoProtocolResultValidator.localNegotiation(await connection.request(method: AxoProtocol.Method.negotiate, parameters: NegotiationParameters()))
         let machine = MachineTarget(machineId: endpoint.machineId, hostGeneration: endpoint.hostGeneration)
         let bootstrap = try CentralRequest.bootstrap(machine: machine)
-        let initial = try await call(bootstrap, connection)
+        let initial = try await Self.call(bootstrap, connection)
         XCTAssertEqual(initial.revision.rawValue, 0)
         let source = initial.source
         let homeCommand = UUID(), workspaceCommand = UUID()
-        let home = try await call(CentralRequest.createSession(source: source, workspaceId: nil, commandId: homeCommand, expectedRevision: initial.revision), connection)
+        let home = try await Self.call(CentralRequest.createSession(source: source, workspaceId: nil, commandId: homeCommand, expectedRevision: initial.revision), connection)
         guard case .operation(.createStandalone(let homeOriginal)?, _) = home.payload else { return XCTFail("Complete home graph") }
         XCTAssertEqual(homeOriginal.graph.panes.count, 2)
-        let workspace = try await call(CentralRequest.createWorkspace(source: source, commandId: workspaceCommand, expectedRevision: home.revision, name: "Workspace", directoryPath: root.path), connection)
+        let workspace = try await Self.call(CentralRequest.createWorkspace(source: source, commandId: workspaceCommand, expectedRevision: home.revision, name: "Workspace", directoryPath: root.path), connection)
         guard case .operation(.createWorkspace(let workspaceOriginal)?, _) = workspace.payload else { return XCTFail("Complete workspace graph") }
         XCTAssertEqual(workspaceOriginal.graph.initialSession.panes.count, 2)
         let deadline = ContinuousClock.now.advanced(by: .seconds(10))
@@ -42,10 +42,10 @@ final class CentralDaemonIntegrationTests: XCTestCase {
         XCTAssertEqual(catalog.terminals.count, 2, "Both account shells materialize without any runtime/Pi start RPC.")
         XCTAssertTrue(catalog.sessions.allSatisfy { $0.readiness != .ready }, "No Pi policy means no fabricated backend readiness.")
         for view in catalog.sessions {
-            let observation = try await call(CentralRequest.observePi(source: source, workspaceId: view.session.workspaceId, sessionId: view.session.sessionId), connection)
+            let observation = try await Self.call(CentralRequest.observePi(source: source, workspaceId: view.session.workspaceId, sessionId: view.session.sessionId), connection)
             XCTAssertEqual(observation.payload, .piObservation(.notAdmitted))
         }
-        let original = try await call(CentralRequest.operation(source: source, commandId: workspaceCommand), connection)
+        let original = try await Self.call(CentralRequest.operation(source: source, commandId: workspaceCommand), connection)
         guard case .operation(.createWorkspace(let unchanged)?, _) = original.payload else { return XCTFail("Original receipt") }
         XCTAssertEqual(unchanged, workspaceOriginal)
         await connection.close()
@@ -58,23 +58,34 @@ final class CentralDaemonIntegrationTests: XCTestCase {
         XCTAssertNotEqual(next.hostGeneration, endpoint.hostGeneration)
         let reconnected = try AxoJSONRPCClient().openLocalWebSocket(endpoint: next)
         _ = try AxoProtocolResultValidator.localNegotiation(await reconnected.request(method: AxoProtocol.Method.negotiate, parameters: NegotiationParameters()))
-        let newBootstrap = try await call(CentralRequest.bootstrap(machine: .init(machineId: next.machineId, hostGeneration: next.hostGeneration)), reconnected)
+        let newBootstrap = try await Self.call(CentralRequest.bootstrap(machine: .init(machineId: next.machineId, hostGeneration: next.hostGeneration)), reconnected)
         XCTAssertEqual(newBootstrap.source.storeGeneration, source.storeGeneration)
         let restored = try await load(newBootstrap.source, reconnected)
         XCTAssertEqual(Set(restored.sessions.map { $0.session.sessionId }), Set(catalog.sessions.map { $0.session.sessionId }))
-        let receipt = try await call(CentralRequest.operation(source: newBootstrap.source, commandId: workspaceCommand), reconnected)
+        let receipt = try await Self.call(CentralRequest.operation(source: newBootstrap.source, commandId: workspaceCommand), reconnected)
         guard case .operation(.createWorkspace(let retained)?, _) = receipt.payload else { return XCTFail("Retained immutable original") }
         XCTAssertEqual(retained, workspaceOriginal)
         await reconnected.close()
         XCTAssertFalse(FileManager.default.fileExists(atPath: root.appendingPathComponent("work-records.json").path))
     }
-    private func call(_ request: CentralRequest, _ connection: AxoJSONRPCWebSocketConnection) async throws -> CentralResponse {
-        let value = try await connection.request(method: request.method, parameters: request.parameters)
-        return try request.parseResult(value)
+    private struct FixtureCallFailure: Error {
+        let method: String
+        let domain: String
+        let code: Int
+    }
+    private static func call(_ request: CentralRequest, _ connection: AxoJSONRPCWebSocketConnection) async throws -> CentralResponse {
+        do {
+            let value = try await connection.request(method: request.method, parameters: request.parameters)
+            return try request.parseResult(value)
+        } catch {
+            // Preserve phase/cause without retaining parameters or reply bodies.
+            let failure = error as NSError
+            throw FixtureCallFailure(method: request.method, domain: failure.domain, code: failure.code)
+        }
     }
     private func load(_ source: CentralSource, _ connection: AxoJSONRPCWebSocketConnection) async throws -> CentralCatalog {
         try await CentralCatalogLoader.load(source: source) { request in
-            try request.parseResult(await connection.request(method: request.method, parameters: request.parameters))
+            try await Self.call(request, connection)
         }
     }
     private func launch(_ executable: String, root: URL) throws -> Process {
