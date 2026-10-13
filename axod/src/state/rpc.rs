@@ -30,6 +30,7 @@ pub(crate) const LOCAL_METHODS: &[&str] = &[
     "axo.state.session.create",
     "axo.state.workspace.rename",
     "axo.state.session.rename",
+    "axo.state.session.delete",
     "axo.state.lifecycle.set",
     "axo.state.pane.add",
     "axo.state.pane.remove",
@@ -192,6 +193,14 @@ struct OperationGet {
     command_id: CommandId,
 }
 #[derive(Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+struct DeleteSessions {
+    target: Target,
+    command_id: CommandId,
+    expected_revision: u64,
+    sessions: Vec<SessionAddress>,
+}
+#[derive(Deserialize)]
 #[serde(deny_unknown_fields)]
 struct Completion {
     target: SessionTarget,
@@ -231,6 +240,10 @@ fn failure(error: Error) -> (i32, &'static str) {
         Error::Conflict => (-32007, "Central command or revision conflict"),
         Error::Capacity => (-32006, "Central capacity"),
         Error::Stopping => (-32010, "Daemon stopping"),
+        Error::UncertainRuntime => (
+            -32009,
+            "Exact runtime ownership or completion is unavailable",
+        ),
         _ => (-32008, "Central storage fenced"),
     }
 }
@@ -365,7 +378,10 @@ fn operation_result(owner: &Controller, operation: Operation) -> Outcome {
         .map(|session| session_view(owner, session))
         .transpose()
         .map_err(failure)?;
-    envelope(owner, json!({"operation":operation,"session":observation}))
+    envelope(
+        owner,
+        json!({"operation":operation,"session":observation,"deletion":null}),
+    )
 }
 trait PageRecord {
     fn view(self, owner: &Controller) -> Result<Value, (i32, &'static str)>;
@@ -458,6 +474,7 @@ pub(crate) fn dispatch(
         call.method.as_str(),
         "axo.state.workspace.create"
             | "axo.state.session.create"
+            | "axo.state.session.delete"
             | "axo.state.workspace.rename"
             | "axo.state.session.rename"
             | "axo.state.lifecycle.set"
@@ -649,18 +666,59 @@ fn route(
         "axo.state.workspace.rename" => {
             let request: WorkspaceRename = parse(params)?;
             target(request.target, owner, machine)?;
-            operation_result(owner, Operation::RenameWorkspace(
-                owner.rename_workspace(request.command_id, request.expected_revision, request.workspace_id, &request.name)
-                    .map_err(failure)?,
-            ))
+            operation_result(
+                owner,
+                Operation::RenameWorkspace(
+                    owner
+                        .rename_workspace(
+                            request.command_id,
+                            request.expected_revision,
+                            request.workspace_id,
+                            &request.name,
+                        )
+                        .map_err(failure)?,
+                ),
+            )
         }
         "axo.state.session.rename" => {
             let request: SessionRename = parse(params)?;
             membership(&request.target, owner, machine)?;
-            operation_result(owner, Operation::RenameSession(
-                owner.rename_session(request.command_id, request.expected_revision, request.target.workspace_id,
-                    request.target.session_id, &request.name).map_err(failure)?,
-            ))
+            operation_result(
+                owner,
+                Operation::RenameSession(
+                    owner
+                        .rename_session(
+                            request.command_id,
+                            request.expected_revision,
+                            request.target.workspace_id,
+                            request.target.session_id,
+                            &request.name,
+                        )
+                        .map_err(failure)?,
+                ),
+            )
+        }
+        "axo.state.session.delete" if local => {
+            let request: DeleteSessions = parse(params)?;
+            target(request.target, owner, machine)?;
+            let receipt = owner
+                .delete_sessions(
+                    request.command_id,
+                    SessionDeletionIntent {
+                        target: DeletionSource {
+                            machine_id: request.target.machine_id,
+                            host_generation: request.target.host_generation,
+                            store_generation: request.target.store_generation,
+                        },
+                        sessions: request.sessions,
+                        expected_revision: request.expected_revision,
+                    },
+                )
+                .map_err(failure)?;
+            envelope(
+                owner,
+                json!({"operation":null,"session":null,"deletion":receipt}),
+            )
         }
         "axo.state.lifecycle.set" if local => {
             let request: Lifecycle = parse(params)?;
@@ -715,6 +773,15 @@ fn route(
         "axo.state.operation.get" => {
             let request: OperationGet = parse(params)?;
             target(request.target, owner, machine)?;
+            if let Some(deletion) = owner
+                .reconcile_deletion(request.command_id)
+                .map_err(failure)?
+            {
+                return envelope(
+                    owner,
+                    json!({"operation":null,"session":null,"deletion":deletion}),
+                );
+            }
             let operation = owner
                 .database
                 .lock()
@@ -723,7 +790,10 @@ fn route(
                 .map_err(failure)?;
             match operation {
                 Some(operation) => operation_result(owner, operation),
-                None => envelope(owner, json!({"operation":null,"session":null})),
+                None => envelope(
+                    owner,
+                    json!({"operation":null,"session":null,"deletion":null}),
+                ),
             }
         }
         "axo.state.session.completion" if local => {

@@ -38,6 +38,30 @@ struct CentralJSON {
         let f = try object(value, keys: ["machineId", "hostGeneration", "storeGeneration"])
         return try CentralSource(machine: MachineTarget(machineId: id(field(f, "machineId")), hostGeneration: id(field(f, "hostGeneration"))), storeGeneration: id(field(f, "storeGeneration")))
     }
+    func deletion(_ value: JSONValue, source currentSource: CentralSource, revision limit: CentralRevision) throws -> CentralSessionDeletionReceipt {
+        let f = try object(value, keys: ["commandId", "intent", "runtimes", "revision"])
+        let intentFields = try object(field(f, "intent"), keys: ["target", "sessions", "expectedRevision"])
+        let target = try source(field(intentFields, "target"))
+        guard target.machine.machineId == currentSource.machine.machineId, target.storeGeneration == currentSource.storeGeneration else { throw failure }
+        let expected = try revision(field(intentFields, "expectedRevision"))
+        let addresses = try array(field(intentFields, "sessions"), maximum: 32, minimum: 1).map { value -> CentralSessionAddress in
+            let address = try object(value, keys: ["workspaceId", "sessionId"])
+            return CentralSessionAddress(workspaceId: try optionalID(field(address, "workspaceId")), sessionId: try id(field(address, "sessionId")))
+        }
+        guard Set(addresses.map(\.sessionId)).count == addresses.count else { throw failure }
+        let intent = CentralSessionDeletionIntent(target: target, sessions: addresses, expectedRevision: expected)
+        let runtimes = try array(field(f, "runtimes"), maximum: 128).map(runtime)
+        guard runtimes.enumerated().allSatisfy({ index, runtime in !runtimes.prefix(index).contains(runtime) }),
+              runtimes.allSatisfy({ runtime in addresses.contains(where: { $0.sessionId == runtime.target.sessionId }) }) else { throw failure }
+        let revisionValue = try field(f, "revision")
+        let accepted = revisionValue == .null ? nil : try revision(revisionValue)
+        if let accepted {
+            guard accepted.rawValue == expected.rawValue + 1, accepted <= limit else { throw failure }
+        } else if limit != expected {
+            throw failure
+        }
+        return CentralSessionDeletionReceipt(commandId: try id(field(f, "commandId")), intent: intent, runtimes: runtimes, revision: accepted)
+    }
     func lifecycle(_ value: JSONValue) throws -> CentralLifecycle {
         guard let result = CentralLifecycle(rawValue: try string(value)) else { throw failure }; return result
     }
@@ -188,7 +212,7 @@ struct CentralResultParser {
         switch request.intent {
         case .bootstrap:
             let b = try json.object(body, keys: ["backendCompleteCreation", "schemaVersion"])
-            guard try json.boolean(json.field(b, "backendCompleteCreation")), try json.integer(json.field(b, "schemaVersion")) == 4 else { throw json.failure }
+            guard try json.boolean(json.field(b, "backendCompleteCreation")), try json.integer(json.field(b, "schemaVersion")) == 5 else { throw json.failure }
             payload = .bootstrap
         case .submitPi(let capture), .piCommand(let capture):
             let encoder = JSONEncoder()
@@ -248,14 +272,24 @@ struct CentralResultParser {
             guard Set(ids).count == ids.count, ordered == ordered.sorted(), prior.map({ cursor in ids.allSatisfy { $0.uuidString.lowercased() > cursor.after.uuidString.lowercased() } }) ?? true else { throw json.failure }
             if let next { guard next.source == source, next.revision == revision, next.domain == domain, next.after == ids.last else { throw json.failure } }
         case .mutation(let command, let expectedRevision, let mutation):
-            let (original, observation) = try operationBody(body, source: source, revision: revision, json: json)
-            guard let original, original.commandId == command, original.revision.rawValue == expectedRevision.rawValue + 1 else { throw json.failure }
+            let (original, observation, deletion) = try operationBody(body, source: source, revision: revision, json: json)
+            guard deletion == nil, let original, original.commandId == command, original.revision.rawValue == expectedRevision.rawValue + 1 else { throw json.failure }
             try correlate(original, mutation, json: json)
             payload = .operation(original: original, observation: observation)
         case .operation(let command):
-            let (original, observation) = try operationBody(body, source: source, revision: revision, json: json)
-            guard original == nil || original?.commandId == command else { throw json.failure }
-            payload = .operation(original: original, observation: observation)
+            let (original, observation, deletion) = try operationBody(body, source: source, revision: revision, json: json)
+            if let deletion {
+                guard deletion.commandId == command, original == nil, observation == nil else { throw json.failure }
+                payload = .deletion(deletion)
+            } else {
+                guard original == nil || original?.commandId == command else { throw json.failure }
+                payload = .operation(original: original, observation: observation)
+            }
+        case .deletion(let expected, let command):
+            let (original, observation, deletion) = try operationBody(body, source: source, revision: revision, json: json)
+            guard original == nil, observation == nil, let deletion,
+                  deletion.commandId == command, deletion.intent == expected else { throw json.failure }
+            payload = .deletion(deletion)
         case .completion(_, _, let captured):
             let b = try json.object(body, keys: ["completed"])
             let completed = try json.array(json.field(b, "completed"), maximum: captured.count).map(json.runtime)
@@ -264,13 +298,15 @@ struct CentralResultParser {
         }
         return CentralResponse(source: source, revision: revision, payload: payload)
     }
-    private func operationBody(_ value: JSONValue, source: CentralSource, revision: CentralRevision, json: CentralJSON) throws -> (CentralOperation?, CentralSessionView?) {
-        let b = try json.object(value, keys: ["operation", "session"])
-        let originalValue = try json.field(b, "operation"), sessionValue = try json.field(b, "session")
+    private func operationBody(_ value: JSONValue, source: CentralSource, revision: CentralRevision, json: CentralJSON) throws -> (CentralOperation?, CentralSessionView?, CentralSessionDeletionReceipt?) {
+        let b = try json.object(value, keys: ["operation", "session", "deletion"])
+        let originalValue = try json.field(b, "operation"), sessionValue = try json.field(b, "session"), deletionValue = try json.field(b, "deletion")
         let original = originalValue == .null ? nil : try json.operation(originalValue, revision: revision)
         let session = sessionValue == .null ? nil : try json.view(sessionValue, source: source, revision: revision)
+        let deletion = deletionValue == .null ? nil : try json.deletion(deletionValue, source: source, revision: revision)
         if let session { guard session.session.sessionId == original?.observedSessionId else { throw json.failure } }
-        return (original, session)
+        if deletion != nil { guard original == nil, session == nil else { throw json.failure } }
+        return (original, session, deletion)
     }
     private func correlate(_ original: CentralOperation, _ mutation: CentralRequest.Mutation, json: CentralJSON) throws {
         switch (original, mutation) {

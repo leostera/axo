@@ -153,7 +153,7 @@ struct StoredOriginal {
 }
 impl Database {
     pub(super) fn validate_pi_originals(&self) -> Result<(), Error> {
-        let count: u32 = self.connection.query_row("SELECT (SELECT count(*) FROM operations) + (SELECT count(*) FROM submitted_commands)", [], |row| row.get(0)).map_err(|_| Error::Corrupt)?;
+        let count: u32 = self.connection.query_row("SELECT (SELECT count(*) FROM operations) + (SELECT count(*) FROM submitted_commands) + (SELECT count(*) FROM deletion_intents)", [], |row| row.get(0)).map_err(|_| Error::Corrupt)?;
         if count > MAX_OPERATIONS {
             return Err(Error::Corrupt);
         }
@@ -170,6 +170,35 @@ impl Database {
         }
         Ok(())
     }
+    pub(crate) fn has_unconfirmed_pi_in(
+        &self,
+        addresses: &[super::SessionAddress],
+    ) -> Result<bool, Error> {
+        self.available()?;
+        let mut statement = self.connection.prepare(
+            "SELECT c.command_id FROM submitted_commands c LEFT JOIN submitted_results r USING(command_id) WHERE r.command_id IS NULL LIMIT 2001",
+        )?;
+        let commands = statement
+            .query_map([], |row| row.get::<_, String>(0))?
+            .collect::<Result<Vec<_>, _>>()?;
+        if commands.len() > MAX_OPERATIONS as usize {
+            return Err(Error::Corrupt);
+        }
+        for command in commands {
+            let original = self
+                .pi_original(parse_id(&command)?)?
+                .ok_or(Error::Corrupt)?;
+            let input = original.capture.input();
+            if addresses.iter().any(|address| {
+                address.session_id == input.binding.session_id
+                    && address.workspace_id == input.binding.workspace_id
+            }) {
+                return Ok(true);
+            }
+        }
+        Ok(false)
+    }
+
     pub fn pi_original(&self, command: CommandId) -> Result<Option<PiOriginal>, Error> {
         self.available()?;
         let row = self.connection.query_row("SELECT c.capture,c.fingerprint,c.accepted_revision,r.result FROM submitted_commands c LEFT JOIN submitted_results r USING(command_id) WHERE c.command_id=?1", [command.to_string()], |row| Ok(StoredOriginal { bytes: row.get(0)?, fingerprint: row.get(1)?, revision: row.get(2)?, result: row.get(3)? })).optional()?;
@@ -240,7 +269,7 @@ impl Database {
         let encoded = capture.encoded()?;
         let input = &capture.0;
         let accepted_revision = self.mutate(|tx| {
-            let collision: bool = tx.query_row("SELECT EXISTS(SELECT 1 FROM operations WHERE command_id=?1) OR EXISTS(SELECT 1 FROM runtime_attempts WHERE attempt_id=?1)", [input.command_id.to_string()], |row| row.get(0))?;
+            let collision: bool = tx.query_row("SELECT EXISTS(SELECT 1 FROM operations WHERE command_id=?1) OR EXISTS(SELECT 1 FROM runtime_attempts WHERE attempt_id=?1) OR EXISTS(SELECT 1 FROM deletion_intents WHERE command_id=?1)", [input.command_id.to_string()], |row| row.get(0))?;
             if collision { return Err(Error::Conflict); }
             let revision = reserve(tx, input.expected_revision, 0)?;
             tx.execute("INSERT INTO submitted_commands VALUES(?1,?2,?3,?4)", params![input.command_id.to_string(), encoded.fingerprint.as_slice(), encoded.bytes, sql_revision(revision)?])?;

@@ -355,6 +355,28 @@ impl Manager {
     pub(crate) fn owns_running_runtime(&self, runtime: RuntimeRef) -> bool {
         self.owned_running_pid(runtime).is_some()
     }
+    /// Preflight for a completion-proven delete. This checks exact in-memory
+    /// owner identity and a signalable process state; it never consults journal
+    /// PIDs or infers ownership from process absence.
+    pub(crate) fn can_stop_exact(&self, runtime: RuntimeRef) -> bool {
+        if self.stopping.load(Ordering::SeqCst) || runtime.host_generation != self.generation {
+            return false;
+        }
+        let terminals = self.terminals.lock().unwrap();
+        let Some(terminal) = terminals.get(&runtime.target.pane_id) else {
+            return false;
+        };
+        if terminal.reference != runtime {
+            return false;
+        }
+        let state = terminal.state.lock().unwrap();
+        matches!(
+            state.process,
+            ProcessState::Running { .. } | ProcessState::Stopping { .. }
+        ) && state.process_group != ProcessGroupState::Uncertain
+            && state.output != OutputState::Failed
+            && state.completion != CompletionPersistence::Failed
+    }
     /// Current child identity for control observation only, not a signal target.
     /// Never consult historical journal PIDs to establish live ownership.
     pub(crate) fn owned_running_pid(&self, runtime: RuntimeRef) -> Option<ChildPid> {

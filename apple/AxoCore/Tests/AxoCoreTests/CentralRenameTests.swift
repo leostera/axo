@@ -17,7 +17,7 @@ import XCTest
         let source = header ?? self.source
         return try json(["hostGeneration": source.machine.hostGeneration.uuidString,
                          "storeGeneration": source.storeGeneration.uuidString,
-                         "revision": 9, "value": ["operation": operation, "session": NSNull()]])
+                         "revision": 9, "value": ["operation": operation, "session": NSNull(), "deletion": NSNull()]])
     }
     private func workspaceOperation(_ ticket: CentralRenameTicket, name: String) -> [String: Any] {
         ["kind": "renameWorkspace", "accepted": ["commandId": ticket.commandId.uuidString,
@@ -78,7 +78,7 @@ import XCTest
             workspaceId: workspace, sessionId: session, name: "Manual")
         _ = try renames.beginSubmission(ticket)
         let missing = try json(["hostGeneration": host.uuidString, "storeGeneration": store.uuidString,
-                                "revision": 9, "value": ["operation": NSNull(), "session": NSNull()]])
+                                "revision": 9, "value": ["operation": NSNull(), "session": NSNull(), "deletion": NSNull()]])
         XCTAssertEqual(try renames.acknowledgeReconciliation(ticket, source: source, result: missing), .missing)
         let nextHost = try CentralSource(machine: .init(machineId: machine, hostGeneration: UUID()), storeGeneration: store)
         let lookup = try renames.reconciliation(ticket, source: nextHost)

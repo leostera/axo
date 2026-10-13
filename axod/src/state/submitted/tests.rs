@@ -74,6 +74,41 @@ fn permit(preparation: PiPreparation) -> PiPermit {
     }
 }
 #[test]
+fn unresolved_submitted_input_fences_deletion_of_its_exact_session() {
+    let mut fixture = Fixture::new();
+    let capture = fixture.capture();
+    let command = capture.0.command_id;
+    drop(permit(fixture.database.prepare_pi(capture).unwrap()));
+    let address = super::super::SessionAddress {
+        workspace_id: fixture.input.binding.workspace_id,
+        session_id: fixture.input.binding.session_id,
+    };
+    assert!(
+        fixture
+            .database
+            .has_unconfirmed_pi_in(std::slice::from_ref(&address))
+            .unwrap()
+    );
+    assert!(
+        !fixture
+            .database
+            .has_unconfirmed_pi_in(&[super::super::SessionAddress {
+                workspace_id: None,
+                session_id: SessionId::new(),
+            }])
+            .unwrap()
+    );
+    assert_eq!(
+        fixture
+            .database
+            .pi_original(command)
+            .unwrap()
+            .unwrap()
+            .disposition,
+        PiDisposition::Unconfirmed
+    );
+}
+#[test]
 fn dropped_or_restarted_original_is_unconfirmed_and_never_another_permit() {
     let mut fixture = Fixture::new();
     let capture = fixture.capture();

@@ -3,6 +3,11 @@
 #[cfg(test)]
 mod command_tests;
 pub mod controller;
+mod deletion;
+pub use deletion::{
+    DeletionPreparation, DeletionSource, SessionAddress, SessionDeletionIntent,
+    SessionDeletionReceipt,
+};
 mod execution;
 #[cfg(test)]
 mod execution_tests;
@@ -32,7 +37,7 @@ pub(crate) enum DirectoryApproval {
 
 const MAX_REVISION: u64 = 9_007_199_254_740_991;
 const MAX_OPERATIONS: u32 = 2000;
-const SCHEMA_VERSION: i64 = 4;
+const SCHEMA_VERSION: i64 = 5;
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Error {
@@ -48,6 +53,7 @@ pub enum Error {
     UnsupportedVersion,
     LegacyState,
     Stopping,
+    UncertainRuntime,
 }
 impl From<rusqlite::Error> for Error {
     fn from(_: rusqlite::Error) -> Self {
@@ -308,14 +314,18 @@ impl Database {
                     [StoreGeneration::new().to_string()],
                 )?;
             }
-            transaction.execute_batch(include_str!("submitted_schema.sql"))?;
-            transaction.execute_batch("PRAGMA user_version=4;")?;
+            if version < 4 {
+                transaction.execute_batch(include_str!("submitted_schema.sql"))?;
+            }
+            transaction.execute_batch(include_str!("deletion_schema.sql"))?;
+            transaction.execute_batch("PRAGMA user_version=5;")?;
             transaction.commit()?;
         }
         if bytes.is_none() {
             let transaction = connection.transaction()?;
             transaction.execute_batch(include_str!("schema.sql"))?;
             transaction.execute_batch(include_str!("submitted_schema.sql"))?;
+            transaction.execute_batch(include_str!("deletion_schema.sql"))?;
             transaction.execute(
                 "INSERT INTO metadata(singleton,machine_id,revision,store_generation) VALUES(1, ?1, 0, ?2)",
                 [machine.to_string(), StoreGeneration::new().to_string()],
@@ -371,11 +381,12 @@ impl Database {
         }
         self.revision()?;
         self.generation()?;
-        let duplicate_original: bool = self.connection.query_row("SELECT EXISTS(SELECT 1 FROM operations o JOIN runtime_attempts a ON o.command_id=a.attempt_id) OR EXISTS(SELECT 1 FROM submitted_commands c JOIN operations o USING(command_id)) OR EXISTS(SELECT 1 FROM submitted_commands c JOIN runtime_attempts a ON c.command_id=a.attempt_id)",[],|row|row.get(0))?;
+        let duplicate_original: bool = self.connection.query_row("SELECT EXISTS(SELECT 1 FROM operations o JOIN runtime_attempts a ON o.command_id=a.attempt_id) OR EXISTS(SELECT 1 FROM submitted_commands c JOIN operations o USING(command_id)) OR EXISTS(SELECT 1 FROM submitted_commands c JOIN runtime_attempts a ON c.command_id=a.attempt_id) OR EXISTS(SELECT 1 FROM deletion_intents d JOIN operations o USING(command_id)) OR EXISTS(SELECT 1 FROM deletion_intents d JOIN submitted_commands c USING(command_id)) OR EXISTS(SELECT 1 FROM deletion_intents d JOIN runtime_attempts a ON d.command_id=a.attempt_id)",[],|row|row.get(0))?;
         if duplicate_original {
             return Err(Error::Corrupt);
         }
         self.validate_pi_originals()?;
+        self.validate_deletions()?;
         // Validate application invariants that cannot be expressed as a local
         // CHECK while inserting the whole graph in one transaction.
         let invalid: bool = self.connection.query_row("SELECT EXISTS(SELECT 1 FROM sessions s WHERE s.tombstoned=0 AND ((SELECT count(*) FROM panes p WHERE p.session_id=s.session_id AND p.role='pi' AND p.desired_present=1)!=1 OR (SELECT count(*) FROM panes p WHERE p.session_id=s.session_id AND p.role!='pi' AND p.desired_present=1)<1 OR (SELECT count(*) FROM panes p WHERE p.session_id=s.session_id AND p.desired_present=1)>32))", [], |row| row.get(0)).map_err(|_| Error::Corrupt)?;
@@ -785,20 +796,27 @@ impl Database {
         if let Some(original) = original(&self.connection, command, &fingerprint)? {
             return Ok(original);
         }
-        if !valid_name(name) { return Err(Error::Invalid); }
+        if !valid_name(name) {
+            return Err(Error::Invalid);
+        }
         let name = name.to_owned();
         self.mutate(|tx| {
-            let (directory, open): (String, bool) = tx.query_row(
-                "SELECT directory,desired_open FROM workspaces WHERE workspace_id=?1",
-                [workspace_id.to_string()],
-                |row| Ok((row.get(0)?, row.get(1)?)),
-            ).optional()?.ok_or(Error::NotFound)?;
+            let (directory, open): (String, bool) = tx
+                .query_row(
+                    "SELECT directory,desired_open FROM workspaces WHERE workspace_id=?1",
+                    [workspace_id.to_string()],
+                    |row| Ok((row.get(0)?, row.get(1)?)),
+                )
+                .optional()?
+                .ok_or(Error::NotFound)?;
             let revision = reserve(tx, expected, 0)?;
             let changed = tx.execute(
                 "UPDATE workspaces SET name=?1,config_revision=?2 WHERE workspace_id=?3",
                 params![name, sql_revision(revision)?, workspace_id.to_string()],
             )?;
-            if changed != 1 { return Err(Error::NotFound); }
+            if changed != 1 {
+                return Err(Error::NotFound);
+            }
             let accepted = Accepted {
                 command_id: command,
                 revision,
@@ -810,7 +828,14 @@ impl Database {
                     config_revision: revision,
                 },
             };
-            record(tx, command, fingerprint, "renameWorkspace", revision, &accepted)?;
+            record(
+                tx,
+                command,
+                fingerprint,
+                "renameWorkspace",
+                revision,
+                &accepted,
+            )?;
             Ok(accepted)
         })
     }
@@ -832,7 +857,9 @@ impl Database {
         if let Some(original) = original(&self.connection, command, &fingerprint)? {
             return Ok(original);
         }
-        if !valid_name(name) { return Err(Error::Invalid); }
+        if !valid_name(name) {
+            return Err(Error::Invalid);
+        }
         let name = name.to_owned();
         self.mutate(|tx| {
             let open: bool = tx.query_row(
@@ -940,7 +967,7 @@ fn original<T: DeserializeOwned>(
     capture: &Capture,
 ) -> Result<Option<T>, Error> {
     let runtime_original: bool = connection.query_row(
-        "SELECT EXISTS(SELECT 1 FROM runtime_attempts WHERE attempt_id=?1) OR EXISTS(SELECT 1 FROM submitted_commands WHERE command_id=?1)",
+        "SELECT EXISTS(SELECT 1 FROM runtime_attempts WHERE attempt_id=?1) OR EXISTS(SELECT 1 FROM submitted_commands WHERE command_id=?1) OR EXISTS(SELECT 1 FROM deletion_intents WHERE command_id=?1)",
         [command.to_string()],
         |row| row.get(0),
     )?;
@@ -1017,9 +1044,17 @@ fn advance_revision(tx: &Transaction<'_>, expected: u64) -> Result<u64, Error> {
     Ok(current + 1)
 }
 fn reserve(tx: &Transaction<'_>, expected: u64, additional_panes: u32) -> Result<u64, Error> {
+    let pending_deletion: bool = tx.query_row(
+        "SELECT EXISTS(SELECT 1 FROM deletion_intents i LEFT JOIN deletion_results r USING(command_id) WHERE r.command_id IS NULL)",
+        [],
+        |row| row.get(0),
+    )?;
+    if pending_deletion {
+        return Err(Error::Conflict);
+    }
     let revision = advance_revision(tx, expected)?;
     let operations: u32 = tx.query_row(
-        "SELECT (SELECT count(*) FROM operations) + (SELECT count(*) FROM submitted_commands)",
+        "SELECT (SELECT count(*) FROM operations) + (SELECT count(*) FROM submitted_commands) + (SELECT count(*) FROM deletion_intents)",
         [],
         |row| row.get(0),
     )?;
@@ -1471,7 +1506,7 @@ mod tests {
         let mut database = Database::open(root.path(), machine).unwrap();
         database
             .mutate(|tx| {
-                tx.execute_batch("PRAGMA user_version=5")?;
+                tx.execute_batch("PRAGMA user_version=6")?;
                 Ok(())
             })
             .unwrap();

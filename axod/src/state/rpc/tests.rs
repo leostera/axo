@@ -102,9 +102,18 @@ fn central_renames_capture_revision_preserve_scope_and_protect_manual_session_na
                "workspaceId":workspace_id,"name":"Renamed workspace"}),
         false,
     );
-    assert_eq!(renamed_workspace["result"]["value"]["operation"]["kind"], "renameWorkspace");
-    assert_eq!(renamed_workspace["result"]["value"]["operation"]["accepted"]["graph"]["name"], "Renamed workspace");
-    assert_eq!(renamed_workspace["result"]["value"]["operation"]["accepted"]["revision"], 2);
+    assert_eq!(
+        renamed_workspace["result"]["value"]["operation"]["kind"],
+        "renameWorkspace"
+    );
+    assert_eq!(
+        renamed_workspace["result"]["value"]["operation"]["accepted"]["graph"]["name"],
+        "Renamed workspace"
+    );
+    assert_eq!(
+        renamed_workspace["result"]["value"]["operation"]["accepted"]["revision"],
+        2
+    );
 
     let mut target = fixture.target();
     target["workspaceId"] = session["workspaceId"].clone();
@@ -115,7 +124,10 @@ fn central_renames_capture_revision_preserve_scope_and_protect_manual_session_na
         json!({"target":target,"commandId":original_session,"expectedRevision":2,"name":"Manual session name"}),
         false,
     );
-    assert_eq!(renamed_session["result"]["value"]["operation"]["kind"], "renameSession");
+    assert_eq!(
+        renamed_session["result"]["value"]["operation"]["kind"],
+        "renameSession"
+    );
     let accepted = &renamed_session["result"]["value"]["operation"]["accepted"];
     assert_eq!(accepted["graph"]["name"], "Manual session name");
     assert_eq!(accepted["graph"]["manualName"], true);
@@ -126,7 +138,10 @@ fn central_renames_capture_revision_preserve_scope_and_protect_manual_session_na
         json!({"target":target,"commandId":original_session,"expectedRevision":2,"name":"Manual session name"}),
         false,
     );
-    assert_eq!(&replay["result"]["value"]["operation"]["accepted"], accepted);
+    assert_eq!(
+        &replay["result"]["value"]["operation"]["accepted"],
+        accepted
+    );
     let conflicting_reuse = fixture.call(
         "axo.state.session.rename",
         json!({"target":target,"commandId":original_session,"expectedRevision":2,"name":"Different name"}),
@@ -141,6 +156,216 @@ fn central_renames_capture_revision_preserve_scope_and_protect_manual_session_na
     );
     assert_eq!(stale["error"]["code"], -32007);
     assert_eq!(fixture.owner.revision().unwrap(), 3);
+}
+#[test]
+fn central_delete_is_local_batch_scoped_and_retains_tombstoned_records() {
+    let fixture = Fixture::new();
+    let created = fixture.create(CommandId::new());
+    let graph = &created["result"]["value"]["operation"]["accepted"]["graph"];
+    let session = &graph["initialSession"]["session"];
+    let address = json!({"workspaceId":session["workspaceId"],"sessionId":session["sessionId"]});
+    let command = CommandId::new();
+    let params = json!({"target":fixture.target(),"commandId":command,"expectedRevision":1,"sessions":[address]});
+
+    assert_eq!(
+        fixture.call("axo.state.session.delete", params.clone(), false)["error"]["code"],
+        -32601
+    );
+    let mut missing_scope = params.clone();
+    missing_scope["sessions"][0]
+        .as_object_mut()
+        .unwrap()
+        .remove("workspaceId");
+    assert_eq!(
+        fixture.call("axo.state.session.delete", missing_scope, true)["error"]["code"],
+        -32602
+    );
+    let mut duplicate = params.clone();
+    duplicate["sessions"] = json!([address, address]);
+    assert_eq!(
+        fixture.call("axo.state.session.delete", duplicate, true)["error"]["code"],
+        -32602
+    );
+
+    let deleted = fixture.call("axo.state.session.delete", params.clone(), true);
+    let receipt = deleted["result"]["value"]["deletion"].clone();
+    assert_eq!(receipt["intent"]["sessions"], json!([address]));
+    assert_eq!(receipt["revision"], json!(2));
+    assert_eq!(fixture.owner.revision().unwrap(), 2);
+    assert!(
+        fixture.call(
+            "axo.state.session.list",
+            json!({"target":fixture.target(),"workspaceId":session["workspaceId"]}),
+            false
+        )["result"]["value"]["records"]
+            .as_array()
+            .unwrap()
+            .is_empty()
+    );
+    let retained: u32 = fixture
+        .owner
+        .database
+        .lock()
+        .unwrap()
+        .connection
+        .query_row(
+            "SELECT count(*) FROM sessions WHERE tombstoned=1",
+            [],
+            |row| row.get(0),
+        )
+        .unwrap();
+    assert_eq!(retained, 1);
+
+    let replay = fixture.call("axo.state.session.delete", params, true);
+    assert_eq!(replay["result"]["value"]["deletion"], receipt);
+    let lookup = fixture.call(
+        "axo.state.operation.get",
+        json!({"target":fixture.target(),"commandId":command}),
+        false,
+    );
+    assert_eq!(lookup["result"]["value"]["deletion"], receipt);
+    assert_eq!(fixture.owner.revision().unwrap(), 2);
+}
+#[test]
+fn central_delete_stops_only_the_captured_runtime_and_lost_response_lookup_never_retries() {
+    let fixture = Fixture::new();
+    let created = fixture.create(CommandId::new());
+    let graph = &created["result"]["value"]["operation"]["accepted"]["graph"];
+    let session = &graph["initialSession"]["session"];
+    let pane_id: PaneId =
+        serde_json::from_value(graph["initialSession"]["panes"][1]["paneId"].clone()).unwrap();
+    let attempt = {
+        let mut database = fixture.owner.database.lock().unwrap();
+        let specification = database.specification(pane_id).unwrap();
+        match database
+            .reserve_attempt(
+                pane_id,
+                fixture.owner.native.generation,
+                specification.configuration,
+            )
+            .unwrap()
+        {
+            super::super::execution::Reservation::New(attempt) => attempt,
+            super::super::execution::Reservation::Existing(_) => {
+                panic!("fresh runtime reservation")
+            }
+        }
+    };
+    let launch = crate::model::TerminalLaunch {
+        directory: fixture.root.path().to_string_lossy().into_owned(),
+        argv: vec!["/bin/sh".into(), "-c".into(), "sleep 0.15".into()],
+    };
+    fixture
+        .owner
+        .native
+        .start_materialized(attempt.command_id, attempt.runtime, &launch, false)
+        .unwrap();
+    fixture
+        .owner
+        .database
+        .lock()
+        .unwrap()
+        .mark_launched(&attempt, attempt.runtime)
+        .unwrap();
+
+    let command = CommandId::new();
+    let params = json!({"target":fixture.target(),"commandId":command,"expectedRevision":1,
+        "sessions":[{"workspaceId":session["workspaceId"],"sessionId":session["sessionId"]}]});
+    let _lost_reply = fixture.call("axo.state.session.delete", params.clone(), true);
+    let mut receipt = Value::Null;
+    for _ in 0..200 {
+        let lookup = fixture.call(
+            "axo.state.operation.get",
+            json!({"target":fixture.target(),"commandId":command}),
+            false,
+        );
+        receipt = lookup["result"]["value"]["deletion"].clone();
+        if receipt["revision"].as_u64().is_some() {
+            break;
+        }
+        thread::sleep(Duration::from_millis(10));
+    }
+    assert_eq!(receipt["revision"], json!(2));
+    assert_eq!(receipt["runtimes"].as_array().unwrap().len(), 1);
+    assert_eq!(
+        receipt["runtimes"][0]["runtime_generation"],
+        json!(attempt.runtime.runtime_generation)
+    );
+    let revision = fixture.owner.revision().unwrap();
+    let replay = fixture.call("axo.state.session.delete", params, true);
+    assert_eq!(replay["result"]["value"]["deletion"], receipt);
+    assert_eq!(fixture.owner.revision().unwrap(), revision);
+}
+#[test]
+fn delete_lookup_does_not_signal_or_infer_completion_from_missing_runtime() {
+    let fixture = Fixture::new();
+    let created = fixture.create(CommandId::new());
+    let graph = &created["result"]["value"]["operation"]["accepted"]["graph"];
+    let session = &graph["initialSession"]["session"];
+    let pane_id: PaneId =
+        serde_json::from_value(graph["initialSession"]["panes"][1]["paneId"].clone()).unwrap();
+    let attempt = {
+        let mut database = fixture.owner.database.lock().unwrap();
+        let specification = database.specification(pane_id).unwrap();
+        match database
+            .reserve_attempt(
+                pane_id,
+                fixture.owner.native.generation,
+                specification.configuration,
+            )
+            .unwrap()
+        {
+            super::super::execution::Reservation::New(attempt) => attempt,
+            super::super::execution::Reservation::Existing(_) => {
+                panic!("fresh runtime reservation")
+            }
+        }
+    };
+    let command = CommandId::new();
+    let intent = SessionDeletionIntent {
+        target: DeletionSource {
+            machine_id: fixture.machine,
+            host_generation: fixture.owner.native.generation,
+            store_generation: fixture.owner.generation().unwrap(),
+        },
+        sessions: vec![SessionAddress {
+            workspace_id: Some(serde_json::from_value(session["workspaceId"].clone()).unwrap()),
+            session_id: serde_json::from_value(session["sessionId"].clone()).unwrap(),
+        }],
+        expected_revision: 1,
+    };
+    fixture
+        .owner
+        .database
+        .lock()
+        .unwrap()
+        .reserve_deletion(command, intent, vec![attempt.runtime])
+        .unwrap();
+
+    for _ in 0..2 {
+        let lookup = fixture.call(
+            "axo.state.operation.get",
+            json!({"target":fixture.target(),"commandId":command}),
+            false,
+        );
+        assert_eq!(
+            lookup["result"]["value"]["deletion"]["revision"],
+            Value::Null
+        );
+        assert_eq!(
+            fixture
+                .owner
+                .database
+                .lock()
+                .unwrap()
+                .sessions()
+                .unwrap()
+                .len(),
+            1
+        );
+        assert!(fixture.owner.runtime_owner().list().is_empty());
+        assert_eq!(fixture.owner.revision().unwrap(), 1);
+    }
 }
 #[test]
 fn central_pi_observation_requires_closed_current_scope_and_never_starts_work() {

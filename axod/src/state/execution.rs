@@ -105,6 +105,9 @@ impl Database {
             workspace_revision,
         ) = row;
         let session = parse_id(&session)?;
+        if self.session_deletion_pending(session)? {
+            return Err(Error::Conflict);
+        }
         let pane = self
             .panes(session)?
             .into_iter()
@@ -163,7 +166,7 @@ impl Database {
         };
         self.mutate(|tx| {
             let metadata_original: bool = tx.query_row(
-                "SELECT EXISTS(SELECT 1 FROM operations WHERE command_id=?1) OR EXISTS(SELECT 1 FROM submitted_commands WHERE command_id=?1)",
+                "SELECT EXISTS(SELECT 1 FROM operations WHERE command_id=?1) OR EXISTS(SELECT 1 FROM submitted_commands WHERE command_id=?1) OR EXISTS(SELECT 1 FROM deletion_intents WHERE command_id=?1)",
                 [attempt.command_id.to_string()],
                 |row| row.get(0),
             )?;

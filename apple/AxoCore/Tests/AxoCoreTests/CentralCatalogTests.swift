@@ -31,7 +31,7 @@ private actor CentralReplies {
             bootstraps += 1
             if bootstraps == 2, mode == .lateRevision { revision = 8 }
             if bootstraps == 2, mode == .lateStore { generation = UUID().uuidString }
-            body = ["backendCompleteCreation": true, "schemaVersion": 4]
+            body = ["backendCompleteCreation": true, "schemaVersion": 5]
         case "axo.state.workspace.list":
             let count = mode == .capacity ? 129 : 3
             let after = (parameters["cursor"] as? [String: Any])?["after"] as? String

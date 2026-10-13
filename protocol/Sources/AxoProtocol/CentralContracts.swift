@@ -160,6 +160,31 @@ public enum CentralPayload: Equatable, Sendable {
     case piCommand(CentralPiOriginal?)
     case operation(original: CentralOperation?, observation: CentralSessionView?)
     case completion([TerminalRuntime])
+    case deletion(CentralSessionDeletionReceipt)
+}
+
+public struct CentralSessionAddress: Equatable, Sendable {
+    public let workspaceId: UUID?
+    public let sessionId: UUID
+    public init(workspaceId: UUID?, sessionId: UUID) {
+        self.workspaceId = workspaceId
+        self.sessionId = sessionId
+    }
+    var json: JSONValue {
+        .object(["workspaceId": .nullableID(workspaceId), "sessionId": .id(sessionId)])
+    }
+}
+public struct CentralSessionDeletionIntent: Equatable, Sendable {
+    public let target: CentralSource
+    public let sessions: [CentralSessionAddress]
+    public let expectedRevision: CentralRevision
+}
+public struct CentralSessionDeletionReceipt: Equatable, Sendable {
+    public let commandId: UUID
+    public let intent: CentralSessionDeletionIntent
+    public let runtimes: [TerminalRuntime]
+    /// Null means reserved/pending and never authorizes another stop attempt.
+    public let revision: CentralRevision?
 }
 public struct CentralResponse: Equatable, Sendable {
     public let source: CentralSource

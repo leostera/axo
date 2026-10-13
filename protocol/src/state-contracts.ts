@@ -37,6 +37,8 @@ export const stateOperationSchema = z.discriminatedUnion("kind", [
   z.object({ kind: z.literal("renameWorkspace"), accepted: accepted(desiredWorkspaceSchema) }).strict(),
   z.object({ kind: z.literal("renameSession"), accepted: accepted(desiredSessionSchema.refine(value => value.manualName)) }).strict(),
 ]);
+const deletionIntent = z.object({ target: stateTargetSchema, sessions: z.array(z.object({ workspaceId: uuid.nullable(), sessionId: uuid }).strict()).min(1).max(32).refine(value => new Set(value.map(session => session.sessionId)).size === value.length), expectedRevision: revision }).strict();
+export const stateSessionDeletionReceiptSchema = z.object({ commandId: uuid, intent: deletionIntent, runtimes: z.array(runtimeRefSchema).max(128).refine(value => new Set(value.map(runtime => JSON.stringify(runtime))).size === value.length), revision: revision.min(1).nullable() }).strict().refine(value => value.runtimes.every(runtime => value.intent.sessions.some(session => session.sessionId === runtime.target.session_id)) && (value.revision === null || value.revision === value.intent.expectedRevision + 1));
 const availability = z.enum(["live", "materializing", "restarting", "stopping", "stopped", "blocked"]);
 const observedPane = z.object({ desired: desiredPaneSchema, availability, lastRuntime: runtimeRefSchema.nullable(), terminal: terminalSchema.nullable() }).strict().refine(value => {
   if (value.terminal === null) return true;
@@ -106,13 +108,17 @@ export const stateLocalMethods = {
   "axo.state.lifecycle.set": z.object({ ...mutation, subject, lifecycle }).strict(),
   "axo.state.pane.add": z.object({ ...mutation, target: stateSessionTargetSchema }).strict(),
   "axo.state.pane.remove": z.object({ ...mutation, target: stateSessionTargetSchema, paneId: uuid }).strict(),
+  "axo.state.session.delete": z.object({ ...mutation, sessions: deletionIntent.shape.sessions }).strict(),
   "axo.state.session.completion": z.object({ target: stateSessionTargetSchema, runtimes: z.array(runtimeRefSchema).min(1).max(32).refine(value => new Set(value.map(runtime => JSON.stringify(runtime))).size === value.length) }).strict(),
 } as const;
-export const stateMutationMethods = ["axo.state.chat.command.submit", "axo.state.workspace.create", "axo.state.session.create", "axo.state.workspace.rename", "axo.state.session.rename", "axo.state.lifecycle.set", "axo.state.pane.add", "axo.state.pane.remove"] as const;
+export const stateMutationMethods = ["axo.state.chat.command.submit", "axo.state.workspace.create", "axo.state.session.create", "axo.state.workspace.rename", "axo.state.session.rename", "axo.state.session.delete", "axo.state.lifecycle.set", "axo.state.pane.add", "axo.state.pane.remove"] as const;
 const envelope = <T extends z.ZodType>(value: T) => z.object({ hostGeneration: uuid, storeGeneration: uuid, revision, value }).strict();
-const operation = envelope(z.object({ operation: stateOperationSchema.nullable(), session: stateSessionViewSchema.nullable() }).strict());
+const operation = envelope(z.object({ operation: stateOperationSchema.nullable(), session: stateSessionViewSchema.nullable(), deletion: stateSessionDeletionReceiptSchema.nullable() }).strict().refine(value => value.deletion === null || (value.operation === null && value.session === null))).refine(value => {
+  const deletion = value.value.deletion;
+  return deletion === null || (deletion.revision === null ? value.revision === deletion.intent.expectedRevision : deletion.revision <= value.revision);
+});
 export const stateResults = {
-  "axo.state.get": envelope(z.object({ backendCompleteCreation: z.literal(true), schemaVersion: z.literal(4) }).strict()),
+  "axo.state.get": envelope(z.object({ backendCompleteCreation: z.literal(true), schemaVersion: z.literal(5) }).strict()),
   "axo.state.workspace.list": envelope(z.object({ records: z.array(desiredWorkspaceSchema).max(50), cursor: cursor.nullable() }).strict()),
   "axo.state.session.list": envelope(z.object({ records: z.array(stateSessionViewSchema).max(50), cursor: cursor.nullable() }).strict()),
   "axo.state.session.get": envelope(stateSessionViewSchema),
@@ -125,5 +131,6 @@ export const stateResults = {
   "axo.state.workspace.create": operation, "axo.state.session.create": operation,
   "axo.state.workspace.rename": operation, "axo.state.session.rename": operation,
   "axo.state.lifecycle.set": operation, "axo.state.pane.add": operation, "axo.state.pane.remove": operation, "axo.state.operation.get": operation,
+  "axo.state.session.delete": operation,
   "axo.state.session.completion": envelope(z.object({ completed: z.array(runtimeRefSchema).max(32) }).strict()),
 } as const;

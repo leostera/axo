@@ -13,6 +13,7 @@ public struct CentralRequest: Sendable {
     public var commandId: UUID? {
         if case .mutation(let id, _, _) = intent { return id }
         if case .submitPi(let capture) = intent { return capture.commandId }
+        if case .deletion(_, let commandId) = intent { return commandId }
         return nil
     }
     enum Intent: Sendable {
@@ -27,6 +28,7 @@ public struct CentralRequest: Sendable {
         case piTool(target: CentralPiBindingTarget, readMode: CentralPiHistoryReadMode, entryId: String, toolCallId: String, cursor: CentralPiToolCursor?, limit: Int)
         case mutation(UUID, CentralRevision, Mutation)
         case operation(UUID)
+        case deletion(CentralSessionDeletionIntent, UUID)
         case completion(UUID?, UUID, [TerminalRuntime])
     }
     enum Mutation: Sendable {
@@ -195,6 +197,17 @@ public struct CentralRequest: Sendable {
         try ids([command], method: method)
         guard revision.rawValue < 9_007_199_254_740_991 else { throw AxoProtocolValidationError.invalidParameters(method: method) }
         return Self(method: method, parameters: .object(fields), machine: source.machine, source: source, intent: .mutation(command, revision, mutation))
+    }
+    public static func deleteSessions(source: CentralSource, commandId: UUID, expectedRevision: CentralRevision, sessions: [CentralSessionAddress]) throws -> Self {
+        let method = "axo.state.session.delete"
+        try ids([commandId] + sessions.flatMap { [$0.sessionId] + ($0.workspaceId.map { [$0] } ?? []) }, method: method)
+        guard (1...32).contains(sessions.count), expectedRevision.rawValue < 9_007_199_254_740_991,
+              Set(sessions.map(\.sessionId)).count == sessions.count else {
+            throw AxoProtocolValidationError.invalidParameters(method: method)
+        }
+        let intent = CentralSessionDeletionIntent(target: source, sessions: sessions, expectedRevision: expectedRevision)
+        let parameters = JSONValue.object(["target": source.json, "commandId": .id(commandId), "expectedRevision": .number(Double(expectedRevision.rawValue)), "sessions": .array(sessions.map(\.json))])
+        return Self(method: method, parameters: parameters, machine: source.machine, source: source, intent: .deletion(intent, commandId))
     }
     public static func operation(source: CentralSource, commandId: UUID) throws -> Self {
         let method = "axo.state.operation.get"

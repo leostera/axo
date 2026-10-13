@@ -19,6 +19,11 @@ test("central commands require store generation, explicit workspace scope and no
   assert.ok(remoteMethods["axo.state.session.rename"].safeParse({ target: { ...target, workspaceId: id(5), sessionId: id(4) }, commandId: id(10), expectedRevision: 1, name: "Manual" }).success);
   assert.equal(Object.hasOwn(remoteMethods, "axo.state.workspace.create"), false);
   assert.ok(localMethods["axo.state.workspace.create"].safeParse({ target, commandId: id(8), expectedRevision: 0, name: "Workspace", directoryPath: "/approved" }).success);
+  const deletion = { target, commandId: id(11), expectedRevision: 1, sessions: [{ workspaceId: id(5), sessionId: id(4) }] };
+  assert.ok(localMethods["axo.state.session.delete"].safeParse(deletion).success);
+  assert.equal(Object.hasOwn(remoteMethods, "axo.state.session.delete"), false);
+  assert.equal(localMethods["axo.state.session.delete"].safeParse({ ...deletion, sessions: [] }).success, false);
+  assert.equal(localMethods["axo.state.session.delete"].safeParse({ ...deletion, sessions: [...deletion.sessions, ...deletion.sessions] }).success, false);
   assert.equal(localMethods["axo.state.workspace.list"].safeParse({ target, cursor: null }).success, false);
 });
 test("central graph observations cannot claim ready without every desired terminal", () => {
@@ -26,13 +31,23 @@ test("central graph observations cannot claim ready without every desired termin
   assert.equal(results["axo.state.session.get"].safeParse({ ...envelope, value: { ...observed, readiness: "ready" } }).success, false);
   assert.equal(results["axo.state.session.get"].safeParse({ ...envelope, value: { ...observed, panes: [observed.panes[0], observed.panes[0]] } }).success, false);
 });
+test("Delete receipts bind exact batch revision and keep pending distinct from commit", () => {
+  const intent = { target, sessions: [{ workspaceId: null, sessionId: id(4) }], expectedRevision: 1 };
+  const pending = { commandId: id(12), intent, runtimes: [], revision: null };
+  const result = (deletion: unknown, revision = 1) => results["axo.state.session.delete"].safeParse({ ...envelope, revision, value: { operation: null, session: null, deletion } });
+  assert.ok(result(pending).success);
+  assert.equal(result(pending, 2).success, false);
+  assert.ok(result({ ...pending, revision: 2 }, 2).success);
+  assert.equal(result({ ...pending, revision: 3 }, 3).success, false);
+  assert.equal(result({ ...pending, intent: { ...intent, sessions: [] } }).success, false);
+});
 test("original graph result is separate from current availability", () => {
   const operation = { kind: "createWorkspace", accepted: { commandId: id(8), revision: 1, graph: { workspace: { workspaceId: id(5), name: "Workspace", directory: "/approved", lifecycle: "open", configRevision: 1 }, initialSession: { session, panes: [pane, shell] } } } };
-  assert.ok(results["axo.state.workspace.create"].safeParse({ ...envelope, value: { operation, session: observed } }).success);
+  assert.ok(results["axo.state.workspace.create"].safeParse({ ...envelope, value: { operation, session: observed, deletion: null } }).success);
   const manualSession = { ...session, name: "Manual", manualName: true, configRevision: 2 };
   const renamed = { kind: "renameSession", accepted: { commandId: id(10), revision: 2, graph: manualSession } };
-  assert.ok(results["axo.state.session.rename"].safeParse({ ...envelope, revision: 2, value: { operation: renamed, session: { ...observed, session: manualSession } } }).success);
-  assert.equal(results["axo.state.session.rename"].safeParse({ ...envelope, revision: 2, value: { operation: { ...renamed, accepted: { ...renamed.accepted, graph: { ...manualSession, manualName: false } } }, session: observed } }).success, false);
+  assert.ok(results["axo.state.session.rename"].safeParse({ ...envelope, revision: 2, value: { operation: renamed, session: { ...observed, session: manualSession }, deletion: null } }).success);
+  assert.equal(results["axo.state.session.rename"].safeParse({ ...envelope, revision: 2, value: { operation: { ...renamed, accepted: { ...renamed.accepted, graph: { ...manualSession, manualName: false } } }, session: observed, deletion: null } }).success, false);
 });
 test("central mutation notifications never invoke registered effects", async () => {
   const server = createProfileServer<void>(); let effects = 0;

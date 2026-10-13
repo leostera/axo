@@ -60,14 +60,14 @@ import XCTest
     return try json([
       "hostGeneration": source.machine.hostGeneration.uuidString,
       "storeGeneration": source.storeGeneration.uuidString,
-      "revision": acceptedRevision, "value": ["operation": operation, "session": NSNull()],
+      "revision": acceptedRevision, "value": ["operation": operation, "session": NSNull(), "deletion": NSNull()],
     ])
   }
   private func missing(_ source: CentralSource, revision: Int = 0) throws -> JSONValue {
     try json([
       "hostGeneration": source.machine.hostGeneration.uuidString,
       "storeGeneration": source.storeGeneration.uuidString,
-      "revision": revision, "value": ["operation": NSNull(), "session": NSNull()],
+      "revision": revision, "value": ["operation": NSNull(), "session": NSNull(), "deletion": NSNull()],
     ])
   }
   func testWorkspaceIsSubmittedOnceAndReadOnlyReconciliationAcceptsCanonicalGraph() async throws {

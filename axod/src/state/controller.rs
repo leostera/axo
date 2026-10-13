@@ -7,8 +7,9 @@ mod model_fixture;
 #[cfg(test)]
 mod tests;
 use super::{
-    Accepted, ApprovedDirectory, ApprovedHome, Attempt, AttemptPhase, Database, DesiredLifecycle,
-    Error, LifecycleTarget, PaneRole, SessionGraph, WorkspaceGraph,
+    Accepted, ApprovedDirectory, ApprovedHome, Attempt, AttemptPhase, Database,
+    DeletionPreparation, DesiredLifecycle, Error, LifecycleTarget, PaneRole, SessionDeletionIntent,
+    SessionDeletionReceipt, SessionGraph, WorkspaceGraph,
     execution::{Reservation, Specification},
 };
 use crate::{
@@ -185,7 +186,10 @@ impl Controller {
         workspace_id: WorkspaceId,
         name: &str,
     ) -> Result<Accepted<super::DesiredWorkspace>, Error> {
-        self.database.lock().unwrap().rename_workspace(command, expected, workspace_id, name)
+        self.database
+            .lock()
+            .unwrap()
+            .rename_workspace(command, expected, workspace_id, name)
     }
     pub fn rename_session(
         &self,
@@ -195,7 +199,13 @@ impl Controller {
         session_id: SessionId,
         name: &str,
     ) -> Result<Accepted<super::DesiredSession>, Error> {
-        self.database.lock().unwrap().rename_session(command, expected, workspace_id, session_id, name)
+        self.database.lock().unwrap().rename_session(
+            command,
+            expected,
+            workspace_id,
+            session_id,
+            name,
+        )
     }
     pub fn set_lifecycle(
         &self,
@@ -231,6 +241,115 @@ impl Controller {
             .lock()
             .unwrap()
             .remove_shell(command, expected, session, pane)
+    }
+    pub fn delete_sessions(
+        &self,
+        command: CommandId,
+        intent: SessionDeletionIntent,
+    ) -> Result<SessionDeletionReceipt, Error> {
+        self.ensure_owner()?;
+        let native = self.runtime_owner();
+        if intent.target.host_generation != native.generation {
+            return Err(Error::Conflict);
+        }
+        let existing = { self.database.lock().unwrap().deletion(command)? };
+        if let Some(original) = existing {
+            if original.intent != intent {
+                return Err(Error::Conflict);
+            }
+            return self.reconcile_deletion(command)?.ok_or(Error::Corrupt);
+        }
+        let (preparation, attempts) = {
+            let mut database = self.database.lock().unwrap();
+            if database.has_unconfirmed_pi_in(&intent.sessions)? {
+                return Err(Error::UncertainRuntime);
+            }
+            let attempts = database.deletion_attempts(&intent.sessions)?;
+            for attempt in &attempts {
+                if native.completion_evidence(attempt.runtime).is_none()
+                    && !native.can_stop_exact(attempt.runtime)
+                {
+                    return Err(Error::UncertainRuntime);
+                }
+            }
+            let runtimes = attempts.iter().map(|attempt| attempt.runtime).collect();
+            let preparation = database.reserve_deletion(command, intent, runtimes)?;
+            (preparation, attempts)
+        };
+        let receipt = match preparation {
+            DeletionPreparation::Original(receipt) => receipt,
+            DeletionPreparation::Reserved(receipt) => {
+                for attempt in attempts {
+                    if native.completion_evidence(attempt.runtime).is_some() {
+                        continue;
+                    }
+                    // Recheck the exact live owner immediately before signaling.
+                    // A changed/uncertain owner remains pending and is never
+                    // inferred complete or retried from the immutable intent.
+                    if native.can_stop_exact(attempt.runtime) {
+                        let _ = native.stop(attempt.runtime);
+                    }
+                }
+                receipt
+            }
+        };
+        self.reconcile_deletion(command)
+            .map(|value| value.unwrap_or(receipt))
+    }
+    /// Observes and may publish the original delete completion. This method
+    /// never signals a runtime; absent proof leaves the immutable receipt pending.
+    pub fn reconcile_deletion(
+        &self,
+        command: CommandId,
+    ) -> Result<Option<SessionDeletionReceipt>, Error> {
+        self.ensure_owner()?;
+        let Some(receipt) = self.database.lock().unwrap().deletion(command)? else {
+            return Ok(None);
+        };
+        if receipt.revision.is_some() {
+            return Ok(Some(receipt));
+        }
+        let native = self.runtime_owner();
+        for runtime in &receipt.runtimes {
+            let attempt = self
+                .database
+                .lock()
+                .unwrap()
+                .attempt(runtime.target.pane_id)?
+                .ok_or(Error::Conflict)?;
+            if attempt.runtime != *runtime {
+                return Err(Error::Conflict);
+            }
+            if attempt.phase == AttemptPhase::CompletionProven {
+                continue;
+            }
+            let Some(proof) = native.completion_evidence(*runtime) else {
+                return Ok(Some(receipt));
+            };
+            let completion = self
+                .database
+                .lock()
+                .unwrap()
+                .complete_attempt(&attempt, proof);
+            match completion {
+                Ok(()) => {}
+                Err(Error::Conflict) => {
+                    let current = self
+                        .database
+                        .lock()
+                        .unwrap()
+                        .attempt(runtime.target.pane_id)?;
+                    if !current.is_some_and(|current| {
+                        current.runtime == *runtime
+                            && current.phase == AttemptPhase::CompletionProven
+                    }) {
+                        return Err(Error::Conflict);
+                    }
+                }
+                Err(error) => return Err(error),
+            }
+        }
+        self.database.lock().unwrap().commit_deletion(command)
     }
     pub fn observations(&self) -> Result<Vec<Observation>, Error> {
         let database = self.database.lock().unwrap();
@@ -317,6 +436,7 @@ impl Controller {
     }
     pub(super) fn reconcile_pane(&self, pane: PaneId) -> Result<Availability, Error> {
         self.ensure_owner()?;
+        let _admission = self.admission.lock().unwrap();
         let (spec, previous) = {
             let database = self.database.lock().unwrap();
             (database.specification(pane)?, database.attempt(pane)?)

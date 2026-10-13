@@ -32,15 +32,15 @@ final class CentralContractTests: XCTestCase {
     }
     func testBootstrapPinsHostStoreAndDoesNotRequireLegacyRuntimeCapability() throws {
         let request = try CentralRequest.bootstrap(machine: machine)
-        let value = try json(envelope(["backendCompleteCreation": true, "schemaVersion": 4]))
+        let value = try json(envelope(["backendCompleteCreation": true, "schemaVersion": 5]))
         let result = try request.parseResult(value)
         XCTAssertEqual(result.source, source); XCTAssertEqual(result.payload, .bootstrap)
         let negotiation = try json(["protocolVersion": 1, "methods": Array(CentralRequest.readMethods), "deliveryCredits": ["frames": 32, "bytes": 131072]])
         XCTAssertEqual(Set(try AxoProtocolResultValidator.negotiation(negotiation).methods), CentralRequest.readMethods)
-        var stale = envelope(["backendCompleteCreation": true, "schemaVersion": 4])
+        var stale = envelope(["backendCompleteCreation": true, "schemaVersion": 5])
         stale["hostGeneration"] = UUID().uuidString
         XCTAssertThrowsError(try request.parseResult(json(stale)))
-        for version in [3, 5] {
+        for version in [3, 4] {
             stale = envelope(["backendCompleteCreation": true, "schemaVersion": version])
             XCTAssertThrowsError(try request.parseResult(json(stale)))
         }
@@ -129,18 +129,18 @@ final class CentralContractTests: XCTestCase {
         let operation: [String: Any] = ["kind": "createStandalone", "accepted": accepted]
         var observation = view(), changed = session()
         changed["name"] = "Later name"; changed["configRevision"] = 2; observation["session"] = changed
-        let response = try request.parseResult(json(envelope(["operation": operation, "session": observation], revision: 2)))
+        let response = try request.parseResult(json(envelope(["operation": operation, "session": observation, "deletion": NSNull()], revision: 2)))
         guard case .operation(.createStandalone(let original)?, let current?) = response.payload else { return XCTFail("Original and observation") }
         XCTAssertEqual(original.graph.session.name, "New Session"); XCTAssertEqual(current.session.name, "Later name")
         for key in ["kind", "commandId", "revision"] {
             var bad = operation, value = accepted
             if key == "kind" { bad[key] = "createSession" }
             else { value[key] = key == "commandId" ? UUID().uuidString as Any : 2 as Any; bad["accepted"] = value }
-            XCTAssertThrowsError(try request.parseResult(json(envelope(["operation": bad, "session": NSNull()], revision: 2))), key)
+            XCTAssertThrowsError(try request.parseResult(json(envelope(["operation": bad, "session": NSNull(), "deletion": NSNull()], revision: 2))), key)
         }
         let lookup = try CentralRequest.operation(source: source, commandId: command)
-        XCTAssertNoThrow(try lookup.parseResult(json(envelope(["operation": NSNull(), "session": NSNull()]))))
-        XCTAssertThrowsError(try lookup.parseResult(json(envelope(["operation": NSNull(), "session": view()]))))
+        XCTAssertNoThrow(try lookup.parseResult(json(envelope(["operation": NSNull(), "session": NSNull(), "deletion": NSNull()]))))
+        XCTAssertThrowsError(try lookup.parseResult(json(envelope(["operation": NSNull(), "session": view(), "deletion": NSNull()]))))
     }
     func testRenameOperationsRequireExactNamesAndManualSessionProtection() throws {
         let workspaceId = UUID()
@@ -153,7 +153,7 @@ final class CentralContractTests: XCTestCase {
         let workspaceOperation: [String: Any] = ["kind": "renameWorkspace", "accepted":
             ["commandId": command.uuidString, "revision": 2, "graph": workspace]]
         XCTAssertNoThrow(try workspaceRequest.parseResult(json(envelope(
-            ["operation": workspaceOperation, "session": NSNull()], revision: 2))))
+            ["operation": workspaceOperation, "session": NSNull(), "deletion": NSNull()], revision: 2))))
         XCTAssertThrowsError(try CentralRequest.renameWorkspace(source: source, workspaceId: workspaceId,
             commandId: command, expectedRevision: revision, name: " padded "))
 
@@ -166,7 +166,7 @@ final class CentralContractTests: XCTestCase {
             ["commandId": command.uuidString, "revision": 2, "graph": renamedSession]]
         var observation = view(); observation["session"] = renamedSession
         XCTAssertNoThrow(try sessionRequest.parseResult(json(envelope(
-            ["operation": sessionOperation, "session": observation], revision: 2))))
+            ["operation": sessionOperation, "session": observation, "deletion": NSNull()], revision: 2))))
         for invalid in [
             { () -> [String: Any] in var value = renamedSession; value["manualName"] = false; return value }(),
             { () -> [String: Any] in var value = renamedSession; value["name"] = "Other"; return value }(),
@@ -175,8 +175,43 @@ final class CentralContractTests: XCTestCase {
             let malformed: [String: Any] = ["kind": "renameSession", "accepted":
                 ["commandId": command.uuidString, "revision": 2, "graph": invalid]]
             XCTAssertThrowsError(try sessionRequest.parseResult(json(envelope(
-                ["operation": malformed, "session": observation], revision: 2))))
+                ["operation": malformed, "session": observation, "deletion": NSNull()], revision: 2))))
         }
+    }
+    func testCentralDeleteCapturesBatchAndReconcilesPendingAndCommittedReceipts() throws {
+        let address = CentralSessionAddress(workspaceId: nil, sessionId: sessionID)
+        let request = try CentralRequest.deleteSessions(source: source, commandId: command, expectedRevision: revision, sessions: [address])
+        XCTAssertEqual(request.method, "axo.state.session.delete")
+        XCTAssertEqual(request.commandId, command)
+        XCTAssertThrowsError(try CentralRequest.deleteSessions(source: source, commandId: command, expectedRevision: revision, sessions: []))
+        XCTAssertThrowsError(try CentralRequest.deleteSessions(source: source, commandId: command, expectedRevision: revision, sessions: [address, address]))
+        let intent: [String: Any] = ["target": sourceObject(), "sessions": [["workspaceId": NSNull(), "sessionId": sessionID.uuidString]], "expectedRevision": 1]
+        let pending: [String: Any] = ["commandId": command.uuidString, "intent": intent, "runtimes": [], "revision": NSNull()]
+        let pendingEnvelope = envelope(["operation": NSNull(), "session": NSNull(), "deletion": pending], revision: 1)
+        guard case .deletion(let original) = try request.parseResult(json(pendingEnvelope)).payload else { return XCTFail("Pending original") }
+        XCTAssertEqual(original.commandId, command)
+        XCTAssertNil(original.revision)
+
+        let lookup = try CentralRequest.operation(source: source, commandId: command)
+        guard case .deletion(let reconciled) = try lookup.parseResult(json(pendingEnvelope)).payload else { return XCTFail("Pending reconciliation") }
+        XCTAssertEqual(reconciled, original)
+        let successorSource = try CentralSource(machine: MachineTarget(machineId: machine.machineId, hostGeneration: UUID()), storeGeneration: store)
+        let reconnectedLookup = try CentralRequest.operation(source: successorSource, commandId: command)
+        let reconnectedEnvelope: [String: Any] = ["hostGeneration": successorSource.machine.hostGeneration.uuidString,
+            "storeGeneration": store.uuidString, "revision": 1,
+            "value": ["operation": NSNull(), "session": NSNull(), "deletion": pending]]
+        guard case .deletion(let retained) = try reconnectedLookup.parseResult(json(reconnectedEnvelope)).payload else { return XCTFail("Cross-generation original") }
+        XCTAssertEqual(retained, original)
+
+        var completed = pending
+        completed["revision"] = 2
+        let committedEnvelope = envelope(["operation": NSNull(), "session": NSNull(), "deletion": completed], revision: 2)
+        guard case .deletion(let receipt) = try lookup.parseResult(json(committedEnvelope)).payload else { return XCTFail("Committed receipt") }
+        XCTAssertEqual(receipt.revision?.rawValue, 2)
+        var invalid = completed
+        invalid["revision"] = 3
+        XCTAssertThrowsError(try lookup.parseResult(json(envelope(["operation": NSNull(), "session": NSNull(), "deletion": invalid], revision: 3))))
+        XCTAssertThrowsError(try lookup.parseResult(json(envelope(["operation": NSNull(), "session": NSNull(), "deletion": pending], revision: 2))))
     }
     func testCompletionReturnsOnlyUniqueExactCapturedRuntimes() throws {
         let jsonParser = CentralJSON(method: "fixture")
