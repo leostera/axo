@@ -55,6 +55,22 @@ final class CentralPiObservationTests: XCTestCase {
         XCTAssertThrowsError(try request.parseResult(envelope(["kind": "live", "target": target(host: 8), "state": state()])))
         XCTAssertThrowsError(try request.parseResult(envelope(["kind": "stopped", "target": target(), "state": state()])))
     }
+    func testSnapshotRequestAndResultKeepTheOriginalRuntimeAndChat() throws {
+        let discovered = try request().parseResult(envelope(["kind": "live", "target": target(), "state": state()]))
+        guard case .piObservation(.live(let captured, _)) = discovered.payload else { return XCTFail("Binding discovery") }
+        let read = try CentralRequest.piSnapshot(target: captured)
+        XCTAssertEqual(read.method, "axo.state.chat.get")
+        XCTAssertNil(read.commandId)
+        let parsed = try read.parseResult(envelope(["kind": "live", "target": target(), "state": state()]))
+        guard case .piSnapshot(let actual, _) = parsed.payload else { return XCTFail("Exact snapshot") }
+        XCTAssertEqual(actual, captured)
+        var foreign = target(); foreign["chatId"] = id(20)
+        XCTAssertThrowsError(try read.parseResult(envelope(["kind": "live", "target": foreign, "state": state()])))
+        var replacement = target(); replacement["runtime"] = ["host_generation": id(2), "runtime_generation": id(21), "target": ["session_id": id(4), "pane_id": id(5)]]
+        XCTAssertThrowsError(try read.parseResult(envelope(["kind": "live", "target": replacement, "state": state()])))
+        XCTAssertThrowsError(try read.parseResult(envelope(["kind": "stopped", "target": target()])))
+        XCTAssertThrowsError(try read.parseResult(envelope(["kind": "notAdmitted"])))
+    }
     func testQuestionBoundsAndInteractionCannotDrift() throws {
         let request = try request()
         let options: [[String: Any]] = [["id": id(10), "label": "First"], ["id": id(11), "label": "Second"]]

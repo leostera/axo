@@ -158,6 +158,39 @@ fn actual_three_by_four_by_three_graph_admits_every_pane_and_resumes_exact_pi_fi
     assert!(observed["result"]["value"]["state"].get("file").is_none());
     assert!(observed["result"]["value"]["state"].get("pid").is_none());
     assert!(serde_json::to_vec(&observed).unwrap().len() < 48 * 1024);
+    let exact_target = observed["result"]["value"]["target"].clone();
+    let snapshot = crate::state::rpc::dispatch(
+        crate::rpc::Call {
+            id: Some(json!(2)),
+            method: "axo.state.chat.get".into(),
+            params: Some(json!({"target":exact_target})),
+        },
+        &controller,
+        machine,
+        false,
+    )
+    .unwrap();
+    assert_eq!(snapshot["result"]["value"]["kind"], "live");
+    assert_eq!(snapshot["result"]["value"]["target"], exact_target);
+    assert_eq!(
+        model.requests.load(Ordering::SeqCst),
+        0,
+        "Snapshot is not submission"
+    );
+    let mut foreign_target = exact_target.clone();
+    foreign_target["chatId"] = json!(uuid::Uuid::new_v4());
+    let rejected = crate::state::rpc::dispatch(
+        crate::rpc::Call {
+            id: Some(json!(3)),
+            method: "axo.state.chat.get".into(),
+            params: Some(json!({"target":foreign_target})),
+        },
+        &controller,
+        machine,
+        false,
+    )
+    .unwrap();
+    assert_eq!(rejected["error"]["code"], -32002);
     let running = controller
         .native
         .managed_live
@@ -243,6 +276,22 @@ fn actual_three_by_four_by_three_graph_admits_every_pane_and_resumes_exact_pi_fi
         binding.runtime.runtime_generation
     );
     assert_eq!(fs::read(&binding.file).unwrap(), original_bytes);
+    let predecessor_read = crate::state::rpc::dispatch(
+        crate::rpc::Call {
+            id: Some(json!(5)),
+            method: "axo.state.chat.get".into(),
+            params: Some(json!({"target":exact_target})),
+        },
+        &controller,
+        machine,
+        false,
+    )
+    .unwrap();
+    assert_eq!(
+        predecessor_read["error"]["code"], -32002,
+        "Snapshot must not retarget the resumed runtime"
+    );
+    assert_eq!(model.requests.load(Ordering::SeqCst), 1);
     wait(|| {
         controller
             .observations()
@@ -302,6 +351,21 @@ fn actual_three_by_four_by_three_graph_admits_every_pane_and_resumes_exact_pi_fi
         json!(empty.runtime)
     );
     assert!(stopped["result"]["value"].get("state").is_none());
+    let stopped_snapshot = crate::state::rpc::dispatch(
+        crate::rpc::Call {
+            id: Some(json!(4)),
+            method: "axo.state.chat.get".into(),
+            params: Some(json!({"target":stopped["result"]["value"]["target"]})),
+        },
+        &controller,
+        machine,
+        false,
+    )
+    .unwrap();
+    assert!(
+        stopped_snapshot.get("error").is_some(),
+        "Stopped readers cannot use a live snapshot route"
+    );
     assert!(
         !empty.file.exists(),
         "Observation must not fabricate canonical history"

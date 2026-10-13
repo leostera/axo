@@ -27,6 +27,17 @@ test("live/stopped alternatives preserve exact identities and do not carry canon
   assert.ok(result.safeParse(envelope({ kind: "stopped", target: historical })).success);
   assert.equal(result.safeParse(envelope({ kind: "live", target, state: { ...state, leafId: "é".repeat(65) } })).success, false);
 });
+test("exact snapshot contract requires binding identities and returns live state only", () => {
+  const request = remoteMethods["axo.state.chat.get"];
+  const result = results["axo.state.chat.get"];
+  assert.ok(request.safeParse({ target }).success);
+  assert.equal(request.safeParse({ target: scope }).success, false);
+  assert.equal(request.safeParse({ target: { ...target, runtime: { ...target.runtime, host_generation: id(20) } } }).success, false);
+  assert.equal(request.safeParse({ target: { ...target, runtime: { ...target.runtime, target: { ...target.runtime.target, pane_id: id(20) } } } }).success, false);
+  assert.ok(result.safeParse(envelope({ kind: "live", target, state })).success);
+  assert.equal(result.safeParse(envelope({ kind: "stopped", target })).success, false);
+  assert.equal(result.safeParse(envelope({ kind: "notAdmitted" })).success, false);
+});
 test("questions keep distinct options, active interaction and exact UTF-16 bounds", () => {
   const options = [{ id: id(10), label: "First" }, { id: id(11), label: "Second" }];
   const question = { id: id(9), interactionId: id(12), title: "😀".repeat(1000), options };

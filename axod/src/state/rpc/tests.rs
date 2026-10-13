@@ -93,6 +93,22 @@ fn central_pi_observation_requires_closed_current_scope_and_never_starts_work() 
         )["error"]["code"],
         -32602
     );
+    let mut exact = scope.clone();
+    exact["paneId"] = json!(PaneId::new());
+    exact["chatId"] = json!(uuid::Uuid::new_v4());
+    exact["runtime"] = json!({"host_generation":fixture.owner.native.generation,"runtime_generation":RuntimeGeneration::new(),"target":{"session_id":scope["sessionId"],"pane_id":exact["paneId"]}});
+    assert_eq!(
+        fixture.call("axo.state.chat.get", json!({"target":exact}), false)["error"]["code"],
+        -32009
+    );
+    for key in ["runtime", "chatId", "workspaceId"] {
+        let mut missing = exact.clone();
+        missing.as_object_mut().unwrap().remove(key);
+        assert_eq!(
+            fixture.call("axo.state.chat.get", json!({"target":missing}), false)["error"]["code"],
+            -32602
+        );
+    }
     assert_eq!(fixture.owner.revision().unwrap(), original_revision);
     assert!(fixture.owner.runtime_owner().list().is_empty());
 }

@@ -1,5 +1,5 @@
-//! Read-only discovery of committed Pi bindings. No admission, file reads or
-//! control dispatch. Missing admission is never permission to launch a writer.
+//! Read-only committed Pi binding/metadata reads. No admission, canonical file
+//! reads or Pi actions. Missing admission is never permission to launch a writer.
 #[cfg(test)]
 mod tests;
 use super::*;
@@ -10,12 +10,13 @@ use crate::{
 
 const MAX_OBSERVATION_BYTES: usize = 48 * 1024;
 
-#[derive(Serialize)]
-#[serde(rename_all = "camelCase")]
-struct BindingTarget {
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub(super) struct BindingTarget {
     machine_id: MachineId,
     host_generation: HostGeneration,
     store_generation: StoreGeneration,
+    #[serde(deserialize_with = "nullable_workspace")]
     workspace_id: Option<WorkspaceId>,
     session_id: SessionId,
     pane_id: PaneId,
@@ -23,6 +24,15 @@ struct BindingTarget {
     chat_id: ChatId,
 }
 impl BindingTarget {
+    pub(super) fn scope(&self) -> SessionTarget {
+        SessionTarget {
+            machine_id: self.machine_id,
+            host_generation: self.host_generation,
+            store_generation: self.store_generation,
+            workspace_id: self.workspace_id,
+            session_id: self.session_id,
+        }
+    }
     fn new(scope: &SessionTarget, binding: &Binding) -> Self {
         Self {
             machine_id: scope.machine_id,
@@ -178,8 +188,98 @@ fn capture(
     }
     Ok((revision, Observation::Live { target, state }))
 }
+struct SnapshotCapture {
+    revision: u64,
+    configuration: Configuration,
+    running: std::sync::Arc<crate::pi_session::Running>,
+}
+fn capture_snapshot(
+    owner: &Controller,
+    target: &BindingTarget,
+) -> Result<SnapshotCapture, (i32, &'static str)> {
+    if target.runtime.host_generation != target.host_generation
+        || target.runtime.target.session_id != target.session_id
+        || target.runtime.target.pane_id != target.pane_id
+    {
+        return Err((-32002, "Stale central Pi binding"));
+    }
+    let database = owner.database.lock().unwrap();
+    let binding = database
+        .binding(target.session_id)
+        .map_err(failure)?
+        .ok_or((-32009, "Central Pi not admitted"))?;
+    if BindingTarget::new(&target.scope(), &binding) != *target {
+        return Err((-32002, "Stale central Pi binding"));
+    }
+    let specification = database.specification(target.pane_id).map_err(failure)?;
+    let attempt = database
+        .attempt(target.pane_id)
+        .map_err(failure)?
+        .ok_or((-32009, "Central Pi writer unproven"))?;
+    if attempt.runtime != binding.runtime
+        || attempt.command_id != binding.start_command_id
+        || attempt.phase != AttemptPhase::Admitted
+        || attempt.configuration.as_ref() != Some(&specification.configuration)
+        || specification.pane.role != PaneRole::Pi
+        || specification.workspace_id != binding.workspace_id
+        || specification.directory != binding.directory
+    {
+        return Err((-32009, "Central Pi writer unproven"));
+    }
+    let native = owner.runtime_owner();
+    if !native.owns_running_runtime(binding.runtime) {
+        return Err((-32009, "Central Pi writer unproven"));
+    }
+    let running = native
+        .managed_live
+        .lock()
+        .unwrap()
+        .get(&binding.session_id)
+        .cloned()
+        .ok_or((-32009, "Central Pi observation unavailable"))?;
+    if running.binding != binding {
+        return Err((-32002, "Stale central Pi binding"));
+    }
+    Ok(SnapshotCapture {
+        revision: database.revision().map_err(failure)?,
+        configuration: specification.configuration,
+        running,
+    })
+}
+pub(super) fn get(owner: &Controller, target: BindingTarget) -> Outcome {
+    let original = capture_snapshot(owner, &target)?;
+    // The Arc retains the exact runtime control and writer lease. No database,
+    // admission or native-map mutex spans this bounded read-only IPC request.
+    let snapshot = original.running.control.get().map_err(control_failure)?;
+    owner.ensure_owner().map_err(failure)?;
+    let current = capture_snapshot(owner, &target)?;
+    if current.revision != original.revision
+        || current.configuration != original.configuration
+        || !std::sync::Arc::ptr_eq(&current.running, &original.running)
+    {
+        return Err((-32002, "Stale central observation"));
+    }
+    if owner.runtime_owner().owned_running_pid(target.runtime) != Some(snapshot.pid) {
+        return Err((-32002, "Stale central Pi binding"));
+    }
+    let state = LiveState::parse(snapshot, &original.running.binding)?;
+    publish(
+        owner,
+        &target.scope(),
+        original.revision,
+        Observation::Live { target, state },
+    )
+}
 pub(super) fn observe(owner: &Controller, scope: SessionTarget) -> Outcome {
     let (revision, observation) = capture(owner, &scope)?;
+    publish(owner, &scope, revision, observation)
+}
+fn publish(
+    owner: &Controller,
+    scope: &SessionTarget,
+    revision: u64,
+    observation: Observation,
+) -> Outcome {
     owner.ensure_owner().map_err(failure)?;
     if owner.revision().map_err(failure)? != revision {
         return Err((-32002, "Stale central observation"));

@@ -11,9 +11,10 @@ const questionText = (maximum: number) => z.string().min(1).max(maximum).refine(
 const piQuestion = z.object({ id: uuid, interactionId: uuid, title: questionText(2000), options: z.array(z.object({ id: uuid, label: questionText(500) }).strict()).min(2).max(8) }).strict().refine(value => new Set(value.options.map(option => option.id)).size === value.options.length);
 const piTitle = z.string().min(1).max(80).refine(value => value.length <= 80 && value.trim() === value && !/\p{Cc}/u.test(value));
 const piLiveState = z.object({ title: piTitle.nullable(), leafId: z.string().min(1).refine(value => new TextEncoder().encode(value).length <= 128 && !/\p{Cc}/u.test(value)).nullable(), busy: z.boolean(), interactionId: uuid.nullable(), uiWaits: z.number().int().min(0).max(65535), question: piQuestion.nullable(), pending: z.boolean(), recovery: z.boolean() }).strict().refine(value => value.question === null || (value.uiWaits > 0 && value.question.interactionId === value.interactionId));
+const piLiveObservation = z.object({ kind: z.literal("live"), target: statePiBindingTargetSchema, state: piLiveState }).strict();
 export const statePiObservationSchema = z.discriminatedUnion("kind", [
   z.object({ kind: z.literal("notAdmitted") }).strict(),
-  z.object({ kind: z.literal("live"), target: statePiBindingTargetSchema, state: piLiveState }).strict(),
+  piLiveObservation,
   z.object({ kind: z.literal("stopped"), target: statePiBindingTargetSchema }).strict(),
 ]).refine(value => value.kind !== "live" || value.target.runtime.host_generation === value.target.hostGeneration);
 export const desiredWorkspaceSchema = z.object({ workspaceId: uuid, name, directory: z.string().min(1).max(4096), lifecycle, configRevision: revision }).strict();
@@ -52,6 +53,7 @@ export const stateRemoteMethods = {
   "axo.state.session.list": z.object({ ...page, workspaceId: uuid.nullable() }).strict(),
   "axo.state.session.get": z.object({ target: stateSessionTargetSchema }).strict(),
   "axo.state.chat.observe": z.object({ target: stateSessionTargetSchema }).strict(),
+  "axo.state.chat.get": z.object({ target: statePiBindingTargetSchema.refine(value => value.runtime.host_generation === value.hostGeneration) }).strict(),
   "axo.state.session.create": z.object({ ...mutation, workspaceId: uuid.nullable(), name }).strict(),
   "axo.state.operation.get": z.object({ target: stateTargetSchema, commandId: uuid }).strict(),
 } as const;
@@ -71,6 +73,7 @@ export const stateResults = {
   "axo.state.session.list": envelope(z.object({ records: z.array(stateSessionViewSchema).max(50), cursor: cursor.nullable() }).strict()),
   "axo.state.session.get": envelope(stateSessionViewSchema),
   "axo.state.chat.observe": envelope(statePiObservationSchema).refine(value => value.value.kind === "notAdmitted" || (value.value.target.hostGeneration === value.hostGeneration && value.value.target.storeGeneration === value.storeGeneration)),
+  "axo.state.chat.get": envelope(piLiveObservation).refine(value => value.value.target.runtime.host_generation === value.hostGeneration && value.value.target.hostGeneration === value.hostGeneration && value.value.target.storeGeneration === value.storeGeneration),
   "axo.state.workspace.create": operation, "axo.state.session.create": operation, "axo.state.lifecycle.set": operation,
   "axo.state.pane.add": operation, "axo.state.pane.remove": operation, "axo.state.operation.get": operation,
   "axo.state.session.completion": envelope(z.object({ completed: z.array(runtimeRefSchema).max(32) }).strict()),

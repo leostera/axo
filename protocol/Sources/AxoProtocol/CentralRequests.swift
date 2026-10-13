@@ -19,6 +19,7 @@ public struct CentralRequest: Sendable {
         case page(CentralPageDomain, CentralCursor?, Int)
         case session(UUID?, UUID)
         case piObservation(UUID?, UUID)
+        case piSnapshot(CentralPiBindingTarget)
         case mutation(UUID, CentralRevision, Mutation)
         case operation(UUID)
         case completion(UUID?, UUID, [TerminalRuntime])
@@ -33,7 +34,7 @@ public struct CentralRequest: Sendable {
     private init(method: String, parameters: JSONValue, machine: MachineTarget, source: CentralSource?, intent: Intent) {
         self.method = method; self.parameters = parameters; self.machine = machine; self.source = source; self.intent = intent
     }
-    public static let readMethods: Set<String> = ["axo.state.get", "axo.state.workspace.list", "axo.state.session.list", "axo.state.session.get", "axo.state.chat.observe", "axo.state.operation.get"]
+    public static let readMethods: Set<String> = ["axo.state.get", "axo.state.workspace.list", "axo.state.session.list", "axo.state.session.get", "axo.state.chat.observe", "axo.state.chat.get", "axo.state.operation.get"]
     public static func bootstrap(machine: MachineTarget) throws -> Self {
         let method = "axo.state.get"
         try ids([machine.machineId, machine.hostGeneration], method: method)
@@ -67,6 +68,13 @@ public struct CentralRequest: Sendable {
         let method = "axo.state.chat.observe"
         let target = try sessionTarget(source, workspaceId, sessionId, method: method)
         return Self(method: method, parameters: .object(["target": target]), machine: source.machine, source: source, intent: .piObservation(workspaceId, sessionId))
+    }
+    public static func piSnapshot(target: CentralPiBindingTarget) throws -> Self {
+        let method = "axo.state.chat.get"
+        guard target.runtime.hostGeneration == target.source.machine.hostGeneration else {
+            throw AxoProtocolValidationError.invalidParameters(method: method)
+        }
+        return try Self(method: method, parameters: .object(["target": target.json]), machine: target.source.machine, source: target.source, intent: .piSnapshot(target))
     }
     public static func createWorkspace(source: CentralSource, commandId: UUID, expectedRevision: CentralRevision, name: String, directoryPath: String) throws -> Self {
         try mutate(source, commandId, expectedRevision, .workspace(name, directoryPath))

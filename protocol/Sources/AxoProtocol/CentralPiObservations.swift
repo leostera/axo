@@ -9,6 +9,10 @@ public struct CentralPiBindingTarget: Equatable, Sendable {
     public let paneId: UUID
     public let runtime: TerminalRuntime
     public let chatId: UUID
+    var json: JSONValue { get throws {
+        let encodedRuntime = try JSONDecoder().decode(JSONValue.self, from: JSONEncoder().encode(runtime))
+        return .object(["machineId": .id(source.machine.machineId), "hostGeneration": .id(source.machine.hostGeneration), "storeGeneration": .id(source.storeGeneration), "workspaceId": .nullableID(workspaceId), "sessionId": .id(sessionId), "paneId": .id(paneId), "runtime": encodedRuntime, "chatId": .id(chatId)])
+    } }
 }
 public struct CentralPiQuestionOption: Equatable, Sendable {
     public let id: UUID

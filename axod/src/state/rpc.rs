@@ -511,6 +511,16 @@ fn route(
                 records,
             )
         }
+        "axo.state.chat.get" => {
+            #[derive(Deserialize)]
+            #[serde(deny_unknown_fields)]
+            struct Request {
+                target: pi_observation::BindingTarget,
+            }
+            let request: Request = parse(params)?;
+            membership(&request.target.scope(), owner, machine)?;
+            pi_observation::get(owner, request.target)
+        }
         "axo.state.chat.observe" => {
             let request: Get = parse(params)?;
             membership(&request.target, owner, machine)?;
