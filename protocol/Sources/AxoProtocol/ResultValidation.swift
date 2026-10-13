@@ -313,24 +313,6 @@ public enum AxoProtocolResultValidator {
         return result
     }
 
-    public static func shellPaneAdd(_ value: JSONValue, parameters: ShellPaneAddParameters) throws -> ShellPaneAddResult {
-        let method = AxoProtocol.Method.addShellPane
-        let source = MachineTarget(machineId: parameters.target.machineId, hostGeneration: parameters.target.hostGeneration)
-        guard let fields = object(value, keys: ["hostGeneration", "receipt", "pane"]),
-              uuid(fields["hostGeneration"]) == source.hostGeneration,
-              let receipt = fields["receipt"], validPaneReceipt(receipt, machineID: source.machineId),
-              let pane = fields["pane"], validShellPane(pane, sessionID: parameters.target.sessionId)
-        else { throw invalid(method) }
-        let result = try decode(value, as: ShellPaneAddResult.self, method: method)
-        guard result.receipt.commandId == parameters.commandId,
-              result.receipt.intent == .add(target: parameters.target, profileId: parameters.profileId),
-              result.pane.paneId == result.receipt.paneId,
-              result.pane.profileId == parameters.profileId,
-              result.pane.runtime == result.receipt.runtime,
-              result.receipt.disposition != .removed else { throw invalid(method) }
-        return result
-    }
-
     public static func commandGet(_ value: JSONValue, target: MachineTarget) throws -> CommandGetResult {
         let method = AxoProtocol.Method.getCommand
         guard let fields = object(value, keys: ["hostGeneration", "receipt"]),
@@ -437,9 +419,6 @@ public enum AxoProtocolResultValidator {
             guard Set(fields.keys) == ["kind", "receipt"],
                   let receipt = fields["receipt"], PiProtocolValidator.validReceipt(receipt, target: target) else { return false }
             return true
-        case "pane":
-            guard Set(fields.keys) == ["kind", "receipt"], let receipt = fields["receipt"] else { return false }
-            return validPaneReceipt(receipt, machineID: target.machineId)
         case "work":
             guard Set(fields.keys) == ["kind", "committed"],
                   let committed = object(fields["committed"], keys: ["revision", "record"]),
@@ -606,36 +585,6 @@ public enum AxoProtocolResultValidator {
               Set(fields.keys).isSubset(of: required.union(["shellPanes", "manualName"])),
               fields["manualName"].map({ if case .bool = $0 { return true }; return false }) ?? true else { return nil }
         return fields
-    }
-
-    private static func validPaneReceipt(_ value: JSONValue, machineID: UUID) -> Bool {
-        guard let receipt = object(value, keys: ["commandId", "intent", "paneId", "runtime", "disposition"]),
-              uuid(receipt["commandId"]) != nil, let paneID = uuid(receipt["paneId"]),
-              case .object(let intent)? = receipt["intent"], let operation = string(intent["operation"]),
-              let target = object(intent["target"], keys: ["machineId", "hostGeneration", "workspaceId", "sessionId"]),
-              uuid(target["machineId"]) == machineID, let host = uuid(target["hostGeneration"]),
-              let workspace = target["workspaceId"], workspace.isNull || uuid(workspace) != nil,
-              let sessionID = uuid(target["sessionId"]), let runtime = receipt["runtime"],
-              case .object(let disposition)? = receipt["disposition"], let kind = string(disposition["kind"])
-        else { return false }
-        switch operation {
-        case "addPane":
-            guard Set(intent.keys) == ["operation", "target", "profileId"], let profile = intent["profileId"],
-                  profile.isNull || string(profile).map(validDirectoryID) == true, kind != "removed" else { return false }
-        case "removePane":
-            guard Set(intent.keys) == ["operation", "target", "paneId", "runtime"], uuid(intent["paneId"]) == paneID,
-                  intent["runtime"] == runtime, kind != "added" else { return false }
-        default: return false
-        }
-        if kind == "rejected" {
-            guard Set(disposition.keys) == ["kind", "reason"], let reason = string(disposition["reason"]),
-                  ShellPaneRejection(rawValue: reason) != nil else { return false }
-        } else {
-            guard Set(disposition.keys) == ["kind"], ["prepared", "added", "removed"].contains(kind) else { return false }
-        }
-        if runtime.isNull { return kind != "added" }
-        guard let reference = validTerminalRuntime(runtime) else { return false }
-        return reference.hostGeneration == host && reference.target.sessionId == sessionID && reference.target.paneId == paneID
     }
 
     private static func validShellPane(_ value: JSONValue, sessionID: UUID) -> Bool {

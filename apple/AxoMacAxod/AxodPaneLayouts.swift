@@ -61,17 +61,6 @@ final class AxodPaneLayouts {
             focusedPanes[move.session] == move.source && trees[move.session]?.find(id: move.destination) != nil
     }
 
-    func adoptRetirement(_ receipt: ShellPaneReceipt) {
-        guard receipt.disposition == .removed, case .remove(let target, let paneID, _) = receipt.intent else { return }
-        let session = Session(machineID: target.machineId, sessionID: target.sessionId)
-        guard let tree = trees[session], let node = tree.find(id: paneID) else { return }
-        let updated = tree.removing(node)
-        replaceTree(updated, in: session)
-        if focusedPanes[session] == paneID, let remaining = updated.root?.leaves().first {
-            focus(remaining.id, in: session)
-        }
-    }
-
     func resize(_ node: Tree.Node, ratio: Double, in session: Session, generation: UUID) {
         guard generations[session] == generation, ratio.isFinite, (0.1...0.9).contains(ratio),
               let tree = trees[session], tree.contains(node), case .split = node,

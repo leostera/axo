@@ -32,8 +32,6 @@ public enum AxoProtocol {
         public static let renameSession = "axo.session.rename"
         public static let deleteSessions = "axo.session.delete"
         public static let getCommand = "axo.command.get"
-        public static let addShellPane = "axo.session.pane.add"
-        public static let removeShellPane = "axo.session.pane.remove"
         public static let getChat = "axo.chat.get"
         public static let getChatHistory = "axo.chat.history"
         public static let getToolOutput = "axo.chat.getToolOutput"
@@ -672,13 +670,12 @@ public struct CommittedWork: Decodable, Equatable, Sendable {
 
 public enum CommandReceipt: Decodable, Equatable, Sendable {
     case deletion(SessionDeletionReceipt)
-    case pane(ShellPaneReceipt)
     case pi(PiCommandReceipt)
     case work(committed: CommittedWork)
     case runtime(runtime: TerminalRuntime, terminal: TerminalSnapshot?)
 
     private enum CodingKeys: String, CodingKey { case kind, receipt, committed, runtime, terminal }
-    private enum Kind: String, Decodable { case deletion, pi, pane, work, runtime }
+    private enum Kind: String, Decodable { case deletion, pi, work, runtime }
 
     public init(from decoder: Decoder) throws {
         let container = try decoder.container(keyedBy: CodingKeys.self)
@@ -688,11 +685,6 @@ public enum CommandReceipt: Decodable, Equatable, Sendable {
                 throw DecodingError.dataCorruptedError(forKey: .kind, in: container, debugDescription: "Invalid deletion receipt.")
             }
             self = .deletion(try container.decode(SessionDeletionReceipt.self, forKey: .receipt))
-        case .pane:
-            guard Set(container.allKeys) == [.kind, .receipt] else {
-                throw DecodingError.dataCorruptedError(forKey: .kind, in: container, debugDescription: "Invalid pane receipt.")
-            }
-            self = .pane(try container.decode(ShellPaneReceipt.self, forKey: .receipt))
         case .pi:
             guard Set(container.allKeys) == [.kind, .receipt] else {
                 throw DecodingError.dataCorruptedError(forKey: .kind, in: container, debugDescription: "Invalid Pi receipt.")

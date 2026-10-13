@@ -2,7 +2,7 @@ import { z } from "zod";
 import { uuid, destinationSchema } from "./identity.js";
 import { runtimeRefSchema, terminalSchema } from "./runtime-contracts.js";
 import { piAdmissionSchema, piReceiptSchema } from "./pi-contracts.js";
-import { shellPaneSchema, paneReceiptSchema } from "./pane-contracts.js";
+import { shellPaneSchema } from "./pane-records.js";
 
 export const workNameSchema = z.string().min(1).max(80).refine(
   name => name.trim() === name && !/[\p{Cc}\p{Cs}]/u.test(name),
@@ -152,7 +152,6 @@ const committedSchema = z.object({
 }).strict();
 export const commandReceiptSchema = z.discriminatedUnion("kind", [
   z.object({ kind: z.literal("deletion"), receipt: sessionDeletionReceiptSchema }).strict(),
-  z.object({ kind: z.literal("pane"), receipt: paneReceiptSchema }).strict(),
   z.object({ kind: z.literal("pi"), receipt: piReceiptSchema }).strict(),
   z.object({ kind: z.literal("work"), committed: committedSchema }).strict(),
   z.object({

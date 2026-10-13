@@ -79,7 +79,6 @@ test(
       await mkdir(stateRoot, { mode: 0o700 });
       roots.push(stateRoot);
       const state = join(stateRoot, "fixture-state.json");
-      const swiftState = join(stateRoot, "swift-fixture-state.json");
       stateFiles.push(state);
       const configuration = join(stateRoot, "relay.json");
       configurations.push(configuration);
@@ -97,14 +96,6 @@ test(
                 "/usr/bin/python3",
                 join(root, "axod/tests/fixtures/terminal_child.py"),
                 state,
-              ],
-            },
-            swiftFixture: {
-              directory: stateRoot,
-              argv: [
-                "/usr/bin/python3",
-                join(root, "axod/tests/fixtures/terminal_child.py"),
-                swiftState,
               ],
             },
           },
@@ -348,46 +339,6 @@ test(
       (value) => value.ticks > 2,
       "second independent PTY running",
     );
-    // Exercise Swift's wire models over the protected Worker and into the real Rust daemon.
-    const swiftState = join(roots[0], "swift-fixture-state.json");
-    const swiftRun = await promisify(execFile)(
-      "swift",
-      [
-        "test",
-        "--package-path",
-        join(root, "protocol"),
-        "--filter",
-        "AxoProtocolE2ETests/testSwiftProtocolContractsAgainstRealAxod",
-      ],
-      {
-        cwd: root,
-        timeout: 90000,
-        maxBuffer: 2 * 1024 * 1024,
-        env: {
-          ...process.env,
-          AXO_PROTOCOL_E2E_URL: h.url,
-          AXO_PROTOCOL_E2E_MACHINE_ID: current.machineId,
-          AXO_PROTOCOL_E2E_HOST_GENERATION: current.hostGeneration,
-          AXO_PROTOCOL_E2E_TOKEN_FILE: clientCredential,
-          AXO_PROTOCOL_E2E_PROFILE: "swiftFixture",
-          AXO_PROTOCOL_E2E_STATE_FILE: swiftState,
-        },
-      },
-    );
-    assert.match(
-      swiftRun.stdout,
-      /testSwiftProtocolContractsAgainstRealAxod.*passed/,
-    );
-    const swiftFixture = JSON.parse(await readFile(swiftState, "utf8")) as {
-      ticks: number;
-      pid: number;
-      inherited_fds: number[];
-      inherited_axo: string[];
-    };
-    assert.ok(swiftFixture.ticks > 0);
-    assert.deepEqual(swiftFixture.inherited_fds, []);
-    assert.deepEqual(swiftFixture.inherited_axo, []);
-
     for (const peer of peers) peer.close();
     await h.close();
     serviceStopped = true;

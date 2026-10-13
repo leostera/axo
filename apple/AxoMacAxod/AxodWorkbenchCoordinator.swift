@@ -1474,22 +1474,6 @@ final class AxodWorkbenchCoordinator {
                     try directory.requireCurrentEndpoint(endpoint)
                     if let index = self.sessions.firstIndex(where: { $0.sessionId == session.sessionId }) {
                         let previous = self.sessions[index]
-                        let candidates = self.terminalSurfaces.capturedRuntimes(machineID: endpoint.machineId, sessionID: session.sessionId)
-                            .filter { runtime in current.runtime?.runtime != runtime && !current.shellPanes.contains(where: { $0.runtime == runtime }) }
-                        if !candidates.isEmpty {
-                            let parameters = SessionCompletionParameters(target: target, runtimes: Array(candidates.prefix(32)))
-                            let proof = try await peer.request(method: "axo.session.completion", parameters: parameters, timeout: 2)
-                            let completion = try AxoProtocolResultValidator.sessionCompletion(proof, parameters: parameters)
-                            guard !Task.isCancelled, self.isCurrent(operation, connection: control, endpoint: endpoint),
-                                  self.sessionLoadGeneration == selection, self.selectedSessionID == session.sessionId,
-                                  self.selectedWorkspaceID == session.workspaceId else { return }
-                            guard let destination = self.sessions.firstIndex(where: { $0.sessionId == session.sessionId }),
-                                  self.sessions[destination] == previous else { continue }
-                            try directory.requireCurrentEndpoint(endpoint)
-                            self.terminalSurfaces.releaseCompleted(completion.completed, machineID: endpoint.machineId)
-                            for receipt in completion.retiredShellReceipts { self.paneLayouts.adoptRetirement(receipt) }
-                            self.preparePaneLayout(current)
-                        }
                         if previous != current, let destination = self.sessions.firstIndex(where: { $0.sessionId == session.sessionId }) {
                             self.sessions[destination] = current
                             let executionChanged = previous.pi != current.pi || previous.runtime?.runtime != current.runtime?.runtime

@@ -15,8 +15,6 @@ import {
   localWorkResults,
   piMethods,
   piResults,
-  paneMethods,
-  paneResults,
   stateRemoteMethods,
   stateLocalMethods,
   stateResults,
@@ -40,8 +38,6 @@ for (const [name, schema] of Object.entries({
   ...Object.fromEntries(Object.entries(localWorkResults).map(([method, schema]) => [`${method}Result`, schema])),
   ...Object.fromEntries(Object.entries(piMethods).map(([method, schema]) => [`${method}Params`, schema])),
   ...Object.fromEntries(Object.entries(piResults).map(([method, schema]) => [`${method}Result`, schema])),
-  ...Object.fromEntries(Object.entries(paneMethods).map(([method, schema]) => [`${method}Params`, schema])),
-  ...Object.fromEntries(Object.entries(paneResults).map(([method, schema]) => [`${method}Result`, schema])),
   ...Object.fromEntries(Object.entries({...stateRemoteMethods, ...stateLocalMethods}).map(([method, schema]) => [`${method}Params`, schema])),
   ...Object.fromEntries(Object.entries(stateResults).map(([method, schema]) => [`${method}Result`, schema])),
 })) {
