@@ -5,6 +5,12 @@ use serde_json::{Value, json};
 use std::collections::BTreeMap;
 
 pub const FRAME_BYTES: usize = 65_536;
+pub(crate) const LOCAL_METHODS: &[&str] = &[
+    "axo.host.get",
+    "axo.host.prepareUpgrade",
+    "axo.runtime.list",
+    "axo.runtime.startApproved",
+];
 #[derive(Debug)]
 pub struct Call {
     pub id: Option<Value>, // Some(Null) is a request; absent is a notification.

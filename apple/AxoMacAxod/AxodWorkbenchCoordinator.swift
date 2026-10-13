@@ -29,7 +29,10 @@ import UserNotifications
     private(set) var selectedPiState: CentralPiLiveState?
     private(set) var selectedPiHistory: CentralPiHistoryPage?
     private(set) var selectedPiReadUnavailable = false
-    @ObservationIgnored private var selectedPiTarget: CentralPiBindingTarget?
+    private(set) var supportsCentralPiSubmission = false
+    private(set) var piPresentationID = UUID()
+    @ObservationIgnored private var lastPiBindingTarget: CentralPiBindingTarget?
+    @ObservationIgnored private var lastInputSource: CentralSource?
     @ObservationIgnored private var piReadGeneration = UUID()
     var selectedSession: CentralSession? { sessions.first { $0.sessionId == selectedSessionID } }
     var sidebarSessionNames: [UUID: String] {
@@ -65,6 +68,7 @@ import UserNotifications
     private(set) var hostStatus: HostStatusResult?
     private(set) var helperUpdateAvailable = false
     private(set) var message = "Connecting to the Axod background service."
+    private(set) var piInputMessage: String?
     private(set) var serviceSetupFailure: String?
     let serviceLifecycle: AxodServiceLifecycle
     let setupPresentation: AxodSetupPresentation
@@ -82,6 +86,10 @@ import UserNotifications
     @ObservationIgnored private var observationTask: Task<Void, Never>?
     @ObservationIgnored private var settingsWindow: NSWindow?
     @ObservationIgnored private var aboutWindow: NSWindow?
+    @ObservationIgnored private var piConversationWindow: NSWindow?
+    @ObservationIgnored private var piConversationWindowDelegate: AxodPiConversationWindowDelegate?
+    @ObservationIgnored private var piConversationWindowSessionID: UUID?
+    @ObservationIgnored private var piConversationWindowSource: CentralSource?
     @ObservationIgnored private var serviceSettingsWindow: NSWindow?
     private let rpc = AxoJSONRPCClient()
     private var operation = UUID()
@@ -198,6 +206,55 @@ import UserNotifications
         window.contentView = NSHostingView(rootView: AxodAboutView(coordinator: self))
         window.center(); aboutWindow = window; window.makeKeyAndOrderFront(nil); NSApp.activate(ignoringOtherApps: true)
     }
+    func showPiConversationWindow(for sessionID: UUID) {
+        guard let source = catalog?.source, sessions.contains(where: { $0.sessionId == sessionID }) else { return }
+        selectSession(sessionID)
+        if let piConversationWindow {
+            if piConversationWindowSessionID != sessionID || piConversationWindowSource != source {
+                piConversationWindowSessionID = sessionID
+                piConversationWindowSource = source
+                piConversationWindow.title = "Conversation — \(selectedSession.map(displayName(for:)) ?? "Session")"
+                piConversationWindow.contentViewController = NSHostingController(
+                    rootView: AxodPiConversationView(coordinator: self, source: source, sessionID: sessionID)
+                )
+            }
+            piConversationWindow.makeKeyAndOrderFront(nil)
+        } else {
+            let window = NSWindow(
+                contentRect: .init(x: 0, y: 0, width: 540, height: 640),
+                styleMask: [.titled, .closable, .miniaturizable, .resizable],
+                backing: .buffered,
+                defer: false
+            )
+            window.identifier = NSUserInterfaceItemIdentifier("Axo.PiConversationWindow")
+            window.title = "Conversation — \(selectedSession.map(displayName(for:)) ?? "Session")"
+            window.isReleasedWhenClosed = false
+            window.minSize = .init(width: 420, height: 420)
+            window.contentViewController = NSHostingController(
+                rootView: AxodPiConversationView(coordinator: self, source: source, sessionID: sessionID)
+            )
+            let delegate = AxodPiConversationWindowDelegate { [weak self] in self?.piConversationWindowWillClose() }
+            window.delegate = delegate
+            piConversationWindowDelegate = delegate
+            piConversationWindowSessionID = sessionID
+            piConversationWindowSource = source
+            piConversationWindow = window
+            window.center()
+            window.makeKeyAndOrderFront(nil)
+        }
+        NSApp.activate(ignoringOtherApps: true)
+        Task { await refreshSelectedPi() }
+    }
+    private func piConversationWindowWillClose() {
+        if let sessionID = piConversationWindowSessionID, let source = piConversationWindowSource {
+            inputBuffers.discardEditing(for: source, sessionId: sessionID)
+        }
+        piPresentationID = UUID()
+        piConversationWindow = nil
+        piConversationWindowDelegate = nil
+        piConversationWindowSessionID = nil
+        piConversationWindowSource = nil
+    }
     func notificationPreferenceChanged(_ enabled: Bool) {
         guard enabled else { return }; UNUserNotificationCenter.current().requestAuthorization(options: [.alert, .sound]) { _, _ in }
     }
@@ -214,6 +271,8 @@ import UserNotifications
         connection = nil
         endpoint = nil
         catalog = nil
+        supportsCentralPiSubmission = false
+        discardVolatilePiEditing()
         clearSelectedPi()
         hostStatus = nil
         observationTask?.cancel()
@@ -266,8 +325,14 @@ import UserNotifications
         self.endpoint = endpoint
         do {
             let rawNegotiation = try await peer.request(method: AxoProtocol.Method.negotiate, parameters: NegotiationParameters(), timeout: timeout(deadline))
-            do { _ = try AxoProtocolResultValidator.localNegotiation(rawNegotiation) }
+            let capabilities: LocalDaemonNegotiationResult
+            do { capabilities = try AxoProtocolResultValidator.localNegotiation(rawNegotiation) }
             catch { throw AxodWorkbenchError.protocolMismatch }
+            let methods = Set(capabilities.methods)
+            guard CentralRequest.readMethods.isSubset(of: methods) else {
+                throw AxodWorkbenchError.protocolMismatch
+            }
+            supportsCentralPiSubmission = CentralRequest.piSubmissionMethods.isSubset(of: methods)
             let machine = MachineTarget(machineId: endpoint.machineId, hostGeneration: endpoint.hostGeneration)
             let bootstrap = try await perform(CentralRequest.bootstrap(machine: machine), peer: peer, endpoint: endpoint, operation: captured, deadline: deadline)
             let loaded = try await loadCatalog(source: bootstrap.source, peer: peer, endpoint: endpoint, operation: captured, deadline: deadline)
@@ -326,9 +391,15 @@ import UserNotifications
         }
         let previous = catalog
         if let previous, previous.source == loaded.source, loaded.revision < previous.revision { return }
-        if previous?.source != loaded.source || previous?.revision != loaded.revision { clearSelectedPi() }
-        catalog = loaded
+        if let oldSource = lastInputSource, oldSource != loaded.source {
+            inputBuffers.discardEditing(for: oldSource)
+            lastPiBindingTarget = nil
+        }
+        let sourceChanged = previous?.source != loaded.source
+        if sourceChanged { clearSelectedPi() }
         let previousSelection = selectedSessionID
+        lastInputSource = loaded.source
+        catalog = loaded
         if restoringSelection,
            preferences.string(forKey: PreferenceKey.machine) == loaded.source.machine.machineId.uuidString,
            preferences.string(forKey: PreferenceKey.store) == loaded.source.storeGeneration.uuidString {
@@ -340,7 +411,13 @@ import UserNotifications
             if !workspaces.contains(where: { $0.workspaceId == selectedWorkspaceID }) { selectedWorkspaceID = workspaces.first?.workspaceId }
             selectedSessionID = sessions.first(where: { $0.workspaceId == selectedWorkspaceID })?.sessionId
         }
-        if previousSelection != selectedSessionID { clearSelectedPi() }
+        if previousSelection != selectedSessionID {
+            if let previousSelection, let source = previous?.source ?? lastInputSource {
+                inputBuffers.discardEditing(for: source, sessionId: previousSelection)
+            }
+            lastPiBindingTarget = nil
+            clearSelectedPi()
+        }
         if let view = selectedSessionView { paneLayouts.observe(view, source: loaded.source) }
         saveSelection()
     }
@@ -482,14 +559,22 @@ import UserNotifications
     func selectWorkspace(_ id: UUID?) {
         guard id == nil || workspaces.contains(where: { $0.workspaceId == id }) else { return }
         let nextSessionID = sessions.first(where: { $0.workspaceId == id })?.sessionId
-        if selectedSessionID != nextSessionID { clearSelectedPi() }
+        if selectedSessionID != nextSessionID {
+            discardSelectedPiEditing()
+            lastPiBindingTarget = nil
+            clearSelectedPi()
+        }
         selectedWorkspaceID = id; selectedSessionID = nextSessionID
         if let view = selectedSessionView, let source = catalog?.source { paneLayouts.observe(view, source: source) }
         saveSelection()
     }
     func selectSession(_ id: UUID) {
         guard let session = sessions.first(where: { $0.sessionId == id }) else { return }
-        if selectedSessionID != id { clearSelectedPi() }
+        if selectedSessionID != id {
+            discardSelectedPiEditing()
+            lastPiBindingTarget = nil
+            clearSelectedPi()
+        }
         selectedSessionID = id; selectedWorkspaceID = session.workspaceId
         if let view = selectedSessionView, let source = catalog?.source { paneLayouts.observe(view, source: source) }
         saveSelection()
@@ -511,34 +596,33 @@ import UserNotifications
             selectedPiReadUnavailable = false
             switch observation {
             case .notAdmitted:
-                selectedPiTarget = nil
+                if let previous = lastPiBindingTarget {
+                    inputBuffers.discardEditing(for: previous.source, sessionId: previous.sessionId)
+                    lastPiBindingTarget = nil
+                    piPresentationID = UUID()
+                }
                 selectedPiState = nil
                 selectedPiHistory = nil
             case .stopped(let target):
+                observePiTarget(target)
                 selectedPiState = nil
-                if selectedPiTarget != target || selectedPiHistory == nil {
-                    selectedPiTarget = target
-                    let request = try CentralRequest.piHistory(target: target, readMode: .stopped, collection: .branch)
-                    let history = try await perform(request, peer: peer, endpoint: endpoint, operation: capturedOperation)
-                    guard piReadIsCurrent(generation, sessionID: sessionID, source: source, revision: catalogRevision, operation: capturedOperation, peer: peer),
-                          case .piHistory(let page) = history.payload else { return }
-                    selectedPiHistory = page
-                }
+                let request = try CentralRequest.piHistory(target: target, readMode: .stopped, collection: .branch)
+                let history = try await perform(request, peer: peer, endpoint: endpoint, operation: capturedOperation)
+                guard piReadIsCurrent(generation, sessionID: sessionID, source: source, revision: catalogRevision, operation: capturedOperation, peer: peer),
+                      case .piHistory(let page) = history.payload, page.target == target, page.readMode == .stopped else { return }
+                selectedPiHistory = page
             case .live(let target, _):
-                if selectedPiTarget != target {
-                    selectedPiTarget = target
-                    selectedPiState = nil
-                    selectedPiHistory = nil
-                }
+                observePiTarget(target)
                 let snapshotRequest = try CentralRequest.piSnapshot(target: target)
                 let snapshot = try await perform(snapshotRequest, peer: peer, endpoint: endpoint, operation: capturedOperation)
                 guard piReadIsCurrent(generation, sessionID: sessionID, source: source, revision: catalogRevision, operation: capturedOperation, peer: peer),
                       case .piSnapshot(let snapshotTarget, let state) = snapshot.payload, snapshotTarget == target else { return }
+                selectedPiResponse = snapshot
                 selectedPiState = state
                 let historyRequest = try CentralRequest.piHistory(target: target, readMode: .live, collection: .branch)
                 let history = try await perform(historyRequest, peer: peer, endpoint: endpoint, operation: capturedOperation)
                 guard piReadIsCurrent(generation, sessionID: sessionID, source: source, revision: catalogRevision, operation: capturedOperation, peer: peer),
-                      case .piHistory(let page) = history.payload else { return }
+                      case .piHistory(let page) = history.payload, page.target == target, page.readMode == .live else { return }
                 selectedPiHistory = page
             }
         } catch {
@@ -549,14 +633,29 @@ import UserNotifications
     private func piReadIsCurrent(_ generation: UUID, sessionID: UUID, source: CentralSource, revision: CentralRevision, operation capturedOperation: UUID, peer: AxoJSONRPCWebSocketConnection) -> Bool {
         piReadGeneration == generation && selectedSessionID == sessionID && catalog?.source == source && catalog?.revision == revision && operation == capturedOperation && connection === peer
     }
+    private func observePiTarget(_ target: CentralPiBindingTarget) {
+        guard lastPiBindingTarget != target else { return }
+        if let previous = lastPiBindingTarget, previous != target {
+            inputBuffers.discardEditing(for: previous.source, sessionId: previous.sessionId)
+        }
+        lastPiBindingTarget = target
+        selectedPiState = nil
+        selectedPiHistory = nil
+        piPresentationID = UUID()
+    }
+    private func discardVolatilePiEditing() {
+        if let source = lastInputSource { inputBuffers.discardEditing(for: source) }
+        lastPiBindingTarget = nil
+    }
     private func clearSelectedPi() {
+        piPresentationID = UUID()
+        piInputMessage = nil
         piReadGeneration = UUID()
         selectedPiObservation = nil
         selectedPiResponse = nil
         selectedPiState = nil
         selectedPiHistory = nil
         selectedPiReadUnavailable = false
-        selectedPiTarget = nil
     }
     func prepareWorkspaceRename(_ workspaceId: UUID) throws -> CentralRenameCapture {
         guard connectionState == .connected, let catalog,
@@ -651,50 +750,109 @@ import UserNotifications
             message = "Rename remains unresolved. The original operation was not repeated."
         }
     }
-    func selectedPiEditingCapture() throws -> CentralEditCapture {
-        guard let response = selectedPiResponse, !selectedPiReadUnavailable,
-              case .piObservation(.live(let target, _)) = response.payload,
-              selectedSessionID == target.sessionId, catalog?.source == target.source else {
-            throw CentralInputIssue.unavailable
+    func piConversationPresentation(for sessionID: UUID, source: CentralSource) -> AxodPiConversationPresentation? {
+        guard catalog?.source == source, selectedSessionID == sessionID,
+              sessions.contains(where: { $0.sessionId == sessionID }) else { return nil }
+        return AxodPiConversationPresentation(id: piPresentationID, source: source, sessionID: sessionID)
+    }
+    func piInputPresentation(matching presentation: AxodPiConversationPresentation) throws -> AxodPiInputPresentation {
+        let response = try currentPiResponse(matching: presentation)
+        let target: CentralPiBindingTarget
+        switch response.payload {
+        case .piObservation(.live(let binding, _)), .piSnapshot(let binding, _): target = binding
+        default: throw CentralInputIssue.unavailable
         }
+        return AxodPiInputPresentation(conversation: presentation, target: target)
+    }
+    func piInputText(matching presentation: AxodPiInputPresentation) -> String {
+        guard (try? currentPiResponse(matching: presentation.conversation)) != nil,
+              let current = try? piInputPresentation(matching: presentation.conversation),
+              current.target == presentation.target else { return "" }
+        return inputBuffers.text(for: CentralEditingTarget(presentation.target))
+    }
+    func editPiInput(_ text: String, matching presentation: AxodPiInputPresentation) throws {
+        let current = try piInputPresentation(matching: presentation.conversation)
+        guard current.target == presentation.target else { throw CentralInputIssue.unavailable }
+        try inputBuffers.edit(text, in: CentralEditingTarget(presentation.target))
+    }
+    func capturePiEdit(matching presentation: AxodPiInputPresentation) throws -> CentralEditCapture {
+        let response = try currentPiResponse(matching: presentation.conversation)
+        let current = try piInputPresentation(matching: presentation.conversation)
+        guard current.target == presentation.target else { throw CentralInputIssue.unavailable }
         return try inputBuffers.editingCapture(from: response)
     }
-    func editSelectedPiInput(_ text: String) throws {
-        guard let response = selectedPiResponse, !selectedPiReadUnavailable,
-              case .piObservation(.live(let target, _)) = response.payload,
-              selectedSessionID == target.sessionId, catalog?.source == target.source else {
-            throw CentralInputIssue.unavailable
-        }
-        try inputBuffers.edit(text, in: CentralEditingTarget(target))
-    }
-    @discardableResult func applyPiInput(_ text: String, matching capture: CentralEditCapture) throws -> Bool {
-        guard let response = selectedPiResponse, !selectedPiReadUnavailable,
-              case .piObservation(.live(let target, _)) = response.payload,
-              selectedSessionID == target.sessionId, catalog?.source == target.source else { return false }
+    @discardableResult func applyPiInput(
+        _ text: String, matching capture: CentralEditCapture, presentation: AxodPiInputPresentation
+    ) throws -> Bool {
+        let response = try currentPiResponse(matching: presentation.conversation)
+        let current = try piInputPresentation(matching: presentation.conversation)
+        guard current.target == presentation.target, capture.binding == presentation.target else { return false }
         return try inputBuffers.apply(text, matching: capture, against: response)
     }
-    func submitSelectedPiInput() {
-        guard let response = selectedPiResponse, !selectedPiReadUnavailable,
-              case .piObservation(.live(let target, _)) = response.payload,
-              selectedSessionID == target.sessionId, catalog?.source == target.source else {
-            message = "Pi input is unavailable until the selected central binding is observed."
+    func submitPiInput(matching presentation: AxodPiInputPresentation) {
+        guard supportsCentralPiSubmission else {
+            reportPiInput("This Axod does not advertise central Pi submission. The draft was not sent.")
             return
         }
-        do { dispatchPiInput(try inputBuffers.captureText(from: response)) }
-        catch { message = "Pi input could not be captured for the current interaction." }
+        piInputMessage = nil
+        do {
+            let response = try currentPiResponse(matching: presentation.conversation)
+            let current = try piInputPresentation(matching: presentation.conversation)
+            guard current.target == presentation.target else { throw CentralInputIssue.unavailable }
+            dispatchPiInput(try inputBuffers.captureText(from: response))
+        } catch {
+            reportPiInput("Pi input is unavailable for the exact selected binding.")
+        }
     }
-    func cancelSelectedPiInteraction() { submitSelectedPiControl(.cancel) }
-    func answerSelectedPiQuestion(optionId: UUID) { submitSelectedPiControl(.answer(optionId: optionId)) }
-    private func submitSelectedPiControl(_ choice: CentralControlChoice) {
-        guard let response = selectedPiResponse, !selectedPiReadUnavailable else { return }
-        do { dispatchPiInput(try inputBuffers.captureControl(choice, from: response)) }
-        catch { message = "That Pi control is no longer available for the observed interaction." }
+    func submitPiControl(_ choice: CentralControlChoice, matching presentation: AxodPiInputPresentation) {
+        guard supportsCentralPiSubmission else {
+            reportPiInput("This Axod does not advertise central Pi submission. The control was not sent.")
+            return
+        }
+        do {
+            let response = try currentPiResponse(matching: presentation.conversation)
+            let current = try piInputPresentation(matching: presentation.conversation)
+            guard current.target == presentation.target else { throw CentralInputIssue.unavailable }
+            dispatchPiInput(try inputBuffers.captureControl(choice, from: response))
+        } catch {
+            reportPiInput("That Pi control is no longer available for the exact selected binding.")
+        }
+    }
+    private func currentPiResponse(matching presentation: AxodPiConversationPresentation) throws -> CentralResponse {
+        guard presentation.id == piPresentationID,
+              selectedSessionID == presentation.sessionID,
+              let source = catalog?.source, source == presentation.source,
+              !selectedPiReadUnavailable,
+              let response = selectedPiResponse,
+              response.source == source else { throw CentralInputIssue.unavailable }
+        let target: CentralPiBindingTarget
+        guard case .piSnapshot(let binding, _) = response.payload else { throw CentralInputIssue.unavailable }
+        target = binding
+        guard target.sessionId == presentation.sessionID, target.source == source else { throw CentralInputIssue.unavailable }
+        return response
+    }
+    private func reportPiInput(_ value: String) {
+        piInputMessage = value
+        message = value
+    }
+    private func discardSelectedPiEditing() {
+        guard let sessionID = selectedSessionID, let source = lastInputSource else { return }
+        inputBuffers.discardEditing(for: source, sessionId: sessionID)
     }
     private func dispatchPiInput(_ ticket: CentralInputTicket) {
+        guard supportsCentralPiSubmission else {
+            do { try inputBuffers.abandonBeforeSubmission(ticket) }
+            catch {
+                reportPiInput("The Pi command reservation remains fenced and was not submitted.")
+                return
+            }
+            reportPiInput("This Axod does not advertise central Pi submission. The command was not sent.")
+            return
+        }
         guard let peer = connection, let endpoint else {
             do { try inputBuffers.abandonBeforeSubmission(ticket) }
             catch { message = "Pi input could not be released before submission."; return }
-            message = "Pi input was not sent because the central connection is unavailable."
+            reportPiInput("Pi input was not sent because the central connection is unavailable.")
             return
         }
         let request: CentralRequest
@@ -702,7 +860,7 @@ import UserNotifications
         catch {
             do { try inputBuffers.abandonBeforeSubmission(ticket) }
             catch { message = "The Pi input reservation remains fenced and was not submitted."; return }
-            message = "The captured Pi command could not be submitted. No replacement command was sent."
+            reportPiInput("The captured Pi command could not be submitted. No replacement command was sent.")
             return
         }
         let captured = operation
@@ -724,10 +882,10 @@ import UserNotifications
         guard captured == operation, connection === peer else { return }
         switch result {
         case .dispatched:
-            message = "Pi acknowledged the submitted command; execution is still observed separately."
+            reportPiInput("Pi acknowledged the submitted command; execution is still observed separately.")
             await refreshSelectedPi()
         case .rejected:
-            message = "Pi rejected the submitted command. Editing remains available for a new explicit submission."
+            reportPiInput("Pi rejected the submitted command. Editing remains available for a new explicit submission.")
             await refreshSelectedPi()
         case .missing, .unconfirmed, .outcomeUnknown:
             await reconcilePiInput(ticket, peer: peer, endpoint: endpoint, operation: captured)
@@ -760,18 +918,18 @@ import UserNotifications
             let result = try inputBuffers.acknowledgeReconciliation(ticket, source: source, response: response)
             switch result {
             case .dispatched:
-                message = "The original Pi command was acknowledged; execution is still observed separately."
+                reportPiInput("The original Pi command was acknowledged; execution is still observed separately.")
                 await refreshSelectedPi()
             case .rejected:
-                message = "The original Pi command was rejected. No replacement command was sent."
+                reportPiInput("The original Pi command was rejected. No replacement command was sent.")
                 await refreshSelectedPi()
             case .missing, .unconfirmed, .outcomeUnknown:
-                message = "The Pi command outcome remains unresolved. No replacement command was sent."
+                reportPiInput("The Pi command outcome remains unresolved. No replacement command was sent.")
             }
         } catch {
             guard captured == operation, connection === peer, catalog?.source == source else { return }
             // The original capture stays fenced. Lookup failure is never permission to resend.
-            message = "The Pi command outcome remains unresolved. No replacement command was sent."
+            reportPiInput("The Pi command outcome remains unresolved. No replacement command was sent.")
         }
     }
     var selectedSessionView: CentralSessionView? { catalog?.sessions.first { $0.session.sessionId == selectedSessionID } }
@@ -872,6 +1030,8 @@ import UserNotifications
         connection = nil
         endpoint = nil
         catalog = nil
+        supportsCentralPiSubmission = false
+        discardVolatilePiEditing()
         hostStatus = nil
         selectedWorkspaceID = nil
         selectedSessionID = nil

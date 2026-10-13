@@ -18,7 +18,11 @@ final class CentralDaemonIntegrationTests: XCTestCase {
         defer { stopOwned(daemon) }
         let endpoint = try await waitForEndpoint(root, process: daemon)
         let connection = try AxoJSONRPCClient().openLocalWebSocket(endpoint: endpoint)
-        _ = try AxoProtocolResultValidator.localNegotiation(await connection.request(method: AxoProtocol.Method.negotiate, parameters: NegotiationParameters()))
+        let capabilities = try AxoProtocolResultValidator.localNegotiation(
+            await connection.request(method: AxoProtocol.Method.negotiate, parameters: NegotiationParameters())
+        )
+        XCTAssertTrue(CentralRequest.readMethods.isSubset(of: Set(capabilities.methods)))
+        XCTAssertTrue(CentralRequest.piSubmissionMethods.isSubset(of: Set(capabilities.methods)))
         let machine = MachineTarget(machineId: endpoint.machineId, hostGeneration: endpoint.hostGeneration)
         let bootstrap = try CentralRequest.bootstrap(machine: machine)
         let initial = try await Self.call(bootstrap, connection)
@@ -57,7 +61,11 @@ final class CentralDaemonIntegrationTests: XCTestCase {
         XCTAssertEqual(next.machineId, endpoint.machineId)
         XCTAssertNotEqual(next.hostGeneration, endpoint.hostGeneration)
         let reconnected = try AxoJSONRPCClient().openLocalWebSocket(endpoint: next)
-        _ = try AxoProtocolResultValidator.localNegotiation(await reconnected.request(method: AxoProtocol.Method.negotiate, parameters: NegotiationParameters()))
+        let nextCapabilities = try AxoProtocolResultValidator.localNegotiation(
+            await reconnected.request(method: AxoProtocol.Method.negotiate, parameters: NegotiationParameters())
+        )
+        XCTAssertTrue(CentralRequest.readMethods.isSubset(of: Set(nextCapabilities.methods)))
+        XCTAssertTrue(CentralRequest.piSubmissionMethods.isSubset(of: Set(nextCapabilities.methods)))
         let newBootstrap = try await Self.call(CentralRequest.bootstrap(machine: .init(machineId: next.machineId, hostGeneration: next.hostGeneration)), reconnected)
         XCTAssertEqual(newBootstrap.source.storeGeneration, source.storeGeneration)
         let restored = try await load(newBootstrap.source, reconnected)

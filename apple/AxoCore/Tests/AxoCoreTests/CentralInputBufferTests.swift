@@ -155,6 +155,23 @@ import XCTest
         XCTAssertEqual(try input.acknowledgeSubmission(ticket, result: result(ticket, disposition: ["kind": "dispatched"])), .dispatched(clearedEditing: false))
         XCTAssertTrue(input.pendingTickets.isEmpty)
     }
+    func testSourceRetirementDiscardsEveryVolatileDraftButRetainsSubmittedOriginals() async throws {
+        let observation = try observed(), key = try key(observation), otherObservation = try observed(chat: UUID())
+        let otherKey = try self.key(otherObservation), input = CentralInputBuffers()
+        try input.edit("Current draft", in: key)
+        try input.edit("Other chat draft", in: otherKey)
+        let ticket = try input.captureText(from: observation)
+        _ = try input.beginSubmission(ticket)
+
+        input.discardEditing(for: observation.source)
+
+        XCTAssertEqual(input.text(for: key), "")
+        XCTAssertEqual(input.text(for: otherKey), "")
+        XCTAssertEqual(input.pendingTickets, [ticket])
+        let dispatched = try CentralRequest.submitPi(ticket.command).parseResult(
+            result(ticket, disposition: ["kind": "dispatched"]))
+        XCTAssertEqual(try input.acknowledgeSubmission(ticket, response: dispatched), .dispatched(clearedEditing: false))
+    }
     func testCanceledEmptyEditingCaptureReleasesOnlyItsOwnUnusedSlot() async throws {
         let observation = try observed(), key = try key(observation), input = CentralInputBuffers()
         let capture = try input.editingCapture(from: observation)

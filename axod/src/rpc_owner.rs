@@ -9,6 +9,12 @@ pub(crate) enum RpcOwner {
     NativeHarness(Arc<Manager>),
 }
 impl RpcOwner {
+    pub(crate) fn local_methods(&self) -> &'static [&'static str] {
+        match self {
+            Self::Central(_) => crate::state::rpc::LOCAL_METHODS,
+            Self::NativeHarness(_) => crate::rpc::LOCAL_METHODS,
+        }
+    }
     pub(crate) fn runtime(&self) -> Arc<Manager> {
         match self {
             Self::Central(owner) => owner.runtime_owner(),

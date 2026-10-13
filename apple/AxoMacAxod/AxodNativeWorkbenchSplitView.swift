@@ -184,6 +184,11 @@ struct AxodNativeWorkbenchSplitView: NSViewRepresentable {
         func fixtureSelectedSessionIDs() -> Set<UUID> {
             Set(outline.selectedRowIndexes.compactMap { (outline.item(atRow: $0) as? Item)?.session?.sessionId })
         }
+        func fixtureSessionMenu(_ id: UUID) -> NSMenu? {
+            guard let entry = fixtureSessionRows().first(where: { $0.id == id }),
+                  let row = outline.view(atColumn: 0, row: entry.row, makeIfNecessary: true) as? WorkspaceSidebarRow else { return nil }
+            return row.menu
+        }
         func fixtureSelectionDidChange() {
             outlineViewSelectionDidChange(Notification(name: NSOutlineView.selectionDidChangeNotification, object: outline))
         }
@@ -547,6 +552,11 @@ struct AxodNativeWorkbenchSplitView: NSViewRepresentable {
                 let rename = NSMenuItem(title: "Rename…", action: #selector(WorkspaceSidebarRow.renameFromMenu(_:)), keyEquivalent: "")
                 rename.target = row
                 actions.addItem(rename)
+                actions.addItem(.separator())
+                let openConversation = NSMenuItem(title: "Open Conversation", action: #selector(openConversationFromMenu(_:)), keyEquivalent: "")
+                openConversation.target = self
+                openConversation.representedObject = session.sessionId
+                actions.addItem(openConversation)
                 // This glyph identifies a session; it does not claim agent busy state.
                 row.imageView?.image = NSImage(systemSymbolName: "hammer", accessibilityDescription: "Session")
                 row.imageView?.contentTintColor = .secondaryLabelColor
@@ -555,6 +565,11 @@ struct AxodNativeWorkbenchSplitView: NSViewRepresentable {
                 return row
             }
             return nil
+        }
+
+        @objc private func openConversationFromMenu(_ sender: NSMenuItem) {
+            guard let sessionID = sender.representedObject as? UUID else { return }
+            workbench.showPiConversationWindow(for: sessionID)
         }
 
         private func renameBehavior(for item: Item) -> WorkspaceSidebarRow.Rename {

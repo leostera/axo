@@ -21,6 +21,29 @@ use crate::{
 use serde::{Deserialize, Serialize, de::DeserializeOwned};
 use serde_json::{Value, json};
 
+pub(crate) const LOCAL_METHODS: &[&str] = &[
+    "axo.state.get",
+    "axo.state.workspace.list",
+    "axo.state.session.list",
+    "axo.state.session.get",
+    "axo.state.workspace.create",
+    "axo.state.session.create",
+    "axo.state.workspace.rename",
+    "axo.state.session.rename",
+    "axo.state.lifecycle.set",
+    "axo.state.pane.add",
+    "axo.state.pane.remove",
+    "axo.state.operation.get",
+    "axo.state.session.completion",
+    "axo.state.chat.observe",
+    "axo.state.chat.get",
+    "axo.state.chat.history",
+    "axo.state.chat.tool.get",
+    "axo.state.chat.command.submit",
+    "axo.state.chat.command.get",
+    "axo.host.get",
+];
+
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 struct Target {

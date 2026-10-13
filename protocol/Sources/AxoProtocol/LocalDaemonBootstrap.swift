@@ -86,22 +86,39 @@ public enum LocalDaemonEndpointError: Error, Equatable, Sendable, LocalizedError
     public var errorDescription: String? { "The local daemon discovery file is invalid or incompatible." }
 }
 
-/// The local adapter currently negotiates only the shared application protocol version.
+/// The local adapter negotiates the shared protocol and the methods its owner exposes.
 public struct LocalDaemonNegotiationResult: Codable, Equatable, Sendable {
     public let protocolVersion: Int
+    public let methods: [String]
 
-    public init(protocolVersion: Int) { self.protocolVersion = protocolVersion }
+    public init(protocolVersion: Int, methods: [String]) {
+        self.protocolVersion = protocolVersion
+        self.methods = methods
+    }
+    public func supports(_ method: String) -> Bool { methods.contains(method) }
 }
 
 public extension AxoProtocolResultValidator {
     static func localNegotiation(_ value: JSONValue) throws -> LocalDaemonNegotiationResult {
         guard case .object(let fields) = value,
-              Set(fields.keys) == ["protocolVersion"],
+              Set(fields.keys) == ["protocolVersion", "methods"],
               case .number(let version)? = fields["protocolVersion"],
-              version == Double(AxoProtocol.version) else {
+              version == Double(AxoProtocol.version),
+              case .array(let rawMethods)? = fields["methods"],
+              rawMethods.count <= 128 else {
             throw AxoProtocolValidationError.invalidResult(method: AxoProtocol.Method.negotiate)
         }
-        return LocalDaemonNegotiationResult(protocolVersion: Int(version))
+        let methods = try rawMethods.map { value -> String in
+            guard case .string(let method) = value, !method.isEmpty, method.utf8.count <= 128,
+                  !method.unicodeScalars.contains(where: { $0.properties.generalCategory == .control }) else {
+                throw AxoProtocolValidationError.invalidResult(method: AxoProtocol.Method.negotiate)
+            }
+            return method
+        }
+        guard Set(methods).count == methods.count else {
+            throw AxoProtocolValidationError.invalidResult(method: AxoProtocol.Method.negotiate)
+        }
+        return LocalDaemonNegotiationResult(protocolVersion: Int(version), methods: methods)
     }
 
     static func runtimeStart(_ value: JSONValue, target: TerminalTarget) throws -> RuntimeStartResult {

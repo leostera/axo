@@ -70,12 +70,22 @@ public enum CentralControlChoice: Equatable, Sendable {
     }
     /// Closing an editor discards its volatile draft and invalidates delayed edits,
     /// while immutable submitted tickets remain available for exact reconciliation.
+    public func discardEditing(for source: CentralSource) {
+        let targets = entries.keys.filter {
+            $0.machineId == source.machine.machineId &&
+            $0.storeGeneration == source.storeGeneration
+        }
+        discardEditing(targets)
+    }
     public func discardEditing(for source: CentralSource, sessionId: UUID) {
         let targets = entries.keys.filter {
             $0.machineId == source.machine.machineId &&
             $0.storeGeneration == source.storeGeneration &&
             $0.sessionId == sessionId
         }
+        discardEditing(targets)
+    }
+    private func discardEditing(_ targets: [CentralEditingTarget]) {
         for target in targets {
             entries.removeValue(forKey: target)
             rejectedEdits.remove(target)

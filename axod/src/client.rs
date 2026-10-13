@@ -105,7 +105,27 @@ impl Client {
         let negotiated = client
             .call("axo.protocol.negotiate", json!({"protocolVersion":1}))
             .map_err(|_| ClientError::Protocol)?;
-        if negotiated != json!({"protocolVersion":1}) {
+        let Some(fields) = negotiated.as_object() else {
+            return Err(ClientError::Protocol);
+        };
+        let Some(methods) = fields.get("methods").and_then(Value::as_array) else {
+            return Err(ClientError::Protocol);
+        };
+        let method_names = methods.iter().filter_map(Value::as_str).collect::<Vec<_>>();
+        if fields.len() != 2
+            || fields.get("protocolVersion") != Some(&json!(1))
+            || methods.len() > 128
+            || methods.iter().any(|method| {
+                method.as_str().is_none_or(|name| {
+                    name.is_empty() || name.len() > 128 || name.chars().any(char::is_control)
+                })
+            })
+            || method_names
+                .iter()
+                .collect::<std::collections::HashSet<_>>()
+                .len()
+                != methods.len()
+        {
             return Err(ClientError::Protocol);
         }
         Ok(client)

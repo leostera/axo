@@ -160,6 +160,10 @@ final class AxodWorkbenchApp: NSObject, NSApplicationDelegate, NSWindowDelegate,
     }
     @objc private func refresh(_ sender: Any?) { coordinator?.refresh() }
     @objc private func connect(_ sender: Any?) { coordinator?.connect() }
+    @objc private func openPiConversation(_ sender: Any?) {
+        guard let sessionID = coordinator?.selectedSessionID else { return }
+        coordinator?.showPiConversationWindow(for: sessionID)
+    }
     @objc private func newSession(_ sender: Any?) { coordinator?.createSession() }
     @objc private func newWorkspace(_ sender: Any?) {
         guard let coordinator, coordinator.canCreate, let window else { return }
@@ -214,6 +218,7 @@ final class AxodWorkbenchApp: NSObject, NSApplicationDelegate, NSWindowDelegate,
             return window != nil && NSApp.keyWindow === window
         }
         if menuItem.action == #selector(newSession(_:)) { return coordinator?.canCreateSession == true }
+        if menuItem.action == #selector(openPiConversation(_:)) { return coordinator?.selectedSession != nil }
         if menuItem.action == #selector(newWorkspace(_:)) { return coordinator?.canCreate == true }
         return true
     }
@@ -260,6 +265,8 @@ final class AxodWorkbenchApp: NSObject, NSApplicationDelegate, NSWindowDelegate,
         let workspaceItem = NSMenuItem()
         menu.addItem(workspaceItem)
         let workspaceMenu = NSMenu(title: "Workspace")
+        let conversationItem = workspaceMenu.addItem(withTitle: "Open Conversation", action: #selector(openPiConversation(_:)), keyEquivalent: "")
+        conversationItem.target = self
         let newSessionItem = workspaceMenu.addItem(withTitle: "New Session", action: #selector(newSession(_:)), keyEquivalent: "t")
         newSessionItem.target = self
         let newWorkspaceItem = workspaceMenu.addItem(withTitle: "New Workspace…", action: #selector(newWorkspace(_:)), keyEquivalent: "")

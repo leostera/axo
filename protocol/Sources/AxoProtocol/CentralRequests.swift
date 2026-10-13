@@ -42,6 +42,7 @@ public struct CentralRequest: Sendable {
         self.method = method; self.parameters = parameters; self.machine = machine; self.source = source; self.intent = intent
     }
     public static let readMethods: Set<String> = ["axo.state.get", "axo.state.workspace.list", "axo.state.session.list", "axo.state.session.get", "axo.state.chat.observe", "axo.state.chat.get", "axo.state.chat.history", "axo.state.chat.tool.get", "axo.state.chat.command.get", "axo.state.operation.get"]
+    public static let piSubmissionMethods: Set<String> = ["axo.state.chat.command.submit", "axo.state.chat.command.get"]
     public static func bootstrap(machine: MachineTarget) throws -> Self {
         let method = "axo.state.get"
         try ids([machine.machineId, machine.hostGeneration], method: method)

@@ -24,12 +24,26 @@ final class LocalDaemonBootstrapTests: XCTestCase {
         }
     }
 
-    func testLocalNegotiationRejectsVersionMismatchAndUnexpectedFields() throws {
+    func testLocalNegotiationCapturesClosedMethodCapabilities() throws {
         let decoder = JSONDecoder()
-        let compatible = try decoder.decode(JSONValue.self, from: Data(#"{"protocolVersion":1}"#.utf8))
-        XCTAssertEqual(try AxoProtocolResultValidator.localNegotiation(compatible).protocolVersion, 1)
+        let compatible = try decoder.decode(JSONValue.self, from: Data(#"{"protocolVersion":1,"methods":["axo.state.get","axo.state.chat.command.submit"]}"#.utf8))
+        let result = try AxoProtocolResultValidator.localNegotiation(compatible)
+        XCTAssertEqual(result.protocolVersion, 1)
+        XCTAssertTrue(result.supports("axo.state.chat.command.submit"))
+        XCTAssertFalse(result.supports("axo.legacy.startPi"))
 
-        for raw in [#"{"protocolVersion":2}"#, #"{"protocolVersion":1,"methods":[]}"#] {
+        let tooManyMethods = (0...128).map { "\"method-\($0)\"" }.joined(separator: ",")
+        let tooLongMethod = String(repeating: "x", count: 129)
+        for raw in [
+            #"{"protocolVersion":2,"methods":[]}"#,
+            #"{"protocolVersion":1}"#,
+            #"{"protocolVersion":1,"methods":["duplicate","duplicate"]}"#,
+            #"{"protocolVersion":1,"methods":[""]}"#,
+            #"{"protocolVersion":1,"methods":[],"unexpected":true}"#,
+            "{\"protocolVersion\":1,\"methods\":[\(tooManyMethods)]}",
+            #"{"protocolVersion":1,"methods":["\#(tooLongMethod)"]}"#,
+            #"{"protocolVersion":1,"methods":["bad\u0001name"]}"#,
+        ] {
             let value = try decoder.decode(JSONValue.self, from: Data(raw.utf8))
             XCTAssertThrowsError(try AxoProtocolResultValidator.localNegotiation(value))
         }

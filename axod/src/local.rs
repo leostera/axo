@@ -382,7 +382,11 @@ impl Connection {
                 return Some(rpc::error(id, -32602, "Invalid params"));
             }
             self.negotiated = true;
-            return Some(json!({"jsonrpc":"2.0","id":id,"result":{"protocolVersion":1}}));
+            return Some(json!({
+                "jsonrpc":"2.0",
+                "id":id,
+                "result":{"protocolVersion":1,"methods":context.owner.local_methods()}
+            }));
         }
         if !self.negotiated {
             return Some(rpc::error(id, -32001, "Negotiation required"));

@@ -65,12 +65,15 @@ import SwiftUI
         precondition(coordinator.selectedPiObservation == .notAdmitted && coordinator.selectedPiHistory == nil &&
                      coordinator.selectedPiResponse?.payload == .piObservation(.notAdmitted) && !coordinator.selectedPiReadUnavailable,
             "A desired Pi pane without a committed admission is reported as not admitted, never as a fresh or empty conversation")
-        precondition((try? coordinator.selectedPiEditingCapture()) == nil,
+        guard let conversation = coordinator.piConversationPresentation(for: sessionOriginal.graph.session.sessionId, source: bootstrap.source) else {
+            fatalError("Selected conversation captures its central source")
+        }
+        precondition((try? coordinator.piInputPresentation(matching: conversation)) == nil,
             "Input editing is unavailable until Axod publishes an admitted binding")
         coordinator.selectWorkspace(original.graph.workspace.workspaceId)
         precondition(coordinator.selectedSession?.workspaceId == original.graph.workspace.workspaceId,
             "Selecting a workspace retains a session within that workspace, independent of page ordering")
-        try checkNativeOutline(coordinator, source: bootstrap.source)
+        try await checkNativeOutline(coordinator, source: bootstrap.source)
         let sessionRename = try coordinator.prepareSessionRename(sessionOriginal.graph.session.sessionId)
         coordinator.finishRename(sessionRename, name: "Manually renamed session")
         let sessionRenameTicket = coordinator.renames.pendingTicket!
@@ -114,9 +117,9 @@ import SwiftUI
         try FileManager.default.moveItem(at: withheldEndpoint, to: endpointFile)
         precondition(coordinator.catalog == nil, "Restored discovery does not automatically restore authority")
         await peer.close()
-        print("PASS: central native coordinator, complete graph reads, desired availability, scoped selection, endpoint fence and disconnect independence")
+        print("PASS: central Mac coordinator, native sidebar, session-bound conversation window, not-admitted fence, endpoint loss and disconnect independence")
     }
-    @MainActor private static func checkNativeOutline(_ coordinator: AxodWorkbenchCoordinator, source: CentralSource) throws {
+    @MainActor private static func checkNativeOutline(_ coordinator: AxodWorkbenchCoordinator, source: CentralSource) async throws {
         let controller = AxodNativeWorkbenchSplitView.SidebarController(workbench: coordinator, sidebarCollapsed: .constant(false))
         let root = controller.makeView(detail: AnyView(EmptyView()))
         let window = NSWindow(contentRect: NSRect(x: -1800, y: -1200, width: 900, height: 600), styleMask: [.titled], backing: .buffered, defer: false)
@@ -160,6 +163,29 @@ import SwiftUI
         precondition(controller.fixtureSessionRows().map(\.id) == order && controller.fixtureSelectedSessionIDs() == selected &&
                      controller.fixtureExpanded(workspace),
             "Title publication preserves native row order, selection and workspace expansion")
+        guard let menu = controller.fixtureSessionMenu(order[0]),
+              let conversationItem = menu.items.first(where: { $0.title == "Open Conversation" }),
+              conversationItem.representedObject as? UUID == order[0],
+              let action = conversationItem.action, let target = conversationItem.target else {
+            fatalError("Session context menu routes to its exact central conversation")
+        }
+        precondition(NSApp.sendAction(action, to: target, from: conversationItem), "Session menu opens its bound conversation")
+        precondition(coordinator.selectedSessionID == order[0])
+        guard let captured = coordinator.piConversationPresentation(for: order[0], source: source) else {
+            fatalError("Opened conversation captures its exact source and session")
+        }
+        coordinator.selectSession(order[1])
+        precondition(coordinator.piConversationPresentation(for: order[0], source: source) == nil,
+            "A previously opened conversation presentation cannot retarget after selection changes")
+        precondition(coordinator.piConversationPresentation(for: order[1], source: source)?.id != captured.id,
+            "A new session presentation receives a new edit fence")
+        try await refreshUntilNotAdmitted(coordinator)
+        precondition(coordinator.selectedPiObservation == .notAdmitted && coordinator.selectedPiHistory == nil,
+            "Opening a session without an admitted Pi shows no fabricated empty or replacement conversation")
+        guard let conversationWindow = NSApp.windows.first(where: { $0.identifier?.rawValue == "Axo.PiConversationWindow" }),
+              conversationWindow.isVisible else { fatalError("Native conversation window is visible") }
+        conversationWindow.close()
+        precondition(!conversationWindow.isVisible, "Closing the conversation window releases its volatile editor presentation")
         window.close()
     }
     @MainActor private static func refreshUntilNotAdmitted(_ coordinator: AxodWorkbenchCoordinator) async throws {
