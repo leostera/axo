@@ -11,6 +11,7 @@ import SwiftUI
         guard CommandLine.arguments.count == 3 else { fatalError("Owned fixture and helper required") }
         _ = NSApplication.shared
         NSApp.setActivationPolicy(.prohibited)
+        checkPasteOriginRouting()
         let root = FileManager.default.temporaryDirectory.appendingPathComponent("axo-native-central-\(UUID().uuidString)", isDirectory: true)
         try FileManager.default.createDirectory(at: root, withIntermediateDirectories: false, attributes: [.posixPermissions: 0o700])
         defer { try? FileManager.default.removeItem(at: root) }
@@ -118,6 +119,12 @@ import SwiftUI
         precondition(coordinator.catalog == nil, "Restored discovery does not automatically restore authority")
         await peer.close()
         print("PASS: central Mac coordinator, native sidebar, session-bound conversation window, not-admitted fence, endpoint loss and disconnect independence")
+    }
+    private static func checkPasteOriginRouting() {
+        precondition(AxodPiEditOrigin.resolve(isPasting: false, capture: nil) == .direct,
+            "Ordinary typing uses the live synchronous edit path")
+        precondition(AxodPiEditOrigin.resolve(isPasting: true, capture: nil) == .rejectedPaste,
+            "A paste without an exact capture is rejected instead of falling back to a retargetable edit")
     }
     @MainActor private static func checkNativeOutline(_ coordinator: AxodWorkbenchCoordinator, source: CentralSource) async throws {
         let controller = AxodNativeWorkbenchSplitView.SidebarController(workbench: coordinator, sidebarCollapsed: .constant(false))

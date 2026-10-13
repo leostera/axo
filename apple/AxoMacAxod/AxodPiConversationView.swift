@@ -19,6 +19,18 @@ private struct AxodPiConversationReadIdentity: Equatable {
     let sessionID: UUID?
 }
 
+enum AxodPiEditOrigin: Equatable {
+    case direct
+    case capturedPaste(CentralEditCapture)
+    case rejectedPaste
+
+    static func resolve(isPasting: Bool, capture: CentralEditCapture?) -> Self {
+        guard isPasting else { return .direct }
+        guard let capture else { return .rejectedPaste }
+        return .capturedPaste(capture)
+    }
+}
+
 @MainActor
 final class AxodPiConversationWindowDelegate: NSObject, NSWindowDelegate {
     private let didClose: () -> Void
@@ -341,13 +353,22 @@ private struct AxodPiComposerEditor: NSViewRepresentable {
             guard NSMaxRange(affectedCharRange) <= current.length else { return false }
             let updated = current.replacingCharacters(in: affectedCharRange, with: replacementString ?? "")
             do {
-                if let editor = textView as? AxodPiTextView, let capture = editor.pendingPasteCapture {
+                let editor = textView as? AxodPiTextView
+                let origin = AxodPiEditOrigin.resolve(
+                    isPasting: editor?.isApplyingPasteCapture == true,
+                    capture: editor?.pendingPasteCapture
+                )
+                switch origin {
+                case .direct:
+                    try workbench.editPiInput(updated, matching: presentation)
+                case .capturedPaste(let capture):
                     guard try workbench.applyPiInput(updated, matching: capture, presentation: presentation) else {
                         onIssue("This paste no longer belongs to the current Pi binding. Its text was not applied.")
                         return false
                     }
-                } else {
-                    try workbench.editPiInput(updated, matching: presentation)
+                case .rejectedPaste:
+                    onIssue("Paste requires an exact live Pi editing capture. Its text was not applied.")
+                    return false
                 }
                 onIssue(nil)
                 return true
@@ -366,11 +387,14 @@ private final class AxodPiTextView: NSTextView {
     var pasteCapture: (() -> CentralEditCapture?)?
     var releasePasteCapture: ((CentralEditCapture) -> Void)?
     fileprivate(set) var pendingPasteCapture: CentralEditCapture?
+    fileprivate(set) var isApplyingPasteCapture = false
 
     override func paste(_ sender: Any?) {
         let capture = pasteCapture?()
         pendingPasteCapture = capture
+        isApplyingPasteCapture = true
         defer {
+            isApplyingPasteCapture = false
             pendingPasteCapture = nil
             if let capture { releasePasteCapture?(capture) }
         }
