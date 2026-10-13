@@ -44,15 +44,16 @@ export const stateSessionViewSchema = z.object({ session: desiredSessionSchema, 
   if (new Set(value.panes.map(pane => pane.desired.paneId)).size !== value.panes.length || !value.panes.every(pane => pane.desired.sessionId === value.session.sessionId && pane.desired.present)) return false;
   return value.readiness !== "ready" || value.panes.every(pane => pane.availability === "live" && pane.terminal !== null);
 });
+const historyReadMode = z.enum(["live", "stopped"]);
 const historyCollection = z.enum(["branch", "entries"]);
 const historyDigest = z.string().regex(/^[0-9a-f]{64}$/u);
 const historyEntryId = z.string().min(1).refine(value => new TextEncoder().encode(value).length <= 128 && !/\p{Cc}/u.test(value));
-const historyCursor = z.object({ target: statePiBindingTargetSchema, readMode: z.literal("stopped"), collection: historyCollection, headDigest: historyDigest, after: historyEntryId }).strict();
+const historyCursor = z.object({ target: statePiBindingTargetSchema, readMode: historyReadMode, collection: historyCollection, headDigest: historyDigest, after: historyEntryId }).strict();
 const historyProjection = canonicalProjectionSchema.refine(value => new TextEncoder().encode(value.timestamp).length <= 128 && historyEntryId.safeParse(value.kind).success && (value.role === null || (new TextEncoder().encode(value.role).length <= 64 && value.role.length > 0 && !/\p{Cc}/u.test(value.role))));
-const stoppedHistoryPage = z.object({ target: statePiBindingTargetSchema, readMode: z.literal("stopped"), collection: historyCollection, headDigest: historyDigest, leafId: historyEntryId.nullable(), entries: z.array(historyProjection).max(50), cursor: historyCursor.nullable() }).strict().refine(value => {
-  if (new Set(value.entries.map(entry => entry.entryId)).size !== value.entries.length) return false;
+const historyPage = z.object({ target: statePiBindingTargetSchema, readMode: historyReadMode, collection: historyCollection, headDigest: historyDigest, leafId: historyEntryId.nullable(), entries: z.array(historyProjection).max(50), cursor: historyCursor.nullable() }).strict().refine(value => {
+  if (new Set(value.entries.map(entry => entry.entryId)).size !== value.entries.length || (value.readMode === "live" && value.target.runtime.host_generation !== value.target.hostGeneration)) return false;
   const cursor = value.cursor;
-  return cursor === null || (JSON.stringify(cursor.target) === JSON.stringify(value.target) && cursor.collection === value.collection && cursor.headDigest === value.headDigest && cursor.after === value.entries.at(-1)?.entryId);
+  return cursor === null || (JSON.stringify(cursor.target) === JSON.stringify(value.target) && cursor.readMode === value.readMode && cursor.collection === value.collection && cursor.headDigest === value.headDigest && cursor.after === value.entries.at(-1)?.entryId);
 });
 const domain = z.discriminatedUnion("kind", [z.object({ kind: z.literal("workspaces") }).strict(), z.object({ kind: z.literal("sessions"), workspaceId: uuid.nullable() }).strict()]);
 const cursor = z.object({ target: stateTargetSchema, revision, domain, after: uuid }).strict();
@@ -65,7 +66,7 @@ export const stateRemoteMethods = {
   "axo.state.session.get": z.object({ target: stateSessionTargetSchema }).strict(),
   "axo.state.chat.observe": z.object({ target: stateSessionTargetSchema }).strict(),
   "axo.state.chat.get": z.object({ target: statePiBindingTargetSchema.refine(value => value.runtime.host_generation === value.hostGeneration) }).strict(),
-  "axo.state.chat.history": z.object({ target: statePiBindingTargetSchema, readMode: z.literal("stopped"), collection: historyCollection.default("branch"), cursor: historyCursor.optional(), limit: z.number().int().min(1).max(50).default(8) }).strict().refine(value => value.cursor === undefined || (JSON.stringify(value.cursor.target) === JSON.stringify(value.target) && value.cursor.collection === value.collection)),
+  "axo.state.chat.history": z.object({ target: statePiBindingTargetSchema, readMode: historyReadMode, collection: historyCollection.default("branch"), cursor: historyCursor.optional(), limit: z.number().int().min(1).max(50).default(8) }).strict().refine(value => (value.readMode !== "live" || value.target.runtime.host_generation === value.target.hostGeneration) && (value.cursor === undefined || (JSON.stringify(value.cursor.target) === JSON.stringify(value.target) && value.cursor.readMode === value.readMode && value.cursor.collection === value.collection))),
   "axo.state.session.create": z.object({ ...mutation, workspaceId: uuid.nullable(), name }).strict(),
   "axo.state.operation.get": z.object({ target: stateTargetSchema, commandId: uuid }).strict(),
 } as const;
@@ -86,7 +87,7 @@ export const stateResults = {
   "axo.state.session.get": envelope(stateSessionViewSchema),
   "axo.state.chat.observe": envelope(statePiObservationSchema).refine(value => value.value.kind === "notAdmitted" || (value.value.target.hostGeneration === value.hostGeneration && value.value.target.storeGeneration === value.storeGeneration)),
   "axo.state.chat.get": envelope(piLiveObservation).refine(value => value.value.target.runtime.host_generation === value.hostGeneration && value.value.target.hostGeneration === value.hostGeneration && value.value.target.storeGeneration === value.storeGeneration),
-  "axo.state.chat.history": envelope(stoppedHistoryPage).refine(value => value.value.target.hostGeneration === value.hostGeneration && value.value.target.storeGeneration === value.storeGeneration),
+  "axo.state.chat.history": envelope(historyPage).refine(value => value.value.target.hostGeneration === value.hostGeneration && value.value.target.storeGeneration === value.storeGeneration),
   "axo.state.workspace.create": operation, "axo.state.session.create": operation, "axo.state.lifecycle.set": operation,
   "axo.state.pane.add": operation, "axo.state.pane.remove": operation, "axo.state.operation.get": operation,
   "axo.state.session.completion": envelope(z.object({ completed: z.array(runtimeRefSchema).max(32) }).strict()),

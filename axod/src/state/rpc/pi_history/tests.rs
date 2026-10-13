@@ -44,9 +44,9 @@ fn branch_pagination_is_bound_to_collection_and_complete_head() {
     assert_eq!(parse_request(wrong).err().unwrap().0, -32602);
 }
 #[test]
-fn requests_reject_live_null_cursor_and_unbounded_pages_before_file_effects() {
+fn requests_reject_unknown_mode_null_cursor_and_unbounded_pages_before_effects() {
     for invalid in [
-        json!({"target":target(),"readMode":"live"}),
+        json!({"target":target(),"readMode":"cached"}),
         json!({"target":target(),"readMode":"stopped","cursor":null}),
         json!({"target":target(),"readMode":"stopped","limit":0}),
         json!({"target":target(),"readMode":"stopped","limit":51}),
@@ -56,18 +56,73 @@ fn requests_reject_live_null_cursor_and_unbounded_pages_before_file_effects() {
     }
 }
 #[test]
+fn canonical_tree_requires_exact_unique_entries_contiguous_branch_and_active_leaf() {
+    for scenario in 0..6 {
+        let mut candidate = history();
+        match scenario {
+            0 => candidate.entries.push(document("root", None, "duplicate")),
+            1 => candidate
+                .entries
+                .push(document("orphan", Some("missing"), "dangling")),
+            2 => candidate
+                .branch
+                .push(document("alien", Some("fork"), "foreign")),
+            3 => candidate.branch[0] = document("root", None, "rewritten branch body"),
+            4 => {
+                candidate.branch.remove(0);
+            }
+            _ => candidate.leaf_id = Some("other".into()),
+        };
+        assert!(history::CanonicalTree::parse(&candidate).is_err());
+    }
+    let mut reset = history();
+    reset.branch.clear();
+    reset.leaf_id = None;
+    assert!(
+        history::CanonicalTree::parse(&reset).is_ok(),
+        "Public resetLeaf can select no branch while retaining entries"
+    );
+}
+#[test]
+fn live_cursor_cannot_cross_read_mode_or_historical_runtime_host() {
+    let mut scope = target();
+    scope["runtime"]["host_generation"] = scope["hostGeneration"].clone();
+    let request = parse_request(
+        serde_json::from_value(json!({"target":scope,"readMode":"live","limit":1})).unwrap(),
+    )
+    .unwrap();
+    let first = page(&request, &history()).unwrap();
+    assert_eq!(first["readMode"], "live");
+    let wrong = serde_json::from_value(
+        json!({"target":scope,"readMode":"stopped","cursor":first["cursor"]}),
+    )
+    .unwrap();
+    assert_eq!(parse_request(wrong).err().unwrap().0, -32602);
+    let historical = serde_json::from_value(json!({"target":target(),"readMode":"live"})).unwrap();
+    assert_eq!(parse_request(historical).err().unwrap().0, -32602);
+}
+#[test]
 fn serialized_page_budget_never_truncates_a_record_without_continuation() {
     let request = parse_request(
         serde_json::from_value(json!({"target":target(),"readMode":"stopped","limit":50})).unwrap(),
     )
     .unwrap();
-    let documents = (0..50)
-        .map(|index| document(&format!("entry-{index}"), None, &"\u{0001}".repeat(2048)))
-        .collect();
+    let documents = || {
+        (0..50)
+            .map(|index| {
+                let parent = (index > 0).then(|| format!("entry-{}", index - 1));
+                document(
+                    &format!("entry-{index}"),
+                    parent.as_deref(),
+                    &"\u{0001}".repeat(2048),
+                )
+            })
+            .collect()
+    };
     let history = History {
-        leaf_id: None,
-        entries: Vec::new(),
-        branch: documents,
+        leaf_id: Some("entry-49".into()),
+        entries: documents(),
+        branch: documents(),
     };
     let result = page(&request, &history).unwrap();
     assert!(result["entries"].as_array().unwrap().len() < 50);

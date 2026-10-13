@@ -20,6 +20,48 @@ struct Link {
     id: String,
     parent_id: Option<String>,
 }
+/// Parsed, immutable tree evidence for either a public control reply or a
+/// completion-proven file snapshot. Branch documents must be exact entries,
+/// contiguous from a root, and end at the reported active leaf.
+pub(crate) struct CanonicalTree<'a> {
+    history: &'a History,
+}
+impl<'a> CanonicalTree<'a> {
+    pub(crate) fn parse(history: &'a History) -> Result<Self, Error> {
+        let mut entries = BTreeMap::new();
+        let valid_id =
+            |id: &str| !id.is_empty() && id.len() <= 128 && !id.chars().any(char::is_control);
+        for document in &history.entries {
+            let link: Link = serde_json::from_str(document.json()).map_err(|_| Error::Invalid)?;
+            if !valid_id(&link.id)
+                || entries.contains_key(&link.id)
+                || link
+                    .parent_id
+                    .as_ref()
+                    .is_some_and(|parent| !valid_id(parent) || !entries.contains_key(parent))
+            {
+                return Err(Error::Invalid);
+            }
+            entries.insert(link.id, (link.parent_id, document));
+        }
+        let mut leaf: Option<&str> = None;
+        for document in &history.branch {
+            let link: Link = serde_json::from_str(document.json()).map_err(|_| Error::Invalid)?;
+            let (id, (parent, stored)) = entries.get_key_value(&link.id).ok_or(Error::Invalid)?;
+            if stored.json() != document.json() || parent.as_deref() != leaf {
+                return Err(Error::Invalid);
+            }
+            leaf = Some(id.as_str());
+        }
+        if leaf != history.leaf_id.as_deref() {
+            return Err(Error::Invalid);
+        }
+        Ok(Self { history })
+    }
+    pub(crate) fn history(&self) -> &'a History {
+        self.history
+    }
+}
 /// Exact native completion and a bound writer-exclusion lease are mandatory.
 /// A successful file read never authorizes a replacement writer.
 pub(crate) fn stopped(

@@ -41,7 +41,7 @@ test("exact snapshot contract requires binding identities and returns live state
 test("stopped history has closed source/head/collection continuations and no live-file fallback", () => {
   const method = remoteMethods["axo.state.chat.history"], result = results["axo.state.chat.history"];
   assert.ok(method.safeParse({ target, readMode: "stopped", limit: 1 }).success);
-  for (const extra of [{ readMode: "live" }, { cursor: null }, { limit: 0 }, { limit: 51 }, { file: "/not-authority" }]) assert.equal(method.safeParse({ target, readMode: "stopped", ...extra }).success, false);
+  for (const extra of [{ readMode: "cached" }, { cursor: null }, { limit: 0 }, { limit: 51 }, { file: "/not-authority" }]) assert.equal(method.safeParse({ target, readMode: "stopped", ...extra }).success, false);
   const entry = { entryId: "first", parentId: null, timestamp: "now", kind: "message", role: "user", text: "owned turn", truncated: false, toolCallId: null, toolName: null, toolCalls: [] };
   const headDigest = "a".repeat(64);
   const cursor = { target, readMode: "stopped", collection: "branch", headDigest, after: "first" };
@@ -49,6 +49,21 @@ test("stopped history has closed source/head/collection continuations and no liv
   assert.ok(result.safeParse(envelope(page)).success);
   assert.equal(method.safeParse({ target, readMode: "stopped", collection: "entries", cursor }).success, false);
   for (const invalid of [{ ...page, readMode: "live" }, { ...page, entries: [] }, { ...page, entries: [entry, entry] }, { ...page, cursor: { ...cursor, headDigest: "b".repeat(64) } }, { ...page, cursor: { ...cursor, after: "other" } }]) assert.equal(result.safeParse(envelope(invalid)).success, false);
+});
+test("live history requires a current runtime and mode-bound continuations", () => {
+  const method = remoteMethods["axo.state.chat.history"], result = results["axo.state.chat.history"];
+  assert.ok(method.safeParse({ target, readMode: "live" }).success);
+  const historical = { ...target, runtime: { ...target.runtime, host_generation: id(8) } };
+  assert.equal(method.safeParse({ target: historical, readMode: "live" }).success, false);
+  assert.ok(method.safeParse({ target: historical, readMode: "stopped" }).success);
+  const entry = { entryId: "first", parentId: null, timestamp: "now", kind: "message", role: "user", text: "owned", truncated: false, toolCallId: null, toolName: null, toolCalls: [] };
+  const headDigest = "a".repeat(64);
+  const cursor = { target, readMode: "live", collection: "branch", headDigest, after: "first" };
+  const page = { target, readMode: "live", collection: "branch", headDigest, leafId: "last", entries: [entry], cursor };
+  assert.ok(result.safeParse(envelope(page)).success);
+  assert.equal(method.safeParse({ target, readMode: "stopped", cursor }).success, false);
+  assert.equal(result.safeParse(envelope({ ...page, cursor: { ...cursor, readMode: "stopped" } })).success, false);
+  assert.equal(result.safeParse(envelope({ ...page, target: historical, cursor: null })).success, false);
 });
 test("questions keep distinct options, active interaction and exact UTF-16 bounds", () => {
   const options = [{ id: id(10), label: "First" }, { id: id(11), label: "Second" }];

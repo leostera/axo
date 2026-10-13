@@ -145,6 +145,31 @@ fn foreign_snapshot_identity_never_becomes_cached_observation() {
     }
 }
 #[test]
+fn history_read_on_a_permanently_fenced_channel_sends_no_request() {
+    use std::io::Read;
+    let shared = Arc::new(shared());
+    let chat_id = shared.state.lock().unwrap().ready.as_ref().unwrap().chat_id;
+    let (writer, mut peer) = UnixStream::pair().unwrap();
+    peer.set_nonblocking(true).unwrap();
+    let runtime = serde_json::from_value(json!({"host_generation":uuid::Uuid::new_v4(),"runtime_generation":uuid::Uuid::new_v4(),"target":{"session_id":uuid::Uuid::new_v4(),"pane_id":uuid::Uuid::new_v4()}})).unwrap();
+    let control = Control {
+        runtime,
+        chat_id,
+        writer: Mutex::new(writer),
+        shared: shared.clone(),
+    };
+    fence(&shared);
+    assert!(matches!(
+        control.history(),
+        Err(ControlError::OutcomeUnknown)
+    ));
+    assert_eq!(
+        peer.read(&mut [0_u8; 1]).unwrap_err().kind(),
+        std::io::ErrorKind::WouldBlock
+    );
+    assert!(shared.state.lock().unwrap().gap);
+}
+#[test]
 fn closed_channel_fence_cannot_be_reset_by_snapshot_reply() {
     let shared = shared();
     let (id, receiver) = pending(&shared);

@@ -284,6 +284,52 @@ pub(super) fn get(owner: &Controller, target: BindingTarget) -> Outcome {
         Observation::Live { target, state },
     )
 }
+/// Only an exact admitted control can mint this read. Its Arc retains the
+/// original control and writer lease until the final publication recheck.
+pub(super) struct LiveHistoryRead {
+    pub(super) history: crate::pi_control::History,
+    capture: SnapshotCapture,
+    target: BindingTarget,
+}
+impl LiveHistoryRead {
+    pub(super) fn revision(&self) -> u64 {
+        self.capture.revision
+    }
+    pub(super) fn check(&self, owner: &Controller) -> Result<(), (i32, &'static str)> {
+        owner.ensure_owner().map_err(failure)?;
+        let current = capture_snapshot(owner, &self.target)?;
+        if current.revision != self.capture.revision
+            || current.configuration != self.capture.configuration
+            || !std::sync::Arc::ptr_eq(&current.running, &self.capture.running)
+        {
+            return Err((-32002, "Stale central history source"));
+        }
+        Ok(())
+    }
+}
+pub(super) fn read_history(
+    owner: &Controller,
+    target: &BindingTarget,
+) -> Result<LiveHistoryRead, (i32, &'static str)> {
+    let capture = capture_snapshot(owner, target)?;
+    // No database/admission/native-map lock spans this bounded healthy-channel
+    // read. Capacity is rejection, not loss, reconnect or permission to launch.
+    let history = capture
+        .running
+        .control
+        .history()
+        .map_err(|error| match error {
+            crate::pi_control::ControlError::Capacity => (-32006, "Central Pi history capacity"),
+            error => control_failure(error),
+        })?;
+    let read = LiveHistoryRead {
+        history,
+        capture,
+        target: target.clone(),
+    };
+    read.check(owner)?;
+    Ok(read)
+}
 pub(super) fn observe(owner: &Controller, scope: SessionTarget) -> Outcome {
     let (revision, observation) = capture(owner, &scope)?;
     publish(owner, &scope, revision, observation)

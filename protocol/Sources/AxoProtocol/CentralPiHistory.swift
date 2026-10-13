@@ -1,19 +1,22 @@
 import Foundation
 
+public enum CentralPiHistoryReadMode: String, Sendable { case live, stopped }
 public enum CentralPiHistoryCollection: String, Sendable { case branch, entries }
 /// Only a parsed continuation can be submitted. Bound to one source/runtime/chat,
 /// collection and exact canonical head, not a caller-selected numeric offset.
 public struct CentralPiHistoryCursor: Equatable, Sendable {
     public let target: CentralPiBindingTarget
+    public let readMode: CentralPiHistoryReadMode
     public let collection: CentralPiHistoryCollection
     public let headDigest: String
     public let after: String
     var json: JSONValue { get throws {
-        try .object(["target": target.json, "readMode": .string("stopped"), "collection": .string(collection.rawValue), "headDigest": .string(headDigest), "after": .string(after)])
+        try .object(["target": target.json, "readMode": .string(readMode.rawValue), "collection": .string(collection.rawValue), "headDigest": .string(headDigest), "after": .string(after)])
     } }
 }
 public struct CentralPiHistoryPage: Equatable, Sendable {
     public let target: CentralPiBindingTarget
+    public let readMode: CentralPiHistoryReadMode
     public let collection: CentralPiHistoryCollection
     public let headDigest: String
     public let leafId: String?
@@ -21,9 +24,9 @@ public struct CentralPiHistoryPage: Equatable, Sendable {
     public let cursor: CentralPiHistoryCursor?
 }
 extension CentralJSON {
-    func stoppedHistory(_ value: JSONValue, target: CentralPiBindingTarget, collection: CentralPiHistoryCollection, cursor prior: CentralPiHistoryCursor?, limit: Int) throws -> CentralPiHistoryPage {
+    func piHistory(_ value: JSONValue, target: CentralPiBindingTarget, readMode: CentralPiHistoryReadMode, collection: CentralPiHistoryCollection, cursor prior: CentralPiHistoryCursor?, limit: Int) throws -> CentralPiHistoryPage {
         let fields = try object(value, keys: ["target", "readMode", "collection", "headDigest", "leafId", "entries", "cursor"])
-        guard try string(field(fields, "readMode")) == "stopped", try string(field(fields, "collection")) == collection.rawValue else { throw failure }
+        guard try string(field(fields, "readMode")) == readMode.rawValue, try string(field(fields, "collection")) == collection.rawValue else { throw failure }
         let actual = try piHistoryTarget(field(fields, "target"), expected: target)
         let digest = try historyDigest(field(fields, "headDigest"))
         let leafValue = try field(fields, "leafId"), leaf = leafValue == .null ? nil : try recordedID(leafValue)
@@ -36,11 +39,11 @@ extension CentralJSON {
             let continuation = try object(nextValue, keys: ["target", "readMode", "collection", "headDigest", "after"])
             _ = try piHistoryTarget(field(continuation, "target"), expected: target)
             let after = try recordedID(field(continuation, "after"))
-            guard try string(field(continuation, "readMode")) == "stopped", try string(field(continuation, "collection")) == collection.rawValue,
+            guard try string(field(continuation, "readMode")) == readMode.rawValue, try string(field(continuation, "collection")) == collection.rawValue,
                   try historyDigest(field(continuation, "headDigest")) == digest, after == entries.last?.entryId else { throw failure }
-            next = CentralPiHistoryCursor(target: actual, collection: collection, headDigest: digest, after: after)
+            next = CentralPiHistoryCursor(target: actual, readMode: readMode, collection: collection, headDigest: digest, after: after)
         }
-        return CentralPiHistoryPage(target: actual, collection: collection, headDigest: digest, leafId: leaf, entries: entries, cursor: next)
+        return CentralPiHistoryPage(target: actual, readMode: readMode, collection: collection, headDigest: digest, leafId: leaf, entries: entries, cursor: next)
     }
     private func piHistoryTarget(_ value: JSONValue, expected: CentralPiBindingTarget) throws -> CentralPiBindingTarget {
         let actual = try piBinding(value, source: expected.source, workspaceId: expected.workspaceId, sessionId: expected.sessionId)

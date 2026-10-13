@@ -8354,7 +8354,10 @@
         },
         "readMode": {
           "type": "string",
-          "const": "stopped"
+          "enum": [
+            "live",
+            "stopped"
+          ]
         },
         "collection": {
           "default": "branch",
@@ -8468,7 +8471,10 @@
             },
             "readMode": {
               "type": "string",
-              "const": "stopped"
+              "enum": [
+                "live",
+                "stopped"
+              ]
             },
             "collection": {
               "type": "string",
@@ -10998,7 +11004,10 @@
             },
             "readMode": {
               "type": "string",
-              "const": "stopped"
+              "enum": [
+                "live",
+                "stopped"
+              ]
             },
             "collection": {
               "type": "string",
@@ -11235,7 +11244,10 @@
                     },
                     "readMode": {
                       "type": "string",
-                      "const": "stopped"
+                      "enum": [
+                        "live",
+                        "stopped"
+                      ]
                     },
                     "collection": {
                       "type": "string",

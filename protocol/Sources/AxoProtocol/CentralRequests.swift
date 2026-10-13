@@ -20,7 +20,7 @@ public struct CentralRequest: Sendable {
         case session(UUID?, UUID)
         case piObservation(UUID?, UUID)
         case piSnapshot(CentralPiBindingTarget)
-        case stoppedHistory(CentralPiBindingTarget, CentralPiHistoryCollection, CentralPiHistoryCursor?, Int)
+        case piHistory(CentralPiBindingTarget, CentralPiHistoryReadMode, CentralPiHistoryCollection, CentralPiHistoryCursor?, Int)
         case mutation(UUID, CentralRevision, Mutation)
         case operation(UUID)
         case completion(UUID?, UUID, [TerminalRuntime])
@@ -77,14 +77,15 @@ public struct CentralRequest: Sendable {
         }
         return try Self(method: method, parameters: .object(["target": target.json]), machine: target.source.machine, source: target.source, intent: .piSnapshot(target))
     }
-    public static func stoppedPiHistory(target: CentralPiBindingTarget, collection: CentralPiHistoryCollection = .branch, cursor: CentralPiHistoryCursor? = nil, limit: Int = 8) throws -> Self {
+    public static func piHistory(target: CentralPiBindingTarget, readMode: CentralPiHistoryReadMode, collection: CentralPiHistoryCollection = .branch, cursor: CentralPiHistoryCursor? = nil, limit: Int = 8) throws -> Self {
         let method = "axo.state.chat.history"
-        guard (1...50).contains(limit), cursor.map({ $0.target == target && $0.collection == collection }) ?? true else {
+        guard (1...50).contains(limit), readMode != .live || target.runtime.hostGeneration == target.source.machine.hostGeneration,
+              cursor.map({ $0.target == target && $0.readMode == readMode && $0.collection == collection }) ?? true else {
             throw AxoProtocolValidationError.invalidParameters(method: method)
         }
-        var fields: [String: JSONValue] = ["target": try target.json, "readMode": .string("stopped"), "collection": .string(collection.rawValue), "limit": .number(Double(limit))]
+        var fields: [String: JSONValue] = ["target": try target.json, "readMode": .string(readMode.rawValue), "collection": .string(collection.rawValue), "limit": .number(Double(limit))]
         if let cursor { fields["cursor"] = try cursor.json }
-        return Self(method: method, parameters: .object(fields), machine: target.source.machine, source: target.source, intent: .stoppedHistory(target, collection, cursor, limit))
+        return Self(method: method, parameters: .object(fields), machine: target.source.machine, source: target.source, intent: .piHistory(target, readMode, collection, cursor, limit))
     }
     public static func createWorkspace(source: CentralSource, commandId: UUID, expectedRevision: CentralRevision, name: String, directoryPath: String) throws -> Self {
         try mutate(source, commandId, expectedRevision, .workspace(name, directoryPath))

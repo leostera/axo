@@ -115,7 +115,7 @@ fn central_pi_observation_requires_closed_current_scope_and_never_starts_work() 
             json!({"target":exact,"readMode":"live"}),
             false
         )["error"]["code"],
-        -32602
+        -32009
     );
     for key in ["runtime", "chatId", "workspaceId"] {
         let mut missing = exact.clone();

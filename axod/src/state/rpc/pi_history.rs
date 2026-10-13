@@ -1,4 +1,5 @@
-//! Completion-proven, writer-excluded stopped history. No live-file fallback,
+//! Exact admitted-control live history or completion-proven stopped history.
+//! No live-file fallback,
 //! additional Pi launcher, canonical writer, history cache or replay path.
 #[cfg(test)]
 mod tests;
@@ -12,6 +13,7 @@ use sha2::{Digest, Sha256};
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 enum ReadMode {
+    Live,
     Stopped,
 }
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
@@ -111,7 +113,8 @@ fn capture(
         attempt,
     })
 }
-fn head(history: &History) -> String {
+fn head(tree: &history::CanonicalTree<'_>) -> String {
+    let history = tree.history();
     let mut digest = Sha256::new();
     for documents in [&history.entries, &history.branch] {
         digest.update((documents.len() as u64).to_be_bytes());
@@ -129,6 +132,11 @@ fn valid_id(id: &str) -> bool {
     !id.is_empty() && id.len() <= 128 && !id.chars().any(char::is_control)
 }
 fn parse_request(request: Input) -> Result<Request, (i32, &'static str)> {
+    if request.read_mode == ReadMode::Live
+        && request.target.runtime().host_generation != request.target.scope().host_generation
+    {
+        return Err((-32602, "Invalid central live history target"));
+    }
     if let Some(cursor) = &request.cursor
         && (cursor.target != request.target
             || cursor.read_mode != request.read_mode
@@ -151,7 +159,10 @@ fn parse_request(request: Input) -> Result<Request, (i32, &'static str)> {
     })
 }
 fn page(request: &Request, history: &History) -> Result<Value, (i32, &'static str)> {
-    let digest = head(history);
+    let tree = history::CanonicalTree::parse(history)
+        .map_err(|_| (-32009, "Invalid central canonical history"))?;
+    let digest = head(&tree);
+    let history = tree.history();
     if request
         .cursor
         .as_ref()
@@ -215,6 +226,30 @@ fn page(request: &Request, history: &History) -> Result<Value, (i32, &'static st
 pub(super) fn read(owner: &Controller, machine: MachineId, input: Input) -> Outcome {
     let request = parse_request(input)?;
     membership(&request.target.scope(), owner, machine)?;
+    match request.read_mode {
+        ReadMode::Live => read_live(owner, request),
+        ReadMode::Stopped => read_stopped(owner, request),
+    }
+}
+fn envelope(owner: &Controller, request: &Request, revision: u64, body: Value) -> Outcome {
+    let result = json!({"hostGeneration":request.target.scope().host_generation,"storeGeneration":owner.generation().map_err(failure)?,"revision":revision,"value":body});
+    if serde_json::to_vec(&result)
+        .map_err(|_| (-32603, "Central encoding failed"))?
+        .len()
+        > 48 * 1024
+    {
+        return Err((-32006, "Central history page capacity"));
+    }
+    Ok(result)
+}
+fn read_live(owner: &Controller, request: Request) -> Outcome {
+    let read = super::pi_observation::read_history(owner, &request.target)?;
+    let body = page(&request, &read.history)?;
+    let result = envelope(owner, &request, read.revision(), body)?;
+    read.check(owner)?;
+    Ok(result)
+}
+fn read_stopped(owner: &Controller, request: Request) -> Outcome {
     let original = capture(owner, &request.target)?;
     let native = owner.runtime_owner();
     let proof = native
@@ -240,14 +275,7 @@ pub(super) fn read(owner: &Controller, machine: MachineId, input: Input) -> Outc
     lease
         .check_for(&original.binding.file)
         .map_err(|_| (-32008, "Central Pi storage fenced"))?;
-    let result = json!({"hostGeneration":request.target.scope().host_generation,"storeGeneration":owner.generation().map_err(failure)?,"revision":original.revision,"value":body});
-    if serde_json::to_vec(&result)
-        .map_err(|_| (-32603, "Central encoding failed"))?
-        .len()
-        > 48 * 1024
-    {
-        return Err((-32006, "Central history page capacity"));
-    }
+    let result = envelope(owner, &request, original.revision, body)?;
     history
         .check()
         .map_err(|_| (-32008, "Central Pi storage fenced"))?;

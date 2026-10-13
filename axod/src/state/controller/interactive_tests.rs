@@ -177,6 +177,36 @@ fn actual_three_by_four_by_three_graph_admits_every_pane_and_resumes_exact_pi_fi
         0,
         "Snapshot is not submission"
     );
+    let live_history = |cursor: Option<serde_json::Value>| {
+        let mut params = json!({"target":exact_target,"readMode":"live","limit":1});
+        if let Some(cursor) = cursor {
+            params["cursor"] = cursor;
+        }
+        crate::state::rpc::dispatch(
+            crate::rpc::Call {
+                id: Some(json!(8)),
+                method: "axo.state.chat.history".into(),
+                params: Some(params),
+            },
+            &controller,
+            machine,
+            false,
+        )
+        .unwrap()
+    };
+    let initial_file = binding.file.exists();
+    let initial_history = live_history(None);
+    assert_eq!(initial_history["result"]["value"]["readMode"], "live");
+    assert_eq!(
+        binding.file.exists(),
+        initial_file,
+        "Live read cannot create canonical files"
+    );
+    assert_eq!(
+        model.requests.load(Ordering::SeqCst),
+        0,
+        "History read is not model submission"
+    );
     let mut foreign_target = exact_target.clone();
     foreign_target["chatId"] = json!(uuid::Uuid::new_v4());
     let rejected = crate::state::rpc::dispatch(
@@ -250,6 +280,24 @@ fn actual_three_by_four_by_three_graph_admits_every_pane_and_resumes_exact_pi_fi
         thread::sleep(Duration::from_millis(50));
     }
     let original_bytes = fs::read(&binding.file).unwrap();
+    let first_live = live_history(None);
+    let live_cursor = first_live["result"]["value"]["cursor"].clone();
+    assert!(!live_cursor.is_null(), "Actual persisted Pi turn paginates");
+    let next_live = live_history(Some(live_cursor));
+    assert_eq!(
+        next_live["result"]["value"]["headDigest"],
+        first_live["result"]["value"]["headDigest"]
+    );
+    assert_ne!(
+        next_live["result"]["value"]["entries"][0]["entryId"],
+        first_live["result"]["value"]["entries"][0]["entryId"]
+    );
+    assert_ne!(
+        initial_history["result"]["value"]["headDigest"],
+        first_live["result"]["value"]["headDigest"]
+    );
+    assert_eq!(fs::read(&binding.file).unwrap(), original_bytes);
+    assert_eq!(model.requests.load(Ordering::SeqCst), 1);
     drop(running);
     controller.native.stop(binding.runtime).unwrap();
     wait(|| {
@@ -287,6 +335,11 @@ fn actual_three_by_four_by_three_graph_admits_every_pane_and_resumes_exact_pi_fi
         false,
     )
     .unwrap();
+    assert_eq!(
+        live_history(None)["error"]["code"],
+        -32002,
+        "History cannot retarget a resumed runtime"
+    );
     assert_eq!(
         predecessor_read["error"]["code"], -32002,
         "Snapshot must not retarget the resumed runtime"
@@ -436,6 +489,21 @@ fn actual_three_by_four_by_three_graph_admits_every_pane_and_resumes_exact_pi_fi
         json!(empty.runtime)
     );
     assert!(stopped["result"]["value"].get("state").is_none());
+    let stopped_live_history = crate::state::rpc::dispatch(
+        crate::rpc::Call {
+            id: Some(json!(9)),
+            method: "axo.state.chat.history".into(),
+            params: Some(json!({"target":stopped["result"]["value"]["target"],"readMode":"live"})),
+        },
+        &controller,
+        machine,
+        false,
+    )
+    .unwrap();
+    assert!(
+        stopped_live_history.get("error").is_some(),
+        "Live history must not fall back to stopped files"
+    );
     let missing_history = crate::state::rpc::dispatch(
         crate::rpc::Call {
             id: Some(json!(7)),
