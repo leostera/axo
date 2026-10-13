@@ -34,7 +34,6 @@ public enum AxoProtocol {
         public static let getCommand = "axo.command.get"
         public static let addShellPane = "axo.session.pane.add"
         public static let removeShellPane = "axo.session.pane.remove"
-        public static let startSession = "axo.session.start"
         public static let getChat = "axo.chat.get"
         public static let getChatHistory = "axo.chat.history"
         public static let getToolOutput = "axo.chat.getToolOutput"

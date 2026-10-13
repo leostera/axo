@@ -85,51 +85,6 @@ public struct PiChatTarget: Codable, Equatable, Sendable {
     }
 }
 
-public enum PiPersistence: Equatable, Sendable {
-    case fresh
-    case resume(chatId: UUID, previousRuntime: TerminalRuntime)
-}
-
-extension PiPersistence: Codable {
-    private enum CodingKeys: String, CodingKey { case kind, chatId, previousRuntime }
-    private enum Kind: String, Codable { case fresh, resume }
-
-    public init(from decoder: Decoder) throws {
-        let container = try decoder.container(keyedBy: CodingKeys.self)
-        switch try container.decode(Kind.self, forKey: .kind) {
-        case .fresh:
-            self = .fresh
-        case .resume:
-            self = .resume(chatId: try container.decode(UUID.self, forKey: .chatId),
-                           previousRuntime: try container.decode(TerminalRuntime.self, forKey: .previousRuntime))
-        }
-    }
-
-    public func encode(to encoder: Encoder) throws {
-        var container = encoder.container(keyedBy: CodingKeys.self)
-        switch self {
-        case .fresh:
-            try container.encode(Kind.fresh, forKey: .kind)
-        case .resume(let chatId, let runtime):
-            try container.encode(Kind.resume, forKey: .kind)
-            try container.encode(chatId, forKey: .chatId)
-            try container.encode(runtime, forKey: .previousRuntime)
-        }
-    }
-}
-
-public struct PiSessionStartParameters: Codable, Equatable, Sendable {
-    public let target: PiSessionTarget
-    public let commandId: UUID
-    public let persistence: PiPersistence
-
-    public init(target: PiSessionTarget, commandId: UUID = UUID(), persistence: PiPersistence = .fresh) {
-        self.target = target
-        self.commandId = commandId
-        self.persistence = persistence
-    }
-}
-
 public enum PiReadMode: String, Codable, Equatable, Sendable {
     case live
     case stopped
@@ -144,20 +99,16 @@ public enum PiChatOperation: String, Codable, Equatable, Sendable {
 }
 
 public enum PiIntent: Equatable, Sendable {
-    case start(target: PiSessionTarget, persistence: PiPersistence)
     case chat(target: PiChatTarget, operation: PiChatOperation)
 }
 
 extension PiIntent: Codable {
-    private enum CodingKeys: String, CodingKey { case kind, target, persistence, operation }
-    private enum Kind: String, Codable { case start, chat }
+    private enum CodingKeys: String, CodingKey { case kind, target, operation }
+    private enum Kind: String, Codable { case chat }
 
     public init(from decoder: Decoder) throws {
         let container = try decoder.container(keyedBy: CodingKeys.self)
         switch try container.decode(Kind.self, forKey: .kind) {
-        case .start:
-            self = .start(target: try container.decode(PiSessionTarget.self, forKey: .target),
-                          persistence: try container.decode(PiPersistence.self, forKey: .persistence))
         case .chat:
             self = .chat(target: try container.decode(PiChatTarget.self, forKey: .target),
                          operation: try container.decode(PiChatOperation.self, forKey: .operation))
@@ -167,10 +118,6 @@ extension PiIntent: Codable {
     public func encode(to encoder: Encoder) throws {
         var container = encoder.container(keyedBy: CodingKeys.self)
         switch self {
-        case .start(let target, let persistence):
-            try container.encode(Kind.start, forKey: .kind)
-            try container.encode(target, forKey: .target)
-            try container.encode(persistence, forKey: .persistence)
         case .chat(let target, let operation):
             try container.encode(Kind.chat, forKey: .kind)
             try container.encode(target, forKey: .target)
@@ -222,13 +169,6 @@ public struct PiCommandReceipt: Codable, Equatable, Sendable {
         self.disposition = disposition
         self.runtime = runtime
     }
-}
-
-public struct PiSessionStartResult: Codable, Equatable, Sendable {
-    public let hostGeneration: UUID
-    public let receipt: PiCommandReceipt
-    public let chat: PiChatTarget?
-    public let admission: PiAdmission
 }
 
 public struct PiChatGetParameters: Codable, Equatable, Sendable {

@@ -89,7 +89,6 @@ UUIDs are case-insensitive inputs normalized to lower-case routing keys. A label
 | `axo.session.create` | `{target: {...source, workspaceId}, commandId, expectedRevision, name}` | Fresh unstarted work/Pi-pane identities, no fabricated chat/history |
 | `axo.session.rename` | `{target: {...source, workspaceId, sessionId}, commandId, expectedRevision, name}` | Durable manual Axo label, not Pi-title mutation |
 | `axo.command.get` | `{target, commandId}` | Read-only machine-scoped work/runtime/Pi receipt; null never proves rejection or safe replay |
-| `axo.session.start` | `{target: {...source, workspaceId, sessionId, paneId}, commandId, persistence}` | Explicit fresh managed Pi admission or exact stopped-runtime resume, local/remote RPC |
 | `axo.chat.get` | `{target: {...source, workspaceId, sessionId, paneId, runtimeHostGeneration, chatId, runtimeGeneration}, readMode}` | Bounded current snapshot through Pi's public API; explicit live/stopped mode |
 | `axo.chat.history` | `{target, readMode, limit?, cursor?}` | Bounded canonical Pi history with branch/source-scoped cursor |
 | `axo.chat.getToolOutput` | `{target, readMode, entryId, toolCallId, offset, limit?}` | Bounded canonical tool output range; no terminal bytes |
@@ -109,7 +108,7 @@ Session views retain both the Axo `name` and canonical `pi.title`. The optional 
 
 Create/rename return committed metadata and revision. Reusing a command reconciles the exact original normalized intent; conflicting arguments or execution/work command reuse reject. Work commits and runtime receipts are separate bounded stores under one owner/admission lock. Uncertain persistence fences mutations in both domains. `command.get` returns a work commit or original runtime reference with any available observation; missing or an absent historical snapshot never permits execution replay.
 
-The proposed `axo._.*` names in [RFD0009](../docs/rfds/RFD0009-protocol-capability-parity.md) have **not** replaced the current prototype spellings yet; no aliases are introduced. Work-record APIs have Swift contract validation and the Axod-only Mac UI reads daemon records without a live registry handoff. The Mac has initial managed Pi start/resume, canonical chat/history, and addressed text/steering/cancel/question controls; broader operational acceptance, event subscriptions, bounded terminal attachment/data plane, workspace/session creation UI, file authority, and Ghostty integration remain unfinished. A runtime observation in `session.get` is deliberately separate from the null/notAdmitted Pi binding.
+`axo.session.start` is retired: Pi admission and exact resume belong to the central daemon materializer, not a client request or receipt variant. The remaining prototype work/chat contracts above are not production central parity. Native Mac and primary phone conversation consumers still require their central cutover; retained DTOs do not establish central history/control/submission support. See [RFD0012](../docs/rfds/RFD0012-sqlite-desired-state-and-session-materialization.md) for the accepted authority boundary.
 
 ## Delivery and failure semantics
 

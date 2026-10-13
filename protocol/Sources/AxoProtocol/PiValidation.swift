@@ -6,31 +6,6 @@ public enum PiProtocolValidator {
     public static let maximumHistoryEntryBytes = 48 * 1_024
     public static let maximumToolOutputBytes = 8_192
 
-    public static func sessionStart(_ value: JSONValue, target: PiSessionTarget,
-                                    commandId: UUID, persistence: PiPersistence) throws -> PiSessionStartResult {
-        let method = AxoProtocol.Method.startSession
-        guard let fields = object(value, keys: ["hostGeneration", "receipt", "chat", "admission"]),
-              let generation = uuid(fields["hostGeneration"]), generation == target.hostGeneration,
-              let receiptValue = fields["receipt"], validReceipt(receiptValue),
-              let chatValue = fields["chat"], let admissionValue = string(fields["admission"]),
-              let admission = PiAdmission(rawValue: admissionValue) else { throw invalid(method) }
-        let receipt = try decode(receiptValue, as: PiCommandReceipt.self, method: method)
-        guard receipt.commandId == commandId,
-              receipt.intent == .start(target: target, persistence: persistence) else { throw invalid(method) }
-        let chat: PiChatTarget?
-        if chatValue.isNull {
-            chat = nil
-        } else {
-            guard validChatTarget(chatValue, session: target),
-                  let decoded = try? decode(chatValue, as: PiChatTarget.self, method: method),
-                  decoded.hostGeneration == target.hostGeneration else { throw invalid(method) }
-            chat = decoded
-        }
-        guard (admission == .notAdmitted) == (chat == nil),
-              chat.map({ receipt.runtime == $0.runtime }) ?? true else { throw invalid(method) }
-        return try decode(value, as: PiSessionStartResult.self, method: method)
-    }
-
     public static func chatGet(_ value: JSONValue, target: PiChatTarget,
                                readMode: PiReadMode = .live) throws -> PiChatSnapshot {
         let method = AxoProtocol.Method.getChat
@@ -139,10 +114,6 @@ public enum PiProtocolValidator {
               let runtimeValue = fields["runtime"], runtimeValue.isNull || validRuntime(runtimeValue),
               let receipt = try? decode(value, as: PiCommandReceipt.self, method: "Pi receipt") else { return false }
         switch receipt.intent {
-        case .start(let session, _):
-            return receipt.runtime.map {
-                $0.target.sessionId == session.sessionId && $0.target.paneId == session.paneId
-            } ?? true
         case .chat(let chat, _):
             return receipt.runtime.map { $0 == chat.runtime } ?? true
         }
@@ -152,8 +123,6 @@ public enum PiProtocolValidator {
         guard validReceipt(value),
               let receipt = try? decode(value, as: PiCommandReceipt.self, method: "Pi receipt") else { return false }
         switch receipt.intent {
-        case .start(let session, _):
-            return session.machineId == target.machineId && session.hostGeneration == target.hostGeneration
         case .chat(let chat, _):
             return chat.machineId == target.machineId && chat.hostGeneration == target.hostGeneration
         }
@@ -171,10 +140,6 @@ public enum PiProtocolValidator {
     private static func validIntent(_ value: JSONValue?) -> Bool {
         guard case .object(let fields)? = value, let kind = string(fields["kind"]) else { return false }
         switch kind {
-        case "start":
-            guard Set(fields.keys) == ["kind", "target", "persistence"],
-                  validSessionTarget(fields["target"]), validPersistence(fields["persistence"]) else { return false }
-            return true
         case "chat":
             guard Set(fields.keys) == ["kind", "target", "operation"], validChatTarget(fields["target"]),
                   let operation = string(fields["operation"]) else { return false }
@@ -192,36 +157,12 @@ public enum PiProtocolValidator {
         }
     }
 
-    private static func validPersistence(_ value: JSONValue?) -> Bool {
-        guard case .object(let fields)? = value, let kind = string(fields["kind"]) else { return false }
-        switch kind {
-        case "fresh": return Set(fields.keys) == ["kind"]
-        case "resume":
-            return Set(fields.keys) == ["kind", "chatId", "previousRuntime"]
-                && uuid(fields["chatId"]) != nil && validRuntime(fields["previousRuntime"])
-        default: return false
-        }
-    }
-
-    private static func validSessionTarget(_ value: JSONValue?) -> Bool {
-        guard let fields = object(value, keys: ["machineId", "hostGeneration", "workspaceId", "sessionId", "paneId"]) else { return false }
+    private static func validChatTarget(_ value: JSONValue?) -> Bool {
+        guard let fields = object(value, keys: ["machineId", "hostGeneration", "workspaceId", "sessionId", "paneId",
+                                               "runtimeHostGeneration", "runtimeGeneration", "chatId"]) else { return false }
         return fields.allSatisfy { key, value in
             key == "workspaceId" ? value.isNull || uuid(value) != nil : uuid(value) != nil
         }
-    }
-
-    private static func validChatTarget(_ value: JSONValue?, session: PiSessionTarget? = nil) -> Bool {
-        guard let fields = object(value, keys: ["machineId", "hostGeneration", "workspaceId", "sessionId", "paneId",
-                                               "runtimeHostGeneration", "runtimeGeneration", "chatId"]),
-              fields.allSatisfy({ key, value in
-                  key == "workspaceId" ? value.isNull || uuid(value) != nil : uuid(value) != nil
-              }) else { return false }
-        guard let session else { return true }
-        return uuid(fields["machineId"]) == session.machineId
-            && uuid(fields["hostGeneration"]) == session.hostGeneration
-            && uuid(fields["workspaceId"]) == session.workspaceId
-            && uuid(fields["sessionId"]) == session.sessionId
-            && uuid(fields["paneId"]) == session.paneId
     }
 
     private static func validChatTarget(_ value: JSONValue?, expected: PiChatTarget) -> Bool {

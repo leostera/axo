@@ -1,18 +1,21 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { piMethods, piMutationMethods, piResults, piReceiptSchema, workResults, createProfileServer, serveProfileMessage, type AxoClient } from "@axo/protocol";
+import { localMethods, remoteMethods, piMethods, piMutationMethods, piResults, piReceiptSchema, workResults, createProfileServer, serveProfileMessage, type AxoClient } from "@axo/protocol";
 
 const session = { machineId: crypto.randomUUID(), hostGeneration: crypto.randomUUID(), workspaceId: crypto.randomUUID(), sessionId: crypto.randomUUID(), paneId: crypto.randomUUID() };
 const chat = { ...session, runtimeHostGeneration: session.hostGeneration, runtimeGeneration: crypto.randomUUID(), chatId: crypto.randomUUID() };
 const runtime = { host_generation: chat.runtimeHostGeneration, runtime_generation: chat.runtimeGeneration, target: { session_id: chat.sessionId, pane_id: chat.paneId } };
 
-test("managed start and chat mutations require complete captured destinations and explicit intent", () => {
-  const start = { target: session, commandId: crypto.randomUUID(), persistence: { kind: "fresh" } };
-  assert.ok(piMethods["axo.session.start"].safeParse(start).success);
-  assert.ok(piMethods["axo.session.start"].safeParse({ ...start, persistence: { kind: "resume", chatId: chat.chatId, previousRuntime: runtime } }).success);
-  for (const patch of [{ persistence: { kind: "resume" } }, { argv: ["pi"] }, { cwd: "/tmp" }, { target: { ...session, paneId: undefined } }]) {
-    assert.equal(piMethods["axo.session.start"].safeParse({ ...start, ...patch }).success, false);
-  }
+test("retired Pi admission has no request, result, mutation or receipt contract", () => {
+  assert.equal("axo.session.start" in localMethods, false);
+  assert.equal("axo.session.start" in remoteMethods, false);
+  assert.equal("axo.session.start" in piResults, false);
+  assert.equal(piMutationMethods.some(method => String(method) === "axo.session.start"), false);
+  const receipt = { commandId: crypto.randomUUID(), intent: { kind: "start", target: session, persistence: { kind: "fresh" } }, disposition: { kind: "prepared" }, runtime: null };
+  assert.equal(piReceiptSchema.safeParse(receipt).success, false);
+});
+
+test("chat mutations require complete captured destinations and explicit intent", () => {
   const send = { target: chat, commandId: crypto.randomUUID(), text: "Actual message λ 界" };
   assert.ok(piMethods["axo.chat.sendMessage"].safeParse(send).success);
   for (const text of ["", "\u0085", " /model", "\u0085/cmd", "\ud800", "x".repeat(48*1024+1)]) assert.equal(piMethods["axo.chat.sendMessage"].safeParse({ ...send, text }).success, false);
@@ -53,6 +56,8 @@ test("every managed Pi mutation notification is non-executing", async () => {
 });
 
 function typedChat(client: AxoClient) {
+  // @ts-expect-error clients cannot admit Pi through the retired start method
+  client.request("axo.session.start", { target: session, commandId: crypto.randomUUID(), persistence: { kind: "fresh" } });
   client.request("axo.chat.sendMessage", { target: chat, commandId: crypto.randomUUID(), text: "Explicit normal intent" });
   // @ts-expect-error chat mutations cannot infer a work session/pane/runtime
   client.request("axo.chat.sendMessage", { target: session, commandId: crypto.randomUUID(), text: "Missing captured chat" });

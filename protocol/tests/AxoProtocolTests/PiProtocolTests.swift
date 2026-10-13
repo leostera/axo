@@ -12,31 +12,11 @@ final class PiProtocolTests: XCTestCase {
     private let chat = "77777777-7777-4777-8777-777777777777"
     private let command = "88888888-8888-4888-8888-888888888888"
 
-    func testManagedStartAndReadResultsStayBoundToTheCapturedPiDestination() throws {
-        let startTarget = #"{"machineId":"\#(machine)","hostGeneration":"\#(host)","workspaceId":"\#(workspace)","sessionId":"\#(session)","paneId":"\#(pane)"}"#
-        let chatTarget = #"{"machineId":"\#(machine)","hostGeneration":"\#(host)","workspaceId":"\#(workspace)","sessionId":"\#(session)","paneId":"\#(pane)","runtimeHostGeneration":"\#(host)","runtimeGeneration":"\#(runtime)","chatId":"\#(chat)"}"#
-        let runtimeRef = #"{"host_generation":"\#(host)","target":{"session_id":"\#(session)","pane_id":"\#(pane)"},"runtime_generation":"\#(runtime)"}"#
-        let start = #"{"hostGeneration":"\#(host)","receipt":{"commandId":"\#(command)","intent":{"kind":"start","target":\#(startTarget),"persistence":{"kind":"fresh"}},"disposition":{"kind":"dispatched"},"runtime":\#(runtimeRef)},"chat":\#(chatTarget),"admission":"ready"}"#
-        let target = PiSessionTarget(machineId: UUID(uuidString: machine)!, hostGeneration: UUID(uuidString: host)!,
-                                    workspaceId: UUID(uuidString: workspace)!, sessionId: UUID(uuidString: session)!,
-                                    paneId: UUID(uuidString: pane)!)
-        let startResult = try PiProtocolValidator.sessionStart(json(start), target: target,
-                                                               commandId: UUID(uuidString: command)!, persistence: .fresh)
-        XCTAssertEqual(startResult.admission, .ready)
-        XCTAssertEqual(startResult.chat?.chatId.uuidString.lowercased(), chat)
-
-        let snapshot = #"{"hostGeneration":"\#(host)","readMode":"live","target":\#(chatTarget),"admission":"ready","busy":false,"interactionId":null,"uiWaits":0,"question":null,"recovery":false,"leafId":null,"recentEntries":[],"viewingCount":0}"#
-        let decodedTarget = try XCTUnwrap(startResult.chat)
-        let chatResult = try PiProtocolValidator.chatGet(json(snapshot), target: decodedTarget)
-        XCTAssertFalse(chatResult.busy)
-        XCTAssertNil(chatResult.interactionId)
-
-        let history = #"{"hostGeneration":"\#(host)","readMode":"stopped","target":\#(chatTarget),"leafId":null,"entries":[],"next":null}"#
-        let stoppedHistory = try PiProtocolValidator.chatHistory(json(history), target: decodedTarget, readMode: .stopped)
-        XCTAssertTrue(stoppedHistory.entries.isEmpty)
-
-        let staleChat = snapshot.replacingOccurrences(of: #""runtimeGeneration":"\#(runtime)""#, with: #""runtimeGeneration":"99999999-9999-4999-8999-999999999999""#)
-        XCTAssertThrowsError(try PiProtocolValidator.chatGet(json(staleChat), target: decodedTarget))
+    func testRetiredStartIntentCannotDecodeAsAChatReceipt() throws {
+        let target = #"{"machineId":"\#(machine)","hostGeneration":"\#(host)","workspaceId":"\#(workspace)","sessionId":"\#(session)","paneId":"\#(pane)"}"#
+        let receipt = try json(#"{"commandId":"\#(command)","intent":{"kind":"start","target":\#(target),"persistence":{"kind":"fresh"}},"disposition":{"kind":"prepared"},"runtime":null}"#)
+        XCTAssertFalse(PiProtocolValidator.validReceipt(receipt))
+        XCTAssertThrowsError(try JSONDecoder().decode(PiCommandReceipt.self, from: JSONEncoder().encode(receipt)))
     }
 
     func testWorkSessionRecognizesActualAdmissionWithoutFabricatingIt() throws {
@@ -114,21 +94,6 @@ final class PiProtocolTests: XCTestCase {
         guard case .object(let cursorFields) = cursorValue else { return XCTFail("Expected a JSON cursor") }
         XCTAssertEqual(cursorFields["leafId"], .null)
         XCTAssertEqual(cursorFields["after"], .string("entry-1"))
-
-        let previous = TerminalRuntime(hostGeneration: UUID(uuidString: host)!,
-                                       target: .init(sessionId: UUID(uuidString: session)!, paneId: UUID(uuidString: pane)!),
-                                       runtimeGeneration: UUID(uuidString: runtime)!)
-        let start = PiSessionStartParameters(
-            target: PiSessionTarget(machineId: UUID(uuidString: machine)!, hostGeneration: UUID(uuidString: host)!,
-                                    workspaceId: UUID(uuidString: workspace)!, sessionId: UUID(uuidString: session)!,
-                                    paneId: UUID(uuidString: pane)!),
-            commandId: UUID(uuidString: command)!, persistence: .resume(chatId: UUID(uuidString: chat)!, previousRuntime: previous)
-        )
-        let startValue = try JSONDecoder().decode(JSONValue.self, from: JSONEncoder().encode(start))
-        guard case .object(let startFields) = startValue,
-              case .object(let persistence)? = startFields["persistence"] else { return XCTFail("Expected explicit resume intent") }
-        XCTAssertEqual(persistence["kind"], .string("resume"))
-        XCTAssertNotNil(persistence["previousRuntime"])
     }
 
     private func json(_ raw: String) throws -> JSONValue {
