@@ -18,7 +18,7 @@ struct NativeTerminalFixtureChecks {
         let runtime = TerminalRuntime(hostGeneration: UUID(uuidString: arguments[4])!,
                                       target: .init(sessionId: UUID(uuidString: arguments[5])!, paneId: UUID(uuidString: arguments[6])!),
                                       runtimeGeneration: UUID(uuidString: arguments[7])!)
-        let launch = try TerminalLaunch.attachment(root: URL(fileURLWithPath: arguments[2]), machineID: UUID(uuidString: arguments[3])!,
+        let launch = try TerminalLaunch.attachment(namespace: .nativeHarness, root: URL(fileURLWithPath: arguments[2]), machineID: UUID(uuidString: arguments[3])!,
                                                   runtime: runtime, helper: URL(fileURLWithPath: arguments[1]))
         let pool = AxodTerminalSurfaces()
         let view = try pool.view(for: launch)

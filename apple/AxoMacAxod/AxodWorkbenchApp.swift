@@ -13,15 +13,7 @@ final class AxodWorkbenchApp: NSObject, NSApplicationDelegate, NSWindowDelegate,
     }()
     private var coordinator: AxodWorkbenchCoordinator?
     private var window: NSWindow?
-#if DEBUG
-    private var waitingForFixtureStop = false
-#endif
-    private var savesWindowFrame = true
     private var menuBar: AxodMenuBarController?
-#if DEBUG
-    private var selfTestTask: Task<Void, Never>?
-    private var uiTestContext: AxodAppSelfTest?
-#endif
 
     static func main() {
 #if DEBUG
@@ -56,30 +48,15 @@ final class AxodWorkbenchApp: NSObject, NSApplicationDelegate, NSWindowDelegate,
 
     func applicationDidFinishLaunching(_ notification: Notification) {
         MacAppearance.applyPreference()
-#if DEBUG
-        let selfTest: AxodAppSelfTest?
-        let uiTest = CommandLine.arguments.contains("-ui-test")
-        if CommandLine.arguments.contains("-self-test") || uiTest {
-            guard CommandLine.arguments.count == 3, ["-self-test", "-ui-test"].contains(CommandLine.arguments[1]),
-                  CommandLine.arguments[2].hasPrefix("/") else {
-                fputs("Usage: Axo -self-test /absolute/private/fixture-root\n", stderr); exit(2)
-            }
-            do { selfTest = try AxodAppSelfTest(root: URL(fileURLWithPath: CommandLine.arguments[2], isDirectory: true)) }
-            catch { fputs("Axo self-test requires a safe prepared fixture root\n", stderr); exit(2) }
-        } else { selfTest = nil }
-        let coordinator = AxodWorkbenchCoordinator(preferences: selfTest?.preferences ?? .standard,
-            voiceHistoryURL: selfTest?.root.appendingPathComponent("voice-transcripts.json"))
-        if let selfTest {
-            coordinator.configureSelfTest(selfTest)
-            savesWindowFrame = false
-            if uiTest { uiTestContext = selfTest }
+        if CommandLine.arguments.contains("-self-test") || CommandLine.arguments.contains("-ui-test") {
+            fputs("Retired startup fixture flags are unsupported\n", stderr); exit(2)
         }
-#else
-        if CommandLine.arguments.contains("-self-test") || CommandLine.arguments.contains("-ui-test") || CommandLine.arguments.contains("-repair-stopped-service") || CommandLine.arguments.contains("-repair-stopped-service-parent") {
+#if !DEBUG
+        if CommandLine.arguments.contains("-repair-stopped-service") || CommandLine.arguments.contains("-repair-stopped-service-parent") {
             fputs("Axo diagnostic flags require a development build\n", stderr); exit(2)
         }
-        let coordinator = AxodWorkbenchCoordinator()
 #endif
+        let coordinator = AxodWorkbenchCoordinator()
         self.coordinator = coordinator
 
         let window = NSWindow(
@@ -92,15 +69,9 @@ final class AxodWorkbenchApp: NSObject, NSApplicationDelegate, NSWindowDelegate,
         window.identifier = NSUserInterfaceItemIdentifier(Self.mainWindowFrameAutosaveName)
         window.delegate = self
         window.contentViewController = NSHostingController(rootView: AxodApplicationView(coordinator: coordinator))
-        let restoredFrame = savesWindowFrame && window.setFrameUsingName(Self.mainWindowFrameAutosaveName)
-        if savesWindowFrame { window.setFrameAutosaveName(Self.mainWindowFrameAutosaveName) }
+        let restoredFrame = window.setFrameUsingName(Self.mainWindowFrameAutosaveName)
+        window.setFrameAutosaveName(Self.mainWindowFrameAutosaveName)
         if !restoredFrame { window.center() }
-#if DEBUG
-        if uiTest, let screen = NSScreen.screens.first {
-            window.setFrameOrigin(NSPoint(x: screen.visibleFrame.minX + 20,
-                y: screen.visibleFrame.maxY - window.frame.height - 20))
-        }
-#endif
 
         self.window = window
         installMenu()
@@ -120,47 +91,17 @@ final class AxodWorkbenchApp: NSObject, NSApplicationDelegate, NSWindowDelegate,
 
         // Neither foreground nor login-only connection creates work.
         coordinator.connect()
-#if DEBUG
-        if let selfTest, !uiTest {
-            selfTestTask = Task { await selfTest.run(coordinator: coordinator, window: window) }
-        }
-#endif
     }
 
     func applicationShouldTerminate(_ sender: NSApplication) -> NSApplication.TerminateReply {
-#if DEBUG
-        uiTestContext?.checkpoint("ui-quit-requested")
-        if let selfTestTask {
-            // An interrupted diagnostic must fail and clean up its owned helper,
-            // not leave a test daemon behind or terminate normal user work.
-            selfTestTask.cancel()
-            return .terminateLater
-        }
-#endif
-        // Unsent input is in-memory only. Quit has no storage barrier and never
-        // stops daemon work; only an explicitly owned diagnostic child is cleaned up.
+        // Unsent input is volatile. Commit the native field editor, without a
+        // save barrier, helper stop or runtime lifecycle intent.
         if let window = NSApp.keyWindow ?? window, !window.makeFirstResponder(nil) { return .terminateCancel }
-#if DEBUG
-        guard !waitingForFixtureStop else { return .terminateLater }
-        if let coordinator, let context = uiTestContext {
-            waitingForFixtureStop = true
-            Task {
-                coordinator.disconnect()
-                await coordinator.stopSelfTestDaemon()
-                context.preferences.removePersistentDomain(forName: "Axo.AppSelfTest.\(context.root.lastPathComponent)")
-                sender.reply(toApplicationShouldTerminate: true)
-            }
-            return .terminateLater
-        }
-#endif
         return .terminateNow
     }
 
     func applicationWillTerminate(_ notification: Notification) {
-#if DEBUG
-        uiTestContext?.checkpoint("ui-terminated")
-#endif
-        if savesWindowFrame { window?.saveFrame(usingName: Self.mainWindowFrameAutosaveName) }
+        window?.saveFrame(usingName: Self.mainWindowFrameAutosaveName)
         NotificationCenter.default.removeObserver(self)
         menuBar?.remove()
         menuBar = nil

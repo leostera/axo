@@ -9,7 +9,11 @@ final class AxodPaneLayouts {
     typealias Tree = SplitTree<AxodPaneLayoutLeaf>
     struct Session: Hashable {
         let machineID: UUID
+        let storeGeneration: UUID
         let sessionID: UUID
+        init(source: CentralSource, sessionID: UUID) {
+            machineID = source.machine.machineId; storeGeneration = source.storeGeneration; self.sessionID = sessionID
+        }
     }
     struct FocusMove {
         let session: Session
@@ -25,18 +29,20 @@ final class AxodPaneLayouts {
     private(set) var generations: [Session: UUID] = [:]
     private(set) var focusedPanes: [Session: UUID] = [:]
 
-    func observe(_ record: WorkSessionRecord, machineID: UUID) {
-        let paneIDs = [record.pi.paneId] + record.shellPanes.map(\.paneId)
+    func observe(_ record: CentralSessionView, source: CentralSource) {
+        let panes = record.panes.filter { $0.desired.present }
+        guard let pi = panes.first(where: { $0.desired.role == .pi }) else { return }
+        let paneIDs = panes.map { $0.desired.paneId }
         guard paneIDs.count <= Self.maximumPanes, Set(paneIDs).count == paneIDs.count else { return }
-        let session = Session(machineID: machineID, sessionID: record.sessionId)
-        var tree = trees[session] ?? Tree(view: AxodPaneLayoutLeaf(id: record.pi.paneId))
-        let missing = record.shellPanes.filter { tree.find(id: $0.paneId) == nil }
+        let session = Session(source: source, sessionID: record.session.sessionId)
+        var tree = trees[session] ?? Tree(view: AxodPaneLayoutLeaf(id: pi.desired.paneId))
+        let missing = panes.filter { $0.desired.role != .pi && tree.find(id: $0.desired.paneId) == nil }
         // An older observation cannot remove retained leaves. Refuse a whole
         // over-capacity update instead of publishing a partially inserted set.
         guard tree.count + missing.count <= Self.maximumPanes,
-              case .leaf(let anchor)? = tree.find(id: record.pi.paneId) else { return }
+              case .leaf(let anchor)? = tree.find(id: pi.desired.paneId) else { return }
         for pane in missing {
-            guard let next = try? tree.inserting(view: AxodPaneLayoutLeaf(id: pane.paneId), at: anchor, direction: .right) else { return }
+            guard let next = try? tree.inserting(view: AxodPaneLayoutLeaf(id: pane.desired.paneId), at: anchor, direction: .right) else { return }
             tree = next
         }
         replaceTree(tree, in: session)

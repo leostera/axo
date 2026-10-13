@@ -83,6 +83,8 @@ final class CentralCatalogTests: XCTestCase {
             } catch {
                 if mode == .lateStore {
                     guard case AxoProtocolValidationError.staleStore = error else { return XCTFail("Store fence") }
+                } else if mode == .lateRevision {
+                    XCTAssertEqual(error as? CentralCatalogLoadError, .revisionChanged, "A moving revision is distinct from malformed records")
                 }
             }
         }

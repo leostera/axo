@@ -2,31 +2,21 @@ import AxoProtocol
 import SwiftUI
 
 struct AxodSessionTerminals: View {
-    let session: WorkSessionRecord
+    let session: CentralSession
     let coordinator: AxodWorkbenchCoordinator
     // One viewport owner per scene/session presentation, not per split branch.
     @State private var viewportID = UUID()
 
-    private var runningPaneIDs: [UUID] {
-        guard coordinator.connectionState == .connected, let source = coordinator.hostStatus else { return [] }
-        func running(_ snapshot: TerminalSnapshot?) -> Bool {
-            guard let snapshot, snapshot.runtime.hostGeneration == source.hostGeneration,
-                  case .running = snapshot.process else { return false }
-            return true
-        }
-        let shells = session.shellPanes.filter { running($0.terminal) }
-        guard !shells.isEmpty else { return [] }
-        let pi = running(coordinator.presentationSnapshot(for: session)) ? [session.pi.paneId] : []
-        return pi + shells.map(\.paneId)
+    private var desiredPaneIDs: [UUID] {
+        coordinator.sessionView(session.sessionId)?.panes.filter { $0.desired.present }.map { $0.desired.paneId } ?? []
     }
-
     private var identity: AxodPaneLayouts.Session? {
-        coordinator.machineID.map { .init(machineID: $0, sessionID: session.sessionId) }
+        coordinator.catalog.map { .init(source: $0.source, sessionID: session.sessionId) }
     }
     var body: some View {
         VStack(spacing: 0) {
             if let identity, let layout = coordinator.paneLayouts.trees[identity]?.root,
-               let root = AxodLivePaneTree.presenting(layout, paneIDs: runningPaneIDs),
+               let root = AxodLivePaneTree.presenting(layout, paneIDs: desiredPaneIDs),
                let generation = coordinator.paneLayouts.generations[identity] {
                 AxodPaneSubtree(node: root, session: session, identity: identity, generation: generation, viewportID: viewportID, coordinator: coordinator)
                     .id(root.structuralIdentity)
@@ -36,7 +26,7 @@ struct AxodSessionTerminals: View {
             }
         }
         .frame(maxWidth: .infinity, maxHeight: .infinity)
-        .task(id: session.shellPanes.map(\.paneId)) { coordinator.preparePaneLayout(session) }
+        .task(id: desiredPaneIDs) { coordinator.preparePaneLayout(session) }
     }
 }
 
@@ -45,7 +35,7 @@ struct AxodSessionTerminals: View {
 /// Copyright (c) 2024 Mitchell Hashimoto, Ghostty contributors. MIT; see Ghostty/LICENSE.txt.
 private struct AxodPaneSubtree: View {
     let node: AxodPaneLayouts.Tree.Node
-    let session: WorkSessionRecord
+    let session: CentralSession
     let identity: AxodPaneLayouts.Session
     let generation: UUID
     let viewportID: UUID
@@ -53,10 +43,10 @@ private struct AxodPaneSubtree: View {
     var body: some View {
         switch node {
         case .leaf(let leaf):
-            let isPi = leaf.id == session.pi.paneId
-            AxodRuntimeTerminalPane(sessionID: session.sessionId,
-                snapshot: isPi ? coordinator.presentationSnapshot(for: session) : session.shellPanes.first(where: { $0.paneId == leaf.id })?.terminal,
-                viewportID: viewportID, coordinator: coordinator)
+            let pane = coordinator.sessionView(session.sessionId)?.panes.first { $0.desired.paneId == leaf.id }
+            let isPi = pane?.desired.role == .pi
+            AxodRuntimeTerminalPane(sessionID: session.sessionId, snapshot: pane?.terminal,
+                availability: pane?.availability, viewportID: viewportID, coordinator: coordinator)
                 .id(leaf.id)
                 .accessibilityElement(children: .contain)
                 .accessibilityLabel(isPi ? "Pi terminal pane" : "Shell terminal pane")
@@ -74,6 +64,7 @@ private struct AxodPaneSubtree: View {
 private struct AxodRuntimeTerminalPane: View {
     let sessionID: UUID
     let snapshot: TerminalSnapshot?
+    let availability: CentralAvailability?
     let viewportID: UUID
     let coordinator: AxodWorkbenchCoordinator
     @State private var launch: TerminalLaunch?
@@ -81,6 +72,7 @@ private struct AxodRuntimeTerminalPane: View {
 
     private struct Refresh: Equatable {
         let runtime: TerminalRuntime?
+        let source: CentralSource?
         let connection: AxodWorkbenchCoordinator.ConnectionState
     }
     var body: some View {
@@ -91,14 +83,14 @@ private struct AxodRuntimeTerminalPane: View {
                 }
                 AxodTerminalHost(launch: launch, surfaces: coordinator.terminalSurfaces, inputEnabled: isRunning,
                     viewportID: viewportID, onFocus: { [weak coordinator] in coordinator?.focusTerminal(launch.key) },
-                    onAvailable: { [weak coordinator] window in coordinator?.terminalBecameAvailable(launch.key, in: window) })
+                    onAvailable: { _ in })
                     .id(launch.key)
             } else {
                 AxodTerminalInlineState(title: nil, message: failure == nil ? pendingMessage : "Terminal unavailable")
             }
         }
         .frame(maxWidth: .infinity, maxHeight: .infinity)
-        .task(id: Refresh(runtime: snapshot?.runtime, connection: coordinator.connectionState)) { prepareAttachment() }
+        .task(id: Refresh(runtime: snapshot?.runtime, source: coordinator.catalog?.source, connection: coordinator.connectionState)) { prepareAttachment() }
     }
 
     private var isRunning: Bool {
@@ -106,7 +98,8 @@ private struct AxodRuntimeTerminalPane: View {
         return false
     }
     private var currentLaunch: TerminalLaunch? {
-        guard isRunning, let launch, let runtime = snapshot?.runtime,
+        guard coordinator.connectionState == .connected, isRunning, let launch, let runtime = snapshot?.runtime,
+              let source = coordinator.catalog?.source, launch.key.namespace == .centralStore(source.storeGeneration),
               launch.key.machineID == coordinator.machineID,
               launch.key.sessionID == sessionID,
               launch.key.hostGeneration == runtime.hostGeneration,
@@ -115,7 +108,13 @@ private struct AxodRuntimeTerminalPane: View {
         return launch
     }
     private var pendingMessage: String {
-        snapshot?.process.axodStatusTitle ?? "Starting…"
+        switch availability {
+        case .live: return snapshot?.process.axodStatusTitle ?? "Terminal unavailable"
+        case .materializing, .restarting: return "Opening session…"
+        case .stopping: return "Stopping…"
+        case .stopped: return "Session ended"
+        case .blocked, nil: return "Session unavailable"
+        }
     }
     private func prepareAttachment() {
         guard !Task.isCancelled else { return }

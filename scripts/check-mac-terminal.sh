@@ -10,7 +10,7 @@ HELPER="${AXO_LOCAL_DAEMON_BINARY:-$ROOT/axod/target/debug/axod}"
 CLI="${AXO_LOCAL_CLI_BINARY:-$ROOT/axod/target/debug/axo}"
 [[ -f "$PRODUCTS/AxoProtocol.o" && -x "$HELPER" && -x "$CLI" ]] || { echo 'Build the Mac target and owned helper/CLI before terminal checks.' >&2; exit 1; }
 compile_check() {
-  env -u LIBRARY_PATH xcrun swiftc -swift-version 5 -parse-as-library \
+  env -u LIBRARY_PATH xcrun swiftc -swift-version 5 -D AXO_NATIVE_TERMINAL_HARNESS -parse-as-library \
     -I "$PRODUCTS" -I "$GHOSTTY/Headers" \
     "$ROOT/apple/AxoMac/GhosttyRuntime.swift" "$ROOT/apple/AxoMac/TerminalView.swift" \
     "$ROOT/apple/AxoMacAxod/TerminalLaunch.swift" "$ROOT/apple/AxoMacAxod/AxodTerminalSurfaces.swift" \

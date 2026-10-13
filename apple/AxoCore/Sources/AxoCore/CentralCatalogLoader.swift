@@ -1,10 +1,12 @@
 import AxoProtocol
 import Foundation
 
-enum CentralCatalogLoader {
+public enum CentralCatalogLoadError: Error, Equatable, Sendable { case revisionChanged }
+
+public enum CentralCatalogLoader {
     /// Every workspace scope (plus explicit home scope) is loaded at one captured
     /// revision. Bounds and cross-page uniqueness are checked before publication.
-    static func load(source: CentralSource, send: @Sendable (CentralRequest) async throws -> CentralResponse) async throws -> CentralCatalog {
+    public static func load(source: CentralSource, send: @Sendable (CentralRequest) async throws -> CentralResponse) async throws -> CentralCatalog {
         let bootstrap = try CentralRequest.bootstrap(machine: source.machine)
         let first = try await send(bootstrap)
         try sameSource(first, source)
@@ -46,7 +48,7 @@ enum CentralCatalogLoader {
     }
     private static func sameRevision(_ response: CentralResponse, _ source: CentralSource, _ revision: CentralRevision) throws {
         try sameSource(response, source)
-        guard response.revision == revision else { throw invalid() }
+        guard response.revision == revision else { throw CentralCatalogLoadError.revisionChanged }
     }
     private static func invalid() -> AxoProtocolValidationError { .invalidResult(method: "axo.state.session.list") }
 }

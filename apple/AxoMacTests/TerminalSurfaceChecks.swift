@@ -19,12 +19,20 @@ struct TerminalSurfaceChecks {
         defer { try? FileManager.default.removeItem(at: root) }
         let machineID = UUID()
         let runtime = TerminalRuntime(hostGeneration: UUID(), target: .init(sessionId: UUID(), paneId: UUID()), runtimeGeneration: UUID())
-        let launch = try TerminalLaunch.attachment(root: root, machineID: machineID, runtime: runtime,
+        let launch = try TerminalLaunch.attachment(namespace: .nativeHarness, root: root, machineID: machineID, runtime: runtime,
                                                   helper: URL(fileURLWithPath: CommandLine.arguments[1]))
         precondition(launch.command.contains("terminal-attach"))
         precondition(launch.command.contains("'\\''"), "Private root arguments must be shell-quoted")
+        let store = UUID(), otherStore = UUID()
+        let central = try TerminalLaunch.attachment(namespace: .centralStore(store), root: root, machineID: machineID, runtime: runtime,
+            helper: URL(fileURLWithPath: CommandLine.arguments[1]))
+        let other = try TerminalLaunch.attachment(namespace: .centralStore(otherStore), root: root, machineID: machineID, runtime: runtime,
+            helper: URL(fileURLWithPath: CommandLine.arguments[1]))
+        precondition(central.key != other.key && central.key != launch.key, "Same runtime IDs cannot alias another store or the independent harness")
         let surfaces = AxodTerminalSurfaces()
         let terminal = try surfaces.view(for: launch)
+        precondition(surfaces.capturedRuntimes(namespace: .centralStore(store), machineID: machineID, sessionID: runtime.target.sessionId).isEmpty)
+        precondition(surfaces.capturedRuntimes(namespace: .nativeHarness, machineID: machineID, sessionID: runtime.target.sessionId) == [runtime])
         let sameSurface = try surfaces.view(for: launch)
         precondition(sameSurface === terminal, "Viewport reconstruction duplicated the frontend surface")
         let window = BackingScaleWindow(contentRect: NSRect(x: -2000, y: -2000, width: 700, height: 450), styleMask: [.titled], backing: .buffered, defer: false)

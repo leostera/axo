@@ -10,6 +10,6 @@ env -u LIBRARY_PATH xcrun swiftc -swift-version 5 -parse-as-library -I "$PRODUCT
   "$ROOT/apple/AxoMac/Ghostty/SplitTree.swift" "$ROOT/apple/AxoMac/Ghostty/Array+Extension.swift" \
   "$ROOT/apple/AxoMacAxod/AxodPaneLayouts.swift" "$ROOT/apple/AxoMacAxod/AxodPaneLayoutLeaf.swift" \
   "$ROOT/apple/AxoMacAxod/AxodPaneFocusDirection.swift" \
-  "$ROOT/apple/AxoMacTests/PanePresentationChecks.swift" "$PRODUCTS/AxoProtocol.o" \
+  "$ROOT/apple/AxoMacTests/CentralPanePresentationChecks.swift" "$PRODUCTS/AxoProtocol.o" \
   -framework AppKit -o "$TMP/check-pane-presentation"
 "$TMP/check-pane-presentation"

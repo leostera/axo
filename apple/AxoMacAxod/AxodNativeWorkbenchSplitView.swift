@@ -4,8 +4,8 @@ import SwiftUI
 
 struct AxodNativeWorkbenchSplitView: NSViewRepresentable {
     let workbench: AxodWorkbenchCoordinator
-    let workspaces: [WorkWorkspaceRecord]
-    let sessions: [WorkSessionRecord]
+    let workspaces: [CentralWorkspace]
+    let sessions: [CentralSession]
     let selectedWorkspaceID: UUID?
     let selectedSessionID: UUID?
     @Binding var sidebarCollapsed: Bool
@@ -37,8 +37,8 @@ struct AxodNativeWorkbenchSplitView: NSViewRepresentable {
     @MainActor
     final class SidebarController: NSObject, NSSplitViewDelegate, NSOutlineViewDataSource, NSOutlineViewDelegate {
         private final class Item: NSObject {
-            var workspace: WorkWorkspaceRecord?
-            var session: WorkSessionRecord?
+            var workspace: CentralWorkspace?
+            var session: CentralSession?
             let heading: String?
             var children: [Item] = []
 
@@ -57,13 +57,13 @@ struct AxodNativeWorkbenchSplitView: NSViewRepresentable {
                 self.isDivider = true
             }
 
-            init(workspace: WorkWorkspaceRecord) {
+            init(workspace: CentralWorkspace) {
                 self.workspace = workspace
                 self.session = nil
                 self.heading = nil
             }
 
-            init(session: WorkSessionRecord) {
+            init(session: CentralSession) {
                 self.workspace = nil
                 self.session = session
                 self.heading = nil
@@ -72,8 +72,9 @@ struct AxodNativeWorkbenchSplitView: NSViewRepresentable {
 
         private struct Snapshot: Equatable {
             let machineID: UUID?
-            let workspaces: [WorkWorkspaceRecord]
-            let sessions: [WorkSessionRecord]
+            let storeGeneration: UUID?
+            let workspaces: [CentralWorkspace]
+            let sessions: [CentralSession]
             let selectedWorkspaceID: UUID?
             let selectedSessionID: UUID?
         }
@@ -156,8 +157,8 @@ struct AxodNativeWorkbenchSplitView: NSViewRepresentable {
 
         func update(
             workbench: AxodWorkbenchCoordinator,
-            workspaces: [WorkWorkspaceRecord],
-            sessions: [WorkSessionRecord],
+            workspaces: [CentralWorkspace],
+            sessions: [CentralSession],
             selectedWorkspaceID: UUID?,
             selectedSessionID: UUID?,
             sidebarCollapsed: Binding<Bool>,
@@ -248,16 +249,19 @@ struct AxodNativeWorkbenchSplitView: NSViewRepresentable {
         }
 
         private func refreshSidebar(
-            workspaces: [WorkWorkspaceRecord],
-            sessions incomingSessions: [WorkSessionRecord],
+            workspaces: [CentralWorkspace],
+            sessions incomingSessions: [CentralSession],
             selectedWorkspaceID: UUID?,
             selectedSessionID: UUID?
         ) {
+            let storeChanged = lastSnapshot?.storeGeneration != workbench.catalog?.source.storeGeneration
+            if storeChanged { sidebarSelection = AxodSidebarSelection() }
             let orderedIDs = sidebarSelection.order(machineID: workbench.machineID, incoming: incomingSessions.map(\.sessionId))
-            let records = incomingSessions.reduce(into: [UUID: WorkSessionRecord]()) { $0[$1.sessionId] = $1 }
+            let records = incomingSessions.reduce(into: [UUID: CentralSession]()) { $0[$1.sessionId] = $1 }
             let sessions = orderedIDs.compactMap { records[$0] }
             let snapshot = Snapshot(
                 machineID: workbench.machineID,
+                storeGeneration: workbench.catalog?.source.storeGeneration,
                 workspaces: workspaces,
                 sessions: sessions,
                 selectedWorkspaceID: selectedWorkspaceID,
@@ -265,7 +269,7 @@ struct AxodNativeWorkbenchSplitView: NSViewRepresentable {
             )
             guard snapshot != lastSnapshot else { return }
             let sameRows = lastSnapshot.map { previous in
-                previous.machineID == snapshot.machineID &&
+                previous.machineID == snapshot.machineID && previous.storeGeneration == snapshot.storeGeneration &&
                 previous.workspaces.map(\.workspaceId) == workspaces.map(\.workspaceId) &&
                 previous.sessions.count == sessions.count &&
                 zip(previous.sessions, sessions).allSatisfy { before, after in
@@ -276,7 +280,7 @@ struct AxodNativeWorkbenchSplitView: NSViewRepresentable {
             refreshCompactSidebar(snapshot)
             sidebarSelection.observe(machineID: snapshot.machineID, available: Set(sessions.map(\.sessionId)),
                 displayedSessionID: selectedSessionID)
-            let expandedWorkspaces = Set(sidebarItems.compactMap { item in
+            let expandedWorkspaces = storeChanged ? Set<UUID>() : Set(sidebarItems.compactMap { item in
                 outline.isItemExpanded(item) ? item.workspace?.workspaceId : nil
             })
 
@@ -285,8 +289,8 @@ struct AxodNativeWorkbenchSplitView: NSViewRepresentable {
             if sameRows {
                 // Do not reset the native range anchor on title/runtime observations.
                 // Keep tree items alive and reload changed cells, not the whole outline.
-                let currentWorkspaces = workspaces.reduce(into: [UUID: WorkWorkspaceRecord]()) { $0[$1.workspaceId] = $1 }
-                let currentSessions = sessions.reduce(into: [UUID: WorkSessionRecord]()) { $0[$1.sessionId] = $1 }
+                let currentWorkspaces = workspaces.reduce(into: [UUID: CentralWorkspace]()) { $0[$1.workspaceId] = $1 }
+                let currentSessions = sessions.reduce(into: [UUID: CentralSession]()) { $0[$1.sessionId] = $1 }
                 for item in sidebarItems.flatMap({ [$0] + $0.children }) {
                     let workspace = item.workspace.flatMap { currentWorkspaces[$0.workspaceId] }
                     let session = item.session.flatMap { currentSessions[$0.sessionId] }
@@ -480,10 +484,10 @@ struct AxodNativeWorkbenchSplitView: NSViewRepresentable {
             }
             if let session = item.session {
                 let running: Bool
-                if case .running? = session.runtime?.process { running = true }
+                if case .running? = workbench.sessionView(session.sessionId)?.panes.first(where: { $0.desired.role == .pi })?.terminal?.process { running = true }
                 else { running = false }
                 let row = WorkspaceSidebarRow(
-                    name: session.displayName,
+                    name: session.name,
                     workspace: false,
                     running: running,
                     actions: actions

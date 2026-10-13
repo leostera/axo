@@ -3,7 +3,14 @@ import Foundation
 
 /// Closed presentation intent. This renderer cannot launch Pi or an ordinary shell.
 struct TerminalLaunch {
+    enum Namespace: Hashable {
+        case centralStore(UUID)
+#if AXO_NATIVE_FIXTURE || AXO_NATIVE_TERMINAL_HARNESS
+        case nativeHarness
+#endif
+    }
     struct Key: Hashable {
+        let namespace: Namespace
         let machineID: UUID
         let hostGeneration: UUID
         let sessionID: UUID
@@ -20,13 +27,13 @@ struct TerminalLaunch {
         self.command = command
     }
 
-    static func attachment(root: URL, machineID: UUID, runtime: TerminalRuntime, helper: URL) throws -> Self {
+    static func attachment(namespace: Namespace, root: URL, machineID: UUID, runtime: TerminalRuntime, helper: URL) throws -> Self {
         guard root.isFileURL, helper.isFileURL, root.path.hasPrefix("/"), helper.path.hasPrefix("/"),
               !root.path.contains("\u{0}"), !helper.path.contains("\u{0}"),
               FileManager.default.isExecutableFile(atPath: helper.path) else {
             throw LaunchError.missingHelper
         }
-        let key = Key(machineID: machineID, hostGeneration: runtime.hostGeneration,
+        let key = Key(namespace: namespace, machineID: machineID, hostGeneration: runtime.hostGeneration,
                       sessionID: runtime.target.sessionId, paneID: runtime.target.paneId,
                       runtimeGeneration: runtime.runtimeGeneration)
         let arguments = [helper.path, "terminal-attach", root.path, machineID.uuidString,
