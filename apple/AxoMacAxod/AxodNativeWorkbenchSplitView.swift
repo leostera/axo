@@ -214,11 +214,6 @@ struct AxodNativeWorkbenchSplitView: NSViewRepresentable {
                 guard let self else { return NSMenu() }
                 let row = self.outline.row(forItem: item)
                 guard let menu = (self.outline.view(atColumn: 0, row: row, makeIfNecessary: true) as? WorkspaceSidebarRow)?.menu else { return NSMenu() }
-                if let session = (item as? Item)?.session {
-                    let targets = self.sidebarSelection.targets(clickedSessionID: session.sessionId)
-                    menu.items.first { $0.action == #selector(WorkspaceSidebarRow.renameFromMenu(_:)) }?.isEnabled =
-                        targets.count == 1 && self.workbench.canEditWork && session.manualName != nil
-                }
                 return menu
             }
             outline.reclaimsOutlineGutter = { value in
@@ -258,8 +253,6 @@ struct AxodNativeWorkbenchSplitView: NSViewRepresentable {
             selectedWorkspaceID: UUID?,
             selectedSessionID: UUID?
         ) {
-            // Preserve the live field editor while Pi titles/catalog observations change.
-            guard !workbench.isRenamingWork else { return }
             let orderedIDs = sidebarSelection.order(machineID: workbench.machineID, incoming: incomingSessions.map(\.sessionId))
             let records = incomingSessions.reduce(into: [UUID: WorkSessionRecord]()) { $0[$1.sessionId] = $1 }
             let sessions = orderedIDs.compactMap { records[$0] }
@@ -474,19 +467,15 @@ struct AxodNativeWorkbenchSplitView: NSViewRepresentable {
             }
             let actions = NSMenu()
             actions.autoenablesItems = false
-            var rename: AxodWorkRename?
             if let workspace = item.workspace {
                 let row = WorkspaceSidebarRow(
                     name: workspace.name,
                     workspace: true,
                     running: false,
-                    actions: actions,
-                    canBeginRename: { [weak workbench = workbench] in rename = workbench?.beginWorkRename(workspace: workspace); return rename != nil },
-                    finishRename: { [weak workbench = workbench] name in if let rename { workbench?.finishWorkRename(rename, name: name) } }
+                    actions: actions
                 )
                 row.textField?.font = .systemFont(ofSize: 13)
                 row.textField?.setAccessibilityIdentifier("workspace.\(workspace.workspaceId.uuidString.lowercased())")
-                addRenameAction(to: row, menu: actions, enabled: workbench.canEditWork)
                 return row
             }
             if let session = item.session {
@@ -497,25 +486,16 @@ struct AxodNativeWorkbenchSplitView: NSViewRepresentable {
                     name: session.displayName,
                     workspace: false,
                     running: running,
-                    actions: actions,
-                    canBeginRename: { [weak workbench = workbench] in rename = workbench?.beginWorkRename(session: session); return rename != nil },
-                    finishRename: { [weak workbench = workbench] name in if let rename { workbench?.finishWorkRename(rename, name: name) } }
+                    actions: actions
                 )
                 // This glyph identifies a session; it does not claim agent busy state.
                 row.imageView?.image = NSImage(systemSymbolName: "hammer", accessibilityDescription: "Session")
                 row.imageView?.contentTintColor = .secondaryLabelColor
                 row.imageView?.symbolConfiguration = NSImage.SymbolConfiguration(pointSize: 13, weight: .regular)
                 row.textField?.setAccessibilityIdentifier("session.\(session.sessionId.uuidString.lowercased())")
-                addRenameAction(to: row, menu: actions, enabled: workbench.canEditWork && session.manualName != nil)
                 return row
             }
             return nil
-        }
-
-        private func addRenameAction(to row: WorkspaceSidebarRow, menu: NSMenu, enabled: Bool) {
-            let action = menu.addItem(withTitle: "Rename…", action: #selector(WorkspaceSidebarRow.renameFromMenu(_:)), keyEquivalent: "")
-            action.target = row
-            action.isEnabled = enabled
         }
 
         func outlineView(_ outlineView: NSOutlineView, selectionIndexesForProposedSelection proposedSelectionIndexes: IndexSet) -> IndexSet {

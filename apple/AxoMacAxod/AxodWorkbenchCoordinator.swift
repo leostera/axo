@@ -84,13 +84,11 @@ final class AxodWorkbenchCoordinator {
     var workEditor: AxodWorkEditorContext?
     private var activeCreationContext: AxodWorkEditorContext?
     private(set) var isEditingWork = false
-    private(set) var activeWorkRename: AxodWorkRename?
-    var isRenamingWork: Bool { activeWorkRename != nil }
     private(set) var workEditMessage = "Create a session."
     private(set) var createdSessionForEditor: WorkSessionRecord?
     private(set) var pendingWorkCommandID: UUID?
     private(set) var pendingWorkIsUnreadable = false
-    var canEditWork: Bool { connectionState == .connected && !isEditingWork && !isRenamingWork && pendingWorkCommandID == nil && !pendingWorkIsUnreadable }
+    var canEditWork: Bool { connectionState == .connected && !isEditingWork && pendingWorkCommandID == nil && !pendingWorkIsUnreadable }
     private(set) var isSendingPiMessage = false
     private var piMutationGeneration: UUID?
     let chatDrafts = AxodChatDrafts()
@@ -302,7 +300,6 @@ final class AxodWorkbenchCoordinator {
         let oldConnection = connection
         connection = nil
         endpoint = nil
-        activeWorkRename = nil
         isEditingWork = false
         connectionState = .starting
         hostObservationTask?.cancel()
@@ -350,7 +347,6 @@ final class AxodWorkbenchCoordinator {
         workspaces = []
         sessions = []
         runtimes = []
-        activeWorkRename = nil
         isEditingWork = false
         catalogRevision = nil
         stopChatObservation()
@@ -381,95 +377,6 @@ final class AxodWorkbenchCoordinator {
         projectSession.isEnabled = canEditWork && selectedWorkspaceID != nil
         menu.autoenablesItems = false
         menu.popUp(positioning: nil, at: NSEvent.mouseLocation, in: nil)
-    }
-
-    func beginWorkRename(workspace: WorkWorkspaceRecord) -> AxodWorkRename? {
-        guard canEditWork, let endpoint, let revision = catalogRevision,
-              workspaces.contains(where: { $0.workspaceId == workspace.workspaceId && $0.name == workspace.name }) else { return nil }
-        let source = MachineTarget(machineId: endpoint.machineId, hostGeneration: endpoint.hostGeneration)
-        let context = AxodWorkRename(source: source, operation: operationGeneration, revision: revision,
-            destination: .workspace(WorkWorkspaceTarget(machineId: source.machineId, hostGeneration: source.hostGeneration, workspaceId: workspace.workspaceId)))
-        activeWorkRename = context
-        return context
-    }
-
-    func beginWorkRename(session: WorkSessionRecord) -> AxodWorkRename? {
-        guard canEditWork, let endpoint, let revision = catalogRevision,
-              let current = sessions.first(where: { $0.sessionId == session.sessionId && $0.workspaceId == session.workspaceId && $0.name == session.name && $0.manualName == session.manualName }) else { return nil }
-        guard current.manualName != nil else {
-            message = "The running helper cannot protect manual session names yet. Rename needs a separately coordinated safe helper update."
-            return nil
-        }
-        let source = MachineTarget(machineId: endpoint.machineId, hostGeneration: endpoint.hostGeneration)
-        let context = AxodWorkRename(source: source, operation: operationGeneration, revision: revision,
-            destination: .session(WorkSessionTarget(machineId: source.machineId, hostGeneration: source.hostGeneration,
-                workspaceId: session.workspaceId, sessionId: session.sessionId)))
-        activeWorkRename = context
-        return context
-    }
-
-    func finishWorkRename(_ context: AxodWorkRename, name: String?) {
-        guard activeWorkRename?.id == context.id else { return }
-        activeWorkRename = nil
-        guard let enteredName = name else { message = "Rename cancelled."; return }
-        guard canEditWork, context.operation == operationGeneration, let connection, let endpoint,
-              endpoint.machineId == context.source.machineId, endpoint.hostGeneration == context.source.hostGeneration else {
-            message = "The rename source changed. Nothing was renamed; reopen the row editor."
-            return
-        }
-        let name = enteredName.trimmingCharacters(in: .whitespacesAndNewlines)
-        let command = UUID()
-        isEditingWork = true
-        Task { [weak self] in
-            guard let self else { return }
-            defer { if self.operationGeneration == context.operation { self.isEditingWork = false } }
-            do {
-                let result = try await context.dispatch(name: name, command: command, connection: connection) {
-                    guard self.isCurrent(context.operation, connection: connection, endpoint: endpoint),
-                          self.pendingWorkCommandID == nil,
-                          self.preferences.object(forKey: self.pendingWorkKey(context.source.machineId)) == nil else { throw CancellationError() }
-                    try self.stateDirectory?.requireCurrentEndpoint(endpoint)
-                    self.savePendingWork(command, machineID: context.source.machineId)
-                }
-                guard self.isCurrent(context.operation, connection: connection, endpoint: endpoint) else { return }
-                try self.stateDirectory?.requireCurrentEndpoint(endpoint)
-                self.clearPendingWork(command, machineID: context.source.machineId)
-                let committedRevision = context.revision.rawValue + 1
-                if (self.catalogRevision?.rawValue ?? 0) <= committedRevision {
-                    self.catalogRevision = WorkRevision(rawValue: committedRevision)
-                    switch result {
-                    case .workspace(let record):
-                        if let index = self.workspaces.firstIndex(where: { $0.workspaceId == record.workspaceId }) { self.workspaces[index] = record }
-                    case .session(let record):
-                        if let index = self.sessions.firstIndex(where: { $0.sessionId == record.sessionId && $0.workspaceId == record.workspaceId }) {
-                            let previous = self.sessions[index]
-                            self.sessions[index] = record
-                            if self.selectedSessionID == record.sessionId,
-                               previous.pi.admission != record.pi.admission || previous.pi.chatId != record.pi.chatId ||
-                               previous.pi.paneId != record.pi.paneId || previous.runtime?.runtime != record.runtime?.runtime {
-                                self.activateSelectedSession()
-                            }
-                        }
-                    }
-                }
-                self.message = "Name saved. Pi's canonical conversation title remains separate."
-            } catch {
-                guard self.isCurrent(context.operation, connection: connection, endpoint: endpoint) else { return }
-                if self.pendingWorkCommandID == command {
-                    if case AxoJSONRPCClientError.remote(let code, _) = error,
-                       [-32601, -32602, -32002, -32006, -32007, -32010].contains(code) {
-                        do { try self.stateDirectory?.requireCurrentEndpoint(endpoint) }
-                        catch { self.message = "The private endpoint changed. The original rename remains saved for read-only reconciliation."; return }
-                        self.clearPendingWork(command, machineID: context.source.machineId)
-                        self.refresh(message: "Rename was rejected or the catalog changed. This request changed no name. Reopen the row editor after the catalog refresh.")
-                    } else {
-                        self.message = "Rename outcome unknown. Reconcile the original command; it will not be replayed."
-                    }
-                } else {
-                    self.refresh(message: "Name is invalid or its source changed. Use 1–80 Unicode characters without control characters. Nothing was renamed.")
-                }
-            }
-        }
     }
 
     @objc func newWorkspace() { prepareWorkEditor(.workspace) }

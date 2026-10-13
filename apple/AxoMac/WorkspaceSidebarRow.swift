@@ -21,14 +21,18 @@ final class WorkspaceSidebarRowView: NSTableRowView {
 
 /// Native source-list row. Single-click activation belongs to the outline; rename is an inline editor.
 final class WorkspaceSidebarRow: NSTableCellView, NSTextFieldDelegate {
+    struct Rename {
+        let begin: () -> Bool
+        let finish: (String?) -> Void
+    }
+
     private let originalName: String
-    private let finishRename: (String?) -> Void
-    private let canBeginRename: () -> Bool
+    private let rename: Rename?
     private var cancelled = false
     private var editing = false
     init(name: String, workspace: Bool, running: Bool, activity: NativeAgentActivity? = nil, loading: Bool = false,
-         voiceRecording: Bool = false, actions: NSMenu, canBeginRename: @escaping () -> Bool = { true }, finishRename: @escaping (String?) -> Void) {
-        originalName = name; self.finishRename = finishRename; self.canBeginRename = canBeginRename
+         voiceRecording: Bool = false, actions: NSMenu, rename: Rename? = nil) {
+        originalName = name; self.rename = rename
         super.init(frame: .zero); menu = actions
         let working = activity == .working, attention = activity == .attention
         let open = running && activity != .detached && !loading
@@ -65,7 +69,7 @@ final class WorkspaceSidebarRow: NSTableCellView, NSTextFieldDelegate {
     required init?(coder: NSCoder) { fatalError("Programmatic view only") }
     @objc func renameFromMenu(_ sender: Any?) { beginRenaming() }
     func beginRenaming() {
-        guard window != nil, let label = textField, !editing, canBeginRename() else { return }
+        guard window != nil, let label = textField, !editing, let rename, rename.begin() else { return }
         editing = true; cancelled = false
         label.isEditable = true; label.isSelectable = true; label.isBezeled = true; label.drawsBackground = true
         label.selectText(nil)
@@ -75,7 +79,7 @@ final class WorkspaceSidebarRow: NSTableCellView, NSTextFieldDelegate {
     private func endRenaming() {
         guard editing, let label = textField else { return }; editing = false
         label.isEditable = false; label.isSelectable = false; label.isBezeled = false; label.drawsBackground = false
-        finishRename(cancelled ? nil : label.stringValue)
+        rename?.finish(cancelled ? nil : label.stringValue)
     }
     func control(_ control: NSControl, textView: NSTextView, doCommandBy commandSelector: Selector) -> Bool {
         guard commandSelector == #selector(NSResponder.cancelOperation(_:)) else { return false }
