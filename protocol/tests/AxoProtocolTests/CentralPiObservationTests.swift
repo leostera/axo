@@ -22,6 +22,55 @@ final class CentralPiObservationTests: XCTestCase {
     private func state() -> [String: Any] {
         ["title": "Observed title", "leafId": NSNull(), "busy": false, "interactionId": NSNull(), "uiWaits": 0, "question": NSNull(), "pending": false, "recovery": false]
     }
+    func testCommandCaptureAndOriginalLookupKeepFrozenSourceAndExactMetadata() throws {
+        let observed = try request().parseResult(envelope(["kind": "live", "target": target(), "state": state()]))
+        guard case .piObservation(.live(let binding, _)) = observed.payload else { return XCTFail("Binding") }
+        let command = UUID(uuidString: id(12))!
+        let captured = try CentralRequest.capturePi(target: binding, commandId: command, expectedRevision: CentralRevision(rawValue: 0)!, action: .send(text: "Owned submission λ界"))
+        let submit = try CentralRequest.submitPi(captured)
+        XCTAssertEqual(submit.commandId, command)
+        var body: [String: Any] = ["target": target(), "commandId": id(12), "expectedRevision": 0, "acceptedRevision": 1, "configuration": ["paneRevision": 0, "sessionRevision": 0, "workspaceRevision": NSNull()], "action": ["kind": "send"], "disposition": ["kind": "unconfirmed"]]
+        let result = try submit.parseResult(envelope(body))
+        guard case .piCommand(let original?) = result.payload else { return XCTFail("Original") }
+        XCTAssertEqual(original.disposition, .unconfirmed)
+        body["disposition"] = ["kind": "dispatched"]
+        _ = try submit.parseResult(envelope(body))
+        body["text"] = "Not transported"
+        XCTAssertThrowsError(try submit.parseResult(envelope(body)))
+        body.removeValue(forKey: "text")
+        body["action"] = ["kind": "cancel", "interactionId": id(20)]
+        XCTAssertThrowsError(try submit.parseResult(envelope(body)))
+        body["action"] = ["kind": "send"]
+        let nextSource = try CentralSource(machine: MachineTarget(machineId: UUID(uuidString: id(1))!, hostGeneration: UUID(uuidString: id(10))!), storeGeneration: UUID(uuidString: id(3))!)
+        let lookup = try CentralRequest.piCommand(source: nextSource, capture: captured)
+        XCTAssertNil(lookup.commandId)
+        let historical = try json(["hostGeneration": id(10), "storeGeneration": id(3), "revision": 1, "value": body])
+        let restored = try lookup.parseResult(historical)
+        guard case .piCommand(let retained?) = restored.payload else { return XCTFail("Historical original") }
+        XCTAssertEqual(retained.target, binding)
+        let missing = try json(["hostGeneration": id(10), "storeGeneration": id(3), "revision": 1, "value": NSNull()])
+        XCTAssertEqual(try lookup.parseResult(missing).payload, .piCommand(nil))
+        let reset = try CentralSource(machine: nextSource.machine, storeGeneration: UUID(uuidString: id(30))!)
+        XCTAssertThrowsError(try CentralRequest.piCommand(source: reset, capture: captured))
+    }
+    func testCommandActionsAreBoundedAndQuestionNonceCannotDrift() throws {
+        let observed = try request().parseResult(envelope(["kind": "live", "target": target(), "state": state()]))
+        guard case .piObservation(.live(let binding, _)) = observed.payload else { return XCTFail("Binding") }
+        let command = UUID(uuidString: id(12))!, interaction = UUID(uuidString: id(20))!, question = UUID(uuidString: id(21))!, option = UUID(uuidString: id(22))!
+        let zero = CentralRevision(rawValue: 0)!
+        for text in ["", " \n", " \t/slash", String(repeating: "x", count: 65536), String(repeating: "\u{0001}", count: 12000)] {
+            XCTAssertThrowsError(try CentralRequest.capturePi(target: binding, commandId: command, expectedRevision: zero, action: .send(text: text)))
+        }
+        for action in [CentralPiAction.steer(interactionId: interaction, text: "Owned steer"), .cancel(interactionId: interaction), .answer(interactionId: interaction, questionId: question, optionId: option)] {
+            _ = try CentralRequest.capturePi(target: binding, commandId: command, expectedRevision: zero, action: action)
+        }
+        let captured = try CentralRequest.capturePi(target: binding, commandId: command, expectedRevision: zero, action: .answer(interactionId: interaction, questionId: question, optionId: option))
+        let submit = try CentralRequest.submitPi(captured)
+        var body: [String: Any] = ["target": target(), "commandId": id(12), "expectedRevision": 0, "acceptedRevision": 1, "configuration": ["paneRevision": 0, "sessionRevision": 0, "workspaceRevision": NSNull()], "action": ["kind": "answer", "interactionId": id(20), "questionId": id(21), "optionId": id(22)], "disposition": ["kind": "rejected", "reason": "stale"]]
+        _ = try submit.parseResult(envelope(body))
+        body["action"] = ["kind": "answer", "interactionId": id(20), "questionId": id(21), "optionId": id(23)]
+        XCTAssertThrowsError(try submit.parseResult(envelope(body)))
+    }
     func testReadRequestIsScopedAndCannotCarryMutationIdentity() throws {
         let request = try request()
         XCTAssertEqual(request.method, "axo.state.chat.observe")

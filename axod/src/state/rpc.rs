@@ -2,6 +2,7 @@
 //! directory authority never becomes remote argv or a legacy catalog fallback.
 #[cfg(test)]
 mod observation_tests;
+mod pi_command;
 mod pi_history;
 mod pi_observation;
 mod pi_tool;
@@ -513,6 +514,8 @@ fn route(
                 records,
             )
         }
+        "axo.state.chat.command.submit" => pi_command::submit(owner, machine, parse(params)?),
+        "axo.state.chat.command.get" => pi_command::lookup(owner, machine, parse(params)?),
         "axo.state.chat.tool.get" => {
             let input: pi_tool::Input = parse(params)?;
             pi_tool::read(owner, machine, input)

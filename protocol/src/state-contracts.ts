@@ -62,6 +62,23 @@ const toolChunk = z.object({ target: statePiBindingTargetSchema, readMode: histo
   const cursor = value.cursor;
   return cursor === null ? end === value.totalBytes : value.text.length > 0 && end < value.totalBytes && cursor.offset === end && cursor.headDigest === value.headDigest && cursor.readMode === value.readMode && cursor.entryId === value.entryId && cursor.toolCallId === value.toolCallId && JSON.stringify(cursor.target) === JSON.stringify(value.target);
 });
+const submittedText = z.string().min(1).max(65536).refine(value => new TextEncoder().encode(value).length <= 65536 && /[^\p{White_Space}]/u.test(value) && !/^\p{White_Space}*\//u.test(value) && [...value].every(character => { const code = character.codePointAt(0)!; return code < 0xd800 || code > 0xdfff; }));
+const commandAction = z.discriminatedUnion("kind", [
+  z.object({ kind: z.literal("send"), text: submittedText }).strict(),
+  z.object({ kind: z.literal("steer"), interactionId: uuid, text: submittedText }).strict(),
+  z.object({ kind: z.literal("cancel"), interactionId: uuid }).strict(),
+  z.object({ kind: z.literal("answer"), interactionId: uuid, questionId: uuid, optionId: uuid }).strict(),
+]).refine(value => new TextEncoder().encode(JSON.stringify(value)).length <= 65536);
+const commandDescriptor = z.discriminatedUnion("kind", [
+  z.object({ kind: z.literal("send") }).strict(), z.object({ kind: z.literal("steer"), interactionId: uuid }).strict(),
+  z.object({ kind: z.literal("cancel"), interactionId: uuid }).strict(),
+  z.object({ kind: z.literal("answer"), interactionId: uuid, questionId: uuid, optionId: uuid }).strict(),
+]);
+const commandDisposition = z.discriminatedUnion("kind", [
+  z.object({ kind: z.literal("unconfirmed") }).strict(), z.object({ kind: z.literal("dispatched") }).strict(), z.object({ kind: z.literal("outcomeUnknown") }).strict(),
+  z.object({ kind: z.literal("rejected"), reason: z.enum(["notReady", "capacity", "stale", "busy", "blocked", "invalid", "recoveryRequired", "sourceChanged", "stopping"]) }).strict(),
+]);
+const commandOriginal = z.object({ commandId: uuid, target: statePiBindingTargetSchema, expectedRevision: revision, acceptedRevision: revision.min(1), configuration: z.object({ paneRevision: revision, sessionRevision: revision, workspaceRevision: revision.nullable() }).strict(), action: commandDescriptor, disposition: commandDisposition }).strict().refine(value => value.acceptedRevision === value.expectedRevision + 1 && value.target.runtime.host_generation === value.target.hostGeneration && (value.configuration.workspaceRevision === null) === (value.target.workspaceId === null) && value.configuration.paneRevision <= value.expectedRevision && value.configuration.sessionRevision <= value.expectedRevision && (value.configuration.workspaceRevision === null || value.configuration.workspaceRevision <= value.expectedRevision));
 const domain = z.discriminatedUnion("kind", [z.object({ kind: z.literal("workspaces") }).strict(), z.object({ kind: z.literal("sessions"), workspaceId: uuid.nullable() }).strict()]);
 const cursor = z.object({ target: stateTargetSchema, revision, domain, after: uuid }).strict();
 const page = { target: stateTargetSchema, cursor: cursor.optional(), limit: z.number().int().min(1).max(50).default(8) };
@@ -71,6 +88,8 @@ export const stateRemoteMethods = {
   "axo.state.workspace.list": z.object(page).strict(),
   "axo.state.session.list": z.object({ ...page, workspaceId: uuid.nullable() }).strict(),
   "axo.state.session.get": z.object({ target: stateSessionTargetSchema }).strict(),
+  "axo.state.chat.command.submit": z.object({ target: statePiBindingTargetSchema, commandId: uuid, expectedRevision: revision, action: commandAction }).strict().refine(value => value.target.runtime.host_generation === value.target.hostGeneration),
+  "axo.state.chat.command.get": z.object({ target: stateTargetSchema, capture: z.object({ target: statePiBindingTargetSchema, commandId: uuid, expectedRevision: revision, action: commandAction }).strict() }).strict().refine(value => value.capture.target.machineId === value.target.machineId && value.capture.target.storeGeneration === value.target.storeGeneration && value.capture.target.runtime.host_generation === value.capture.target.hostGeneration),
   "axo.state.chat.observe": z.object({ target: stateSessionTargetSchema }).strict(),
   "axo.state.chat.get": z.object({ target: statePiBindingTargetSchema.refine(value => value.runtime.host_generation === value.hostGeneration) }).strict(),
   "axo.state.chat.tool.get": z.object({ target: statePiBindingTargetSchema, readMode: historyReadMode, entryId: historyEntryId, toolCallId: historyEntryId, cursor: toolCursor.optional(), limit: z.number().int().min(4).max(8192).default(8192) }).strict().refine(value => (value.readMode !== "live" || value.target.runtime.host_generation === value.target.hostGeneration) && (value.cursor === undefined || (JSON.stringify(value.cursor.target) === JSON.stringify(value.target) && value.cursor.readMode === value.readMode && value.cursor.entryId === value.entryId && value.cursor.toolCallId === value.toolCallId))),
@@ -85,7 +104,7 @@ export const stateLocalMethods = {
   "axo.state.pane.remove": z.object({ ...mutation, target: stateSessionTargetSchema, paneId: uuid }).strict(),
   "axo.state.session.completion": z.object({ target: stateSessionTargetSchema, runtimes: z.array(runtimeRefSchema).min(1).max(32).refine(value => new Set(value.map(runtime => JSON.stringify(runtime))).size === value.length) }).strict(),
 } as const;
-export const stateMutationMethods = ["axo.state.workspace.create", "axo.state.session.create", "axo.state.lifecycle.set", "axo.state.pane.add", "axo.state.pane.remove"] as const;
+export const stateMutationMethods = ["axo.state.chat.command.submit", "axo.state.workspace.create", "axo.state.session.create", "axo.state.lifecycle.set", "axo.state.pane.add", "axo.state.pane.remove"] as const;
 const envelope = <T extends z.ZodType>(value: T) => z.object({ hostGeneration: uuid, storeGeneration: uuid, revision, value }).strict();
 const operation = envelope(z.object({ operation: stateOperationSchema.nullable(), session: stateSessionViewSchema.nullable() }).strict());
 export const stateResults = {
@@ -93,6 +112,8 @@ export const stateResults = {
   "axo.state.workspace.list": envelope(z.object({ records: z.array(desiredWorkspaceSchema).max(50), cursor: cursor.nullable() }).strict()),
   "axo.state.session.list": envelope(z.object({ records: z.array(stateSessionViewSchema).max(50), cursor: cursor.nullable() }).strict()),
   "axo.state.session.get": envelope(stateSessionViewSchema),
+  "axo.state.chat.command.submit": envelope(commandOriginal).refine(value => value.value.target.hostGeneration === value.hostGeneration && value.value.target.storeGeneration === value.storeGeneration && value.value.acceptedRevision <= value.revision),
+  "axo.state.chat.command.get": envelope(commandOriginal.nullable()).refine(value => value.value === null || (value.value.target.storeGeneration === value.storeGeneration && value.value.acceptedRevision <= value.revision)),
   "axo.state.chat.observe": envelope(statePiObservationSchema).refine(value => value.value.kind === "notAdmitted" || (value.value.target.hostGeneration === value.hostGeneration && value.value.target.storeGeneration === value.storeGeneration)),
   "axo.state.chat.get": envelope(piLiveObservation).refine(value => value.value.target.runtime.host_generation === value.hostGeneration && value.value.target.hostGeneration === value.hostGeneration && value.value.target.storeGeneration === value.storeGeneration),
   "axo.state.chat.tool.get": envelope(toolChunk).refine(value => value.value.target.hostGeneration === value.hostGeneration && value.value.target.storeGeneration === value.storeGeneration),

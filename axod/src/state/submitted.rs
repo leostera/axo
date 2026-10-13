@@ -26,12 +26,12 @@ pub struct PiCapture(PiCaptureInput);
 impl PiCapture {
     pub fn parse(input: PiCaptureInput) -> Result<Self, Error> {
         if input.expected_revision > MAX_REVISION
-            || input.configuration.pane_revision > MAX_REVISION
-            || input.configuration.session_revision > MAX_REVISION
+            || input.configuration.pane_revision > input.expected_revision
+            || input.configuration.session_revision > input.expected_revision
             || input
                 .configuration
                 .workspace_revision
-                .is_some_and(|revision| revision > MAX_REVISION)
+                .is_some_and(|revision| revision > input.expected_revision)
             || input.configuration.workspace_revision.is_some()
                 != input.binding.workspace_id.is_some()
             || input.binding.runtime.host_generation != input.host_generation

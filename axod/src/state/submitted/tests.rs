@@ -195,7 +195,7 @@ fn malformed_and_foreign_captures_do_not_publish_or_claim_command_ids() {
             0 => input.machine_id = MachineId::new(),
             1 => input.store_generation = StoreGeneration::new(),
             2 => input.expected_revision += 1,
-            3 => input.configuration.session_revision += 1,
+            3 => input.configuration.session_revision = 0,
             4 => {
                 input.binding.chat_id =
                     serde_json::from_value(serde_json::json!(uuid::Uuid::new_v4())).unwrap()

@@ -184,6 +184,16 @@ struct CentralResultParser {
             let b = try json.object(body, keys: ["backendCompleteCreation", "schemaVersion"])
             guard try json.boolean(json.field(b, "backendCompleteCreation")), try json.integer(json.field(b, "schemaVersion")) == 4 else { throw json.failure }
             payload = .bootstrap
+        case .submitPi(let capture), .piCommand(let capture):
+            let encoder = JSONEncoder()
+            encoder.outputFormatting = [.withoutEscapingSlashes]
+            guard try encoder.encode(value).count <= 48 * 1024 else { throw json.failure }
+            if body == .null {
+                guard case .piCommand = request.intent else { throw json.failure }
+                payload = .piCommand(nil)
+            } else {
+                payload = try .piCommand(json.piOriginal(body, capture: capture, revision: revision))
+            }
         case .session(let workspace, let id):
             let view = try json.view(body, source: source, revision: revision)
             guard view.session.sessionId == id, view.session.workspaceId == workspace else { throw json.failure }

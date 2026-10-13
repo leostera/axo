@@ -12,10 +12,13 @@ public struct CentralRequest: Sendable {
     /// (including original-operation lookup and completion) carry no mutation.
     public var commandId: UUID? {
         if case .mutation(let id, _, _) = intent { return id }
+        if case .submitPi(let capture) = intent { return capture.commandId }
         return nil
     }
     enum Intent: Sendable {
         case bootstrap
+        case submitPi(CentralPiCommandCapture)
+        case piCommand(CentralPiCommandCapture)
         case page(CentralPageDomain, CentralCursor?, Int)
         case session(UUID?, UUID)
         case piObservation(UUID?, UUID)
@@ -36,7 +39,7 @@ public struct CentralRequest: Sendable {
     private init(method: String, parameters: JSONValue, machine: MachineTarget, source: CentralSource?, intent: Intent) {
         self.method = method; self.parameters = parameters; self.machine = machine; self.source = source; self.intent = intent
     }
-    public static let readMethods: Set<String> = ["axo.state.get", "axo.state.workspace.list", "axo.state.session.list", "axo.state.session.get", "axo.state.chat.observe", "axo.state.chat.get", "axo.state.chat.history", "axo.state.chat.tool.get", "axo.state.operation.get"]
+    public static let readMethods: Set<String> = ["axo.state.get", "axo.state.workspace.list", "axo.state.session.list", "axo.state.session.get", "axo.state.chat.observe", "axo.state.chat.get", "axo.state.chat.history", "axo.state.chat.tool.get", "axo.state.chat.command.get", "axo.state.operation.get"]
     public static func bootstrap(machine: MachineTarget) throws -> Self {
         let method = "axo.state.get"
         try ids([machine.machineId, machine.hostGeneration], method: method)
@@ -100,6 +103,31 @@ public struct CentralRequest: Sendable {
         if let cursor { fields["cursor"] = try cursor.json }
         return Self(method: method, parameters: .object(fields), machine: target.source.machine, source: target.source,
                     intent: .piTool(target: target, readMode: readMode, entryId: entryId, toolCallId: toolCallId, cursor: cursor, limit: limit))
+    }
+    public static func capturePi(target: CentralPiBindingTarget, commandId: UUID, expectedRevision: CentralRevision, action: CentralPiAction) throws -> CentralPiCommandCapture {
+        let method = "axo.state.chat.command.submit"
+        try ids([commandId] + action.identifiers, method: method)
+        guard target.runtime.hostGeneration == target.source.machine.hostGeneration, expectedRevision.rawValue < 9_007_199_254_740_991 else { throw AxoProtocolValidationError.invalidParameters(method: method) }
+        if let text = action.text {
+            let scalars = text.unicodeScalars.drop(while: { $0.properties.isWhitespace })
+            guard text.utf8.count <= 65_536, let first = scalars.first, first != "/" else { throw AxoProtocolValidationError.invalidParameters(method: method) }
+        }
+        let capture = CentralPiCommandCapture(target: target, commandId: commandId, expectedRevision: expectedRevision, action: action)
+        // Same encoder/framing as the client, including a bounded transport ID.
+        let lookup = try JSONValue.object(["target": target.source.json, "capture": capture.parameters])
+        for (name, params) in [(method, try capture.parameters), ("axo.state.chat.command.get", lookup)] {
+            let bounded = RPCRequest(id: .string(String(repeating: "0", count: 36)), method: name, params: params)
+            guard try JSONEncoder().encode(bounded).count <= AxoProtocolCodec.maximumFrameBytes else { throw AxoProtocolValidationError.invalidParameters(method: method) }
+        }
+        return capture
+    }
+    public static func submitPi(_ capture: CentralPiCommandCapture) throws -> Self {
+        try Self(method: "axo.state.chat.command.submit", parameters: capture.parameters, machine: capture.target.source.machine, source: capture.target.source, intent: .submitPi(capture))
+    }
+    public static func piCommand(source: CentralSource, capture: CentralPiCommandCapture) throws -> Self {
+        let method = "axo.state.chat.command.get"
+        guard source.machine.machineId == capture.target.source.machine.machineId, source.storeGeneration == capture.target.source.storeGeneration else { throw AxoProtocolValidationError.invalidParameters(method: method) }
+        return Self(method: method, parameters: try .object(["target": source.json, "capture": capture.parameters]), machine: source.machine, source: source, intent: .piCommand(capture))
     }
     public static func createWorkspace(source: CentralSource, commandId: UUID, expectedRevision: CentralRevision, name: String, directoryPath: String) throws -> Self {
         try mutate(source, commandId, expectedRevision, .workspace(name, directoryPath))

@@ -115,6 +115,18 @@ impl Controller {
         }
         Ok(())
     }
+    pub(super) fn record_pi_result(
+        &self,
+        permit: super::submitted::PiPermit,
+        outcome: super::submitted::PiTerminal,
+    ) -> Result<super::submitted::PiOriginal, Error> {
+        // Stop admission does not turn a known acknowledgement into rejection.
+        // Namespace/storage ownership still fences terminal publication.
+        if let Some(root) = &self.service_root {
+            root.check_directory()?;
+        }
+        self.database.lock().unwrap().finish_pi(permit, outcome)
+    }
     pub(crate) fn runtime_owner(&self) -> Arc<Manager> {
         self.native.clone()
     }

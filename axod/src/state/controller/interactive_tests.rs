@@ -251,30 +251,57 @@ fn actual_three_by_four_by_three_graph_admits_every_pane_and_resumes_exact_pi_fi
         })
         .unwrap()
     };
-    let crate::state::submitted::PiPreparation::New(permit) = controller
-        .database
-        .lock()
-        .unwrap()
-        .prepare_pi(original_capture.clone())
-        .unwrap()
-    else {
-        panic!("Fresh original")
-    };
-    let proof = running
-        .control
-        .execute(
-            original_capture.input().command_id,
-            &original_capture.input().action,
-        )
-        .unwrap();
+    let submission = json!({"target":exact_target,"commandId":original_capture.input().command_id,"expectedRevision":original_capture.input().expected_revision,"action":original_capture.input().action});
+    let first_receipt = crate::state::rpc::dispatch(
+        crate::rpc::Call {
+            id: Some(json!(20)),
+            method: "axo.state.chat.command.submit".into(),
+            params: Some(submission.clone()),
+        },
+        &controller,
+        machine,
+        false,
+    )
+    .unwrap();
+    assert_eq!(
+        first_receipt["result"]["value"]["disposition"]["kind"],
+        "dispatched"
+    );
+    let duplicate = crate::state::rpc::dispatch(
+        crate::rpc::Call {
+            id: Some(json!(21)),
+            method: "axo.state.chat.command.submit".into(),
+            params: Some(submission.clone()),
+        },
+        &controller,
+        machine,
+        false,
+    )
+    .unwrap();
+    assert_eq!(
+        duplicate["result"]["value"], first_receipt["result"]["value"],
+        "Lost replies reconcile the immutable original, not a second effect"
+    );
+    let mut conflicting = submission;
+    conflicting["action"]["text"] = json!("Foreign original bytes");
+    let conflict = crate::state::rpc::dispatch(
+        crate::rpc::Call {
+            id: Some(json!(22)),
+            method: "axo.state.chat.command.submit".into(),
+            params: Some(conflicting),
+        },
+        &controller,
+        machine,
+        false,
+    )
+    .unwrap();
+    assert_eq!(conflict["error"]["code"], -32007);
     let original = controller
         .database
         .lock()
         .unwrap()
-        .finish_pi(
-            permit,
-            crate::state::submitted::PiTerminal::Dispatched(proof),
-        )
+        .pi_original(original_capture.input().command_id)
+        .unwrap()
         .unwrap();
     assert_eq!(
         original.disposition,
@@ -411,6 +438,11 @@ fn actual_three_by_four_by_three_graph_admits_every_pane_and_resumes_exact_pi_fi
             .as_ref()
             == Some(&original),
         "Restart observes the immutable original; it does not replay input"
+    );
+    let lookup = crate::state::rpc::dispatch(crate::rpc::Call { id: Some(json!(23)), method: "axo.state.chat.command.get".into(), params: Some(json!({"target":{"machineId":machine,"hostGeneration":controller.runtime_owner().generation,"storeGeneration":controller.generation().unwrap()},"capture":{"target":exact_target,"commandId":original_capture.input().command_id,"expectedRevision":original_capture.input().expected_revision,"action":original_capture.input().action}})) }, &controller, machine, false).unwrap();
+    assert_eq!(
+        lookup["result"]["value"], first_receipt["result"]["value"],
+        "New owner reads historical original metadata without retarget or replay"
     );
     wait(|| {
         controller

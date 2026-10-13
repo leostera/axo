@@ -39,6 +39,19 @@ impl BindingTarget {
     pub(super) fn matches(&self, binding: &Binding) -> bool {
         Self::new(&self.scope(), binding) == *self
     }
+    pub(super) fn captured(capture: &crate::state::submitted::PiCapture) -> Self {
+        let input = capture.input();
+        Self::new(
+            &SessionTarget {
+                machine_id: input.machine_id,
+                host_generation: input.host_generation,
+                store_generation: input.store_generation,
+                workspace_id: input.binding.workspace_id,
+                session_id: input.binding.session_id,
+            },
+            &input.binding,
+        )
+    }
     fn new(scope: &SessionTarget, binding: &Binding) -> Self {
         Self {
             machine_id: scope.machine_id,
@@ -198,10 +211,49 @@ fn capture(
     }
     Ok((revision, Observation::Live { target, state }))
 }
-struct SnapshotCapture {
+pub(super) struct SnapshotCapture {
     revision: u64,
     configuration: Configuration,
     running: std::sync::Arc<crate::pi_session::Running>,
+}
+impl SnapshotCapture {
+    pub(super) fn revision(&self) -> u64 {
+        self.revision
+    }
+    pub(super) fn configuration(&self) -> &Configuration {
+        &self.configuration
+    }
+    pub(super) fn running(&self) -> &std::sync::Arc<crate::pi_session::Running> {
+        &self.running
+    }
+    /// Own original preparation advances the store revision. Configuration,
+    /// binding, native ownership, Arc identity and healthy control may not drift.
+    pub(super) fn check_action(
+        &self,
+        owner: &Controller,
+        target: &BindingTarget,
+    ) -> Result<(), (i32, &'static str)> {
+        owner.ensure_owner().map_err(failure)?;
+        let current = capture_action(owner, target)?;
+        if current.configuration != self.configuration
+            || !std::sync::Arc::ptr_eq(&current.running, &self.running)
+        {
+            return Err((-32002, "Stale central Pi command source"));
+        }
+        Ok(())
+    }
+}
+pub(super) fn capture_action(
+    owner: &Controller,
+    target: &BindingTarget,
+) -> Result<SnapshotCapture, (i32, &'static str)> {
+    let capture = capture_snapshot(owner, target)?;
+    let state = capture.running.control.current().map_err(control_failure)?;
+    if owner.runtime_owner().owned_running_pid(target.runtime) != Some(state.pid) {
+        return Err((-32002, "Stale central Pi binding"));
+    }
+    LiveState::parse(state, &capture.running.binding)?;
+    Ok(capture)
 }
 fn capture_snapshot(
     owner: &Controller,
