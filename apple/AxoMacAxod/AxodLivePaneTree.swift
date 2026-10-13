@@ -1,11 +1,11 @@
 import Foundation
 
-/// Presentation only: never erase saved layout or runtime/history identities.
+/// A volatile rendering projection, never desired topology or runtime ownership.
 @MainActor
 enum AxodLivePaneTree {
-    static func presenting(_ saved: AxodPaneLayouts.Tree.Node, paneIDs: [UUID]) -> AxodPaneLayouts.Tree.Node? {
+    static func presenting(_ layout: AxodPaneLayouts.Tree.Node, paneIDs: [UUID]) -> AxodPaneLayouts.Tree.Node? {
         let live = Array(paneIDs.prefix(AxodPaneLayouts.maximumPanes))
-        var root = keeping(saved, paneIDs: Set(live))
+        var root = keeping(layout, paneIDs: Set(live))
         for paneID in live where !(root?.leaves().contains { $0.id == paneID } ?? false) {
             let leaf = AxodPaneLayouts.Tree.Node.leaf(view: AxodPaneLayoutLeaf(id: paneID))
             if let existing = root { root = .split(.init(direction: .horizontal, ratio: 0.5, left: existing, right: leaf)) }

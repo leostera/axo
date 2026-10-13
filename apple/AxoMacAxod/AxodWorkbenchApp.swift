@@ -226,14 +226,6 @@ final class AxodWorkbenchApp: NSObject, NSApplicationDelegate, NSWindowDelegate,
         guard coordinator?.showsSetup == false else { return }
         coordinator?.newSession()
     }
-    @objc private func splitRight(_ sender: Any?) {
-        guard let window, NSApp.keyWindow === window else { return }
-        coordinator?.splitRight(sender)
-    }
-    @objc private func splitDown(_ sender: Any?) {
-        guard let window, NSApp.keyWindow === window else { return }
-        coordinator?.splitDown(sender)
-    }
     @objc private func focusLeft(_ sender: Any?) { movePaneFocus(.left) }
     @objc private func focusRight(_ sender: Any?) { movePaneFocus(.right) }
     @objc private func focusUp(_ sender: Any?) { movePaneFocus(.up) }
@@ -263,16 +255,13 @@ final class AxodWorkbenchApp: NSObject, NSApplicationDelegate, NSWindowDelegate,
 
     func validateMenuItem(_ menuItem: NSMenuItem) -> Bool {
         if coordinator?.showsSetup == true, let action = menuItem.action,
-           [#selector(newWorkspace(_:)), #selector(newSession(_:)), #selector(splitRight(_:)), #selector(splitDown(_:))].contains(action) { return false }
+           [#selector(newWorkspace(_:)), #selector(newSession(_:))].contains(action) { return false }
         if let direction = focusDirection(for: menuItem.action) {
             guard let window, NSApp.keyWindow === window else { return false }
             return coordinator?.capturePaneFocus(direction, in: window) != nil
         }
         if menuItem.action == #selector(toggleSidebar(_:)) {
             return window != nil && NSApp.keyWindow === window
-        }
-        if menuItem.action == #selector(splitRight(_:)) || menuItem.action == #selector(splitDown(_:)) {
-            return window != nil && NSApp.keyWindow === window && coordinator?.canSplitPane == true
         }
         if menuItem.action == #selector(newWorkspace(_:)) {
             return coordinator?.canEditWork == true && coordinator?.workEditor == nil
@@ -340,12 +329,6 @@ final class AxodWorkbenchApp: NSObject, NSApplicationDelegate, NSWindowDelegate,
         let paneItem = NSMenuItem()
         menu.addItem(paneItem)
         let paneMenu = NSMenu(title: "Pane")
-        let right = paneMenu.addItem(withTitle: "Split Right", action: #selector(splitRight(_:)), keyEquivalent: "d")
-        right.target = self
-        let down = paneMenu.addItem(withTitle: "Split Down", action: #selector(splitDown(_:)), keyEquivalent: "d")
-        down.target = self
-        down.keyEquivalentModifierMask = [.command, .shift]
-        paneMenu.addItem(.separator())
         let focusItems: [PaneFocusMenuItem] = [
             .init(title: "Focus Left", action: #selector(focusLeft(_:)), key: "\u{F702}"),
             .init(title: "Focus Right", action: #selector(focusRight(_:)), key: "\u{F703}"),

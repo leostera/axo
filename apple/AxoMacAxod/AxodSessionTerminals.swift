@@ -25,8 +25,8 @@ struct AxodSessionTerminals: View {
     }
     var body: some View {
         VStack(spacing: 0) {
-            if let identity, let saved = coordinator.paneLayouts.trees[identity]?.root,
-               let root = AxodLivePaneTree.presenting(saved, paneIDs: runningPaneIDs),
+            if let identity, let layout = coordinator.paneLayouts.trees[identity]?.root,
+               let root = AxodLivePaneTree.presenting(layout, paneIDs: runningPaneIDs),
                let generation = coordinator.paneLayouts.generations[identity] {
                 AxodPaneSubtree(node: root, session: session, identity: identity, generation: generation, viewportID: viewportID, coordinator: coordinator)
                     .id(root.structuralIdentity)

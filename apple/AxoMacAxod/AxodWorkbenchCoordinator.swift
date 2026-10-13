@@ -107,7 +107,6 @@ final class AxodWorkbenchCoordinator {
     @ObservationIgnored private var preferredSessionID: UUID?
     @ObservationIgnored private var initialTerminalFocus: WorkSessionTarget?
     let terminalSurfaces = AxodTerminalSurfaces()
-    let shellCreation: AxodShellCreation
     let paneLayouts: AxodPaneLayouts
     private let rpc = AxoJSONRPCClient()
     private var stateDirectory: AxodStateDirectory?
@@ -160,8 +159,7 @@ final class AxodWorkbenchCoordinator {
         self.serviceLifecycle = serviceLifecycle ?? .shared
         self.setupPresentation = AxodSetupPresentation(preferences: preferences)
         self.preferences = preferences
-        self.shellCreation = AxodShellCreation(preferences: preferences)
-        self.paneLayouts = AxodPaneLayouts(preferences: preferences)
+        self.paneLayouts = AxodPaneLayouts()
 #if AXO_NATIVE_FIXTURE
         // Owned checks neither load live voice history nor request microphone access.
         self.voice = MacVoiceCoordinator()
@@ -923,100 +921,6 @@ final class AxodWorkbenchCoordinator {
         return try? terminalLaunch(for: snapshot, sessionID: session.sessionId).key
     }
 
-    var canSplitPane: Bool {
-        guard connectionState == .connected,
-              let session = selectedSession, let machineID,
-              session.shellPanes.count + 1 < AxodPaneLayouts.maximumPanes else { return false }
-        switch shellStartupState(for: session.sessionId) {
-        case .starting?, .unresolved?, .unavailable?: return false
-        case .ready?, .rejected?, nil: break
-        }
-        return paneLayouts.canSplit(.init(machineID: machineID, sessionID: session.sessionId))
-    }
-
-    @objc func splitRight(_ sender: Any?) { splitPane(.right) }
-    @objc func splitDown(_ sender: Any?) { splitPane(.down) }
-
-    /// One captured action; startup, restoration and catalog observation never call this.
-    func splitPane(_ direction: AxodPaneSplitDirection) {
-        guard let session = selectedSession, let endpoint, let control = connection,
-              let directory = stateDirectory else { return }
-        preparePaneLayout(session)
-        guard canSplitPane else { return }
-        let identity = AxodPaneLayouts.Session(machineID: endpoint.machineId, sessionID: session.sessionId)
-        let anchor = paneLayouts.focusedPanes[identity] ?? session.pi.paneId
-        guard anchor == session.pi.paneId || session.shellPanes.contains(where: { $0.paneId == anchor }) else { return }
-        let source = MachineTarget(machineId: endpoint.machineId, hostGeneration: endpoint.hostGeneration)
-        let parameters = ShellPaneAddParameters(target: WorkSessionTarget(machineId: source.machineId,
-            hostGeneration: source.hostGeneration, workspaceId: session.workspaceId, sessionId: session.sessionId), commandId: UUID())
-        guard (try? directory.requireCurrentEndpoint(endpoint)) != nil,
-              let placement = paneLayouts.capture(parameters: parameters, anchor: anchor, direction: direction) else { return }
-        let operation = operationGeneration
-        Task { [weak self] in
-            guard let self else { return }
-            do {
-                guard self.isCurrent(operation, connection: control, endpoint: endpoint) else { throw CancellationError() }
-                try directory.requireCurrentEndpoint(endpoint)
-                // Separate control peer: a Pi admission wait must not block an explicit shell split.
-                let peer = try self.rpc.openLocalWebSocket(endpoint: endpoint)
-                defer { Task { await peer.close() } }
-                let negotiation = try await peer.request(method: AxoProtocol.Method.negotiate, parameters: NegotiationParameters())
-                _ = try AxoProtocolResultValidator.localNegotiation(negotiation)
-                let pane = await self.shellCreation.start(session: session, source: source, commandID: parameters.commandId, send: { pending in
-                    try await peer.request(method: AxoProtocol.Method.addShellPane, parameters: pending)
-                }) {
-                    guard self.isCurrent(operation, connection: control, endpoint: endpoint) else { throw CancellationError() }
-                    try directory.requireCurrentEndpoint(endpoint)
-                }
-                guard self.isCurrent(operation, connection: control, endpoint: endpoint) else { return }
-                if self.shellStartupState(for: session.sessionId) == .ready, let pane {
-                    self.paneLayouts.commit(placement, paneID: pane.paneId)
-                } else if self.shellStartupState(for: session.sessionId) == .rejected {
-                    self.paneLayouts.finishKnownCommand(placement)
-                }
-                if let pane, let index = self.sessions.firstIndex(where: { $0.sessionId == session.sessionId }) {
-                    let current = self.sessions[index]
-                    self.sessions[index] = WorkSessionRecord(sessionId: current.sessionId, workspaceId: current.workspaceId,
-                        name: current.name, nameSource: current.nameSource, pi: current.pi, runtime: current.runtime,
-                        shellPanes: current.shellPanes.filter { $0.paneId != pane.paneId } + [pane], manualName: current.manualName)
-                }
-                self.refresh()
-            } catch {
-                // No pane command was dispatched: open/negotiation failed. A saved
-                // shell hint, if one exists, remains owned by ShellCreation instead.
-                self.paneLayouts.noDispatch(placement)
-            }
-        }
-    }
-
-    func shellStartupState(for sessionID: UUID) -> AxodShellCreation.State? {
-        guard let machineID else { return nil }
-        return shellCreation.states[.init(machineID: machineID, sessionID: sessionID)]
-    }
-
-    func reconcileSelectedShell() {
-        guard let session = selectedSession, let endpoint, let connection else { return }
-        let operation = operationGeneration
-        let source = MachineTarget(machineId: endpoint.machineId, hostGeneration: endpoint.hostGeneration)
-        Task { [weak self] in
-            guard let self else { return }
-            let identity = AxodPaneLayouts.Session(machineID: source.machineId, sessionID: session.sessionId)
-            let receipt = await self.shellCreation.reconcile(session: session, source: source,
-                parameters: self.paneLayouts.pendingParameters(identity), lookup: { parameters in
-                try await connection.request(method: AxoProtocol.Method.getCommand, parameters: parameters)
-            }) {
-                guard self.isCurrent(operation, connection: connection, endpoint: endpoint),
-                      let directory = self.stateDirectory else { throw CancellationError() }
-                try directory.requireCurrentEndpoint(endpoint)
-            }
-            guard self.isCurrent(operation, connection: connection, endpoint: endpoint) else { return }
-            if let receipt {
-                self.paneLayouts.adopt(receipt, in: .init(machineID: source.machineId, sessionID: session.sessionId))
-            }
-            self.refresh()
-        }
-    }
-
     func refreshChat() {
         guard let target = chatTarget, let connection, let endpoint,
               selectedSessionID == target.sessionId else { return }
@@ -1621,7 +1525,6 @@ final class AxodWorkbenchCoordinator {
             chatStatusMessage = "Select an admitted Pi session to view its canonical conversation."
             return
         }
-        shellCreation.restore(session: session, machineID: endpoint.machineId)
         paneLayouts.observe(session, machineID: endpoint.machineId)
         let pending = readPendingChatCommand(machineID: endpoint.machineId, sessionID: session.sessionId)
         pendingChatCommandId = pending?.commandId
