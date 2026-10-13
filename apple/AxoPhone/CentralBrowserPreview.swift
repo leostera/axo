@@ -5,6 +5,18 @@ import Foundation
 /// Preview values traverse the same closed boundary as real responses. They
 /// neither read stored catalogs nor construct unchecked trusted domain records.
 enum CentralBrowserPreview {
+    static func notAdmittedObservation(source: CentralSource, workspaceId: UUID?, sessionId: UUID) throws -> CentralResponse {
+        let request = try CentralRequest.observePi(source: source, workspaceId: workspaceId, sessionId: sessionId)
+        let envelope: [String: Any] = [
+            "hostGeneration": source.machine.hostGeneration.uuidString,
+            "storeGeneration": source.storeGeneration.uuidString,
+            "revision": 7,
+            "value": ["kind": "notAdmitted"]
+        ]
+        let value = try JSONDecoder().decode(JSONValue.self, from: JSONSerialization.data(withJSONObject: envelope))
+        return try request.parseResult(value)
+    }
+
     static func records(source: CentralSource, piID: UUID) throws -> (workspaces: [CentralWorkspace], sessions: [CentralSessionView]) {
         let workspace = "bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb", session = "cccccccc-cccc-4ccc-8ccc-cccccccccccc"
         func envelope(_ body: [String: Any]) throws -> JSONValue {

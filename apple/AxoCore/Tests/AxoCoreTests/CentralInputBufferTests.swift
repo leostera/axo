@@ -7,6 +7,7 @@ import XCTest
 /// admission, PTY ownership, model delivery or editor/IME acceptance.
 @MainActor final class CentralInputBufferTests: XCTestCase {
     private let machine = UUID(), host = UUID(), store = UUID(), session = UUID(), pane = UUID(), chat = UUID()
+    private let runtimeGeneration = UUID(uuidString: "77777777-7777-4777-8777-777777777777")!
     private func json(_ value: Any) throws -> JSONValue {
         try JSONDecoder().decode(JSONValue.self, from: JSONSerialization.data(withJSONObject: value))
     }
@@ -14,7 +15,7 @@ import XCTest
         let host = host ?? self.host, store = store ?? self.store
         let source = try CentralSource(machine: .init(machineId: machine, hostGeneration: host), storeGeneration: store)
         let request = try CentralRequest.observePi(source: source, workspaceId: nil, sessionId: session)
-        let target: [String: Any] = ["machineId": machine.uuidString, "hostGeneration": host.uuidString, "storeGeneration": store.uuidString, "workspaceId": NSNull(), "sessionId": session.uuidString, "paneId": pane.uuidString, "chatId": (chat ?? self.chat).uuidString, "runtime": ["host_generation": host.uuidString, "runtime_generation": UUID().uuidString, "target": ["session_id": session.uuidString, "pane_id": pane.uuidString]]]
+        let target: [String: Any] = ["machineId": machine.uuidString, "hostGeneration": host.uuidString, "storeGeneration": store.uuidString, "workspaceId": NSNull(), "sessionId": session.uuidString, "paneId": pane.uuidString, "chatId": (chat ?? self.chat).uuidString, "runtime": ["host_generation": host.uuidString, "runtime_generation": runtimeGeneration.uuidString, "target": ["session_id": session.uuidString, "pane_id": pane.uuidString]]]
         let state: [String: Any] = ["title": NSNull(), "leafId": NSNull(), "busy": busy, "interactionId": interaction?.uuidString as Any? ?? NSNull(), "uiWaits": question == nil ? 0 : 1, "question": question as Any? ?? NSNull(), "pending": false, "recovery": recovery]
         return try request.parseResult(json(["hostGeneration": host.uuidString, "storeGeneration": store.uuidString, "revision": 4, "value": ["kind": "live", "target": target, "state": state]]))
     }
@@ -41,7 +42,7 @@ import XCTest
         let observed = try observed(), key = try key(observed), input = CentralInputBuffers()
         let text = "  Owned input λ界  "
         try input.edit(text, in: key)
-        let delayed = try input.editingCapture(for: key)
+        let delayed = try input.editingCapture(from: observed)
         let ticket = try input.captureText(from: observed)
         XCTAssertEqual(ticket.command.action, .send(text: text))
         let request = try input.beginSubmission(ticket)
@@ -54,7 +55,7 @@ import XCTest
             result(ticket, disposition: ["kind": "dispatched"]))
         XCTAssertEqual(try input.acknowledgeSubmission(ticket, response: dispatched), .dispatched(clearedEditing: true))
         XCTAssertEqual(input.text(for: key), "")
-        XCTAssertFalse(try input.apply("Late transcript", matching: delayed))
+        XCTAssertFalse(try input.apply("Late transcript", matching: delayed, against: observed))
         XCTAssertThrowsError(try input.beginSubmission(ticket))
         XCTAssertTrue(input.pendingTickets.isEmpty)
     }
@@ -69,10 +70,10 @@ import XCTest
         let second = try input.captureText(from: observed)
         _ = try input.beginSubmission(second)
         try input.edit("é", in: key)
-        let accent = try input.editingCapture(for: key)
+        let accent = try input.editingCapture(from: observed)
         try input.edit("e\u{301}", in: key)
         XCTAssertEqual(Array(input.text(for: key).utf8), Array("e\u{301}".utf8))
-        XCTAssertFalse(try input.apply("Late paste", matching: accent))
+        XCTAssertFalse(try input.apply("Late paste", matching: accent, against: observed))
         XCTAssertEqual(try input.acknowledgeSubmission(second, result: result(second, disposition: ["kind": "dispatched"])), .dispatched(clearedEditing: false))
     }
     func testMissingUnknownAndForeignResultsNeverReleaseOrRetargetCapture() async throws {
@@ -137,14 +138,45 @@ import XCTest
         try input.edit("Retained", in: key)
         _ = try input.captureText(from: observed)
     }
+    func testClosingEditorDiscardsDraftAndInvalidatesDelayedEditsButKeepsSubmittedOriginal() async throws {
+        let observation = try observed(), key = try key(observation), input = CentralInputBuffers()
+        let delayed = try input.editingCapture(from: observation)
+        try input.edit("Unsent draft", in: key)
+        input.discardEditing(for: observation.source, sessionId: session)
+        XCTAssertEqual(input.text(for: key), "")
+        let reopened = try input.editingCapture(from: observation)
+        XCTAssertFalse(try input.apply("Late transcript", matching: delayed, against: observation))
+        XCTAssertTrue(try input.apply("Fresh edit", matching: reopened, against: observation))
+
+        let ticket = try input.captureText(from: observation)
+        _ = try input.beginSubmission(ticket)
+        input.discardEditing(for: observation.source, sessionId: session)
+        XCTAssertEqual(input.pendingTickets, [ticket])
+        XCTAssertEqual(try input.acknowledgeSubmission(ticket, result: result(ticket, disposition: ["kind": "dispatched"])), .dispatched(clearedEditing: false))
+        XCTAssertTrue(input.pendingTickets.isEmpty)
+    }
+    func testCanceledEmptyEditingCaptureReleasesOnlyItsOwnUnusedSlot() async throws {
+        let observation = try observed(), key = try key(observation), input = CentralInputBuffers()
+        let capture = try input.editingCapture(from: observation)
+        input.releaseEmptyEditingCapture(capture)
+        XCTAssertFalse(try input.apply("Late result", matching: capture, against: observation))
+
+        let next = try input.editingCapture(from: observation)
+        try input.edit("Keep me", in: key)
+        input.releaseEmptyEditingCapture(next)
+        XCTAssertEqual(input.text(for: key), "Keep me")
+        XCTAssertFalse(try input.apply("Stale result", matching: next, against: observation))
+    }
     func testDelayedPasteAndVoiceEditsRequireExactLogicalRevisionIncludingEmptyABA() async throws {
         let observed = try observed(), key = try key(observed), input = CentralInputBuffers()
-        let empty = try input.editingCapture(for: key)
+        let empty = try input.editingCapture(from: observed)
         try input.edit("Typed", in: key); try input.edit("", in: key)
-        XCTAssertFalse(try input.apply("Late voice result", matching: empty))
-        let current = try input.editingCapture(for: key)
-        XCTAssertTrue(try input.apply("Pasted text", matching: current))
-        XCTAssertFalse(try input.apply("Other delayed result", matching: current))
+        XCTAssertFalse(try input.apply("Late voice result", matching: empty, against: observed))
+        let current = try input.editingCapture(from: observed)
+        let restarted = try self.observed(host: UUID())
+        XCTAssertFalse(try input.apply("Late paste", matching: current, against: restarted), "A delayed edit must not retarget to a replacement host generation")
+        XCTAssertTrue(try input.apply("Pasted text", matching: current, against: observed))
+        XCTAssertFalse(try input.apply("Other delayed result", matching: current, against: observed))
         XCTAssertEqual(input.text(for: key), "Pasted text")
     }
     func testQuotasRejectWithoutEvictionTruncationOrStaleSubmission() async throws {
@@ -204,11 +236,11 @@ import XCTest
         for _ in 0..<33 {
             let observed = try observed(chat: UUID()), key = try key(observed)
             try input.edit("Owned slot", in: key)
-            let delayed = try input.editingCapture(for: key)
+            let delayed = try input.editingCapture(from: observed)
             let ticket = try input.captureText(from: observed)
             _ = try input.beginSubmission(ticket)
             XCTAssertEqual(try input.acknowledgeSubmission(ticket, result: result(ticket, disposition: ["kind": "dispatched"])), .dispatched(clearedEditing: true))
-            XCTAssertFalse(try input.apply("Delayed result", matching: delayed))
+            XCTAssertFalse(try input.apply("Delayed result", matching: delayed, against: observed))
         }
     }
     func testPendingQuotaAndOwnerIncarnationCannotBeBypassed() async throws {

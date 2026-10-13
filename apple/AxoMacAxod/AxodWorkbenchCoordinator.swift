@@ -657,7 +657,7 @@ import UserNotifications
               selectedSessionID == target.sessionId, catalog?.source == target.source else {
             throw CentralInputIssue.unavailable
         }
-        return try inputBuffers.editingCapture(for: CentralEditingTarget(target))
+        return try inputBuffers.editingCapture(from: response)
     }
     func editSelectedPiInput(_ text: String) throws {
         guard let response = selectedPiResponse, !selectedPiReadUnavailable,
@@ -668,7 +668,10 @@ import UserNotifications
         try inputBuffers.edit(text, in: CentralEditingTarget(target))
     }
     @discardableResult func applyPiInput(_ text: String, matching capture: CentralEditCapture) throws -> Bool {
-        try inputBuffers.apply(text, matching: capture)
+        guard let response = selectedPiResponse, !selectedPiReadUnavailable,
+              case .piObservation(.live(let target, _)) = response.payload,
+              selectedSessionID == target.sessionId, catalog?.source == target.source else { return false }
+        return try inputBuffers.apply(text, matching: capture, against: response)
     }
     func submitSelectedPiInput() {
         guard let response = selectedPiResponse, !selectedPiReadUnavailable,

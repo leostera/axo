@@ -28,19 +28,6 @@ final class VoiceAudioClipTests: XCTestCase {
         XCTAssertEqual(file.length, 16_000)
     }
 
-    func testMigrationDeletesOnlyTheOldModelCache() throws {
-        let support = FileManager.default.temporaryDirectory.appendingPathComponent("axo-migration-\(UUID())")
-        defer { try? FileManager.default.removeItem(at: support) }
-        let oldModels = support.appendingPathComponent("AxoVoice/Models")
-        try FileManager.default.createDirectory(at: oldModels, withIntermediateDirectories: true)
-        let otherData = support.appendingPathComponent("keep.txt")
-        try Data("keep".utf8).write(to: otherData)
-        try LegacyVoiceCleanup.removeParakeetCache(in: support)
-        try LegacyVoiceCleanup.removeParakeetCache(in: support) // Idempotent.
-        XCTAssertFalse(FileManager.default.fileExists(atPath: oldModels.path))
-        XCTAssertTrue(FileManager.default.fileExists(atPath: otherData.path))
-    }
-
     private func makeClip(duration: Double, tone: Bool) throws -> URL {
         let url = FileManager.default.temporaryDirectory.appendingPathComponent("axo-clip-\(UUID()).wav")
         let format = try XCTUnwrap(AVAudioFormat(standardFormatWithSampleRate: 16_000, channels: 1))

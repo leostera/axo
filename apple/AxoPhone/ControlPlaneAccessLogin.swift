@@ -4,6 +4,10 @@ import SwiftUI
 import WebKit
 
 /// Human Access login for the private control-plane audience, isolated from legacy relay cookies.
+enum ControlPlaneAccessCredentialError: Error {
+    case keychainFailure
+}
+
 struct ControlPlaneAccessLogin: UIViewRepresentable {
     let endpoint: AxoControlPlaneEndpoint
     let onAuthenticated: (AxoControlPlaneAccessCookie) -> Void
@@ -78,7 +82,7 @@ enum ControlPlaneAccessCredential {
         item[kSecValueData as String] = Data(credential.valueForKeychainStorage.utf8)
         item[kSecAttrAccessible as String] = kSecAttrAccessibleWhenUnlockedThisDeviceOnly
         guard SecItemAdd(item as CFDictionary, nil) == errSecSuccess else {
-            throw ProtocolError.malformed
+            throw ControlPlaneAccessCredentialError.keychainFailure
         }
     }
 

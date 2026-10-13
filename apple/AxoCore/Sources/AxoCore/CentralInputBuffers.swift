@@ -22,6 +22,7 @@ public struct CentralEditCapture: Equatable, Sendable {
     fileprivate let owner: UUID
     fileprivate let revision: UUID
     public let target: CentralEditingTarget
+    public let binding: CentralPiBindingTarget
 }
 public struct CentralInputTicket: Equatable, Sendable {
     fileprivate let owner: UUID
@@ -67,10 +68,33 @@ public enum CentralControlChoice: Equatable, Sendable {
     public func hasPending(for target: CentralEditingTarget) -> Bool {
         submissions.values.contains { CentralEditingTarget($0.ticket.command.target) == target }
     }
-    public func editingCapture(for target: CentralEditingTarget) throws -> CentralEditCapture {
+    /// Closing an editor discards its volatile draft and invalidates delayed edits,
+    /// while immutable submitted tickets remain available for exact reconciliation.
+    public func discardEditing(for source: CentralSource, sessionId: UUID) {
+        let targets = entries.keys.filter {
+            $0.machineId == source.machine.machineId &&
+            $0.storeGeneration == source.storeGeneration &&
+            $0.sessionId == sessionId
+        }
+        for target in targets {
+            entries.removeValue(forKey: target)
+            rejectedEdits.remove(target)
+        }
+    }
+    public func editingCapture(from observation: CentralResponse) throws -> CentralEditCapture {
+        let (binding, _) = try live(observation)
+        let target = CentralEditingTarget(binding)
         guard !rejectedEdits.contains(target) else { throw CentralInputIssue.unavailable }
         let entry = try reserveEditor(target)
-        return CentralEditCapture(owner: owner, revision: entry.revision, target: target)
+        return CentralEditCapture(owner: owner, revision: entry.revision, target: target, binding: binding)
+    }
+    /// Release a canceled voice/paste capture only while its unchanged editor is empty.
+    public func releaseEmptyEditingCapture(_ capture: CentralEditCapture) {
+        guard capture.owner == owner, let entry = entries[capture.target],
+              entry.revision == capture.revision, entry.text.isEmpty,
+              !hasPending(for: capture.target) else { return }
+        entries.removeValue(forKey: capture.target)
+        rejectedEdits.remove(capture.target)
     }
     public func edit(_ text: String, in target: CentralEditingTarget) throws {
         let bytes = text.utf8.count
@@ -92,8 +116,11 @@ public enum CentralControlChoice: Equatable, Sendable {
     }
     /// Returns false rather than overwriting edits made after asynchronous input
     /// was captured, including an empty -> text -> empty ABA transition.
-    @discardableResult public func apply(_ text: String, matching capture: CentralEditCapture) throws -> Bool {
-        guard capture.owner == owner, entries[capture.target]?.revision == capture.revision else { return false }
+    @discardableResult public func apply(_ text: String, matching capture: CentralEditCapture, against observation: CentralResponse) throws -> Bool {
+        let (binding, _) = try live(observation)
+        guard capture.owner == owner, binding == capture.binding,
+              CentralEditingTarget(binding) == capture.target,
+              entries[capture.target]?.revision == capture.revision else { return false }
         try edit(text, in: capture.target)
         return true
     }
@@ -115,7 +142,7 @@ public enum CentralControlChoice: Equatable, Sendable {
             action = .steer(interactionId: interaction, text: entry.text)
         } else { action = .send(text: entry.text) }
         let command = try CentralRequest.capturePi(target: target, commandId: UUID(), expectedRevision: observation.revision, action: action)
-        return try reserve(command, editing: CentralEditCapture(owner: owner, revision: entry.revision, target: key))
+        return try reserve(command, editing: CentralEditCapture(owner: owner, revision: entry.revision, target: key, binding: target))
     }
     public func captureControl(_ choice: CentralControlChoice, from observation: CentralResponse) throws -> CentralInputTicket {
         let (target, state) = try live(observation)

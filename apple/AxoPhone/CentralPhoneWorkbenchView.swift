@@ -3,14 +3,16 @@ import AxoProtocol
 import SwiftUI
 
 @MainActor
-struct PrivateMachineBrowserView: View {
-    @State private var model: PrivateMachineBrowserModel
-
-    init() { _model = State(initialValue: PrivateMachineBrowserModel()) }
-    init(model: PrivateMachineBrowserModel) { _model = State(initialValue: model) }
-    @State private var isShowingLogin = false
+struct CentralPhoneWorkbenchView: View {
+    @Bindable var model: CentralPhoneWorkbenchModel
+    private enum BrowserSheet: Identifiable {
+        case login
+        case conversation(UUID)
+        case settings
+        var id: String { switch self { case .login: "login"; case .conversation(let id): "conversation-\(id.uuidString)"; case .settings: "settings" } }
+    }
+    @State private var presentedSheet: BrowserSheet?
     @State private var loginError: String?
-    @Environment(\.dismiss) private var dismiss
 
     var body: some View {
         List {
@@ -24,7 +26,7 @@ struct PrivateMachineBrowserView: View {
                             .foregroundStyle(.secondary)
                     }
                     Button("Sign in with Cloudflare Access", systemImage: "person.crop.circle.badge.checkmark") {
-                        isShowingLogin = true
+                        presentedSheet = .login
                     }
                     .accessibilityIdentifier("control-plane-login")
                 }
@@ -79,10 +81,10 @@ struct PrivateMachineBrowserView: View {
             }
         }
         .listStyle(.insetGrouped)
-        .navigationTitle("Private machines")
+        .navigationTitle("Axo")
         .navigationBarTitleDisplayMode(.inline)
         .toolbar {
-            ToolbarItem(placement: .topBarTrailing) {
+            ToolbarItemGroup(placement: .topBarTrailing) {
                 if model.isSignedIn {
                     Button {
                         Task { await model.refreshMachines() }
@@ -93,41 +95,54 @@ struct PrivateMachineBrowserView: View {
                     .accessibilityLabel("Refresh machines")
                     .accessibilityIdentifier("control-plane-refresh-machines")
                 }
+                Button { presentedSheet = .settings } label: {
+                    Image(systemName: "gearshape")
+                }
+                .accessibilityLabel("Settings")
             }
         }
         .refreshable { await model.refreshMachines() }
         .task { await model.start() }
-        .sheet(isPresented: $isShowingLogin) {
-            NavigationStack {
-                VStack(spacing: 16) {
-                    Text("Sign in to Axo’s private machine directory.")
-                        .font(.headline)
-                        .multilineTextAlignment(.center)
-                        .padding(.horizontal)
-                    ControlPlaneAccessLogin(
-                        endpoint: .production,
-                        onAuthenticated: { credential in
-                            isShowingLogin = false
-                            Task { await model.signIn(credential) }
-                        },
-                        onFailure: { loginError = $0 }
-                    )
-                    .clipShape(RoundedRectangle(cornerRadius: 14))
-                    if let loginError {
-                        Text(loginError).font(.caption).foregroundStyle(.orange)
+        .sheet(item: $presentedSheet) { sheet in
+            switch sheet {
+            case .login:
+                NavigationStack {
+                    VStack(spacing: 16) {
+                        Text("Sign in to Axo’s private machine directory.")
+                            .font(.headline)
+                            .multilineTextAlignment(.center)
+                            .padding(.horizontal)
+                        ControlPlaneAccessLogin(
+                            endpoint: .production,
+                            onAuthenticated: { credential in
+                                presentedSheet = nil
+                                Task { await model.signIn(credential) }
+                            },
+                            onFailure: { loginError = $0 }
+                        )
+                        .clipShape(RoundedRectangle(cornerRadius: 14))
+                        if let loginError {
+                            Text(loginError).font(.caption).foregroundStyle(.orange)
+                        }
+                    }
+                    .padding()
+                    .navigationTitle("Cloudflare Access")
+                    .navigationBarTitleDisplayMode(.inline)
+                    .toolbar {
+                        ToolbarItem(placement: .cancellationAction) {
+                            Button("Cancel") { presentedSheet = nil }
+                        }
                     }
                 }
-                .padding()
-                .navigationTitle("Cloudflare Access")
-                .navigationBarTitleDisplayMode(.inline)
-                .toolbar {
-                    ToolbarItem(placement: .cancellationAction) {
-                        Button("Cancel") { isShowingLogin = false }
-                    }
-                }
+                .presentationDetents([.large])
+                .presentationDragIndicator(.visible)
+            case .conversation:
+                NavigationStack { CentralPhoneConversationView(model: model) }
+                    .presentationDetents([.large])
+                    .presentationDragIndicator(.visible)
+            case .settings:
+                PhoneSettingsView()
             }
-            .presentationDetents([.large])
-            .presentationDragIndicator(.visible)
         }
     }
 
@@ -191,7 +206,7 @@ struct PrivateMachineBrowserView: View {
         } header: {
             Text("Runtime metadata")
         } footer: {
-            Text("Runtime and pane identifiers are daemon metadata. This does not expose Pi conversations, transcripts, or terminal output.")
+            Text("Runtime identifiers are daemon metadata. Pi conversations open only from an exact selected central session and binding.")
         }
 
         workRecordsSection(machine)
@@ -233,13 +248,23 @@ struct PrivateMachineBrowserView: View {
                     VStack(alignment: .leading, spacing: 6) {
                         Text(workspace.name).font(.headline)
                         ForEach(model.sessions(in: workspace.workspaceId), id: \.session.sessionId) { session in
-                            WorkRecordRow(session: session)
+                            Button { openConversation(session.session.sessionId) } label: {
+                                WorkRecordRow(session: session)
+                            }
+                            .buttonStyle(.plain)
+                            .disabled(!model.isConnected)
+                            .accessibilityIdentifier("control-plane-session-open-\(session.session.sessionId.uuidString.lowercased())")
                         }
                     }
                     .padding(.vertical, 4)
                 }
                 ForEach(model.sessions(in: nil), id: \.session.sessionId) { session in
-                    WorkRecordRow(session: session)
+                    Button { openConversation(session.session.sessionId) } label: {
+                        WorkRecordRow(session: session)
+                    }
+                    .buttonStyle(.plain)
+                    .disabled(!model.isConnected)
+                    .accessibilityIdentifier("control-plane-session-open-\(session.session.sessionId.uuidString.lowercased())")
                 }
             }
         } header: {
@@ -251,8 +276,13 @@ struct PrivateMachineBrowserView: View {
                 }
             }
         } footer: {
-            Text("A work session is not a Pi chat. Axod owns startup; this browser only reads central state.")
+            Text("Opening a session reads its exact admitted Pi conversation. Typed input uses the central original-submission path; this screen never starts or replaces Pi.")
         }
+    }
+
+    private func openConversation(_ id: UUID) {
+        presentedSheet = .conversation(id)
+        Task { await model.openConversation(sessionID: id) }
     }
 
     private func shortID(_ id: UUID) -> String { String(id.uuidString.prefix(8)).lowercased() }

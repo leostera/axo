@@ -11,7 +11,7 @@ public final class SessionFilesClient {
     public private(set) var isStale = true
     public private(set) var nextCursor: String?
     public private(set) var notice: String?
-    private let endpoint: RelayEndpoint
+    private let endpoint: SessionFilesEndpoint
     private var cookie: String
     private let session: URLSession
     private let configuration: URLSessionConfiguration
@@ -25,17 +25,16 @@ public final class SessionFilesClient {
     // A fresh per-client temporary directory, never a restorable draft archive.
     private let staging = TemporaryAttachmentDirectory()
 
-    public init(endpoint: RelayEndpoint, cookie: String, configuration: URLSessionConfiguration = .ephemeral) {
+    public init(endpoint: SessionFilesEndpoint, cookie: String, configuration: URLSessionConfiguration = .ephemeral) {
         self.endpoint = endpoint
         self.cookie = cookie
         self.configuration = configuration
         self.session = URLSession(configuration: configuration, delegate: PrivateTransferDelegate(), delegateQueue: nil)
         self.cache = FileManager.default.urls(for: .cachesDirectory, in: .userDomainMask)[0].appendingPathComponent("AxoFiles", isDirectory: true)
-        sessionId = UserDefaults.standard.string(forKey: "axo.fileSession.\(endpoint.baseURL.absoluteString)")
     }
     public var storageOrigin: URL { endpoint.baseURL }
-    public func matches(_ endpoint: RelayEndpoint) -> Bool { self.endpoint.baseURL == endpoint.baseURL }
-    public func configure(endpoint: RelayEndpoint, cookie: String) { if matches(endpoint) { self.cookie = cookie } }
+    public func matches(_ endpoint: SessionFilesEndpoint) -> Bool { self.endpoint.baseURL == endpoint.baseURL }
+    public func configure(endpoint: SessionFilesEndpoint, cookie: String) { if matches(endpoint) { self.cookie = cookie } }
     public func cancelAllUploads() {
         let queued = uploadQueue
         uploadQueue.removeAll()
@@ -57,8 +56,6 @@ public final class SessionFilesClient {
         notificationRevision = 0
         loadedRevision = 0
         isStale = true
-        if let id { UserDefaults.standard.set(id, forKey: "axo.fileSession.\(endpoint.baseURL.absoluteString)") }
-        else { UserDefaults.standard.removeObject(forKey: "axo.fileSession.\(endpoint.baseURL.absoluteString)") }
     }
     public func invalidate(sessionId: String, revision: Int? = nil) {
         guard self.sessionId == sessionId else { return }

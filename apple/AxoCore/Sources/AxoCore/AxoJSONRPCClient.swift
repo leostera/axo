@@ -3,6 +3,7 @@ import Foundation
 
 public enum AxoJSONRPCClientError: Error, Equatable, Sendable, LocalizedError {
     case invalidMethod
+    case invalidEndpoint
     case frameTooLarge
     case pendingCallLimit
     case disconnected
@@ -19,6 +20,7 @@ public enum AxoJSONRPCClientError: Error, Equatable, Sendable, LocalizedError {
     public var errorDescription: String? {
         switch self {
         case .invalidMethod: "The JSON-RPC method name is invalid."
+        case .invalidEndpoint: "The JSON-RPC endpoint is invalid."
         case .frameTooLarge: "The JSON-RPC frame exceeded the profile limit."
         case .pendingCallLimit: "Too many JSON-RPC calls are already in flight."
         case .disconnected: "The control-plane connection is closed."
@@ -206,7 +208,7 @@ public actor AxoJSONRPCWebSocketConnection {
             url.host == "127.0.0.1" && url.port != nil && url.path == "/v1/rpc"
         guard (validCloudEndpoint || validLocalEndpoint), url.user == nil, url.password == nil,
               url.query == nil, url.fragment == nil else {
-            throw ProtocolError.invalidEndpoint
+            throw AxoJSONRPCClientError.invalidEndpoint
         }
         let configuration = AxoJSONRPCClient.sessionConfiguration()
         session = URLSession(configuration: configuration, delegate: RejectRedirects(), delegateQueue: nil)

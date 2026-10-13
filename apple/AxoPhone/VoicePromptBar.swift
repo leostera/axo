@@ -4,6 +4,7 @@ import SwiftUI
 struct VoicePromptButton: View {
     let voice: VoicePrompt
     let prominent: Bool
+    var onStart: () -> Bool = { true }
     @AppStorage("appleSpeechSetupApproved") private var downloadApproved = false
     @State private var confirmDownload = false
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
@@ -26,7 +27,10 @@ struct VoicePromptButton: View {
         .accessibilityLabel(label)
         .accessibilityIdentifier("voicePromptButton")
         .alert("Set up Apple on-device speech?", isPresented: $confirmDownload) {
-            Button("Continue") { downloadApproved = true; voice.prepareAndRecord() }
+            Button("Continue") {
+                downloadApproved = true
+                if onStart() { voice.prepareAndRecord() }
+            }
             Button("Not now", role: .cancel) {}
         } message: {
             Text("Uses Apple's English speech model on this iPhone. Apple may need to download language assets first; use Wi-Fi. Audio stays on-device. Stop transcribes into your draft for review. Send transcribes and sends to Pi when available; otherwise it stays in your draft.")
@@ -55,10 +59,13 @@ struct VoicePromptButton: View {
     private func act() {
         switch voice.state {
         case .recording: voice.finishRecording()
-        case .ready: voice.startRecording()
+        case .ready:
+            if onStart() { voice.startRecording() }
         case .transcribing: voice.cancel()
         case .idle, .failed:
-            if downloadApproved { voice.prepareAndRecord() } else { confirmDownload = true }
+            if downloadApproved {
+                if onStart() { voice.prepareAndRecord() }
+            } else { confirmDownload = true }
         default: break
         }
     }
@@ -140,10 +147,10 @@ struct VoiceInformationView: View {
         ScrollView {
             VStack(alignment: .leading, spacing: 16) {
                 Text("Apple on-device speech").font(.title2.bold())
-                Text("Tap the waveform or microphone to record. Stop (the square) transcribes into your draft without sending, so you can review and edit. Send (the arrow) transcribes and sends the resulting prompt to Pi when available. Cancel (the cross) discards the recording and preserves existing draft text. There is no recording time limit; long recordings use more device storage. If Axo is offline or cannot send, the transcript stays in your draft and is never automatically replayed. You can dictate while the Mac is offline.")
+                Text("Before dictation, Axo must observe a live central Pi binding. Stop (the square) transcribes into this open conversation for review. Send (the arrow) asks Axod to submit once to that exact binding. If submission is unavailable or the binding changes, no request is rerouted: text stays in the open conversation or is shown for review. Closing the conversation discards unsent text. Cancel (the cross) discards the recording and preserves prior text. There is no recording time limit; long recordings use more device storage.")
                 Text("Recognition uses Apple's on-device SpeechTranscriber, not a server recognition service. Audio is never uploaded by Axo. Temporary recordings are deleted after transcription or cancellation; backgrounding or an audio interruption cancels capture.")
                 Text("Requires iOS 26 and a device that supports Apple's English speech model. Apple manages language assets and may download them during setup. Axo shows bytes when Apple reports byte counts, otherwise percentage progress. Apple may continue a shared asset download after you cancel setup.")
-                Text("No Parakeet, FluidAudio, Hugging Face download, or server-recognition fallback. The old Parakeet cache is removed when this version opens. This is stop-to-transcribe dictation, not live streaming.")
+                Text("No Parakeet, FluidAudio, Hugging Face download, or server-recognition fallback. Existing data from older voice integrations is left untouched. This is stop-to-transcribe dictation, not live streaming.")
                 Link("About Apple's SpeechTranscriber", destination: URL(string: "https://developer.apple.com/documentation/speech/speechtranscriber")!)
             }.padding(22)
         }

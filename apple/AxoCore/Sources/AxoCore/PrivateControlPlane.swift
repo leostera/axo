@@ -1,6 +1,10 @@
 import AxoProtocol
 import Foundation
 
+public enum AxoControlPlaneEndpointError: Error, Equatable, Sendable {
+    case invalidEndpoint
+}
+
 public struct AxoControlPlaneEndpoint: Equatable, Sendable {
     public static let production = try! AxoControlPlaneEndpoint("https://api.axo.leostera.dev")
     public static let accessAudience = "b4ce8a1f58bff7fd09c1d2b64fdbbd7a2098df4a0e46850b78caa05783676073"
@@ -8,7 +12,7 @@ public struct AxoControlPlaneEndpoint: Equatable, Sendable {
     public init(_ origin: String) throws {
         guard let url = URL(string: origin), url.scheme == "https", let host = url.host, !host.isEmpty,
               url.user == nil, url.password == nil, url.query == nil, url.fragment == nil,
-              url.path.isEmpty || url.path == "/" else { throw ProtocolError.invalidEndpoint }
+              url.path.isEmpty || url.path == "/" else { throw AxoControlPlaneEndpointError.invalidEndpoint }
         baseURL = url
     }
     public var rpcURL: URL {

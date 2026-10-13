@@ -172,16 +172,10 @@ final class AxodWorkbenchApp: NSObject, NSApplicationDelegate, NSWindowDelegate,
         panel.allowsMultipleSelection = false
         panel.beginSheetModal(for: window) { response in
             guard response == .OK, let url = panel.url else { return }
-            do {
-                let name = try WorkbenchName(url.lastPathComponent)
-                coordinator.createWorkspace(name: name.value, directoryPath: url.resolvingSymlinksInPath().standardizedFileURL.path)
-            } catch {
-                let alert = NSAlert()
-                alert.messageText = "Workspace name is invalid"
-                alert.informativeText = "Choose a folder whose name is non-empty and no longer than 120 UTF-8 bytes."
-                alert.alertStyle = .warning
-                alert.beginSheetModal(for: window)
-            }
+            coordinator.createWorkspace(
+                name: url.lastPathComponent,
+                directoryPath: url.resolvingSymlinksInPath().standardizedFileURL.path
+            )
         }
     }
     @objc private func focusLeft(_ sender: Any?) { movePaneFocus(.left) }

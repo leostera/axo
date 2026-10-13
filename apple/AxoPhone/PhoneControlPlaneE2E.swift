@@ -12,7 +12,7 @@ import Foundation
         let origin: URL
         let cookie: String
     }
-    static func model() throws -> PrivateMachineBrowserModel {
+    static func model() throws -> CentralPhoneWorkbenchModel {
         guard requested,
               !ProcessInfo.processInfo.arguments.contains("--axo-control-plane-preview"),
               let support = FileManager.default.urls(for: .applicationSupportDirectory, in: .userDomainMask).first else {
@@ -35,7 +35,7 @@ import Foundation
         }
         let endpoint = try AxoControlPlaneEndpoint(configuration.origin.absoluteString)
         let credential = try AxoControlPlaneAccessCookie(configuration.cookie)
-        return PrivateMachineBrowserModel(endpoint: endpoint, credential: credential, persistsCredentials: false)
+        return CentralPhoneWorkbenchModel(endpoint: endpoint, credential: credential, persistsCredentials: false)
     }
 }
 #endif
