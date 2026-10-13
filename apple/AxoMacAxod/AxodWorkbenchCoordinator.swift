@@ -12,7 +12,6 @@ final class AxodWorkbenchCoordinator {
         static let machineID = "Axo.axod.selection.machineID"
         static let workspaceID = "Axo.axod.selection.workspaceID"
         static let sessionID = "Axo.axod.selection.sessionID"
-        static let pendingChatPrefix = "Axo.axod.pendingChat."
     }
 
     enum ConnectionState: Equatable {
@@ -80,11 +79,6 @@ final class AxodWorkbenchCoordinator {
     let toolOutput = AxodToolOutput()
     @ObservationIgnored private var toolOutputTask: Task<Void, Never>?
     private(set) var chatStatusMessage = "Select an admitted Pi session to view its canonical conversation."
-    private(set) var pendingChatCommandId: UUID?
-    private(set) var isSendingPiMessage = false
-    private var piMutationGeneration: UUID?
-    let chatDrafts = AxodChatDrafts()
-    private(set) var isReconcilingPiCommand = false
 
     @ObservationIgnored let preferences: UserDefaults
     @ObservationIgnored private var preferredMachineID: UUID?
@@ -343,7 +337,6 @@ final class AxodWorkbenchCoordinator {
         chatTarget = nil
         chatSnapshot = nil
         chatEntries = []
-        pendingChatCommandId = nil
         selectedWorkspaceID = nil
         selectedSessionID = nil
         nextWorkspaceCursor = nil
@@ -381,7 +374,6 @@ final class AxodWorkbenchCoordinator {
         chatTarget = nil
         chatSnapshot = nil
         chatEntries = []
-        pendingChatCommandId = nil
         selectedWorkspaceID = workspaceID
         selectedSessionID = nil
         preferredWorkspaceID = workspaceID
@@ -634,108 +626,6 @@ final class AxodWorkbenchCoordinator {
                 self.toolOutput.complete(ticket, page: page)
             } catch {
                 self.toolOutput.fail(ticket, issue: error is CancellationError ? .unavailable : .failed)
-            }
-        }
-    }
-
-    func submitChatDraft(snapshot: PiChatSnapshot) {
-        guard snapshot.readMode == .live, snapshot.admission == .ready,
-              !snapshot.recovery, snapshot.uiWaits == 0, snapshot.question == nil,
-              let current = chatSnapshot, chatTarget == snapshot.target,
-              current.target == snapshot.target, current.readMode == .live,
-              current.admission == .ready, !current.recovery, current.uiWaits == 0, current.question == nil,
-              current.busy == snapshot.busy, current.interactionId == snapshot.interactionId,
-              !isSendingPiMessage, connectionState == .connected else {
-            chatStatusMessage = "The captured Pi conversation changed or is unavailable. The draft was preserved; nothing was sent."
-            return
-        }
-        guard let draft = chatDrafts.capture(for: snapshot.target, operation: snapshot.busy ? .sendSteeringMessage : .sendMessage) else { return }
-        sendPiMutation(
-            operation: snapshot.busy ? .sendSteeringMessage : .sendMessage,
-            interactionID: snapshot.busy ? snapshot.interactionId : nil,
-            questionID: nil, optionID: nil, text: draft.text, draft: draft
-        )
-    }
-
-    func cancelChatTurn(snapshot captured: PiChatSnapshot) {
-        guard captured.readMode == .live, !captured.recovery, captured.busy,
-              chatTarget == captured.target, chatSnapshot?.interactionId == captured.interactionId else {
-            chatStatusMessage = "The captured Pi interaction changed. Nothing was cancelled."
-            return
-        }
-        guard let snapshot = chatSnapshot, snapshot.busy,
-              let interactionID = snapshot.interactionId,
-              snapshot.readMode == .live, !snapshot.recovery else {
-            chatStatusMessage = "There is no captured Pi interaction to cancel."
-            return
-        }
-        sendPiMutation(operation: .cancelTurn, interactionID: interactionID, questionID: nil, optionID: nil, text: nil)
-    }
-
-    func answerChatQuestion(_ question: PiQuestion, option: PiQuestionOption, snapshot captured: PiChatSnapshot) {
-        guard captured.readMode == .live, captured.question == question,
-              chatTarget == captured.target,
-              let snapshot = chatSnapshot, snapshot.target == captured.target, snapshot.readMode == .live,
-              snapshot.question == question, snapshot.interactionId == question.interactionId,
-              question.options.contains(option) else {
-            chatStatusMessage = "The Pi question changed before the answer was sent. Refresh and choose again."
-            return
-        }
-        sendPiMutation(
-            operation: .answerQuestion, interactionID: question.interactionId,
-            questionID: question.id, optionID: option.id, text: nil
-        )
-    }
-
-    func reconcilePendingPiCommand() {
-        guard !isSendingPiMessage, !isReconcilingPiCommand, let endpoint, let connection, let session = selectedSession,
-              let pending = readPendingChatCommand(machineID: endpoint.machineId, sessionID: session.sessionId) else {
-            chatStatusMessage = "No pending Pi command is available for reconciliation."
-            return
-        }
-        let target = MachineTarget(machineId: endpoint.machineId, hostGeneration: endpoint.hostGeneration)
-        let parameters = CommandGetParameters(target: target, commandId: pending.commandId)
-        let operation = operationGeneration
-        isReconcilingPiCommand = true
-        Task { [weak self] in
-            guard let self else { return }
-            defer { self.isReconcilingPiCommand = false }
-            do {
-                let value = try await connection.request(method: AxoProtocol.Method.getCommand, parameters: parameters)
-                let result = try AxoProtocolResultValidator.commandGet(value, target: target)
-                guard self.isCurrent(operation, connection: connection, endpoint: endpoint),
-                      self.selectedSessionID == pending.target.sessionId else { return }
-                try self.stateDirectory?.requireCurrentEndpoint(endpoint)
-                guard case .pi(let receipt)? = result.receipt,
-                      receipt.commandId == pending.commandId,
-                      receipt.intent == .chat(target: pending.target, operation: pending.operation) else {
-                    self.chatStatusMessage = "No matching durable Pi command receipt is visible. It was not replayed."
-                    return
-                }
-                guard self.resolveChatDraft(receipt: receipt) else {
-                    self.chatStatusMessage = "The receipt does not match the captured input. The original hint and text were preserved; do not resend."
-                    return
-                }
-                guard self.isCurrent(operation, connection: connection, endpoint: endpoint),
-                      self.selectedSessionID == pending.target.sessionId else { return }
-                try self.stateDirectory?.requireCurrentEndpoint(endpoint)
-                switch receipt.disposition {
-                case .prepared:
-                    self.chatStatusMessage = "The original Pi command is still prepared or uncertain. It was not replayed."
-                case .rejected(let code):
-                    self.clearPendingChatCommand(pending)
-                    self.pendingChatCommandId = nil
-                    self.chatStatusMessage = "The original Pi command was rejected before dispatch (\(code))."
-                case .dispatched:
-                    self.clearPendingChatCommand(pending)
-                    self.pendingChatCommandId = nil
-                    self.chatStatusMessage = "The Pi public API acknowledged dispatch. This does not prove execution; refreshing canonical history."
-                    self.refreshChat()
-                }
-            } catch {
-                guard self.operationGeneration == operation,
-                      self.selectedSessionID == pending.target.sessionId else { return }
-                self.chatStatusMessage = "Could not reconcile the original Pi command. It was not repeated."
             }
         }
     }
@@ -1023,14 +913,10 @@ final class AxodWorkbenchCoordinator {
             chatTarget = nil
             chatSnapshot = nil
             chatEntries = []
-            pendingChatCommandId = nil
             chatStatusMessage = "Select an admitted Pi session to view its canonical conversation."
             return
         }
         paneLayouts.observe(session, machineID: endpoint.machineId)
-        let pending = readPendingChatCommand(machineID: endpoint.machineId, sessionID: session.sessionId)
-        pendingChatCommandId = pending?.commandId
-
         switch session.pi.admission {
         case .notAdmitted:
             chatTarget = nil
@@ -1067,151 +953,9 @@ final class AxodWorkbenchCoordinator {
         switch session.pi.admission {
         case .ready, .stopped, .failed:
             chatTarget = target
-            pendingChatCommandId = readPendingChatCommand(machineID: endpoint.machineId, sessionID: session.sessionId)?.commandId
             refreshChat()
         case .notAdmitted, .recoveryRequired:
             return
-        }
-    }
-
-    private func sendPiMutation(
-        operation: PiChatOperation,
-        interactionID: UUID?,
-        questionID: UUID?,
-        optionID: UUID?,
-        text: String?,
-        draft: AxodChatDrafts.Submission? = nil
-    ) {
-        guard let target = chatTarget, let endpoint, let connection, let directory = stateDirectory,
-              chatSnapshot?.readMode == .live, !isSendingPiMessage else {
-            if let draft { chatDrafts.resolve(commandID: draft.commandID, target: draft.target, outcome: .rejected) }
-            return
-        }
-        if let draft, draft.target != target || draft.operation != operation {
-            chatDrafts.resolve(commandID: draft.commandID, target: draft.target, outcome: .rejected)
-            return
-        }
-        let key = pendingChatKey(machineID: endpoint.machineId, sessionID: target.sessionId)
-        if preferences.object(forKey: key) != nil {
-            if let draft { chatDrafts.resolve(commandID: draft.commandID, target: draft.target, outcome: .rejected) }
-            pendingChatCommandId = readPendingChatCommand(machineID: endpoint.machineId, sessionID: target.sessionId)?.commandId
-            chatStatusMessage = "A prior Pi command may have an unknown outcome. Reconcile it before sending another."
-            return
-        }
-        let pending = PendingPiCommand(target: target, commandId: draft?.commandID ?? UUID(), operation: operation)
-        let request: AxodPiMutationRequest
-        do {
-            request = try AxodPiMutationRequest(target: target, commandID: pending.commandId, operation: operation,
-                                               interactionID: interactionID, questionID: questionID, optionID: optionID, text: text)
-        } catch {
-            if let draft { chatDrafts.resolve(commandID: draft.commandID, target: draft.target, outcome: .rejected) }
-            chatStatusMessage = "The Pi command parameters exceeded supported text/transport bounds or were invalid. The draft was preserved; nothing was sent."
-            return
-        }
-        let pendingData: Data
-        do { pendingData = try JSONEncoder().encode(pending) }
-        catch {
-            if let draft { chatDrafts.resolve(commandID: draft.commandID, target: draft.target, outcome: .rejected) }
-            chatStatusMessage = "The Pi command identity could not be saved. Nothing was sent."
-            return
-        }
-        pendingChatCommandId = pending.commandId
-        let operationID = operationGeneration
-        let mutationGeneration = UUID()
-        piMutationGeneration = mutationGeneration
-        isSendingPiMessage = true
-        chatStatusMessage = "Submitting the captured Pi command."
-
-        Task { [weak self] in
-            guard let self else { return }
-            defer {
-                if self.piMutationGeneration == mutationGeneration {
-                    self.piMutationGeneration = nil
-                    self.isSendingPiMessage = false
-                }
-            }
-            // Recheck the captured operation/peer and private endpoint before
-            // creating a dispatch hint. The editing buffer is only in memory.
-            guard !Task.isCancelled, self.isCurrent(operationID, connection: connection, endpoint: endpoint) else {
-                if let draft { self.chatDrafts.resolve(commandID: draft.commandID, target: draft.target, outcome: .rejected) }
-                self.clearPendingChatCommand(pending)
-                return
-            }
-            do {
-                // This check is before any request bytes are submitted. Failure
-                // releases only the exact local hint; it is not execution replay.
-                do { try directory.requireCurrentEndpoint(endpoint) }
-                catch {
-                    self.chatDrafts.resolve(commandID: pending.commandId, target: target, outcome: .rejected)
-                    self.clearPendingChatCommand(pending)
-                    if self.chatTarget == target {
-                        self.pendingChatCommandId = nil
-                        self.chatStatusMessage = "The private local endpoint changed. The draft was preserved; nothing was sent."
-                    }
-                    return
-                }
-                guard self.preferences.object(forKey: key) == nil else {
-                    self.chatDrafts.resolve(commandID: pending.commandId, target: target, outcome: .rejected)
-                    if self.chatTarget == target {
-                        self.pendingChatCommandId = self.readPendingChatCommand(machineID: target.machineId, sessionID: target.sessionId)?.commandId
-                        self.chatStatusMessage = "A prior Pi hint appeared before dispatch. Existing data and the draft were preserved; nothing was sent."
-                    }
-                    return
-                }
-                self.preferences.set(pendingData, forKey: key)
-                let value = try await connection.request(method: request.method, parameters: request.parameters)
-                let result = try PiProtocolValidator.mutation(
-                    value, target: target, commandId: pending.commandId, operation: operation, method: request.method
-                )
-                guard self.isCurrent(operationID, connection: connection, endpoint: endpoint) else { return }
-                try directory.requireCurrentEndpoint(endpoint)
-                guard self.resolveChatDraft(receipt: result.receipt) else {
-                    self.chatStatusMessage = "The original Pi receipt does not match the captured input. The original hint and text were preserved; do not resend."
-                    return
-                }
-                guard self.isCurrent(operationID, connection: connection, endpoint: endpoint) else { return }
-                do { try directory.requireCurrentEndpoint(endpoint) }
-                catch {
-                    if self.chatTarget == target {
-                        self.chatStatusMessage = "The original receipt was validated, but the private endpoint changed. Its hint remains for read-only reconciliation; nothing was replayed."
-                    }
-                    return
-                }
-                guard self.chatTarget == target else { return }
-                switch result.receipt.disposition {
-                case .prepared:
-                    self.chatStatusMessage = "The Pi command is prepared or uncertain. Reconcile it; do not resend."
-                case .rejected(let code):
-                    self.clearPendingChatCommand(pending)
-                    self.pendingChatCommandId = nil
-                    self.chatStatusMessage = "Pi rejected the command before dispatch (\(code))."
-                case .dispatched:
-                    self.clearPendingChatCommand(pending)
-                    self.pendingChatCommandId = nil
-                    self.chatStatusMessage = "Pi's public API acknowledged dispatch; execution is not inferred. Refreshing canonical history."
-                    self.refreshChat()
-                }
-            } catch {
-                guard self.isCurrent(operationID, connection: connection, endpoint: endpoint) else { return }
-                let noEffectCode = Self.knownNoEffectCode(error)
-                if noEffectCode != nil {
-                    guard self.chatDrafts.resolve(commandID: pending.commandId, target: target, outcome: .rejected) else {
-                        self.chatStatusMessage = "The known no-effect result does not match the captured input. Original data was preserved; nothing was replayed."
-                        return
-                    }
-                    guard self.isCurrent(operationID, connection: connection, endpoint: endpoint) else { return }
-                    do { try directory.requireCurrentEndpoint(endpoint) } catch { return }
-                }
-                guard self.chatTarget == target else { return }
-                if let code = noEffectCode {
-                    self.clearPendingChatCommand(pending)
-                    self.pendingChatCommandId = nil
-                    self.chatStatusMessage = "Pi rejected the command before dispatch (\(code))."
-                } else {
-                    self.pendingChatCommandId = pending.commandId
-                    self.chatStatusMessage = "The Pi command outcome may be unknown. Its command ID is retained; reconcile before sending again."
-                }
-            }
         }
     }
 
@@ -1286,57 +1030,6 @@ final class AxodWorkbenchCoordinator {
         chatObservationTask?.cancel()
         chatObservationTask = nil
         chatLoadGeneration = UUID()
-    }
-
-    private func readPendingChatCommand(machineID: UUID, sessionID: UUID) -> PendingPiCommand? {
-        let key = pendingChatKey(machineID: machineID, sessionID: sessionID)
-        if let object = preferences.object(forKey: key) {
-            guard let data = object as? Data, let pending = try? JSONDecoder().decode(PendingPiCommand.self, from: data),
-                  pending.target.machineId == machineID, pending.target.sessionId == sessionID else { return nil }
-            return pending
-        }
-        guard let target = chatTarget, target.machineId == machineID, target.sessionId == sessionID,
-              let saved = chatDrafts.pending(for: target) else { return nil }
-        // The in-memory capture enables only original read-only receipt lookup,
-        // never dispatch. It is not restored after client restart.
-        return PendingPiCommand(target: saved.target, commandId: saved.commandID, operation: saved.operation)
-    }
-
-    private func pendingChatKey(machineID: UUID, sessionID: UUID) -> String {
-        PreferenceKey.pendingChatPrefix + machineID.uuidString + "." + sessionID.uuidString
-    }
-
-    private func clearPendingChatCommand(_ expected: PendingPiCommand) {
-        let key = pendingChatKey(machineID: expected.target.machineId, sessionID: expected.target.sessionId)
-        guard let data = preferences.object(forKey: key) as? Data,
-              let saved = try? JSONDecoder().decode(PendingPiCommand.self, from: data),
-              saved.commandId == expected.commandId, saved.target == expected.target,
-              saved.operation == expected.operation else { return }
-        preferences.removeObject(forKey: pendingChatKey(machineID: expected.target.machineId, sessionID: expected.target.sessionId))
-    }
-
-    private func resolveChatDraft(receipt: PiCommandReceipt) -> Bool {
-        guard case .chat(let target, let operation) = receipt.intent else { return false }
-        guard operation == .sendMessage || operation == .sendSteeringMessage else { return true }
-        if let captured = chatDrafts.pending(for: target), captured.commandID == receipt.commandId,
-           captured.operation != operation { return false }
-        let outcome: AxodChatDrafts.Outcome
-        switch receipt.disposition {
-        case .prepared: outcome = .unknown
-        case .rejected: outcome = .rejected
-        case .dispatched: outcome = .dispatched
-        }
-        return chatDrafts.resolve(commandID: receipt.commandId, target: target, outcome: outcome)
-    }
-
-    private static func knownNoEffectCode(_ error: Error) -> Int? {
-        guard case AxoJSONRPCClientError.remote(let code, _) = error else { return nil }
-        switch code {
-        case -32601, -32602, -32001, -32002, -32003, -32005, -32006, -32007, -32009, -32010:
-            return code
-        default:
-            return nil
-        }
     }
 
     private func saveSelection() {
