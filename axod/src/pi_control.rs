@@ -1,5 +1,7 @@
 //! Owner-only typed IPC to the public extension inside an already-owned Pi TUI.
 //! No listener, agent engine, terminal parser, persistence writer or automatic replay.
+#[cfg(test)]
+mod snapshot_tests;
 mod wire;
 use crate::model::{ChildPid, RuntimeRef};
 use std::{
@@ -125,12 +127,7 @@ impl Control {
             .or(state.ready.as_ref())
             .ok_or(ControlError::NotReady)?;
         let admitted = state.ready.as_ref().ok_or(ControlError::NotReady)?;
-        if current.chat_id != self.chat_id
-            || current.file != admitted.file
-            || current.cwd != admitted.cwd
-            || current.pid != admitted.pid
-            || current.mode != admitted.mode
-        {
+        if current.chat_id != self.chat_id || !same_identity(current, admitted) {
             return Err(ControlError::Stale);
         }
         Ok(current.clone())
@@ -346,12 +343,33 @@ fn route(record: Record, shared: &Shared) -> bool {
             }
             let response = match reply.response {
                 Response::Rejected(code) => Err(rejection(code)),
+                Response::Snapshot(snapshot) => {
+                    if !state
+                        .ready
+                        .as_ref()
+                        .is_some_and(|ready| same_identity(&snapshot, ready))
+                    {
+                        let _ = pending.sender.try_send(Err(ControlError::Stale));
+                        return false;
+                    }
+                    // Publish at this reply's receive position, not in the waiting
+                    // caller: that caller could otherwise overwrite a later status.
+                    state.current = Some(*snapshot.clone());
+                    Ok(Response::Snapshot(snapshot))
+                }
                 response => Ok(response),
             };
             let _ = pending.sender.try_send(response);
         }
     }
     true
+}
+fn same_identity(observed: &State, admitted: &State) -> bool {
+    observed.chat_id == admitted.chat_id
+        && observed.file == admitted.file
+        && observed.cwd == admitted.cwd
+        && observed.pid == admitted.pid
+        && observed.mode == admitted.mode
 }
 fn rejection(error: RemoteError) -> ControlError {
     match error {
