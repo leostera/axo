@@ -188,6 +188,11 @@ struct CentralResultParser {
             let view = try json.view(body, source: source, revision: revision)
             guard view.session.sessionId == id, view.session.workspaceId == workspace else { throw json.failure }
             payload = .session(view)
+        case .piObservation(let workspace, let session):
+            let encoder = JSONEncoder()
+            encoder.outputFormatting = [.withoutEscapingSlashes]
+            guard try encoder.encode(value).count <= 48 * 1024 else { throw json.failure }
+            payload = try .piObservation(json.piObservation(body, source: source, workspaceId: workspace, sessionId: session))
         case .page(let domain, let prior, let limit):
             let b = try json.object(body, keys: ["records", "cursor"]), values = try json.array(json.field(b, "records"), maximum: limit)
             let encoder = JSONEncoder()

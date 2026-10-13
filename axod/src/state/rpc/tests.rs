@@ -50,6 +50,53 @@ impl Fixture {
     }
 }
 #[test]
+fn central_pi_observation_requires_closed_current_scope_and_never_starts_work() {
+    let fixture = Fixture::new();
+    let created = fixture.create(CommandId::new());
+    let session =
+        &created["result"]["value"]["operation"]["accepted"]["graph"]["initialSession"]["session"];
+    let mut scope = fixture.target();
+    scope["workspaceId"] = session["workspaceId"].clone();
+    scope["sessionId"] = session["sessionId"].clone();
+    let observation = fixture.call("axo.state.chat.observe", json!({"target":scope}), false);
+    assert_eq!(
+        observation["result"]["value"],
+        json!({"kind":"notAdmitted"})
+    );
+    assert!(fixture.owner.runtime_owner().list().is_empty());
+    let original_revision = fixture.owner.revision().unwrap();
+    for key in ["workspaceId", "storeGeneration"] {
+        let mut missing = scope.clone();
+        missing.as_object_mut().unwrap().remove(key);
+        assert_eq!(
+            fixture.call("axo.state.chat.observe", json!({"target":missing}), false)["error"]["code"],
+            -32602
+        );
+    }
+    let mut stale = scope.clone();
+    stale["storeGeneration"] = json!(StoreGeneration::new());
+    assert_eq!(
+        fixture.call("axo.state.chat.observe", json!({"target":stale}), false)["error"]["code"],
+        -32002
+    );
+    let mut foreign = scope.clone();
+    foreign["workspaceId"] = json!(WorkspaceId::new());
+    assert_eq!(
+        fixture.call("axo.state.chat.observe", json!({"target":foreign}), false)["error"]["code"],
+        -32010
+    );
+    assert_eq!(
+        fixture.call(
+            "axo.state.chat.observe",
+            json!({"target":scope,"argv":["forbidden"]}),
+            false
+        )["error"]["code"],
+        -32602
+    );
+    assert_eq!(fixture.owner.revision().unwrap(), original_revision);
+    assert!(fixture.owner.runtime_owner().list().is_empty());
+}
+#[test]
 fn service_claims_parent_lease_without_reading_or_replacing_legacy_catalog() {
     let fixture = Fixture::new();
     assert!(

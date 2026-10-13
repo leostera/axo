@@ -353,18 +353,23 @@ impl Manager {
             .then_some(RuntimeCompletion(runtime))
     }
     pub(crate) fn owns_running_runtime(&self, runtime: RuntimeRef) -> bool {
+        self.owned_running_pid(runtime).is_some()
+    }
+    /// Current child identity for control observation only, not a signal target.
+    /// Never consult historical journal PIDs to establish live ownership.
+    pub(crate) fn owned_running_pid(&self, runtime: RuntimeRef) -> Option<ChildPid> {
         let terminals = self.terminals.lock().unwrap();
-        terminals
-            .get(&runtime.target.pane_id)
-            .is_some_and(|terminal| {
-                terminal.reference == runtime
-                    && runtime.host_generation == self.generation
-                    && terminal.owns_live_resources()
-                    && matches!(
-                        terminal.state.lock().unwrap().process,
-                        ProcessState::Running { .. }
-                    )
-            })
+        let terminal = terminals.get(&runtime.target.pane_id)?;
+        if terminal.reference != runtime
+            || runtime.host_generation != self.generation
+            || !terminal.owns_live_resources()
+        {
+            return None;
+        }
+        match terminal.state.lock().unwrap().process {
+            ProcessState::Running { pid } => Some(pid),
+            _ => None,
+        }
     }
 
     pub(crate) fn runtime_completed(&self, runtime: RuntimeRef) -> bool {

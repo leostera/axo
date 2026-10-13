@@ -21,6 +21,10 @@ npm --prefix protocol run schema:check
 
 [Accepted RFD0012](../docs/rfds/RFD0012-sqlite-desired-state-and-session-materialization.md) defines backend-complete workspace/session creation through `axo.state.workspace.create` and `axo.state.session.create`. Complete desired graphs are reserved before execution effects. Native launch, setup completion, selection and reconnect are not creation authority. The retired empty-startup mutation has no contract or compatibility alias.
 
+## Central Pi observation
+
+`axo.state.chat.observe` is a read-only local/remote discovery request with an exact machine/host/store/workspace/session target. Its 48-KiB result distinguishes not-admitted, live with bounded public control metadata, and completion-proven stopped bindings. Not-admitted does not authorize a new conversation; a control gap is an error rather than fabricated idle/stopped state. Exact runtime/chat identities accompany admitted bindings, without canonical paths or process details. The Swift `CentralRequest.observePi` parser correlates the result to the captured source and session. History, resynchronization and actions require separate central contracts; this observation does not dispatch them.
+
 ## Swift package
 
 `Package.swift` exposes the `AxoProtocol` library for macOS 14+ and iOS 17+, with no external dependencies. Add this directory as a local Swift package in Xcode, or use it from another Swift package:
@@ -36,7 +40,7 @@ The Swift surface includes JSON-RPC envelope/response types, a bounded envelope 
 swift test --package-path protocol
 ```
 
-The Codable contract models establish wire shapes, and `AxoProtocolResultValidator`, `AxoProtocolWorkRequestValidator`, and `AxoProtocolPiRequest/ResultValidator` provide method-boundary validation. `AxoCore.AxoJSONRPCClient` opens credential-free local WebSockets only from a strictly validated private discovery descriptor; cloud calls still require the existing Access cookie. The new Axod-only Mac app uses this client for local work/runtime metadata and managed Pi admission, canonical chat/history, message/steering/cancel, and question answers. Native terminal attachment uses a separate bounded local data plane and transport-only frontend child, not these JSON-RPC methods; full VT recovery remains unavailable. The private API end-to-end harness exercises negotiation/runtime methods; Pi request/result contracts have Swift unit coverage.
+The Codable contract models establish wire shapes, and `AxoProtocolResultValidator`, `AxoProtocolWorkRequestValidator`, and `AxoProtocolPiRequest/ResultValidator` provide method-boundary validation. `AxoCore.AxoJSONRPCClient` opens credential-free local WebSockets only from a strictly validated private discovery descriptor; cloud calls still require the existing Access cookie. The Mac coordinator still contains prototype work/chat consumers awaiting central cutover; those retained contracts do not establish production admission/history/control support. Central Pi admission belongs to the daemon materializer. Native terminal attachment uses a separate bounded local data plane and transport-only frontend child, not these JSON-RPC methods; full VT recovery remains unavailable. The private API end-to-end harness exercises negotiation/runtime methods; Pi request/result contracts have Swift unit coverage.
 
 ## Typed use
 

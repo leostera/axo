@@ -219,6 +219,8 @@ Pi is ambient interactive vanilla Pi on a daemon-owned native PTY, with the inst
 - An unresolved writer or storage outcome remains blocked. Preserve the original evidence and expose a metadata-only diagnostic; do not discard it to satisfy a keep-alive predicate.
 - Restoring a conversation loads its history; it never resubmits a prompt, replays a tool call, or restarts the last model turn implicitly.
 
+I use a read-only, source-fenced Pi observation to discover the committed binding for an exact workspace/session scope. Its closed alternatives are not admitted, live with bounded public control metadata, and stopped with exact completion proof. Not admitted includes unfinished admission; it is not a new-chat or replacement capability. A live observation requires the same durable binding and attempt, current native ownership and exact control identity. An observation gap is unavailable, never an idle snapshot or stopped-writer proof. The result is bounded to 48 KiB and carries no canonical path, PID, launch specification or terminal data. I bound question titles to 2,000 UTF-16 units, option labels to 500 and options to 2–8 distinct IDs; a question must match the active interaction. History, snapshot resynchronization and actions remain separate exact-binding operations, not side effects of observation.
+
 New workspace histories remain under `<workspace>/.axo/sessions/<work-session UUID>/`. Bindings created by the central store keep their original locations. Legacy bindings are not imported or resumed. Pi alone writes JSONL; the fresh start neither copies nor rewrites old canonical histories.
 
 ### Startup, crash and shutdown boundaries

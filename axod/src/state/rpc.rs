@@ -2,6 +2,7 @@
 //! directory authority never becomes remote argv or a legacy catalog fallback.
 #[cfg(test)]
 mod observation_tests;
+mod pi_observation;
 #[cfg(test)]
 mod tests;
 #[cfg(test)]
@@ -509,6 +510,11 @@ fn route(
                 request.limit,
                 records,
             )
+        }
+        "axo.state.chat.observe" => {
+            let request: Get = parse(params)?;
+            membership(&request.target, owner, machine)?;
+            pi_observation::observe(owner, request.target)
         }
         "axo.state.session.get" => {
             let request: Get = parse(params)?;

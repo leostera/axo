@@ -41,6 +41,10 @@ final class CentralDaemonIntegrationTests: XCTestCase {
         XCTAssertEqual(catalog.sessions.count, 2)
         XCTAssertEqual(catalog.terminals.count, 2, "Both account shells materialize without any runtime/Pi start RPC.")
         XCTAssertTrue(catalog.sessions.allSatisfy { $0.readiness != .ready }, "No Pi policy means no fabricated backend readiness.")
+        for view in catalog.sessions {
+            let observation = try await call(CentralRequest.observePi(source: source, workspaceId: view.session.workspaceId, sessionId: view.session.sessionId), connection)
+            XCTAssertEqual(observation.payload, .piObservation(.notAdmitted))
+        }
         let original = try await call(CentralRequest.operation(source: source, commandId: workspaceCommand), connection)
         guard case .operation(.createWorkspace(let unchanged)?, _) = original.payload else { return XCTFail("Original receipt") }
         XCTAssertEqual(unchanged, workspaceOriginal)

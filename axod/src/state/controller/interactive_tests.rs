@@ -55,12 +55,18 @@ fn policy(root: &TestDirectory, model: &super::model_fixture::Model) -> crate::P
     fs::set_permissions(&manifest, fs::Permissions::from_mode(0o600)).unwrap();
     crate::PiPolicy::read(&manifest).unwrap()
 }
+fn observe(controller: &Controller, machine: MachineId, binding: &Binding) -> serde_json::Value {
+    crate::state::rpc::dispatch(crate::rpc::Call {
+        id: Some(json!(1)), method: "axo.state.chat.observe".into(),
+        params: Some(json!({"target":{"machineId":machine,"hostGeneration":controller.native.generation,"storeGeneration":controller.generation().unwrap(),"workspaceId":binding.workspace_id,"sessionId":binding.session_id}})),
+    }, controller, machine, false).unwrap()
+}
 #[test]
 fn actual_three_by_four_by_three_graph_admits_every_pane_and_resumes_exact_pi_file() {
     let root = TestDirectory::new();
     let model = super::model_fixture::Model::new();
-    let mut owner =
-        Controller::open(root.path(), MachineId::new(), Some(policy(&root, &model))).unwrap();
+    let machine = MachineId::new();
+    let mut owner = Controller::open(root.path(), machine, Some(policy(&root, &model))).unwrap();
     let shell = root.path().join("private-zsh");
     fs::write(
         &shell,
@@ -139,6 +145,19 @@ fn actual_three_by_four_by_three_graph_admits_every_pane_and_resumes_exact_pi_fi
         .unwrap()
         .unwrap();
     assert_eq!(model.requests.load(Ordering::SeqCst), 0);
+    let observed = observe(&controller, machine, &binding);
+    assert_eq!(observed["result"]["value"]["kind"], "live");
+    assert_eq!(
+        observed["result"]["value"]["target"]["runtime"],
+        json!(binding.runtime)
+    );
+    assert_eq!(
+        observed["result"]["value"]["target"]["chatId"],
+        json!(binding.chat_id)
+    );
+    assert!(observed["result"]["value"]["state"].get("file").is_none());
+    assert!(observed["result"]["value"]["state"].get("pid").is_none());
+    assert!(serde_json::to_vec(&observed).unwrap().len() < 48 * 1024);
     let running = controller
         .native
         .managed_live
@@ -276,6 +295,17 @@ fn actual_three_by_four_by_three_graph_admits_every_pane_and_resumes_exact_pi_fi
         empty.runtime
     );
     assert!(!empty.file.exists());
+    let stopped = observe(&controller, machine, &empty);
+    assert_eq!(stopped["result"]["value"]["kind"], "stopped");
+    assert_eq!(
+        stopped["result"]["value"]["target"]["runtime"],
+        json!(empty.runtime)
+    );
+    assert!(stopped["result"]["value"].get("state").is_none());
+    assert!(
+        !empty.file.exists(),
+        "Observation must not fabricate canonical history"
+    );
     assert_eq!(model.requests.load(Ordering::SeqCst), 1);
     workers.shutdown().unwrap();
 }

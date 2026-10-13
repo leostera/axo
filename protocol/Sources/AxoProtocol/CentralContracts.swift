@@ -146,6 +146,7 @@ public enum CentralPayload: Equatable, Sendable {
     case workspaces(records: [CentralWorkspace], cursor: CentralCursor?)
     case sessions(records: [CentralSessionView], cursor: CentralCursor?)
     case session(CentralSessionView)
+    case piObservation(CentralPiObservation)
     case operation(original: CentralOperation?, observation: CentralSessionView?)
     case completion([TerminalRuntime])
 }

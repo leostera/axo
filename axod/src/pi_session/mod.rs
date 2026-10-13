@@ -19,7 +19,7 @@ pub enum CanonicalReadError {
     Changed,
     NotFound,
 }
-#[derive(Clone, Debug, Serialize, Deserialize)]
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct Binding {
     pub workspace_id: Option<WorkspaceId>,

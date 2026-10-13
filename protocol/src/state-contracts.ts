@@ -6,6 +6,16 @@ const name = z.string().min(1).max(80).refine(value => value.trim() === value &&
 export const stateTargetSchema = destinationSchema.extend({ storeGeneration: uuid }).strict();
 export const stateSessionTargetSchema = stateTargetSchema.extend({ workspaceId: uuid.nullable(), sessionId: uuid }).strict();
 const lifecycle = z.enum(["open", "archived"]);
+export const statePiBindingTargetSchema = stateSessionTargetSchema.extend({ paneId: uuid, runtime: runtimeRefSchema, chatId: uuid }).strict().refine(value => value.runtime.target.session_id === value.sessionId && value.runtime.target.pane_id === value.paneId);
+const questionText = (maximum: number) => z.string().min(1).max(maximum).refine(value => value.length <= maximum && !value.includes("\0"));
+const piQuestion = z.object({ id: uuid, interactionId: uuid, title: questionText(2000), options: z.array(z.object({ id: uuid, label: questionText(500) }).strict()).min(2).max(8) }).strict().refine(value => new Set(value.options.map(option => option.id)).size === value.options.length);
+const piTitle = z.string().min(1).max(80).refine(value => value.length <= 80 && value.trim() === value && !/\p{Cc}/u.test(value));
+const piLiveState = z.object({ title: piTitle.nullable(), leafId: z.string().min(1).refine(value => new TextEncoder().encode(value).length <= 128 && !/\p{Cc}/u.test(value)).nullable(), busy: z.boolean(), interactionId: uuid.nullable(), uiWaits: z.number().int().min(0).max(65535), question: piQuestion.nullable(), pending: z.boolean(), recovery: z.boolean() }).strict().refine(value => value.question === null || (value.uiWaits > 0 && value.question.interactionId === value.interactionId));
+export const statePiObservationSchema = z.discriminatedUnion("kind", [
+  z.object({ kind: z.literal("notAdmitted") }).strict(),
+  z.object({ kind: z.literal("live"), target: statePiBindingTargetSchema, state: piLiveState }).strict(),
+  z.object({ kind: z.literal("stopped"), target: statePiBindingTargetSchema }).strict(),
+]).refine(value => value.kind !== "live" || value.target.runtime.host_generation === value.target.hostGeneration);
 export const desiredWorkspaceSchema = z.object({ workspaceId: uuid, name, directory: z.string().min(1).max(4096), lifecycle, configRevision: revision }).strict();
 export const desiredSessionSchema = z.object({ sessionId: uuid, workspaceId: uuid.nullable(), name, manualName: z.boolean(), lifecycle, configRevision: revision }).strict();
 const role = z.discriminatedUnion("kind", [z.object({ kind: z.literal("pi") }).strict(), z.object({ kind: z.literal("accountShell") }).strict(), z.object({ kind: z.literal("profileShell"), profileId: z.string().min(1).max(80) }).strict()]);
@@ -41,6 +51,7 @@ export const stateRemoteMethods = {
   "axo.state.workspace.list": z.object(page).strict(),
   "axo.state.session.list": z.object({ ...page, workspaceId: uuid.nullable() }).strict(),
   "axo.state.session.get": z.object({ target: stateSessionTargetSchema }).strict(),
+  "axo.state.chat.observe": z.object({ target: stateSessionTargetSchema }).strict(),
   "axo.state.session.create": z.object({ ...mutation, workspaceId: uuid.nullable(), name }).strict(),
   "axo.state.operation.get": z.object({ target: stateTargetSchema, commandId: uuid }).strict(),
 } as const;
@@ -59,6 +70,7 @@ export const stateResults = {
   "axo.state.workspace.list": envelope(z.object({ records: z.array(desiredWorkspaceSchema).max(50), cursor: cursor.nullable() }).strict()),
   "axo.state.session.list": envelope(z.object({ records: z.array(stateSessionViewSchema).max(50), cursor: cursor.nullable() }).strict()),
   "axo.state.session.get": envelope(stateSessionViewSchema),
+  "axo.state.chat.observe": envelope(statePiObservationSchema).refine(value => value.value.kind === "notAdmitted" || (value.value.target.hostGeneration === value.hostGeneration && value.value.target.storeGeneration === value.storeGeneration)),
   "axo.state.workspace.create": operation, "axo.state.session.create": operation, "axo.state.lifecycle.set": operation,
   "axo.state.pane.add": operation, "axo.state.pane.remove": operation, "axo.state.operation.get": operation,
   "axo.state.session.completion": envelope(z.object({ completed: z.array(runtimeRefSchema).max(32) }).strict()),
