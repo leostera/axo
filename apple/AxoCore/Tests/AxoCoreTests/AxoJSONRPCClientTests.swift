@@ -142,7 +142,7 @@ final class AxoJSONRPCClientTests: XCTestCase {
             _ = try await makeClient().callHTTP(
                 endpoint: .production,
                 accessCookie: try AxoControlPlaneAccessCookie(jwt(audience: AxoControlPlaneEndpoint.accessAudience, expiration: 4_102_444_800)),
-                method: AxoProtocol.Method.createWorkspace,
+                method: "axo.state.session.create",
                 parameters: EmptyRPCParameters()
             )
             XCTFail("Expected an uncertain transport outcome")

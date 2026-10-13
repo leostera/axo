@@ -142,6 +142,42 @@ final class CentralContractTests: XCTestCase {
         XCTAssertNoThrow(try lookup.parseResult(json(envelope(["operation": NSNull(), "session": NSNull()]))))
         XCTAssertThrowsError(try lookup.parseResult(json(envelope(["operation": NSNull(), "session": view()]))))
     }
+    func testRenameOperationsRequireExactNamesAndManualSessionProtection() throws {
+        let workspaceId = UUID()
+        let workspaceRequest = try CentralRequest.renameWorkspace(source: source, workspaceId: workspaceId,
+            commandId: command, expectedRevision: revision, name: "Renamed workspace")
+        XCTAssertEqual(workspaceRequest.method, "axo.state.workspace.rename")
+        XCTAssertEqual(workspaceRequest.commandId, command)
+        let workspace: [String: Any] = ["workspaceId": workspaceId.uuidString, "name": "Renamed workspace",
+            "directory": "/approved", "lifecycle": "open", "configRevision": 2]
+        let workspaceOperation: [String: Any] = ["kind": "renameWorkspace", "accepted":
+            ["commandId": command.uuidString, "revision": 2, "graph": workspace]]
+        XCTAssertNoThrow(try workspaceRequest.parseResult(json(envelope(
+            ["operation": workspaceOperation, "session": NSNull()], revision: 2))))
+        XCTAssertThrowsError(try CentralRequest.renameWorkspace(source: source, workspaceId: workspaceId,
+            commandId: command, expectedRevision: revision, name: " padded "))
+
+        let sessionRequest = try CentralRequest.renameSession(source: source, workspaceId: nil,
+            sessionId: sessionID, commandId: command, expectedRevision: revision, name: "Manual name")
+        XCTAssertEqual(sessionRequest.method, "axo.state.session.rename")
+        var renamedSession = session()
+        renamedSession["name"] = "Manual name"; renamedSession["manualName"] = true; renamedSession["configRevision"] = 2
+        let sessionOperation: [String: Any] = ["kind": "renameSession", "accepted":
+            ["commandId": command.uuidString, "revision": 2, "graph": renamedSession]]
+        var observation = view(); observation["session"] = renamedSession
+        XCTAssertNoThrow(try sessionRequest.parseResult(json(envelope(
+            ["operation": sessionOperation, "session": observation], revision: 2))))
+        for invalid in [
+            { () -> [String: Any] in var value = renamedSession; value["manualName"] = false; return value }(),
+            { () -> [String: Any] in var value = renamedSession; value["name"] = "Other"; return value }(),
+            { () -> [String: Any] in var value = renamedSession; value["sessionId"] = UUID().uuidString; return value }(),
+        ] {
+            let malformed: [String: Any] = ["kind": "renameSession", "accepted":
+                ["commandId": command.uuidString, "revision": 2, "graph": invalid]]
+            XCTAssertThrowsError(try sessionRequest.parseResult(json(envelope(
+                ["operation": malformed, "session": observation], revision: 2))))
+        }
+    }
     func testCompletionReturnsOnlyUniqueExactCapturedRuntimes() throws {
         let jsonParser = CentralJSON(method: "fixture")
         let captured = try jsonParser.runtime(json(runtime(shellID)))

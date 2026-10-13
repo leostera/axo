@@ -178,6 +178,25 @@ impl Controller {
     pub fn revision(&self) -> Result<u64, Error> {
         self.database.lock().unwrap().revision()
     }
+    pub fn rename_workspace(
+        &self,
+        command: CommandId,
+        expected: u64,
+        workspace_id: WorkspaceId,
+        name: &str,
+    ) -> Result<Accepted<super::DesiredWorkspace>, Error> {
+        self.database.lock().unwrap().rename_workspace(command, expected, workspace_id, name)
+    }
+    pub fn rename_session(
+        &self,
+        command: CommandId,
+        expected: u64,
+        workspace_id: Option<WorkspaceId>,
+        session_id: SessionId,
+        name: &str,
+    ) -> Result<Accepted<super::DesiredSession>, Error> {
+        self.database.lock().unwrap().rename_session(command, expected, workspace_id, session_id, name)
+    }
     pub fn set_lifecycle(
         &self,
         command: CommandId,

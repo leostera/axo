@@ -123,6 +123,23 @@ struct SessionCreate {
 }
 #[derive(Deserialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
+struct WorkspaceRename {
+    target: Target,
+    command_id: CommandId,
+    expected_revision: u64,
+    workspace_id: WorkspaceId,
+    name: String,
+}
+#[derive(Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+struct SessionRename {
+    target: SessionTarget,
+    command_id: CommandId,
+    expected_revision: u64,
+    name: String,
+}
+#[derive(Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
 struct Lifecycle {
     target: Target,
     command_id: CommandId,
@@ -306,6 +323,7 @@ fn operation_result(owner: &Controller, operation: Operation) -> Outcome {
         Operation::CreateSession(value) | Operation::CreateStandalone(value) => {
             Some(value.graph.session.session_id)
         }
+        Operation::RenameSession(value) => Some(value.graph.session_id),
         Operation::AddShell(value) => Some(value.graph.session_id),
         _ => None,
     };
@@ -417,6 +435,8 @@ pub(crate) fn dispatch(
         call.method.as_str(),
         "axo.state.workspace.create"
             | "axo.state.session.create"
+            | "axo.state.workspace.rename"
+            | "axo.state.session.rename"
             | "axo.state.lifecycle.set"
             | "axo.state.pane.add"
             | "axo.state.pane.remove"
@@ -602,6 +622,22 @@ fn route(
                 )
             };
             operation_result(owner, operation)
+        }
+        "axo.state.workspace.rename" => {
+            let request: WorkspaceRename = parse(params)?;
+            target(request.target, owner, machine)?;
+            operation_result(owner, Operation::RenameWorkspace(
+                owner.rename_workspace(request.command_id, request.expected_revision, request.workspace_id, &request.name)
+                    .map_err(failure)?,
+            ))
+        }
+        "axo.state.session.rename" => {
+            let request: SessionRename = parse(params)?;
+            membership(&request.target, owner, machine)?;
+            operation_result(owner, Operation::RenameSession(
+                owner.rename_session(request.command_id, request.expected_revision, request.target.workspace_id,
+                    request.target.session_id, &request.name).map_err(failure)?,
+            ))
         }
         "axo.state.lifecycle.set" if local => {
             let request: Lifecycle = parse(params)?;

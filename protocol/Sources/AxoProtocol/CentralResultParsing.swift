@@ -164,6 +164,12 @@ struct CentralJSON {
             return .addShell(.init(commandId: command, revision: revision, graph: pane))
         case "removeShell": return try .removeShell(.init(commandId: command, revision: revision, graph: id(graphValue)))
         case "setLifecycle": return try .setLifecycle(.init(commandId: command, revision: revision, graph: subject(graphValue)))
+        case "renameWorkspace":
+            return try .renameWorkspace(.init(commandId: command, revision: revision, graph: workspace(graphValue, revision: revision)))
+        case "renameSession":
+            let session = try session(graphValue, revision: revision)
+            guard session.manualName else { throw failure }
+            return .renameSession(.init(commandId: command, revision: revision, graph: session))
         default: throw failure
         }
     }
@@ -280,6 +286,11 @@ struct CentralResultParser {
             guard accepted.graph.sessionId == session else { throw json.failure }
         case (.removeShell(let accepted), .remove(_, _, let pane)):
             guard accepted.graph == pane else { throw json.failure }
+        case (.renameWorkspace(let accepted), .renameWorkspace(let workspace, let name)):
+            guard accepted.graph.workspaceId == workspace, accepted.graph.name == name else { throw json.failure }
+        case (.renameSession(let accepted), .renameSession(let workspace, let session, let name)):
+            guard accepted.graph.workspaceId == workspace, accepted.graph.sessionId == session,
+                  accepted.graph.name == name, accepted.graph.manualName else { throw json.failure }
         default: throw json.failure
         }
     }

@@ -50,7 +50,7 @@ enum AxodDaemonUpgradePlan {
               Set(plan.keys) == ["handoffId", "expectedVersion", "replacementVersion", "replacementBuildNumber"],
               let captured = try? JSONDecoder().decode(HostUpgradeParameters.self, from: data),
               captured.plan.replacementBuildNumber > 0,
-              captured.plan.replacementBuildNumber <= WorkRevision.maximumSafeInteger,
+              captured.plan.replacementBuildNumber <= AxoProtocol.maximumSafeInteger,
               [captured.plan.expectedVersion, captured.plan.replacementVersion].allSatisfy({ version in
                   !version.isEmpty && version.utf8.count <= 128 && !version.unicodeScalars.contains { CharacterSet.controlCharacters.contains($0) }
               }) else { return nil }

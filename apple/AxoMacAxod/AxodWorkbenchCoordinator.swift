@@ -32,6 +32,36 @@ import UserNotifications
     @ObservationIgnored private var selectedPiTarget: CentralPiBindingTarget?
     @ObservationIgnored private var piReadGeneration = UUID()
     var selectedSession: CentralSession? { sessions.first { $0.sessionId == selectedSessionID } }
+    var sidebarSessionNames: [UUID: String] {
+        guard let catalog else { return [:] }
+        return Dictionary(uniqueKeysWithValues: catalog.sessions.map { view in
+            let session = view.session
+            return (session.sessionId, CentralSessionDisplayName.resolve(
+                catalogName: session.name,
+                manualName: session.manualName,
+                sessionId: session.sessionId,
+                workspaceId: session.workspaceId,
+                selectedSessionId: selectedSessionID,
+                source: catalog.source,
+                revision: catalog.revision,
+                piResponse: selectedPiResponse,
+                piReadUnavailable: selectedPiReadUnavailable
+            ))
+        })
+    }
+    func displayName(for session: CentralSession) -> String {
+        CentralSessionDisplayName.resolve(
+            catalogName: session.name,
+            manualName: session.manualName,
+            sessionId: session.sessionId,
+            workspaceId: session.workspaceId,
+            selectedSessionId: selectedSessionID,
+            source: catalog?.source,
+            revision: catalog?.revision,
+            piResponse: selectedPiResponse,
+            piReadUnavailable: selectedPiReadUnavailable
+        )
+    }
     private(set) var hostStatus: HostStatusResult?
     private(set) var helperUpdateAvailable = false
     private(set) var message = "Connecting to the Axod background service."
@@ -42,6 +72,7 @@ import UserNotifications
     let terminalSurfaces = AxodTerminalSurfaces()
     let inputBuffers = CentralInputBuffers()
     let creations = CentralCreations()
+    let renames = CentralRenames()
     let voice: MacVoiceCoordinator
     @ObservationIgnored let preferences: UserDefaults
     @ObservationIgnored private var endpoint: LocalDaemonEndpoint?
@@ -59,6 +90,7 @@ import UserNotifications
     private var reconcilingCreation: UUID?
     @ObservationIgnored private var reconcilingPiInputs = Set<UUID>()
     @ObservationIgnored private var nextPiInputReconciliation: UUID?
+    @ObservationIgnored private var reconcilingRename: UUID?
     private var creationRevisionFloor: (source: CentralSource, revision: CentralRevision)?
     private var serviceObservation: UUID?
     private var usesFixtureDaemon = false
@@ -328,6 +360,7 @@ import UserNotifications
                     self.hostStatus = try AxoProtocolResultValidator.host(value, target: source.machine)
                     await self.refreshSelectedPi()
                     await self.reconcilePendingPiInputs()
+                    await self.reconcilePendingRename()
                 } catch {
                     guard self.operation == captured, self.connection === peer else { return }
                     // A failed bounded read never publishes a partial catalog or
@@ -524,6 +557,99 @@ import UserNotifications
         selectedPiHistory = nil
         selectedPiReadUnavailable = false
         selectedPiTarget = nil
+    }
+    func prepareWorkspaceRename(_ workspaceId: UUID) throws -> CentralRenameCapture {
+        guard connectionState == .connected, let catalog,
+              let workspace = catalog.workspaces.first(where: { $0.workspaceId == workspaceId }) else {
+            throw CentralRenameIssue.invalidTicket
+        }
+        return try renames.prepareWorkspace(source: catalog.source, revision: catalog.revision,
+                                            workspaceId: workspaceId, currentName: workspace.name)
+    }
+    func prepareSessionRename(_ sessionId: UUID) throws -> CentralRenameCapture {
+        guard connectionState == .connected, let view = sessionView(sessionId), let catalog else {
+            throw CentralRenameIssue.invalidTicket
+        }
+        return try renames.prepareSession(source: catalog.source, revision: catalog.revision,
+            workspaceId: view.session.workspaceId, sessionId: sessionId, currentName: view.session.name)
+    }
+    func finishRename(_ capture: CentralRenameCapture, name: String?) {
+        guard let name, name != capture.originalName else {
+            do { try renames.abandon(capture) }
+            catch { message = "The captured Rename editor could not be released." }
+            return
+        }
+        do { dispatchRename(try renames.capture(capture, name: name)) }
+        catch { message = "Rename could not be captured against the current central revision." }
+    }
+    private func dispatchRename(_ ticket: CentralRenameTicket) {
+        guard let peer = connection, let endpoint else {
+            do { try renames.abandonBeforeSubmission(ticket) }
+            catch { message = "Rename remains reserved and was not submitted."; return }
+            message = "Rename was not submitted because the central connection is unavailable."
+            return
+        }
+        let request: CentralRequest
+        do { request = try renames.beginSubmission(ticket) }
+        catch {
+            do { try renames.abandonBeforeSubmission(ticket) }
+            catch { message = "The Rename reservation remains fenced and was not submitted."; return }
+            message = "Rename was not submitted. No replacement command was sent."
+            return
+        }
+        let captured = operation
+        Task { [weak self] in
+            guard let self else { return }
+            do {
+                let response = try await self.perform(request, peer: peer, endpoint: endpoint, operation: captured)
+                let result = try self.renames.acknowledgeSubmission(ticket, response: response)
+                await self.finishRename(ticket, result: result, peer: peer, endpoint: endpoint, operation: captured)
+            } catch {
+                await self.reconcileRename(ticket, peer: peer, endpoint: endpoint, operation: captured)
+            }
+        }
+    }
+    private func finishRename(
+        _ ticket: CentralRenameTicket, result: CentralRenameResolution,
+        peer: AxoJSONRPCWebSocketConnection, endpoint: LocalDaemonEndpoint, operation captured: UUID
+    ) async {
+        guard captured == operation, connection === peer else { return }
+        switch result {
+        case .renamed:
+            message = "Central Rename accepted."
+            refresh(message: "Central Rename accepted.")
+        case .missing:
+            await reconcileRename(ticket, peer: peer, endpoint: endpoint, operation: captured)
+        }
+    }
+    private func reconcilePendingRename() async {
+        guard let ticket = renames.pendingTicket, let peer = connection, let endpoint else { return }
+        await reconcileRename(ticket, peer: peer, endpoint: endpoint, operation: operation)
+    }
+    private func reconcileRename(
+        _ ticket: CentralRenameTicket, peer: AxoJSONRPCWebSocketConnection,
+        endpoint: LocalDaemonEndpoint, operation captured: UUID
+    ) async {
+        guard reconcilingRename == nil else { return }
+        reconcilingRename = ticket.commandId
+        defer { reconcilingRename = nil }
+        guard captured == operation, connection === peer, let source = catalog?.source else { return }
+        do {
+            let request = try renames.reconciliation(ticket, source: source)
+            let response = try await perform(request, peer: peer, endpoint: endpoint, operation: captured)
+            guard captured == operation, connection === peer, catalog?.source == source else { return }
+            let result = try renames.acknowledgeReconciliation(ticket, source: source, response: response)
+            switch result {
+            case .renamed:
+                message = "Central Rename was reconciled from its original receipt."
+                refresh(message: "Central Rename accepted.")
+            case .missing:
+                message = "Rename remains unresolved. The original operation was not repeated."
+            }
+        } catch {
+            guard captured == operation, connection === peer, catalog?.source == source else { return }
+            message = "Rename remains unresolved. The original operation was not repeated."
+        }
     }
     func selectedPiEditingCapture() throws -> CentralEditCapture {
         guard let response = selectedPiResponse, !selectedPiReadUnavailable,

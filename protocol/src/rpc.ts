@@ -16,8 +16,6 @@ import {
   registrationSchema,
   machineListResultSchema,
   localMethods,
-  workMutationMethods,
-  piMutationMethods,
   stateMutationMethods,
   type LocalMethod,
   results,
@@ -67,7 +65,7 @@ export function createProfileServer<Context = void>(): JSONRPCServer<Context> {
   server.applyMiddleware((next, request, context) => {
     if (
       request.id === undefined &&
-      [...workMutationMethods, ...piMutationMethods, ...stateMutationMethods, "axo.runtime.startApproved", "axo.machine.register"].includes(
+      [...stateMutationMethods, "axo.runtime.startApproved", "axo.machine.register"].includes(
         request.method,
       )
     )

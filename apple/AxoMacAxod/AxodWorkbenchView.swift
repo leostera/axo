@@ -20,6 +20,7 @@ struct AxodWorkbenchView: View {
                 workbench: coordinator,
                 workspaces: coordinator.workspaces,
                 sessions: coordinator.sessions,
+                sessionDisplayNames: coordinator.sidebarSessionNames,
                 selectedWorkspaceID: coordinator.selectedWorkspaceID,
                 selectedSessionID: coordinator.selectedSessionID,
                 sidebarCollapsed: $sidebarCollapsed,
@@ -30,6 +31,8 @@ struct AxodWorkbenchView: View {
         .onAppear(perform: updateWindowTitle)
         .onChange(of: coordinator.selectedSessionID) { _, _ in updateWindowTitle() }
         .onChange(of: coordinator.sessions) { _, _ in updateWindowTitle() }
+        .onChange(of: coordinator.selectedPiResponse) { _, _ in updateWindowTitle() }
+        .onChange(of: coordinator.selectedPiReadUnavailable) { _, _ in updateWindowTitle() }
     }
 
     // Only actionable failures/unknown outcomes occupy chrome. Healthy work is
@@ -90,7 +93,7 @@ struct AxodWorkbenchView: View {
             ? "Axo (\(identifier.dropFirst(base.count + 1)))"
             : "Axo"
         let titleName = name
-        let title = selectedSession.map { titleName + " — " + $0.name } ?? titleName
+        let title = selectedSession.map { titleName + " — " + coordinator.displayName(for: $0) } ?? titleName
         let windowIdentifier = "Axo.MainWindow.\(Bundle.main.bundleIdentifier ?? "default")"
         NSApp.windows.first { $0.identifier?.rawValue == windowIdentifier }?.title = title
     }

@@ -71,6 +71,28 @@ import SwiftUI
         precondition(coordinator.selectedSession?.workspaceId == original.graph.workspace.workspaceId,
             "Selecting a workspace retains a session within that workspace, independent of page ordering")
         try checkNativeOutline(coordinator, source: bootstrap.source)
+        let sessionRename = try coordinator.prepareSessionRename(sessionOriginal.graph.session.sessionId)
+        coordinator.finishRename(sessionRename, name: "Manually renamed session")
+        let sessionRenameTicket = coordinator.renames.pendingTicket!
+        try await wait {
+            coordinator.sessionView(sessionOriginal.graph.session.sessionId)?.session.name == "Manually renamed session" &&
+            coordinator.sessionView(sessionOriginal.graph.session.sessionId)?.session.manualName == true && !coordinator.renames.hasPending
+        }
+        guard case .operation(.renameSession(let acceptedSession)?, _) = try await call(
+            CentralRequest.operation(source: bootstrap.source, commandId: sessionRenameTicket.commandId), peer).payload
+        else { fatalError("Manual Rename immutable original") }
+        precondition(acceptedSession.graph.manualName && acceptedSession.graph.name == "Manually renamed session")
+        let workspaceRename = try coordinator.prepareWorkspaceRename(original.graph.workspace.workspaceId)
+        coordinator.finishRename(workspaceRename, name: "Manually renamed workspace")
+        let workspaceRenameTicket = coordinator.renames.pendingTicket!
+        try await wait {
+            coordinator.workspaces.first(where: { $0.workspaceId == original.graph.workspace.workspaceId })?.name == "Manually renamed workspace" &&
+            !coordinator.renames.hasPending
+        }
+        guard case .operation(.renameWorkspace(let acceptedWorkspace)?, _) = try await call(
+            CentralRequest.operation(source: bootstrap.source, commandId: workspaceRenameTicket.commandId), peer).payload
+        else { fatalError("Workspace Rename immutable original") }
+        precondition(acceptedWorkspace.graph.name == "Manually renamed workspace")
         precondition(preferences.data(forKey: retired) == opaque, "Retired selection preference bytes are neither imported nor changed")
         let captured = coordinator.runtimes.map(\.runtime)
         coordinator.disconnect()
@@ -101,6 +123,7 @@ import SwiftUI
         window.isReleasedWhenClosed = false
         window.contentView = root
         controller.update(workbench: coordinator, workspaces: coordinator.workspaces, sessions: coordinator.sessions,
+            sessionDisplayNames: coordinator.sidebarSessionNames,
             selectedWorkspaceID: coordinator.selectedWorkspaceID, selectedSessionID: coordinator.selectedSessionID,
             sidebarCollapsed: .constant(false), detail: AnyView(EmptyView()))
         window.contentView?.layoutSubtreeIfNeeded()
@@ -120,11 +143,23 @@ import SwiftUI
             "value": ["records": [["workspaceId": extraId.uuidString, "name": "Fixture addition", "directory": "/fixture/addition", "lifecycle": "open", "configRevision": coordinator.catalog!.revision.rawValue]], "cursor": NSNull()]])
         guard case .workspaces(let additions, _) = try request.parseResult(extraRaw).payload, let added = additions.first else { fatalError("Parsed fixture metadata") }
         controller.update(workbench: coordinator, workspaces: coordinator.workspaces + [added], sessions: coordinator.sessions.reversed(),
+            sessionDisplayNames: coordinator.sidebarSessionNames,
             selectedWorkspaceID: coordinator.selectedWorkspaceID, selectedSessionID: coordinator.selectedSessionID,
             sidebarCollapsed: .constant(false), detail: AnyView(EmptyView()))
         precondition(controller.fixtureSessionRows().map(\.id) == order, "Catalog reordering and appended workspace do not reorder existing outline rows")
         precondition(controller.fixtureSelectedSessionIDs() == selected, "Metadata refresh preserves discontiguous session selection")
         precondition(controller.fixtureExpanded(workspace), "Metadata refresh preserves workspace expansion")
+        let titleNames = coordinator.sidebarSessionNames.merging([order[0]: "Observed Pi title"]) { _, proposed in proposed }
+        controller.update(workbench: coordinator, workspaces: coordinator.workspaces + [added], sessions: coordinator.sessions.reversed(),
+            sessionDisplayNames: titleNames,
+            selectedWorkspaceID: coordinator.selectedWorkspaceID, selectedSessionID: coordinator.selectedSessionID,
+            sidebarCollapsed: .constant(false), detail: AnyView(EmptyView()))
+        window.contentView?.layoutSubtreeIfNeeded()
+        precondition(controller.fixtureSessionNames()[order[0]] == "Observed Pi title",
+            "A scoped title publication refreshes its row without rebuilding the native outline")
+        precondition(controller.fixtureSessionRows().map(\.id) == order && controller.fixtureSelectedSessionIDs() == selected &&
+                     controller.fixtureExpanded(workspace),
+            "Title publication preserves native row order, selection and workspace expansion")
         window.close()
     }
     @MainActor private static func refreshUntilNotAdmitted(_ coordinator: AxodWorkbenchCoordinator) async throws {

@@ -1,6 +1,6 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { localMethods, remoteMethods, results, commandReceiptSchema, type AxoClient } from "@axo/protocol";
+import { localMethods, remoteMethods, results, type AxoClient } from "@axo/protocol";
 
 const target = { machineId: crypto.randomUUID(), hostGeneration: crypto.randomUUID(), workspaceId: null, sessionId: crypto.randomUUID() };
 
@@ -10,15 +10,6 @@ test("retired pane mutations and completion have no local, remote or result cont
     assert.equal(method in remoteMethods, false);
     assert.equal(method in results, false);
   }
-});
-
-test("retired pane receipts cannot become command authority", () => {
-  const receipt = {
-    kind: "pane",
-    receipt: { commandId: crypto.randomUUID(), paneId: crypto.randomUUID(), runtime: null,
-      intent: { operation: "addPane", target, profileId: null }, disposition: { kind: "prepared" } },
-  };
-  assert.equal(commandReceiptSchema.safeParse(receipt).success, false);
 });
 
 function retiredCalls(client: AxoClient) {

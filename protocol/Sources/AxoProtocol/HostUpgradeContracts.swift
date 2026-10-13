@@ -45,7 +45,7 @@ public enum HostUpgradeValidator {
         catch { throw AxoProtocolValidationError.invalidResult(method: method) }
         guard result.machineId == parameters.target.machineId, result.hostGeneration == parameters.target.hostGeneration,
               result.plan == parameters.plan, result.daemonVersion == parameters.plan.expectedVersion,
-              result.daemonBuildNumber <= WorkRevision.maximumSafeInteger else {
+              result.daemonBuildNumber <= AxoProtocol.maximumSafeInteger else {
             throw AxoProtocolValidationError.invalidResult(method: method)
         }
         let newer = result.daemonBuildNumber > 0 && result.plan.replacementBuildNumber > result.daemonBuildNumber

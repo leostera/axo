@@ -141,8 +141,8 @@ Unicode input/output, eventual geometry and the exact unchanged running runtime
 after disposal. This is **native component evidence**, not actual workbench,
 real IME composition, graphics or restoration acceptance. Ghostty applies its
 outer-PTY resize asynchronously; native resize dispatch is not an ordering barrier
-for the following input. See [exact checkpoint evidence](../docs/implementation/evidence/native-ghostty-attachment.md).
-Do not modify ignored Ghostty sources or launch another Pi to obtain a second view.
+for the following input. Do not modify ignored Ghostty sources or launch another
+Pi to obtain a second view.
 
 **Screen recovery remains missing.** Raw backlog, even when not truncated, is
 not a complete VT snapshot (historical geometry/parser state also matters).

@@ -1,7 +1,7 @@
 import { z } from "zod";
 import { uuid, destinationSchema } from "./identity.js";
 import { terminalSchema, runtimeRefSchema } from "./runtime-contracts.js";
-import { canonicalProjectionSchema } from "./pi-contracts.js";
+import { centralPiProjectionSchema } from "./pi-history.js";
 const revision = z.number().int().min(0).max(Number.MAX_SAFE_INTEGER);
 const name = z.string().min(1).max(80).refine(value => value.trim() === value && !/[\u0000-\u001f\u007f]/u.test(value));
 export const stateTargetSchema = destinationSchema.extend({ storeGeneration: uuid }).strict();
@@ -34,6 +34,8 @@ export const stateOperationSchema = z.discriminatedUnion("kind", [
   z.object({ kind: z.literal("addShell"), accepted: accepted(desiredPaneSchema) }).strict(),
   z.object({ kind: z.literal("removeShell"), accepted: accepted(uuid) }).strict(),
   z.object({ kind: z.literal("setLifecycle"), accepted: accepted(subject) }).strict(),
+  z.object({ kind: z.literal("renameWorkspace"), accepted: accepted(desiredWorkspaceSchema) }).strict(),
+  z.object({ kind: z.literal("renameSession"), accepted: accepted(desiredSessionSchema.refine(value => value.manualName)) }).strict(),
 ]);
 const availability = z.enum(["live", "materializing", "restarting", "stopping", "stopped", "blocked"]);
 const observedPane = z.object({ desired: desiredPaneSchema, availability, lastRuntime: runtimeRefSchema.nullable(), terminal: terminalSchema.nullable() }).strict().refine(value => {
@@ -49,7 +51,7 @@ const historyCollection = z.enum(["branch", "entries"]);
 const historyDigest = z.string().regex(/^[0-9a-f]{64}$/u);
 const historyEntryId = z.string().min(1).refine(value => new TextEncoder().encode(value).length <= 128 && !/\p{Cc}/u.test(value));
 const historyCursor = z.object({ target: statePiBindingTargetSchema, readMode: historyReadMode, collection: historyCollection, headDigest: historyDigest, after: historyEntryId }).strict();
-const historyProjection = canonicalProjectionSchema.refine(value => new TextEncoder().encode(value.timestamp).length <= 128 && historyEntryId.safeParse(value.kind).success && (value.role === null || (new TextEncoder().encode(value.role).length <= 64 && value.role.length > 0 && !/\p{Cc}/u.test(value.role))));
+const historyProjection = centralPiProjectionSchema.refine(value => new TextEncoder().encode(value.timestamp).length <= 128 && historyEntryId.safeParse(value.kind).success && (value.role === null || (new TextEncoder().encode(value.role).length <= 64 && value.role.length > 0 && !/\p{Cc}/u.test(value.role))));
 const historyPage = z.object({ target: statePiBindingTargetSchema, readMode: historyReadMode, collection: historyCollection, headDigest: historyDigest, leafId: historyEntryId.nullable(), entries: z.array(historyProjection).max(50), cursor: historyCursor.nullable() }).strict().refine(value => {
   if (new Set(value.entries.map(entry => entry.entryId)).size !== value.entries.length || (value.readMode === "live" && value.target.runtime.host_generation !== value.target.hostGeneration)) return false;
   const cursor = value.cursor;
@@ -95,6 +97,8 @@ export const stateRemoteMethods = {
   "axo.state.chat.tool.get": z.object({ target: statePiBindingTargetSchema, readMode: historyReadMode, entryId: historyEntryId, toolCallId: historyEntryId, cursor: toolCursor.optional(), limit: z.number().int().min(4).max(8192).default(8192) }).strict().refine(value => (value.readMode !== "live" || value.target.runtime.host_generation === value.target.hostGeneration) && (value.cursor === undefined || (JSON.stringify(value.cursor.target) === JSON.stringify(value.target) && value.cursor.readMode === value.readMode && value.cursor.entryId === value.entryId && value.cursor.toolCallId === value.toolCallId))),
   "axo.state.chat.history": z.object({ target: statePiBindingTargetSchema, readMode: historyReadMode, collection: historyCollection.default("branch"), cursor: historyCursor.optional(), limit: z.number().int().min(1).max(50).default(8) }).strict().refine(value => (value.readMode !== "live" || value.target.runtime.host_generation === value.target.hostGeneration) && (value.cursor === undefined || (JSON.stringify(value.cursor.target) === JSON.stringify(value.target) && value.cursor.readMode === value.readMode && value.cursor.collection === value.collection))),
   "axo.state.session.create": z.object({ ...mutation, workspaceId: uuid.nullable(), name }).strict(),
+  "axo.state.workspace.rename": z.object({ ...mutation, workspaceId: uuid, name }).strict(),
+  "axo.state.session.rename": z.object({ target: stateSessionTargetSchema, commandId: uuid, expectedRevision: revision, name }).strict(),
   "axo.state.operation.get": z.object({ target: stateTargetSchema, commandId: uuid }).strict(),
 } as const;
 export const stateLocalMethods = {
@@ -104,7 +108,7 @@ export const stateLocalMethods = {
   "axo.state.pane.remove": z.object({ ...mutation, target: stateSessionTargetSchema, paneId: uuid }).strict(),
   "axo.state.session.completion": z.object({ target: stateSessionTargetSchema, runtimes: z.array(runtimeRefSchema).min(1).max(32).refine(value => new Set(value.map(runtime => JSON.stringify(runtime))).size === value.length) }).strict(),
 } as const;
-export const stateMutationMethods = ["axo.state.chat.command.submit", "axo.state.workspace.create", "axo.state.session.create", "axo.state.lifecycle.set", "axo.state.pane.add", "axo.state.pane.remove"] as const;
+export const stateMutationMethods = ["axo.state.chat.command.submit", "axo.state.workspace.create", "axo.state.session.create", "axo.state.workspace.rename", "axo.state.session.rename", "axo.state.lifecycle.set", "axo.state.pane.add", "axo.state.pane.remove"] as const;
 const envelope = <T extends z.ZodType>(value: T) => z.object({ hostGeneration: uuid, storeGeneration: uuid, revision, value }).strict();
 const operation = envelope(z.object({ operation: stateOperationSchema.nullable(), session: stateSessionViewSchema.nullable() }).strict());
 export const stateResults = {
@@ -118,7 +122,8 @@ export const stateResults = {
   "axo.state.chat.get": envelope(piLiveObservation).refine(value => value.value.target.runtime.host_generation === value.hostGeneration && value.value.target.hostGeneration === value.hostGeneration && value.value.target.storeGeneration === value.storeGeneration),
   "axo.state.chat.tool.get": envelope(toolChunk).refine(value => value.value.target.hostGeneration === value.hostGeneration && value.value.target.storeGeneration === value.storeGeneration),
   "axo.state.chat.history": envelope(historyPage).refine(value => value.value.target.hostGeneration === value.hostGeneration && value.value.target.storeGeneration === value.storeGeneration),
-  "axo.state.workspace.create": operation, "axo.state.session.create": operation, "axo.state.lifecycle.set": operation,
-  "axo.state.pane.add": operation, "axo.state.pane.remove": operation, "axo.state.operation.get": operation,
+  "axo.state.workspace.create": operation, "axo.state.session.create": operation,
+  "axo.state.workspace.rename": operation, "axo.state.session.rename": operation,
+  "axo.state.lifecycle.set": operation, "axo.state.pane.add": operation, "axo.state.pane.remove": operation, "axo.state.operation.get": operation,
   "axo.state.session.completion": envelope(z.object({ completed: z.array(runtimeRefSchema).max(32) }).strict()),
 } as const;

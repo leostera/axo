@@ -15,6 +15,8 @@ pub enum Operation {
     AddShell(Accepted<DesiredPane>),
     RemoveShell(Accepted<PaneId>),
     SetLifecycle(Accepted<LifecycleTarget>),
+    RenameWorkspace(Accepted<DesiredWorkspace>),
+    RenameSession(Accepted<DesiredSession>),
 }
 impl Operation {
     pub fn command_id(&self) -> CommandId {
@@ -24,6 +26,8 @@ impl Operation {
             Self::AddShell(value) => value.command_id,
             Self::RemoveShell(value) => value.command_id,
             Self::SetLifecycle(value) => value.command_id,
+            Self::RenameWorkspace(value) => value.command_id,
+            Self::RenameSession(value) => value.command_id,
         }
     }
 }

@@ -236,6 +236,17 @@ enum Intent<'a> {
         target: &'a LifecycleTarget,
         lifecycle: DesiredLifecycle,
     },
+    RenameWorkspace {
+        expected_revision: u64,
+        workspace_id: WorkspaceId,
+        name: &'a str,
+    },
+    RenameSession {
+        expected_revision: u64,
+        workspace_id: Option<WorkspaceId>,
+        session_id: SessionId,
+        name: &'a str,
+    },
 }
 struct Capture {
     fingerprint: [u8; 32],
@@ -755,6 +766,99 @@ impl Database {
             let pane = insert_pane(tx, session, PaneRole::AccountShell, ordinal, revision)?;
             let accepted = Accepted { command_id: command, revision, graph: pane };
             record(tx, command, fingerprint, "addShell", revision, &accepted)?;
+            Ok(accepted)
+        })
+    }
+    pub fn rename_workspace(
+        &mut self,
+        command: CommandId,
+        expected: u64,
+        workspace_id: WorkspaceId,
+        name: &str,
+    ) -> Result<Accepted<DesiredWorkspace>, Error> {
+        let fingerprint = fingerprint(&Intent::RenameWorkspace {
+            expected_revision: expected,
+            workspace_id,
+            name,
+        })?;
+        self.available()?;
+        if let Some(original) = original(&self.connection, command, &fingerprint)? {
+            return Ok(original);
+        }
+        if !valid_name(name) { return Err(Error::Invalid); }
+        let name = name.to_owned();
+        self.mutate(|tx| {
+            let (directory, open): (String, bool) = tx.query_row(
+                "SELECT directory,desired_open FROM workspaces WHERE workspace_id=?1",
+                [workspace_id.to_string()],
+                |row| Ok((row.get(0)?, row.get(1)?)),
+            ).optional()?.ok_or(Error::NotFound)?;
+            let revision = reserve(tx, expected, 0)?;
+            let changed = tx.execute(
+                "UPDATE workspaces SET name=?1,config_revision=?2 WHERE workspace_id=?3",
+                params![name, sql_revision(revision)?, workspace_id.to_string()],
+            )?;
+            if changed != 1 { return Err(Error::NotFound); }
+            let accepted = Accepted {
+                command_id: command,
+                revision,
+                graph: DesiredWorkspace {
+                    workspace_id,
+                    name,
+                    directory: directory.into(),
+                    lifecycle: DesiredLifecycle::from_open(open),
+                    config_revision: revision,
+                },
+            };
+            record(tx, command, fingerprint, "renameWorkspace", revision, &accepted)?;
+            Ok(accepted)
+        })
+    }
+    pub fn rename_session(
+        &mut self,
+        command: CommandId,
+        expected: u64,
+        workspace_id: Option<WorkspaceId>,
+        session_id: SessionId,
+        name: &str,
+    ) -> Result<Accepted<DesiredSession>, Error> {
+        let fingerprint = fingerprint(&Intent::RenameSession {
+            expected_revision: expected,
+            workspace_id,
+            session_id,
+            name,
+        })?;
+        self.available()?;
+        if let Some(original) = original(&self.connection, command, &fingerprint)? {
+            return Ok(original);
+        }
+        if !valid_name(name) { return Err(Error::Invalid); }
+        let name = name.to_owned();
+        self.mutate(|tx| {
+            let open: bool = tx.query_row(
+                "SELECT desired_open FROM sessions WHERE session_id=?1 AND workspace_id IS ?2 AND tombstoned=0",
+                params![session_id.to_string(), workspace_id.map(|id| id.to_string())],
+                |row| row.get(0),
+            ).optional()?.ok_or(Error::NotFound)?;
+            let revision = reserve(tx, expected, 0)?;
+            let changed = tx.execute(
+                "UPDATE sessions SET name=?1,manual_name=1,config_revision=?2 WHERE session_id=?3 AND workspace_id IS ?4 AND tombstoned=0",
+                params![name, sql_revision(revision)?, session_id.to_string(), workspace_id.map(|id| id.to_string())],
+            )?;
+            if changed != 1 { return Err(Error::NotFound); }
+            let accepted = Accepted {
+                command_id: command,
+                revision,
+                graph: DesiredSession {
+                    session_id,
+                    workspace_id,
+                    name,
+                    manual_name: true,
+                    lifecycle: DesiredLifecycle::from_open(open),
+                    config_revision: revision,
+                },
+            };
+            record(tx, command, fingerprint, "renameSession", revision, &accepted)?;
             Ok(accepted)
         })
     }

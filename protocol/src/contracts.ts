@@ -1,14 +1,10 @@
 import { z } from "zod";
 import { uuid, destinationSchema } from "./identity.js";
 import { terminalSchema } from "./runtime-contracts.js";
-import { workMethods, workResults, localWorkMethods, localWorkResults } from "./work-contracts.js";
-import { piMethods, piResults } from "./pi-contracts.js";
 import { hostMethods, hostResults } from "./host-contracts.js";
 import { stateRemoteMethods, stateLocalMethods, stateResults } from "./state-contracts.js";
 export { uuid, destinationSchema } from "./identity.js";
 export * from "./runtime-contracts.js";
-export * from "./work-contracts.js";
-export * from "./pi-contracts.js";
 export * from "./pane-records.js";
 export * from "./host-contracts.js";
 export * from "./state-contracts.js";
@@ -192,21 +188,16 @@ export const startSchema = z
   .strict();
 export const remoteMethods = {
   ...stateRemoteMethods,
-  ...workMethods,
-  ...piMethods,
   "axo.runtime.list": listSchema,
   "axo.runtime.startApproved": startSchema,
 } as const;
 export type RemoteMethod = keyof typeof remoteMethods;
 export const METHODS = Object.keys(remoteMethods) as RemoteMethod[];
 // Host maintenance and native folder approval remain local.
-export const localMethods = { ...remoteMethods, ...localWorkMethods, ...hostMethods, ...stateLocalMethods } as const;
+export const localMethods = { ...remoteMethods, ...hostMethods, ...stateLocalMethods } as const;
 export type LocalMethod = keyof typeof localMethods;
 export const results = {
   ...stateResults,
-  ...workResults,
-  ...localWorkResults,
-  ...piResults,
   ...hostResults,
   "axo.runtime.list": z
     .object({

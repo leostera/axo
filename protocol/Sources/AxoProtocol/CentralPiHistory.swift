@@ -20,7 +20,7 @@ public struct CentralPiHistoryPage: Equatable, Sendable {
     public let collection: CentralPiHistoryCollection
     public let headDigest: String
     public let leafId: String?
-    public let entries: [PiCanonicalProjection]
+    public let entries: [CentralPiCanonicalProjection]
     public let cursor: CentralPiHistoryCursor?
 }
 extension CentralJSON {
@@ -60,7 +60,7 @@ extension CentralJSON {
         guard !id.isEmpty, id.utf8.count <= 128, !id.unicodeScalars.contains(where: { $0.properties.generalCategory == .control }) else { throw failure }
         return id
     }
-    private func canonicalProjection(_ value: JSONValue) throws -> PiCanonicalProjection {
+    private func canonicalProjection(_ value: JSONValue) throws -> CentralPiCanonicalProjection {
         let fields = try object(value, keys: ["entryId", "parentId", "timestamp", "kind", "role", "text", "truncated", "toolCallId", "toolName", "toolCalls"])
         _ = try recordedID(field(fields, "entryId")); _ = try recordedID(field(fields, "kind"))
         for key in ["parentId", "toolCallId", "toolName"] { let value = try field(fields, key); if value != .null { _ = try recordedID(value) } }
@@ -71,6 +71,6 @@ extension CentralJSON {
         for call in try array(field(fields, "toolCalls"), maximum: 32) {
             let fields = try object(call, keys: ["id", "name"]); _ = try recordedID(field(fields, "id")); _ = try recordedID(field(fields, "name"))
         }
-        return try JSONDecoder().decode(PiCanonicalProjection.self, from: JSONEncoder().encode(value))
+        return try JSONDecoder().decode(CentralPiCanonicalProjection.self, from: JSONEncoder().encode(value))
     }
 }

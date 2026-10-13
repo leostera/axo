@@ -10,7 +10,7 @@ import { once } from "node:events";
 import fc from "fast-check";
 import {
   decode, callSchema, remoteMethods, serveProfileMessage, createProfileServer,
-  workMutationMethods,
+  stateMutationMethods,
 } from "@axo/protocol";
 
 const root = fileURLToPath(new URL("../../", import.meta.url));
@@ -189,8 +189,8 @@ test("read admission properties match Rust and shared schemas for UUID and numer
 
 test("property-generated mutation notifications cannot dispatch and post-dispatch errors preserve hop IDs", async () => {
   const server = createProfileServer(); let mutations = 0;
-  for (const method of workMutationMethods) server.addMethod(method, () => { mutations++; return {}; });
-  await check(fc.asyncProperty(fc.array(fc.constantFrom(...workMutationMethods), { minLength: 1, maxLength: 8 }), async methods => {
+  for (const method of stateMutationMethods) server.addMethod(method, () => { mutations++; return {}; });
+  await check(fc.asyncProperty(fc.array(fc.constantFrom(...stateMutationMethods), { minLength: 1, maxLength: 8 }), async methods => {
     const reply = await serveProfileMessage(server, JSON.stringify(methods.map(method => ({ jsonrpc: "2.0", method, params: {} }))), undefined);
     return reply === null && mutations === 0;
   }), 500);

@@ -30,6 +30,18 @@ import AppKit
         refused.controlTextDidEndEditing(Notification(name: NSText.didEndEditingNotification))
         precondition(completions == 0 && refused.textField?.stringValue == "Captured row")
 
+        var submitted: String?
+        let editable = WorkspaceSidebarRow(name: "Authoritative name", workspace: true, running: false,
+            actions: NSMenu(), rename: .init(begin: { true }, finish: { submitted = $0 }))
+        content.addSubview(editable)
+        editable.beginRenaming()
+        precondition(editable.textField?.isEditable == true)
+        editable.textField?.stringValue = "Uncommitted name"
+        editable.controlTextDidEndEditing(Notification(name: NSText.didEndEditingNotification))
+        precondition(submitted == "Uncommitted name", "The captured edit is delivered to the authority")
+        precondition(editable.textField?.stringValue == "Authoritative name",
+            "An unacknowledged name never appears as a successful sidebar value")
+
         // Detached rows cannot borrow permission from a later window or selection.
         refused.removeFromSuperview()
         refused.beginRenaming()

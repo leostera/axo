@@ -35,6 +35,8 @@ public struct CentralRequest: Sendable {
         case lifecycle(CentralSubject, CentralLifecycle)
         case add(UUID?, UUID)
         case remove(UUID?, UUID, UUID)
+        case renameWorkspace(UUID, String)
+        case renameSession(UUID?, UUID, String)
     }
     private init(method: String, parameters: JSONValue, machine: MachineTarget, source: CentralSource?, intent: Intent) {
         self.method = method; self.parameters = parameters; self.machine = machine; self.source = source; self.intent = intent
@@ -144,6 +146,12 @@ public struct CentralRequest: Sendable {
     public static func removeShell(source: CentralSource, workspaceId: UUID?, sessionId: UUID, paneId: UUID, commandId: UUID, expectedRevision: CentralRevision) throws -> Self {
         try mutate(source, commandId, expectedRevision, .remove(workspaceId, sessionId, paneId))
     }
+    public static func renameWorkspace(source: CentralSource, workspaceId: UUID, commandId: UUID, expectedRevision: CentralRevision, name: String) throws -> Self {
+        try mutate(source, commandId, expectedRevision, .renameWorkspace(workspaceId, name))
+    }
+    public static func renameSession(source: CentralSource, workspaceId: UUID?, sessionId: UUID, commandId: UUID, expectedRevision: CentralRevision, name: String) throws -> Self {
+        try mutate(source, commandId, expectedRevision, .renameSession(workspaceId, sessionId, name))
+    }
     private static func mutate(_ source: CentralSource, _ command: UUID, _ revision: CentralRevision, _ mutation: Mutation) throws -> Self {
         var fields: [String: JSONValue] = ["target": source.json, "commandId": .id(command), "expectedRevision": .number(Double(revision.rawValue))]
         let method: String
@@ -172,6 +180,16 @@ public struct CentralRequest: Sendable {
             try ids([pane], method: method)
             fields["target"] = try sessionTarget(source, workspace, session, method: method)
             fields["paneId"] = .id(pane)
+        case .renameWorkspace(let workspace, let name):
+            method = "axo.state.workspace.rename"
+            try ids([workspace], method: method)
+            guard CentralJSON.validName(name) else { throw AxoProtocolValidationError.invalidParameters(method: method) }
+            fields["workspaceId"] = .id(workspace); fields["name"] = .string(name)
+        case .renameSession(let workspace, let session, let name):
+            method = "axo.state.session.rename"
+            fields["target"] = try sessionTarget(source, workspace, session, method: method)
+            guard CentralJSON.validName(name) else { throw AxoProtocolValidationError.invalidParameters(method: method) }
+            fields["name"] = .string(name)
         }
         try ids([command], method: method)
         guard revision.rawValue < 9_007_199_254_740_991 else { throw AxoProtocolValidationError.invalidParameters(method: method) }

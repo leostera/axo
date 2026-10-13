@@ -14,6 +14,9 @@ test("central commands require store generation, explicit workspace scope and no
   assert.equal(remoteMethods["axo.state.session.create"].safeParse({ ...request, workspaceId: undefined }).success, false);
   assert.equal(remoteMethods["axo.state.session.create"].safeParse({ ...request, target: { ...target, storeGeneration: undefined } }).success, false);
   assert.equal(remoteMethods["axo.state.session.create"].safeParse({ ...request, argv: ["zsh"] }).success, false);
+  assert.ok(remoteMethods["axo.state.workspace.rename"].safeParse({ target, commandId: id(9), expectedRevision: 1, workspaceId: id(5), name: "Renamed" }).success);
+  assert.equal(remoteMethods["axo.state.workspace.rename"].safeParse({ target, commandId: id(9), expectedRevision: 1, workspaceId: id(5), name: "  " }).success, false);
+  assert.ok(remoteMethods["axo.state.session.rename"].safeParse({ target: { ...target, workspaceId: id(5), sessionId: id(4) }, commandId: id(10), expectedRevision: 1, name: "Manual" }).success);
   assert.equal(Object.hasOwn(remoteMethods, "axo.state.workspace.create"), false);
   assert.ok(localMethods["axo.state.workspace.create"].safeParse({ target, commandId: id(8), expectedRevision: 0, name: "Workspace", directoryPath: "/approved" }).success);
   assert.equal(localMethods["axo.state.workspace.list"].safeParse({ target, cursor: null }).success, false);
@@ -26,6 +29,10 @@ test("central graph observations cannot claim ready without every desired termin
 test("original graph result is separate from current availability", () => {
   const operation = { kind: "createWorkspace", accepted: { commandId: id(8), revision: 1, graph: { workspace: { workspaceId: id(5), name: "Workspace", directory: "/approved", lifecycle: "open", configRevision: 1 }, initialSession: { session, panes: [pane, shell] } } } };
   assert.ok(results["axo.state.workspace.create"].safeParse({ ...envelope, value: { operation, session: observed } }).success);
+  const manualSession = { ...session, name: "Manual", manualName: true, configRevision: 2 };
+  const renamed = { kind: "renameSession", accepted: { commandId: id(10), revision: 2, graph: manualSession } };
+  assert.ok(results["axo.state.session.rename"].safeParse({ ...envelope, revision: 2, value: { operation: renamed, session: { ...observed, session: manualSession } } }).success);
+  assert.equal(results["axo.state.session.rename"].safeParse({ ...envelope, revision: 2, value: { operation: { ...renamed, accepted: { ...renamed.accepted, graph: { ...manualSession, manualName: false } } }, session: observed } }).success, false);
 });
 test("central mutation notifications never invoke registered effects", async () => {
   const server = createProfileServer<void>(); let effects = 0;

@@ -88,6 +88,61 @@ fn central_session_pages_are_sorted_by_identity_not_insertion_order() {
     );
 }
 #[test]
+fn central_renames_capture_revision_preserve_scope_and_protect_manual_session_names() {
+    let fixture = Fixture::new();
+    let created = fixture.create(CommandId::new());
+    let graph = &created["result"]["value"]["operation"]["accepted"]["graph"];
+    let workspace_id = graph["workspace"]["workspaceId"].as_str().unwrap();
+    let session = &graph["initialSession"]["session"];
+    let session_id = session["sessionId"].as_str().unwrap();
+    let original_workspace = CommandId::new();
+    let renamed_workspace = fixture.call(
+        "axo.state.workspace.rename",
+        json!({"target":fixture.target(),"commandId":original_workspace,"expectedRevision":1,
+               "workspaceId":workspace_id,"name":"Renamed workspace"}),
+        false,
+    );
+    assert_eq!(renamed_workspace["result"]["value"]["operation"]["kind"], "renameWorkspace");
+    assert_eq!(renamed_workspace["result"]["value"]["operation"]["accepted"]["graph"]["name"], "Renamed workspace");
+    assert_eq!(renamed_workspace["result"]["value"]["operation"]["accepted"]["revision"], 2);
+
+    let mut target = fixture.target();
+    target["workspaceId"] = session["workspaceId"].clone();
+    target["sessionId"] = json!(session_id);
+    let original_session = CommandId::new();
+    let renamed_session = fixture.call(
+        "axo.state.session.rename",
+        json!({"target":target,"commandId":original_session,"expectedRevision":2,"name":"Manual session name"}),
+        false,
+    );
+    assert_eq!(renamed_session["result"]["value"]["operation"]["kind"], "renameSession");
+    let accepted = &renamed_session["result"]["value"]["operation"]["accepted"];
+    assert_eq!(accepted["graph"]["name"], "Manual session name");
+    assert_eq!(accepted["graph"]["manualName"], true);
+    assert_eq!(accepted["graph"]["configRevision"], 3);
+
+    let replay = fixture.call(
+        "axo.state.session.rename",
+        json!({"target":target,"commandId":original_session,"expectedRevision":2,"name":"Manual session name"}),
+        false,
+    );
+    assert_eq!(&replay["result"]["value"]["operation"]["accepted"], accepted);
+    let conflicting_reuse = fixture.call(
+        "axo.state.session.rename",
+        json!({"target":target,"commandId":original_session,"expectedRevision":2,"name":"Different name"}),
+        false,
+    );
+    assert_eq!(conflicting_reuse["error"]["code"], -32007);
+
+    let stale = fixture.call(
+        "axo.state.session.rename",
+        json!({"target":target,"commandId":CommandId::new(),"expectedRevision":2,"name":"Stale"}),
+        false,
+    );
+    assert_eq!(stale["error"]["code"], -32007);
+    assert_eq!(fixture.owner.revision().unwrap(), 3);
+}
+#[test]
 fn central_pi_observation_requires_closed_current_scope_and_never_starts_work() {
     let fixture = Fixture::new();
     let created = fixture.create(CommandId::new());

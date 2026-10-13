@@ -78,8 +78,10 @@ final class WorkspaceSidebarRow: NSTableCellView, NSTextFieldDelegate {
     func controlTextDidEndEditing(_ notification: Notification) { endRenaming() }
     private func endRenaming() {
         guard editing, let label = textField else { return }; editing = false
+        let submitted = cancelled ? nil : label.stringValue
+        label.stringValue = originalName
         label.isEditable = false; label.isSelectable = false; label.isBezeled = false; label.drawsBackground = false
-        rename?.finish(cancelled ? nil : label.stringValue)
+        rename?.finish(submitted)
     }
     func control(_ control: NSControl, textView: NSTextView, doCommandBy commandSelector: Selector) -> Bool {
         guard commandSelector == #selector(NSResponder.cancelOperation(_:)) else { return false }

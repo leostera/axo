@@ -19,7 +19,7 @@ public struct CentralSource: Equatable, Sendable {
 public struct CentralRevision: Equatable, Comparable, Sendable {
     public let rawValue: Int
     public init?(rawValue: Int) {
-        guard (0...9_007_199_254_740_991).contains(rawValue) else { return nil }
+        guard (0...AxoProtocol.maximumSafeInteger).contains(rawValue) else { return nil }
         self.rawValue = rawValue
     }
     public static func < (lhs: Self, rhs: Self) -> Bool { lhs.rawValue < rhs.rawValue }
@@ -114,6 +114,8 @@ public enum CentralOperation: Equatable, Sendable {
     case addShell(CentralAccepted<CentralPane>)
     case removeShell(CentralAccepted<UUID>)
     case setLifecycle(CentralAccepted<CentralSubject>)
+    case renameWorkspace(CentralAccepted<CentralWorkspace>)
+    case renameSession(CentralAccepted<CentralSession>)
     public var commandId: UUID {
         switch self {
         case .createWorkspace(let value): value.commandId
@@ -121,6 +123,8 @@ public enum CentralOperation: Equatable, Sendable {
         case .addShell(let value): value.commandId
         case .removeShell(let value): value.commandId
         case .setLifecycle(let value): value.commandId
+        case .renameWorkspace(let value): value.commandId
+        case .renameSession(let value): value.commandId
         }
     }
     public var revision: CentralRevision {
@@ -130,6 +134,8 @@ public enum CentralOperation: Equatable, Sendable {
         case .addShell(let value): value.revision
         case .removeShell(let value): value.revision
         case .setLifecycle(let value): value.revision
+        case .renameWorkspace(let value): value.revision
+        case .renameSession(let value): value.revision
         }
     }
     var observedSessionId: UUID? {
@@ -137,6 +143,7 @@ public enum CentralOperation: Equatable, Sendable {
         case .createWorkspace(let value): value.graph.initialSession.session.sessionId
         case .createSession(let value), .createStandalone(let value): value.graph.session.sessionId
         case .addShell(let value): value.graph.sessionId
+        case .renameSession(let value): value.graph.sessionId
         default: nil
         }
     }
