@@ -3,27 +3,19 @@
   "private": true,
   "type": "module",
   "scripts": {
-    "test": "tsx --test tests/*.test.ts",
+    "test": "npm --prefix protocol test && npm --prefix sites/api.axo.leostera.dev test && npm run test:pi-control && npm run test:pi-discovery",
     "test:pi-control": "tsc -p pi-axo/tsconfig.json && tsx --test pi-axo/tests/*.test.ts",
     "test:pi-discovery": "tsc -p axod/pi/tsconfig.json && tsx --test axod/tests/pi/ambient.test.ts",
     "test:pi-interactive": "cargo build --manifest-path axod/Cargo.toml --locked --offline --example interactive-pi-fixture && tsc -p pi-axo/tsconfig.json && tsc -p axod/pi/tsconfig.json && tsx --test --test-concurrency=1 axod/tests/pi/interactive.test.ts",
-    "typecheck": "tsc --noEmit && npm --prefix service run typecheck",
-    "build:bridge": "node scripts/build-bridge.mjs",
-    "build:service": "npm --prefix service run build"
+    "typecheck": "npm --prefix protocol run build && npm --prefix sites/api.axo.leostera.dev run typecheck && tsc -p pi-axo/tsconfig.json && tsc -p axod/pi/tsconfig.json"
   },
   "dependencies": {
     "typebox": "^1.0.0",
-    "ws": "^8.18.0",
     "zod": "^4.5.0"
   },
   "devDependencies": {
-    "@cloudflare/workers-types": "^5.20261008.1",
     "@earendil-works/pi-coding-agent": "1.1.0",
     "@types/node": "^24.0.0",
-    "@types/ws": "^8.18.0",
-    "esbuild": "^0.25.0",
-    "jose": "^6.2.12",
-    "miniflare": "5.20261006.1-alpha",
     "tsx": "^4.20.0",
     "typescript": "^7.0.2"
   }

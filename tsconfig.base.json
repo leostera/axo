@@ -8,7 +8,5 @@
     "allowImportingTsExtensions": true,
     "skipLibCheck": true,
     "types": ["node"]
-  },
-  "include": ["bridge/**/*.ts", "shared/**/*.ts", "tests/**/*.ts", "pi-axo/**/*.ts"],
-  "exclude": ["bridge/dist", "tests/fixtures/files-worker.ts"]
+  }
 }
