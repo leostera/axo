@@ -30,9 +30,6 @@ struct AxodWorkbenchView: View {
         .onAppear(perform: updateWindowTitle)
         .onChange(of: coordinator.selectedSessionID) { _, _ in updateWindowTitle() }
         .onChange(of: coordinator.sessions) { _, _ in updateWindowTitle() }
-        .sheet(item: $coordinator.workEditor) { context in
-            AxodWorkEditor(context: context, coordinator: coordinator).id(context.id)
-        }
     }
 
     // Only actionable failures/unknown outcomes occupy chrome. Healthy work is
@@ -42,12 +39,6 @@ struct AxodWorkbenchView: View {
             if connectionNeedsRecovery {
                 AxodStatusNotice("Disconnected") {
                     Button("Reconnect") { coordinator.connect() }
-                }
-            }
-            if coordinator.pendingWorkCommandID != nil && !coordinator.isEditingWork {
-                AxodStatusNotice("Change unconfirmed") {
-                    Button("Check Status") { coordinator.reconcilePendingWork() }
-                        .disabled(coordinator.connectionState != .connected)
                 }
             }
             if coordinator.needsLoginItemsReview || coordinator.needsDaemonServiceReview {
@@ -71,14 +62,9 @@ struct AxodWorkbenchView: View {
                 .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
             } else {
                 VStack(alignment: .leading, spacing: 7) {
-                    Text(coordinator.connectionState == .connected ? "Select or create a session" : "Background service unavailable")
+                    Text(coordinator.connectionState == .connected ? "Select a session" : "Background service unavailable")
                         .font(.system(size: 14, weight: .medium))
                         .foregroundStyle(Color.white.opacity(0.88))
-                    if coordinator.canEditWork {
-                        Text("Press ⌘T to create a session.")
-                            .font(.system(size: 12))
-                            .foregroundStyle(Color.white.opacity(0.58))
-                    }
                 }
                 .padding(12)
                 .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)

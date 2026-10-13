@@ -218,14 +218,6 @@ final class AxodWorkbenchApp: NSObject, NSApplicationDelegate, NSWindowDelegate,
     }
     @objc private func refresh(_ sender: Any?) { coordinator?.refresh() }
     @objc private func connect(_ sender: Any?) { coordinator?.connect() }
-    @objc private func newWorkspace(_ sender: Any?) {
-        guard coordinator?.showsSetup == false else { return }
-        coordinator?.newWorkspace()
-    }
-    @objc private func newSession(_ sender: Any?) {
-        guard coordinator?.showsSetup == false else { return }
-        coordinator?.newSession()
-    }
     @objc private func focusLeft(_ sender: Any?) { movePaneFocus(.left) }
     @objc private func focusRight(_ sender: Any?) { movePaneFocus(.right) }
     @objc private func focusUp(_ sender: Any?) { movePaneFocus(.up) }
@@ -254,20 +246,12 @@ final class AxodWorkbenchApp: NSObject, NSApplicationDelegate, NSWindowDelegate,
     }
 
     func validateMenuItem(_ menuItem: NSMenuItem) -> Bool {
-        if coordinator?.showsSetup == true, let action = menuItem.action,
-           [#selector(newWorkspace(_:)), #selector(newSession(_:))].contains(action) { return false }
         if let direction = focusDirection(for: menuItem.action) {
             guard let window, NSApp.keyWindow === window else { return false }
             return coordinator?.capturePaneFocus(direction, in: window) != nil
         }
         if menuItem.action == #selector(toggleSidebar(_:)) {
             return window != nil && NSApp.keyWindow === window
-        }
-        if menuItem.action == #selector(newWorkspace(_:)) {
-            return coordinator?.canEditWork == true && coordinator?.workEditor == nil
-        }
-        if menuItem.action == #selector(newSession(_:)) {
-            return coordinator?.canEditWork == true && coordinator?.workEditor == nil
         }
         return true
     }
@@ -314,11 +298,6 @@ final class AxodWorkbenchApp: NSObject, NSApplicationDelegate, NSWindowDelegate,
         let workspaceItem = NSMenuItem()
         menu.addItem(workspaceItem)
         let workspaceMenu = NSMenu(title: "Workspace")
-        let newWorkspaceItem = workspaceMenu.addItem(withTitle: "New Workspace…", action: #selector(newWorkspace(_:)), keyEquivalent: "n")
-        newWorkspaceItem.target = self
-        let newSessionItem = workspaceMenu.addItem(withTitle: "New Session", action: #selector(newSession(_:)), keyEquivalent: "t")
-        newSessionItem.target = self
-        workspaceMenu.addItem(.separator())
         let refreshItem = workspaceMenu.addItem(withTitle: "Refresh", action: #selector(refresh(_:)), keyEquivalent: "r")
         refreshItem.target = self
         let connectItem = workspaceMenu.addItem(withTitle: "Connect / Reconnect", action: #selector(connect(_:)), keyEquivalent: "r")
