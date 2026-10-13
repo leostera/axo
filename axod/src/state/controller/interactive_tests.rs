@@ -352,8 +352,87 @@ fn actual_three_by_four_by_three_graph_admits_every_pane_and_resumes_exact_pi_fi
             .iter()
             .all(|observation| observation.availability == Availability::Live)
     });
+    let tool_running = controller
+        .native
+        .managed_live
+        .lock()
+        .unwrap()
+        .get(&session)
+        .unwrap()
+        .clone();
+    tool_running
+        .control
+        .send("Owned central fixture tool request")
+        .unwrap();
+    wait(|| {
+        model.requests.load(Ordering::SeqCst) == 3
+            && tool_running.control.get().is_ok_and(|state| !state.busy)
+    });
+    drop(tool_running);
+    let tool_bytes = fs::read(&resumed.file).unwrap();
     let history_target =
         observe(&controller, machine, &resumed)["result"]["value"]["target"].clone();
+    let tool_history = crate::state::rpc::dispatch(
+        crate::rpc::Call {
+            id: Some(json!(10)),
+            method: "axo.state.chat.history".into(),
+            params: Some(json!({"target":history_target,"readMode":"live","limit":50})),
+        },
+        &controller,
+        machine,
+        false,
+    )
+    .unwrap();
+    let tool_entry = tool_history["result"]["value"]["entries"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|entry| entry["role"] == "toolResult")
+        .expect("Real bash produced a Pi-owned canonical tool result")["entryId"]
+        .clone();
+    let read_tool = |mode: &str, cursor: Option<serde_json::Value>, call: &str| {
+        let mut params =
+            json!({"target":history_target,"readMode":mode,"entryId":tool_entry,"toolCallId":call});
+        if let Some(cursor) = cursor {
+            params["cursor"] = cursor;
+        }
+        crate::state::rpc::dispatch(
+            crate::rpc::Call {
+                id: Some(json!(11)),
+                method: "axo.state.chat.tool.get".into(),
+                params: Some(params),
+            },
+            &controller,
+            machine,
+            false,
+        )
+        .unwrap()
+    };
+    let collect_tool = |mode: &str| {
+        let mut cursor = None;
+        let mut text = String::new();
+        loop {
+            let result = read_tool(mode, cursor, "owned-bash");
+            let page = &result["result"]["value"];
+            assert_eq!(page["offset"].as_u64().unwrap() as usize, text.len());
+            let part = page["text"].as_str().unwrap();
+            assert!(part.len() <= 8192);
+            text.push_str(part);
+            if page["cursor"].is_null() {
+                break;
+            }
+            cursor = Some(page["cursor"].clone());
+        }
+        assert_eq!(text, "λ界".repeat(3000));
+    };
+    collect_tool("live");
+    assert_eq!(read_tool("live", None, "foreign")["error"]["code"], -32009);
+    assert_eq!(
+        model.requests.load(Ordering::SeqCst),
+        3,
+        "Tool reads never execute another model/tool turn"
+    );
+    assert_eq!(fs::read(&resumed.file).unwrap(), tool_bytes);
     let read_history = |cursor: Option<serde_json::Value>| {
         let mut params = json!({"target":history_target,"readMode":"stopped","limit":1});
         if let Some(cursor) = cursor {
@@ -410,6 +489,8 @@ fn actual_three_by_four_by_three_graph_admits_every_pane_and_resumes_exact_pi_fi
         "A held writer lease blocks stopped history"
     );
     drop(exclusion);
+    collect_tool("stopped");
+    assert_eq!(model.requests.load(Ordering::SeqCst), 3);
     let first_history = read_history(None);
     assert_eq!(
         first_history["result"]["value"]["entries"]
@@ -434,8 +515,8 @@ fn actual_three_by_four_by_three_graph_admits_every_pane_and_resumes_exact_pi_fi
     );
     assert_eq!(
         fs::read(&resumed.file).unwrap(),
-        original_bytes,
-        "History read cannot rewrite canonical bytes"
+        tool_bytes,
+        "History/tool reads cannot rewrite canonical bytes"
     );
     // Vanilla Pi names an unsaved file before its first assistant turn. Missing
     // history is not authority to replace that already-admitted chat identity.
@@ -540,6 +621,10 @@ fn actual_three_by_four_by_three_graph_admits_every_pane_and_resumes_exact_pi_fi
         !empty.file.exists(),
         "Observation must not fabricate canonical history"
     );
-    assert_eq!(model.requests.load(Ordering::SeqCst), 1);
+    assert_eq!(
+        model.requests.load(Ordering::SeqCst),
+        3,
+        "Only the original text turn and explicit bash/tool follow-up ran"
+    );
     workers.shutdown().unwrap();
 }

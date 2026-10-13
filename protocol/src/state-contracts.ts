@@ -55,6 +55,13 @@ const historyPage = z.object({ target: statePiBindingTargetSchema, readMode: his
   const cursor = value.cursor;
   return cursor === null || (JSON.stringify(cursor.target) === JSON.stringify(value.target) && cursor.readMode === value.readMode && cursor.collection === value.collection && cursor.headDigest === value.headDigest && cursor.after === value.entries.at(-1)?.entryId);
 });
+const toolCursor = z.object({ target: statePiBindingTargetSchema, readMode: historyReadMode, entryId: historyEntryId, toolCallId: historyEntryId, headDigest: historyDigest, offset: z.number().int().min(1).max(4 * 1024 * 1024) }).strict();
+const toolChunk = z.object({ target: statePiBindingTargetSchema, readMode: historyReadMode, entryId: historyEntryId, toolCallId: historyEntryId, headDigest: historyDigest, offset: z.number().int().min(0).max(4 * 1024 * 1024), text: z.string().refine(value => new TextEncoder().encode(value).length <= 8192), totalBytes: z.number().int().min(0).max(4 * 1024 * 1024), cursor: toolCursor.nullable() }).strict().refine(value => {
+  const end = value.offset + new TextEncoder().encode(value.text).length;
+  if (end > value.totalBytes || (value.readMode === "live" && value.target.runtime.host_generation !== value.target.hostGeneration)) return false;
+  const cursor = value.cursor;
+  return cursor === null ? end === value.totalBytes : value.text.length > 0 && end < value.totalBytes && cursor.offset === end && cursor.headDigest === value.headDigest && cursor.readMode === value.readMode && cursor.entryId === value.entryId && cursor.toolCallId === value.toolCallId && JSON.stringify(cursor.target) === JSON.stringify(value.target);
+});
 const domain = z.discriminatedUnion("kind", [z.object({ kind: z.literal("workspaces") }).strict(), z.object({ kind: z.literal("sessions"), workspaceId: uuid.nullable() }).strict()]);
 const cursor = z.object({ target: stateTargetSchema, revision, domain, after: uuid }).strict();
 const page = { target: stateTargetSchema, cursor: cursor.optional(), limit: z.number().int().min(1).max(50).default(8) };
@@ -66,6 +73,7 @@ export const stateRemoteMethods = {
   "axo.state.session.get": z.object({ target: stateSessionTargetSchema }).strict(),
   "axo.state.chat.observe": z.object({ target: stateSessionTargetSchema }).strict(),
   "axo.state.chat.get": z.object({ target: statePiBindingTargetSchema.refine(value => value.runtime.host_generation === value.hostGeneration) }).strict(),
+  "axo.state.chat.tool.get": z.object({ target: statePiBindingTargetSchema, readMode: historyReadMode, entryId: historyEntryId, toolCallId: historyEntryId, cursor: toolCursor.optional(), limit: z.number().int().min(4).max(8192).default(8192) }).strict().refine(value => (value.readMode !== "live" || value.target.runtime.host_generation === value.target.hostGeneration) && (value.cursor === undefined || (JSON.stringify(value.cursor.target) === JSON.stringify(value.target) && value.cursor.readMode === value.readMode && value.cursor.entryId === value.entryId && value.cursor.toolCallId === value.toolCallId))),
   "axo.state.chat.history": z.object({ target: statePiBindingTargetSchema, readMode: historyReadMode, collection: historyCollection.default("branch"), cursor: historyCursor.optional(), limit: z.number().int().min(1).max(50).default(8) }).strict().refine(value => (value.readMode !== "live" || value.target.runtime.host_generation === value.target.hostGeneration) && (value.cursor === undefined || (JSON.stringify(value.cursor.target) === JSON.stringify(value.target) && value.cursor.readMode === value.readMode && value.cursor.collection === value.collection))),
   "axo.state.session.create": z.object({ ...mutation, workspaceId: uuid.nullable(), name }).strict(),
   "axo.state.operation.get": z.object({ target: stateTargetSchema, commandId: uuid }).strict(),
@@ -87,6 +95,7 @@ export const stateResults = {
   "axo.state.session.get": envelope(stateSessionViewSchema),
   "axo.state.chat.observe": envelope(statePiObservationSchema).refine(value => value.value.kind === "notAdmitted" || (value.value.target.hostGeneration === value.hostGeneration && value.value.target.storeGeneration === value.storeGeneration)),
   "axo.state.chat.get": envelope(piLiveObservation).refine(value => value.value.target.runtime.host_generation === value.hostGeneration && value.value.target.hostGeneration === value.hostGeneration && value.value.target.storeGeneration === value.storeGeneration),
+  "axo.state.chat.tool.get": envelope(toolChunk).refine(value => value.value.target.hostGeneration === value.hostGeneration && value.value.target.storeGeneration === value.storeGeneration),
   "axo.state.chat.history": envelope(historyPage).refine(value => value.value.target.hostGeneration === value.hostGeneration && value.value.target.storeGeneration === value.storeGeneration),
   "axo.state.workspace.create": operation, "axo.state.session.create": operation, "axo.state.lifecycle.set": operation,
   "axo.state.pane.add": operation, "axo.state.pane.remove": operation, "axo.state.operation.get": operation,

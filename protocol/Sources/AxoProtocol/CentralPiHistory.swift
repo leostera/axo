@@ -45,17 +45,17 @@ extension CentralJSON {
         }
         return CentralPiHistoryPage(target: actual, readMode: readMode, collection: collection, headDigest: digest, leafId: leaf, entries: entries, cursor: next)
     }
-    private func piHistoryTarget(_ value: JSONValue, expected: CentralPiBindingTarget) throws -> CentralPiBindingTarget {
+    func piHistoryTarget(_ value: JSONValue, expected: CentralPiBindingTarget) throws -> CentralPiBindingTarget {
         let actual = try piBinding(value, source: expected.source, workspaceId: expected.workspaceId, sessionId: expected.sessionId)
         guard actual == expected else { throw failure }
         return actual
     }
-    private func historyDigest(_ value: JSONValue) throws -> String {
+    func historyDigest(_ value: JSONValue) throws -> String {
         let digest = try string(value)
         guard digest.utf8.count == 64, digest.utf8.allSatisfy({ (48...57).contains($0) || (97...102).contains($0) }) else { throw failure }
         return digest
     }
-    private func recordedID(_ value: JSONValue) throws -> String {
+    func recordedID(_ value: JSONValue) throws -> String {
         let id = try string(value)
         guard !id.isEmpty, id.utf8.count <= 128, !id.unicodeScalars.contains(where: { $0.properties.generalCategory == .control }) else { throw failure }
         return id

@@ -1,4 +1,5 @@
-//! Owned text-only HTTP model; counts requests without retaining prompt bodies.
+//! Owned HTTP model; counts requests without retaining prompt bodies. Tool mode
+//! asks vanilla Pi to run real bash and persist its own canonical result.
 use serde_json::json;
 use std::{
     io::{Read, Write},
@@ -108,8 +109,17 @@ fn respond(mut stream: TcpStream, count: &AtomicUsize) -> std::io::Result<()> {
         }
         bytes.extend_from_slice(&chunk[..size]);
     }
-    let _: serde_json::Value =
+    let request: serde_json::Value =
         serde_json::from_slice(&bytes[header_end..header_end + length]).map_err(|_| invalid())?;
+    let tool = request["messages"]
+        .as_array()
+        .and_then(|messages| messages.last())
+        .is_some_and(|message| {
+            message["role"] == "user"
+                && message["content"]
+                    .to_string()
+                    .contains("Owned central fixture tool request")
+        });
     count.fetch_add(1, Ordering::SeqCst);
     let frame = |delta: serde_json::Value, finish: serde_json::Value| {
         json!({"id":"owned","object":"chat.completion.chunk","created":1,"model":"fixture","choices":[{"index":0,"delta":delta,"finish_reason":finish}]}).to_string()
@@ -118,10 +128,14 @@ fn respond(mut stream: TcpStream, count: &AtomicUsize) -> std::io::Result<()> {
         "data: {}\n\ndata: {}\n\ndata: {}\n\ndata: [DONE]\n\n",
         frame(json!({"role":"assistant"}), json!(null)),
         frame(
-            json!({"content":"Owned central fixture complete"}),
+            if tool {
+                json!({"tool_calls":[{"index":0,"id":"owned-bash","type":"function","function":{"name":"bash","arguments":json!({"command":"i=0; while [ \"$i\" -lt 3000 ]; do printf 'λ界'; i=$((i+1)); done"}).to_string()}}]})
+            } else {
+                json!({"content":"Owned central fixture complete"})
+            },
             json!(null)
         ),
-        frame(json!({}), json!("stop"))
+        frame(json!({}), json!(if tool { "tool_calls" } else { "stop" }))
     );
     let response = format!(
         "HTTP/1.1 200 OK\r\nContent-Type: text/event-stream\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{body}",

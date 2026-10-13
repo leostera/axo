@@ -4,6 +4,7 @@
 mod observation_tests;
 mod pi_history;
 mod pi_observation;
+mod pi_tool;
 #[cfg(test)]
 mod tests;
 #[cfg(test)]
@@ -511,6 +512,10 @@ fn route(
                 request.limit,
                 records,
             )
+        }
+        "axo.state.chat.tool.get" => {
+            let input: pi_tool::Input = parse(params)?;
+            pi_tool::read(owner, machine, input)
         }
         "axo.state.chat.history" => {
             let request: pi_history::Input = parse(params)?;

@@ -12,7 +12,7 @@ use crate::{
 use sha2::{Digest, Sha256};
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
-enum ReadMode {
+pub(super) enum ReadMode {
     Live,
     Stopped,
 }
@@ -113,7 +113,7 @@ fn capture(
         attempt,
     })
 }
-fn head(tree: &history::CanonicalTree<'_>) -> String {
+pub(super) fn head(tree: &history::CanonicalTree<'_>) -> String {
     let history = tree.history();
     let mut digest = Sha256::new();
     for documents in [&history.entries, &history.branch] {
@@ -225,14 +225,12 @@ fn page(request: &Request, history: &History) -> Result<Value, (i32, &'static st
 }
 pub(super) fn read(owner: &Controller, machine: MachineId, input: Input) -> Outcome {
     let request = parse_request(input)?;
-    membership(&request.target.scope(), owner, machine)?;
-    match request.read_mode {
-        ReadMode::Live => read_live(owner, request),
-        ReadMode::Stopped => read_stopped(owner, request),
-    }
+    let read = CanonicalRead::capture(owner, machine, &request.target, request.read_mode)?;
+    let body = page(&request, read.history())?;
+    read.publish(owner, body)
 }
-fn envelope(owner: &Controller, request: &Request, revision: u64, body: Value) -> Outcome {
-    let result = json!({"hostGeneration":request.target.scope().host_generation,"storeGeneration":owner.generation().map_err(failure)?,"revision":revision,"value":body});
+fn envelope(owner: &Controller, target: &BindingTarget, revision: u64, body: Value) -> Outcome {
+    let result = json!({"hostGeneration":target.scope().host_generation,"storeGeneration":owner.generation().map_err(failure)?,"revision":revision,"value":body});
     if serde_json::to_vec(&result)
         .map_err(|_| (-32603, "Central encoding failed"))?
         .len()
@@ -242,53 +240,107 @@ fn envelope(owner: &Controller, request: &Request, revision: u64, body: Value) -
     }
     Ok(result)
 }
-fn read_live(owner: &Controller, request: Request) -> Outcome {
-    let read = super::pi_observation::read_history(owner, &request.target)?;
-    let body = page(&request, &read.history)?;
-    let result = envelope(owner, &request, read.revision(), body)?;
-    read.check(owner)?;
-    Ok(result)
+/// One captured read owns the original source until publication. Live controls
+/// and stopped files coexist intentionally; neither is a fallback for the other.
+pub(super) struct CanonicalRead {
+    target: BindingTarget,
+    source: Source,
 }
-fn read_stopped(owner: &Controller, request: Request) -> Outcome {
-    let original = capture(owner, &request.target)?;
-    let native = owner.runtime_owner();
-    let proof = native
-        .completion_evidence(request.target.runtime())
-        .ok_or((-32009, "Central Pi writer unproven"))?;
-    // Exclusion and canonical I/O occur after the database guard is released.
-    let lease = WriterLease::acquire(&original.binding.file)
-        .map_err(|_| (-32009, "Central Pi writer exclusion unavailable"))?;
-    let history = history::stopped(&original.binding, &proof, &lease)
-        .map_err(|_| (-32009, "Central stopped history unavailable"))?;
-    let body = page(&request, &history.history)?;
-    owner.ensure_owner().map_err(failure)?;
-    let current = capture(owner, &request.target)?;
-    if current.revision != original.revision
-        || current.binding != original.binding
-        || current.attempt != original.attempt
-        || native
-            .completion_evidence(request.target.runtime())
-            .is_none()
-    {
-        return Err((-32002, "Stale central history source"));
+enum Source {
+    Live(Box<super::pi_observation::LiveHistoryRead>),
+    Stopped(Box<StoppedRead>),
+}
+struct StoppedRead {
+    original: CapturedWriter,
+    lease: WriterLease,
+    history: history::StoppedHistory,
+}
+impl CanonicalRead {
+    pub(super) fn capture(
+        owner: &Controller,
+        machine: MachineId,
+        target: &BindingTarget,
+        mode: ReadMode,
+    ) -> Result<Self, (i32, &'static str)> {
+        membership(&target.scope(), owner, machine)?;
+        if mode == ReadMode::Live
+            && target.runtime().host_generation != target.scope().host_generation
+        {
+            return Err((-32602, "Invalid central live history target"));
+        }
+        let source = match mode {
+            ReadMode::Live => Source::Live(Box::new(super::pi_observation::read_history(
+                owner, target,
+            )?)),
+            ReadMode::Stopped => {
+                let original = capture(owner, target)?;
+                let native = owner.runtime_owner();
+                let proof = native
+                    .completion_evidence(target.runtime())
+                    .ok_or((-32009, "Central Pi writer unproven"))?;
+                // No database lock spans exclusion or canonical I/O.
+                let lease = WriterLease::acquire(&original.binding.file)
+                    .map_err(|_| (-32009, "Central Pi writer exclusion unavailable"))?;
+                let history = history::stopped(&original.binding, &proof, &lease)
+                    .map_err(|_| (-32009, "Central stopped history unavailable"))?;
+                Source::Stopped(Box::new(StoppedRead {
+                    original,
+                    lease,
+                    history,
+                }))
+            }
+        };
+        let read = Self {
+            target: target.clone(),
+            source,
+        };
+        read.check(owner)?;
+        Ok(read)
     }
-    lease
-        .check_for(&original.binding.file)
-        .map_err(|_| (-32008, "Central Pi storage fenced"))?;
-    let result = envelope(owner, &request, original.revision, body)?;
-    history
-        .check()
-        .map_err(|_| (-32008, "Central Pi storage fenced"))?;
-    lease
-        .check_for(&original.binding.file)
-        .map_err(|_| (-32008, "Central Pi storage fenced"))?;
-    owner.ensure_owner().map_err(failure)?;
-    let published = capture(owner, &request.target)?;
-    if published.revision != original.revision
-        || published.binding != original.binding
-        || published.attempt != original.attempt
-    {
-        return Err((-32002, "Stale central history source"));
+    pub(super) fn history(&self) -> &History {
+        match &self.source {
+            Source::Live(read) => &read.history,
+            Source::Stopped(read) => &read.history.history,
+        }
     }
-    Ok(result)
+    fn check(&self, owner: &Controller) -> Result<(), (i32, &'static str)> {
+        match &self.source {
+            Source::Live(read) => read.check(owner),
+            Source::Stopped(read) => {
+                let StoppedRead {
+                    original,
+                    lease,
+                    history,
+                } = read.as_ref();
+                history
+                    .check()
+                    .map_err(|_| (-32008, "Central Pi storage fenced"))?;
+                lease
+                    .check_for(&original.binding.file)
+                    .map_err(|_| (-32008, "Central Pi storage fenced"))?;
+                owner.ensure_owner().map_err(failure)?;
+                let current = capture(owner, &self.target)?;
+                if current.revision != original.revision
+                    || current.binding != original.binding
+                    || current.attempt != original.attempt
+                    || owner
+                        .runtime_owner()
+                        .completion_evidence(self.target.runtime())
+                        .is_none()
+                {
+                    return Err((-32002, "Stale central history source"));
+                }
+                Ok(())
+            }
+        }
+    }
+    pub(super) fn publish(&self, owner: &Controller, body: Value) -> Outcome {
+        let revision = match &self.source {
+            Source::Live(read) => read.revision(),
+            Source::Stopped(read) => read.original.revision,
+        };
+        let result = envelope(owner, &self.target, revision, body)?;
+        self.check(owner)?;
+        Ok(result)
+    }
 }

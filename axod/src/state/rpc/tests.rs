@@ -117,6 +117,15 @@ fn central_pi_observation_requires_closed_current_scope_and_never_starts_work() 
         )["error"]["code"],
         -32009
     );
+    assert_eq!(
+        fixture.call(
+            "axo.state.chat.tool.get",
+            json!({"target":exact,"readMode":"live","entryId":"result","toolCallId":"call"}),
+            false
+        )["error"]["code"],
+        -32009
+    );
+    assert_eq!(fixture.call("axo.state.chat.tool.get", json!({"target":exact,"readMode":"live","entryId":"result","toolCallId":"call","offset":1}), false)["error"]["code"], -32602);
     for key in ["runtime", "chatId", "workspaceId"] {
         let mut missing = exact.clone();
         missing.as_object_mut().unwrap().remove(key);
@@ -133,6 +142,10 @@ fn central_pi_observation_requires_closed_current_scope_and_never_starts_work() 
             -32602
         );
     }
+    assert!(
+        fixture.owner.runtime_owner().list().is_empty(),
+        "Canonical reads cannot start a runtime"
+    );
     assert_eq!(fixture.owner.revision().unwrap(), original_revision);
     assert!(fixture.owner.runtime_owner().list().is_empty());
 }

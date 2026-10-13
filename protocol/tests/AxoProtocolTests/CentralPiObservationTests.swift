@@ -114,6 +114,28 @@ final class CentralPiObservationTests: XCTestCase {
         page["target"] = target(); page["readMode"] = "stopped"
         XCTAssertThrowsError(try read.parseResult(envelope(page)))
     }
+    func testToolChunksRequireExactCallHeadAndUtf8Progress() throws {
+        let observed = try request().parseResult(envelope(["kind": "live", "target": target(), "state": state()]))
+        guard case .piObservation(.live(let captured, _)) = observed.payload else { return XCTFail("Binding") }
+        let read = try CentralRequest.piTool(target: captured, readMode: .live, entryId: "result", toolCallId: "call")
+        let digest = String(repeating: "a", count: 64)
+        let next: [String: Any] = ["target": target(), "readMode": "live", "entryId": "result", "toolCallId": "call", "headDigest": digest, "offset": 5]
+        var body: [String: Any] = ["target": target(), "readMode": "live", "entryId": "result", "toolCallId": "call", "headDigest": digest, "offset": 0, "text": "λ界", "totalBytes": 10, "cursor": next]
+        let parsed = try read.parseResult(envelope(body))
+        guard case .piTool(let chunk) = parsed.payload, let cursor = chunk.cursor else { return XCTFail("Chunk") }
+        XCTAssertEqual(cursor.offset, 5)
+        XCTAssertNil(read.commandId)
+        let continued = try CentralRequest.piTool(target: captured, readMode: .live, entryId: "result", toolCallId: "call", cursor: cursor)
+        body["offset"] = 5; body["cursor"] = NSNull()
+        _ = try continued.parseResult(envelope(body))
+        body["headDigest"] = String(repeating: "b", count: 64)
+        XCTAssertThrowsError(try continued.parseResult(envelope(body)))
+        XCTAssertThrowsError(try CentralRequest.piTool(target: captured, readMode: .stopped, entryId: "result", toolCallId: "call", cursor: cursor))
+        XCTAssertThrowsError(try CentralRequest.piTool(target: captured, readMode: .live, entryId: "result", toolCallId: "other", cursor: cursor))
+        XCTAssertThrowsError(try CentralRequest.piTool(target: captured, readMode: .live, entryId: "result", toolCallId: "call", limit: 3))
+        body["offset"] = 0; body["headDigest"] = digest; body["cursor"] = next; body["text"] = ""
+        XCTAssertThrowsError(try read.parseResult(envelope(body)))
+    }
     func testQuestionBoundsAndInteractionCannotDrift() throws {
         let request = try request()
         let options: [[String: Any]] = [["id": id(10), "label": "First"], ["id": id(11), "label": "Second"]]

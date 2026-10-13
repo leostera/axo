@@ -188,6 +188,11 @@ struct CentralResultParser {
             let view = try json.view(body, source: source, revision: revision)
             guard view.session.sessionId == id, view.session.workspaceId == workspace else { throw json.failure }
             payload = .session(view)
+        case .piTool(let target, let readMode, let entryId, let toolCallId, let cursor, let limit):
+            let encoder = JSONEncoder()
+            encoder.outputFormatting = [.withoutEscapingSlashes]
+            guard try encoder.encode(value).count <= 48 * 1024 else { throw json.failure }
+            payload = try .piTool(json.piTool(body, target: target, readMode: readMode, entryId: entryId, toolCallId: toolCallId, cursor: cursor, limit: limit))
         case .piHistory(let target, let readMode, let collection, let cursor, let limit):
             let encoder = JSONEncoder()
             encoder.outputFormatting = [.withoutEscapingSlashes]

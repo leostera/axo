@@ -65,6 +65,19 @@ test("live history requires a current runtime and mode-bound continuations", () 
   assert.equal(result.safeParse(envelope({ ...page, cursor: { ...cursor, readMode: "stopped" } })).success, false);
   assert.equal(result.safeParse(envelope({ ...page, target: historical, cursor: null })).success, false);
 });
+test("tool chunks have exact call/mode/head/UTF-8 progress and no arbitrary offsets", () => {
+  const method = remoteMethods["axo.state.chat.tool.get"], result = results["axo.state.chat.tool.get"];
+  const request = { target, readMode: "live", entryId: "result", toolCallId: "call" };
+  assert.ok(method.safeParse(request).success);
+  for (const extra of [{ limit: 3 }, { limit: 8193 }, { cursor: null }, { offset: 1 }, { entryId: "\0" }]) assert.equal(method.safeParse({ ...request, ...extra }).success, false);
+  const headDigest = "a".repeat(64), cursor = { ...request, headDigest, offset: 5 };
+  const body = { ...request, headDigest, offset: 0, text: "λ界", totalBytes: 10, cursor };
+  assert.ok(result.safeParse(envelope(body)).success);
+  assert.equal(method.safeParse({ ...request, readMode: "stopped", cursor }).success, false);
+  assert.equal(method.safeParse({ ...request, toolCallId: "other", cursor }).success, false);
+  for (const invalid of [{ ...body, text: "" }, { ...body, cursor: null }, { ...body, cursor: { ...cursor, offset: 4 } }, { ...body, cursor: { ...cursor, headDigest: "b".repeat(64) } }, { ...body, text: "x".repeat(8193) }]) assert.equal(result.safeParse(envelope(invalid)).success, false);
+  assert.ok(result.safeParse(envelope({ ...body, offset: 5, cursor: null })).success);
+});
 test("questions keep distinct options, active interaction and exact UTF-16 bounds", () => {
   const options = [{ id: id(10), label: "First" }, { id: id(11), label: "Second" }];
   const question = { id: id(9), interactionId: id(12), title: "😀".repeat(1000), options };

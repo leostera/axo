@@ -21,6 +21,7 @@ public struct CentralRequest: Sendable {
         case piObservation(UUID?, UUID)
         case piSnapshot(CentralPiBindingTarget)
         case piHistory(CentralPiBindingTarget, CentralPiHistoryReadMode, CentralPiHistoryCollection, CentralPiHistoryCursor?, Int)
+        case piTool(target: CentralPiBindingTarget, readMode: CentralPiHistoryReadMode, entryId: String, toolCallId: String, cursor: CentralPiToolCursor?, limit: Int)
         case mutation(UUID, CentralRevision, Mutation)
         case operation(UUID)
         case completion(UUID?, UUID, [TerminalRuntime])
@@ -35,7 +36,7 @@ public struct CentralRequest: Sendable {
     private init(method: String, parameters: JSONValue, machine: MachineTarget, source: CentralSource?, intent: Intent) {
         self.method = method; self.parameters = parameters; self.machine = machine; self.source = source; self.intent = intent
     }
-    public static let readMethods: Set<String> = ["axo.state.get", "axo.state.workspace.list", "axo.state.session.list", "axo.state.session.get", "axo.state.chat.observe", "axo.state.chat.get", "axo.state.chat.history", "axo.state.operation.get"]
+    public static let readMethods: Set<String> = ["axo.state.get", "axo.state.workspace.list", "axo.state.session.list", "axo.state.session.get", "axo.state.chat.observe", "axo.state.chat.get", "axo.state.chat.history", "axo.state.chat.tool.get", "axo.state.operation.get"]
     public static func bootstrap(machine: MachineTarget) throws -> Self {
         let method = "axo.state.get"
         try ids([machine.machineId, machine.hostGeneration], method: method)
@@ -86,6 +87,19 @@ public struct CentralRequest: Sendable {
         var fields: [String: JSONValue] = ["target": try target.json, "readMode": .string(readMode.rawValue), "collection": .string(collection.rawValue), "limit": .number(Double(limit))]
         if let cursor { fields["cursor"] = try cursor.json }
         return Self(method: method, parameters: .object(fields), machine: target.source.machine, source: target.source, intent: .piHistory(target, readMode, collection, cursor, limit))
+    }
+    public static func piTool(target: CentralPiBindingTarget, readMode: CentralPiHistoryReadMode, entryId: String, toolCallId: String, cursor: CentralPiToolCursor? = nil, limit: Int = 8192) throws -> Self {
+        let method = "axo.state.chat.tool.get"
+        let validID: (String) -> Bool = { !$0.isEmpty && $0.utf8.count <= 128 && !$0.unicodeScalars.contains(where: { $0.properties.generalCategory == .control }) }
+        guard validID(entryId), validID(toolCallId), (4...8192).contains(limit),
+              readMode != .live || target.runtime.hostGeneration == target.source.machine.hostGeneration,
+              cursor.map({ $0.target == target && $0.readMode == readMode && $0.entryId == entryId && $0.toolCallId == toolCallId }) ?? true else {
+            throw AxoProtocolValidationError.invalidParameters(method: method)
+        }
+        var fields: [String: JSONValue] = ["target": try target.json, "readMode": .string(readMode.rawValue), "entryId": .string(entryId), "toolCallId": .string(toolCallId), "limit": .number(Double(limit))]
+        if let cursor { fields["cursor"] = try cursor.json }
+        return Self(method: method, parameters: .object(fields), machine: target.source.machine, source: target.source,
+                    intent: .piTool(target: target, readMode: readMode, entryId: entryId, toolCallId: toolCallId, cursor: cursor, limit: limit))
     }
     public static func createWorkspace(source: CentralSource, commandId: UUID, expectedRevision: CentralRevision, name: String, directoryPath: String) throws -> Self {
         try mutate(source, commandId, expectedRevision, .workspace(name, directoryPath))

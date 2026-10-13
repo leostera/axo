@@ -149,6 +149,7 @@ public enum CentralPayload: Equatable, Sendable {
     case piObservation(CentralPiObservation)
     case piSnapshot(target: CentralPiBindingTarget, state: CentralPiLiveState)
     case piHistory(CentralPiHistoryPage)
+    case piTool(CentralPiToolChunk)
     case operation(original: CentralOperation?, observation: CentralSessionView?)
     case completion([TerminalRuntime])
 }
