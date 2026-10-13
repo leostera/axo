@@ -1,19 +1,21 @@
 //! Exact resume validation and cooperative managed-writer lease. No transcript writes.
-use super::Binding;
+use super::{
+    Binding,
+    canonical_file::{CanonicalFile, Directory},
+};
 use crate::pi_control::ChatId;
 use serde::Deserialize;
 use std::{
     collections::BTreeSet,
-    fs::{self, File, OpenOptions},
-    io::{self, Read},
-    os::{
-        fd::AsRawFd,
-        unix::fs::{MetadataExt, OpenOptionsExt, PermissionsExt},
-    },
+    fs::{self, File},
+    io,
+    os::fd::AsRawFd,
     path::{Path, PathBuf},
 };
 pub struct WriterLease {
     file: File,
+    directory: Directory,
+    name: std::ffi::OsString,
 }
 impl Drop for WriterLease {
     fn drop(&mut self) {
@@ -29,26 +31,24 @@ impl WriterLease {
             .file_name()
             .and_then(|name| name.to_str())
             .ok_or_else(|| io::Error::other("Invalid writer binding"))?;
-        let lock = file.with_file_name(format!(".{name}.axo-writer.lock"));
-        let handle = OpenOptions::new()
-            .read(true)
-            .write(true)
-            .create(true)
-            .mode(0o600)
-            .custom_flags(libc::O_NOFOLLOW | libc::O_NONBLOCK | libc::O_CLOEXEC)
-            .open(lock)?;
-        let metadata = handle.metadata()?;
-        if !metadata.is_file()
-            || metadata.nlink() != 1
-            || metadata.uid() != unsafe { libc::geteuid() }
-            || metadata.permissions().mode() & 0o077 != 0
-        {
-            return Err(io::Error::other("Invalid managed writer lease"));
-        }
+        let directory = Directory::open(
+            file.parent()
+                .ok_or_else(|| io::Error::other("Invalid writer parent"))?,
+        )?;
+        let name = std::ffi::OsString::from(format!(".{name}.axo-writer.lock"));
+        let handle = directory.writer_lock(&name)?;
         if unsafe { libc::flock(handle.as_raw_fd(), libc::LOCK_EX | libc::LOCK_NB) } != 0 {
             return Err(io::Error::other("Persistence already has a managed writer"));
         }
-        Ok(Self { file: handle })
+        directory.check_leaf(&name, &handle)?;
+        Ok(Self {
+            file: handle,
+            directory,
+            name,
+        })
+    }
+    pub(crate) fn check(&self) -> io::Result<()> {
+        self.directory.check_leaf(&self.name, &self.file)
     }
 }
 #[cfg(test)]
@@ -107,18 +107,6 @@ pub(super) fn validate_header(line: &str, binding: &Binding) -> io::Result<()> {
     Ok(())
 }
 pub fn validate_resume(binding: &Binding, directory: &Path, sessions: &Path) -> io::Result<()> {
-    let mut file = OpenOptions::new()
-        .read(true)
-        .custom_flags(libc::O_NOFOLLOW | libc::O_NONBLOCK | libc::O_CLOEXEC)
-        .open(&binding.file)?;
-    let metadata = file.metadata()?;
-    if !metadata.is_file()
-        || metadata.nlink() != 1
-        || metadata.uid() != unsafe { libc::geteuid() }
-        || metadata.len() > 4 * 1024 * 1024
-    {
-        return Err(io::Error::other("Invalid resume file"));
-    }
     let parent = binding
         .file
         .parent()
@@ -128,10 +116,7 @@ pub fn validate_resume(binding: &Binding, directory: &Path, sessions: &Path) -> 
     {
         return Err(io::Error::other("Resume directory binding mismatch"));
     }
-    let mut bytes = Vec::new();
-    file.by_ref()
-        .take(4 * 1024 * 1024 + 1)
-        .read_to_end(&mut bytes)?;
+    let bytes = CanonicalFile::open(&binding.file)?.read()?;
     if bytes.len() > 4 * 1024 * 1024 || bytes.last() != Some(&b'\n') {
         return Err(io::Error::other("Incomplete resume history"));
     }

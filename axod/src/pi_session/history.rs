@@ -1,13 +1,8 @@
 //! Explicit stopped-file reads of public Pi JSONL v3: reconstruct the tree, not a flat transcript.
-use super::{Binding, CanonicalReadError as Error, persistence};
+use super::{Binding, CanonicalReadError as Error, canonical_file::CanonicalFile, persistence};
 use crate::pi_control::{CanonicalDocument, History};
 use serde::Deserialize;
-use std::{
-    collections::BTreeMap,
-    fs::OpenOptions,
-    io::Read,
-    os::unix::fs::{MetadataExt, OpenOptionsExt},
-};
+use std::collections::BTreeMap;
 #[derive(Deserialize)]
 #[serde(rename_all = "camelCase")]
 struct Link {
@@ -18,36 +13,12 @@ struct Link {
 /// read alone never establishes that Pi has stopped or authorizes replacement.
 pub fn stopped(binding: &Binding) -> Result<History, Error> {
     let parent = binding.file.parent().ok_or(Error::Invalid)?;
-    let metadata = std::fs::symlink_metadata(parent).map_err(|_| Error::Unavailable)?;
-    if !metadata.is_dir()
-        || metadata.uid() != unsafe { libc::geteuid() }
-        || metadata.mode() & 0o077 != 0
-    {
-        return Err(Error::Invalid);
-    }
     persistence::validate_resume(binding, &binding.directory, parent)
         .map_err(|_| Error::Invalid)?;
-    let mut file = OpenOptions::new()
-        .read(true)
-        .custom_flags(libc::O_NOFOLLOW | libc::O_NONBLOCK | libc::O_CLOEXEC)
-        .open(&binding.file)
-        .map_err(|_| Error::Unavailable)?;
-    let before = file.metadata().map_err(|_| Error::Unavailable)?;
-    if !before.is_file() || before.nlink() != 1 || before.len() > 4 * 1024 * 1024 {
-        return Err(Error::Invalid);
-    }
-    let mut bytes = Vec::new();
-    file.by_ref()
-        .take(4 * 1024 * 1024 + 1)
-        .read_to_end(&mut bytes)
-        .map_err(|_| Error::Unavailable)?;
-    let after = file.metadata().map_err(|_| Error::Unavailable)?;
-    if before.len() != after.len()
-        || before.mtime() != after.mtime()
-        || before.mtime_nsec() != after.mtime_nsec()
-    {
-        return Err(Error::Changed);
-    }
+    let bytes = CanonicalFile::open(&binding.file)
+        .map_err(|_| Error::Unavailable)?
+        .read()
+        .map_err(|_| Error::Changed)?;
     if bytes.len() > 4 * 1024 * 1024 || bytes.last() != Some(&b'\n') {
         return Err(Error::Invalid);
     }

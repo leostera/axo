@@ -273,6 +273,8 @@ Use a reviewed Rust SQLite dependency/VFS configuration, foreign-key enforcement
 
 Retain approved directory/launch authority and current local/remote role checks. Database-backed configuration must not become arbitrary remote argv/path execution. SQLite is persistence, not a new authentication or sandbox boundary. Respect macOS ServiceManagement, signing, TCC and automation denials.
 
+For Pi canonical-file and writer-lock I/O, I capture the private parent's identity while resolving its configured location, then use pinned directory-relative no-follow opens. I do not rewrite the recorded binding path or repair permissions. The private parent must remain owned and mode 0700 in both its selected/resolved namespaces; data and lock leaves must remain owned regular single-link mode-0600 files. A canonical read is bounded to 4 MiB and publishes bytes only if the pinned/named leaf identity, length and modification/change stamps remain consistent. A writer lease retains its parent descriptor and named lock identity; an exchanged parent or lock blocks admission/live readiness rather than proving completion or permitting replacement. Stopped-file reads still require separate exact completion and writer-exclusion authority; safe file I/O alone grants neither.
+
 Diagnostics include only bounded operation/lifecycle categories, revision/epoch, and failure facts. Never log SQL parameter values, prompt/terminal/audio content, secrets, argv, arbitrary RPC bodies, or sensitive paths. Support export is separately explicit and metadata-only.
 
 ### Fresh start and clean cutover

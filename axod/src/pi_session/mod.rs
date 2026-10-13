@@ -1,5 +1,6 @@
 //! Vanilla Pi's canonical binding, owned control endpoint and writer lease.
 //! No catalog, frontend-start RPC or JSON receipt store lives here.
+mod canonical_file;
 pub mod history;
 pub mod persistence;
 pub mod policy;
@@ -34,5 +35,5 @@ pub struct Binding {
 pub(crate) struct Running {
     pub binding: Binding,
     pub control: Control,
-    pub(crate) _lease: persistence::WriterLease,
+    pub(crate) lease: persistence::WriterLease,
 }

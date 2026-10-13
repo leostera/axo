@@ -177,6 +177,10 @@ fn capture(
     if running.binding != binding {
         return Err((-32002, "Stale central Pi binding"));
     }
+    running
+        .lease
+        .check()
+        .map_err(|_| (-32008, "Central Pi storage fenced"))?;
     let observed = running.control.current().map_err(control_failure)?;
     if native.owned_running_pid(binding.runtime) != Some(observed.pid) {
         return Err((-32002, "Stale central Pi binding"));
@@ -240,6 +244,10 @@ fn capture_snapshot(
     if running.binding != binding {
         return Err((-32002, "Stale central Pi binding"));
     }
+    running
+        .lease
+        .check()
+        .map_err(|_| (-32008, "Central Pi storage fenced"))?;
     Ok(SnapshotCapture {
         revision: database.revision().map_err(failure)?,
         configuration: specification.configuration,

@@ -269,7 +269,9 @@ impl Controller {
                 .unwrap()
                 .get(&attempt.runtime.target.session_id)
                 .is_some_and(|running| {
-                    running.binding.runtime == attempt.runtime && running.control.current().is_ok()
+                    running.binding.runtime == attempt.runtime
+                        && running.lease.check().is_ok()
+                        && running.control.current().is_ok()
                 })
     }
     fn current(&self, spec: &Specification) -> bool {
@@ -391,6 +393,7 @@ impl Controller {
                 Some(lease) => lease,
                 None => WriterLease::acquire(&file).map_err(|_| Error::Conflict)?,
             };
+            lease.check().map_err(|_| Error::UnsafeStorage)?;
             let binding = Binding {
                 workspace_id: spec.workspace_id,
                 session_id: spec.pane.session_id,
@@ -404,7 +407,7 @@ impl Controller {
             let running = Arc::new(Running {
                 binding: binding.clone(),
                 control,
-                _lease: lease,
+                lease,
             });
             self.native
                 .managed_live
