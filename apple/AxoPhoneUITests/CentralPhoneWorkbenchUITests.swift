@@ -22,6 +22,9 @@ final class CentralPhoneWorkbenchUITests: XCTestCase {
         let send = app.buttons["central-pi-send"]
         XCTAssertTrue(send.exists)
         XCTAssertFalse(send.isEnabled, "Unavailable Pi must not show a successful or actionable composer")
+        let voice = app.buttons["voicePromptButton"]
+        XCTAssertTrue(voice.exists)
+        XCTAssertFalse(voice.isEnabled, "Voice capture requires the same exact admitted live binding as typed input")
 
         app.buttons["Close"].tap()
         XCTAssertTrue(session.waitForExistence(timeout: 5))
