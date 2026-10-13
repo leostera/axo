@@ -49,9 +49,6 @@ final class AxodWorkbenchApp: NSObject, NSApplicationDelegate, NSWindowDelegate,
 
     func applicationDidFinishLaunching(_ notification: Notification) {
         MacAppearance.applyPreference()
-        if CommandLine.arguments.contains("-self-test") || CommandLine.arguments.contains("-ui-test") {
-            fputs("Retired startup fixture flags are unsupported\n", stderr); exit(2)
-        }
 #if !DEBUG
         if CommandLine.arguments.contains("-repair-stopped-service") || CommandLine.arguments.contains("-repair-stopped-service-parent") {
             fputs("Axo diagnostic flags require a development build\n", stderr); exit(2)
