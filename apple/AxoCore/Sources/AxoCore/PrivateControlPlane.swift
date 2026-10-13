@@ -15,6 +15,17 @@ public struct AxoControlPlaneEndpoint: Equatable, Sendable {
               url.path.isEmpty || url.path == "/" else { throw AxoControlPlaneEndpointError.invalidEndpoint }
         baseURL = url
     }
+    #if DEBUG
+    /// Explicit transport exception for signed synthetic credentials and a local owned API fixture.
+    public init(ownedLoopbackFixture origin: String) throws {
+        guard let url = URL(string: origin), url.scheme == "http", url.host == "127.0.0.1",
+              let port = url.port, (1...65_535).contains(port), url.user == nil, url.password == nil, url.query == nil,
+              url.fragment == nil, url.path.isEmpty || url.path == "/" else {
+            throw AxoControlPlaneEndpointError.invalidEndpoint
+        }
+        baseURL = url
+    }
+    #endif
     public var rpcURL: URL {
         var components = URLComponents(url: baseURL, resolvingAgainstBaseURL: false)!
         components.path = "/v1/rpc"
@@ -22,7 +33,7 @@ public struct AxoControlPlaneEndpoint: Equatable, Sendable {
     }
     public func clientSocketURL(machineID: UUID) -> URL {
         var components = URLComponents(url: baseURL, resolvingAgainstBaseURL: false)!
-        components.scheme = "wss"
+        components.scheme = baseURL.scheme == "https" ? "wss" : "ws"
         components.path = "/v1/machines/\(machineID.uuidString.lowercased())/client"
         return components.url!
     }

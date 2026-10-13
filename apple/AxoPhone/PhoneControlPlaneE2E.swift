@@ -33,7 +33,7 @@ import Foundation
         guard configuration.version == 1, configuration.origin.host == "127.0.0.1" else {
             throw CocoaError(.fileReadCorruptFile)
         }
-        let endpoint = try AxoControlPlaneEndpoint(configuration.origin.absoluteString)
+        let endpoint = try AxoControlPlaneEndpoint(ownedLoopbackFixture: configuration.origin.absoluteString)
         let credential = try AxoControlPlaneAccessCookie(configuration.cookie)
         return CentralPhoneWorkbenchModel(endpoint: endpoint, credential: credential, persistsCredentials: false)
     }

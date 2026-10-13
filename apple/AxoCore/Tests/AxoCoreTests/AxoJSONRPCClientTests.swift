@@ -26,6 +26,20 @@ final class AxoJSONRPCClientTests: XCTestCase {
         XCTAssertThrowsError(try AxoControlPlaneEndpoint("http://api.axo.leostera.dev"))
         XCTAssertThrowsError(try AxoControlPlaneEndpoint("https://user@api.axo.leostera.dev"))
         XCTAssertThrowsError(try AxoControlPlaneEndpoint("https://api.axo.leostera.dev/v1/rpc"))
+        #if DEBUG
+        let fixture = try AxoControlPlaneEndpoint(ownedLoopbackFixture: "http://127.0.0.1:8787")
+        XCTAssertEqual(fixture.rpcURL.absoluteString, "http://127.0.0.1:8787/v1/rpc")
+        XCTAssertEqual(
+            fixture.clientSocketURL(machineID: UUID(uuidString: "11111111-1111-4111-8111-111111111111")!).absoluteString,
+            "ws://127.0.0.1:8787/v1/machines/11111111-1111-4111-8111-111111111111/client"
+        )
+        XCTAssertThrowsError(try AxoControlPlaneEndpoint(ownedLoopbackFixture: "http://example.com:8787"))
+        XCTAssertThrowsError(try AxoControlPlaneEndpoint(ownedLoopbackFixture: "http://localhost:8787"))
+        XCTAssertThrowsError(try AxoControlPlaneEndpoint(ownedLoopbackFixture: "http://127.0.0.1"))
+        XCTAssertThrowsError(try AxoControlPlaneEndpoint(ownedLoopbackFixture: "http://127.0.0.1:0"))
+        XCTAssertThrowsError(try AxoControlPlaneEndpoint(ownedLoopbackFixture: "http://127.0.0.1:65536"))
+        XCTAssertThrowsError(try AxoControlPlaneEndpoint(ownedLoopbackFixture: "https://127.0.0.1:8787"))
+        #endif
     }
 
     func testHTTPDiscoveryUsesOnlyCFAuthorizationCookieAndCorrelatesResponse() async throws {
