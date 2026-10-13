@@ -38,6 +38,18 @@ test("exact snapshot contract requires binding identities and returns live state
   assert.equal(result.safeParse(envelope({ kind: "stopped", target })).success, false);
   assert.equal(result.safeParse(envelope({ kind: "notAdmitted" })).success, false);
 });
+test("stopped history has closed source/head/collection continuations and no live-file fallback", () => {
+  const method = remoteMethods["axo.state.chat.history"], result = results["axo.state.chat.history"];
+  assert.ok(method.safeParse({ target, readMode: "stopped", limit: 1 }).success);
+  for (const extra of [{ readMode: "live" }, { cursor: null }, { limit: 0 }, { limit: 51 }, { file: "/not-authority" }]) assert.equal(method.safeParse({ target, readMode: "stopped", ...extra }).success, false);
+  const entry = { entryId: "first", parentId: null, timestamp: "now", kind: "message", role: "user", text: "owned turn", truncated: false, toolCallId: null, toolName: null, toolCalls: [] };
+  const headDigest = "a".repeat(64);
+  const cursor = { target, readMode: "stopped", collection: "branch", headDigest, after: "first" };
+  const page = { target, readMode: "stopped", collection: "branch", headDigest, leafId: "last", entries: [entry], cursor };
+  assert.ok(result.safeParse(envelope(page)).success);
+  assert.equal(method.safeParse({ target, readMode: "stopped", collection: "entries", cursor }).success, false);
+  for (const invalid of [{ ...page, readMode: "live" }, { ...page, entries: [] }, { ...page, entries: [entry, entry] }, { ...page, cursor: { ...cursor, headDigest: "b".repeat(64) } }, { ...page, cursor: { ...cursor, after: "other" } }]) assert.equal(result.safeParse(envelope(invalid)).success, false);
+});
 test("questions keep distinct options, active interaction and exact UTF-16 bounds", () => {
   const options = [{ id: id(10), label: "First" }, { id: id(11), label: "Second" }];
   const question = { id: id(9), interactionId: id(12), title: "😀".repeat(1000), options };

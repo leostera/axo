@@ -299,6 +299,91 @@ fn actual_three_by_four_by_three_graph_admits_every_pane_and_resumes_exact_pi_fi
             .iter()
             .all(|observation| observation.availability == Availability::Live)
     });
+    let history_target =
+        observe(&controller, machine, &resumed)["result"]["value"]["target"].clone();
+    let read_history = |cursor: Option<serde_json::Value>| {
+        let mut params = json!({"target":history_target,"readMode":"stopped","limit":1});
+        if let Some(cursor) = cursor {
+            params["cursor"] = cursor;
+        }
+        crate::state::rpc::dispatch(
+            crate::rpc::Call {
+                id: Some(json!(6)),
+                method: "axo.state.chat.history".into(),
+                params: Some(params),
+            },
+            &controller,
+            machine,
+            false,
+        )
+        .unwrap()
+    };
+    assert_eq!(
+        read_history(None)["error"]["code"],
+        -32009,
+        "Live writer cannot use stopped file history"
+    );
+    controller
+        .set_lifecycle(
+            CommandId::new(),
+            controller.revision().unwrap(),
+            LifecycleTarget::Session {
+                workspace_id: resumed.workspace_id,
+                session_id: session,
+            },
+            DesiredLifecycle::Archived,
+        )
+        .unwrap();
+    wait(|| {
+        controller.native.runtime_completed(resumed.runtime)
+            && controller
+                .database
+                .lock()
+                .unwrap()
+                .attempt(resumed.pane_id)
+                .unwrap()
+                .is_some_and(|attempt| attempt.phase == AttemptPhase::CompletionProven)
+            && !controller
+                .native
+                .managed_live
+                .lock()
+                .unwrap()
+                .contains_key(&session)
+    });
+    let exclusion = WriterLease::acquire(&resumed.file).unwrap();
+    assert_eq!(
+        read_history(None)["error"]["code"],
+        -32009,
+        "A held writer lease blocks stopped history"
+    );
+    drop(exclusion);
+    let first_history = read_history(None);
+    assert_eq!(
+        first_history["result"]["value"]["entries"]
+            .as_array()
+            .unwrap()
+            .len(),
+        1
+    );
+    let cursor = first_history["result"]["value"]["cursor"].clone();
+    assert!(
+        !cursor.is_null(),
+        "Actual vanilla Pi turn has a continuation"
+    );
+    let next_history = read_history(Some(cursor));
+    assert_eq!(
+        next_history["result"]["value"]["headDigest"],
+        first_history["result"]["value"]["headDigest"]
+    );
+    assert_ne!(
+        next_history["result"]["value"]["entries"][0]["entryId"],
+        first_history["result"]["value"]["entries"][0]["entryId"]
+    );
+    assert_eq!(
+        fs::read(&resumed.file).unwrap(),
+        original_bytes,
+        "History read cannot rewrite canonical bytes"
+    );
     // Vanilla Pi names an unsaved file before its first assistant turn. Missing
     // history is not authority to replace that already-admitted chat identity.
     let empty = controller
@@ -351,6 +436,23 @@ fn actual_three_by_four_by_three_graph_admits_every_pane_and_resumes_exact_pi_fi
         json!(empty.runtime)
     );
     assert!(stopped["result"]["value"].get("state").is_none());
+    let missing_history = crate::state::rpc::dispatch(
+        crate::rpc::Call {
+            id: Some(json!(7)),
+            method: "axo.state.chat.history".into(),
+            params: Some(
+                json!({"target":stopped["result"]["value"]["target"],"readMode":"stopped"}),
+            ),
+        },
+        &controller,
+        machine,
+        false,
+    )
+    .unwrap();
+    assert_eq!(
+        missing_history["error"]["code"], -32009,
+        "Completion does not manufacture a never-written history file"
+    );
     let stopped_snapshot = crate::state::rpc::dispatch(
         crate::rpc::Call {
             id: Some(json!(4)),

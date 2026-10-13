@@ -33,6 +33,12 @@ impl BindingTarget {
             session_id: self.session_id,
         }
     }
+    pub(super) fn runtime(&self) -> RuntimeRef {
+        self.runtime
+    }
+    pub(super) fn matches(&self, binding: &Binding) -> bool {
+        Self::new(&self.scope(), binding) == *self
+    }
     fn new(scope: &SessionTarget, binding: &Binding) -> Self {
         Self {
             machine_id: scope.machine_id,
@@ -179,7 +185,7 @@ fn capture(
     }
     running
         .lease
-        .check()
+        .check_for(&running.binding.file)
         .map_err(|_| (-32008, "Central Pi storage fenced"))?;
     let observed = running.control.current().map_err(control_failure)?;
     if native.owned_running_pid(binding.runtime) != Some(observed.pid) {
@@ -246,7 +252,7 @@ fn capture_snapshot(
     }
     running
         .lease
-        .check()
+        .check_for(&running.binding.file)
         .map_err(|_| (-32008, "Central Pi storage fenced"))?;
     Ok(SnapshotCapture {
         revision: database.revision().map_err(failure)?,

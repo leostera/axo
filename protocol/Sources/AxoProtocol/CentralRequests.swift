@@ -20,6 +20,7 @@ public struct CentralRequest: Sendable {
         case session(UUID?, UUID)
         case piObservation(UUID?, UUID)
         case piSnapshot(CentralPiBindingTarget)
+        case stoppedHistory(CentralPiBindingTarget, CentralPiHistoryCollection, CentralPiHistoryCursor?, Int)
         case mutation(UUID, CentralRevision, Mutation)
         case operation(UUID)
         case completion(UUID?, UUID, [TerminalRuntime])
@@ -34,7 +35,7 @@ public struct CentralRequest: Sendable {
     private init(method: String, parameters: JSONValue, machine: MachineTarget, source: CentralSource?, intent: Intent) {
         self.method = method; self.parameters = parameters; self.machine = machine; self.source = source; self.intent = intent
     }
-    public static let readMethods: Set<String> = ["axo.state.get", "axo.state.workspace.list", "axo.state.session.list", "axo.state.session.get", "axo.state.chat.observe", "axo.state.chat.get", "axo.state.operation.get"]
+    public static let readMethods: Set<String> = ["axo.state.get", "axo.state.workspace.list", "axo.state.session.list", "axo.state.session.get", "axo.state.chat.observe", "axo.state.chat.get", "axo.state.chat.history", "axo.state.operation.get"]
     public static func bootstrap(machine: MachineTarget) throws -> Self {
         let method = "axo.state.get"
         try ids([machine.machineId, machine.hostGeneration], method: method)
@@ -75,6 +76,15 @@ public struct CentralRequest: Sendable {
             throw AxoProtocolValidationError.invalidParameters(method: method)
         }
         return try Self(method: method, parameters: .object(["target": target.json]), machine: target.source.machine, source: target.source, intent: .piSnapshot(target))
+    }
+    public static func stoppedPiHistory(target: CentralPiBindingTarget, collection: CentralPiHistoryCollection = .branch, cursor: CentralPiHistoryCursor? = nil, limit: Int = 8) throws -> Self {
+        let method = "axo.state.chat.history"
+        guard (1...50).contains(limit), cursor.map({ $0.target == target && $0.collection == collection }) ?? true else {
+            throw AxoProtocolValidationError.invalidParameters(method: method)
+        }
+        var fields: [String: JSONValue] = ["target": try target.json, "readMode": .string("stopped"), "collection": .string(collection.rawValue), "limit": .number(Double(limit))]
+        if let cursor { fields["cursor"] = try cursor.json }
+        return Self(method: method, parameters: .object(fields), machine: target.source.machine, source: target.source, intent: .stoppedHistory(target, collection, cursor, limit))
     }
     public static func createWorkspace(source: CentralSource, commandId: UUID, expectedRevision: CentralRevision, name: String, directoryPath: String) throws -> Self {
         try mutate(source, commandId, expectedRevision, .workspace(name, directoryPath))

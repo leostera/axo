@@ -23,8 +23,28 @@ fn bounded_owned_file_read_is_pinned_and_does_not_rewrite_bytes() {
     let path = root.path().join("session.jsonl");
     file(&path);
     let before = fs::read(&path).unwrap();
-    assert_eq!(CanonicalFile::open(&path).unwrap().read().unwrap(), before);
+    assert_eq!(
+        CanonicalFile::open(&path).unwrap().read().unwrap().bytes(),
+        before
+    );
     assert_eq!(fs::read(&path).unwrap(), before);
+}
+#[test]
+fn published_read_retains_leaf_identity_and_rejects_later_namespace_exchange() {
+    let root = TestDirectory::new();
+    let parent = root.path().join("retained");
+    directory(&parent);
+    let path = parent.join("session.jsonl");
+    file(&path);
+    let read = CanonicalFile::open(&path).unwrap().read().unwrap();
+    read.check().unwrap();
+    fs::rename(&path, parent.join("original.jsonl")).unwrap();
+    file(&path);
+    assert!(read.check().is_err());
+    assert_eq!(read.bytes(), b"owned canonical bytes\n");
+    let lease = WriterLease::acquire(&path).unwrap();
+    assert!(lease.check_for(&parent.join("other.jsonl")).is_err());
+    lease.check_for(&path).unwrap();
 }
 #[test]
 fn symlink_hardlink_public_mode_fifo_and_oversized_files_are_refused() {

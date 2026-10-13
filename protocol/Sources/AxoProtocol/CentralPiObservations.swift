@@ -58,7 +58,7 @@ extension CentralJSON {
         guard target.runtime.hostGeneration == source.machine.hostGeneration else { throw failure }
         return try .live(target: target, state: piState(field(fields, "state")))
     }
-    private func piBinding(_ value: JSONValue, source: CentralSource, workspaceId: UUID?, sessionId: UUID) throws -> CentralPiBindingTarget {
+    func piBinding(_ value: JSONValue, source: CentralSource, workspaceId: UUID?, sessionId: UUID) throws -> CentralPiBindingTarget {
         let fields = try object(value, keys: ["machineId", "hostGeneration", "storeGeneration", "workspaceId", "sessionId", "paneId", "runtime", "chatId"])
         let machine = try MachineTarget(machineId: id(field(fields, "machineId")), hostGeneration: id(field(fields, "hostGeneration")))
         let actual = try CentralSource(machine: machine, storeGeneration: id(field(fields, "storeGeneration")))

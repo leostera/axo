@@ -101,11 +101,35 @@ fn central_pi_observation_requires_closed_current_scope_and_never_starts_work() 
         fixture.call("axo.state.chat.get", json!({"target":exact}), false)["error"]["code"],
         -32009
     );
+    assert_eq!(
+        fixture.call(
+            "axo.state.chat.history",
+            json!({"target":exact,"readMode":"stopped"}),
+            false
+        )["error"]["code"],
+        -32009
+    );
+    assert_eq!(
+        fixture.call(
+            "axo.state.chat.history",
+            json!({"target":exact,"readMode":"live"}),
+            false
+        )["error"]["code"],
+        -32602
+    );
     for key in ["runtime", "chatId", "workspaceId"] {
         let mut missing = exact.clone();
         missing.as_object_mut().unwrap().remove(key);
         assert_eq!(
             fixture.call("axo.state.chat.get", json!({"target":missing}), false)["error"]["code"],
+            -32602
+        );
+        assert_eq!(
+            fixture.call(
+                "axo.state.chat.history",
+                json!({"target":missing,"readMode":"stopped"}),
+                false
+            )["error"]["code"],
             -32602
         );
     }

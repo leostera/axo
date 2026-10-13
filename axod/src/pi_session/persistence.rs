@@ -16,6 +16,7 @@ pub struct WriterLease {
     file: File,
     directory: Directory,
     name: std::ffi::OsString,
+    binding: PathBuf,
 }
 impl Drop for WriterLease {
     fn drop(&mut self) {
@@ -45,10 +46,17 @@ impl WriterLease {
             file: handle,
             directory,
             name,
+            binding: file.to_path_buf(),
         })
     }
     pub(crate) fn check(&self) -> io::Result<()> {
         self.directory.check_leaf(&self.name, &self.file)
+    }
+    pub(crate) fn check_for(&self, file: &Path) -> io::Result<()> {
+        if self.binding != file {
+            return Err(io::Error::other("Writer lease binding mismatch"));
+        }
+        self.check()
     }
 }
 #[cfg(test)]
@@ -117,11 +125,11 @@ pub fn validate_resume(binding: &Binding, directory: &Path, sessions: &Path) -> 
         return Err(io::Error::other("Resume directory binding mismatch"));
     }
     let bytes = CanonicalFile::open(&binding.file)?.read()?;
-    if bytes.len() > 4 * 1024 * 1024 || bytes.last() != Some(&b'\n') {
+    if bytes.bytes().len() > 4 * 1024 * 1024 || bytes.bytes().last() != Some(&b'\n') {
         return Err(io::Error::other("Incomplete resume history"));
     }
-    let text =
-        std::str::from_utf8(&bytes).map_err(|_| io::Error::other("Invalid resume encoding"))?;
+    let text = std::str::from_utf8(bytes.bytes())
+        .map_err(|_| io::Error::other("Invalid resume encoding"))?;
     let mut lines = text.lines();
     validate_header(
         lines

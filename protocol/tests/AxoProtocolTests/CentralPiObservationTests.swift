@@ -71,6 +71,29 @@ final class CentralPiObservationTests: XCTestCase {
         XCTAssertThrowsError(try read.parseResult(envelope(["kind": "stopped", "target": target()])))
         XCTAssertThrowsError(try read.parseResult(envelope(["kind": "notAdmitted"])))
     }
+    func testStoppedHistoryBindsContinuationToTargetCollectionAndHead() throws {
+        let observed = try request().parseResult(envelope(["kind": "stopped", "target": target(host: 8)]))
+        guard case .piObservation(.stopped(let captured)) = observed.payload else { return XCTFail("Stopped binding") }
+        let read = try CentralRequest.stoppedPiHistory(target: captured, limit: 1)
+        let entry: [String: Any] = ["entryId": "first", "parentId": NSNull(), "timestamp": "now", "kind": "message", "role": "user", "text": "owned turn", "truncated": false, "toolCallId": NSNull(), "toolName": NSNull(), "toolCalls": []]
+        let digest = String(repeating: "a", count: 64)
+        let cursor: [String: Any] = ["target": target(host: 8), "readMode": "stopped", "collection": "branch", "headDigest": digest, "after": "first"]
+        var page: [String: Any] = ["target": target(host: 8), "readMode": "stopped", "collection": "branch", "headDigest": digest, "leafId": "last", "entries": [entry], "cursor": cursor]
+        let parsed = try read.parseResult(envelope(page))
+        guard case .piHistory(let history) = parsed.payload, let next = history.cursor else { return XCTFail("Continuation") }
+        XCTAssertEqual(history.target, captured)
+        XCTAssertNil(read.commandId)
+        let continued = try CentralRequest.stoppedPiHistory(target: captured, cursor: next, limit: 1)
+        XCTAssertThrowsError(try CentralRequest.stoppedPiHistory(target: captured, collection: .entries, cursor: next))
+        page["headDigest"] = String(repeating: "b", count: 64)
+        XCTAssertThrowsError(try continued.parseResult(envelope(page)))
+        page["headDigest"] = digest; page["readMode"] = "live"
+        XCTAssertThrowsError(try read.parseResult(envelope(page)))
+        page["readMode"] = "stopped"; page["entries"] = [entry, entry]
+        XCTAssertThrowsError(try read.parseResult(envelope(page)))
+        page["entries"] = []; page["cursor"] = cursor
+        XCTAssertThrowsError(try read.parseResult(envelope(page)))
+    }
     func testQuestionBoundsAndInteractionCannotDrift() throws {
         let request = try request()
         let options: [[String: Any]] = [["id": id(10), "label": "First"], ["id": id(11), "label": "Second"]]

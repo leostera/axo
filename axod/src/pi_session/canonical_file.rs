@@ -161,6 +161,33 @@ pub(super) struct CanonicalFile {
     name: OsString,
     file: File,
 }
+/// Immutable bytes plus their pinned source. Publication can recheck the
+/// namespace and timestamps without reopening or reading a successor file.
+pub(super) struct PinnedRead {
+    source: CanonicalFile,
+    metadata: Metadata,
+    bytes: Vec<u8>,
+}
+impl PinnedRead {
+    pub(super) fn bytes(&self) -> &[u8] {
+        &self.bytes
+    }
+    pub(super) fn check(&self) -> io::Result<()> {
+        self.source
+            .directory
+            .check_leaf(&self.source.name, &self.source.file)?;
+        let current = self.source.file.metadata()?;
+        let named = self
+            .source
+            .directory
+            .leaf(&self.source.name, libc::O_RDONLY)?
+            .metadata()?;
+        if !unchanged(&self.metadata, &current) || !unchanged(&current, &named) {
+            return Err(invalid());
+        }
+        Ok(())
+    }
+}
 impl CanonicalFile {
     pub(super) fn open(path: &Path) -> io::Result<Self> {
         let directory = Directory::open(path.parent().ok_or_else(invalid)?)?;
@@ -175,7 +202,7 @@ impl CanonicalFile {
             file,
         })
     }
-    pub(super) fn read(mut self) -> io::Result<Vec<u8>> {
+    pub(super) fn read(mut self) -> io::Result<PinnedRead> {
         self.directory.check_leaf(&self.name, &self.file)?;
         let before = self.file.metadata()?;
         if !private_file(&before) || before.len() > MAX_BYTES {
@@ -198,6 +225,10 @@ impl CanonicalFile {
             return Err(invalid());
         }
         self.directory.check()?;
-        Ok(bytes)
+        Ok(PinnedRead {
+            source: self,
+            metadata: after,
+            bytes,
+        })
     }
 }
