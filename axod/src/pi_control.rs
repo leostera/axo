@@ -375,6 +375,7 @@ fn rejection(error: RemoteError) -> ControlError {
     match error {
         RemoteError::Busy => ControlError::Busy,
         RemoteError::Blocked => ControlError::Blocked,
+        RemoteError::Capacity => ControlError::Capacity,
         RemoteError::Invalid => ControlError::Invalid,
         RemoteError::Stale | RemoteError::StaleInteraction => ControlError::Stale,
         RemoteError::NotReady | RemoteError::NotInteractive => ControlError::NotReady,

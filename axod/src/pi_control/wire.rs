@@ -117,6 +117,7 @@ pub(super) enum RemoteError {
     Busy,
     StaleInteraction,
     Blocked,
+    Capacity,
     Unknown,
 }
 #[derive(Debug, Deserialize, Serialize)]

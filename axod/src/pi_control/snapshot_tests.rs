@@ -77,6 +77,39 @@ fn correlated_snapshot_updates_cache_without_overwriting_later_status() {
     );
 }
 #[test]
+fn history_capacity_rejection_preserves_healthy_channel_and_snapshot_refresh() {
+    let shared = shared();
+    let (id, receiver) = pending(&shared);
+    shared
+        .state
+        .lock()
+        .unwrap()
+        .calls
+        .get_mut(&id)
+        .unwrap()
+        .expected = Expected::History;
+    assert!(route(
+        Record::Reply(wire::Reply {
+            id: Some(id),
+            response: Response::Rejected(RemoteError::Capacity)
+        }),
+        &shared
+    ));
+    assert!(matches!(
+        receiver.recv().unwrap(),
+        Err(ControlError::Capacity)
+    ));
+    assert!(!shared.state.lock().unwrap().gap);
+    let (refresh, receiver) = pending(&shared);
+    let ready = shared.state.lock().unwrap().ready.clone().unwrap();
+    assert!(snapshot(&shared, refresh, ready));
+    assert!(matches!(
+        receiver.recv().unwrap(),
+        Ok(Response::Snapshot(_))
+    ));
+    assert!(!shared.state.lock().unwrap().gap);
+}
+#[test]
 fn foreign_snapshot_identity_never_becomes_cached_observation() {
     for key in ["chatId", "file", "cwd", "pid"] {
         let shared = shared();

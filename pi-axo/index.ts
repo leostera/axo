@@ -5,6 +5,7 @@ import { Socket } from "node:net";
 import { randomUUID } from "node:crypto";
 import { z } from "zod";
 import { questions } from "./questions.ts";
+import { encodeHistoryReply } from "./history-reply.ts";
 import { sessionTitles } from "./title.ts";
 import { ControlFailure, type Record as ControlRecord, type Response } from "./control-protocol.ts";
 const runtimeSchema = z.object({ host_generation: z.string().uuid(), runtime_generation: z.string().uuid(),
@@ -44,7 +45,10 @@ export default function managed(pi: ExtensionAPI) {
   sessionTitles(pi, changed);
   function write(value: ControlRecord<ReturnType<typeof snapshot>>) {
     if (!socket || socket.destroyed) return;
-    const raw = JSON.stringify(value) + "\n";
+    writeEncoded(JSON.stringify(value) + "\n");
+  }
+  function writeEncoded(raw: string) {
+    if (!socket || socket.destroyed) return;
     if (Buffer.byteLength(raw) > 4*1024*1024 || socket.writableLength + Buffer.byteLength(raw) > 4*1024*1024) { recovery = true; socket.destroy(); return; }
     socket.write(raw, error => { if (error) recovery = true; });
   }
@@ -74,7 +78,10 @@ export default function managed(pi: ExtensionAPI) {
       const target = request.target;
       if (!bound || JSON.stringify(target.runtime) !== JSON.stringify(bound) || target.chatId !== chatId || ctx.sessionManager.getSessionId() !== chatId || ctx.sessionManager.getSessionFile() !== sessionFile || ctx.cwd !== cwd) throw new ControlFailure("stale");
       if (request.method === "get") { respond(request.id, { snapshot: snapshot() }); return; }
-      if (request.method === "history") { respond(request.id, { history: { leafId: ctx.sessionManager.getLeafId(), entries: ctx.sessionManager.getEntries(), branch: ctx.sessionManager.getBranch() } }); return; }
+      if (request.method === "history") {
+        const history = { leafId: ctx.sessionManager.getLeafId(), entries: ctx.sessionManager.getEntries(), branch: ctx.sessionManager.getBranch() };
+        writeEncoded(encodeHistoryReply(request.id, history)); return;
+      }
       if (recovery || (!interactionId && ctx.hasPendingMessages())) throw new ControlFailure("recovery");
       if (request.method === "answer") {
         if (cancelling || request.target.interactionId !== interactionId) throw new ControlFailure("staleInteraction");
