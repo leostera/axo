@@ -34,6 +34,7 @@ import UserNotifications
     let paneLayouts = AxodPaneLayouts()
     let terminalSurfaces = AxodTerminalSurfaces()
     let inputBuffers = CentralInputBuffers()
+    let creations = CentralCreations()
     let voice: MacVoiceCoordinator
     @ObservationIgnored let preferences: UserDefaults
     @ObservationIgnored private var endpoint: LocalDaemonEndpoint?
@@ -48,6 +49,8 @@ import UserNotifications
     private var operation = UUID()
     private var refreshGeneration = UUID()
     private var catalogLoadGeneration = UUID()
+    private var reconcilingCreation: UUID?
+    private var creationRevisionFloor: (source: CentralSource, revision: CentralRevision)?
     private var serviceObservation: UUID?
     private var usesFixtureDaemon = false
 #if AXO_NATIVE_FIXTURE
@@ -236,6 +239,9 @@ import UserNotifications
             connectionState = .connected
             message = "Connected to axod."
             observe(peer: peer, endpoint: endpoint, operation: captured)
+            if let ticket = creations.pendingTicket {
+                Task { await self.reconcileCreation(ticket, peer: peer, endpoint: endpoint, operation: captured) }
+            }
         } catch {
             await peer.close()
             if connection === peer { connection = nil; self.endpoint = nil }
@@ -272,6 +278,10 @@ import UserNotifications
         return loaded
     }
     private func publish(_ loaded: CentralCatalog, restoringSelection: Bool = false) {
+        if let floor = creationRevisionFloor {
+            if floor.source != loaded.source { creationRevisionFloor = nil }
+            else if loaded.revision >= floor.revision { creationRevisionFloor = nil }
+        }
         let previous = catalog
         if let previous, previous.source == loaded.source, loaded.revision < previous.revision { return }
         catalog = loaded
@@ -323,10 +333,102 @@ import UserNotifications
                 try self.requireCurrent(captured, peer: peer, endpoint: endpoint)
                 guard self.refreshGeneration == generation, self.catalog?.source == source else { return }
                 self.publish(loaded); self.message = completionMessage ?? "Central metadata refreshed."
+                if let ticket = self.creations.pendingTicket {
+                    await self.reconcileCreation(ticket, peer: peer, endpoint: endpoint, operation: captured)
+                }
             } catch {
                 guard self.operation == captured, self.connection === peer else { return }
                 if Self.lostAuthority(error) { self.connectionFailed(peer: peer) }
             }
+        }
+    }
+    var canCreate: Bool {
+        guard connectionState == .connected, let catalog, !creations.hasPending else { return false }
+        if let floor = creationRevisionFloor, floor.source == catalog.source, catalog.revision < floor.revision { return false }
+        return true
+    }
+    var canCreateSession: Bool {
+        guard canCreate else { return false }
+        let workspace: UUID?
+        if let selectedSession { workspace = selectedSession.workspaceId }
+        else { workspace = selectedWorkspaceID }
+        return workspace.map { id in workspaces.contains { $0.workspaceId == id && $0.lifecycle == .open } } ?? true
+    }
+    func createSession() {
+        guard canCreateSession, let catalog else { return }
+        let workspace: UUID?
+        if let selectedSession { workspace = selectedSession.workspaceId }
+        else { workspace = selectedWorkspaceID }
+        if let workspace, !workspaces.contains(where: { $0.workspaceId == workspace && $0.lifecycle == .open }) { return }
+        do {
+            let ticket = try creations.captureSession(source: catalog.source, revision: catalog.revision, workspaceId: workspace)
+            submitCreation(ticket)
+        } catch { message = "A new session could not be reserved. No client-side start was attempted." }
+    }
+    func createWorkspace(name: String, directoryPath: String) {
+        guard canCreate, let catalog else { return }
+        do {
+            let ticket = try creations.captureWorkspace(source: catalog.source, revision: catalog.revision, name: name, directoryPath: directoryPath)
+            submitCreation(ticket)
+        } catch { message = "Workspace selection is invalid or another creation is unresolved." }
+    }
+    private func submitCreation(_ ticket: CentralCreationTicket) {
+        guard let peer = connection, let endpoint else {
+            try? creations.abandonBeforeSubmission(ticket)
+            return
+        }
+        let request: CentralRequest
+        do { request = try creations.beginSubmission(ticket) }
+        catch { try? creations.abandonBeforeSubmission(ticket); return }
+        let captured = operation
+        Task { [weak self] in
+            guard let self else { return }
+            do {
+                let response = try await self.perform(request, peer: peer, endpoint: endpoint, operation: captured)
+                let result = try self.creations.acknowledgeSubmission(ticket, response: response)
+                await self.finishCreation(result, peer: peer, endpoint: endpoint, operation: captured)
+            } catch {
+                await self.reconcileCreation(ticket, peer: peer, endpoint: endpoint, operation: captured)
+            }
+        }
+    }
+    private func reconcileCreation(_ ticket: CentralCreationTicket, peer: AxoJSONRPCWebSocketConnection, endpoint: LocalDaemonEndpoint, operation captured: UUID) async {
+        guard captured == operation, connection === peer, let source = catalog?.source,
+              reconcilingCreation == nil else { return }
+        let command = ticket.commandId
+        reconcilingCreation = command
+        defer { if reconcilingCreation == command { reconcilingCreation = nil } }
+        do {
+            let request = try creations.reconciliation(ticket, source: source)
+            let response = try await perform(request, peer: peer, endpoint: endpoint, operation: captured)
+            let result = try creations.acknowledgeReconciliation(ticket, source: source, response: response)
+            await finishCreation(result, peer: peer, endpoint: endpoint, operation: captured)
+        } catch {
+            // Lookup is read-only. Missing or unavailable originals retain the
+            // fence; no second creation request or client startup is attempted.
+            message = "Creation outcome is unresolved. Reconnect or refresh to observe its original operation."
+        }
+    }
+    private func finishCreation(_ result: CentralCreationResolution, peer: AxoJSONRPCWebSocketConnection, endpoint: LocalDaemonEndpoint, operation captured: UUID) async {
+        guard case .accepted(let creation) = result, captured == operation, connection === peer,
+              let source = catalog?.source else { return }
+        creationRevisionFloor = (source, creation.revision)
+        let sessionID = creation.sessionId
+        let workspaceID = creation.workspaceId
+        do {
+            let loaded = try await loadCatalog(source: source, peer: peer, endpoint: endpoint, operation: captured)
+            try requireCurrent(captured, peer: peer, endpoint: endpoint)
+            guard loaded.sessions.contains(where: { $0.session.sessionId == sessionID && $0.session.workspaceId == workspaceID }) else {
+                message = "The accepted graph is reserved and still materializing. Its original operation was not repeated."
+                publish(loaded)
+                return
+            }
+            publish(loaded)
+            selectSession(sessionID)
+            message = "Central session graph reserved; availability is reported by Axod."
+        } catch {
+            if Self.lostAuthority(error) { connectionFailed(peer: peer) }
+            else { message = "The accepted graph is reserved. Refresh to observe its current availability." }
         }
     }
     func selectWorkspace(_ id: UUID?) {
@@ -428,6 +530,8 @@ import UserNotifications
     }
     func disconnect() {
         operation = UUID()
+        reconcilingCreation = nil
+        creationRevisionFloor = nil
         refreshGeneration = UUID()
         catalogLoadGeneration = UUID()
         connectTask?.cancel()

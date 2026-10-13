@@ -1,4 +1,5 @@
 import AppKit
+import AxoCore
 import SwiftUI
 
 @main
@@ -159,6 +160,30 @@ final class AxodWorkbenchApp: NSObject, NSApplicationDelegate, NSWindowDelegate,
     }
     @objc private func refresh(_ sender: Any?) { coordinator?.refresh() }
     @objc private func connect(_ sender: Any?) { coordinator?.connect() }
+    @objc private func newSession(_ sender: Any?) { coordinator?.createSession() }
+    @objc private func newWorkspace(_ sender: Any?) {
+        guard let coordinator, coordinator.canCreate, let window else { return }
+        let panel = NSOpenPanel()
+        panel.title = "Choose a Workspace Folder"
+        panel.message = "Axo will reserve the workspace and its initial session as one operation."
+        panel.prompt = "Create Workspace"
+        panel.canChooseDirectories = true
+        panel.canChooseFiles = false
+        panel.allowsMultipleSelection = false
+        panel.beginSheetModal(for: window) { response in
+            guard response == .OK, let url = panel.url else { return }
+            do {
+                let name = try WorkbenchName(url.lastPathComponent)
+                coordinator.createWorkspace(name: name.value, directoryPath: url.resolvingSymlinksInPath().standardizedFileURL.path)
+            } catch {
+                let alert = NSAlert()
+                alert.messageText = "Workspace name is invalid"
+                alert.informativeText = "Choose a folder whose name is non-empty and no longer than 120 UTF-8 bytes."
+                alert.alertStyle = .warning
+                alert.beginSheetModal(for: window)
+            }
+        }
+    }
     @objc private func focusLeft(_ sender: Any?) { movePaneFocus(.left) }
     @objc private func focusRight(_ sender: Any?) { movePaneFocus(.right) }
     @objc private func focusUp(_ sender: Any?) { movePaneFocus(.up) }
@@ -194,6 +219,8 @@ final class AxodWorkbenchApp: NSObject, NSApplicationDelegate, NSWindowDelegate,
         if menuItem.action == #selector(toggleSidebar(_:)) {
             return window != nil && NSApp.keyWindow === window
         }
+        if menuItem.action == #selector(newSession(_:)) { return coordinator?.canCreateSession == true }
+        if menuItem.action == #selector(newWorkspace(_:)) { return coordinator?.canCreate == true }
         return true
     }
 
@@ -239,6 +266,11 @@ final class AxodWorkbenchApp: NSObject, NSApplicationDelegate, NSWindowDelegate,
         let workspaceItem = NSMenuItem()
         menu.addItem(workspaceItem)
         let workspaceMenu = NSMenu(title: "Workspace")
+        let newSessionItem = workspaceMenu.addItem(withTitle: "New Session", action: #selector(newSession(_:)), keyEquivalent: "t")
+        newSessionItem.target = self
+        let newWorkspaceItem = workspaceMenu.addItem(withTitle: "New Workspace…", action: #selector(newWorkspace(_:)), keyEquivalent: "")
+        newWorkspaceItem.target = self
+        workspaceMenu.addItem(.separator())
         let refreshItem = workspaceMenu.addItem(withTitle: "Refresh", action: #selector(refresh(_:)), keyEquivalent: "r")
         refreshItem.target = self
         let connectItem = workspaceMenu.addItem(withTitle: "Connect / Reconnect", action: #selector(connect(_:)), keyEquivalent: "r")

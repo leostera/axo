@@ -155,6 +155,28 @@ struct AxodNativeWorkbenchSplitView: NSViewRepresentable {
             return rootView
         }
 
+#if AXO_NATIVE_FIXTURE
+        var fixtureOutline: NSOutlineView { outline }
+        func fixtureSessionRows() -> [(id: UUID, row: Int)] {
+            sidebarItems.flatMap { [$0] + $0.children }.compactMap { item in
+                guard let session = item.session else { return nil }
+                let row = outline.row(forItem: item)
+                return row >= 0 ? (session.sessionId, row) : nil
+            }
+        }
+        func fixtureWorkspaceItem(_ id: UUID) -> Any? { sidebarItems.first { $0.workspace?.workspaceId == id } }
+        func fixtureExpanded(_ id: UUID) -> Bool {
+            guard let item = fixtureWorkspaceItem(id) else { return false }
+            return outline.isItemExpanded(item)
+        }
+        func fixtureSelectedSessionIDs() -> Set<UUID> {
+            Set(outline.selectedRowIndexes.compactMap { (outline.item(atRow: $0) as? Item)?.session?.sessionId })
+        }
+        func fixtureSelectionDidChange() {
+            outlineViewSelectionDidChange(Notification(name: NSOutlineView.selectionDidChangeNotification, object: outline))
+        }
+#endif
+
         func update(
             workbench: AxodWorkbenchCoordinator,
             workspaces: [CentralWorkspace],

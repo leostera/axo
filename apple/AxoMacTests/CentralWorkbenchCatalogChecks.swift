@@ -2,6 +2,7 @@ import AppKit
 import AxoCore
 import AxoProtocol
 import Foundation
+import SwiftUI
 
 /// Actual production coordinator against an explicitly owned local fixture.
 /// This is catalog/transport acceptance, not foreground, selection or IME proof.
@@ -37,19 +38,32 @@ import Foundation
         let peer = try AxoJSONRPCClient().openLocalWebSocket(endpoint: discovered)
         _ = try AxoProtocolResultValidator.localNegotiation(await peer.request(method: AxoProtocol.Method.negotiate, parameters: NegotiationParameters()))
         let bootstrap = try await call(CentralRequest.bootstrap(machine: .init(machineId: discovered.machineId, hostGeneration: discovered.hostGeneration)), peer)
-        let workspace = try await call(CentralRequest.createWorkspace(source: bootstrap.source, commandId: UUID(), expectedRevision: bootstrap.revision, name: "Owned workspace", directoryPath: root.path), peer)
-        guard case .operation(.createWorkspace(let original)?, _) = workspace.payload else { fatalError("Complete workspace graph") }
+        coordinator.createWorkspace(name: "Owned workspace", directoryPath: root.path)
+        let workspaceTicket = coordinator.creations.pendingTicket!
+        do { try await wait { coordinator.sessions.count == 1 && coordinator.workspaces.count == 1 && !coordinator.creations.hasPending } }
+        catch {
+            fputs("Workspace creation fixture state: message=\(coordinator.message) pending=\(coordinator.creations.hasPending) workspaces=\(coordinator.workspaces.count) sessions=\(coordinator.sessions.count) connection=\(coordinator.connectionState)\n", stderr)
+            let request = try CentralRequest.operation(source: bootstrap.source, commandId: workspaceTicket.commandId)
+            fputs("Workspace original observation: \(try await call(request, peer).payload)\n", stderr)
+            throw error
+        }
+        guard case .operation(.createWorkspace(let original)?, _) = try await call(CentralRequest.operation(source: bootstrap.source, commandId: workspaceTicket.commandId), peer).payload else { fatalError("Original one-operation workspace graph") }
         precondition(original.graph.initialSession.panes.count == 2)
-        let home = try await call(CentralRequest.createSession(source: bootstrap.source, workspaceId: nil, commandId: UUID(), expectedRevision: workspace.revision), peer)
-        guard case .operation(.createStandalone(let standalone)?, _) = home.payload else { fatalError("Complete home graph") }
-        coordinator.refresh()
-        try await wait { coordinator.sessions.count == 2 && coordinator.workspaces.count == 1 && coordinator.runtimes.count == 2 }
+        coordinator.selectWorkspace(original.graph.workspace.workspaceId)
+        coordinator.createSession()
+        let sessionTicket = coordinator.creations.pendingTicket!
+        try await wait { coordinator.sessions.count == 2 && !coordinator.creations.hasPending }
+        guard case .operation(.createSession(let sessionOriginal)?, _) = try await call(CentralRequest.operation(source: bootstrap.source, commandId: sessionTicket.commandId), peer).payload else { fatalError("Original ⌘T complete session graph") }
+        precondition(sessionOriginal.graph.panes.count == 2 && sessionOriginal.graph.session.workspaceId == original.graph.workspace.workspaceId)
+        do { try await wait { coordinator.runtimes.count == 2 } }
+        catch { fputs("Runtime fixture state: runtimes=\(coordinator.runtimes.count) message=\(coordinator.message)\n", stderr); throw error }
         precondition(coordinator.catalog?.source == bootstrap.source)
         precondition(coordinator.catalog?.sessions.allSatisfy { $0.readiness != .ready } == true, "No Pi policy cannot fabricate readiness")
-        coordinator.selectSession(standalone.graph.session.sessionId)
-        precondition(coordinator.selectedWorkspaceID == nil && coordinator.selectedSessionID == standalone.graph.session.sessionId)
+        coordinator.selectSession(sessionOriginal.graph.session.sessionId)
+        precondition(coordinator.selectedWorkspaceID == original.graph.workspace.workspaceId && coordinator.selectedSessionID == sessionOriginal.graph.session.sessionId)
         coordinator.selectWorkspace(original.graph.workspace.workspaceId)
         precondition(coordinator.selectedSessionID == original.graph.initialSession.session.sessionId)
+        try checkNativeOutline(coordinator, source: bootstrap.source)
         precondition(preferences.data(forKey: retired) == opaque, "Retired selection preference bytes are neither imported nor changed")
         let captured = coordinator.runtimes.map(\.runtime)
         coordinator.disconnect()
@@ -70,6 +84,42 @@ import Foundation
         precondition(coordinator.catalog == nil, "Restored discovery does not automatically restore authority")
         await peer.close()
         print("PASS: central native coordinator, complete graph reads, desired availability, scoped selection, endpoint fence and disconnect independence")
+    }
+    @MainActor private static func checkNativeOutline(_ coordinator: AxodWorkbenchCoordinator, source: CentralSource) throws {
+        let controller = AxodNativeWorkbenchSplitView.SidebarController(workbench: coordinator, sidebarCollapsed: .constant(false))
+        let root = controller.makeView(detail: AnyView(EmptyView()))
+        let window = NSWindow(contentRect: NSRect(x: -1800, y: -1200, width: 900, height: 600), styleMask: [.titled], backing: .buffered, defer: false)
+        window.isReleasedWhenClosed = false
+        window.contentView = root
+        controller.update(workbench: coordinator, workspaces: coordinator.workspaces, sessions: coordinator.sessions,
+            selectedWorkspaceID: coordinator.selectedWorkspaceID, selectedSessionID: coordinator.selectedSessionID,
+            sidebarCollapsed: .constant(false), detail: AnyView(EmptyView()))
+        window.contentView?.layoutSubtreeIfNeeded()
+        guard let workspace = coordinator.selectedWorkspaceID, let item = controller.fixtureWorkspaceItem(workspace) else { fatalError("Native workspace row") }
+        controller.fixtureOutline.expandItem(item)
+        let rows = controller.fixtureSessionRows()
+        precondition(rows.count == 2 && rows[0].id != rows[1].id, "Both central sessions have native outline rows")
+        let selected = Set(rows.map(\.id))
+        controller.fixtureOutline.selectRowIndexes(IndexSet(rows.map(\.row)), byExtendingSelection: false)
+        controller.fixtureSelectionDidChange()
+        precondition(controller.fixtureSelectedSessionIDs() == selected, "Native outline multi-selection remains identity-based")
+        let order = rows.map(\.id)
+        let request = try CentralRequest.workspaces(source: source)
+        let extraId = UUID()
+        let extraRaw = try json(["hostGeneration": source.machine.hostGeneration.uuidString,
+            "storeGeneration": source.storeGeneration.uuidString, "revision": coordinator.catalog!.revision.rawValue,
+            "value": ["records": [["workspaceId": extraId.uuidString, "name": "Fixture addition", "directory": "/fixture/addition", "lifecycle": "open", "configRevision": coordinator.catalog!.revision.rawValue]], "cursor": NSNull()]])
+        guard case .workspaces(let additions, _) = try request.parseResult(extraRaw).payload, let added = additions.first else { fatalError("Parsed fixture metadata") }
+        controller.update(workbench: coordinator, workspaces: coordinator.workspaces + [added], sessions: coordinator.sessions.reversed(),
+            selectedWorkspaceID: coordinator.selectedWorkspaceID, selectedSessionID: coordinator.selectedSessionID,
+            sidebarCollapsed: .constant(false), detail: AnyView(EmptyView()))
+        precondition(controller.fixtureSessionRows().map(\.id) == order, "Catalog reordering and appended workspace do not reorder existing outline rows")
+        precondition(controller.fixtureSelectedSessionIDs() == selected, "Metadata refresh preserves discontiguous session selection")
+        precondition(controller.fixtureExpanded(workspace), "Metadata refresh preserves workspace expansion")
+        window.close()
+    }
+    private static func json(_ value: Any) throws -> JSONValue {
+        try JSONDecoder().decode(JSONValue.self, from: JSONSerialization.data(withJSONObject: value))
     }
     @MainActor private static func wait(_ predicate: () throws -> Bool) async throws {
         let deadline = ContinuousClock.now.advanced(by: .seconds(10))
