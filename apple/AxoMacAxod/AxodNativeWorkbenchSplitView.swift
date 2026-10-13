@@ -218,10 +218,6 @@ struct AxodNativeWorkbenchSplitView: NSViewRepresentable {
                     let targets = self.sidebarSelection.targets(clickedSessionID: session.sessionId)
                     menu.items.first { $0.action == #selector(WorkspaceSidebarRow.renameFromMenu(_:)) }?.isEnabled =
                         targets.count == 1 && self.workbench.canEditWork && session.manualName != nil
-                    for action in menu.items.filter({ $0.action == #selector(self.deleteSessionsFromMenu(_:)) }) { menu.removeItem(action) }
-                    let deletion = self.workbench.captureSessionDeletion(targets)
-                    let action = menu.addItem(withTitle: "Delete…", action: #selector(self.deleteSessionsFromMenu(_:)), keyEquivalent: "")
-                    action.target = self; action.representedObject = deletion; action.isEnabled = deletion != nil
                 }
                 return menu
             }
@@ -514,11 +510,6 @@ struct AxodNativeWorkbenchSplitView: NSViewRepresentable {
                 return row
             }
             return nil
-        }
-
-        @objc private func deleteSessionsFromMenu(_ sender: NSMenuItem) {
-            guard let context = sender.representedObject as? AxodSessionDeletion, let window = outline.window else { return }
-            workbench.confirmSessionDeletion(context, in: window)
         }
 
         private func addRenameAction(to row: WorkspaceSidebarRow, menu: NSMenu, enabled: Bool) {

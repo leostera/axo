@@ -8,12 +8,10 @@ export const hostUpgradePlanSchema = z.object({
   replacementBuildNumber: z.number().int().positive().max(Number.MAX_SAFE_INTEGER),
 }).strict();
 export const hostMethods = {
-  "axo.host.lifecycle": z.object({ target: destinationSchema }).strict(),
   "axo.host.get": z.object({ target: destinationSchema }).strict(),
   "axo.host.prepareUpgrade": z.object({ target: destinationSchema, plan: hostUpgradePlanSchema }).strict(),
 } as const;
 export const hostResults = {
-  "axo.host.lifecycle": z.object({ hostGeneration: uuid, sessionKeepAlive: z.boolean() }).strict(),
   "axo.host.prepareUpgrade": z.object({
     hostGeneration: uuid,
     machineId: uuid,

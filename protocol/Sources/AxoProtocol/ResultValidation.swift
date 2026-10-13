@@ -364,57 +364,10 @@ public enum AxoProtocolResultValidator {
         return try decode(value, as: SessionMutationResult.self, method: method)
     }
 
-    public static func sessionDeletionParameters(_ value: JSONValue) throws -> SessionDeletionParameters {
-        let method = AxoProtocol.Method.deleteSessions
-        guard let fields = object(value, keys: ["target", "commandId", "sessions", "expectedRevision"]),
-              let target = object(fields["target"], keys: ["machineId", "hostGeneration"]), let machineID = uuid(target["machineId"]),
-              let command = fields["commandId"], let source = fields["target"], let sessions = fields["sessions"], let revision = fields["expectedRevision"] else { throw invalid(method) }
-        let receipt: JSONValue = .object(["commandId": command, "intent": .object(["target": source, "sessions": sessions, "expectedRevision": revision]), "runtimes": .array([]), "revision": .null])
-        guard validSessionDeletionReceipt(receipt, machineID: machineID) else { throw invalid(method) }
-        return try decode(value, as: SessionDeletionParameters.self, method: method)
-    }
-
-    public static func sessionDeletion(_ value: JSONValue, parameters: SessionDeletionParameters) throws -> SessionDeletionResult {
-        let method = AxoProtocol.Method.deleteSessions
-        guard let fields = object(value, keys: ["hostGeneration", "receipt"]),
-              uuid(fields["hostGeneration"]) == parameters.target.hostGeneration,
-              let receipt = fields["receipt"], validSessionDeletionReceipt(receipt, machineID: parameters.target.machineId) else { throw invalid(method) }
-        let result = try decode(value, as: SessionDeletionResult.self, method: method)
-        guard result.receipt.commandId == parameters.commandId, result.receipt.intent == parameters.intent else { throw invalid(method) }
-        return result
-    }
-
-    private static func validSessionDeletionReceipt(_ value: JSONValue, machineID: UUID) -> Bool {
-        guard let fields = object(value, keys: ["commandId", "intent", "runtimes", "revision"]), uuid(fields["commandId"]) != nil,
-              let intent = object(fields["intent"], keys: ["target", "sessions", "expectedRevision"]),
-              let target = object(intent["target"], keys: ["machineId", "hostGeneration"]),
-              uuid(target["machineId"]) == machineID, uuid(target["hostGeneration"]) != nil,
-              let expected = integer(intent["expectedRevision"]), expected >= 0, expected < 9_007_199_254_740_991,
-              case .array(let sessions)? = intent["sessions"], (1...32).contains(sessions.count),
-              case .array(let runtimes)? = fields["runtimes"], runtimes.count <= 256,
-              let revision = fields["revision"] else { return false }
-        if !revision.isNull && integer(revision) != expected + 1 { return false }
-        var ids = Set<UUID>()
-        for session in sessions {
-            guard let address = object(session, keys: ["workspaceId", "sessionId"]),
-                  let id = uuid(address["sessionId"]), ids.insert(id).inserted,
-                  let workspace = address["workspaceId"], workspace.isNull || uuid(workspace) != nil else { return false }
-        }
-        var captured: [TerminalRuntime] = []
-        for value in runtimes {
-            guard let runtime = validTerminalRuntime(value), ids.contains(runtime.target.sessionId), !captured.contains(runtime) else { return false }
-            captured.append(runtime)
-        }
-        return true
-    }
-
     private static func validCommandReceipt(_ value: JSONValue, target: MachineTarget) -> Bool {
         if value.isNull { return true }
         guard case .object(let fields) = value, let kind = string(fields["kind"]) else { return false }
         switch kind {
-        case "deletion":
-            guard Set(fields.keys) == ["kind", "receipt"], let receipt = fields["receipt"] else { return false }
-            return validSessionDeletionReceipt(receipt, machineID: target.machineId)
         case "pi":
             guard Set(fields.keys) == ["kind", "receipt"],
                   let receipt = fields["receipt"], PiProtocolValidator.validReceipt(receipt, target: target) else { return false }

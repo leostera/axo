@@ -81,9 +81,6 @@ final class AxodWorkbenchCoordinator {
     @ObservationIgnored private var toolOutputTask: Task<Void, Never>?
     private(set) var chatStatusMessage = "Select an admitted Pi session to view its canonical conversation."
     private(set) var pendingChatCommandId: UUID?
-    private(set) var daemonKeepsSessionsAlive = false
-    @ObservationIgnored private var sessionLivenessTask: Task<Void, Never>?
-    @ObservationIgnored private var sessionLivenessIdentity: UUID?
     var workEditor: AxodWorkEditorContext?
     private var activeCreationContext: AxodWorkEditorContext?
     private(set) var isEditingWork = false
@@ -93,9 +90,7 @@ final class AxodWorkbenchCoordinator {
     private(set) var createdSessionForEditor: WorkSessionRecord?
     private(set) var pendingWorkCommandID: UUID?
     private(set) var pendingWorkIsUnreadable = false
-    private(set) var sessionDeletionConfirmation: AxodSessionDeletion?
-    var canEditWork: Bool { connectionState == .connected && !isEditingWork && !isRenamingWork && pendingWorkCommandID == nil && !pendingWorkIsUnreadable && sessionDeletionConfirmation == nil && !hasPendingSessionDeletion }
-    private var hasPendingSessionDeletion: Bool { machineID.map { preferences.object(forKey: pendingDeletionKey($0)) != nil } ?? false }
+    var canEditWork: Bool { connectionState == .connected && !isEditingWork && !isRenamingWork && pendingWorkCommandID == nil && !pendingWorkIsUnreadable }
     private(set) var isSendingPiMessage = false
     private var piMutationGeneration: UUID?
     let chatDrafts = AxodChatDrafts()
@@ -477,102 +472,6 @@ final class AxodWorkbenchCoordinator {
         }
     }
 
-    func captureSessionDeletion(_ ids: Set<UUID>) -> AxodSessionDeletion? {
-        guard canEditWork, (1...32).contains(ids.count), let endpoint, let revision = catalogRevision else { return nil }
-        let records = sessions.filter { ids.contains($0.sessionId) }.sorted { $0.sessionId.uuidString < $1.sessionId.uuidString }
-        guard records.count == ids.count else { return nil }
-        let parameters = SessionDeletionParameters(target: MachineTarget(machineId: endpoint.machineId, hostGeneration: endpoint.hostGeneration),
-            commandId: UUID(), sessions: records.map { SessionAddress(workspaceId: $0.workspaceId, sessionId: $0.sessionId) }, expectedRevision: revision)
-        return AxodSessionDeletion(operation: operationGeneration, parameters: parameters, names: records.map(\.displayName))
-    }
-
-    func confirmSessionDeletion(_ context: AxodSessionDeletion, in window: NSWindow) {
-        guard canEditWork, context.operation == operationGeneration, let endpoint,
-              context.parameters.target == MachineTarget(machineId: endpoint.machineId, hostGeneration: endpoint.hostGeneration),
-              catalogRevision == context.parameters.expectedRevision else { message = "The deletion source changed. Reopen the session menu."; return }
-        sessionDeletionConfirmation = context
-        let alert = NSAlert()
-        alert.alertStyle = .warning
-        alert.messageText = context.names.count == 1 ? "Delete “\(context.names[0])”?" : "Delete \(context.names.count) Sessions?"
-        alert.informativeText = "This stops Pi and every shell in these sessions, including running commands, and removes the sessions from Axo. Conversation histories remain on disk."
-        alert.addButton(withTitle: "Delete").hasDestructiveAction = true
-        alert.addButton(withTitle: "Cancel")
-        alert.beginSheetModal(for: window) { [weak self] response in
-            guard let self, self.sessionDeletionConfirmation?.id == context.id else { return }
-            self.sessionDeletionConfirmation = nil
-            guard response == .alertFirstButtonReturn else { self.message = "Deletion cancelled. Nothing was stopped."; return }
-            self.deleteSessions(context)
-        }
-    }
-
-    private func deleteSessions(_ context: AxodSessionDeletion) {
-        let parameters = context.parameters
-        guard canEditWork, context.operation == operationGeneration, let connection, let endpoint,
-              parameters.target == MachineTarget(machineId: endpoint.machineId, hostGeneration: endpoint.hostGeneration),
-              catalogRevision == parameters.expectedRevision,
-              parameters.sessions.allSatisfy({ address in sessions.contains { $0.sessionId == address.sessionId && $0.workspaceId == address.workspaceId } }) else {
-            message = "The confirmed deletion source changed. Nothing was stopped; reopen the session menu."; return
-        }
-        isEditingWork = true
-        Task { [weak self] in
-            guard let self else { return }
-            defer { if self.operationGeneration == context.operation { self.isEditingWork = false } }
-            var saved = false
-            do {
-                try self.stateDirectory?.requireCurrentEndpoint(endpoint)
-                let data = try JSONEncoder().encode(parameters)
-                guard data.count <= 8192 else { throw AxoProtocolValidationError.invalidParameters(method: AxoProtocol.Method.deleteSessions) }
-                let value = try JSONDecoder().decode(JSONValue.self, from: data)
-                _ = try AxoProtocolResultValidator.sessionDeletionParameters(value)
-                self.preferences.set(data, forKey: self.pendingDeletionKey(parameters.target.machineId))
-                self.savePendingWork(parameters.commandId, machineID: parameters.target.machineId)
-                saved = true
-                let response = try await connection.request(method: AxoProtocol.Method.deleteSessions, parameters: parameters)
-                let result = try AxoProtocolResultValidator.sessionDeletion(response, parameters: parameters)
-                guard self.isCurrent(context.operation, connection: connection, endpoint: endpoint) else { return }
-                try self.stateDirectory?.requireCurrentEndpoint(endpoint)
-                guard result.receipt.revision != nil else {
-                    self.message = "Deletion is awaiting exact runtime completion. Reconcile the original command; it will not be replayed."; return
-                }
-                self.applySessionDeletion(result.receipt)
-            } catch {
-                guard self.isCurrent(context.operation, connection: connection, endpoint: endpoint) else { return }
-                if saved {
-                    if case AxoJSONRPCClientError.remote(let code, _) = error,
-                       [-32601, -32602, -32002, -32006, -32007, -32009, -32010].contains(code) {
-                        do { try self.stateDirectory?.requireCurrentEndpoint(endpoint) } catch { return }
-                        self.clearPendingWork(parameters.commandId, machineID: parameters.target.machineId)
-                        self.refresh(message: code == -32009 ? "Deletion refused: a session requires durable runtime recovery. No uncertain process was signaled." : "Deletion was rejected before stopping work. Refresh and reopen the session menu.")
-                    } else { self.message = "Deletion outcome unknown. The exact original command is saved for reconciliation, never replay." }
-                } else { self.message = "Deletion could not be prepared. Nothing was stopped." }
-            }
-        }
-    }
-
-    private func pendingDeletionKey(_ machineID: UUID) -> String { "Axo.axod.pendingDeletion." + machineID.uuidString }
-    private func savedSessionDeletion(_ machineID: UUID) -> SessionDeletionParameters? {
-        guard let data = preferences.data(forKey: pendingDeletionKey(machineID)), data.count <= 8192,
-              let value = try? JSONDecoder().decode(JSONValue.self, from: data),
-              let parameters = try? AxoProtocolResultValidator.sessionDeletionParameters(value), parameters.target.machineId == machineID else { return nil }
-        return parameters
-    }
-    private func applySessionDeletion(_ receipt: SessionDeletionReceipt) {
-        guard let revision = receipt.revision else { return }
-        let removed = Set(receipt.intent.sessions.map(\.sessionId))
-        clearPendingWork(receipt.commandId, machineID: receipt.intent.target.machineId)
-        terminalSurfaces.releaseDeletedSessions(receipt)
-        sessions.removeAll { removed.contains($0.sessionId) }
-        if (catalogRevision?.rawValue ?? 0) <= revision.rawValue { catalogRevision = revision }
-        if selectedSessionID.map(removed.contains) == true {
-            stopChatObservation(); chatTarget = nil; chatSnapshot = nil; chatEntries = []
-            selectedSessionID = nil; preferredSessionID = nil
-            if let next = sessions.first(where: { $0.workspaceId == selectedWorkspaceID }) ?? sessions.first { selectSession(next.sessionId) }
-            else { saveSelection() }
-        }
-        message = "Sessions deleted. Conversation histories were retained."
-        refresh()
-    }
-
     @objc func newWorkspace() { prepareWorkEditor(.workspace) }
     @objc func newSession() { prepareWorkEditor(.session(workspaceID: selectedWorkspaceID)) }
     @objc func newWorkspaceSession() {
@@ -581,7 +480,6 @@ final class AxodWorkbenchCoordinator {
     }
 
     private func prepareWorkEditor(_ kind: AxodWorkEditorContext.Kind) {
-        guard daemonKeepsSessionsAlive || usesFixtureDaemon else { message = "Background service needs updating."; return }
         guard canEditWork, workEditor == nil, let connection, let endpoint else { return }
         let operation = operationGeneration
         let target = MachineTarget(machineId: endpoint.machineId, hostGeneration: endpoint.hostGeneration)
@@ -610,7 +508,6 @@ final class AxodWorkbenchCoordinator {
     }
 
     func createWork(_ context: AxodWorkEditorContext, name: String, directory: LocalDirectoryPath?) {
-        guard daemonKeepsSessionsAlive || usesFixtureDaemon else { message = "Background service needs updating."; return }
         guard canEditWork, createdSessionForEditor == nil, (workEditor?.id ?? activeCreationContext?.id) == context.id, let connection, let endpoint,
               endpoint.machineId == context.target.machineId, endpoint.hostGeneration == context.target.hostGeneration else { return }
         let operation = operationGeneration
@@ -722,18 +619,6 @@ final class AxodWorkbenchCoordinator {
                 let result = try AxoProtocolResultValidator.commandGet(value, target: target)
                 guard self.isCurrent(operation, connection: connection, endpoint: endpoint) else { return }
                 try self.stateDirectory?.requireCurrentEndpoint(endpoint)
-                if case .deletion(let receipt) = result.receipt {
-                    guard let original = self.savedSessionDeletion(target.machineId), original.commandId == command,
-                          receipt.commandId == command, receipt.intent == original.intent else {
-                        self.workEditMessage = "The deletion receipt does not match its saved intent. It was preserved; nothing was replayed."; return
-                    }
-                    guard receipt.revision != nil else { self.workEditMessage = "Deletion still awaits exact runtime completion. The original command was not replayed."; return }
-                    self.applySessionDeletion(receipt)
-                    return
-                }
-                guard self.preferences.object(forKey: self.pendingDeletionKey(target.machineId)) == nil else {
-                    self.workEditMessage = "No matching deletion receipt was found. Its original intent remains saved, without replay."; return
-                }
                 guard case .work(let committed) = result.receipt else {
                     self.workEditMessage = "No committed work receipt was found. The unresolved command was not replayed."
                     return
@@ -767,7 +652,6 @@ final class AxodWorkbenchCoordinator {
     }
     private func clearPendingWork(_ command: UUID, machineID: UUID) {
         guard preferences.string(forKey: pendingWorkKey(machineID)) == command.uuidString else { return }
-        if let deletion = savedSessionDeletion(machineID), deletion.commandId == command { preferences.removeObject(forKey: pendingDeletionKey(machineID)) }
         preferences.removeObject(forKey: pendingWorkKey(machineID))
         if self.machineID == machineID { pendingWorkCommandID = nil }
     }
@@ -1315,17 +1199,6 @@ final class AxodWorkbenchCoordinator {
                 }
             }
 #endif
-            let keepsSessionsAlive: Bool
-            do {
-                let value = try await connection.request(method: "axo.host.lifecycle", parameters: HostGetParameters(target: source),
-                    timeout: try readinessTimeout(until: readinessDeadline))
-                keepsSessionsAlive = try AxoProtocolResultValidator.hostLifecycle(value, target: source).sessionKeepAlive
-            } catch AxoJSONRPCClientError.remote(let code, _) where code == -32601 {
-                keepsSessionsAlive = false
-            }
-            try requireCurrent(operation)
-            try stateDirectory.requireCurrentEndpoint(endpoint)
-            daemonKeepsSessionsAlive = keepsSessionsAlive
             hostStatus = status
             updateHelperObservation(status)
             if let serviceObservation { serviceLifecycle.observedReady(source, observation: serviceObservation) }
@@ -1356,12 +1229,6 @@ final class AxodWorkbenchCoordinator {
             let savedWork = preferences.string(forKey: pendingWorkKey(endpoint.machineId))
             pendingWorkCommandID = savedWork.flatMap(UUID.init(uuidString:))
             pendingWorkIsUnreadable = preferences.object(forKey: pendingWorkKey(endpoint.machineId)) != nil && pendingWorkCommandID == nil
-            if preferences.object(forKey: pendingDeletionKey(endpoint.machineId)) != nil {
-                if let deletion = savedSessionDeletion(endpoint.machineId), pendingWorkCommandID == nil || pendingWorkCommandID == deletion.commandId {
-                    pendingWorkCommandID = deletion.commandId
-                    if preferences.object(forKey: pendingWorkKey(endpoint.machineId)) == nil { preferences.set(deletion.commandId.uuidString, forKey: pendingWorkKey(endpoint.machineId)) }
-                } else { pendingWorkIsUnreadable = true }
-            }
             preferredMachineID = endpoint.machineId
             self.endpoint = endpoint
             self.connection = connection
@@ -1445,50 +1312,6 @@ final class AxodWorkbenchCoordinator {
         }
     }
 
-    /// Read-only observation. Backend lifecycle transitions are never client retries.
-    private func observeSessionLiveness(_ session: WorkSessionRecord, endpoint: LocalDaemonEndpoint) {
-        let selection = sessionLoadGeneration
-        guard sessionLivenessIdentity != selection, let control = connection, let directory = stateDirectory else { return }
-        sessionLivenessTask?.cancel()
-        sessionLivenessIdentity = selection
-        let operation = operationGeneration
-        let target = WorkSessionTarget(machineId: endpoint.machineId, hostGeneration: endpoint.hostGeneration,
-            workspaceId: session.workspaceId, sessionId: session.sessionId)
-        sessionLivenessTask = Task { [weak self] in
-            guard let self else { return }
-            defer { if self.sessionLivenessIdentity == selection { self.sessionLivenessIdentity = nil } }
-            do {
-                let peer = try self.rpc.openLocalWebSocket(endpoint: endpoint)
-                defer { Task { await peer.close() } }
-                let negotiation = try await peer.request(method: AxoProtocol.Method.negotiate, parameters: NegotiationParameters(), timeout: 2)
-                _ = try AxoProtocolResultValidator.localNegotiation(negotiation)
-                while !Task.isCancelled, self.isCurrent(operation, connection: control, endpoint: endpoint),
-                      self.sessionLoadGeneration == selection, self.selectedSessionID == session.sessionId {
-                    try await Task.sleep(for: .seconds(1))
-                    let value = try await peer.request(method: AxoProtocol.Method.getSession,
-                        parameters: SessionGetParameters(target: target), timeout: 2)
-                    let current = try AxoProtocolResultValidator.sessionGet(value, target: target).session
-                    guard !Task.isCancelled, self.isCurrent(operation, connection: control, endpoint: endpoint),
-                          self.sessionLoadGeneration == selection, self.selectedSessionID == session.sessionId,
-                          self.selectedWorkspaceID == session.workspaceId else { return }
-                    try directory.requireCurrentEndpoint(endpoint)
-                    if let index = self.sessions.firstIndex(where: { $0.sessionId == session.sessionId }) {
-                        let previous = self.sessions[index]
-                        if previous != current, let destination = self.sessions.firstIndex(where: { $0.sessionId == session.sessionId }) {
-                            self.sessions[destination] = current
-                            let executionChanged = previous.pi != current.pi || previous.runtime?.runtime != current.runtime?.runtime
-                                || previous.runtime?.process != current.runtime?.process
-                                || previous.shellPanes.map(\.paneId) != current.shellPanes.map(\.paneId)
-                                || previous.shellPanes.map(\.runtime) != current.shellPanes.map(\.runtime)
-                                || previous.shellPanes.map { $0.terminal?.process } != current.shellPanes.map { $0.terminal?.process }
-                            if executionChanged { self.activateSelectedSession() }
-                        }
-                    }
-                }
-            } catch { /* Reconnection is separate and read-only; no start/replay fallback. */ }
-        }
-    }
-
     private func activateSelectedSession() {
         // An immutable tool entry is not a branch-page cursor. Keep its explicit reader
         // across metadata-only refresh while the full selected writer/read mode is unchanged.
@@ -1512,7 +1335,6 @@ final class AxodWorkbenchCoordinator {
         paneLayouts.observe(session, machineID: endpoint.machineId)
         let pending = readPendingChatCommand(machineID: endpoint.machineId, sessionID: session.sessionId)
         pendingChatCommandId = pending?.commandId
-        if daemonKeepsSessionsAlive { observeSessionLiveness(session, endpoint: endpoint) }
 
         switch session.pi.admission {
         case .notAdmitted:
