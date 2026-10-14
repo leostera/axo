@@ -4,14 +4,17 @@ import SwiftUI
 
 @main
 struct AxoApp: App {
-  @StateObject private var daemon = DaemonController()
+  @StateObject private var daemon: DaemonController
+
+  init() {
+    let daemon = DaemonController()
+    _daemon = StateObject(wrappedValue: daemon)
+    daemon.startIfNeeded()
+  }
 
   var body: some Scene {
     MenuBarExtra {
       AxoMenu(daemon: daemon)
-        .task {
-          daemon.startIfNeeded()
-        }
     } label: {
       Label("Axo", systemImage: "command")
     }
@@ -19,9 +22,6 @@ struct AxoApp: App {
 
     Window("Axo Settings", id: "settings") {
       SettingsView(daemon: daemon)
-        .task {
-          daemon.startIfNeeded()
-        }
     }
     .windowResizability(.contentSize)
   }
