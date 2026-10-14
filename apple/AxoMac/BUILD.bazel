@@ -17,6 +17,13 @@ swift_library(
 )
 
 genrule(
+    name = "versioned_info_plist",
+    srcs = ["Info.plist", "//:BUILD_NUMBER", "//:scripts/stamp-info-plist.sh"],
+    outs = ["AxoVersionedInfo.plist"],
+    cmd = "$(location //:scripts/stamp-info-plist.sh) $(location Info.plist) $(location //:BUILD_NUMBER) $@",
+)
+
+genrule(
     name = "launch_agent_plist",
     srcs = ["Resources/dev.leostera.axo.axod.plist"],
     outs = ["dev.leostera.axo.axod.plist"],
@@ -28,7 +35,7 @@ macos_application(
     bundle_id = "dev.leostera.axo",
     bundle_name = "Axo",
     executable_name = "Axo",
-    infoplists = ["Info.plist"],
+    infoplists = [":versioned_info_plist"],
     minimum_os_version = "13.0",
     additional_contents = {
         ":launch_agent_plist": "Library/LaunchAgents",

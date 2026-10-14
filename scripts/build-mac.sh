@@ -20,39 +20,62 @@ fi
 
 export DEVELOPER_DIR=${DEVELOPER_DIR:-/Applications/Xcode.app/Contents/Developer}
 
-# Reserve a unique number before building; failed builds also consume their number.
-lock_dir="$root/.build-number.lock"
-if ! mkdir "$lock_dir" 2>/dev/null; then
-  echo "Another build is updating BUILD_NUMBER; retry after it finishes" >&2
-  exit 1
-fi
-cleanup_build_number_lock() {
-  if [[ -n ${temporary_build_number:-} ]]; then
-    rm -f -- "$temporary_build_number"
+if [[ -n ${AXO_BUILD_NUMBER:-} ]]; then
+  build_number=$AXO_BUILD_NUMBER
+else
+  build_state_dir=${AXO_BUILD_STATE_DIR:-"${HOME:?HOME is required for local build numbering}/Library/Application Support/Axo"}
+  mkdir -p "$build_state_dir"
+  build_state_file="$build_state_dir/build-number"
+  lock_dir="$build_state_file.lock"
+  if ! mkdir "$lock_dir" 2>/dev/null; then
+    echo "Another build is reserving an Axo build number; retry after it finishes" >&2
+    exit 1
   fi
-  rmdir "$lock_dir" 2>/dev/null || true
-}
-trap cleanup_build_number_lock EXIT
-previous_build_number=$(tr -d '\n' < BUILD_NUMBER)
-if [[ ! "$previous_build_number" =~ ^[1-9][0-9]*$ ]]; then
-  echo "BUILD_NUMBER must be a positive canonical decimal integer" >&2
+  cleanup_build_number_lock() {
+    if [[ -n ${temporary_build_number:-} ]]; then
+      rm -f -- "$temporary_build_number"
+    fi
+    rmdir "$lock_dir" 2>/dev/null || true
+  }
+  trap cleanup_build_number_lock EXIT
+
+  previous_build_number=$(tr -d '\n' < BUILD_NUMBER)
+  if [[ ! "$previous_build_number" =~ ^[1-9][0-9]*$ ]]; then
+    echo "BUILD_NUMBER must be a positive canonical decimal integer" >&2
+    exit 1
+  fi
+  if [[ -f "$build_state_file" ]]; then
+    saved_build_number=$(tr -d '\n' < "$build_state_file")
+    if [[ ! "$saved_build_number" =~ ^[1-9][0-9]*$ ]]; then
+      echo "Local Axo build-number state is invalid: $build_state_file" >&2
+      exit 1
+    fi
+    if ((saved_build_number > previous_build_number)); then
+      previous_build_number=$saved_build_number
+    fi
+  fi
+
+  build_number=$((previous_build_number + 1))
+  temporary_build_number=$(mktemp "$build_state_file.XXXXXX")
+  printf '%s\n' "$build_number" > "$temporary_build_number"
+  chmod 600 "$temporary_build_number"
+  mv -f "$temporary_build_number" "$build_state_file"
+  temporary_build_number=""
+  rmdir "$lock_dir"
+  trap - EXIT
+fi
+if [[ ! "$build_number" =~ ^[1-9][0-9]*$ ]]; then
+  echo "AXO_BUILD_NUMBER must be a positive canonical decimal integer" >&2
   exit 1
 fi
-build_number=$((previous_build_number + 1))
-temporary_build_number=$(mktemp "$root/.BUILD_NUMBER.XXXXXX")
-printf '%s\n' "$build_number" > "$temporary_build_number"
-chmod 644 "$temporary_build_number"
-mv -f "$temporary_build_number" BUILD_NUMBER
-temporary_build_number=""
-rmdir "$lock_dir"
-trap - EXIT
+export AXO_BUILD_NUMBER="$build_number"
 
 cargo fmt --all --check
 cargo clippy --workspace --all-targets --locked --offline -- -D warnings
 xcrun swift-format lint --strict --recursive apple/AxoRPC apple/AxoDaemonManager apple/AxoMac/Sources
 
-bazel test //...
-bazel build -c opt //apple/AxoMac:AxoApp //crates/axod:axod
+bazel test --action_env=AXO_BUILD_NUMBER="$build_number" //...
+bazel build --action_env=AXO_BUILD_NUMBER="$build_number" -c opt //apple/AxoMac:AxoApp //crates/axod:axod
 app_archive=$(bazel cquery -c opt --output=files //apple/AxoMac:AxoApp)
 daemon_binary=$(bazel cquery -c opt --output=files //crates/axod:axod)
 
@@ -70,8 +93,12 @@ trap cleanup EXIT
 ditto -x -k "$app_archive" "$stage"
 mkdir -p "$app/Contents/Helpers"
 cp "$daemon_binary" "$app/Contents/Helpers/axod"
-/usr/libexec/PlistBuddy -c "Set :CFBundleVersion $build_number" "$app/Contents/Info.plist"
 plutil -lint "$app/Contents/Info.plist"
+reported_app_build=$(/usr/libexec/PlistBuddy -c 'Print :CFBundleVersion' "$app/Contents/Info.plist")
+if [[ "$reported_app_build" != "$build_number" ]]; then
+  echo "Axo app reports build $reported_app_build, expected $build_number" >&2
+  exit 1
+fi
 plutil -lint "$app/Contents/Library/LaunchAgents/dev.leostera.axo.axod.plist"
 minimum_os=$(/usr/libexec/PlistBuddy -c 'Print :LSMinimumSystemVersion' "$app/Contents/Info.plist")
 for executable in "$app/Contents/MacOS/Axo" "$app/Contents/Helpers/axod"; do

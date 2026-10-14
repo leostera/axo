@@ -4,13 +4,16 @@ fn main() {
     println!("cargo:rerun-if-env-changed=AXO_BUILD_NUMBER");
     println!("cargo:rerun-if-env-changed=AXO_BUILD_NUMBER_FILE");
 
-    let build_number = match env::var_os("AXO_BUILD_NUMBER_FILE") {
-        Some(path) => {
-            let path = PathBuf::from(path);
-            println!("cargo:rerun-if-changed={}", path.display());
-            fs::read_to_string(path).expect("could not read build-number file")
-        }
-        None => env::var("AXO_BUILD_NUMBER").unwrap_or_else(|_| "1".into()),
+    let build_number = match env::var("AXO_BUILD_NUMBER") {
+        Ok(value) => value,
+        Err(_) => match env::var_os("AXO_BUILD_NUMBER_FILE") {
+            Some(path) => {
+                let path = PathBuf::from(path);
+                println!("cargo:rerun-if-changed={}", path.display());
+                fs::read_to_string(path).expect("could not read build-number file")
+            }
+            None => "1".into(),
+        },
     };
     let build_number = build_number.trim_end_matches(['\r', '\n']);
     let parsed_build_number: u64 = build_number
