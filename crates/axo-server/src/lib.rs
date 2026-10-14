@@ -5,12 +5,19 @@ use std::os::unix::ffi::OsStrExt;
 use std::os::unix::fs::{FileTypeExt, OpenOptionsExt, PermissionsExt};
 use std::os::unix::net::UnixStream;
 use std::path::{Path, PathBuf};
+use std::sync::Arc;
+use std::sync::atomic::{AtomicBool, Ordering};
+use std::thread;
+use std::time::Duration;
 
 use jsonrpc_core::IoHandler;
 use jsonrpc_ipc_server::{Separator, ServerBuilder};
 use serde_json::json;
 
+mod session;
+
 const MAX_SOCKET_PATH_BYTES: usize = 103;
+static SHUTDOWN_REQUESTED: AtomicBool = AtomicBool::new(false);
 
 include!(concat!(env!("OUT_DIR"), "/build_number.rs"));
 
@@ -19,7 +26,7 @@ pub fn default_server_directory() -> io::Result<PathBuf> {
     Ok(current_user_home_directory()?.join(".axo/server"))
 }
 
-fn current_user_home_directory() -> io::Result<PathBuf> {
+pub(crate) fn current_user_home_directory() -> io::Result<PathBuf> {
     resolve_home_directory(std::env::var_os("HOME").map(PathBuf::from))
 }
 
@@ -98,26 +105,107 @@ pub fn serve_ipc(
     prepare_runtime_directory(&socket_path.0)?;
     remove_stale_socket(&socket_path.0)?;
 
-    let server = ServerBuilder::new(rpc_handler())
+    let sessions = session::SessionManager::open(server_directory)?;
+    let server = ServerBuilder::new(rpc_handler(Arc::clone(&sessions)))
         .request_separators(Separator::Byte(b'\n'), Separator::Byte(b'\n'))
         .start(path_as_str(&socket_path.0)?)?;
     fs::set_permissions(&socket_path.0, fs::Permissions::from_mode(0o600))?;
     let _pid_file = PidFile::write(&server_directory.join("axo.pid"))?;
+    let signal_handlers = SignalHandlers::install()?;
+    let stop_watcher = Arc::new(AtomicBool::new(false));
+    let close_server = server.close_handle();
+    let watcher_stop = Arc::clone(&stop_watcher);
+    let watcher_sessions = Arc::clone(&sessions);
+    let signal_watcher = thread::Builder::new()
+        .name("axo-shutdown-signals".into())
+        .spawn(move || {
+            while !watcher_stop.load(Ordering::Relaxed) {
+                if SHUTDOWN_REQUESTED.swap(false, Ordering::Relaxed) {
+                    watcher_sessions.shutdown();
+                    close_server.close();
+                    break;
+                }
+                thread::sleep(Duration::from_millis(20));
+            }
+        })?;
+
     log::info!("event=daemon.ready pid={}", std::process::id());
     server.wait();
+    stop_watcher.store(true, Ordering::Relaxed);
+    let _ = signal_watcher.join();
+    sessions.shutdown();
+    drop(signal_handlers);
     log::info!("event=daemon.server_stopped");
     Ok(())
 }
 
-fn rpc_handler() -> IoHandler {
+extern "C" fn request_shutdown(_: libc::c_int) {
+    SHUTDOWN_REQUESTED.store(true, Ordering::Relaxed);
+}
+
+struct SignalHandlers {
+    previous_terminate: libc::sighandler_t,
+    previous_interrupt: libc::sighandler_t,
+}
+
+impl SignalHandlers {
+    fn install() -> io::Result<Self> {
+        SHUTDOWN_REQUESTED.store(false, Ordering::Relaxed);
+        // SAFETY: request_shutdown only performs an atomic store, which is signal-safe.
+        let previous_terminate = unsafe {
+            libc::signal(
+                libc::SIGTERM,
+                request_shutdown as *const () as libc::sighandler_t,
+            )
+        };
+        if previous_terminate == libc::SIG_ERR {
+            return Err(io::Error::last_os_error());
+        }
+        // SAFETY: request_shutdown only performs an atomic store, which is signal-safe.
+        let previous_interrupt = unsafe {
+            libc::signal(
+                libc::SIGINT,
+                request_shutdown as *const () as libc::sighandler_t,
+            )
+        };
+        if previous_interrupt == libc::SIG_ERR {
+            // SAFETY: restore the prior SIGTERM handler after SIGINT setup failed.
+            unsafe {
+                libc::signal(libc::SIGTERM, previous_terminate);
+            }
+            return Err(io::Error::last_os_error());
+        }
+        Ok(Self {
+            previous_terminate,
+            previous_interrupt,
+        })
+    }
+}
+
+impl Drop for SignalHandlers {
+    fn drop(&mut self) {
+        // SAFETY: restore the process's prior handlers after the watcher stopped.
+        unsafe {
+            libc::signal(libc::SIGTERM, self.previous_terminate);
+            libc::signal(libc::SIGINT, self.previous_interrupt);
+        }
+    }
+}
+
+fn rpc_handler(sessions: Arc<session::SessionManager>) -> IoHandler {
     let mut handler = IoHandler::new();
+    add_health_method(&mut handler);
+    sessions.register_rpc_methods(&mut handler);
+    handler
+}
+
+fn add_health_method(handler: &mut IoHandler) {
     handler.add_sync_method("axo.daemon.health", |_| {
         Ok(json!({
             "buildNumber": BUILD_NUMBER,
             "status": "running"
         }))
     });
-    handler
 }
 
 #[derive(Debug, Eq, PartialEq)]
@@ -239,7 +327,9 @@ mod tests {
 
     #[test]
     fn health_method_reports_this_build() {
-        let response = rpc_handler()
+        let mut handler = IoHandler::new();
+        add_health_method(&mut handler);
+        let response = handler
             .handle_request_sync(r#"{"jsonrpc":"2.0","id":1,"method":"axo.daemon.health"}"#)
             .expect("health is a request with a response");
         let response: serde_json::Value = serde_json::from_str(&response).unwrap();
@@ -250,7 +340,9 @@ mod tests {
 
     #[test]
     fn unknown_methods_use_the_json_rpc_method_not_found_error() {
-        let response = rpc_handler()
+        let mut handler = IoHandler::new();
+        add_health_method(&mut handler);
+        let response = handler
             .handle_request_sync(r#"{"jsonrpc":"2.0","id":1,"method":"axo.unknown"}"#)
             .expect("unknown method requests have an error response");
         let response: serde_json::Value = serde_json::from_str(&response).unwrap();

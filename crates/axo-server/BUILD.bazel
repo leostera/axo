@@ -16,14 +16,14 @@ cargo_build_script(
 
 rust_library(
     name = "axo_server",
-    srcs = ["src/lib.rs"],
+    srcs = ["src/lib.rs", "src/session.rs"],
     edition = crate_edition(),
     deps = [":build_script"] + all_crate_deps(normal = True),
 )
 
 rust_test(
     name = "axo_server_tests",
-    srcs = ["src/lib.rs"],
+    srcs = ["src/lib.rs", "src/session.rs"],
     edition = crate_edition(),
     deps = [":build_script"] + all_crate_deps(normal = True),
 )

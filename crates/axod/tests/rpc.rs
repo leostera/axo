@@ -1,16 +1,88 @@
 use std::io::{BufRead, BufReader, Write};
+use std::os::fd::{AsRawFd, FromRawFd, OwnedFd, RawFd};
 use std::os::unix::net::UnixStream;
 use std::process::{Child, Command, Stdio};
 use std::thread;
 use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
+use serde_json::{Value, json};
+
 struct ChildGuard(Child);
+
+#[derive(Default)]
+struct SessionProcessCleanup(Vec<libc::pid_t>);
+
+impl SessionProcessCleanup {
+    fn track(&mut self, session: &Value) {
+        self.0
+            .push(session["processId"].as_i64().unwrap() as libc::pid_t);
+    }
+}
+
+impl Drop for SessionProcessCleanup {
+    fn drop(&mut self) {
+        for process_id in &self.0 {
+            // SAFETY: these PIDs came from sessions created by this isolated test daemon.
+            unsafe {
+                libc::kill(-process_id, libc::SIGKILL);
+                libc::kill(*process_id, libc::SIGKILL);
+            }
+        }
+    }
+}
+
+impl ChildGuard {
+    fn stop(&mut self) {
+        if self.0.try_wait().ok().flatten().is_some() {
+            return;
+        }
+        // SAFETY: this sends SIGTERM to only the daemon child created by this test.
+        unsafe {
+            libc::kill(self.0.id() as libc::pid_t, libc::SIGTERM);
+        }
+        let deadline = Instant::now() + Duration::from_secs(3);
+        while Instant::now() < deadline {
+            if self.0.try_wait().ok().flatten().is_some() {
+                return;
+            }
+            thread::sleep(Duration::from_millis(20));
+        }
+        let _ = self.0.kill();
+        let kill_deadline = Instant::now() + Duration::from_secs(3);
+        while Instant::now() < kill_deadline {
+            if self.0.try_wait().ok().flatten().is_some() {
+                return;
+            }
+            thread::sleep(Duration::from_millis(20));
+        }
+        panic!("axod did not exit within three seconds after SIGKILL");
+    }
+}
 
 impl Drop for ChildGuard {
     fn drop(&mut self) {
-        if self.0.try_wait().ok().flatten().is_none() {
-            let _ = self.0.kill();
-            let _ = self.0.wait();
+        if self.0.try_wait().ok().flatten().is_some() {
+            return;
+        }
+        // Let the daemon run its bounded PTY cleanup before falling back to SIGKILL.
+        // SAFETY: this sends SIGTERM to only the daemon child created by this test.
+        unsafe {
+            libc::kill(self.0.id() as libc::pid_t, libc::SIGTERM);
+        }
+        let deadline = Instant::now() + Duration::from_secs(3);
+        while Instant::now() < deadline {
+            if self.0.try_wait().ok().flatten().is_some() {
+                return;
+            }
+            thread::sleep(Duration::from_millis(20));
+        }
+        let _ = self.0.kill();
+        let kill_deadline = Instant::now() + Duration::from_secs(3);
+        while Instant::now() < kill_deadline {
+            if self.0.try_wait().ok().flatten().is_some() {
+                return;
+            }
+            thread::sleep(Duration::from_millis(20));
         }
     }
 }
@@ -44,72 +116,271 @@ fn axod_binary() -> std::path::PathBuf {
     }
 }
 
-fn rpc(socket: &std::path::Path, method: &str) -> serde_json::Value {
-    let mut stream = UnixStream::connect(socket).expect("daemon socket should accept connections");
-    writeln!(stream, r#"{{"jsonrpc":"2.0","id":1,"method":"{method}"}}"#).unwrap();
-    let mut response = String::new();
-    BufReader::new(stream).read_line(&mut response).unwrap();
-    serde_json::from_str(&response).unwrap()
-}
-
-#[test]
-fn daemon_serves_json_rpc_health_and_standard_method_errors() {
-    let unique = SystemTime::now()
-        .duration_since(UNIX_EPOCH)
-        .unwrap()
-        .as_nanos();
-    let directory = std::env::temp_dir().join(format!("axod-rpc-{}-{unique}", std::process::id()));
-    std::fs::create_dir_all(&directory).unwrap();
-    let socket = directory.join("axod.sock");
+fn start_axod(directory: &std::path::Path, socket: &std::path::Path) -> ChildGuard {
+    std::fs::create_dir_all(directory).unwrap();
     let child = Command::new(axod_binary())
         .arg("--socket")
-        .arg(&socket)
+        .arg(socket)
         .arg("--server-dir")
-        .arg(&directory)
+        .arg(directory)
         .stdout(Stdio::null())
         .stderr(Stdio::null())
         .spawn()
         .unwrap();
-    let mut child = ChildGuard(child);
+    ChildGuard(child)
+}
 
+fn rpc(socket: &std::path::Path, method: &str) -> Value {
+    rpc_with_params(socket, method, json!({}))
+}
+
+fn rpc_with_params(socket: &std::path::Path, method: &str, params: Value) -> Value {
+    let mut stream = UnixStream::connect(socket).expect("daemon socket should accept connections");
+    stream
+        .set_read_timeout(Some(Duration::from_secs(10)))
+        .unwrap();
+    stream
+        .set_write_timeout(Some(Duration::from_secs(10)))
+        .unwrap();
+    let request = json!({
+        "jsonrpc": "2.0",
+        "id": 1,
+        "method": method,
+        "params": params,
+    });
+    writeln!(stream, "{request}").unwrap();
+    let mut response = String::new();
+    BufReader::new(stream)
+        .read_line(&mut response)
+        .unwrap_or_else(|error| panic!("RPC {method} did not respond before its timeout: {error}"));
+    serde_json::from_str(&response).unwrap()
+}
+
+fn wait_for_socket(socket: &std::path::Path, child: &mut ChildGuard) {
     let deadline = Instant::now() + Duration::from_secs(5);
-    let health = loop {
-        if let Ok(stream) = UnixStream::connect(&socket) {
-            drop(stream);
-            break rpc(&socket, "axo.daemon.health");
+    loop {
+        if UnixStream::connect(socket).is_ok() {
+            return;
         }
+        assert!(
+            child.0.try_wait().unwrap().is_none(),
+            "axod exited before listening"
+        );
         assert!(
             Instant::now() < deadline,
             "daemon did not create its socket"
         );
         thread::sleep(Duration::from_millis(20));
+    }
+}
+
+fn open_session(session: &Value) -> (UnixStream, OwnedFd) {
+    let mut control = UnixStream::connect(session["attachSocketPath"].as_str().unwrap()).unwrap();
+    control
+        .set_read_timeout(Some(Duration::from_secs(3)))
+        .unwrap();
+    control
+        .set_write_timeout(Some(Duration::from_secs(3)))
+        .unwrap();
+    writeln!(control, "{}", session["id"].as_i64().unwrap()).unwrap();
+
+    let mut byte = 0_u8;
+    let mut vector = libc::iovec {
+        iov_base: (&mut byte as *mut u8).cast(),
+        iov_len: 1,
     };
-    assert_eq!(health["jsonrpc"], "2.0");
+    let control_size = unsafe { libc::CMSG_SPACE(std::mem::size_of::<RawFd>() as u32) } as usize;
+    let mut control_buffer = vec![0_usize; control_size.div_ceil(std::mem::size_of::<usize>())];
+    // SAFETY: zeroed msghdr is a valid starting point before its fields are initialized.
+    let mut message: libc::msghdr = unsafe { std::mem::zeroed() };
+    message.msg_iov = &mut vector;
+    message.msg_iovlen = 1;
+    message.msg_control = control_buffer.as_mut_ptr().cast();
+    message.msg_controllen = control_size as _;
+
+    // SAFETY: message references writable byte and control buffers of the advertised sizes.
+    let received = unsafe { libc::recvmsg(control.as_raw_fd(), &mut message, 0) };
+    assert_eq!(
+        received, 1,
+        "attach handshake should return one byte and one descriptor"
+    );
+    assert_eq!(byte, b'1');
+
+    // SAFETY: recvmsg returned a control message containing one SCM_RIGHTS descriptor.
+    let header = unsafe { libc::CMSG_FIRSTHDR(&message) };
+    assert!(
+        !header.is_null(),
+        "attach response should include a control message"
+    );
+    assert_eq!(unsafe { (*header).cmsg_level }, libc::SOL_SOCKET);
+    assert_eq!(unsafe { (*header).cmsg_type }, libc::SCM_RIGHTS);
+    // SAFETY: the validated ancillary message contains a single raw descriptor.
+    let master = unsafe { std::ptr::read_unaligned(libc::CMSG_DATA(header).cast::<RawFd>()) };
+    // SAFETY: recvmsg transferred ownership of this descriptor to the caller.
+    (control, unsafe { OwnedFd::from_raw_fd(master) })
+}
+
+fn write_pty(master: RawFd, input: &[u8]) {
+    let mut remaining = input;
+    let deadline = Instant::now() + Duration::from_secs(3);
+    while !remaining.is_empty() {
+        let mut descriptor = libc::pollfd {
+            fd: master,
+            events: libc::POLLOUT,
+            revents: 0,
+        };
+        // SAFETY: descriptor is a valid one-element poll array.
+        let ready = unsafe { libc::poll(&mut descriptor, 1, 100) };
+        if ready == 0 {
+            assert!(
+                Instant::now() < deadline,
+                "timed out waiting to write to PTY"
+            );
+            continue;
+        }
+        assert!(
+            ready > 0,
+            "PTY poll failed: {}",
+            std::io::Error::last_os_error()
+        );
+        // SAFETY: remaining contains initialized bytes and master is an open PTY descriptor.
+        let written = unsafe { libc::write(master, remaining.as_ptr().cast(), remaining.len()) };
+        if written == -1 {
+            let error = std::io::Error::last_os_error();
+            if error.kind() == std::io::ErrorKind::WouldBlock {
+                assert!(Instant::now() < deadline, "timed out writing to PTY");
+                continue;
+            }
+            panic!("PTY write failed: {error}");
+        }
+        remaining = &remaining[written as usize..];
+    }
+}
+
+fn pty_contains(master: RawFd, needle: &[u8], timeout: Duration) -> bool {
+    let deadline = Instant::now() + timeout;
+    let mut received = Vec::new();
+    while Instant::now() < deadline {
+        let mut descriptor = libc::pollfd {
+            fd: master,
+            events: libc::POLLIN,
+            revents: 0,
+        };
+        // SAFETY: descriptor is a valid one-element poll array.
+        let ready = unsafe { libc::poll(&mut descriptor, 1, 100) };
+        if ready <= 0 {
+            continue;
+        }
+        let mut bytes = [0_u8; 1024];
+        // SAFETY: bytes is writable and master is open.
+        let count = unsafe { libc::read(master, bytes.as_mut_ptr().cast(), bytes.len()) };
+        if count > 0 {
+            received.extend_from_slice(&bytes[..count as usize]);
+            if received
+                .windows(needle.len())
+                .any(|window| window == needle)
+            {
+                return true;
+            }
+        }
+    }
+    false
+}
+
+fn active_sessions(socket: &std::path::Path) -> Vec<Value> {
+    rpc(socket, "axo.session.list")["result"]["sessions"]
+        .as_array()
+        .unwrap()
+        .clone()
+}
+
+#[test]
+fn daemon_creates_a_default_pty_session_and_restores_it_after_restart() {
+    let unique = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .unwrap()
+        .as_nanos();
+    let mut cleanup = SessionProcessCleanup::default();
+    let directory = std::env::temp_dir().join(format!("axo-e2e-{}-{unique}", std::process::id()));
+    let server_directory = directory.join("server");
+    let socket = directory.join("axod.sock");
+
+    let mut daemon = start_axod(&server_directory, &socket);
+    wait_for_socket(&socket, &mut daemon);
+
+    let health = rpc(&socket, "axo.daemon.health");
     assert_eq!(health["result"]["status"], "running");
     assert!(health["result"]["buildNumber"].as_u64().is_some());
-    let pid_path = directory.join("axo.pid");
-    while !pid_path.exists() {
-        assert!(
-            Instant::now() < deadline,
-            "daemon did not write its PID file"
-        );
-        thread::sleep(Duration::from_millis(10));
-    }
-    assert_eq!(
-        std::fs::read_to_string(pid_path).unwrap().trim(),
-        child.0.id().to_string()
-    );
-    assert!(directory.join("stdout.log").exists());
+
+    let home = std::env::var("HOME").unwrap();
+    let sessions = active_sessions(&socket);
+    assert_eq!(sessions.len(), 1, "axod should keep a default session open");
+    let session = &sessions[0];
+    cleanup.track(session);
+    assert_eq!(session["initialPwd"], home);
+    assert!(session["ptyDevice"].as_str().unwrap().starts_with("/dev/"));
+    assert!(server_directory.join("axo.db").exists());
+
+    let (_attachment, master) = open_session(session);
+    write_pty(master.as_raw_fd(), b"printf 'AXOD_PTY_E2E_OK\\n'\n");
     assert!(
-        std::fs::read_to_string(directory.join("stderr.log"))
-            .unwrap()
-            .contains("event=daemon.started")
+        pty_contains(
+            master.as_raw_fd(),
+            b"AXOD_PTY_E2E_OK",
+            Duration::from_secs(3)
+        ),
+        "the attached PTY should execute commands and return their output"
     );
 
-    let unknown_method = rpc(&socket, "axo.unknown");
-    assert_eq!(unknown_method["error"]["code"], -32601);
+    let session_id = session["id"].as_i64().unwrap();
+    let original_process_id = session["processId"].as_u64().unwrap();
+    daemon.stop();
+    drop(daemon);
+    drop(master);
 
-    child.0.kill().unwrap();
-    child.0.wait().unwrap();
+    let mut restarted = start_axod(&server_directory, &socket);
+    wait_for_socket(&socket, &mut restarted);
+    let restored = active_sessions(&socket);
+    assert_eq!(restored.len(), 1);
+    assert_eq!(
+        restored[0]["id"], session_id,
+        "restart should keep the logical session id"
+    );
+    assert_ne!(
+        restored[0]["processId"].as_u64().unwrap(),
+        original_process_id,
+        "restart should recreate the shell process"
+    );
+    assert_eq!(restored[0]["initialPwd"], home);
+    cleanup.track(&restored[0]);
+
+    let (_attachment, restored_master) = open_session(&restored[0]);
+    write_pty(
+        restored_master.as_raw_fd(),
+        b"printf 'AXOD_RESTORED_OK\\n'\n",
+    );
+    assert!(pty_contains(
+        restored_master.as_raw_fd(),
+        b"AXOD_RESTORED_OK",
+        Duration::from_secs(3)
+    ));
+
+    let close = rpc_with_params(
+        &socket,
+        "axo.session.close",
+        json!({ "sessionId": session_id }),
+    );
+    assert_eq!(close["result"]["archivedSessionId"], session_id);
+    let replacement = &close["result"]["replacement"];
+    assert!(
+        replacement.is_object(),
+        "closing the last session creates a replacement"
+    );
+    cleanup.track(replacement);
+    assert_ne!(replacement["id"], session_id);
+    assert_eq!(active_sessions(&socket).len(), 1);
+
+    restarted.stop();
+    drop(restarted);
     let _ = std::fs::remove_dir_all(directory);
 }

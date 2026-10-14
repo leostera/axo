@@ -23,5 +23,6 @@ rust_test(
     edition = crate_edition(),
     data = [":axod"],
     env = {"AXOD_BINARY": "$(rootpath :axod)"},
-    deps = all_crate_deps(normal_dev = True),
+    timeout = "short",
+    deps = all_crate_deps(normal = True, normal_dev = True),
 )
