@@ -36,7 +36,7 @@ enum AxodCommand {
         #[arg(long, value_name = "PATH")]
         attach_socket: PathBuf,
         #[arg(long, value_name = "ID")]
-        session_id: i64,
+        shell_id: i64,
     },
 }
 
@@ -50,10 +50,10 @@ fn main() {
     let cli = Cli::from_arg_matches(&matches).expect("clap validated the arguments");
     if let Some(AxodCommand::TerminalAttach {
         attach_socket,
-        session_id,
+        shell_id,
     }) = cli.command
     {
-        if let Err(error) = attach_terminal(&attach_socket, session_id) {
+        if let Err(error) = attach_terminal(&attach_socket, shell_id) {
             eprintln!("axod terminal-attach: {error}");
             std::process::exit(1);
         }
@@ -96,17 +96,17 @@ fn main() {
     log::info!("event=daemon.stopped");
 }
 
-fn attach_terminal(socket_path: &Path, session_id: i64) -> io::Result<()> {
-    if session_id <= 0 {
+fn attach_terminal(socket_path: &Path, shell_id: i64) -> io::Result<()> {
+    if shell_id <= 0 {
         return Err(io::Error::new(
             io::ErrorKind::InvalidInput,
-            "session ID must be positive",
+            "shell ID must be positive",
         ));
     }
 
     let mut control = UnixStream::connect(socket_path)?;
     control.set_read_timeout(Some(Duration::from_secs(5)))?;
-    writeln!(control, "{session_id}")?;
+    writeln!(control, "{shell_id}")?;
     let master = receive_pty_master(&control)?;
     let mut writer = File::from(duplicate_descriptor(master.as_raw_fd())?);
     let mut reader = File::from(master);

@@ -7,7 +7,7 @@ final class TerminalLayoutTests: XCTestCase {
     let original = TerminalLayout.pane(17)
 
     let updated = try XCTUnwrap(
-      original.inserting(sessionID: 23, direction: .down, beside: 17)
+      original.inserting(shellID: 23, direction: .down, beside: 17)
     )
 
     guard case .split(_, let direction, let first, let second) = updated else {
@@ -26,10 +26,18 @@ final class TerminalLayoutTests: XCTestCase {
       second: .pane(23)
     )
 
-    XCTAssertEqual(layout.removing(sessionID: 17), .pane(23))
+    XCTAssertEqual(layout.removing(shellID: 17), .pane(23))
   }
 
-  func testPruningClosedSessionsCollapsesNestedSplit() {
+  func testAddingNewShellsPreservesExistingPanesWithoutDuplicates() {
+    let layout = TerminalLayout.pane(17)
+
+    let updated = layout.adding([23, 42, 23])
+
+    XCTAssertEqual(updated.shellIDs, [17, 23, 42])
+  }
+
+  func testPruningClosedShellsCollapsesNestedSplit() {
     let layout = TerminalLayout.split(
       id: UUID(),
       direction: .right,

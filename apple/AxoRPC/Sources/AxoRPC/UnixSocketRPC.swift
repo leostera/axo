@@ -48,6 +48,18 @@ public struct DaemonHealth: Decodable, Equatable, Sendable {
 
 public struct TerminalSession: Decodable, Equatable, Identifiable, Sendable {
   public let id: Int64
+  public let initialPwd: String
+  public let shells: [TerminalShell]
+
+  public init(id: Int64, initialPwd: String, shells: [TerminalShell]) {
+    self.id = id
+    self.initialPwd = initialPwd
+    self.shells = shells
+  }
+}
+
+public struct TerminalShell: Decodable, Equatable, Identifiable, Sendable {
+  public let id: Int64
   public let processId: UInt32
   public let initialPwd: String
   public let ptyDevice: String
@@ -59,12 +71,27 @@ public struct ClosedTerminalSession: Decodable, Equatable, Sendable {
   public let replacement: TerminalSession?
 }
 
+public struct ClosedTerminalShell: Decodable, Equatable, Sendable {
+  public let archivedShellId: Int64
+  public let archivedSessionId: Int64?
+  public let replacement: TerminalSession?
+}
+
 private struct TerminalSessionList: Decodable {
   let sessions: [TerminalSession]
 }
 
 private struct CloseTerminalSessionRequest: Encodable {
   let sessionId: Int64
+}
+
+private struct CreateTerminalShellRequest: Encodable {
+  let sessionId: Int64
+}
+
+private struct CloseTerminalShellRequest: Encodable {
+  let sessionId: Int64
+  let shellId: Int64
 }
 
 public enum UnixSocketRPCError: Error, LocalizedError {
@@ -121,6 +148,31 @@ public enum UnixSocketRPC {
       try await session.response(
         to: "axo.session.close",
         params: CloseTerminalSessionRequest(sessionId: sessionID)
+      )
+    }
+  }
+
+  public static func createShell(
+    in sessionID: Int64,
+    at socketPath: UnixSocketPath
+  ) async throws -> TerminalShell {
+    try await withResponse(at: socketPath) { session in
+      try await session.response(
+        to: "axo.shell.create",
+        params: CreateTerminalShellRequest(sessionId: sessionID)
+      )
+    }
+  }
+
+  public static func closeShell(
+    _ shellID: Int64,
+    in sessionID: Int64,
+    at socketPath: UnixSocketPath
+  ) async throws -> ClosedTerminalShell {
+    try await withResponse(at: socketPath) { session in
+      try await session.response(
+        to: "axo.shell.close",
+        params: CloseTerminalShellRequest(sessionId: sessionID, shellId: shellID)
       )
     }
   }

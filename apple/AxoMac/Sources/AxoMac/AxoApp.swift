@@ -67,6 +67,11 @@ struct AxoApp: App {
 
         Divider()
 
+        Button("Close Focused Shell", role: .destructive) {
+          Task { await sessions.closeFocusedShell() }
+        }
+        .disabled(sessions.focusedShellID == nil)
+
         Button("Close Session", role: .destructive) {
           if let sessionID = sessions.selectedSessionID {
             Task { await sessions.closeSession(sessionID) }

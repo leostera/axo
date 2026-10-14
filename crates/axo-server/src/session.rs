@@ -26,14 +26,20 @@ const REAPER_INTERVAL: Duration = Duration::from_millis(100);
 #[derive(Clone, Copy, Debug, Eq, Hash, PartialEq)]
 struct SessionId(i64);
 
+#[derive(Clone, Copy, Debug, Eq, Hash, PartialEq)]
+struct ShellId(i64);
+
 #[derive(Debug)]
 struct SessionRecord {
     id: SessionId,
     initial_pwd: PathBuf,
+    shell_ids: Vec<ShellId>,
 }
 
 #[derive(Debug)]
-struct RunningSession {
+struct RunningShell {
+    session_id: SessionId,
+    initial_pwd: PathBuf,
     child: Child,
     master: OwnedFd,
     slave_device: String,
@@ -42,7 +48,7 @@ struct RunningSession {
 
 struct SessionState {
     database: Connection,
-    running: HashMap<SessionId, RunningSession>,
+    running: HashMap<ShellId, RunningShell>,
     initial_pwd: PathBuf,
 }
 
@@ -54,15 +60,15 @@ pub struct SessionManager {
 }
 
 #[derive(Debug)]
-struct SessionMetadata {
-    id: SessionId,
+struct ShellMetadata {
+    id: ShellId,
     process_id: u32,
     initial_pwd: PathBuf,
     slave_device: String,
     attach_socket_path: PathBuf,
 }
 
-impl SessionMetadata {
+impl ShellMetadata {
     fn to_json(&self) -> Value {
         json!({
             "id": self.id.0,
@@ -74,26 +80,52 @@ impl SessionMetadata {
     }
 }
 
+#[derive(Debug)]
+struct SessionMetadata {
+    id: SessionId,
+    initial_pwd: PathBuf,
+    shells: Vec<ShellMetadata>,
+}
+
+impl SessionMetadata {
+    fn to_json(&self) -> Value {
+        json!({
+            "id": self.id.0,
+            "initialPwd": self.initial_pwd,
+            "shells": self.shells.iter().map(ShellMetadata::to_json).collect::<Vec<_>>(),
+        })
+    }
+}
+
+#[derive(Debug)]
+struct ClosedShellMetadata {
+    archived_shell_id: ShellId,
+    archived_session_id: Option<SessionId>,
+    replacement: Option<SessionMetadata>,
+}
+
+impl ClosedShellMetadata {
+    fn to_json(&self) -> Value {
+        json!({
+            "archivedShellId": self.archived_shell_id.0,
+            "archivedSessionId": self.archived_session_id.map(|id| id.0),
+            "replacement": self.replacement.as_ref().map(SessionMetadata::to_json),
+        })
+    }
+}
+
 impl SessionManager {
     pub fn open(server_directory: &Path) -> Result<Arc<Self>, Box<dyn std::error::Error>> {
         let database_path = server_directory.join(DATABASE_FILE);
         let attach_socket_path = server_directory.join(ATTACH_SOCKET_FILE);
         let initial_pwd = super::current_user_home_directory()?;
 
-        let database = Connection::open(&database_path)?;
+        let mut database = Connection::open(&database_path)?;
         database.busy_timeout(Duration::from_secs(3))?;
         database.pragma_update(None, "journal_mode", "WAL")?;
         database.pragma_update(None, "synchronous", "FULL")?;
-        database.execute_batch(
-            "CREATE TABLE IF NOT EXISTS sessions (
-                id INTEGER PRIMARY KEY AUTOINCREMENT,
-                initial_pwd TEXT NOT NULL,
-                state TEXT NOT NULL CHECK (state IN ('open', 'archived')),
-                created_at INTEGER NOT NULL,
-                archived_at INTEGER,
-                termination_reason TEXT
-            );",
-        )?;
+        database.pragma_update(None, "foreign_keys", "ON")?;
+        initialize_database(&mut database)?;
         fs::set_permissions(&database_path, fs::Permissions::from_mode(0o600))?;
 
         let manager = Arc::new(Self {
@@ -143,6 +175,24 @@ impl SessionManager {
                 })
                 .map_err(internal_rpc_error)
         });
+
+        let manager = Arc::clone(self);
+        handler.add_sync_method("axo.shell.create", move |params| {
+            let id = parse_session_id(params)?;
+            manager
+                .create_shell(id)
+                .map(|shell| shell.to_json())
+                .map_err(internal_rpc_error)
+        });
+
+        let manager = Arc::clone(self);
+        handler.add_sync_method("axo.shell.close", move |params| {
+            let (session_id, shell_id) = parse_shell_ids(params)?;
+            manager
+                .close_shell(session_id, shell_id)
+                .map(|closed| closed.to_json())
+                .map_err(internal_rpc_error)
+        });
     }
 
     fn restore_open_sessions(self: &Arc<Self>) -> io::Result<()> {
@@ -152,8 +202,14 @@ impl SessionManager {
             create_session(&mut state, &self.attach_socket_path)?;
         } else {
             for record in records {
-                let running = spawn_shell(&record.initial_pwd)?;
-                state.running.insert(record.id, running);
+                let has_shells = !record.shell_ids.is_empty();
+                for shell_id in record.shell_ids {
+                    let shell = spawn_shell(record.id, &record.initial_pwd)?;
+                    state.running.insert(shell_id, shell);
+                }
+                if !has_shells {
+                    create_shell(&mut state, record.id, &self.attach_socket_path)?;
+                }
             }
         }
         Ok(())
@@ -221,20 +277,23 @@ impl SessionManager {
 
     fn list_sessions(&self) -> io::Result<Vec<SessionMetadata>> {
         let state = self.lock_state()?;
-        let mut sessions = state
-            .running
-            .iter()
-            .map(|(id, running)| {
-                let initial_pwd = session_initial_pwd(&state.database, *id)?;
-                Ok(SessionMetadata {
-                    id: *id,
-                    process_id: running.child.id(),
-                    initial_pwd,
-                    slave_device: running.slave_device.clone(),
-                    attach_socket_path: self.attach_socket_path.clone(),
-                })
-            })
-            .collect::<io::Result<Vec<_>>>()?;
+        let mut sessions: HashMap<SessionId, SessionMetadata> = HashMap::new();
+        for (shell_id, running) in &state.running {
+            let session = sessions
+                .entry(running.session_id)
+                .or_insert_with(|| SessionMetadata {
+                    id: running.session_id,
+                    initial_pwd: running.initial_pwd.clone(),
+                    shells: Vec::new(),
+                });
+            session
+                .shells
+                .push(shell_metadata(*shell_id, running, &self.attach_socket_path));
+        }
+        let mut sessions: Vec<_> = sessions.into_values().collect();
+        for session in &mut sessions {
+            session.shells.sort_by_key(|shell| shell.id.0);
+        }
         sessions.sort_by_key(|session| session.id.0);
         Ok(sessions)
     }
@@ -244,26 +303,23 @@ impl SessionManager {
         create_session(&mut state, &self.attach_socket_path)
     }
 
+    fn create_shell(&self, session_id: SessionId) -> io::Result<ShellMetadata> {
+        let mut state = self.lock_state()?;
+        create_shell(&mut state, session_id, &self.attach_socket_path)
+    }
+
     fn close_session(&self, id: SessionId) -> io::Result<Option<SessionMetadata>> {
         let mut state = self.lock_state()?;
-        if !state.running.contains_key(&id) {
-            return Err(io::Error::new(
-                io::ErrorKind::NotFound,
-                "session is not open",
-            ));
-        }
+        close_session(&mut state, id, &self.attach_socket_path)
+    }
 
-        let replacement = if state.running.len() == 1 {
-            Some(create_session(&mut state, &self.attach_socket_path)?)
-        } else {
-            None
-        };
-
-        archive_session(&state.database, id, "explicit_close")?;
-        if let Some(mut running) = state.running.remove(&id) {
-            terminate_shell(&mut running.child);
-        }
-        Ok(replacement)
+    fn close_shell(
+        &self,
+        session_id: SessionId,
+        shell_id: ShellId,
+    ) -> io::Result<ClosedShellMetadata> {
+        let mut state = self.lock_state()?;
+        close_shell(&mut state, session_id, shell_id, &self.attach_socket_path)
     }
 
     fn reap_exited_sessions(&self) -> io::Result<()> {
@@ -271,16 +327,23 @@ impl SessionManager {
         let exited = state
             .running
             .iter_mut()
-            .filter_map(|(id, running)| match running.child.try_wait() {
-                Ok(Some(_)) => Some(Ok(*id)),
+            .filter_map(|(shell_id, running)| match running.child.try_wait() {
+                Ok(Some(_)) => Some(Ok((*shell_id, running.session_id))),
                 Ok(None) => None,
                 Err(error) => Some(Err(error)),
             })
             .collect::<io::Result<Vec<_>>>()?;
 
-        for id in exited {
-            state.running.remove(&id);
-            archive_session(&state.database, id, "shell_exited")?;
+        for (shell_id, session_id) in exited {
+            state.running.remove(&shell_id);
+            archive_shell(&state.database, shell_id, "shell_exited")?;
+            if !state
+                .running
+                .values()
+                .any(|shell| shell.session_id == session_id)
+            {
+                archive_session(&mut state.database, session_id, "shell_exited")?;
+            }
         }
         if state.running.is_empty() {
             create_session(&mut state, &self.attach_socket_path)?;
@@ -288,16 +351,16 @@ impl SessionManager {
         Ok(())
     }
 
-    fn duplicate_master(&self, id: SessionId) -> io::Result<OwnedFd> {
+    fn duplicate_master(&self, id: ShellId) -> io::Result<OwnedFd> {
         let mut state = self.lock_state()?;
         let running = state
             .running
             .get_mut(&id)
-            .ok_or_else(|| io::Error::new(io::ErrorKind::NotFound, "session is not open"))?;
+            .ok_or_else(|| io::Error::new(io::ErrorKind::NotFound, "shell is not open"))?;
         if running.attached {
             return Err(io::Error::new(
                 io::ErrorKind::AddrInUse,
-                "session already has a PTY attachment",
+                "shell already has a PTY attachment",
             ));
         }
         let fd = unsafe { libc::fcntl(running.master.as_raw_fd(), libc::F_DUPFD_CLOEXEC, 0) };
@@ -309,7 +372,7 @@ impl SessionManager {
         Ok(unsafe { OwnedFd::from_raw_fd(fd) })
     }
 
-    fn mark_detached(&self, id: SessionId) {
+    fn mark_detached(&self, id: ShellId) {
         if let Ok(mut state) = self.state.lock()
             && let Some(running) = state.running.get_mut(&id)
         {
@@ -355,53 +418,258 @@ impl Drop for SessionManager {
     }
 }
 
+fn initialize_database(database: &mut Connection) -> rusqlite::Result<()> {
+    let sessions_exist = database.query_row(
+        "SELECT EXISTS(SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = 'sessions')",
+        [],
+        |row| row.get::<_, bool>(0),
+    )?;
+    let shells_exist = database.query_row(
+        "SELECT EXISTS(SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = 'shells')",
+        [],
+        |row| row.get::<_, bool>(0),
+    )?;
+    let transaction = database.transaction()?;
+
+    if sessions_exist && !shells_exist {
+        transaction.execute_batch("ALTER TABLE sessions RENAME TO legacy_sessions;")?;
+        create_tables(&transaction)?;
+        transaction.execute_batch(
+            "INSERT INTO sessions (id, initial_pwd, state, created_at, archived_at, termination_reason)
+             SELECT id, initial_pwd, state, created_at, archived_at, termination_reason
+             FROM legacy_sessions;
+             INSERT INTO shells (id, session_id, initial_pwd, state, created_at, archived_at, termination_reason)
+             SELECT id, id, initial_pwd, state, created_at, archived_at, termination_reason
+             FROM legacy_sessions;
+             DROP TABLE legacy_sessions;",
+        )?;
+    } else {
+        create_tables(&transaction)?;
+    }
+
+    transaction.pragma_update(None, "user_version", 2)?;
+    transaction.commit()
+}
+
+fn create_tables(transaction: &rusqlite::Transaction<'_>) -> rusqlite::Result<()> {
+    transaction.execute_batch(
+        "CREATE TABLE IF NOT EXISTS sessions (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            initial_pwd TEXT NOT NULL,
+            state TEXT NOT NULL CHECK (state IN ('open', 'archived')),
+            created_at INTEGER NOT NULL,
+            archived_at INTEGER,
+            termination_reason TEXT
+        );
+        CREATE TABLE IF NOT EXISTS shells (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            session_id INTEGER NOT NULL REFERENCES sessions(id),
+            initial_pwd TEXT NOT NULL,
+            state TEXT NOT NULL CHECK (state IN ('open', 'archived')),
+            created_at INTEGER NOT NULL,
+            archived_at INTEGER,
+            termination_reason TEXT
+        );
+        CREATE INDEX IF NOT EXISTS shells_by_session_state
+            ON shells(session_id, state, id);",
+    )
+}
+
 fn create_session(
     state: &mut SessionState,
     attach_socket_path: &Path,
 ) -> io::Result<SessionMetadata> {
     let initial_pwd = state.initial_pwd.clone();
-    let timestamp = unix_timestamp();
     state
         .database
         .execute(
             "INSERT INTO sessions (initial_pwd, state, created_at) VALUES (?1, 'open', ?2)",
-            params![initial_pwd.to_string_lossy(), timestamp],
+            params![initial_pwd.to_string_lossy(), unix_timestamp()],
         )
         .map_err(io::Error::other)?;
     let id = SessionId(state.database.last_insert_rowid());
 
-    let running = match spawn_shell(&initial_pwd) {
+    if let Err(error) = create_shell(state, id, attach_socket_path) {
+        archive_session(&mut state.database, id, "spawn_failed")?;
+        return Err(error);
+    }
+    session_metadata(state, id, attach_socket_path)
+}
+
+fn create_shell(
+    state: &mut SessionState,
+    session_id: SessionId,
+    attach_socket_path: &Path,
+) -> io::Result<ShellMetadata> {
+    let initial_pwd = session_initial_pwd(&state.database, session_id)?;
+    state
+        .database
+        .execute(
+            "INSERT INTO shells (session_id, initial_pwd, state, created_at)
+             VALUES (?1, ?2, 'open', ?3)",
+            params![
+                session_id.0,
+                initial_pwd.to_string_lossy(),
+                unix_timestamp()
+            ],
+        )
+        .map_err(io::Error::other)?;
+    let shell_id = ShellId(state.database.last_insert_rowid());
+
+    let running = match spawn_shell(session_id, &initial_pwd) {
         Ok(running) => running,
         Err(error) => {
-            archive_session(&state.database, id, "spawn_failed")?;
+            archive_shell(&state.database, shell_id, "spawn_failed")?;
             return Err(error);
         }
     };
-    let metadata = SessionMetadata {
+    let metadata = shell_metadata(shell_id, &running, attach_socket_path);
+    state.running.insert(shell_id, running);
+    Ok(metadata)
+}
+
+fn close_session(
+    state: &mut SessionState,
+    id: SessionId,
+    attach_socket_path: &Path,
+) -> io::Result<Option<SessionMetadata>> {
+    if !state.running.values().any(|shell| shell.session_id == id) {
+        return Err(io::Error::new(
+            io::ErrorKind::NotFound,
+            "session is not open",
+        ));
+    }
+
+    let open_session_ids: std::collections::HashSet<_> = state
+        .running
+        .values()
+        .map(|shell| shell.session_id)
+        .collect();
+    let replacement = if open_session_ids.len() == 1 {
+        Some(create_session(state, attach_socket_path)?)
+    } else {
+        None
+    };
+
+    archive_session(&mut state.database, id, "explicit_close")?;
+    terminate_session_shells(state, id);
+    Ok(replacement)
+}
+
+fn close_shell(
+    state: &mut SessionState,
+    session_id: SessionId,
+    shell_id: ShellId,
+    attach_socket_path: &Path,
+) -> io::Result<ClosedShellMetadata> {
+    let shell = state
+        .running
+        .get(&shell_id)
+        .ok_or_else(|| io::Error::new(io::ErrorKind::NotFound, "shell is not open"))?;
+    if shell.session_id != session_id {
+        return Err(io::Error::new(
+            io::ErrorKind::InvalidInput,
+            "shell does not belong to this session",
+        ));
+    }
+
+    let sibling_count = state
+        .running
+        .values()
+        .filter(|shell| shell.session_id == session_id)
+        .count();
+    if sibling_count == 1 {
+        let replacement = close_session(state, session_id, attach_socket_path)?;
+        return Ok(ClosedShellMetadata {
+            archived_shell_id: shell_id,
+            archived_session_id: Some(session_id),
+            replacement,
+        });
+    }
+
+    archive_shell(&state.database, shell_id, "explicit_close")?;
+    if let Some(mut shell) = state.running.remove(&shell_id) {
+        terminate_shell(&mut shell.child);
+    }
+    Ok(ClosedShellMetadata {
+        archived_shell_id: shell_id,
+        archived_session_id: None,
+        replacement: None,
+    })
+}
+
+fn terminate_session_shells(state: &mut SessionState, session_id: SessionId) {
+    let shell_ids: Vec<_> = state
+        .running
+        .iter()
+        .filter_map(|(shell_id, shell)| (shell.session_id == session_id).then_some(*shell_id))
+        .collect();
+    for shell_id in shell_ids {
+        if let Some(mut shell) = state.running.remove(&shell_id) {
+            terminate_shell(&mut shell.child);
+        }
+    }
+}
+
+fn session_metadata(
+    state: &SessionState,
+    id: SessionId,
+    attach_socket_path: &Path,
+) -> io::Result<SessionMetadata> {
+    let initial_pwd = session_initial_pwd(&state.database, id)?;
+    let mut shells: Vec<_> = state
+        .running
+        .iter()
+        .filter(|&(_, running)| running.session_id == id)
+        .map(|(shell_id, running)| shell_metadata(*shell_id, running, attach_socket_path))
+        .collect();
+    shells.sort_by_key(|shell| shell.id.0);
+    Ok(SessionMetadata {
+        id,
+        initial_pwd,
+        shells,
+    })
+}
+
+fn shell_metadata(id: ShellId, running: &RunningShell, attach_socket_path: &Path) -> ShellMetadata {
+    ShellMetadata {
         id,
         process_id: running.child.id(),
-        initial_pwd,
+        initial_pwd: running.initial_pwd.clone(),
         slave_device: running.slave_device.clone(),
         attach_socket_path: attach_socket_path.to_path_buf(),
-    };
-    state.running.insert(id, running);
-    Ok(metadata)
+    }
 }
 
 fn read_open_sessions(database: &Connection) -> io::Result<Vec<SessionRecord>> {
     let mut statement = database
         .prepare("SELECT id, initial_pwd FROM sessions WHERE state = 'open' ORDER BY id")
         .map_err(io::Error::other)?;
-    let records = statement
+    let rows = statement
         .query_map([], |row| {
-            Ok(SessionRecord {
-                id: SessionId(row.get(0)?),
-                initial_pwd: PathBuf::from(row.get::<_, String>(1)?),
-            })
+            Ok((
+                SessionId(row.get(0)?),
+                PathBuf::from(row.get::<_, String>(1)?),
+            ))
         })
-        .map_err(io::Error::other)?
-        .collect::<Result<Vec<_>, _>>()
         .map_err(io::Error::other)?;
+    let mut records = Vec::new();
+    for row in rows {
+        let (id, initial_pwd) = row.map_err(io::Error::other)?;
+        let mut shell_statement = database
+            .prepare("SELECT id FROM shells WHERE session_id = ?1 AND state = 'open' ORDER BY id")
+            .map_err(io::Error::other)?;
+        let shell_ids = shell_statement
+            .query_map(params![id.0], |row| Ok(ShellId(row.get(0)?)))
+            .map_err(io::Error::other)?
+            .collect::<Result<Vec<_>, _>>()
+            .map_err(io::Error::other)?;
+        records.push(SessionRecord {
+            id,
+            initial_pwd,
+            shell_ids,
+        });
+    }
     Ok(records)
 }
 
@@ -418,12 +686,38 @@ fn session_initial_pwd(database: &Connection, id: SessionId) -> io::Result<PathB
         .ok_or_else(|| io::Error::new(io::ErrorKind::NotFound, "session record is missing"))
 }
 
-fn archive_session(database: &Connection, id: SessionId, reason: &str) -> io::Result<()> {
+fn archive_shell(database: &Connection, id: ShellId, reason: &str) -> io::Result<()> {
     let changed = database
+        .execute(
+            "UPDATE shells SET state = 'archived', archived_at = ?1, termination_reason = ?2
+             WHERE id = ?3 AND state = 'open'",
+            params![unix_timestamp(), reason, id.0],
+        )
+        .map_err(io::Error::other)?;
+    if changed != 1 {
+        return Err(io::Error::new(
+            io::ErrorKind::NotFound,
+            "shell was not open in the database",
+        ));
+    }
+    Ok(())
+}
+
+fn archive_session(database: &mut Connection, id: SessionId, reason: &str) -> io::Result<()> {
+    let transaction = database.transaction().map_err(io::Error::other)?;
+    let archived_at = unix_timestamp();
+    transaction
+        .execute(
+            "UPDATE shells SET state = 'archived', archived_at = ?1, termination_reason = ?2
+             WHERE session_id = ?3 AND state = 'open'",
+            params![archived_at, reason, id.0],
+        )
+        .map_err(io::Error::other)?;
+    let changed = transaction
         .execute(
             "UPDATE sessions SET state = 'archived', archived_at = ?1, termination_reason = ?2
              WHERE id = ?3 AND state = 'open'",
-            params![unix_timestamp(), reason, id.0],
+            params![archived_at, reason, id.0],
         )
         .map_err(io::Error::other)?;
     if changed != 1 {
@@ -432,7 +726,7 @@ fn archive_session(database: &Connection, id: SessionId, reason: &str) -> io::Re
             "session was not open in the database",
         ));
     }
-    Ok(())
+    transaction.commit().map_err(io::Error::other)
 }
 
 fn app_resources_directory() -> Option<PathBuf> {
@@ -456,7 +750,7 @@ fn bundled_terminfo_directory() -> Option<PathBuf> {
         .then_some(terminfo_directory)
 }
 
-fn spawn_shell(initial_pwd: &Path) -> io::Result<RunningSession> {
+fn spawn_shell(session_id: SessionId, initial_pwd: &Path) -> io::Result<RunningShell> {
     let mut master_fd: RawFd = -1;
     let mut slave_fd: RawFd = -1;
     let mut size = libc::winsize {
@@ -533,7 +827,9 @@ fn spawn_shell(initial_pwd: &Path) -> io::Result<RunningSession> {
 
     let child = command.spawn()?;
     drop(slave);
-    Ok(RunningSession {
+    Ok(RunningShell {
+        session_id,
+        initial_pwd: initial_pwd.to_path_buf(),
         child,
         master,
         slave_device,
@@ -618,7 +914,7 @@ fn handle_attachment(mut stream: UnixStream, manager: Weak<SessionManager>) {
     let Ok(raw_id) = text.parse::<i64>() else {
         return;
     };
-    let id = SessionId(raw_id);
+    let id = ShellId(raw_id);
     let Some(manager) = manager.upgrade() else {
         return;
     };
@@ -699,6 +995,23 @@ fn parse_session_id(params: Params) -> Result<SessionId, RpcError> {
     Ok(SessionId(id))
 }
 
+fn parse_shell_ids(params: Params) -> Result<(SessionId, ShellId), RpcError> {
+    let value: Value = params
+        .parse()
+        .map_err(|_| invalid_params("expected {sessionId, shellId}"))?;
+    let session_id = value
+        .get("sessionId")
+        .and_then(Value::as_i64)
+        .filter(|id| *id > 0)
+        .ok_or_else(|| invalid_params("sessionId must be a positive integer"))?;
+    let shell_id = value
+        .get("shellId")
+        .and_then(Value::as_i64)
+        .filter(|id| *id > 0)
+        .ok_or_else(|| invalid_params("shellId must be a positive integer"))?;
+    Ok((SessionId(session_id), ShellId(shell_id)))
+}
+
 fn invalid_params(message: &str) -> RpcError {
     RpcError {
         code: ErrorCode::InvalidParams,
@@ -722,7 +1035,7 @@ fn unix_timestamp() -> i64 {
         .as_secs() as i64
 }
 
-impl Drop for RunningSession {
+impl Drop for RunningShell {
     fn drop(&mut self) {
         // Closing the master PTY sends SIGHUP to its controlling session, so a
         // daemon restart tears down the shell without archiving its DB record.
@@ -734,9 +1047,51 @@ mod tests {
     use super::*;
 
     #[test]
+    fn migrates_legacy_shell_sessions_into_tabs() {
+        let mut database = Connection::open_in_memory().unwrap();
+        database
+            .execute_batch(
+                "CREATE TABLE sessions (
+                    id INTEGER PRIMARY KEY AUTOINCREMENT,
+                    initial_pwd TEXT NOT NULL,
+                    state TEXT NOT NULL CHECK (state IN ('open', 'archived')),
+                    created_at INTEGER NOT NULL,
+                    archived_at INTEGER,
+                    termination_reason TEXT
+                );
+                INSERT INTO sessions (id, initial_pwd, state, created_at)
+                VALUES (7, '/tmp', 'open', 123);",
+            )
+            .unwrap();
+
+        initialize_database(&mut database).unwrap();
+
+        let (session_id, initial_pwd): (i64, String) = database
+            .query_row(
+                "SELECT id, initial_pwd FROM sessions WHERE state = 'open'",
+                [],
+                |row| Ok((row.get(0)?, row.get(1)?)),
+            )
+            .unwrap();
+        let (shell_id, shell_session_id, shell_pwd): (i64, i64, String) = database
+            .query_row(
+                "SELECT id, session_id, initial_pwd FROM shells WHERE state = 'open'",
+                [],
+                |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?)),
+            )
+            .unwrap();
+
+        assert_eq!(session_id, 7);
+        assert_eq!(initial_pwd, "/tmp");
+        assert_eq!(shell_id, 7);
+        assert_eq!(shell_session_id, session_id);
+        assert_eq!(shell_pwd, initial_pwd);
+    }
+
+    #[test]
     fn creates_a_shell_attached_to_a_real_pty() {
         let home = super::super::current_user_home_directory().unwrap();
-        let mut session = spawn_shell(&home).unwrap();
+        let mut session = spawn_shell(SessionId(1), &home).unwrap();
         assert!(session.slave_device.starts_with("/dev/"));
 
         let master = session.master.as_raw_fd();

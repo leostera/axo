@@ -28,7 +28,7 @@ final class GhosttyRuntime: ObservableObject {
 
   func createSurface(
     in view: GhosttySurfaceNSView,
-    session: TerminalSession,
+    shell: TerminalShell,
     helperURL: URL
   ) {
     guard let app else {
@@ -54,11 +54,11 @@ final class GhosttyRuntime: ObservableObject {
 
     let command = Self.terminalAttachCommand(
       helperPath: helperURL.path,
-      socketPath: session.attachSocketPath,
-      sessionID: session.id
+      socketPath: shell.attachSocketPath,
+      shellID: shell.id
     )
 
-    let createdSurface = session.initialPwd.withCString { workingDirectory in
+    let createdSurface = shell.initialPwd.withCString { workingDirectory in
       command.withCString { command in
         surfaceConfig.working_directory = workingDirectory
         surfaceConfig.command = command
@@ -72,7 +72,7 @@ final class GhosttyRuntime: ObservableObject {
     }
 
     view.attach(createdSurface)
-    view.status = "Connected to session \(session.id)"
+    view.status = "Connected to shell \(shell.id)"
     updateSurfaceSize(in: view)
   }
 
@@ -190,15 +190,15 @@ final class GhosttyRuntime: ObservableObject {
   private static func terminalAttachCommand(
     helperPath: String,
     socketPath: String,
-    sessionID: Int64
+    shellID: Int64
   ) -> String {
     [
       helperPath,
       "terminal-attach",
       "--attach-socket",
       socketPath,
-      "--session-id",
-      String(sessionID),
+      "--shell-id",
+      String(shellID),
     ]
     .map(shellQuoted)
     .joined(separator: " ")

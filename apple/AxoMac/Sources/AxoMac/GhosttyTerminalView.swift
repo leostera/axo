@@ -6,7 +6,7 @@ import SwiftUI
 
 struct GhosttyTerminalView: NSViewRepresentable {
   let runtime: GhosttyRuntime
-  let session: TerminalSession
+  let shell: TerminalShell
   let helperURL: URL
   let onFocus: () -> Void
   let onStatusChange: (String) -> Void
@@ -18,7 +18,7 @@ struct GhosttyTerminalView: NSViewRepresentable {
   func makeNSView(context: Context) -> GhosttySurfaceNSView {
     let view = GhosttySurfaceNSView(runtime: runtime, onFocus: onFocus)
     view.onStatusChange = onStatusChange
-    runtime.createSurface(in: view, session: session, helperURL: helperURL)
+    runtime.createSurface(in: view, shell: shell, helperURL: helperURL)
     return view
   }
 

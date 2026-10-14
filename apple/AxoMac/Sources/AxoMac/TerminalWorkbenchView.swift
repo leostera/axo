@@ -26,8 +26,10 @@ struct TerminalWorkbenchView: View {
     }
     .frame(minWidth: 760, minHeight: 480)
     .task(id: daemonIsRunning) {
-      if daemonIsRunning {
+      guard daemonIsRunning else { return }
+      while !Task.isCancelled {
         await sessions.refresh()
+        try? await Task.sleep(for: .seconds(1))
       }
     }
   }
@@ -108,17 +110,17 @@ private struct TerminalLayoutView: View {
   @ViewBuilder
   var body: some View {
     switch layout {
-    case .pane(let sessionID):
-      if let session = sessions.session(for: sessionID) {
+    case .pane(let shellID):
+      if let shell = sessions.shell(for: shellID) {
         TerminalPaneView(
-          session: session,
+          shell: shell,
           sessions: sessions
         )
-        .id(session.id)
+        .id(shell.id)
       } else {
         ContentUnavailableViewPlaceholder(
-          title: "Session Unavailable",
-          message: "This session is no longer open.",
+          title: "Shell Unavailable",
+          message: "This shell is no longer open.",
           systemImage: "terminal"
         )
       }
@@ -144,7 +146,7 @@ private struct TerminalLayoutView: View {
 }
 
 private struct TerminalPaneView: View {
-  let session: TerminalSession
+  let shell: TerminalShell
   let sessions: TerminalSessionsModel
   @EnvironmentObject private var ghostty: GhosttyRuntime
   @State private var terminalError: String?
@@ -152,9 +154,9 @@ private struct TerminalPaneView: View {
   var body: some View {
     GhosttyTerminalView(
       runtime: ghostty,
-      session: session,
+      shell: shell,
       helperURL: sessions.helperURL,
-      onFocus: { sessions.focus(session.id) },
+      onFocus: { sessions.focus(shell.id) },
       onStatusChange: { status in
         terminalError = status.hasPrefix("Connected to ") ? nil : status
       }

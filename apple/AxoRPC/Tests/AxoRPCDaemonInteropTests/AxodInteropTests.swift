@@ -36,9 +36,22 @@ final class AxodInteropTests: XCTestCase {
 
     let createdSession = try await UnixSocketRPC.createSession(at: socketPath)
     XCTAssertNotEqual(createdSession.id, initialSessions[0].id)
+    let createdShell = try await UnixSocketRPC.createShell(in: createdSession.id, at: socketPath)
     let sessionsAfterCreate = try await UnixSocketRPC.listSessions(at: socketPath)
     XCTAssertEqual(
       Set(sessionsAfterCreate.map(\.id)), Set([initialSessions[0].id, createdSession.id]))
+    XCTAssertEqual(
+      sessionsAfterCreate.first(where: { $0.id == createdSession.id })?.shells.map(\.id),
+      [createdSession.shells[0].id, createdShell.id]
+    )
+
+    let closedShell = try await UnixSocketRPC.closeShell(
+      createdShell.id,
+      in: createdSession.id,
+      at: socketPath
+    )
+    XCTAssertEqual(closedShell.archivedShellId, createdShell.id)
+    XCTAssertNil(closedShell.archivedSessionId)
 
     let closedSession = try await UnixSocketRPC.closeSession(createdSession.id, at: socketPath)
     XCTAssertEqual(closedSession.archivedSessionId, createdSession.id)

@@ -29,7 +29,10 @@ enum AxoAppSelfTest {
       guard sessions.contains(where: { $0.id == session.id }) else {
         throw SelfTestError.createdSessionMissing
       }
-      try verifyPTYAttachment(session, helperURL: helperURL)
+      guard let shell = session.shells.first else {
+        throw SelfTestError.createdShellMissing
+      }
+      try verifyPTYAttachment(shell, helperURL: helperURL)
       let closed = try await UnixSocketRPC.closeSession(session.id, at: socketPath)
       guard closed.archivedSessionId == session.id else {
         throw SelfTestError.closeDidNotArchiveSession
@@ -41,7 +44,7 @@ enum AxoAppSelfTest {
   }
 
   private static func verifyPTYAttachment(
-    _ session: TerminalSession,
+    _ shell: TerminalShell,
     helperURL: URL
   ) throws {
     guard FileManager.default.isExecutableFile(atPath: helperURL.path) else {
@@ -54,8 +57,8 @@ enum AxoAppSelfTest {
     helper.executableURL = helperURL
     helper.arguments = [
       "terminal-attach",
-      "--attach-socket", session.attachSocketPath,
-      "--session-id", String(session.id),
+      "--attach-socket", shell.attachSocketPath,
+      "--shell-id", String(shell.id),
     ]
     helper.standardInput = input
     helper.standardOutput = output
@@ -127,6 +130,7 @@ private enum SelfTestError: Error, LocalizedError {
   case missingTestSocket
   case daemonUnavailable
   case createdSessionMissing
+  case createdShellMissing
   case closeDidNotArchiveSession
   case helperMissing(String)
   case helperClosedBeforeMarker
@@ -141,6 +145,8 @@ private enum SelfTestError: Error, LocalizedError {
       "Axo D did not report a running status."
     case .createdSessionMissing:
       "Axo D did not return the session created by the self-test."
+    case .createdShellMissing:
+      "Axo D did not return a shell in the self-test session."
     case .closeDidNotArchiveSession:
       "Axo D did not archive the self-test session."
     case .helperMissing(let path):

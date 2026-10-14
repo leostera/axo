@@ -14,8 +14,13 @@ struct SessionProcessCleanup(Vec<libc::pid_t>);
 
 impl SessionProcessCleanup {
     fn track(&mut self, session: &Value) {
-        self.0
-            .push(session["processId"].as_i64().unwrap() as libc::pid_t);
+        self.0.extend(
+            session["shells"]
+                .as_array()
+                .unwrap()
+                .iter()
+                .map(|shell| shell["processId"].as_i64().unwrap() as libc::pid_t),
+        );
     }
 }
 
@@ -189,15 +194,15 @@ fn wait_for_socket(socket: &std::path::Path, child: &mut ChildGuard) {
     }
 }
 
-fn open_session(session: &Value) -> (UnixStream, OwnedFd) {
-    let mut control = UnixStream::connect(session["attachSocketPath"].as_str().unwrap()).unwrap();
+fn open_shell(shell: &Value) -> (UnixStream, OwnedFd) {
+    let mut control = UnixStream::connect(shell["attachSocketPath"].as_str().unwrap()).unwrap();
     control
         .set_read_timeout(Some(Duration::from_secs(3)))
         .unwrap();
     control
         .set_write_timeout(Some(Duration::from_secs(3)))
         .unwrap();
-    writeln!(control, "{}", session["id"].as_i64().unwrap()).unwrap();
+    writeln!(control, "{}", shell["id"].as_i64().unwrap()).unwrap();
 
     let mut byte = 0_u8;
     let mut vector = libc::iovec {
@@ -322,12 +327,13 @@ fn terminal_attach_subcommand_bridges_input_and_output() {
     let mut daemon = start_axod(&server_directory, &socket);
     wait_for_socket(&socket, &mut daemon);
     let session = active_sessions(&socket).remove(0);
+    let shell = &session["shells"][0];
     let mut process = Command::new(axod_binary())
         .arg("terminal-attach")
         .arg("--attach-socket")
-        .arg(session["attachSocketPath"].as_str().unwrap())
-        .arg("--session-id")
-        .arg(session["id"].as_i64().unwrap().to_string())
+        .arg(shell["attachSocketPath"].as_str().unwrap())
+        .arg("--shell-id")
+        .arg(shell["id"].as_i64().unwrap().to_string())
         .stdin(Stdio::piped())
         .stdout(Stdio::piped())
         .stderr(Stdio::piped())
@@ -381,10 +387,13 @@ fn daemon_creates_a_default_pty_session_and_restores_it_after_restart() {
     let session = &sessions[0];
     cleanup.track(session);
     assert_eq!(session["initialPwd"], home);
-    assert!(session["ptyDevice"].as_str().unwrap().starts_with("/dev/"));
+    assert_eq!(session["shells"].as_array().unwrap().len(), 1);
+    let shell = &session["shells"][0];
+    assert_eq!(shell["initialPwd"], home);
+    assert!(shell["ptyDevice"].as_str().unwrap().starts_with("/dev/"));
     assert!(server_directory.join("axo.db").exists());
 
-    let (_attachment, master) = open_session(session);
+    let (_attachment, master) = open_shell(shell);
     write_pty(master.as_raw_fd(), b"printf 'AXOD_PTY_E2E_OK\\n'\n");
     assert!(
         pty_contains(
@@ -396,7 +405,24 @@ fn daemon_creates_a_default_pty_session_and_restores_it_after_restart() {
     );
 
     let session_id = session["id"].as_i64().unwrap();
-    let original_process_id = session["processId"].as_u64().unwrap();
+    let shell_id = shell["id"].as_i64().unwrap();
+    let original_process_id = shell["processId"].as_u64().unwrap();
+    let split_shell = rpc_with_params(
+        &socket,
+        "axo.shell.create",
+        json!({ "sessionId": session_id }),
+    )["result"]
+        .clone();
+    cleanup
+        .0
+        .push(split_shell["processId"].as_i64().unwrap() as libc::pid_t);
+    assert_eq!(
+        active_sessions(&socket)[0]["shells"]
+            .as_array()
+            .unwrap()
+            .len(),
+        2
+    );
     daemon.stop();
     drop(daemon);
     drop(master);
@@ -409,15 +435,32 @@ fn daemon_creates_a_default_pty_session_and_restores_it_after_restart() {
         restored[0]["id"], session_id,
         "restart should keep the logical session id"
     );
+    assert_eq!(restored[0]["shells"].as_array().unwrap().len(), 2);
+    let restored_shell = restored[0]["shells"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|restored_shell| restored_shell["id"] == shell_id)
+        .unwrap();
     assert_ne!(
-        restored[0]["processId"].as_u64().unwrap(),
+        restored_shell["processId"].as_u64().unwrap(),
         original_process_id,
         "restart should recreate the shell process"
     );
+    let restored_split_shell = restored[0]["shells"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|restored_shell| restored_shell["id"] == split_shell["id"])
+        .unwrap();
     assert_eq!(restored[0]["initialPwd"], home);
+    assert_ne!(
+        restored_split_shell["processId"], split_shell["processId"],
+        "restart should recreate each shell process"
+    );
     cleanup.track(&restored[0]);
 
-    let (_attachment, restored_master) = open_session(&restored[0]);
+    let (_attachment, restored_master) = open_shell(restored_shell);
     write_pty(
         restored_master.as_raw_fd(),
         b"printf 'AXOD_RESTORED_OK\\n'\n",
@@ -427,6 +470,27 @@ fn daemon_creates_a_default_pty_session_and_restores_it_after_restart() {
         b"AXOD_RESTORED_OK",
         Duration::from_secs(3)
     ));
+
+    assert_ne!(split_shell["id"], shell_id);
+    let grouped = active_sessions(&socket);
+    assert_eq!(grouped.len(), 1, "a split stays in the current tab");
+    assert_eq!(grouped[0]["id"], session_id);
+    assert_eq!(grouped[0]["shells"].as_array().unwrap().len(), 2);
+
+    let close_shell = rpc_with_params(
+        &socket,
+        "axo.shell.close",
+        json!({ "sessionId": session_id, "shellId": split_shell["id"] }),
+    );
+    assert_eq!(close_shell["result"]["archivedShellId"], split_shell["id"]);
+    assert!(close_shell["result"]["archivedSessionId"].is_null());
+    assert_eq!(
+        active_sessions(&socket)[0]["shells"]
+            .as_array()
+            .unwrap()
+            .len(),
+        1
+    );
 
     let close = rpc_with_params(
         &socket,
@@ -441,6 +505,22 @@ fn daemon_creates_a_default_pty_session_and_restores_it_after_restart() {
     );
     cleanup.track(replacement);
     assert_ne!(replacement["id"], session_id);
+    assert_eq!(active_sessions(&socket).len(), 1);
+
+    let replacement_id = replacement["id"].as_i64().unwrap();
+    let replacement_shell_id = replacement["shells"][0]["id"].as_i64().unwrap();
+    let close_last_shell = rpc_with_params(
+        &socket,
+        "axo.shell.close",
+        json!({ "sessionId": replacement_id, "shellId": replacement_shell_id }),
+    );
+    assert_eq!(
+        close_last_shell["result"]["archivedSessionId"],
+        replacement_id
+    );
+    let final_replacement = &close_last_shell["result"]["replacement"];
+    assert!(final_replacement.is_object());
+    cleanup.track(final_replacement);
     assert_eq!(active_sessions(&socket).len(), 1);
 
     restarted.stop();
