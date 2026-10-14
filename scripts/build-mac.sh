@@ -4,12 +4,6 @@ set -euo pipefail
 root=$(cd "$(dirname "$0")/.." && pwd)
 cd "$root"
 
-build_number=$(tr -d '\n' < BUILD_NUMBER)
-if [[ ! "$build_number" =~ ^[1-9][0-9]*$ ]]; then
-  echo "BUILD_NUMBER must be a positive canonical decimal integer" >&2
-  exit 1
-fi
-
 identity=${AXO_MAC_SIGNING_IDENTITY:-}
 if [[ -z "$identity" ]]; then
   identities=()
@@ -25,6 +19,33 @@ if [[ -z "$identity" ]]; then
 fi
 
 export DEVELOPER_DIR=${DEVELOPER_DIR:-/Applications/Xcode.app/Contents/Developer}
+
+# Reserve a unique number before building; failed builds also consume their number.
+lock_dir="$root/.build-number.lock"
+if ! mkdir "$lock_dir" 2>/dev/null; then
+  echo "Another build is updating BUILD_NUMBER; retry after it finishes" >&2
+  exit 1
+fi
+cleanup_build_number_lock() {
+  if [[ -n ${temporary_build_number:-} ]]; then
+    rm -f -- "$temporary_build_number"
+  fi
+  rmdir "$lock_dir" 2>/dev/null || true
+}
+trap cleanup_build_number_lock EXIT
+previous_build_number=$(tr -d '\n' < BUILD_NUMBER)
+if [[ ! "$previous_build_number" =~ ^[1-9][0-9]*$ ]]; then
+  echo "BUILD_NUMBER must be a positive canonical decimal integer" >&2
+  exit 1
+fi
+build_number=$((previous_build_number + 1))
+temporary_build_number=$(mktemp "$root/.BUILD_NUMBER.XXXXXX")
+printf '%s\n' "$build_number" > "$temporary_build_number"
+chmod 644 "$temporary_build_number"
+mv -f "$temporary_build_number" BUILD_NUMBER
+temporary_build_number=""
+rmdir "$lock_dir"
+trap - EXIT
 
 cargo fmt --all --check
 cargo clippy --workspace --all-targets --locked --offline -- -D warnings

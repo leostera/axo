@@ -29,4 +29,4 @@ Build, sign, verify, and atomically publish the development app bundle with:
 bash scripts/build-mac.sh
 ```
 
-The packaging script requires Bazel 9.3.0, Cargo for Rust lint checks, Xcode, and one valid Apple code-signing identity. It does not launch the app or daemon. The first slice does not yet integrate LibGhostty or session/PTY control.
+The packaging script requires Bazel 9.3.0, Cargo for Rust lint checks, Xcode, and one valid Apple code-signing identity. Each invocation reserves and increments `BUILD_NUMBER` before building; failed builds consume their number so it is not reused by later invocations in that checkout. Use this script for packaged app builds—direct Bazel builds are intentionally deterministic and do not increment the number. It does not launch the app or daemon. The first slice does not yet integrate LibGhostty or session/PTY control.
