@@ -1,0 +1,23 @@
+build/
+updates/
+.vscode
+.DS_Store
+
+# Xcode
+*.xcodeproj/xcuserdata/
+*.xcworkspace/xcuserdata/
+*.xcuserstate
+buildServer.json
+bin
+scripts
+tools
+ExportOptions.plist
+HexCore/.build
+HexCore/.swiftpm/xcode/xcuserdata/kit.xcuserdatad/xcschemes
+FluidAudio/
+node_modules/
+.npm-cache/
+.tmp/
+
+# Claude
+.claude/

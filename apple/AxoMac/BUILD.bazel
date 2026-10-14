@@ -1,0 +1,48 @@
+load("@rules_apple//apple:macos.bzl", "macos_application")
+load("@rules_swift//swift:swift_library.bzl", "swift_library")
+load("@rules_xcodeproj//xcodeproj:defs.bzl", "xcodeproj")
+
+package(default_visibility = ["//visibility:public"])
+
+exports_files([
+    "Info.plist",
+    "Resources/dev.leostera.axo.axod.plist",
+])
+
+swift_library(
+    name = "AxoMac",
+    srcs = glob(["Sources/AxoMac/**/*.swift"]),
+    copts = ["-swift-version", "5"],
+    deps = ["//apple/AxoDaemonManager:AxoDaemonManager"],
+)
+
+genrule(
+    name = "launch_agent_plist",
+    srcs = ["Resources/dev.leostera.axo.axod.plist"],
+    outs = ["dev.leostera.axo.axod.plist"],
+    cmd = "cp $(location Resources/dev.leostera.axo.axod.plist) $@",
+)
+
+macos_application(
+    name = "AxoApp",
+    bundle_id = "dev.leostera.axo",
+    bundle_name = "Axo",
+    executable_name = "Axo",
+    infoplists = ["Info.plist"],
+    minimum_os_version = "13.0",
+    additional_contents = {
+        ":launch_agent_plist": "Library/LaunchAgents",
+    },
+    deps = [":AxoMac"],
+)
+
+xcodeproj(
+    name = "xcodeproj",
+    project_name = "AxoMac",
+    tags = ["manual"],
+    top_level_targets = [
+        ":AxoApp",
+        "//apple/AxoRPC:AxoRPCTests",
+        "//apple/AxoDaemonManager:AxoDaemonManagerTests",
+    ],
+)

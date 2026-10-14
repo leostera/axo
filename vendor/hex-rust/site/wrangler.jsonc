@@ -1,0 +1,10 @@
+{
+  "name": "hex-voice-site",
+  "compatibility_date": "2026-07-19",
+  "assets": {
+    "directory": "./dist"
+  },
+  "routes": [
+    { "pattern": "hex.kitlangton.dev", "custom_domain": true }
+  ]
+}

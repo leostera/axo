@@ -1,0 +1,1907 @@
+use std::path::PathBuf;
+use std::sync::Arc;
+use std::sync::atomic::{AtomicBool, AtomicU8, AtomicU64, Ordering};
+use std::sync::mpsc::{self, Receiver, TryRecvError};
+use std::thread::JoinHandle;
+use std::time::{Duration, Instant};
+
+use color_eyre::Result;
+use gpui::{
+    AnyElement, App, Application, Bounds, Context, Keystroke, Timer, Window, WindowBounds,
+    WindowKind, WindowOptions, div, prelude::*, px, rgb, size,
+};
+
+use crate::desktop_activity::DesktopActivity;
+use crate::desktop_host::{
+    DesktopAction, DesktopHost, DesktopListenerSnapshot, DesktopShortcut, DesktopSnapshot,
+    DesktopTranscriptionSnapshot, DesktopUpdateStatus,
+};
+use crate::desktop_transcription_picker::{
+    ModelDeletion, TranscriptionPickerDelegate, TranscriptionPickerModel,
+    TranscriptionPickerProgress, TranscriptionPickerStatus, TranscriptionPickerView,
+    render_transcription_picker, transcription_selection_is_active,
+};
+use crate::desktop_ui::{
+    LINE, MUTED, NavigationIcon, SIDEBAR_WIDTH, SURFACE, TEXT_SOFT, compact_button,
+    disclosure_button, hotkey_keycaps, navigation_item, pane_body, pane_content, pane_header,
+    segmented_control, segmented_item, settings_panel, settings_row, settings_section_label,
+    sidebar_frame, toggle, window_frame,
+};
+use crate::events::EventReader;
+use crate::linux_service::{
+    self, Client, Event as ServiceEvent, Request, Snapshot as ServiceSnapshot,
+};
+use crate::linux_session::LinuxSession;
+use crate::linux_updater::InstalledUpdate;
+
+const WINDOW_WIDTH: f32 = 1040.0;
+const WINDOW_HEIGHT: f32 = 700.0;
+const MINIMUM_WIDTH: f32 = 860.0;
+const MINIMUM_HEIGHT: f32 = 560.0;
+const UPDATE_INTERVAL: Duration = Duration::from_secs(24 * 60 * 60);
+
+type ListenerResult = std::result::Result<(), String>;
+type PreparationResult = std::result::Result<PreparedTranscription, String>;
+
+struct PreparedTranscription {
+    selection: crate::transcription_models::TranscriptionSelection,
+    transcriber: crate::linux_transcriber::LinuxTranscriber,
+}
+
+struct TranscriptionPreparation {
+    canceled: Arc<AtomicBool>,
+    model: crate::transcription_models::TranscriptionModelId,
+    progress: Arc<AtomicU64>,
+    stage: Arc<AtomicU8>,
+    worker: JoinHandle<PreparationResult>,
+}
+
+#[derive(Clone)]
+enum SettingsChange {
+    Capture,
+    Hotkey(crate::linux_settings::LinuxHotkey),
+    DoubleTap(bool),
+    PasteWithShift(bool),
+}
+
+struct SettingsEdit {
+    change: SettingsChange,
+    resume: bool,
+    canceled: Arc<AtomicBool>,
+    worker: Option<JoinHandle<Result<crate::linux_settings::LinuxSettings>>>,
+}
+
+struct Listener {
+    stop: Arc<AtomicBool>,
+    worker: JoinHandle<ListenerResult>,
+    startup: ListenerStartup,
+    hotkey_status: crate::linux_input::HotkeyStatus,
+}
+
+enum ListenerStartup {
+    Awaiting { previous_session: Option<u64> },
+    Observed,
+}
+
+impl Listener {
+    fn stop(&self) {
+        self.stop.store(true, Ordering::Relaxed);
+    }
+
+    fn finish(self) -> ListenerResult {
+        self.worker
+            .join()
+            .unwrap_or_else(|_| Err("listener worker stopped unexpectedly".into()))
+    }
+
+    fn observe_session(&mut self, session: Option<u64>) {
+        if let ListenerStartup::Awaiting { previous_session } = self.startup
+            && session != previous_session
+        {
+            self.startup = ListenerStartup::Observed;
+        }
+    }
+}
+
+struct LinuxDesktopHost {
+    event_path: PathBuf,
+    event_reader: EventReader,
+    activity: DesktopActivity,
+    listener: Option<Listener>,
+    listen_when_ready: bool,
+    status: String,
+    error: Option<String>,
+    dismissed_failure_at: Option<u64>,
+    settings_error: Option<String>,
+    settings: crate::linux_settings::LinuxSettings,
+    // Dismissing a load error must not authorize recording with fallback defaults.
+    settings_valid: bool,
+    settings_edit: Option<SettingsEdit>,
+    prepared_transcriber: Option<crate::linux_transcriber::LinuxTranscriber>,
+    transcription_preparation: Option<TranscriptionPreparation>,
+    transcription_error: Option<String>,
+    update: UpdateState,
+}
+
+struct LinuxApp {
+    host: RemoteHost,
+    quitting: bool,
+    transcription_picker: TranscriptionPickerState,
+}
+
+enum TranscriptionPickerState {
+    Closed,
+    Choosing(String),
+    Preparing(String),
+}
+
+impl TranscriptionPickerState {
+    fn language(&self) -> Option<&str> {
+        match self {
+            Self::Closed => None,
+            Self::Choosing(language) | Self::Preparing(language) => Some(language),
+        }
+    }
+}
+
+enum UpdateState {
+    Unmanaged,
+    Checking(Receiver<Result<Option<InstalledUpdate>, String>>),
+    Failed(Instant),
+    Waiting(Instant),
+    Ready(InstalledUpdate),
+}
+
+/// Settings is a disposable projection. It never opens audio, saves settings, or owns workers.
+struct RemoteHost {
+    client: Client,
+    settings: crate::linux_settings::LinuxSettings,
+}
+
+impl RemoteHost {
+    fn new() -> Self {
+        Self {
+            client: Client::new(),
+            settings: Default::default(),
+        }
+    }
+
+    fn refresh(&mut self) {
+        self.client.refresh();
+        if let Some(state) = &self.client.state {
+            self.settings = state.settings.clone();
+        }
+    }
+
+    fn editing_settings(&self) -> bool {
+        self.client.state.as_ref().is_some_and(|s| s.editing)
+    }
+
+    fn send(&mut self, request: Request) -> Result<()> {
+        if let Err(error) = self.client.send(request) {
+            self.client.error = Some(format!("{error:#}"));
+            return Err(error);
+        }
+        Ok(())
+    }
+
+    fn is_running(&self) -> bool {
+        self.client
+            .state
+            .as_ref()
+            .is_some_and(|s| s.desktop.listener.running)
+    }
+
+    fn capturing_hotkey(&self) -> bool {
+        self.client.state.as_ref().is_some_and(|s| s.capturing)
+    }
+
+    fn capture_shortcut(&mut self) {
+        let _ = self.send(Request::CaptureShortcut);
+    }
+
+    fn set_terminal_paste(&mut self, value: bool) {
+        let _ = self.send(Request::SetTerminalPaste(value));
+    }
+
+    fn cancel_settings_edit(&mut self) {
+        let _ = self.send(Request::CancelShortcut);
+    }
+    fn cancel_transcription_preparation(&mut self) {
+        let _ = self.send(Request::CancelModel);
+    }
+    fn set_sound_effect_volume(&mut self, volume: f32) -> Result<()> {
+        self.send(Request::SetVolume(volume))
+    }
+    fn choose_transcription(
+        &mut self,
+        model: crate::transcription_models::TranscriptionModelId,
+        language: String,
+    ) -> Result<()> {
+        self.send(Request::ChooseModel { model, language })
+    }
+}
+
+impl DesktopHost for RemoteHost {
+    fn snapshot(&self) -> DesktopSnapshot {
+        let mut snapshot = self
+            .client
+            .state
+            .as_ref()
+            .map(|s| s.desktop.clone())
+            .unwrap_or_else(|| DesktopSnapshot {
+                activity: DesktopActivity::default(),
+                dictation_shortcut: self.settings.dictation_hotkey.keycaps(),
+                double_tap_lock: self.settings.double_tap_lock,
+                listener: DesktopListenerSnapshot {
+                    running: false,
+                    status: "Service disconnected".into(),
+                    warning: None,
+                },
+                operation_error: None,
+                transcription: DesktopTranscriptionSnapshot {
+                    downloaded_bytes: 0,
+                    error: None,
+                    preparation_stage: None,
+                    selection: self.settings.transcription.clone(),
+                    preparing: None,
+                },
+                update_status: DesktopUpdateStatus::Unavailable,
+            });
+        if let Some(error) = &self.client.error {
+            snapshot.operation_error = Some(error.clone());
+        }
+        snapshot
+    }
+
+    fn dispatch(&mut self, action: DesktopAction) -> Result<()> {
+        self.send(Request::Desktop(action))
+    }
+}
+
+fn service_snapshot(host: &LinuxDesktopHost, owns_editor: bool) -> ServiceSnapshot {
+    ServiceSnapshot {
+        desktop: host.snapshot(),
+        settings: host.settings.clone(),
+        editing: host.settings_edit.is_some(),
+        capturing: owns_editor && host.capturing_hotkey(),
+        hud_limitation: crate::linux_desktop::hud_limitation(),
+        pid: std::process::id(),
+        session: linux_service::Session::current(),
+    }
+}
+
+fn disconnect_editor(
+    host: &mut LinuxDesktopHost,
+    editor: &mut Option<(u64, Instant)>,
+    client: u64,
+) {
+    if editor.is_some_and(|(owner, _)| owner == client) {
+        host.cancel_settings_edit();
+        *editor = None;
+    }
+}
+
+/// The service owns this host independently of any GPUI application or Settings window.
+pub fn run_service(event_path: PathBuf, shutdown: &'static AtomicBool) -> Result<()> {
+    let mut server = linux_service::Server::bind()?;
+    let (settings, error) = match crate::linux_settings::LinuxSettings::load() {
+        Ok(settings) => (settings, None),
+        Err(error) => (
+            Default::default(),
+            Some(format!("Could not load Linux settings: {error:#}")),
+        ),
+    };
+    crate::linux_dictation::initialize_feedback(settings.sound_effect_volume);
+    let update = if crate::linux_updater::managed_install() {
+        UpdateState::Checking(start_update_check())
+    } else {
+        UpdateState::Unmanaged
+    };
+    let mut host = LinuxDesktopHost::new(event_path, settings, error, update);
+    host.start();
+    let mut editor: Option<(u64, Instant)> = None;
+    let mut stopping = false;
+    loop {
+        if shutdown.load(Ordering::Acquire) && !stopping {
+            stopping = true;
+            host.stop();
+            host.cancel_transcription_preparation();
+        }
+        host.refresh();
+        if stopping && !host.has_pending_work() {
+            break;
+        }
+        if !host.capturing_hotkey() {
+            editor = None;
+        }
+        if let Some((owner, deadline)) = editor
+            && Instant::now() >= deadline
+        {
+            disconnect_editor(&mut host, &mut editor, owner);
+        }
+        server.accept()?;
+        match server.events.recv_timeout(Duration::from_millis(20)) {
+            Ok(ServiceEvent::Disconnected(client)) => {
+                disconnect_editor(&mut host, &mut editor, client)
+            }
+            Ok(ServiceEvent::Request {
+                client,
+                request,
+                reply,
+            }) => {
+                let result = (|| -> Result<()> {
+                    if stopping {
+                        return Err(color_eyre::eyre::eyre!("HEX service is stopping"));
+                    }
+                    if let Some((owner, deadline)) = &mut editor {
+                        if *owner == client {
+                            *deadline = Instant::now() + Duration::from_secs(3);
+                        } else if matches!(
+                            request,
+                            Request::CaptureShortcut
+                                | Request::CancelShortcut
+                                | Request::Desktop(DesktopAction::SetDictationShortcut(_))
+                        ) {
+                            return Err(color_eyre::eyre::eyre!(
+                                "Another Settings client is capturing a shortcut"
+                            ));
+                        }
+                    }
+                    match request {
+                        Request::Snapshot => {}
+                        Request::Desktop(action) => host.dispatch(action)?,
+                        Request::CaptureShortcut => {
+                            host.begin_settings_edit(SettingsChange::Capture);
+                            if host.capturing_hotkey() {
+                                editor = Some((client, Instant::now() + Duration::from_secs(3)));
+                            }
+                        }
+                        Request::CancelShortcut => host.cancel_settings_edit(),
+                        Request::SetTerminalPaste(value) => {
+                            host.begin_settings_edit(SettingsChange::PasteWithShift(value))
+                        }
+                        Request::SetVolume(value) => host.set_sound_effect_volume(value)?,
+                        Request::ChooseModel { model, language } => {
+                            host.choose_transcription(model, language)?
+                        }
+                        Request::CancelModel => host.cancel_transcription_preparation(),
+                        Request::Shutdown => shutdown.store(true, Ordering::Release),
+                    }
+                    Ok(())
+                })();
+                let _ = reply.try_send((
+                    service_snapshot(&host, editor.is_some_and(|(owner, _)| owner == client)),
+                    result.err().map(|e| format!("{e:#}")),
+                ));
+            }
+            Err(mpsc::RecvTimeoutError::Timeout) => {}
+            Err(mpsc::RecvTimeoutError::Disconnected) => break,
+        }
+    }
+    Ok(())
+}
+
+pub fn open(start_hidden: bool, shutdown: &'static AtomicBool) -> Result<()> {
+    if start_hidden {
+        return linux_service::start();
+    }
+    Application::new().run(move |cx: &mut App| {
+        let bounds = Bounds::centered(None, size(px(WINDOW_WIDTH), px(WINDOW_HEIGHT)), cx);
+        let window = cx
+            .open_window(
+                WindowOptions {
+                    window_bounds: Some(WindowBounds::Windowed(bounds)),
+                    window_min_size: Some(size(px(MINIMUM_WIDTH), px(MINIMUM_HEIGHT))),
+                    kind: WindowKind::Floating,
+                    app_id: Some("hex".into()),
+                    ..Default::default()
+                },
+                |_, cx| {
+                    cx.new(|_| LinuxApp {
+                        host: RemoteHost::new(),
+                        quitting: false,
+                        transcription_picker: TranscriptionPickerState::Closed,
+                    })
+                },
+            )
+            .expect("could not open the HEX window");
+        let app = window.update(cx, |_, _, cx| cx.entity()).unwrap();
+        let hotkey_app = app.clone();
+        cx.observe_keystrokes(move |event, _, cx| {
+            hotkey_app.update(cx, |app, cx| {
+                if app.capture_hotkey(&event.keystroke) {
+                    cx.notify();
+                }
+            });
+        })
+        .detach();
+        cx.spawn(async move |cx| {
+            loop {
+                Timer::after(Duration::from_millis(250)).await;
+                if app
+                    .update(cx, |this, cx| {
+                        if shutdown.load(Ordering::Relaxed) {
+                            this.request_quit();
+                        }
+                        this.host.refresh();
+                        if this.quitting {
+                            cx.quit();
+                        }
+                        if let TranscriptionPickerState::Preparing(language) =
+                            &this.transcription_picker
+                        {
+                            let (preparing_done, has_error) =
+                                this.host.client.state.as_ref().map_or((true, false), |s| {
+                                    (
+                                        s.desktop.transcription.preparing.is_none(),
+                                        s.desktop.transcription.error.is_some(),
+                                    )
+                                });
+                            if preparing_done {
+                                this.transcription_picker = if has_error {
+                                    TranscriptionPickerState::Choosing(language.clone())
+                                } else {
+                                    TranscriptionPickerState::Closed
+                                };
+                            }
+                        }
+                        cx.notify();
+                    })
+                    .is_err()
+                {
+                    break;
+                }
+            }
+        })
+        .detach();
+        window
+            .update(cx, |_, window, cx| {
+                window.set_window_title("HEX");
+                let close_app = cx.entity().downgrade();
+                window.on_window_should_close(cx, move |_, cx| {
+                    if close_app
+                        .update(cx, |app, cx| {
+                            app.request_quit();
+                            cx.notify();
+                        })
+                        .is_err()
+                    {
+                        cx.quit();
+                    }
+                    false
+                });
+                window.activate_window();
+            })
+            .ok();
+        cx.activate(true);
+    });
+    Ok(())
+}
+
+impl LinuxDesktopHost {
+    fn new(
+        event_path: PathBuf,
+        settings: crate::linux_settings::LinuxSettings,
+        error: Option<String>,
+        update: UpdateState,
+    ) -> Self {
+        let mut event_reader = EventReader::open(&event_path);
+        let mut activity = DesktopActivity::default();
+        activity.refresh(&mut event_reader);
+        Self {
+            event_reader,
+            event_path,
+            activity,
+            listener: None,
+            listen_when_ready: false,
+            status: "Ready".into(),
+            error: None,
+            dismissed_failure_at: None,
+            settings_valid: error.is_none(),
+            settings_error: error,
+            settings,
+            settings_edit: None,
+            prepared_transcriber: None,
+            transcription_preparation: None,
+            transcription_error: None,
+            update,
+        }
+    }
+
+    fn start(&mut self) {
+        if self.settings_edit.is_some() {
+            return;
+        }
+        self.listen_when_ready = true;
+        if self.is_running() || self.transcription_preparation.is_some() {
+            return;
+        }
+        // Defaults are only an editable recovery projection after a failed load.
+        // They must never become a recording configuration until saved successfully.
+        if !self.settings_valid {
+            self.status = "Unavailable".into();
+            return;
+        }
+        let model = crate::transcription_models::definition(self.settings.transcription.model);
+        if !crate::transcription_models::is_installed(model, &self.settings.transcription.language)
+        {
+            self.status = "Model required".into();
+            return;
+        }
+        let stop = Arc::new(AtomicBool::new(false));
+        let worker_stop = stop.clone();
+        let settings = self.settings.clone();
+        let event_path = self.event_path.clone();
+        let prepared_transcriber = self.prepared_transcriber.take();
+        let hotkey_status = crate::linux_input::HotkeyStatus::default();
+        let worker_hotkey_status = hotkey_status.clone();
+        let worker = std::thread::spawn(move || {
+            let result = crate::instance::acquire("listener").and_then(|_instance| {
+                crate::linux_dictation::run(
+                    &event_path,
+                    None,
+                    &worker_stop,
+                    settings,
+                    prepared_transcriber,
+                    worker_hotkey_status,
+                )
+            });
+            result.map_err(|error| format!("{error:#}"))
+        });
+        self.listener = Some(Listener {
+            stop,
+            worker,
+            startup: ListenerStartup::Awaiting {
+                previous_session: self.activity.session_started_at,
+            },
+            hotkey_status,
+        });
+        self.status = "Starting".into();
+    }
+
+    fn stop(&mut self) {
+        self.listen_when_ready = false;
+        if let Some(edit) = &mut self.settings_edit {
+            edit.resume = false;
+            edit.canceled.store(true, Ordering::Release);
+        }
+        if let Some(listener) = &self.listener {
+            listener.stop();
+            self.status = "Stopping".into();
+        }
+    }
+
+    fn refresh(&mut self) {
+        if matches!(&self.update, UpdateState::Waiting(at) | UpdateState::Failed(at) if Instant::now() >= *at)
+        {
+            self.update = UpdateState::Checking(start_update_check());
+        }
+        let update_result = match &self.update {
+            UpdateState::Checking(receiver) => match receiver.try_recv() {
+                Ok(result) => Some(result),
+                Err(TryRecvError::Disconnected) => {
+                    Some(Err("update worker stopped unexpectedly".into()))
+                }
+                Err(TryRecvError::Empty) => None,
+            },
+            _ => None,
+        };
+        if let Some(result) = update_result {
+            self.update = match result {
+                Ok(Some(executable)) => UpdateState::Ready(executable),
+                Ok(None) => UpdateState::Waiting(Instant::now() + UPDATE_INTERVAL),
+                Err(error) => {
+                    tracing::warn!(%error, "Linux update check failed");
+                    UpdateState::Failed(Instant::now() + UPDATE_INTERVAL)
+                }
+            };
+        }
+
+        let mut start_listener = false;
+        if let Some(preparation) = self
+            .transcription_preparation
+            .take_if(|preparation| preparation.worker.is_finished())
+        {
+            let was_canceled = preparation.canceled.load(Ordering::Relaxed);
+            let result = preparation
+                .worker
+                .join()
+                .unwrap_or_else(|_| Err("model preparation worker stopped unexpectedly".into()));
+            if was_canceled {
+                self.transcription_error = None;
+            } else {
+                match result {
+                    Ok(prepared) => {
+                        let mut candidate = self.settings.clone();
+                        candidate.transcription = prepared.selection;
+                        match candidate.save() {
+                            Ok(()) => {
+                                self.settings = candidate;
+                                self.settings_valid = true;
+                                self.prepared_transcriber = Some(prepared.transcriber);
+                                self.transcription_error = None;
+                                self.settings_error = None;
+                                self.status = "Ready".into();
+                                start_listener = self.listen_when_ready;
+                            }
+                            Err(error) => {
+                                self.transcription_error = Some(format!(
+                                    "Could not save transcription selection: {error:#}"
+                                ));
+                            }
+                        }
+                    }
+                    Err(error) => {
+                        self.transcription_error = Some(error);
+                    }
+                }
+            }
+        }
+        if start_listener {
+            self.start();
+        }
+
+        if let Some(listener) = self
+            .listener
+            .take_if(|listener| listener.worker.is_finished())
+        {
+            let result = listener.finish();
+            match result {
+                Ok(()) => self.status = "Ready".into(),
+                Err(error) => {
+                    self.status = "Unavailable".into();
+                    self.error = Some(error);
+                }
+            }
+        }
+
+        self.refresh_settings_edit();
+
+        self.activity.refresh(&mut self.event_reader);
+        if let Some(listener) = &mut self.listener {
+            listener.observe_session(self.activity.session_started_at);
+        }
+        if self
+            .listener
+            .as_ref()
+            .is_some_and(|listener| matches!(listener.startup, ListenerStartup::Observed))
+            && self.listen_when_ready
+            && let Some(status) = self.activity.state_label()
+        {
+            self.status = status.into();
+        }
+    }
+
+    fn is_running(&self) -> bool {
+        self.listener.is_some()
+    }
+
+    fn set_dictation_hotkey(&mut self, shortcut: DesktopShortcut) -> Result<()> {
+        if shortcut.function {
+            self.error = Some("The Fn modifier cannot be registered on Linux".into());
+            self.cancel_settings_edit();
+            return Err(color_eyre::eyre::eyre!(
+                "the Fn modifier cannot be registered on Linux"
+            ));
+        }
+        let binding = crate::linux_settings::LinuxHotkey {
+            control: shortcut.control,
+            alt: shortcut.alt,
+            shift: shortcut.shift,
+            super_key: shortcut.platform,
+            key: if shortcut.key == " " {
+                "space".into()
+            } else {
+                shortcut.key.to_ascii_lowercase()
+            },
+        };
+        if let Some(edit) = &mut self.settings_edit {
+            if matches!(edit.change, SettingsChange::Capture) && edit.worker.is_none() {
+                edit.change = SettingsChange::Hotkey(binding);
+            }
+        } else {
+            self.begin_settings_edit(SettingsChange::Hotkey(binding));
+        }
+        Ok(())
+    }
+
+    fn begin_settings_edit(&mut self, change: SettingsChange) {
+        if self.settings_edit.is_some() {
+            return;
+        }
+        if self.transcription_preparation.is_some() {
+            self.error = Some("Wait for model preparation before editing shortcut settings".into());
+            return;
+        }
+        let resume = self.is_running() && self.listen_when_ready;
+        self.stop();
+        self.error = None;
+        self.settings_edit = Some(SettingsEdit {
+            change,
+            resume,
+            canceled: Arc::new(AtomicBool::new(false)),
+            worker: None,
+        });
+    }
+
+    fn set_sound_effect_volume(&mut self, volume: f32) -> Result<()> {
+        if self.settings_edit.is_some() || self.transcription_preparation.is_some() {
+            return Err(color_eyre::eyre::eyre!(
+                "Wait for settings changes to finish before adjusting sound volume"
+            ));
+        }
+        let mut candidate = self.settings.clone();
+        candidate.sound_effect_volume = volume;
+        if let Err(error) = candidate.save() {
+            self.settings_error = Some(format!("Could not save sound volume: {error:#}"));
+            return Err(error);
+        }
+        self.settings = candidate;
+        self.settings_valid = true;
+        self.settings_error = None;
+        crate::feedback::set_volume(volume);
+        crate::feedback::play(crate::feedback::Tone::DictationStart);
+        Ok(())
+    }
+
+    fn cancel_settings_edit(&mut self) {
+        if let Some(edit) = &self.settings_edit {
+            edit.canceled.store(true, Ordering::Release);
+        }
+    }
+
+    fn capturing_hotkey(&self) -> bool {
+        self.settings_edit.as_ref().is_some_and(|edit| {
+            !edit.canceled.load(Ordering::Acquire) && matches!(edit.change, SettingsChange::Capture)
+        })
+    }
+
+    fn has_pending_work(&self) -> bool {
+        self.is_running()
+            || self.settings_edit.is_some()
+            || self.transcription_preparation.is_some()
+    }
+
+    fn refresh_settings_edit(&mut self) {
+        if self.is_running() {
+            return;
+        }
+        let Some(edit) = &mut self.settings_edit else {
+            return;
+        };
+        if edit
+            .worker
+            .as_ref()
+            .is_some_and(|worker| !worker.is_finished())
+        {
+            return;
+        }
+        let canceled = edit.canceled.load(Ordering::Acquire);
+        if let Some(worker) = edit.worker.take() {
+            match worker.join() {
+                // Once persistence completed, keep the in-memory projection consistent even
+                // if Cancel raced with the final atomic save.
+                Ok(Ok(settings)) => {
+                    self.settings = settings;
+                    self.settings_valid = true;
+                    self.settings_error = None;
+                }
+                Ok(Err(error)) if !canceled => {
+                    self.error = Some(format!("Could not update dictation settings: {error:#}"));
+                }
+                Err(_) if !canceled => {
+                    self.error = Some("Settings worker stopped unexpectedly".into())
+                }
+                _ => {}
+            }
+        } else if !canceled {
+            let wayland = LinuxSession::detect().is_wayland();
+            if !wayland && matches!(edit.change, SettingsChange::Capture) {
+                // X11 uses focused GPUI keystrokes, never raw input-device access.
+                self.status = "Press a shortcut".into();
+                return;
+            }
+            let change = edit.change.clone();
+            let mut candidate = self.settings.clone();
+            let canceled = edit.canceled.clone();
+            edit.worker = Some(std::thread::spawn(move || {
+                let binding = match change {
+                    SettingsChange::Capture => {
+                        Some(crate::linux_input::capture_wayland_binding(&canceled)?)
+                    }
+                    SettingsChange::Hotkey(binding) => Some(binding),
+                    SettingsChange::DoubleTap(enabled) => {
+                        candidate.double_tap_lock = enabled;
+                        None
+                    }
+                    SettingsChange::PasteWithShift(enabled) => {
+                        candidate.paste_with_shift = enabled;
+                        None
+                    }
+                };
+                if let Some(binding) = binding {
+                    binding.validate()?;
+                    crate::linux_input::LinuxHotkeyMonitor::start(
+                        binding.clone(),
+                        false,
+                        Default::default(),
+                    )?;
+                    candidate.dictation_hotkey = binding;
+                }
+                if canceled.load(Ordering::Acquire) {
+                    return Err(color_eyre::eyre::eyre!("Shortcut edit canceled"));
+                }
+                candidate.save()?;
+                Ok(candidate)
+            }));
+            self.status = if self.capturing_hotkey() {
+                "Press a shortcut"
+            } else {
+                "Saving settings"
+            }
+            .into();
+            return;
+        }
+        let resume = self.settings_edit.take().is_some_and(|edit| edit.resume);
+        self.status = "Ready".into();
+        if resume {
+            self.start();
+        }
+    }
+
+    fn restart_into_update(&self) -> Result<()> {
+        let UpdateState::Ready(update) = &self.update else {
+            return Err(color_eyre::eyre::eyre!("no installed update is ready"));
+        };
+        crate::linux_updater::relaunch(update)
+    }
+
+    fn choose_transcription(
+        &mut self,
+        model: crate::transcription_models::TranscriptionModelId,
+        language: String,
+    ) -> Result<()> {
+        if self.is_running() || self.settings_edit.is_some() {
+            let error = "Stop listening and finish shortcut editing before changing the transcription model".to_string();
+            self.transcription_error = Some(error.clone());
+            return Err(color_eyre::eyre::eyre!(error));
+        }
+        if self.transcription_preparation.is_some() {
+            self.cancel_transcription_preparation();
+            let error = "The previous model preparation is still stopping".to_string();
+            self.transcription_error = Some(error.clone());
+            return Err(color_eyre::eyre::eyre!(error));
+        }
+        let selection = crate::transcription_models::TranscriptionSelection {
+            model,
+            language,
+            recognition_hints: String::new(),
+        };
+        crate::transcription_models::validate(&selection)?;
+        let definition = crate::transcription_models::definition(model);
+        let canceled = Arc::new(AtomicBool::new(false));
+        let progress = Arc::new(AtomicU64::new(0));
+        let stage = Arc::new(AtomicU8::new(
+            crate::transcription_models::ModelPreparationStage::Downloading as u8,
+        ));
+        let worker_canceled = canceled.clone();
+        let worker_progress = progress.clone();
+        let worker_stage = stage.clone();
+        let worker = std::thread::spawn(move || {
+            (|| {
+                crate::transcription_models::download_with_stage_progress(
+                    definition,
+                    &worker_canceled,
+                    &worker_progress,
+                    &worker_stage,
+                )?;
+                if worker_canceled.load(Ordering::Relaxed) {
+                    return Err(color_eyre::eyre::eyre!("model activation canceled"));
+                }
+                crate::transcription_models::ModelPreparationStage::Loading.store(&worker_stage);
+                let transcriber = crate::linux_transcriber::LinuxTranscriber::load(&selection)?;
+                if worker_canceled.load(Ordering::Relaxed) {
+                    return Err(color_eyre::eyre::eyre!("model activation canceled"));
+                }
+                Ok(PreparedTranscription {
+                    selection,
+                    transcriber,
+                })
+            })()
+            .map_err(|error| format!("{error:#}"))
+        });
+        self.transcription_preparation = Some(TranscriptionPreparation {
+            canceled,
+            model,
+            progress,
+            stage,
+            worker,
+        });
+        self.transcription_error = None;
+        Ok(())
+    }
+
+    fn cancel_transcription_preparation(&mut self) {
+        if let Some(preparation) = &self.transcription_preparation {
+            preparation.canceled.store(true, Ordering::Relaxed);
+        }
+        self.transcription_error = None;
+    }
+}
+
+impl LinuxApp {
+    fn request_quit(&mut self) {
+        self.quitting = true;
+    }
+
+    fn capture_hotkey(&mut self, keystroke: &Keystroke) -> bool {
+        if !self.host.capturing_hotkey() {
+            return false;
+        }
+        if keystroke.key == "escape" {
+            self.host.cancel_settings_edit();
+            return true;
+        }
+        if LinuxSession::detect().is_wayland() || self.host.is_running() {
+            return false;
+        }
+        let shortcut = DesktopShortcut {
+            alt: keystroke.modifiers.alt,
+            control: keystroke.modifiers.control,
+            function: keystroke.modifiers.function,
+            key: keystroke.key.clone(),
+            platform: keystroke.modifiers.platform,
+            shift: keystroke.modifiers.shift,
+        };
+        let _ = self
+            .host
+            .dispatch(DesktopAction::SetDictationShortcut(shortcut));
+        true
+    }
+}
+
+fn start_update_check() -> Receiver<Result<Option<InstalledUpdate>, String>> {
+    let (sender, receiver) = mpsc::sync_channel(1);
+    std::thread::spawn(move || {
+        let result = crate::linux_updater::install_latest().map_err(|error| format!("{error:#}"));
+        let _ = sender.send(result);
+    });
+    receiver
+}
+
+impl Drop for LinuxDesktopHost {
+    fn drop(&mut self) {
+        self.stop();
+        self.cancel_transcription_preparation();
+        if let Some(listener) = self
+            .listener
+            .take_if(|listener| listener.worker.is_finished())
+        {
+            let _ = listener.finish();
+        }
+        if let Some(preparation) = self
+            .transcription_preparation
+            .take_if(|preparation| preparation.worker.is_finished())
+        {
+            let _ = preparation.worker.join();
+        }
+        if let Some(edit) = &mut self.settings_edit
+            && let Some(worker) = edit.worker.take_if(|worker| worker.is_finished())
+        {
+            let _ = worker.join();
+        }
+    }
+}
+
+impl DesktopHost for LinuxDesktopHost {
+    fn snapshot(&self) -> DesktopSnapshot {
+        let update_status = match &self.update {
+            UpdateState::Unmanaged => DesktopUpdateStatus::Unavailable,
+            UpdateState::Checking(_) => DesktopUpdateStatus::Checking,
+            UpdateState::Failed(_) => DesktopUpdateStatus::Failed,
+            UpdateState::Waiting(_) => DesktopUpdateStatus::Current,
+            UpdateState::Ready(_) => DesktopUpdateStatus::ReadyToRestart,
+        };
+        DesktopSnapshot {
+            activity: self.activity.clone(),
+            dictation_shortcut: self.settings.dictation_hotkey.keycaps(),
+            double_tap_lock: self.settings.double_tap_lock,
+            listener: DesktopListenerSnapshot {
+                running: self.is_running(),
+                status: self.status.clone(),
+                warning: self
+                    .listener
+                    .as_ref()
+                    .and_then(|listener| listener.hotkey_status.warning()),
+            },
+            operation_error: self
+                .error
+                .clone()
+                .or_else(|| self.settings_error.clone())
+                .or_else(|| {
+                    self.activity
+                        .last_failure
+                        .as_ref()
+                        .filter(|(at, _)| Some(*at) != self.dismissed_failure_at)
+                        .map(|(_, message)| message.clone())
+                }),
+            transcription: DesktopTranscriptionSnapshot {
+                downloaded_bytes: self
+                    .transcription_preparation
+                    .as_ref()
+                    .map_or(0, |preparation| {
+                        preparation.progress.load(Ordering::Relaxed)
+                    }),
+                error: self.transcription_error.clone(),
+                preparation_stage: self.transcription_preparation.as_ref().map(|preparation| {
+                    crate::transcription_models::ModelPreparationStage::load(&preparation.stage)
+                }),
+                selection: self.settings.transcription.clone(),
+                preparing: self
+                    .transcription_preparation
+                    .as_ref()
+                    .map(|preparation| preparation.model),
+            },
+            update_status,
+        }
+    }
+
+    fn dispatch(&mut self, action: DesktopAction) -> Result<()> {
+        match action {
+            DesktopAction::ClearError => {
+                self.error = None;
+                self.settings_error = None;
+                self.dismissed_failure_at = self.activity.last_failure.as_ref().map(|(at, _)| *at);
+            }
+            DesktopAction::RestartIntoUpdate => {
+                if let Err(error) = self.restart_into_update() {
+                    self.error = Some(format!("Could not restart HEX: {error:#}"));
+                    return Err(error);
+                }
+            }
+            DesktopAction::SetDictationShortcut(shortcut) => {
+                self.set_dictation_hotkey(shortcut)?;
+            }
+            DesktopAction::SetDoubleTapLock(enabled) => {
+                self.begin_settings_edit(SettingsChange::DoubleTap(enabled));
+            }
+            DesktopAction::StartListening => {
+                self.error = None;
+                self.dismissed_failure_at = self.activity.last_failure.as_ref().map(|(at, _)| *at);
+                self.start();
+            }
+            DesktopAction::StopListening => self.stop(),
+        }
+        Ok(())
+    }
+}
+
+impl LinuxApp {
+    fn render_shared_navigation(&self) -> AnyElement {
+        sidebar_frame()
+            .w(px(SIDEBAR_WIDTH))
+            .px(px(14.0))
+            .pt(px(52.0))
+            .pb_4()
+            .flex()
+            .flex_col()
+            .child(
+                navigation_item(NavigationIcon::Settings, true)
+                    .id("linux-nav-settings")
+                    .child("Settings"),
+            )
+            .child(div().flex_1())
+            .into_any_element()
+    }
+
+    fn render_shared_settings(
+        &mut self,
+        snapshot: &DesktopSnapshot,
+        cx: &mut Context<Self>,
+    ) -> AnyElement {
+        let running = snapshot.listener.running;
+        let double_tap_lock = snapshot.double_tap_lock;
+        let editing = self.host.editing_settings();
+        let paste_with_shift = self.host.settings.paste_with_shift;
+        let sound_volume_busy = editing || snapshot.transcription.preparing.is_some();
+        let sound_volume = segmented_control().children(
+            crate::desktop_ui::SOUND_VOLUME_STEPS
+                .into_iter()
+                .enumerate()
+                .map(|(index, (label, volume))| {
+                    let selected = (self.host.settings.sound_effect_volume - volume).abs() < 0.01;
+                    segmented_item(selected)
+                        .id(("linux-sound-volume", index))
+                        .child(label)
+                        .when(sound_volume_busy, |item| item.opacity(0.5))
+                        .on_click(cx.listener(move |this, _, _, cx| {
+                            if !this.quitting && !sound_volume_busy {
+                                let _ = this.host.set_sound_effect_volume(volume);
+                                cx.notify();
+                            }
+                        }))
+                }),
+        );
+        let shortcut = if self.host.capturing_hotkey() {
+            div()
+                .w(px(180.0))
+                .h(px(34.0))
+                .flex()
+                .items_center()
+                .justify_center()
+                .rounded(px(6.0))
+                .border_1()
+                .border_color(rgb(TEXT_SOFT))
+                .bg(rgb(SURFACE))
+                .text_size(px(11.0))
+                .child(if running {
+                    "Stopping listener..."
+                } else {
+                    "Press a shortcut..."
+                })
+                .into_any_element()
+        } else {
+            hotkey_keycaps(snapshot.dictation_shortcut.clone(), 1.0)
+        };
+        let update_ready = snapshot.update_status == DesktopUpdateStatus::ReadyToRestart;
+        let transcription = &snapshot.transcription;
+        let transcription_label = format!(
+            "{} · {}",
+            crate::transcription_models::language_name(&transcription.selection.language),
+            crate::transcription_models::definition(transcription.selection.model).name
+        );
+        let transcription_language = transcription.selection.language.clone();
+
+        div()
+            .size_full()
+            .flex()
+            .flex_col()
+            .child(pane_header("Settings"))
+            .child(
+                pane_body().child(div()
+                    .id("settings-scroll")
+                    .flex_1()
+                    .overflow_y_scroll()
+                    .px_8()
+                    .pt_1()
+                    .pb_7()
+                    .child(
+                        div().w_full().flex().justify_center().child(
+                            pane_content()
+                                .relative()
+                                .child(settings_section_label("LISTENER"))
+                                .child(settings_panel().child(settings_row(
+                                    "Dictation",
+                                    "Global hotkey dictation",
+                                    div().flex().items_center().gap_3()
+                                        .child(div().text_size(px(12.0)).text_color(rgb(MUTED))
+                                            .child(snapshot.listener.status.clone()))
+                                        .child(compact_button(if running { "Stop" } else { "Start" })
+                                        .id("linux-listener-toggle")
+                                        .on_click(cx.listener(move |this, _, _, cx| {
+                                            if !this.quitting {
+                                                let _ = this.host.dispatch(if running {
+                                                    DesktopAction::StopListening
+                                                } else {
+                                                    DesktopAction::StartListening
+                                                });
+                                                cx.notify();
+                                            }
+                                        }))),
+                                )))
+                                .when_some(snapshot.listener.warning.clone(), |content, warning| {
+                                    content.child(
+                                        div().id("linux-listener-warning").mt_3().p_3().rounded(px(6.0)).border_1().border_color(rgb(LINE))
+                                            .child(div().text_size(px(12.0)).child(warning))
+                                            .child(div().mt_2().text_size(px(12.0)).text_color(rgb(MUTED))
+                                                .child("Dictation still works. Release the hold shortcut or press the locked shortcut to finish. Free Escape in the other application; HEX retries on the next capture.")),
+                                    )
+                                })
+                                .when_some(snapshot.operation_error.clone(), |content, error| {
+                                    content.child(
+                                        div().mt_3().p_3().rounded(px(6.0)).border_1().border_color(rgb(LINE))
+                                            .child(div().text_size(px(12.0)).child(error))
+                                            .child(div().mt_2().flex().gap_2()
+                                                .when(!running, |buttons| buttons.child(compact_button("Retry").id("linux-error-retry")
+                                                    .on_click(cx.listener(|this, _, _, cx| {
+                                                        if !this.quitting {
+                                                            let _ = this.host.dispatch(DesktopAction::StartListening);
+                                                            cx.notify();
+                                                        }
+                                                    }))))
+                                                .child(compact_button("Dismiss").id("linux-error-dismiss")
+                                                    .on_click(cx.listener(|this, _, _, cx| {
+                                                        let _ = this.host.dispatch(DesktopAction::ClearError);
+                                                        cx.notify();
+                                                    })))),
+                                    )
+                                })
+                                .when_some(self.host.client.state.as_ref().and_then(|s| s.hud_limitation.clone()), |content, limitation| {
+                                    content.child(div().mt_3().text_size(px(12.0)).text_color(rgb(MUTED)).child(limitation))
+                                })
+                                .child(settings_section_label("DICTATION"))
+                                .child(
+                                    settings_panel()
+                                        .child(settings_row(
+                                            "Local transcription",
+                                            "Language and on-device speech model",
+                                            disclosure_button(transcription_label)
+                                                .id("transcription-model-setting")
+                                                .on_click(cx.listener(move |this, _, _, cx| {
+                                                    this.transcription_picker =
+                                                        TranscriptionPickerState::Choosing(
+                                                            transcription_language.clone(),
+                                                        );
+                                                    cx.notify();
+                                                })),
+                                        ))
+                                        .child(settings_row(
+                                            "Microphone",
+                                            "Automatically chooses the preferred available input",
+                                            disclosure_button("Automatic"),
+                                        ))
+                                        .child(
+                                            settings_row(
+                                                "Dictation shortcut",
+                                                "Hold to dictate, release to transcribe",
+                                                shortcut,
+                                            )
+                                            .border_b_0()
+                                            .id("dictation-hotkey-setting")
+                                            .on_click(
+                                                cx.listener(move |this, _, _, cx| {
+                                                    if !this.quitting {
+                                                        if this.host.capturing_hotkey() {
+                                                            this.host.cancel_settings_edit();
+                                                        } else {
+                                                            this.host.capture_shortcut();
+                                                        }
+                                                        cx.notify();
+                                                    }
+                                                }),
+                                            ),
+                                        )
+                                        .when(editing, |panel| panel.child(settings_row(
+                                            "Updating shortcut settings",
+                                            "Listening resumes after the change if it was previously running.",
+                                            compact_button("Cancel").id("linux-cancel-shortcut")
+                                                .on_click(cx.listener(|this, _, _, cx| {
+                                                    this.host.cancel_settings_edit();
+                                                    cx.notify();
+                                                })),
+                                        ))),
+                                )
+                                .child(settings_section_label("BEHAVIOR"))
+                                .child(
+                                    settings_panel().child(
+                                        settings_row(
+                                            "Double-tap to lock",
+                                            "Double-tap the shortcut for hands-free dictation",
+                                            toggle(if double_tap_lock { 1.0 } else { 0.0 }),
+                                        )
+                                        .id("double-tap-setting")
+                                        .when(editing, |row| row.opacity(0.5))
+                                        .on_click(
+                                            cx.listener(move |this, _, _, cx| {
+                                                if !this.quitting && !editing {
+                                                    let _ = this.host.dispatch(
+                                                        DesktopAction::SetDoubleTapLock(
+                                                            !double_tap_lock,
+                                                        ),
+                                                    );
+                                                    cx.notify();
+                                                }
+                                            }),
+                                        ),
+                                    ).child(
+                                        settings_row(
+                                            "Terminal paste shortcut",
+                                            "Use Ctrl-Shift-V instead of Ctrl-V",
+                                            toggle(if paste_with_shift { 1.0 } else { 0.0 }),
+                                        )
+                                        .id("terminal-paste-setting")
+                                        .when(editing, |row| row.opacity(0.5))
+                                        .on_click(cx.listener(move |this, _, _, cx| {
+                                            if !this.quitting && !editing {
+                                                this.host.set_terminal_paste(!paste_with_shift);
+                                                cx.notify();
+                                            }
+                                        })),
+                                    ).child(settings_row(
+                                        "Sound volume",
+                                        "Recording start, stop, and cancel sounds",
+                                        sound_volume,
+                                    ).border_b_0()),
+                                )
+                                .child(settings_section_label("APPLICATION"))
+                                .child(
+                                    settings_panel()
+                                        .child(settings_row(
+                                            "HEX",
+                                            "Private local dictation for Linux",
+                                            div().text_size(px(12.0)).text_color(rgb(MUTED)).child(
+                                                format!("Version {}", env!("CARGO_PKG_VERSION")),
+                                            ),
+                                        ))
+                                        .child(settings_row(
+                                            "Close Settings",
+                                            "Dictation continues in the background service",
+                                            compact_button("Close")
+                                                .id("linux-quit")
+                                                .on_click(cx.listener(|this, _, _, cx| {
+                                                    this.request_quit();
+                                                    cx.notify();
+                                                })),
+                                        ))
+                                        .when(update_ready, |panel| {
+                                            panel.child(settings_row(
+                                                "Update ready",
+                                                "Restart into the verified Linux release.",
+                                                compact_button("Restart")
+                                                    .id("restart-update")
+                                                    .border_1()
+                                                    .border_color(rgb(LINE))
+                                                    .on_click(cx.listener(|this, _, _, cx| {
+                                                        let _ = this.host.dispatch(DesktopAction::RestartIntoUpdate);
+                                                        cx.notify();
+                                                    })),
+                                            ))
+                                        }),
+                                ),
+                        ),
+                    )),
+            )
+            .into_any_element()
+    }
+
+    fn transcription_picker_view(
+        &self,
+        language: String,
+        transcription: &DesktopTranscriptionSnapshot,
+    ) -> TranscriptionPickerView {
+        let models = crate::transcription_models::choices_for_runtime(&language)
+            .into_iter()
+            .map(|choice| {
+                let model = choice.model;
+                let installed = crate::transcription_models::is_installed(model, &language);
+                let downloading = transcription.preparing == Some(model.id);
+                let active = transcription_selection_is_active(
+                    &transcription.selection,
+                    model,
+                    &language,
+                    installed,
+                );
+                let progress = if downloading {
+                    model.download_bytes().map_or(0.0, |bytes| {
+                        (transcription.downloaded_bytes as f32 / bytes as f32).clamp(0.0, 1.0)
+                    })
+                } else {
+                    0.0
+                };
+                let status = if downloading {
+                    let stage = transcription
+                        .preparation_stage
+                        .unwrap_or(crate::transcription_models::ModelPreparationStage::Downloading);
+                    let (label, progress) = match stage {
+                        crate::transcription_models::ModelPreparationStage::Downloading => (
+                            format!("Downloading {:.0}%", progress * 100.0),
+                            Some(TranscriptionPickerProgress::Downloading(progress)),
+                        ),
+                        crate::transcription_models::ModelPreparationStage::Verifying => {
+                            ("Verifying model".into(), None)
+                        }
+                        crate::transcription_models::ModelPreparationStage::Loading => (
+                            "Loading model".into(),
+                            Some(TranscriptionPickerProgress::Loading(0.25)),
+                        ),
+                    };
+                    TranscriptionPickerStatus::Preparing { label, progress }
+                } else if active {
+                    TranscriptionPickerStatus::Active
+                } else {
+                    // The service owns model files; Settings cannot delete them yet.
+                    TranscriptionPickerStatus::Available {
+                        installed,
+                        deletion: ModelDeletion::Unavailable,
+                    }
+                };
+                TranscriptionPickerModel { choice, status }
+            })
+            .collect();
+        TranscriptionPickerView {
+            error: transcription.error.clone(),
+            deletion_error: None,
+            language,
+            models,
+        }
+    }
+}
+
+impl TranscriptionPickerDelegate for LinuxApp {
+    fn cancel_transcription_preparation(&mut self) {
+        self.host.cancel_transcription_preparation();
+        if let TranscriptionPickerState::Preparing(language) = &self.transcription_picker {
+            self.transcription_picker = TranscriptionPickerState::Choosing(language.clone());
+        }
+    }
+
+    fn choose_transcription_model(
+        &mut self,
+        model: crate::transcription_models::TranscriptionModelId,
+        language: String,
+        _cx: &mut Context<Self>,
+    ) {
+        if self.quitting {
+            return;
+        }
+        if self
+            .host
+            .choose_transcription(model, language.clone())
+            .is_ok()
+        {
+            self.transcription_picker = TranscriptionPickerState::Preparing(language);
+        }
+    }
+
+    fn dismiss_transcription_picker(&mut self, cx: &mut Context<Self>) {
+        self.transcription_picker = TranscriptionPickerState::Closed;
+        cx.notify();
+    }
+
+    fn select_transcription_language(&mut self, language: String, cx: &mut Context<Self>) {
+        if self.transcription_picker.language() != Some(&language) {
+            self.host.cancel_transcription_preparation();
+            self.transcription_picker = TranscriptionPickerState::Choosing(language);
+            cx.notify();
+        }
+    }
+}
+
+impl Render for LinuxApp {
+    fn render(&mut self, _window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+        let snapshot = self.host.snapshot();
+        let content = self.render_shared_settings(&snapshot, cx);
+        let model_picker =
+            self.transcription_picker
+                .language()
+                .map(str::to_owned)
+                .map(|language| {
+                    render_transcription_picker(
+                        self.transcription_picker_view(language, &snapshot.transcription),
+                        cx,
+                    )
+                });
+        window_frame()
+            .child(self.render_shared_navigation())
+            .child(
+                div()
+                    .flex_1()
+                    .min_w(px(0.0))
+                    .h_full()
+                    .overflow_hidden()
+                    .child(content),
+            )
+            .children(model_picker)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::transcription_models::{
+        ModelPreparationStage, TranscriptionModelId, TranscriptionSelection,
+    };
+
+    fn host_for_edit(running: bool) -> LinuxDesktopHost {
+        let settings = crate::linux_settings::LinuxSettings {
+            transcription: TranscriptionSelection {
+                // Prevent the restart assertions from opening a real microphone.
+                model: TranscriptionModelId::AppleSpeech,
+                ..Default::default()
+            },
+            ..Default::default()
+        };
+        let mut host =
+            LinuxDesktopHost::new(PathBuf::new(), settings, None, UpdateState::Unmanaged);
+        if running {
+            host.listener = Some(Listener {
+                worker: std::thread::spawn(|| Ok(())),
+                stop: Arc::new(AtomicBool::new(false)),
+                startup: ListenerStartup::Observed,
+                hotkey_status: Default::default(),
+            });
+            host.listen_when_ready = true;
+        }
+        host
+    }
+
+    fn set_finished_edit(
+        host: &mut LinuxDesktopHost,
+        result: Result<crate::linux_settings::LinuxSettings>,
+    ) {
+        let worker = std::thread::spawn(move || result);
+        while !worker.is_finished() {
+            std::thread::yield_now();
+        }
+        host.settings_edit.as_mut().unwrap().worker = Some(worker);
+    }
+
+    #[test]
+    fn malformed_settings_cannot_start_even_after_dismissing_the_error() {
+        let mut host = LinuxDesktopHost::new(
+            PathBuf::new(),
+            Default::default(),
+            Some("Could not load Linux settings: invalid JSON".into()),
+            UpdateState::Unmanaged,
+        );
+        host.start();
+        assert!(!host.is_running());
+        assert_eq!(host.status, "Unavailable");
+        host.dispatch(DesktopAction::ClearError).unwrap();
+        host.start();
+        assert!(!host.is_running());
+        assert_eq!(host.status, "Unavailable");
+        assert!(!host.settings_valid);
+
+        host.begin_settings_edit(SettingsChange::DoubleTap(false));
+        let mut recovered = host.settings.clone();
+        recovered.double_tap_lock = false;
+        set_finished_edit(&mut host, Ok(recovered.clone()));
+        host.refresh_settings_edit();
+        assert!(host.settings_valid);
+        assert_eq!(host.settings, recovered);
+        assert!(!host.is_running());
+    }
+
+    #[test]
+    fn listener_startup_ignores_the_previous_session_until_a_new_one_arrives() {
+        for previous_session in [None, Some(10)] {
+            let mut listener = Listener {
+                stop: Arc::new(AtomicBool::new(false)),
+                worker: std::thread::spawn(|| Ok(())),
+                startup: ListenerStartup::Awaiting { previous_session },
+                hotkey_status: Default::default(),
+            };
+            listener.observe_session(previous_session);
+            assert!(matches!(listener.startup, ListenerStartup::Awaiting { .. }));
+            listener.observe_session(Some(20));
+            assert!(matches!(listener.startup, ListenerStartup::Observed));
+            listener.observe_session(previous_session);
+            assert!(matches!(listener.startup, ListenerStartup::Observed));
+            listener.stop();
+            assert!(listener.stop.load(Ordering::Relaxed));
+            listener.finish().unwrap();
+        }
+    }
+
+    #[test]
+    fn listener_warning_is_nonfatal_and_round_trips_in_service_snapshots() {
+        let mut host = host_for_edit(true);
+        host.status = "Listening".into();
+        let status = host.listener.as_ref().unwrap().hotkey_status.clone();
+        status.update_escape_availability(false);
+        let snapshot = service_snapshot(&host, false);
+        let serialized = serde_json::to_vec(&snapshot).unwrap();
+        let received: ServiceSnapshot = serde_json::from_slice(&serialized).unwrap();
+        let listener = received.desktop.listener;
+        assert!(listener.running);
+        assert_eq!(listener.status, "Listening");
+        assert_eq!(
+            listener.warning.as_deref(),
+            Some(crate::linux_input::ESCAPE_CANCEL_WARNING),
+        );
+        assert!(received.desktop.operation_error.is_none());
+
+        // Dismissing an unrelated failure must not hide an unresolved limitation.
+        host.error = Some("previous transcription failed".into());
+        assert_eq!(
+            host.snapshot().operation_error.as_deref(),
+            Some("previous transcription failed"),
+        );
+        host.dispatch(DesktopAction::ClearError).unwrap();
+        assert!(host.snapshot().listener.warning.is_some());
+        assert!(host.snapshot().operation_error.is_none());
+        status.update_escape_availability(true);
+        assert!(host.snapshot().listener.warning.is_none());
+        status.update_escape_availability(false);
+        host.stop();
+        while !host.listener.as_ref().unwrap().worker.is_finished() {
+            std::thread::yield_now();
+        }
+        host.refresh();
+        let listener = host.snapshot().listener;
+        assert!(!listener.running);
+        assert!(listener.warning.is_none());
+    }
+
+    #[test]
+    fn listener_completion_waits_for_the_worker_and_preserves_errors() {
+        for outcome in [Some(Ok(())), Some(Err("listener failed".into())), None] {
+            let expected = outcome
+                .clone()
+                .unwrap_or_else(|| Err("listener worker stopped unexpectedly".into()))
+                .err();
+            let mut host = host_for_edit(true);
+            let (release, held) = mpsc::channel();
+            host.listener.as_mut().unwrap().worker = std::thread::spawn(move || {
+                held.recv_timeout(Duration::from_secs(5)).unwrap();
+                outcome.expect("fixture listener panic")
+            });
+            host.refresh();
+            assert!(host.is_running());
+            assert!(!host.listener.as_ref().unwrap().stop.load(Ordering::Relaxed));
+            release.send(()).unwrap();
+            while !host.listener.as_ref().unwrap().worker.is_finished() {
+                std::thread::yield_now();
+            }
+            host.refresh();
+            assert!(!host.is_running());
+            assert!(host.listener.is_none());
+            assert_eq!(host.error, expected);
+            assert_eq!(
+                host.status,
+                if expected.is_some() {
+                    "Unavailable"
+                } else {
+                    "Ready"
+                }
+            );
+        }
+    }
+
+    #[test]
+    fn preparation_completion_preserves_selection_and_honors_cancellation() {
+        for (canceled, panics) in [(false, false), (false, true), (true, false), (true, true)] {
+            let mut host = host_for_edit(false);
+            let original = host.settings.clone();
+            let (release, held) = mpsc::channel();
+            host.transcription_preparation = Some(TranscriptionPreparation {
+                canceled: Arc::new(AtomicBool::new(false)),
+                model: TranscriptionModelId::default(),
+                progress: Arc::new(AtomicU64::new(0)),
+                stage: Arc::new(AtomicU8::new(ModelPreparationStage::Loading as u8)),
+                worker: std::thread::spawn(move || {
+                    held.recv_timeout(Duration::from_secs(5)).unwrap();
+                    assert!(!panics, "fixture preparation panic");
+                    Err("model unavailable".into())
+                }),
+            });
+            if canceled {
+                host.cancel_transcription_preparation();
+            }
+            host.refresh();
+            assert!(host.has_pending_work());
+            release.send(()).unwrap();
+            while !host
+                .transcription_preparation
+                .as_ref()
+                .unwrap()
+                .worker
+                .is_finished()
+            {
+                std::thread::yield_now();
+            }
+            host.refresh();
+            assert!(!host.has_pending_work());
+            assert_eq!(host.settings, original);
+            assert_eq!(
+                host.transcription_error.as_deref(),
+                if canceled {
+                    None
+                } else if panics {
+                    Some("model preparation worker stopped unexpectedly")
+                } else {
+                    Some("model unavailable")
+                }
+            );
+        }
+    }
+
+    #[test]
+    fn preference_edits_wait_for_stop_and_only_restart_a_previously_running_listener() {
+        for (running, paste) in [(false, false), (true, false), (false, true), (true, true)] {
+            let mut host = host_for_edit(running);
+            let mut candidate = host.settings.clone();
+            if paste {
+                candidate.paste_with_shift = !candidate.paste_with_shift;
+                host.begin_settings_edit(SettingsChange::PasteWithShift(
+                    candidate.paste_with_shift,
+                ));
+            } else {
+                candidate.double_tap_lock = !candidate.double_tap_lock;
+                host.dispatch(DesktopAction::SetDoubleTapLock(candidate.double_tap_lock))
+                    .unwrap();
+            }
+            assert_eq!(host.settings_edit.as_ref().unwrap().resume, running);
+            if running {
+                host.refresh_settings_edit();
+                assert!(host.listener.as_ref().unwrap().stop.load(Ordering::Relaxed));
+                assert!(host.settings_edit.as_ref().unwrap().worker.is_none());
+                assert_ne!(host.settings, candidate);
+            }
+            host.listener = None;
+            set_finished_edit(&mut host, Ok(candidate.clone()));
+            host.refresh_settings_edit();
+            assert_eq!(host.settings, candidate);
+            assert!(host.settings_edit.is_none());
+            assert_eq!(host.listen_when_ready, running);
+        }
+    }
+
+    #[test]
+    fn canceled_or_failed_capture_restores_prior_listening_without_changing_settings() {
+        for running in [false, true] {
+            for cancel in [false, true] {
+                let mut host = host_for_edit(running);
+                let original = host.settings.clone();
+                host.begin_settings_edit(SettingsChange::Capture);
+                assert!(host.capturing_hotkey());
+                host.listener = None;
+                if cancel {
+                    host.cancel_settings_edit();
+                } else {
+                    set_finished_edit(
+                        &mut host,
+                        Err(color_eyre::eyre::eyre!("input permission denied")),
+                    );
+                }
+                host.refresh_settings_edit();
+                assert_eq!(host.settings, original);
+                assert_eq!(host.listen_when_ready, running);
+                assert_eq!(host.error.is_some(), !cancel);
+                assert!(host.settings_edit.is_none());
+                assert!(!host.capturing_hotkey());
+            }
+        }
+    }
+
+    #[test]
+    fn cancel_signals_worker_and_does_not_wait_or_restart_until_it_finishes() {
+        let mut host = host_for_edit(true);
+        host.begin_settings_edit(SettingsChange::Capture);
+        host.listener = None;
+        let (release, held) = mpsc::channel();
+        host.settings_edit.as_mut().unwrap().worker = Some(std::thread::spawn(move || {
+            let _ = held.recv();
+            Err(color_eyre::eyre::eyre!("capture canceled"))
+        }));
+        host.cancel_settings_edit();
+        host.refresh_settings_edit();
+        let edit = host.settings_edit.as_mut().unwrap();
+        assert!(edit.canceled.load(Ordering::Acquire));
+        assert!(edit.worker.is_some());
+        assert!(!host.listen_when_ready);
+        release.send(()).unwrap();
+        let _ = host
+            .settings_edit
+            .as_mut()
+            .unwrap()
+            .worker
+            .take()
+            .unwrap()
+            .join()
+            .unwrap()
+            .unwrap_err();
+        host.refresh_settings_edit();
+        assert!(host.listen_when_ready);
+        assert!(host.settings_edit.is_none());
+    }
+
+    #[test]
+    fn client_disconnect_cancels_its_edit_and_restores_previous_listening() {
+        let mut host = host_for_edit(true);
+        host.begin_settings_edit(SettingsChange::Capture);
+        let mut editor = Some((1, Instant::now()));
+        disconnect_editor(&mut host, &mut editor, 2);
+        assert!(
+            !host
+                .settings_edit
+                .as_ref()
+                .unwrap()
+                .canceled
+                .load(Ordering::Acquire)
+        );
+        disconnect_editor(&mut host, &mut editor, 1);
+        let edit = host.settings_edit.as_ref().unwrap();
+        assert!(edit.resume);
+        assert!(edit.canceled.load(Ordering::Acquire));
+        host.listener = None;
+        host.refresh_settings_edit();
+        assert!(host.listen_when_ready);
+        assert!(editor.is_none());
+    }
+
+    #[test]
+    fn closing_a_client_does_not_stop_normal_dictation() {
+        let mut host = host_for_edit(true);
+        disconnect_editor(&mut host, &mut None, 1);
+        assert!(host.is_running());
+        assert!(host.listen_when_ready);
+        assert!(!host.listener.as_ref().unwrap().stop.load(Ordering::Acquire));
+    }
+
+    #[test]
+    fn dismiss_clears_operational_and_settings_errors() {
+        let mut host = host_for_edit(false);
+        host.error = Some("listener failed".into());
+        host.settings_error = Some("settings failed".into());
+        host.dispatch(DesktopAction::ClearError).unwrap();
+        assert!(host.snapshot().operation_error.is_none());
+    }
+
+    #[test]
+    fn invalid_volume_preserves_settings_and_does_not_stop_the_listener() {
+        let mut host = host_for_edit(true);
+        let original = host.settings.clone();
+        assert!(host.set_sound_effect_volume(f32::NAN).is_err());
+        assert_eq!(host.settings, original);
+        assert!(host.settings_error.is_some());
+        assert!(host.is_running());
+        assert!(host.listen_when_ready);
+        assert!(!host.listener.as_ref().unwrap().stop.load(Ordering::Relaxed));
+    }
+
+    #[test]
+    fn volume_changes_cannot_overwrite_an_in_flight_settings_edit() {
+        let mut host = host_for_edit(false);
+        let original = host.settings.clone();
+        host.begin_settings_edit(SettingsChange::Capture);
+        assert!(host.set_sound_effect_volume(0.0).is_err());
+        assert_eq!(host.settings, original);
+        assert!(host.capturing_hotkey());
+    }
+
+    #[test]
+    fn output_failures_are_visible_and_dismissal_only_acknowledges_that_failure() {
+        let mut host = host_for_edit(false);
+        host.activity.last_failure = Some((10, "paste helper failed".into()));
+        assert_eq!(
+            host.snapshot().operation_error.as_deref(),
+            Some("paste helper failed")
+        );
+        host.dispatch(DesktopAction::ClearError).unwrap();
+        assert!(host.snapshot().operation_error.is_none());
+        host.activity.last_failure = Some((11, "paste helper failed".into()));
+        assert_eq!(
+            host.snapshot().operation_error.as_deref(),
+            Some("paste helper failed")
+        );
+        host.dispatch(DesktopAction::StartListening).unwrap();
+        assert!(host.snapshot().operation_error.is_none());
+    }
+
+    #[test]
+    fn start_during_preparation_defers_listening_and_stop_clears_the_request() {
+        let settings = crate::linux_settings::LinuxSettings {
+            // An unavailable model prevents a regressed guard from opening audio.
+            transcription: TranscriptionSelection {
+                model: TranscriptionModelId::AppleSpeech,
+                ..Default::default()
+            },
+            ..Default::default()
+        };
+        let mut host =
+            LinuxDesktopHost::new(PathBuf::new(), settings, None, UpdateState::Unmanaged);
+        host.transcription_preparation = Some(TranscriptionPreparation {
+            canceled: Arc::new(AtomicBool::new(false)),
+            model: TranscriptionModelId::default(),
+            progress: Arc::new(AtomicU64::new(0)),
+            stage: Arc::new(AtomicU8::new(ModelPreparationStage::Downloading as u8)),
+            worker: std::thread::spawn(|| Err("fixture preparation".into())),
+        });
+
+        host.dispatch(DesktopAction::StartListening).unwrap();
+
+        assert!(host.listen_when_ready);
+        assert_eq!(host.status, "Ready");
+        assert!(!host.is_running());
+        assert!(host.listener.is_none());
+        assert!(host.transcription_preparation.is_some());
+
+        host.dispatch(DesktopAction::StopListening).unwrap();
+
+        assert!(!host.listen_when_ready);
+        assert!(host.transcription_preparation.is_some());
+    }
+}

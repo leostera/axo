@@ -1,0 +1,27 @@
+load("@crates//:defs.bzl", "all_crate_deps", "crate_edition")
+load("@rules_rust//cargo:defs.bzl", "cargo_toml_env_vars")
+load("@rules_rust//rust:defs.bzl", "rust_binary", "rust_test")
+
+package(default_visibility = ["//visibility:public"])
+
+cargo_toml_env_vars(
+    name = "cargo_env",
+    src = "Cargo.toml",
+)
+
+rust_binary(
+    name = "axod",
+    srcs = ["src/main.rs"],
+    edition = crate_edition(),
+    rustc_env_files = [":cargo_env"],
+    deps = ["//crates/axo-server:axo_server"] + all_crate_deps(normal = True),
+)
+
+rust_test(
+    name = "rpc_tests",
+    srcs = ["tests/rpc.rs"],
+    edition = crate_edition(),
+    data = [":axod"],
+    env = {"AXOD_BINARY": "$(rootpath :axod)"},
+    deps = all_crate_deps(normal_dev = True),
+)

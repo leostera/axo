@@ -1,0 +1,9 @@
+bazel-*
+dist
+target
+vendor
+node_modules
+local
+apple/AxoMac/DerivedData
+apple/AxoRPC/.build
+apple/AxoDaemonManager/.build

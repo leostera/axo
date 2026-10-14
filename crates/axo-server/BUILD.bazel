@@ -1,0 +1,29 @@
+load("@crates//:defs.bzl", "all_crate_deps", "crate_edition")
+load("@rules_rust//cargo:defs.bzl", "cargo_build_script")
+load("@rules_rust//rust:defs.bzl", "rust_library", "rust_test")
+
+package(default_visibility = ["//visibility:public"])
+
+cargo_build_script(
+    name = "build_script",
+    srcs = ["build.rs"],
+    edition = crate_edition(),
+    build_script_env = {
+        "AXO_BUILD_NUMBER_FILE": "$(execpath //:BUILD_NUMBER)",
+    },
+    data = ["//:BUILD_NUMBER"],
+)
+
+rust_library(
+    name = "axo_server",
+    srcs = ["src/lib.rs"],
+    edition = crate_edition(),
+    deps = [":build_script"] + all_crate_deps(normal = True),
+)
+
+rust_test(
+    name = "axo_server_tests",
+    srcs = ["src/lib.rs"],
+    edition = crate_edition(),
+    deps = [":build_script"] + all_crate_deps(normal = True),
+)

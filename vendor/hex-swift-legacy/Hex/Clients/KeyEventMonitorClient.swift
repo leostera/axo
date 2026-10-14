@@ -1,0 +1,611 @@
+import AppKit
+import ApplicationServices
+import Carbon
+import ComposableArchitecture
+import CoreGraphics
+import Dependencies
+import DependenciesMacros
+import Foundation
+import HexCore
+import IOKit
+import IOKit.hidsystem
+import Sauce
+
+private let logger = HexLog.keyEvent
+
+struct KeyEventMonitorToken: Sendable {
+  private let cancelHandler: @Sendable () -> Void
+
+  init(cancel: @escaping @Sendable () -> Void) {
+    self.cancelHandler = cancel
+  }
+
+  func cancel() {
+    cancelHandler()
+  }
+
+  static let noop = KeyEventMonitorToken(cancel: {})
+}
+
+public extension KeyEvent {
+  init(cgEvent: CGEvent, type: CGEventType, isFnPressed: Bool) {
+    let keyCode = Int(cgEvent.getIntegerValueField(.keyboardEventKeycode))
+    // Accessing keyboard layout / input source via Sauce must be on main thread.
+    let key: Key?
+    if cgEvent.type == .keyDown {
+      if Thread.isMainThread {
+        key = Sauce.shared.key(for: keyCode)
+      } else {
+        key = DispatchQueue.main.sync { Sauce.shared.key(for: keyCode) }
+      }
+    } else {
+      key = nil
+    }
+
+    var modifiers = Modifiers.from(carbonFlags: cgEvent.flags)
+    if !isFnPressed {
+      modifiers = modifiers.removing(kind: .fn)
+    }
+    self.init(key: key, modifiers: modifiers)
+  }
+}
+
+@DependencyClient
+struct KeyEventMonitorClient {
+  var listenForKeyPress: @Sendable () async -> AsyncThrowingStream<KeyEvent, Error> = {
+    AsyncThrowingStream { _ in }
+  }
+  var handleKeyEvent: @Sendable (@Sendable @escaping (KeyEvent) -> Bool) -> KeyEventMonitorToken = { _ in .noop }
+  var handleInputEvent: @Sendable (@Sendable @escaping (InputEvent) -> Bool) -> KeyEventMonitorToken = { _ in .noop }
+  var startMonitoring: @Sendable () async -> Void = {}
+  var stopMonitoring: @Sendable () -> Void = {}
+}
+
+extension KeyEventMonitorClient: DependencyKey {
+  static var liveValue: KeyEventMonitorClient {
+    let live = KeyEventMonitorClientLive()
+    return KeyEventMonitorClient(
+      listenForKeyPress: {
+        live.listenForKeyPress()
+      },
+      handleKeyEvent: { handler in
+        live.handleKeyEvent(handler)
+      },
+      handleInputEvent: { handler in
+        live.handleInputEvent(handler)
+      },
+      startMonitoring: {
+        live.startMonitoring()
+      },
+      stopMonitoring: {
+        live.stopMonitoring()
+      }
+    )
+  }
+}
+
+extension DependencyValues {
+  var keyEventMonitor: KeyEventMonitorClient {
+    get { self[KeyEventMonitorClient.self] }
+    set { self[KeyEventMonitorClient.self] = newValue }
+  }
+}
+
+class KeyEventMonitorClientLive {
+  private var eventTapPort: CFMachPort?
+  private var runLoopSource: CFRunLoopSource?
+  private var continuations: [UUID: @Sendable (KeyEvent) -> Bool] = [:]
+  private var inputContinuations: [UUID: @Sendable (InputEvent) -> Bool] = [:]
+  private let queue = DispatchQueue(label: "com.kitlangton.Hex.KeyEventMonitor", attributes: .concurrent)
+  private let queueSpecificKey = DispatchSpecificKey<Void>()
+  private var isMonitoring = false
+  private var wantsMonitoring = false
+  private var accessibilityTrusted = false
+  private var inputMonitoringTrusted = false
+  /// Set when key events are observed arriving at the tap. Key events only flow when Input
+  /// Monitoring is genuinely granted, so this overrides stale `IOHIDCheckAccess` denials (#250).
+  private var inputMonitoringProvenByEvents = false
+  private var trustMonitorTask: Task<Void, Never>?
+  private var systemEventObservers: [NSObjectProtocol] = []
+  private var isFnPressed = false
+  private var hasPromptedForAccessibilityTrust = false
+  private let accessibilityTrustProvider: @Sendable () -> Bool
+  private let accessibilityTrustPrompt: @Sendable () -> Bool
+  private let inputMonitoringTrustProvider: @Sendable () -> Bool
+  @Shared(.hotkeyPermissionState) private var hotkeyPermissionState: HotkeyPermissionState
+
+  private let trustCheckIntervalNanoseconds: UInt64 = 100_000_000 // 100ms
+
+  init(
+    accessibilityTrustProvider: @escaping @Sendable () -> Bool = {
+      let promptKey = kAXTrustedCheckOptionPrompt.takeUnretainedValue() as String
+      return AXIsProcessTrustedWithOptions([promptKey: false] as CFDictionary)
+    },
+    accessibilityTrustPrompt: @escaping @Sendable () -> Bool = {
+      let promptKey = kAXTrustedCheckOptionPrompt.takeUnretainedValue() as String
+      return AXIsProcessTrustedWithOptions([promptKey: true] as CFDictionary)
+    },
+    inputMonitoringTrustProvider: @escaping @Sendable () -> Bool = {
+      IOHIDCheckAccess(kIOHIDRequestTypeListenEvent) == kIOHIDAccessTypeGranted
+    }
+  ) {
+    self.accessibilityTrustProvider = accessibilityTrustProvider
+    self.accessibilityTrustPrompt = accessibilityTrustPrompt
+    self.inputMonitoringTrustProvider = inputMonitoringTrustProvider
+    queue.setSpecific(key: queueSpecificKey, value: ())
+    logger.info("Initializing HotKeyClient with CGEvent tap.")
+    registerSystemEventObservers()
+  }
+
+  deinit {
+    let center = NSWorkspace.shared.notificationCenter
+    for observer in systemEventObservers {
+      center.removeObserver(observer)
+    }
+    self.stopMonitoring()
+  }
+
+  private var hasHandlers: Bool {
+    readState { !(continuations.isEmpty && inputContinuations.isEmpty) }
+  }
+
+  func readState<Value>(_ operation: () -> Value) -> Value {
+    // Handler registration performs permission checks from a barrier block on this queue.
+    if DispatchQueue.getSpecific(key: queueSpecificKey) != nil {
+      return operation()
+    }
+    return queue.sync(execute: operation)
+  }
+
+  private func setMonitoringIntent(_ value: Bool) {
+    queue.async(flags: .barrier) { [weak self] in
+      self?.wantsMonitoring = value
+    }
+  }
+
+  private func desiredMonitoringState() -> Bool {
+    // Intentionally not gated on `inputMonitoringTrusted`: `IOHIDCheckAccess` is notorious for
+    // returning stale denials (after sleep, MDM re-logins, or OS updates) while events still
+    // flow, and tearing the tap down on that signal killed working hotkeys (#250). The tap only
+    // needs Accessibility to exist; without Input Monitoring, macOS simply withholds key events
+    // (modifiers still arrive), and creating the tap is what triggers the permission prompt.
+    readState {
+      wantsMonitoring
+        && accessibilityTrusted
+        && !(continuations.isEmpty && inputContinuations.isEmpty)
+    }
+  }
+
+  /// Provide a stream of key events.
+  func listenForKeyPress() -> AsyncThrowingStream<KeyEvent, Error> {
+    AsyncThrowingStream { continuation in
+      let uuid = UUID()
+
+      queue.async(flags: .barrier) { [weak self] in
+        guard let self = self else { return }
+        self.continuations[uuid] = { event in
+          continuation.yield(event)
+          return false
+        }
+        let shouldStart = self.continuations.count == 1 && self.inputContinuations.isEmpty
+
+        // Start monitoring if this is the first subscription
+        if shouldStart {
+          self.startMonitoring()
+        }
+      }
+
+      // Cleanup on cancellation
+      continuation.onTermination = { [weak self] _ in
+        self?.removeHandlerContinuation(uuid: uuid)
+      }
+    }
+  }
+
+  private func removeHandlerContinuation(uuid: UUID) {
+    queue.async(flags: .barrier) { [weak self] in
+      guard let self = self else { return }
+      self.continuations[uuid] = nil
+      if self.continuations.isEmpty && self.inputContinuations.isEmpty {
+        self.stopMonitoring()
+      }
+    }
+  }
+
+  private func removeInputContinuation(uuid: UUID) {
+    queue.async(flags: .barrier) { [weak self] in
+      guard let self = self else { return }
+      self.inputContinuations[uuid] = nil
+      if self.continuations.isEmpty && self.inputContinuations.isEmpty {
+        self.stopMonitoring()
+      }
+    }
+  }
+
+  func startMonitoring() {
+    setMonitoringIntent(true)
+    startTrustMonitorIfNeeded()
+    refreshTrustedFlag(promptIfUntrusted: true)
+    Task { [weak self] in
+      await self?.refreshMonitoringState(reason: "startMonitoring")
+    }
+  }
+  // TODO: Handle removing the handler from the continuations on deinit/cancellation
+  func handleKeyEvent(_ handler: @Sendable @escaping (KeyEvent) -> Bool) -> KeyEventMonitorToken {
+    let uuid = UUID()
+
+    queue.async(flags: .barrier) { [weak self] in
+      guard let self = self else { return }
+      self.continuations[uuid] = handler
+      let shouldStart = self.continuations.count == 1 && self.inputContinuations.isEmpty
+
+      if shouldStart {
+        self.startMonitoring()
+      }
+    }
+
+    return KeyEventMonitorToken { [weak self] in
+      self?.removeHandlerContinuation(uuid: uuid)
+    }
+  }
+
+  func handleInputEvent(_ handler: @Sendable @escaping (InputEvent) -> Bool) -> KeyEventMonitorToken {
+    let uuid = UUID()
+
+    queue.async(flags: .barrier) { [weak self] in
+      guard let self = self else { return }
+      self.inputContinuations[uuid] = handler
+      let shouldStart = self.inputContinuations.count == 1 && self.continuations.isEmpty
+
+      if shouldStart {
+        self.startMonitoring()
+      }
+    }
+
+    return KeyEventMonitorToken { [weak self] in
+      self?.removeInputContinuation(uuid: uuid)
+    }
+  }
+
+  func stopMonitoring() {
+    setMonitoringIntent(false)
+    Task { [weak self] in
+      await self?.refreshMonitoringState(reason: "stopMonitoring")
+    }
+    cancelTrustMonitorIfNeeded()
+  }
+
+  private func startTrustMonitorIfNeeded() {
+    queue.async(flags: .barrier) { [weak self] in
+      guard let self else { return }
+      guard self.trustMonitorTask == nil else { return }
+      self.trustMonitorTask = Task { [weak self] in
+        await self?.watchPermissions()
+      }
+    }
+  }
+
+  private func cancelTrustMonitorIfNeeded() {
+    queue.async(flags: .barrier) { [weak self] in
+      guard let self else { return }
+      guard !self.wantsMonitoring else { return }
+      self.trustMonitorTask?.cancel()
+      self.trustMonitorTask = nil
+    }
+  }
+
+  // no separate helper; handled inline above
+
+  private func watchPermissions() async {
+    var last = (
+      accessibility: currentAccessibilityTrust(),
+      input: currentInputMonitoringTrust()
+    )
+    await handlePermissionChange(accessibility: last.accessibility, input: last.input, reason: "initial")
+
+    while !Task.isCancelled {
+      try? await Task.sleep(nanoseconds: trustCheckIntervalNanoseconds)
+      let current = (
+        accessibility: currentAccessibilityTrust(),
+        input: currentInputMonitoringTrust()
+      )
+
+      if current.accessibility != last.accessibility || current.input != last.input {
+        let combinedBefore = last.accessibility && last.input
+        let combinedAfter = current.accessibility && current.input
+        let reason: String
+        if combinedAfter && !combinedBefore {
+          reason = "regained"
+        } else if !combinedAfter && combinedBefore {
+          reason = "revoked"
+        } else {
+          reason = "updated"
+        }
+        await handlePermissionChange(accessibility: current.accessibility, input: current.input, reason: reason)
+        last = current
+      } else if current.accessibility {
+        await ensureTapIsRunning()
+      }
+    }
+  }
+
+  private func handlePermissionChange(accessibility: Bool, input: Bool, reason: String) async {
+    setPermissionFlags(accessibility: accessibility, input: input)
+    logger.notice("Permission update: accessibility=\(accessibility), inputMonitoring=\(input), reason=\(reason)")
+    if accessibility && input {
+      logger.notice("Keyboard monitoring permissions granted (\(reason)).")
+    } else {
+      if !accessibility {
+        logger.error("Accessibility permission missing (\(reason)); suspending tap.")
+      }
+      if !input {
+        logger.error("Input Monitoring permission missing (\(reason)); keyed hotkeys may not fire until it is granted. Tap stays alive in case the check is stale.")
+      }
+    }
+    await refreshMonitoringState(reason: "trust_\(reason)")
+  }
+
+  private func ensureTapIsRunning() async {
+    guard desiredMonitoringState() else { return }
+    await activateTapOnMain(reason: "watchdog_keepalive")
+  }
+
+  private func refreshMonitoringState(reason: String) async {
+    let shouldMonitor = desiredMonitoringState()
+    if shouldMonitor {
+      await activateTapOnMain(reason: reason)
+    } else {
+      await deactivateTapOnMain(reason: reason)
+    }
+  }
+
+  private func setPermissionFlags(accessibility: Bool, input: Bool) {
+    queue.async(flags: .barrier) { [weak self] in
+      self?.accessibilityTrusted = accessibility
+      self?.inputMonitoringTrusted = input
+    }
+    recordSharedPermissionState(accessibility: accessibility, input: input)
+  }
+
+  private func recordSharedPermissionState(accessibility: Bool, input: Bool) {
+    $hotkeyPermissionState.withLock {
+      $0.accessibility = accessibility ? .granted : .denied
+      $0.inputMonitoring = input ? .granted : .denied
+      $0.lastUpdated = Date()
+    }
+  }
+
+  private func activateTapOnMain(reason: String) async {
+    await MainActor.run {
+      self.activateTapIfNeeded(reason: reason)
+    }
+  }
+
+  private func deactivateTapOnMain(reason: String) async {
+    await MainActor.run {
+      self.deactivateTap(reason: reason)
+    }
+  }
+
+  @MainActor
+  private func activateTapIfNeeded(reason: String) {
+    if isMonitoring {
+      // The 100ms permission watchdog lands here while healthy; use it to revive taps that
+      // macOS disabled without sending a tapDisabled event (observed after sleep, #250).
+      if let eventTapPort, !CGEvent.tapIsEnabled(tap: eventTapPort) {
+        CGEvent.tapEnable(tap: eventTapPort, enable: true)
+        logger.notice("Re-enabled event tap that was silently disabled (reason: \(reason)).")
+      }
+      return
+    }
+    guard hasHandlers else { return }
+
+    let accessibilityTrusted = currentAccessibilityTrust()
+    let inputMonitoringTrusted = currentInputMonitoringTrust()
+    setPermissionFlags(accessibility: accessibilityTrusted, input: inputMonitoringTrusted)
+    guard accessibilityTrusted else {
+      logger.error("Cannot start key event monitoring (reason: \(reason)); accessibility permission is not granted.")
+      return
+    }
+
+    if !inputMonitoringTrusted {
+      logger.notice("Input Monitoring not yet granted; creating event tap will trigger permission prompt (reason: \(reason)).")
+    }
+
+    let eventMask =
+      ((1 << CGEventType.keyDown.rawValue)
+       | (1 << CGEventType.keyUp.rawValue)
+       | (1 << CGEventType.flagsChanged.rawValue)
+       | (1 << CGEventType.leftMouseDown.rawValue)
+       | (1 << CGEventType.rightMouseDown.rawValue)
+       | (1 << CGEventType.otherMouseDown.rawValue))
+
+    guard
+      let eventTap = CGEvent.tapCreate(
+        tap: .cghidEventTap,
+        place: .headInsertEventTap,
+        options: .defaultTap,
+        eventsOfInterest: CGEventMask(eventMask),
+        callback: { _, type, cgEvent, userInfo in
+          guard
+            let hotKeyClientLive = Unmanaged<KeyEventMonitorClientLive>
+            .fromOpaque(userInfo!)
+            .takeUnretainedValue() as KeyEventMonitorClientLive?
+          else {
+            return Unmanaged.passUnretained(cgEvent)
+          }
+
+          if type == .tapDisabledByUserInput || type == .tapDisabledByTimeout {
+            hotKeyClientLive.handleTapDisabledEvent(type)
+            return Unmanaged.passUnretained(cgEvent)
+          }
+
+          // An event arriving at the tap is authoritative proof the underlying permission is
+          // granted. Never drop delivered events because a cached permission check went
+          // stale (#250) — that turned recoverable TCC hiccups into dead hotkeys.
+          hotKeyClientLive.noteEventDelivered(type: type)
+
+          if type == .leftMouseDown || type == .rightMouseDown || type == .otherMouseDown {
+            _ = hotKeyClientLive.processInputEvent(.mouseClick)
+            return Unmanaged.passUnretained(cgEvent)
+          }
+
+          hotKeyClientLive.updateFnStateIfNeeded(type: type, cgEvent: cgEvent)
+
+          let keyEvent = KeyEvent(cgEvent: cgEvent, type: type, isFnPressed: hotKeyClientLive.isFnPressed)
+          let handledByKeyHandler = hotKeyClientLive.processKeyEvent(keyEvent)
+          let handledByInputHandler = hotKeyClientLive.processInputEvent(.keyboard(keyEvent))
+
+          return (handledByKeyHandler || handledByInputHandler) ? nil : Unmanaged.passUnretained(cgEvent)
+        },
+        userInfo: UnsafeMutableRawPointer(Unmanaged.passUnretained(self).toOpaque())
+      )
+    else {
+      logger.error("Failed to create event tap (reason: \(reason)).")
+      return
+    }
+
+    eventTapPort = eventTap
+
+    let runLoopSource = CFMachPortCreateRunLoopSource(kCFAllocatorDefault, eventTap, 0)
+    self.runLoopSource = runLoopSource
+
+    CFRunLoopAddSource(CFRunLoopGetMain(), runLoopSource, .commonModes)
+    CGEvent.tapEnable(tap: eventTap, enable: true)
+    isMonitoring = true
+    logger.info("Started monitoring key events via CGEvent tap (reason: \(reason)).")
+  }
+
+  @MainActor
+  private func deactivateTap(reason: String) {
+    guard isMonitoring || eventTapPort != nil else { return }
+
+    if let runLoopSource = runLoopSource {
+      CFRunLoopRemoveSource(CFRunLoopGetMain(), runLoopSource, .commonModes)
+      self.runLoopSource = nil
+    }
+
+    if let eventTapPort = eventTapPort {
+      CGEvent.tapEnable(tap: eventTapPort, enable: false)
+      self.eventTapPort = nil
+    }
+
+    isMonitoring = false
+    clearInputMonitoringProof()
+    logger.info("Suspended key event monitoring (reason: \(reason)).")
+  }
+
+  private func clearInputMonitoringProof() {
+    queue.async(flags: .barrier) { [weak self] in
+      self?.inputMonitoringProvenByEvents = false
+    }
+  }
+
+  private func handleTapDisabledEvent(_ type: CGEventType) {
+    let reason = type == .tapDisabledByTimeout ? "timeout" : "userInput"
+    logger.error("Event tap disabled by \(reason); scheduling restart.")
+    Task { [weak self] in
+      guard let self else { return }
+      await self.refreshMonitoringState(reason: "tap_disabled_\(reason)")
+    }
+  }
+
+  private func processEvent<T>(
+    _ event: T,
+    handlers: () -> [UUID: @Sendable (T) -> Bool]
+  ) -> Bool {
+    let handlerList = readState { Array(handlers().values) }
+    return handlerList.reduce(false) { handled, handler in
+      handler(event) || handled
+    }
+  }
+
+  private func processKeyEvent(_ keyEvent: KeyEvent) -> Bool {
+    processEvent(keyEvent, handlers: { continuations })
+  }
+
+  private func processInputEvent(_ inputEvent: InputEvent) -> Bool {
+    processEvent(inputEvent, handlers: { inputContinuations })
+  }
+
+  /// Records that an event was delivered to the tap. Key events are proof that Input
+  /// Monitoring is genuinely granted even when `IOHIDCheckAccess` reports otherwise (#250).
+  fileprivate func noteEventDelivered(type: CGEventType) {
+    guard type == .keyDown || type == .keyUp else { return }
+    let alreadyProven = readState { inputMonitoringProvenByEvents }
+    guard !alreadyProven else { return }
+    queue.async(flags: .barrier) { [weak self] in
+      self?.inputMonitoringProvenByEvents = true
+      self?.inputMonitoringTrusted = true
+    }
+    if IOHIDCheckAccess(kIOHIDRequestTypeListenEvent) != kIOHIDAccessTypeGranted {
+      logger.notice("Key events are flowing while IOHIDCheckAccess reports denied; treating Input Monitoring as granted (stale TCC cache, #250).")
+    }
+  }
+
+  /// Recreate the event tap after system transitions that are known to leave taps in a dead or
+  /// stale state (wake from sleep, session reactivation after fast user switching / MDM logout).
+  private func registerSystemEventObservers() {
+    let center = NSWorkspace.shared.notificationCenter
+    let events: [(Notification.Name, String)] = [
+      (NSWorkspace.didWakeNotification, "system_wake"),
+      (NSWorkspace.sessionDidBecomeActiveNotification, "session_active"),
+    ]
+    for (name, reason) in events {
+      let observer = center.addObserver(forName: name, object: nil, queue: .main) { [weak self] _ in
+        self?.restartTapAfterSystemEvent(reason: reason)
+      }
+      systemEventObservers.append(observer)
+    }
+  }
+
+  private func restartTapAfterSystemEvent(reason: String) {
+    logger.notice("System transition (\(reason)); recreating event tap to recover from any stale state.")
+    Task { [weak self] in
+      guard let self else { return }
+      await self.deactivateTapOnMain(reason: reason)
+      await self.refreshMonitoringState(reason: reason)
+    }
+  }
+}
+
+extension KeyEventMonitorClientLive {
+  private func updateFnStateIfNeeded(type: CGEventType, cgEvent: CGEvent) {
+    guard type == .flagsChanged else { return }
+    let keyCode = Int(cgEvent.getIntegerValueField(.keyboardEventKeycode))
+    guard keyCode == kVK_Function else { return }
+    isFnPressed = cgEvent.flags.contains(.maskSecondaryFn)
+  }
+
+  private func refreshTrustedFlag(promptIfUntrusted: Bool) {
+    var accessibilityTrusted = currentAccessibilityTrust()
+    if !accessibilityTrusted && promptIfUntrusted && !hasPromptedForAccessibilityTrust {
+      accessibilityTrusted = requestAccessibilityTrustPrompt()
+      hasPromptedForAccessibilityTrust = true
+      logger.notice("Prompted for accessibility trust")
+    }
+
+    let inputMonitoringTrusted = currentInputMonitoringTrust()
+    setPermissionFlags(accessibility: accessibilityTrusted, input: inputMonitoringTrusted)
+  }
+
+  private func currentAccessibilityTrust() -> Bool {
+    accessibilityTrustProvider()
+  }
+
+  private func requestAccessibilityTrustPrompt() -> Bool {
+    accessibilityTrustPrompt()
+  }
+
+  private func currentInputMonitoringTrust() -> Bool {
+    if inputMonitoringTrustProvider() {
+      return true
+    }
+    // A stale TCC cache can report denied while key events demonstrably flow (#250);
+    // trust the events over the check so the watchdog and settings UI stay honest.
+    return readState { inputMonitoringProvenByEvents }
+  }
+
+  // Intentionally no request helper: creating the event tap prompts macOS 15+ for Input Monitoring
+  // the same way older versions did, while we still track status for UI.
+}

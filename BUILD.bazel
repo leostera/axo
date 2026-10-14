@@ -1,0 +1,5 @@
+exports_files([
+    "BUILD_NUMBER",
+    "Cargo.lock",
+    "Cargo.toml",
+])
