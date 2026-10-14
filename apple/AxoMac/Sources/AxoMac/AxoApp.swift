@@ -9,16 +9,19 @@ struct AxoApp: App {
   var body: some Scene {
     MenuBarExtra {
       AxoMenu(daemon: daemon)
-    } label: {
-      Label("Axo", systemImage: "command")
         .task {
           daemon.startIfNeeded()
         }
+    } label: {
+      Label("Axo", systemImage: "command")
     }
     .menuBarExtraStyle(.menu)
 
     Window("Axo Settings", id: "settings") {
       SettingsView(daemon: daemon)
+        .task {
+          daemon.startIfNeeded()
+        }
     }
     .windowResizability(.contentSize)
   }
