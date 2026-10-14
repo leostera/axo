@@ -16,7 +16,10 @@ final class AxodInteropTests: XCTestCase {
     let socketPath = try UnixSocketPath(directory.appendingPathComponent("axod.sock").path)
     let daemon = Process()
     daemon.executableURL = try axodExecutable()
-    daemon.arguments = ["--socket", socketPath.value]
+    daemon.arguments = [
+      "--socket", socketPath.value,
+      "--server-dir", directory.appendingPathComponent("server").path,
+    ]
     daemon.standardOutput = FileHandle.nullDevice
     daemon.standardError = FileHandle.nullDevice
     try daemon.run()

@@ -64,6 +64,8 @@ fn daemon_serves_json_rpc_health_and_standard_method_errors() {
     let child = Command::new(axod_binary())
         .arg("--socket")
         .arg(&socket)
+        .arg("--server-dir")
+        .arg(&directory)
         .stdout(Stdio::null())
         .stderr(Stdio::null())
         .spawn()
@@ -85,6 +87,24 @@ fn daemon_serves_json_rpc_health_and_standard_method_errors() {
     assert_eq!(health["jsonrpc"], "2.0");
     assert_eq!(health["result"]["status"], "running");
     assert!(health["result"]["buildNumber"].as_u64().is_some());
+    let pid_path = directory.join("axo.pid");
+    while !pid_path.exists() {
+        assert!(
+            Instant::now() < deadline,
+            "daemon did not write its PID file"
+        );
+        thread::sleep(Duration::from_millis(10));
+    }
+    assert_eq!(
+        std::fs::read_to_string(pid_path).unwrap().trim(),
+        child.0.id().to_string()
+    );
+    assert!(directory.join("stdout.log").exists());
+    assert!(
+        std::fs::read_to_string(directory.join("stderr.log"))
+            .unwrap()
+            .contains("event=daemon.started")
+    );
 
     let unknown_method = rpc(&socket, "axo.unknown");
     assert_eq!(unknown_method["error"]["code"], -32601);
