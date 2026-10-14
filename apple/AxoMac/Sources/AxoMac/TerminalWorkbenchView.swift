@@ -24,42 +24,6 @@ struct TerminalWorkbenchView: View {
     } detail: {
       terminalContent
     }
-    .toolbar {
-      ToolbarItemGroup(placement: .primaryAction) {
-        Button {
-          Task { await sessions.createSession() }
-        } label: {
-          Label("New Session", systemImage: "plus")
-        }
-        .keyboardShortcut("n", modifiers: .command)
-        .help("Create a new session (⌘N)")
-
-        Button {
-          Task { await sessions.split(.right) }
-        } label: {
-          Label("Split Right", systemImage: "rectangle.split.2x1")
-        }
-        .keyboardShortcut("d", modifiers: .command)
-        .help("Split right (⌘D)")
-
-        Button {
-          Task { await sessions.split(.down) }
-        } label: {
-          Label("Split Down", systemImage: "rectangle.split.1x2")
-        }
-        .keyboardShortcut("d", modifiers: [.command, .shift])
-        .help("Split down (⌘⇧D)")
-
-        Button(role: .destructive) {
-          if let selectedSessionID = sessions.selectedSessionID {
-            Task { await sessions.closeSession(selectedSessionID) }
-          }
-        } label: {
-          Label("Close Session", systemImage: "xmark")
-        }
-        .disabled(sessions.selectedSessionID == nil)
-      }
-    }
     .frame(minWidth: 760, minHeight: 480)
     .task(id: daemonIsRunning) {
       if daemonIsRunning {
@@ -183,34 +147,28 @@ private struct TerminalPaneView: View {
   let session: TerminalSession
   let sessions: TerminalSessionsModel
   @EnvironmentObject private var ghostty: GhosttyRuntime
-  @State private var terminalStatus = "Starting libghostty…"
+  @State private var terminalError: String?
 
   var body: some View {
-    VStack(spacing: 0) {
-      HStack(spacing: 8) {
-        Label("Session \(session.id)", systemImage: "terminal")
-          .font(.headline)
-        Spacer()
-        Text(terminalStatus)
+    GhosttyTerminalView(
+      runtime: ghostty,
+      session: session,
+      helperURL: sessions.helperURL,
+      onFocus: { sessions.focus(session.id) },
+      onStatusChange: { status in
+        terminalError = status.hasPrefix("Connected to ") ? nil : status
+      }
+    )
+    .frame(maxWidth: .infinity, maxHeight: .infinity)
+    .background(Color(nsColor: .textBackgroundColor))
+    .overlay(alignment: .topLeading) {
+      if let terminalError {
+        Text(terminalError)
           .font(.caption)
           .foregroundStyle(.secondary)
-          .lineLimit(1)
+          .padding(8)
       }
-      .padding(.horizontal, 12)
-      .padding(.vertical, 9)
-
-      Divider()
-
-      GhosttyTerminalView(
-        runtime: ghostty,
-        session: session,
-        helperURL: sessions.helperURL,
-        onFocus: { sessions.focus(session.id) },
-        onStatusChange: { terminalStatus = $0 }
-      )
-      .frame(maxWidth: .infinity, maxHeight: .infinity)
     }
-    .background(Color(nsColor: .textBackgroundColor))
   }
 }
 

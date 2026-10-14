@@ -46,7 +46,35 @@ struct AxoApp: App {
       TerminalWorkbenchView(daemon: daemon, sessions: sessions)
         .environmentObject(ghostty)
     }
+    .windowStyle(.hiddenTitleBar)
     .defaultSize(width: 1000, height: 680)
+    .commands {
+      CommandMenu("Terminal") {
+        Button("New Session") {
+          Task { await sessions.createSession() }
+        }
+        .keyboardShortcut("n", modifiers: .command)
+
+        Button("Split Right") {
+          Task { await sessions.split(.right) }
+        }
+        .keyboardShortcut("d", modifiers: .command)
+
+        Button("Split Down") {
+          Task { await sessions.split(.down) }
+        }
+        .keyboardShortcut("d", modifiers: [.command, .shift])
+
+        Divider()
+
+        Button("Close Session", role: .destructive) {
+          if let sessionID = sessions.selectedSessionID {
+            Task { await sessions.closeSession(sessionID) }
+          }
+        }
+        .disabled(sessions.selectedSessionID == nil)
+      }
+    }
 
     Window("Axo Settings", id: "settings") {
       SettingsView(daemon: daemon)
