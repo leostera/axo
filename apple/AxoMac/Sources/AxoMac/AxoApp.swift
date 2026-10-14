@@ -32,8 +32,21 @@ private struct AxoMenu: View {
   @ObservedObject var daemon: DaemonController
 
   var body: some View {
-    Text(daemon.status.menuTitle)
-      .disabled(true)
+    Group {
+      if case .running = daemon.status {
+        Label {
+          Text(daemon.status.menuTitle)
+        } icon: {
+          Circle()
+            .fill(Color.green)
+            .frame(width: 7, height: 7)
+            .accessibilityHidden(true)
+        }
+      } else {
+        Text(daemon.status.menuTitle)
+      }
+    }
+    .disabled(true)
 
     Divider()
 
