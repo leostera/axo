@@ -53,7 +53,7 @@ struct AxoApp: App {
         Button("New Session") {
           Task { await sessions.createSession() }
         }
-        .keyboardShortcut("n", modifiers: .command)
+        .keyboardShortcut("t", modifiers: .command)
 
         Button("Split Right") {
           Task { await sessions.split(.right) }
@@ -115,7 +115,6 @@ private struct AxoMenu: View {
     Button("Open Terminal") {
       openWindow(id: "terminal")
     }
-    .keyboardShortcut("t", modifiers: .command)
 
     Button("Settings…") {
       openWindow(id: "settings")

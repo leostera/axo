@@ -225,6 +225,7 @@ private struct TerminalPaneView: View {
       runtime: ghostty,
       shell: shell,
       helperURL: sessions.helperURL,
+      isFocused: sessions.focusedShellID == shell.id,
       onFocus: { sessions.focus(shell.id) },
       onStatusChange: { status in
         terminalError = status.hasPrefix("Connected to ") ? nil : status

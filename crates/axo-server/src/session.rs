@@ -309,8 +309,12 @@ impl SessionManager {
     }
 
     fn close_session(&self, id: SessionId) -> io::Result<Option<SessionMetadata>> {
-        let mut state = self.lock_state()?;
-        close_session(&mut state, id, &self.attach_socket_path)
+        let (replacement, shells_to_terminate) = {
+            let mut state = self.lock_state()?;
+            close_session(&mut state, id, &self.attach_socket_path)?
+        };
+        self.terminate_shells_in_background(shells_to_terminate);
+        Ok(replacement)
     }
 
     fn close_shell(
@@ -318,8 +322,45 @@ impl SessionManager {
         session_id: SessionId,
         shell_id: ShellId,
     ) -> io::Result<ClosedShellMetadata> {
-        let mut state = self.lock_state()?;
-        close_shell(&mut state, session_id, shell_id, &self.attach_socket_path)
+        let (closed, shells_to_terminate) = {
+            let mut state = self.lock_state()?;
+            close_shell(&mut state, session_id, shell_id, &self.attach_socket_path)?
+        };
+        self.terminate_shells_in_background(shells_to_terminate);
+        Ok(closed)
+    }
+
+    fn terminate_shells_in_background(&self, shells: Vec<RunningShell>) {
+        for mut shell in shells {
+            let process_id = shell.child.id() as libc::pid_t;
+            signal_shell(-process_id, process_id, libc::SIGTERM);
+            let worker_name = format!("axo-shell-cleanup-{process_id}");
+            match thread::Builder::new().name(worker_name).spawn(move || {
+                terminate_shell(&mut shell.child);
+            }) {
+                Ok(worker) => match self.workers.lock() {
+                    Ok(mut workers) => {
+                        let previous_workers = std::mem::take(&mut *workers);
+                        for previous in previous_workers {
+                            if previous.is_finished() {
+                                let _ = previous.join();
+                            } else {
+                                workers.push(previous);
+                            }
+                        }
+                        workers.push(worker);
+                    }
+                    Err(_) => {
+                        let _ = worker.join();
+                    }
+                },
+                Err(error) => {
+                    log::error!(
+                        "event=session.shell_cleanup_start_failed pid={process_id} reason={error}"
+                    );
+                }
+            }
+        }
     }
 
     fn reap_exited_sessions(&self) -> io::Result<()> {
@@ -382,10 +423,13 @@ impl SessionManager {
 
     pub fn shutdown(&self) {
         self.stop_workers.store(true, Ordering::Relaxed);
-        if let Ok(mut workers) = self.workers.lock() {
-            for worker in workers.drain(..) {
-                let _ = worker.join();
-            }
+        let workers = self
+            .workers
+            .lock()
+            .map(|mut workers| std::mem::take(&mut *workers))
+            .unwrap_or_default();
+        for worker in workers {
+            let _ = worker.join();
         }
         if let Ok(mut state) = self.state.lock() {
             for running in state.running.values_mut() {
@@ -404,10 +448,13 @@ impl SessionManager {
 impl Drop for SessionManager {
     fn drop(&mut self) {
         self.stop_workers.store(true, Ordering::Relaxed);
-        if let Ok(workers) = self.workers.get_mut() {
-            for worker in workers.drain(..) {
-                let _ = worker.join();
-            }
+        let workers = self
+            .workers
+            .get_mut()
+            .map(std::mem::take)
+            .unwrap_or_default();
+        for worker in workers {
+            let _ = worker.join();
         }
         if let Ok(state) = self.state.get_mut() {
             for running in state.running.values_mut() {
@@ -532,7 +579,7 @@ fn close_session(
     state: &mut SessionState,
     id: SessionId,
     attach_socket_path: &Path,
-) -> io::Result<Option<SessionMetadata>> {
+) -> io::Result<(Option<SessionMetadata>, Vec<RunningShell>)> {
     if !state.running.values().any(|shell| shell.session_id == id) {
         return Err(io::Error::new(
             io::ErrorKind::NotFound,
@@ -552,8 +599,8 @@ fn close_session(
     };
 
     archive_session(&mut state.database, id, "explicit_close")?;
-    terminate_session_shells(state, id);
-    Ok(replacement)
+    let shells = remove_session_shells(state, id);
+    Ok((replacement, shells))
 }
 
 fn close_shell(
@@ -561,7 +608,7 @@ fn close_shell(
     session_id: SessionId,
     shell_id: ShellId,
     attach_socket_path: &Path,
-) -> io::Result<ClosedShellMetadata> {
+) -> io::Result<(ClosedShellMetadata, Vec<RunningShell>)> {
     let shell = state
         .running
         .get(&shell_id)
@@ -579,36 +626,39 @@ fn close_shell(
         .filter(|shell| shell.session_id == session_id)
         .count();
     if sibling_count == 1 {
-        let replacement = close_session(state, session_id, attach_socket_path)?;
-        return Ok(ClosedShellMetadata {
-            archived_shell_id: shell_id,
-            archived_session_id: Some(session_id),
-            replacement,
-        });
+        let (replacement, shells) = close_session(state, session_id, attach_socket_path)?;
+        return Ok((
+            ClosedShellMetadata {
+                archived_shell_id: shell_id,
+                archived_session_id: Some(session_id),
+                replacement,
+            },
+            shells,
+        ));
     }
 
     archive_shell(&state.database, shell_id, "explicit_close")?;
-    if let Some(mut shell) = state.running.remove(&shell_id) {
-        terminate_shell(&mut shell.child);
-    }
-    Ok(ClosedShellMetadata {
-        archived_shell_id: shell_id,
-        archived_session_id: None,
-        replacement: None,
-    })
+    let shell = state.running.remove(&shell_id).into_iter().collect();
+    Ok((
+        ClosedShellMetadata {
+            archived_shell_id: shell_id,
+            archived_session_id: None,
+            replacement: None,
+        },
+        shell,
+    ))
 }
 
-fn terminate_session_shells(state: &mut SessionState, session_id: SessionId) {
+fn remove_session_shells(state: &mut SessionState, session_id: SessionId) -> Vec<RunningShell> {
     let shell_ids: Vec<_> = state
         .running
         .iter()
         .filter_map(|(shell_id, shell)| (shell.session_id == session_id).then_some(*shell_id))
         .collect();
-    for shell_id in shell_ids {
-        if let Some(mut shell) = state.running.remove(&shell_id) {
-            terminate_shell(&mut shell.child);
-        }
-    }
+    shell_ids
+        .into_iter()
+        .filter_map(|shell_id| state.running.remove(&shell_id))
+        .collect()
 }
 
 fn session_metadata(

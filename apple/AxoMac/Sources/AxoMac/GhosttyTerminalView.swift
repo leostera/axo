@@ -8,6 +8,7 @@ struct GhosttyTerminalView: NSViewRepresentable {
   let runtime: GhosttyRuntime
   let shell: TerminalShell
   let helperURL: URL
+  let isFocused: Bool
   let onFocus: () -> Void
   let onStatusChange: (String) -> Void
 
@@ -19,12 +20,20 @@ struct GhosttyTerminalView: NSViewRepresentable {
     let view = GhosttySurfaceNSView(runtime: runtime, onFocus: onFocus)
     view.onStatusChange = onStatusChange
     runtime.createSurface(in: view, shell: shell, helperURL: helperURL)
+    if isFocused {
+      view.requestFocus()
+    }
     return view
   }
 
   func updateNSView(_ view: GhosttySurfaceNSView, context: Context) {
     view.onFocus = onFocus
     view.onStatusChange = onStatusChange
+    if isFocused {
+      view.requestFocus()
+    } else {
+      view.cancelFocusRequest()
+    }
   }
 
   static func dismantleNSView(_ view: GhosttySurfaceNSView, coordinator: Coordinator) {
@@ -52,6 +61,8 @@ final class GhosttySurfaceNSView: NSView, @preconcurrency NSTextInputClient {
   private weak var runtime: GhosttyRuntime?
   private var markedText = NSMutableAttributedString()
   private var committedText: [String]?
+  private var shouldRequestFocus = false
+  private var focusTask: Task<Void, Never>?
   private var trackingArea: NSTrackingArea?
 
   init(runtime: GhosttyRuntime, onFocus: @escaping () -> Void) {
@@ -73,6 +84,9 @@ final class GhosttySurfaceNSView: NSView, @preconcurrency NSTextInputClient {
     updateSurfaceScaleAndSize()
     updateSurfaceFocus()
     updateSurfaceOcclusion()
+    if shouldRequestFocus {
+      requestFocus()
+    }
   }
 
   override func viewDidChangeBackingProperties() {
@@ -86,6 +100,7 @@ final class GhosttySurfaceNSView: NSView, @preconcurrency NSTextInputClient {
   }
 
   override func becomeFirstResponder() -> Bool {
+    cancelFocusRequest()
     onFocus?()
     updateSurfaceFocus(true)
     return true
@@ -109,6 +124,30 @@ final class GhosttySurfaceNSView: NSView, @preconcurrency NSTextInputClient {
     addTrackingArea(area)
     trackingArea = area
     super.updateTrackingAreas()
+  }
+
+  func requestFocus() {
+    if window?.firstResponder === self {
+      shouldRequestFocus = false
+      return
+    }
+    shouldRequestFocus = true
+    guard focusTask == nil else { return }
+    focusTask = Task { @MainActor [weak self] in
+      await Task.yield()
+      guard !Task.isCancelled, let self else { return }
+      self.focusTask = nil
+      guard self.shouldRequestFocus, let window = self.window else { return }
+      if window.firstResponder !== self {
+        _ = window.makeFirstResponder(self)
+      }
+    }
+  }
+
+  func cancelFocusRequest() {
+    shouldRequestFocus = false
+    focusTask?.cancel()
+    focusTask = nil
   }
 
   func attach(_ surface: ghostty_surface_t) {
