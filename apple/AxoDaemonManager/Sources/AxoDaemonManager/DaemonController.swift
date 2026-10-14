@@ -42,6 +42,7 @@ public final class DaemonController: ObservableObject {
   private static let registrationIntentKey = "dev.leostera.axo.axod.registrationRequested"
   private static let registrationReceiptKey = "dev.leostera.axo.axod.registrationSucceeded"
   private static let servicePlistName = "dev.leostera.axo.axod.plist"
+  private static let daemonStartupTimeout: Duration = .seconds(3)
 
   private let service = SMAppService.agent(plistName: servicePlistName)
   private let logger = Logger(subsystem: "dev.leostera.axo", category: "daemon")
@@ -190,7 +191,18 @@ public final class DaemonController: ObservableObject {
     let socketPath = try makeSocketPath()
     let appBuildNumber = try makeAppBuildNumber()
     logger.info("event=daemon.health_check_started")
-    let daemon = try await waitForDaemon(at: socketPath, expectedBuild: nil)
+
+    let daemon: DaemonHealth
+    do {
+      daemon = try await waitForDaemon(at: socketPath, expectedBuild: nil)
+    } catch DaemonControllerError.startupTimedOut {
+      logger.warning("event=daemon.health_check_timed_out action=restart")
+      status = .updating
+      guard try await restartDaemon(at: socketPath, expectedBuild: appBuildNumber) else { return }
+      status = .running(buildNumber: appBuildNumber)
+      return
+    }
+
     logger.info("event=daemon.health_check_succeeded build=\(daemon.buildNumber, privacy: .public)")
     guard daemon.buildNumber != appBuildNumber.value else {
       status = .running(buildNumber: appBuildNumber)
@@ -198,19 +210,32 @@ public final class DaemonController: ObservableObject {
     }
 
     status = .updating
+    guard try await restartDaemon(at: socketPath, expectedBuild: appBuildNumber) else { return }
+    status = .running(buildNumber: appBuildNumber)
+  }
+
+  private func restartDaemon(
+    at socketPath: UnixSocketPath,
+    expectedBuild: BuildNumber
+  ) async throws -> Bool {
+    logger.info("event=daemon.restart_started")
     try await service.unregister()
     do {
       try service.register()
     } catch {
       if service.status == .requiresApproval {
+        logger.warning("event=daemon.restart_requires_approval")
         status = .requiresApproval
-        return
+        return false
       }
       throw error
     }
-    guard try recordRegistrationResult() else { return }
-    _ = try await waitForDaemon(at: socketPath, expectedBuild: appBuildNumber)
-    status = .running(buildNumber: appBuildNumber)
+    guard try recordRegistrationResult() else { return false }
+
+    logger.info("event=daemon.restart_registered")
+    _ = try await waitForDaemon(at: socketPath, expectedBuild: expectedBuild)
+    logger.info("event=daemon.restart_succeeded")
+    return true
   }
 
   private func makeAppBuildNumber() throws -> BuildNumber {
@@ -229,7 +254,7 @@ public final class DaemonController: ObservableObject {
     expectedBuild: BuildNumber?
   ) async throws -> DaemonHealth {
     let clock = ContinuousClock()
-    let deadline = clock.now.advanced(by: .seconds(5))
+    let deadline = clock.now.advanced(by: Self.daemonStartupTimeout)
     while clock.now < deadline {
       do {
         let health = try await UnixSocketRPC.health(at: socketPath)
