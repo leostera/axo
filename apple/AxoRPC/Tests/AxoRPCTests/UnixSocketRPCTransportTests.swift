@@ -5,6 +5,18 @@ import XCTest
 @testable import AxoRPC
 
 final class UnixSocketRPCTransportTests: XCTestCase {
+  func testHealthFailsWhenTheSocketDoesNotExist() async throws {
+    let path = "/tmp/axo-rpc-missing-\(UUID().uuidString).sock"
+    do {
+      _ = try await UnixSocketRPC.health(at: UnixSocketPath(path))
+      XCTFail("Expected a missing socket to fail")
+    } catch let error as UnixSocketRPCError {
+      guard case .connectionFailed = error else {
+        return XCTFail("Unexpected RPC error: \(error)")
+      }
+    }
+  }
+
   func testHealthUsesJsonRPCOverNewlineFramedUnixSocket() async throws {
     let fixture = try OneResponseUnixSocket(
       response: #"{"jsonrpc":"2.0","id":1,"result":{"buildNumber":42,"status":"running"}}"#

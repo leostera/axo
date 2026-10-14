@@ -96,6 +96,7 @@ public enum UnixSocketRPC {
 
 private final class UnixSocketTransport: @unchecked Sendable {
   private static let maximumMessageBytes = 64 * 1024
+  private static let connectionTimeout: DispatchTimeInterval = .seconds(1)
 
   private let connection: NWConnection
   private let queue = DispatchQueue(label: "dev.leostera.axo.rpc")
@@ -133,6 +134,16 @@ private final class UnixSocketTransport: @unchecked Sendable {
         self?.handle(state: state)
       }
       connection.start(queue: queue)
+      queue.asyncAfter(deadline: .now() + Self.connectionTimeout) { [weak self] in
+        guard let self,
+          self.finishReadiness(
+            .failure(UnixSocketRPCError.connectionFailed("connection timed out")))
+        else {
+          return
+        }
+        self.connection.cancel()
+        self.dataContinuation.finish()
+      }
     }
   }
 
@@ -144,7 +155,7 @@ private final class UnixSocketTransport: @unchecked Sendable {
   private func handle(state: NWConnection.State) {
     switch state {
     case .ready:
-      finishReadiness(.success(()))
+      guard finishReadiness(.success(())) else { return }
       receiveNext()
     case .failed(let error):
       finishReadiness(.failure(UnixSocketRPCError.connectionFailed(error.localizedDescription)))
@@ -160,12 +171,15 @@ private final class UnixSocketTransport: @unchecked Sendable {
     }
   }
 
-  private func finishReadiness(_ result: Result<Void, Error>) {
+  @discardableResult
+  private func finishReadiness(_ result: Result<Void, Error>) -> Bool {
     stateLock.lock()
     let continuation = readiness
     readiness = nil
     stateLock.unlock()
-    continuation?.resume(with: result)
+    guard let continuation else { return false }
+    continuation.resume(with: result)
+    return true
   }
 
   private func receiveNext() {

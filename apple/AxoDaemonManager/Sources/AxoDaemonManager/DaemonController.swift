@@ -1,6 +1,7 @@
 import AxoRPC
 import Combine
 import Foundation
+import OSLog
 import ServiceManagement
 
 @MainActor
@@ -43,6 +44,7 @@ public final class DaemonController: ObservableObject {
   private static let servicePlistName = "dev.leostera.axo.axod.plist"
 
   private let service = SMAppService.agent(plistName: servicePlistName)
+  private let logger = Logger(subsystem: "dev.leostera.axo", category: "daemon")
   private var startTask: Task<Void, Never>?
 
   public init() {}
@@ -59,6 +61,7 @@ public final class DaemonController: ObservableObject {
   }
 
   public func startIfNeeded() {
+    logger.info("event=daemon.start_requested")
     guard startTask == nil else { return }
     startTask = Task {
       defer { startTask = nil }
@@ -84,13 +87,19 @@ public final class DaemonController: ObservableObject {
       guard try ensureRegistered() else { return }
       try await checkBuildAndRestartIfNeeded()
     } catch {
+      logger.error(
+        "event=daemon.start_failed reason=\(error.localizedDescription, privacy: .private)")
       status = .failed(error.localizedDescription)
     }
   }
 
   private func ensureRegistered() throws -> Bool {
+    let serviceStatus = service.status
+    logger.info(
+      "event=daemon.service_status value=\(Self.serviceStatusName(serviceStatus), privacy: .public)"
+    )
     let decision = RegistrationDecision.resolve(
-      serviceStatus: service.status,
+      serviceStatus: serviceStatus,
       registrationIntentRecorded: UserDefaults.standard.bool(forKey: Self.registrationIntentKey)
     )
     switch decision {
@@ -106,6 +115,7 @@ public final class DaemonController: ObservableObject {
       status = .disabled
       return false
     case .registerOnce:
+      logger.info("event=daemon.registration_started")
       UserDefaults.standard.set(true, forKey: Self.registrationIntentKey)
       do {
         try service.register()
@@ -116,6 +126,7 @@ public final class DaemonController: ObservableObject {
         }
         throw error
       }
+      logger.info("event=daemon.registration_returned")
       return try recordRegistrationResult()
     case .unknown:
       throw DaemonControllerError.unknownServiceStatus
@@ -178,7 +189,9 @@ public final class DaemonController: ObservableObject {
   private func checkBuildAndRestartIfNeeded() async throws {
     let socketPath = try makeSocketPath()
     let appBuildNumber = try makeAppBuildNumber()
+    logger.info("event=daemon.health_check_started")
     let daemon = try await waitForDaemon(at: socketPath, expectedBuild: nil)
+    logger.info("event=daemon.health_check_succeeded build=\(daemon.buildNumber, privacy: .public)")
     guard daemon.buildNumber != appBuildNumber.value else {
       status = .running(buildNumber: appBuildNumber)
       return
@@ -215,7 +228,9 @@ public final class DaemonController: ObservableObject {
     at socketPath: UnixSocketPath,
     expectedBuild: BuildNumber?
   ) async throws -> DaemonHealth {
-    for _ in 0..<100 {
+    let clock = ContinuousClock()
+    let deadline = clock.now.advanced(by: .seconds(5))
+    while clock.now < deadline {
       do {
         let health = try await UnixSocketRPC.health(at: socketPath)
         if let expectedBuild, health.buildNumber != expectedBuild.value {
@@ -224,7 +239,12 @@ public final class DaemonController: ObservableObject {
         }
         return health
       } catch let error as UnixSocketRPCError {
-        guard case .connectionFailed = error else { throw error }
+        switch error {
+        case .connectionFailed, .requestTimedOut:
+          break
+        case .invalidSocketPath, .invalidResponse:
+          throw error
+        }
       }
       try await Task.sleep(nanoseconds: 50_000_000)
     }
@@ -233,6 +253,16 @@ public final class DaemonController: ObservableObject {
       throw DaemonControllerError.restartTimedOut(expectedBuild)
     }
     throw DaemonControllerError.startupTimedOut
+  }
+
+  private static func serviceStatusName(_ status: SMAppService.Status) -> String {
+    switch status {
+    case .enabled: "enabled"
+    case .requiresApproval: "requires-approval"
+    case .notFound: "not-found"
+    case .notRegistered: "not-registered"
+    @unknown default: "unknown"
+    }
   }
 }
 
