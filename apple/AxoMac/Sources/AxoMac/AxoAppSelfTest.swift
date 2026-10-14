@@ -23,23 +23,115 @@ enum AxoAppSelfTest {
       throw SelfTestError.daemonUnavailable
     }
 
+    let baselineSessions = try await UnixSocketRPC.listSessions(at: socketPath)
+    guard !baselineSessions.isEmpty else {
+      throw SelfTestError.defaultSessionMissing
+    }
     let session = try await UnixSocketRPC.createSession(at: socketPath)
     do {
-      let sessions = try await UnixSocketRPC.listSessions(at: socketPath)
-      guard sessions.contains(where: { $0.id == session.id }) else {
-        throw SelfTestError.createdSessionMissing
-      }
-      guard let shell = session.shells.first else {
+      guard let firstShell = session.shells.first else {
         throw SelfTestError.createdShellMissing
       }
-      try verifyPTYAttachment(shell, helperURL: helperURL)
-      let closed = try await UnixSocketRPC.closeSession(session.id, at: socketPath)
-      guard closed.archivedSessionId == session.id else {
-        throw SelfTestError.closeDidNotArchiveSession
+      try await verifyShells(
+        [firstShell], in: session, at: socketPath, helperURL: helperURL)
+      try await verifyUnchangedSessions(baselineSessions, at: socketPath)
+
+      let secondShell = try await UnixSocketRPC.createShell(in: session.id, at: socketPath)
+      let thirdShell = try await UnixSocketRPC.createShell(in: session.id, at: socketPath)
+      try await verifyShells(
+        [firstShell, secondShell, thirdShell],
+        in: session,
+        at: socketPath,
+        helperURL: helperURL
+      )
+      try await verifyUnchangedSessions(baselineSessions, at: socketPath)
+
+      let closedMiddleShell = try await UnixSocketRPC.closeShell(
+        secondShell.id,
+        in: session.id,
+        at: socketPath
+      )
+      guard closedMiddleShell.archivedShellId == secondShell.id,
+        closedMiddleShell.archivedSessionId == nil
+      else {
+        throw SelfTestError.splitShellCloseArchivedSession
+      }
+      try await verifyShells(
+        [firstShell, thirdShell], in: session, at: socketPath, helperURL: helperURL)
+      try await verifyUnchangedSessions(baselineSessions, at: socketPath)
+
+      let closedFirstShell = try await UnixSocketRPC.closeShell(
+        firstShell.id,
+        in: session.id,
+        at: socketPath
+      )
+      guard closedFirstShell.archivedShellId == firstShell.id,
+        closedFirstShell.archivedSessionId == nil
+      else {
+        throw SelfTestError.nonLastShellCloseArchivedSession
+      }
+
+      for baselineSession in baselineSessions {
+        let closedBaseline = try await UnixSocketRPC.closeSession(
+          baselineSession.id,
+          at: socketPath
+        )
+        guard closedBaseline.archivedSessionId == baselineSession.id,
+          closedBaseline.replacement == nil
+        else {
+          throw SelfTestError.independentSessionCloseFailed
+        }
+      }
+
+      let closedLastShell = try await UnixSocketRPC.closeShell(
+        thirdShell.id,
+        in: session.id,
+        at: socketPath
+      )
+      guard closedLastShell.archivedShellId == thirdShell.id,
+        closedLastShell.archivedSessionId == session.id,
+        let replacement = closedLastShell.replacement,
+        replacement.id != session.id
+      else {
+        throw SelfTestError.lastShellDidNotReplaceSession
+      }
+      let remainingSessions = try await UnixSocketRPC.listSessions(at: socketPath)
+      guard remainingSessions.contains(where: { $0.id == replacement.id }),
+        !remainingSessions.contains(where: { $0.id == session.id })
+      else {
+        throw SelfTestError.replacementSessionMissing
       }
     } catch {
       _ = try? await UnixSocketRPC.closeSession(session.id, at: socketPath)
       throw error
+    }
+  }
+
+  private static func verifyShells(
+    _ shells: [TerminalShell],
+    in session: TerminalSession,
+    at socketPath: UnixSocketPath,
+    helperURL: URL
+  ) async throws {
+    let sessions = try await UnixSocketRPC.listSessions(at: socketPath)
+    guard let listedSession = sessions.first(where: { $0.id == session.id }) else {
+      throw SelfTestError.createdSessionMissing
+    }
+    guard Set(listedSession.shells.map(\.id)) == Set(shells.map(\.id)) else {
+      throw SelfTestError.splitShellSetMismatch
+    }
+    for shell in shells {
+      try verifyPTYAttachment(shell, helperURL: helperURL)
+    }
+  }
+
+  private static func verifyUnchangedSessions(
+    _ expectedSessions: [TerminalSession],
+    at socketPath: UnixSocketPath
+  ) async throws {
+    let activeSessions = try await UnixSocketRPC.listSessions(at: socketPath)
+    guard expectedSessions.allSatisfy({ activeSessions.contains($0) }) else {
+      throw SelfTestError.independentSessionChanged
     }
   }
 
@@ -66,15 +158,16 @@ enum AxoAppSelfTest {
     try helper.run()
     defer { stop(helper) }
 
+    let markerText = "\(successMarker)_SHELL_\(shell.id)"
     let command =
-      "test -f \"$TERMINFO/78/xterm-ghostty\" && test -f \"$GHOSTTY_RESOURCES_DIR/shell-integration/zsh/ghostty-integration\" && printf 'AXO_APP_' && printf 'SELF_TEST_PTY_OK\\n'\n"
+      "test -f \"$TERMINFO/78/xterm-ghostty\" && test -f \"$GHOSTTY_RESOURCES_DIR/shell-integration/zsh/ghostty-integration\" && printf '\(successMarker)' && printf '_SHELL_\(shell.id)\\n'\n"
     try input.fileHandleForWriting.write(contentsOf: Data(command.utf8))
 
     let outputDescriptor = output.fileHandleForReading.fileDescriptor
     let deadline = Date().addingTimeInterval(5)
     var received = Data()
     var buffer = [UInt8](repeating: 0, count: 4096)
-    let marker = Data(successMarker.utf8)
+    let marker = Data(markerText.utf8)
 
     while Date() < deadline {
       var descriptor = pollfd(
@@ -106,7 +199,7 @@ enum AxoAppSelfTest {
       }
     }
 
-    throw SelfTestError.outputTimedOut
+    throw SelfTestError.outputTimedOut(shell.id)
   }
 
   private static func stop(_ process: Process) {
@@ -131,11 +224,18 @@ private enum SelfTestError: Error, LocalizedError {
   case daemonUnavailable
   case createdSessionMissing
   case createdShellMissing
-  case closeDidNotArchiveSession
+  case defaultSessionMissing
+  case independentSessionChanged
+  case independentSessionCloseFailed
+  case splitShellSetMismatch
+  case splitShellCloseArchivedSession
+  case nonLastShellCloseArchivedSession
+  case lastShellDidNotReplaceSession
+  case replacementSessionMissing
   case helperMissing(String)
   case helperClosedBeforeMarker
   case outputReadFailed(String)
-  case outputTimedOut
+  case outputTimedOut(Int64)
 
   var errorDescription: String? {
     switch self {
@@ -147,16 +247,30 @@ private enum SelfTestError: Error, LocalizedError {
       "Axo D did not return the session created by the self-test."
     case .createdShellMissing:
       "Axo D did not return a shell in the self-test session."
-    case .closeDidNotArchiveSession:
-      "Axo D did not archive the self-test session."
+    case .defaultSessionMissing:
+      "Axo D did not provide its default session before the split test began."
+    case .independentSessionChanged:
+      "Splitting or closing a shell changed an unrelated session."
+    case .independentSessionCloseFailed:
+      "Closing an unrelated session did not preserve the active split session."
+    case .splitShellSetMismatch:
+      "The shells returned by Axo D did not match the expected session layout."
+    case .splitShellCloseArchivedSession:
+      "Closing a split shell unexpectedly archived its session."
+    case .nonLastShellCloseArchivedSession:
+      "Closing a shell with another shell still open archived its session."
+    case .lastShellDidNotReplaceSession:
+      "Closing the last shell did not archive its session and create a replacement."
+    case .replacementSessionMissing:
+      "The replacement session was not present in Axo D's active session list."
     case .helperMissing(let path):
       "The terminal-attach helper is missing or not executable at \(path)."
     case .helperClosedBeforeMarker:
       "The terminal-attach helper exited before the test command returned output."
     case .outputReadFailed(let reason):
       "Could not read PTY output: \(reason)"
-    case .outputTimedOut:
-      "The test command did not return PTY output within five seconds."
+    case .outputTimedOut(let shellID):
+      "Shell \(shellID) did not return PTY output within five seconds."
     }
   }
 }

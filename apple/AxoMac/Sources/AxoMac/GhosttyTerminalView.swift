@@ -61,12 +61,18 @@ struct GhosttyTerminalView: NSViewRepresentable {
 
 @MainActor
 final class GhosttySurfaceHostNSView: NSView {
-  private var terminalView: GhosttySurfaceNSView?
+  private var terminalView: NSView?
 
-  func attachSurface(_ view: GhosttySurfaceNSView) {
+  func attachSurface(_ view: NSView) {
     guard terminalView !== view || view.superview !== self else { return }
-    terminalView?.removeFromSuperview()
-    view.removeFromSuperview()
+    if let terminalView, terminalView !== view {
+      terminalView.removeFromSuperview()
+    }
+    if let previousHost = view.superview as? GhosttySurfaceHostNSView {
+      previousHost.releaseSurface(view)
+    } else {
+      view.removeFromSuperview()
+    }
     terminalView = view
     view.frame = bounds
     view.autoresizingMask = [.width, .height]
@@ -75,15 +81,21 @@ final class GhosttySurfaceHostNSView: NSView {
 
   func detachSurface() {
     guard let terminalView else { return }
-    if terminalView.superview === self {
-      terminalView.removeFromSuperview()
+    releaseSurface(terminalView)
+  }
+
+  fileprivate func releaseSurface(_ view: NSView) {
+    guard terminalView === view else { return }
+    terminalView = nil
+    if view.superview === self {
+      view.removeFromSuperview()
     }
-    self.terminalView = nil
   }
 
   override func layout() {
     super.layout()
-    terminalView?.frame = bounds
+    guard let terminalView, terminalView.superview === self else { return }
+    terminalView.frame = bounds
   }
 }
 

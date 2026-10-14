@@ -25,7 +25,10 @@ swift_library(
 
 swift_test(
     name = "AxoMacTests",
-    srcs = ["Tests/AxoMacTests/TerminalLayoutTests.swift"],
+    srcs = [
+        "Tests/AxoMacTests/TerminalLayoutTests.swift",
+        "Tests/AxoMacTests/TerminalSplitE2ETests.swift",
+    ],
     copts = ["-swift-version", "5"],
     deps = [":AxoMac"],
 )
