@@ -10,7 +10,6 @@ final class GhosttyRuntime: ObservableObject {
 
   private var config: ghostty_config_t?
   private var app: ghostty_app_t?
-  private var tickIsScheduled = false
   private var notificationTokens: [NSObjectProtocol] = []
 
   init() {
@@ -184,16 +183,7 @@ final class GhosttyRuntime: ObservableObject {
     guard let userdata else { return }
     let runtime = Unmanaged<GhosttyRuntime>.fromOpaque(userdata).takeUnretainedValue()
     DispatchQueue.main.async {
-      MainActor.assumeIsolated {
-        guard !runtime.tickIsScheduled else { return }
-        runtime.tickIsScheduled = true
-        DispatchQueue.main.async {
-          MainActor.assumeIsolated {
-            runtime.tickIsScheduled = false
-            runtime.tick()
-          }
-        }
-      }
+      MainActor.assumeIsolated { runtime.tick() }
     }
   }
 
