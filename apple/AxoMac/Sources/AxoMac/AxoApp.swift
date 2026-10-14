@@ -70,6 +70,7 @@ struct AxoApp: App {
         Button("Close Focused Shell", role: .destructive) {
           Task { await sessions.closeFocusedShell() }
         }
+        .keyboardShortcut("w", modifiers: .command)
         .disabled(sessions.focusedShellID == nil)
 
         Button("Close Session", role: .destructive) {
