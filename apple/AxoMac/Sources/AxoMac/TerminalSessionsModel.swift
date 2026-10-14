@@ -198,6 +198,21 @@ final class TerminalSessionsModel: ObservableObject {
     errorMessage = nil
   }
 
+  func resizeSplit(_ splitID: UUID, to ratio: Double) {
+    guard let selectedSessionID,
+      let currentLayout = layoutsBySession[selectedSessionID],
+      ratio.isFinite,
+      let updated = currentLayout.resizing(
+        splitID: splitID,
+        to: min(max(ratio, 0.01), 0.99)
+      )
+    else {
+      return
+    }
+    layoutsBySession[selectedSessionID] = updated
+    layout = updated
+  }
+
   func focus(_ shellID: Int64) {
     guard let session = sessions.first(where: { $0.shells.contains(where: { $0.id == shellID }) })
     else {
@@ -268,6 +283,7 @@ final class TerminalSessionsModel: ObservableObject {
       layoutsBySession[sessionID] = .split(
         id: UUID(),
         direction: direction,
+        ratio: 0.5,
         first: .pane(anchorShellID),
         second: .pane(shellID)
       )
@@ -280,6 +296,7 @@ final class TerminalSessionsModel: ObservableObject {
       .split(
         id: UUID(),
         direction: .right,
+        ratio: 0.5,
         first: layout,
         second: .pane(shell.id)
       )
@@ -287,7 +304,7 @@ final class TerminalSessionsModel: ObservableObject {
   }
 }
 
-enum TerminalSplitDirection: Equatable {
+enum TerminalSplitDirection: Hashable {
   case right
   case down
 }
@@ -295,19 +312,24 @@ enum TerminalSplitDirection: Equatable {
 indirect enum TerminalLayout: Equatable, Identifiable {
   case pane(Int64)
   case split(
-    id: UUID, direction: TerminalSplitDirection, first: TerminalLayout, second: TerminalLayout)
+    id: UUID,
+    direction: TerminalSplitDirection,
+    ratio: Double,
+    first: TerminalLayout,
+    second: TerminalLayout
+  )
 
   var id: String {
     switch self {
     case .pane(let shellID): "shell-\(shellID)"
-    case .split(let id, _, _, _): "split-\(id.uuidString)"
+    case .split(let id, _, _, _, _): "split-\(id.uuidString)"
     }
   }
 
   var shellIDs: Set<Int64> {
     switch self {
     case .pane(let shellID): [shellID]
-    case .split(_, _, let first, let second): first.shellIDs.union(second.shellIDs)
+    case .split(_, _, _, let first, let second): first.shellIDs.union(second.shellIDs)
     }
   }
 
@@ -317,6 +339,7 @@ indirect enum TerminalLayout: Equatable, Identifiable {
       return .split(
         id: UUID(),
         direction: .right,
+        ratio: 0.5,
         first: layout,
         second: .pane(shellID)
       )
@@ -326,14 +349,14 @@ indirect enum TerminalLayout: Equatable, Identifiable {
   var firstShellID: Int64? {
     switch self {
     case .pane(let shellID): shellID
-    case .split(_, _, let first, _): first.firstShellID
+    case .split(_, _, _, let first, _): first.firstShellID
     }
   }
 
   func contains(shellID: Int64) -> Bool {
     switch self {
     case .pane(let currentID): currentID == shellID
-    case .split(_, _, let first, let second):
+    case .split(_, _, _, let first, let second):
       first.contains(shellID: shellID) || second.contains(shellID: shellID)
     }
   }
@@ -348,25 +371,30 @@ indirect enum TerminalLayout: Equatable, Identifiable {
       return .split(
         id: UUID(),
         direction: direction,
+        ratio: 0.5,
         first: self,
         second: .pane(newShellID)
       )
     case .pane:
       return nil
-    case .split(let id, let existingDirection, let first, let second):
+    case .split(let id, let existingDirection, let ratio, let first, let second):
       if let updatedFirst = first.inserting(
         shellID: newShellID,
         direction: direction,
         beside: targetShellID
       ) {
-        return .split(id: id, direction: existingDirection, first: updatedFirst, second: second)
+        return .split(
+          id: id, direction: existingDirection, ratio: ratio, first: updatedFirst, second: second
+        )
       }
       if let updatedSecond = second.inserting(
         shellID: newShellID,
         direction: direction,
         beside: targetShellID
       ) {
-        return .split(id: id, direction: existingDirection, first: first, second: updatedSecond)
+        return .split(
+          id: id, direction: existingDirection, ratio: ratio, first: first, second: updatedSecond
+        )
       }
       return nil
     }
@@ -376,7 +404,7 @@ indirect enum TerminalLayout: Equatable, Identifiable {
     switch self {
     case .pane(let currentID):
       return currentID == shellID ? nil : self
-    case .split(let id, let direction, let first, let second):
+    case .split(let id, let direction, let ratio, let first, let second):
       let remainingFirst = first.removing(shellID: shellID)
       let remainingSecond = second.removing(shellID: shellID)
       switch (remainingFirst, remainingSecond) {
@@ -390,6 +418,7 @@ indirect enum TerminalLayout: Equatable, Identifiable {
         return .split(
           id: id,
           direction: direction,
+          ratio: ratio,
           first: remainingFirst,
           second: remainingSecond
         )
@@ -401,7 +430,7 @@ indirect enum TerminalLayout: Equatable, Identifiable {
     switch self {
     case .pane(let shellID):
       return openShellIDs.contains(shellID) ? self : nil
-    case .split(let id, let direction, let first, let second):
+    case .split(let id, let direction, let ratio, let first, let second):
       let remainingFirst = first.pruned(to: openShellIDs)
       let remainingSecond = second.pruned(to: openShellIDs)
       switch (remainingFirst, remainingSecond) {
@@ -415,10 +444,58 @@ indirect enum TerminalLayout: Equatable, Identifiable {
         return .split(
           id: id,
           direction: direction,
+          ratio: ratio,
           first: remainingFirst,
           second: remainingSecond
         )
       }
+    }
+  }
+
+  // Ratios are excluded so divider drags don't replace terminal pane views.
+  var structuralIdentity: StructuralIdentity {
+    StructuralIdentity(self)
+  }
+
+  func resizing(splitID: UUID, to newRatio: Double) -> TerminalLayout? {
+    switch self {
+    case .pane:
+      return nil
+    case .split(let id, let direction, let ratio, let first, let second):
+      if id == splitID {
+        return .split(
+          id: id, direction: direction, ratio: newRatio, first: first, second: second
+        )
+      }
+      if let updatedFirst = first.resizing(splitID: splitID, to: newRatio) {
+        return .split(
+          id: id, direction: direction, ratio: ratio, first: updatedFirst, second: second
+        )
+      }
+      if let updatedSecond = second.resizing(splitID: splitID, to: newRatio) {
+        return .split(
+          id: id, direction: direction, ratio: ratio, first: first, second: updatedSecond
+        )
+      }
+      return nil
+    }
+  }
+
+  struct StructuralIdentity: Hashable {
+    private let representation: Representation
+
+    init(_ layout: TerminalLayout) {
+      switch layout {
+      case .pane(let shellID):
+        representation = .pane(shellID)
+      case .split(_, let direction, _, let first, let second):
+        representation = .split(direction, first.structuralIdentity, second.structuralIdentity)
+      }
+    }
+
+    private indirect enum Representation: Hashable {
+      case pane(Int64)
+      case split(TerminalSplitDirection, StructuralIdentity, StructuralIdentity)
     }
   }
 }

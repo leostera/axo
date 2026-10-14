@@ -8,8 +8,15 @@ import GhosttyKit
 final class GhosttyRuntime: ObservableObject {
   @Published private(set) var errorMessage: String?
 
+  private struct SurfaceEntry {
+    let shell: TerminalShell
+    let view: GhosttySurfaceNSView
+  }
+
   private var config: ghostty_config_t?
   private var app: ghostty_app_t?
+  // A Ghostty surface and its platform NSView outlive SwiftUI's pane view identities.
+  private var terminalSurfaces: [Int64: SurfaceEntry] = [:]
   private var notificationTokens: [NSObjectProtocol] = []
 
   init() {
@@ -18,6 +25,14 @@ final class GhosttyRuntime: ObservableObject {
 
   deinit {
     notificationTokens.forEach(NotificationCenter.default.removeObserver)
+    MainActor.assumeIsolated {
+      for entry in terminalSurfaces.values {
+        entry.view.removeFromSuperview()
+        if let surface = entry.view.detach() {
+          ghostty_surface_free(surface)
+        }
+      }
+    }
     if let app {
       ghostty_app_free(app)
     }
@@ -26,7 +41,50 @@ final class GhosttyRuntime: ObservableObject {
     }
   }
 
-  func createSurface(
+  func surfaceView(
+    for shell: TerminalShell,
+    helperURL: URL,
+    onFocus: @escaping () -> Void,
+    onStatusChange: @escaping (String) -> Void
+  ) -> GhosttySurfaceNSView {
+    if let existing = terminalSurfaces[shell.id], existing.shell == shell {
+      existing.view.onFocus = onFocus
+      existing.view.onStatusChange = onStatusChange
+      onStatusChange(existing.view.status)
+      return existing.view
+    }
+
+    destroySurface(shellID: shell.id)
+    let view = GhosttySurfaceNSView(runtime: self, onFocus: onFocus)
+    view.onStatusChange = onStatusChange
+    createSurface(in: view, shell: shell, helperURL: helperURL)
+    terminalSurfaces[shell.id] = SurfaceEntry(shell: shell, view: view)
+    return view
+  }
+
+  func detachSurface(from host: GhosttySurfaceHostNSView) {
+    host.detachSurface()
+  }
+
+  func reconcileSurfaces(with shells: [TerminalShell]) {
+    let openShells = Dictionary(uniqueKeysWithValues: shells.map { ($0.id, $0) })
+    let closedShellIDs = terminalSurfaces.compactMap { shellID, entry in
+      openShells[shellID] == entry.shell ? nil : shellID
+    }
+    for shellID in closedShellIDs {
+      destroySurface(shellID: shellID)
+    }
+  }
+
+  private func destroySurface(shellID: Int64) {
+    guard let entry = terminalSurfaces.removeValue(forKey: shellID) else { return }
+    entry.view.removeFromSuperview()
+    if let surface = entry.view.detach() {
+      ghostty_surface_free(surface)
+    }
+  }
+
+  private func createSurface(
     in view: GhosttySurfaceNSView,
     shell: TerminalShell,
     helperURL: URL

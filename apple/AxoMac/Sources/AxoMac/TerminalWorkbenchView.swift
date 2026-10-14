@@ -5,6 +5,7 @@ import SwiftUI
 struct TerminalWorkbenchView: View {
   @ObservedObject var daemon: DaemonController
   @ObservedObject var sessions: TerminalSessionsModel
+  @EnvironmentObject private var ghostty: GhosttyRuntime
   @AppStorage("terminalSidebarIsCollapsed") private var isSidebarCollapsed = true
 
   private var daemonIsRunning: Bool {
@@ -34,9 +35,13 @@ struct TerminalWorkbenchView: View {
     }
     .frame(minWidth: 760, maxWidth: .infinity, minHeight: 480, maxHeight: .infinity)
     .task(id: daemonIsRunning) {
-      guard daemonIsRunning else { return }
+      guard daemonIsRunning else {
+        ghostty.reconcileSurfaces(with: [])
+        return
+      }
       while !Task.isCancelled {
         await sessions.refresh()
+        ghostty.reconcileSurfaces(with: sessions.sessions.flatMap(\.shells))
         try? await Task.sleep(for: .seconds(1))
       }
     }
@@ -143,6 +148,7 @@ struct TerminalWorkbenchView: View {
       )
     } else if let layout = sessions.layout {
       TerminalLayoutView(layout: layout, sessions: sessions)
+        .id(layout.structuralIdentity)
     } else {
       ContentUnavailableViewPlaceholder(
         title: daemonIsRunning ? "No Session Selected" : daemon.status.menuTitle,
@@ -193,23 +199,19 @@ private struct TerminalLayoutView: View {
           systemImage: "terminal"
         )
       }
-    case .split(_, let direction, let first, let second):
-      switch direction {
-      case .right:
-        HSplitView {
+    case .split(let id, let direction, let ratio, let first, let second):
+      TerminalSplitView(
+        id: id,
+        direction: direction,
+        ratio: ratio,
+        onRatioChange: { sessions.resizeSplit(id, to: $0) },
+        first: {
           TerminalLayoutView(layout: first, sessions: sessions)
-            .frame(minWidth: 260)
+        },
+        second: {
           TerminalLayoutView(layout: second, sessions: sessions)
-            .frame(minWidth: 260)
         }
-      case .down:
-        VSplitView {
-          TerminalLayoutView(layout: first, sessions: sessions)
-            .frame(minHeight: 180)
-          TerminalLayoutView(layout: second, sessions: sessions)
-            .frame(minHeight: 180)
-        }
-      }
+      )
     }
   }
 }

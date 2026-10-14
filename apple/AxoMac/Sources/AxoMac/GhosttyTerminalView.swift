@@ -16,28 +16,38 @@ struct GhosttyTerminalView: NSViewRepresentable {
     Coordinator(runtime: runtime)
   }
 
-  func makeNSView(context: Context) -> GhosttySurfaceNSView {
-    let view = GhosttySurfaceNSView(runtime: runtime, onFocus: onFocus)
-    view.onStatusChange = onStatusChange
-    runtime.createSurface(in: view, shell: shell, helperURL: helperURL)
+  func makeNSView(context: Context) -> GhosttySurfaceHostNSView {
+    let host = GhosttySurfaceHostNSView()
+    let surfaceView = runtime.surfaceView(
+      for: shell,
+      helperURL: helperURL,
+      onFocus: onFocus,
+      onStatusChange: onStatusChange
+    )
+    host.attachSurface(surfaceView)
     if isFocused {
-      view.requestFocus()
+      surfaceView.requestFocus()
     }
-    return view
+    return host
   }
 
-  func updateNSView(_ view: GhosttySurfaceNSView, context: Context) {
-    view.onFocus = onFocus
-    view.onStatusChange = onStatusChange
+  func updateNSView(_ host: GhosttySurfaceHostNSView, context: Context) {
+    let surfaceView = runtime.surfaceView(
+      for: shell,
+      helperURL: helperURL,
+      onFocus: onFocus,
+      onStatusChange: onStatusChange
+    )
+    host.attachSurface(surfaceView)
     if isFocused {
-      view.requestFocus()
+      surfaceView.requestFocus()
     } else {
-      view.cancelFocusRequest()
+      surfaceView.cancelFocusRequest()
     }
   }
 
-  static func dismantleNSView(_ view: GhosttySurfaceNSView, coordinator: Coordinator) {
-    coordinator.runtime.destroySurface(in: view)
+  static func dismantleNSView(_ host: GhosttySurfaceHostNSView, coordinator: Coordinator) {
+    coordinator.runtime.detachSurface(from: host)
   }
 
   final class Coordinator {
@@ -46,6 +56,34 @@ struct GhosttyTerminalView: NSViewRepresentable {
     init(runtime: GhosttyRuntime) {
       self.runtime = runtime
     }
+  }
+}
+
+@MainActor
+final class GhosttySurfaceHostNSView: NSView {
+  private var terminalView: GhosttySurfaceNSView?
+
+  func attachSurface(_ view: GhosttySurfaceNSView) {
+    guard terminalView !== view || view.superview !== self else { return }
+    terminalView?.removeFromSuperview()
+    view.removeFromSuperview()
+    terminalView = view
+    view.frame = bounds
+    view.autoresizingMask = [.width, .height]
+    addSubview(view)
+  }
+
+  func detachSurface() {
+    guard let terminalView else { return }
+    if terminalView.superview === self {
+      terminalView.removeFromSuperview()
+    }
+    self.terminalView = nil
+  }
+
+  override func layout() {
+    super.layout()
+    terminalView?.frame = bounds
   }
 }
 

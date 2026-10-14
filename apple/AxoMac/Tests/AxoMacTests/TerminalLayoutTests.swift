@@ -10,10 +10,11 @@ final class TerminalLayoutTests: XCTestCase {
       original.inserting(shellID: 23, direction: .down, beside: 17)
     )
 
-    guard case .split(_, let direction, let first, let second) = updated else {
+    guard case .split(_, let direction, let ratio, let first, let second) = updated else {
       return XCTFail("inserting a pane should create a split")
     }
     XCTAssertEqual(direction, .down)
+    XCTAssertEqual(ratio, 0.5)
     XCTAssertEqual(first, .pane(17))
     XCTAssertEqual(second, .pane(23))
   }
@@ -22,11 +23,67 @@ final class TerminalLayoutTests: XCTestCase {
     let layout = TerminalLayout.split(
       id: UUID(),
       direction: .right,
+      ratio: 0.5,
       first: .pane(17),
       second: .pane(23)
     )
 
     XCTAssertEqual(layout.removing(shellID: 17), .pane(23))
+  }
+
+  func testResizeChangesOnlyTheTargetSplitRatio() throws {
+    let nestedSplitID = UUID()
+    let layout = TerminalLayout.split(
+      id: UUID(),
+      direction: .right,
+      ratio: 0.6,
+      first: .split(
+        id: nestedSplitID,
+        direction: .down,
+        ratio: 0.4,
+        first: .pane(17),
+        second: .pane(23)
+      ),
+      second: .pane(42)
+    )
+
+    let resized = try XCTUnwrap(layout.resizing(splitID: nestedSplitID, to: 0.7))
+
+    guard
+      case .split(_, .right, let outerRatio, .split(_, .down, let innerRatio, _, _), _) = resized
+    else {
+      return XCTFail("resizing should preserve the split tree")
+    }
+    XCTAssertEqual(outerRatio, 0.6)
+    XCTAssertEqual(innerRatio, 0.7)
+  }
+
+  func testStructuralIdentityIgnoresRatiosButTracksTreeShape() {
+    let splitID = UUID()
+    let original = TerminalLayout.split(
+      id: splitID,
+      direction: .right,
+      ratio: 0.5,
+      first: .pane(17),
+      second: .pane(23)
+    )
+    let resized = TerminalLayout.split(
+      id: splitID,
+      direction: .right,
+      ratio: 0.7,
+      first: .pane(17),
+      second: .pane(23)
+    )
+    let changed = TerminalLayout.split(
+      id: splitID,
+      direction: .down,
+      ratio: 0.5,
+      first: .pane(17),
+      second: .pane(23)
+    )
+
+    XCTAssertEqual(original.structuralIdentity, resized.structuralIdentity)
+    XCTAssertNotEqual(original.structuralIdentity, changed.structuralIdentity)
   }
 
   func testAddingNewShellsPreservesExistingPanesWithoutDuplicates() {
@@ -41,10 +98,12 @@ final class TerminalLayoutTests: XCTestCase {
     let layout = TerminalLayout.split(
       id: UUID(),
       direction: .right,
+      ratio: 0.5,
       first: .pane(17),
       second: .split(
         id: UUID(),
         direction: .down,
+        ratio: 0.5,
         first: .pane(23),
         second: .pane(42)
       )
