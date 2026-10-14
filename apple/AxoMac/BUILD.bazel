@@ -19,6 +19,7 @@ swift_library(
     deps = [
         "//apple/AxoDaemonManager:AxoDaemonManager",
         "//apple/AxoRPC:AxoRPC",
+        "@ghostty//:GhosttyKit",
     ],
 )
 
@@ -33,10 +34,9 @@ swift_test(
     name = "AxoAppSelfTestTests",
     srcs = ["Tests/AxoMacTests/TerminalAppE2ETests.swift"],
     copts = ["-swift-version", "5"],
-    data = [":AxoApp", "//crates/axod:axod"],
+    data = [":AxoApp"],
     env = {
         "AXO_APP_BUNDLE_ZIP": "$(rootpath :AxoApp)",
-        "AXOD_BINARY": "$(rootpath //crates/axod:axod)",
     },
     tags = ["no-sandbox"],
     timeout = "short",
@@ -69,6 +69,8 @@ macos_application(
     additional_contents = {
         ":launch_agent_plist": "Library/LaunchAgents",
         "//crates/axod:axod": "Helpers",
+        "@ghostty//:resources": "Resources",
+        "@ghostty//:terminfo": "Resources",
     },
     deps = [":AxoMac"],
 )

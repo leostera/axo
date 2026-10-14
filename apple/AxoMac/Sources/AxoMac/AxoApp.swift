@@ -7,11 +7,13 @@ import SwiftUI
 struct AxoApp: App {
   @StateObject private var daemon: DaemonController
   @StateObject private var sessions: TerminalSessionsModel
+  @StateObject private var ghostty: GhosttyRuntime
 
   init() {
     let daemon = DaemonController()
     _daemon = StateObject(wrappedValue: daemon)
     _sessions = StateObject(wrappedValue: TerminalSessionsModel())
+    _ghostty = StateObject(wrappedValue: GhosttyRuntime())
 
     if ProcessInfo.processInfo.arguments.contains("--self-test") {
       Task.detached {
@@ -42,6 +44,7 @@ struct AxoApp: App {
 
     Window("Axo Terminal", id: "terminal") {
       TerminalWorkbenchView(daemon: daemon, sessions: sessions)
+        .environmentObject(ghostty)
     }
     .defaultSize(width: 1000, height: 680)
 

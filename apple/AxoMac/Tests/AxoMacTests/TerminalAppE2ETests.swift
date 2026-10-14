@@ -13,19 +13,31 @@ final class TerminalAppE2ETests: XCTestCase {
     defer { try? FileManager.default.removeItem(at: root) }
 
     let archive = try runfile(named: "AXO_APP_BUNDLE_ZIP")
-    let daemonURL = try runfile(named: "AXOD_BINARY")
     try extractApp(at: archive, into: root)
 
     let appURL = root.appendingPathComponent("Axo.app", isDirectory: true)
     let appExecutable = appURL.appendingPathComponent("Contents/MacOS/Axo")
     let attachHelper = appURL.appendingPathComponent("Contents/Helpers/axod")
+    let resources = appURL.appendingPathComponent("Contents/Resources", isDirectory: true)
     XCTAssertTrue(FileManager.default.isExecutableFile(atPath: appExecutable.path))
     XCTAssertTrue(FileManager.default.isExecutableFile(atPath: attachHelper.path))
+    XCTAssertTrue(
+      FileManager.default.fileExists(
+        atPath: resources.appendingPathComponent(
+          "ghostty-resources/shell-integration/zsh/ghostty-integration"
+        ).path
+      )
+    )
+    XCTAssertTrue(
+      FileManager.default.fileExists(
+        atPath: resources.appendingPathComponent("terminfo/78/xterm-ghostty").path
+      )
+    )
 
     let socketPath = root.appendingPathComponent("axod.sock").path
     let serverDirectory = root.appendingPathComponent("server", isDirectory: true)
     let daemon = Process()
-    daemon.executableURL = daemonURL
+    daemon.executableURL = attachHelper
     daemon.arguments = [
       "--socket", socketPath,
       "--server-dir", serverDirectory.path,

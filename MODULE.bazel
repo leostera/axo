@@ -35,3 +35,6 @@ swift_deps.from_package(
     swift = "//apple/AxoRPC:Package.swift",
 )
 use_repo(swift_deps, "swift_package", "swiftpkg_jsonrpc")
+
+ghostty_repository = use_repo_rule("//:ghostty_repository.bzl", "ghostty_repository")
+ghostty_repository(name = "ghostty")

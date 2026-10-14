@@ -63,9 +63,9 @@ enum AxoAppSelfTest {
     try helper.run()
     defer { stop(helper) }
 
-    try input.fileHandleForWriting.write(
-      contentsOf: Data("printf '\(successMarker)\\n'\n".utf8)
-    )
+    let command =
+      "test -f \"$TERMINFO/78/xterm-ghostty\" && test -f \"$GHOSTTY_RESOURCES_DIR/shell-integration/zsh/ghostty-integration\" && printf 'AXO_APP_' && printf 'SELF_TEST_PTY_OK\\n'\n"
+    try input.fileHandleForWriting.write(contentsOf: Data(command.utf8))
 
     let outputDescriptor = output.fileHandleForReading.fileDescriptor
     let deadline = Date().addingTimeInterval(5)

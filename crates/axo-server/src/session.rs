@@ -435,6 +435,27 @@ fn archive_session(database: &Connection, id: SessionId, reason: &str) -> io::Re
     Ok(())
 }
 
+fn app_resources_directory() -> Option<PathBuf> {
+    let executable = std::env::current_exe().ok()?;
+    Some(executable.parent()?.parent()?.join("Resources"))
+}
+
+fn bundled_ghostty_resources_directory() -> Option<PathBuf> {
+    let resources_directory = app_resources_directory()?.join("ghostty-resources");
+    resources_directory
+        .join("shell-integration")
+        .is_dir()
+        .then_some(resources_directory)
+}
+
+fn bundled_terminfo_directory() -> Option<PathBuf> {
+    let terminfo_directory = app_resources_directory()?.join("terminfo");
+    terminfo_directory
+        .join("78/xterm-ghostty")
+        .is_file()
+        .then_some(terminfo_directory)
+}
+
 fn spawn_shell(initial_pwd: &Path) -> io::Result<RunningSession> {
     let mut master_fd: RawFd = -1;
     let mut slave_fd: RawFd = -1;
@@ -480,6 +501,12 @@ fn spawn_shell(initial_pwd: &Path) -> io::Result<RunningSession> {
         .stdin(Stdio::null())
         .stdout(Stdio::null())
         .stderr(Stdio::null());
+    if let Some(resources_directory) = bundled_ghostty_resources_directory() {
+        command.env("GHOSTTY_RESOURCES_DIR", resources_directory);
+    }
+    if let Some(terminfo_directory) = bundled_terminfo_directory() {
+        command.env("TERMINFO", terminfo_directory);
+    }
 
     // SAFETY: this child-only setup creates a session, assigns the PTY as its
     // controlling terminal, and connects all standard streams before exec.

@@ -1,16 +1,20 @@
 use std::fs::{self, File, OpenOptions};
 use std::io::{self, Write};
 use std::mem::size_of;
-use std::os::fd::{AsRawFd, FromRawFd, OwnedFd};
+use std::os::fd::{AsRawFd, FromRawFd, OwnedFd, RawFd};
 use std::os::unix::fs::{OpenOptionsExt, PermissionsExt};
 use std::os::unix::net::UnixStream;
 use std::path::{Path, PathBuf};
-use std::thread;
+use std::sync::Arc;
+use std::sync::atomic::{AtomicBool, Ordering};
+use std::thread::{self, JoinHandle};
 use std::time::Duration;
 
 use clap::{CommandFactory, FromArgMatches, Parser, Subcommand};
 
 const MAX_LOG_BYTES: u64 = 10 * 1024 * 1024;
+
+static TERMINAL_RESIZE_REQUESTED: AtomicBool = AtomicBool::new(false);
 
 #[derive(Parser)]
 #[command(name = "axod", about = "Axo daemon command-line entrypoint")]
@@ -106,6 +110,8 @@ fn attach_terminal(socket_path: &Path, session_id: i64) -> io::Result<()> {
     let master = receive_pty_master(&control)?;
     let mut writer = File::from(duplicate_descriptor(master.as_raw_fd())?);
     let mut reader = File::from(master);
+    let _input_mode = TerminalInputModeGuard::raw(libc::STDIN_FILENO)?;
+    let _resize_forwarder = TerminalResizeForwarder::start(libc::STDIN_FILENO, reader.as_raw_fd())?;
 
     thread::Builder::new()
         .name("axo-terminal-input".into())
@@ -114,12 +120,135 @@ fn attach_terminal(socket_path: &Path, session_id: i64) -> io::Result<()> {
             let _ = io::copy(&mut stdin, &mut writer);
         })?;
 
-    let mut stdout = io::stdout().lock();
+    let mut stdout = File::from(duplicate_descriptor(libc::STDOUT_FILENO)?);
     match io::copy(&mut reader, &mut stdout) {
         Ok(_) => Ok(()),
         Err(error) if error.raw_os_error() == Some(libc::EIO) => Ok(()),
         Err(error) => Err(error),
     }
+}
+
+struct TerminalInputModeGuard {
+    file_descriptor: RawFd,
+    original: libc::termios,
+}
+
+impl TerminalInputModeGuard {
+    fn raw(file_descriptor: RawFd) -> io::Result<Option<Self>> {
+        // SAFETY: termios is initialized by tcgetattr on success.
+        let mut original: libc::termios = unsafe { std::mem::zeroed() };
+        // SAFETY: file_descriptor is borrowed and original points to writable termios storage.
+        if unsafe { libc::tcgetattr(file_descriptor, &mut original) } == -1 {
+            let error = io::Error::last_os_error();
+            if error.raw_os_error() == Some(libc::ENOTTY) {
+                return Ok(None);
+            }
+            return Err(error);
+        }
+
+        let mut raw = original;
+        // SAFETY: cfmakeraw mutates the initialized termios value in place.
+        unsafe { libc::cfmakeraw(&mut raw) };
+        // SAFETY: file_descriptor remains open and raw is a valid termios structure.
+        if unsafe { libc::tcsetattr(file_descriptor, libc::TCSANOW, &raw) } == -1 {
+            return Err(io::Error::last_os_error());
+        }
+        Ok(Some(Self {
+            file_descriptor,
+            original,
+        }))
+    }
+}
+
+impl Drop for TerminalInputModeGuard {
+    fn drop(&mut self) {
+        // SAFETY: this guard borrows a live standard-input descriptor and restores its saved mode.
+        unsafe { libc::tcsetattr(self.file_descriptor, libc::TCSANOW, &self.original) };
+    }
+}
+
+struct TerminalResizeForwarder {
+    stop: Arc<AtomicBool>,
+    thread: Option<JoinHandle<()>>,
+    previous_handler: libc::sighandler_t,
+}
+
+impl TerminalResizeForwarder {
+    fn start(input_fd: RawFd, pty_master_fd: RawFd) -> io::Result<Self> {
+        copy_terminal_size(input_fd, pty_master_fd)?;
+        TERMINAL_RESIZE_REQUESTED.store(false, Ordering::Relaxed);
+
+        // SAFETY: the handler only updates an atomic flag and is valid for the process lifetime.
+        let previous_handler = unsafe {
+            libc::signal(
+                libc::SIGWINCH,
+                request_terminal_resize as *const () as libc::sighandler_t,
+            )
+        };
+        if previous_handler == libc::SIG_ERR {
+            return Err(io::Error::last_os_error());
+        }
+
+        let stop = Arc::new(AtomicBool::new(false));
+        let thread_stop = Arc::clone(&stop);
+        let resize_thread = thread::Builder::new()
+            .name("axo-terminal-resize".into())
+            .spawn(move || {
+                while !thread_stop.load(Ordering::Relaxed) {
+                    if TERMINAL_RESIZE_REQUESTED.swap(false, Ordering::Relaxed) {
+                        let _ = copy_terminal_size(input_fd, pty_master_fd);
+                    }
+                    thread::sleep(Duration::from_millis(25));
+                }
+            });
+
+        match resize_thread {
+            Ok(thread) => Ok(Self {
+                stop,
+                thread: Some(thread),
+                previous_handler,
+            }),
+            Err(error) => {
+                // SAFETY: restore the handler that was active before installing ours.
+                unsafe { libc::signal(libc::SIGWINCH, previous_handler) };
+                Err(error)
+            }
+        }
+    }
+}
+
+impl Drop for TerminalResizeForwarder {
+    fn drop(&mut self) {
+        self.stop.store(true, Ordering::Relaxed);
+        if let Some(thread) = self.thread.take() {
+            let _ = thread.join();
+        }
+        // SAFETY: restore the handler that was active before this forwarder started.
+        unsafe { libc::signal(libc::SIGWINCH, self.previous_handler) };
+    }
+}
+
+extern "C" fn request_terminal_resize(_signal: libc::c_int) {
+    TERMINAL_RESIZE_REQUESTED.store(true, Ordering::Relaxed);
+}
+
+fn copy_terminal_size(input_fd: RawFd, pty_master_fd: RawFd) -> io::Result<bool> {
+    // SAFETY: winsize is a plain C struct and TIOCGWINSZ initializes it on success.
+    let mut size: libc::winsize = unsafe { std::mem::zeroed() };
+    // SAFETY: input_fd is borrowed and size points to writable memory for the ioctl call.
+    if unsafe { libc::ioctl(input_fd, libc::TIOCGWINSZ, &mut size) } == -1 {
+        let error = io::Error::last_os_error();
+        if error.raw_os_error() == Some(libc::ENOTTY) {
+            return Ok(false);
+        }
+        return Err(error);
+    }
+
+    // SAFETY: pty_master_fd is borrowed and size contains a valid winsize structure.
+    if unsafe { libc::ioctl(pty_master_fd, libc::TIOCSWINSZ, &size) } == -1 {
+        return Err(io::Error::last_os_error());
+    }
+    Ok(true)
 }
 
 fn duplicate_descriptor(descriptor: libc::c_int) -> io::Result<OwnedFd> {
@@ -236,4 +365,92 @@ fn redirect_standard_stream(file_descriptor: libc::c_int, path: &Path) -> io::Re
         return Err(io::Error::last_os_error());
     }
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn raw_input_mode_is_restored_when_the_guard_drops() {
+        let (_master, slave) = open_pty();
+        // SAFETY: termios is initialized by tcgetattr on success.
+        let mut original: libc::termios = unsafe { std::mem::zeroed() };
+        // SAFETY: slave is an open PTY and original is writable.
+        assert_eq!(
+            unsafe { libc::tcgetattr(slave.as_raw_fd(), &mut original) },
+            0
+        );
+
+        let guard = TerminalInputModeGuard::raw(slave.as_raw_fd())
+            .unwrap()
+            .expect("PTY slave should support terminal modes");
+        // SAFETY: termios is initialized by tcgetattr on success.
+        let mut raw: libc::termios = unsafe { std::mem::zeroed() };
+        // SAFETY: slave is an open PTY and raw is writable.
+        assert_eq!(unsafe { libc::tcgetattr(slave.as_raw_fd(), &mut raw) }, 0);
+        assert_eq!(raw.c_lflag & (libc::ICANON | libc::ECHO | libc::ISIG), 0);
+
+        drop(guard);
+        // SAFETY: termios is initialized by tcgetattr on success.
+        let mut restored: libc::termios = unsafe { std::mem::zeroed() };
+        // SAFETY: slave is an open PTY and restored is writable.
+        assert_eq!(
+            unsafe { libc::tcgetattr(slave.as_raw_fd(), &mut restored) },
+            0
+        );
+        let relevant_local_flags = libc::ICANON | libc::ECHO | libc::ISIG;
+        assert_eq!(
+            restored.c_lflag & relevant_local_flags,
+            original.c_lflag & relevant_local_flags
+        );
+    }
+
+    #[test]
+    fn forwards_window_size_to_daemon_owned_pty() {
+        let (input_master, input_slave) = open_pty();
+        let (output_master, _output_slave) = open_pty();
+        let expected = libc::winsize {
+            ws_row: 41,
+            ws_col: 137,
+            ws_xpixel: 0,
+            ws_ypixel: 0,
+        };
+
+        // SAFETY: input_slave is an open PTY and expected points to a valid winsize.
+        assert_eq!(
+            unsafe { libc::ioctl(input_slave.as_raw_fd(), libc::TIOCSWINSZ, &expected) },
+            0
+        );
+        assert!(copy_terminal_size(input_slave.as_raw_fd(), output_master.as_raw_fd()).unwrap());
+
+        // SAFETY: winsize is initialized by TIOCGWINSZ on success.
+        let mut actual: libc::winsize = unsafe { std::mem::zeroed() };
+        // SAFETY: output_master is an open PTY and actual is writable for the ioctl call.
+        assert_eq!(
+            unsafe { libc::ioctl(output_master.as_raw_fd(), libc::TIOCGWINSZ, &mut actual) },
+            0
+        );
+        assert_eq!(actual.ws_row, expected.ws_row);
+        assert_eq!(actual.ws_col, expected.ws_col);
+        drop(input_master);
+    }
+
+    fn open_pty() -> (OwnedFd, OwnedFd) {
+        let mut master = -1;
+        let mut slave = -1;
+        // SAFETY: openpty initializes both descriptors on success; no optional attributes are used.
+        let result = unsafe {
+            libc::openpty(
+                &mut master,
+                &mut slave,
+                std::ptr::null_mut(),
+                std::ptr::null_mut(),
+                std::ptr::null_mut(),
+            )
+        };
+        assert_eq!(result, 0, "{}", io::Error::last_os_error());
+        // SAFETY: openpty returned two new descriptors owned by this test.
+        unsafe { (OwnedFd::from_raw_fd(master), OwnedFd::from_raw_fd(slave)) }
+    }
 }

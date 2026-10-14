@@ -148,7 +148,6 @@ private struct TerminalLayoutView: View {
       if let session = sessions.session(for: sessionID) {
         TerminalPaneView(
           session: session,
-          helperURL: sessions.helperURL,
           sessions: sessions
         )
         .id(session.id)
@@ -183,17 +182,8 @@ private struct TerminalLayoutView: View {
 private struct TerminalPaneView: View {
   let session: TerminalSession
   let sessions: TerminalSessionsModel
-  @StateObject private var attachment: TerminalAttachmentModel
-  @State private var command = ""
-  @FocusState private var commandFieldIsFocused: Bool
-
-  init(session: TerminalSession, helperURL: URL, sessions: TerminalSessionsModel) {
-    self.session = session
-    self.sessions = sessions
-    _attachment = StateObject(
-      wrappedValue: TerminalAttachmentModel(session: session, helperURL: helperURL)
-    )
-  }
+  @EnvironmentObject private var ghostty: GhosttyRuntime
+  @State private var terminalStatus = "Starting libghostty…"
 
   var body: some View {
     VStack(spacing: 0) {
@@ -201,7 +191,7 @@ private struct TerminalPaneView: View {
         Label("Session \(session.id)", systemImage: "terminal")
           .font(.headline)
         Spacer()
-        Text(attachment.status)
+        Text(terminalStatus)
           .font(.caption)
           .foregroundStyle(.secondary)
           .lineLimit(1)
@@ -211,55 +201,16 @@ private struct TerminalPaneView: View {
 
       Divider()
 
-      outputView
-
-      Divider()
-
-      HStack(spacing: 8) {
-        Image(systemName: "chevron.right")
-          .foregroundStyle(.secondary)
-          .accessibilityHidden(true)
-        TextField("Run a shell command…", text: $command)
-          .textFieldStyle(.plain)
-          .focused($commandFieldIsFocused)
-          .onSubmit(submitCommand)
-          .disabled(!attachment.canSendCommands)
-          .accessibilityLabel("Shell command")
-      }
-      .padding(12)
+      GhosttyTerminalView(
+        runtime: ghostty,
+        session: session,
+        helperURL: sessions.helperURL,
+        onFocus: { sessions.focus(session.id) },
+        onStatusChange: { terminalStatus = $0 }
+      )
+      .frame(maxWidth: .infinity, maxHeight: .infinity)
     }
     .background(Color(nsColor: .textBackgroundColor))
-    .task { attachment.start() }
-    .onDisappear { attachment.stop() }
-    .onChange(of: commandFieldIsFocused) { isFocused in
-      if isFocused {
-        sessions.focus(session.id)
-      }
-    }
-  }
-
-  private var outputView: some View {
-    ScrollViewReader { proxy in
-      ScrollView {
-        VStack(alignment: .leading, spacing: 0) {
-          Text(attachment.output.isEmpty ? "PTY output will appear here." : attachment.output)
-            .font(.system(.body, design: .monospaced))
-            .textSelection(.enabled)
-            .frame(maxWidth: .infinity, alignment: .leading)
-            .padding(12)
-            .id("terminal-output-tail")
-        }
-      }
-      .onChange(of: attachment.output) { _ in
-        proxy.scrollTo("terminal-output-tail", anchor: .bottom)
-      }
-    }
-  }
-
-  private func submitCommand() {
-    guard !command.isEmpty else { return }
-    attachment.sendCommand(command)
-    command = ""
   }
 }
 
