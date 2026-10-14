@@ -1,15 +1,35 @@
 import AppKit
 import AxoDaemonManager
+import Darwin
 import SwiftUI
 
 @main
 struct AxoApp: App {
   @StateObject private var daemon: DaemonController
+  @StateObject private var sessions: TerminalSessionsModel
 
   init() {
     let daemon = DaemonController()
     _daemon = StateObject(wrappedValue: daemon)
-    daemon.startIfNeeded()
+    _sessions = StateObject(wrappedValue: TerminalSessionsModel())
+
+    if ProcessInfo.processInfo.arguments.contains("--self-test") {
+      Task.detached {
+        do {
+          try await AxoAppSelfTest.run()
+          try? FileHandle.standardOutput.write(
+            contentsOf: Data("AXO_SELF_TEST_OK\n".utf8)
+          )
+          Darwin.exit(0)
+        } catch {
+          let message = "AXO_SELF_TEST_FAILED: \(error.localizedDescription)\n"
+          try? FileHandle.standardError.write(contentsOf: Data(message.utf8))
+          Darwin.exit(1)
+        }
+      }
+    } else {
+      daemon.startIfNeeded()
+    }
   }
 
   var body: some Scene {
@@ -19,6 +39,11 @@ struct AxoApp: App {
       Label("Axo", systemImage: "command")
     }
     .menuBarExtraStyle(.menu)
+
+    Window("Axo Terminal", id: "terminal") {
+      TerminalWorkbenchView(daemon: daemon, sessions: sessions)
+    }
+    .defaultSize(width: 1000, height: 680)
 
     Window("Axo Settings", id: "settings") {
       SettingsView(daemon: daemon)
@@ -49,6 +74,11 @@ private struct AxoMenu: View {
     .disabled(true)
 
     Divider()
+
+    Button("Open Terminal") {
+      openWindow(id: "terminal")
+    }
+    .keyboardShortcut("t", modifiers: .command)
 
     Button("Settings…") {
       openWindow(id: "settings")

@@ -1,3 +1,4 @@
+import Darwin
 import Foundation
 import XCTest
 
@@ -23,17 +24,27 @@ final class AxodInteropTests: XCTestCase {
     daemon.standardOutput = FileHandle.nullDevice
     daemon.standardError = FileHandle.nullDevice
     try daemon.run()
-    defer {
-      if daemon.isRunning {
-        daemon.terminate()
-        daemon.waitUntilExit()
-      }
-    }
+    defer { stop(daemon) }
 
     try await waitForSocket(at: socketPath, from: daemon)
     let health = try await UnixSocketRPC.health(at: socketPath)
     XCTAssertGreaterThan(health.buildNumber, 0)
     XCTAssertEqual(health.status, "running")
+
+    let initialSessions = try await UnixSocketRPC.listSessions(at: socketPath)
+    XCTAssertEqual(initialSessions.count, 1)
+
+    let createdSession = try await UnixSocketRPC.createSession(at: socketPath)
+    XCTAssertNotEqual(createdSession.id, initialSessions[0].id)
+    let sessionsAfterCreate = try await UnixSocketRPC.listSessions(at: socketPath)
+    XCTAssertEqual(
+      Set(sessionsAfterCreate.map(\.id)), Set([initialSessions[0].id, createdSession.id]))
+
+    let closedSession = try await UnixSocketRPC.closeSession(createdSession.id, at: socketPath)
+    XCTAssertEqual(closedSession.archivedSessionId, createdSession.id)
+    XCTAssertNil(closedSession.replacement)
+    let remainingSessions = try await UnixSocketRPC.listSessions(at: socketPath)
+    XCTAssertEqual(remainingSessions.map(\.id), [initialSessions[0].id])
   }
 }
 
@@ -63,6 +74,21 @@ private func axodExecutable() throws -> URL {
     throw AxodInteropError.binaryNotFound(configuredPath)
   }
   return executable
+}
+
+private func stop(_ process: Process) {
+  guard process.isRunning else { return }
+  let exited = DispatchSemaphore(value: 0)
+  process.terminationHandler = { _ in exited.signal() }
+  process.terminate()
+  guard exited.wait(timeout: .now() + 3) == .timedOut else { return }
+
+  _ = Darwin.kill(process.processIdentifier, SIGKILL)
+  XCTAssertEqual(
+    exited.wait(timeout: .now() + 3),
+    .success,
+    "axod did not exit within three seconds after SIGKILL"
+  )
 }
 
 private func waitForSocket(at socketPath: UnixSocketPath, from daemon: Process) async throws {

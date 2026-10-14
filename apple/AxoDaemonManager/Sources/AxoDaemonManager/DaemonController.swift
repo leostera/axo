@@ -55,10 +55,14 @@ public final class DaemonController: ObservableObject {
       ?? "Unknown"
   }
 
-  private func makeSocketPath() throws -> UnixSocketPath {
+  public static func socketPath() throws -> UnixSocketPath {
     let path = FileManager.default.homeDirectoryForCurrentUser
       .appendingPathComponent("Library/Application Support/Axo/run/axod.sock")
     return try UnixSocketPath(path.path)
+  }
+
+  private func makeSocketPath() throws -> UnixSocketPath {
+    try Self.socketPath()
   }
 
   public func startIfNeeded() {

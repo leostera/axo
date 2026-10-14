@@ -156,6 +156,21 @@ fn rpc_with_params(socket: &std::path::Path, method: &str, params: Value) -> Val
     serde_json::from_str(&response).unwrap()
 }
 
+fn wait_for_exit(child: &mut Child, timeout: Duration) -> std::process::ExitStatus {
+    let deadline = Instant::now() + timeout;
+    loop {
+        if let Some(status) = child.try_wait().unwrap() {
+            return status;
+        }
+        if Instant::now() >= deadline {
+            let _ = child.kill();
+            let _ = child.wait();
+            panic!("external process did not exit within {timeout:?}");
+        }
+        thread::sleep(Duration::from_millis(20));
+    }
+}
+
 fn wait_for_socket(socket: &std::path::Path, child: &mut ChildGuard) {
     let deadline = Instant::now() + Duration::from_secs(5);
     loop {
@@ -292,6 +307,54 @@ fn active_sessions(socket: &std::path::Path) -> Vec<Value> {
         .as_array()
         .unwrap()
         .clone()
+}
+
+#[test]
+fn terminal_attach_subcommand_bridges_input_and_output() {
+    let unique = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .unwrap()
+        .as_nanos();
+    let root =
+        std::path::PathBuf::from("/tmp").join(format!("axoa-{}-{unique}", std::process::id()));
+    let server_directory = root.join("server");
+    let socket = root.join("axod.sock");
+    let mut daemon = start_axod(&server_directory, &socket);
+    wait_for_socket(&socket, &mut daemon);
+    let session = active_sessions(&socket).remove(0);
+    let mut process = Command::new(axod_binary())
+        .arg("terminal-attach")
+        .arg("--attach-socket")
+        .arg(session["attachSocketPath"].as_str().unwrap())
+        .arg("--session-id")
+        .arg(session["id"].as_i64().unwrap().to_string())
+        .stdin(Stdio::piped())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .spawn()
+        .expect("axod terminal-attach should start");
+    let mut stdin = process.stdin.take().unwrap();
+    let mut stdout = process.stdout.take().unwrap();
+    let output_reader = thread::spawn(move || {
+        let mut output = String::new();
+        std::io::Read::read_to_string(&mut stdout, &mut output).unwrap();
+        output
+    });
+
+    writeln!(stdin, "printf 'AXO_TERMINAL_ATTACH_OK\\n'; exit").unwrap();
+    drop(stdin);
+    let status = wait_for_exit(&mut process, Duration::from_secs(5));
+    assert!(status.success(), "terminal-attach exited with {status}");
+    let output = output_reader
+        .join()
+        .expect("PTY output reader should finish when the shell exits");
+    assert!(
+        output.contains("AXO_TERMINAL_ATTACH_OK"),
+        "attached PTY output did not contain the marker: {output:?}"
+    );
+
+    daemon.stop();
+    let _ = std::fs::remove_dir_all(root);
 }
 
 #[test]

@@ -46,6 +46,27 @@ public struct DaemonHealth: Decodable, Equatable, Sendable {
   public let status: String
 }
 
+public struct TerminalSession: Decodable, Equatable, Identifiable, Sendable {
+  public let id: Int64
+  public let processId: UInt32
+  public let initialPwd: String
+  public let ptyDevice: String
+  public let attachSocketPath: String
+}
+
+public struct ClosedTerminalSession: Decodable, Equatable, Sendable {
+  public let archivedSessionId: Int64
+  public let replacement: TerminalSession?
+}
+
+private struct TerminalSessionList: Decodable {
+  let sessions: [TerminalSession]
+}
+
+private struct CloseTerminalSessionRequest: Encodable {
+  let sessionId: Int64
+}
+
 public enum UnixSocketRPCError: Error, LocalizedError {
   case connectionFailed(String)
   case invalidSocketPath
@@ -64,17 +85,62 @@ public enum UnixSocketRPCError: Error, LocalizedError {
 
 public enum UnixSocketRPC {
   public static func health(at socketPath: UnixSocketPath) async throws -> DaemonHealth {
+    let health: DaemonHealth = try await withResponse(
+      at: socketPath,
+      timeout: .seconds(2)
+    ) { session in
+      try await session.response(to: "axo.daemon.health")
+    }
+    guard health.status == "running" else {
+      throw UnixSocketRPCError.invalidResponse("daemon status was not running")
+    }
+    guard BuildNumber(health.buildNumber) != nil else {
+      throw UnixSocketRPCError.invalidResponse("build number must be positive")
+    }
+    return health
+  }
+
+  public static func listSessions(at socketPath: UnixSocketPath) async throws -> [TerminalSession] {
+    let response: TerminalSessionList = try await withResponse(at: socketPath) { session in
+      try await session.response(to: "axo.session.list")
+    }
+    return response.sessions
+  }
+
+  public static func createSession(at socketPath: UnixSocketPath) async throws -> TerminalSession {
+    try await withResponse(at: socketPath) { session in
+      try await session.response(to: "axo.session.create")
+    }
+  }
+
+  public static func closeSession(
+    _ sessionID: Int64,
+    at socketPath: UnixSocketPath
+  ) async throws -> ClosedTerminalSession {
+    try await withResponse(at: socketPath) { session in
+      try await session.response(
+        to: "axo.session.close",
+        params: CloseTerminalSessionRequest(sessionId: sessionID)
+      )
+    }
+  }
+
+  private static func withResponse<Response: Decodable>(
+    at socketPath: UnixSocketPath,
+    timeout: Duration = .seconds(5),
+    request: @escaping @Sendable (JSONRPCSession) async throws -> Response
+  ) async throws -> Response {
     let transport = UnixSocketTransport(socketPath: socketPath)
     try await transport.connect()
     defer { transport.close() }
 
     let session = JSONRPCSession(channel: transport.dataChannel)
-    let health = try await withThrowingTaskGroup(of: DaemonHealth.self) { group in
+    return try await withThrowingTaskGroup(of: Response.self) { group in
       group.addTask {
-        try await session.response(to: "axo.daemon.health")
+        try await request(session)
       }
       group.addTask {
-        try await Task.sleep(nanoseconds: 2_000_000_000)
+        try await Task.sleep(nanoseconds: timeout.nanoseconds)
         transport.close()
         throw UnixSocketRPCError.requestTimedOut
       }
@@ -84,13 +150,15 @@ public enum UnixSocketRPC {
       }
       return response
     }
-    guard health.status == "running" else {
-      throw UnixSocketRPCError.invalidResponse("daemon status was not running")
-    }
-    guard BuildNumber(health.buildNumber) != nil else {
-      throw UnixSocketRPCError.invalidResponse("build number must be positive")
-    }
-    return health
+  }
+}
+
+extension Duration {
+  fileprivate var nanoseconds: UInt64 {
+    let components = components
+    let seconds = UInt64(max(0, components.seconds))
+    let attoseconds = UInt64(max(0, components.attoseconds))
+    return seconds * 1_000_000_000 + attoseconds / 1_000_000_000
   }
 }
 

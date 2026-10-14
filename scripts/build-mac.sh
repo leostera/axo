@@ -76,9 +76,8 @@ xcrun swift-format lint --strict --recursive apple/AxoRPC apple/AxoDaemonManager
 
 stamp_flags=(--stamp "--embed_label=axo_build_${build_number}")
 bazel test "${stamp_flags[@]}" //...
-bazel build "${stamp_flags[@]}" -c opt //apple/AxoMac:AxoApp //crates/axod:axod
+bazel build "${stamp_flags[@]}" -c opt //apple/AxoMac:AxoApp
 app_archive=$(bazel cquery "${stamp_flags[@]}" -c opt --output=files //apple/AxoMac:AxoApp)
-daemon_binary=$(bazel cquery "${stamp_flags[@]}" -c opt --output=files //crates/axod:axod)
 
 mkdir -p dist
 stage=$(mktemp -d "$root/dist/.Axo-stage.XXXXXX")
@@ -92,8 +91,6 @@ cleanup() {
 trap cleanup EXIT
 
 ditto -x -k "$app_archive" "$stage"
-mkdir -p "$app/Contents/Helpers"
-cp "$daemon_binary" "$app/Contents/Helpers/axod"
 plutil -lint "$app/Contents/Info.plist"
 reported_app_build=$(/usr/libexec/PlistBuddy -c 'Print :CFBundleVersion' "$app/Contents/Info.plist")
 if [[ "$reported_app_build" != "$build_number" ]]; then

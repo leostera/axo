@@ -1,6 +1,7 @@
 load("@rules_apple//apple:macos.bzl", "macos_application")
 load("@rules_apple//apple:versioning.bzl", "apple_bundle_version")
 load("@rules_swift//swift:swift_library.bzl", "swift_library")
+load("@rules_swift//swift:swift_test.bzl", "swift_test")
 load("@rules_xcodeproj//xcodeproj:defs.bzl", "xcodeproj")
 
 package(default_visibility = ["//visibility:public"])
@@ -12,9 +13,33 @@ exports_files([
 
 swift_library(
     name = "AxoMac",
+    module_name = "AxoMac",
     srcs = glob(["Sources/AxoMac/**/*.swift"]),
     copts = ["-swift-version", "5"],
-    deps = ["//apple/AxoDaemonManager:AxoDaemonManager"],
+    deps = [
+        "//apple/AxoDaemonManager:AxoDaemonManager",
+        "//apple/AxoRPC:AxoRPC",
+    ],
+)
+
+swift_test(
+    name = "AxoMacTests",
+    srcs = ["Tests/AxoMacTests/TerminalLayoutTests.swift"],
+    copts = ["-swift-version", "5"],
+    deps = [":AxoMac"],
+)
+
+swift_test(
+    name = "AxoAppSelfTestTests",
+    srcs = ["Tests/AxoMacTests/TerminalAppE2ETests.swift"],
+    copts = ["-swift-version", "5"],
+    data = [":AxoApp", "//crates/axod:axod"],
+    env = {
+        "AXO_APP_BUNDLE_ZIP": "$(rootpath :AxoApp)",
+        "AXOD_BINARY": "$(rootpath //crates/axod:axod)",
+    },
+    tags = ["no-sandbox"],
+    timeout = "short",
 )
 
 apple_bundle_version(
@@ -43,6 +68,7 @@ macos_application(
     version = ":build_version",
     additional_contents = {
         ":launch_agent_plist": "Library/LaunchAgents",
+        "//crates/axod:axod": "Helpers",
     },
     deps = [":AxoMac"],
 )
@@ -55,5 +81,7 @@ xcodeproj(
         ":AxoApp",
         "//apple/AxoRPC:AxoRPCTests",
         "//apple/AxoDaemonManager:AxoDaemonManagerTests",
+        "//apple/AxoMac:AxoMacTests",
+        "//apple/AxoMac:AxoAppSelfTestTests",
     ],
 )
