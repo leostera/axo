@@ -5,6 +5,7 @@ import SwiftUI
 struct TerminalWorkbenchView: View {
   @ObservedObject var daemon: DaemonController
   @ObservedObject var sessions: TerminalSessionsModel
+  @AppStorage("terminalSidebarIsCollapsed") private var isSidebarCollapsed = true
 
   private var daemonIsRunning: Bool {
     if case .running = daemon.status { return true }
@@ -19,12 +20,19 @@ struct TerminalWorkbenchView: View {
   }
 
   var body: some View {
-    NavigationSplitView {
-      sessionSidebar
-    } detail: {
+    HStack(spacing: 0) {
+      if isSidebarCollapsed {
+        collapsedSidebar
+      } else {
+        expandedSidebar
+      }
+
+      Divider()
+
       terminalContent
+        .frame(maxWidth: .infinity, maxHeight: .infinity)
     }
-    .frame(minWidth: 760, minHeight: 480)
+    .frame(minWidth: 760, maxWidth: .infinity, minHeight: 480, maxHeight: .infinity)
     .task(id: daemonIsRunning) {
       guard daemonIsRunning else { return }
       while !Task.isCancelled {
@@ -34,34 +42,95 @@ struct TerminalWorkbenchView: View {
     }
   }
 
-  private var sessionSidebar: some View {
-    List(selection: sidebarSelection) {
-      Section("Sessions") {
-        ForEach(sessions.sessions) { session in
-          SessionSidebarRow(session: session)
-            .tag(session.id)
+  private var expandedSidebar: some View {
+    VStack(spacing: 0) {
+      List(selection: sidebarSelection) {
+        Section("Sessions") {
+          ForEach(sessions.sessions) { session in
+            SessionSidebarRow(session: session)
+              .tag(session.id)
+              .contextMenu {
+                Button("Close Session", role: .destructive) {
+                  Task { await sessions.closeSession(session.id) }
+                }
+              }
+          }
+        }
+      }
+      .listStyle(.sidebar)
+      .overlay {
+        if sessions.sessions.isEmpty {
+          ContentUnavailableViewPlaceholder(
+            title: daemonIsRunning ? "No Sessions" : "Axo D Is Not Running",
+            message: sessions.errorMessage
+              ?? (daemonIsRunning
+                ? "Create a session to open a shell."
+                : daemon.status.settingsTitle)
+          )
+        }
+      }
+
+      sidebarToggle(isCollapsed: false)
+        .frame(maxWidth: .infinity, alignment: .leading)
+        .padding(10)
+    }
+    .frame(width: 220)
+    .frame(maxHeight: .infinity)
+    .background(Color(nsColor: .windowBackgroundColor))
+  }
+
+  private var collapsedSidebar: some View {
+    VStack(spacing: 0) {
+      ScrollView {
+        VStack(spacing: 8) {
+          ForEach(sessions.sessions) { session in
+            Button {
+              sessions.showSession(session.id)
+            } label: {
+              Image(systemName: "terminal")
+                .frame(width: 36, height: 36)
+                .background(
+                  sessions.selectedSessionID == session.id
+                    ? Color.accentColor.opacity(0.18)
+                    : Color.clear,
+                  in: RoundedRectangle(cornerRadius: 8)
+                )
+            }
+            .buttonStyle(.plain)
+            .help("Session \(session.id)")
+            .accessibilityLabel("Session \(session.id)")
             .contextMenu {
               Button("Close Session", role: .destructive) {
                 Task { await sessions.closeSession(session.id) }
               }
             }
+          }
         }
+        .padding(.horizontal, 10)
       }
+
+      Spacer(minLength: 0)
+      sidebarToggle(isCollapsed: true)
     }
-    .listStyle(.sidebar)
-    .navigationTitle("Axo")
-    .navigationSplitViewColumnWidth(min: 170, ideal: 220, max: 300)
-    .overlay {
-      if sessions.sessions.isEmpty {
-        ContentUnavailableViewPlaceholder(
-          title: daemonIsRunning ? "No Sessions" : "Axo D Is Not Running",
-          message: sessions.errorMessage
-            ?? (daemonIsRunning
-              ? "Create a session to open a shell."
-              : daemon.status.settingsTitle)
-        )
+    .padding(.vertical, 8)
+    .frame(width: 56)
+    .frame(maxHeight: .infinity)
+    .background(Color(nsColor: .windowBackgroundColor))
+  }
+
+  private func sidebarToggle(isCollapsed: Bool) -> some View {
+    Button {
+      withAnimation(.easeInOut(duration: 0.18)) {
+        isSidebarCollapsed.toggle()
       }
+    } label: {
+      Image(systemName: isCollapsed ? "sidebar.right" : "sidebar.left")
+        .frame(width: 36, height: 36)
+        .contentShape(Rectangle())
     }
+    .buttonStyle(.plain)
+    .help(isCollapsed ? "Expand sidebar" : "Collapse sidebar")
+    .accessibilityLabel(isCollapsed ? "Expand sidebar" : "Collapse sidebar")
   }
 
   @ViewBuilder
