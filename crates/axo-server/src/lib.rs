@@ -1,3 +1,4 @@
+use std::ffi::{CStr, OsStr};
 use std::fs::{self, OpenOptions};
 use std::io::{self, Write};
 use std::os::unix::ffi::OsStrExt;
@@ -15,9 +16,61 @@ include!(concat!(env!("OUT_DIR"), "/build_number.rs"));
 
 /// Returns the default directory for daemon metadata and logs.
 pub fn default_server_directory() -> io::Result<PathBuf> {
-    let home = std::env::var_os("HOME")
-        .ok_or_else(|| io::Error::new(io::ErrorKind::NotFound, "HOME is not set"))?;
-    Ok(PathBuf::from(home).join(".axo/server"))
+    Ok(current_user_home_directory()?.join(".axo/server"))
+}
+
+fn current_user_home_directory() -> io::Result<PathBuf> {
+    resolve_home_directory(std::env::var_os("HOME").map(PathBuf::from))
+}
+
+fn resolve_home_directory(configured_home: Option<PathBuf>) -> io::Result<PathBuf> {
+    if let Some(home) = configured_home.filter(|path| path.is_absolute()) {
+        return Ok(home);
+    }
+
+    // LaunchAgents do not guarantee that HOME is present in their environment.
+    let mut account = std::mem::MaybeUninit::<libc::passwd>::uninit();
+    let mut buffer = vec![0; 16 * 1024];
+    let mut result = std::ptr::null_mut();
+    // SAFETY: account, buffer, and result are valid writable storage for getpwuid_r.
+    let error = unsafe {
+        libc::getpwuid_r(
+            libc::getuid(),
+            account.as_mut_ptr(),
+            buffer.as_mut_ptr().cast(),
+            buffer.len(),
+            &mut result,
+        )
+    };
+    if error != 0 {
+        return Err(io::Error::from_raw_os_error(error));
+    }
+    if result.is_null() {
+        return Err(io::Error::new(
+            io::ErrorKind::NotFound,
+            "could not determine the current user's home directory",
+        ));
+    }
+
+    // SAFETY: getpwuid_r returned a non-null result and initialized account.
+    let home = unsafe { account.assume_init() }.pw_dir;
+    if home.is_null() {
+        return Err(io::Error::new(
+            io::ErrorKind::NotFound,
+            "the current user's account has no home directory",
+        ));
+    }
+
+    // SAFETY: pw_dir points to a NUL-terminated string in buffer, which remains alive here.
+    let home = unsafe { CStr::from_ptr(home) }.to_bytes();
+    let home = PathBuf::from(OsStr::from_bytes(home));
+    if !home.is_absolute() {
+        return Err(io::Error::new(
+            io::ErrorKind::InvalidData,
+            "the current user's home directory is not absolute",
+        ));
+    }
+    Ok(home)
 }
 
 /// Creates the daemon's per-user directory with private permissions.
@@ -84,9 +137,8 @@ impl SocketPath {
 }
 
 fn default_socket_path() -> Result<SocketPath, Box<dyn std::error::Error>> {
-    let home = std::env::var_os("HOME").ok_or("HOME is not set")?;
     Ok(SocketPath::parse(
-        PathBuf::from(home).join("Library/Application Support/Axo/run/axod.sock"),
+        current_user_home_directory()?.join("Library/Application Support/Axo/run/axod.sock"),
     )?)
 }
 
@@ -229,6 +281,16 @@ mod tests {
         assert_eq!(error.kind(), io::ErrorKind::AlreadyExists);
         assert_eq!(fs::read(&file).unwrap(), b"keep me");
         fs::remove_file(file).unwrap();
+    }
+
+    #[test]
+    fn home_directory_uses_the_account_database_when_home_is_unset_or_relative() {
+        let from_account = resolve_home_directory(None).unwrap();
+        assert!(from_account.is_absolute());
+        assert_eq!(
+            resolve_home_directory(Some(PathBuf::from("relative/home"))).unwrap(),
+            from_account
+        );
     }
 
     #[test]

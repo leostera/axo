@@ -67,6 +67,7 @@ version = "0.1.0"
 dependencies = [
  "jsonrpc-core",
  "jsonrpc-ipc-server",
+ "libc",
  "log",
  "serde_json",
 ]
