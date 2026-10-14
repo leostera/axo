@@ -19,7 +19,16 @@ mod session;
 const MAX_SOCKET_PATH_BYTES: usize = 103;
 static SHUTDOWN_REQUESTED: AtomicBool = AtomicBool::new(false);
 
-include!(concat!(env!("OUT_DIR"), "/build_number.rs"));
+pub const BUILD_NUMBER: &str = match option_env!("AXO_BUILD_NUMBER") {
+    Some(build_number) => build_number,
+    None => "1",
+};
+
+pub fn build_number() -> u64 {
+    BUILD_NUMBER
+        .parse()
+        .expect("build metadata must provide a positive decimal build number")
+}
 
 /// Returns the default directory for daemon metadata and logs.
 pub fn default_server_directory() -> io::Result<PathBuf> {
@@ -202,7 +211,7 @@ fn rpc_handler(sessions: Arc<session::SessionManager>) -> IoHandler {
 fn add_health_method(handler: &mut IoHandler) {
     handler.add_sync_method("axo.daemon.health", |_| {
         Ok(json!({
-            "buildNumber": BUILD_NUMBER,
+            "buildNumber": build_number(),
             "status": "running"
         }))
     });
@@ -334,7 +343,7 @@ mod tests {
             .expect("health is a request with a response");
         let response: serde_json::Value = serde_json::from_str(&response).unwrap();
 
-        assert_eq!(response["result"]["buildNumber"], BUILD_NUMBER);
+        assert_eq!(response["result"]["buildNumber"], build_number());
         assert_eq!(response["result"]["status"], "running");
     }
 

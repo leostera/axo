@@ -23,7 +23,7 @@ fn main() {
     let version = format!(
         "{} (build {})",
         env!("CARGO_PKG_VERSION"),
-        axo_server::BUILD_NUMBER
+        axo_server::build_number()
     );
     let matches = Cli::command().version(version).get_matches();
     let cli = Cli::from_arg_matches(&matches).expect("clap validated the arguments");
@@ -54,7 +54,7 @@ fn main() {
     log::info!(
         "event=daemon.started pid={} build={}",
         std::process::id(),
-        axo_server::BUILD_NUMBER
+        axo_server::build_number()
     );
     if let Err(error) = axo_server::serve_ipc(cli.socket.as_deref(), &server_directory) {
         log::error!("event=daemon.failed reason={error:?}");

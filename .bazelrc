@@ -1,5 +1,6 @@
 common --enable_bzlmod
 build --enable_platform_specific_config
 build --macos_minimum_os=13.0
+build --workspace_status_command=./scripts/workspace-status.sh
 test --test_output=errors
 try-import %workspace%/.bazelrc.local
