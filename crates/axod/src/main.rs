@@ -90,7 +90,11 @@ fn main() {
         std::process::id(),
         axo_server::build_number()
     );
-    if let Err(error) = axo_server::serve_ipc(cli.socket.as_deref(), &server_directory) {
+    if let Err(error) = axo_server::serve_ipc(
+        cli.socket.as_deref(),
+        &server_directory,
+        env!("CARGO_PKG_VERSION"),
+    ) {
         log::error!("event=daemon.failed reason={error:?}");
         std::process::exit(1);
     }

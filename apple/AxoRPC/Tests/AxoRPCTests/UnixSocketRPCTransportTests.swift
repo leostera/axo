@@ -17,6 +17,22 @@ final class UnixSocketRPCTransportTests: XCTestCase {
     }
   }
 
+  func testHealthAcceptsAnOlderDaemonWithoutVersionInItsResponse() async throws {
+    let fixture = try OneResponseUnixSocket(
+      response: #"{"jsonrpc":"2.0","id":1,"result":{"buildNumber":41,"status":"running"}}"#
+    )
+    let responder = Task.detached {
+      try fixture.receiveOneRequestAndReply()
+    }
+
+    let health = try await UnixSocketRPC.health(at: UnixSocketPath(fixture.path))
+    _ = try await responder.value
+
+    XCTAssertNil(health.version)
+    XCTAssertEqual(health.buildNumber, 41)
+    XCTAssertEqual(health.status, "running")
+  }
+
   func testHealthUsesJsonRPCOverNewlineFramedUnixSocket() async throws {
     let fixture = try OneResponseUnixSocket(
       response:

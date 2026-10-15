@@ -28,7 +28,7 @@ final class AxodInteropTests: XCTestCase {
 
     try await waitForSocket(at: socketPath, from: daemon)
     let health = try await UnixSocketRPC.health(at: socketPath)
-    XCTAssertFalse(health.version.isEmpty)
+    XCTAssertEqual(health.version, "0.1.0")
     XCTAssertGreaterThan(health.buildNumber, 0)
     XCTAssertEqual(health.status, "running")
 

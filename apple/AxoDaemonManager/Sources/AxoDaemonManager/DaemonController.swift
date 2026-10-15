@@ -206,13 +206,13 @@ public final class DaemonController: ObservableObject {
         let restartedDaemon =
           try await restartDaemon(at: socketPath, expectedBuild: appBuildNumber)
       else { return }
-      status = .running(version: restartedDaemon.version, buildNumber: appBuildNumber)
+      status = .running(version: restartedDaemon.version ?? "Unknown", buildNumber: appBuildNumber)
       return
     }
 
     logger.info("event=daemon.health_check_succeeded build=\(daemon.buildNumber, privacy: .public)")
     guard daemon.buildNumber != appBuildNumber.value else {
-      status = .running(version: daemon.version, buildNumber: appBuildNumber)
+      status = .running(version: daemon.version ?? "Unknown", buildNumber: appBuildNumber)
       return
     }
 
@@ -221,7 +221,7 @@ public final class DaemonController: ObservableObject {
       let restartedDaemon =
         try await restartDaemon(at: socketPath, expectedBuild: appBuildNumber)
     else { return }
-    status = .running(version: restartedDaemon.version, buildNumber: appBuildNumber)
+    status = .running(version: restartedDaemon.version ?? "Unknown", buildNumber: appBuildNumber)
   }
 
   private func restartDaemon(

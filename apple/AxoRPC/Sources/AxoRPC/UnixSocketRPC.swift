@@ -42,7 +42,7 @@ public struct UnixSocketPath: Equatable, Sendable {
 }
 
 public struct DaemonHealth: Decodable, Equatable, Sendable {
-  public let version: String
+  public let version: String?
   public let buildNumber: UInt64
   public let status: String
 }
@@ -119,7 +119,7 @@ public enum UnixSocketRPC {
     ) { session in
       try await session.response(to: "axo.daemon.health")
     }
-    guard !health.version.isEmpty else {
+    if let version = health.version, version.isEmpty {
       throw UnixSocketRPCError.invalidResponse("daemon version must not be empty")
     }
     guard health.status == "running" else {

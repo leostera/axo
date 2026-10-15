@@ -105,6 +105,7 @@ pub fn prepare_server_directory(path: &Path) -> io::Result<()> {
 pub fn serve_ipc(
     socket_override: Option<&Path>,
     server_directory: &Path,
+    daemon_version: &'static str,
 ) -> Result<(), Box<dyn std::error::Error>> {
     prepare_server_directory(server_directory)?;
     let socket_path = match socket_override {
@@ -115,7 +116,7 @@ pub fn serve_ipc(
     remove_stale_socket(&socket_path.0)?;
 
     let sessions = session::SessionManager::open(server_directory)?;
-    let server = ServerBuilder::new(rpc_handler(Arc::clone(&sessions)))
+    let server = ServerBuilder::new(rpc_handler(Arc::clone(&sessions), daemon_version))
         .request_separators(Separator::Byte(b'\n'), Separator::Byte(b'\n'))
         .start(path_as_str(&socket_path.0)?)?;
     fs::set_permissions(&socket_path.0, fs::Permissions::from_mode(0o600))?;
@@ -201,17 +202,17 @@ impl Drop for SignalHandlers {
     }
 }
 
-fn rpc_handler(sessions: Arc<session::SessionManager>) -> IoHandler {
+fn rpc_handler(sessions: Arc<session::SessionManager>, daemon_version: &'static str) -> IoHandler {
     let mut handler = IoHandler::new();
-    add_health_method(&mut handler);
+    add_health_method(&mut handler, daemon_version);
     sessions.register_rpc_methods(&mut handler);
     handler
 }
 
-fn add_health_method(handler: &mut IoHandler) {
-    handler.add_sync_method("axo.daemon.health", |_| {
+fn add_health_method(handler: &mut IoHandler, daemon_version: &'static str) {
+    handler.add_sync_method("axo.daemon.health", move |_| {
         Ok(json!({
-            "version": env!("CARGO_PKG_VERSION"),
+            "version": daemon_version,
             "buildNumber": build_number(),
             "status": "running"
         }))
@@ -338,7 +339,7 @@ mod tests {
     #[test]
     fn health_method_reports_this_build() {
         let mut handler = IoHandler::new();
-        add_health_method(&mut handler);
+        add_health_method(&mut handler, env!("CARGO_PKG_VERSION"));
         let response = handler
             .handle_request_sync(r#"{"jsonrpc":"2.0","id":1,"method":"axo.daemon.health"}"#)
             .expect("health is a request with a response");
@@ -352,7 +353,7 @@ mod tests {
     #[test]
     fn unknown_methods_use_the_json_rpc_method_not_found_error() {
         let mut handler = IoHandler::new();
-        add_health_method(&mut handler);
+        add_health_method(&mut handler, env!("CARGO_PKG_VERSION"));
         let response = handler
             .handle_request_sync(r#"{"jsonrpc":"2.0","id":1,"method":"axo.unknown"}"#)
             .expect("unknown method requests have an error response");
