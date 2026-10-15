@@ -211,6 +211,7 @@ fn rpc_handler(sessions: Arc<session::SessionManager>) -> IoHandler {
 fn add_health_method(handler: &mut IoHandler) {
     handler.add_sync_method("axo.daemon.health", |_| {
         Ok(json!({
+            "version": env!("CARGO_PKG_VERSION"),
             "buildNumber": build_number(),
             "status": "running"
         }))
@@ -343,6 +344,7 @@ mod tests {
             .expect("health is a request with a response");
         let response: serde_json::Value = serde_json::from_str(&response).unwrap();
 
+        assert_eq!(response["result"]["version"], env!("CARGO_PKG_VERSION"));
         assert_eq!(response["result"]["buildNumber"], build_number());
         assert_eq!(response["result"]["status"], "running");
     }

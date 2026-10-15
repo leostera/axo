@@ -1,5 +1,5 @@
 use std::fs::{self, File, OpenOptions};
-use std::io::{self, Write};
+use std::io::{self, Read, Write};
 use std::mem::size_of;
 use std::os::fd::{AsRawFd, FromRawFd, OwnedFd, RawFd};
 use std::os::unix::fs::{OpenOptionsExt, PermissionsExt};
@@ -13,6 +13,7 @@ use std::time::Duration;
 use clap::{CommandFactory, FromArgMatches, Parser, Subcommand};
 
 const MAX_LOG_BYTES: u64 = 10 * 1024 * 1024;
+const MAX_TERMINAL_OUTPUT_HISTORY_BYTES: u64 = 8 * 1024 * 1024;
 
 static TERMINAL_RESIZE_REQUESTED: AtomicBool = AtomicBool::new(false);
 
@@ -107,11 +108,16 @@ fn attach_terminal(socket_path: &Path, shell_id: i64) -> io::Result<()> {
     let mut control = UnixStream::connect(socket_path)?;
     control.set_read_timeout(Some(Duration::from_secs(5)))?;
     writeln!(control, "{shell_id}")?;
-    let master = receive_pty_master(&control)?;
+    let replay = receive_terminal_output_history(&mut control)
+        .map_err(|error| io::Error::new(error.kind(), format!("read terminal history: {error}")))?;
+    let master = receive_pty_master(&control)
+        .map_err(|error| io::Error::new(error.kind(), format!("receive PTY: {error}")))?;
     let mut writer = File::from(duplicate_descriptor(master.as_raw_fd())?);
     let mut reader = File::from(master);
-    let _input_mode = TerminalInputModeGuard::raw(libc::STDIN_FILENO)?;
-    let _resize_forwarder = TerminalResizeForwarder::start(libc::STDIN_FILENO, reader.as_raw_fd())?;
+    let _input_mode = TerminalInputModeGuard::raw(libc::STDIN_FILENO)
+        .map_err(|error| io::Error::new(error.kind(), format!("set input mode: {error}")))?;
+    let _resize_forwarder = TerminalResizeForwarder::start(libc::STDIN_FILENO, reader.as_raw_fd())
+        .map_err(|error| io::Error::new(error.kind(), format!("forward terminal size: {error}")))?;
 
     thread::Builder::new()
         .name("axo-terminal-input".into())
@@ -121,10 +127,25 @@ fn attach_terminal(socket_path: &Path, shell_id: i64) -> io::Result<()> {
         })?;
 
     let mut stdout = File::from(duplicate_descriptor(libc::STDOUT_FILENO)?);
-    match io::copy(&mut reader, &mut stdout) {
-        Ok(_) => Ok(()),
-        Err(error) if error.raw_os_error() == Some(libc::EIO) => Ok(()),
-        Err(error) => Err(error),
+    stdout.write_all(&replay).map_err(|error| {
+        io::Error::new(error.kind(), format!("replay terminal history: {error}"))
+    })?;
+
+    let mut output = [0_u8; 8192];
+    loop {
+        match reader.read(&mut output) {
+            Ok(0) => return Ok(()),
+            Ok(count) => {
+                control.write_all(&output[..count]).map_err(|error| {
+                    io::Error::new(error.kind(), format!("record terminal output: {error}"))
+                })?;
+                stdout.write_all(&output[..count]).map_err(|error| {
+                    io::Error::new(error.kind(), format!("forward terminal output: {error}"))
+                })?;
+            }
+            Err(error) if error.raw_os_error() == Some(libc::EIO) => return Ok(()),
+            Err(error) => return Err(error),
+        }
     }
 }
 
@@ -259,6 +280,22 @@ fn duplicate_descriptor(descriptor: libc::c_int) -> io::Result<OwnedFd> {
     }
     // SAFETY: fcntl returned a new descriptor owned by this process.
     Ok(unsafe { OwnedFd::from_raw_fd(duplicate) })
+}
+
+fn receive_terminal_output_history(control: &mut UnixStream) -> io::Result<Vec<u8>> {
+    let mut length_bytes = [0_u8; size_of::<u64>()];
+    control.read_exact(&mut length_bytes)?;
+    let length = u64::from_be_bytes(length_bytes);
+    if length > MAX_TERMINAL_OUTPUT_HISTORY_BYTES {
+        return Err(io::Error::new(
+            io::ErrorKind::InvalidData,
+            "daemon supplied an oversized terminal history",
+        ));
+    }
+
+    let mut replay = vec![0_u8; length as usize];
+    control.read_exact(&mut replay)?;
+    Ok(replay)
 }
 
 fn receive_pty_master(control: &UnixStream) -> io::Result<OwnedFd> {

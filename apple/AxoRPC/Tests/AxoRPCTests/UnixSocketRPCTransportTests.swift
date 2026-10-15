@@ -19,7 +19,8 @@ final class UnixSocketRPCTransportTests: XCTestCase {
 
   func testHealthUsesJsonRPCOverNewlineFramedUnixSocket() async throws {
     let fixture = try OneResponseUnixSocket(
-      response: #"{"jsonrpc":"2.0","id":1,"result":{"buildNumber":42,"status":"running"}}"#
+      response:
+        #"{"jsonrpc":"2.0","id":1,"result":{"version":"0.1.0","buildNumber":42,"status":"running"}}"#
     )
     let responder = Task.detached {
       try fixture.receiveOneRequestAndReply()
@@ -31,6 +32,7 @@ final class UnixSocketRPCTransportTests: XCTestCase {
       JSONSerialization.jsonObject(with: requestData) as? [String: Any]
     )
 
+    XCTAssertEqual(health.version, "0.1.0")
     XCTAssertEqual(health.buildNumber, 42)
     XCTAssertEqual(health.status, "running")
     XCTAssertEqual(request["jsonrpc"] as? String, "2.0")

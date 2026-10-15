@@ -11,7 +11,9 @@ struct AxoApp: App {
   @StateObject private var daemon: DaemonController
   @StateObject private var sessions: TerminalSessionsModel
   @StateObject private var ghostty: GhosttyRuntime
+  @State private var settingsSection = SettingsSection.general
   private let isUITestApp: Bool
+  @AppStorage("terminalSidebarIsCollapsed") private var isSidebarCollapsed = true
 
   init() {
     let daemon = DaemonController()
@@ -85,7 +87,7 @@ struct AxoApp: App {
 
   var body: some Scene {
     MenuBarExtra {
-      AxoMenu(daemon: daemon)
+      AxoMenu(daemon: daemon, settingsSection: $settingsSection)
     } label: {
       AxoMenuBarLabel()
     }
@@ -112,6 +114,15 @@ struct AxoApp: App {
     .windowStyle(.hiddenTitleBar)
     .defaultSize(width: 1000, height: 680)
     .commands {
+      AxoApplicationCommands(settingsSection: $settingsSection)
+
+      CommandGroup(replacing: .sidebar) {
+        Button("Toggle Sidebar") {
+          isSidebarCollapsed.toggle()
+        }
+        .keyboardShortcut("s", modifiers: .command)
+      }
+
       CommandMenu("Terminal") {
         Button("New Session") {
           Task { await sessions.createSession() }
@@ -172,7 +183,7 @@ struct AxoApp: App {
     }
 
     Window("Axo Settings", id: "settings") {
-      SettingsView(daemon: daemon)
+      SettingsView(daemon: daemon, selection: $settingsSection)
     }
     .windowResizability(.contentSize)
   }
@@ -196,6 +207,7 @@ private struct AxoMenuBarLabel: View {
 private struct AxoMenu: View {
   @Environment(\.openWindow) private var openWindow
   @ObservedObject var daemon: DaemonController
+  @Binding var settingsSection: SettingsSection
 
   var body: some View {
     Group {
@@ -221,6 +233,7 @@ private struct AxoMenu: View {
     }
 
     Button("Settings…") {
+      settingsSection = .general
       openWindow(id: "settings")
     }
     .keyboardShortcut(",")
@@ -243,5 +256,30 @@ private struct AxoMenu: View {
     alert.alertStyle = .informational
     alert.addButton(withTitle: "OK")
     alert.runModal()
+  }
+}
+
+private struct AxoApplicationCommands: Commands {
+  @Binding var settingsSection: SettingsSection
+  @Environment(\.openWindow) private var openWindow
+
+  var body: some Commands {
+    CommandGroup(replacing: .appInfo) {
+      Button("About Axo") {
+        showSettings(section: .about)
+      }
+    }
+
+    CommandGroup(replacing: .appSettings) {
+      Button("Settings…") {
+        showSettings(section: .general)
+      }
+      .keyboardShortcut(",")
+    }
+  }
+
+  private func showSettings(section: SettingsSection) {
+    settingsSection = section
+    openWindow(id: "settings")
   }
 }

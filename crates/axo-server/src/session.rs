@@ -1,7 +1,7 @@
 use std::collections::HashMap;
 use std::ffi::CStr;
 use std::fs;
-use std::io::{self, Read};
+use std::io::{self, Read, Write};
 use std::os::fd::{AsRawFd, FromRawFd, OwnedFd, RawFd};
 use std::os::unix::fs::PermissionsExt;
 use std::os::unix::net::{UnixListener, UnixStream};
@@ -22,6 +22,7 @@ const ATTACH_SOCKET_FILE: &str = "attach.sock";
 const PTY_ROWS: libc::c_ushort = 24;
 const PTY_COLUMNS: libc::c_ushort = 80;
 const REAPER_INTERVAL: Duration = Duration::from_millis(100);
+const MAX_TERMINAL_OUTPUT_HISTORY_BYTES: usize = 8 * 1024 * 1024;
 
 #[derive(Clone, Copy, Debug, Eq, Hash, PartialEq)]
 struct SessionId(i64);
@@ -44,6 +45,40 @@ struct RunningShell {
     master: OwnedFd,
     slave_device: String,
     attached: bool,
+    output_history: TerminalOutputHistory,
+}
+
+#[derive(Debug)]
+struct TerminalOutputHistory {
+    bytes: Vec<u8>,
+    complete: bool,
+}
+
+impl TerminalOutputHistory {
+    fn new() -> Self {
+        Self {
+            bytes: Vec::new(),
+            complete: true,
+        }
+    }
+
+    fn record(&mut self, output: &[u8]) {
+        if !self.complete {
+            return;
+        }
+
+        if self.bytes.len().saturating_add(output.len()) > MAX_TERMINAL_OUTPUT_HISTORY_BYTES {
+            self.bytes.clear();
+            self.complete = false;
+            return;
+        }
+
+        self.bytes.extend_from_slice(output);
+    }
+
+    fn replay(&self) -> &[u8] {
+        if self.complete { &self.bytes } else { &[] }
+    }
 }
 
 struct SessionState {
@@ -392,7 +427,7 @@ impl SessionManager {
         Ok(())
     }
 
-    fn duplicate_master(&self, id: ShellId) -> io::Result<OwnedFd> {
+    fn duplicate_master(&self, id: ShellId) -> io::Result<(OwnedFd, Vec<u8>)> {
         let mut state = self.lock_state()?;
         let running = state
             .running
@@ -409,8 +444,17 @@ impl SessionManager {
             return Err(io::Error::last_os_error());
         }
         running.attached = true;
+        let replay = running.output_history.replay().to_vec();
         // SAFETY: fcntl returned a new, owned descriptor.
-        Ok(unsafe { OwnedFd::from_raw_fd(fd) })
+        Ok((unsafe { OwnedFd::from_raw_fd(fd) }, replay))
+    }
+
+    fn record_terminal_output(&self, id: ShellId, output: &[u8]) {
+        if let Ok(mut state) = self.state.lock()
+            && let Some(running) = state.running.get_mut(&id)
+        {
+            running.output_history.record(output);
+        }
     }
 
     fn mark_detached(&self, id: ShellId) {
@@ -884,6 +928,7 @@ fn spawn_shell(session_id: SessionId, initial_pwd: &Path) -> io::Result<RunningS
         master,
         slave_device,
         attached: false,
+        output_history: TerminalOutputHistory::new(),
     })
 }
 
@@ -968,20 +1013,42 @@ fn handle_attachment(mut stream: UnixStream, manager: Weak<SessionManager>) {
     let Some(manager) = manager.upgrade() else {
         return;
     };
-    let master = match manager.duplicate_master(id) {
-        Ok(master) => master,
+    let (master, replay) = match manager.duplicate_master(id) {
+        Ok(attachment) => attachment,
         Err(_) => return,
     };
 
-    if send_file_descriptor(stream.as_raw_fd(), master.as_raw_fd()).is_err() {
+    let replay_length = (replay.len() as u64).to_be_bytes();
+    if stream
+        .write_all(&replay_length)
+        .and_then(|()| stream.write_all(&replay))
+        .and_then(|()| send_file_descriptor(stream.as_raw_fd(), master.as_raw_fd()))
+        .is_err()
+    {
         manager.mark_detached(id);
         return;
     }
 
-    // Keep the control connection alive so the daemon knows when the client
-    // has detached and can issue a new master descriptor to the next client.
-    let mut discard = [0_u8; 64];
-    while stream.read(&mut discard).unwrap_or(0) > 0 {}
+    // The attachment helper tees PTY output back over this control connection
+    // so the next Ghostty surface can replay the terminal's complete VT stream.
+    let mut output = [0_u8; 8192];
+    loop {
+        match stream.read(&mut output) {
+            Ok(0) => break,
+            Ok(count) => manager.record_terminal_output(id, &output[..count]),
+            Err(error)
+                if matches!(
+                    error.kind(),
+                    io::ErrorKind::Interrupted
+                        | io::ErrorKind::WouldBlock
+                        | io::ErrorKind::TimedOut
+                ) =>
+            {
+                thread::sleep(Duration::from_millis(20));
+            }
+            Err(_) => break,
+        }
+    }
     manager.mark_detached(id);
 }
 
@@ -1095,6 +1162,19 @@ impl Drop for RunningShell {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn terminal_output_history_replays_only_complete_streams() {
+        let mut history = TerminalOutputHistory::new();
+        history.record(b"initial screen");
+        assert_eq!(history.replay(), b"initial screen");
+
+        history.record(&vec![b'x'; MAX_TERMINAL_OUTPUT_HISTORY_BYTES]);
+        assert!(history.replay().is_empty());
+
+        history.record(b"later output");
+        assert!(history.replay().is_empty());
+    }
 
     #[test]
     fn migrates_legacy_shell_sessions_into_tabs() {

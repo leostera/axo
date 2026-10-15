@@ -8,7 +8,7 @@ import ServiceManagement
 public final class DaemonController: ObservableObject {
   public enum Status: Equatable {
     case starting
-    case running(buildNumber: BuildNumber)
+    case running(version: String, buildNumber: BuildNumber)
     case updating
     case requiresApproval
     case disabled
@@ -28,7 +28,7 @@ public final class DaemonController: ObservableObject {
     public var settingsTitle: String {
       switch self {
       case .starting: "Starting…"
-      case .running(let buildNumber): "Running (build \(buildNumber))"
+      case .running(_, let buildNumber): "Running (build \(buildNumber))"
       case .updating: "Restarting for this app build…"
       case .requiresApproval: "Approval required in Login Items settings"
       case .disabled: "Not enabled"
@@ -202,26 +202,32 @@ public final class DaemonController: ObservableObject {
     } catch DaemonControllerError.startupTimedOut {
       logger.warning("event=daemon.health_check_timed_out action=restart")
       status = .updating
-      guard try await restartDaemon(at: socketPath, expectedBuild: appBuildNumber) else { return }
-      status = .running(buildNumber: appBuildNumber)
+      guard
+        let restartedDaemon =
+          try await restartDaemon(at: socketPath, expectedBuild: appBuildNumber)
+      else { return }
+      status = .running(version: restartedDaemon.version, buildNumber: appBuildNumber)
       return
     }
 
     logger.info("event=daemon.health_check_succeeded build=\(daemon.buildNumber, privacy: .public)")
     guard daemon.buildNumber != appBuildNumber.value else {
-      status = .running(buildNumber: appBuildNumber)
+      status = .running(version: daemon.version, buildNumber: appBuildNumber)
       return
     }
 
     status = .updating
-    guard try await restartDaemon(at: socketPath, expectedBuild: appBuildNumber) else { return }
-    status = .running(buildNumber: appBuildNumber)
+    guard
+      let restartedDaemon =
+        try await restartDaemon(at: socketPath, expectedBuild: appBuildNumber)
+    else { return }
+    status = .running(version: restartedDaemon.version, buildNumber: appBuildNumber)
   }
 
   private func restartDaemon(
     at socketPath: UnixSocketPath,
     expectedBuild: BuildNumber
-  ) async throws -> Bool {
+  ) async throws -> DaemonHealth? {
     logger.info("event=daemon.restart_started")
     try await service.unregister()
     do {
@@ -230,16 +236,16 @@ public final class DaemonController: ObservableObject {
       if service.status == .requiresApproval {
         logger.warning("event=daemon.restart_requires_approval")
         status = .requiresApproval
-        return false
+        return nil
       }
       throw error
     }
-    guard try recordRegistrationResult() else { return false }
+    guard try recordRegistrationResult() else { return nil }
 
     logger.info("event=daemon.restart_registered")
-    _ = try await waitForDaemon(at: socketPath, expectedBuild: expectedBuild)
+    let daemon = try await waitForDaemon(at: socketPath, expectedBuild: expectedBuild)
     logger.info("event=daemon.restart_succeeded")
-    return true
+    return daemon
   }
 
   private func makeAppBuildNumber() throws -> BuildNumber {

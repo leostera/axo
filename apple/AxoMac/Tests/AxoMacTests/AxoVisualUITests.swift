@@ -24,6 +24,7 @@ final class AxoVisualUITests: XCTestCase {
       helperURL: fixture.helperURL
     )
     try await fixture.waitForWindow()
+    XCTAssertTrue(app.menuBars.menuBarItems["Axo"].waitForExistence(timeout: 2))
     let window = app.windows.firstMatch
     try fixture.capture("00-window-opened", in: window)
 
@@ -146,8 +147,50 @@ final class AxoVisualUITests: XCTestCase {
     let sessionWrap = try fixture.capture("16-next-session-wrap", in: window)
     try fixture.assertContainsText("AXO VISUAL SURVIVOR 5690", in: sessionWrap)
 
+    window.typeText(
+      "printf '\\033[?1049h\\033[2J\\033[HAXO REATTACHED TUI 8751\\n'; sleep 30\n"
+    )
+    try await Task.sleep(for: .milliseconds(500))
+    app.terminate()
+    XCTAssertTrue(app.wait(for: .notRunning, timeout: 8))
+    fixture.launchApp()
+    try await fixture.waitForWindow()
+    try await waitForSessionCount(2, model: model)
+    try await fixture.waitForTerminalReady()
+    try await Task.sleep(for: .milliseconds(500))
+    let reopenedWindow = app.windows.firstMatch
+    let restoredTUI = try fixture.capture("17-restored-tui-after-relaunch", in: reopenedWindow)
+    try fixture.assertContainsText("AXO REATTACHED TUI 8751", in: restoredTUI)
+
+    let sidebarStartsCollapsed = app.buttons["Expand sidebar"].exists
+    let sidebarStartsExpanded = app.buttons["Collapse sidebar"].exists
+    XCTAssertTrue(sidebarStartsCollapsed || sidebarStartsExpanded)
+    reopenedWindow.typeKey("s", modifierFlags: .command)
+    if sidebarStartsCollapsed {
+      XCTAssertTrue(app.buttons["Collapse sidebar"].waitForExistence(timeout: 2))
+    } else {
+      XCTAssertTrue(app.buttons["Expand sidebar"].waitForExistence(timeout: 2))
+    }
+    reopenedWindow.typeKey("s", modifierFlags: .command)
+    if sidebarStartsCollapsed {
+      XCTAssertTrue(app.buttons["Expand sidebar"].waitForExistence(timeout: 2))
+    } else {
+      XCTAssertTrue(app.buttons["Collapse sidebar"].waitForExistence(timeout: 2))
+    }
+
     XCTAssertEqual(model.sessions.count, 2)
-    XCTAssertEqual(fixture.screenshotsWritten, 18)
+
+    app.menuBars.menuBarItems["Axo"].click()
+    let aboutMenuItem = app.menuItems["About Axo"]
+    XCTAssertTrue(aboutMenuItem.waitForExistence(timeout: 2))
+    aboutMenuItem.click()
+    let settingsWindow = app.windows["Axo Settings"]
+    XCTAssertTrue(settingsWindow.waitForExistence(timeout: 2))
+    XCTAssertTrue(settingsWindow.staticTexts["Axo D version"].exists)
+    XCTAssertTrue(settingsWindow.staticTexts["Axo D build"].exists)
+    XCTAssertTrue(settingsWindow.staticTexts["Daemon status"].exists)
+    try fixture.capture("18-about-settings", in: settingsWindow)
+    XCTAssertEqual(fixture.screenshotsWritten, 20)
   }
 
   private func assertNoAxoUITestAppIsAlreadyRunning() throws {
@@ -305,21 +348,25 @@ private final class UITestFixture {
   }
 
   func assertTextInLeftHalf(_ expected: String, in image: CGImage) throws {
-    let line = try XCTUnwrap(
-      try recognizedLine(containing: expected, in: image),
-      "Screenshot OCR did not locate '\(expected)'."
+    let matchingLines = try recognizedLines(in: image).filter {
+      $0.text.localizedCaseInsensitiveContains(expected)
+    }
+    XCTAssertFalse(matchingLines.isEmpty, "Screenshot OCR did not locate '\(expected)'.")
+    XCTAssertTrue(
+      matchingLines.contains { $0.bounds.midX < 0.5 },
+      "Expected '\(expected)' to appear in the left split pane."
     )
-    XCTAssertLessThan(
-      line.bounds.midX, 0.5, "Expected '\(expected)' to appear in the left split pane.")
   }
 
   func assertTextInRightHalf(_ expected: String, in image: CGImage) throws {
-    let line = try XCTUnwrap(
-      try recognizedLine(containing: expected, in: image),
-      "Screenshot OCR did not locate '\(expected)'."
+    let matchingLines = try recognizedLines(in: image).filter {
+      $0.text.localizedCaseInsensitiveContains(expected)
+    }
+    XCTAssertFalse(matchingLines.isEmpty, "Screenshot OCR did not locate '\(expected)'.")
+    XCTAssertTrue(
+      matchingLines.contains { $0.bounds.midX > 0.5 },
+      "Expected '\(expected)' to appear in the right split pane."
     )
-    XCTAssertGreaterThan(
-      line.bounds.midX, 0.5, "Expected '\(expected)' to appear in the right split pane.")
   }
 
   func assertTextBelow(_ text: String, _ otherText: String, in image: CGImage) throws {

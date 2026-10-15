@@ -1,7 +1,8 @@
-use std::io::{BufRead, BufReader, Write};
+use std::io::{BufRead, BufReader, Read, Write};
 use std::os::fd::{AsRawFd, FromRawFd, OwnedFd, RawFd};
 use std::os::unix::net::UnixStream;
-use std::process::{Child, Command, Stdio};
+use std::process::{Child, ChildStdout, Command, Stdio};
+use std::sync::mpsc::{self, Receiver};
 use std::thread;
 use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
@@ -203,6 +204,11 @@ fn open_shell(shell: &Value) -> (UnixStream, OwnedFd) {
         .set_write_timeout(Some(Duration::from_secs(3)))
         .unwrap();
     writeln!(control, "{}", shell["id"].as_i64().unwrap()).unwrap();
+    let mut replay_length = [0_u8; std::mem::size_of::<u64>()];
+    control.read_exact(&mut replay_length).unwrap();
+    let replay_length = u64::from_be_bytes(replay_length) as usize;
+    let mut replay = vec![0_u8; replay_length];
+    control.read_exact(&mut replay).unwrap();
 
     let mut byte = 0_u8;
     let mut vector = libc::iovec {
@@ -307,6 +313,55 @@ fn pty_contains(master: RawFd, needle: &[u8], timeout: Duration) -> bool {
     false
 }
 
+fn start_terminal_attach(attach_socket: &str, shell_id: i64) -> Child {
+    Command::new(axod_binary())
+        .arg("terminal-attach")
+        .arg("--attach-socket")
+        .arg(attach_socket)
+        .arg("--shell-id")
+        .arg(shell_id.to_string())
+        .stdin(Stdio::piped())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::inherit())
+        .spawn()
+        .expect("axod terminal-attach should start")
+}
+
+fn output_channel(mut stdout: ChildStdout) -> Receiver<Vec<u8>> {
+    let (sender, receiver) = mpsc::channel();
+    thread::spawn(move || {
+        let mut buffer = [0_u8; 8192];
+        loop {
+            match stdout.read(&mut buffer) {
+                Ok(0) | Err(_) => return,
+                Ok(count) => {
+                    if sender.send(buffer[..count].to_vec()).is_err() {
+                        return;
+                    }
+                }
+            }
+        }
+    });
+    receiver
+}
+
+fn output_contains(receiver: &Receiver<Vec<u8>>, needle: &[u8], timeout: Duration) -> bool {
+    let deadline = Instant::now() + timeout;
+    let mut output = Vec::new();
+    while Instant::now() < deadline {
+        match receiver.recv_timeout(deadline.saturating_duration_since(Instant::now())) {
+            Ok(chunk) => {
+                output.extend_from_slice(&chunk);
+                if output.windows(needle.len()).any(|window| window == needle) {
+                    return true;
+                }
+            }
+            Err(_) => return false,
+        }
+    }
+    false
+}
+
 fn active_sessions(socket: &std::path::Path) -> Vec<Value> {
     rpc(socket, "axo.session.list")["result"]["sessions"]
         .as_array()
@@ -336,7 +391,7 @@ fn terminal_attach_subcommand_bridges_input_and_output() {
         .arg(shell["id"].as_i64().unwrap().to_string())
         .stdin(Stdio::piped())
         .stdout(Stdio::piped())
-        .stderr(Stdio::piped())
+        .stderr(Stdio::inherit())
         .spawn()
         .expect("axod terminal-attach should start");
     let mut stdin = process.stdin.take().unwrap();
@@ -364,6 +419,60 @@ fn terminal_attach_subcommand_bridges_input_and_output() {
 }
 
 #[test]
+fn terminal_attach_replays_output_after_reconnect() {
+    let unique = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .unwrap()
+        .as_nanos();
+    let root =
+        std::path::PathBuf::from("/tmp").join(format!("axoa-{}-{unique}", std::process::id()));
+    let server_directory = root.join("server");
+    let socket = root.join("axod.sock");
+    let mut daemon = start_axod(&server_directory, &socket);
+    wait_for_socket(&socket, &mut daemon);
+    let session = active_sessions(&socket).remove(0);
+    let shell = &session["shells"][0];
+    let shell_id = shell["id"].as_i64().unwrap();
+    let attach_socket = shell["attachSocketPath"].as_str().unwrap();
+
+    let mut first = start_terminal_attach(attach_socket, shell_id);
+    let first_output = output_channel(first.stdout.take().unwrap());
+    writeln!(
+        first.stdin.as_mut().unwrap(),
+        "printf '\\033[2J\\033[H%s%s\\n' AXO_REPLAY_ SCREEN_9971; sleep 3"
+    )
+    .unwrap();
+    let first_output_seen = output_contains(
+        &first_output,
+        b"AXO_REPLAY_SCREEN_9971",
+        Duration::from_secs(5),
+    );
+    if !first_output_seen {
+        eprintln!(
+            "first attach logs: {}",
+            std::fs::read_to_string(server_directory.join("stderr.log")).unwrap_or_default()
+        );
+    }
+    assert!(first_output_seen);
+    first.kill().unwrap();
+    let _ = wait_for_exit(&mut first, Duration::from_secs(3));
+    thread::sleep(Duration::from_millis(100));
+
+    let mut second = start_terminal_attach(attach_socket, shell_id);
+    let second_output = output_channel(second.stdout.take().unwrap());
+    assert!(output_contains(
+        &second_output,
+        b"AXO_REPLAY_SCREEN_9971",
+        Duration::from_secs(5),
+    ));
+    second.kill().unwrap();
+    let _ = wait_for_exit(&mut second, Duration::from_secs(3));
+
+    daemon.stop();
+    let _ = std::fs::remove_dir_all(root);
+}
+
+#[test]
 fn daemon_creates_a_default_pty_session_and_restores_it_after_restart() {
     let unique = SystemTime::now()
         .duration_since(UNIX_EPOCH)
@@ -379,6 +488,7 @@ fn daemon_creates_a_default_pty_session_and_restores_it_after_restart() {
 
     let health = rpc(&socket, "axo.daemon.health");
     assert_eq!(health["result"]["status"], "running");
+    assert!(health["result"]["version"].as_str().is_some());
     assert!(health["result"]["buildNumber"].as_u64().is_some());
 
     let home = std::env::var("HOME").unwrap();
