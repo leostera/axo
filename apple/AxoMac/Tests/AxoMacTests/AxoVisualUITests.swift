@@ -11,6 +11,8 @@ import XCTest
 final class AxoVisualUITests: XCTestCase {
   func testLaunchSplitCloseExitSessionSelectionAndSurvivingShell() async throws {
     try assertNoAxoUITestAppIsAlreadyRunning()
+    let pasteboardSnapshot = PasteboardSnapshot()
+    defer { pasteboardSnapshot.restore() }
 
     let app = XCUIApplication(bundleIdentifier: "dev.leostera.axo.ui-tests")
     let fixture = try UITestFixture(app: app)
@@ -36,6 +38,22 @@ final class AxoVisualUITests: XCTestCase {
     try await Task.sleep(for: .milliseconds(500))
     let initialOutput = try fixture.capture("02-initial-shell-output", in: window)
     try fixture.assertContainsText("AXO VISUAL INITIAL 7319", in: initialOutput)
+
+    NSPasteboard.general.clearContents()
+    window.typeKey("a", modifierFlags: .command)
+    let copyDeadline = Date().addingTimeInterval(2)
+    var copiedSelection: String?
+    while Date() < copyDeadline {
+      copiedSelection = NSPasteboard.general.string(forType: .string)
+      if copiedSelection?.contains("AXO VISUAL INITIAL 7319") == true { break }
+      try await Task.sleep(for: .milliseconds(25))
+    }
+    XCTAssertTrue(
+      copiedSelection?.contains("AXO VISUAL INITIAL 7319") == true,
+      "Selecting terminal text should copy it to the system clipboard."
+    )
+    let selectedTerminal = try fixture.capture("02b-copy-on-select", in: window)
+    try fixture.assertContainsText("AXO VISUAL INITIAL 7319", in: selectedTerminal)
 
     window.typeKey("d", modifierFlags: .command)
     try await waitForShellCount(2, sessionID: initialSession.id, model: model)
@@ -129,7 +147,7 @@ final class AxoVisualUITests: XCTestCase {
     try fixture.assertContainsText("AXO VISUAL SURVIVOR 5690", in: sessionWrap)
 
     XCTAssertEqual(model.sessions.count, 2)
-    XCTAssertEqual(fixture.screenshotsWritten, 17)
+    XCTAssertEqual(fixture.screenshotsWritten, 18)
   }
 
   private func assertNoAxoUITestAppIsAlreadyRunning() throws {
@@ -412,6 +430,38 @@ private final class UITestFixture {
     }
   }
 
+}
+
+private struct PasteboardSnapshot {
+  private struct Representation {
+    let type: NSPasteboard.PasteboardType
+    let data: Data
+  }
+
+  private let items: [[Representation]]
+
+  init(pasteboard: NSPasteboard = .general) {
+    items = (pasteboard.pasteboardItems ?? []).map { item in
+      item.types.compactMap { type in
+        guard let data = item.data(forType: type) else { return nil }
+        return Representation(type: type, data: data)
+      }
+    }
+  }
+
+  func restore(to pasteboard: NSPasteboard = .general) {
+    pasteboard.clearContents()
+    let restoredItems = items.map { representations in
+      let item = NSPasteboardItem()
+      for representation in representations {
+        item.setData(representation.data, forType: representation.type)
+      }
+      return item
+    }
+    if !restoredItems.isEmpty {
+      pasteboard.writeObjects(restoredItems)
+    }
+  }
 }
 
 private struct ControlRequest: Encodable {

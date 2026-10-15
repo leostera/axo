@@ -14,7 +14,7 @@ Axo is an agentic harness with a native macOS frontend and a Rust daemon.
 - The daemon continues running when the menu-bar app quits. Check for Updates is intentionally a placeholder until Axo has a release channel.
 - A session is a tab containing one or more shells. Splits create additional shells in the selected tab; each shell has its own daemon-owned PTY and pinned libghostty surface. Pane and window title bars are omitted; keyboard commands are in the Terminal menu.
 - `axod terminal-attach --shell-id` bridges a Ghostty surface to a daemon-owned PTY and forwards terminal input mode and resize changes. The daemon restores open tabs and shells after restart and ensures at least one shell remains available.
-- `ghostty_repository.bzl` pins Ghostty and Zig, builds GhosttyKit for macOS, and packages Ghostty resources and terminfo through Bazel.
+- `ghostty_repository.bzl` pins Ghostty and Zig, builds GhosttyKit for macOS, and packages Ghostty resources and terminfo through Bazel. When the Ghostty app is installed, Axo uses its theme resources and loads the normal Ghostty config; copy-on-select writes selected terminal text to the system clipboard by default, with the Ghostty config able to override that default.
 - Bazel 9.3.0 is the shared build and test graph. Rust dependencies are resolved from `Cargo.lock`; Swift package dependencies are resolved from `apple/AxoRPC/Package.resolved`. The test graph includes a live Swift-client-to-Rust-daemon Unix-socket interoperability test.
 
 ## Native visual UI tests

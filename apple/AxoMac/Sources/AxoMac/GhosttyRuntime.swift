@@ -194,11 +194,7 @@ final class GhosttyRuntime: ObservableObject {
   }
 
   private func initialize() {
-    if let resourceDirectory = Bundle.main.resourceURL?.appendingPathComponent(
-      "ghostty-resources", isDirectory: true
-    ) {
-      setenv("GHOSTTY_RESOURCES_DIR", resourceDirectory.path, 1)
-    }
+    configureGhosttyResources()
 
     guard ghostty_init(UInt(CommandLine.argc), CommandLine.unsafeArgv) == GHOSTTY_SUCCESS else {
       errorMessage = "libghostty could not initialize."
@@ -209,6 +205,8 @@ final class GhosttyRuntime: ObservableObject {
       return
     }
 
+    // Load Axo's macOS default first so explicit Ghostty config values can override it.
+    loadAxoConfigDefaults(into: config)
     ghostty_config_load_default_files(config)
     ghostty_config_load_recursive_files(config)
     ghostty_config_finalize(config)
@@ -220,7 +218,14 @@ final class GhosttyRuntime: ObservableObject {
       action_cb: { _, _, _ in false },
       read_clipboard_cb: { _, _, _, _, _, _ in GHOSTTY_CLIPBOARD_READ_UNSUPPORTED },
       confirm_read_clipboard_cb: { _, _, _, _ in },
-      write_clipboard_cb: { _, _, _, _, _ in },
+      write_clipboard_cb: { _, location, content, count, confirm in
+        GhosttyRuntime.writeClipboard(
+          location: location,
+          content: content,
+          count: count,
+          confirm: confirm
+        )
+      },
       close_surface_cb: { _, _ in }
     )
 
@@ -234,6 +239,70 @@ final class GhosttyRuntime: ObservableObject {
     self.app = app
     ghostty_app_set_focus(app, NSApp.isActive)
     observeApplicationState()
+  }
+
+  private func configureGhosttyResources() {
+    if let configuredDirectory = ProcessInfo.processInfo.environment["GHOSTTY_RESOURCES_DIR"],
+      !configuredDirectory.isEmpty
+    {
+      return
+    }
+
+    let installedAppURL = NSWorkspace.shared.urlForApplication(
+      withBundleIdentifier: "com.mitchellh.ghostty"
+    )
+    let bundledResourcesURL = Bundle.main.resourceURL?.appendingPathComponent(
+      "ghostty-resources", isDirectory: true
+    )
+    guard
+      let resourceDirectory = GhosttyResourceLocator.resolve(
+        installedGhosttyAppURL: installedAppURL,
+        bundledResourcesURL: bundledResourcesURL
+      )
+    else {
+      return
+    }
+    setenv("GHOSTTY_RESOURCES_DIR", resourceDirectory.path, 1)
+  }
+
+  private func loadAxoConfigDefaults(into config: ghostty_config_t) {
+    let configURL = FileManager.default.temporaryDirectory
+      .appendingPathComponent("axo-ghostty-default-\(UUID().uuidString).ghostty")
+    do {
+      try "copy-on-select = clipboard\n".write(to: configURL, atomically: true, encoding: .utf8)
+    } catch {
+      errorMessage = "Axo could not enable copy-on-select: \(error.localizedDescription)"
+      return
+    }
+    defer { try? FileManager.default.removeItem(at: configURL) }
+    configURL.path.withCString { ghostty_config_load_file(config, $0) }
+  }
+
+  private static func writeClipboard(
+    location: ghostty_clipboard_e,
+    content: UnsafePointer<ghostty_clipboard_content_s>?,
+    count: Int,
+    confirm: Bool
+  ) {
+    // Confirmed writes need a prompt, which Axo does not provide yet; fail closed.
+    guard location == GHOSTTY_CLIPBOARD_STANDARD, !confirm, let content, count > 0 else { return }
+
+    // The callback owns this C buffer only for its duration; copy it before hopping to AppKit.
+    for index in 0..<count {
+      guard let mime = content[index].mime,
+        String(cString: mime) == "text/plain",
+        let bytes = content[index].data
+      else {
+        continue
+      }
+      let data = Data(bytes: bytes, count: Int(content[index].len))
+      let text = String(decoding: data, as: UTF8.self)
+      DispatchQueue.main.async {
+        NSPasteboard.general.clearContents()
+        NSPasteboard.general.setString(text, forType: .string)
+      }
+      return
+    }
   }
 
   private func observeApplicationState() {

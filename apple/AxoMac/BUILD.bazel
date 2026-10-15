@@ -28,6 +28,7 @@ swift_library(
 swift_test(
     name = "AxoMacTests",
     srcs = [
+        "Tests/AxoMacTests/GhosttyResourceLocatorTests.swift",
         "Tests/AxoMacTests/TerminalLayoutTests.swift",
         "Tests/AxoMacTests/TerminalSplitE2ETests.swift",
     ],
