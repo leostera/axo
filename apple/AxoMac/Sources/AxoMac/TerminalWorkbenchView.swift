@@ -223,16 +223,19 @@ private struct TerminalPaneView: View {
   @State private var terminalError: String?
 
   var body: some View {
-    GhosttyTerminalView(
-      runtime: ghostty,
-      shell: shell,
-      helperURL: sessions.helperURL,
-      isFocused: sessions.focusedShellID == shell.id,
-      onFocus: { sessions.focus(shell.id) },
-      onStatusChange: { status in
-        terminalError = status.hasPrefix("Connected to ") ? nil : status
-      }
-    )
+    GeometryReader { geometry in
+      GhosttyTerminalView(
+        runtime: ghostty,
+        shell: shell,
+        helperURL: sessions.helperURL,
+        size: geometry.size,
+        isFocused: sessions.focusedShellID == shell.id,
+        onFocus: { sessions.focus(shell.id) },
+        onStatusChange: { status in
+          terminalError = status.hasPrefix("Connected to ") ? nil : status
+        }
+      )
+    }
     .frame(maxWidth: .infinity, maxHeight: .infinity)
     .background(Color(nsColor: .textBackgroundColor))
     .overlay(alignment: .topLeading) {

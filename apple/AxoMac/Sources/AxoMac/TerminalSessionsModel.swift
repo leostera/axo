@@ -28,6 +28,12 @@ final class TerminalSessionsModel: ObservableObject {
     }
   }
 
+  init(socketPath: UnixSocketPath, helperURL: URL) {
+    self.socketPath = socketPath
+    socketPathError = nil
+    self.helperURL = helperURL
+  }
+
   func refresh() async {
     guard let socketPath else {
       errorMessage = socketPathError ?? "The Axo D socket path is unavailable."

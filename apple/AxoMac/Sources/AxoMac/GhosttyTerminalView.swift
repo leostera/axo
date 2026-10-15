@@ -8,6 +8,7 @@ struct GhosttyTerminalView: NSViewRepresentable {
   let runtime: GhosttyRuntime
   let shell: TerminalShell
   let helperURL: URL
+  let size: CGSize
   let isFocused: Bool
   let onFocus: () -> Void
   let onStatusChange: (String) -> Void
@@ -25,6 +26,7 @@ struct GhosttyTerminalView: NSViewRepresentable {
       onStatusChange: onStatusChange
     )
     host.attachSurface(surfaceView)
+    surfaceView.updateContentSize(size)
     if isFocused {
       surfaceView.requestFocus()
     }
@@ -39,6 +41,10 @@ struct GhosttyTerminalView: NSViewRepresentable {
       onStatusChange: onStatusChange
     )
     host.attachSurface(surfaceView)
+    if host.bounds.size != size {
+      host.needsLayout = true
+    }
+    surfaceView.updateContentSize(size)
     if isFocused {
       surfaceView.requestFocus()
     } else {
@@ -114,6 +120,7 @@ final class GhosttySurfaceNSView: NSView, @preconcurrency NSTextInputClient {
   private var shouldRequestFocus = false
   private var focusTask: Task<Void, Never>?
   private var trackingArea: NSTrackingArea?
+  private var contentSize: CGSize?
 
   init(runtime: GhosttyRuntime, onFocus: @escaping () -> Void) {
     self.runtime = runtime
@@ -209,6 +216,12 @@ final class GhosttySurfaceNSView: NSView, @preconcurrency NSTextInputClient {
     let surface = self.surface
     self.surface = nil
     return surface
+  }
+
+  func updateContentSize(_ size: CGSize) {
+    guard size.width > 0, size.height > 0 else { return }
+    contentSize = size
+    runtime?.updateSurfaceSize(in: self, contentSize: size)
   }
 
   override func mouseDown(with event: NSEvent) {
@@ -419,7 +432,7 @@ final class GhosttySurfaceNSView: NSView, @preconcurrency NSTextInputClient {
   }
 
   private func updateSurfaceScaleAndSize() {
-    runtime?.updateSurfaceSize(in: self)
+    runtime?.updateSurfaceSize(in: self, contentSize: contentSize ?? bounds.size)
   }
 
   private func updateSurfaceFocus(_ focused: Bool? = nil) {

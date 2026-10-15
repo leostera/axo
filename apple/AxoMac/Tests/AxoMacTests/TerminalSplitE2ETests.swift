@@ -109,6 +109,49 @@ final class TerminalSplitE2ETests: XCTestCase {
     XCTAssertEqual(rightSurface.frame, newRightHost.bounds)
   }
 
+  func testAddingAndRemovingNestedPanesKeepsSurvivingSurfacesInTheirLatestHosts() {
+    let initialHost = host(width: 1_000, height: 600)
+    let firstSplitLeftHost = host(width: 499.5, height: 600)
+    let firstSplitRightHost = host(width: 499.5, height: 600)
+    let nestedLeftHost = host(width: 499.5, height: 600)
+    let nestedTopHost = host(width: 499.5, height: 299.5)
+    let nestedBottomHost = host(width: 499.5, height: 299.5)
+    let collapsedLeftHost = host(width: 499.5, height: 600)
+    let collapsedRightHost = host(width: 499.5, height: 600)
+    let firstSurface = NSView()
+    let secondSurface = NSView()
+    let thirdSurface = NSView()
+
+    initialHost.attachSurface(firstSurface)
+    firstSplitLeftHost.attachSurface(firstSurface)
+    firstSplitRightHost.attachSurface(secondSurface)
+    nestedLeftHost.attachSurface(firstSurface)
+    nestedTopHost.attachSurface(secondSurface)
+    nestedBottomHost.attachSurface(thirdSurface)
+    nestedBottomHost.detachSurface()
+    collapsedLeftHost.attachSurface(firstSurface)
+    collapsedRightHost.attachSurface(secondSurface)
+
+    initialHost.setFrameSize(NSSize(width: 1, height: 1))
+    firstSplitLeftHost.setFrameSize(NSSize(width: 1, height: 1))
+    firstSplitRightHost.setFrameSize(NSSize(width: 1, height: 1))
+    nestedLeftHost.setFrameSize(NSSize(width: 1, height: 1))
+    nestedTopHost.setFrameSize(NSSize(width: 1, height: 1))
+    nestedBottomHost.setFrameSize(NSSize(width: 1, height: 1))
+    for staleHost in [
+      initialHost, firstSplitLeftHost, firstSplitRightHost, nestedLeftHost, nestedTopHost,
+      nestedBottomHost,
+    ] {
+      staleHost.layoutSubtreeIfNeeded()
+    }
+
+    XCTAssertTrue(firstSurface.superview === collapsedLeftHost)
+    XCTAssertTrue(secondSurface.superview === collapsedRightHost)
+    XCTAssertEqual(firstSurface.frame, collapsedLeftHost.bounds)
+    XCTAssertEqual(secondSurface.frame, collapsedRightHost.bounds)
+    XCTAssertNil(thirdSurface.superview)
+  }
+
   func testSwiftUISplitGeometryUsesRatioAndKeepsDividerGapForRightSplit() throws {
     let splitID = UUID()
     let coordinateSpace = "terminal-split-\(splitID.uuidString)"

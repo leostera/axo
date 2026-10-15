@@ -34,6 +34,19 @@ swift_test(
 )
 
 swift_test(
+    name = "TerminalWorkbenchE2ETests",
+    srcs = ["Tests/AxoMacTests/TerminalWorkbenchE2ETests.swift"],
+    copts = ["-swift-version", "5"],
+    data = ["//crates/axod:axod"],
+    env = {
+        "AXOD_TEST_BINARY": "$(rootpath //crates/axod:axod)",
+    },
+    deps = [":AxoMac"],
+    tags = ["no-sandbox"],
+    timeout = "short",
+)
+
+swift_test(
     name = "AxoAppSelfTestTests",
     srcs = ["Tests/AxoMacTests/TerminalAppE2ETests.swift"],
     copts = ["-swift-version", "5"],
@@ -87,6 +100,7 @@ xcodeproj(
         "//apple/AxoRPC:AxoRPCTests",
         "//apple/AxoDaemonManager:AxoDaemonManagerTests",
         "//apple/AxoMac:AxoMacTests",
+        "//apple/AxoMac:TerminalWorkbenchE2ETests",
         "//apple/AxoMac:AxoAppSelfTestTests",
     ],
 )

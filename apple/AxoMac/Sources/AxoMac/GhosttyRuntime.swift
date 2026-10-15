@@ -131,7 +131,7 @@ final class GhosttyRuntime: ObservableObject {
 
     view.attach(createdSurface)
     view.status = "Connected to shell \(shell.id)"
-    updateSurfaceSize(in: view)
+    updateSurfaceSize(in: view, contentSize: view.bounds.size)
   }
 
   func destroySurface(in view: GhosttySurfaceNSView) {
@@ -149,13 +149,17 @@ final class GhosttyRuntime: ObservableObject {
     ghostty_app_set_focus(app, focused)
   }
 
-  func updateSurfaceSize(in view: GhosttySurfaceNSView) {
+  func updateSurfaceSize(in view: GhosttySurfaceNSView, contentSize: CGSize) {
     guard let surface = view.surface else { return }
-    let scale = view.window?.backingScaleFactor ?? NSScreen.main?.backingScaleFactor ?? 1
-    ghostty_surface_set_content_scale(surface, scale, scale)
-    let backingSize = view.convertToBacking(view.bounds).size
-    let width = UInt32(max(0, backingSize.width.rounded()))
-    let height = UInt32(max(0, backingSize.height.rounded()))
+    let fallbackScale = view.window?.backingScaleFactor ?? NSScreen.main?.backingScaleFactor ?? 1
+    let frameSize = view.frame.size
+    let backingFrame = view.convertToBacking(view.frame)
+    let scaleX = frameSize.width > 0 ? backingFrame.width / frameSize.width : fallbackScale
+    let scaleY = frameSize.height > 0 ? backingFrame.height / frameSize.height : fallbackScale
+    ghostty_surface_set_content_scale(surface, scaleX, scaleY)
+    let backingSize = view.convertToBacking(contentSize)
+    let width = UInt32(max(0, backingSize.width))
+    let height = UInt32(max(0, backingSize.height))
     guard width > 0, height > 0 else { return }
     ghostty_surface_set_size(surface, width, height)
   }
