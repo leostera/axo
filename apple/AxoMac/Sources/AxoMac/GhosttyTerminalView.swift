@@ -13,18 +13,16 @@ struct GhosttyTerminalView: NSViewRepresentable {
   let onFocus: () -> Void
   let onStatusChange: (String) -> Void
 
-  func makeCoordinator() -> Coordinator {
-    Coordinator(runtime: runtime)
-  }
-
   func makeNSView(context: Context) -> GhosttySurfaceHostNSView {
-    let host = GhosttySurfaceHostNSView()
     let surfaceView = runtime.surfaceView(
       for: shell,
       helperURL: helperURL,
       onFocus: onFocus,
       onStatusChange: onStatusChange
     )
+    guard let host = runtime.surfaceHost(for: shell.id) else {
+      preconditionFailure("Ghostty runtime did not retain a host for shell \(shell.id).")
+    }
     host.attachSurface(surfaceView)
     surfaceView.updateContentSize(size)
     if isFocused {
@@ -52,17 +50,6 @@ struct GhosttyTerminalView: NSViewRepresentable {
     }
   }
 
-  static func dismantleNSView(_ host: GhosttySurfaceHostNSView, coordinator: Coordinator) {
-    coordinator.runtime.detachSurface(from: host)
-  }
-
-  final class Coordinator {
-    let runtime: GhosttyRuntime
-
-    init(runtime: GhosttyRuntime) {
-      self.runtime = runtime
-    }
-  }
 }
 
 @MainActor

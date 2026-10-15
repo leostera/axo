@@ -17,6 +17,25 @@ Axo is an agentic harness with a native macOS frontend and a Rust daemon.
 - `ghostty_repository.bzl` pins Ghostty and Zig, builds GhosttyKit for macOS, and packages Ghostty resources and terminfo through Bazel.
 - Bazel 9.3.0 is the shared build and test graph. Rust dependencies are resolved from `Cargo.lock`; Swift package dependencies are resolved from `apple/AxoRPC/Package.resolved`. The test graph includes a live Swift-client-to-Rust-daemon Unix-socket interoperability test.
 
+## Native visual UI tests
+
+The opt-in `//apple/AxoMac:AxoVisualUITests` target is a native XCUITest of a separate-bundle build of the real Axo app. Each test starts an owned `axod` process with private socket, database, home, and test-control directories, then launches the app through `XCUIApplication` with those paths injected. The UI-test bundle ID is deliberately distinct from production, and the test app never registers or restarts the production LaunchAgent. Cleanup stops only the test app and daemon owned by that fixture.
+
+XCUITest sends actual keyboard shortcuts and terminal text to real libghostty surfaces. A file bridge, present only in the alternate test bundle, provides bounded readiness and surface-count checks; the production app has no test control endpoint. Every workflow checkpoint captures a PNG of the app window, attaches it to the XCTest result, and also writes it under `$TMPDIR/axo-ui-screenshots/<run-id>/` (the test log prints the exact directory). OCR checks on terminal markers and daemon-state assertions detect missing output as well as blank panes. The `manual` tag keeps this interactive test out of the ordinary headless `bazel test //...` run.
+
+Run the GUI suite on an unlocked macOS 14+ desktop. macOS may require a one-time system authorization to enable Xcode UI Automation; approve it through the normal macOS authentication prompt/settings. If `testmanagerd` cannot enable Automation Mode, the runner exits before the test fixture starts; do not try to bypass that OS authorization.
+
+```sh
+bazel run //apple/AxoMac:xcodeproj
+xcodebuild test \\
+  -project apple/AxoMac/AxoMac.xcodeproj \\
+  -scheme AxoVisualUITests \\
+  -destination 'platform=macOS' \\
+  -resultBundlePath /tmp/axo-visual-ui.xcresult
+```
+
+The test bundle and its app/helper dependencies are built from Bazel targets; Xcode's native UI-test runner is used because `rules_apple`'s default macOS UI-test runner is unsupported for interactive UI automation. Open the `.xcresult` in Xcode to inspect attached screenshots, or open the printed temporary screenshot directory directly.
+
 ## Build and test
 
 ```sh

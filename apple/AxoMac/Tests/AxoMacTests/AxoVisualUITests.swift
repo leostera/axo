@@ -1,0 +1,495 @@
+import AppKit
+import AxoRPC
+import CoreGraphics
+import Darwin
+import Foundation
+import Vision
+import XCTest
+
+@testable import AxoMac
+
+@MainActor
+final class AxoVisualUITests: XCTestCase {
+  func testLaunchSplitCloseExitSessionSelectionAndSurvivingShell() async throws {
+    try assertNoAxoUITestAppIsAlreadyRunning()
+
+    let app = XCUIApplication(bundleIdentifier: "dev.leostera.axo.ui-tests")
+    let fixture = try UITestFixture(app: app)
+    defer { fixture.stop() }
+    fixture.launchApp()
+
+    let model = TerminalSessionsModel(
+      socketPath: try UnixSocketPath(fixture.socketURL.path),
+      helperURL: fixture.helperURL
+    )
+    try await fixture.waitForWindow()
+    let window = app.windows.firstMatch
+    try fixture.capture("00-window-opened", in: window)
+
+    try await waitForSessionCount(1, model: model)
+    try await fixture.waitForTerminalReady()
+    try fixture.capture("01-initial-terminal", in: window)
+
+    let initialSession = try XCTUnwrap(model.sessions.first)
+    XCTAssertEqual(initialSession.shells.count, 1)
+    window.click()
+    window.typeText("printf 'AXO VISUAL INITIAL 7319\\n'\n")
+    try await Task.sleep(for: .milliseconds(500))
+    let initialOutput = try fixture.capture("02-initial-shell-output", in: window)
+    try fixture.assertContainsText("AXO VISUAL INITIAL 7319", in: initialOutput)
+
+    window.typeKey("d", modifierFlags: .command)
+    try await waitForShellCount(2, sessionID: initialSession.id, model: model)
+    try await fixture.waitForSurfaceCount(2)
+    let firstSplit = try fixture.capture("03-split-right", in: window)
+    try fixture.assertContainsText("AXO VISUAL INITIAL 7319", in: firstSplit)
+    try fixture.assertTextInLeftHalf("AXO VISUAL INITIAL 7319", in: firstSplit)
+
+    window.typeText("printf 'AXO VISUAL RIGHT 2846\\n'\n")
+    try await Task.sleep(for: .milliseconds(500))
+    let rightOutput = try fixture.capture("04-split-right-output", in: window)
+    try fixture.assertContainsText("AXO VISUAL INITIAL 7319", in: rightOutput)
+    try fixture.assertContainsText("AXO VISUAL RIGHT 2846", in: rightOutput)
+    try fixture.assertTextInLeftHalf("AXO VISUAL INITIAL 7319", in: rightOutput)
+    try fixture.assertTextInRightHalf("AXO VISUAL RIGHT 2846", in: rightOutput)
+
+    window.typeKey("d", modifierFlags: [.command, .shift])
+    try await waitForShellCount(3, sessionID: initialSession.id, model: model)
+    try await fixture.waitForSurfaceCount(3)
+    let nestedSplit = try fixture.capture("05-nested-split-down", in: window)
+    try fixture.assertContainsText("AXO VISUAL INITIAL 7319", in: nestedSplit)
+    try fixture.assertContainsText("AXO VISUAL RIGHT 2846", in: nestedSplit)
+
+    window.typeText("printf 'AXO VISUAL LOWER 3691\\n'\n")
+    try await Task.sleep(for: .milliseconds(500))
+    let nestedOutput = try fixture.capture("06-nested-split-output", in: window)
+    try fixture.assertTextInLeftHalf("AXO VISUAL INITIAL 7319", in: nestedOutput)
+    try fixture.assertTextInRightHalf("AXO VISUAL RIGHT 2846", in: nestedOutput)
+    try fixture.assertTextInRightHalf("AXO VISUAL LOWER 3691", in: nestedOutput)
+    try fixture.assertTextBelow("AXO VISUAL LOWER 3691", "AXO VISUAL RIGHT 2846", in: nestedOutput)
+
+    window.typeKey("w", modifierFlags: .command)
+    try await waitForShellCount(2, sessionID: initialSession.id, model: model)
+    try await fixture.waitForSurfaceCount(2)
+    let afterClose = try fixture.capture("07-close-focused-shell", in: window)
+    try fixture.assertContainsText("AXO VISUAL INITIAL 7319", in: afterClose)
+    try fixture.assertContainsText("AXO VISUAL RIGHT 2846", in: afterClose)
+    try fixture.assertDoesNotContainText("AXO VISUAL LOWER 3691", in: afterClose)
+
+    window.typeText("exit\n")
+    try await waitForShellCount(1, sessionID: initialSession.id, model: model)
+    try await fixture.waitForSurfaceCount(1)
+    let afterExit = try fixture.capture("08-shell-exit", in: window)
+    try fixture.assertContainsText("AXO VISUAL RIGHT 2846", in: afterExit)
+    try fixture.assertDoesNotContainText("AXO VISUAL INITIAL 7319", in: afterExit)
+
+    window.typeText("printf 'AXO VISUAL SURVIVOR 5690\\n'\n")
+    try await Task.sleep(for: .milliseconds(500))
+    let survivorOutput = try fixture.capture("09-surviving-shell-output", in: window)
+    try fixture.assertContainsText("AXO VISUAL SURVIVOR 5690", in: survivorOutput)
+
+    window.typeKey("t", modifierFlags: .command)
+    try await waitForSessionCount(2, model: model)
+    try await fixture.waitForSurfaceCount(2)
+    let newSession = try fixture.capture("10-new-session", in: window)
+    try fixture.assertDoesNotContainText("AXO VISUAL SURVIVOR 5690", in: newSession)
+
+    let existingSessionButton = app.buttons["Session \(initialSession.id)"]
+    XCTAssertTrue(existingSessionButton.waitForExistence(timeout: 5))
+    existingSessionButton.click()
+    let selectedSession = try fixture.capture("11-select-existing-session", in: window)
+    try fixture.assertContainsText("AXO VISUAL SURVIVOR 5690", in: selectedSession)
+
+    XCTAssertEqual(model.sessions.count, 2)
+    XCTAssertEqual(fixture.screenshotsWritten, 12)
+  }
+
+  private func assertNoAxoUITestAppIsAlreadyRunning() throws {
+    let testBundleID = "dev.leostera.axo.ui-tests"
+    let running = NSWorkspace.shared.runningApplications.first {
+      $0.bundleIdentifier == testBundleID && !$0.isTerminated
+    }
+    guard let running else { return }
+    throw UITestError.frontendAlreadyRunning(
+      "\(testBundleID) (pid \(running.processIdentifier))")
+  }
+
+  private func waitForSessionCount(_ count: Int, model: TerminalSessionsModel) async throws {
+    let deadline = Date().addingTimeInterval(8)
+    while Date() < deadline {
+      await model.refresh()
+      if model.sessions.count == count { return }
+      try await Task.sleep(for: .milliseconds(100))
+    }
+    throw UITestError.sessionCountTimedOut(count, model.sessions.count)
+  }
+
+  private func waitForShellCount(
+    _ count: Int,
+    sessionID: Int64,
+    model: TerminalSessionsModel
+  ) async throws {
+    let deadline = Date().addingTimeInterval(8)
+    while Date() < deadline {
+      await model.refresh()
+      if model.session(for: sessionID)?.shells.count == count { return }
+      try await Task.sleep(for: .milliseconds(100))
+    }
+    throw UITestError.shellCountTimedOut(
+      count, model.session(for: sessionID)?.shells.count ?? 0, sessionID)
+  }
+}
+
+@MainActor
+private final class UITestFixture {
+  private struct RecognizedLine {
+    let text: String
+    let bounds: CGRect
+  }
+
+  let root: URL
+  let socketURL: URL
+  let helperURL: URL
+  let app: XCUIApplication
+  private let daemon: Process
+  private let controlDirectory: URL
+  private let screenshotDirectory: URL
+  private var didLaunchApp = false
+  private(set) var screenshotsWritten = 0
+
+  init(app: XCUIApplication) throws {
+    self.app = app
+    let resources = Bundle(for: AxoVisualUITests.self).resourceURL
+    guard let helperURL = resources?.appendingPathComponent("axod"),
+      FileManager.default.isExecutableFile(atPath: helperURL.path)
+    else { throw UITestError.bundledHelperMissing(resources?.path ?? "<no test resources>") }
+    self.helperURL = helperURL
+
+    root = URL(fileURLWithPath: "/tmp", isDirectory: true)
+      .appendingPathComponent(
+        "axo-visual-ui-\(ProcessInfo.processInfo.processIdentifier)-\(UUID().uuidString.prefix(8))",
+        isDirectory: true
+      )
+    let serverDirectory = root.appendingPathComponent("server", isDirectory: true)
+    let homeDirectory = root.appendingPathComponent("home", isDirectory: true)
+    let temporaryDirectory = root.appendingPathComponent("tmp", isDirectory: true)
+    socketURL = root.appendingPathComponent("axod.sock")
+    controlDirectory = root.appendingPathComponent("control", isDirectory: true)
+    screenshotDirectory = URL(fileURLWithPath: NSTemporaryDirectory(), isDirectory: true)
+      .appendingPathComponent("axo-ui-screenshots", isDirectory: true)
+      .appendingPathComponent(UUID().uuidString, isDirectory: true)
+
+    try FileManager.default.createDirectory(at: root, withIntermediateDirectories: true)
+    try FileManager.default.setAttributes([.posixPermissions: 0o700], ofItemAtPath: root.path)
+    try FileManager.default.createDirectory(
+      at: serverDirectory, withIntermediateDirectories: true)
+    try FileManager.default.createDirectory(at: homeDirectory, withIntermediateDirectories: true)
+    try FileManager.default.createDirectory(
+      at: temporaryDirectory, withIntermediateDirectories: true)
+    try FileManager.default.createDirectory(
+      at: controlDirectory, withIntermediateDirectories: true)
+    try FileManager.default.setAttributes(
+      [.posixPermissions: 0o700], ofItemAtPath: controlDirectory.path)
+    try FileManager.default.createDirectory(
+      at: screenshotDirectory, withIntermediateDirectories: true)
+    _ = FileManager.default.createFile(
+      atPath: serverDirectory.appendingPathComponent("stderr.log").path,
+      contents: nil
+    )
+
+    daemon = Process()
+    daemon.executableURL = helperURL
+    daemon.arguments = ["--socket", socketURL.path, "--server-dir", serverDirectory.path]
+    daemon.standardOutput = FileHandle.nullDevice
+    daemon.standardError = try FileHandle(
+      forWritingTo: serverDirectory.appendingPathComponent("stderr.log"))
+    daemon.environment = Self.testEnvironment(
+      homeDirectory: homeDirectory, temporaryDirectory: temporaryDirectory)
+    do {
+      try daemon.run()
+      try waitForSocket()
+    } catch {
+      if Self.stop(daemon) {
+        try? FileManager.default.removeItem(at: root)
+      }
+      throw error
+    }
+  }
+
+  func launchApp() {
+    let homeDirectory = root.appendingPathComponent("home", isDirectory: true)
+    let temporaryDirectory = root.appendingPathComponent("tmp", isDirectory: true)
+    var environment = Self.testEnvironment(
+      homeDirectory: homeDirectory, temporaryDirectory: temporaryDirectory)
+    environment["AXO_UI_TEST_SOCKET"] = socketURL.path
+    environment["AXO_UI_TEST_HELPER"] = helperURL.path
+    environment["AXO_UI_TEST_CONTROL_DIR"] = controlDirectory.path
+    app.launchArguments = ["--ui-test"]
+    app.launchEnvironment = environment
+    app.launch()
+    didLaunchApp = true
+  }
+
+  func waitForWindow() async throws {
+    guard app.wait(for: .runningForeground, timeout: 12),
+      app.windows.firstMatch.waitForExistence(timeout: 8)
+    else { throw UITestError.windowTimedOut }
+  }
+
+  func waitForTerminalReady() async throws {
+    try await perform(ControlRequest(operation: "wait-ready"))
+  }
+
+  func waitForSurfaceCount(_ count: Int) async throws {
+    try await perform(
+      ControlRequest(operation: "wait-surface-count", minimumSurfaceCount: count))
+  }
+
+  @discardableResult
+  func capture(_ name: String, in window: XCUIElement) throws -> CGImage {
+    let screenshot = window.screenshot()
+    let data = screenshot.pngRepresentation
+    let url = screenshotDirectory.appendingPathComponent("\(name).png")
+    try data.write(to: url, options: .atomic)
+    let attachment = XCTAttachment(data: data, uniformTypeIdentifier: "public.png")
+    attachment.name = name
+    attachment.lifetime = .keepAlways
+    XCTContext.runActivity(named: "Screenshot: \(name)") { activity in
+      activity.add(attachment)
+    }
+    screenshotsWritten += 1
+    print("AXO_UI_SCREENSHOT \(url.path)")
+
+    guard let bitmap = NSBitmapImageRep(data: data), let image = bitmap.cgImage else {
+      throw UITestError.couldNotDecodeScreenshot(name)
+    }
+    guard Self.hasVisiblePixels(image) else { throw UITestError.blankScreenshot(name) }
+    return image
+  }
+
+  func assertContainsText(_ expected: String, in image: CGImage) throws {
+    let lines = try recognizedLines(in: image)
+    let recognizedText = lines.map(\.text).joined(separator: " ")
+    XCTAssertTrue(
+      recognizedText.localizedCaseInsensitiveContains(expected),
+      "Screenshot OCR did not find '\(expected)'. Recognized: \(recognizedText)"
+    )
+  }
+
+  func assertDoesNotContainText(_ expected: String, in image: CGImage) throws {
+    let lines = try recognizedLines(in: image)
+    let recognizedText = lines.map(\.text).joined(separator: " ")
+    XCTAssertFalse(
+      recognizedText.localizedCaseInsensitiveContains(expected),
+      "Screenshot unexpectedly contains '\(expected)'. Recognized: \(recognizedText)"
+    )
+  }
+
+  func assertTextInLeftHalf(_ expected: String, in image: CGImage) throws {
+    let line = try XCTUnwrap(
+      try recognizedLine(containing: expected, in: image),
+      "Screenshot OCR did not locate '\(expected)'."
+    )
+    XCTAssertLessThan(
+      line.bounds.midX, 0.5, "Expected '\(expected)' to appear in the left split pane.")
+  }
+
+  func assertTextInRightHalf(_ expected: String, in image: CGImage) throws {
+    let line = try XCTUnwrap(
+      try recognizedLine(containing: expected, in: image),
+      "Screenshot OCR did not locate '\(expected)'."
+    )
+    XCTAssertGreaterThan(
+      line.bounds.midX, 0.5, "Expected '\(expected)' to appear in the right split pane.")
+  }
+
+  func assertTextBelow(_ text: String, _ otherText: String, in image: CGImage) throws {
+    let line = try XCTUnwrap(
+      try recognizedLine(containing: text, in: image),
+      "Screenshot OCR did not locate '\(text)'."
+    )
+    let otherLine = try XCTUnwrap(
+      try recognizedLine(containing: otherText, in: image),
+      "Screenshot OCR did not locate '\(otherText)'."
+    )
+    XCTAssertLessThan(
+      line.bounds.midY, otherLine.bounds.midY,
+      "Expected '\(text)' to appear below '\(otherText)' in the nested split."
+    )
+  }
+
+  private func recognizedLine(containing text: String, in image: CGImage) throws -> RecognizedLine?
+  {
+    try recognizedLines(in: image).first {
+      $0.text.localizedCaseInsensitiveContains(text)
+    }
+  }
+
+  private func recognizedLines(in image: CGImage) throws -> [RecognizedLine] {
+    let request = VNRecognizeTextRequest()
+    request.recognitionLevel = .accurate
+    request.usesLanguageCorrection = false
+    try VNImageRequestHandler(cgImage: image).perform([request])
+    return request.results?.compactMap { observation in
+      guard let text = observation.topCandidates(1).first?.string else { return nil }
+      return RecognizedLine(text: text, bounds: observation.boundingBox)
+    } ?? []
+  }
+
+  func stop() {
+    if didLaunchApp, app.state != .notRunning {
+      app.terminate()
+      _ = app.wait(for: .notRunning, timeout: 4)
+    }
+    guard Self.stop(daemon) else {
+      XCTFail("The isolated axod did not stop; preserving its private root at \(root.path).")
+      print("AXO_UI_SCREENSHOTS \(screenshotDirectory.path)")
+      return
+    }
+    try? FileManager.default.removeItem(at: root)
+    print("AXO_UI_SCREENSHOTS \(screenshotDirectory.path)")
+  }
+
+  private func perform(_ request: ControlRequest) async throws {
+    let requestURL = controlDirectory.appendingPathComponent("request.json")
+    let responseURL = controlDirectory.appendingPathComponent("response-\(request.id).json")
+    guard !FileManager.default.fileExists(atPath: requestURL.path) else {
+      throw UITestError.controlRequestAlreadyPending
+    }
+    try JSONEncoder().encode(request).write(to: requestURL, options: .atomic)
+
+    let timeout: TimeInterval = request.operation.hasPrefix("wait-") ? 14 : 6
+    let deadline = Date().addingTimeInterval(timeout)
+    while Date() < deadline {
+      if let data = try? Data(contentsOf: responseURL) {
+        try? FileManager.default.removeItem(at: responseURL)
+        let response = try JSONDecoder().decode(ControlResponse.self, from: data)
+        guard response.id == request.id else { throw UITestError.wrongControlResponse }
+        if let error = response.error { throw UITestError.appActionFailed(error) }
+        return
+      }
+      try await Task.sleep(for: .milliseconds(25))
+    }
+    throw UITestError.controlRequestTimedOut(request.operation)
+  }
+
+  private static func testEnvironment(homeDirectory: URL, temporaryDirectory: URL)
+    -> [String: String]
+  {
+    let inherited = ProcessInfo.processInfo.environment
+    var environment: [String: String] = [
+      "HOME": homeDirectory.path,
+      "TMPDIR": temporaryDirectory.path,
+    ]
+    for key in ["PATH", "SHELL", "USER", "LOGNAME", "LANG", "LC_ALL", "TERM"] {
+      if let value = inherited[key] { environment[key] = value }
+    }
+    return environment
+  }
+
+  private func waitForSocket() throws {
+    let deadline = Date().addingTimeInterval(6)
+    while Date() < deadline {
+      if FileManager.default.fileExists(atPath: socketURL.path) { return }
+      guard daemon.isRunning else { throw UITestError.daemonExited(daemon.terminationStatus) }
+      Thread.sleep(forTimeInterval: 0.02)
+    }
+    throw UITestError.daemonTimedOut
+  }
+
+  private static func hasVisiblePixels(_ image: CGImage) -> Bool {
+    guard let providerData = image.dataProvider?.data,
+      let data = providerData as Data?,
+      !data.isEmpty
+    else { return false }
+
+    let bytesPerPixel = max(1, image.bitsPerPixel / 8)
+    let xStride = max(1, image.width / 32)
+    let yStride = max(1, image.height / 32)
+    return data.withUnsafeBytes { bytes in
+      guard let baseAddress = bytes.baseAddress?.assumingMemoryBound(to: UInt8.self) else {
+        return false
+      }
+      for y in stride(from: 0, to: image.height, by: yStride) {
+        for x in stride(from: 0, to: image.width, by: xStride) {
+          let offset = y * image.bytesPerRow + x * bytesPerPixel
+          guard offset + min(2, bytesPerPixel - 1) < data.count else { continue }
+          if (0..<min(3, bytesPerPixel)).contains(where: { baseAddress[offset + $0] > 12 }) {
+            return true
+          }
+        }
+      }
+      return false
+    }
+  }
+
+  private static func stop(_ process: Process) -> Bool {
+    guard process.isRunning else { return true }
+    process.terminate()
+    let gracefulDeadline = Date().addingTimeInterval(3)
+    while process.isRunning && Date() < gracefulDeadline {
+      Thread.sleep(forTimeInterval: 0.02)
+    }
+    guard process.isRunning else { return true }
+    _ = Darwin.kill(process.processIdentifier, SIGKILL)
+    let killDeadline = Date().addingTimeInterval(2)
+    while process.isRunning && Date() < killDeadline {
+      Thread.sleep(forTimeInterval: 0.02)
+    }
+    return !process.isRunning
+  }
+}
+
+private struct ControlRequest: Encodable {
+  let id = UUID().uuidString
+  let operation: String
+  var minimumSurfaceCount: Int?
+}
+
+private struct ControlResponse: Decodable {
+  let id: String
+  let error: String?
+}
+
+private enum UITestError: Error, LocalizedError {
+  case frontendAlreadyRunning(String)
+  case bundledHelperMissing(String)
+  case couldNotDecodeScreenshot(String)
+  case blankScreenshot(String)
+  case daemonExited(Int32)
+  case daemonTimedOut
+  case controlRequestAlreadyPending
+  case controlRequestTimedOut(String)
+  case wrongControlResponse
+  case appActionFailed(String)
+  case windowTimedOut
+  case sessionCountTimedOut(Int, Int)
+  case shellCountTimedOut(Int, Int, Int64)
+
+  var errorDescription: String? {
+    switch self {
+    case .frontendAlreadyRunning(let existing):
+      "Refusing to run visual UI tests while an Axo UI-test app is already running: \(existing). Terminate it explicitly, then rerun."
+    case .bundledHelperMissing(let path):
+      "The test bundle's axod helper is missing or not executable: \(path)."
+    case .couldNotDecodeScreenshot(let name):
+      "Could not decode the screenshot at checkpoint \(name)."
+    case .blankScreenshot(let name):
+      "The Axo window remained visually blank at screenshot checkpoint \(name)."
+    case .daemonExited(let status):
+      "The isolated axod exited before opening its socket (status \(status))."
+    case .daemonTimedOut: "The isolated axod did not create its socket within six seconds."
+    case .controlRequestAlreadyPending: "The app has an unprocessed UI-test action."
+    case .controlRequestTimedOut(let action):
+      "The app did not acknowledge UI-test action \(action) within its bounded wait."
+    case .wrongControlResponse: "The app responded to a different UI-test action."
+    case .appActionFailed(let error): "The app rejected the requested UI-test action: \(error)"
+    case .windowTimedOut:
+      "The app did not present its terminal window in the foreground within twelve seconds."
+    case .sessionCountTimedOut(let expected, let actual):
+      "Expected \(expected) sessions within eight seconds; found \(actual)."
+    case .shellCountTimedOut(let expected, let actual, let sessionID):
+      "Expected \(expected) shells in session \(sessionID) within eight seconds; found \(actual)."
+    }
+  }
+}

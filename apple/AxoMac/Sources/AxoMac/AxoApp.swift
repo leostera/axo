@@ -1,19 +1,25 @@
 import AppKit
 import AxoDaemonManager
+import AxoRPC
 import Darwin
 import SwiftUI
 
 @main
 struct AxoApp: App {
+  private static let uiTestBundleIdentifier = "dev.leostera.axo.ui-tests"
+
   @StateObject private var daemon: DaemonController
   @StateObject private var sessions: TerminalSessionsModel
   @StateObject private var ghostty: GhosttyRuntime
+  private let isUITestApp: Bool
 
   init() {
     let daemon = DaemonController()
+    let isUITestApp = Bundle.main.bundleIdentifier == Self.uiTestBundleIdentifier
     _daemon = StateObject(wrappedValue: daemon)
-    _sessions = StateObject(wrappedValue: TerminalSessionsModel())
+    _sessions = StateObject(wrappedValue: Self.makeSessions(isUITestApp: isUITestApp))
     _ghostty = StateObject(wrappedValue: GhosttyRuntime())
+    self.isUITestApp = isUITestApp
 
     if ProcessInfo.processInfo.arguments.contains("--self-test") {
       Task.detached {
@@ -29,8 +35,28 @@ struct AxoApp: App {
           Darwin.exit(1)
         }
       }
-    } else {
+    } else if !isUITestApp {
       daemon.startIfNeeded()
+    }
+  }
+
+  private static func makeSessions(isUITestApp: Bool) -> TerminalSessionsModel {
+    guard isUITestApp else { return TerminalSessionsModel() }
+    let environment = ProcessInfo.processInfo.environment
+    guard let socket = environment["AXO_UI_TEST_SOCKET"],
+      let helper = environment["AXO_UI_TEST_HELPER"],
+      let controlDirectory = environment["AXO_UI_TEST_CONTROL_DIR"],
+      FileManager.default.fileExists(atPath: controlDirectory)
+    else {
+      fatalError("The Axo UI-test app requires isolated socket, helper, and control paths.")
+    }
+    do {
+      return TerminalSessionsModel(
+        socketPath: try UnixSocketPath(socket),
+        helperURL: URL(fileURLWithPath: helper)
+      )
+    } catch {
+      fatalError("The Axo UI-test socket path is invalid: \(error)")
     }
   }
 
@@ -38,13 +64,26 @@ struct AxoApp: App {
     MenuBarExtra {
       AxoMenu(daemon: daemon)
     } label: {
-      Label("Axo", systemImage: "command")
+      AxoMenuBarLabel()
     }
     .menuBarExtraStyle(.menu)
 
     Window("Axo Terminal", id: "terminal") {
-      TerminalWorkbenchView(daemon: daemon, sessions: sessions)
-        .environmentObject(ghostty)
+      TerminalWorkbenchView(
+        daemon: daemon,
+        sessions: sessions,
+        daemonIsRunningOverride: isUITestApp ? true : nil
+      )
+      .environmentObject(ghostty)
+      .task {
+        guard isUITestApp else { return }
+        NSApp.activate(ignoringOtherApps: true)
+        guard let path = ProcessInfo.processInfo.environment["AXO_UI_TEST_CONTROL_DIR"] else {
+          return
+        }
+        await TerminalUITestAutomation(sessions: sessions, ghostty: ghostty)
+          .run(in: URL(fileURLWithPath: path, isDirectory: true))
+      }
     }
     .windowStyle(.hiddenTitleBar)
     .defaultSize(width: 1000, height: 680)
@@ -86,6 +125,21 @@ struct AxoApp: App {
       SettingsView(daemon: daemon)
     }
     .windowResizability(.contentSize)
+  }
+}
+
+private struct AxoMenuBarLabel: View {
+  @Environment(\.openWindow) private var openWindow
+  @State private var didOpenTerminal = false
+
+  var body: some View {
+    Label("Axo", systemImage: "command")
+      .task {
+        guard !didOpenTerminal else { return }
+        didOpenTerminal = true
+        guard !ProcessInfo.processInfo.arguments.contains("--self-test") else { return }
+        openWindow(id: "terminal")
+      }
   }
 }
 

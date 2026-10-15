@@ -1,4 +1,4 @@
-load("@rules_apple//apple:macos.bzl", "macos_application")
+load("@rules_apple//apple:macos.bzl", "macos_application", "macos_ui_test")
 load("@rules_apple//apple:versioning.bzl", "apple_bundle_version")
 load("@rules_swift//swift:swift_library.bzl", "swift_library")
 load("@rules_swift//swift:swift_test.bzl", "swift_test")
@@ -8,6 +8,7 @@ package(default_visibility = ["//visibility:public"])
 
 exports_files([
     "Info.plist",
+    "AxoUITest-Info.plist",
     "Resources/dev.leostera.axo.axod.plist",
 ])
 
@@ -44,6 +45,24 @@ swift_test(
     deps = [":AxoMac"],
     tags = ["no-sandbox"],
     timeout = "short",
+)
+
+swift_library(
+    name = "AxoVisualUITestsLib",
+    testonly = True,
+    srcs = ["Tests/AxoMacTests/AxoVisualUITests.swift"],
+    copts = ["-swift-version", "5"],
+    deps = [":AxoMac"],
+)
+
+macos_ui_test(
+    name = "AxoVisualUITests",
+    minimum_os_version = "14.0",
+    test_host = ":AxoUITestApp",
+    resources = ["//crates/axod:axod"],
+    deps = [":AxoVisualUITestsLib"],
+    tags = ["manual", "no-sandbox"],
+    timeout = "long",
 )
 
 swift_test(
@@ -91,16 +110,35 @@ macos_application(
     deps = [":AxoMac"],
 )
 
+macos_application(
+    name = "AxoUITestApp",
+    bundle_id = "dev.leostera.axo.ui-tests",
+    bundle_name = "Axo",
+    executable_name = "Axo",
+    infoplists = ["AxoUITest-Info.plist"],
+    minimum_os_version = "13.0",
+    version = ":build_version",
+    additional_contents = {
+        ":launch_agent_plist": "Library/LaunchAgents",
+        "//crates/axod:axod": "Helpers",
+        "@ghostty//:resources": "Resources",
+        "@ghostty//:terminfo": "Resources",
+    },
+    deps = [":AxoMac"],
+)
+
 xcodeproj(
     name = "xcodeproj",
     project_name = "AxoMac",
     tags = ["manual"],
     top_level_targets = [
         ":AxoApp",
+        ":AxoUITestApp",
         "//apple/AxoRPC:AxoRPCTests",
         "//apple/AxoDaemonManager:AxoDaemonManagerTests",
         "//apple/AxoMac:AxoMacTests",
         "//apple/AxoMac:TerminalWorkbenchE2ETests",
+        "//apple/AxoMac:AxoVisualUITests",
         "//apple/AxoMac:AxoAppSelfTestTests",
     ],
 )

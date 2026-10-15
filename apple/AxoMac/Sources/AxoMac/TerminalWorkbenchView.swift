@@ -5,10 +5,12 @@ import SwiftUI
 struct TerminalWorkbenchView: View {
   @ObservedObject var daemon: DaemonController
   @ObservedObject var sessions: TerminalSessionsModel
+  var daemonIsRunningOverride: Bool? = nil
   @EnvironmentObject private var ghostty: GhosttyRuntime
   @AppStorage("terminalSidebarIsCollapsed") private var isSidebarCollapsed = true
 
   private var daemonIsRunning: Bool {
+    if let daemonIsRunningOverride { return daemonIsRunningOverride }
     if case .running = daemon.status { return true }
     return false
   }

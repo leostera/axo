@@ -10,6 +10,7 @@ final class GhosttyRuntime: ObservableObject {
 
   private struct SurfaceEntry {
     let shell: TerminalShell
+    let host: GhosttySurfaceHostNSView
     let view: GhosttySurfaceNSView
   }
 
@@ -56,10 +57,16 @@ final class GhosttyRuntime: ObservableObject {
 
     destroySurface(shellID: shell.id)
     let view = GhosttySurfaceNSView(runtime: self, onFocus: onFocus)
+    let host = GhosttySurfaceHostNSView()
     view.onStatusChange = onStatusChange
     createSurface(in: view, shell: shell, helperURL: helperURL)
-    terminalSurfaces[shell.id] = SurfaceEntry(shell: shell, view: view)
+    host.attachSurface(view)
+    terminalSurfaces[shell.id] = SurfaceEntry(shell: shell, host: host, view: view)
     return view
+  }
+
+  func surfaceHost(for shellID: Int64) -> GhosttySurfaceHostNSView? {
+    terminalSurfaces[shellID]?.host
   }
 
   func detachSurface(from host: GhosttySurfaceHostNSView) {
@@ -147,6 +154,19 @@ final class GhosttyRuntime: ObservableObject {
   func updateFocus(_ focused: Bool) {
     guard let app else { return }
     ghostty_app_set_focus(app, focused)
+  }
+
+  var surfaceCount: Int { terminalSurfaces.count }
+
+  func hasSurface(for shellID: Int64) -> Bool {
+    terminalSurfaces[shellID]?.view.surface != nil
+  }
+
+  @discardableResult
+  func insertText(_ text: String, into shellID: Int64) -> Bool {
+    guard let view = terminalSurfaces[shellID]?.view, view.surface != nil else { return false }
+    view.insertText(text, replacementRange: NSRange(location: NSNotFound, length: 0))
+    return true
   }
 
   func updateSurfaceSize(in view: GhosttySurfaceNSView, contentSize: CGSize) {
