@@ -48,7 +48,11 @@ struct TerminalWorkbenchView: View {
       }
     }
     .task(id: sessions.focusedShellID) {
-      guard let focusedShellID = sessions.focusedShellID else { return }
+      guard let focusedShellID = sessions.focusedShellID else {
+        ghostty.setFocusedShellID(nil)
+        return
+      }
+      ghostty.setFocusedShellID(focusedShellID)
       for _ in 0..<40 {
         if ghostty.focusSurface(for: focusedShellID) { return }
         try? await Task.sleep(for: .milliseconds(25))

@@ -63,6 +63,25 @@ final class AxoVisualUITests: XCTestCase {
     try fixture.assertContainsText("AXO VISUAL INITIAL 7319", in: firstSplit)
     try fixture.assertTextInLeftHalf("AXO VISUAL INITIAL 7319", in: firstSplit)
 
+    NSPasteboard.general.clearContents()
+    NSPasteboard.general.setString("printf 'AXO VISUAL PASTE RIGHT 6482\\n'\n", forType: .string)
+    window.typeKey("v", modifierFlags: .command)
+    window.typeText("\n")
+    try await Task.sleep(for: .milliseconds(500))
+    let pastedIntoRight = try fixture.capture("03b-paste-focused-pane", in: window)
+    try fixture.assertTextInRightHalf("AXO VISUAL PASTE RIGHT 6482", in: pastedIntoRight)
+
+    window.coordinate(withNormalizedOffset: CGVector(dx: 0.75, dy: 0.5)).click()
+    window.typeKey("w", modifierFlags: .command)
+    try await waitForShellCount(1, sessionID: initialSession.id, model: model)
+    try await fixture.waitForSurfaceCount(1)
+    let closedClickedPane = try fixture.capture("03c-close-clicked-pane", in: window)
+    try fixture.assertContainsText("AXO VISUAL INITIAL 7319", in: closedClickedPane)
+    try fixture.assertDoesNotContainText("AXO VISUAL PASTE RIGHT 6482", in: closedClickedPane)
+
+    window.typeKey("d", modifierFlags: .command)
+    try await waitForShellCount(2, sessionID: initialSession.id, model: model)
+    try await fixture.waitForSurfaceCount(2)
     window.typeText("printf 'AXO VISUAL RIGHT 2846\\n'\n")
     try await Task.sleep(for: .milliseconds(500))
     let rightOutput = try fixture.capture("04-split-right-output", in: window)
@@ -192,7 +211,7 @@ final class AxoVisualUITests: XCTestCase {
     XCTAssertTrue(settingsWindow.staticTexts["Axo D build"].exists)
     XCTAssertTrue(settingsWindow.staticTexts["Daemon status"].exists)
     try fixture.capture("18-about-settings", in: settingsWindow)
-    XCTAssertEqual(fixture.screenshotsWritten, 20)
+    XCTAssertEqual(fixture.screenshotsWritten, 22)
   }
 
   private func assertNoAxoUITestAppIsAlreadyRunning() throws {

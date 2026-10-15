@@ -17,7 +17,10 @@ struct GhosttyTerminalView: NSViewRepresentable {
     let surfaceView = runtime.surfaceView(
       for: shell,
       helperURL: helperURL,
-      onFocus: onFocus,
+      onFocus: {
+        runtime.setFocusedShellID(shell.id)
+        onFocus()
+      },
       onStatusChange: onStatusChange
     )
     guard let host = runtime.surfaceHost(for: shell.id) else {
@@ -26,6 +29,7 @@ struct GhosttyTerminalView: NSViewRepresentable {
     host.attachSurface(surfaceView)
     surfaceView.updateContentSize(size)
     if isFocused {
+      runtime.setFocusedShellID(shell.id)
       surfaceView.requestFocus()
     }
     return host
@@ -35,7 +39,10 @@ struct GhosttyTerminalView: NSViewRepresentable {
     let surfaceView = runtime.surfaceView(
       for: shell,
       helperURL: helperURL,
-      onFocus: onFocus,
+      onFocus: {
+        runtime.setFocusedShellID(shell.id)
+        onFocus()
+      },
       onStatusChange: onStatusChange
     )
     host.attachSurface(surfaceView)
@@ -44,6 +51,7 @@ struct GhosttyTerminalView: NSViewRepresentable {
     }
     surfaceView.updateContentSize(size)
     if isFocused {
+      runtime.setFocusedShellID(shell.id)
       surfaceView.requestFocus()
     } else {
       surfaceView.cancelFocusRequest()
@@ -320,19 +328,27 @@ final class GhosttySurfaceNSView: NSView, @preconcurrency NSTextInputClient {
   override func performKeyEquivalent(with event: NSEvent) -> Bool {
     guard event.type == .keyDown,
       event.modifierFlags.contains(.command),
-      let surface
+      let runtime
     else { return super.performKeyEquivalent(with: event) }
 
     switch event.charactersIgnoringModifiers?.lowercased() {
     case "c":
-      copySelection(surface)
+      runtime.copySelection()
       return true
     case "v":
-      pasteClipboard(surface)
+      runtime.pasteClipboard()
       return true
     default:
       return super.performKeyEquivalent(with: event)
     }
+  }
+
+  @objc func copy(_ sender: Any?) {
+    runtime?.copySelection()
+  }
+
+  @objc func paste(_ sender: Any?) {
+    runtime?.pasteClipboard()
   }
 
   func insertText(_ string: Any, replacementRange: NSRange) {
@@ -477,22 +493,6 @@ final class GhosttySurfaceNSView: NSView, @preconcurrency NSTextInputClient {
       bounds.height - point.y,
       Self.ghosttyMods(event.modifierFlags)
     )
-  }
-
-  private func copySelection(_ surface: ghostty_surface_t) {
-    var selection = ghostty_text_s()
-    guard ghostty_surface_read_selection(surface, &selection) else { return }
-    defer { ghostty_surface_free_text(surface, &selection) }
-    guard let text = selection.text else { return }
-    let data = Data(bytes: text, count: Int(selection.text_len))
-    let value = String(decoding: data, as: UTF8.self)
-    NSPasteboard.general.clearContents()
-    NSPasteboard.general.setString(value, forType: .string)
-  }
-
-  private func pasteClipboard(_ surface: ghostty_surface_t) {
-    guard let text = NSPasteboard.general.string(forType: .string) else { return }
-    text.withCString { ghostty_surface_paste_text(surface, $0, UInt(text.utf8.count)) }
   }
 
   private static func ghosttyCharacters(for event: NSEvent) -> String? {

@@ -168,7 +168,10 @@ struct AxoApp: App {
         Divider()
 
         Button("Close Focused Shell", role: .destructive) {
-          Task { await sessions.closeFocusedShell() }
+          guard let shellID = sessions.focusedShellID ?? ghostty.keyWindowFocusedShellID else {
+            return
+          }
+          Task { await sessions.closeShell(shellID) }
         }
         .keyboardShortcut("w", modifiers: .command)
         .disabled(sessions.focusedShellID == nil)

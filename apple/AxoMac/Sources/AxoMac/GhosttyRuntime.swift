@@ -17,6 +17,7 @@ final class GhosttyRuntime: ObservableObject {
 
   private var config: ghostty_config_t?
   private var app: ghostty_app_t?
+  private(set) var focusedShellID: Int64?
   // A Ghostty surface and its platform NSView outlive SwiftUI's pane view identities.
   private var terminalSurfaces: [Int64: SurfaceEntry] = [:]
   private var notificationTokens: [NSObjectProtocol] = []
@@ -75,6 +76,10 @@ final class GhosttyRuntime: ObservableObject {
 
   func surfaceHost(for shellID: Int64) -> GhosttySurfaceHostNSView? {
     terminalSurfaces[shellID]?.host
+  }
+
+  func setFocusedShellID(_ shellID: Int64?) {
+    focusedShellID = shellID
   }
 
   func detachSurface(from host: GhosttySurfaceHostNSView) {
@@ -173,6 +178,13 @@ final class GhosttyRuntime: ObservableObject {
 
   var surfaceCount: Int { terminalSurfaces.count }
 
+  var keyWindowFocusedShellID: Int64? {
+    guard let focusedView = NSApp.keyWindow?.firstResponder as? GhosttySurfaceNSView else {
+      return nil
+    }
+    return terminalSurfaces.first { $0.value.view === focusedView }?.key
+  }
+
   func hasSurface(for shellID: Int64) -> Bool {
     terminalSurfaces[shellID]?.view.surface != nil
   }
@@ -191,6 +203,36 @@ final class GhosttyRuntime: ObservableObject {
     guard let view = terminalSurfaces[shellID]?.view, view.surface != nil else { return false }
     view.insertText(text, replacementRange: NSRange(location: NSNotFound, length: 0))
     return true
+  }
+
+  func copySelection(from shellID: Int64? = nil) {
+    guard let shellID = shellID ?? focusedShellID,
+      let surface = terminalSurfaces[shellID]?.view.surface
+    else { return }
+    var selection = ghostty_text_s()
+    guard ghostty_surface_read_selection(surface, &selection) else { return }
+    defer { ghostty_surface_free_text(surface, &selection) }
+    guard let text = selection.text else { return }
+    let data = Data(bytes: text, count: Int(selection.text_len))
+    let value = String(decoding: data, as: UTF8.self)
+    NSPasteboard.general.clearContents()
+    NSPasteboard.general.setString(value, forType: .string)
+  }
+
+  func pasteClipboard(into shellID: Int64? = nil) {
+    guard let shellID = shellID ?? focusedShellID,
+      let text = NSPasteboard.general.string(forType: .string)
+    else { return }
+    Task { @MainActor [weak self] in
+      for _ in 0..<40 {
+        guard let self else { return }
+        if let surface = self.terminalSurfaces[shellID]?.view.surface {
+          text.withCString { ghostty_surface_paste_text(surface, $0, UInt(text.utf8.count)) }
+          return
+        }
+        try? await Task.sleep(for: .milliseconds(25))
+      }
+    }
   }
 
   func updateSurfaceSize(in view: GhosttySurfaceNSView, contentSize: CGSize) {
