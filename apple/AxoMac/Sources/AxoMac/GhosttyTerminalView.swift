@@ -10,7 +10,6 @@ struct GhosttyTerminalView: NSViewRepresentable {
   let helperURL: URL
   let size: CGSize
   let isFocused: Bool
-  let scrollSensitivity: Double
   let onFocus: () -> Void
   let onStatusChange: (String) -> Void
 
@@ -21,7 +20,6 @@ struct GhosttyTerminalView: NSViewRepresentable {
       onFocus: onFocus,
       onStatusChange: onStatusChange
     )
-    surfaceView.updateScrollSensitivity(scrollSensitivity)
     guard let host = runtime.surfaceHost(for: shell.id) else {
       preconditionFailure("Ghostty runtime did not retain a host for shell \(shell.id).")
     }
@@ -40,7 +38,6 @@ struct GhosttyTerminalView: NSViewRepresentable {
       onFocus: onFocus,
       onStatusChange: onStatusChange
     )
-    surfaceView.updateScrollSensitivity(scrollSensitivity)
     host.attachSurface(surfaceView)
     if host.bounds.size != size {
       host.needsLayout = true
@@ -111,7 +108,6 @@ final class GhosttySurfaceNSView: NSView, @preconcurrency NSTextInputClient {
   private var focusTask: Task<Void, Never>?
   private var trackingArea: NSTrackingArea?
   private var contentSize: CGSize?
-  private var scrollSensitivity = TerminalScrollSensitivity.defaultMultiplier
 
   init(runtime: GhosttyRuntime, onFocus: @escaping () -> Void) {
     self.runtime = runtime
@@ -209,10 +205,6 @@ final class GhosttySurfaceNSView: NSView, @preconcurrency NSTextInputClient {
     return surface
   }
 
-  func updateScrollSensitivity(_ multiplier: Double) {
-    scrollSensitivity = TerminalScrollSensitivity.boundedMultiplier(multiplier)
-  }
-
   func updateContentSize(_ size: CGSize) {
     guard size.width > 0, size.height > 0 else { return }
     contentSize = size
@@ -279,7 +271,8 @@ final class GhosttySurfaceNSView: NSView, @preconcurrency NSTextInputClient {
   override func scrollWheel(with event: NSEvent) {
     guard let surface else { return }
     let deviceMultiplier = event.hasPreciseScrollingDeltas ? 1.5 : 1.0
-    let multiplier = scrollSensitivity * deviceMultiplier
+    let sensitivity = runtime?.scrollSensitivity ?? TerminalScrollSensitivity.defaultMultiplier
+    let multiplier = sensitivity * deviceMultiplier
     ghostty_surface_mouse_scroll(
       surface,
       event.scrollingDeltaX * multiplier,

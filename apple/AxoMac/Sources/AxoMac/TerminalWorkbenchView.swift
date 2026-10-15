@@ -229,8 +229,6 @@ private struct TerminalPaneView: View {
   let shell: TerminalShell
   let sessions: TerminalSessionsModel
   @EnvironmentObject private var ghostty: GhosttyRuntime
-  @AppStorage("terminalScrollSensitivity") private var scrollSensitivity =
-    TerminalScrollSensitivity.defaultMultiplier
   @State private var terminalError: String?
 
   var body: some View {
@@ -241,7 +239,6 @@ private struct TerminalPaneView: View {
         helperURL: sessions.helperURL,
         size: geometry.size,
         isFocused: sessions.focusedShellID == shell.id,
-        scrollSensitivity: scrollSensitivity,
         onFocus: { sessions.focus(shell.id) },
         onStatusChange: { status in
           terminalError = status.hasPrefix("Connected to ") ? nil : status

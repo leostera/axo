@@ -7,6 +7,7 @@ import GhosttyKit
 @MainActor
 final class GhosttyRuntime: ObservableObject {
   @Published private(set) var errorMessage: String?
+  @Published private(set) var scrollSensitivity: Double
 
   private struct SurfaceEntry {
     let shell: TerminalShell
@@ -21,6 +22,13 @@ final class GhosttyRuntime: ObservableObject {
   private var notificationTokens: [NSObjectProtocol] = []
 
   init() {
+    let storedSensitivity =
+      UserDefaults.standard.object(
+        forKey: TerminalScrollSensitivity.preferenceKey
+      ) as? Double
+    scrollSensitivity = TerminalScrollSensitivity.boundedMultiplier(
+      storedSensitivity ?? TerminalScrollSensitivity.defaultMultiplier
+    )
     initialize()
   }
 
@@ -71,6 +79,13 @@ final class GhosttyRuntime: ObservableObject {
 
   func detachSurface(from host: GhosttySurfaceHostNSView) {
     host.detachSurface()
+  }
+
+  func setScrollSensitivity(_ multiplier: Double) {
+    let multiplier = TerminalScrollSensitivity.boundedMultiplier(multiplier)
+    guard multiplier != scrollSensitivity else { return }
+    scrollSensitivity = multiplier
+    UserDefaults.standard.set(multiplier, forKey: TerminalScrollSensitivity.preferenceKey)
   }
 
   func reconcileSurfaces(with shells: [TerminalShell]) {

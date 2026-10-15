@@ -91,6 +91,8 @@ cleanup() {
 trap cleanup EXIT
 
 ditto -x -k "$app_archive" "$stage"
+git_commit=$(git rev-parse --short=8 HEAD)
+/usr/libexec/PlistBuddy -c "Set :AXOGitCommit $git_commit" "$app/Contents/Info.plist"
 plutil -lint "$app/Contents/Info.plist"
 reported_app_build=$(/usr/libexec/PlistBuddy -c 'Print :CFBundleVersion' "$app/Contents/Info.plist")
 if [[ "$reported_app_build" != "$build_number" ]]; then

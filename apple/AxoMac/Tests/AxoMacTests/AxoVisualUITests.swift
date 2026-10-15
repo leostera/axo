@@ -186,6 +186,8 @@ final class AxoVisualUITests: XCTestCase {
     aboutMenuItem.click()
     let settingsWindow = app.windows["Axo Settings"]
     XCTAssertTrue(settingsWindow.waitForExistence(timeout: 2))
+    XCTAssertTrue(settingsWindow.staticTexts["Agentic harness for terminal romantics"].exists)
+    XCTAssertTrue(settingsWindow.staticTexts["Commit"].exists)
     XCTAssertTrue(settingsWindow.staticTexts["Axo D version"].exists)
     XCTAssertTrue(settingsWindow.staticTexts["Axo D build"].exists)
     XCTAssertTrue(settingsWindow.staticTexts["Daemon status"].exists)

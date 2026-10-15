@@ -183,7 +183,7 @@ struct AxoApp: App {
     }
 
     Window("Axo Settings", id: "settings") {
-      SettingsView(daemon: daemon, selection: $settingsSection)
+      SettingsView(daemon: daemon, ghostty: ghostty, selection: $settingsSection)
     }
     .windowResizability(.contentSize)
   }

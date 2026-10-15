@@ -2,6 +2,7 @@ import Foundation
 
 /// Maps the scroll-sensitivity preference onto a slider with its neutral value centered.
 enum TerminalScrollSensitivity {
+  static let preferenceKey = "terminalScrollSensitivity"
   static let minimumMultiplier = 0.1
   static let defaultMultiplier = 1.0
   static let maximumMultiplier = 3.0

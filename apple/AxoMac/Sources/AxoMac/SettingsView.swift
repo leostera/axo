@@ -25,6 +25,7 @@ enum SettingsSection: String, CaseIterable, Identifiable {
 
 struct SettingsView: View {
   @ObservedObject var daemon: DaemonController
+  let ghostty: GhosttyRuntime
   @Binding var selection: SettingsSection
 
   private var sidebarSelection: Binding<SettingsSection?> {
@@ -48,7 +49,7 @@ struct SettingsView: View {
       Group {
         switch selection {
         case .general:
-          GeneralSettingsView(daemon: daemon)
+          GeneralSettingsView(daemon: daemon, ghostty: ghostty)
         case .about:
           AboutSettingsView(daemon: daemon)
         }
@@ -62,18 +63,21 @@ struct SettingsView: View {
 
 private struct GeneralSettingsView: View {
   @ObservedObject var daemon: DaemonController
-  @AppStorage("terminalScrollSensitivity") private var scrollSensitivity =
-    TerminalScrollSensitivity.defaultMultiplier
+  @ObservedObject var ghostty: GhosttyRuntime
 
   private var scrollSensitivityPosition: Binding<Double> {
     Binding(
-      get: { TerminalScrollSensitivity.sliderPosition(for: scrollSensitivity) },
-      set: { scrollSensitivity = TerminalScrollSensitivity.multiplier(atSliderPosition: $0) }
+      get: { TerminalScrollSensitivity.sliderPosition(for: ghostty.scrollSensitivity) },
+      set: {
+        ghostty.setScrollSensitivity(
+          TerminalScrollSensitivity.multiplier(atSliderPosition: $0)
+        )
+      }
     )
   }
 
   private var displayedScrollSensitivity: String {
-    let value = TerminalScrollSensitivity.boundedMultiplier(scrollSensitivity)
+    let value = TerminalScrollSensitivity.boundedMultiplier(ghostty.scrollSensitivity)
     return "\(value.formatted(.number.precision(.fractionLength(1))))×"
   }
 
@@ -81,13 +85,6 @@ private struct GeneralSettingsView: View {
     Form {
       Section("Terminal") {
         VStack(alignment: .leading, spacing: 8) {
-          HStack {
-            Text("Scroll sensitivity")
-            Spacer()
-            Text(displayedScrollSensitivity)
-              .monospacedDigit()
-          }
-
           Slider(value: scrollSensitivityPosition, in: 0...1) {
             Text("Scroll sensitivity")
           }
@@ -102,10 +99,6 @@ private struct GeneralSettingsView: View {
           }
           .font(.caption)
           .foregroundStyle(.secondary)
-
-          Text("1.0× keeps Axo’s current scroll feel.")
-            .font(.caption)
-            .foregroundStyle(.secondary)
         }
       }
 
@@ -147,6 +140,10 @@ private struct AboutSettingsView: View {
     Bundle.main.infoDictionary?["CFBundleShortVersionString"] as? String ?? "Unknown"
   }
 
+  private var appCommit: String {
+    Bundle.main.infoDictionary?["AXOGitCommit"] as? String ?? "Unknown"
+  }
+
   private var daemonVersion: String {
     guard case .running(let version, _) = daemon.status else { return "Not available" }
     return version
@@ -169,31 +166,59 @@ private struct AboutSettingsView: View {
   }
 
   var body: some View {
-    VStack(alignment: .leading, spacing: 24) {
-      HStack(spacing: 16) {
-        Image(nsImage: NSApplication.shared.applicationIconImage)
-          .resizable()
-          .scaledToFit()
-          .frame(width: 64, height: 64)
-          .accessibilityHidden(true)
+    VStack(spacing: 14) {
+      Spacer(minLength: 0)
 
-        VStack(alignment: .leading, spacing: 5) {
-          Text("Axo")
-            .font(.title2.bold())
-          Text("Version \(appVersion) (\(DaemonController.appBuildNumberLabel))")
-            .foregroundStyle(.secondary)
-        }
+      Image(nsImage: NSApplication.shared.applicationIconImage)
+        .resizable()
+        .scaledToFit()
+        .frame(width: 96, height: 96)
+        .accessibilityHidden(true)
+
+      VStack(spacing: 6) {
+        Text("Axo")
+          .font(.system(size: 30, weight: .bold))
+        Text("Agentic harness for terminal romantics")
+          .font(.body)
+          .foregroundStyle(.secondary)
+          .multilineTextAlignment(.center)
       }
 
-      Form {
-        Section("Components") {
-          LabeledContent("Axo D version", value: daemonVersion)
-          LabeledContent("Axo D build", value: daemonBuild)
-          LabeledContent("Daemon status", value: daemonStatus)
-        }
+      VStack(spacing: 6) {
+        aboutRow("Version", appVersion)
+        aboutRow("Build", DaemonController.appBuildNumberLabel)
+        aboutRow("Commit", appCommit)
+        Divider()
+          .frame(width: 240)
+          .padding(.vertical, 3)
+        aboutRow("Axo D version", daemonVersion)
+        aboutRow("Axo D build", daemonBuild)
+        aboutRow("Daemon status", daemonStatus)
       }
-      .formStyle(.grouped)
+      .padding(.vertical, 4)
+
+      HStack(spacing: 12) {
+        Link("Docs", destination: URL(string: "https://github.com/leostera/axo#readme")!)
+        Link("GitHub", destination: URL(string: "https://github.com/leostera/axo")!)
+      }
+      .buttonStyle(.bordered)
+
+      Spacer(minLength: 0)
     }
-    .frame(maxWidth: .infinity, alignment: .topLeading)
+    .frame(maxWidth: .infinity, maxHeight: .infinity)
+  }
+
+  private func aboutRow(_ title: String, _ value: String) -> some View {
+    HStack(spacing: 10) {
+      Text(title)
+        .foregroundStyle(.secondary)
+        .frame(width: 120, alignment: .trailing)
+      Text(value)
+        .monospacedDigit()
+        .lineLimit(1)
+        .minimumScaleFactor(0.8)
+        .frame(minWidth: 130, alignment: .leading)
+    }
+    .font(.callout)
   }
 }
