@@ -211,6 +211,22 @@ final class TerminalSessionsModel: ObservableObject {
     errorMessage = nil
   }
 
+  func focusPreviousPane() {
+    focusAdjacentPane(.previous)
+  }
+
+  func focusNextPane() {
+    focusAdjacentPane(.next)
+  }
+
+  func showPreviousSession() {
+    showAdjacentSession(.previous)
+  }
+
+  func showNextSession() {
+    showAdjacentSession(.next)
+  }
+
   func resizeSplit(_ splitID: UUID, to ratio: Double) {
     guard let selectedSessionID,
       let currentLayout = layoutsBySession[selectedSessionID],
@@ -243,6 +259,50 @@ final class TerminalSessionsModel: ObservableObject {
   func shell(for shellID: Int64) -> TerminalShell? {
     guard let selectedSessionID else { return nil }
     return session(for: selectedSessionID)?.shells.first(where: { $0.id == shellID })
+  }
+
+  private func focusAdjacentPane(_ direction: TerminalNavigationDirection) {
+    guard let layout else { return }
+    let paneIDs = layout.orderedShellIDs
+    let currentIndex = focusedShellID.flatMap { focusedID in
+      paneIDs.firstIndex(of: focusedID)
+    }
+    guard
+      let targetIndex = Self.adjacentIndex(
+        from: currentIndex,
+        count: paneIDs.count,
+        direction: direction
+      )
+    else {
+      return
+    }
+    focus(paneIDs[targetIndex])
+  }
+
+  private func showAdjacentSession(_ direction: TerminalNavigationDirection) {
+    let currentIndex = selectedSessionID.flatMap { selectedID in
+      sessions.firstIndex { $0.id == selectedID }
+    }
+    guard
+      let targetIndex = Self.adjacentIndex(
+        from: currentIndex,
+        count: sessions.count,
+        direction: direction
+      )
+    else {
+      return
+    }
+    showSession(sessions[targetIndex].id)
+  }
+
+  private static func adjacentIndex(
+    from currentIndex: Int?,
+    count: Int,
+    direction: TerminalNavigationDirection
+  ) -> Int? {
+    guard count > 0 else { return nil }
+    let startingIndex = currentIndex ?? (direction == .next ? count - 1 : 0)
+    return (startingIndex + direction.rawValue + count) % count
   }
 
   private func activate(_ sessionID: Int64) {
@@ -322,6 +382,11 @@ enum TerminalSplitDirection: Hashable {
   case down
 }
 
+enum TerminalNavigationDirection: Int, Equatable {
+  case previous = -1
+  case next = 1
+}
+
 indirect enum TerminalLayout: Equatable, Identifiable {
   case pane(Int64)
   case split(
@@ -343,6 +408,14 @@ indirect enum TerminalLayout: Equatable, Identifiable {
     switch self {
     case .pane(let shellID): [shellID]
     case .split(_, _, _, let first, let second): first.shellIDs.union(second.shellIDs)
+    }
+  }
+
+  var orderedShellIDs: [Int64] {
+    switch self {
+    case .pane(let shellID): [shellID]
+    case .split(_, _, _, let first, let second):
+      first.orderedShellIDs + second.orderedShellIDs
     }
   }
 

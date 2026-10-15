@@ -86,6 +86,24 @@ final class TerminalLayoutTests: XCTestCase {
     XCTAssertNotEqual(original.structuralIdentity, changed.structuralIdentity)
   }
 
+  func testOrderedShellIDsFollowSplitTreeOrder() {
+    let layout = TerminalLayout.split(
+      id: UUID(),
+      direction: .right,
+      ratio: 0.5,
+      first: .pane(17),
+      second: .split(
+        id: UUID(),
+        direction: .down,
+        ratio: 0.5,
+        first: .pane(23),
+        second: .pane(42)
+      )
+    )
+
+    XCTAssertEqual(layout.orderedShellIDs, [17, 23, 42])
+  }
+
   func testAddingNewShellsPreservesExistingPanesWithoutDuplicates() {
     let layout = TerminalLayout.pane(17)
 

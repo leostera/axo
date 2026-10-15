@@ -130,6 +130,32 @@ struct AxoApp: App {
 
         Divider()
 
+        Button("Previous Pane") {
+          sessions.focusPreviousPane()
+        }
+        .keyboardShortcut("[", modifiers: .command)
+        .disabled((sessions.layout?.orderedShellIDs.count ?? 0) < 2)
+
+        Button("Next Pane") {
+          sessions.focusNextPane()
+        }
+        .keyboardShortcut("]", modifiers: .command)
+        .disabled((sessions.layout?.orderedShellIDs.count ?? 0) < 2)
+
+        Button("Previous Session") {
+          sessions.showPreviousSession()
+        }
+        .keyboardShortcut("[", modifiers: [.command, .shift])
+        .disabled(sessions.sessions.count < 2)
+
+        Button("Next Session") {
+          sessions.showNextSession()
+        }
+        .keyboardShortcut("]", modifiers: [.command, .shift])
+        .disabled(sessions.sessions.count < 2)
+
+        Divider()
+
         Button("Close Focused Shell", role: .destructive) {
           Task { await sessions.closeFocusedShell() }
         }

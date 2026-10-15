@@ -47,6 +47,52 @@ final class TerminalWorkbenchE2ETests: XCTestCase {
     }
   }
 
+  func testPaneNavigationCyclesInLayoutOrder() async throws {
+    try await withWorkbench { model, _ in
+      let sessionID = try XCTUnwrap(model.selectedSessionID)
+      let firstShell = try XCTUnwrap(model.session(for: sessionID)?.shells.first)
+
+      await model.split(.right)
+      let secondShell = try XCTUnwrap(
+        model.session(for: sessionID)?.shells.first { $0.id != firstShell.id }
+      )
+      await model.split(.down)
+      let thirdShell = try XCTUnwrap(
+        model.session(for: sessionID)?.shells.first {
+          $0.id != firstShell.id && $0.id != secondShell.id
+        }
+      )
+      XCTAssertEqual(model.layout?.orderedShellIDs, [firstShell.id, secondShell.id, thirdShell.id])
+
+      model.focusPreviousPane()
+      XCTAssertEqual(model.focusedShellID, secondShell.id)
+      model.focusPreviousPane()
+      XCTAssertEqual(model.focusedShellID, firstShell.id)
+      model.focusPreviousPane()
+      XCTAssertEqual(model.focusedShellID, thirdShell.id)
+      model.focusNextPane()
+      XCTAssertEqual(model.focusedShellID, firstShell.id)
+    }
+  }
+
+  func testSessionNavigationCyclesInSessionOrder() async throws {
+    try await withWorkbench { model, _ in
+      let firstSessionID = try XCTUnwrap(model.selectedSessionID)
+      await model.createSession()
+      let secondSessionID = try XCTUnwrap(model.selectedSessionID)
+      XCTAssertNotEqual(firstSessionID, secondSessionID)
+
+      model.showNextSession()
+      XCTAssertEqual(model.selectedSessionID, firstSessionID)
+      model.showNextSession()
+      XCTAssertEqual(model.selectedSessionID, secondSessionID)
+      model.showPreviousSession()
+      XCTAssertEqual(model.selectedSessionID, firstSessionID)
+      model.showPreviousSession()
+      XCTAssertEqual(model.selectedSessionID, secondSessionID)
+    }
+  }
+
   func testCommandWClosureCollapsesNestedPaneWithoutKillingSiblings() async throws {
     try await withWorkbench { model, daemon in
       let sessionID = try XCTUnwrap(model.selectedSessionID)

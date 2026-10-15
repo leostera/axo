@@ -67,10 +67,33 @@ final class AxoVisualUITests: XCTestCase {
     try fixture.assertTextInRightHalf("AXO VISUAL LOWER 3691", in: nestedOutput)
     try fixture.assertTextBelow("AXO VISUAL LOWER 3691", "AXO VISUAL RIGHT 2846", in: nestedOutput)
 
+    window.typeKey("[", modifierFlags: .command)
+    window.typeText("printf 'AXO VISUAL PREVIOUS PANE 4128\\n'\n")
+    try await Task.sleep(for: .milliseconds(500))
+    let previousPane = try fixture.capture("07-previous-pane", in: window)
+    try fixture.assertTextInRightHalf("AXO VISUAL PREVIOUS PANE 4128", in: previousPane)
+    try fixture.assertTextBelow(
+      "AXO VISUAL PREVIOUS PANE 4128", "AXO VISUAL RIGHT 2846", in: previousPane)
+
+    window.typeKey("]", modifierFlags: .command)
+    window.typeText("printf 'AXO VISUAL NEXT PANE 9357\\n'\n")
+    try await Task.sleep(for: .milliseconds(500))
+    let nextPane = try fixture.capture("08-next-pane", in: window)
+    try fixture.assertTextInRightHalf("AXO VISUAL NEXT PANE 9357", in: nextPane)
+    try fixture.assertTextBelow(
+      "AXO VISUAL NEXT PANE 9357", "AXO VISUAL PREVIOUS PANE 4128", in: nextPane)
+
+    window.typeKey("]", modifierFlags: .command)
+    window.typeText("printf 'AXO VISUAL PANE WRAP 7832\\n'\n")
+    try await Task.sleep(for: .milliseconds(500))
+    let paneWrap = try fixture.capture("09-pane-next-wrap", in: window)
+    try fixture.assertTextInLeftHalf("AXO VISUAL PANE WRAP 7832", in: paneWrap)
+
+    window.typeKey("[", modifierFlags: .command)
     window.typeKey("w", modifierFlags: .command)
     try await waitForShellCount(2, sessionID: initialSession.id, model: model)
     try await fixture.waitForSurfaceCount(2)
-    let afterClose = try fixture.capture("07-close-focused-shell", in: window)
+    let afterClose = try fixture.capture("10-close-focused-shell", in: window)
     try fixture.assertContainsText("AXO VISUAL INITIAL 7319", in: afterClose)
     try fixture.assertContainsText("AXO VISUAL RIGHT 2846", in: afterClose)
     try fixture.assertDoesNotContainText("AXO VISUAL LOWER 3691", in: afterClose)
@@ -78,29 +101,35 @@ final class AxoVisualUITests: XCTestCase {
     window.typeText("exit\n")
     try await waitForShellCount(1, sessionID: initialSession.id, model: model)
     try await fixture.waitForSurfaceCount(1)
-    let afterExit = try fixture.capture("08-shell-exit", in: window)
+    let afterExit = try fixture.capture("11-shell-exit", in: window)
     try fixture.assertContainsText("AXO VISUAL RIGHT 2846", in: afterExit)
     try fixture.assertDoesNotContainText("AXO VISUAL INITIAL 7319", in: afterExit)
 
     window.typeText("printf 'AXO VISUAL SURVIVOR 5690\\n'\n")
     try await Task.sleep(for: .milliseconds(500))
-    let survivorOutput = try fixture.capture("09-surviving-shell-output", in: window)
+    let survivorOutput = try fixture.capture("12-surviving-shell-output", in: window)
     try fixture.assertContainsText("AXO VISUAL SURVIVOR 5690", in: survivorOutput)
 
     window.typeKey("t", modifierFlags: .command)
     try await waitForSessionCount(2, model: model)
     try await fixture.waitForSurfaceCount(2)
-    let newSession = try fixture.capture("10-new-session", in: window)
+    let newSession = try fixture.capture("13-new-session", in: window)
     try fixture.assertDoesNotContainText("AXO VISUAL SURVIVOR 5690", in: newSession)
 
-    let existingSessionButton = app.buttons["Session \(initialSession.id)"]
-    XCTAssertTrue(existingSessionButton.waitForExistence(timeout: 5))
-    existingSessionButton.click()
-    let selectedSession = try fixture.capture("11-select-existing-session", in: window)
-    try fixture.assertContainsText("AXO VISUAL SURVIVOR 5690", in: selectedSession)
+    window.typeKey("[", modifierFlags: [.command, .shift])
+    let previousSession = try fixture.capture("14-previous-session", in: window)
+    try fixture.assertContainsText("AXO VISUAL SURVIVOR 5690", in: previousSession)
+
+    window.typeKey("]", modifierFlags: [.command, .shift])
+    let nextSession = try fixture.capture("15-next-session", in: window)
+    try fixture.assertDoesNotContainText("AXO VISUAL SURVIVOR 5690", in: nextSession)
+
+    window.typeKey("]", modifierFlags: [.command, .shift])
+    let sessionWrap = try fixture.capture("16-next-session-wrap", in: window)
+    try fixture.assertContainsText("AXO VISUAL SURVIVOR 5690", in: sessionWrap)
 
     XCTAssertEqual(model.sessions.count, 2)
-    XCTAssertEqual(fixture.screenshotsWritten, 12)
+    XCTAssertEqual(fixture.screenshotsWritten, 17)
   }
 
   private func assertNoAxoUITestAppIsAlreadyRunning() throws {
