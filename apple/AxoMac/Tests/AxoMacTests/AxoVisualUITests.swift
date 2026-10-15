@@ -87,11 +87,27 @@ final class AxoVisualUITests: XCTestCase {
     )
     XCTAssertFalse(copiedFocusedPane?.contains("AXO VISUAL INITIAL 7319") == true)
 
+    NSPasteboard.general.clearContents()
+    window.typeKey("x", modifierFlags: .command)
+    let cutCopyDeadline = Date().addingTimeInterval(2)
+    var cutCopiedFocusedPane: String?
+    while Date() < cutCopyDeadline {
+      cutCopiedFocusedPane = NSPasteboard.general.string(forType: .string)
+      if cutCopiedFocusedPane?.contains("AXO VISUAL PASTE RIGHT 6482") == true { break }
+      try await Task.sleep(for: .milliseconds(25))
+    }
+    XCTAssertTrue(
+      cutCopiedFocusedPane?.contains("AXO VISUAL PASTE RIGHT 6482") == true,
+      "Cut should copy from the currently focused pane, like Copy."
+    )
+    let afterCut = try fixture.capture("03c-cut-copies-focused-pane", in: window)
+    try fixture.assertContainsText("AXO VISUAL PASTE RIGHT 6482", in: afterCut)
+
     window.coordinate(withNormalizedOffset: CGVector(dx: 0.75, dy: 0.5)).click()
     window.typeKey("w", modifierFlags: .command)
     try await waitForShellCount(1, sessionID: initialSession.id, model: model)
     try await fixture.waitForSurfaceCount(1)
-    let closedClickedPane = try fixture.capture("03c-close-clicked-pane", in: window)
+    let closedClickedPane = try fixture.capture("03d-close-clicked-pane", in: window)
     try fixture.assertContainsText("AXO VISUAL INITIAL 7319", in: closedClickedPane)
     try fixture.assertDoesNotContainText("AXO VISUAL PASTE RIGHT 6482", in: closedClickedPane)
 
@@ -227,7 +243,7 @@ final class AxoVisualUITests: XCTestCase {
     XCTAssertTrue(settingsWindow.staticTexts["Axo D build"].exists)
     XCTAssertTrue(settingsWindow.staticTexts["Daemon status"].exists)
     try fixture.capture("18-about-settings", in: settingsWindow)
-    XCTAssertEqual(fixture.screenshotsWritten, 22)
+    XCTAssertEqual(fixture.screenshotsWritten, 23)
   }
 
   private func assertNoAxoUITestAppIsAlreadyRunning() throws {

@@ -139,9 +139,11 @@ struct AxoApp: App {
       }
 
       CommandGroup(replacing: .pasteboard) {
-        Button("Cut") {}
-          .keyboardShortcut("x", modifiers: .command)
-          .disabled(true)
+        Button("Cut") {
+          ghostty.copySelection()
+        }
+        .keyboardShortcut("x", modifiers: .command)
+        .disabled(sessions.focusedShellID == nil)
 
         Button("Copy") {
           ghostty.copySelection()

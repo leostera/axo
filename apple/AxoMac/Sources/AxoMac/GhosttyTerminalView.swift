@@ -338,7 +338,10 @@ final class GhosttySurfaceNSView: NSView, @preconcurrency NSTextInputClient {
     case "v":
       runtime.pasteClipboard()
       return true
-    case "a", "x", "z":
+    case "x":
+      runtime.copySelection()
+      return true
+    case "a", "z":
       return runtime.forwardKeyEquivalent(event)
     default:
       return super.performKeyEquivalent(with: event)
