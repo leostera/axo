@@ -338,9 +338,20 @@ final class GhosttySurfaceNSView: NSView, @preconcurrency NSTextInputClient {
     case "v":
       runtime.pasteClipboard()
       return true
+    case "a", "x", "z":
+      return runtime.forwardKeyEquivalent(event)
     default:
       return super.performKeyEquivalent(with: event)
     }
+  }
+
+  func forwardKeyEquivalent(_ event: NSEvent) {
+    sendKey(event, action: GHOSTTY_ACTION_PRESS, text: nil)
+    sendKey(event, action: GHOSTTY_ACTION_RELEASE, text: nil)
+  }
+
+  @IBAction override func selectAll(_ sender: Any?) {
+    _ = runtime?.perform(.selectAll)
   }
 
   @objc func copy(_ sender: Any?) {

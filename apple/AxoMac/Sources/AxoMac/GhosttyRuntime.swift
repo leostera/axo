@@ -205,6 +205,25 @@ final class GhosttyRuntime: ObservableObject {
     return true
   }
 
+  @discardableResult
+  func perform(_ action: GhosttySurfaceAction, on shellID: Int64? = nil) -> Bool {
+    guard let shellID = shellID ?? focusedShellID,
+      let surface = terminalSurfaces[shellID]?.view.surface
+    else { return false }
+    return action.rawValue.withCString {
+      ghostty_surface_binding_action(surface, $0, UInt(action.rawValue.utf8.count))
+    }
+  }
+
+  func forwardKeyEquivalent(_ event: NSEvent) -> Bool {
+    guard let shellID = focusedShellID,
+      let view = terminalSurfaces[shellID]?.view,
+      view.surface != nil
+    else { return false }
+    view.forwardKeyEquivalent(event)
+    return true
+  }
+
   func copySelection(from shellID: Int64? = nil) {
     guard let shellID = shellID ?? focusedShellID,
       let surface = terminalSurfaces[shellID]?.view.surface
@@ -424,4 +443,10 @@ final class GhosttyRuntime: ObservableObject {
   private static func shellQuoted(_ value: String) -> String {
     "'" + value.replacingOccurrences(of: "'", with: "'\\''") + "'"
   }
+}
+
+enum GhosttySurfaceAction: String {
+  case selectAll = "select_all"
+  case undo
+  case redo
 }

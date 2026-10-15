@@ -71,6 +71,22 @@ final class AxoVisualUITests: XCTestCase {
     let pastedIntoRight = try fixture.capture("03b-paste-focused-pane", in: window)
     try fixture.assertTextInRightHalf("AXO VISUAL PASTE RIGHT 6482", in: pastedIntoRight)
 
+    NSPasteboard.general.clearContents()
+    window.typeKey("a", modifierFlags: .command)
+    window.typeKey("c", modifierFlags: .command)
+    let focusedCopyDeadline = Date().addingTimeInterval(2)
+    var copiedFocusedPane: String?
+    while Date() < focusedCopyDeadline {
+      copiedFocusedPane = NSPasteboard.general.string(forType: .string)
+      if copiedFocusedPane?.contains("AXO VISUAL PASTE RIGHT 6482") == true { break }
+      try await Task.sleep(for: .milliseconds(25))
+    }
+    XCTAssertTrue(
+      copiedFocusedPane?.contains("AXO VISUAL PASTE RIGHT 6482") == true,
+      "Select All and Copy should read the currently focused pane."
+    )
+    XCTAssertFalse(copiedFocusedPane?.contains("AXO VISUAL INITIAL 7319") == true)
+
     window.coordinate(withNormalizedOffset: CGVector(dx: 0.75, dy: 0.5)).click()
     window.typeKey("w", modifierFlags: .command)
     try await waitForShellCount(1, sessionID: initialSession.id, model: model)

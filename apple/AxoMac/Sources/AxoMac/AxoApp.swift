@@ -116,6 +116,52 @@ struct AxoApp: App {
     .commands {
       AxoApplicationCommands(settingsSection: $settingsSection)
 
+      CommandGroup(replacing: .textEditing) {
+        Button("Undo") {
+          _ = ghostty.perform(.undo)
+        }
+        .keyboardShortcut("z", modifiers: .command)
+        .disabled(sessions.focusedShellID == nil)
+
+        Button("Redo") {
+          _ = ghostty.perform(.redo)
+        }
+        .keyboardShortcut("z", modifiers: [.command, .shift])
+        .disabled(sessions.focusedShellID == nil)
+
+        Divider()
+
+        Button("Select All") {
+          _ = ghostty.perform(.selectAll)
+        }
+        .keyboardShortcut("a", modifiers: .command)
+        .disabled(sessions.focusedShellID == nil)
+      }
+
+      CommandGroup(replacing: .pasteboard) {
+        Button("Cut") {}
+          .keyboardShortcut("x", modifiers: .command)
+          .disabled(true)
+
+        Button("Copy") {
+          ghostty.copySelection()
+        }
+        .keyboardShortcut("c", modifiers: .command)
+        .disabled(sessions.focusedShellID == nil)
+
+        Button("Paste") {
+          ghostty.pasteClipboard()
+        }
+        .keyboardShortcut("v", modifiers: .command)
+        .disabled(sessions.focusedShellID == nil)
+
+        Button("Paste and Match Style") {
+          ghostty.pasteClipboard()
+        }
+        .keyboardShortcut("v", modifiers: [.command, .option, .shift])
+        .disabled(sessions.focusedShellID == nil)
+      }
+
       CommandGroup(replacing: .sidebar) {
         Button("Toggle Sidebar") {
           isSidebarCollapsed.toggle()
