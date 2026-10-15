@@ -19,22 +19,23 @@ Axo is an agentic harness with a native macOS frontend and a Rust daemon.
 
 ## Native visual UI tests
 
-The opt-in `//apple/AxoMac:AxoVisualUITests` target is a native XCUITest of a separate-bundle build of the real Axo app. Each test starts an owned `axod` process with private socket, database, home, and test-control directories, then launches the app through `XCUIApplication` with those paths injected. The UI-test bundle ID is deliberately distinct from production, and the test app never registers or restarts the production LaunchAgent. Cleanup stops only the test app and daemon owned by that fixture.
+`//apple/AxoMac:AxoVisualUITestsBazel` is the repeatable entrypoint for the native UI test. It is a Bazel `sh_test` wrapper that prepares the Xcode project and private socket/database/home/control fixture, starts its own `axod`, injects the fixture root into the Xcode scheme, and invokes Xcode's native UI-test runner. The alternate app bundle never registers or restarts the production LaunchAgent, and the wrapper stops only its own daemon and app. The underlying `//apple/AxoMac:AxoVisualUITests` `macos_ui_test` target remains tagged `manual` because `rules_apple`'s default runner cannot provide this interactive desktop workflow; the wrapper is not `manual`, so it is included in `bazel test //...` on macOS.
 
-XCUITest sends actual keyboard shortcuts and terminal text to real libghostty surfaces. A file bridge, present only in the alternate test bundle, provides bounded readiness and surface-count checks; the production app has no test control endpoint. Every workflow checkpoint captures a PNG of the app window, attaches it to the XCTest result, and also writes it under `$TMPDIR/axo-ui-screenshots/<run-id>/` (the test log prints the exact directory). OCR checks on terminal markers and daemon-state assertions detect missing output as well as blank panes. The `manual` tag keeps this interactive test out of the ordinary headless `bazel test //...` run.
-
-Run the GUI suite on an unlocked macOS 14+ desktop. macOS may require a one-time system authorization to enable Xcode UI Automation; approve it through the normal macOS authentication prompt/settings. If `testmanagerd` cannot enable Automation Mode, the runner exits before the test fixture starts; do not try to bypass that OS authorization.
+Run the GUI suite on an unlocked macOS 14+ desktop:
 
 ```sh
-bazel run //apple/AxoMac:xcodeproj
-xcodebuild test \\
-  -project apple/AxoMac/AxoMac.xcodeproj \\
-  -scheme AxoVisualUITests \\
-  -destination 'platform=macOS' \\
-  -resultBundlePath /tmp/axo-visual-ui.xcresult
+# Run only the native visual UI test and print its artifact paths.
+bazel test //apple/AxoMac:AxoVisualUITestsBazel --test_output=all
+
+# Run it together with the rest of the Bazel test suite.
+bazel test //...
 ```
 
-The test bundle and its app/helper dependencies are built from Bazel targets; Xcode's native UI-test runner is used because `rules_apple`'s default macOS UI-test runner is unsupported for interactive UI automation. Open the `.xcresult` in Xcode to inspect attached screenshots, or open the printed temporary screenshot directory directly.
+XCUITest sends keyboard shortcuts and terminal text to real libghostty surfaces. A test-bundle-only file bridge provides bounded readiness and surface-count checks; the production app has no test control endpoint. Every workflow checkpoint captures a PNG, attaches it to the XCTest result, and writes it under the XCTest runner's `NSTemporaryDirectory()/axo-ui-screenshots/<run-id>/`; the test log prints the exact directory. OCR checks on terminal markers and pane geometry, together with daemon-state assertions, detect missing output, blank panes, and misplaced splits.
+
+The Bazel test outputs for `AxoVisualUITestsBazel` contain `xcodebuild.log`, the `.xcresult` bundle, and isolated daemon logs under `bazel-testlogs/apple/AxoMac/AxoVisualUITestsBazel/test.outputs/` for the active test configuration. The wrapper prints `AXO_UI_XCRESULT` and `AXO_UI_SCREENSHOTS` with their exact paths; open the result bundle in Xcode to inspect the attached screenshots, or open the PNG directory directly. Direct `xcodebuild test` invocation does not prepare the fixture root or start the isolated daemon; use the Bazel wrapper for repeatable runs.
+
+macOS may require system authorization to enable Xcode UI Automation; approve it through the normal macOS authentication prompt or settings. If `testmanagerd` cannot enable Automation Mode, the test fails before the fixture starts. Do not bypass that OS authorization.
 
 ## Build and test
 
