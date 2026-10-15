@@ -3,6 +3,42 @@ import XCTest
 @testable import AxoMac
 
 final class TerminalLayoutTests: XCTestCase {
+  func testLayoutPersistenceRoundTripsNestedSplitHierarchy() throws {
+    let suiteName = "axo-terminal-layout-test-\(UUID().uuidString)"
+    let defaults = try XCTUnwrap(UserDefaults(suiteName: suiteName))
+    defer { defaults.removePersistentDomain(forName: suiteName) }
+    let store = UserDefaultsTerminalLayoutPersistence(defaults: defaults)
+    let layout = TerminalLayout.split(
+      id: UUID(),
+      direction: .right,
+      ratio: 0.63,
+      first: .pane(17),
+      second: .split(
+        id: UUID(),
+        direction: .down,
+        ratio: 0.42,
+        first: .pane(23),
+        second: .pane(42)
+      )
+    )
+
+    store.save([9: layout])
+
+    XCTAssertEqual(store.load()[9], layout)
+  }
+
+  func testLayoutPersistenceRejectsDuplicateShellIdentities() {
+    let layout = TerminalLayout.split(
+      id: UUID(),
+      direction: .right,
+      ratio: 0.5,
+      first: .pane(17),
+      second: .pane(17)
+    )
+
+    XCTAssertFalse(layout.isValidForPersistence)
+  }
+
   func testInsertAddsSiblingPaneInRequestedDirection() throws {
     let original = TerminalLayout.pane(17)
 

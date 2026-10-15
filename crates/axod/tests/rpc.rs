@@ -454,11 +454,25 @@ fn terminal_attach_replays_output_after_reconnect() {
         );
     }
     assert!(first_output_seen);
-    first.kill().unwrap();
-    let _ = wait_for_exit(&mut first, Duration::from_secs(3));
-    thread::sleep(Duration::from_millis(100));
 
     let mut second = start_terminal_attach(attach_socket, shell_id);
+    let rejection_deadline = Instant::now() + Duration::from_secs(2);
+    loop {
+        let log = std::fs::read_to_string(server_directory.join("stderr.log")).unwrap_or_default();
+        if log.contains(&format!(
+            "event=session.attach_rejected shell_id={shell_id}"
+        )) {
+            break;
+        }
+        assert!(
+            Instant::now() < rejection_deadline,
+            "daemon did not reject the overlapping attachment"
+        );
+        thread::sleep(Duration::from_millis(20));
+    }
+    first.kill().unwrap();
+    let _ = wait_for_exit(&mut first, Duration::from_secs(3));
+
     let second_output = output_channel(second.stdout.take().unwrap());
     assert!(output_contains(
         &second_output,

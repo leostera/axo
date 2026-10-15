@@ -6,7 +6,13 @@ import Foundation
 @MainActor
 final class TerminalSessionsModel: ObservableObject {
   @Published private(set) var sessions: [TerminalSession] = []
-  @Published var selectedSessionID: Int64?
+  @Published var selectedSessionID: Int64? {
+    didSet {
+      if oldValue != selectedSessionID {
+        layoutPersistence.saveSelectedSessionID(selectedSessionID)
+      }
+    }
+  }
   @Published private(set) var focusedShellID: Int64?
   @Published private(set) var layout: TerminalLayout?
   @Published private(set) var errorMessage: String?
@@ -15,9 +21,16 @@ final class TerminalSessionsModel: ObservableObject {
 
   private let socketPath: UnixSocketPath?
   private let socketPathError: String?
-  private var layoutsBySession: [Int64: TerminalLayout] = [:]
+  private let layoutPersistence: TerminalLayoutPersistence
+  private var layoutsBySession: [Int64: TerminalLayout] = [:] {
+    didSet { layoutPersistence.save(layoutsBySession) }
+  }
 
   init() {
+    let layoutPersistence = UserDefaultsTerminalLayoutPersistence()
+    self.layoutPersistence = layoutPersistence
+    _selectedSessionID = Published(initialValue: layoutPersistence.loadSelectedSessionID())
+    layoutsBySession = layoutPersistence.load()
     helperURL = Bundle.main.bundleURL.appendingPathComponent("Contents/Helpers/axod")
     do {
       socketPath = try DaemonController.socketPath()
@@ -28,10 +41,17 @@ final class TerminalSessionsModel: ObservableObject {
     }
   }
 
-  init(socketPath: UnixSocketPath, helperURL: URL) {
+  init(
+    socketPath: UnixSocketPath,
+    helperURL: URL,
+    layoutPersistence: TerminalLayoutPersistence = InMemoryTerminalLayoutPersistence()
+  ) {
     self.socketPath = socketPath
     socketPathError = nil
     self.helperURL = helperURL
+    self.layoutPersistence = layoutPersistence
+    _selectedSessionID = Published(initialValue: layoutPersistence.loadSelectedSessionID())
+    layoutsBySession = layoutPersistence.load()
   }
 
   func refresh() async {
@@ -46,13 +66,21 @@ final class TerminalSessionsModel: ObservableObject {
         sessions = updatedSessions
       }
       let openSessionIDs = Set(sessions.map(\.id))
-      layoutsBySession = layoutsBySession.filter { openSessionIDs.contains($0.key) }
+      let retainedLayouts = layoutsBySession.filter { openSessionIDs.contains($0.key) }
+      if retainedLayouts != layoutsBySession {
+        layoutsBySession = retainedLayouts
+      }
 
       for session in sessions {
         let shellIDs = Set(session.shells.map(\.id))
-        if let current = layoutsBySession[session.id]?.pruned(to: shellIDs) {
+        if let persistedLayout = layoutsBySession[session.id],
+          let current = persistedLayout.pruned(to: shellIDs)
+        {
           let newlyCreatedShellIDs = shellIDs.subtracting(current.shellIDs)
-          layoutsBySession[session.id] = current.adding(newlyCreatedShellIDs)
+          let updatedLayout = current.adding(newlyCreatedShellIDs)
+          if updatedLayout != persistedLayout {
+            layoutsBySession[session.id] = updatedLayout
+          }
           if selectedSessionID == session.id, let newestShellID = newlyCreatedShellIDs.max() {
             focusedShellID = newestShellID
           }
@@ -377,7 +405,7 @@ final class TerminalSessionsModel: ObservableObject {
   }
 }
 
-enum TerminalSplitDirection: Hashable {
+enum TerminalSplitDirection: String, Codable, Hashable {
   case right
   case down
 }
@@ -387,7 +415,7 @@ enum TerminalNavigationDirection: Int, Equatable {
   case next = 1
 }
 
-indirect enum TerminalLayout: Equatable, Identifiable {
+indirect enum TerminalLayout: Codable, Equatable, Identifiable {
   case pane(Int64)
   case split(
     id: UUID,
@@ -535,6 +563,28 @@ indirect enum TerminalLayout: Equatable, Identifiable {
           second: remainingSecond
         )
       }
+    }
+  }
+
+  var isValidForPersistence: Bool {
+    var shellIDs = Set<Int64>()
+    var splitIDs = Set<UUID>()
+    return collectPersistenceIdentities(shellIDs: &shellIDs, splitIDs: &splitIDs)
+  }
+
+  private func collectPersistenceIdentities(
+    shellIDs: inout Set<Int64>,
+    splitIDs: inout Set<UUID>
+  ) -> Bool {
+    switch self {
+    case .pane(let shellID):
+      return shellID > 0 && shellIDs.insert(shellID).inserted
+    case .split(let id, _, let ratio, let first, let second):
+      return ratio.isFinite
+        && (0.01...0.99).contains(ratio)
+        && splitIDs.insert(id).inserted
+        && first.collectPersistenceIdentities(shellIDs: &shellIDs, splitIDs: &splitIDs)
+        && second.collectPersistenceIdentities(shellIDs: &shellIDs, splitIDs: &splitIDs)
     }
   }
 

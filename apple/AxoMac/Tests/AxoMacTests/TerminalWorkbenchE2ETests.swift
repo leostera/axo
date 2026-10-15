@@ -47,6 +47,45 @@ final class TerminalWorkbenchE2ETests: XCTestCase {
     }
   }
 
+  func testPaneHierarchySurvivesWorkbenchModelRecreation() async throws {
+    let daemon = try DaemonFixture()
+    defer { daemon.stop() }
+    let socketPath = try UnixSocketPath(daemon.socketPath.path)
+    let defaultsSuite = "axo-terminal-layout-test-\(UUID().uuidString)"
+    let defaults = try XCTUnwrap(UserDefaults(suiteName: defaultsSuite))
+    defer { defaults.removePersistentDomain(forName: defaultsSuite) }
+    let persistence = UserDefaultsTerminalLayoutPersistence(defaults: defaults)
+
+    let firstModel = TerminalSessionsModel(
+      socketPath: socketPath,
+      helperURL: daemon.executableURL,
+      layoutPersistence: persistence
+    )
+    await firstModel.refresh()
+    await firstModel.createSession()
+    let sessionID = try XCTUnwrap(firstModel.selectedSessionID)
+    let firstShell = try XCTUnwrap(firstModel.session(for: sessionID)?.shells.first)
+
+    await firstModel.split(.right)
+    await firstModel.split(.down)
+    if case .split(let splitID, _, _, _, _) = firstModel.layout {
+      firstModel.resizeSplit(splitID, to: 0.63)
+    }
+    let expectedLayout = try XCTUnwrap(firstModel.layout)
+    XCTAssertEqual(expectedLayout.orderedShellIDs.count, 3)
+
+    let reopenedModel = TerminalSessionsModel(
+      socketPath: socketPath,
+      helperURL: daemon.executableURL,
+      layoutPersistence: UserDefaultsTerminalLayoutPersistence(defaults: defaults)
+    )
+    await reopenedModel.refresh()
+
+    XCTAssertEqual(reopenedModel.selectedSessionID, sessionID)
+    XCTAssertEqual(reopenedModel.layout, expectedLayout)
+    XCTAssertEqual(reopenedModel.layout?.firstShellID, firstShell.id)
+  }
+
   func testPaneNavigationCyclesInLayoutOrder() async throws {
     try await withWorkbench { model, _ in
       let sessionID = try XCTUnwrap(model.selectedSessionID)

@@ -8,12 +8,15 @@ use std::path::{Path, PathBuf};
 use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::thread::{self, JoinHandle};
-use std::time::Duration;
+use std::time::{Duration, Instant};
 
 use clap::{CommandFactory, FromArgMatches, Parser, Subcommand};
 
 const MAX_LOG_BYTES: u64 = 10 * 1024 * 1024;
 const MAX_TERMINAL_OUTPUT_HISTORY_BYTES: u64 = 8 * 1024 * 1024;
+const ATTACH_REJECTION_MARKER: u64 = u64::MAX;
+const ATTACH_RETRY_WINDOW: Duration = Duration::from_secs(3);
+const ATTACH_RETRY_DELAY: Duration = Duration::from_millis(50);
 
 static TERMINAL_RESIZE_REQUESTED: AtomicBool = AtomicBool::new(false);
 
@@ -109,13 +112,7 @@ fn attach_terminal(socket_path: &Path, shell_id: i64) -> io::Result<()> {
         ));
     }
 
-    let mut control = UnixStream::connect(socket_path)?;
-    control.set_read_timeout(Some(Duration::from_secs(5)))?;
-    writeln!(control, "{shell_id}")?;
-    let replay = receive_terminal_output_history(&mut control)
-        .map_err(|error| io::Error::new(error.kind(), format!("read terminal history: {error}")))?;
-    let master = receive_pty_master(&control)
-        .map_err(|error| io::Error::new(error.kind(), format!("receive PTY: {error}")))?;
+    let (mut control, replay, master) = connect_terminal_attachment(socket_path, shell_id)?;
     let mut writer = File::from(duplicate_descriptor(master.as_raw_fd())?);
     let mut reader = File::from(master);
     let _input_mode = TerminalInputModeGuard::raw(libc::STDIN_FILENO)
@@ -286,10 +283,61 @@ fn duplicate_descriptor(descriptor: libc::c_int) -> io::Result<OwnedFd> {
     Ok(unsafe { OwnedFd::from_raw_fd(duplicate) })
 }
 
+fn connect_terminal_attachment(
+    socket_path: &Path,
+    shell_id: i64,
+) -> io::Result<(UnixStream, Vec<u8>, OwnedFd)> {
+    let deadline = Instant::now() + ATTACH_RETRY_WINDOW;
+    loop {
+        match open_terminal_attachment(socket_path, shell_id) {
+            Ok(attachment) => return Ok(attachment),
+            Err(error)
+                if matches!(
+                    error.kind(),
+                    io::ErrorKind::AddrInUse | io::ErrorKind::UnexpectedEof
+                ) && Instant::now() < deadline =>
+            {
+                thread::sleep(ATTACH_RETRY_DELAY);
+            }
+            Err(error) => return Err(error),
+        }
+    }
+}
+
+fn open_terminal_attachment(
+    socket_path: &Path,
+    shell_id: i64,
+) -> io::Result<(UnixStream, Vec<u8>, OwnedFd)> {
+    let mut control = UnixStream::connect(socket_path)?;
+    control.set_read_timeout(Some(Duration::from_secs(5)))?;
+    writeln!(control, "{shell_id}")?;
+    let replay = receive_terminal_output_history(&mut control)
+        .map_err(|error| io::Error::new(error.kind(), format!("read terminal history: {error}")))?;
+    let master = receive_pty_master(&control)
+        .map_err(|error| io::Error::new(error.kind(), format!("receive PTY: {error}")))?;
+    Ok((control, replay, master))
+}
+
 fn receive_terminal_output_history(control: &mut UnixStream) -> io::Result<Vec<u8>> {
     let mut length_bytes = [0_u8; size_of::<u64>()];
     control.read_exact(&mut length_bytes)?;
     let length = u64::from_be_bytes(length_bytes);
+    if length == ATTACH_REJECTION_MARKER {
+        let mut code = [0_u8; 1];
+        control.read_exact(&mut code)?;
+        let (kind, message) = match code[0] {
+            1 => (
+                io::ErrorKind::AddrInUse,
+                "shell already has a terminal attachment",
+            ),
+            2 => (io::ErrorKind::NotFound, "shell is no longer open"),
+            _ => (
+                io::ErrorKind::Other,
+                "daemon rejected the terminal attachment",
+            ),
+        };
+        return Err(io::Error::new(kind, message));
+    }
     if length > MAX_TERMINAL_OUTPUT_HISTORY_BYTES {
         return Err(io::Error::new(
             io::ErrorKind::InvalidData,
@@ -411,6 +459,22 @@ fn redirect_standard_stream(file_descriptor: libc::c_int, path: &Path) -> io::Re
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn terminal_attach_reports_an_existing_attachment() {
+        let (mut server, mut client) = UnixStream::pair().unwrap();
+        let response = thread::spawn(move || {
+            server
+                .write_all(&ATTACH_REJECTION_MARKER.to_be_bytes())
+                .unwrap();
+            server.write_all(&[1]).unwrap();
+        });
+
+        let error = receive_terminal_output_history(&mut client).unwrap_err();
+        assert_eq!(error.kind(), io::ErrorKind::AddrInUse);
+        assert_eq!(error.to_string(), "shell already has a terminal attachment");
+        response.join().unwrap();
+    }
 
     #[test]
     fn raw_input_mode_is_restored_when_the_guard_drops() {

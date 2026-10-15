@@ -23,6 +23,7 @@ const PTY_ROWS: libc::c_ushort = 24;
 const PTY_COLUMNS: libc::c_ushort = 80;
 const REAPER_INTERVAL: Duration = Duration::from_millis(100);
 const MAX_TERMINAL_OUTPUT_HISTORY_BYTES: usize = 8 * 1024 * 1024;
+const ATTACH_REJECTION_MARKER: u64 = u64::MAX;
 
 #[derive(Clone, Copy, Debug, Eq, Hash, PartialEq)]
 struct SessionId(i64);
@@ -1015,7 +1016,19 @@ fn handle_attachment(mut stream: UnixStream, manager: Weak<SessionManager>) {
     };
     let (master, replay) = match manager.duplicate_master(id) {
         Ok(attachment) => attachment,
-        Err(_) => return,
+        Err(error) => {
+            log::warn!(
+                "event=session.attach_rejected shell_id={} reason={error}",
+                id.0
+            );
+            if let Err(write_error) = write_attachment_rejection(&mut stream, &error) {
+                log::debug!(
+                    "event=session.attach_rejection_write_failed shell_id={} reason={write_error}",
+                    id.0
+                );
+            }
+            return;
+        }
     };
 
     let replay_length = (replay.len() as u64).to_be_bytes();
@@ -1050,6 +1063,16 @@ fn handle_attachment(mut stream: UnixStream, manager: Weak<SessionManager>) {
         }
     }
     manager.mark_detached(id);
+}
+
+fn write_attachment_rejection(stream: &mut UnixStream, error: &io::Error) -> io::Result<()> {
+    let code = match error.kind() {
+        io::ErrorKind::AddrInUse => 1,
+        io::ErrorKind::NotFound => 2,
+        _ => 3,
+    };
+    stream.write_all(&ATTACH_REJECTION_MARKER.to_be_bytes())?;
+    stream.write_all(&[code])
 }
 
 fn send_file_descriptor(socket_fd: RawFd, descriptor: RawFd) -> io::Result<()> {
