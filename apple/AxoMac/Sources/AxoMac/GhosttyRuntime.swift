@@ -162,6 +162,15 @@ final class GhosttyRuntime: ObservableObject {
     terminalSurfaces[shellID]?.view.surface != nil
   }
 
+  func focusSurface(for shellID: Int64) -> Bool {
+    guard let view = terminalSurfaces[shellID]?.view,
+      let window = view.window,
+      window.isKeyWindow
+    else { return false }
+    if window.firstResponder === view { return true }
+    return window.makeFirstResponder(view) && window.firstResponder === view
+  }
+
   @discardableResult
   func insertText(_ text: String, into shellID: Int64) -> Bool {
     guard let view = terminalSurfaces[shellID]?.view, view.surface != nil else { return false }

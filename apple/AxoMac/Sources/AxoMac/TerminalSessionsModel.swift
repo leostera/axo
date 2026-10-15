@@ -51,7 +51,11 @@ final class TerminalSessionsModel: ObservableObject {
       for session in sessions {
         let shellIDs = Set(session.shells.map(\.id))
         if let current = layoutsBySession[session.id]?.pruned(to: shellIDs) {
-          layoutsBySession[session.id] = current.adding(shellIDs.subtracting(current.shellIDs))
+          let newlyCreatedShellIDs = shellIDs.subtracting(current.shellIDs)
+          layoutsBySession[session.id] = current.adding(newlyCreatedShellIDs)
+          if selectedSessionID == session.id, let newestShellID = newlyCreatedShellIDs.max() {
+            focusedShellID = newestShellID
+          }
         } else {
           layoutsBySession[session.id] = Self.defaultLayout(for: session.shells)
         }
@@ -107,10 +111,13 @@ final class TerminalSessionsModel: ObservableObject {
     do {
       let shell = try await UnixSocketRPC.createShell(in: sessionID, at: socketPath)
       replace(session, withShells: session.shells + [shell])
-      let currentLayout = layoutsBySession[sessionID] ?? Self.defaultLayout(for: session.shells)
-      layoutBySession(
-        sessionID, inserting: shell.id, direction: direction, beside: anchorShellID,
-        fallback: currentLayout)
+      if let currentLayout = layoutsBySession[sessionID] ?? Self.defaultLayout(for: session.shells),
+        !currentLayout.contains(shellID: shell.id)
+      {
+        layoutBySession(
+          sessionID, inserting: shell.id, direction: direction, beside: anchorShellID,
+          fallback: currentLayout)
+      }
       if selectedSessionID == sessionID {
         layout = layoutsBySession[sessionID]
         focusedShellID = shell.id
@@ -254,7 +261,7 @@ final class TerminalSessionsModel: ObservableObject {
     if let focusedShellID, currentLayout.contains(shellID: focusedShellID) {
       return
     }
-    focusedShellID = currentLayout.firstShellID
+    focusedShellID = session.shells.map(\.id).max() ?? currentLayout.firstShellID
   }
 
   private func add(_ session: TerminalSession) {

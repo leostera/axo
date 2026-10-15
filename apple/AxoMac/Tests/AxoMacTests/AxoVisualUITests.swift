@@ -1,7 +1,6 @@
 import AppKit
 import AxoRPC
 import CoreGraphics
-import Darwin
 import Foundation
 import Vision
 import XCTest
@@ -151,7 +150,6 @@ private final class UITestFixture {
   let socketURL: URL
   let helperURL: URL
   let app: XCUIApplication
-  private let daemon: Process
   private let controlDirectory: URL
   private let screenshotDirectory: URL
   private var didLaunchApp = false
@@ -159,61 +157,35 @@ private final class UITestFixture {
 
   init(app: XCUIApplication) throws {
     self.app = app
+    let environment = ProcessInfo.processInfo.environment
+    guard let rootPath = environment["AXO_UI_TEST_ROOT"] else {
+      throw UITestError.missingDaemonEnvironment("AXO_UI_TEST_ROOT")
+    }
+    root = URL(fileURLWithPath: rootPath, isDirectory: true)
+    socketURL = root.appendingPathComponent("s")
+    controlDirectory = root.appendingPathComponent("control", isDirectory: true)
+    let homeDirectory = root.appendingPathComponent("home", isDirectory: true)
+    let temporaryDirectory = root.appendingPathComponent("tmp", isDirectory: true)
+
     let resources = Bundle(for: AxoVisualUITests.self).resourceURL
     guard let helperURL = resources?.appendingPathComponent("axod"),
       FileManager.default.isExecutableFile(atPath: helperURL.path)
     else { throw UITestError.bundledHelperMissing(resources?.path ?? "<no test resources>") }
     self.helperURL = helperURL
 
-    root = URL(fileURLWithPath: "/tmp", isDirectory: true)
-      .appendingPathComponent(
-        "axo-visual-ui-\(ProcessInfo.processInfo.processIdentifier)-\(UUID().uuidString.prefix(8))",
-        isDirectory: true
-      )
-    let serverDirectory = root.appendingPathComponent("server", isDirectory: true)
-    let homeDirectory = root.appendingPathComponent("home", isDirectory: true)
-    let temporaryDirectory = root.appendingPathComponent("tmp", isDirectory: true)
-    socketURL = root.appendingPathComponent("axod.sock")
-    controlDirectory = root.appendingPathComponent("control", isDirectory: true)
+    for path in [
+      root.path, socketURL.path, controlDirectory.path, homeDirectory.path,
+      temporaryDirectory.path,
+    ]
+    where !FileManager.default.fileExists(atPath: path) {
+      throw UITestError.missingDaemonEnvironment(path)
+    }
+
     screenshotDirectory = URL(fileURLWithPath: NSTemporaryDirectory(), isDirectory: true)
       .appendingPathComponent("axo-ui-screenshots", isDirectory: true)
       .appendingPathComponent(UUID().uuidString, isDirectory: true)
-
-    try FileManager.default.createDirectory(at: root, withIntermediateDirectories: true)
-    try FileManager.default.setAttributes([.posixPermissions: 0o700], ofItemAtPath: root.path)
-    try FileManager.default.createDirectory(
-      at: serverDirectory, withIntermediateDirectories: true)
-    try FileManager.default.createDirectory(at: homeDirectory, withIntermediateDirectories: true)
-    try FileManager.default.createDirectory(
-      at: temporaryDirectory, withIntermediateDirectories: true)
-    try FileManager.default.createDirectory(
-      at: controlDirectory, withIntermediateDirectories: true)
-    try FileManager.default.setAttributes(
-      [.posixPermissions: 0o700], ofItemAtPath: controlDirectory.path)
     try FileManager.default.createDirectory(
       at: screenshotDirectory, withIntermediateDirectories: true)
-    _ = FileManager.default.createFile(
-      atPath: serverDirectory.appendingPathComponent("stderr.log").path,
-      contents: nil
-    )
-
-    daemon = Process()
-    daemon.executableURL = helperURL
-    daemon.arguments = ["--socket", socketURL.path, "--server-dir", serverDirectory.path]
-    daemon.standardOutput = FileHandle.nullDevice
-    daemon.standardError = try FileHandle(
-      forWritingTo: serverDirectory.appendingPathComponent("stderr.log"))
-    daemon.environment = Self.testEnvironment(
-      homeDirectory: homeDirectory, temporaryDirectory: temporaryDirectory)
-    do {
-      try daemon.run()
-      try waitForSocket()
-    } catch {
-      if Self.stop(daemon) {
-        try? FileManager.default.removeItem(at: root)
-      }
-      throw error
-    }
   }
 
   func launchApp() {
@@ -341,12 +313,6 @@ private final class UITestFixture {
       app.terminate()
       _ = app.wait(for: .notRunning, timeout: 4)
     }
-    guard Self.stop(daemon) else {
-      XCTFail("The isolated axod did not stop; preserving its private root at \(root.path).")
-      print("AXO_UI_SCREENSHOTS \(screenshotDirectory.path)")
-      return
-    }
-    try? FileManager.default.removeItem(at: root)
     print("AXO_UI_SCREENSHOTS \(screenshotDirectory.path)")
   }
 
@@ -378,23 +344,17 @@ private final class UITestFixture {
   {
     let inherited = ProcessInfo.processInfo.environment
     var environment: [String: String] = [
+      "ApplePersistenceIgnoreState": "YES",
       "HOME": homeDirectory.path,
+      "PATH": "/usr/bin:/bin:/usr/sbin:/sbin",
+      "SHELL": "/bin/zsh",
+      "TERM": "xterm-ghostty",
       "TMPDIR": temporaryDirectory.path,
     ]
-    for key in ["PATH", "SHELL", "USER", "LOGNAME", "LANG", "LC_ALL", "TERM"] {
+    for key in ["USER", "LOGNAME", "LANG", "LC_ALL"] {
       if let value = inherited[key] { environment[key] = value }
     }
     return environment
-  }
-
-  private func waitForSocket() throws {
-    let deadline = Date().addingTimeInterval(6)
-    while Date() < deadline {
-      if FileManager.default.fileExists(atPath: socketURL.path) { return }
-      guard daemon.isRunning else { throw UITestError.daemonExited(daemon.terminationStatus) }
-      Thread.sleep(forTimeInterval: 0.02)
-    }
-    throw UITestError.daemonTimedOut
   }
 
   private static func hasVisiblePixels(_ image: CGImage) -> Bool {
@@ -423,21 +383,6 @@ private final class UITestFixture {
     }
   }
 
-  private static func stop(_ process: Process) -> Bool {
-    guard process.isRunning else { return true }
-    process.terminate()
-    let gracefulDeadline = Date().addingTimeInterval(3)
-    while process.isRunning && Date() < gracefulDeadline {
-      Thread.sleep(forTimeInterval: 0.02)
-    }
-    guard process.isRunning else { return true }
-    _ = Darwin.kill(process.processIdentifier, SIGKILL)
-    let killDeadline = Date().addingTimeInterval(2)
-    while process.isRunning && Date() < killDeadline {
-      Thread.sleep(forTimeInterval: 0.02)
-    }
-    return !process.isRunning
-  }
 }
 
 private struct ControlRequest: Encodable {
@@ -456,8 +401,7 @@ private enum UITestError: Error, LocalizedError {
   case bundledHelperMissing(String)
   case couldNotDecodeScreenshot(String)
   case blankScreenshot(String)
-  case daemonExited(Int32)
-  case daemonTimedOut
+  case missingDaemonEnvironment(String)
   case controlRequestAlreadyPending
   case controlRequestTimedOut(String)
   case wrongControlResponse
@@ -476,9 +420,8 @@ private enum UITestError: Error, LocalizedError {
       "Could not decode the screenshot at checkpoint \(name)."
     case .blankScreenshot(let name):
       "The Axo window remained visually blank at screenshot checkpoint \(name)."
-    case .daemonExited(let status):
-      "The isolated axod exited before opening its socket (status \(status))."
-    case .daemonTimedOut: "The isolated axod did not create its socket within six seconds."
+    case .missingDaemonEnvironment(let key):
+      "The Bazel visual-test runner did not provide isolated daemon input \(key)."
     case .controlRequestAlreadyPending: "The app has an unprocessed UI-test action."
     case .controlRequestTimedOut(let action):
       "The app did not acknowledge UI-test action \(action) within its bounded wait."

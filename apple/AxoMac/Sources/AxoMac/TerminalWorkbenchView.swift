@@ -47,6 +47,13 @@ struct TerminalWorkbenchView: View {
         try? await Task.sleep(for: .seconds(1))
       }
     }
+    .task(id: sessions.focusedShellID) {
+      guard let focusedShellID = sessions.focusedShellID else { return }
+      for _ in 0..<40 {
+        if ghostty.focusSurface(for: focusedShellID) { return }
+        try? await Task.sleep(for: .milliseconds(25))
+      }
+    }
   }
 
   private var expandedSidebar: some View {

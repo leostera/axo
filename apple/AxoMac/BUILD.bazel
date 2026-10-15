@@ -1,5 +1,6 @@
 load("@rules_apple//apple:macos.bzl", "macos_application", "macos_ui_test")
 load("@rules_apple//apple:versioning.bzl", "apple_bundle_version")
+load("@rules_shell//shell:sh_test.bzl", "sh_test")
 load("@rules_swift//swift:swift_library.bzl", "swift_library")
 load("@rules_swift//swift:swift_test.bzl", "swift_test")
 load("@rules_xcodeproj//xcodeproj:defs.bzl", "xcodeproj")
@@ -57,12 +58,35 @@ swift_library(
 
 macos_ui_test(
     name = "AxoVisualUITests",
+    bundle_id = "dev.leostera.axo.vt",
     minimum_os_version = "14.0",
     test_host = ":AxoUITestApp",
     resources = ["//crates/axod:axod"],
     deps = [":AxoVisualUITestsLib"],
     tags = ["manual", "no-sandbox"],
     timeout = "long",
+)
+
+sh_test(
+    name = "AxoVisualUITestsBazel",
+    srcs = ["run_visual_ui_test.sh"],
+    data = [":xcodeproj", "//:MODULE.bazel", "//crates/axod:axod"],
+    env = {
+        "AXO_UI_AXOD_RUNFILE": "$(rlocationpath //crates/axod:axod)",
+        "AXO_XCODEPROJ_RUNNER": "$(rlocationpath :xcodeproj)",
+        "AXO_WORKSPACE_MODULE": "$(rlocationpath //:MODULE.bazel)",
+    },
+    env_inherit = [
+        "BAZEL_REAL",
+        "BAZELISK_SKIP_WRAPPER",
+        "DEVELOPER_DIR",
+        "HOME",
+        "PATH",
+        "TMPDIR",
+    ],
+    tags = ["no-sandbox", "requires-mac-ui"],
+    timeout = "long",
+    target_compatible_with = ["@platforms//os:macos"],
 )
 
 swift_test(

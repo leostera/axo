@@ -3,10 +3,12 @@ module(
     version = "0.1.0",
 )
 
+bazel_dep(name = "platforms", version = "1.1.0")
 bazel_dep(name = "rules_apple", version = "5.3.0")
 bazel_dep(name = "rules_rust", version = "0.74.0")
 bazel_dep(name = "rules_swift", version = "4.2.1")
 bazel_dep(name = "rules_swift_package_manager", version = "1.25.0")
+bazel_dep(name = "rules_shell", version = "0.6.1")
 bazel_dep(name = "rules_xcodeproj", version = "4.1.0")
 
 rust = use_extension("@rules_rust//rust:extensions.bzl", "rust")

@@ -33,6 +33,20 @@ final class TerminalWorkbenchE2ETests: XCTestCase {
     }
   }
 
+  func testRefreshFocusesTheNewestCreatedPane() async throws {
+    try await withWorkbench { model, daemon in
+      let sessionID = try XCTUnwrap(model.selectedSessionID)
+      let firstShell = try XCTUnwrap(model.session(for: sessionID)?.shells.first)
+      let socketPath = try UnixSocketPath(daemon.socketPath.path)
+
+      let newestShell = try await UnixSocketRPC.createShell(in: sessionID, at: socketPath)
+      await model.refresh()
+
+      XCTAssertEqual(model.focusedShellID, newestShell.id)
+      XCTAssertEqual(model.layout?.shellIDs, [firstShell.id, newestShell.id])
+    }
+  }
+
   func testCommandWClosureCollapsesNestedPaneWithoutKillingSiblings() async throws {
     try await withWorkbench { model, daemon in
       let sessionID = try XCTUnwrap(model.selectedSessionID)

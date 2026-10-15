@@ -40,6 +40,29 @@ struct AxoApp: App {
     }
   }
 
+  @MainActor
+  private static func positionUITestWindow() async {
+    for _ in 0..<20 {
+      if let window = NSApp.windows.first(where: { $0.title == "Axo Terminal" }),
+        let screen = NSScreen.main
+      {
+        let visibleFrame = screen.visibleFrame
+        let size = NSSize(
+          width: min(1000, visibleFrame.width),
+          height: min(680, visibleFrame.height)
+        )
+        let origin = NSPoint(
+          x: visibleFrame.midX - size.width / 2,
+          y: visibleFrame.midY - size.height / 2
+        )
+        window.setFrame(NSRect(origin: origin, size: size), display: true)
+        window.makeKeyAndOrderFront(nil)
+        return
+      }
+      try? await Task.sleep(for: .milliseconds(50))
+    }
+  }
+
   private static func makeSessions(isUITestApp: Bool) -> TerminalSessionsModel {
     guard isUITestApp else { return TerminalSessionsModel() }
     let environment = ProcessInfo.processInfo.environment
@@ -78,6 +101,7 @@ struct AxoApp: App {
       .task {
         guard isUITestApp else { return }
         NSApp.activate(ignoringOtherApps: true)
+        await Self.positionUITestWindow()
         guard let path = ProcessInfo.processInfo.environment["AXO_UI_TEST_CONTROL_DIR"] else {
           return
         }
