@@ -50,7 +50,7 @@ async function terminate(child: ChildProcess, processGroup = false): Promise<voi
 function browserWebSocketFactory() {
   return (url: string): WebSocketLike => {
     const socket = new WebSocket(url, {
-      headers: { Origin: "https://app.axo.leostera.dev" },
+      headers: { Origin: "https://axo.leostera.dev" },
       followRedirects: false,
       maxPayload: 65_536,
     });
@@ -133,7 +133,7 @@ test("an isolated axod registers, publishes, streams PTY output, accepts remote 
       api.url,
       async (input, init) => {
         const headers = new Headers(init?.headers);
-        headers.set("Origin", "https://app.axo.leostera.dev");
+        headers.set("Origin", "https://axo.leostera.dev");
         return fetch(input, { ...init, headers });
       },
       browserWebSocketFactory(),

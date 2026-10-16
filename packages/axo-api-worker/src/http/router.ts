@@ -2,12 +2,19 @@ import { Hono, type Context } from "hono";
 import { uuid } from "@axo/protocol";
 import { edgePrincipal, type Principal } from "../access";
 import { serveDiscovery } from "./rpc";
+import {
+  authExports,
+  completeCloudflareLogin,
+  currentAxoSession,
+  logoutAxoSession,
+  startCloudflareLogin,
+} from "../auth/cloudflare";
 import { serveMachines } from "./machines";
 import { authorizeHttpHostClient, serveHostSessions, serveHosts } from "./hosts";
 
 type Api = { Bindings: Env };
 const app = new Hono<Api>();
-const APP_ORIGIN = "https://app.axo.leostera.dev";
+const APP_ORIGIN = "https://axo.leostera.dev";
 const CORS_METHODS = "GET, POST, OPTIONS";
 const CORS_HEADERS = "Content-Type";
 
@@ -54,6 +61,34 @@ app.use("/v1/*", async (context, next) => {
 async function authorizeCaller(_context: Context<Api>, role: "client" | "daemon"): Promise<Principal | Response> {
   return edgePrincipal(role);
 }
+
+app.all("/api/auth/cloudflare/start", context =>
+  startCloudflareLogin(context.req.raw, context.env),
+);
+
+app.all("/api/auth/cloudflare/callback", context =>
+  completeCloudflareLogin(
+    context.req.raw,
+    context.env,
+    authExports((context.executionCtx as ExecutionContext).exports),
+  ),
+);
+
+app.all("/api/auth/me", context =>
+  currentAxoSession(
+    context.req.raw,
+    context.env,
+    authExports((context.executionCtx as ExecutionContext).exports),
+  ),
+);
+
+app.all("/api/auth/logout", context =>
+  logoutAxoSession(
+    context.req.raw,
+    context.env,
+    authExports((context.executionCtx as ExecutionContext).exports),
+  ),
+);
 
 app.all("/v1/rpc", async context => {
   const principal = await authorizeCaller(context, "client");

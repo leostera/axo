@@ -15,7 +15,7 @@
     "build": "tsc -p tsconfig.json --noEmit",
     "typecheck": "tsc -p tsconfig.json --noEmit",
     "test": "npm run test:core && npm run test:relay",
-    "test:core": "npm --prefix ../axo-api run schema:check && npm run typecheck && tsx --test --test-concurrency=1 tests/api.test.ts tests/hosts.test.ts tests/lifecycle.test.ts tests/limits.test.ts tests/machines.test.ts tests/observability.test.ts tests/replies.property.test.ts tests/replies.test.ts",
+    "test:core": "npm --prefix ../axo-api run schema:check && npm run typecheck && tsx --test --test-concurrency=1 tests/api.test.ts tests/auth.test.ts tests/hosts.test.ts tests/lifecycle.test.ts tests/limits.test.ts tests/machines.test.ts tests/observability.test.ts tests/replies.property.test.ts tests/replies.test.ts",
     "test:properties": "npm --prefix ../axo-api run build && tsx --test --test-concurrency=1 tests/replies.property.test.ts",
     "test:axod": "npm run test:relay",
     "test:relay": "npm --prefix ../axo-api run build && npm --prefix ../axo-api run schema:check && (cd ../.. && bazel build //crates/axod:axod) && AXOD_BINARY=../../bazel-bin/crates/axod/axod tsx --test --test-concurrency=1 tests/axod-relay.test.ts",

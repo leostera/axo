@@ -1,6 +1,7 @@
 import { HostRelayConnection, type Session } from "@axo/app";
 import { FitAddon } from "@xterm/addon-fit";
 import { Terminal } from "@xterm/xterm";
+import "@xterm/xterm/css/xterm.css";
 import { useEffect, useRef } from "react";
 
 type Activity = "running" | "exited" | "attached" | "detached" | "unknown";

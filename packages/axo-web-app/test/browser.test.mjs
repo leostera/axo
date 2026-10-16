@@ -14,7 +14,7 @@ const hostId = "1e1e7f91-3d8f-4f97-8f71-4fc7d53313c6";
 const hostGeneration = "f9c5761c-3b2d-42a8-bb19-9a8c0b8cf230";
 const subscriptionId = "53c8b056-a7ba-4354-9659-dda29f57850a";
 const now = "2026-10-16T12:00:00.000Z";
-const siteRoot = resolve(import.meta.dirname, "../../../sites/app.axo.leostera.dev");
+const siteRoot = resolve(import.meta.dirname, "../../../sites/axo.leostera.dev");
 const chromePath = process.env.CHROME_PATH ?? "/Applications/Google Chrome.app/Contents/MacOS/Google Chrome";
 
 function session(sessionId, shellId) {
@@ -104,6 +104,10 @@ test("browser discovers hosts, renders live PTY output, sends input, and uses Cm
       return;
     }
     const url = new URL(request.url, "http://127.0.0.1");
+    if (request.method === "GET" && url.pathname === "/api/auth/me") {
+      json(response, { authenticated: false }, origin);
+      return;
+    }
     if (request.method === "GET" && url.pathname === "/v1/hosts") {
       json(response, { hosts: [host(sessions)] }, origin);
       return;
@@ -199,12 +203,14 @@ test("browser discovers hosts, renders live PTY output, sends input, and uses Cm
       root: siteRoot,
       define: { "import.meta.env.VITE_AXO_API_BASE_URL": JSON.stringify(apiBaseUrl) },
       plugins: [react()],
+      resolve: { dedupe: ["react", "react-dom"] },
       server: {
         host: "127.0.0.1",
         port: appPort,
         strictPort: true,
         proxy: {
           "/v1": { target: `http://127.0.0.1:${apiPort}`, changeOrigin: true, ws: true },
+          "/api": { target: `http://127.0.0.1:${apiPort}`, changeOrigin: true },
         },
       },
       logLevel: "error",
@@ -226,7 +232,11 @@ test("browser discovers hosts, renders live PTY output, sends input, and uses Cm
     page.on("console", (message) => browserMessages.push(`${message.type()}: ${message.text()}`));
     page.on("requestfailed", (request) => browserMessages.push(`request failed: ${request.url()} ${request.failure()?.errorText ?? ""}`));
     page.on("response", (response) => { if (response.status() >= 400) browserMessages.push(`HTTP ${response.status()}: ${response.url()}`); });
-    await page.goto(appUrl, { waitUntil: "networkidle" });
+    await page.goto(`${appUrl}/`, { waitUntil: "networkidle" });
+    assert.equal(await page.getByRole("heading", { name: "Pick up where your Mac left off." }).count(), 1);
+    await page.getByRole("link", { name: "Continue to Axo" }).click();
+    await page.getByRole("heading", { name: "Sign in to Axo" }).waitFor({ timeout: 10_000 });
+    await page.goto(`${appUrl}/__tests__/terminal`, { waitUntil: "networkidle" });
     await page.getByRole("button", { name: /Browser fixture Mac/ }).waitFor({ timeout: 10_000 }).catch(async (error) => {
       throw new Error(`${error.message}\npage: ${pageErrors.join(" | ")}\ntext: ${await page.locator("body").innerText()}\nconsole: ${browserMessages.join(" | ")}\napi: ${apiRequests.join(" | ")}`);
     });
@@ -270,6 +280,12 @@ test("browser discovers hosts, renders live PTY output, sends input, and uses Cm
     assert.equal(sessionCreateCount, 1);
     assert.ok(methods.includes("axo.remote.terminal.input"));
     assert.ok(methods.includes("axo.remote.session.create"));
+
+    await page.goto(`${appUrl}/app`, { waitUntil: "networkidle" });
+    await page.getByRole("link", { name: "Continue with Cloudflare" }).waitFor({ timeout: 10_000 });
+    assert.equal(await page.getByRole("heading", { name: "Sign in to Axo" }).count(), 1);
+    assert.ok((await page.getByRole("link", { name: "Continue with Cloudflare" }).getAttribute("href"))
+      .endsWith("/api/auth/cloudflare/start"));
     assert.deepEqual(pageErrors, []);
   } finally {
     await browser?.close();

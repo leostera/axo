@@ -9,7 +9,7 @@ export { Peer } from "../testing/client";
 
 export const root = fileURLToPath(new URL("../../../", import.meta.url));
 export const issuer = "https://private-test.cloudflareaccess.com";
-export async function harness(configuration: { audience?: string } = {}) {
+export async function harness(configuration: { audience?: string; bindings?: Record<string, string> } = {}) {
   const audience = configuration.audience ?? "private-test";
   const directory = await mkdtemp(join(tmpdir(), "axo-api-"));
   const bundle = join(directory, "worker.mjs");
@@ -25,13 +25,22 @@ export async function harness(configuration: { audience?: string } = {}) {
   const keys = await generateKeyPair("RS256");
   const options = convertV4MiniflareOptions({
     name: "api-test",
+    bindings: configuration.bindings ?? {},
     modules: true,
     script: await readFile(bundle, "utf8"),
     compatibilityDate: "2026-10-09",
-    compatibilityFlags: ["nodejs_compat"],
+    compatibilityFlags: ["nodejs_compat", "enable_ctx_exports"],
+    exports: {
+      AxoHostDirectory: { type: "durable-object", storage: "sqlite" },
+      AxoHostRelay: { type: "durable-object", storage: "sqlite" },
+      AxoIdentityIndex: { type: "durable-object", storage: "sqlite" },
+      AxoAccountDirectory: { type: "durable-object", storage: "sqlite" },
+    },
     durableObjects: {
       TEST_DIRECTORY: { className: "AxoHostDirectory", useSQLite: true },
       TEST_MACHINE: { className: "AxoHostRelay", useSQLite: true },
+      TEST_IDENTITIES: { className: "AxoIdentityIndex", useSQLite: true },
+      TEST_ACCOUNTS: { className: "AxoAccountDirectory", useSQLite: true },
     },
     resourcePersistencePath: join(directory, "storage"),
     unsafeInspectDurableObjects: true,

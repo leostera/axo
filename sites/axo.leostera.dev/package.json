@@ -1,17 +1,19 @@
 {
-  "name": "@axo/remote-app-site",
+  "name": "@axo/public-site",
   "private": true,
   "type": "module",
   "scripts": {
     "dev": "cf dev",
     "build": "npm --prefix ../../packages/axo-api run build && npm --prefix ../../packages/axo-app run build && npm --prefix ../../packages/axo-web-app run build && cf build",
     "preview": "cf preview",
-    "test:browser": "npm --prefix ../../packages/axo-web-app run test:browser",
     "typecheck": "npm --prefix ../../packages/axo-api run build && npm --prefix ../../packages/axo-app run build && npm --prefix ../../packages/axo-web-app run typecheck && cf workers types && tsc --noEmit",
-    "test": "npm --prefix ../../packages/axo-api run build && npm --prefix ../../packages/axo-app test && npm --prefix ../../packages/axo-web-app test"
+    "test": "node --test tests/*.test.mjs && npm --prefix ../../packages/axo-api-worker run test:core && npm --prefix ../../packages/axo-web-app run test"
   },
   "dependencies": {
-    "@axo/web-app": "file:../../packages/axo-web-app"
+    "@axo/api-worker": "file:../../packages/axo-api-worker",
+    "@axo/web-app": "file:../../packages/axo-web-app",
+    "react": "^19.3.1",
+    "react-dom": "^19.3.1"
   },
   "devDependencies": {
     "@cloudflare/vite-plugin": "2.0.0-beta.sha-52b0dc0e9",
@@ -19,5 +21,9 @@
     "cf": "1.0.0-beta.13",
     "typescript": "^7.0.2",
     "vite": "^8.3.0"
+  },
+  "overrides": {
+    "sharp": "0.35.5",
+    "workerd": "1.20261016.1"
   }
 }

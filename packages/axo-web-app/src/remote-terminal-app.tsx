@@ -17,7 +17,7 @@ const TerminalPane = lazy(async () => {
   return { default: module.TerminalPane };
 });
 
-const DEFAULT_API_URL = "https://api.axo.leostera.dev";
+const DEFAULT_API_URL = "https://axo.leostera.dev";
 const apiBaseUrl = import.meta.env.VITE_AXO_API_BASE_URL || DEFAULT_API_URL;
 
 type ConnectionState = "disconnected" | "connecting" | "live" | "error";

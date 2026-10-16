@@ -65,7 +65,7 @@ async function main() {
   const [endpoint, credentialFile, ...flags] = process.argv.slice(2);
   if (!endpoint || !credentialFile)
     throw new Error(
-      "Usage: dummy-client.ts https://api.axo.leostera.dev/ /absolute/private/client.jwt [--machine UUID] [--start-approved PROFILE] [--allow-loopback]",
+      "Usage: dummy-client.ts https://axo.leostera.dev/ /absolute/private/client.jwt [--machine UUID] [--start-approved PROFILE] [--allow-loopback]",
     );
   let machineId: string | undefined;
   let profileId: string | undefined;

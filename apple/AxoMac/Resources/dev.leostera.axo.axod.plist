@@ -17,7 +17,7 @@
     <key>EnvironmentVariables</key>
     <dict>
         <key>AXO_RELAY_URL</key>
-        <string>https://api.axo.leostera.dev</string>
+        <string>https://axo.leostera.dev</string>
     </dict>
     <key>ProcessType</key>
     <string>Background</string>

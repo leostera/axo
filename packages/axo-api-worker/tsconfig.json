@@ -13,6 +13,6 @@
     "tests/**/*.ts",
     "testing/**/*.ts",
     "scripts/**/*.ts",
-    "../../sites/api.axo.leostera.dev/.cloudflare/types/**/*.d.ts"
+    "../../sites/axo.leostera.dev/.cloudflare/types/**/*.d.ts"
   ]
 }

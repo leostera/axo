@@ -34,7 +34,7 @@ test("host metadata is available without Worker JWT validation and becomes stale
   const hostGeneration = crypto.randomUUID();
   const headers = accessHeaders(await h.token("client"));
   const listURL = new URL("v1/hosts", h.url);
-  const appOrigin = "https://app.axo.leostera.dev";
+  const appOrigin = "https://axo.leostera.dev";
 
   assert.equal((await fetch(listURL)).status, 200);
   assert.equal((await fetch(listURL, { headers: accessHeaders(await h.token("daemon")) })).status, 200);
@@ -203,7 +203,7 @@ test("host subscriptions stream metadata and output; remote controls are routed 
     hostId,
     "client",
     true,
-    "https://app.axo.leostera.dev",
+    "https://axo.leostera.dev",
   );
   await client.negotiate();
   const subscribed = await client.call("axo.host.subscribe", { hostId, hostGeneration });

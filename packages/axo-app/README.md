@@ -11,4 +11,4 @@ npm --prefix packages/axo-app install
 npm --prefix packages/axo-app test
 ```
 
-`RemoteAxoApi` accepts an API origin, with optional fetch and WebSocket factories for isolated tests. Production pages should use `https://api.axo.leostera.dev`. Configure the app site's Cloudflare Access policy separately; API browser requests also require the personal Access identity for the API hostname.
+`RemoteAxoApi` accepts an API origin, with optional fetch and WebSocket factories for isolated tests. The canonical public origin is `https://axo.leostera.dev`; its product host/relay endpoints remain unavailable until account-scoped authorization and pairing are implemented. The retired app/API subdomains are no longer the production target.
