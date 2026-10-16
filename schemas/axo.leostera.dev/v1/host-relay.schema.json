@@ -1,0 +1,734 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://schemas.axo.leostera.dev/v1/host-relay.schema.json",
+  "title": "Axo protocol v1 host registration and remote RPC",
+  "$defs": {
+    "Call": {
+      "oneOf": [
+        {
+          "$ref": "#/$defs/HostRegisterCall"
+        },
+        {
+          "$ref": "#/$defs/HostHeartbeatCall"
+        },
+        {
+          "$ref": "#/$defs/SessionPublishCall"
+        },
+        {
+          "$ref": "#/$defs/HostListCall"
+        },
+        {
+          "$ref": "#/$defs/SessionsListCall"
+        },
+        {
+          "$ref": "#/$defs/HostSubscribeCall"
+        },
+        {
+          "$ref": "#/$defs/HostUnsubscribeCall"
+        },
+        {
+          "$ref": "#/$defs/RemoteSessionCreateCall"
+        },
+        {
+          "$ref": "#/$defs/RemoteSessionCloseCall"
+        },
+        {
+          "$ref": "#/$defs/RemoteShellCreateCall"
+        },
+        {
+          "$ref": "#/$defs/RemoteShellCloseCall"
+        },
+        {
+          "$ref": "#/$defs/RemoteLayoutSetCall"
+        },
+        {
+          "$ref": "#/$defs/RemoteTerminalInputCall"
+        },
+        {
+          "$ref": "#/$defs/RemoteTerminalResizeCall"
+        }
+      ]
+    },
+    "BaseCall": {
+      "type": "object",
+      "required": [
+        "jsonrpc",
+        "id",
+        "method"
+      ],
+      "properties": {
+        "jsonrpc": {
+          "const": "2.0"
+        },
+        "id": {
+          "$ref": "common.schema.json#/$defs/RpcId"
+        },
+        "method": {
+          "type": "string"
+        },
+        "params": {
+          "type": "object"
+        }
+      }
+    },
+    "HostRegisterCall": {
+      "allOf": [
+        {
+          "$ref": "#/$defs/BaseCall"
+        },
+        {
+          "properties": {
+            "method": {
+              "const": "axo.host.register"
+            },
+            "params": {
+              "type": "object",
+              "additionalProperties": false,
+              "required": [
+                "protocolVersion",
+                "hostId",
+                "hostGeneration",
+                "label",
+                "hostKind",
+                "sessions"
+              ],
+              "properties": {
+                "protocolVersion": {
+                  "const": 1
+                },
+                "hostId": {
+                  "$ref": "common.schema.json#/$defs/HostId"
+                },
+                "hostGeneration": {
+                  "$ref": "common.schema.json#/$defs/HostGeneration"
+                },
+                "label": {
+                  "type": "string",
+                  "minLength": 1,
+                  "maxLength": 128
+                },
+                "hostKind": {
+                  "type": "string",
+                  "pattern": "^[a-z][a-z0-9-]{0,63}$"
+                },
+                "sessions": {
+                  "type": "array",
+                  "items": {
+                    "$ref": "common.schema.json#/$defs/SessionSnapshot"
+                  }
+                }
+              }
+            }
+          }
+        }
+      ],
+      "unevaluatedProperties": false,
+      "required": [
+        "params"
+      ]
+    },
+    "HostHeartbeatCall": {
+      "allOf": [
+        {
+          "$ref": "#/$defs/BaseCall"
+        },
+        {
+          "properties": {
+            "method": {
+              "const": "axo.host.heartbeat"
+            },
+            "params": {
+              "$ref": "common.schema.json#/$defs/HostRef"
+            }
+          }
+        }
+      ],
+      "unevaluatedProperties": false,
+      "required": [
+        "params"
+      ]
+    },
+    "SessionPublishCall": {
+      "allOf": [
+        {
+          "$ref": "#/$defs/BaseCall"
+        },
+        {
+          "properties": {
+            "method": {
+              "const": "axo.host.sessions.publish"
+            },
+            "params": {
+              "type": "object",
+              "additionalProperties": false,
+              "required": [
+                "hostId",
+                "hostGeneration",
+                "sessions"
+              ],
+              "properties": {
+                "hostId": {
+                  "$ref": "common.schema.json#/$defs/HostId"
+                },
+                "hostGeneration": {
+                  "$ref": "common.schema.json#/$defs/HostGeneration"
+                },
+                "sessions": {
+                  "type": "array",
+                  "items": {
+                    "$ref": "common.schema.json#/$defs/SessionSnapshot"
+                  }
+                }
+              }
+            }
+          }
+        }
+      ],
+      "unevaluatedProperties": false,
+      "required": [
+        "params"
+      ]
+    },
+    "HostListCall": {
+      "allOf": [
+        {
+          "$ref": "#/$defs/BaseCall"
+        },
+        {
+          "properties": {
+            "method": {
+              "const": "axo.host.list"
+            },
+            "params": {
+              "type": "object",
+              "maxProperties": 0
+            }
+          }
+        }
+      ],
+      "unevaluatedProperties": false
+    },
+    "SessionsListCall": {
+      "allOf": [
+        {
+          "$ref": "#/$defs/BaseCall"
+        },
+        {
+          "properties": {
+            "method": {
+              "const": "axo.host.sessions.list"
+            },
+            "params": {
+              "$ref": "common.schema.json#/$defs/HostRef"
+            }
+          }
+        }
+      ],
+      "unevaluatedProperties": false,
+      "required": [
+        "params"
+      ]
+    },
+    "HostSubscribeCall": {
+      "allOf": [
+        {
+          "$ref": "#/$defs/BaseCall"
+        },
+        {
+          "properties": {
+            "method": {
+              "const": "axo.host.subscribe"
+            },
+            "params": {
+              "$ref": "common.schema.json#/$defs/HostRef"
+            }
+          }
+        }
+      ],
+      "unevaluatedProperties": false,
+      "required": [
+        "params"
+      ]
+    },
+    "HostUnsubscribeCall": {
+      "allOf": [
+        {
+          "$ref": "#/$defs/BaseCall"
+        },
+        {
+          "properties": {
+            "method": {
+              "const": "axo.host.unsubscribe"
+            },
+            "params": {
+              "type": "object",
+              "additionalProperties": false,
+              "required": [
+                "subscriptionId"
+              ],
+              "properties": {
+                "subscriptionId": {
+                  "type": "string",
+                  "format": "uuid"
+                }
+              }
+            }
+          }
+        }
+      ],
+      "unevaluatedProperties": false,
+      "required": [
+        "params"
+      ]
+    },
+    "RemoteSessionCreateCall": {
+      "allOf": [
+        {
+          "$ref": "#/$defs/BaseCall"
+        },
+        {
+          "properties": {
+            "method": {
+              "const": "axo.remote.session.create"
+            },
+            "params": {
+              "type": "object",
+              "additionalProperties": false,
+              "required": [
+                "target"
+              ],
+              "properties": {
+                "target": {
+                  "$ref": "common.schema.json#/$defs/HostRef"
+                }
+              }
+            }
+          }
+        }
+      ],
+      "unevaluatedProperties": false,
+      "required": [
+        "params"
+      ]
+    },
+    "RemoteSessionCloseCall": {
+      "allOf": [
+        {
+          "$ref": "#/$defs/BaseCall"
+        },
+        {
+          "properties": {
+            "method": {
+              "const": "axo.remote.session.close"
+            },
+            "params": {
+              "type": "object",
+              "additionalProperties": false,
+              "required": [
+                "target",
+                "sessionId"
+              ],
+              "properties": {
+                "target": {
+                  "$ref": "common.schema.json#/$defs/HostRef"
+                },
+                "sessionId": {
+                  "$ref": "common.schema.json#/$defs/SessionId"
+                }
+              }
+            }
+          }
+        }
+      ],
+      "unevaluatedProperties": false,
+      "required": [
+        "params"
+      ]
+    },
+    "RemoteShellCreateCall": {
+      "allOf": [
+        {
+          "$ref": "#/$defs/BaseCall"
+        },
+        {
+          "properties": {
+            "method": {
+              "const": "axo.remote.shell.create"
+            },
+            "params": {
+              "type": "object",
+              "additionalProperties": false,
+              "required": [
+                "target",
+                "sessionId"
+              ],
+              "properties": {
+                "target": {
+                  "$ref": "common.schema.json#/$defs/HostRef"
+                },
+                "sessionId": {
+                  "$ref": "common.schema.json#/$defs/SessionId"
+                }
+              }
+            }
+          }
+        }
+      ],
+      "unevaluatedProperties": false,
+      "required": [
+        "params"
+      ]
+    },
+    "RemoteShellCloseCall": {
+      "allOf": [
+        {
+          "$ref": "#/$defs/BaseCall"
+        },
+        {
+          "properties": {
+            "method": {
+              "const": "axo.remote.shell.close"
+            },
+            "params": {
+              "type": "object",
+              "additionalProperties": false,
+              "required": [
+                "target",
+                "sessionId",
+                "shellId"
+              ],
+              "properties": {
+                "target": {
+                  "$ref": "common.schema.json#/$defs/HostRef"
+                },
+                "sessionId": {
+                  "$ref": "common.schema.json#/$defs/SessionId"
+                },
+                "shellId": {
+                  "$ref": "common.schema.json#/$defs/ShellId"
+                }
+              }
+            }
+          }
+        }
+      ],
+      "unevaluatedProperties": false,
+      "required": [
+        "params"
+      ]
+    },
+    "RemoteLayoutSetCall": {
+      "allOf": [
+        {
+          "$ref": "#/$defs/BaseCall"
+        },
+        {
+          "properties": {
+            "method": {
+              "const": "axo.remote.session.layout.set"
+            },
+            "params": {
+              "type": "object",
+              "additionalProperties": false,
+              "required": [
+                "target",
+                "sessionId",
+                "layout"
+              ],
+              "properties": {
+                "target": {
+                  "$ref": "common.schema.json#/$defs/HostRef"
+                },
+                "sessionId": {
+                  "$ref": "common.schema.json#/$defs/SessionId"
+                },
+                "layout": {
+                  "$ref": "common.schema.json#/$defs/Layout"
+                }
+              }
+            }
+          }
+        }
+      ],
+      "unevaluatedProperties": false,
+      "required": [
+        "params"
+      ]
+    },
+    "RemoteTerminalInputCall": {
+      "allOf": [
+        {
+          "$ref": "#/$defs/BaseCall"
+        },
+        {
+          "properties": {
+            "method": {
+              "const": "axo.remote.terminal.input"
+            },
+            "params": {
+              "type": "object",
+              "additionalProperties": false,
+              "required": [
+                "target",
+                "sessionId",
+                "shellId",
+                "sequence",
+                "data"
+              ],
+              "properties": {
+                "target": {
+                  "$ref": "common.schema.json#/$defs/HostRef"
+                },
+                "sessionId": {
+                  "$ref": "common.schema.json#/$defs/SessionId"
+                },
+                "shellId": {
+                  "$ref": "common.schema.json#/$defs/ShellId"
+                },
+                "sequence": {
+                  "type": "integer",
+                  "minimum": 0,
+                  "maximum": 9007199254740991
+                },
+                "data": {
+                  "type": "string",
+                  "contentEncoding": "base64",
+                  "minLength": 4,
+                  "maxLength": 65536
+                }
+              }
+            }
+          }
+        }
+      ],
+      "unevaluatedProperties": false,
+      "required": [
+        "params"
+      ]
+    },
+    "RemoteTerminalResizeCall": {
+      "allOf": [
+        {
+          "$ref": "#/$defs/BaseCall"
+        },
+        {
+          "properties": {
+            "method": {
+              "const": "axo.remote.terminal.resize"
+            },
+            "params": {
+              "type": "object",
+              "additionalProperties": false,
+              "required": [
+                "target",
+                "sessionId",
+                "shellId",
+                "rows",
+                "columns"
+              ],
+              "properties": {
+                "target": {
+                  "$ref": "common.schema.json#/$defs/HostRef"
+                },
+                "sessionId": {
+                  "$ref": "common.schema.json#/$defs/SessionId"
+                },
+                "shellId": {
+                  "$ref": "common.schema.json#/$defs/ShellId"
+                },
+                "rows": {
+                  "type": "integer",
+                  "minimum": 1,
+                  "maximum": 65535
+                },
+                "columns": {
+                  "type": "integer",
+                  "minimum": 1,
+                  "maximum": 65535
+                }
+              }
+            }
+          }
+        }
+      ],
+      "unevaluatedProperties": false,
+      "required": [
+        "params"
+      ]
+    },
+    "Response": {
+      "$ref": "local-rpc.schema.json#/$defs/Response"
+    },
+    "HostRegisterResult": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "host"
+      ],
+      "properties": {
+        "host": {
+          "$ref": "common.schema.json#/$defs/HostSnapshot"
+        }
+      }
+    },
+    "HeartbeatResult": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "acknowledged",
+        "lastSeenAt"
+      ],
+      "properties": {
+        "acknowledged": {
+          "const": true
+        },
+        "lastSeenAt": {
+          "type": "string",
+          "format": "date-time"
+        }
+      }
+    },
+    "SessionPublishResult": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "storedAt"
+      ],
+      "properties": {
+        "storedAt": {
+          "type": "string",
+          "format": "date-time"
+        }
+      }
+    },
+    "HostListResult": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "hosts"
+      ],
+      "properties": {
+        "hosts": {
+          "type": "array",
+          "items": {
+            "$ref": "common.schema.json#/$defs/HostSnapshot"
+          }
+        }
+      }
+    },
+    "SessionsListResult": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "host",
+        "sessions"
+      ],
+      "properties": {
+        "host": {
+          "$ref": "common.schema.json#/$defs/HostSnapshot"
+        },
+        "sessions": {
+          "type": "array",
+          "items": {
+            "$ref": "common.schema.json#/$defs/SessionSnapshot"
+          }
+        }
+      }
+    },
+    "HostSubscribeResult": {
+      "$ref": "local-rpc.schema.json#/$defs/SubscribeResult"
+    },
+    "RemoteSessionCreateResult": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "session"
+      ],
+      "properties": {
+        "session": {
+          "$ref": "common.schema.json#/$defs/SessionSnapshot"
+        }
+      }
+    },
+    "RemoteSessionCloseResult": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "closed",
+        "sessionId",
+        "replacement"
+      ],
+      "properties": {
+        "closed": {
+          "const": true
+        },
+        "sessionId": {
+          "$ref": "common.schema.json#/$defs/SessionId"
+        },
+        "replacement": {
+          "anyOf": [
+            {
+              "$ref": "common.schema.json#/$defs/SessionSnapshot"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        }
+      }
+    },
+    "RemoteShellCreateResult": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "hostId",
+        "sessionId",
+        "shellId"
+      ],
+      "properties": {
+        "hostId": {
+          "$ref": "common.schema.json#/$defs/HostId"
+        },
+        "sessionId": {
+          "$ref": "common.schema.json#/$defs/SessionId"
+        },
+        "shellId": {
+          "$ref": "common.schema.json#/$defs/ShellId"
+        }
+      }
+    },
+    "RemoteShellCloseResult": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "closed",
+        "hostId",
+        "sessionId",
+        "shellId"
+      ],
+      "properties": {
+        "closed": {
+          "const": true
+        },
+        "hostId": {
+          "$ref": "common.schema.json#/$defs/HostId"
+        },
+        "sessionId": {
+          "$ref": "common.schema.json#/$defs/SessionId"
+        },
+        "shellId": {
+          "$ref": "common.schema.json#/$defs/ShellId"
+        }
+      }
+    },
+    "RemoteLayoutSetResult": {
+      "$ref": "local-rpc.schema.json#/$defs/LayoutSetResult"
+    },
+    "RemoteTerminalInputResult": {
+      "$ref": "local-rpc.schema.json#/$defs/TerminalInputResult"
+    },
+    "RemoteTerminalResizeResult": {
+      "$ref": "local-rpc.schema.json#/$defs/TerminalResizeResult"
+    }
+  }
+}

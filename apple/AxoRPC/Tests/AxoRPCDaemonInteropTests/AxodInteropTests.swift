@@ -27,10 +27,28 @@ final class AxodInteropTests: XCTestCase {
     defer { stop(daemon) }
 
     try await waitForSocket(at: socketPath, from: daemon)
+    let negotiation = try await UnixSocketRPC.negotiate(at: socketPath)
+    XCTAssertEqual(negotiation.protocolVersion, UnixSocketRPC.protocolVersion)
+    for method in [
+      "axo.session.create", "axo.session.subscribe", "axo.session.events.next",
+      "axo.session.unsubscribe", "axo.terminal.input", "axo.terminal.resize",
+      "axo.relay.settings", "axo.relay.configure", "axo.relay.disable",
+      "axo.relay.status", "axo.relay.connect",
+    ] {
+      XCTAssertTrue(negotiation.methods.contains(method), "axod should advertise \(method)")
+    }
     let health = try await UnixSocketRPC.health(at: socketPath)
     XCTAssertEqual(health.version, "0.1.0")
     XCTAssertGreaterThan(health.buildNumber, 0)
     XCTAssertEqual(health.status, "running")
+
+    let relaySettings = try await UnixSocketRPC.remoteAccessSettings(at: socketPath)
+    XCTAssertFalse(relaySettings.enabled)
+    let relayStatus = try await UnixSocketRPC.remoteAccessStatus(at: socketPath)
+    XCTAssertEqual(relayStatus.state, .disconnected)
+    XCTAssertFalse(relayStatus.hostName.isEmpty)
+    XCTAssertEqual(relayStatus.hostKind, "macos")
+    try await UnixSocketRPC.disableRemoteAccess(at: socketPath)
 
     let initialSessions = try await UnixSocketRPC.listSessions(at: socketPath)
     XCTAssertEqual(initialSessions.count, 1)
@@ -41,6 +59,31 @@ final class AxodInteropTests: XCTestCase {
     let sessionsAfterCreate = try await UnixSocketRPC.listSessions(at: socketPath)
     XCTAssertEqual(
       Set(sessionsAfterCreate.map(\.id)), Set([initialSessions[0].id, createdSession.id]))
+    let subscription = try await UnixSocketRPC.subscribe(to: createdSession.id, at: socketPath)
+    let initialEvent = try await UnixSocketRPC.nextEvent(
+      for: subscription,
+      timeout: .seconds(1),
+      at: socketPath
+    )
+    guard case .sessionSnapshot(let snapshot) = initialEvent else {
+      return XCTFail("subscription should begin with a current session snapshot")
+    }
+    XCTAssertEqual(snapshot.id, createdSession.id)
+    try await UnixSocketRPC.resizeTerminal(
+      shellID: createdShell.id,
+      in: createdSession.id,
+      rows: 44,
+      columns: 120,
+      at: socketPath
+    )
+    try await UnixSocketRPC.sendTerminalInput(
+      Data("echo AXO_SWIFT_PROTOCOL_INPUT\n".utf8),
+      to: createdShell.id,
+      in: createdSession.id,
+      sequence: 0,
+      at: socketPath
+    )
+    try await UnixSocketRPC.unsubscribe(subscription, at: socketPath)
     XCTAssertEqual(
       sessionsAfterCreate.first(where: { $0.id == createdSession.id })?.shells.map(\.id),
       [createdSession.shells[0].id, createdShell.id]

@@ -1,10 +1,6 @@
 import { build } from "esbuild";
-import {
-  Miniflare,
-  Response as MockResponse,
-  convertV4MiniflareOptions,
-} from "miniflare";
-import { generateKeyPair, exportJWK, SignJWT } from "jose";
+import { Miniflare, convertV4MiniflareOptions } from "miniflare";
+import { generateKeyPair, SignJWT } from "jose";
 import { mkdtemp, readFile, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
@@ -26,13 +22,7 @@ export async function harness(configuration: { audience?: string } = {}) {
     mainFields: ["module", "main"],
     external: ["cloudflare:workers"],
   });
-  const keys = await generateKeyPair("RS256", { extractable: true });
-  const jwk = {
-    ...(await exportJWK(keys.publicKey)),
-    kid: "test-key",
-    alg: "RS256",
-    use: "sig",
-  };
+  const keys = await generateKeyPair("RS256");
   const options = convertV4MiniflareOptions({
     name: "api-test",
     modules: true,
@@ -45,17 +35,6 @@ export async function harness(configuration: { audience?: string } = {}) {
     },
     resourcePersistencePath: join(directory, "storage"),
     unsafeInspectDurableObjects: true,
-    outboundService: async (request) => {
-      if (request.url !== `${issuer}/cdn-cgi/access/certs`)
-        return new MockResponse("Unexpected outbound request", { status: 403 });
-      return MockResponse.json({ keys: [jwk] });
-    },
-    bindings: {
-      ACCESS_TEAM_URL: issuer,
-      ACCESS_AUD: audience,
-      ACCESS_USER_EMAIL: "human@example.com",
-      ACCESS_HOST_CLIENT_ID: "daemon.access",
-    },
   });
   let mf = new Miniflare(options);
   let url: string;
@@ -78,7 +57,7 @@ export async function harness(configuration: { audience?: string } = {}) {
         : { common_name: "daemon.access", sub: "" }),
       ...overrides,
     })
-      .setProtectedHeader({ alg: "RS256", kid: "test-key" })
+      .setProtectedHeader({ alg: "RS256" })
       .setIssuer(issuer)
       .setAudience(audience)
       .setExpirationTime(expiration)

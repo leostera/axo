@@ -27,6 +27,7 @@ final class TerminalSessionsModel: ObservableObject {
   private let socketPath: UnixSocketPath?
   private let socketPathError: String?
   private let selectedSessionDefaults: UserDefaults?
+  private var negotiatedSocketPath: UnixSocketPath?
   private var layoutsBySession: [Int64: TerminalLayout] = [:]
   private var pendingLayoutWrites: [Int64: SessionLayout] = [:]
   private var layoutWriteTasks: [Int64: Task<Void, Never>] = [:]
@@ -70,11 +71,25 @@ final class TerminalSessionsModel: ObservableObject {
 
   func refresh() async {
     guard let socketPath else {
-      errorMessage = socketPathError ?? "The Axo D socket path is unavailable."
+      errorMessage = socketPathError ?? "The axod socket path is unavailable."
       return
     }
 
     do {
+      if negotiatedSocketPath != socketPath {
+        let negotiation = try await UnixSocketRPC.negotiate(at: socketPath)
+        let requiredMethods: Set<String> = [
+          "axo.session.list", "axo.session.subscribe", "axo.session.events.next",
+          "axo.session.unsubscribe", "axo.terminal.input", "axo.terminal.resize",
+        ]
+        guard negotiation.protocolVersion == UnixSocketRPC.protocolVersion,
+          requiredMethods.isSubset(of: Set(negotiation.methods))
+        else {
+          throw UnixSocketRPCError.invalidResponse(
+            "daemon does not support the required Axo protocol")
+        }
+        negotiatedSocketPath = socketPath
+      }
       let updatedSessions = try await UnixSocketRPC.listSessions(at: socketPath)
       let openSessionIDs = Set(updatedSessions.map(\.id))
       layoutsBySession = layoutsBySession.filter { openSessionIDs.contains($0.key) }
@@ -137,7 +152,7 @@ final class TerminalSessionsModel: ObservableObject {
 
   func createSession() async {
     guard let socketPath else {
-      errorMessage = socketPathError ?? "The Axo D socket path is unavailable."
+      errorMessage = socketPathError ?? "The axod socket path is unavailable."
       return
     }
 
@@ -154,7 +169,7 @@ final class TerminalSessionsModel: ObservableObject {
 
   func split(_ direction: TerminalSplitDirection) async {
     guard let socketPath else {
-      errorMessage = socketPathError ?? "The Axo D socket path is unavailable."
+      errorMessage = socketPathError ?? "The axod socket path is unavailable."
       return
     }
     guard let sessionID = selectedSessionID,
@@ -187,7 +202,7 @@ final class TerminalSessionsModel: ObservableObject {
 
   func closeSession(_ sessionID: Int64) async {
     guard let socketPath else {
-      errorMessage = socketPathError ?? "The Axo D socket path is unavailable."
+      errorMessage = socketPathError ?? "The axod socket path is unavailable."
       return
     }
 

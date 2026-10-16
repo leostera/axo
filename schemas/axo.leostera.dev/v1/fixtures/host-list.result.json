@@ -1,0 +1,22 @@
+{
+  "hosts": [
+    {
+      "hostId": "18355f00-95fd-4c93-8586-a71a8a52bf73",
+      "hostGeneration": "c3b6da28-55c0-4bb0-ac04-dd458fd41a2b",
+      "label": "Axo Mac",
+      "hostKind": "macos",
+      "status": "offline",
+      "stale": true,
+      "lastSeenAt": "2026-10-16T00:00:00Z",
+      "sessions": [
+        {
+          "hostId": "18355f00-95fd-4c93-8586-a71a8a52bf73",
+          "sessionId": 9,
+          "shells": [{ "shellId": 12 }],
+          "layout": { "kind": "pane", "shellId": 12 },
+          "updatedAt": "2026-10-15T23:59:00Z"
+        }
+      ]
+    }
+  ]
+}

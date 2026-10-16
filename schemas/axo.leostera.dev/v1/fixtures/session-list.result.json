@@ -1,0 +1,21 @@
+{
+  "sessions": [
+    {
+      "id": 9,
+      "initialPwd": "/tmp",
+      "shells": [
+        {
+          "id": 12,
+          "processId": 4321,
+          "initialPwd": "/tmp",
+          "ptyDevice": "/dev/ttys001",
+          "attachSocketPath": "/tmp/axo/attach.sock"
+        }
+      ],
+      "layout": {
+        "kind": "pane",
+        "shellId": 12
+      }
+    }
+  ]
+}

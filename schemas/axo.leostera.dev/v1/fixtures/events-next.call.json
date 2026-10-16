@@ -1,0 +1,9 @@
+{
+  "jsonrpc": "2.0",
+  "id": 2,
+  "method": "axo.session.events.next",
+  "params": {
+    "subscriptionId": "7f1b6750-65fa-4b5d-9b6f-2d844c62b226",
+    "timeoutMs": 15000
+  }
+}

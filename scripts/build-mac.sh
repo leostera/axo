@@ -110,7 +110,7 @@ for executable in "$app/Contents/MacOS/Axo" "$app/Contents/Helpers/axod"; do
 done
 reported_build=$("$app/Contents/Helpers/axod" --version)
 if [[ "$reported_build" != *"(build $build_number)" ]]; then
-  echo "Axo D reports the wrong build number: $reported_build" >&2
+  echo "axod reports the wrong build number: $reported_build" >&2
   exit 1
 fi
 

@@ -1,0 +1,15 @@
+{
+  "jsonrpc": "2.0",
+  "id": 5,
+  "method": "axo.remote.terminal.input",
+  "params": {
+    "target": {
+      "hostId": "18355f00-95fd-4c93-8586-a71a8a52bf73",
+      "hostGeneration": "c3b6da28-55c0-4bb0-ac04-dd458fd41a2b"
+    },
+    "sessionId": 9,
+    "shellId": 12,
+    "sequence": 4,
+    "data": "cHJpbnRmICdPSycK"
+  }
+}

@@ -1,0 +1,11 @@
+{
+  "jsonrpc": "2.0",
+  "id": 4,
+  "method": "axo.terminal.resize",
+  "params": {
+    "sessionId": 9,
+    "shellId": 12,
+    "rows": 42,
+    "columns": 120
+  }
+}

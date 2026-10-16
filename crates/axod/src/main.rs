@@ -15,7 +15,7 @@ use clap::{CommandFactory, FromArgMatches, Parser, Subcommand};
 const MAX_LOG_BYTES: u64 = 10 * 1024 * 1024;
 const MAX_TERMINAL_OUTPUT_HISTORY_BYTES: u64 = 8 * 1024 * 1024;
 const ATTACH_REJECTION_MARKER: u64 = u64::MAX;
-const ATTACH_RETRY_WINDOW: Duration = Duration::from_secs(3);
+const ATTACH_RETRY_WINDOW: Duration = Duration::from_secs(10);
 const ATTACH_RETRY_DELAY: Duration = Duration::from_millis(50);
 
 static TERMINAL_RESIZE_REQUESTED: AtomicBool = AtomicBool::new(false);
@@ -459,6 +459,8 @@ fn redirect_standard_stream(file_descriptor: libc::c_int, path: &Path) -> io::Re
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::os::unix::net::UnixListener;
+    use std::time::{SystemTime, UNIX_EPOCH};
 
     #[test]
     fn terminal_attach_reports_an_existing_attachment() {
@@ -474,6 +476,64 @@ mod tests {
         assert_eq!(error.kind(), io::ErrorKind::AddrInUse);
         assert_eq!(error.to_string(), "shell already has a terminal attachment");
         response.join().unwrap();
+    }
+
+    #[test]
+    fn terminal_attach_retries_a_truncated_history_response() {
+        let unique = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .unwrap()
+            .as_nanos();
+        let socket_path = std::env::temp_dir().join(format!(
+            "axo-attach-retry-{}-{unique}.sock",
+            std::process::id()
+        ));
+        let listener = UnixListener::bind(&socket_path).unwrap();
+        let descriptor = File::open("/dev/null").unwrap();
+        let server = thread::spawn(move || {
+            let (mut first, _) = listener.accept().unwrap();
+            first.write_all(&[0, 0, 0]).unwrap();
+            drop(first);
+
+            let (mut second, _) = listener.accept().unwrap();
+            second.write_all(&0_u64.to_be_bytes()).unwrap();
+            send_test_file_descriptor(second.as_raw_fd(), descriptor.as_raw_fd());
+        });
+
+        let (control, replay, master) = connect_terminal_attachment(&socket_path, 1).unwrap();
+        assert!(replay.is_empty());
+        drop(master);
+        drop(control);
+        server.join().unwrap();
+        std::fs::remove_file(socket_path).unwrap();
+    }
+
+    fn send_test_file_descriptor(socket_fd: RawFd, descriptor: RawFd) {
+        let mut payload = b'1';
+        let mut vector = libc::iovec {
+            iov_base: (&mut payload as *mut u8).cast(),
+            iov_len: 1,
+        };
+        let control_size = unsafe { libc::CMSG_SPACE(size_of::<libc::c_int>() as u32) } as usize;
+        let mut ancillary = vec![0_usize; control_size.div_ceil(size_of::<usize>())];
+        // SAFETY: zeroed msghdr is initialized before it is passed to sendmsg.
+        let mut message: libc::msghdr = unsafe { std::mem::zeroed() };
+        message.msg_iov = &mut vector;
+        message.msg_iovlen = 1;
+        message.msg_control = ancillary.as_mut_ptr().cast();
+        message.msg_controllen = control_size as _;
+        // SAFETY: the ancillary buffer is large enough for one descriptor.
+        let header = unsafe { libc::CMSG_FIRSTHDR(&message) };
+        assert!(!header.is_null());
+        // SAFETY: header points into the initialized ancillary buffer.
+        unsafe {
+            (*header).cmsg_level = libc::SOL_SOCKET;
+            (*header).cmsg_type = libc::SCM_RIGHTS;
+            (*header).cmsg_len = libc::CMSG_LEN(size_of::<libc::c_int>() as u32) as _;
+            std::ptr::write(libc::CMSG_DATA(header).cast::<libc::c_int>(), descriptor);
+        }
+        // SAFETY: message references valid payload and ancillary storage.
+        assert_eq!(unsafe { libc::sendmsg(socket_fd, &message, 0) }, 1);
     }
 
     #[test]

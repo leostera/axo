@@ -12,3 +12,5 @@ log = "0.4"
 rusqlite = { version = "0.39.0", features = ["bundled"] }
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
+tungstenite = { version = "0.30.0", features = ["native-tls", "url"] }
+url = "2.5.8"

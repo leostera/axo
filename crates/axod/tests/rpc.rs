@@ -183,10 +183,11 @@ fn wait_for_socket(socket: &std::path::Path, child: &mut ChildGuard) {
         if UnixStream::connect(socket).is_ok() {
             return;
         }
-        assert!(
-            child.0.try_wait().unwrap().is_none(),
-            "axod exited before listening"
-        );
+        if let Some(status) = child.0.try_wait().unwrap() {
+            let log_path = socket.parent().unwrap().join("server/stderr.log");
+            let log = std::fs::read_to_string(log_path).unwrap_or_default();
+            panic!("axod exited before listening with {status}: {log}");
+        }
         assert!(
             Instant::now() < deadline,
             "daemon did not create its socket"
@@ -487,6 +488,140 @@ fn terminal_attach_replays_output_after_reconnect() {
 }
 
 #[test]
+fn local_protocol_streams_events_and_controls_the_pty() {
+    let unique = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .unwrap()
+        .as_nanos();
+    let root =
+        std::path::PathBuf::from("/tmp").join(format!("axo-p-{}-{unique}", std::process::id()));
+    let server_directory = root.join("server");
+    let socket = root.join("axod.sock");
+    let mut daemon = start_axod(&server_directory, &socket);
+    wait_for_socket(&socket, &mut daemon);
+
+    let session = active_sessions(&socket).remove(0);
+    let session_id = session["id"].as_i64().unwrap();
+    let shell = &session["shells"][0];
+    let shell_id = shell["id"].as_i64().unwrap();
+    let subscription = rpc_with_params(
+        &socket,
+        "axo.session.subscribe",
+        json!({ "sessionId": session_id }),
+    )["result"]["subscriptionId"]
+        .as_str()
+        .unwrap()
+        .to_owned();
+    let initial = rpc_with_params(
+        &socket,
+        "axo.session.events.next",
+        json!({ "subscriptionId": subscription, "timeoutMs": 1000 }),
+    );
+    assert_eq!(initial["result"]["event"]["type"], "session.snapshot");
+    assert_eq!(initial["result"]["event"]["session"]["id"], session_id);
+
+    let mut attach = ChildGuard(start_terminal_attach(
+        shell["attachSocketPath"].as_str().unwrap(),
+        shell_id,
+    ));
+    let output = output_channel(attach.0.stdout.take().unwrap());
+    let attach_deadline = Instant::now() + Duration::from_secs(3);
+    loop {
+        let event = rpc_with_params(
+            &socket,
+            "axo.session.events.next",
+            json!({ "subscriptionId": subscription, "timeoutMs": 500 }),
+        )["result"]["event"]
+            .clone();
+        if event["type"] == "shell.activity" && event["activity"] == "attached" {
+            break;
+        }
+        assert!(
+            Instant::now() < attach_deadline,
+            "PTY attachment event was not delivered"
+        );
+    }
+
+    let resize = rpc_with_params(
+        &socket,
+        "axo.terminal.resize",
+        json!({ "sessionId": session_id, "shellId": shell_id, "rows": 42, "columns": 120 }),
+    );
+    assert_eq!(resize["result"]["accepted"], true);
+    let command = rpc_with_params(
+        &socket,
+        "axo.terminal.input",
+        json!({
+            "sessionId": session_id,
+            "shellId": shell_id,
+            "sequence": 0,
+            "data": "ZWNobyBBWE9fUkVNT1RFX0lOUFVUX09LCg=="
+        }),
+    );
+    assert_eq!(command["result"]["accepted"], true);
+    let duplicate = rpc_with_params(
+        &socket,
+        "axo.terminal.input",
+        json!({
+            "sessionId": session_id,
+            "shellId": shell_id,
+            "sequence": 0,
+            "data": "ZWNobyBBWE9fUkVNT1RFX0lOUFVUX09LCg=="
+        }),
+    );
+    assert_eq!(duplicate["result"]["accepted"], true);
+    let out_of_order = rpc_with_params(
+        &socket,
+        "axo.terminal.input",
+        json!({
+            "sessionId": session_id,
+            "shellId": shell_id,
+            "sequence": 2,
+            "data": "ZWNobyBBWE9fUkVNT1RFX0lOUFVUX09LCg=="
+        }),
+    );
+    assert_eq!(out_of_order["error"]["code"], -32602);
+    assert!(output_contains(
+        &output,
+        b"AXO_REMOTE_INPUT_OK",
+        Duration::from_secs(4)
+    ));
+
+    let event_deadline = Instant::now() + Duration::from_secs(3);
+    let mut output_event_seen = false;
+    while Instant::now() < event_deadline {
+        let event = rpc_with_params(
+            &socket,
+            "axo.session.events.next",
+            json!({ "subscriptionId": subscription, "timeoutMs": 500 }),
+        )["result"]["event"]
+            .clone();
+        if event["type"] == "terminal.output"
+            && event["sessionId"] == session_id
+            && event["shellId"] == shell_id
+            && !event["data"].as_str().unwrap_or_default().is_empty()
+        {
+            output_event_seen = true;
+            break;
+        }
+    }
+    assert!(
+        output_event_seen,
+        "terminal output must be streamed through the event API"
+    );
+
+    attach.stop();
+    let unsubscribed = rpc_with_params(
+        &socket,
+        "axo.session.unsubscribe",
+        json!({ "subscriptionId": subscription }),
+    );
+    assert_eq!(unsubscribed["result"]["unsubscribed"], true);
+    daemon.stop();
+    let _ = std::fs::remove_dir_all(root);
+}
+
+#[test]
 fn daemon_creates_a_default_pty_session_and_restores_it_after_restart() {
     let unique = SystemTime::now()
         .duration_since(UNIX_EPOCH)
@@ -499,6 +634,35 @@ fn daemon_creates_a_default_pty_session_and_restores_it_after_restart() {
 
     let mut daemon = start_axod(&server_directory, &socket);
     wait_for_socket(&socket, &mut daemon);
+
+    let negotiated = rpc_with_params(
+        &socket,
+        "axo.protocol.negotiate",
+        json!({ "protocolVersion": 1 }),
+    );
+    assert_eq!(negotiated["result"]["protocolVersion"], 1);
+    for method in [
+        "axo.session.subscribe",
+        "axo.session.events.next",
+        "axo.session.unsubscribe",
+        "axo.terminal.input",
+        "axo.terminal.resize",
+    ] {
+        assert!(
+            negotiated["result"]["methods"]
+                .as_array()
+                .unwrap()
+                .iter()
+                .any(|advertised| advertised == method),
+            "axod should advertise {method}"
+        );
+    }
+    let unsupported = rpc_with_params(
+        &socket,
+        "axo.protocol.negotiate",
+        json!({ "protocolVersion": 99 }),
+    );
+    assert_eq!(unsupported["error"]["code"], -32602);
 
     let health = rpc(&socket, "axo.daemon.health");
     assert_eq!(health["result"]["status"], "running");

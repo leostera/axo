@@ -16,12 +16,12 @@ public final class DaemonController: ObservableObject {
 
     public var menuTitle: String {
       switch self {
-      case .starting: "Axo D: Starting…"
-      case .running: "Axo D: Running"
-      case .updating: "Axo D: Updating…"
-      case .requiresApproval: "Axo D: Needs Approval"
-      case .disabled: "Axo D: Disabled"
-      case .failed: "Axo D: Unavailable"
+      case .starting: "axod: Starting…"
+      case .running: "axod: Running"
+      case .updating: "axod: Updating…"
+      case .requiresApproval: "axod: Needs Approval"
+      case .disabled: "axod: Disabled"
+      case .failed: "axod: Unavailable"
       }
     }
 
@@ -314,15 +314,15 @@ private enum DaemonControllerError: Error, LocalizedError {
     case .invalidAppBuild:
       "the app bundle has no valid numeric build number"
     case .missingServiceDefinition:
-      "the bundled Axo D LaunchAgent definition is missing"
+      "the bundled axod LaunchAgent definition is missing"
     case .registrationDidNotComplete:
-      "Axo D did not register; check Login Items settings"
+      "axod did not register; check Login Items settings"
     case .restartTimedOut(let buildNumber):
-      "Axo D did not restart with build \(buildNumber)"
+      "axod did not restart with build \(buildNumber)"
     case .startupTimedOut:
-      "Axo D did not become ready"
+      "axod did not become ready"
     case .unknownServiceStatus:
-      "macOS returned an unknown Axo D service status"
+      "macOS returned an unknown axod service status"
     }
   }
 }

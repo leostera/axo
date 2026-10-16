@@ -8,7 +8,8 @@ use std::os::unix::net::{UnixListener, UnixStream};
 use std::os::unix::process::CommandExt;
 use std::path::{Path, PathBuf};
 use std::process::{Child, Command, Stdio};
-use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
+use std::sync::mpsc::{self, Receiver, RecvTimeoutError, SyncSender, TrySendError};
 use std::sync::{Arc, Mutex, Weak};
 use std::thread::{self, JoinHandle};
 use std::time::Duration;
@@ -27,6 +28,8 @@ const MAX_TERMINAL_OUTPUT_HISTORY_BYTES: usize = 8 * 1024 * 1024;
 const ATTACH_REJECTION_MARKER: u64 = u64::MAX;
 const MAX_LAYOUT_DEPTH: usize = 64;
 const MAX_LAYOUT_NODES: usize = 255;
+const MAX_SUBSCRIPTIONS: usize = 64;
+const MAX_QUEUED_EVENTS_PER_SUBSCRIPTION: usize = 128;
 
 #[derive(Clone, Copy, Debug, Eq, Hash, PartialEq)]
 struct SessionId(i64);
@@ -164,6 +167,43 @@ struct SetSessionLayoutRequest {
     layout: SessionLayout,
 }
 
+#[derive(Debug, Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+struct SessionSubscribeRequest {
+    session_id: Option<i64>,
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+struct SessionEventsNextRequest {
+    subscription_id: String,
+    timeout_ms: u64,
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+struct SessionUnsubscribeRequest {
+    subscription_id: String,
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+struct TerminalInputRequest {
+    session_id: i64,
+    shell_id: i64,
+    sequence: u64,
+    data: String,
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+struct TerminalResizeRequest {
+    session_id: i64,
+    shell_id: i64,
+    rows: u32,
+    columns: u32,
+}
+
 #[derive(Debug)]
 struct SessionRecord {
     id: SessionId,
@@ -180,6 +220,8 @@ struct RunningShell {
     slave_device: String,
     attached: bool,
     output_history: TerminalOutputHistory,
+    output_sequence: u64,
+    last_input_sequence: Option<u64>,
 }
 
 #[derive(Debug)]
@@ -224,8 +266,19 @@ struct SessionState {
 pub struct SessionManager {
     state: Mutex<SessionState>,
     attach_socket_path: PathBuf,
+    host_id: String,
+    host_generation: String,
     stop_workers: Arc<AtomicBool>,
     workers: Mutex<Vec<JoinHandle<()>>>,
+    subscriptions: Mutex<HashMap<String, Receiver<Value>>>,
+    subscribers: Mutex<Vec<LocalSubscriber>>,
+    next_subscription_id: AtomicU64,
+}
+
+struct LocalSubscriber {
+    id: String,
+    session_id: Option<SessionId>,
+    sender: SyncSender<Value>,
 }
 
 #[derive(Debug)]
@@ -266,6 +319,16 @@ impl SessionMetadata {
             "layout": self.layout,
         })
     }
+
+    fn to_remote_json(&self, host_id: &str, updated_at: &str) -> Value {
+        json!({
+            "hostId": host_id,
+            "sessionId": self.id.0,
+            "shells": self.shells.iter().map(|shell| json!({ "shellId": shell.id.0 })).collect::<Vec<_>>(),
+            "layout": self.layout,
+            "updatedAt": updated_at,
+        })
+    }
 }
 
 #[derive(Debug)]
@@ -297,6 +360,8 @@ impl SessionManager {
         database.pragma_update(None, "synchronous", "FULL")?;
         database.pragma_update(None, "foreign_keys", "ON")?;
         initialize_database(&mut database)?;
+        let host_id = load_or_create_host_id(&database)?;
+        let host_generation = create_uuid_v4()?;
         fs::set_permissions(&database_path, fs::Permissions::from_mode(0o600))?;
 
         let manager = Arc::new(Self {
@@ -306,14 +371,142 @@ impl SessionManager {
                 initial_pwd,
             }),
             attach_socket_path,
+            host_id,
+            host_generation,
             stop_workers: Arc::new(AtomicBool::new(false)),
             workers: Mutex::new(Vec::new()),
+            subscriptions: Mutex::new(HashMap::new()),
+            subscribers: Mutex::new(Vec::new()),
+            next_subscription_id: AtomicU64::new(1),
         });
 
         manager.restore_open_sessions()?;
         manager.start_attachment_listener()?;
         manager.start_reaper();
         Ok(manager)
+    }
+
+    pub(crate) fn host_id(&self) -> &str {
+        &self.host_id
+    }
+
+    pub(crate) fn host_generation(&self) -> &str {
+        &self.host_generation
+    }
+
+    pub(crate) fn remote_session_snapshots(&self, updated_at: &str) -> io::Result<Vec<Value>> {
+        let sessions = self.list_sessions()?;
+        if sessions.len() > 256 || sessions.iter().any(|session| session.shells.len() > 256) {
+            return Err(io::Error::new(
+                io::ErrorKind::InvalidData,
+                "host session snapshot exceeds the protocol limit",
+            ));
+        }
+        Ok(sessions
+            .iter()
+            .map(|session| session.to_remote_json(&self.host_id, updated_at))
+            .collect())
+    }
+
+    pub(crate) fn subscribe_remote_events(&self) -> io::Result<String> {
+        self.subscribe(None)
+    }
+
+    pub(crate) fn next_remote_event(
+        &self,
+        subscription_id: &str,
+        timeout: Duration,
+    ) -> io::Result<Option<Value>> {
+        self.next_event(subscription_id, timeout)
+    }
+
+    pub(crate) fn unsubscribe_remote_events(&self, subscription_id: &str) -> io::Result<()> {
+        self.unsubscribe(subscription_id)
+    }
+
+    pub(crate) fn remote_create_session(&self, updated_at: &str) -> io::Result<Value> {
+        let session = self.create_session()?;
+        self.publish_event(json!({ "type": "session.snapshot", "session": session.to_json() }));
+        Ok(session.to_remote_json(&self.host_id, updated_at))
+    }
+
+    pub(crate) fn remote_close_session(
+        &self,
+        session_id: i64,
+        updated_at: &str,
+    ) -> io::Result<Option<Value>> {
+        if session_id <= 0 {
+            return Err(io::Error::new(
+                io::ErrorKind::InvalidInput,
+                "session ID must be positive",
+            ));
+        }
+        let session_id = SessionId(session_id);
+        let replacement = self.close_session(session_id)?;
+        self.publish_session_removed(session_id);
+        if let Some(session) = &replacement {
+            self.publish_event(json!({ "type": "session.snapshot", "session": session.to_json() }));
+        }
+        Ok(replacement.map(|session| session.to_remote_json(&self.host_id, updated_at)))
+    }
+
+    pub(crate) fn remote_create_shell(&self, session_id: i64) -> io::Result<i64> {
+        let session_id = SessionId(session_id);
+        let shell = self.create_shell(session_id)?;
+        self.publish_session_snapshot(session_id)?;
+        self.publish_shell_activity(session_id, shell.id, "started");
+        Ok(shell.id.0)
+    }
+
+    pub(crate) fn remote_close_shell(&self, session_id: i64, shell_id: i64) -> io::Result<()> {
+        let (session_id, shell_id) = parse_session_shell_ids(session_id, shell_id)
+            .map_err(|_| io::Error::new(io::ErrorKind::InvalidInput, "invalid shell identity"))?;
+        let closed = self.close_shell(session_id, shell_id)?;
+        if closed.archived_session_id.is_some() {
+            self.publish_session_removed(session_id);
+            if let Some(replacement) = &closed.replacement {
+                self.publish_event(
+                    json!({ "type": "session.snapshot", "session": replacement.to_json() }),
+                );
+            }
+        } else {
+            self.publish_session_snapshot(session_id)?;
+        }
+        self.publish_shell_activity(session_id, shell_id, "exited");
+        Ok(())
+    }
+
+    pub(crate) fn remote_set_layout(&self, session_id: i64, layout: Value) -> io::Result<()> {
+        let session_id = SessionId(session_id);
+        let layout: SessionLayout = serde_json::from_value(layout)
+            .map_err(|_| io::Error::new(io::ErrorKind::InvalidInput, "invalid session layout"))?;
+        layout.shell_ids()?;
+        self.set_layout(session_id, layout)?;
+        self.publish_session_snapshot(session_id)
+    }
+
+    pub(crate) fn remote_terminal_input(
+        &self,
+        session_id: i64,
+        shell_id: i64,
+        sequence: u64,
+        data: &str,
+    ) -> io::Result<()> {
+        let (session_id, shell_id) = parse_session_shell_ids(session_id, shell_id)
+            .map_err(|_| io::Error::new(io::ErrorKind::InvalidInput, "invalid shell identity"))?;
+        self.write_terminal_input(session_id, shell_id, sequence, data)
+    }
+
+    pub(crate) fn remote_terminal_resize(
+        &self,
+        session_id: i64,
+        shell_id: i64,
+        rows: u32,
+        columns: u32,
+    ) -> io::Result<()> {
+        let (session_id, shell_id) = parse_session_shell_ids(session_id, shell_id)
+            .map_err(|_| io::Error::new(io::ErrorKind::InvalidInput, "invalid shell identity"))?;
+        self.resize_terminal(session_id, shell_id, rows, columns)
     }
 
     pub fn register_rpc_methods(self: &Arc<Self>, handler: &mut IoHandler) {
@@ -339,6 +532,7 @@ impl SessionManager {
                 .map_err(|_| invalid_params("layout is malformed or exceeds its limits"))?;
             manager
                 .set_layout(SessionId(request.session_id), request.layout)
+                .and_then(|()| manager.publish_session_snapshot(SessionId(request.session_id)))
                 .map(|()| json!({ "saved": true }))
                 .map_err(|error| {
                     if error.kind() == io::ErrorKind::InvalidInput {
@@ -350,43 +544,147 @@ impl SessionManager {
         });
 
         let manager = Arc::clone(self);
-        handler.add_sync_method("axo.session.create", move |_| {
+        handler.add_sync_method("axo.session.subscribe", move |params: Params| {
+            let request: SessionSubscribeRequest = params
+                .parse()
+                .map_err(|_| invalid_params("expected {sessionId?}"))?;
+            let session_id = request
+                .session_id
+                .map(|id| {
+                    if id <= 0 {
+                        Err(invalid_params("sessionId must be a positive integer"))
+                    } else {
+                        Ok(SessionId(id))
+                    }
+                })
+                .transpose()?;
             manager
-                .create_session()
-                .map(|session| session.to_json())
+                .subscribe(session_id)
+                .map(|subscription_id| json!({ "subscriptionId": subscription_id }))
                 .map_err(internal_rpc_error)
+        });
+
+        let manager = Arc::clone(self);
+        handler.add_sync_method("axo.session.events.next", move |params: Params| {
+            let request: SessionEventsNextRequest = params
+                .parse()
+                .map_err(|_| invalid_params("expected {subscriptionId, timeoutMs}"))?;
+            if request.timeout_ms == 0 || request.timeout_ms > 20_000 {
+                return Err(invalid_params("timeoutMs must be between 1 and 20000"));
+            }
+            manager
+                .next_event(
+                    &request.subscription_id,
+                    Duration::from_millis(request.timeout_ms),
+                )
+                .map(|event| json!({ "event": event }))
+                .map_err(internal_rpc_error)
+        });
+
+        let manager = Arc::clone(self);
+        handler.add_sync_method("axo.session.unsubscribe", move |params: Params| {
+            let request: SessionUnsubscribeRequest = params
+                .parse()
+                .map_err(|_| invalid_params("expected {subscriptionId}"))?;
+            manager
+                .unsubscribe(&request.subscription_id)
+                .map(|()| json!({ "unsubscribed": true }))
+                .map_err(internal_rpc_error)
+        });
+
+        let manager = Arc::clone(self);
+        handler.add_sync_method("axo.terminal.input", move |params: Params| {
+            let request: TerminalInputRequest = params
+                .parse()
+                .map_err(|_| invalid_params("expected {sessionId, shellId, sequence, data}"))?;
+            let (session_id, shell_id) =
+                parse_session_shell_ids(request.session_id, request.shell_id)?;
+            manager
+                .write_terminal_input(session_id, shell_id, request.sequence, &request.data)
+                .map(|()| json!({ "accepted": true, "sequence": request.sequence }))
+                .map_err(|error| {
+                    if error.kind() == io::ErrorKind::InvalidInput {
+                        invalid_params("terminal input is invalid or out of sequence")
+                    } else {
+                        internal_rpc_error(error)
+                    }
+                })
+        });
+
+        let manager = Arc::clone(self);
+        handler.add_sync_method("axo.terminal.resize", move |params: Params| {
+            let request: TerminalResizeRequest = params
+                .parse()
+                .map_err(|_| invalid_params("expected {sessionId, shellId, rows, columns}"))?;
+            let (session_id, shell_id) = parse_session_shell_ids(request.session_id, request.shell_id)?;
+            manager
+                .resize_terminal(session_id, shell_id, request.rows, request.columns)
+                .map(|()| json!({ "accepted": true, "rows": request.rows, "columns": request.columns }))
+                .map_err(|error| {
+                    if error.kind() == io::ErrorKind::InvalidInput {
+                        invalid_params("terminal dimensions are invalid")
+                    } else {
+                        internal_rpc_error(error)
+                    }
+                })
+        });
+
+        let manager = Arc::clone(self);
+        handler.add_sync_method("axo.session.create", move |_| {
+            let session = manager.create_session().map_err(internal_rpc_error)?;
+            manager
+                .publish_event(json!({ "type": "session.snapshot", "session": session.to_json() }));
+            Ok(session.to_json())
         });
 
         let manager = Arc::clone(self);
         handler.add_sync_method("axo.session.close", move |params| {
             let id = parse_session_id(params)?;
-            manager
-                .close_session(id)
-                .map(|replacement| {
-                    json!({
-                        "archivedSessionId": id.0,
-                        "replacement": replacement.map(|session| session.to_json()),
-                    })
-                })
-                .map_err(internal_rpc_error)
+            let replacement = manager.close_session(id).map_err(internal_rpc_error)?;
+            manager.publish_session_removed(id);
+            if let Some(session) = &replacement {
+                manager.publish_event(
+                    json!({ "type": "session.snapshot", "session": session.to_json() }),
+                );
+            }
+            Ok(json!({
+                "archivedSessionId": id.0,
+                "replacement": replacement.map(|session| session.to_json()),
+            }))
         });
 
         let manager = Arc::clone(self);
         handler.add_sync_method("axo.shell.create", move |params| {
             let id = parse_session_id(params)?;
+            let shell = manager.create_shell(id).map_err(internal_rpc_error)?;
             manager
-                .create_shell(id)
-                .map(|shell| shell.to_json())
-                .map_err(internal_rpc_error)
+                .publish_session_snapshot(id)
+                .map_err(internal_rpc_error)?;
+            manager.publish_shell_activity(id, shell.id, "started");
+            Ok(shell.to_json())
         });
 
         let manager = Arc::clone(self);
         handler.add_sync_method("axo.shell.close", move |params| {
             let (session_id, shell_id) = parse_shell_ids(params)?;
-            manager
+            let closed = manager
                 .close_shell(session_id, shell_id)
-                .map(|closed| closed.to_json())
-                .map_err(internal_rpc_error)
+                .map_err(internal_rpc_error)?;
+            if closed.archived_session_id.is_some() {
+                manager.publish_session_removed(session_id);
+                if let Some(replacement) = &closed.replacement {
+                    manager.publish_event(json!({
+                        "type": "session.snapshot",
+                        "session": replacement.to_json(),
+                    }));
+                }
+            } else {
+                manager
+                    .publish_session_snapshot(session_id)
+                    .map_err(internal_rpc_error)?;
+            }
+            manager.publish_shell_activity(session_id, shell_id, "exited");
+            Ok(closed.to_json())
         });
     }
 
@@ -538,6 +836,222 @@ impl SessionManager {
         Ok(())
     }
 
+    fn subscribe(&self, session_id: Option<SessionId>) -> io::Result<String> {
+        if let Some(session_id) = session_id {
+            let state = self.lock_state()?;
+            session_initial_pwd(&state.database, session_id)?;
+        }
+        let id = self.next_subscription_id.fetch_add(1, Ordering::Relaxed);
+        let subscription_id = format!(
+            "00000000-0000-4000-8000-{:012x}",
+            ((std::process::id() as u64) << 32 | id) & 0x0000_ffff_ffff_ffff
+        );
+        let (sender, receiver) = mpsc::sync_channel(MAX_QUEUED_EVENTS_PER_SUBSCRIPTION);
+        let mut subscriptions = self
+            .subscriptions
+            .lock()
+            .map_err(|_| io::Error::other("session subscription lock was poisoned"))?;
+        if subscriptions.len() >= MAX_SUBSCRIPTIONS {
+            return Err(io::Error::new(
+                io::ErrorKind::WouldBlock,
+                "session subscription capacity reached",
+            ));
+        }
+        let mut subscribers = self
+            .subscribers
+            .lock()
+            .map_err(|_| io::Error::other("session subscriber lock was poisoned"))?;
+        subscriptions.insert(subscription_id.clone(), receiver);
+        subscribers.push(LocalSubscriber {
+            id: subscription_id.clone(),
+            session_id,
+            sender,
+        });
+        drop(subscribers);
+        drop(subscriptions);
+        let sessions = match self.list_sessions() {
+            Ok(sessions) => sessions,
+            Err(error) => {
+                let _ = self.unsubscribe(&subscription_id);
+                return Err(error);
+            }
+        };
+        for session in sessions {
+            if session_id.is_none_or(|expected| expected == session.id) {
+                self.publish_event(
+                    json!({ "type": "session.snapshot", "session": session.to_json() }),
+                );
+            }
+        }
+        Ok(subscription_id)
+    }
+
+    fn next_event(&self, id: &str, timeout: Duration) -> io::Result<Option<Value>> {
+        let mut subscriptions = self
+            .subscriptions
+            .lock()
+            .map_err(|_| io::Error::other("session subscription lock was poisoned"))?;
+        let receiver = subscriptions
+            .get_mut(id)
+            .ok_or_else(|| io::Error::new(io::ErrorKind::NotFound, "subscription is not open"))?;
+        match receiver.recv_timeout(timeout) {
+            Ok(event) => Ok(Some(event)),
+            Err(RecvTimeoutError::Timeout) => Ok(None),
+            Err(RecvTimeoutError::Disconnected) => Err(io::Error::new(
+                io::ErrorKind::NotFound,
+                "subscription is closed",
+            )),
+        }
+    }
+
+    fn unsubscribe(&self, id: &str) -> io::Result<()> {
+        let mut subscriptions = self
+            .subscriptions
+            .lock()
+            .map_err(|_| io::Error::other("session subscription lock was poisoned"))?;
+        if subscriptions.remove(id).is_none() {
+            return Err(io::Error::new(
+                io::ErrorKind::NotFound,
+                "subscription is not open",
+            ));
+        }
+        let mut subscribers = self
+            .subscribers
+            .lock()
+            .map_err(|_| io::Error::other("session subscriber lock was poisoned"))?;
+        subscribers.retain(|subscriber| subscriber.id != id);
+        Ok(())
+    }
+
+    fn publish_event(&self, event: Value) {
+        let session_id = event.get("sessionId").and_then(Value::as_i64).or_else(|| {
+            event
+                .get("session")
+                .and_then(|session| session["id"].as_i64())
+        });
+        let Ok(mut subscribers) = self.subscribers.lock() else {
+            return;
+        };
+        subscribers.retain(|subscriber| {
+            if subscriber
+                .session_id
+                .is_some_and(|expected| session_id != Some(expected.0))
+            {
+                return true;
+            }
+            match subscriber.sender.try_send(event.clone()) {
+                Ok(()) | Err(TrySendError::Full(_)) => true,
+                Err(TrySendError::Disconnected(_)) => false,
+            }
+        });
+    }
+
+    fn publish_session_snapshot(&self, session_id: SessionId) -> io::Result<()> {
+        let session = {
+            let state = self.lock_state()?;
+            session_metadata(&state, session_id, &self.attach_socket_path)?
+        };
+        self.publish_event(json!({ "type": "session.snapshot", "session": session.to_json() }));
+        Ok(())
+    }
+
+    fn publish_session_removed(&self, session_id: SessionId) {
+        self.publish_event(json!({ "type": "session.removed", "sessionId": session_id.0 }));
+    }
+
+    fn publish_shell_activity(&self, session_id: SessionId, shell_id: ShellId, activity: &str) {
+        self.publish_event(json!({
+            "type": "shell.activity",
+            "sessionId": session_id.0,
+            "shellId": shell_id.0,
+            "activity": activity,
+        }));
+    }
+
+    fn write_terminal_input(
+        &self,
+        session_id: SessionId,
+        shell_id: ShellId,
+        sequence: u64,
+        encoded_input: &str,
+    ) -> io::Result<()> {
+        let input = decode_base64(encoded_input)?;
+        if input.is_empty() || input.len() > 49_152 {
+            return Err(io::Error::new(
+                io::ErrorKind::InvalidInput,
+                "terminal input must contain 1 to 49152 bytes",
+            ));
+        }
+        let mut state = self.lock_state()?;
+        let running = state
+            .running
+            .get_mut(&shell_id)
+            .filter(|running| running.session_id == session_id)
+            .ok_or_else(|| io::Error::new(io::ErrorKind::NotFound, "shell is not open"))?;
+        if running.last_input_sequence == Some(sequence) {
+            return Ok(());
+        }
+        let expected_sequence = running
+            .last_input_sequence
+            .map_or(Some(0), |last| last.checked_add(1))
+            .ok_or_else(|| {
+                io::Error::new(
+                    io::ErrorKind::InvalidInput,
+                    "terminal input sequence exhausted",
+                )
+            })?;
+        if sequence != expected_sequence {
+            return Err(io::Error::new(
+                io::ErrorKind::InvalidInput,
+                "terminal input sequence is out of order",
+            ));
+        }
+        write_fd_all(running.master.as_raw_fd(), &input)?;
+        running.last_input_sequence = Some(sequence);
+        Ok(())
+    }
+
+    fn resize_terminal(
+        &self,
+        session_id: SessionId,
+        shell_id: ShellId,
+        rows: u32,
+        columns: u32,
+    ) -> io::Result<()> {
+        if rows == 0 || columns == 0 || rows > u16::MAX as u32 || columns > u16::MAX as u32 {
+            return Err(io::Error::new(
+                io::ErrorKind::InvalidInput,
+                "terminal dimensions are outside the supported range",
+            ));
+        }
+        let state = self.lock_state()?;
+        let running = state
+            .running
+            .get(&shell_id)
+            .filter(|running| running.session_id == session_id)
+            .ok_or_else(|| io::Error::new(io::ErrorKind::NotFound, "shell is not open"))?;
+        let size = libc::winsize {
+            ws_row: rows as libc::c_ushort,
+            ws_col: columns as libc::c_ushort,
+            ws_xpixel: 0,
+            ws_ypixel: 0,
+        };
+        // SAFETY: size is fully initialized and the PTY master descriptor remains open.
+        let result = unsafe {
+            libc::ioctl(
+                running.master.as_raw_fd(),
+                libc::TIOCSWINSZ,
+                &size as *const libc::winsize,
+            )
+        };
+        if result == -1 {
+            return Err(io::Error::last_os_error());
+        }
+        let process_id = running.child.id() as libc::pid_t;
+        signal_shell(-process_id, process_id, libc::SIGWINCH);
+        Ok(())
+    }
+
     fn create_shell(&self, session_id: SessionId) -> io::Result<ShellMetadata> {
         let mut state = self.lock_state()?;
         create_shell(&mut state, session_id, &self.attach_socket_path)
@@ -611,38 +1125,56 @@ impl SessionManager {
             .collect::<io::Result<Vec<_>>>()?;
 
         let exited_shell_ids: HashSet<_> = exited.iter().map(|(shell_id, _)| *shell_id).collect();
-        for (shell_id, session_id) in exited {
+        let mut changed_sessions = HashSet::new();
+        let mut removed_sessions = HashSet::new();
+        for (shell_id, session_id) in &exited {
             let remaining_shell_ids: HashSet<_> = state
                 .running
                 .iter()
                 .filter_map(|(candidate_id, shell)| {
-                    (shell.session_id == session_id && !exited_shell_ids.contains(candidate_id))
+                    (shell.session_id == *session_id && !exited_shell_ids.contains(candidate_id))
                         .then_some(*candidate_id)
                 })
                 .collect();
             archive_shell_and_prune_layout(
                 &mut state.database,
-                shell_id,
-                session_id,
+                *shell_id,
+                *session_id,
                 "shell_exited",
                 &remaining_shell_ids,
             )?;
-            state.running.remove(&shell_id);
-            if !state
-                .running
-                .values()
-                .any(|shell| shell.session_id == session_id)
-            {
-                archive_session(&mut state.database, session_id, "shell_exited")?;
+            state.running.remove(shell_id);
+            if remaining_shell_ids.is_empty() {
+                if removed_sessions.insert(*session_id) {
+                    archive_session(&mut state.database, *session_id, "shell_exited")?;
+                }
+            } else {
+                changed_sessions.insert(*session_id);
             }
         }
-        if state.running.is_empty() {
-            create_session(&mut state, &self.attach_socket_path)?;
+        let replacement = if state.running.is_empty() {
+            Some(create_session(&mut state, &self.attach_socket_path)?)
+        } else {
+            None
+        };
+        drop(state);
+
+        for (shell_id, session_id) in exited {
+            self.publish_shell_activity(session_id, shell_id, "exited");
+        }
+        for session_id in removed_sessions {
+            self.publish_session_removed(session_id);
+        }
+        for session_id in changed_sessions {
+            self.publish_session_snapshot(session_id)?;
+        }
+        if let Some(session) = replacement {
+            self.publish_event(json!({ "type": "session.snapshot", "session": session.to_json() }));
         }
         Ok(())
     }
 
-    fn duplicate_master(&self, id: ShellId) -> io::Result<(OwnedFd, Vec<u8>)> {
+    fn duplicate_master(&self, id: ShellId) -> io::Result<(OwnedFd, Vec<u8>, SessionId)> {
         let mut state = self.lock_state()?;
         let running = state
             .running
@@ -660,24 +1192,45 @@ impl SessionManager {
         }
         running.attached = true;
         let replay = running.output_history.replay().to_vec();
+        let session_id = running.session_id;
         // SAFETY: fcntl returned a new, owned descriptor.
-        Ok((unsafe { OwnedFd::from_raw_fd(fd) }, replay))
+        Ok((unsafe { OwnedFd::from_raw_fd(fd) }, replay, session_id))
     }
 
     fn record_terminal_output(&self, id: ShellId, output: &[u8]) {
-        if let Ok(mut state) = self.state.lock()
-            && let Some(running) = state.running.get_mut(&id)
-        {
+        let event = {
+            let Ok(mut state) = self.state.lock() else {
+                return;
+            };
+            let Some(running) = state.running.get_mut(&id) else {
+                return;
+            };
             running.output_history.record(output);
-        }
+            let sequence = running.output_sequence;
+            running.output_sequence = running.output_sequence.saturating_add(1);
+            json!({
+                "type": "terminal.output",
+                "sessionId": running.session_id.0,
+                "shellId": id.0,
+                "sequence": sequence,
+                "data": encode_base64(output),
+            })
+        };
+        self.publish_event(event);
     }
 
     fn mark_detached(&self, id: ShellId) {
-        if let Ok(mut state) = self.state.lock()
-            && let Some(running) = state.running.get_mut(&id)
-        {
+        let session_id = {
+            let Ok(mut state) = self.state.lock() else {
+                return;
+            };
+            let Some(running) = state.running.get_mut(&id) else {
+                return;
+            };
             running.attached = false;
-        }
+            running.session_id
+        };
+        self.publish_shell_activity(session_id, id, "detached");
     }
 
     pub fn shutdown(&self) {
@@ -722,6 +1275,61 @@ impl Drop for SessionManager {
         }
         let _ = fs::remove_file(&self.attach_socket_path);
     }
+}
+
+fn load_or_create_host_id(database: &Connection) -> io::Result<String> {
+    let existing = database
+        .query_row(
+            "SELECT value FROM daemon_metadata WHERE key = 'host_id'",
+            [],
+            |row| row.get::<_, String>(0),
+        )
+        .optional()
+        .map_err(io::Error::other)?;
+    if let Some(host_id) = existing {
+        if !is_uuid_string(&host_id) {
+            return Err(io::Error::new(
+                io::ErrorKind::InvalidData,
+                "stored host identity is malformed",
+            ));
+        }
+        return Ok(host_id);
+    }
+
+    let host_id = create_uuid_v4()?;
+    database
+        .execute(
+            "INSERT INTO daemon_metadata (key, value) VALUES ('host_id', ?1)",
+            params![host_id],
+        )
+        .map_err(io::Error::other)?;
+    Ok(host_id)
+}
+
+fn create_uuid_v4() -> io::Result<String> {
+    let mut bytes = [0_u8; 16];
+    std::fs::File::open("/dev/urandom")?.read_exact(&mut bytes)?;
+    bytes[6] = (bytes[6] & 0x0f) | 0x40;
+    bytes[8] = (bytes[8] & 0x3f) | 0x80;
+    Ok(format!(
+        "{:02x}{:02x}{:02x}{:02x}-{:02x}{:02x}-{:02x}{:02x}-{:02x}{:02x}-{:02x}{:02x}{:02x}{:02x}{:02x}{:02x}",
+        bytes[0],
+        bytes[1],
+        bytes[2],
+        bytes[3],
+        bytes[4],
+        bytes[5],
+        bytes[6],
+        bytes[7],
+        bytes[8],
+        bytes[9],
+        bytes[10],
+        bytes[11],
+        bytes[12],
+        bytes[13],
+        bytes[14],
+        bytes[15],
+    ))
 }
 
 fn initialize_database(database: &mut Connection) -> rusqlite::Result<()> {
@@ -779,7 +1387,11 @@ fn create_tables(transaction: &rusqlite::Transaction<'_>) -> rusqlite::Result<()
             termination_reason TEXT
         );
         CREATE INDEX IF NOT EXISTS shells_by_session_state
-            ON shells(session_id, state, id);",
+            ON shells(session_id, state, id);
+        CREATE TABLE IF NOT EXISTS daemon_metadata (
+            key TEXT PRIMARY KEY,
+            value TEXT NOT NULL
+        );",
     )
 }
 
@@ -1249,6 +1861,8 @@ fn spawn_shell(session_id: SessionId, initial_pwd: &Path) -> io::Result<RunningS
         slave_device,
         attached: false,
         output_history: TerminalOutputHistory::new(),
+        output_sequence: 0,
+        last_input_sequence: None,
     })
 }
 
@@ -1333,7 +1947,7 @@ fn handle_attachment(mut stream: UnixStream, manager: Weak<SessionManager>) {
     let Some(manager) = manager.upgrade() else {
         return;
     };
-    let (master, replay) = match manager.duplicate_master(id) {
+    let (master, replay, session_id) = match manager.duplicate_master(id) {
         Ok(attachment) => attachment,
         Err(error) => {
             log::warn!(
@@ -1350,6 +1964,7 @@ fn handle_attachment(mut stream: UnixStream, manager: Weak<SessionManager>) {
         }
     };
 
+    manager.publish_shell_activity(session_id, id, "attached");
     let replay_length = (replay.len() as u64).to_be_bytes();
     if stream
         .write_all(&replay_length)
@@ -1468,6 +2083,19 @@ fn parse_shell_ids(params: Params) -> Result<(SessionId, ShellId), RpcError> {
         .and_then(Value::as_i64)
         .filter(|id| *id > 0)
         .ok_or_else(|| invalid_params("shellId must be a positive integer"))?;
+    parse_session_shell_ids(session_id, shell_id)
+}
+
+fn parse_session_shell_ids(
+    session_id: i64,
+    shell_id: i64,
+) -> Result<(SessionId, ShellId), RpcError> {
+    if session_id <= 0 {
+        return Err(invalid_params("sessionId must be a positive integer"));
+    }
+    if shell_id <= 0 {
+        return Err(invalid_params("shellId must be a positive integer"));
+    }
     Ok((SessionId(session_id), ShellId(shell_id)))
 }
 
@@ -1487,6 +2115,119 @@ fn internal_rpc_error(error: io::Error) -> RpcError {
     }
 }
 
+fn decode_base64(input: &str) -> io::Result<Vec<u8>> {
+    let (chunks, trailing_bytes) = input.as_bytes().as_chunks::<4>();
+    if input.is_empty() || input.len() > 65_536 || !trailing_bytes.is_empty() {
+        return Err(io::Error::new(
+            io::ErrorKind::InvalidInput,
+            "terminal input is not bounded, padded base64",
+        ));
+    }
+    let mut decoded = Vec::with_capacity(input.len() / 4 * 3);
+    let chunk_count = chunks.len();
+    for (index, chunk) in chunks.iter().enumerate() {
+        let a = base64_value(chunk[0])?;
+        let b = base64_value(chunk[1])?;
+        let last = index + 1 == chunk_count;
+        let c = if chunk[2] == b'=' && last {
+            None
+        } else {
+            Some(base64_value(chunk[2])?)
+        };
+        let d = if chunk[3] == b'=' && last {
+            None
+        } else {
+            Some(base64_value(chunk[3])?)
+        };
+        if c.is_none() && d.is_some() {
+            return Err(io::Error::new(
+                io::ErrorKind::InvalidInput,
+                "invalid base64 padding",
+            ));
+        }
+        if (c.is_none() && b & 0x0f != 0)
+            || (d.is_none() && c.is_some_and(|value| value & 0x03 != 0))
+        {
+            return Err(io::Error::new(
+                io::ErrorKind::InvalidInput,
+                "non-canonical base64 padding bits",
+            ));
+        }
+        let value = ((a as u32) << 18)
+            | ((b as u32) << 12)
+            | ((c.unwrap_or(0) as u32) << 6)
+            | d.unwrap_or(0) as u32;
+        decoded.push((value >> 16) as u8);
+        if c.is_some() {
+            decoded.push((value >> 8) as u8);
+        }
+        if d.is_some() {
+            decoded.push(value as u8);
+        }
+    }
+    Ok(decoded)
+}
+
+fn base64_value(byte: u8) -> io::Result<u8> {
+    match byte {
+        b'A'..=b'Z' => Ok(byte - b'A'),
+        b'a'..=b'z' => Ok(byte - b'a' + 26),
+        b'0'..=b'9' => Ok(byte - b'0' + 52),
+        b'+' => Ok(62),
+        b'/' => Ok(63),
+        _ => Err(io::Error::new(
+            io::ErrorKind::InvalidInput,
+            "invalid base64 input",
+        )),
+    }
+}
+
+fn encode_base64(input: &[u8]) -> String {
+    const TABLE: &[u8; 64] = b"ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/";
+    let mut encoded = String::with_capacity(input.len().div_ceil(3) * 4);
+    for chunk in input.chunks(3) {
+        let a = chunk[0] as u32;
+        let b = chunk.get(1).copied().unwrap_or(0) as u32;
+        let c = chunk.get(2).copied().unwrap_or(0) as u32;
+        let value = (a << 16) | (b << 8) | c;
+        encoded.push(TABLE[((value >> 18) & 63) as usize] as char);
+        encoded.push(TABLE[((value >> 12) & 63) as usize] as char);
+        encoded.push(if chunk.len() > 1 {
+            TABLE[((value >> 6) & 63) as usize] as char
+        } else {
+            '='
+        });
+        encoded.push(if chunk.len() > 2 {
+            TABLE[(value & 63) as usize] as char
+        } else {
+            '='
+        });
+    }
+    encoded
+}
+
+fn write_fd_all(fd: RawFd, mut bytes: &[u8]) -> io::Result<()> {
+    while !bytes.is_empty() {
+        // SAFETY: bytes points to initialized memory and fd remains open for this call.
+        let written = unsafe { libc::write(fd, bytes.as_ptr().cast(), bytes.len()) };
+        if written == -1 {
+            let error = io::Error::last_os_error();
+            if error.kind() == io::ErrorKind::Interrupted {
+                continue;
+            }
+            return Err(error);
+        }
+        if written == 0 {
+            return Err(io::Error::new(
+                io::ErrorKind::WriteZero,
+                "terminal input write returned zero",
+            ));
+        }
+        bytes = &bytes[written as usize..];
+    }
+    Ok(())
+}
+
 fn unix_timestamp() -> i64 {
     std::time::SystemTime::now()
         .duration_since(std::time::UNIX_EPOCH)
@@ -1504,6 +2245,68 @@ impl Drop for RunningShell {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn host_identity_persists_while_generation_rotates() {
+        let directory =
+            std::env::temp_dir().join(format!("axo-host-identity-{}", create_uuid_v4().unwrap()));
+        fs::create_dir(&directory).unwrap();
+        let path = directory.join("axo.db");
+
+        let first_host_id;
+        let first_generation = create_uuid_v4().unwrap();
+        {
+            let mut database = Connection::open(&path).unwrap();
+            initialize_database(&mut database).unwrap();
+            first_host_id = load_or_create_host_id(&database).unwrap();
+        }
+
+        let second_generation = create_uuid_v4().unwrap();
+        let second_host_id;
+        {
+            let mut database = Connection::open(&path).unwrap();
+            initialize_database(&mut database).unwrap();
+            second_host_id = load_or_create_host_id(&database).unwrap();
+        }
+
+        assert_eq!(first_host_id, second_host_id);
+        assert_ne!(first_generation, second_generation);
+        assert!(is_uuid_string(&first_host_id));
+        assert_eq!(first_host_id.as_bytes()[14], b'4');
+        assert!(matches!(
+            first_host_id.as_bytes()[19],
+            b'8' | b'9' | b'a' | b'b'
+        ));
+        fs::remove_dir_all(directory).unwrap();
+    }
+
+    #[test]
+    fn remote_session_snapshots_exclude_local_process_and_filesystem_details() {
+        let session = SessionMetadata {
+            id: SessionId(9),
+            initial_pwd: PathBuf::from("/private/path"),
+            shells: vec![ShellMetadata {
+                id: ShellId(12),
+                process_id: 1234,
+                initial_pwd: PathBuf::from("/private/path"),
+                slave_device: "/dev/ttys001".to_owned(),
+                attach_socket_path: PathBuf::from("/private/path/attach.sock"),
+            }],
+            layout: Some(SessionLayout::Pane { shell_id: 12 }),
+        };
+        let remote = session.to_remote_json(
+            "18355f00-95fd-4c93-8586-a71a8a52bf73",
+            "2026-10-16T00:00:00Z",
+        );
+        let object = remote.as_object().unwrap();
+        assert_eq!(object.len(), 5);
+        assert_eq!(object["sessionId"], 9);
+        assert_eq!(object["shells"], json!([{ "shellId": 12 }]));
+        let serialized = remote.to_string();
+        assert!(!serialized.contains("/private/path"));
+        assert!(!serialized.contains("/dev/ttys001"));
+        assert!(!serialized.contains("1234"));
+    }
 
     #[test]
     fn terminal_output_history_replays_only_complete_streams() {

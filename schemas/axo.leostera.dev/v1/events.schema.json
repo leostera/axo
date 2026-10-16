@@ -1,0 +1,381 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://schemas.axo.leostera.dev/v1/events.schema.json",
+  "title": "Axo protocol v1 local and host-scoped events",
+  "$defs": {
+    "LocalEvent": {
+      "oneOf": [
+        {
+          "$ref": "#/$defs/SessionSnapshotEvent"
+        },
+        {
+          "$ref": "#/$defs/SessionRemovedEvent"
+        },
+        {
+          "$ref": "#/$defs/ShellActivityEvent"
+        },
+        {
+          "$ref": "#/$defs/TerminalOutputEvent"
+        }
+      ]
+    },
+    "HostEvent": {
+      "oneOf": [
+        {
+          "$ref": "#/$defs/HostPresenceEvent"
+        },
+        {
+          "$ref": "#/$defs/HostDataEvent"
+        }
+      ]
+    },
+    "Notification": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "jsonrpc",
+        "method",
+        "params"
+      ],
+      "properties": {
+        "jsonrpc": {
+          "const": "2.0"
+        },
+        "method": {
+          "const": "axo.session.event"
+        },
+        "params": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": [
+            "subscriptionId",
+            "event"
+          ],
+          "properties": {
+            "subscriptionId": {
+              "type": "string",
+              "format": "uuid"
+            },
+            "event": {
+              "$ref": "#/$defs/LocalEvent"
+            }
+          }
+        }
+      }
+    },
+    "HostRelayNotification": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "jsonrpc",
+        "method",
+        "params"
+      ],
+      "properties": {
+        "jsonrpc": {
+          "const": "2.0"
+        },
+        "method": {
+          "const": "axo.host.event"
+        },
+        "params": {
+          "$ref": "#/$defs/HostDataEvent"
+        }
+      }
+    },
+    "HostNotification": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "jsonrpc",
+        "method",
+        "params"
+      ],
+      "properties": {
+        "jsonrpc": {
+          "const": "2.0"
+        },
+        "method": {
+          "const": "axo.host.event"
+        },
+        "params": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": [
+            "subscriptionId",
+            "event"
+          ],
+          "properties": {
+            "subscriptionId": {
+              "type": "string",
+              "format": "uuid"
+            },
+            "event": {
+              "$ref": "#/$defs/HostEvent"
+            }
+          }
+        }
+      }
+    },
+    "HostPresenceEvent": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "type",
+        "hostId",
+        "hostGeneration",
+        "status",
+        "observedAt"
+      ],
+      "properties": {
+        "type": {
+          "const": "host.presence"
+        },
+        "hostId": {
+          "$ref": "common.schema.json#/$defs/HostId"
+        },
+        "hostGeneration": {
+          "$ref": "common.schema.json#/$defs/HostGeneration"
+        },
+        "status": {
+          "enum": [
+            "online",
+            "offline"
+          ]
+        },
+        "observedAt": {
+          "type": "string",
+          "format": "date-time"
+        }
+      }
+    },
+    "HostDataEvent": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "type",
+        "hostId",
+        "hostGeneration",
+        "event"
+      ],
+      "properties": {
+        "type": {
+          "const": "host.data"
+        },
+        "hostId": {
+          "$ref": "common.schema.json#/$defs/HostId"
+        },
+        "hostGeneration": {
+          "$ref": "common.schema.json#/$defs/HostGeneration"
+        },
+        "event": {
+          "$ref": "#/$defs/HostSessionEvent"
+        }
+      }
+    },
+    "SessionSnapshotEvent": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "type",
+        "session"
+      ],
+      "properties": {
+        "type": {
+          "const": "session.snapshot"
+        },
+        "session": {
+          "$ref": "common.schema.json#/$defs/LocalSession"
+        }
+      }
+    },
+    "SessionRemovedEvent": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "type",
+        "sessionId"
+      ],
+      "properties": {
+        "type": {
+          "const": "session.removed"
+        },
+        "sessionId": {
+          "$ref": "common.schema.json#/$defs/SessionId"
+        }
+      }
+    },
+    "ShellActivityEvent": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "type",
+        "sessionId",
+        "shellId",
+        "activity"
+      ],
+      "properties": {
+        "type": {
+          "const": "shell.activity"
+        },
+        "sessionId": {
+          "$ref": "common.schema.json#/$defs/SessionId"
+        },
+        "shellId": {
+          "$ref": "common.schema.json#/$defs/ShellId"
+        },
+        "activity": {
+          "enum": [
+            "started",
+            "exited",
+            "attached",
+            "detached"
+          ]
+        }
+      }
+    },
+    "TerminalOutputEvent": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "type",
+        "sessionId",
+        "shellId",
+        "sequence",
+        "data"
+      ],
+      "properties": {
+        "type": {
+          "const": "terminal.output"
+        },
+        "sessionId": {
+          "$ref": "common.schema.json#/$defs/SessionId"
+        },
+        "shellId": {
+          "$ref": "common.schema.json#/$defs/ShellId"
+        },
+        "sequence": {
+          "type": "integer",
+          "minimum": 0,
+          "maximum": 9007199254740991
+        },
+        "data": {
+          "type": "string",
+          "contentEncoding": "base64",
+          "minLength": 4,
+          "maxLength": 131072
+        }
+      }
+    },
+    "HostSessionEvent": {
+      "oneOf": [
+        {
+          "$ref": "#/$defs/HostSessionSnapshotEvent"
+        },
+        {
+          "$ref": "#/$defs/HostSessionRemovedEvent"
+        },
+        {
+          "$ref": "#/$defs/HostShellActivityEvent"
+        },
+        {
+          "$ref": "#/$defs/HostTerminalOutputEvent"
+        }
+      ]
+    },
+    "HostSessionSnapshotEvent": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "type",
+        "snapshot"
+      ],
+      "properties": {
+        "type": {
+          "const": "session.snapshot"
+        },
+        "snapshot": {
+          "$ref": "common.schema.json#/$defs/SessionSnapshot"
+        }
+      }
+    },
+    "HostSessionRemovedEvent": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "type",
+        "sessionId"
+      ],
+      "properties": {
+        "type": {
+          "const": "session.removed"
+        },
+        "sessionId": {
+          "$ref": "common.schema.json#/$defs/SessionId"
+        }
+      }
+    },
+    "HostShellActivityEvent": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "type",
+        "sessionId",
+        "shellId",
+        "activity"
+      ],
+      "properties": {
+        "type": {
+          "const": "shell.activity"
+        },
+        "sessionId": {
+          "$ref": "common.schema.json#/$defs/SessionId"
+        },
+        "shellId": {
+          "$ref": "common.schema.json#/$defs/ShellId"
+        },
+        "activity": {
+          "enum": [
+            "started",
+            "exited",
+            "attached",
+            "detached"
+          ]
+        }
+      }
+    },
+    "HostTerminalOutputEvent": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "type",
+        "sessionId",
+        "shellId",
+        "sequence",
+        "data"
+      ],
+      "properties": {
+        "type": {
+          "const": "terminal.output"
+        },
+        "sessionId": {
+          "$ref": "common.schema.json#/$defs/SessionId"
+        },
+        "shellId": {
+          "$ref": "common.schema.json#/$defs/ShellId"
+        },
+        "sequence": {
+          "type": "integer",
+          "minimum": 0,
+          "maximum": 9007199254740991
+        },
+        "data": {
+          "type": "string",
+          "contentEncoding": "base64",
+          "minLength": 4,
+          "maxLength": 131072
+        }
+      }
+    }
+  }
+}

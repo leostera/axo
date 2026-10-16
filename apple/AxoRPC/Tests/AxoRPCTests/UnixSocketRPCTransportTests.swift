@@ -33,6 +33,78 @@ final class UnixSocketRPCTransportTests: XCTestCase {
     XCTAssertEqual(health.status, "running")
   }
 
+  func testRemoteAccessConfigurationSendsOnlyConnectionMetadata() async throws {
+    let fixture = try OneResponseUnixSocket(
+      response:
+        #"{"jsonrpc":"2.0","id":1,"result":{"enabled":true,"relayUrl":"https://api.example.test","hostLabel":"My Mac","hostKind":"macos"}}"#
+    )
+    let responder = Task.detached {
+      try fixture.receiveOneRequestAndReply()
+    }
+
+    let settings = try await UnixSocketRPC.configureRemoteAccess(
+      RemoteAccessConfiguration(
+        relayUrl: "https://api.example.test",
+        hostLabel: "My Mac"
+      ),
+      at: UnixSocketPath(fixture.path)
+    )
+    let requestData = try await responder.value
+    let request = try XCTUnwrap(
+      JSONSerialization.jsonObject(with: requestData) as? [String: Any]
+    )
+    let params = try XCTUnwrap(request["params"] as? [String: Any])
+
+    XCTAssertTrue(settings.enabled)
+    XCTAssertEqual(request["method"] as? String, "axo.relay.configure")
+    XCTAssertEqual(params["relayUrl"] as? String, "https://api.example.test")
+    XCTAssertEqual(params["hostLabel"] as? String, "My Mac")
+    XCTAssertNil(params["clientId"])
+    XCTAssertNil(params["clientSecret"])
+  }
+
+  func testRemoteAccessStatusReportsActualRelayState() async throws {
+    let fixture = try OneResponseUnixSocket(
+      response:
+        #"{"jsonrpc":"2.0","id":1,"result":{"state":"connected","connectedSinceUnixMillis":1792157691000,"hostName":"Axo Mac","hostKind":"macos","lastError":null}}"#
+    )
+    let responder = Task.detached {
+      try fixture.receiveOneRequestAndReply()
+    }
+
+    let status = try await UnixSocketRPC.remoteAccessStatus(at: UnixSocketPath(fixture.path))
+    let requestData = try await responder.value
+    let request = try XCTUnwrap(
+      JSONSerialization.jsonObject(with: requestData) as? [String: Any]
+    )
+
+    XCTAssertEqual(status.state, .connected)
+    XCTAssertEqual(status.connectedSinceUnixMillis, 1_792_157_691_000)
+    XCTAssertEqual(status.hostName, "Axo Mac")
+    XCTAssertEqual(status.hostKind, "macos")
+    XCTAssertNil(status.lastError)
+    XCTAssertEqual(request["method"] as? String, "axo.relay.status")
+    XCTAssertTrue(request["params"] is NSNull)
+  }
+
+  func testRemoteAccessConnectRequestsImmediateRetry() async throws {
+    let fixture = try OneResponseUnixSocket(
+      response: #"{"jsonrpc":"2.0","id":1,"result":{"requested":true}}"#
+    )
+    let responder = Task.detached {
+      try fixture.receiveOneRequestAndReply()
+    }
+
+    try await UnixSocketRPC.requestRemoteAccessConnection(at: UnixSocketPath(fixture.path))
+    let requestData = try await responder.value
+    let request = try XCTUnwrap(
+      JSONSerialization.jsonObject(with: requestData) as? [String: Any]
+    )
+
+    XCTAssertEqual(request["method"] as? String, "axo.relay.connect")
+    XCTAssertTrue(request["params"] is NSNull)
+  }
+
   func testHealthUsesJsonRPCOverNewlineFramedUnixSocket() async throws {
     let fixture = try OneResponseUnixSocket(
       response:

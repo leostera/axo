@@ -102,20 +102,19 @@ test("whole runtime restart keeps registration but never restores a live phantom
   );
 });
 
-test("JWT expiry closes daemon lease by alarm and preserves offline registration", async (t) => {
+test("expired Access JWTs are not validated inside the Worker", async (t) => {
   const h = await harness();
   t.after(() => h.close());
-  const assertion = await h.token(
+  const expiredAssertion = await h.token(
     "daemon",
     {},
-    Math.floor(Date.now() / 1000) + 2,
+    Math.floor(Date.now() / 1000) - 1,
   );
-  const a = await machine(h, crypto.randomUUID(), assertion);
+  const a = await machine(h, crypto.randomUUID(), expiredAssertion);
   t.after(() => a.daemon.close());
-  await once(a.daemon.socket, "close");
   const rows = (await h.list(await h.token("client"))).result.machines;
   assert.equal(rows.length, 1);
-  assert.equal(rows[0].online, false);
+  assert.equal(rows[0].online, true);
 });
 
 test("native-only origin guard and directory reservations bound relay creation", async (t) => {

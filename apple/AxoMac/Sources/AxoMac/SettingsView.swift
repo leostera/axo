@@ -4,6 +4,7 @@ import SwiftUI
 
 enum SettingsSection: String, CaseIterable, Identifiable {
   case general
+  case remoteAccess
   case about
 
   var id: String { rawValue }
@@ -11,6 +12,7 @@ enum SettingsSection: String, CaseIterable, Identifiable {
   var title: String {
     switch self {
     case .general: "General"
+    case .remoteAccess: "Remote Access"
     case .about: "About"
     }
   }
@@ -18,6 +20,7 @@ enum SettingsSection: String, CaseIterable, Identifiable {
   var systemImage: String {
     switch self {
     case .general: "gearshape"
+    case .remoteAccess: "network"
     case .about: "info.circle"
     }
   }
@@ -50,6 +53,8 @@ struct SettingsView: View {
         switch selection {
         case .general:
           GeneralSettingsView(daemon: daemon, ghostty: ghostty)
+        case .remoteAccess:
+          RemoteAccessSettingsView(daemon: daemon)
         case .about:
           AboutSettingsView(daemon: daemon)
         }
@@ -102,12 +107,12 @@ private struct GeneralSettingsView: View {
         }
       }
 
-      Section("Axo D") {
+      Section("axod") {
         LabeledContent("Daemon status", value: daemon.status.settingsTitle)
 
         switch daemon.status {
         case .disabled:
-          Button("Enable Axo D") {
+          Button("Enable axod") {
             daemon.enableDaemon()
           }
         case .requiresApproval:
@@ -121,7 +126,7 @@ private struct GeneralSettingsView: View {
           Button("Retry daemon") {
             daemon.startIfNeeded()
           }
-          Button("Enable Axo D") {
+          Button("Enable axod") {
             daemon.enableDaemon()
           }
         case .starting, .running, .updating:
@@ -191,8 +196,8 @@ private struct AboutSettingsView: View {
         Divider()
           .frame(width: 240)
           .padding(.vertical, 3)
-        aboutRow("Axo D version", daemonVersion)
-        aboutRow("Axo D build", daemonBuild)
+        aboutRow("axod version", daemonVersion)
+        aboutRow("axod build", daemonBuild)
         aboutRow("Daemon status", daemonStatus)
       }
       .padding(.vertical, 4)

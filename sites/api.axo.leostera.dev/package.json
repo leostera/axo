@@ -4,21 +4,23 @@
   "type": "module",
   "scripts": {
     "dev": "cf dev",
-    "build": "npm --prefix ../../protocol run build && cf build",
-    "typecheck": "npm --prefix ../../protocol run build && cf workers types && tsc --noEmit",
-    "test": "npm --prefix ../../protocol run build && npm --prefix ../../protocol run schema:check && tsx --test --test-concurrency=1 tests/*.test.ts",
-    "test:properties": "npm --prefix ../../protocol run build && tsx --test --test-concurrency=1 tests/replies.property.test.ts",
-    "test:axod": "npm --prefix ../../protocol run build && npm --prefix ../../protocol run schema:check && tsx --test --test-concurrency=1 tests/axod.test.ts tests/local.test.ts",
+    "build": "npm --prefix ../../packages/axo-api run build && cf build",
+    "typecheck": "npm --prefix ../../packages/axo-api run build && cf workers types && tsc --noEmit",
+    "test": "npm --prefix ../../packages/axo-api run build && npm --prefix ../../packages/axo-api run schema:check && tsx --test --test-concurrency=1 tests/*.test.ts",
+    "test:properties": "npm --prefix ../../packages/axo-api run build && tsx --test --test-concurrency=1 tests/replies.property.test.ts",
+    "test:axod": "npm --prefix ../../packages/axo-api run build && npm --prefix ../../packages/axo-api run schema:check && tsx --test --test-concurrency=1 tests/axod.test.ts tests/local.test.ts",
+    "test:relay": "npm --prefix ../../packages/axo-api run build && npm --prefix ../../packages/axo-app run build && npm --prefix ../../packages/axo-api run schema:check && (cd ../.. && bazel build //crates/axod:axod) && AXOD_BINARY=../../bazel-bin/crates/axod/axod npm exec -- tsx --test --test-concurrency=1 tests/axod-relay.test.ts",
     "smoke": "tsx scripts/dummy-client.ts"
   },
   "dependencies": {
-    "@axo/protocol": "file:../../protocol",
+    "@axo/protocol": "file:../../packages/axo-api",
     "hono": "4.13.13",
     "jose": "^6.2.12",
     "ws": "^8.18.0",
     "zod": "^4.5.0"
   },
   "devDependencies": {
+    "@axo/app": "file:../../packages/axo-app",
     "@cloudflare/vite-plugin": "2.0.0-beta.sha-52b0dc0e9",
     "@types/node": "^24.0.0",
     "@types/ws": "^8.18.0",

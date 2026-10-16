@@ -1,0 +1,10 @@
+{
+  "jsonrpc": "2.0",
+  "id": 22,
+  "method": "axo.relay.configure",
+  "params": {
+    "relayUrl": "https://api.example.test",
+    "hostLabel": "Test Mac",
+    "hostKind": "macos"
+  }
+}

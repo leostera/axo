@@ -1,0 +1,14 @@
+{
+  "jsonrpc": "2.0",
+  "method": "axo.session.event",
+  "params": {
+    "subscriptionId": "7f1b6750-65fa-4b5d-9b6f-2d844c62b226",
+    "event": {
+      "type": "terminal.output",
+      "sessionId": 9,
+      "shellId": 12,
+      "sequence": 0,
+      "data": "aGV5"
+    }
+  }
+}

@@ -1,0 +1,123 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://schemas.axo.leostera.dev/v1/common.schema.json",
+  "title": "Axo protocol v1 common values",
+  "$defs": {
+    "RpcId": {
+      "oneOf": [
+        { "type": "string", "minLength": 1, "maxLength": 128 },
+        { "type": "integer", "minimum": 0, "maximum": 9007199254740991 }
+      ]
+    },
+    "HostId": { "type": "string", "format": "uuid" },
+    "HostGeneration": { "type": "string", "format": "uuid" },
+    "SessionId": { "type": "integer", "minimum": 1, "maximum": 9007199254740991 },
+    "ShellId": { "type": "integer", "minimum": 1, "maximum": 9007199254740991 },
+    "SplitDirection": { "type": "string", "enum": ["right", "down"] },
+    "Layout": {
+      "oneOf": [
+        { "$ref": "#/$defs/PaneLayout" },
+        { "$ref": "#/$defs/SplitLayout" }
+      ]
+    },
+    "PaneLayout": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["kind", "shellId"],
+      "properties": {
+        "kind": { "const": "pane" },
+        "shellId": { "$ref": "#/$defs/ShellId" }
+      }
+    },
+    "SplitLayout": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["kind", "id", "direction", "ratio", "first", "second"],
+      "properties": {
+        "kind": { "const": "split" },
+        "id": { "type": "string", "format": "uuid" },
+        "direction": { "$ref": "#/$defs/SplitDirection" },
+        "ratio": { "type": "number", "minimum": 0.01, "maximum": 0.99 },
+        "first": { "$ref": "#/$defs/Layout" },
+        "second": { "$ref": "#/$defs/Layout" }
+      }
+    },
+    "HostRef": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["hostId", "hostGeneration"],
+      "properties": {
+        "hostId": { "$ref": "#/$defs/HostId" },
+        "hostGeneration": { "$ref": "#/$defs/HostGeneration" }
+      }
+    },
+    "LocalShell": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["id", "processId", "initialPwd", "ptyDevice", "attachSocketPath"],
+      "properties": {
+        "id": { "$ref": "#/$defs/ShellId" },
+        "processId": { "type": "integer", "minimum": 1, "maximum": 4294967295 },
+        "initialPwd": { "type": "string", "minLength": 1 },
+        "ptyDevice": { "type": "string", "minLength": 1 },
+        "attachSocketPath": { "type": "string", "minLength": 1 }
+      }
+    },
+    "LocalSession": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["id", "initialPwd", "shells"],
+      "properties": {
+        "id": { "$ref": "#/$defs/SessionId" },
+        "initialPwd": { "type": "string", "minLength": 1 },
+        "shells": { "type": "array", "items": { "$ref": "#/$defs/LocalShell" } },
+        "layout": { "anyOf": [{ "$ref": "#/$defs/Layout" }, { "type": "null" }] }
+      }
+    },
+    "SessionSnapshot": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["hostId", "sessionId", "shells", "layout", "updatedAt"],
+      "properties": {
+        "hostId": { "$ref": "#/$defs/HostId" },
+        "sessionId": { "$ref": "#/$defs/SessionId" },
+        "shells": {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "additionalProperties": false,
+            "required": ["shellId"],
+            "properties": { "shellId": { "$ref": "#/$defs/ShellId" } }
+          }
+        },
+        "layout": { "anyOf": [{ "$ref": "#/$defs/Layout" }, { "type": "null" }] },
+        "updatedAt": { "type": "string", "format": "date-time" }
+      }
+    },
+    "HostSnapshot": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["hostId", "hostGeneration", "label", "hostKind", "status", "stale", "lastSeenAt", "sessions"],
+      "properties": {
+        "hostId": { "$ref": "#/$defs/HostId" },
+        "hostGeneration": { "$ref": "#/$defs/HostGeneration" },
+        "label": { "type": "string", "minLength": 1, "maxLength": 128 },
+        "hostKind": { "type": "string", "pattern": "^[a-z][a-z0-9-]{0,63}$" },
+        "status": { "type": "string", "enum": ["online", "offline"] },
+        "stale": { "type": "boolean" },
+        "lastSeenAt": { "type": "string", "format": "date-time" },
+        "sessions": { "type": "array", "items": { "$ref": "#/$defs/SessionSnapshot" } }
+      }
+    },
+    "RpcError": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["code", "message"],
+      "properties": {
+        "code": { "type": "integer" },
+        "message": { "type": "string", "minLength": 1 },
+        "data": {}
+      }
+    }
+  }
+}

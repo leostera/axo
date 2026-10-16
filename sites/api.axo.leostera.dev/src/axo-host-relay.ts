@@ -23,10 +23,42 @@ import {
   type Heartbeat,
   type RemoteMethod,
 } from "@axo/protocol";
+import {
+  hostDataEventSchema,
+  hostPresenceEventSchema,
+  hostNotificationSchema,
+  hostRelayNotificationSchema,
+  hostV1Methods,
+  hostV1Results,
+  type HostMethod,
+} from "@axo/protocol/v1";
 import { peerSchema, type Peer, type CallerContext } from "./relay/peer";
 import type { Route, Group, Pending } from "./relay/records";
 import { recordApiEvent } from "./observability";
 import { boundReplyGroup } from "./relay/replies";
+
+type HostRegistrationMethods = {
+  "axo.host.register": (
+    params: z.input<typeof hostV1Methods["axo.host.register"]>,
+  ) => z.output<typeof hostV1Results["axo.host.register"]>;
+  "axo.host.heartbeat": (
+    params: z.input<typeof hostV1Methods["axo.host.heartbeat"]>,
+  ) => z.output<typeof hostV1Results["axo.host.heartbeat"]>;
+  "axo.host.sessions.publish": (
+    params: z.input<typeof hostV1Methods["axo.host.sessions.publish"]>,
+  ) => z.output<typeof hostV1Results["axo.host.sessions.publish"]>;
+};
+
+const hostRemoteMethods = {
+  "axo.remote.session.create": hostV1Methods["axo.remote.session.create"],
+  "axo.remote.session.close": hostV1Methods["axo.remote.session.close"],
+  "axo.remote.shell.create": hostV1Methods["axo.remote.shell.create"],
+  "axo.remote.shell.close": hostV1Methods["axo.remote.shell.close"],
+  "axo.remote.session.layout.set": hostV1Methods["axo.remote.session.layout.set"],
+  "axo.remote.terminal.input": hostV1Methods["axo.remote.terminal.input"],
+  "axo.remote.terminal.resize": hostV1Methods["axo.remote.terminal.resize"],
+} as const;
+type HostRemoteMethod = keyof typeof hostRemoteMethods;
 
 export class AxoHostRelay extends DurableObject<Env> {
   private readonly rpc: JSONRPCServer<CallerContext>;
@@ -52,7 +84,7 @@ export class AxoHostRelay extends DurableObject<Env> {
         | "axo.protocol.negotiate"
         | "axo.machine.register"
         | "axo.machine.heartbeat"
-      >,
+      > & HostRegistrationMethods,
       CallerContext
     > = server;
     typed.addMethod("axo.protocol.negotiate", (params, { socket }) => {
@@ -63,7 +95,12 @@ export class AxoHostRelay extends DurableObject<Env> {
       socket.serializeAttachment(current);
       return {
         protocolVersion: 1,
-        methods: Object.keys(remoteMethods),
+        methods: [
+          ...Object.keys(remoteMethods),
+          ...Object.keys(hostV1Methods).filter((method) =>
+            method !== "axo.host.list" && method !== "axo.host.sessions.list",
+          ),
+        ],
         deliveryCredits: { frames: 32, bytes: 131072 },
       };
     });
@@ -72,6 +109,15 @@ export class AxoHostRelay extends DurableObject<Env> {
     );
     typed.addMethod("axo.machine.heartbeat", (params, caller) =>
       this.heartbeat(params, caller),
+    );
+    typed.addMethod("axo.host.register", (params, caller) =>
+      this.registerHost(params, caller),
+    );
+    typed.addMethod("axo.host.heartbeat", (params, caller) =>
+      this.heartbeatHost(params, caller),
+    );
+    typed.addMethod("axo.host.sessions.publish", (params, caller) =>
+      this.publishHostSessions(params, caller),
     );
     return server;
   }
@@ -218,6 +264,17 @@ export class AxoHostRelay extends DurableObject<Env> {
       return;
     }
     if (peer.role === "daemon" && !decoded.batch) {
+      const notificationCall = callSchema.safeParse(decoded.entries[0]);
+      if (notificationCall.success && notificationCall.data.method === "axo.host.event") {
+        const notification = hostRelayNotificationSchema.safeParse(decoded.entries[0]);
+        if (!notification.success || notificationCall.data.id !== undefined) {
+          this.drop(socket, 1008, "Invalid host event");
+          return;
+        }
+        await this.receiveHostEvent(socket, peer, notification.data.params);
+        await this.schedule();
+        return;
+      }
       const reply = replySchema.safeParse(decoded.entries[0]);
       if (reply.success) {
         this.receiveReply(socket, reply.data);
@@ -286,6 +343,18 @@ export class AxoHostRelay extends DurableObject<Env> {
     if (call.method === "axo.protocol.negotiate" || peer.role === "daemon") {
       const reply = await this.rpc.receive(call, { socket, peer });
       if (reply) this.complete(groupId, replySchema.parse(reply));
+      return;
+    }
+    if (call.method === "axo.host.subscribe") {
+      await this.subscribeHost(socket, peer, groupId, call);
+      return;
+    }
+    if (call.method === "axo.host.unsubscribe") {
+      this.unsubscribeHost(socket, peer, groupId, call);
+      return;
+    }
+    if (Object.hasOwn(hostRemoteMethods, call.method)) {
+      await this.forwardHostRemoteCall(socket, peer, groupId, call);
       return;
     }
     if (!Object.hasOwn(remoteMethods, call.method)) {
@@ -366,6 +435,213 @@ export class AxoHostRelay extends DurableObject<Env> {
       );
   }
 
+  private async subscribeHost(
+    socket: WebSocket,
+    peer: Peer,
+    groupId: string,
+    call: Call,
+  ): Promise<void> {
+    const parsed = hostV1Methods["axo.host.subscribe"].safeParse(call.params);
+    if (!parsed.success) {
+      this.complete(groupId, failure(call.id!, -32602, "Invalid params"));
+      return;
+    }
+    const target = parsed.data;
+    const active = this.active();
+    if (target.hostId !== peer.machineId || (active && active.route.machine_id !== target.hostId)) {
+      this.complete(groupId, failure(call.id!, -32002, "Wrong host"));
+      return;
+    }
+    if (!active) {
+      this.complete(groupId, failure(call.id!, -32005, "Host offline; nothing queued"));
+      return;
+    }
+    if (target.hostGeneration !== active.route.generation) {
+      this.complete(groupId, failure(call.id!, -32002, "Stale host"));
+      return;
+    }
+    if (peer.hostSubscriptions.length >= 64) {
+      this.complete(groupId, failure(call.id!, -32006, "Subscription capacity"));
+      return;
+    }
+
+    const subscriptionId = crypto.randomUUID();
+    peer.hostSubscriptions.push({
+      subscriptionId,
+      hostGeneration: target.hostGeneration,
+    });
+    socket.serializeAttachment(peer);
+    this.complete(groupId, success(call.id!, { subscriptionId }));
+    const presence = hostPresenceEventSchema.parse({
+      type: "host.presence",
+      hostId: target.hostId,
+      hostGeneration: target.hostGeneration,
+      status: "online",
+      observedAt: new Date().toISOString(),
+    });
+    this.sendHostEvent(socket, subscriptionId, presence);
+  }
+
+  private unsubscribeHost(
+    socket: WebSocket,
+    peer: Peer,
+    groupId: string,
+    call: Call,
+  ): void {
+    const parsed = hostV1Methods["axo.host.unsubscribe"].safeParse(call.params);
+    if (!parsed.success) {
+      this.complete(groupId, failure(call.id!, -32602, "Invalid params"));
+      return;
+    }
+    const previousLength = peer.hostSubscriptions.length;
+    peer.hostSubscriptions = peer.hostSubscriptions.filter(
+      (subscription) => subscription.subscriptionId !== parsed.data.subscriptionId,
+    );
+    socket.serializeAttachment(peer);
+    if (peer.hostSubscriptions.length === previousLength) {
+      this.complete(groupId, failure(call.id!, -32004, "Subscription not found"));
+      return;
+    }
+    this.complete(groupId, success(call.id!, { unsubscribed: true }));
+  }
+
+  private sendHostEvent(socket: WebSocket, subscriptionId: string, event: unknown): void {
+    const notification = hostNotificationSchema.safeParse({
+      jsonrpc: "2.0",
+      method: "axo.host.event",
+      params: { subscriptionId, event },
+    });
+    if (notification.success) this.send(socket, notification.data);
+  }
+
+  private broadcastHostPresence(
+    hostId: string,
+    hostGeneration: string,
+    status: "online" | "offline",
+  ): void {
+    const event = hostPresenceEventSchema.parse({
+      type: "host.presence",
+      hostId,
+      hostGeneration,
+      status,
+      observedAt: new Date().toISOString(),
+    });
+    for (const socket of this.sockets("client")) {
+      const peer = this.peer(socket);
+      if (!peer.negotiated) continue;
+      for (const subscription of peer.hostSubscriptions) {
+        if (status === "offline" && subscription.hostGeneration !== hostGeneration) continue;
+        this.sendHostEvent(socket, subscription.subscriptionId, event);
+      }
+    }
+  }
+
+  private async receiveHostEvent(
+    socket: WebSocket,
+    peer: Peer,
+    event: unknown,
+  ): Promise<void> {
+    const parsed = hostDataEventSchema.safeParse(event);
+    const route = this.active()?.route;
+    if (
+      !parsed.success ||
+      peer.role !== "daemon" ||
+      !route ||
+      route.connection_id !== peer.connectionId ||
+      route.machine_id !== parsed.data.hostId ||
+      route.generation !== parsed.data.hostGeneration
+    ) {
+      this.drop(socket, 1008, "Invalid host event");
+      return;
+    }
+    try {
+      await this.ctx.exports.AxoHostDirectory
+        .getByName("private-fleet")
+        .applyHostEvent(parsed.data, peer.identity);
+    } catch {
+      this.drop(socket, 1008, "Host event rejected");
+      return;
+    }
+
+    for (const client of this.sockets("client")) {
+      const clientPeer = this.peer(client);
+      if (!clientPeer.negotiated) continue;
+      for (const subscription of clientPeer.hostSubscriptions) {
+        if (subscription.hostGeneration !== parsed.data.hostGeneration) continue;
+        this.sendHostEvent(client, subscription.subscriptionId, parsed.data);
+      }
+    }
+  }
+
+  private async forwardHostRemoteCall(
+    socket: WebSocket,
+    peer: Peer,
+    groupId: string,
+    call: Call,
+  ): Promise<void> {
+    const method = call.method as HostRemoteMethod;
+    const parsed = hostRemoteMethods[method].safeParse(call.params);
+    if (!parsed.success) {
+      this.complete(groupId, failure(call.id!, -32602, "Invalid params"));
+      return;
+    }
+    const active = this.active();
+    if (
+      parsed.data.target.hostId !== peer.machineId ||
+      (active && active.route.machine_id !== peer.machineId)
+    ) {
+      this.complete(groupId, failure(call.id!, -32002, "Wrong host"));
+      return;
+    }
+    if (!active) {
+      this.complete(groupId, failure(call.id!, -32005, "Host offline; nothing queued"));
+      return;
+    }
+    if (parsed.data.target.hostGeneration !== active.route.generation) {
+      this.complete(groupId, failure(call.id!, -32002, "Stale host"));
+      return;
+    }
+    const sql = this.ctx.storage.sql;
+    if (
+      sql.exec<{ count: number }>("SELECT COUNT(*) AS count FROM pending").one().count >= LIMITS.pendingPerMachine ||
+      sql.exec<{ count: number }>(
+        "SELECT COUNT(*) AS count FROM pending WHERE group_id IN (SELECT group_id FROM groups WHERE connection_id = ?)",
+        peer.connectionId,
+      ).one().count >= LIMITS.pendingPerClient
+    ) {
+      this.complete(groupId, failure(call.id!, -32006, "Pending capacity"));
+      return;
+    }
+    const hopId = crypto.randomUUID();
+    const deadline = Math.min(
+      Date.now() + LIMITS.deadlineMs,
+      peer.expiresAt,
+      active.route.lease_until,
+    );
+    sql.exec(
+      "INSERT INTO pending VALUES (?, ?, ?, ?, ?, ?, ?)",
+      hopId,
+      groupId,
+      JSON.stringify(call.id),
+      active.route.connection_id,
+      method,
+      active.route.generation!,
+      deadline,
+    );
+    await this.ctx.storage.sync();
+    if (
+      this.active()?.route.connection_id !== active.route.connection_id ||
+      !this.socket(peer.connectionId) ||
+      deadline <= Date.now()
+    ) {
+      this.finishPending(hopId, failure(call.id!, -32004, "Outcome unknown; reconcile commandId"));
+      return;
+    }
+    if (!this.send(active.socket, { ...call, id: hopId, params: parsed.data })) {
+      this.finishPending(hopId, failure(call.id!, -32004, "Outcome unknown; reconcile commandId"));
+    }
+  }
+
   private admittedDaemon(peer: Peer): Route {
     const route = this.route();
     if (peer.role !== "daemon")
@@ -440,6 +716,86 @@ export class AxoHostRelay extends DurableObject<Env> {
     return { leaseId: peer.connectionId, leaseExpiresAt: this.admittedDaemon(peer).lease_until };
   }
 
+  private async registerHost(params: unknown, { socket, peer }: CallerContext) {
+    const route = this.admittedDaemon(peer);
+    const parsed = hostV1Methods["axo.host.register"].safeParse(params);
+    if (
+      !parsed.success ||
+      parsed.data.hostId !== peer.machineId ||
+      (route.generation !== null && route.generation !== parsed.data.hostGeneration)
+    )
+      throw new JSONRPCErrorException("Invalid host registration", -32602);
+
+    this.ctx.storage.sql.exec(
+      "UPDATE route SET generation = ? WHERE connection_id = ?",
+      parsed.data.hostGeneration,
+      peer.connectionId,
+    );
+    const host = await this.ctx.exports.AxoHostDirectory
+      .getByName("private-fleet")
+      .registerHost(parsed.data, peer.identity);
+    const current = this.admittedDaemon(peer);
+    if (
+      current.generation !== parsed.data.hostGeneration ||
+      !this.socket(peer.connectionId) ||
+      this.peer(socket).expiresAt <= Date.now()
+    )
+      throw new JSONRPCErrorException("Stale lease", -32002);
+    this.ctx.storage.sql.exec(
+      "UPDATE route SET generation = ?, ready = 1, lease_until = ? WHERE connection_id = ?",
+      parsed.data.hostGeneration,
+      Math.min(peer.expiresAt, Date.now() + LIMITS.leaseMs),
+      peer.connectionId,
+    );
+    recordApiEvent({ event: "host_registered" });
+    this.broadcastHostPresence(parsed.data.hostId, parsed.data.hostGeneration, "online");
+    return { host };
+  }
+
+  private async heartbeatHost(params: unknown, { peer }: CallerContext) {
+    const route = this.admittedDaemon(peer);
+    const parsed = hostV1Methods["axo.host.heartbeat"].safeParse(params);
+    if (
+      !parsed.success ||
+      !route.ready ||
+      parsed.data.hostId !== peer.machineId ||
+      parsed.data.hostGeneration !== route.generation
+    )
+      throw new JSONRPCErrorException("Invalid host heartbeat", -32602);
+
+    const result = await this.ctx.exports.AxoHostDirectory
+      .getByName("private-fleet")
+      .heartbeatHost(parsed.data, peer.identity);
+    this.renewRoute(peer);
+    return result;
+  }
+
+  private async publishHostSessions(params: unknown, { peer }: CallerContext) {
+    const route = this.admittedDaemon(peer);
+    const parsed = hostV1Methods["axo.host.sessions.publish"].safeParse(params);
+    if (
+      !parsed.success ||
+      !route.ready ||
+      parsed.data.hostId !== peer.machineId ||
+      parsed.data.hostGeneration !== route.generation
+    )
+      throw new JSONRPCErrorException("Invalid host session publication", -32602);
+
+    const result = await this.ctx.exports.AxoHostDirectory
+      .getByName("private-fleet")
+      .publishHostSessions(parsed.data, peer.identity);
+    this.renewRoute(peer);
+    return result;
+  }
+
+  private renewRoute(peer: Peer): void {
+    this.ctx.storage.sql.exec(
+      "UPDATE route SET lease_until = ? WHERE connection_id = ?",
+      Math.min(peer.expiresAt, Date.now() + LIMITS.leaseMs),
+      peer.connectionId,
+    );
+  }
+
   private receiveReply(socket: WebSocket, reply: Reply): void {
     if (typeof reply.id !== "string") return;
     const pending = this.ctx.storage.sql
@@ -462,22 +818,33 @@ export class AxoHostRelay extends DurableObject<Env> {
       return;
     }
     if ("result" in reply) {
-      const result = results[pending.method].safeParse(reply.result);
-      if (!result.success) {
-        this.finishPending(
-          reply.id,
-          failure(id, -32004, "Invalid daemon outcome; reconcile commandId"),
-        );
-        return;
-      }
-      // The response source is current; historical terminal records legitimately retain
-      // their original runtime generation and must never be promoted to current ownership.
-      if (result.data.hostGeneration !== pending.generation) {
-        this.finishPending(
-          reply.id,
-          failure(id, -32004, "Stale daemon outcome; reconcile commandId"),
-        );
-        return;
+      if (Object.hasOwn(hostV1Results, pending.method)) {
+        const result = hostV1Results[pending.method as HostMethod].safeParse(reply.result);
+        if (!result.success) {
+          this.finishPending(
+            reply.id,
+            failure(id, -32004, "Invalid daemon outcome; reconcile commandId"),
+          );
+          return;
+        }
+      } else {
+        const result = results[pending.method as RemoteMethod].safeParse(reply.result);
+        if (!result.success) {
+          this.finishPending(
+            reply.id,
+            failure(id, -32004, "Invalid daemon outcome; reconcile commandId"),
+          );
+          return;
+        }
+        // The response source is current; historical terminal records legitimately retain
+        // their original runtime generation and must never be promoted to current ownership.
+        if (result.data.hostGeneration !== pending.generation) {
+          this.finishPending(
+            reply.id,
+            failure(id, -32004, "Stale daemon outcome; reconcile commandId"),
+          );
+          return;
+        }
       }
     }
     // Only schema-validated metadata responses cross this adapter; no terminal bytes.
@@ -548,6 +915,7 @@ export class AxoHostRelay extends DurableObject<Env> {
   }
   private fence(connectionId: string) {
     const sql = this.ctx.storage.sql;
+    const previousRoute = this.route();
     const rows = sql
       .exec<Pending>(
         "SELECT * FROM pending WHERE connection_id = ?",
@@ -564,6 +932,16 @@ export class AxoHostRelay extends DurableObject<Env> {
         ),
       );
     sql.exec("DELETE FROM route WHERE connection_id = ?", connectionId);
+    if (
+      previousRoute?.connection_id === connectionId &&
+      previousRoute.generation
+    ) {
+      this.broadcastHostPresence(
+        previousRoute.machine_id,
+        previousRoute.generation,
+        "offline",
+      );
+    }
     const socket = this.socket(connectionId);
     if (socket) socket.close(4002, "Lease ended");
   }

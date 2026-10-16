@@ -2,7 +2,6 @@ import type { RemoteMethod } from "@axo/protocol";
 
 // Deliberately excludes identity, URLs, credentials, payloads, paths and arbitrary error text.
 type ApiEvent =
-  | { event: "access_denied"; role: "client" | "daemon" }
   | { event: "host_registered" }
   | { event: "connection_closed"; role: "client" | "daemon"; code: number }
   | {

@@ -99,6 +99,27 @@ export class Peer {
     );
     return Peer.open(socket, credits);
   }
+  static async connectHost(
+    url: string,
+    assertion: string,
+    host: string,
+    role: "client" | "daemon",
+    credits = true,
+    origin?: string,
+  ) {
+    const socket = new WebSocket(
+      `${url.replace(/^http/, "ws")}v1/hosts/${host}/${role}`,
+      {
+        headers: {
+          ...accessHeaders(assertion),
+          ...(origin ? { Origin: origin } : {}),
+        },
+        maxPayload: 65_536,
+        followRedirects: false,
+      },
+    );
+    return Peer.open(socket, credits);
+  }
   static async connectLocal(discovery: LocalEndpoint, credits = true) {
     const endpoint = localEndpointSchema.parse(discovery);
     return Peer.open(

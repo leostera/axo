@@ -1,19 +1,58 @@
 import { Hono, type Context } from "hono";
 import { uuid } from "@axo/protocol";
-import { authorize, type Principal } from "../access";
-import { recordApiEvent } from "../observability";
+import { edgePrincipal, type Principal } from "../access";
 import { serveDiscovery } from "./rpc";
 import { serveMachines } from "./machines";
+import { authorizeHttpHostClient, serveHostSessions, serveHosts } from "./hosts";
 
 type Api = { Bindings: Env };
 const app = new Hono<Api>();
+const APP_ORIGIN = "https://app.axo.leostera.dev";
+const CORS_METHODS = "GET, POST, OPTIONS";
+const CORS_HEADERS = "Content-Type";
 
-async function authorizeCaller(context: Context<Api>, role: "client" | "daemon"): Promise<Principal | Response> {
-  try { return await authorize(context.req.raw, role, context.env); }
-  catch {
-    recordApiEvent({ event: "access_denied", role });
-    return new Response("Access required", { status: 401, headers: { "Cache-Control": "private, no-store" } });
+app.use("/v1/*", async (context, next) => {
+  const origin = context.req.header("Origin");
+  if (context.req.method === "OPTIONS") {
+    if (origin !== APP_ORIGIN) return new Response(null, { status: 403 });
+    const requestedMethod = context.req.header("Access-Control-Request-Method");
+    if (!requestedMethod || !CORS_METHODS.split(", ").includes(requestedMethod))
+      return new Response(null, { status: 405 });
+    const requestedHeaders = context.req.header("Access-Control-Request-Headers");
+    if (requestedHeaders && requestedHeaders.split(",").some((header) =>
+      !CORS_HEADERS.toLowerCase().split(", ").includes(header.trim().toLowerCase()),
+    )) return new Response(null, { status: 403 });
+    return new Response(null, {
+      status: 204,
+      headers: {
+        "Access-Control-Allow-Origin": APP_ORIGIN,
+        "Access-Control-Allow-Credentials": "true",
+        "Access-Control-Allow-Methods": CORS_METHODS,
+        "Access-Control-Allow-Headers": CORS_HEADERS,
+        "Access-Control-Max-Age": "600",
+        "Vary": "Origin, Access-Control-Request-Method, Access-Control-Request-Headers",
+      },
+    });
   }
+
+  await next();
+  if (origin !== APP_ORIGIN || context.res.status === 101) return;
+  const response = context.res;
+  const headers = new Headers(response.headers);
+  headers.set("Access-Control-Allow-Origin", APP_ORIGIN);
+  headers.set("Access-Control-Allow-Credentials", "true");
+  const vary = new Set((headers.get("Vary") ?? "").split(",").map((value) => value.trim()).filter(Boolean));
+  vary.add("Origin");
+  headers.set("Vary", [...vary].join(", "));
+  context.res = new Response(response.body, {
+    status: response.status,
+    statusText: response.statusText,
+    headers,
+  });
+});
+
+async function authorizeCaller(_context: Context<Api>, role: "client" | "daemon"): Promise<Principal | Response> {
+  return edgePrincipal(role);
 }
 
 app.all("/v1/rpc", async context => {
@@ -28,6 +67,59 @@ app.all("/v1/machines/", async context => {
   return serveMachines(context.req.raw, principal, context.executionCtx as ExecutionContext);
 });
 
+app.all("/v1/hosts", async context => {
+  const principal = await authorizeHttpHostClient(context.req.raw, context.env);
+  if (principal instanceof Response) return principal;
+  return serveHosts(context.req.raw, principal, context.executionCtx as ExecutionContext);
+});
+
+app.all("/v1/hosts/", async context => {
+  const principal = await authorizeHttpHostClient(context.req.raw, context.env);
+  if (principal instanceof Response) return principal;
+  return serveHosts(context.req.raw, principal, context.executionCtx as ExecutionContext);
+});
+
+app.all("/v1/hosts/:host/sessions", async context => {
+  const principal = await authorizeHttpHostClient(context.req.raw, context.env);
+  if (principal instanceof Response) return principal;
+  return serveHostSessions(
+    context.req.raw,
+    principal,
+    context.executionCtx as ExecutionContext,
+    context.req.param("host"),
+  );
+});
+
+app.all("/v1/hosts/:host/:role", async context => {
+  const role = context.req.param("role");
+  if (role !== "daemon" && role !== "client") return context.text("Not found", 404);
+  const principal = await authorizeCaller(context, role);
+  if (principal instanceof Response) return principal;
+  const host = uuid.safeParse(context.req.param("host"));
+  if (!host.success) return context.text("Invalid host", 400);
+  const request = context.req.raw;
+  if (request.method !== "GET" || request.headers.get("Upgrade")?.toLowerCase() !== "websocket") {
+    return context.text("WebSocket required", 426);
+  }
+  if (!isAllowedWebSocketOrigin(request, role)) return context.text("Origin not allowed", 403);
+  const ctx = context.executionCtx as ExecutionContext;
+  const directory = ctx.exports.AxoHostDirectory.getByName("private-fleet");
+  const admission = await directory.admitHost(host.data, principal);
+  if (admission !== "admitted") {
+    return new Response(admission, { status: admission === "capacity" ? 429 : admission === "conflict" ? 403 : 404 });
+  }
+  if (principal.expiresAt <= Date.now()) return context.text("Access expired", 401);
+  return ctx.exports.AxoHostRelay.getByName(host.data).fetch(new Request("https://host.internal/", {
+    headers: {
+      Upgrade: "websocket",
+      "X-Axo-Role": role,
+      "X-Axo-Identity": principal.identity,
+      "X-Axo-Expiry": String(principal.expiresAt),
+      "X-Axo-Machine": host.data,
+    },
+  }));
+});
+
 app.all("/v1/machines/:machine/:role", async context => {
   const role = context.req.param("role");
   if (role !== "daemon" && role !== "client") return context.text("Not found", 404);
@@ -39,14 +131,14 @@ app.all("/v1/machines/:machine/:role", async context => {
   if (request.method !== "GET" || request.headers.get("Upgrade")?.toLowerCase() !== "websocket") {
     return context.text("WebSocket required", 426);
   }
-  if (request.headers.has("Origin")) return context.text("Native connections only", 403);
+  if (!isAllowedWebSocketOrigin(request, role)) return context.text("Origin not allowed", 403);
   const ctx = context.executionCtx as ExecutionContext;
   const admission = await ctx.exports.AxoHostDirectory.getByName("private-fleet").admit(machine.data, principal);
   if (admission !== "admitted") {
     return new Response(admission, { status: admission === "capacity" ? 429 : admission === "conflict" ? 403 : 404 });
   }
   if (principal.expiresAt <= Date.now()) return context.text("Access expired", 401);
-  // Fresh headers only: public callers cannot spoof the trusted internal context.
+  // Fresh headers only: caller-supplied headers never reach the Durable Object.
   return ctx.exports.AxoHostRelay.getByName(machine.data).fetch(new Request("https://machine.internal/", {
     headers: {
       Upgrade: "websocket",
@@ -57,6 +149,11 @@ app.all("/v1/machines/:machine/:role", async context => {
     },
   }));
 });
+
+function isAllowedWebSocketOrigin(request: Request, role: "client" | "daemon"): boolean {
+  const origin = request.headers.get("Origin");
+  return origin === null || (role === "client" && origin === APP_ORIGIN);
+}
 
 app.notFound(context => context.text("Not found", 404));
 // Hono's default exception logger is deliberately replaced: no payload-bearing stack traces.

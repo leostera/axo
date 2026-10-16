@@ -278,7 +278,7 @@ final class TerminalWorkbenchE2ETests: XCTestCase {
       }
       try await Task.sleep(for: .milliseconds(50))
     }
-    XCTFail("Axo D did not persist the session pane hierarchy")
+    XCTFail("axod did not persist the session pane hierarchy")
   }
 
   private func withWorkbench(

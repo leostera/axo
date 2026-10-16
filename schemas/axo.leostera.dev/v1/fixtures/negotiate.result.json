@@ -1,0 +1,17 @@
+{
+  "protocolVersion": 1,
+  "methods": [
+    "axo.daemon.health",
+    "axo.relay.settings",
+    "axo.relay.configure",
+    "axo.relay.disable",
+    "axo.relay.status",
+    "axo.relay.connect",
+    "axo.session.list",
+    "axo.session.create",
+    "axo.session.close",
+    "axo.session.layout.set",
+    "axo.shell.create",
+    "axo.shell.close"
+  ]
+}

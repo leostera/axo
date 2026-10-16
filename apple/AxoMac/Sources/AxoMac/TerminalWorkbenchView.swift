@@ -79,7 +79,7 @@ struct TerminalWorkbenchView: View {
       .overlay {
         if sessions.sessions.isEmpty {
           ContentUnavailableViewPlaceholder(
-            title: daemonIsRunning ? "No Sessions" : "Axo D Is Not Running",
+            title: daemonIsRunning ? "No Sessions" : "axod is not running",
             message: sessions.errorMessage
               ?? (daemonIsRunning
                 ? "Create a session to open a shell."

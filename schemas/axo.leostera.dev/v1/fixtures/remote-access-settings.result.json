@@ -1,0 +1,6 @@
+{
+  "enabled": true,
+  "relayUrl": "https://api.example.test",
+  "hostLabel": "Test Mac",
+  "hostKind": "macos"
+}

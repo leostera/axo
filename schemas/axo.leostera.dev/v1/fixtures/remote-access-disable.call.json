@@ -1,0 +1,5 @@
+{
+  "jsonrpc": "2.0",
+  "id": 23,
+  "method": "axo.relay.disable"
+}

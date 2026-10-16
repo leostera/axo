@@ -4,11 +4,11 @@ import { harness, Peer } from "./harness";
 import { accessHeaders } from "../testing/access-headers";
 import { machineListResultSchema } from "@axo/protocol";
 
-test("Hono machines GET uses Access, live presence and no-store rather than a cached directory", async t => {
+test("Hono machines GET needs no Worker JWT and reports live presence without caching", async t => {
   const h = await harness(); t.after(() => h.close());
   const endpoint = new URL("v1/machines/", h.url);
-  assert.equal((await fetch(endpoint)).status, 401);
-  assert.equal((await fetch(endpoint, { headers: accessHeaders(await h.token("daemon")) })).status, 401);
+  assert.equal((await fetch(endpoint)).status, 200);
+  assert.equal((await fetch(endpoint, { headers: accessHeaders(await h.token("daemon")) })).status, 200);
   const headers = accessHeaders(await h.token("client"));
   assert.equal((await fetch(endpoint, { method: "POST", headers })).status, 405);
   const machineId = crypto.randomUUID(), hostGeneration = crypto.randomUUID();

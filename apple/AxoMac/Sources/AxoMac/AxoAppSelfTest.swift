@@ -242,19 +242,19 @@ private enum SelfTestError: Error, LocalizedError {
     case .missingTestSocket:
       "Set AXO_SELF_TEST_SOCKET to an isolated daemon socket before running the app self-test."
     case .daemonUnavailable:
-      "Axo D did not report a running status."
+      "axod did not report a running status."
     case .createdSessionMissing:
-      "Axo D did not return the session created by the self-test."
+      "axod did not return the session created by the self-test."
     case .createdShellMissing:
-      "Axo D did not return a shell in the self-test session."
+      "axod did not return a shell in the self-test session."
     case .defaultSessionMissing:
-      "Axo D did not provide its default session before the split test began."
+      "axod did not provide its default session before the split test began."
     case .independentSessionChanged:
       "Splitting or closing a shell changed an unrelated session."
     case .independentSessionCloseFailed:
       "Closing an unrelated session did not preserve the active split session."
     case .splitShellSetMismatch:
-      "The shells returned by Axo D did not match the expected session layout."
+      "The shells returned by axod did not match the expected session layout."
     case .splitShellCloseArchivedSession:
       "Closing a split shell unexpectedly archived its session."
     case .nonLastShellCloseArchivedSession:
@@ -262,7 +262,7 @@ private enum SelfTestError: Error, LocalizedError {
     case .lastShellDidNotReplaceSession:
       "Closing the last shell did not archive its session and create a replacement."
     case .replacementSessionMissing:
-      "The replacement session was not present in Axo D's active session list."
+      "The replacement session was not present in axod's active session list."
     case .helperMissing(let path):
       "The terminal-attach helper is missing or not executable at \(path)."
     case .helperClosedBeforeMarker:

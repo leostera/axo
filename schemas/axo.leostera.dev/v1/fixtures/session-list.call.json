@@ -1,0 +1,5 @@
+{
+  "jsonrpc": "2.0",
+  "id": "fixture-session-list",
+  "method": "axo.session.list"
+}

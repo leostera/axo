@@ -10,10 +10,11 @@ use std::sync::atomic::{AtomicBool, Ordering};
 use std::thread;
 use std::time::Duration;
 
-use jsonrpc_core::IoHandler;
+use jsonrpc_core::{IoHandler, Params};
 use jsonrpc_ipc_server::{Separator, ServerBuilder};
 use serde_json::json;
 
+mod relay;
 mod session;
 
 const MAX_SOCKET_PATH_BYTES: usize = 103;
@@ -116,7 +117,25 @@ pub fn serve_ipc(
     remove_stale_socket(&socket_path.0)?;
 
     let sessions = session::SessionManager::open(server_directory)?;
-    let server = ServerBuilder::new(rpc_handler(Arc::clone(&sessions), daemon_version))
+    let mut remote_relay = match relay::RelayWorker::start(Arc::clone(&sessions), server_directory)
+    {
+        Ok(worker) => worker,
+        Err(_) => {
+            log::error!("event=relay.configuration_unavailable");
+            None
+        }
+    };
+    let relay_stop = remote_relay.as_ref().map(relay::RelayWorker::stop_handle);
+    let relay_control = remote_relay
+        .as_ref()
+        .map(relay::RelayWorker::control_handle);
+    let handler = rpc_handler(
+        Arc::clone(&sessions),
+        daemon_version,
+        server_directory.to_path_buf(),
+        relay_control,
+    );
+    let server = ServerBuilder::new(handler)
         .request_separators(Separator::Byte(b'\n'), Separator::Byte(b'\n'))
         .start(path_as_str(&socket_path.0)?)?;
     fs::set_permissions(&socket_path.0, fs::Permissions::from_mode(0o600))?;
@@ -125,13 +144,14 @@ pub fn serve_ipc(
     let stop_watcher = Arc::new(AtomicBool::new(false));
     let close_server = server.close_handle();
     let watcher_stop = Arc::clone(&stop_watcher);
-    let watcher_sessions = Arc::clone(&sessions);
     let signal_watcher = thread::Builder::new()
         .name("axo-shutdown-signals".into())
         .spawn(move || {
             while !watcher_stop.load(Ordering::Relaxed) {
                 if SHUTDOWN_REQUESTED.swap(false, Ordering::Relaxed) {
-                    watcher_sessions.shutdown();
+                    if let Some(relay_stop) = &relay_stop {
+                        relay_stop.store(true, Ordering::Relaxed);
+                    }
                     close_server.close();
                     break;
                 }
@@ -143,6 +163,9 @@ pub fn serve_ipc(
     server.wait();
     stop_watcher.store(true, Ordering::Relaxed);
     let _ = signal_watcher.join();
+    if let Some(relay) = remote_relay.as_mut() {
+        relay.shutdown();
+    }
     sessions.shutdown();
     drop(signal_handlers);
     log::info!("event=daemon.server_stopped");
@@ -202,11 +225,147 @@ impl Drop for SignalHandlers {
     }
 }
 
-fn rpc_handler(sessions: Arc<session::SessionManager>, daemon_version: &'static str) -> IoHandler {
+fn rpc_handler(
+    sessions: Arc<session::SessionManager>,
+    daemon_version: &'static str,
+    server_directory: PathBuf,
+    relay_control: Option<Arc<relay::RelayControl>>,
+) -> IoHandler {
     let mut handler = IoHandler::new();
+    add_protocol_negotiate_method(&mut handler);
     add_health_method(&mut handler, daemon_version);
+    add_relay_methods(&mut handler, server_directory, relay_control);
     sessions.register_rpc_methods(&mut handler);
     handler
+}
+
+fn add_relay_methods(
+    handler: &mut IoHandler,
+    server_directory: PathBuf,
+    relay_control: Option<Arc<relay::RelayControl>>,
+) {
+    let settings_path = server_directory.join(relay::CONFIG_FILE);
+    handler.add_sync_method("axo.relay.settings", move |_| {
+        serde_json::to_value(
+            relay::settings(&settings_path).map_err(|_| jsonrpc_core::Error {
+                code: jsonrpc_core::ErrorCode::InternalError,
+                message: "could not read remote access settings".to_owned(),
+                data: None,
+            })?,
+        )
+        .map_err(|_| jsonrpc_core::Error {
+            code: jsonrpc_core::ErrorCode::InternalError,
+            message: "could not encode remote access settings".to_owned(),
+            data: None,
+        })
+    });
+
+    let configure_path = server_directory.join(relay::CONFIG_FILE);
+    handler.add_sync_method("axo.relay.configure", move |params: Params| {
+        let request = params
+            .parse::<relay::ConfigureRelayRequest>()
+            .map_err(|_| invalid_params("invalid remote access settings"))?;
+        let settings =
+            relay::configure(&configure_path, request).map_err(|_| jsonrpc_core::Error {
+                code: jsonrpc_core::ErrorCode::InvalidParams,
+                message: "could not save remote access settings".to_owned(),
+                data: None,
+            })?;
+        serde_json::to_value(settings).map_err(|_| jsonrpc_core::Error {
+            code: jsonrpc_core::ErrorCode::InternalError,
+            message: "could not encode remote access settings".to_owned(),
+            data: None,
+        })
+    });
+
+    let disable_path = server_directory.join(relay::CONFIG_FILE);
+    handler.add_sync_method("axo.relay.disable", move |_| {
+        relay::disable(&disable_path).map_err(|_| jsonrpc_core::Error {
+            code: jsonrpc_core::ErrorCode::InternalError,
+            message: "could not disable remote access".to_owned(),
+            data: None,
+        })?;
+        Ok(json!({ "disabled": true }))
+    });
+
+    let status_control = relay_control.clone();
+    handler.add_sync_method("axo.relay.status", move |_| {
+        let status = match &status_control {
+            Some(control) => control.snapshot().map_err(|_| jsonrpc_core::Error {
+                code: jsonrpc_core::ErrorCode::InternalError,
+                message: "could not read remote connection status".to_owned(),
+                data: None,
+            })?,
+            None => relay::unavailable_status(),
+        };
+        serde_json::to_value(status).map_err(|_| jsonrpc_core::Error {
+            code: jsonrpc_core::ErrorCode::InternalError,
+            message: "could not encode remote connection status".to_owned(),
+            data: None,
+        })
+    });
+
+    handler.add_sync_method("axo.relay.connect", move |_| {
+        let requested = match &relay_control {
+            Some(control) => {
+                control.request_connect().map_err(|_| jsonrpc_core::Error {
+                    code: jsonrpc_core::ErrorCode::InternalError,
+                    message: "could not request remote connection".to_owned(),
+                    data: None,
+                })?;
+                true
+            }
+            None => false,
+        };
+        Ok(json!({ "requested": requested }))
+    });
+}
+
+fn add_protocol_negotiate_method(handler: &mut IoHandler) {
+    handler.add_sync_method("axo.protocol.negotiate", |params: Params| {
+        let request: ProtocolNegotiationRequest = params
+            .parse()
+            .map_err(|_| invalid_params("expected {protocolVersion}"))?;
+        if request.protocol_version != 1 {
+            return Err(invalid_params("unsupported protocol version"));
+        }
+        Ok(json!({
+            "protocolVersion": 1,
+            "methods": [
+                "axo.daemon.health",
+                "axo.session.list",
+                "axo.session.create",
+                "axo.session.close",
+                "axo.session.layout.set",
+                "axo.session.subscribe",
+                "axo.session.events.next",
+                "axo.session.unsubscribe",
+                "axo.shell.create",
+                "axo.shell.close",
+                "axo.terminal.input",
+                "axo.terminal.resize",
+                "axo.relay.settings",
+                "axo.relay.configure",
+                "axo.relay.disable",
+                "axo.relay.status",
+                "axo.relay.connect"
+            ]
+        }))
+    });
+}
+
+#[derive(serde::Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+struct ProtocolNegotiationRequest {
+    protocol_version: u32,
+}
+
+fn invalid_params(message: &str) -> jsonrpc_core::Error {
+    jsonrpc_core::Error {
+        code: jsonrpc_core::ErrorCode::InvalidParams,
+        message: message.to_owned(),
+        data: None,
+    }
 }
 
 fn add_health_method(handler: &mut IoHandler, daemon_version: &'static str) {

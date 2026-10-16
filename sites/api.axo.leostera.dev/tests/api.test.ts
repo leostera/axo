@@ -57,7 +57,7 @@ function code(reply: unknown) {
 
 test("shared JSON-RPC envelope fixtures agree with Rust", async () => {
   const fixtures = JSON.parse(
-    await readFile(`${root}protocol/fixtures/envelopes.json`, "utf8"),
+    await readFile(`${root}packages/axo-api/fixtures/envelopes.json`, "utf8"),
   ) as Array<{ raw: string; errors: number[]; name: string }>;
   for (const fixture of fixtures) {
     const result = decode(fixture.raw);
@@ -71,16 +71,23 @@ test("shared JSON-RPC envelope fixtures agree with Rust", async () => {
   }
 });
 
-test("public Worker validates real signed JWTs and refuses spoofed roles", async (t) => {
+test("Worker does not require or validate Access JWTs", async (t) => {
   const h = await harness();
   t.after(() => h.close());
   const body = JSON.stringify({
     jsonrpc: "2.0",
     id: 1,
     method: "axo.machine.list",
+    params: {},
   });
+  const direct = await fetch(`${h.url}v1/rpc`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body,
+  });
+  assert.equal(direct.status, 200);
+
   for (const token of [
-    "",
     "forged",
     await h.token("daemon"),
     await h.token("client", { email: "wrong@example.com" }),
@@ -89,12 +96,23 @@ test("public Worker validates real signed JWTs and refuses spoofed roles", async
   ]) {
     const response = await fetch(`${h.url}v1/rpc`, {
       method: "POST",
-      headers: { "Cf-Access-Jwt-Assertion": token, "X-Axo-Role": "client" },
+      headers: { "Cf-Access-Jwt-Assertion": token, "Content-Type": "application/json" },
       body,
     });
-    assert.equal(response.status, 401);
+    assert.equal(response.status, 200);
   }
   assert.deepEqual((await h.list(await h.token("client"))).result.machines, []);
+});
+
+test("daemon WebSocket connections reach the Worker without Access JWT headers", async (t) => {
+  const h = await harness();
+  t.after(() => h.close());
+  const socket = new WebSocket(
+    `${h.url.replace(/^http/, "ws")}v1/machines/${crypto.randomUUID()}/daemon`,
+    { followRedirects: false },
+  );
+  await once(socket, "open");
+  socket.terminate();
 });
 
 test("automatic registration, two machines and independent colliding client IDs", async (t) => {
@@ -154,7 +172,7 @@ test("automatic registration, two machines and independent colliding client IDs"
   );
 });
 
-test("duplicate live machine admission and wrong credential role fail closed", async (t) => {
+test("duplicate live machine admission and malformed IDs fail closed", async (t) => {
   const h = await harness();
   t.after(() => h.close());
   const a = await registered(h);
@@ -171,10 +189,6 @@ test("duplicate live machine admission and wrong credential role fail closed", a
       "daemon",
     ),
     /409/,
-  );
-  await assert.rejects(
-    Peer.connect(h.url, await h.token("client"), crypto.randomUUID(), "daemon"),
-    /401/,
   );
 });
 
