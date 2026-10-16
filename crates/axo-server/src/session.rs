@@ -1,4 +1,4 @@
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::ffi::CStr;
 use std::fs;
 use std::io::{self, Read, Write};
@@ -15,6 +15,7 @@ use std::time::Duration;
 
 use jsonrpc_core::{Error as RpcError, ErrorCode, IoHandler, Params};
 use rusqlite::{Connection, OptionalExtension, params};
+use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
 
 const DATABASE_FILE: &str = "axo.db";
@@ -24,12 +25,144 @@ const PTY_COLUMNS: libc::c_ushort = 80;
 const REAPER_INTERVAL: Duration = Duration::from_millis(100);
 const MAX_TERMINAL_OUTPUT_HISTORY_BYTES: usize = 8 * 1024 * 1024;
 const ATTACH_REJECTION_MARKER: u64 = u64::MAX;
+const MAX_LAYOUT_DEPTH: usize = 64;
+const MAX_LAYOUT_NODES: usize = 255;
 
 #[derive(Clone, Copy, Debug, Eq, Hash, PartialEq)]
 struct SessionId(i64);
 
 #[derive(Clone, Copy, Debug, Eq, Hash, PartialEq)]
 struct ShellId(i64);
+
+#[derive(Clone, Debug, Deserialize, PartialEq, Serialize)]
+#[serde(
+    tag = "kind",
+    rename_all = "camelCase",
+    rename_all_fields = "camelCase",
+    deny_unknown_fields
+)]
+enum SessionLayout {
+    Pane {
+        shell_id: i64,
+    },
+    Split {
+        id: String,
+        direction: LayoutDirection,
+        ratio: f64,
+        first: Box<SessionLayout>,
+        second: Box<SessionLayout>,
+    },
+}
+
+#[derive(Clone, Copy, Debug, Deserialize, PartialEq, Serialize)]
+#[serde(rename_all = "camelCase")]
+enum LayoutDirection {
+    Right,
+    Down,
+}
+
+impl SessionLayout {
+    fn shell_ids(&self) -> io::Result<HashSet<ShellId>> {
+        let mut shell_ids = HashSet::new();
+        let mut split_ids = HashSet::new();
+        let mut node_count = 0;
+        self.collect_shell_ids(0, &mut node_count, &mut shell_ids, &mut split_ids)?;
+        Ok(shell_ids)
+    }
+
+    fn pruned_to(&self, open_shell_ids: &HashSet<ShellId>) -> Option<Self> {
+        match self {
+            Self::Pane { shell_id } => open_shell_ids
+                .contains(&ShellId(*shell_id))
+                .then(|| self.clone()),
+            Self::Split {
+                id,
+                direction,
+                ratio,
+                first,
+                second,
+            } => match (
+                first.pruned_to(open_shell_ids),
+                second.pruned_to(open_shell_ids),
+            ) {
+                (None, None) => None,
+                (Some(remaining), None) | (None, Some(remaining)) => Some(remaining),
+                (Some(first), Some(second)) => Some(Self::Split {
+                    id: id.clone(),
+                    direction: *direction,
+                    ratio: *ratio,
+                    first: Box::new(first),
+                    second: Box::new(second),
+                }),
+            },
+        }
+    }
+
+    fn collect_shell_ids(
+        &self,
+        depth: usize,
+        node_count: &mut usize,
+        shell_ids: &mut HashSet<ShellId>,
+        split_ids: &mut HashSet<String>,
+    ) -> io::Result<()> {
+        *node_count += 1;
+        if depth > MAX_LAYOUT_DEPTH || *node_count > MAX_LAYOUT_NODES {
+            return Err(io::Error::new(
+                io::ErrorKind::InvalidInput,
+                "session layout exceeds its structural limits",
+            ));
+        }
+
+        match self {
+            Self::Pane { shell_id } => {
+                if *shell_id <= 0 || !shell_ids.insert(ShellId(*shell_id)) {
+                    return Err(io::Error::new(
+                        io::ErrorKind::InvalidInput,
+                        "session layout contains an invalid or duplicate shell ID",
+                    ));
+                }
+            }
+            Self::Split {
+                id,
+                ratio,
+                first,
+                second,
+                ..
+            } => {
+                if !is_uuid_string(id) || !split_ids.insert(id.clone()) {
+                    return Err(io::Error::new(
+                        io::ErrorKind::InvalidInput,
+                        "session layout contains an invalid or duplicate split ID",
+                    ));
+                }
+                if !ratio.is_finite() || !(0.01..=0.99).contains(ratio) {
+                    return Err(io::Error::new(
+                        io::ErrorKind::InvalidInput,
+                        "session layout split ratio must be between 0.01 and 0.99",
+                    ));
+                }
+                first.collect_shell_ids(depth + 1, node_count, shell_ids, split_ids)?;
+                second.collect_shell_ids(depth + 1, node_count, shell_ids, split_ids)?;
+            }
+        }
+        Ok(())
+    }
+}
+
+fn is_uuid_string(value: &str) -> bool {
+    value.len() == 36
+        && value.bytes().enumerate().all(|(index, byte)| match index {
+            8 | 13 | 18 | 23 => byte == b'-',
+            _ => byte.is_ascii_hexdigit(),
+        })
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+struct SetSessionLayoutRequest {
+    session_id: i64,
+    layout: SessionLayout,
+}
 
 #[derive(Debug)]
 struct SessionRecord {
@@ -121,6 +254,7 @@ struct SessionMetadata {
     id: SessionId,
     initial_pwd: PathBuf,
     shells: Vec<ShellMetadata>,
+    layout: Option<SessionLayout>,
 }
 
 impl SessionMetadata {
@@ -129,6 +263,7 @@ impl SessionMetadata {
             "id": self.id.0,
             "initialPwd": self.initial_pwd,
             "shells": self.shells.iter().map(ShellMetadata::to_json).collect::<Vec<_>>(),
+            "layout": self.layout,
         })
     }
 }
@@ -188,6 +323,30 @@ impl SessionManager {
                 .list_sessions()
                 .map(|sessions| json!({ "sessions": sessions.iter().map(SessionMetadata::to_json).collect::<Vec<_>>() }))
                 .map_err(internal_rpc_error)
+        });
+
+        let manager = Arc::clone(self);
+        handler.add_sync_method("axo.session.layout.set", move |params: Params| {
+            let request: SetSessionLayoutRequest = params
+                .parse()
+                .map_err(|_| invalid_params("expected {sessionId, layout}"))?;
+            if request.session_id <= 0 {
+                return Err(invalid_params("sessionId must be a positive integer"));
+            }
+            request
+                .layout
+                .shell_ids()
+                .map_err(|_| invalid_params("layout is malformed or exceeds its limits"))?;
+            manager
+                .set_layout(SessionId(request.session_id), request.layout)
+                .map(|()| json!({ "saved": true }))
+                .map_err(|error| {
+                    if error.kind() == io::ErrorKind::InvalidInput {
+                        invalid_params("layout must contain each open session shell exactly once")
+                    } else {
+                        internal_rpc_error(error)
+                    }
+                })
         });
 
         let manager = Arc::clone(self);
@@ -321,6 +480,7 @@ impl SessionManager {
                     id: running.session_id,
                     initial_pwd: running.initial_pwd.clone(),
                     shells: Vec::new(),
+                    layout: None,
                 });
             session
                 .shells
@@ -329,6 +489,7 @@ impl SessionManager {
         let mut sessions: Vec<_> = sessions.into_values().collect();
         for session in &mut sessions {
             session.shells.sort_by_key(|shell| shell.id.0);
+            session.layout = read_session_layout(&state.database, session.id)?;
         }
         sessions.sort_by_key(|session| session.id.0);
         Ok(sessions)
@@ -337,6 +498,44 @@ impl SessionManager {
     fn create_session(&self) -> io::Result<SessionMetadata> {
         let mut state = self.lock_state()?;
         create_session(&mut state, &self.attach_socket_path)
+    }
+
+    fn set_layout(&self, session_id: SessionId, layout: SessionLayout) -> io::Result<()> {
+        let shell_ids = layout.shell_ids()?;
+        let state = self.lock_state()?;
+        let open_shell_ids: HashSet<_> = state
+            .running
+            .iter()
+            .filter_map(|(shell_id, shell)| (shell.session_id == session_id).then_some(*shell_id))
+            .collect();
+        if open_shell_ids.is_empty() {
+            return Err(io::Error::new(
+                io::ErrorKind::NotFound,
+                "session is not open",
+            ));
+        }
+        if shell_ids != open_shell_ids {
+            return Err(io::Error::new(
+                io::ErrorKind::InvalidInput,
+                "layout does not match the session's open shells",
+            ));
+        }
+
+        let layout_json = serde_json::to_string(&layout).map_err(io::Error::other)?;
+        let changed = state
+            .database
+            .execute(
+                "UPDATE sessions SET layout_json = ?1 WHERE id = ?2 AND state = 'open'",
+                params![layout_json, session_id.0],
+            )
+            .map_err(io::Error::other)?;
+        if changed != 1 {
+            return Err(io::Error::new(
+                io::ErrorKind::NotFound,
+                "session record is missing",
+            ));
+        }
+        Ok(())
     }
 
     fn create_shell(&self, session_id: SessionId) -> io::Result<ShellMetadata> {
@@ -411,9 +610,24 @@ impl SessionManager {
             })
             .collect::<io::Result<Vec<_>>>()?;
 
+        let exited_shell_ids: HashSet<_> = exited.iter().map(|(shell_id, _)| *shell_id).collect();
         for (shell_id, session_id) in exited {
+            let remaining_shell_ids: HashSet<_> = state
+                .running
+                .iter()
+                .filter_map(|(candidate_id, shell)| {
+                    (shell.session_id == session_id && !exited_shell_ids.contains(candidate_id))
+                        .then_some(*candidate_id)
+                })
+                .collect();
+            archive_shell_and_prune_layout(
+                &mut state.database,
+                shell_id,
+                session_id,
+                "shell_exited",
+                &remaining_shell_ids,
+            )?;
             state.running.remove(&shell_id);
-            archive_shell(&state.database, shell_id, "shell_exited")?;
             if !state
                 .running
                 .values()
@@ -538,8 +752,9 @@ fn initialize_database(database: &mut Connection) -> rusqlite::Result<()> {
     } else {
         create_tables(&transaction)?;
     }
+    ensure_session_layout_column(&transaction)?;
 
-    transaction.pragma_update(None, "user_version", 2)?;
+    transaction.pragma_update(None, "user_version", 3)?;
     transaction.commit()
 }
 
@@ -551,7 +766,8 @@ fn create_tables(transaction: &rusqlite::Transaction<'_>) -> rusqlite::Result<()
             state TEXT NOT NULL CHECK (state IN ('open', 'archived')),
             created_at INTEGER NOT NULL,
             archived_at INTEGER,
-            termination_reason TEXT
+            termination_reason TEXT,
+            layout_json TEXT
         );
         CREATE TABLE IF NOT EXISTS shells (
             id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -682,7 +898,20 @@ fn close_shell(
         ));
     }
 
-    archive_shell(&state.database, shell_id, "explicit_close")?;
+    let remaining_shell_ids: HashSet<_> = state
+        .running
+        .iter()
+        .filter_map(|(candidate_id, shell)| {
+            (shell.session_id == session_id && *candidate_id != shell_id).then_some(*candidate_id)
+        })
+        .collect();
+    archive_shell_and_prune_layout(
+        &mut state.database,
+        shell_id,
+        session_id,
+        "explicit_close",
+        &remaining_shell_ids,
+    )?;
     let shell = state.running.remove(&shell_id).into_iter().collect();
     Ok((
         ClosedShellMetadata {
@@ -723,6 +952,7 @@ fn session_metadata(
         id,
         initial_pwd,
         shells,
+        layout: read_session_layout(&state.database, id)?,
     })
 }
 
@@ -768,6 +998,55 @@ fn read_open_sessions(database: &Connection) -> io::Result<Vec<SessionRecord>> {
     Ok(records)
 }
 
+fn read_session_layout(database: &Connection, id: SessionId) -> io::Result<Option<SessionLayout>> {
+    let stored_layout = database
+        .query_row(
+            "SELECT layout_json FROM sessions WHERE id = ?1 AND state = 'open'",
+            params![id.0],
+            |row| row.get::<_, Option<String>>(0),
+        )
+        .optional()
+        .map_err(io::Error::other)?
+        .ok_or_else(|| io::Error::new(io::ErrorKind::NotFound, "session record is missing"))?;
+    let Some(stored_layout) = stored_layout else {
+        return Ok(None);
+    };
+
+    let layout: SessionLayout = match serde_json::from_str(&stored_layout) {
+        Ok(layout) => layout,
+        Err(error) => {
+            log::warn!(
+                "event=session.layout_invalid session_id={} reason={error}",
+                id.0
+            );
+            return Ok(None);
+        }
+    };
+    if let Err(error) = layout.shell_ids() {
+        log::warn!(
+            "event=session.layout_invalid session_id={} reason={error}",
+            id.0
+        );
+        return Ok(None);
+    }
+    Ok(Some(layout))
+}
+
+fn ensure_session_layout_column(transaction: &rusqlite::Transaction<'_>) -> rusqlite::Result<()> {
+    let has_layout_column = {
+        let mut statement = transaction.prepare("PRAGMA table_info(sessions)")?;
+        let columns = statement.query_map([], |row| row.get::<_, String>(1))?;
+        columns
+            .collect::<Result<Vec<_>, _>>()?
+            .iter()
+            .any(|column| column == "layout_json")
+    };
+    if !has_layout_column {
+        transaction.execute("ALTER TABLE sessions ADD COLUMN layout_json TEXT", [])?;
+    }
+    Ok(())
+}
+
 fn session_initial_pwd(database: &Connection, id: SessionId) -> io::Result<PathBuf> {
     database
         .query_row(
@@ -796,6 +1075,46 @@ fn archive_shell(database: &Connection, id: ShellId, reason: &str) -> io::Result
         ));
     }
     Ok(())
+}
+
+fn archive_shell_and_prune_layout(
+    database: &mut Connection,
+    shell_id: ShellId,
+    session_id: SessionId,
+    reason: &str,
+    remaining_shell_ids: &HashSet<ShellId>,
+) -> io::Result<()> {
+    let transaction = database.transaction().map_err(io::Error::other)?;
+    let changed = transaction
+        .execute(
+            "UPDATE shells SET state = 'archived', archived_at = ?1, termination_reason = ?2
+             WHERE id = ?3 AND state = 'open'",
+            params![unix_timestamp(), reason, shell_id.0],
+        )
+        .map_err(io::Error::other)?;
+    if changed != 1 {
+        return Err(io::Error::new(
+            io::ErrorKind::NotFound,
+            "shell was not open in the database",
+        ));
+    }
+
+    if let Some(layout) = read_session_layout(&transaction, session_id)? {
+        let pruned_layout = layout.pruned_to(remaining_shell_ids);
+        let layout_json = pruned_layout
+            .as_ref()
+            .map(serde_json::to_string)
+            .transpose()
+            .map_err(io::Error::other)?;
+        transaction
+            .execute(
+                "UPDATE sessions SET layout_json = ?1 WHERE id = ?2 AND state = 'open'",
+                params![layout_json, session_id.0],
+            )
+            .map_err(io::Error::other)?;
+    }
+
+    transaction.commit().map_err(io::Error::other)
 }
 
 fn archive_session(database: &mut Connection, id: SessionId, reason: &str) -> io::Result<()> {
@@ -1239,6 +1558,49 @@ mod tests {
         assert_eq!(shell_id, 7);
         assert_eq!(shell_session_id, session_id);
         assert_eq!(shell_pwd, initial_pwd);
+    }
+
+    #[test]
+    fn adds_layout_storage_to_existing_tab_databases() {
+        let mut database = Connection::open_in_memory().unwrap();
+        database
+            .execute_batch(
+                "CREATE TABLE sessions (
+                    id INTEGER PRIMARY KEY AUTOINCREMENT,
+                    initial_pwd TEXT NOT NULL,
+                    state TEXT NOT NULL CHECK (state IN ('open', 'archived')),
+                    created_at INTEGER NOT NULL,
+                    archived_at INTEGER,
+                    termination_reason TEXT
+                );
+                CREATE TABLE shells (
+                    id INTEGER PRIMARY KEY AUTOINCREMENT,
+                    session_id INTEGER NOT NULL,
+                    initial_pwd TEXT NOT NULL,
+                    state TEXT NOT NULL CHECK (state IN ('open', 'archived')),
+                    created_at INTEGER NOT NULL,
+                    archived_at INTEGER,
+                    termination_reason TEXT
+                );
+                INSERT INTO sessions (initial_pwd, state, created_at)
+                VALUES ('/tmp', 'open', 123);
+                INSERT INTO shells (session_id, initial_pwd, state, created_at)
+                VALUES (1, '/tmp', 'open', 123);",
+            )
+            .unwrap();
+
+        initialize_database(&mut database).unwrap();
+
+        let layout: Option<String> = database
+            .query_row("SELECT layout_json FROM sessions WHERE id = 1", [], |row| {
+                row.get(0)
+            })
+            .unwrap();
+        let schema_version: i64 = database
+            .query_row("PRAGMA user_version", [], |row| row.get(0))
+            .unwrap();
+        assert_eq!(layout, None);
+        assert_eq!(schema_version, 3);
     }
 
     #[test]

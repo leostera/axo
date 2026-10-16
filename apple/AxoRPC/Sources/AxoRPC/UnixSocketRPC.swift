@@ -51,11 +51,18 @@ public struct TerminalSession: Decodable, Equatable, Identifiable, Sendable {
   public let id: Int64
   public let initialPwd: String
   public let shells: [TerminalShell]
+  public let layout: SessionLayout?
 
-  public init(id: Int64, initialPwd: String, shells: [TerminalShell]) {
+  public init(
+    id: Int64,
+    initialPwd: String,
+    shells: [TerminalShell],
+    layout: SessionLayout? = nil
+  ) {
     self.id = id
     self.initialPwd = initialPwd
     self.shells = shells
+    self.layout = layout
   }
 }
 
@@ -88,6 +95,15 @@ private struct CloseTerminalSessionRequest: Encodable {
 
 private struct CreateTerminalShellRequest: Encodable {
   let sessionId: Int64
+}
+
+private struct SetSessionLayoutRequest: Encodable {
+  let sessionId: Int64
+  let layout: SessionLayout
+}
+
+private struct SessionLayoutAcknowledgement: Decodable {
+  let saved: Bool
 }
 
 private struct CloseTerminalShellRequest: Encodable {
@@ -165,6 +181,24 @@ public enum UnixSocketRPC {
         to: "axo.shell.create",
         params: CreateTerminalShellRequest(sessionId: sessionID)
       )
+    }
+  }
+
+  public static func setLayout(
+    _ layout: SessionLayout,
+    for sessionID: Int64,
+    at socketPath: UnixSocketPath
+  ) async throws {
+    let acknowledgement: SessionLayoutAcknowledgement = try await withResponse(
+      at: socketPath
+    ) { session in
+      try await session.response(
+        to: "axo.session.layout.set",
+        params: SetSessionLayoutRequest(sessionId: sessionID, layout: layout)
+      )
+    }
+    guard acknowledgement.saved else {
+      throw UnixSocketRPCError.invalidResponse("daemon did not save the session layout")
     }
   }
 

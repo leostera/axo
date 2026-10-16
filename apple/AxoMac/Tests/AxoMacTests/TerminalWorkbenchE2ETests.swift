@@ -54,12 +54,10 @@ final class TerminalWorkbenchE2ETests: XCTestCase {
     let defaultsSuite = "axo-terminal-layout-test-\(UUID().uuidString)"
     let defaults = try XCTUnwrap(UserDefaults(suiteName: defaultsSuite))
     defer { defaults.removePersistentDomain(forName: defaultsSuite) }
-    let persistence = UserDefaultsTerminalLayoutPersistence(defaults: defaults)
-
     let firstModel = TerminalSessionsModel(
       socketPath: socketPath,
       helperURL: daemon.executableURL,
-      layoutPersistence: persistence
+      selectedSessionDefaults: defaults
     )
     await firstModel.refresh()
     await firstModel.createSession()
@@ -73,11 +71,12 @@ final class TerminalWorkbenchE2ETests: XCTestCase {
     }
     let expectedLayout = try XCTUnwrap(firstModel.layout)
     XCTAssertEqual(expectedLayout.orderedShellIDs.count, 3)
+    try await waitUntilLayout(expectedLayout, for: sessionID, at: socketPath)
 
     let reopenedModel = TerminalSessionsModel(
       socketPath: socketPath,
       helperURL: daemon.executableURL,
-      layoutPersistence: UserDefaultsTerminalLayoutPersistence(defaults: defaults)
+      selectedSessionDefaults: defaults
     )
     await reopenedModel.refresh()
 
@@ -262,6 +261,24 @@ final class TerminalWorkbenchE2ETests: XCTestCase {
       try daemon.assertCanRunCommand(in: initialShell)
       try daemon.assertCanRunCommand(in: fourthShell)
     }
+  }
+
+  private func waitUntilLayout(
+    _ expected: TerminalLayout,
+    for sessionID: Int64,
+    at socketPath: UnixSocketPath
+  ) async throws {
+    let deadline = Date().addingTimeInterval(5)
+    while Date() < deadline {
+      let sessions = try await UnixSocketRPC.listSessions(at: socketPath)
+      if let storedLayout = sessions.first(where: { $0.id == sessionID })?.layout,
+        TerminalLayout(storedLayout) == expected
+      {
+        return
+      }
+      try await Task.sleep(for: .milliseconds(50))
+    }
+    XCTFail("Axo D did not persist the session pane hierarchy")
   }
 
   private func withWorkbench(

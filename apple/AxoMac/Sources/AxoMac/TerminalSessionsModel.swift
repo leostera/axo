@@ -8,8 +8,11 @@ final class TerminalSessionsModel: ObservableObject {
   @Published private(set) var sessions: [TerminalSession] = []
   @Published var selectedSessionID: Int64? {
     didSet {
-      if oldValue != selectedSessionID {
-        layoutPersistence.saveSelectedSessionID(selectedSessionID)
+      guard oldValue != selectedSessionID, let selectedSessionDefaults else { return }
+      if let selectedSessionID, selectedSessionID > 0 {
+        selectedSessionDefaults.set(selectedSessionID, forKey: Self.selectedSessionPreferenceKey)
+      } else {
+        selectedSessionDefaults.removeObject(forKey: Self.selectedSessionPreferenceKey)
       }
     }
   }
@@ -19,18 +22,19 @@ final class TerminalSessionsModel: ObservableObject {
 
   let helperURL: URL
 
+  private static let selectedSessionPreferenceKey = "terminalSelectedSession.v1"
+
   private let socketPath: UnixSocketPath?
   private let socketPathError: String?
-  private let layoutPersistence: TerminalLayoutPersistence
-  private var layoutsBySession: [Int64: TerminalLayout] = [:] {
-    didSet { layoutPersistence.save(layoutsBySession) }
-  }
+  private let selectedSessionDefaults: UserDefaults?
+  private var layoutsBySession: [Int64: TerminalLayout] = [:]
+  private var pendingLayoutWrites: [Int64: SessionLayout] = [:]
+  private var layoutWriteTasks: [Int64: Task<Void, Never>] = [:]
 
   init() {
-    let layoutPersistence = UserDefaultsTerminalLayoutPersistence()
-    self.layoutPersistence = layoutPersistence
-    _selectedSessionID = Published(initialValue: layoutPersistence.loadSelectedSessionID())
-    layoutsBySession = layoutPersistence.load()
+    let defaults = UserDefaults.standard
+    selectedSessionDefaults = defaults
+    _selectedSessionID = Published(initialValue: Self.storedSelectedSessionID(from: defaults))
     helperURL = Bundle.main.bundleURL.appendingPathComponent("Contents/Helpers/axod")
     do {
       socketPath = try DaemonController.socketPath()
@@ -44,14 +48,24 @@ final class TerminalSessionsModel: ObservableObject {
   init(
     socketPath: UnixSocketPath,
     helperURL: URL,
-    layoutPersistence: TerminalLayoutPersistence = InMemoryTerminalLayoutPersistence()
+    selectedSessionDefaults: UserDefaults? = nil
   ) {
     self.socketPath = socketPath
     socketPathError = nil
     self.helperURL = helperURL
-    self.layoutPersistence = layoutPersistence
-    _selectedSessionID = Published(initialValue: layoutPersistence.loadSelectedSessionID())
-    layoutsBySession = layoutPersistence.load()
+    self.selectedSessionDefaults = selectedSessionDefaults
+    _selectedSessionID = Published(
+      initialValue: Self.storedSelectedSessionID(from: selectedSessionDefaults)
+    )
+  }
+
+  private static func storedSelectedSessionID(from defaults: UserDefaults?) -> Int64? {
+    guard let sessionID = defaults?.object(forKey: selectedSessionPreferenceKey) as? Int64,
+      sessionID > 0
+    else {
+      return nil
+    }
+    return sessionID
   }
 
   func refresh() async {
@@ -62,31 +76,46 @@ final class TerminalSessionsModel: ObservableObject {
 
     do {
       let updatedSessions = try await UnixSocketRPC.listSessions(at: socketPath)
-      if sessions != updatedSessions {
-        sessions = updatedSessions
-      }
-      let openSessionIDs = Set(sessions.map(\.id))
-      let retainedLayouts = layoutsBySession.filter { openSessionIDs.contains($0.key) }
-      if retainedLayouts != layoutsBySession {
-        layoutsBySession = retainedLayouts
+      let openSessionIDs = Set(updatedSessions.map(\.id))
+      layoutsBySession = layoutsBySession.filter { openSessionIDs.contains($0.key) }
+      pendingLayoutWrites = pendingLayoutWrites.filter { openSessionIDs.contains($0.key) }
+      for sessionID in Array(layoutWriteTasks.keys) where !openSessionIDs.contains(sessionID) {
+        layoutWriteTasks.removeValue(forKey: sessionID)?.cancel()
       }
 
-      for session in sessions {
+      var normalizedSessions: [TerminalSession] = []
+      for session in updatedSessions {
         let shellIDs = Set(session.shells.map(\.id))
-        if let persistedLayout = layoutsBySession[session.id],
-          let current = persistedLayout.pruned(to: shellIDs)
-        {
-          let newlyCreatedShellIDs = shellIDs.subtracting(current.shellIDs)
-          let updatedLayout = current.adding(newlyCreatedShellIDs)
-          if updatedLayout != persistedLayout {
-            layoutsBySession[session.id] = updatedLayout
-          }
-          if selectedSessionID == session.id, let newestShellID = newlyCreatedShellIDs.max() {
-            focusedShellID = newestShellID
-          }
+        let serverLayout = session.layout.map(TerminalLayout.init)
+        let sourceLayout = layoutsBySession[session.id] ?? serverLayout
+        let normalizedLayout: TerminalLayout?
+        let newlyCreatedShellIDs: Set<Int64>
+        if let sourceLayout, let pruned = sourceLayout.pruned(to: shellIDs) {
+          newlyCreatedShellIDs = shellIDs.subtracting(pruned.shellIDs)
+          normalizedLayout = pruned.adding(newlyCreatedShellIDs)
         } else {
-          layoutsBySession[session.id] = Self.defaultLayout(for: session.shells)
+          newlyCreatedShellIDs = []
+          normalizedLayout = Self.defaultLayout(for: session.shells)
         }
+
+        layoutsBySession[session.id] = normalizedLayout
+        normalizedSessions.append(
+          TerminalSession(
+            id: session.id,
+            initialPwd: session.initialPwd,
+            shells: session.shells,
+            layout: normalizedLayout?.sessionLayout
+          )
+        )
+        if let normalizedLayout, serverLayout != normalizedLayout {
+          scheduleLayoutPersistence(for: session.id)
+        }
+        if selectedSessionID == session.id, let newestShellID = newlyCreatedShellIDs.max() {
+          focusedShellID = newestShellID
+        }
+      }
+      if sessions != normalizedSessions {
+        sessions = normalizedSessions
       }
 
       if let selectedSessionID, openSessionIDs.contains(selectedSessionID) {
@@ -165,6 +194,7 @@ final class TerminalSessionsModel: ObservableObject {
     do {
       let closed = try await UnixSocketRPC.closeSession(sessionID, at: socketPath)
       layoutsBySession.removeValue(forKey: sessionID)
+      discardPendingLayoutWrite(for: sessionID)
       sessions.removeAll { $0.id == sessionID }
       if let replacement = closed.replacement {
         add(replacement)
@@ -201,6 +231,7 @@ final class TerminalSessionsModel: ObservableObject {
       let closed = try await UnixSocketRPC.closeShell(shellID, in: sessionID, at: socketPath)
       if closed.archivedSessionId != nil {
         layoutsBySession.removeValue(forKey: sessionID)
+        discardPendingLayoutWrite(for: sessionID)
         sessions.removeAll { $0.id == sessionID }
         if let replacement = closed.replacement {
           add(replacement)
@@ -219,7 +250,7 @@ final class TerminalSessionsModel: ObservableObject {
         let remainingShells = session.shells.filter { $0.id != shellID }
         replace(session, withShells: remainingShells)
         if let currentLayout = layoutsBySession[sessionID] {
-          layoutsBySession[sessionID] = currentLayout.removing(shellID: shellID)
+          setLayout(currentLayout.removing(shellID: shellID), for: sessionID, persist: true)
         }
         if selectedSessionID == sessionID {
           layout = layoutsBySession[sessionID]
@@ -266,7 +297,7 @@ final class TerminalSessionsModel: ObservableObject {
     else {
       return
     }
-    layoutsBySession[selectedSessionID] = updated
+    setLayout(updated, for: selectedSessionID, persist: true)
     layout = updated
   }
 
@@ -340,7 +371,9 @@ final class TerminalSessionsModel: ObservableObject {
       return
     }
     let currentLayout = layoutsBySession[sessionID] ?? Self.defaultLayout(for: session.shells)
-    layoutsBySession[sessionID] = currentLayout
+    if layoutsBySession[sessionID] == nil {
+      setLayout(currentLayout, for: sessionID, persist: true)
+    }
     layout = currentLayout
     guard let currentLayout else {
       focusedShellID = nil
@@ -354,15 +387,86 @@ final class TerminalSessionsModel: ObservableObject {
 
   private func add(_ session: TerminalSession) {
     sessions.removeAll { $0.id == session.id }
-    sessions.append(session)
+    let layout = session.layout.map(TerminalLayout.init) ?? Self.defaultLayout(for: session.shells)
+    sessions.append(
+      TerminalSession(
+        id: session.id,
+        initialPwd: session.initialPwd,
+        shells: session.shells,
+        layout: layout?.sessionLayout
+      )
+    )
     sessions.sort { $0.id < $1.id }
-    layoutsBySession[session.id] = Self.defaultLayout(for: session.shells)
+    setLayout(layout, for: session.id, persist: session.layout == nil)
   }
 
   private func replace(_ session: TerminalSession, withShells shells: [TerminalShell]) {
-    let updated = TerminalSession(id: session.id, initialPwd: session.initialPwd, shells: shells)
+    let layout = layoutsBySession[session.id]?.sessionLayout ?? session.layout
+    let updated = TerminalSession(
+      id: session.id,
+      initialPwd: session.initialPwd,
+      shells: shells,
+      layout: layout
+    )
     guard let index = sessions.firstIndex(where: { $0.id == session.id }) else { return }
     sessions[index] = updated
+  }
+
+  private func setLayout(_ layout: TerminalLayout?, for sessionID: Int64, persist: Bool) {
+    layoutsBySession[sessionID] = layout
+    if let index = sessions.firstIndex(where: { $0.id == sessionID }) {
+      let session = sessions[index]
+      if session.layout.map(TerminalLayout.init) != layout {
+        sessions[index] = TerminalSession(
+          id: session.id,
+          initialPwd: session.initialPwd,
+          shells: session.shells,
+          layout: layout?.sessionLayout
+        )
+      }
+    }
+    if persist, layout != nil {
+      scheduleLayoutPersistence(for: sessionID)
+    }
+  }
+
+  private func scheduleLayoutPersistence(for sessionID: Int64) {
+    guard let socketPath, let layout = layoutsBySession[sessionID] else { return }
+    pendingLayoutWrites[sessionID] = layout.sessionLayout
+    guard layoutWriteTasks[sessionID] == nil else { return }
+
+    layoutWriteTasks[sessionID] = Task { @MainActor [weak self] in
+      guard let self else { return }
+      while !Task.isCancelled {
+        do {
+          try await Task.sleep(for: .milliseconds(150))
+        } catch {
+          break
+        }
+        guard let pendingLayout = pendingLayoutWrites.removeValue(forKey: sessionID) else {
+          break
+        }
+        do {
+          try await UnixSocketRPC.setLayout(
+            pendingLayout,
+            for: sessionID,
+            at: socketPath
+          )
+        } catch {
+          if !Task.isCancelled, session(for: sessionID) != nil {
+            pendingLayoutWrites[sessionID] = pendingLayoutWrites[sessionID] ?? pendingLayout
+            errorMessage = error.localizedDescription
+          }
+          break
+        }
+      }
+      layoutWriteTasks[sessionID] = nil
+    }
+  }
+
+  private func discardPendingLayoutWrite(for sessionID: Int64) {
+    pendingLayoutWrites.removeValue(forKey: sessionID)
+    layoutWriteTasks.removeValue(forKey: sessionID)?.cancel()
   }
 
   private func layoutBySession(
@@ -379,14 +483,18 @@ final class TerminalSessionsModel: ObservableObject {
         beside: anchorShellID
       )
     {
-      layoutsBySession[sessionID] = updated
+      setLayout(updated, for: sessionID, persist: true)
     } else {
-      layoutsBySession[sessionID] = .split(
-        id: UUID(),
-        direction: direction,
-        ratio: 0.5,
-        first: .pane(anchorShellID),
-        second: .pane(shellID)
+      setLayout(
+        .split(
+          id: UUID(),
+          direction: direction,
+          ratio: 0.5,
+          first: .pane(anchorShellID),
+          second: .pane(shellID)
+        ),
+        for: sessionID,
+        persist: true
       )
     }
   }
@@ -405,7 +513,7 @@ final class TerminalSessionsModel: ObservableObject {
   }
 }
 
-enum TerminalSplitDirection: String, Codable, Hashable {
+enum TerminalSplitDirection: Hashable {
   case right
   case down
 }
@@ -415,7 +523,7 @@ enum TerminalNavigationDirection: Int, Equatable {
   case next = 1
 }
 
-indirect enum TerminalLayout: Codable, Equatable, Identifiable {
+indirect enum TerminalLayout: Equatable, Identifiable {
   case pane(Int64)
   case split(
     id: UUID,
@@ -563,28 +671,6 @@ indirect enum TerminalLayout: Codable, Equatable, Identifiable {
           second: remainingSecond
         )
       }
-    }
-  }
-
-  var isValidForPersistence: Bool {
-    var shellIDs = Set<Int64>()
-    var splitIDs = Set<UUID>()
-    return collectPersistenceIdentities(shellIDs: &shellIDs, splitIDs: &splitIDs)
-  }
-
-  private func collectPersistenceIdentities(
-    shellIDs: inout Set<Int64>,
-    splitIDs: inout Set<UUID>
-  ) -> Bool {
-    switch self {
-    case .pane(let shellID):
-      return shellID > 0 && shellIDs.insert(shellID).inserted
-    case .split(let id, _, let ratio, let first, let second):
-      return ratio.isFinite
-        && (0.01...0.99).contains(ratio)
-        && splitIDs.insert(id).inserted
-        && first.collectPersistenceIdentities(shellIDs: &shellIDs, splitIDs: &splitIDs)
-        && second.collectPersistenceIdentities(shellIDs: &shellIDs, splitIDs: &splitIDs)
     }
   }
 

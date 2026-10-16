@@ -547,6 +547,30 @@ fn daemon_creates_a_default_pty_session_and_restores_it_after_restart() {
             .len(),
         2
     );
+    let layout = json!({
+        "kind": "split",
+        "id": "02a4c161-8143-4c9a-bbf2-1a625e8b8342",
+        "direction": "down",
+        "ratio": 0.63,
+        "first": { "kind": "pane", "shellId": shell_id },
+        "second": { "kind": "pane", "shellId": split_shell["id"] },
+    });
+    let expected_layout = layout.clone();
+    let saved_layout = rpc_with_params(
+        &socket,
+        "axo.session.layout.set",
+        json!({ "sessionId": session_id, "layout": layout }),
+    );
+    assert_eq!(saved_layout["result"]["saved"], true, "{saved_layout}");
+    let rejected_layout = rpc_with_params(
+        &socket,
+        "axo.session.layout.set",
+        json!({
+            "sessionId": session_id,
+            "layout": { "kind": "pane", "shellId": shell_id },
+        }),
+    );
+    assert_eq!(rejected_layout["error"]["code"], -32602);
     daemon.stop();
     drop(daemon);
     drop(master);
@@ -558,6 +582,10 @@ fn daemon_creates_a_default_pty_session_and_restores_it_after_restart() {
     assert_eq!(
         restored[0]["id"], session_id,
         "restart should keep the logical session id"
+    );
+    assert_eq!(
+        restored[0]["layout"], expected_layout,
+        "restart should restore the session pane hierarchy"
     );
     assert_eq!(restored[0]["shells"].as_array().unwrap().len(), 2);
     let restored_shell = restored[0]["shells"]
@@ -614,6 +642,10 @@ fn daemon_creates_a_default_pty_session_and_restores_it_after_restart() {
             .unwrap()
             .len(),
         1
+    );
+    assert_eq!(
+        active_sessions(&socket)[0]["layout"],
+        json!({ "kind": "pane", "shellId": shell_id })
     );
 
     let close = rpc_with_params(
