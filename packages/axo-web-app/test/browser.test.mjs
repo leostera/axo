@@ -67,6 +67,21 @@ function sendEvent(socket, event) {
   }));
 }
 
+async function assertPanesFillSlots(page) {
+  const sizes = await page.locator(".layout-child").evaluateAll((slots) => slots.map((slot) => {
+    const pane = slot.querySelector(":scope > .terminal-pane");
+    return pane ? {
+      paneWidth: pane.getBoundingClientRect().width,
+      slotWidth: slot.getBoundingClientRect().width,
+    } : null;
+  }));
+  assert.equal(sizes.length, 2);
+  for (const size of sizes) {
+    assert.ok(size, "split slot should contain its terminal pane");
+    assert.ok(Math.abs(size.paneWidth - size.slotWidth) < 1, `pane width ${size.paneWidth} should fill slot width ${size.slotWidth}`);
+  }
+}
+
 test("browser discovers hosts, renders live PTY output, sends input, and uses Cmd+T", {
   skip: !existsSync(chromePath) && "Set CHROME_PATH to a Chrome/Chromium executable to run this browser acceptance test",
   timeout: 45_000,
@@ -267,6 +282,7 @@ test("browser discovers hosts, renders live PTY output, sends input, and uses Cm
     await page.waitForFunction(() => document.querySelector(".connection-chip.live"), null, { timeout: 10_000 });
     await page.locator(".terminal-output .xterm-rows").first().waitFor({ timeout: 10_000 });
     assert.equal(await page.locator(".terminal-pane").count(), 2);
+    await assertPanesFillSlots(page);
 
     const liveText = "LIVE_BROWSER_OUTPUT";
     for (const socket of sockets) {
@@ -287,6 +303,7 @@ test("browser discovers hosts, renders live PTY output, sends input, and uses Cm
       document.querySelector(".terminal-pane:first-child .terminal-output .xterm-rows")
         ?.textContent?.includes(needle),
     liveText, { timeout: 10_000 });
+    await assertPanesFillSlots(page);
 
     const focusedPane = page.locator(".terminal-pane").nth(1);
     await focusedPane.locator(".terminal-output").click();
