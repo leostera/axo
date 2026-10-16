@@ -70,12 +70,9 @@ if [[ ! "$build_number" =~ ^[1-9][0-9]*$ ]]; then
 fi
 export AXO_BUILD_NUMBER="$build_number"
 
-cargo fmt --all --check
-cargo clippy --workspace --all-targets --locked --offline -- -D warnings
-xcrun swift-format lint --strict --recursive apple/AxoRPC apple/AxoDaemonManager apple/AxoMac/Sources
-
+# Keep packaging fast and predictable. Formatting, linting, and tests run through
+# their own commands; this script only builds and verifies the distributable app.
 stamp_flags=(--stamp "--embed_label=axo_build_${build_number}")
-bazel test "${stamp_flags[@]}" //...
 bazel build "${stamp_flags[@]}" -c opt //apple/AxoMac:AxoApp
 app_archive=$(bazel cquery "${stamp_flags[@]}" -c opt --output=files //apple/AxoMac:AxoApp)
 
