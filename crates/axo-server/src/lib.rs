@@ -14,6 +14,8 @@ use jsonrpc_core::{IoHandler, Params};
 use jsonrpc_ipc_server::{Separator, ServerBuilder};
 use serde_json::json;
 
+mod credential;
+mod pairing;
 mod relay;
 mod session;
 
@@ -117,9 +119,14 @@ pub fn serve_ipc(
     remove_stale_socket(&socket_path.0)?;
 
     let sessions = session::SessionManager::open(server_directory)?;
-    let mut remote_relay = match relay::RelayWorker::start(Arc::clone(&sessions), server_directory)
-    {
-        Ok(worker) => worker,
+    let credential_store: Arc<dyn credential::HostCredentialStore> =
+        Arc::new(credential::MacOSKeychain);
+    let mut remote_relay = match relay::RelayWorker::start(
+        Arc::clone(&sessions),
+        server_directory,
+        Arc::clone(&credential_store),
+    ) {
+        Ok(worker) => Some(worker),
         Err(_) => {
             log::error!("event=relay.configuration_unavailable");
             None
@@ -134,6 +141,7 @@ pub fn serve_ipc(
         daemon_version,
         server_directory.to_path_buf(),
         relay_control,
+        credential_store,
     );
     let server = ServerBuilder::new(handler)
         .request_separators(Separator::Byte(b'\n'), Separator::Byte(b'\n'))
@@ -230,11 +238,18 @@ fn rpc_handler(
     daemon_version: &'static str,
     server_directory: PathBuf,
     relay_control: Option<Arc<relay::RelayControl>>,
+    credential_store: Arc<dyn credential::HostCredentialStore>,
 ) -> IoHandler {
     let mut handler = IoHandler::new();
     add_protocol_negotiate_method(&mut handler);
     add_health_method(&mut handler, daemon_version);
-    add_relay_methods(&mut handler, server_directory, relay_control);
+    add_relay_methods(
+        &mut handler,
+        server_directory,
+        sessions.clone(),
+        relay_control,
+        credential_store,
+    );
     sessions.register_rpc_methods(&mut handler);
     handler
 }
@@ -242,7 +257,9 @@ fn rpc_handler(
 fn add_relay_methods(
     handler: &mut IoHandler,
     server_directory: PathBuf,
+    sessions: Arc<session::SessionManager>,
     relay_control: Option<Arc<relay::RelayControl>>,
+    credential_store: Arc<dyn credential::HostCredentialStore>,
 ) {
     let settings_path = server_directory.join(relay::CONFIG_FILE);
     handler.add_sync_method("axo.relay.settings", move |_| {
@@ -261,16 +278,21 @@ fn add_relay_methods(
     });
 
     let configure_path = server_directory.join(relay::CONFIG_FILE);
+    let configure_control = relay_control.clone();
+    let configure_credentials = Arc::clone(&credential_store);
     handler.add_sync_method("axo.relay.configure", move |params: Params| {
         let request = params
             .parse::<relay::ConfigureRelayRequest>()
             .map_err(|_| invalid_params("invalid remote access settings"))?;
-        let settings =
-            relay::configure(&configure_path, request).map_err(|_| jsonrpc_core::Error {
-                code: jsonrpc_core::ErrorCode::InvalidParams,
-                message: "could not save remote access settings".to_owned(),
-                data: None,
-            })?;
+        let settings = relay::configure(&configure_path, request, configure_credentials.as_ref())
+            .map_err(|_| jsonrpc_core::Error {
+            code: jsonrpc_core::ErrorCode::InvalidParams,
+            message: "could not save remote access settings".to_owned(),
+            data: None,
+        })?;
+        if let Some(control) = &configure_control {
+            let _ = control.request_connect();
+        }
         serde_json::to_value(settings).map_err(|_| jsonrpc_core::Error {
             code: jsonrpc_core::ErrorCode::InternalError,
             message: "could not encode remote access settings".to_owned(),
@@ -279,13 +301,52 @@ fn add_relay_methods(
     });
 
     let disable_path = server_directory.join(relay::CONFIG_FILE);
+    let disable_control = relay_control.clone();
+    let disable_credentials = Arc::clone(&credential_store);
     handler.add_sync_method("axo.relay.disable", move |_| {
-        relay::disable(&disable_path).map_err(|_| jsonrpc_core::Error {
+        relay::disable(&disable_path, disable_credentials.as_ref()).map_err(|_| {
+            jsonrpc_core::Error {
+                code: jsonrpc_core::ErrorCode::InternalError,
+                message: "could not disable remote access".to_owned(),
+                data: None,
+            }
+        })?;
+        if let Some(control) = &disable_control {
+            let _ = control.request_connect();
+        }
+        Ok(json!({ "disabled": true }))
+    });
+
+    let link_path = server_directory.join(relay::CONFIG_FILE);
+    let link_sessions = Arc::clone(&sessions);
+    let link_credentials = Arc::clone(&credential_store);
+    let link_control = relay_control.clone();
+    handler.add_sync_method("axo.relay.link", move |params: Params| {
+        let request = params
+            .parse::<HostPairingRequest>()
+            .map_err(|_| invalid_params("expected {code}"))?;
+        let control = link_control.as_ref().ok_or_else(|| jsonrpc_core::Error {
             code: jsonrpc_core::ErrorCode::InternalError,
-            message: "could not disable remote access".to_owned(),
+            message: "host relay is unavailable".to_owned(),
             data: None,
         })?;
-        Ok(json!({ "disabled": true }))
+        let host_label = relay::link_host(
+            &link_path,
+            &request.code,
+            &link_sessions,
+            link_credentials.as_ref(),
+        )
+        .map_err(|_| jsonrpc_core::Error {
+            code: jsonrpc_core::ErrorCode::InternalError,
+            message: "could not link this Mac".to_owned(),
+            data: None,
+        })?;
+        control.request_connect().map_err(|_| jsonrpc_core::Error {
+            code: jsonrpc_core::ErrorCode::InternalError,
+            message: "could not start the host relay".to_owned(),
+            data: None,
+        })?;
+        Ok(json!({ "linked": true, "hostLabel": host_label }))
     });
 
     let status_control = relay_control.clone();
@@ -346,12 +407,19 @@ fn add_protocol_negotiate_method(handler: &mut IoHandler) {
                 "axo.terminal.resize",
                 "axo.relay.settings",
                 "axo.relay.configure",
+                "axo.relay.link",
                 "axo.relay.disable",
                 "axo.relay.status",
                 "axo.relay.connect"
             ]
         }))
     });
+}
+
+#[derive(serde::Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+struct HostPairingRequest {
+    code: String,
 }
 
 #[derive(serde::Deserialize)]

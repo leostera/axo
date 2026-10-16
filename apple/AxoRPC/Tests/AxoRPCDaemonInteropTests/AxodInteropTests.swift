@@ -32,7 +32,7 @@ final class AxodInteropTests: XCTestCase {
     for method in [
       "axo.session.create", "axo.session.subscribe", "axo.session.events.next",
       "axo.session.unsubscribe", "axo.terminal.input", "axo.terminal.resize",
-      "axo.relay.settings", "axo.relay.configure", "axo.relay.disable",
+      "axo.relay.settings", "axo.relay.configure", "axo.relay.link", "axo.relay.disable",
       "axo.relay.status", "axo.relay.connect",
     ] {
       XCTAssertTrue(negotiation.methods.contains(method), "axod should advertise \(method)")

@@ -19,6 +19,7 @@ export type Pending = {
   group_id: string;
   original_id: string;
   connection_id: string;
+  machine_id: string;
   method: RemoteMethod;
   generation: string;
   deadline: number;

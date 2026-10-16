@@ -48,7 +48,7 @@ async function stop(child) {
   ]);
 }
 
-test("single site serves landing/app assets and exposes only OAuth before account API cutover", {
+test("single site serves landing/app assets and keeps account APIs fail-closed", {
   timeout: 45_000,
 }, async (t) => {
   const port = await freePort();
@@ -77,7 +77,10 @@ test("single site serves landing/app assets and exposes only OAuth before accoun
   assert.equal(start.status, 503);
   assert.equal(start.headers.get("Cache-Control"), "private, no-store");
 
-  const productApi = await fetch(`${url}/api/v1/hosts`);
-  assert.equal(productApi.status, 503);
-  assert.match(await productApi.text(), /not enabled yet/);
+  const accountHosts = await fetch(`${url}/api/v1/account/hosts`);
+  assert.equal(accountHosts.status, 401);
+  assert.deepEqual(await accountHosts.json(), { error: "Sign in required" });
+  const legacyProductApi = await fetch(`${url}/api/v1/hosts`);
+  assert.equal(legacyProductApi.status, 503);
+  assert.match(await legacyProductApi.text(), /not enabled yet/);
 });

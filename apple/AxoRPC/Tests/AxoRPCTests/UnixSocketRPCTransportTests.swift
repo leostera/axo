@@ -87,6 +87,30 @@ final class UnixSocketRPCTransportTests: XCTestCase {
     XCTAssertTrue(request["params"] is NSNull)
   }
 
+  func testHostPairingSendsValidatedCodeAndReturnsRedactedResult() async throws {
+    let fixture = try OneResponseUnixSocket(
+      response: #"{"jsonrpc":"2.0","id":1,"result":{"linked":true,"hostLabel":"Axo Mac"}}"#
+    )
+    let responder = Task.detached {
+      try fixture.receiveOneRequestAndReply()
+    }
+
+    let result = try await UnixSocketRPC.linkHost(
+      using: try XCTUnwrap(HostPairingCode(parsing: "B26A-NRKT")),
+      at: UnixSocketPath(fixture.path)
+    )
+    let requestData = try await responder.value
+    let request = try XCTUnwrap(
+      JSONSerialization.jsonObject(with: requestData) as? [String: Any]
+    )
+    let params = try XCTUnwrap(request["params"] as? [String: Any])
+
+    XCTAssertEqual(result.hostLabel, "Axo Mac")
+    XCTAssertEqual(request["method"] as? String, "axo.relay.link")
+    XCTAssertEqual(params["code"] as? String, "B26A-NRKT")
+    XCTAssertEqual(params.count, 1)
+  }
+
   func testRemoteAccessConnectRequestsImmediateRetry() async throws {
     let fixture = try OneResponseUnixSocket(
       response: #"{"jsonrpc":"2.0","id":1,"result":{"requested":true}}"#

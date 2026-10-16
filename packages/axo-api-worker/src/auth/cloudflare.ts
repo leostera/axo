@@ -27,13 +27,45 @@ type SessionCookie = {
 };
 type IdentityStub = { resolveAccount(): Promise<string> };
 type AccountStub = {
-  establishSession(sessionDigest: string, expiresAt: number, profile: { email: string | null; name: string | null }): Promise<void>;
-  sessionProfile(sessionDigest: string, now: number): Promise<{ email: string | null; name: string | null } | null>;
+  establishSession(accountId: string, sessionDigest: string, expiresAt: number, profile: { email: string | null; name: string | null }): Promise<void>;
+  sessionProfile(accountId: string, sessionDigest: string, now: number): Promise<{ email: string | null; name: string | null } | null>;
   revokeSession(sessionDigest: string, now: number): Promise<void>;
+  listHosts?(): Promise<unknown>;
+  listHostSessions?(reference: unknown): Promise<unknown>;
+  revokeHost?(hostId: string, now?: number): Promise<void>;
+  fetch?(request: Request): Promise<Response>;
+  createPairing?(codeVerifier: string, pairingId: string, now: number, expiresAt: number): Promise<"created" | "collision" | "limited">;
+  cancelPairing?(codeVerifier: string, pairingId: string): Promise<void>;
+  redeemPairing?(input: {
+    codeVerifier: string;
+    pairingId: string;
+    hostId: string;
+    hostGeneration: string;
+    credentialId: string;
+    credentialVerifier: string;
+    label: string;
+    hostKind: string;
+    now: number;
+  }): Promise<{
+    status: "invalid";
+  } | {
+    status: "linked";
+    hostId: string;
+    hostGeneration: string;
+    credentialId: string;
+    linkedAt: number;
+  }>;
 };
-type AuthExports = Partial<{
+type PairingIndexStub = {
+  reserve(verifier: string, accountId: string, pairingId: string, expiresAt: number, now: number): Promise<boolean>;
+  lookup(verifier: string, now: number): Promise<{ accountId: string; pairingId: string; expiresAt: number } | null>;
+};
+type RateLimitStub = { consume(now: number, windowMs: number, maximum: number): Promise<boolean> };
+export type AuthExports = Partial<{
   AxoIdentityIndex: { getByName(name: string): IdentityStub };
-  AxoAccountDirectory: { getByName(name: string): AccountStub };
+  AxoAccountManager: { getByName(name: string): AccountStub };
+  AxoPairingIndex: { getByName(name: string): PairingIndexStub };
+  AxoPairingRateLimit: { getByName(name: string): RateLimitStub };
 }>;
 
 export function authExports(value: unknown): AuthExports {
@@ -41,7 +73,9 @@ export function authExports(value: unknown): AuthExports {
   if (!record) return {};
   return {
     AxoIdentityIndex: namespace(record.AxoIdentityIndex, isIdentityStub),
-    AxoAccountDirectory: namespace(record.AxoAccountDirectory, isAccountStub),
+    AxoAccountManager: namespace(record.AxoAccountManager ?? record.AxoAccountDirectory, isAccountStub),
+    AxoPairingIndex: namespace(record.AxoPairingIndex, isPairingIndexStub),
+    AxoPairingRateLimit: namespace(record.AxoPairingRateLimit, isRateLimitStub),
   };
 }
 
@@ -86,7 +120,7 @@ export async function completeCloudflareLogin(
     recordApiEvent({ event: "oauth_callback_failure", stage: "configuration", reason: "configuration" });
     return unavailable(cookiesToClear, "oauth_configuration");
   }
-  if (!exports.AxoIdentityIndex || !exports.AxoAccountDirectory) {
+  if (!exports.AxoIdentityIndex || !exports.AxoAccountManager) {
     recordApiEvent({ event: "oauth_callback_failure", stage: "durable_object_exports", reason: "configuration" });
     return unavailable(cookiesToClear, "oauth_durable_object_exports");
   }
@@ -116,9 +150,9 @@ export async function completeCloudflareLogin(
     const sessionId = randomToken();
     const expiresAt = Date.now() + SESSION_LIFETIME_SECONDS * 1000;
     const digest = await hmac(env.SESSION_SECRET!, `session\0${sessionId}`);
-    const account = exports.AxoAccountDirectory.getByName(accountId);
+    const account = exports.AxoAccountManager.getByName(accountId);
     failureStage = "session_persist";
-    await account.establishSession(digest, expiresAt, {
+    await account.establishSession(accountId, digest, expiresAt, {
       email: profile.email,
       name: profile.name,
     });
@@ -152,6 +186,45 @@ export async function completeCloudflareLogin(
   }
 }
 
+export type AxoWebSession = { accountId: string; expiresAt: number; sessionDigest: string };
+
+export async function requireAxoSession(
+  request: Request,
+  env: OAuthEnvironment,
+  exports: AuthExports,
+  requireCsrf: boolean,
+): Promise<AxoWebSession | Response> {
+  if (requireCsrf && request.headers.get("Origin") !== AUTH_ORIGIN)
+    return json({ error: "Origin not allowed" }, 403);
+
+  const session = await readSession(request, env);
+  if (!session) return json({ error: "Sign in required" }, 401);
+  if (requireCsrf && !constantTimeEqual(session.csrf, request.headers.get("X-Axo-CSRF") ?? ""))
+    return json({ error: "CSRF check failed" }, 403);
+
+  if (!exports.AxoAccountManager) return unavailable();
+  try {
+    const sessionDigest = await hmac(env.SESSION_SECRET!, `session\0${session.sessionId}`);
+    const account = exports.AxoAccountManager.getByName(session.accountId);
+    const profile = await account.sessionProfile(session.accountId, sessionDigest, Date.now());
+    return profile
+      ? { accountId: session.accountId, expiresAt: session.expiresAt, sessionDigest }
+      : json({ error: "Sign in required" }, 401, [clearCookie(SESSION_COOKIE)]);
+  } catch {
+    return unavailable();
+  }
+}
+
+export async function requireAxoAccount(
+  request: Request,
+  env: OAuthEnvironment,
+  exports: AuthExports,
+  requireCsrf: boolean,
+): Promise<string | Response> {
+  const session = await requireAxoSession(request, env, exports, requireCsrf);
+  return session instanceof Response ? session : session.accountId;
+}
+
 export async function currentAxoSession(
   request: Request,
   env: OAuthEnvironment,
@@ -161,9 +234,10 @@ export async function currentAxoSession(
   const session = await readSession(request, env);
   if (!session) return json({ authenticated: false }, 200);
 
-  if (!exports.AxoAccountDirectory) return unavailable();
-  const account = exports.AxoAccountDirectory.getByName(session.accountId);
+  if (!exports.AxoAccountManager) return unavailable();
+  const account = exports.AxoAccountManager.getByName(session.accountId);
   const profile = await account.sessionProfile(
+    session.accountId,
     await hmac(env.SESSION_SECRET!, `session\0${session.sessionId}`),
     Date.now(),
   );
@@ -186,12 +260,12 @@ export async function logoutAxoSession(
   if (origin !== AUTH_ORIGIN) return json({ error: "Origin not allowed" }, 403, [clearCookie(SESSION_COOKIE)]);
   const session = await readSession(request, env);
   if (session) {
-    if (!exports.AxoAccountDirectory) return unavailable();
+    if (!exports.AxoAccountManager) return unavailable();
     const csrf = request.headers.get("X-Axo-CSRF") ?? "";
     if (!constantTimeEqual(session.csrf, csrf))
       return json({ error: "CSRF check failed" }, 403);
     const digest = await hmac(env.SESSION_SECRET!, `session\0${session.sessionId}`);
-    await exports.AxoAccountDirectory.getByName(session.accountId).revokeSession(digest, Date.now());
+    await exports.AxoAccountManager.getByName(session.accountId).revokeSession(digest, Date.now());
   }
   return new Response(null, {
     status: 204,
@@ -238,6 +312,15 @@ function isAccountStub(value: unknown): value is AccountStub {
   const record = asRecord(value);
   return Boolean(record && typeof record.establishSession === "function" &&
     typeof record.sessionProfile === "function" && typeof record.revokeSession === "function");
+}
+
+function isPairingIndexStub(value: unknown): value is PairingIndexStub {
+  const record = asRecord(value);
+  return Boolean(record && typeof record.reserve === "function" && typeof record.lookup === "function");
+}
+
+function isRateLimitStub(value: unknown): value is RateLimitStub {
+  return Boolean(asRecord(value) && typeof asRecord(value)!.consume === "function");
 }
 
 function asRecord(value: unknown): Record<string, unknown> | null {

@@ -271,11 +271,16 @@ kbd { padding: 2px 5px; border: 1px solid #4d405b; border-radius: 4px; color: #c
   cursor: pointer;
 }
 .auth-primary-button:hover, .auth-secondary-button:hover { border-color: #bd93df; background: #4d3861; }
+.host-pairing-code .auth-secondary-button { margin-top: 0; justify-content: center; text-decoration: none; }
 .auth-status { color: #aaa5b4; font-size: 12px; }
 .auth-error { padding: 10px 12px; border: 1px solid #5b343e; border-radius: 7px; color: #e4b8bd; background: #25181d; font-size: 11px; line-height: 1.5; }
 .auth-account { display: flex; flex-direction: column; gap: 6px; padding: 14px; border: 1px solid #322d3a; border-radius: 9px; background: #141219; }
 .auth-account strong { color: #ebe7f1; font-size: 13px; }
 .auth-account span { color: #9993a3; font-size: 11px; }
+.host-pairing-code { display: grid; gap: 12px; margin-top: 12px; padding: 18px; border: 1px solid #51465c; border-radius: 12px; background: #211c28; }
+.host-pairing-code strong { color: #f4edf9; font-family: ui-monospace, SFMono-Regular, Menlo, monospace; font-size: clamp(28px, 7vw, 40px); font-weight: 650; letter-spacing: 0.14em; line-height: 1.1; }
+.host-pairing-code span { color: #aaa5b4; font-size: 12px; line-height: 1.5; }
+.host-pairing-code .auth-secondary-button { justify-content: center; margin-top: 0; text-decoration: none; }
 .auth-secondary-button { width: 100%; min-height: 36px; margin-top: 8px; border-color: #51465c; background: #211c28; }
 .auth-footnote { margin: 22px 0 0; color: #777282; font-size: 10px; line-height: 1.6; }
 

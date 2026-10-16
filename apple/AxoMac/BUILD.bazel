@@ -29,6 +29,7 @@ swift_test(
     name = "AxoMacTests",
     srcs = [
         "Tests/AxoMacTests/GhosttyResourceLocatorTests.swift",
+        "Tests/AxoMacTests/PairingLinkRouterTests.swift",
         "Tests/AxoMacTests/TerminalLayoutTests.swift",
         "Tests/AxoMacTests/TerminalScrollSensitivityTests.swift",
         "Tests/AxoMacTests/TerminalSplitE2ETests.swift",

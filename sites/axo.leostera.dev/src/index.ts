@@ -5,6 +5,8 @@ export {
   AxoHostDirectory,
   AxoHostRelay,
   AxoIdentityIndex,
+  AxoPairingIndex,
+  AxoPairingRateLimit,
 } from "@axo/api-worker";
 
 type WorkerEnvironment = Env & {
@@ -22,7 +24,10 @@ function unavailable(): Response {
 export default {
   async fetch(request: Request, env: WorkerEnvironment, executionContext: ExecutionContext): Promise<Response> {
     const { pathname } = new URL(request.url);
-    if (pathname === AUTH_PATH || pathname.startsWith(`${AUTH_PATH}/`))
+    if (pathname === AUTH_PATH || pathname.startsWith(`${AUTH_PATH}/`) ||
+        pathname.startsWith("/api/v1/account/") ||
+        pathname.startsWith("/api/v1/accounts/") ||
+        pathname === "/api/v1/host-pairings/redeem")
       return await api.fetch(request, env, executionContext);
     if (pathname === "/api" || pathname.startsWith("/api/"))
       return unavailable();

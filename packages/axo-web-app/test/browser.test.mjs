@@ -91,6 +91,8 @@ test("browser discovers hosts, renders live PTY output, sends input, and uses Cm
   const apiRequests = [];
   let inputText = "";
   let sessionCreateCount = 0;
+  let authenticated = false;
+  let pairingRequestCount = 0;
   const apiHttp = createHttpServer((request, response) => {
     apiRequests.push(`${request.method} ${request.url} origin=${request.headers.origin ?? "none"}`);
     const origin = request.headers.origin;
@@ -105,7 +107,22 @@ test("browser discovers hosts, renders live PTY output, sends input, and uses Cm
     }
     const url = new URL(request.url, "http://127.0.0.1");
     if (request.method === "GET" && url.pathname === "/api/auth/me") {
-      json(response, { authenticated: false }, origin);
+      json(response, authenticated
+        ? {
+            authenticated: true,
+            profile: { email: "fixture@example.test", name: "Pairing fixture" },
+            csrfToken: "csrf-fixture",
+            expiresAt: now,
+          }
+        : { authenticated: false }, origin);
+      return;
+    }
+    if (request.method === "POST" && url.pathname === "/api/v1/account/host-pairings") {
+      pairingRequestCount++;
+      json(response, {
+        code: "B26A-NRKT",
+        expiresAt: "2026-10-16T12:10:00.000Z",
+      }, origin);
       return;
     }
     if (request.method === "GET" && url.pathname === "/v1/hosts") {
@@ -286,6 +303,14 @@ test("browser discovers hosts, renders live PTY output, sends input, and uses Cm
     assert.equal(await page.getByRole("heading", { name: "Sign in to Axo" }).count(), 1);
     assert.ok((await page.getByRole("link", { name: "Continue with Cloudflare" }).getAttribute("href"))
       .endsWith("/api/auth/cloudflare/start"));
+
+    authenticated = true;
+    await page.reload({ waitUntil: "networkidle" });
+    await page.getByRole("heading", { name: "You’re signed in" }).waitFor({ timeout: 10_000 });
+    await page.getByRole("button", { name: "Link a Mac" }).click();
+    await page.getByText("B26A-NRKT").waitFor({ timeout: 10_000 });
+    assert.equal(pairingRequestCount, 1);
+    assert.equal(await page.getByRole("link", { name: "Open Axo on this Mac" }).getAttribute("href"), "axo://pair/B26A-NRKT");
     assert.deepEqual(pageErrors, []);
   } finally {
     await browser?.close();

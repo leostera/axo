@@ -82,6 +82,11 @@ public struct RemoteAccessStatus: Decodable, Equatable, Sendable {
   public var isConnected: Bool { state == .connected }
 }
 
+public struct HostPairingResult: Decodable, Equatable, Sendable {
+  public let linked: Bool
+  public let hostLabel: String
+}
+
 public struct RemoteAccessConfiguration: Encodable, Sendable {
   public let relayUrl: String
   public let hostLabel: String
@@ -204,6 +209,10 @@ private struct RemoteAccessDisabled: Decodable {
 
 private struct RemoteAccessConnectResponse: Decodable {
   let requested: Bool
+}
+
+private struct HostPairingRequest: Encodable {
+  let code: String
 }
 
 private struct CloseTerminalSessionRequest: Encodable {
@@ -334,6 +343,22 @@ public enum UnixSocketRPC {
     guard response.requested else {
       throw UnixSocketRPCError.invalidResponse("axod has no remote relay configured")
     }
+  }
+
+  public static func linkHost(
+    using code: HostPairingCode,
+    at socketPath: UnixSocketPath
+  ) async throws -> HostPairingResult {
+    let result: HostPairingResult = try await withResponse(at: socketPath) { session in
+      try await session.response(
+        to: "axo.relay.link",
+        params: HostPairingRequest(code: code.value)
+      )
+    }
+    guard result.linked, !result.hostLabel.isEmpty else {
+      throw UnixSocketRPCError.invalidResponse("axod did not confirm host pairing")
+    }
+    return result
   }
 
   public static func configureRemoteAccess(

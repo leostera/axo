@@ -99,6 +99,24 @@ export class Peer {
     );
     return Peer.open(socket, credits);
   }
+  static async connectAccountHost(
+    url: string,
+    accountId: string,
+    hostId: string,
+    role: "client" | "daemon",
+    headers: Record<string, string>,
+    credits = true,
+  ) {
+    const path = role === "client"
+      ? `api/v1/account/hosts/${hostId}/client`
+      : `api/v1/accounts/${accountId}/hosts/${hostId}/daemon`;
+    const socket = new WebSocket(`${url.replace(/^http/, "ws")}${path}`, {
+      headers,
+      maxPayload: 65_536,
+      followRedirects: false,
+    });
+    return Peer.open(socket, credits);
+  }
   static async connectHost(
     url: string,
     assertion: string,

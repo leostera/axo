@@ -65,11 +65,14 @@ dependencies = [
 name = "axo-server"
 version = "0.1.0"
 dependencies = [
+ "httparse",
  "jsonrpc-core",
  "jsonrpc-ipc-server",
  "libc",
  "log",
+ "native-tls",
  "rusqlite",
+ "security-framework",
  "serde",
  "serde_json",
  "tungstenite",

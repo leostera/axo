@@ -1,0 +1,371 @@
+import { AxoHostRelay } from "../axo-host-relay";
+import { LIMITS } from "@axo/protocol";
+import {
+  hostDataEventSchema,
+  hostRegisterSchema,
+  hostRefSchema,
+  hostSessionsPublishSchema,
+  hostSnapshotSchema,
+  sessionSnapshotSchema,
+  type HostSnapshot,
+  type SessionSnapshot,
+} from "@axo/protocol/v1";
+import { constantTimeEqual, hmac } from "./crypto";
+import type { Peer } from "../relay/peer";
+
+type AccountProfile = { email: string | null; name: string | null };
+type SessionRow = { session_digest: string; expires_at: number; revoked_at: number | null };
+type PairingRow = {
+  pairing_id: string;
+  code_verifier: string;
+  expires_at: number;
+  consumed_host_id: string | null;
+  consumed_host_generation: string | null;
+  consumed_credential_id: string | null;
+  consumed_credential_verifier: string | null;
+};
+type AccountHostRow = {
+  host_id: string;
+  host_generation: string;
+  credential_id: string;
+  credential_verifier: string;
+  label: string;
+  host_kind: string;
+  linked_at: number;
+  last_seen_at: number;
+  revoked_at: number | null;
+};
+type StoredHostSessionRow = { host_id: string; session_id: number; snapshot_json: string };
+
+export type PairingCreationStatus = "created" | "collision" | "limited";
+export type PairingRedemption =
+  | { status: "invalid" }
+  | { status: "linked"; hostId: string; hostGeneration: string; credentialId: string; linkedAt: number };
+export type PairingRedemptionInput = {
+  codeVerifier: string;
+  pairingId: string;
+  hostId: string;
+  hostGeneration: string;
+  credentialId: string;
+  credentialVerifier: string;
+  label: string;
+  hostKind: string;
+  now: number;
+};
+
+/** All account-owned state and live host relays share this per-account Durable Object. */
+export class AxoAccountManager extends AxoHostRelay {
+  constructor(ctx: DurableObjectState, env: Env) {
+    super(ctx, env);
+    ctx.storage.sql.exec(`CREATE TABLE IF NOT EXISTS account (
+      singleton INTEGER PRIMARY KEY CHECK (singleton = 1), account_id TEXT NOT NULL UNIQUE
+    )`);
+    ctx.storage.sql.exec(`CREATE TABLE IF NOT EXISTS profile (
+      singleton INTEGER PRIMARY KEY CHECK (singleton = 1), email TEXT, name TEXT
+    )`);
+    ctx.storage.sql.exec(`CREATE TABLE IF NOT EXISTS web_sessions (
+      session_digest TEXT PRIMARY KEY, created_at INTEGER NOT NULL, expires_at INTEGER NOT NULL, revoked_at INTEGER
+    )`);
+    ctx.storage.sql.exec(`CREATE TABLE IF NOT EXISTS pairing_issuance (created_at INTEGER NOT NULL)`);
+    ctx.storage.sql.exec(`CREATE TABLE IF NOT EXISTS pairings (
+      pairing_id TEXT PRIMARY KEY, code_verifier TEXT NOT NULL UNIQUE, created_at INTEGER NOT NULL,
+      expires_at INTEGER NOT NULL, consumed_host_id TEXT, consumed_host_generation TEXT,
+      consumed_credential_id TEXT, consumed_credential_verifier TEXT
+    )`);
+    ctx.storage.sql.exec(`CREATE TABLE IF NOT EXISTS account_hosts (
+      host_id TEXT PRIMARY KEY, host_generation TEXT NOT NULL, credential_id TEXT NOT NULL UNIQUE,
+      credential_verifier TEXT NOT NULL, label TEXT NOT NULL, host_kind TEXT NOT NULL,
+      linked_at INTEGER NOT NULL, last_seen_at INTEGER NOT NULL, revoked_at INTEGER
+    )`);
+    ctx.storage.sql.exec(`CREATE TABLE IF NOT EXISTS host_sessions_v1 (
+      host_id TEXT NOT NULL REFERENCES account_hosts(host_id) ON DELETE CASCADE,
+      session_id INTEGER NOT NULL, snapshot_json TEXT NOT NULL CHECK (json_valid(snapshot_json)),
+      PRIMARY KEY (host_id, session_id)
+    )`);
+    ctx.storage.sql.exec("CREATE INDEX IF NOT EXISTS host_sessions_v1_by_host ON host_sessions_v1(host_id, session_id)");
+  }
+
+  establishSession(accountId: string, sessionDigest: string, expiresAt: number, profile: AccountProfile): void {
+    const now = Date.now();
+    this.ctx.storage.transactionSync(() => {
+      this.bindAccount(accountId);
+      const sql = this.ctx.storage.sql;
+      sql.exec(`INSERT INTO profile (singleton, email, name) VALUES (1, ?, ?)
+        ON CONFLICT(singleton) DO UPDATE SET email = excluded.email, name = excluded.name`, profile.email, profile.name);
+      sql.exec("DELETE FROM web_sessions WHERE expires_at <= ? OR revoked_at IS NOT NULL", now);
+      sql.exec("INSERT INTO web_sessions (session_digest, created_at, expires_at, revoked_at) VALUES (?, ?, ?, NULL)", sessionDigest, now, expiresAt);
+    });
+  }
+
+  async sessionProfile(accountId: string, sessionDigest: string, now: number): Promise<AccountProfile | null> {
+    const sql = this.ctx.storage.sql;
+    const session = sql.exec<SessionRow>("SELECT * FROM web_sessions WHERE session_digest = ?", sessionDigest).toArray()[0];
+    if (!session || session.revoked_at !== null || session.expires_at <= now) return null;
+    this.bindAccount(accountId);
+    const profile = sql.exec<AccountProfile>("SELECT email, name FROM profile WHERE singleton = 1").toArray()[0];
+    return profile ? { email: profile.email, name: profile.name } : null;
+  }
+
+  revokeSession(sessionDigest: string, now: number): void {
+    this.ctx.storage.sql.exec("UPDATE web_sessions SET revoked_at = ? WHERE session_digest = ? AND revoked_at IS NULL", now, sessionDigest);
+    this.closeClientSession(sessionDigest);
+  }
+
+  createPairing(codeVerifier: string, pairingId: string, now: number, expiresAt: number): PairingCreationStatus {
+    if (!Number.isSafeInteger(now) || !Number.isSafeInteger(expiresAt) || expiresAt <= now || expiresAt > now + 10 * 60 * 1000)
+      throw new Error("Invalid pairing expiration");
+    return this.ctx.storage.transactionSync(() => {
+      const sql = this.ctx.storage.sql;
+      sql.exec("DELETE FROM pairings WHERE expires_at <= ? AND (consumed_host_id IS NULL OR created_at <= ?)", now, now - 24 * 60 * 60 * 1000);
+      sql.exec("DELETE FROM pairing_issuance WHERE created_at <= ?", now - 60 * 60 * 1000);
+      if (sql.exec("SELECT pairing_id FROM pairings WHERE code_verifier = ?", codeVerifier).toArray().length)
+        return "collision";
+      const pending = sql.exec<{ count: number }>("SELECT COUNT(*) AS count FROM pairings WHERE consumed_host_id IS NULL AND expires_at > ?", now).one().count;
+      const issued = sql.exec<{ count: number }>("SELECT COUNT(*) AS count FROM pairing_issuance").one().count;
+      if (pending >= 3 || issued >= 5) return "limited";
+      sql.exec(`INSERT INTO pairings (pairing_id, code_verifier, created_at, expires_at,
+        consumed_host_id, consumed_host_generation, consumed_credential_id, consumed_credential_verifier)
+        VALUES (?, ?, ?, ?, NULL, NULL, NULL, NULL)`, pairingId, codeVerifier, now, expiresAt);
+      sql.exec("INSERT INTO pairing_issuance (created_at) VALUES (?)", now);
+      return "created";
+    });
+  }
+
+  cancelPairing(codeVerifier: string, pairingId: string): void {
+    this.ctx.storage.sql.exec("DELETE FROM pairings WHERE code_verifier = ? AND pairing_id = ? AND consumed_host_id IS NULL", codeVerifier, pairingId);
+  }
+
+  redeemPairing(input: PairingRedemptionInput): PairingRedemption {
+    let credentialRotated = false;
+    const result = this.ctx.storage.transactionSync(() => {
+      const sql = this.ctx.storage.sql;
+      const pairing = sql.exec<PairingRow>(
+        "SELECT * FROM pairings WHERE pairing_id = ? AND code_verifier = ?",
+        input.pairingId,
+        input.codeVerifier,
+      ).toArray()[0];
+      if (!pairing) return { status: "invalid" } as const;
+
+      if (pairing.consumed_host_id !== null) {
+        const sameRedemption = pairing.consumed_host_id === input.hostId &&
+          pairing.consumed_host_generation === input.hostGeneration &&
+          pairing.consumed_credential_id === input.credentialId &&
+          pairing.consumed_credential_verifier === input.credentialVerifier;
+        const host = sql.exec<AccountHostRow>(
+          "SELECT * FROM account_hosts WHERE host_id = ?",
+          input.hostId,
+        ).toArray()[0];
+        if (!sameRedemption || !host || host.credential_id !== input.credentialId ||
+            host.credential_verifier !== input.credentialVerifier ||
+            host.host_generation !== input.hostGeneration || host.revoked_at !== null)
+          return { status: "invalid" } as const;
+        return {
+          status: "linked",
+          hostId: host.host_id,
+          hostGeneration: host.host_generation,
+          credentialId: host.credential_id,
+          linkedAt: host.linked_at,
+        } as const;
+      }
+
+      if (pairing.expires_at <= input.now) return { status: "invalid" } as const;
+      const sqlHost = sql.exec<AccountHostRow>(
+        "SELECT * FROM account_hosts WHERE host_id = ?",
+        input.hostId,
+      ).toArray()[0];
+      const credentialOwner = sql.exec<{ host_id: string }>(
+        "SELECT host_id FROM account_hosts WHERE credential_id = ?",
+        input.credentialId,
+      ).toArray()[0];
+      if (credentialOwner && credentialOwner.host_id !== input.hostId)
+        return { status: "invalid" } as const;
+      if (!sqlHost) {
+        const activeHosts = sql.exec<{ count: number }>(
+          "SELECT COUNT(*) AS count FROM account_hosts WHERE revoked_at IS NULL",
+        ).one().count;
+        if (activeHosts >= LIMITS.machines) return { status: "invalid" } as const;
+      }
+
+      credentialRotated = Boolean(sqlHost && (
+        sqlHost.credential_id !== input.credentialId ||
+        sqlHost.credential_verifier !== input.credentialVerifier ||
+        sqlHost.host_generation !== input.hostGeneration ||
+        sqlHost.revoked_at !== null
+      ));
+      const linkedAt = sqlHost?.linked_at ?? input.now;
+      sql.exec(`INSERT INTO account_hosts (host_id, host_generation, credential_id, credential_verifier,
+        label, host_kind, linked_at, last_seen_at, revoked_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, NULL)
+        ON CONFLICT(host_id) DO UPDATE SET host_generation = excluded.host_generation,
+        credential_id = excluded.credential_id, credential_verifier = excluded.credential_verifier,
+        label = excluded.label, host_kind = excluded.host_kind, last_seen_at = excluded.last_seen_at, revoked_at = NULL`,
+        input.hostId, input.hostGeneration, input.credentialId, input.credentialVerifier,
+        input.label, input.hostKind, linkedAt, input.now);
+      sql.exec(`UPDATE pairings SET consumed_host_id = ?, consumed_host_generation = ?,
+        consumed_credential_id = ?, consumed_credential_verifier = ?
+        WHERE pairing_id = ? AND code_verifier = ? AND consumed_host_id IS NULL`,
+        input.hostId, input.hostGeneration, input.credentialId, input.credentialVerifier,
+        input.pairingId, input.codeVerifier);
+      return {
+        status: "linked",
+        hostId: input.hostId,
+        hostGeneration: input.hostGeneration,
+        credentialId: input.credentialId,
+        linkedAt,
+      } as const;
+    });
+
+    if (result.status === "linked" && credentialRotated) this.closeHostRelay(input.hostId);
+    return result;
+  }
+
+  async listHosts(): Promise<{ hosts: HostSnapshot[] }> {
+    const rows = this.ctx.storage.sql.exec<AccountHostRow>("SELECT * FROM account_hosts ORDER BY host_id LIMIT ?", LIMITS.machines).toArray();
+    return { hosts: await Promise.all(rows.map((row) => this.hostSnapshot(row))) };
+  }
+
+  async listHostSessions(reference: unknown): Promise<{ host: HostSnapshot; sessions: SessionSnapshot[] } | null> {
+    const hostRef = hostRefSchema.parse(reference);
+    const row = this.ctx.storage.sql.exec<AccountHostRow>("SELECT * FROM account_hosts WHERE host_id = ? AND revoked_at IS NULL", hostRef.hostId).toArray()[0];
+    if (!row) return null;
+    if (row.host_generation !== hostRef.hostGeneration) throw new Error("Host generation conflict");
+    const host = await this.hostSnapshot(row);
+    return { host, sessions: host.sessions };
+  }
+
+  revokeHost(hostId: string, now = Date.now()): void {
+    this.ctx.storage.sql.exec("UPDATE account_hosts SET revoked_at = ? WHERE host_id = ? AND revoked_at IS NULL", now, hostId);
+    this.closeHostRelay(hostId);
+  }
+
+  protected override supportsLegacyMachineMethods(): boolean { return false; }
+
+  protected override async authorizeRelayPeer(request: Request, peer: Peer): Promise<boolean> {
+    const accountId = this.accountId();
+    if (!accountId || peer.identity !== accountId) return false;
+    const host = this.ctx.storage.sql.exec<AccountHostRow>("SELECT * FROM account_hosts WHERE host_id = ? AND revoked_at IS NULL", peer.machineId).toArray()[0];
+    if (!host) return false;
+    if (peer.role === "client") {
+      if (!peer.sessionDigest) return false;
+      const session = this.ctx.storage.sql.exec<SessionRow>(
+        "SELECT * FROM web_sessions WHERE session_digest = ?",
+        peer.sessionDigest,
+      ).toArray()[0];
+      return Boolean(session && session.revoked_at === null && session.expires_at > Date.now());
+    }
+
+    const credentialId = request.headers.get("X-Axo-Credential-Id") ?? "";
+    const credential = request.headers.get("X-Axo-Credential") ?? "";
+    const sessionSecret = (this.env as Env & { SESSION_SECRET?: string }).SESSION_SECRET;
+    if (!/^[A-Za-z0-9_-]{43}$/.test(credential) || credentialId !== host.credential_id || !sessionSecret)
+      return false;
+    const verifier = await hmac(sessionSecret, `host-credential\0${credential}`);
+    return constantTimeEqual(verifier, host.credential_verifier);
+  }
+
+  protected override async storeHostRegistration(registration: unknown, principal: string): Promise<HostSnapshot> {
+    const input = hostRegisterSchema.parse(registration);
+    this.requireAccount(principal);
+    const old = this.ctx.storage.sql.exec<AccountHostRow>("SELECT * FROM account_hosts WHERE host_id = ? AND revoked_at IS NULL", input.hostId).toArray()[0];
+    if (!old) throw new Error("Host is not linked to this account");
+    const storedAt = Date.now();
+    const sessions = input.sessions.map((session) => sessionSnapshotSchema.parse({ ...session, updatedAt: new Date(storedAt).toISOString() }));
+    this.ctx.storage.transactionSync(() => {
+      this.ctx.storage.sql.exec(`UPDATE account_hosts SET host_generation = ?, label = ?, host_kind = ?, last_seen_at = ?
+        WHERE host_id = ? AND revoked_at IS NULL`, input.hostGeneration, input.label, input.hostKind, storedAt, input.hostId);
+      this.replaceHostSessions(input.hostId, sessions);
+    });
+    return hostSnapshotSchema.parse({ hostId: input.hostId, hostGeneration: input.hostGeneration, label: input.label,
+      hostKind: input.hostKind, status: "online", stale: false, lastSeenAt: new Date(storedAt).toISOString(), sessions });
+  }
+
+  protected override async storeHostHeartbeat(reference: unknown, principal: string): Promise<{ acknowledged: true; lastSeenAt: string }> {
+    const input = hostRefSchema.parse(reference);
+    this.requireAccount(principal);
+    const row = this.ctx.storage.sql.exec<AccountHostRow>("SELECT * FROM account_hosts WHERE host_id = ? AND revoked_at IS NULL", input.hostId).toArray()[0];
+    if (!row) throw new Error("Host is not linked to this account");
+    if (row.host_generation !== input.hostGeneration) throw new Error("Host generation conflict");
+    const now = Date.now();
+    this.ctx.storage.sql.exec("UPDATE account_hosts SET last_seen_at = ? WHERE host_id = ?", now, input.hostId);
+    return { acknowledged: true, lastSeenAt: new Date(now).toISOString() };
+  }
+
+  protected override async storeHostSessions(publication: unknown, principal: string): Promise<{ storedAt: string }> {
+    const input = hostSessionsPublishSchema.parse(publication);
+    this.requireAccount(principal);
+    const row = this.ctx.storage.sql.exec<AccountHostRow>("SELECT * FROM account_hosts WHERE host_id = ? AND revoked_at IS NULL", input.hostId).toArray()[0];
+    if (!row) throw new Error("Host is not linked to this account");
+    if (row.host_generation !== input.hostGeneration) throw new Error("Host generation conflict");
+    const now = Date.now();
+    const sessions = input.sessions.map((session) => sessionSnapshotSchema.parse({ ...session, updatedAt: new Date(now).toISOString() }));
+    this.ctx.storage.transactionSync(() => {
+      this.ctx.storage.sql.exec("UPDATE account_hosts SET last_seen_at = ? WHERE host_id = ?", now, input.hostId);
+      this.replaceHostSessions(input.hostId, sessions);
+    });
+    return { storedAt: new Date(now).toISOString() };
+  }
+
+  protected override async storeHostEvent(event: unknown, principal: string): Promise<void> {
+    const input = hostDataEventSchema.parse(event);
+    this.requireAccount(principal);
+    const host = this.ctx.storage.sql.exec<AccountHostRow>("SELECT * FROM account_hosts WHERE host_id = ? AND revoked_at IS NULL", input.hostId).toArray()[0];
+    if (!host || host.host_generation !== input.hostGeneration) throw new Error("Host generation conflict");
+    const sql = this.ctx.storage.sql;
+    const now = Date.now();
+    const hostEvent = input.event;
+    switch (hostEvent.type) {
+      case "session.snapshot": {
+        const snapshot = sessionSnapshotSchema.parse({ ...hostEvent.snapshot, updatedAt: new Date(now).toISOString() });
+        this.ctx.storage.transactionSync(() => {
+          sql.exec("UPDATE account_hosts SET last_seen_at = ? WHERE host_id = ?", now, input.hostId);
+          sql.exec(`INSERT INTO host_sessions_v1 (host_id, session_id, snapshot_json) VALUES (?, ?, ?)
+            ON CONFLICT(host_id, session_id) DO UPDATE SET snapshot_json = excluded.snapshot_json`, input.hostId, snapshot.sessionId, JSON.stringify(snapshot));
+        });
+        return;
+      }
+      case "session.removed": {
+        this.ctx.storage.transactionSync(() => {
+          sql.exec("UPDATE account_hosts SET last_seen_at = ? WHERE host_id = ?", now, input.hostId);
+          sql.exec("DELETE FROM host_sessions_v1 WHERE host_id = ? AND session_id = ?", input.hostId, hostEvent.sessionId);
+        });
+        return;
+      }
+      case "shell.activity":
+      case "terminal.output":
+        return;
+    }
+  }
+
+  private replaceHostSessions(hostId: string, sessions: SessionSnapshot[]): void {
+    const sql = this.ctx.storage.sql;
+    sql.exec("DELETE FROM host_sessions_v1 WHERE host_id = ?", hostId);
+    for (const session of sessions) {
+      sql.exec("INSERT INTO host_sessions_v1 (host_id, session_id, snapshot_json) VALUES (?, ?, ?)", hostId, session.sessionId, JSON.stringify(session));
+    }
+  }
+
+  private async hostSnapshot(row: AccountHostRow): Promise<HostSnapshot> {
+    const presence = this.presence(row.host_id);
+    const online = row.revoked_at === null && presence.online && presence.hostGeneration === row.host_generation;
+    const sessions = this.ctx.storage.sql.exec<StoredHostSessionRow>(
+      "SELECT * FROM host_sessions_v1 WHERE host_id = ? ORDER BY session_id LIMIT 256", row.host_id,
+    ).toArray().map((session) => sessionSnapshotSchema.parse(JSON.parse(session.snapshot_json)));
+    return hostSnapshotSchema.parse({
+      hostId: row.host_id, hostGeneration: row.host_generation, label: row.label, hostKind: row.host_kind,
+      status: online ? "online" : "offline", stale: !online,
+      lastSeenAt: new Date(row.last_seen_at).toISOString(), sessions,
+    });
+  }
+
+  private bindAccount(accountId: string): void {
+    const sql = this.ctx.storage.sql;
+    const old = sql.exec<{ account_id: string }>("SELECT account_id FROM account WHERE singleton = 1").toArray()[0];
+    if (old && old.account_id !== accountId) throw new Error("Account identity conflict");
+    if (!old) sql.exec("INSERT INTO account (singleton, account_id) VALUES (1, ?)", accountId);
+  }
+  private accountId(): string | null {
+    return this.ctx.storage.sql.exec<{ account_id: string }>("SELECT account_id FROM account WHERE singleton = 1").toArray()[0]?.account_id ?? null;
+  }
+  private requireAccount(accountId: string): void {
+    if (!this.accountId() || this.accountId() !== accountId) throw new Error("Account identity conflict");
+  }
+}

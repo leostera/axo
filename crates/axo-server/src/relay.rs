@@ -1,3 +1,4 @@
+use crate::credential::HostCredentialStore;
 use crate::session::SessionManager;
 use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
@@ -5,7 +6,7 @@ use std::fs::{self, OpenOptions};
 use std::io::{self, Read, Write};
 use std::net::{TcpStream, ToSocketAddrs};
 use std::os::unix::fs::{OpenOptionsExt, PermissionsExt};
-use std::path::Path;
+use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex};
 use std::thread::{self, JoinHandle};
@@ -38,6 +39,14 @@ struct RawRelayConfig {
     relay_url: String,
     host_label: String,
     host_kind: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    account_id: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    credential_id: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pending_credential_id: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pending_host_generation: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     access: Option<LoopbackAccess>,
     #[serde(default)]
@@ -72,6 +81,9 @@ struct RelayConfig {
     relay_url: Url,
     host_label: String,
     host_kind: String,
+    account_id: Option<String>,
+    credential_id: Option<String>,
+    pending_credential_id: Option<String>,
     access: Option<LoopbackAccess>,
 }
 
@@ -100,7 +112,7 @@ impl RelayControl {
     fn new(host_name: String, host_kind: String) -> Self {
         Self {
             status: Mutex::new(RelayStatus {
-                state: "connecting".to_owned(),
+                state: "disconnected".to_owned(),
                 connected_since_unix_millis: None,
                 host_name,
                 host_kind,
@@ -164,26 +176,29 @@ impl RelayWorker {
     pub(crate) fn start(
         sessions: Arc<SessionManager>,
         server_directory: &Path,
-    ) -> io::Result<Option<Self>> {
+        credentials: Arc<dyn HostCredentialStore>,
+    ) -> io::Result<Self> {
         let config_path = server_directory.join(CONFIG_FILE);
-        let Some(config) = load_runtime_config(&config_path)? else {
-            return Ok(None);
-        };
         let stop = Arc::new(AtomicBool::new(false));
-        let control = Arc::new(RelayControl::new(
-            config.host_label.clone(),
-            config.host_kind.clone(),
-        ));
+        let control = Arc::new(RelayControl::new(local_host_name(), "macos".to_owned()));
         let worker_stop = Arc::clone(&stop);
         let worker_control = Arc::clone(&control);
         let worker = thread::Builder::new()
             .name("axo-cloud-relay".to_owned())
-            .spawn(move || run_reconnect_loop(config, sessions, worker_stop, worker_control))?;
-        Ok(Some(Self {
+            .spawn(move || {
+                run_reconnect_loop(
+                    config_path,
+                    sessions,
+                    worker_stop,
+                    worker_control,
+                    credentials,
+                )
+            })?;
+        Ok(Self {
             stop,
             control,
             thread: Some(worker),
-        }))
+        })
     }
 
     pub(crate) fn stop_handle(&self) -> Arc<AtomicBool> {
@@ -258,6 +273,10 @@ fn default_raw_config(relay_url: String) -> RawRelayConfig {
         relay_url,
         host_label: local_host_name(),
         host_kind: "macos".to_owned(),
+        account_id: None,
+        credential_id: None,
+        pending_credential_id: None,
+        pending_host_generation: None,
         access: None,
         allow_insecure_loopback: false,
     }
@@ -395,6 +414,31 @@ fn parse_config(raw: RawRelayConfig) -> io::Result<RelayConfig> {
         ));
     }
 
+    match (&raw.account_id, &raw.credential_id) {
+        (None, None) => {}
+        (Some(account_id), Some(credential_id))
+            if is_uuid(account_id) && is_uuid(credential_id) => {}
+        _ => {
+            return Err(io::Error::new(
+                io::ErrorKind::InvalidInput,
+                "paired relay configuration requires valid account and credential identifiers",
+            ));
+        }
+    }
+    match (&raw.pending_credential_id, &raw.pending_host_generation) {
+        (None, None) => {}
+        (Some(credential_id), Some(host_generation))
+            if is_uuid(credential_id)
+                && is_uuid(host_generation)
+                && raw.credential_id.as_deref() != Some(credential_id) => {}
+        _ => {
+            return Err(io::Error::new(
+                io::ErrorKind::InvalidInput,
+                "pending pairing identifiers are invalid",
+            ));
+        }
+    }
+
     if let Some(LoopbackAccess::AccessAssertion { assertion }) = &raw.access
         && (assertion.trim().is_empty() || assertion.len() > 8192 || !is_loopback(&relay_url))
     {
@@ -408,6 +452,9 @@ fn parse_config(raw: RawRelayConfig) -> io::Result<RelayConfig> {
         relay_url,
         host_label: raw.host_label,
         host_kind: raw.host_kind,
+        account_id: raw.account_id,
+        credential_id: raw.credential_id,
+        pending_credential_id: raw.pending_credential_id,
         access: raw.access,
     })
 }
@@ -430,25 +477,141 @@ pub(crate) fn settings(path: &Path) -> io::Result<RelaySettings> {
     })
 }
 
-pub(crate) fn configure(path: &Path, request: ConfigureRelayRequest) -> io::Result<RelaySettings> {
+pub(crate) fn link_host(
+    path: &Path,
+    raw_code: &str,
+    sessions: &SessionManager,
+    credentials: &dyn HostCredentialStore,
+) -> io::Result<String> {
+    crate::pairing::validate_code(raw_code)?;
+    let mut raw = match read_raw_config(path)? {
+        Some(raw) => raw,
+        None => {
+            let relay_url = std::env::var("AXO_RELAY_URL").map_err(|_| {
+                io::Error::new(
+                    io::ErrorKind::NotFound,
+                    "Axo relay endpoint is not configured",
+                )
+            })?;
+            default_raw_config(relay_url)
+        }
+    };
+    if let Ok(relay_url) = std::env::var("AXO_RELAY_URL") {
+        if relay_url.trim().is_empty() {
+            return Err(io::Error::new(
+                io::ErrorKind::InvalidInput,
+                "Axo relay endpoint is invalid",
+            ));
+        }
+        raw.relay_url = relay_url;
+    }
+    raw.access = None;
+    raw.allow_insecure_loopback = false;
+    let config = parse_config(raw.clone())?;
+    let (credential_id, pending_host_generation) = match (
+        raw.pending_credential_id.clone(),
+        raw.pending_host_generation.clone(),
+    ) {
+        (Some(credential_id), Some(host_generation)) => (credential_id, host_generation),
+        (None, None) => {
+            let credential_id = crate::pairing::prepare_credential(credentials)?;
+            let host_generation = sessions.host_generation().to_owned();
+            raw.pending_credential_id = Some(credential_id.clone());
+            raw.pending_host_generation = Some(host_generation.clone());
+            if let Err(error) = write_raw_config(path, &raw) {
+                let _ = credentials.delete(&credential_id);
+                return Err(error);
+            }
+            (credential_id, host_generation)
+        }
+        _ => {
+            return Err(io::Error::new(
+                io::ErrorKind::InvalidData,
+                "pending pairing state is incomplete",
+            ));
+        }
+    };
+    let result = crate::pairing::redeem(
+        crate::pairing::RedemptionRequest {
+            relay_url: &config.relay_url,
+            code: raw_code,
+            host_id: sessions.host_id(),
+            host_generation: &pending_host_generation,
+            credential_id: &credential_id,
+            label: &config.host_label,
+            host_kind: &config.host_kind,
+        },
+        credentials,
+    )?;
+
+    let previous_credential_id = raw.credential_id.clone();
+    raw.account_id = Some(result.account_id);
+    raw.credential_id = Some(result.credential_id.clone());
+    raw.pending_credential_id = None;
+    raw.pending_host_generation = None;
+    write_raw_config(path, &raw)?;
+    if let Some(previous_credential_id) = previous_credential_id
+        && previous_credential_id != result.credential_id
+    {
+        let _ = credentials.delete(&previous_credential_id);
+    }
+    Ok(raw.host_label)
+}
+
+pub(crate) fn configure(
+    path: &Path,
+    request: ConfigureRelayRequest,
+    credentials: &dyn HostCredentialStore,
+) -> io::Result<RelaySettings> {
+    let existing = read_raw_config(path)?;
+    if existing
+        .as_ref()
+        .is_some_and(|raw| raw.account_id.is_some())
+    {
+        return Err(io::Error::new(
+            io::ErrorKind::PermissionDenied,
+            "paired hosts must be revoked from the Axo account before reconfiguration",
+        ));
+    }
+    let pending_credential_id = existing.and_then(|raw| raw.pending_credential_id);
     let config = RawRelayConfig {
         relay_url: request.relay_url,
         host_label: request.host_label,
         host_kind: request.host_kind,
+        account_id: None,
+        credential_id: None,
+        pending_credential_id: None,
+        pending_host_generation: None,
         access: None,
         allow_insecure_loopback: false,
     };
     parse_config(config.clone())?;
     write_raw_config(path, &config)?;
+    if let Some(credential_id) = pending_credential_id {
+        let _ = credentials.delete(&credential_id);
+    }
     settings(path)
 }
 
-pub(crate) fn disable(path: &Path) -> io::Result<()> {
+pub(crate) fn disable(path: &Path, credentials: &dyn HostCredentialStore) -> io::Result<()> {
+    let credential_ids = read_raw_config(path)?
+        .map(|raw| [raw.credential_id, raw.pending_credential_id])
+        .unwrap_or_default();
     match fs::remove_file(path) {
-        Ok(()) => Ok(()),
-        Err(error) if error.kind() == io::ErrorKind::NotFound => Ok(()),
-        Err(error) => Err(error),
+        Ok(()) => {}
+        Err(error) if error.kind() == io::ErrorKind::NotFound => {}
+        Err(error) => return Err(error),
     }
+    let mut delete_error = None;
+    for credential_id in credential_ids.into_iter().flatten() {
+        if let Err(error) = credentials.delete(&credential_id) {
+            delete_error.get_or_insert(error);
+        }
+    }
+    if let Some(error) = delete_error {
+        return Err(error);
+    }
+    Ok(())
 }
 
 fn write_raw_config(path: &Path, config: &RawRelayConfig) -> io::Result<()> {
@@ -491,6 +654,17 @@ fn write_raw_config(path: &Path, config: &RawRelayConfig) -> io::Result<()> {
     write_result
 }
 
+fn is_uuid(value: &str) -> bool {
+    value.len() == 36
+        && value.bytes().enumerate().all(|(index, byte)| {
+            if matches!(index, 8 | 13 | 18 | 23) {
+                byte == b'-'
+            } else {
+                byte.is_ascii_hexdigit()
+            }
+        })
+}
+
 fn is_loopback(url: &Url) -> bool {
     match url.host() {
         Some(Host::Domain(domain)) => domain.eq_ignore_ascii_case("localhost"),
@@ -501,15 +675,40 @@ fn is_loopback(url: &Url) -> bool {
 }
 
 fn run_reconnect_loop(
-    config: RelayConfig,
+    config_path: PathBuf,
     sessions: Arc<SessionManager>,
     stop: Arc<AtomicBool>,
     control: Arc<RelayControl>,
+    credentials: Arc<dyn HostCredentialStore>,
 ) {
     let mut retry_delay = Duration::from_secs(1);
     while !stop.load(Ordering::Relaxed) {
+        let config = match load_runtime_config(&config_path) {
+            Ok(Some(config)) => config,
+            Ok(None) => {
+                control.mark_disconnected("This Mac is not linked to an Axo account.");
+                wait_for_reconnect(&control, &stop, Duration::from_secs(1));
+                retry_delay = Duration::from_secs(1);
+                continue;
+            }
+            Err(error) => {
+                control.mark_disconnected(&error);
+                log::warn!("event=relay.configuration_unavailable reason={error}");
+                wait_for_reconnect(&control, &stop, retry_delay);
+                retry_delay = (retry_delay * 2).min(MAX_RECONNECT_DELAY);
+                continue;
+            }
+        };
+
+        if config.account_id.is_none() && config.pending_credential_id.is_some() {
+            control.mark_disconnected("Pairing is ready to resume from Remote Access Settings.");
+            wait_for_reconnect(&control, &stop, Duration::from_secs(1));
+            retry_delay = Duration::from_secs(1);
+            continue;
+        }
+
         control.mark_connecting();
-        match run_connection(&config, &sessions, &stop, &control) {
+        match run_connection(&config, &sessions, &stop, &control, credentials.as_ref()) {
             Ok(()) if stop.load(Ordering::Relaxed) => break,
             Ok(()) => {
                 control.mark_disconnected("relay connection ended");
@@ -523,15 +722,7 @@ fn run_reconnect_loop(
         if stop.load(Ordering::Relaxed) {
             break;
         }
-        let until = Instant::now() + retry_delay;
-        let mut requested_now = false;
-        while Instant::now() < until && !stop.load(Ordering::Relaxed) {
-            if control.reconnect_requested.swap(false, Ordering::Relaxed) {
-                requested_now = true;
-                break;
-            }
-            thread::sleep(Duration::from_millis(100));
-        }
+        let requested_now = wait_for_reconnect(&control, &stop, retry_delay);
         retry_delay = if requested_now {
             Duration::from_secs(1)
         } else {
@@ -540,15 +731,27 @@ fn run_reconnect_loop(
     }
 }
 
+fn wait_for_reconnect(control: &RelayControl, stop: &AtomicBool, delay: Duration) -> bool {
+    let until = Instant::now() + delay;
+    while Instant::now() < until && !stop.load(Ordering::Relaxed) {
+        if control.reconnect_requested.swap(false, Ordering::Relaxed) {
+            return true;
+        }
+        thread::sleep(Duration::from_millis(100));
+    }
+    false
+}
+
 fn run_connection(
     config: &RelayConfig,
     sessions: &Arc<SessionManager>,
     stop: &AtomicBool,
     control: &RelayControl,
+    credentials: &dyn HostCredentialStore,
 ) -> io::Result<()> {
     let host_id = sessions.host_id().to_owned();
     let host_generation = sessions.host_generation().to_owned();
-    let request = relay_websocket_request(config, &host_id)?;
+    let request = relay_websocket_request(config, &host_id, credentials)?;
 
     let websocket_config = WebSocketConfig::default()
         .read_buffer_size(8192)
@@ -602,11 +805,14 @@ fn run_connection(
     let result = relay_session(
         &mut socket,
         &mut request_number,
-        sessions,
-        &host_id,
-        &host_generation,
-        &subscription_id,
-        stop,
+        RelaySessionContext {
+            sessions,
+            host_id: &host_id,
+            host_generation: &host_generation,
+            subscription_id: &subscription_id,
+            stop,
+            control,
+        },
     );
     let _ = sessions.unsubscribe_remote_events(&subscription_id);
     result
@@ -615,13 +821,47 @@ fn run_connection(
 fn relay_websocket_request(
     config: &RelayConfig,
     host_id: &str,
+    credentials: &dyn HostCredentialStore,
 ) -> io::Result<tungstenite::http::Request<()>> {
-    let url = host_websocket_url(&config.relay_url, host_id)?;
+    let (url, credential) = match (&config.account_id, &config.credential_id) {
+        (Some(account_id), Some(credential_id)) => {
+            let mut secret = credentials.load(credential_id)?;
+            if secret.len() != 32 {
+                secret.fill(0);
+                return Err(io::Error::new(
+                    io::ErrorKind::InvalidData,
+                    "stored host credential is invalid",
+                ));
+            }
+            let token = crate::pairing::encode_base64url(&secret);
+            secret.fill(0);
+            (
+                account_host_websocket_url(&config.relay_url, account_id, host_id)?,
+                Some((credential_id.as_str(), token)),
+            )
+        }
+        (None, None) => (host_websocket_url(&config.relay_url, host_id)?, None),
+        _ => {
+            return Err(io::Error::new(
+                io::ErrorKind::InvalidData,
+                "paired relay configuration is incomplete",
+            ));
+        }
+    };
     let mut request = url
         .as_str()
         .into_client_request()
         .map_err(io::Error::other)?;
-    if let Some(LoopbackAccess::AccessAssertion { assertion }) = &config.access {
+    if let Some((credential_id, token)) = credential {
+        request.headers_mut().insert(
+            "Authorization",
+            HeaderValue::from_str(&format!("Bearer {token}")).map_err(io::Error::other)?,
+        );
+        request.headers_mut().insert(
+            "X-Axo-Credential-Id",
+            HeaderValue::from_str(credential_id).map_err(io::Error::other)?,
+        );
+    } else if let Some(LoopbackAccess::AccessAssertion { assertion }) = &config.access {
         request.headers_mut().insert(
             "Cf-Access-Jwt-Assertion",
             HeaderValue::from_str(assertion).map_err(io::Error::other)?,
@@ -864,6 +1104,26 @@ fn host_websocket_url(base: &Url, host_id: &str) -> io::Result<Url> {
     Ok(url)
 }
 
+fn account_host_websocket_url(base: &Url, account_id: &str, host_id: &str) -> io::Result<Url> {
+    if !is_uuid(account_id) || !is_uuid(host_id) {
+        return Err(io::Error::new(
+            io::ErrorKind::InvalidInput,
+            "paired host routing identifier is invalid",
+        ));
+    }
+    let mut url = base.clone();
+    url.set_path(&format!(
+        "/api/v1/accounts/{account_id}/hosts/{host_id}/daemon"
+    ));
+    if url.scheme() != "wss" {
+        return Err(io::Error::new(
+            io::ErrorKind::InvalidInput,
+            "paired relay URL must use secure WebSockets",
+        ));
+    }
+    Ok(url)
+}
+
 fn rpc_call(
     socket: &mut RelaySocket,
     request_number: &mut u64,
@@ -897,17 +1157,24 @@ fn rpc_call(
     }
 }
 
+struct RelaySessionContext<'a> {
+    sessions: &'a Arc<SessionManager>,
+    host_id: &'a str,
+    host_generation: &'a str,
+    subscription_id: &'a str,
+    stop: &'a AtomicBool,
+    control: &'a RelayControl,
+}
+
 fn relay_session(
     socket: &mut RelaySocket,
     request_number: &mut u64,
-    sessions: &Arc<SessionManager>,
-    host_id: &str,
-    host_generation: &str,
-    subscription_id: &str,
-    stop: &AtomicBool,
+    context: RelaySessionContext<'_>,
 ) -> io::Result<()> {
     let mut next_heartbeat = Instant::now() + HEARTBEAT_INTERVAL;
-    while !stop.load(Ordering::Relaxed) {
+    while !context.stop.load(Ordering::Relaxed)
+        && !context.control.reconnect_requested.load(Ordering::Relaxed)
+    {
         if Instant::now() >= next_heartbeat {
             *request_number = request_number.saturating_add(1);
             send_json(
@@ -916,15 +1183,16 @@ fn relay_session(
                     "jsonrpc": "2.0",
                     "id": format!("axod-{}", *request_number),
                     "method": "axo.host.heartbeat",
-                    "params": { "hostId": host_id, "hostGeneration": host_generation }
+                    "params": { "hostId": context.host_id, "hostGeneration": context.host_generation }
                 }),
             )?;
             next_heartbeat = Instant::now() + HEARTBEAT_INTERVAL;
         }
 
-        let notification = sessions
-            .next_remote_event(subscription_id, Duration::ZERO)?
-            .and_then(|event| host_notification(event, host_id, host_generation));
+        let notification = context
+            .sessions
+            .next_remote_event(context.subscription_id, Duration::ZERO)?
+            .and_then(|event| host_notification(event, context.host_id, context.host_generation));
         if let Some(notification) = notification {
             send_json(socket, &notification)?;
         }
@@ -934,7 +1202,12 @@ fn relay_session(
         };
         let message: Value = serde_json::from_str(&raw)
             .map_err(|_| io::Error::new(io::ErrorKind::InvalidData, "invalid relay JSON"))?;
-        if let Some(reply) = remote_request_reply(&message, sessions, host_id, host_generation) {
+        if let Some(reply) = remote_request_reply(
+            &message,
+            context.sessions,
+            context.host_id,
+            context.host_generation,
+        ) {
             send_json(socket, &reply)?;
         }
     }
@@ -1295,6 +1568,10 @@ mod tests {
             relay_url: relay_url.to_owned(),
             host_label: "Test host".to_owned(),
             host_kind: "macos".to_owned(),
+            account_id: None,
+            credential_id: None,
+            pending_credential_id: None,
+            pending_host_generation: None,
             access,
             allow_insecure_loopback: insecure,
         })
@@ -1382,6 +1659,7 @@ mod tests {
         let directory = temporary_directory();
         fs::create_dir(&directory).unwrap();
         let path = directory.join(CONFIG_FILE);
+        let credentials = crate::credential::testing::MemoryCredentialStore::default();
         let settings = configure(
             &path,
             ConfigureRelayRequest {
@@ -1389,6 +1667,7 @@ mod tests {
                 host_label: "My Mac".to_owned(),
                 host_kind: "macos".to_owned(),
             },
+            &credentials,
         )
         .unwrap();
 
@@ -1411,12 +1690,46 @@ mod tests {
                 host_label: "Renamed Mac".to_owned(),
                 host_kind: "macos".to_owned(),
             },
+            &credentials,
         )
         .unwrap();
         assert_eq!(updated.host_label.as_deref(), Some("Renamed Mac"));
 
-        disable(&path).unwrap();
+        let credentials = crate::credential::testing::MemoryCredentialStore::default();
+        disable(&path, &credentials).unwrap();
         assert!(!path.exists());
+        fs::remove_dir_all(directory).unwrap();
+    }
+
+    #[test]
+    fn disabling_remote_access_removes_an_unfinished_pairing_credential() {
+        let directory = temporary_directory();
+        fs::create_dir(&directory).unwrap();
+        let path = directory.join(CONFIG_FILE);
+        let credential_id = "0d98fcf1-e8b0-4b46-8ab5-4aa0a11c8a45";
+        let credentials = crate::credential::testing::MemoryCredentialStore::default();
+        crate::credential::HostCredentialStore::store(&credentials, credential_id, &[0x5a; 32])
+            .unwrap();
+        write_raw_config(
+            &path,
+            &RawRelayConfig {
+                relay_url: "https://axo.leostera.dev".to_owned(),
+                host_label: "Test host".to_owned(),
+                host_kind: "macos".to_owned(),
+                account_id: None,
+                credential_id: None,
+                pending_credential_id: Some(credential_id.to_owned()),
+                pending_host_generation: Some("f9c5761c-3b2d-42a8-bb19-9a8c0b8cf230".to_owned()),
+                access: None,
+                allow_insecure_loopback: false,
+            },
+        )
+        .unwrap();
+
+        disable(&path, &credentials).unwrap();
+
+        assert!(!path.exists());
+        assert!(crate::credential::HostCredentialStore::load(&credentials, credential_id).is_err());
         fs::remove_dir_all(directory).unwrap();
     }
 
@@ -1430,7 +1743,8 @@ mod tests {
             host_label: "My Mac".to_owned(),
             host_kind: "macos".to_owned(),
         };
-        assert!(configure(&path, invalid).is_err());
+        let credentials = crate::credential::testing::MemoryCredentialStore::default();
+        assert!(configure(&path, invalid, &credentials).is_err());
         assert!(!path.exists());
         fs::remove_dir_all(directory).unwrap();
     }
@@ -1448,6 +1762,10 @@ mod tests {
                 relay_url: "http://example.test".to_owned(),
                 host_label: "Test host".to_owned(),
                 host_kind: "macos".to_owned(),
+                account_id: None,
+                credential_id: None,
+                pending_credential_id: None,
+                pending_host_generation: None,
                 access: None,
                 allow_insecure_loopback: true,
             })
@@ -1456,9 +1774,43 @@ mod tests {
     }
 
     #[test]
+    fn pending_pairing_config_pins_the_original_host_generation() {
+        let credential_id = "0d98fcf1-e8b0-4b46-8ab5-4aa0a11c8a45";
+        let host_generation = "f9c5761c-3b2d-42a8-bb19-9a8c0b8cf230";
+        let config = parse_config(RawRelayConfig {
+            relay_url: "https://axo.leostera.dev".to_owned(),
+            host_label: "Test host".to_owned(),
+            host_kind: "macos".to_owned(),
+            account_id: None,
+            credential_id: None,
+            pending_credential_id: Some(credential_id.to_owned()),
+            pending_host_generation: Some(host_generation.to_owned()),
+            access: None,
+            allow_insecure_loopback: false,
+        })
+        .unwrap();
+        assert_eq!(config.pending_credential_id.as_deref(), Some(credential_id));
+
+        assert!(
+            parse_config(RawRelayConfig {
+                relay_url: "https://axo.leostera.dev".to_owned(),
+                host_label: "Test host".to_owned(),
+                host_kind: "macos".to_owned(),
+                account_id: None,
+                credential_id: None,
+                pending_credential_id: Some(credential_id.to_owned()),
+                pending_host_generation: None,
+                access: None,
+                allow_insecure_loopback: false,
+            })
+            .is_err()
+        );
+    }
+
+    #[test]
     fn relay_status_tracks_connection_and_manual_retry_states() {
         let control = RelayControl::new("Test Mac".to_owned(), "macos".to_owned());
-        assert_eq!(control.snapshot().unwrap().state, "connecting");
+        assert_eq!(control.snapshot().unwrap().state, "disconnected");
 
         control.mark_connected();
         let connected = control.snapshot().unwrap();
@@ -1485,7 +1837,8 @@ mod tests {
     #[test]
     fn production_relay_requests_call_the_api_without_access_headers() {
         let config = config(None, "https://api.example.test", false);
-        let request = relay_websocket_request(&config, "host-fixture").unwrap();
+        let credentials = crate::credential::testing::MemoryCredentialStore::default();
+        let request = relay_websocket_request(&config, "host-fixture", &credentials).unwrap();
 
         assert_eq!(request.uri().scheme_str(), Some("wss"));
         assert_eq!(request.uri().host(), Some("api.example.test"));
@@ -1493,6 +1846,40 @@ mod tests {
         assert!(request.headers().get("cf-access-client-id").is_none());
         assert!(request.headers().get("cf-access-client-secret").is_none());
         assert!(request.headers().get("origin").is_none());
+    }
+
+    #[test]
+    fn paired_relay_requests_use_account_route_and_keychain_credential() {
+        let account_id = "b6b4cc11-b541-40ca-8aa5-b84276fa9939";
+        let host_id = "36bc9f8c-8a79-4885-9ca8-a1a271ccdcfe";
+        let credential_id = "0d98fcf1-e8b0-4b46-8ab5-4aa0a11c8a45";
+        let credentials = crate::credential::testing::MemoryCredentialStore::default();
+        crate::credential::HostCredentialStore::store(&credentials, credential_id, &[0xff; 32])
+            .unwrap();
+        let config = parse_config(RawRelayConfig {
+            relay_url: "https://axo.leostera.dev".to_owned(),
+            host_label: "Test host".to_owned(),
+            host_kind: "macos".to_owned(),
+            account_id: Some(account_id.to_owned()),
+            credential_id: Some(credential_id.to_owned()),
+            pending_credential_id: None,
+            pending_host_generation: None,
+            access: None,
+            allow_insecure_loopback: false,
+        })
+        .unwrap();
+
+        let request = relay_websocket_request(&config, host_id, &credentials).unwrap();
+
+        assert_eq!(
+            request.uri().path(),
+            format!("/api/v1/accounts/{account_id}/hosts/{host_id}/daemon")
+        );
+        assert_eq!(request.headers()["X-Axo-Credential-Id"], credential_id);
+        let authorization = request.headers()["Authorization"].to_str().unwrap();
+        assert!(authorization.starts_with("Bearer "));
+        assert_eq!(authorization.len(), "Bearer ".len() + 43);
+        assert!(request.headers().get("Cf-Access-Jwt-Assertion").is_none());
     }
 
     #[test]
@@ -1514,6 +1901,10 @@ mod tests {
                 relay_url: "https://api.example.test".to_owned(),
                 host_label: "Test host".to_owned(),
                 host_kind: "macos".to_owned(),
+                account_id: None,
+                credential_id: None,
+                pending_credential_id: None,
+                pending_host_generation: None,
                 access: assertion,
                 allow_insecure_loopback: false,
             })

@@ -24,8 +24,8 @@ This changes the security model and storage ownership across the app, API, proto
 The first implementation step has moved product code out of site directories:
 
 - [`packages/axo-api-worker/src/access.ts`](../../packages/axo-api-worker/src/access.ts) still makes synthetic edge principals; the API does not yet verify an Axo account or device credential.
-- [`packages/axo-api-worker/src/http/router.ts`](../../packages/axo-api-worker/src/http/router.ts) still assigns WebSocket roles from route segments and forwards a fresh internal principal to the relay Durable Object.
-- [`packages/axo-api-worker/src/axo-host-directory.ts`](../../packages/axo-api-worker/src/axo-host-directory.ts) still stores hosts and snapshots in one `private-fleet` directory; it is not partitioned by Axo account.
+- Legacy `/v1/*` routes still use synthetic edge principals and the unassigned `private-fleet` directory. Account-scoped `/api/v1/*` routes use `AxoAccountManager`; they must never fall back to legacy ownership or principals.
+- [`packages/axo-api-worker/src/axo-host-directory.ts`](../../packages/axo-api-worker/src/axo-host-directory.ts) remains only for legacy/unassigned host data; new account hosts and snapshots are stored in their owning account manager.
 - The app and Worker implementations, their tests, and runtime dependencies now live in `packages/axo-web-app` and `packages/axo-api-worker`. The `sites/*` directories contain thin entrypoint shims and deployment configuration.
 - The current production Access policies have not been changed or inspected as part of this implementation.
 
@@ -71,8 +71,8 @@ The pairing code is a fourth, temporary value: eight Crockford Base32 characters
 1. The user opens `https://axo.leostera.dev/`, can view the landing page, and opens `/app` to choose **Sign in with Cloudflare**.
 2. The browser navigates to `/api/auth/cloudflare/start`. The Worker creates `state` and PKCE values, then redirects to Cloudflare's consent/login page.
 3. Cloudflare returns the authorization code to the fixed `/api/auth/cloudflare/callback` URL. The Worker verifies state, exchanges the code, calls userinfo, and maps the verified subject to an Axo account ID. It creates an Axo session and redirects to `/app`.
-4. The user chooses **Link host**. The Worker creates an eight-character Crockford Base32 code formatted `XXXX-YYYY`, tied to that account and expiring after ten minutes. It displays the code once with a copy action.
-5. In Mac Settings → Remote Access, the user opens **Link Host**, types or pastes the code into a popup, and chooses **Link**. The app passes it to `axod` through local RPC. `axod` generates a host ID and unique random host credential, stores the credential in Keychain, and redeems the code over TLS with host metadata.
+4. The user chooses **Link a Mac**. The Worker creates an eight-character Crockford Base32 code formatted `XXXX-YYYY`, tied to that account and expiring after ten minutes. The web app displays the code once with copy and **Open Axo on this Mac** actions; the latter uses `axo://pair/<code>`.
+5. Axo registers the `axo` URL scheme and routes valid pairing links to Settings → Remote Access. The user can also type or paste the code there, then explicitly chooses **Link this Mac**. The app passes it to `axod` through local RPC. `axod` generates a unique random host credential, stores it in Keychain, and persists only its public credential ID and the pairing-time host generation in the private relay config before redeeming the code over TLS with host metadata.
 6. The Worker locates the account from the code's short-lived pairing index. The account Durable Object atomically consumes the code, creates host membership, and stores only the host credential verifier. `axod` then authenticates its outbound WSS connection with that credential and receives the full currently supported protocol for that host.
 7. The web app lists the host and retained terminal-free session metadata. The owner can revoke the host; revocation closes its active relay, rejects future reconnects, and retains last-known metadata as offline/stale.
 
@@ -82,10 +82,9 @@ sequenceDiagram
   participant Web as axo.leostera.dev/app
   participant API as axo.leostera.dev/api
   participant CF as Cloudflare OAuth
-  participant Account as Account Durable Object
+  participant Account as AxoAccountManager DO
   participant Mac as Axo Settings
   participant Daemon as axod
-  participant Relay as Host Relay Durable Object
 
   User->>Web: Sign in with Cloudflare
   Web->>API: Navigate to /api/auth/cloudflare/start
@@ -102,9 +101,9 @@ sequenceDiagram
   Mac->>Daemon: Local axo.relay.link(code)
   Daemon->>API: Redeem code + host credential verifier
   API->>Account: Route lookup; atomically redeem
-  Account-->>Daemon: Linked host / success
-  Daemon->>Relay: WSS with per-host credential
-  Relay->>Account: Validate host credential and membership
+  Account-->>Daemon: Linked host / success + account routing ID
+  Daemon->>Account: WSS with per-host credential
+  Account->>Account: Validate credential; host and route socket
 ```
 
 ## Reference-level explanation
@@ -123,15 +122,9 @@ Axo has no per-method or per-session authorization tiers in v1: a signed-in user
 
 #### Account-scoped coordination
 
-Accept any Cloudflare identity; no Cloudflare-account membership allowlist is required. Use a minimal global identity index from `(issuer, subject)` to a random internal Axo account ID. That index contains no profile, host, session, or terminal data. Store each user's account profile, sessions, hosts, and host-owned metadata only in that user's SQLite-backed `AxoAccountDirectory` Durable Object:
+Accept any Cloudflare identity; no Cloudflare-account membership allowlist is required. Use a minimal global identity index from `(issuer, subject)` to a random internal Axo account ID. That index contains no profile, host, session, or terminal data. Store each user's account profile, sessions, pairings, hosts, host-owned metadata, bounded RPC correlation, presence, and live host/browser WebSockets in that user's SQLite-backed `AxoAccountManager` Durable Object. Keep the deployed Durable Object export name `AxoAccountDirectory` as a stable storage identity while evolving its implementation into the account manager, so existing profile/session rows are reused rather than abandoned. Relay tables are keyed by host ID inside the account object, so multiple hosts can share one account DO without sharing routes, pending calls, subscriptions, or delivery budgets. It is the single authority for credential checks, revocation, host metadata, and relay lifecycle.
 
-- browser session records and account profile metadata;
-- pending pairing-code verifiers/expiry/attempt state;
-- host membership and host credential hashes/revocation state;
-- persistent host metadata and terminal-free session snapshots;
-- account-scoped coordination/fanout.
-
-Retain a per-host `AxoHostRelay` Durable Object for the WebSocket route, bounded pending RPC correlation, presence, and relay state. The account object authorizes a host connection and owns its metadata; the relay object owns the live connection. Account and host IDs may be used as routing inputs, but are never authorization by themselves. A short-lived, sharded `AxoPairingIndex` maps a keyed pairing-code verifier to an account ID and pairing ID so an eight-character code can locate its account. It contains no account profile, host metadata, session data, or terminal content. The account object remains authoritative: it atomically consumes the pairing and registers the host in one SQLite transaction.
+Account and host IDs may be used as routing inputs, but are never authorization by themselves. A short-lived, sharded `AxoPairingIndex` maps a keyed pairing-code verifier to an account ID and pairing ID so an eight-character code can locate its account; it is only a routing index, not an owner of pairing state. It contains no account profile, host metadata, session data, or terminal content. The account manager remains authoritative: it atomically consumes the pairing and registers the host in one SQLite transaction. Account IDs and host IDs returned during redemption are public routing hints; the host credential remains the only daemon authority.
 
 Every host-owned record is scoped to exactly one Axo account and references a persistent Host record. On disconnect, keep last-known metadata and derive offline/stale status. Do not persist terminal content.
 
@@ -139,14 +132,14 @@ Every host-owned record is scoped to exactly one Axo account and references a pe
 
 - Generate eight characters using a cryptographic RNG from Crockford Base32 (`0123456789ABCDEFGHJKMNPQRSTVWXYZ`), displayed as `XXXX-YYYY`. This provides 40 bits of entropy while avoiding visually ambiguous characters.
 - Expire codes after 10 minutes and permit one successful redemption. A short-code space is safe only with strict online throttling: rate-limit issuance and every failed lookup by source, apply a global abuse limit, and enforce per-account pending-code limits. Set exact thresholds before rollout and test them under distributed guessing assumptions.
-- Store an HMAC-based verifier in the pairing index and account DO, never the raw code. The index maps verifier to account/pairing IDs and expiry; the account DO owns pending/consumed state. Detect collisions before displaying a code and regenerate on collision.
+- Store an HMAC-based verifier in the pairing index and account DO, never the raw code. The index maps verifier to account/pairing IDs and a bounded 24-hour retry horizon; the account DO enforces the 10-minute redemption expiry and owns pending/consumed state. Retaining the route briefly permits a same-host/credential retry after a lost response without allowing a new redemption. Detect collisions before displaying a code and regenerate on collision.
 - Display the raw code once in the web app with a copy button. Redeem with TLS. The account DO atomically consumes the code and registers the host. An identical retry from the same host ID and credential verifier may return the same success after a lost response; a different host/credential must fail.
 - Generate a fresh 256-bit random host credential per Mac in `axod`; save it to Keychain before attempting redemption. Send it once during redemption. Store only its digest server-side. Never place it in a URL, `relay.json`, logs, analytics, UI persistence, or source code.
 - Bind the credential to one account and one host. It authorizes the daemon connection and host operations only for that host; it cannot list an account's hosts or operate another host. Within that boundary, v1 enables all currently supported Axo protocol capabilities, including existing session and terminal controls. Do not add per-method or per-session restrictions until a later capability-policy design.
 - Include a token/key identifier or account/host routing hint so the Worker can reach the correct Account DO. The identifier is public and not sufficient to authenticate. Verify the secret against the stored hash and reject revoked credentials.
 - An owner can revoke/rotate a host credential from the web app. Revocation rejects the old credential immediately, closes active daemon sockets, fences in-flight relay work, and leaves the Host record offline/stale. Re-linking an existing host in the same account replaces its credential while preserving its host identity and metadata. Cross-account transfer is out of scope.
 
-The current `axod` relay config contains endpoint and host metadata but no credential. Keep endpoint/label configuration non-secret; add a Keychain-backed credential operation owned by `axod`. A **Link Host** popup in Remote Access Settings accepts typed or pasted `XXXX-YYYY`, validates its shape locally, and submits it through local RPC. The app and daemon keep the pairing code only in memory and never expose or persist the returned host credential outside Keychain.
+The `axod` relay config contains endpoint and host metadata plus the public credential ID; the host credential itself remains in Keychain. The pending credential ID and pairing-time host generation are persisted before redemption so a retry after a lost response or daemon restart can reuse the identical Keychain secret and redemption tuple, even though the active daemon generation rotates on restart. Remote Access Settings accepts typed or pasted `XXXX-YYYY`, validates its shape locally, and submits it through local RPC; the `axo://pair/<code>` deep link opens that same settings section. The app and daemon keep the pairing code only in memory and never expose or persist the returned host credential outside Keychain.
 
 #### Authorization and API behavior
 
@@ -157,7 +150,7 @@ Replace `edgePrincipal(role)` for product routes with two verified principal for
 
 The URL's `client`/`daemon` segment is a routing hint, never the source of role/identity. Reject a host credential on client routes, a browser session on daemon routes, cross-account host IDs, wrong host IDs, stale host generations, and revoked keys. Browser HTTP and WebSocket routes require the exact app Origin `https://axo.leostera.dev`; Axod daemon connections may omit Origin, but still require the host credential.
 
-Host credentials go in an `Authorization` header on the WebSocket upgrade, never in a query string. Strip caller-supplied internal identity headers and forward only a newly constructed, verified context to the relay Durable Object. Recheck host-account ownership before dispatching remote controls. A route that merely names a UUID must never register a new user-owned host.
+Host credentials go in an `Authorization` header on the WebSocket upgrade, never in a query string. Strip caller-supplied internal identity headers and forward only a newly constructed context to the account manager, which independently checks account membership, session state, and the host credential before upgrading. Recheck host-account ownership before dispatching remote controls. A route that merely names a UUID must never register a new user-owned host.
 
 #### Proposed HTTP surface
 
@@ -170,10 +163,10 @@ Exact names and schema envelopes remain subject to the shared v1 schema review. 
 | `POST /api/auth/logout` / `GET /api/auth/me` | Axo web session | Revoke session / report signed-in account |
 | `POST /api/v1/account/host-pairings` | Axo web session + CSRF/Origin checks | Create and return one-time pairing code |
 | `POST /api/v1/host-pairings/redeem` | Pairing code | Locate account, atomically consume code, register one host credential |
-| `GET /api/v1/hosts`, `GET /api/v1/hosts/:host/sessions` | Axo web session | List only hosts/snapshots owned by account |
-| `POST /api/v1/hosts/:host/revoke` | Axo web session | Revoke this account's host credential and close relay |
-| `/api/v1/hosts/:host/client` WebSocket | Axo web session | Full current protocol control of an owned host |
-| `/api/v1/hosts/:host/daemon` WebSocket | Per-host credential | Full current daemon protocol for that exact host |
+| `GET /api/v1/account/hosts`, `GET /api/v1/account/hosts/:host/sessions` | Axo web session | List only hosts/snapshots owned by account |
+| `POST /api/v1/account/hosts/:host/revoke` | Axo web session | Revoke this account's host credential and close relay |
+| `/api/v1/account/hosts/:host/client` WebSocket | Axo web session | Full current protocol control of an owned host |
+| `/api/v1/accounts/:account/hosts/:host/daemon` WebSocket | Per-host credential | Route to the account manager, then authorize the exact host credential |
 
 No endpoint accepts a caller-selected account ID as proof of authority. New or changed request/result objects are versioned in `@axo/protocol/v1` and canonical JSON schemas/fixtures before client implementation.
 
@@ -182,12 +175,13 @@ No endpoint accepts a caller-selected account ID as proof of authority. New or c
 Conceptual records:
 
 - Global identity index: `(issuer, subject) -> accountId`; contains only the identity key and internal account ID.
-- In each account Durable Object, `account`: internal Axo account ID, creation time, mutable display metadata.
-- In each account Durable Object, `sessions`: session ID digest, created/expiry/revoked timestamps.
-- In each account Durable Object, `pairings`: keyed verifier, creation/expiry, consumed host ID, consumed credential verifier for safe identical retry.
+- In each `AxoAccountManager` Durable Object, `account`: internal Axo account ID, creation time, mutable display metadata.
+- In each account manager, `sessions`: session ID digest, created/expiry/revoked timestamps.
+- In each account manager, `pairings`: keyed verifier, creation/expiry, consumed host ID, consumed credential verifier for safe identical retry.
 - In the short-lived pairing index, `codeVerifier -> accountId/pairingId/expiry`; no user profile or host/session data.
-- In each account Durable Object, `hosts`: host ID, label, kind, linked/revoked state, created/last-seen timestamps, credential ID/verifier, host generation.
-- In each account Durable Object, `host_sessions`: strict terminal-free snapshots, host ID/generation, updated time.
+- In each account manager, `hosts`: host ID, label, kind, linked/revoked state, created/last-seen timestamps, credential ID/verifier, host generation.
+- In each account manager, `host_sessions`: strict terminal-free snapshots, host ID/generation, updated time.
+- In each account manager, `route`, `groups`, and `pending` tables plus hibernatable WebSocket attachments: per-host live relay state and transient correlation only; terminal bytes are never persisted.
 
 Account membership is one Cloudflare identity per Axo account for v1. The design can later add members/roles without treating email as a primary key or sharing host credentials.
 
@@ -199,7 +193,7 @@ The daemon's local `axo.relay.link` operation accepts an eight-character pairing
 - **Invalid state, stale callback, wrong verifier, or mismatched redirect:** reject; do not exchange the code or create a session.
 - **Pair code expires or was already redeemed by another host:** reject without host creation. The user generates a fresh code.
 - **Worker commits redemption but response is lost:** an identical retry with the same pairing code, host ID, and credential hash returns idempotent success. A changed host ID/hash is rejected.
-- **Daemon crashes during link:** if its Keychain credential exists, it may safely retry the same redemption tuple; if not, the user creates a new pairing code. Never retry with a different host credential under the same consumed code.
+- **Daemon crashes during link:** the private relay config retains the pending credential ID and pairing-time host generation, and Keychain retains the secret. The user can re-enter or re-open the still-valid code to retry the identical redemption tuple. If the pairing code has expired, the user creates a fresh code; the same pending credential may be used. Never retry with a different host credential under the same consumed code.
 - **Host disconnects:** relay presence expires; retain host and snapshots as offline/stale.
 - **Host credential is revoked:** reject reconnect and close existing socket; retain metadata as offline/stale. Do not infer that local PTYs stopped or delete Axod state.
 - **Account session is revoked:** browser access stops; host credentials remain linked until separately revoked. Browser sign-out does not silently unlink Macs.
@@ -319,6 +313,6 @@ The product choices raised in review are incorporated: any Cloudflare identity m
 ## Future possibilities
 
 - Add team membership and host sharing using explicit account roles without sharing device credentials.
-- Replace typed/pasted code entry with a one-time callback/deep-link UX while keeping the same pairing grant semantics.
+- Add verified HTTPS universal links for stronger domain-to-app association while retaining the typed/pasted fallback and the same pairing grant semantics.
 - Add host public keys and proof-of-possession if the risk warrants more than a revocable bearer credential.
 - Add multiple IdPs by mapping several issuer/subject pairs to one internal Axo account through an explicit account-linking confirmation flow.

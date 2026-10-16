@@ -2,4 +2,7 @@
 export { default } from "./http/router";
 export { AxoHostDirectory } from "./axo-host-directory";
 export { AxoHostRelay } from "./axo-host-relay";
-export { AxoAccountDirectory, AxoIdentityIndex } from "./auth/account";
+export { AxoIdentityIndex } from "./auth/account";
+// Keep the Durable Object export name stable so existing account SQLite storage is reused.
+export { AxoAccountManager as AxoAccountDirectory } from "./auth/account-manager";
+export { AxoPairingIndex, AxoPairingRateLimit } from "./auth/pairing-directory";

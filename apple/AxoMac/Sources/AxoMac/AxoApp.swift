@@ -10,7 +10,9 @@ struct AxoApp: App {
 
   @StateObject private var daemon: DaemonController
   @StateObject private var sessions: TerminalSessionsModel
+  @NSApplicationDelegateAdaptor(AxoURLSchemeDelegate.self) private var urlSchemeDelegate
   @StateObject private var ghostty: GhosttyRuntime
+  @StateObject private var pairingLink = PairingLinkRouter.shared
   @State private var settingsSection = SettingsSection.general
   private let isUITestApp: Bool
   @AppStorage("terminalSidebarIsCollapsed") private var isSidebarCollapsed = true
@@ -89,17 +91,19 @@ struct AxoApp: App {
     MenuBarExtra {
       AxoMenu(daemon: daemon, settingsSection: $settingsSection)
     } label: {
-      AxoMenuBarLabel()
+      AxoMenuBarLabel(pairingLink: pairingLink, settingsSection: $settingsSection)
     }
     .menuBarExtraStyle(.menu)
 
     Window("Axo Terminal", id: "terminal") {
-      TerminalWorkbenchView(
+      TerminalAppWindow(
         daemon: daemon,
         sessions: sessions,
+        ghostty: ghostty,
+        settingsSection: $settingsSection,
+        pairingLink: pairingLink,
         daemonIsRunningOverride: isUITestApp ? true : nil
       )
-      .environmentObject(ghostty)
       .task {
         guard isUITestApp else { return }
         NSApp.activate(ignoringOtherApps: true)
@@ -234,24 +238,62 @@ struct AxoApp: App {
     }
 
     Window("Axo Settings", id: "settings") {
-      SettingsView(daemon: daemon, ghostty: ghostty, selection: $settingsSection)
+      SettingsView(
+        daemon: daemon,
+        ghostty: ghostty,
+        selection: $settingsSection,
+        pairingLink: pairingLink
+      )
     }
     .windowResizability(.contentSize)
   }
 }
 
+private struct TerminalAppWindow: View {
+  @Environment(\.openWindow) private var openWindow
+  @ObservedObject var daemon: DaemonController
+  @ObservedObject var sessions: TerminalSessionsModel
+  @ObservedObject var ghostty: GhosttyRuntime
+  @Binding var settingsSection: SettingsSection
+  @ObservedObject var pairingLink: PairingLinkRouter
+  var daemonIsRunningOverride: Bool?
+
+  var body: some View {
+    TerminalWorkbenchView(
+      daemon: daemon,
+      sessions: sessions,
+      daemonIsRunningOverride: daemonIsRunningOverride
+    )
+    .environmentObject(ghostty)
+  }
+}
+
 private struct AxoMenuBarLabel: View {
   @Environment(\.openWindow) private var openWindow
+  @ObservedObject var pairingLink: PairingLinkRouter
+  @Binding var settingsSection: SettingsSection
   @State private var didOpenTerminal = false
 
   var body: some View {
     Label("Axo", systemImage: "command")
       .task {
-        guard !didOpenTerminal else { return }
-        didOpenTerminal = true
-        guard !ProcessInfo.processInfo.arguments.contains("--self-test") else { return }
-        openWindow(id: "terminal")
+        if !didOpenTerminal {
+          didOpenTerminal = true
+          guard !ProcessInfo.processInfo.arguments.contains("--self-test") else { return }
+          openWindow(id: "terminal")
+        }
+        if pairingLink.pendingCode != nil {
+          openPairingSettings()
+        }
       }
+      .onChange(of: pairingLink.routeRevision) { _ in
+        openPairingSettings()
+      }
+  }
+
+  private func openPairingSettings() {
+    settingsSection = .remoteAccess
+    openWindow(id: "settings")
   }
 }
 

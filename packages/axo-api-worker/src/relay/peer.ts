@@ -14,6 +14,7 @@ export interface Peer extends Principal {
   calls: number;
   outgoing: number[];
   hostSubscriptions: HostSubscription[];
+  sessionDigest?: string;
 }
 export type CallerContext = { socket: WebSocket; peer: Peer };
 export const peerSchema = z
@@ -31,5 +32,6 @@ export const peerSchema = z
       subscriptionId: z.uuid(),
       hostGeneration: uuid,
     }).strict()).max(64).default([]),
+    sessionDigest: z.string().min(1).max(128).optional(),
   })
   .strict();

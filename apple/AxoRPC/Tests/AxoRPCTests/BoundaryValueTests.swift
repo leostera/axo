@@ -38,6 +38,32 @@ final class BoundaryValueTests: XCTestCase {
     XCTAssertNil(BuildNumber(bundleValue: 42))
   }
 
+  func testPairingCodeParsingNormalizesOnlyTheExpectedCodeShape() {
+    XCTAssertEqual(HostPairingCode(parsing: " b26a-nrkt\n")?.value, "B26A-NRKT")
+    XCTAssertNil(HostPairingCode(parsing: "B26A-IRKT"))
+    XCTAssertNil(HostPairingCode(parsing: "B26A-NRKT-extra"))
+    XCTAssertNil(HostPairingCode(parsing: "B26A NRKT"))
+  }
+
+  func testPairingDeepLinkAcceptsOnlyTheAxoPairRoute() throws {
+    XCTAssertEqual(
+      HostPairingCode.fromPairingURL(try XCTUnwrap(URL(string: "axo://pair/B26A-NRKT")))?.value,
+      "B26A-NRKT"
+    )
+    XCTAssertNil(
+      HostPairingCode.fromPairingURL(
+        try XCTUnwrap(URL(string: "https://axo.leostera.dev/pair/B26A-NRKT"))))
+    XCTAssertNil(
+      HostPairingCode.fromPairingURL(try XCTUnwrap(URL(string: "axo://other/B26A-NRKT"))))
+    XCTAssertNil(
+      HostPairingCode.fromPairingURL(try XCTUnwrap(URL(string: "axo://pair/B26A-NRKT/extra"))))
+    XCTAssertNil(
+      HostPairingCode.fromPairingURL(
+        try XCTUnwrap(URL(string: "axo://pair/B26A-NRKT?redirect=https://example.test"))))
+    XCTAssertNil(
+      HostPairingCode.fromPairingURL(try XCTUnwrap(URL(string: "axo://pair/B26A%2DNRKT"))))
+  }
+
   func testUnixSocketPathMustBeAbsoluteAndFitThePlatformAddress() throws {
     XCTAssertEqual(try UnixSocketPath("/tmp/axod.sock").value, "/tmp/axod.sock")
     XCTAssertThrowsError(try UnixSocketPath("relative/axod.sock"))

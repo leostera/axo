@@ -4,7 +4,12 @@ import SwiftUI
 
 struct RemoteAccessSettingsView: View {
   @ObservedObject var daemon: DaemonController
+  @Binding var pairingCode: HostPairingCode?
 
+  @State private var pairingCodeText = ""
+  @State private var pairingError: String?
+  @State private var pairingSuccess: String?
+  @State private var isLinking = false
   @State private var connection: RemoteAccessStatus?
   @State private var statusError: String?
   @State private var isRequestingConnection = false
@@ -12,6 +17,10 @@ struct RemoteAccessSettingsView: View {
   private var daemonIsRunning: Bool {
     if case .running = daemon.status { return true }
     return false
+  }
+
+  private var parsedPairingCode: HostPairingCode? {
+    HostPairingCode(parsing: pairingCodeText)
   }
 
   private var notRunningActionTitle: String {
@@ -24,6 +33,39 @@ struct RemoteAccessSettingsView: View {
 
   var body: some View {
     Form {
+      Section("Link this Mac") {
+        Text("Enter the one-time code from your Axo account to connect this Mac.")
+          .foregroundStyle(.secondary)
+
+        TextField("XXXX-YYYY", text: $pairingCodeText)
+          .font(.system(.title3, design: .monospaced))
+          .textFieldStyle(.roundedBorder)
+          .accessibilityLabel("Host pairing code")
+
+        if let pairingError {
+          Text(pairingError)
+            .font(.caption)
+            .foregroundStyle(.red)
+            .textSelection(.enabled)
+        }
+        if let pairingSuccess {
+          Label(pairingSuccess, systemImage: "checkmark.circle.fill")
+            .font(.caption)
+            .foregroundStyle(.green)
+        }
+
+        Button {
+          linkHost()
+        } label: {
+          if isLinking {
+            ProgressView("Linking this Mac…")
+          } else {
+            Text("Link this Mac")
+          }
+        }
+        .disabled(parsedPairingCode == nil || !daemonIsRunning || isLinking)
+      }
+
       Section("Connection") {
         RemoteConnectionSummary(
           status: connection,
@@ -41,6 +83,12 @@ struct RemoteAccessSettingsView: View {
       }
     }
     .formStyle(.grouped)
+    .onAppear {
+      applyPairingCode(pairingCode)
+    }
+    .onChange(of: pairingCode) { code in
+      applyPairingCode(code)
+    }
     .task(id: daemon.status) {
       await monitorConnection()
     }
@@ -49,6 +97,36 @@ struct RemoteAccessSettingsView: View {
   private static var platformDescription: String {
     let version = ProcessInfo.processInfo.operatingSystemVersion
     return "macOS \(version.majorVersion).\(version.minorVersion).\(version.patchVersion)"
+  }
+
+  private func applyPairingCode(_ code: HostPairingCode?) {
+    guard let code else { return }
+    pairingCodeText = code.value
+    pairingCode = nil
+    pairingError = nil
+    pairingSuccess = nil
+  }
+
+  private func linkHost() {
+    guard let code = parsedPairingCode, !isLinking else { return }
+    isLinking = true
+    pairingError = nil
+    pairingSuccess = nil
+
+    Task {
+      defer { isLinking = false }
+      do {
+        let result = try await UnixSocketRPC.linkHost(
+          using: code,
+          at: DaemonController.socketPath()
+        )
+        pairingCodeText = ""
+        pairingSuccess = "\(result.hostLabel) is linked. axod will connect automatically."
+        await refreshConnection()
+      } catch {
+        pairingError = error.localizedDescription
+      }
+    }
   }
 
   private func monitorConnection() async {

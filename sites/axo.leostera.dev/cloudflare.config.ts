@@ -26,6 +26,8 @@ export default defineConfig(({ isPreview }) => ({
       AxoHostRelay: exports.durableObject({ storage: "sqlite" }),
       AxoIdentityIndex: exports.durableObject({ storage: "sqlite" }),
       AxoAccountDirectory: exports.durableObject({ storage: "sqlite" }),
+      AxoPairingIndex: exports.durableObject({ storage: "sqlite" }),
+      AxoPairingRateLimit: exports.durableObject({ storage: "sqlite" }),
     },
   },
 }));

@@ -9,6 +9,9 @@ import {
   hostRelayNotificationSchema,
   hostRegisterSchema,
   hostSnapshotSchema,
+  hostPairingCreateResultSchema,
+  hostPairingRedeemRequestSchema,
+  hostPairingRedeemResultSchema,
 } from "../dist/v1.js";
 
 const schemaRoot = resolve(import.meta.dirname, "../../../schemas/axo.leostera.dev/v1");
@@ -20,6 +23,7 @@ const schemaNames = [
   "events.schema.json",
   "local-rpc.schema.json",
   "host-relay.schema.json",
+  "pairing.schema.json",
 ];
 for (const name of schemaNames) {
   const schema = JSON.parse(await readFile(resolve(schemaRoot, name), "utf8"));
@@ -123,6 +127,19 @@ assert.equal(validateHostCall(missingParams), false, "control calls require thei
 const extraField = await fixture("host-session-create.call.json");
 extraField.params.unscopedSessionId = 9;
 assert.equal(validateHostCall(extraField), false, "host-scoped calls reject unscoped fields");
+const pairingSchema = "https://schemas.axo.leostera.dev/v1/pairing.schema.json#/$defs/";
+const createPairing = await fixture("host-pairing-create.result.json");
+validateWith(`${pairingSchema}HostPairingCreateResult`, createPairing);
+assert.equal(hostPairingCreateResultSchema.safeParse(createPairing).success, true);
+const redeemPairing = await fixture("host-pairing-redeem.call.json");
+validateWith(`${pairingSchema}HostPairingRedeemRequest`, redeemPairing);
+assert.equal(hostPairingRedeemRequestSchema.safeParse(redeemPairing).success, true);
+const invalidCredential = { ...redeemPairing, credential: "not-a-host-credential" };
+assert.equal(hostPairingRedeemRequestSchema.safeParse(invalidCredential).success, false);
+const redeemResult = await fixture("host-pairing-redeem.result.json");
+validateWith(`${pairingSchema}HostPairingRedeemResult`, redeemResult);
+assert.equal(hostPairingRedeemResultSchema.safeParse(redeemResult).success, true);
+
 const invalidRelayConfiguration = await fixture("remote-access-configure.call.json");
 invalidRelayConfiguration.params.clientSecret = "unexpected";
 assert.equal(
@@ -131,4 +148,4 @@ assert.equal(
   "relay configuration must not accept app-level Access credentials",
 );
 
-console.log(`Validated ${schemaNames.length} v1 schemas and 24 cross-language fixtures.`);
+console.log(`Validated ${schemaNames.length} v1 schemas and pairing request/result fixtures.`);

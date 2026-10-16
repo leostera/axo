@@ -52,11 +52,11 @@ test("OAuth adapts callable Cloudflare Durable Object namespaces", async () => {
   });
   const namespaces = authExports({
     AxoIdentityIndex: identityNamespace,
-    AxoAccountDirectory: accountNamespace,
+    AxoAccountManager: accountNamespace,
   });
 
   assert.equal(await namespaces.AxoIdentityIndex?.getByName("identity").resolveAccount(), "account-123");
-  assert.ok(namespaces.AxoAccountDirectory?.getByName("account"));
+  assert.ok(namespaces.AxoAccountManager?.getByName("account"));
 });
 
 test("Cloudflare OAuth confidential exchange keeps client secret in Basic auth", async () => {
@@ -155,13 +155,15 @@ test("OAuth callback creates an account-scoped Axo session and logout revokes it
         return { resolveAccount: async () => "account-123" };
       },
     },
-    AxoAccountDirectory: {
+    AxoAccountManager: {
       getByName(accountId: string) {
         assert.equal(accountId, "account-123");
         return {
-          establishSession: async (digest: string) => { sessionDigest = digest; },
-          sessionProfile: async (digest: string) =>
-            !revoked && digest === sessionDigest ? { email: "user@example.test", name: "Test User" } : null,
+          establishSession: async (_accountId: string, digest: string) => { sessionDigest = digest; },
+          sessionProfile: async (accountId: string, digest: string) => {
+            assert.equal(accountId, "account-123");
+            return !revoked && digest === sessionDigest ? { email: "user@example.test", name: "Test User" } : null;
+          },
           revokeSession: async (digest: string) => { if (digest === sessionDigest) revoked = true; },
         };
       },
@@ -216,7 +218,7 @@ test("OAuth callback reports a bounded provider diagnostic without provider deta
     env,
     {
       AxoIdentityIndex: { getByName: () => ({ resolveAccount: async () => "account" }) },
-      AxoAccountDirectory: { getByName: () => ({
+      AxoAccountManager: { getByName: () => ({
         establishSession: async () => undefined,
         sessionProfile: async () => null,
         revokeSession: async () => undefined,

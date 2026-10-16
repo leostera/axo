@@ -11,14 +11,16 @@ import {
 } from "../auth/cloudflare";
 import { serveMachines } from "./machines";
 import { authorizeHttpHostClient, serveHostSessions, serveHosts } from "./hosts";
+import { createHostPairing, redeemHostPairing } from "../auth/pairing";
+import { revokeAccountHost, serveAccountHostSessions, serveAccountHosts, upgradeAccountHostRelay } from "./account-hosts";
 
 type Api = { Bindings: Env };
 const app = new Hono<Api>();
 const APP_ORIGIN = "https://axo.leostera.dev";
 const CORS_METHODS = "GET, POST, OPTIONS";
-const CORS_HEADERS = "Content-Type";
+const CORS_HEADERS = "Content-Type, X-Axo-CSRF";
 
-app.use("/v1/*", async (context, next) => {
+const corsMiddleware = async (context: Context<Api>, next: () => Promise<void>) => {
   const origin = context.req.header("Origin");
   if (context.req.method === "OPTIONS") {
     if (origin !== APP_ORIGIN) return new Response(null, { status: 403 });
@@ -56,7 +58,10 @@ app.use("/v1/*", async (context, next) => {
     statusText: response.statusText,
     headers,
   });
-});
+};
+
+app.use("/v1/*", corsMiddleware);
+app.use("/api/v1/*", corsMiddleware);
 
 async function authorizeCaller(_context: Context<Api>, role: "client" | "daemon"): Promise<Principal | Response> {
   return edgePrincipal(role);
@@ -87,6 +92,69 @@ app.all("/api/auth/logout", context =>
     context.req.raw,
     context.env,
     authExports((context.executionCtx as ExecutionContext).exports),
+  ),
+);
+
+app.all("/api/v1/account/host-pairings", context =>
+  createHostPairing(
+    context.req.raw,
+    context.env,
+    authExports((context.executionCtx as ExecutionContext).exports),
+  ),
+);
+
+app.all("/api/v1/host-pairings/redeem", context =>
+  redeemHostPairing(
+    context.req.raw,
+    context.env,
+    authExports((context.executionCtx as ExecutionContext).exports),
+  ),
+);
+
+app.all("/api/v1/account/hosts", context =>
+  serveAccountHosts(
+    context.req.raw,
+    context.env,
+    authExports((context.executionCtx as ExecutionContext).exports),
+  ),
+);
+
+app.all("/api/v1/account/hosts/:host/sessions", context =>
+  serveAccountHostSessions(
+    context.req.raw,
+    context.env,
+    authExports((context.executionCtx as ExecutionContext).exports),
+    context.req.param("host"),
+  ),
+);
+
+app.all("/api/v1/account/hosts/:host/revoke", context =>
+  revokeAccountHost(
+    context.req.raw,
+    context.env,
+    authExports((context.executionCtx as ExecutionContext).exports),
+    context.req.param("host"),
+  ),
+);
+
+app.all("/api/v1/account/hosts/:host/client", context =>
+  upgradeAccountHostRelay(
+    context.req.raw,
+    context.env,
+    authExports((context.executionCtx as ExecutionContext).exports),
+    "client",
+    context.req.param("host"),
+  ),
+);
+
+app.all("/api/v1/accounts/:account/hosts/:host/daemon", context =>
+  upgradeAccountHostRelay(
+    context.req.raw,
+    context.env,
+    authExports((context.executionCtx as ExecutionContext).exports),
+    "daemon",
+    context.req.param("host"),
+    context.req.param("account"),
   ),
 );
 

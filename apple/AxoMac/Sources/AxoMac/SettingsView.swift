@@ -30,6 +30,7 @@ struct SettingsView: View {
   @ObservedObject var daemon: DaemonController
   let ghostty: GhosttyRuntime
   @Binding var selection: SettingsSection
+  @ObservedObject var pairingLink: PairingLinkRouter
 
   private var sidebarSelection: Binding<SettingsSection?> {
     Binding(
@@ -54,7 +55,7 @@ struct SettingsView: View {
         case .general:
           GeneralSettingsView(daemon: daemon, ghostty: ghostty)
         case .remoteAccess:
-          RemoteAccessSettingsView(daemon: daemon)
+          RemoteAccessSettingsView(daemon: daemon, pairingCode: $pairingLink.pendingCode)
         case .about:
           AboutSettingsView(daemon: daemon)
         }

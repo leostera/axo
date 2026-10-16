@@ -31,6 +31,7 @@ import {
   hostV1Methods,
   hostV1Results,
   type HostMethod,
+  type HostSnapshot,
 } from "@axo/protocol/v1";
 import { peerSchema, type Peer, type CallerContext } from "./relay/peer";
 import type { Route, Group, Pending } from "./relay/records";
@@ -64,15 +65,14 @@ export class AxoHostRelay extends DurableObject<Env> {
   private readonly rpc: JSONRPCServer<CallerContext>;
   constructor(ctx: DurableObjectState, env: Env) {
     super(ctx, env);
-    ctx.storage.sql.exec(
-      "CREATE TABLE IF NOT EXISTS route (singleton INTEGER PRIMARY KEY CHECK(singleton = 1), connection_id TEXT NOT NULL, machine_id TEXT NOT NULL, generation TEXT, lease_until REAL NOT NULL, ready INTEGER NOT NULL)",
-    );
+    this.prepareRoutes();
     ctx.storage.sql.exec(
       "CREATE TABLE IF NOT EXISTS groups (group_id TEXT PRIMARY KEY, connection_id TEXT NOT NULL, batch INTEGER NOT NULL, remaining INTEGER NOT NULL, replies TEXT NOT NULL)",
     );
     ctx.storage.sql.exec(
-      "CREATE TABLE IF NOT EXISTS pending (hop_id TEXT PRIMARY KEY, group_id TEXT NOT NULL, original_id TEXT NOT NULL, connection_id TEXT NOT NULL, method TEXT NOT NULL, generation TEXT NOT NULL, deadline REAL NOT NULL)",
+      "CREATE TABLE IF NOT EXISTS pending (hop_id TEXT PRIMARY KEY, group_id TEXT NOT NULL, original_id TEXT NOT NULL, connection_id TEXT NOT NULL, machine_id TEXT NOT NULL, method TEXT NOT NULL, generation TEXT NOT NULL, deadline REAL NOT NULL)",
     );
+    this.preparePending();
     this.discardDisconnectedCorrelations();
     this.rpc = this.createRpcServer();
   }
@@ -96,6 +96,7 @@ export class AxoHostRelay extends DurableObject<Env> {
       return {
         protocolVersion: 1,
         methods: [
+          ...(this.supportsLegacyMachineMethods() ? ["axo.machine.register", "axo.machine.heartbeat"] : []),
           ...Object.keys(remoteMethods),
           ...Object.keys(hostV1Methods).filter((method) =>
             method !== "axo.host.list" && method !== "axo.host.sessions.list",
@@ -121,6 +122,35 @@ export class AxoHostRelay extends DurableObject<Env> {
     );
     return server;
   }
+  private prepareRoutes(): void {
+    const sql = this.ctx.storage.sql;
+    const columns = sql.exec<{ name: string }>("PRAGMA table_info(route)").toArray();
+    if (columns.length === 0) {
+      sql.exec("CREATE TABLE route (machine_id TEXT PRIMARY KEY, connection_id TEXT NOT NULL UNIQUE, generation TEXT, lease_until REAL NOT NULL, ready INTEGER NOT NULL)");
+      return;
+    }
+    if (columns.some((column) => column.name === "singleton")) {
+      this.ctx.storage.transactionSync(() => {
+        sql.exec("ALTER TABLE route RENAME TO legacy_route");
+        sql.exec("CREATE TABLE route (machine_id TEXT PRIMARY KEY, connection_id TEXT NOT NULL UNIQUE, generation TEXT, lease_until REAL NOT NULL, ready INTEGER NOT NULL)");
+        sql.exec("INSERT INTO route (machine_id, connection_id, generation, lease_until, ready) SELECT machine_id, connection_id, generation, lease_until, ready FROM legacy_route");
+        sql.exec("DROP TABLE legacy_route");
+      });
+    }
+  }
+  private preparePending(): void {
+    const sql = this.ctx.storage.sql;
+    const columns = sql.exec<{ name: string }>("PRAGMA table_info(pending)").toArray();
+    if (!columns.some((column) => column.name === "machine_id")) {
+      this.ctx.storage.transactionSync(() => {
+        sql.exec("ALTER TABLE pending ADD COLUMN machine_id TEXT NOT NULL DEFAULT ''");
+        sql.exec(`UPDATE pending SET machine_id = COALESCE((
+          SELECT machine_id FROM route WHERE route.connection_id = pending.connection_id
+        ), '') WHERE machine_id = ''`);
+      });
+    }
+    sql.exec("CREATE INDEX IF NOT EXISTS pending_by_machine ON pending(machine_id, deadline)");
+  }
   private discardDisconnectedCorrelations() {
     const connected = new Set(
       this.ctx.getWebSockets().map((socket) => this.peer(socket).connectionId),
@@ -138,9 +168,8 @@ export class AxoHostRelay extends DurableObject<Env> {
       );
       sql.exec("DELETE FROM groups WHERE connection_id = ?", row.connection_id);
     }
-    const route = this.route();
-    if (route && !connected.has(route.connection_id))
-      this.fence(route.connection_id);
+    for (const route of this.routes())
+      if (!connected.has(route.connection_id)) this.fence(route.connection_id);
   }
   private peer(socket: WebSocket): Peer {
     return peerSchema.parse(socket.deserializeAttachment());
@@ -156,24 +185,39 @@ export class AxoHostRelay extends DurableObject<Env> {
       (socket) => this.peer(socket).connectionId === id,
     );
   }
-  private route(): Route | undefined {
-    return this.ctx.storage.sql
-      .exec<Route>("SELECT * FROM route WHERE singleton = 1")
-      .toArray()[0];
+  private route(machineId?: string): Route | undefined {
+    const sql = this.ctx.storage.sql;
+    return machineId
+      ? sql.exec<Route>("SELECT * FROM route WHERE machine_id = ?", machineId).toArray()[0]
+      : sql.exec<Route>("SELECT * FROM route LIMIT 1").toArray()[0];
   }
-  private active(): { route: Route; socket: WebSocket } | undefined {
-    const route = this.route();
+  private routeByConnection(connectionId: string): Route | undefined {
+    return this.ctx.storage.sql.exec<Route>(
+      "SELECT * FROM route WHERE connection_id = ?",
+      connectionId,
+    ).toArray()[0];
+  }
+  private routes(): Route[] {
+    return this.ctx.storage.sql.exec<Route>("SELECT * FROM route").toArray();
+  }
+  private active(machineId?: string): { route: Route; socket: WebSocket } | undefined {
+    const route = this.route(machineId);
     if (!route?.ready || route.lease_until <= Date.now()) return;
     const socket = this.socket(route.connection_id);
     if (socket) return { route, socket };
   }
-  presence() {
-    const active = this.active();
+  presence(machineId?: string) {
+    const active = this.active(machineId);
     return {
       online: !!active,
       hostGeneration: active?.route.generation ?? null,
     };
   }
+
+  protected async authorizeRelayPeer(_request: Request, _peer: Peer): Promise<boolean> {
+    return true;
+  }
+  protected supportsLegacyMachineMethods(): boolean { return true; }
 
   async fetch(request: Request): Promise<Response> {
     const now = Date.now();
@@ -187,24 +231,29 @@ export class AxoHostRelay extends DurableObject<Env> {
       window: now,
       calls: 0,
       outgoing: [],
+      ...(request.headers.has("X-Axo-Session-Digest")
+        ? { sessionDigest: request.headers.get("X-Axo-Session-Digest")! }
+        : {}),
     });
     if (!parsed.success || parsed.data.expiresAt <= now)
       return new Response("Invalid internal identity", { status: 403 });
     const peer = parsed.data;
+    if (!(await this.authorizeRelayPeer(request, peer)))
+      return new Response("Host is not authorized", { status: 403 });
     if (
       peer.role === "client" &&
-      this.sockets("client").length >= LIMITS.clientsPerMachine
+      this.sockets("client").filter((socket) => this.peer(socket).machineId === peer.machineId).length >= LIMITS.clientsPerMachine
     )
       return new Response("Client capacity", { status: 429 });
     if (peer.role === "daemon") {
-      const old = this.route();
+      const old = this.route(peer.machineId);
       if (old && old.lease_until > now && this.socket(old.connection_id))
         return new Response("Duplicate machine connection", { status: 409 });
       if (old) this.fence(old.connection_id);
       this.ctx.storage.sql.exec(
-        "INSERT OR REPLACE INTO route VALUES (1, ?, ?, NULL, ?, 0)",
-        peer.connectionId,
+        "INSERT OR REPLACE INTO route (machine_id, connection_id, generation, lease_until, ready) VALUES (?, ?, NULL, ?, 0)",
         peer.machineId,
+        peer.connectionId,
         Math.min(peer.expiresAt, now + LIMITS.deadlineMs),
       );
     }
@@ -367,7 +416,7 @@ export class AxoHostRelay extends DurableObject<Env> {
       this.complete(groupId, failure(id, -32602, "Invalid params"));
       return;
     }
-    const active = this.active();
+    const active = this.active(peer.machineId);
     if (
       parsed.data.target.machineId !== peer.machineId ||
       (active && active.route.machine_id !== peer.machineId)
@@ -388,7 +437,7 @@ export class AxoHostRelay extends DurableObject<Env> {
     }
     const sql = this.ctx.storage.sql;
     if (
-      sql.exec<{ count: number }>("SELECT COUNT(*) AS count FROM pending").one()
+      sql.exec<{ count: number }>("SELECT COUNT(*) AS count FROM pending WHERE machine_id = ?", peer.machineId).one()
         .count >= LIMITS.pendingPerMachine ||
       sql
         .exec<{ count: number }>(
@@ -407,18 +456,19 @@ export class AxoHostRelay extends DurableObject<Env> {
       active.route.lease_until,
     );
     sql.exec(
-      "INSERT INTO pending VALUES (?, ?, ?, ?, ?, ?, ?)",
+      "INSERT INTO pending (hop_id, group_id, original_id, connection_id, machine_id, method, generation, deadline) VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
       hopId,
       groupId,
       JSON.stringify(id),
       active.route.connection_id,
+      peer.machineId,
       method,
       active.route.generation!,
       deadline,
     );
     await this.ctx.storage.sync();
     if (
-      this.active()?.route.connection_id !== active.route.connection_id ||
+      this.active(peer.machineId)?.route.connection_id !== active.route.connection_id ||
       !this.socket(peer.connectionId) ||
       deadline <= Date.now()
     ) {
@@ -447,7 +497,7 @@ export class AxoHostRelay extends DurableObject<Env> {
       return;
     }
     const target = parsed.data;
-    const active = this.active();
+    const active = this.active(peer.machineId);
     if (target.hostId !== peer.machineId || (active && active.route.machine_id !== target.hostId)) {
       this.complete(groupId, failure(call.id!, -32002, "Wrong host"));
       return;
@@ -528,7 +578,7 @@ export class AxoHostRelay extends DurableObject<Env> {
     });
     for (const socket of this.sockets("client")) {
       const peer = this.peer(socket);
-      if (!peer.negotiated) continue;
+      if (!peer.negotiated || peer.machineId !== hostId) continue;
       for (const subscription of peer.hostSubscriptions) {
         if (status === "offline" && subscription.hostGeneration !== hostGeneration) continue;
         this.sendHostEvent(socket, subscription.subscriptionId, event);
@@ -542,7 +592,7 @@ export class AxoHostRelay extends DurableObject<Env> {
     event: unknown,
   ): Promise<void> {
     const parsed = hostDataEventSchema.safeParse(event);
-    const route = this.active()?.route;
+    const route = this.active(peer.machineId)?.route;
     if (
       !parsed.success ||
       peer.role !== "daemon" ||
@@ -555,9 +605,7 @@ export class AxoHostRelay extends DurableObject<Env> {
       return;
     }
     try {
-      await this.ctx.exports.AxoHostDirectory
-        .getByName("private-fleet")
-        .applyHostEvent(parsed.data, peer.identity);
+      await this.storeHostEvent(parsed.data, peer.identity);
     } catch {
       this.drop(socket, 1008, "Host event rejected");
       return;
@@ -565,7 +613,7 @@ export class AxoHostRelay extends DurableObject<Env> {
 
     for (const client of this.sockets("client")) {
       const clientPeer = this.peer(client);
-      if (!clientPeer.negotiated) continue;
+      if (!clientPeer.negotiated || clientPeer.machineId !== parsed.data.hostId) continue;
       for (const subscription of clientPeer.hostSubscriptions) {
         if (subscription.hostGeneration !== parsed.data.hostGeneration) continue;
         this.sendHostEvent(client, subscription.subscriptionId, parsed.data);
@@ -585,7 +633,7 @@ export class AxoHostRelay extends DurableObject<Env> {
       this.complete(groupId, failure(call.id!, -32602, "Invalid params"));
       return;
     }
-    const active = this.active();
+    const active = this.active(peer.machineId);
     if (
       parsed.data.target.hostId !== peer.machineId ||
       (active && active.route.machine_id !== peer.machineId)
@@ -603,7 +651,7 @@ export class AxoHostRelay extends DurableObject<Env> {
     }
     const sql = this.ctx.storage.sql;
     if (
-      sql.exec<{ count: number }>("SELECT COUNT(*) AS count FROM pending").one().count >= LIMITS.pendingPerMachine ||
+      sql.exec<{ count: number }>("SELECT COUNT(*) AS count FROM pending WHERE machine_id = ?", peer.machineId).one().count >= LIMITS.pendingPerMachine ||
       sql.exec<{ count: number }>(
         "SELECT COUNT(*) AS count FROM pending WHERE group_id IN (SELECT group_id FROM groups WHERE connection_id = ?)",
         peer.connectionId,
@@ -619,18 +667,19 @@ export class AxoHostRelay extends DurableObject<Env> {
       active.route.lease_until,
     );
     sql.exec(
-      "INSERT INTO pending VALUES (?, ?, ?, ?, ?, ?, ?)",
+      "INSERT INTO pending (hop_id, group_id, original_id, connection_id, machine_id, method, generation, deadline) VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
       hopId,
       groupId,
       JSON.stringify(call.id),
       active.route.connection_id,
+      peer.machineId,
       method,
       active.route.generation!,
       deadline,
     );
     await this.ctx.storage.sync();
     if (
-      this.active()?.route.connection_id !== active.route.connection_id ||
+      this.active(peer.machineId)?.route.connection_id !== active.route.connection_id ||
       !this.socket(peer.connectionId) ||
       deadline <= Date.now()
     ) {
@@ -642,8 +691,28 @@ export class AxoHostRelay extends DurableObject<Env> {
     }
   }
 
+  protected async storeHostRegistration(registration: unknown, principal: string): Promise<HostSnapshot> {
+    return this.ctx.exports.AxoHostDirectory
+      .getByName("private-fleet")
+      .registerHost(registration, principal);
+  }
+  protected async storeHostHeartbeat(reference: unknown, principal: string): Promise<{ acknowledged: true; lastSeenAt: string }> {
+    return this.ctx.exports.AxoHostDirectory
+      .getByName("private-fleet")
+      .heartbeatHost(reference, principal);
+  }
+  protected async storeHostSessions(publication: unknown, principal: string): Promise<{ storedAt: string }> {
+    return this.ctx.exports.AxoHostDirectory
+      .getByName("private-fleet")
+      .publishHostSessions(publication, principal);
+  }
+  protected async storeHostEvent(event: unknown, principal: string): Promise<void> {
+    await this.ctx.exports.AxoHostDirectory
+      .getByName("private-fleet")
+      .applyHostEvent(event, principal);
+  }
   private admittedDaemon(peer: Peer): Route {
-    const route = this.route();
+    const route = this.route(peer.machineId);
     if (peer.role !== "daemon")
       throw new JSONRPCErrorException("Method not found", -32601);
     if (
@@ -659,6 +728,8 @@ export class AxoHostRelay extends DurableObject<Env> {
     params: unknown,
     { socket, peer }: CallerContext,
   ): Promise<Registered> {
+    if (!this.supportsLegacyMachineMethods())
+      throw new JSONRPCErrorException("Method not found", -32601);
     const route = this.admittedDaemon(peer);
     const parsed = registrationSchema.safeParse(params);
     if (
@@ -699,6 +770,8 @@ export class AxoHostRelay extends DurableObject<Env> {
     };
   }
   private heartbeat(params: unknown, { peer }: CallerContext): Heartbeat {
+    if (!this.supportsLegacyMachineMethods())
+      throw new JSONRPCErrorException("Method not found", -32601);
     const route = this.admittedDaemon(peer);
     if (
       !route.ready ||
@@ -731,9 +804,7 @@ export class AxoHostRelay extends DurableObject<Env> {
       parsed.data.hostGeneration,
       peer.connectionId,
     );
-    const host = await this.ctx.exports.AxoHostDirectory
-      .getByName("private-fleet")
-      .registerHost(parsed.data, peer.identity);
+    const host = await this.storeHostRegistration(parsed.data, peer.identity);
     const current = this.admittedDaemon(peer);
     if (
       current.generation !== parsed.data.hostGeneration ||
@@ -763,9 +834,7 @@ export class AxoHostRelay extends DurableObject<Env> {
     )
       throw new JSONRPCErrorException("Invalid host heartbeat", -32602);
 
-    const result = await this.ctx.exports.AxoHostDirectory
-      .getByName("private-fleet")
-      .heartbeatHost(parsed.data, peer.identity);
+    const result = await this.storeHostHeartbeat(parsed.data, peer.identity);
     this.renewRoute(peer);
     return result;
   }
@@ -781,9 +850,7 @@ export class AxoHostRelay extends DurableObject<Env> {
     )
       throw new JSONRPCErrorException("Invalid host session publication", -32602);
 
-    const result = await this.ctx.exports.AxoHostDirectory
-      .getByName("private-fleet")
-      .publishHostSessions(parsed.data, peer.identity);
+    const result = await this.storeHostSessions(parsed.data, peer.identity);
     this.renewRoute(peer);
     return result;
   }
@@ -801,7 +868,7 @@ export class AxoHostRelay extends DurableObject<Env> {
     const pending = this.ctx.storage.sql
       .exec<Pending>("SELECT * FROM pending WHERE hop_id = ?", reply.id)
       .toArray()[0];
-    const active = this.active();
+    const active = this.active(this.peer(socket).machineId);
     if (
       !pending ||
       !active ||
@@ -913,9 +980,21 @@ export class AxoHostRelay extends DurableObject<Env> {
       return false;
     }
   }
-  private fence(connectionId: string) {
+  protected closeHostRelay(machineId: string): void {
+    for (const socket of this.sockets("client")) {
+      if (this.peer(socket).machineId === machineId) this.drop(socket, 4003, "Host revoked");
+    }
+    const route = this.route(machineId);
+    if (route) this.fence(route.connection_id);
+  }
+  protected closeClientSession(sessionDigest: string): void {
+    for (const socket of this.sockets("client")) {
+      if (this.peer(socket).sessionDigest === sessionDigest) this.drop(socket, 4001, "Session revoked");
+    }
+  }
+  protected fence(connectionId: string) {
     const sql = this.ctx.storage.sql;
-    const previousRoute = this.route();
+    const previousRoute = this.routeByConnection(connectionId);
     const rows = sql
       .exec<Pending>(
         "SELECT * FROM pending WHERE connection_id = ?",
@@ -969,8 +1048,7 @@ export class AxoHostRelay extends DurableObject<Env> {
     const deadlines = this.sockets().map(
       (socket) => this.peer(socket).expiresAt,
     );
-    const route = this.route();
-    if (route) deadlines.push(route.lease_until);
+    for (const route of this.routes()) deadlines.push(route.lease_until);
     const pending = this.ctx.storage.sql
       .exec<{ deadline: number }>(
         "SELECT MIN(deadline) AS deadline FROM pending",
@@ -984,9 +1062,8 @@ export class AxoHostRelay extends DurableObject<Env> {
     else await this.ctx.storage.deleteAlarm();
   }
   async alarm() {
-    const route = this.route();
-    if (route && route.lease_until <= Date.now())
-      this.fence(route.connection_id);
+    for (const route of this.routes())
+      if (route.lease_until <= Date.now()) this.fence(route.connection_id);
     for (const socket of this.ctx.getWebSockets())
       if (this.peer(socket).expiresAt <= Date.now())
         this.drop(socket, 4001, "Access expired");

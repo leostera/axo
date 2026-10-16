@@ -5,7 +5,7 @@ package(default_visibility = ["//visibility:public"])
 
 rust_library(
     name = "axo_server",
-    srcs = ["src/lib.rs", "src/session.rs", "src/relay.rs"],
+    srcs = ["src/lib.rs", "src/session.rs", "src/relay.rs", "src/credential.rs", "src/pairing.rs"],
     edition = crate_edition(),
     rustc_env_files = ["build_number.env"],
     stamp = 1,
@@ -14,7 +14,7 @@ rust_library(
 
 rust_test(
     name = "axo_server_tests",
-    srcs = ["src/lib.rs", "src/session.rs", "src/relay.rs"],
+    srcs = ["src/lib.rs", "src/session.rs", "src/relay.rs", "src/credential.rs", "src/pairing.rs"],
     edition = crate_edition(),
     rustc_env_files = ["build_number.env"],
     stamp = 1,
