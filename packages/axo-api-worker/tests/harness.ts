@@ -14,7 +14,7 @@ export async function harness(configuration: { audience?: string } = {}) {
   const directory = await mkdtemp(join(tmpdir(), "axo-api-"));
   const bundle = join(directory, "worker.mjs");
   await build({
-    entryPoints: [resolve(root, "sites/api.axo.leostera.dev/src/index.ts")],
+    entryPoints: [resolve(root, "packages/axo-api-worker/src/index.ts")],
     outfile: bundle,
     bundle: true,
     format: "esm",

@@ -19,16 +19,15 @@ Users need a simple first-run path: sign in on the Axo website, authorize one ho
 
 This changes the security model and storage ownership across the app, API, protocol, and daemon. It needs a reviewable contract before implementation.
 
-### Current source boundary (pre-extraction)
+### Current source boundary
 
-At the current source checkpoint, before the package-boundary refactor:
+The first implementation step has moved product code out of site directories:
 
-- [`sites/api.axo.leostera.dev/src/access.ts`](../../sites/api.axo.leostera.dev/src/access.ts) makes synthetic edge principals; the API does not verify an Axo account or device credential.
-- [`sites/api.axo.leostera.dev/src/http/router.ts`](../../sites/api.axo.leostera.dev/src/http/router.ts) assigns WebSocket roles from route segments, and forwards a fresh internal principal to the relay Durable Object.
-- [`sites/api.axo.leostera.dev/src/axo-host-directory.ts`](../../sites/api.axo.leostera.dev/src/axo-host-directory.ts) stores hosts and snapshots in one `private-fleet` directory; it is not partitioned by Axo account.
-- The Worker README says Cloudflare Access is the edge identity gate and that the Worker derives roles from routes. The current production Access policies were not inspected or changed for this proposal.
-
-These paths describe the existing implementation only. Before implementing account/pairing behavior, move the API Worker handler, auth, Durable Object classes, domain logic, and their tests into `packages/axo-api-worker`; move the React application, terminal UI, browser logic, and their tests into `packages/axo-web-app`. Keep `packages/axo-api` as the shared protocol/schema package. The existing site directories become thin entrypoint shims plus deployment configuration; product logic and its tests live under `packages/*`.
+- [`packages/axo-api-worker/src/access.ts`](../../packages/axo-api-worker/src/access.ts) still makes synthetic edge principals; the API does not yet verify an Axo account or device credential.
+- [`packages/axo-api-worker/src/http/router.ts`](../../packages/axo-api-worker/src/http/router.ts) still assigns WebSocket roles from route segments and forwards a fresh internal principal to the relay Durable Object.
+- [`packages/axo-api-worker/src/axo-host-directory.ts`](../../packages/axo-api-worker/src/axo-host-directory.ts) still stores hosts and snapshots in one `private-fleet` directory; it is not partitioned by Axo account.
+- The app and Worker implementations, their tests, and runtime dependencies now live in `packages/axo-web-app` and `packages/axo-api-worker`. The `sites/*` directories contain thin entrypoint shims and deployment configuration.
+- The current production Access policies have not been changed or inspected as part of this implementation.
 
 ## Goals
 

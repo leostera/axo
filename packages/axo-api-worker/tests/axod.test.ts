@@ -182,7 +182,7 @@ test(
         "--allow-loopback",
       ],
       {
-        cwd: join(root, "sites/api.axo.leostera.dev"),
+        cwd: join(root, "packages/axo-api-worker"),
         timeout: 15000,
         maxBuffer: 65536,
       },

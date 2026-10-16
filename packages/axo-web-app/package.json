@@ -1,0 +1,38 @@
+{
+  "name": "@axo/web-app",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "description": "Axo web application and browser acceptance tests",
+  "exports": {
+    ".": {
+      "types": "./src/main.tsx",
+      "import": "./src/main.tsx",
+      "default": "./src/main.tsx"
+    }
+  },
+  "scripts": {
+    "build": "tsc -p tsconfig.json --noEmit",
+    "typecheck": "tsc -p tsconfig.json --noEmit",
+    "test:browser": "node --test test/browser.test.mjs",
+    "test": "npm run typecheck && npm run test:browser"
+  },
+  "dependencies": {
+    "@axo/app": "file:../axo-app",
+    "@axo/protocol": "file:../axo-api",
+    "@xterm/addon-fit": "^0.11.0",
+    "@xterm/xterm": "^6.0.0",
+    "react": "^19.3.1",
+    "react-dom": "^19.3.1"
+  },
+  "devDependencies": {
+    "@types/node": "^24.0.0",
+    "@types/react": "^19.3.0",
+    "@types/react-dom": "^19.3.0",
+    "@vitejs/plugin-react": "^6.1.2",
+    "playwright-core": "^1.64.1",
+    "typescript": "^7.0.2",
+    "vite": "^8.3.0",
+    "ws": "^8.18.0"
+  }
+}
