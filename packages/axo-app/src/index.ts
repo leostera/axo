@@ -102,7 +102,7 @@ export class RemoteAxoApi {
   }
 
   async listHosts(signal?: AbortSignal): Promise<Host[]> {
-    const response = await this.get("/v1/hosts", signal);
+    const response = await this.get("/api/v1/account/hosts", signal);
     return hostListResultSchema.parse(await response.json()).hosts;
   }
 
@@ -110,7 +110,7 @@ export class RemoteAxoApi {
     const host = hostRefSchema.parse(reference);
     const query = new URLSearchParams({ hostGeneration: host.hostGeneration });
     const response = await this.get(
-      `/v1/hosts/${encodeURIComponent(host.hostId)}/sessions?${query}`,
+      `/api/v1/account/hosts/${encodeURIComponent(host.hostId)}/sessions?${query}`,
       signal,
     );
     const result = hostSessionsListResultSchema.parse(await response.json());
@@ -163,7 +163,7 @@ export class RemoteAxoApi {
   private webSocketUrl(reference: HostRef): string {
     const host = hostRefSchema.parse(reference);
     const url = new URL(
-      `/v1/hosts/${encodeURIComponent(host.hostId)}/client`,
+      `/api/v1/account/hosts/${encodeURIComponent(host.hostId)}/client`,
       this.baseUrl,
     );
     url.protocol = url.protocol === "https:" ? "wss:" : "ws:";

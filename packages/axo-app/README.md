@@ -11,4 +11,4 @@ npm --prefix packages/axo-app install
 npm --prefix packages/axo-app test
 ```
 
-`RemoteAxoApi` accepts an API origin, with optional fetch and WebSocket factories for isolated tests. The canonical public origin is `https://axo.leostera.dev`; its product host/relay endpoints remain unavailable until account-scoped authorization and pairing are implemented. The retired app/API subdomains are no longer the production target.
+`RemoteAxoApi` accepts an API origin, with optional fetch and WebSocket factories for isolated tests. The canonical public origin is `https://axo.leostera.dev`. The client uses the same-origin account-scoped host and relay endpoints at `/api/v1/account/hosts`; browser-managed Axo session cookies authorize host discovery, session metadata, and relay connections. The retired app/API subdomains and the legacy global `private-fleet` host routes are not used by this product client.

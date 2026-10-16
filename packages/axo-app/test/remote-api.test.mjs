@@ -100,7 +100,7 @@ test("HTTP metadata calls include browser Access credentials and validate the AP
   const requests = [];
   const api = new RemoteAxoApi("https://api.example.test/", async (input, init) => {
     requests.push({ url: new URL(input), init });
-    if (new URL(input).pathname === "/v1/hosts") {
+    if (new URL(input).pathname === "/api/v1/account/hosts") {
       return Response.json({ hosts: [host()] });
     }
     return Response.json({ host: host(), sessions: [snapshot()] });
@@ -113,7 +113,7 @@ test("HTTP metadata calls include browser Access credentials and validate the AP
   assert.equal(requests[0].init.credentials, "include");
   assert.equal(requests[0].init.cache, "no-store");
   assert.equal(requests[0].init.method, "GET");
-  assert.equal(requests[1].url.pathname, `/v1/hosts/${hostId}/sessions`);
+  assert.equal(requests[1].url.pathname, `/api/v1/account/hosts/${hostId}/sessions`);
   assert.equal(requests[1].url.searchParams.get("hostGeneration"), hostGeneration);
 });
 
@@ -135,7 +135,7 @@ test("WebSocket negotiates, subscribes, dispatches live events, and calls sessio
     (event) => receivedEvents.push(event),
     (error) => closeErrors.push(error),
   );
-  assert.equal(socket.url, `wss://api.example.test/v1/hosts/${hostId}/client`);
+  assert.equal(socket.url, `wss://api.example.test/api/v1/account/hosts/${hostId}/client`);
   assert.deepEqual(socket.sent
     .filter((request) => request.method !== "axo.transport.ack")
     .map((request) => request.method)

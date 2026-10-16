@@ -34,7 +34,7 @@ function terminalKey(sessionId: number, shellId: number): string {
 
 function messageFor(error: unknown): string {
   if (error instanceof AxoApiError && (error.status === 401 || error.status === 403)) {
-    return "Axo API access is required. Authenticate with the API, then retry.";
+    return "Your Axo sign-in expired. Sign in again to reconnect to your hosts.";
   }
   if (error instanceof AxoRpcError) {
     return `The host rejected the request (${error.code}): ${error.message}`;
@@ -134,7 +134,31 @@ function LayoutBranch({
   );
 }
 
-export function RemoteTerminalApp() {
+type AccountProfile = { email: string | null; name: string | null };
+
+type RemoteTerminalAppProps = {
+  profile?: AccountProfile;
+  accountError?: string | null;
+  pairingCode?: string | null;
+  pairingExpiresAt?: string | null;
+  creatingPairing?: boolean;
+  onCreatePairing?: () => void;
+  onCopyPairingCode?: () => void;
+  onDismissPairing?: () => void;
+  onSignOut?: () => void;
+};
+
+export function RemoteTerminalApp({
+  profile,
+  accountError = null,
+  pairingCode = null,
+  pairingExpiresAt = null,
+  creatingPairing = false,
+  onCreatePairing,
+  onCopyPairingCode,
+  onDismissPairing,
+  onSignOut,
+}: RemoteTerminalAppProps = {}) {
   const api = useMemo(() => new RemoteAxoApi(apiBaseUrl), []);
   const registry = useRef<TerminalRegistry>(new Map());
   const connectionRef = useRef<Awaited<ReturnType<RemoteAxoApi["connectHost"]>> | null>(null);
@@ -154,7 +178,7 @@ export function RemoteTerminalApp() {
   const selectedHost = hosts.find((host) => host.hostId === selectedHostId) ?? null;
   const selectedSession = sessions.find((session) => session.sessionId === selectedSessionId) ?? null;
   const active = Boolean(selectedHost && selectedHost.status === "online" && connectionState === "live");
-  const apiLoginUrl = new URL("/", apiBaseUrl).href;
+  const apiLoginUrl = new URL("/app", apiBaseUrl).href;
 
   const refreshHosts = useCallback(async (signal?: AbortSignal) => {
     try {
@@ -375,16 +399,8 @@ export function RemoteTerminalApp() {
   return (
     <main className="remote-app">
       <aside className="sidebar">
-        <div className="brand-lockup">
-          <div className="brand-mark">a</div>
-          <div>
-            <div className="brand-name">axo</div>
-            <div className="brand-caption">REMOTE TERMINALS</div>
-          </div>
-        </div>
-
-        <div className="sidebar-heading">
-          <span>Your hosts</span>
+        <div className="sidebar-heading sidebar-hosts-heading">
+          <span>Hosts</span>
           <button className="icon-button refresh-button" onClick={() => void refreshHosts()} title="Refresh hosts" aria-label="Refresh hosts">
             ↻
           </button>
@@ -422,7 +438,7 @@ export function RemoteTerminalApp() {
                   key={session.sessionId}
                   onClick={() => selectSession(session.sessionId)}
                 >
-                  <span className="session-icon">⌘</span>
+                  <span className="session-icon" aria-hidden="true">&gt;_</span>
                   <span className="session-copy">
                     <span className="session-name">Session {session.sessionId}</span>
                     <span className="session-meta">{session.shells.length} {session.shells.length === 1 ? "pane" : "panes"}</span>
@@ -436,7 +452,7 @@ export function RemoteTerminalApp() {
 
         <div className="sidebar-bottom">
           <span className="access-lock">◈</span>
-          <span>Private to your Access identity</span>
+          <span>Private to your Axo account</span>
         </div>
       </aside>
 
@@ -444,24 +460,35 @@ export function RemoteTerminalApp() {
         <header className="topbar">
           <div className="breadcrumbs">
             <span className="breadcrumb-muted">{selectedHost?.label ?? "Your workspace"}</span>
-            {selectedSession ? <><span className="breadcrumb-separator">/</span><span>Session {selectedSession.sessionId}</span></> : null}
+            {selectedSession ? <><span className="breadcrumb-separator">/</span><h1 className="breadcrumb-session">Session {selectedSession.sessionId}</h1></> : null}
           </div>
           <div className="topbar-actions">
             <span className={`connection-chip ${connectionState}`}>
               <span className="status-dot" />
               {connectionState === "live" ? "Live" : connectionState === "connecting" ? "Connecting" : connectionState === "error" ? "Unavailable" : "Offline"}
             </span>
+            {onCreatePairing ? (
+              <button className="link-host-button" onClick={onCreatePairing} disabled={creatingPairing}>
+                {creatingPairing ? "Creating code…" : "Link a Mac"}
+              </button>
+            ) : null}
             <button className="new-session-button" onClick={() => void openNewSession()} disabled={!active || newSessionBusy} title="New session (⌘T)">
               <span className="plus">＋</span> New session <kbd>⌘T</kbd>
             </button>
+            {onSignOut ? (
+              <div className="account-actions">
+                <span title={profile?.email ?? undefined}>{profile?.name || profile?.email || "Axo account"}</span>
+                <button className="account-signout" onClick={onSignOut}>Sign out</button>
+              </div>
+            ) : null}
           </div>
         </header>
 
         {error ? (
           <div className="message-banner error-banner" role="alert">
             <span>{error}</span>
-            {(error.includes("Access") || error.includes("reach the Axo API")) ? (
-              <a href={apiLoginUrl} target="_blank" rel="noreferrer">Open Axo API access ↗</a>
+            {(error.includes("sign-in expired") || error.includes("reach the Axo API")) ? (
+              <a href={apiLoginUrl} target="_blank" rel="noreferrer">Sign in to Axo ↗</a>
             ) : null}
             <button onClick={() => setError(null)} aria-label="Dismiss error">×</button>
           </div>
@@ -470,6 +497,9 @@ export function RemoteTerminalApp() {
           <div className="message-banner notice-banner" role="status">
             <span>{notice}</span><button onClick={() => setNotice(null)} aria-label="Dismiss notice">×</button>
           </div>
+        ) : null}
+        {accountError ? (
+          <div className="message-banner error-banner" role="alert"><span>{accountError}</span></div>
         ) : null}
 
         {!selectedHost ? (
@@ -482,18 +512,6 @@ export function RemoteTerminalApp() {
           </div>
         ) : (
           <div className="terminal-workspace">
-            <div className="workspace-heading">
-              <div>
-                <p className="eyebrow">{selectedHost.hostKind.toUpperCase()} HOST</p>
-                <h1>{selectedSession ? `Session ${selectedSession.sessionId}` : "No session selected"}</h1>
-              </div>
-              {selectedHost.stale ? (
-                <div className="stale-badge" title={`Last seen ${new Date(selectedHost.lastSeenAt).toLocaleString()}`}>
-                  <span className="status-dot offline" /> Offline snapshot <span>·</span> Last seen {new Date(selectedHost.lastSeenAt).toLocaleString()}
-                </div>
-              ) : null}
-            </div>
-
             {selectedHost.status === "offline" ? (
               <div className="offline-callout">
                 <div className="offline-icon">◌</div>
@@ -503,11 +521,6 @@ export function RemoteTerminalApp() {
 
             {selectedSession ? (
               <div className="terminal-frame">
-                <div className="terminal-frame-bar">
-                  <div className="window-controls"><i /><i /><i /></div>
-                  <div className="frame-title">{selectedHost.label} <span>—</span> session {selectedSession.sessionId}</div>
-                  <div className="frame-state"><span className={`status-dot ${active ? "online" : "offline"}`} />{active ? "connected" : "read only"}</div>
-                </div>
                 <div className="terminal-canvas">
                   {branch ? (
                     <LayoutBranch
@@ -560,6 +573,19 @@ export function RemoteTerminalApp() {
           </div>
         )}
       </section>
+      {pairingCode && pairingExpiresAt && onDismissPairing ? (
+        <div className="pairing-dialog-backdrop">
+          <section className="pairing-dialog" role="dialog" aria-modal="true" aria-labelledby="pairing-title">
+            <button className="pairing-dialog-close" onClick={onDismissPairing} aria-label="Close pairing dialog">×</button>
+            <p className="eyebrow">ADD A TRUSTED HOST</p>
+            <h2 id="pairing-title">Link a Mac</h2>
+            <p className="pairing-dialog-copy">Enter this one-time code in Axo on the Mac you want to link. It expires at {new Date(pairingExpiresAt).toLocaleTimeString()}.</p>
+            <strong className="pairing-dialog-code">{pairingCode}</strong>
+            <a className="auth-primary-button" href={`axo://pair/${pairingCode}`}>Open Axo on this Mac</a>
+            <button className="auth-secondary-button" onClick={onCopyPairingCode}>Copy code</button>
+          </section>
+        </div>
+      ) : null}
     </main>
   );
 }

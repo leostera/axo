@@ -1,5 +1,10 @@
-import { useCallback, useEffect, useMemo, useState } from "react";
+import { lazy, Suspense, useCallback, useEffect, useMemo, useState } from "react";
 import { hostPairingCreateResultSchema } from "@axo/protocol/v1";
+
+const RemoteTerminalApp = lazy(async () => {
+  const module = await import("./remote-terminal-app");
+  return { default: module.RemoteTerminalApp };
+});
 
 type SessionResponse =
   | { authenticated: false }
@@ -10,10 +15,12 @@ type SessionResponse =
       expiresAt: string;
     };
 
+type AuthenticatedSession = Extract<SessionResponse, { authenticated: true }>;
+
 const authBaseUrl = import.meta.env.VITE_AXO_AUTH_API_BASE_URL || window.location.origin;
 
 export function CloudflareSignInApp() {
-  const [session, setSession] = useState<Extract<SessionResponse, { authenticated: true }> | null>(null);
+  const [session, setSession] = useState<AuthenticatedSession | null>(null);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
   const [pairingCode, setPairingCode] = useState<string | null>(null);
@@ -77,6 +84,11 @@ export function CloudflareSignInApp() {
     }
   }, [creatingPairing, pairingUrl, session]);
 
+  const dismissPairing = useCallback(() => {
+    setPairingCode(null);
+    setPairingExpiresAt(null);
+  }, []);
+
   const copyPairingCode = useCallback(async () => {
     if (!pairingCode) return;
     try {
@@ -106,39 +118,35 @@ export function CloudflareSignInApp() {
     }
   }, [logoutUrl, session]);
 
+  if (!loading && session) {
+    return (
+      <Suspense fallback={<main className="app-loading" role="status">Opening your Axo workspace…</main>}>
+        <RemoteTerminalApp
+          profile={session.profile}
+          accountError={error}
+          pairingCode={pairingCode}
+          pairingExpiresAt={pairingExpiresAt}
+          creatingPairing={creatingPairing}
+          onCreatePairing={() => void createPairing()}
+          onCopyPairingCode={() => void copyPairingCode()}
+          onDismissPairing={dismissPairing}
+          onSignOut={() => void signOut()}
+        />
+      </Suspense>
+    );
+  }
+
   return (
     <main className="auth-shell">
       <section className="auth-card" aria-labelledby="auth-title">
         <div className="auth-brand-mark" aria-hidden="true">A</div>
         <p className="auth-eyebrow">AXO REMOTE ACCESS</p>
-        <h1 id="auth-title">{session ? "You’re signed in" : "Sign in to Axo"}</h1>
+        <h1 id="auth-title">Sign in to Axo</h1>
         <p className="auth-description">
-          {session
-            ? "Your Cloudflare identity is connected to an Axo account."
-            : "Use your Cloudflare identity to create and access your private Axo account."}
+          Use your Cloudflare identity to create and access your private Axo account.
         </p>
         {loading ? <p className="auth-status" role="status">Checking sign-in status…</p> : null}
         {error ? <p className="auth-error" role="alert">{error}</p> : null}
-        {!loading && session ? (
-          <div className="auth-account">
-            <strong>{session.profile.name || "Cloudflare account"}</strong>
-            {session.profile.email ? <span>{session.profile.email}</span> : null}
-            <div className="host-pairing">
-              <button className="auth-secondary-button" onClick={() => void createPairing()} disabled={creatingPairing}>
-                {creatingPairing ? "Creating code…" : "Link a Mac"}
-              </button>
-              {pairingCode ? (
-                <div className="host-pairing-code" aria-live="polite">
-                  <strong>{pairingCode}</strong>
-                  <span>Enter this code in Axo on your Mac. It expires at {new Date(pairingExpiresAt!).toLocaleTimeString()}.</span>
-                  <a className="auth-secondary-button" href={`axo://pair/${pairingCode}`}>Open Axo on this Mac</a>
-                  <button className="auth-secondary-button" onClick={() => void copyPairingCode()}>Copy code</button>
-                </div>
-              ) : null}
-            </div>
-            <button className="auth-secondary-button" onClick={() => void signOut()}>Sign out</button>
-          </div>
-        ) : null}
         {!loading && !session ? (
           <a className="auth-primary-button" href={startUrl}>Continue with Cloudflare</a>
         ) : null}

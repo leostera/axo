@@ -125,11 +125,17 @@ test("browser discovers hosts, renders live PTY output, sends input, and uses Cm
       }, origin);
       return;
     }
-    if (request.method === "GET" && url.pathname === "/v1/hosts") {
+    if (request.method === "POST" && url.pathname === "/api/auth/logout") {
+      authenticated = false;
+      response.statusCode = 204;
+      response.end();
+      return;
+    }
+    if (request.method === "GET" && url.pathname === "/api/v1/account/hosts") {
       json(response, { hosts: [host(sessions)] }, origin);
       return;
     }
-    if (request.method === "GET" && url.pathname === `/v1/hosts/${hostId}/sessions`) {
+    if (request.method === "GET" && url.pathname === `/api/v1/account/hosts/${hostId}/sessions`) {
       if (url.searchParams.get("hostGeneration") !== hostGeneration) {
         response.statusCode = 409;
         response.end("stale host generation");
@@ -143,7 +149,7 @@ test("browser discovers hosts, renders live PTY output, sends input, and uses Cm
   });
   const websocketServer = new WebSocketServer({ noServer: true, maxPayload: 65_536 });
   apiHttp.on("upgrade", (request, socket, head) => {
-    if (request.url !== `/v1/hosts/${hostId}/client`) {
+    if (request.url !== `/api/v1/account/hosts/${hostId}/client`) {
       socket.destroy();
       return;
     }
@@ -227,14 +233,14 @@ test("browser discovers hosts, renders live PTY output, sends input, and uses Cm
         strictPort: true,
         proxy: {
           "/v1": { target: `http://127.0.0.1:${apiPort}`, changeOrigin: true, ws: true },
-          "/api": { target: `http://127.0.0.1:${apiPort}`, changeOrigin: true },
+          "/api": { target: `http://127.0.0.1:${apiPort}`, changeOrigin: true, ws: true },
         },
       },
       logLevel: "error",
     });
     await vite.listen();
     await fetch(`${appUrl}/`);
-    const proxyCheck = await fetch(`${appUrl}/v1/hosts`);
+    const proxyCheck = await fetch(`${appUrl}/api/v1/account/hosts`);
     assert.equal(proxyCheck.status, 200, `Vite API proxy failed: ${await proxyCheck.text()}`);
     browser = await chromium.launch({
       executablePath: chromePath,
@@ -306,12 +312,17 @@ test("browser discovers hosts, renders live PTY output, sends input, and uses Cm
 
     authenticated = true;
     await page.reload({ waitUntil: "networkidle" });
-    await page.getByRole("heading", { name: "You’re signed in" }).waitFor({ timeout: 10_000 });
+    await page.getByRole("heading", { name: "Session 1" }).waitFor({ timeout: 10_000 });
+    await page.waitForFunction(() => document.querySelector(".connection-chip.live"), null, { timeout: 10_000 });
+    assert.equal(await page.locator(".terminal-pane").count(), 2);
     await page.getByRole("button", { name: "Link a Mac" }).click();
-    await page.getByText("B26A-NRKT").waitFor({ timeout: 10_000 });
+    await page.getByRole("dialog", { name: "Link a Mac" }).getByText("B26A-NRKT").waitFor({ timeout: 10_000 });
     assert.equal(pairingRequestCount, 1);
     assert.equal(await page.getByRole("link", { name: "Open Axo on this Mac" }).getAttribute("href"), "axo://pair/B26A-NRKT");
     assert.deepEqual(pageErrors, []);
+    await page.getByRole("button", { name: "Close pairing dialog" }).click();
+    await page.getByRole("button", { name: "Sign out" }).click();
+    await page.getByRole("link", { name: "Continue with Cloudflare" }).waitFor({ timeout: 10_000 });
   } finally {
     await browser?.close();
     await vite?.close();
