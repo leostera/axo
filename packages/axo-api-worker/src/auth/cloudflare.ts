@@ -32,6 +32,7 @@ type AccountStub = {
   revokeSession(sessionDigest: string, now: number): Promise<void>;
   listHosts?(): Promise<unknown>;
   listHostSessions?(reference: unknown): Promise<unknown>;
+  listPiEvents?(request: unknown): Promise<unknown>;
   revokeHost?(hostId: string, now?: number): Promise<void>;
   fetch?(request: Request): Promise<Response>;
   createPairing?(codeVerifier: string, pairingId: string, now: number, expiresAt: number): Promise<"created" | "collision" | "limited">;

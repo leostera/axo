@@ -1,10 +1,13 @@
 import { AxoHostRelay } from "../axo-host-relay";
+import { z } from "zod";
+import { uuid } from "@axo/protocol";
 import { LIMITS } from "@axo/protocol";
 import {
   hostDataEventSchema,
   hostRegisterSchema,
   hostRefSchema,
   hostSessionsPublishSchema,
+  sessionIdSchema,
   hostSnapshotSchema,
   sessionSnapshotSchema,
   type HostSnapshot,
@@ -12,6 +15,7 @@ import {
 } from "@axo/protocol/v1";
 import { constantTimeEqual, hmac } from "./crypto";
 import type { Peer } from "../relay/peer";
+import { sessionDOName, sessionEventBindingSchema, sessionEventPageRequestSchema, sessionEventPageResultSchema } from "../session-history";
 
 type AccountProfile = { email: string | null; name: string | null };
 type SessionRow = { session_digest: string; expires_at: number; revoked_at: number | null };
@@ -232,6 +236,28 @@ export class AxoAccountManager extends AxoHostRelay {
     return { host, sessions: host.sessions };
   }
 
+  async listPiEvents(request: unknown): Promise<{ events: unknown[]; next: number | null }> {
+    const accountId = this.accountId();
+    if (!accountId) throw new Error("Account identity is unavailable");
+    const query = z.object({
+      hostId: uuid,
+      sessionId: sessionIdSchema,
+      after: z.number().int().min(0).max(Number.MAX_SAFE_INTEGER).default(0),
+      limit: z.number().int().min(1).max(50).default(20),
+    }).strict().parse(request);
+    const input = sessionEventPageRequestSchema.parse({ ...query, accountId });
+    const host = this.ctx.storage.sql.exec<AccountHostRow>(
+      "SELECT * FROM account_hosts WHERE host_id = ?",
+      input.hostId,
+    ).toArray()[0];
+    if (!host) throw new Error("Host not found");
+    const page = await this.ctx.exports.AxoSessionDO.getByName(
+      sessionDOName(accountId, input.hostId, input.sessionId),
+    ).list(input) as unknown as { ok: boolean; events?: unknown; next?: unknown };
+    if (!page.ok) throw new Error("Session history ownership conflict");
+    return sessionEventPageResultSchema.parse({ events: page.events, next: page.next });
+  }
+
   revokeHost(hostId: string, now = Date.now()): void {
     this.ctx.storage.sql.exec("UPDATE account_hosts SET revoked_at = ? WHERE host_id = ? AND revoked_at IS NULL", now, hostId);
     this.closeHostRelay(hostId);
@@ -332,6 +358,33 @@ export class AxoAccountManager extends AxoHostRelay {
       case "shell.activity":
       case "terminal.output":
         return;
+      case "pi.event": {
+        const session = sql.exec<StoredHostSessionRow>(
+          "SELECT * FROM host_sessions_v1 WHERE host_id = ? AND session_id = ?",
+          input.hostId,
+          hostEvent.sessionId,
+        ).toArray()[0];
+        if (!session) throw new Error("Pi event references an unknown Session");
+        const accountId = this.accountId();
+        if (!accountId) throw new Error("Account identity is unavailable");
+        const binding = sessionEventBindingSchema.parse({
+          accountId,
+          hostId: input.hostId,
+          hostGeneration: input.hostGeneration,
+          sessionId: hostEvent.sessionId,
+          piSessionId: hostEvent.piSessionId,
+          streamId: hostEvent.streamId,
+          sequence: hostEvent.sequence,
+          name: hostEvent.name,
+          data: hostEvent.data,
+        });
+        const appended = await this.ctx.exports.AxoSessionDO.getByName(
+          sessionDOName(accountId, input.hostId, hostEvent.sessionId),
+        ).append(binding) as unknown as { ok: boolean };
+        if (!appended.ok) throw new Error("Session history binding conflict");
+        sql.exec("UPDATE account_hosts SET last_seen_at = ? WHERE host_id = ?", now, input.hostId);
+        return;
+      }
     }
   }
 

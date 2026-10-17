@@ -37,6 +37,7 @@ export async function harness(configuration: { audience?: string; bindings?: Rec
       AxoAccountDirectory: { type: "durable-object", storage: "sqlite" },
       AxoPairingIndex: { type: "durable-object", storage: "sqlite" },
       AxoPairingRateLimit: { type: "durable-object", storage: "sqlite" },
+      AxoSessionDO: { type: "durable-object", storage: "sqlite" },
     },
     durableObjects: {
       TEST_DIRECTORY: { className: "AxoHostDirectory", useSQLite: true },
@@ -45,6 +46,7 @@ export async function harness(configuration: { audience?: string; bindings?: Rec
       TEST_ACCOUNTS: { className: "AxoAccountDirectory", useSQLite: true },
       TEST_PAIRINGS: { className: "AxoPairingIndex", useSQLite: true },
       TEST_PAIRING_LIMITS: { className: "AxoPairingRateLimit", useSQLite: true },
+      TEST_SESSION_HISTORY: { className: "AxoSessionDO", useSQLite: true },
     },
     resourcePersistencePath: join(directory, "storage"),
     unsafeInspectDurableObjects: true,

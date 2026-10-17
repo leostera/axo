@@ -1,10 +1,12 @@
 import { uuid } from "@axo/protocol";
 import {
   hostIdSchema,
+  sessionIdSchema,
   hostRefSchema,
   hostListResultSchema,
   hostSessionsListResultSchema,
 } from "@axo/protocol/v1";
+import { sessionEventPageResultSchema } from "../session-history";
 import { authExports, requireAxoAccount, requireAxoSession, type AuthExports } from "../auth/cloudflare";
 
 const privateHeaders = { "Cache-Control": "private, no-store", Pragma: "no-cache" };
@@ -47,6 +49,50 @@ export async function serveAccountHostSessions(
   } catch (error) {
     if (error instanceof Error && error.message === "Host generation conflict")
       return json({ error: "Host generation is stale" }, 409);
+    return unavailable();
+  }
+}
+
+export async function serveAccountHostEvents(
+  request: Request,
+  env: PairingEnvironment,
+  exports: AuthExports,
+  rawHostId: string,
+  rawSessionId: string,
+): Promise<Response> {
+  if (request.method !== "GET") return methodNotAllowed("GET");
+  const accountId = await requireAxoAccount(request, env, exports, false);
+  if (accountId instanceof Response) return accountId;
+  const hostId = uuid.safeParse(rawHostId);
+  const sessionId = sessionIdSchema.safeParse(Number(rawSessionId));
+  if (!hostId.success || !sessionId.success || String(sessionId.data) !== rawSessionId)
+    return json({ error: "Valid host and Session IDs required" }, 400);
+
+  const url = new URL(request.url);
+  const allowed = new Set(["after", "limit"]);
+  if ([...url.searchParams.keys()].some(key => !allowed.has(key)))
+    return json({ error: "Unsupported query parameter" }, 400);
+  const afterText = url.searchParams.get("after");
+  const limitText = url.searchParams.get("limit");
+  const after = afterText === null ? 0 : Number(afterText);
+  const limit = limitText === null ? 20 : Number(limitText);
+  if (!Number.isSafeInteger(after) || after < 0 || String(after) !== (afterText ?? "0") ||
+      !Number.isSafeInteger(limit) || limit < 1 || limit > 50 || String(limit) !== (limitText ?? "20"))
+    return json({ error: "Invalid event page cursor or limit" }, 400);
+
+  try {
+    const manager = exports.AxoAccountManager?.getByName(accountId);
+    if (!manager?.listPiEvents) return unavailable();
+    const page = sessionEventPageResultSchema.parse(await manager.listPiEvents({
+      hostId: hostId.data,
+      sessionId: sessionId.data,
+      after,
+      limit,
+    }));
+    return Response.json(page, { headers: privateHeaders });
+  } catch (error) {
+    if (error instanceof Error && error.message === "Host not found")
+      return json({ error: "Host not found" }, 404);
     return unavailable();
   }
 }

@@ -18,19 +18,118 @@ export const statePiObservationSchema = z.discriminatedUnion("kind", [
   piLiveObservation,
   z.object({ kind: z.literal("stopped"), target: statePiBindingTargetSchema }).strict(),
 ]).refine(value => value.kind !== "live" || value.target.runtime.host_generation === value.target.hostGeneration);
-export const desiredWorkspaceSchema = z.object({ workspaceId: uuid, name, directory: z.string().min(1).max(4096), lifecycle, configRevision: revision }).strict();
-export const desiredSessionSchema = z.object({ sessionId: uuid, workspaceId: uuid.nullable(), name, manualName: z.boolean(), lifecycle, configRevision: revision }).strict();
-const role = z.discriminatedUnion("kind", [z.object({ kind: z.literal("pi") }).strict(), z.object({ kind: z.literal("accountShell") }).strict(), z.object({ kind: z.literal("profileShell"), profileId: z.string().min(1).max(80) }).strict()]);
-export const desiredPaneSchema = z.object({ paneId: uuid, sessionId: uuid, role, present: z.boolean(), ordinal: z.number().int().min(0).max(31), configRevision: revision }).strict();
-const panes = z.array(desiredPaneSchema).min(2).max(32);
-const graph = z.object({ session: desiredSessionSchema, panes }).strict().refine(value => new Set(value.panes.map(pane => pane.paneId)).size === value.panes.length && value.panes.every(pane => pane.sessionId === value.session.sessionId));
-const workspaceGraph = z.object({ workspace: desiredWorkspaceSchema, initialSession: graph }).strict().refine(value => value.initialSession.session.workspaceId === value.workspace.workspaceId);
+export const desiredWorkspaceSchema = z.object({ workspaceId: uuid, name, directory: z.string().min(1).max(4096).refine(value => value.startsWith("/") && !value.includes("\0")), lifecycle, configRevision: revision }).strict();
+export type SessionLayout =
+  | { kind: "pane"; paneId: string }
+  | { kind: "split"; id: string; direction: "right" | "down"; ratio: number; first: SessionLayout; second: SessionLayout };
+const paneLayoutSchema = z.object({ kind: z.literal("pane"), paneId: uuid }).strict();
+const MAX_LAYOUT_DEPTH = 64;
+const MAX_LAYOUT_NODES = 255;
+function layoutSchemaAt(depth: number): z.ZodType<SessionLayout> {
+  if (depth === MAX_LAYOUT_DEPTH) return paneLayoutSchema;
+  return z.discriminatedUnion("kind", [
+    paneLayoutSchema,
+    z.object({
+      kind: z.literal("split"),
+      id: uuid,
+      direction: z.enum(["right", "down"]),
+      ratio: z.number().min(0.01).max(0.99),
+      first: z.lazy(() => layoutSchemaAt(depth + 1)),
+      second: z.lazy(() => layoutSchemaAt(depth + 1)),
+    }).strict(),
+  ]);
+}
+export const sessionLayoutSchema = layoutSchemaAt(0);
+function sessionLayoutErrors(layout: SessionLayout, presentPanes: DesiredPane[]): string[] {
+  const errors: string[] = [];
+  const paneIds: string[] = [];
+  const splitIds = new Set<string>();
+  const pending = [{ layout, depth: 0 }];
+  let nodeCount = 0;
+  while (pending.length > 0) {
+    const current = pending.pop()!;
+    nodeCount += 1;
+    if (nodeCount > MAX_LAYOUT_NODES || current.depth > MAX_LAYOUT_DEPTH) {
+      return ["layout exceeds its structural limits"];
+    }
+    if (current.layout.kind === "pane") {
+      paneIds.push(current.layout.paneId);
+      continue;
+    }
+    if (splitIds.has(current.layout.id)) errors.push("split IDs must be unique within a layout");
+    splitIds.add(current.layout.id);
+    pending.push(
+      { layout: current.layout.first, depth: current.depth + 1 },
+      { layout: current.layout.second, depth: current.depth + 1 },
+    );
+  }
+
+  const presentPaneIds = presentPanes.map(pane => pane.paneId);
+  if (paneIds.length !== presentPaneIds.length || new Set(paneIds).size !== paneIds.length ||
+      paneIds.some(paneId => !presentPaneIds.includes(paneId))) {
+    errors.push("layout must contain each present pane exactly once");
+  }
+  return errors;
+}
+export const desiredSessionSchema = z.object({ sessionId: uuid, workspaceId: uuid.nullable(), name, manualName: z.boolean(), lifecycle, configRevision: revision, layout: sessionLayoutSchema }).strict();
+const role = z.discriminatedUnion("kind", [
+  z.object({ kind: z.literal("pi") }).strict(),
+  z.object({ kind: z.literal("accountShell") }).strict(),
+  z.object({ kind: z.literal("profileShell"), profileId: z.string().min(1).max(80) }).strict(),
+]);
+export const desiredPaneSchema = z.object({
+  paneId: uuid,
+  sessionId: uuid,
+  role,
+  present: z.boolean(),
+  ordinal: z.number().int().min(0).max(31),
+  configRevision: revision,
+}).strict();
+const panes = z.array(desiredPaneSchema).min(1).max(32);
+type DesiredPane = z.infer<typeof desiredPaneSchema>;
+function sessionPaneErrors(panes: DesiredPane[], sessionId: string): string[] {
+  const errors: string[] = [];
+  if (new Set(panes.map(pane => pane.paneId)).size !== panes.length) {
+    errors.push("pane IDs must be unique within a session");
+  }
+  if (panes.some(pane => pane.sessionId !== sessionId)) {
+    errors.push("every pane must belong to its session");
+  }
+
+  const present = panes.filter(pane => pane.present);
+  if (present.filter(pane => pane.role.kind === "pi").length !== 1) {
+    errors.push("a session must have exactly one present Pi pane");
+  }
+  if (present.filter(pane => pane.role.kind !== "pi").length > 1) {
+    errors.push("a session can have at most one present terminal pane");
+  }
+  if (new Set(present.map(pane => pane.ordinal)).size !== present.length) {
+    errors.push("present pane ordinals must be unique within a session");
+  }
+  return errors;
+}
+export const desiredSessionGraphSchema = z.object({ session: desiredSessionSchema, panes }).strict().superRefine((value, context) => {
+  for (const message of sessionPaneErrors(value.panes, value.session.sessionId)) {
+    context.addIssue({ code: "custom", path: ["panes"], message });
+  }
+  for (const message of sessionLayoutErrors(value.session.layout, value.panes.filter(pane => pane.present))) {
+    context.addIssue({ code: "custom", path: ["session", "layout"], message });
+  }
+});
+export const workspaceGraphSchema = z.object({ workspace: desiredWorkspaceSchema, initialSession: desiredSessionGraphSchema }).strict().superRefine((value, context) => {
+  if (value.initialSession.session.workspaceId !== value.workspace.workspaceId) {
+    context.addIssue({ code: "custom", path: ["initialSession", "session", "workspaceId"], message: "initial session must belong to its Workspace" });
+  }
+  if (value.workspace.lifecycle !== "open" || value.initialSession.session.lifecycle !== "open") {
+    context.addIssue({ code: "custom", path: ["initialSession"], message: "Workspace creation must start with an open Workspace and Session" });
+  }
+});
 const subject = z.discriminatedUnion("kind", [z.object({ kind: z.literal("workspace"), workspaceId: uuid }).strict(), z.object({ kind: z.literal("session"), workspaceId: uuid.nullable(), sessionId: uuid }).strict()]);
 const accepted = <T extends z.ZodType>(graph: T) => z.object({ commandId: uuid, revision: revision.min(1), graph }).strict();
 export const stateOperationSchema = z.discriminatedUnion("kind", [
-  z.object({ kind: z.literal("createWorkspace"), accepted: accepted(workspaceGraph) }).strict(),
-  z.object({ kind: z.literal("createSession"), accepted: accepted(graph) }).strict(),
-  z.object({ kind: z.literal("createStandalone"), accepted: accepted(graph) }).strict(),
+  z.object({ kind: z.literal("createWorkspace"), accepted: accepted(workspaceGraphSchema) }).strict(),
+  z.object({ kind: z.literal("createSession"), accepted: accepted(desiredSessionGraphSchema) }).strict(),
+  z.object({ kind: z.literal("createStandalone"), accepted: accepted(desiredSessionGraphSchema) }).strict(),
   z.object({ kind: z.literal("addShell"), accepted: accepted(desiredPaneSchema) }).strict(),
   z.object({ kind: z.literal("removeShell"), accepted: accepted(uuid) }).strict(),
   z.object({ kind: z.literal("setLifecycle"), accepted: accepted(subject) }).strict(),
@@ -44,9 +143,20 @@ const observedPane = z.object({ desired: desiredPaneSchema, availability, lastRu
   if (value.terminal === null) return true;
   return value.availability === "live" && value.lastRuntime !== null && JSON.stringify(value.terminal.runtime) === JSON.stringify(value.lastRuntime) && value.terminal.runtime.target.pane_id === value.desired.paneId && value.terminal.runtime.target.session_id === value.desired.sessionId;
 });
-export const stateSessionViewSchema = z.object({ session: desiredSessionSchema, panes: z.array(observedPane).min(2).max(32), readiness: z.enum(["ready", "materializing", "blocked", "stopped"]) }).strict().refine(value => {
-  if (new Set(value.panes.map(pane => pane.desired.paneId)).size !== value.panes.length || !value.panes.every(pane => pane.desired.sessionId === value.session.sessionId && pane.desired.present)) return false;
-  return value.readiness !== "ready" || value.panes.every(pane => pane.availability === "live" && pane.terminal !== null);
+export const stateSessionViewSchema = z.object({ session: desiredSessionSchema, panes: z.array(observedPane).min(1).max(32), readiness: z.enum(["ready", "materializing", "blocked", "stopped"]) }).strict().superRefine((value, context) => {
+  const desiredPanes = value.panes.map(pane => pane.desired);
+  for (const message of sessionPaneErrors(desiredPanes, value.session.sessionId)) {
+    context.addIssue({ code: "custom", path: ["panes"], message });
+  }
+  for (const message of sessionLayoutErrors(value.session.layout, desiredPanes.filter(pane => pane.present))) {
+    context.addIssue({ code: "custom", path: ["session", "layout"], message });
+  }
+  if (desiredPanes.some(pane => !pane.present)) {
+    context.addIssue({ code: "custom", path: ["panes"], message: "session views include only present panes" });
+  }
+  if (value.readiness === "ready" && value.panes.some(pane => pane.availability !== "live" || pane.terminal === null)) {
+    context.addIssue({ code: "custom", path: ["readiness"], message: "a ready session requires every pane to be live" });
+  }
 });
 const historyReadMode = z.enum(["live", "stopped"]);
 const historyCollection = z.enum(["branch", "entries"]);

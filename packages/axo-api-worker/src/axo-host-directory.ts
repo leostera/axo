@@ -366,7 +366,8 @@ export class AxoHostDirectory extends DurableObject<Env> {
       }
       case "shell.activity":
       case "terminal.output":
-        // Activity and terminal bytes are intentionally forwarded but never persisted.
+      case "pi.event":
+        // The unassigned legacy fleet has no Pi history store.
         return;
     }
   }

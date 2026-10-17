@@ -12,7 +12,7 @@ import {
 import { serveMachines } from "./machines";
 import { authorizeHttpHostClient, serveHostSessions, serveHosts } from "./hosts";
 import { createHostPairing, redeemHostPairing } from "../auth/pairing";
-import { revokeAccountHost, serveAccountHostSessions, serveAccountHosts, upgradeAccountHostRelay } from "./account-hosts";
+import { revokeAccountHost, serveAccountHostEvents, serveAccountHostSessions, serveAccountHosts, upgradeAccountHostRelay } from "./account-hosts";
 
 type Api = { Bindings: Env };
 const app = new Hono<Api>();
@@ -125,6 +125,16 @@ app.all("/api/v1/account/hosts/:host/sessions", context =>
     context.env,
     authExports((context.executionCtx as ExecutionContext).exports),
     context.req.param("host"),
+  ),
+);
+
+app.all("/api/v1/account/hosts/:host/sessions/:session/events", context =>
+  serveAccountHostEvents(
+    context.req.raw,
+    context.env,
+    authExports((context.executionCtx as ExecutionContext).exports),
+    context.req.param("host"),
+    context.req.param("session"),
   ),
 );
 

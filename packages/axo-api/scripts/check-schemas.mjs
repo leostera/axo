@@ -6,6 +6,7 @@ import addFormats from "ajv-formats";
 import {
   hostListResultSchema,
   hostNotificationSchema,
+  hostDataEventSchema,
   hostRelayNotificationSchema,
   hostRegisterSchema,
   hostSnapshotSchema,
@@ -13,6 +14,7 @@ import {
   hostPairingRedeemRequestSchema,
   hostPairingRedeemResultSchema,
 } from "../dist/v1.js";
+import { desiredSessionGraphSchema, stateSessionViewSchema, workspaceGraphSchema } from "../dist/index.js";
 
 const schemaRoot = resolve(import.meta.dirname, "../../../schemas/axo.leostera.dev/v1");
 const ajv = new Ajv2020({ allErrors: true, strict: true, strictTypes: false });
@@ -35,6 +37,105 @@ const validateWith = (schemaID, value) => {
   assert.ok(validate, `missing schema ${schemaID}`);
   assert.equal(validate(value), true, `${schemaID}: ${ajv.errorsText(validate.errors)}`);
 };
+
+const workspaceId = crypto.randomUUID();
+const sessionId = crypto.randomUUID();
+const piPaneId = crypto.randomUUID();
+const terminalPaneId = crypto.randomUUID();
+const validWorkspaceGraph = {
+  workspace: {
+    workspaceId,
+    name: "Axo",
+    directory: "/projects/axo",
+    lifecycle: "open",
+    configRevision: 0,
+  },
+  initialSession: {
+    session: {
+      sessionId,
+      workspaceId,
+      name: "Session 1",
+      manualName: false,
+      lifecycle: "open",
+      configRevision: 0,
+      layout: {
+        kind: "split",
+        id: crypto.randomUUID(),
+        direction: "right",
+        ratio: 0.5,
+        first: { kind: "pane", paneId: piPaneId },
+        second: { kind: "pane", paneId: terminalPaneId },
+      },
+    },
+    panes: [
+      { paneId: piPaneId, sessionId, role: { kind: "pi" }, present: true, ordinal: 0, configRevision: 0 },
+      { paneId: terminalPaneId, sessionId, role: { kind: "accountShell" }, present: true, ordinal: 1, configRevision: 0 },
+    ],
+  },
+};
+assert.equal(workspaceGraphSchema.safeParse(validWorkspaceGraph).success, true, "Workspace creation starts with Pi and a terminal");
+const missingPiGraph = structuredClone(validWorkspaceGraph);
+missingPiGraph.initialSession.panes[0].role = { kind: "profileShell", profileId: "zsh" };
+assert.equal(workspaceGraphSchema.safeParse(missingPiGraph).success, false, "a session requires exactly one Pi pane");
+const agentOnlyGraph = structuredClone(validWorkspaceGraph);
+agentOnlyGraph.initialSession.panes = agentOnlyGraph.initialSession.panes.slice(0, 1);
+agentOnlyGraph.initialSession.session.layout = { kind: "pane", paneId: piPaneId };
+assert.equal(workspaceGraphSchema.safeParse(agentOnlyGraph).success, true, "a terminal pane is optional");
+const multipleTerminalGraph = structuredClone(validWorkspaceGraph);
+const secondTerminalPaneId = crypto.randomUUID();
+multipleTerminalGraph.initialSession.panes.push({
+  paneId: secondTerminalPaneId,
+  sessionId,
+  role: { kind: "accountShell" },
+  present: true,
+  ordinal: 2,
+  configRevision: 0,
+});
+multipleTerminalGraph.initialSession.session.layout.second = {
+  kind: "split",
+  id: crypto.randomUUID(),
+  direction: "down",
+  ratio: 0.5,
+  first: { kind: "pane", paneId: terminalPaneId },
+  second: { kind: "pane", paneId: secondTerminalPaneId },
+};
+assert.equal(workspaceGraphSchema.safeParse(multipleTerminalGraph).success, false, "a session has at most one terminal pane");
+const duplicatePiGraph = structuredClone(validWorkspaceGraph);
+duplicatePiGraph.initialSession.panes[1].role = { kind: "pi" };
+assert.equal(desiredSessionGraphSchema.safeParse(duplicatePiGraph.initialSession).success, false, "a session cannot contain multiple Pi panes");
+const invalidLayoutGraph = structuredClone(validWorkspaceGraph);
+invalidLayoutGraph.initialSession.session.layout.second.paneId = crypto.randomUUID();
+assert.equal(desiredSessionGraphSchema.safeParse(invalidLayoutGraph.initialSession).success, false, "layout leaves must match each present pane exactly once");
+const validSessionView = {
+  session: validWorkspaceGraph.initialSession.session,
+  panes: validWorkspaceGraph.initialSession.panes.map(desired => ({
+    desired,
+    availability: "materializing",
+    lastRuntime: null,
+    terminal: null,
+  })),
+  readiness: "materializing",
+};
+assert.equal(stateSessionViewSchema.safeParse(validSessionView).success, true, "observed sessions retain the required Pi pane");
+const agentOnlyView = structuredClone(validSessionView);
+agentOnlyView.session.layout = { kind: "pane", paneId: piPaneId };
+agentOnlyView.panes = agentOnlyView.panes.slice(0, 1);
+assert.equal(stateSessionViewSchema.safeParse(agentOnlyView).success, true, "observed sessions can omit the optional terminal pane");
+const invalidSessionView = structuredClone(validSessionView);
+invalidSessionView.panes[0].desired.role = { kind: "accountShell" };
+assert.equal(stateSessionViewSchema.safeParse(invalidSessionView).success, false, "invalid observed sessions cannot omit the Pi pane");
+const foreignPaneGraph = structuredClone(validWorkspaceGraph);
+foreignPaneGraph.initialSession.panes[1].sessionId = crypto.randomUUID();
+assert.equal(desiredSessionGraphSchema.safeParse(foreignPaneGraph.initialSession).success, false, "panes cannot cross session ownership");
+const mismatchedWorkspaceGraph = structuredClone(validWorkspaceGraph);
+mismatchedWorkspaceGraph.initialSession.session.workspaceId = crypto.randomUUID();
+assert.equal(workspaceGraphSchema.safeParse(mismatchedWorkspaceGraph).success, false, "initial session must belong to its Workspace");
+const relativeWorkspaceGraph = structuredClone(validWorkspaceGraph);
+relativeWorkspaceGraph.workspace.directory = "projects/axo";
+assert.equal(workspaceGraphSchema.safeParse(relativeWorkspaceGraph).success, false, "Workspace roots must be absolute host-local paths");
+const closedWorkspaceGraph = structuredClone(validWorkspaceGraph);
+closedWorkspaceGraph.workspace.lifecycle = "archived";
+assert.equal(workspaceGraphSchema.safeParse(closedWorkspaceGraph).success, false, "Workspace creation starts open");
 
 const fixture = async (name) =>
   JSON.parse(await readFile(resolve(schemaRoot, "fixtures", name), "utf8"));
@@ -106,6 +207,13 @@ validateWith(
   relayHostEvent,
 );
 assert.equal(hostRelayNotificationSchema.safeParse(relayHostEvent).success, true, "Axod host events must satisfy runtime validation");
+const relayPiEvent = await fixture("host-pi-event.relay.json");
+validateWith(
+  "https://schemas.axo.leostera.dev/v1/events.schema.json#/$defs/HostRelayNotification",
+  relayPiEvent,
+);
+assert.equal(hostRelayNotificationSchema.safeParse(relayPiEvent).success, true, "Pi events must satisfy host relay runtime validation");
+assert.equal(hostDataEventSchema.safeParse(relayPiEvent.params).success, true, "Pi event payloads must satisfy host event validation");
 const mismatchedOwner = structuredClone(hostList.hosts[0]);
 mismatchedOwner.sessions[0].hostId = crypto.randomUUID();
 assert.equal(hostSnapshotSchema.safeParse(mismatchedOwner).success, false, "host sessions must reference their owning host");
@@ -148,4 +256,4 @@ assert.equal(
   "relay configuration must not accept app-level Access credentials",
 );
 
-console.log(`Validated ${schemaNames.length} v1 schemas and pairing request/result fixtures.`);
+console.log(`Validated ${schemaNames.length} v1 schemas, pairing fixtures, and Workspace/Session invariants.`);

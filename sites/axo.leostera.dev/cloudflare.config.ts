@@ -28,6 +28,7 @@ export default defineConfig(({ isPreview }) => ({
       AxoAccountDirectory: exports.durableObject({ storage: "sqlite" }),
       AxoPairingIndex: exports.durableObject({ storage: "sqlite" }),
       AxoPairingRateLimit: exports.durableObject({ storage: "sqlite" }),
+      AxoSessionDO: exports.durableObject({ storage: "sqlite" }),
     },
   },
 }));

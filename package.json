@@ -6,11 +6,9 @@
     "test:axod": "bazel test //crates/...",
     "test:mac": "bazel test //apple/... && xcodebuild -project apple/AxoMac/AxoMac.xcodeproj -scheme Axo -configuration Debug -destination 'platform=macOS' CODE_SIGNING_ALLOWED=NO build",
     "build:mac": "bash scripts/build-mac.sh",
-    "test": "npm --prefix packages/axo-api run test && npm --prefix sites/axo.leostera.dev test && npm run test:pi-control && npm run test:pi-discovery",
-    "test:pi-control": "tsc -p pi-axo/tsconfig.json && tsx --test pi-axo/tests/*.test.ts",
-    "test:pi-discovery": "tsc -p axod/pi/tsconfig.json && tsx --test axod/tests/pi/ambient.test.ts",
-    "test:pi-interactive": "cargo build --manifest-path axod/Cargo.toml --locked --offline --example interactive-pi-fixture && tsc -p pi-axo/tsconfig.json && tsc -p axod/pi/tsconfig.json && tsx --test --test-concurrency=1 axod/tests/pi/interactive.test.ts",
-    "typecheck": "npm --prefix packages/axo-api run build && npm --prefix sites/axo.leostera.dev run typecheck && tsc -p pi-axo/tsconfig.json && tsc -p axod/pi/tsconfig.json"
+    "test": "npm --prefix packages/axo-api run test && npm --prefix sites/axo.leostera.dev test && npm run test:pi-control",
+    "test:pi-control": "npm --prefix packages/pi-axo test",
+    "typecheck": "npm --prefix packages/axo-api run build && npm --prefix sites/axo.leostera.dev run typecheck && npm --prefix packages/pi-axo run build"
   },
   "dependencies": {
     "typebox": "^1.0.0",

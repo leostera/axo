@@ -249,6 +249,15 @@ export const hostPresenceEventSchema = z.object({
   status: z.enum(["online", "offline"]),
   observedAt: z.string().datetime({ offset: true }),
 }).strict();
+const piEventDataSchema = z.unknown().refine(value => {
+  try {
+    const encoded = JSON.stringify(value);
+    return encoded !== undefined && new TextEncoder().encode(encoded).byteLength <= 60_000;
+  } catch {
+    return false;
+  }
+}, "Pi event data must be JSON and no larger than 60000 bytes");
+
 export const hostDataEventSchema = z.object({
   type: z.literal("host.data"),
   hostId: hostIdSchema,
@@ -268,6 +277,15 @@ export const hostDataEventSchema = z.object({
       shellId: shellIdSchema,
       sequence: z.number().int().min(0).max(Number.MAX_SAFE_INTEGER),
       data: z.base64().min(4).max(131_072),
+    }).strict(),
+    z.object({
+      type: z.literal("pi.event"),
+      sessionId: sessionIdSchema,
+      piSessionId: z.string().min(1).max(128).refine(value => !/[\u0000-\u001f\u007f]/u.test(value)),
+      streamId: z.uuid(),
+      sequence: z.number().int().positive().max(Number.MAX_SAFE_INTEGER),
+      name: z.string().min(1).max(128).refine(value => !/[\u0000-\u001f\u007f]/u.test(value)),
+      data: piEventDataSchema,
     }).strict(),
   ]),
 }).strict().superRefine((hostEvent, context) => {

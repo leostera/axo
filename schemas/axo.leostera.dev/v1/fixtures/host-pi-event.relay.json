@@ -1,0 +1,21 @@
+{
+  "jsonrpc": "2.0",
+  "method": "axo.host.event",
+  "params": {
+    "type": "host.data",
+    "hostId": "70fa4f38-71d9-42f8-9013-43b4fd688693",
+    "hostGeneration": "7f1918d3-8b6d-4af4-a57e-7e6ae28e89e2",
+    "event": {
+      "type": "pi.event",
+      "sessionId": 17,
+      "piSessionId": "pi-session-example",
+      "streamId": "0f00f22d-a24c-4cbc-9196-74dbed95ca80",
+      "sequence": 1,
+      "name": "message.end",
+      "data": {
+        "role": "assistant",
+        "content": "fixture content"
+      }
+    }
+  }
+}
