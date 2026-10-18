@@ -443,6 +443,7 @@ private struct SessionSidebarRow: View {
         .truncationMode(.tail)
       Spacer(minLength: 0)
     }
+    .padding(.leading, 6)
     .padding(.trailing, 8)
     .frame(maxWidth: .infinity, minHeight: 22, alignment: .leading)
     .background(
