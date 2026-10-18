@@ -131,7 +131,17 @@ if [[ -z "$helper_team" || "$helper_team" != "$app_team" ]]; then
   exit 1
 fi
 
+package_timestamp=$(date '+%m/%d/%Y %H:%M:%S')
+xcrun SetFile -d "$package_timestamp" -m "$package_timestamp" "$app"
+
 xcrun swift scripts/replace-app.swift "$app" "$root/dist/Axo.app"
+final_creation_date=$(stat -f '%SB' -t '%m/%d/%Y %H:%M:%S' "$root/dist/Axo.app")
+final_modification_date=$(stat -f '%Sm' -t '%m/%d/%Y %H:%M:%S' "$root/dist/Axo.app")
+if [[ "$final_creation_date" != "$package_timestamp" || "$final_modification_date" != "$package_timestamp" ]]; then
+  echo "Published app directory timestamps do not match packaging time" >&2
+  echo "Expected $package_timestamp; got creation=$final_creation_date modification=$final_modification_date" >&2
+  exit 1
+fi
 if [[ -d "$stage/Axo.app" ]]; then
   echo "Previous Axo.app retained for rollback at $stage/Axo.app"
   preserve_stage=1
