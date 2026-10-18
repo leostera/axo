@@ -16,6 +16,7 @@ struct AxoApp: App {
   @State private var settingsSection = SettingsSection.general
   @State private var isPresentingWorkspaceCreation = false
   private let isUITestApp: Bool
+  @AppStorage("appearance.theme") private var appearanceTheme: AppearanceTheme = .system
   @AppStorage("terminalSidebarIsCollapsed") private var isSidebarCollapsed = true
 
   init() {
@@ -106,6 +107,7 @@ struct AxoApp: App {
         isPresentingWorkspaceCreation: $isPresentingWorkspaceCreation,
         daemonIsRunningOverride: isUITestApp ? true : nil
       )
+      .preferredColorScheme(appearanceTheme.colorScheme)
       .task {
         guard isUITestApp else { return }
         NSApp.activate(ignoringOtherApps: true)
@@ -253,8 +255,10 @@ struct AxoApp: App {
         daemon: daemon,
         ghostty: ghostty,
         selection: $settingsSection,
+        appearanceTheme: $appearanceTheme,
         pairingLink: pairingLink
       )
+      .preferredColorScheme(appearanceTheme.colorScheme)
     }
     .windowResizability(.contentSize)
   }

@@ -2,8 +2,33 @@ import AppKit
 import AxoDaemonManager
 import SwiftUI
 
+enum AppearanceTheme: String, CaseIterable, Identifiable {
+  case system
+  case light
+  case dark
+
+  var id: String { rawValue }
+
+  var title: String {
+    switch self {
+    case .system: "System"
+    case .light: "Light"
+    case .dark: "Dark"
+    }
+  }
+
+  var colorScheme: ColorScheme? {
+    switch self {
+    case .system: nil
+    case .light: .light
+    case .dark: .dark
+    }
+  }
+}
+
 enum SettingsSection: String, CaseIterable, Identifiable {
   case general
+  case appearance
   case remoteAccess
   case about
 
@@ -12,6 +37,7 @@ enum SettingsSection: String, CaseIterable, Identifiable {
   var title: String {
     switch self {
     case .general: "General"
+    case .appearance: "Appearance"
     case .remoteAccess: "Remote Access"
     case .about: "About"
     }
@@ -20,6 +46,7 @@ enum SettingsSection: String, CaseIterable, Identifiable {
   var systemImage: String {
     switch self {
     case .general: "gearshape"
+    case .appearance: "paintbrush"
     case .remoteAccess: "network"
     case .about: "info.circle"
     }
@@ -30,6 +57,7 @@ struct SettingsView: View {
   @ObservedObject var daemon: DaemonController
   let ghostty: GhosttyRuntime
   @Binding var selection: SettingsSection
+  @Binding var appearanceTheme: AppearanceTheme
   @ObservedObject var pairingLink: PairingLinkRouter
 
   private var sidebarSelection: Binding<SettingsSection?> {
@@ -54,6 +82,8 @@ struct SettingsView: View {
         switch selection {
         case .general:
           GeneralSettingsView(daemon: daemon, ghostty: ghostty)
+        case .appearance:
+          AppearanceSettingsView(theme: $appearanceTheme)
         case .remoteAccess:
           RemoteAccessSettingsView(daemon: daemon, pairingCode: $pairingLink.pendingCode)
         case .about:
@@ -64,6 +94,23 @@ struct SettingsView: View {
       .padding(20)
     }
     .frame(minWidth: 700, minHeight: 440)
+  }
+}
+
+private struct AppearanceSettingsView: View {
+  @Binding var theme: AppearanceTheme
+
+  var body: some View {
+    Form {
+      Picker("Theme", selection: $theme) {
+        ForEach(AppearanceTheme.allCases) { theme in
+          Text(theme.title).tag(theme)
+        }
+      }
+      .pickerStyle(.segmented)
+      .accessibilityIdentifier("appearance-theme-picker")
+    }
+    .formStyle(.grouped)
   }
 }
 
