@@ -291,7 +291,14 @@ final class GhosttyRuntime: ObservableObject {
       userdata: Unmanaged.passUnretained(self).toOpaque(),
       supports_selection_clipboard: false,
       wakeup_cb: { userdata in GhosttyRuntime.wakeup(userdata) },
-      action_cb: { _, _, _ in false },
+      action_cb: { _, target, action in
+        // Axo enters libghostty from MainActor-bound surface calls and ticks, so this callback
+        // updates AppKit state synchronously on that same thread.
+        guard Thread.isMainThread else { return false }
+        return MainActor.assumeIsolated {
+          GhosttyRuntime.handlePointerAction(target: target, action: action)
+        }
+      },
       read_clipboard_cb: { _, _, _, _, _, _ in GHOSTTY_CLIPBOARD_READ_UNSUPPORTED },
       confirm_read_clipboard_cb: { _, _, _, _ in },
       write_clipboard_cb: { _, location, content, count, confirm in
@@ -413,6 +420,35 @@ final class GhosttyRuntime: ObservableObject {
         }
       }
     )
+  }
+
+  private static func handlePointerAction(
+    target: ghostty_target_s,
+    action: ghostty_action_s
+  ) -> Bool {
+    guard target.tag == GHOSTTY_TARGET_SURFACE,
+      let surface = target.target.surface,
+      let userdata = ghostty_surface_userdata(surface)
+    else { return false }
+    let view = Unmanaged<GhosttySurfaceNSView>.fromOpaque(userdata).takeUnretainedValue()
+    switch action.tag {
+    case GHOSTTY_ACTION_MOUSE_SHAPE:
+      view.setCursorShape(action.action.mouse_shape)
+      return true
+    case GHOSTTY_ACTION_MOUSE_VISIBILITY:
+      switch action.action.mouse_visibility {
+      case GHOSTTY_MOUSE_VISIBLE:
+        view.setCursorVisibility(true)
+        return true
+      case GHOSTTY_MOUSE_HIDDEN:
+        view.setCursorVisibility(false)
+        return true
+      default:
+        return false
+      }
+    default:
+      return false
+    }
   }
 
   private static func wakeup(_ userdata: UnsafeMutableRawPointer?) {

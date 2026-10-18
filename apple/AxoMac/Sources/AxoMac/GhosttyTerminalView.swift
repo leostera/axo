@@ -121,7 +121,11 @@ final class GhosttySurfaceNSView: NSView, @preconcurrency NSTextInputClient {
   private var markedText = NSMutableAttributedString()
   private var committedText: [String]?
   private var committedTextDecoder = TerminalCommittedText()
-  private var keyUpEventMonitor: Any?
+  private var localEventMonitor: Any?
+  private var suppressNextLeftMouseUp = false
+  private var previousPressureStage = 0
+  private var cursor = NSCursor.iBeam
+  private var cursorIsVisible = true
   private var lastPerformKeyEvent: TimeInterval?
   private var shouldRequestFocus = false
   private var focusTask: Task<Void, Never>?
@@ -133,25 +137,34 @@ final class GhosttySurfaceNSView: NSView, @preconcurrency NSTextInputClient {
     self.onFocus = onFocus
     super.init(frame: .zero)
     registerForDraggedTypes([.string, .fileURL])
-    keyUpEventMonitor = NSEvent.addLocalMonitorForEvents(matching: .keyUp) { [weak self] event in
+    localEventMonitor = NSEvent.addLocalMonitorForEvents(
+      matching: [.keyUp, .leftMouseDown]
+    ) { [weak self] event in
       guard let self else { return event }
       let actorEvent = MainActorNSEvent(value: event)
       let shouldConsume = MainActor.assumeIsolated {
         let event = actorEvent.value
-        guard TerminalKeyEquivalentPolicy.shouldForwardCommandKeyUp(event),
-          self.isFocusedKeyResponder,
-          self.surface != nil
-        else { return false }
-        self.keyUp(with: event)
-        return true
+        switch event.type {
+        case .keyUp:
+          guard TerminalKeyEquivalentPolicy.shouldForwardCommandKeyUp(event),
+            self.isFocusedKeyResponder,
+            self.surface != nil
+          else { return false }
+          self.keyUp(with: event)
+          return true
+        case .leftMouseDown:
+          return self.handleFocusOnlyLeftClick(event)
+        default:
+          return false
+        }
       }
       return shouldConsume ? nil : event
     }
   }
 
   deinit {
-    if let keyUpEventMonitor {
-      NSEvent.removeMonitor(keyUpEventMonitor)
+    if let localEventMonitor {
+      NSEvent.removeMonitor(localEventMonitor)
     }
   }
 
@@ -200,7 +213,7 @@ final class GhosttySurfaceNSView: NSView, @preconcurrency NSTextInputClient {
     }
     let area = NSTrackingArea(
       rect: .zero,
-      options: [.mouseEnteredAndExited, .mouseMoved, .activeInKeyWindow, .inVisibleRect],
+      options: [.mouseEnteredAndExited, .mouseMoved, .activeAlways, .inVisibleRect],
       owner: self,
       userInfo: nil
     )
@@ -257,27 +270,39 @@ final class GhosttySurfaceNSView: NSView, @preconcurrency NSTextInputClient {
   }
 
   override func mouseUp(with event: NSEvent) {
+    if suppressNextLeftMouseUp {
+      suppressNextLeftMouseUp = false
+      return
+    }
+    previousPressureStage = 0
     sendMouseButton(event, state: GHOSTTY_MOUSE_RELEASE, button: GHOSTTY_MOUSE_LEFT)
+    if let surface {
+      ghostty_surface_mouse_pressure(surface, 0, 0)
+    }
   }
 
   override func rightMouseDown(with event: NSEvent) {
+    guard surface != nil else { return super.rightMouseDown(with: event) }
     window?.makeFirstResponder(self)
     onFocus?()
-    sendMouseButton(event, state: GHOSTTY_MOUSE_PRESS, button: GHOSTTY_MOUSE_RIGHT)
+    if sendMouseButton(event, state: GHOSTTY_MOUSE_PRESS, button: GHOSTTY_MOUSE_RIGHT) { return }
+    super.rightMouseDown(with: event)
   }
 
   override func rightMouseUp(with event: NSEvent) {
-    sendMouseButton(event, state: GHOSTTY_MOUSE_RELEASE, button: GHOSTTY_MOUSE_RIGHT)
+    guard surface != nil else { return super.rightMouseUp(with: event) }
+    if sendMouseButton(event, state: GHOSTTY_MOUSE_RELEASE, button: GHOSTTY_MOUSE_RIGHT) { return }
+    super.rightMouseUp(with: event)
   }
 
   override func otherMouseDown(with event: NSEvent) {
     window?.makeFirstResponder(self)
-    let button = event.buttonNumber == 2 ? GHOSTTY_MOUSE_MIDDLE : GHOSTTY_MOUSE_UNKNOWN
+    let button = TerminalMouseInput.button(forEventButtonNumber: event.buttonNumber)
     sendMouseButton(event, state: GHOSTTY_MOUSE_PRESS, button: button)
   }
 
   override func otherMouseUp(with event: NSEvent) {
-    let button = event.buttonNumber == 2 ? GHOSTTY_MOUSE_MIDDLE : GHOSTTY_MOUSE_UNKNOWN
+    let button = TerminalMouseInput.button(forEventButtonNumber: event.buttonNumber)
     sendMouseButton(event, state: GHOSTTY_MOUSE_RELEASE, button: button)
   }
 
@@ -316,8 +341,66 @@ final class GhosttySurfaceNSView: NSView, @preconcurrency NSTextInputClient {
       surface,
       event.scrollingDeltaX * multiplier,
       event.scrollingDeltaY * multiplier,
-      0
+      TerminalMouseInput.scrollFlags(
+        isPrecise: event.hasPreciseScrollingDeltas,
+        momentumPhase: event.momentumPhase
+      )
     )
+  }
+
+  override func pressureChange(with event: NSEvent) {
+    guard let surface else { return }
+    ghostty_surface_mouse_pressure(surface, UInt32(event.stage), Double(event.pressure))
+    let shouldShowQuickLook = TerminalPressurePolicy.shouldShowQuickLook(
+      previousStage: previousPressureStage,
+      currentStage: event.stage,
+      forceClickEnabled: UserDefaults.standard.bool(forKey: "com.apple.trackpad.forceClick")
+    )
+    previousPressureStage = event.stage
+    guard shouldShowQuickLook else { return }
+    quickLook(with: event)
+  }
+
+  override func quickLook(with event: NSEvent) {
+    guard let surface else { return super.quickLook(with: event) }
+    var text = ghostty_text_s()
+    guard ghostty_surface_quicklook_word(surface, &text) else {
+      return super.quickLook(with: event)
+    }
+    defer { ghostty_surface_free_text(surface, &text) }
+    guard text.text_len > 0, let textPointer = text.text else {
+      return super.quickLook(with: event)
+    }
+
+    var attributes: [NSAttributedString.Key: Any] = [:]
+    if let fontRaw = ghostty_surface_quicklook_font(surface) {
+      let font = Unmanaged<CTFont>.fromOpaque(fontRaw)
+      attributes[.font] = font.takeUnretainedValue()
+      font.release()
+    }
+    let bytes = Data(bytes: textPointer, count: Int(text.text_len))
+    let word = NSAttributedString(
+      string: String(decoding: bytes, as: UTF8.self), attributes: attributes)
+    let point = NSPoint(x: text.tl_px_x, y: frame.size.height - text.tl_px_y)
+    showDefinition(for: word, at: point)
+  }
+
+  override func resetCursorRects() {
+    super.resetCursorRects()
+    guard cursorIsVisible else { return }
+    addCursorRect(bounds, cursor: cursor)
+  }
+
+  func setCursorShape(_ shape: ghostty_action_mouse_shape_e) {
+    guard let cursor = TerminalCursorPolicy.cursor(for: shape) else { return }
+    self.cursor = cursor
+    window?.invalidateCursorRects(for: self)
+  }
+
+  func setCursorVisibility(_ visible: Bool) {
+    cursorIsVisible = visible
+    NSCursor.setHiddenUntilMouseMoves(!visible)
+    window?.invalidateCursorRects(for: self)
   }
 
   // Keep native key translation and IME handling aligned with Ghostty's AppKit surface bridge
@@ -663,6 +746,27 @@ final class GhosttySurfaceNSView: NSView, @preconcurrency NSTextInputClient {
     return NSApp.isActive && window.isKeyWindow && window.firstResponder === self
   }
 
+  private func handleFocusOnlyLeftClick(_ event: NSEvent) -> Bool {
+    guard let window, event.window === window, let contentView = window.contentView else {
+      return false
+    }
+    let location = contentView.convert(event.locationInWindow, from: nil)
+    guard contentView.hitTest(location) === self else { return false }
+
+    suppressNextLeftMouseUp = false
+    let surfaceIsFirstResponder = window.firstResponder === self
+    guard !surfaceIsFirstResponder else { return false }
+    let shouldConsume = TerminalMouseInput.shouldConsumeFocusOnlyClick(
+      surfaceIsFirstResponder: surfaceIsFirstResponder,
+      applicationIsActive: NSApp.isActive,
+      windowIsKey: window.isKeyWindow
+    )
+    _ = window.makeFirstResponder(self)
+    guard shouldConsume else { return false }
+    suppressNextLeftMouseUp = true
+    return true
+  }
+
   private func sendKeyEquivalent(_ event: NSEvent, characters: String) {
     guard let translatedEvent = NSEvent.keyEvent(
       with: .keyDown,
@@ -820,13 +924,15 @@ final class GhosttySurfaceNSView: NSView, @preconcurrency NSTextInputClient {
     return keyEvent
   }
 
+  @discardableResult
   private func sendMouseButton(
     _ event: NSEvent,
     state: ghostty_input_mouse_state_e,
     button: ghostty_input_mouse_button_e
-  ) {
-    guard let surface else { return }
-    _ = ghostty_surface_mouse_button(surface, state, button, Self.ghosttyMods(event.modifierFlags))
+  ) -> Bool {
+    guard let surface else { return false }
+    return ghostty_surface_mouse_button(
+      surface, state, button, Self.ghosttyMods(event.modifierFlags))
   }
 
   private func sendMousePosition(_ event: NSEvent) {

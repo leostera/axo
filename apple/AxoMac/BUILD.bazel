@@ -32,6 +32,7 @@ swift_test(
         "Tests/AxoMacTests/PairingLinkRouterTests.swift",
         "Tests/AxoMacTests/TerminalKeyEquivalentPolicyTests.swift",
         "Tests/AxoMacTests/TerminalTextInputTests.swift",
+        "Tests/AxoMacTests/TerminalPointerInputTests.swift",
         "Tests/AxoMacTests/TerminalLayoutTests.swift",
         "Tests/AxoMacTests/TerminalScrollSensitivityTests.swift",
         "Tests/AxoMacTests/TerminalSplitE2ETests.swift",
