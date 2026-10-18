@@ -3,6 +3,7 @@ import AxoRPC
 import Darwin
 import Foundation
 import GhosttyKit
+import QuartzCore
 
 @MainActor
 final class GhosttyRuntime: ObservableObject {
@@ -263,6 +264,15 @@ final class GhosttyRuntime: ObservableObject {
   }
 
   func updateSurfaceSize(in view: GhosttySurfaceNSView, contentSize: CGSize) {
+    // Match Ghostty's AppKit surface bridge: libghostty renders at framebuffer resolution,
+    // so Core Animation must not rescale its layer when the window moves between displays.
+    if let window = view.window {
+      CATransaction.begin()
+      CATransaction.setDisableActions(true)
+      view.layer?.contentsScale = window.backingScaleFactor
+      CATransaction.commit()
+    }
+
     guard let surface = view.surface else { return }
     let fallbackScale = view.window?.backingScaleFactor ?? NSScreen.main?.backingScaleFactor ?? 1
     let frameSize = view.frame.size
