@@ -34,6 +34,7 @@ swift_test(
         "Tests/AxoMacTests/TerminalTextInputTests.swift",
         "Tests/AxoMacTests/TerminalPointerInputTests.swift",
         "Tests/AxoMacTests/TerminalClipboardTests.swift",
+        "Tests/AxoMacTests/TerminalAccessibilityTests.swift",
         "Tests/AxoMacTests/TerminalLayoutTests.swift",
         "Tests/AxoMacTests/TerminalScrollSensitivityTests.swift",
         "Tests/AxoMacTests/TerminalSplitE2ETests.swift",

@@ -27,10 +27,12 @@ enum TerminalClipboardPolicy {
     }
   }
 
-  static func textContent(from contents: [TerminalClipboardContent]) -> String? {
-    let textContents = contents.filter { $0.mimeType == textMIMEType }
-    guard textContents.count == 1 else { return nil }
-    return textContents[0].text
+  static func singlePlainText(from contents: [TerminalClipboardContent]) -> String? {
+    guard contents.count == 1,
+      let content = contents.first,
+      content.mimeType == textMIMEType
+    else { return nil }
+    return content.text
   }
 
   static func availableMIMETypes(hasPlainText: Bool) -> [String] {

@@ -24,31 +24,29 @@ struct GhosttyTerminalView: NSViewRepresentable {
   let onClose: () -> Void
 
   func makeNSView(context: Context) -> GhosttySurfaceHostNSView {
-    let surfaceView = runtime.surfaceView(
-      for: shell,
-      helperURL: helperURL,
-      onFocus: {
-        runtime.setFocusedShellID(shell.id)
-        onFocus()
-      },
-      onStatusChange: onStatusChange,
-      onSplit: onSplit,
-      onClose: onClose
-    )
-    guard let host = runtime.surfaceHost(for: shell.id) else {
-      preconditionFailure("Ghostty runtime did not retain a host for shell \(shell.id).")
-    }
-    host.attachSurface(surfaceView)
-    surfaceView.updateContentSize(size)
-    if isFocused {
-      runtime.setFocusedShellID(shell.id)
-      surfaceView.requestFocus()
-    }
-    return host
+    let presentation = makeSurfacePresentation()
+    presentation.host.attachSurface(presentation.view)
+    presentation.view.updateContentSize(size)
+    updateFocus(of: presentation.view)
+    return presentation.host
   }
 
   func updateNSView(_ host: GhosttySurfaceHostNSView, context: Context) {
-    let surfaceView = runtime.surfaceView(
+    let presentation = makeSurfacePresentation()
+    host.attachSurface(presentation.view)
+    if host.bounds.size != size {
+      host.needsLayout = true
+    }
+    presentation.view.updateContentSize(size)
+    updateFocus(of: presentation.view)
+  }
+
+  @MainActor
+  private func makeSurfacePresentation() -> (
+    host: GhosttySurfaceHostNSView,
+    view: GhosttySurfaceNSView
+  ) {
+    runtime.surfacePresentation(
       for: shell,
       helperURL: helperURL,
       onFocus: {
@@ -59,17 +57,16 @@ struct GhosttyTerminalView: NSViewRepresentable {
       onSplit: onSplit,
       onClose: onClose
     )
-    host.attachSurface(surfaceView)
-    if host.bounds.size != size {
-      host.needsLayout = true
+  }
+
+  @MainActor
+  private func updateFocus(of view: GhosttySurfaceNSView) {
+    guard isFocused else {
+      view.cancelFocusRequest()
+      return
     }
-    surfaceView.updateContentSize(size)
-    if isFocused {
-      runtime.setFocusedShellID(shell.id)
-      surfaceView.requestFocus()
-    } else {
-      surfaceView.cancelFocusRequest()
-    }
+    runtime.setFocusedShellID(shell.id)
+    view.requestFocus()
   }
 
 }

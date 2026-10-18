@@ -1,8 +1,23 @@
+import AxoRPC
 import XCTest
 
 @testable import AxoMac
 
 final class TerminalLayoutTests: XCTestCase {
+  func testSessionLayoutBridgePreservesBothSplitDirections() {
+    for direction in [SessionSplitDirection.right, .down] {
+      let sessionLayout = SessionLayout.split(
+        id: UUID(),
+        direction: direction,
+        ratio: 0.5,
+        first: .pane(shellID: 17),
+        second: .pane(shellID: 23)
+      )
+
+      XCTAssertEqual(TerminalLayout(sessionLayout).sessionLayout, sessionLayout)
+    }
+  }
+
   func testInsertAddsSiblingPaneInRequestedDirection() throws {
     let original = TerminalLayout.pane(17)
 

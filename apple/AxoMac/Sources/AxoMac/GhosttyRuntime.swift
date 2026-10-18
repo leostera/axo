@@ -18,7 +18,8 @@ final class GhosttyRuntime: ObservableObject {
   private var config: ghostty_config_t?
   private var app: ghostty_app_t?
   private(set) var focusedShellID: Int64?
-  // A Ghostty surface and its platform NSView outlive SwiftUI's pane view identities.
+  // Retain each view until its surface is freed: Ghostty passes this unretained per-surface
+  // userdata pointer back to the clipboard callbacks, even after SwiftUI pane identities change.
   private var terminalSurfaces: [Int64: SurfaceEntry] = [:]
   private var notificationTokens: [NSObjectProtocol] = []
 
@@ -51,21 +52,21 @@ final class GhosttyRuntime: ObservableObject {
     }
   }
 
-  func surfaceView(
+  func surfacePresentation(
     for shell: TerminalShell,
     helperURL: URL,
     onFocus: @escaping () -> Void,
     onStatusChange: @escaping (String) -> Void,
     onSplit: @escaping (TerminalSplitDirection) -> Void,
     onClose: @escaping () -> Void
-  ) -> GhosttySurfaceNSView {
+  ) -> (host: GhosttySurfaceHostNSView, view: GhosttySurfaceNSView) {
     if let existing = terminalSurfaces[shell.id], existing.shell == shell {
       existing.view.onFocus = onFocus
       existing.view.onStatusChange = onStatusChange
       existing.view.onSplit = onSplit
       existing.view.onClose = onClose
       onStatusChange(existing.view.status)
-      return existing.view
+      return (existing.host, existing.view)
     }
 
     destroySurface(shellID: shell.id)
@@ -77,11 +78,7 @@ final class GhosttyRuntime: ObservableObject {
     createSurface(in: view, shell: shell, helperURL: helperURL)
     host.attachSurface(view)
     terminalSurfaces[shell.id] = SurfaceEntry(shell: shell, host: host, view: view)
-    return view
-  }
-
-  func surfaceHost(for shellID: Int64) -> GhosttySurfaceHostNSView? {
-    terminalSurfaces[shellID]?.host
+    return (host, view)
   }
 
   func setFocusedShellID(_ shellID: Int64?) {
@@ -515,7 +512,7 @@ final class GhosttyRuntime: ObservableObject {
       }
       contents.append(TerminalClipboardContent(mimeType: String(cString: mime), data: data))
     }
-    guard let text = TerminalClipboardPolicy.textContent(from: contents) else { return }
+    guard let text = TerminalClipboardPolicy.singlePlainText(from: contents) else { return }
     if confirm && !TerminalClipboardConsent.requestAccess(
       for: GHOSTTY_CLIPBOARD_REQUEST_OSC_52_WRITE,
       text: text
