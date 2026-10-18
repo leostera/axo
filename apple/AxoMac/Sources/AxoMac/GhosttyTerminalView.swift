@@ -1,4 +1,5 @@
 import AppKit
+import CoreText
 import AxoRPC
 import Carbon
 import Foundation
@@ -119,6 +120,7 @@ final class GhosttySurfaceNSView: NSView, @preconcurrency NSTextInputClient {
   private weak var runtime: GhosttyRuntime?
   private var markedText = NSMutableAttributedString()
   private var committedText: [String]?
+  private var committedTextDecoder = TerminalCommittedText()
   private var keyUpEventMonitor: Any?
   private var lastPerformKeyEvent: TimeInterval?
   private var shouldRequestFocus = false
@@ -525,22 +527,16 @@ final class GhosttySurfaceNSView: NSView, @preconcurrency NSTextInputClient {
   }
 
   func insertText(_ string: Any, replacementRange: NSRange) {
-    let text: String
-    switch string {
-    case let value as NSAttributedString:
-      text = value.string
-    case let value as String:
-      text = value
-    default:
-      return
-    }
+    guard NSApp.currentEvent != nil,
+      let text = committedTextDecoder.decode(string)
+    else { return }
 
+    unmarkText()
     if committedText != nil {
       committedText?.append(text)
-    } else if let surface {
-      text.withCString { ghostty_surface_text(surface, $0, UInt(text.utf8.count)) }
+    } else if !text.isEmpty {
+      sendCommittedText(GHOSTTY_ACTION_PRESS, text: text)
     }
-    clearMarkedText()
   }
 
   func setMarkedText(_ string: Any, selectedRange: NSRange, replacementRange: NSRange) {
@@ -552,13 +548,13 @@ final class GhosttySurfaceNSView: NSView, @preconcurrency NSTextInputClient {
     default:
       return
     }
-    guard let surface else { return }
-    markedText.string.withCString {
-      ghostty_surface_preedit(surface, $0, UInt(markedText.string.utf8.count))
+    if committedText == nil {
+      syncPreedit(clearIfNeeded: true)
     }
   }
 
   func unmarkText() {
+    guard hasMarkedText() else { return }
     clearMarkedText()
   }
 
@@ -567,12 +563,15 @@ final class GhosttySurfaceNSView: NSView, @preconcurrency NSTextInputClient {
   }
 
   func markedRange() -> NSRange {
-    markedText.length > 0
-      ? NSRange(location: 0, length: markedText.length) : NSRange(location: NSNotFound, length: 0)
+    markedText.length > 0 ? NSRange(location: 0, length: markedText.length) : NSRange()
   }
 
   func selectedRange() -> NSRange {
-    NSRange(location: NSNotFound, length: 0)
+    guard let surface else { return NSRange() }
+    var selection = ghostty_text_s()
+    guard ghostty_surface_read_selection(surface, &selection) else { return NSRange() }
+    defer { ghostty_surface_free_text(surface, &selection) }
+    return NSRange(location: Int(selection.offset_start), length: Int(selection.offset_len))
   }
 
   func validAttributesForMarkedText() -> [NSAttributedString.Key] {
@@ -582,22 +581,69 @@ final class GhosttySurfaceNSView: NSView, @preconcurrency NSTextInputClient {
   func attributedSubstring(forProposedRange range: NSRange, actualRange: NSRangePointer?)
     -> NSAttributedString?
   {
-    nil
+    guard let surface, range.length > 0 else { return nil }
+    var selection = ghostty_text_s()
+    guard ghostty_surface_read_selection(surface, &selection) else { return nil }
+    defer { ghostty_surface_free_text(surface, &selection) }
+
+    let bytes = selection.text.map {
+      Data(bytes: $0, count: Int(selection.text_len))
+    } ?? Data()
+    var attributes: [NSAttributedString.Key: Any] = [:]
+    if let fontRaw = ghostty_surface_quicklook_font(surface) {
+      let font = Unmanaged<CTFont>.fromOpaque(fontRaw)
+      attributes[.font] = font.takeUnretainedValue()
+      font.release()
+    }
+    return NSAttributedString(
+      string: String(decoding: bytes, as: UTF8.self), attributes: attributes)
   }
 
   func characterIndex(for point: NSPoint) -> Int {
-    NSNotFound
+    0
   }
 
   func firstRect(forCharacterRange range: NSRange, actualRange: NSRangePointer?) -> NSRect {
-    guard let surface, let window else { return .zero }
+    guard let surface else {
+      return NSRect(x: frame.origin.x, y: frame.origin.y, width: 0, height: 0)
+    }
+
+    let size = ghostty_surface_size(surface)
+    let selectionRange = selectedRange()
+    let backingScale = max(window?.backingScaleFactor ?? NSScreen.main?.backingScaleFactor ?? 1, 1)
+    let cellSize = CGSize(
+      width: CGFloat(size.cell_width_px) / backingScale,
+      height: CGFloat(size.cell_height_px) / backingScale
+    )
     var x = 0.0
     var y = 0.0
-    var width = 0.0
-    var height = 0.0
-    ghostty_surface_ime_point(surface, &x, &y, &width, &height)
-    let localRect = NSRect(x: x, y: bounds.height - y - height, width: width, height: height)
-    return window.convertToScreen(convert(localRect, to: nil))
+    var width = Double(cellSize.width)
+    var height = Double(cellSize.height)
+    var selectionTopLeft: CGPoint?
+
+    if range.length > 0, range != selectionRange {
+      var selection = ghostty_text_s()
+      if ghostty_surface_read_selection(surface, &selection) {
+        selectionTopLeft = CGPoint(x: selection.tl_px_x, y: selection.tl_px_y)
+        ghostty_surface_free_text(surface, &selection)
+      } else {
+        ghostty_surface_ime_point(surface, &x, &y, &width, &height)
+      }
+    } else {
+      ghostty_surface_ime_point(surface, &x, &y, &width, &height)
+    }
+
+    let viewRect = TerminalIMEGeometry.viewRect(
+      requestedRange: range,
+      selectionRange: selectionRange,
+      selectionTopLeft: selectionTopLeft,
+      imePoint: CGRect(x: x, y: y, width: width, height: height),
+      cellSize: cellSize,
+      viewSize: bounds.size
+    )
+    let windowRect = convert(viewRect, to: nil)
+    guard let window else { return windowRect }
+    return window.convertToScreen(windowRect)
   }
 
   override func doCommand(by selector: Selector) {
