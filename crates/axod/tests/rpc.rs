@@ -370,6 +370,10 @@ fn active_sessions(socket: &std::path::Path) -> Vec<Value> {
         .clone()
 }
 
+fn create_session(socket: &std::path::Path) -> Value {
+    rpc(socket, "axo.session.create")["result"].clone()
+}
+
 #[test]
 fn terminal_attach_subcommand_bridges_input_and_output() {
     let unique = SystemTime::now()
@@ -382,7 +386,7 @@ fn terminal_attach_subcommand_bridges_input_and_output() {
     let socket = root.join("axod.sock");
     let mut daemon = start_axod(&server_directory, &socket);
     wait_for_socket(&socket, &mut daemon);
-    let session = active_sessions(&socket).remove(0);
+    let session = create_session(&socket);
     let shell = &session["shells"][0];
     let mut process = Command::new(axod_binary())
         .arg("terminal-attach")
@@ -431,7 +435,7 @@ fn terminal_attach_replays_output_after_reconnect() {
     let socket = root.join("axod.sock");
     let mut daemon = start_axod(&server_directory, &socket);
     wait_for_socket(&socket, &mut daemon);
-    let session = active_sessions(&socket).remove(0);
+    let session = create_session(&socket);
     let shell = &session["shells"][0];
     let shell_id = shell["id"].as_i64().unwrap();
     let attach_socket = shell["attachSocketPath"].as_str().unwrap();
@@ -500,7 +504,7 @@ fn local_protocol_streams_events_and_controls_the_pty() {
     let mut daemon = start_axod(&server_directory, &socket);
     wait_for_socket(&socket, &mut daemon);
 
-    let session = active_sessions(&socket).remove(0);
+    let session = create_session(&socket);
     let session_id = session["id"].as_i64().unwrap();
     let shell = &session["shells"][0];
     let shell_id = shell["id"].as_i64().unwrap();
@@ -622,13 +626,144 @@ fn local_protocol_streams_events_and_controls_the_pty() {
 }
 
 #[test]
-fn daemon_creates_a_default_pty_session_and_restores_it_after_restart() {
+fn workspace_creation_validates_name_and_existing_directory_without_a_bookmark() {
+    let unique = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .unwrap()
+        .as_nanos();
+    let directory = std::path::Path::new("/tmp").join(format!(
+        "axo-workspace-error-{}-{unique}",
+        std::process::id()
+    ));
+    let server_directory = directory.join("server");
+    let socket = directory.join("axod.sock");
+    std::fs::create_dir_all(&directory).unwrap();
+
+    let mut daemon = start_axod(&server_directory, &socket);
+    wait_for_socket(&socket, &mut daemon);
+
+    let invalid_name = rpc_with_params(
+        &socket,
+        "axo.workspace.create",
+        json!({ "name": "", "directoryPath": directory }),
+    );
+    assert_eq!(invalid_name["error"]["code"], -32602);
+    assert_eq!(
+        invalid_name["error"]["message"],
+        "Workspace name is invalid"
+    );
+
+    let missing_directory = rpc_with_params(
+        &socket,
+        "axo.workspace.create",
+        json!({
+            "name": "Workspace",
+            "directoryPath": directory.join("missing"),
+        }),
+    );
+    assert_eq!(missing_directory["error"]["code"], -32602);
+    assert_eq!(
+        missing_directory["error"]["message"],
+        "Workspace directory no longer exists or is unavailable"
+    );
+
+    daemon.stop();
+    let _ = std::fs::remove_dir_all(directory);
+}
+
+#[test]
+fn keeps_one_standalone_session_open_while_workspaces_exist() {
+    let unique = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .unwrap()
+        .as_nanos();
+    let directory = std::path::Path::new("/tmp").join(format!(
+        "axo-standalone-invariant-{}-{unique}",
+        std::process::id()
+    ));
+    let server_directory = directory.join("server");
+    let socket = directory.join("axod.sock");
+    let workspace_directory = directory.join("workspace");
+    std::fs::create_dir_all(&workspace_directory).unwrap();
+
+    let mut cleanup = SessionProcessCleanup::default();
+    let mut daemon = start_axod(&server_directory, &socket);
+    wait_for_socket(&socket, &mut daemon);
+
+    let home_session = active_sessions(&socket)
+        .into_iter()
+        .find(|session| session["workspaceId"].is_null())
+        .expect("axod should start a standalone home Session");
+    cleanup.track(&home_session);
+
+    let workspace = rpc_with_params(
+        &socket,
+        "axo.workspace.create",
+        json!({ "name": "Invariant", "directoryPath": workspace_directory }),
+    );
+    assert!(workspace["result"]["session"].is_object(), "{workspace}");
+    cleanup.track(&workspace["result"]["session"]);
+
+    let close_home = rpc_with_params(
+        &socket,
+        "axo.session.close",
+        json!({ "sessionId": home_session["id"] }),
+    );
+    let mut standalone_replacement = close_home["result"]["replacement"].clone();
+    assert!(
+        standalone_replacement.is_object(),
+        "closing the final standalone Session should create a replacement even when a Workspace Session is open: {close_home}"
+    );
+    cleanup.track(&standalone_replacement);
+
+    let sessions = active_sessions(&socket);
+    assert_eq!(
+        sessions
+            .iter()
+            .filter(|session| session["workspaceId"].is_null())
+            .count(),
+        1
+    );
+    assert_eq!(
+        sessions
+            .iter()
+            .filter(|session| !session["workspaceId"].is_null())
+            .count(),
+        1
+    );
+
+    let close_replacement = rpc_with_params(
+        &socket,
+        "axo.session.close",
+        json!({ "sessionId": standalone_replacement["id"] }),
+    );
+    standalone_replacement = close_replacement["result"]["replacement"].clone();
+    assert!(
+        standalone_replacement.is_object(),
+        "the standalone Session invariant should also hold on subsequent closes: {close_replacement}"
+    );
+    cleanup.track(&standalone_replacement);
+    assert_eq!(
+        active_sessions(&socket)
+            .iter()
+            .filter(|session| session["workspaceId"].is_null())
+            .count(),
+        1
+    );
+
+    daemon.stop();
+    let _ = std::fs::remove_dir_all(directory);
+}
+
+#[test]
+fn daemon_starts_with_and_restores_a_default_pty_session_after_restart() {
     let unique = SystemTime::now()
         .duration_since(UNIX_EPOCH)
         .unwrap()
         .as_nanos();
     let mut cleanup = SessionProcessCleanup::default();
-    let directory = std::env::temp_dir().join(format!("axo-e2e-{}-{unique}", std::process::id()));
+    let directory =
+        std::path::Path::new("/tmp").join(format!("axo-e2e-{}-{unique}", std::process::id()));
     let server_directory = directory.join("server");
     let socket = directory.join("axod.sock");
 
@@ -645,6 +780,9 @@ fn daemon_creates_a_default_pty_session_and_restores_it_after_restart() {
         "axo.session.subscribe",
         "axo.session.events.next",
         "axo.session.unsubscribe",
+        "axo.workspace.list",
+        "axo.workspace.create",
+        "axo.workspace.session.create",
         "axo.terminal.input",
         "axo.terminal.resize",
     ] {
@@ -671,10 +809,11 @@ fn daemon_creates_a_default_pty_session_and_restores_it_after_restart() {
 
     let home = std::env::var("HOME").unwrap();
     let sessions = active_sessions(&socket);
-    assert_eq!(sessions.len(), 1, "axod should keep a default session open");
-    let session = &sessions[0];
-    cleanup.track(session);
+    assert_eq!(sessions.len(), 1, "axod should start one default Session");
+    let session = sessions[0].clone();
+    cleanup.track(&session);
     assert_eq!(session["initialPwd"], home);
+    assert!(session["workspaceId"].is_null());
     assert_eq!(session["shells"].as_array().unwrap().len(), 1);
     let shell = &session["shells"][0];
     assert_eq!(shell["initialPwd"], home);
@@ -825,6 +964,8 @@ fn daemon_creates_a_default_pty_session_and_restores_it_after_restart() {
     );
     cleanup.track(replacement);
     assert_ne!(replacement["id"], session_id);
+    assert_eq!(replacement["initialPwd"], home);
+    assert!(replacement["workspaceId"].is_null());
     assert_eq!(active_sessions(&socket).len(), 1);
 
     let replacement_id = replacement["id"].as_i64().unwrap();

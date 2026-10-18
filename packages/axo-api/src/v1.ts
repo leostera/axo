@@ -40,6 +40,11 @@ export { layoutSchema };
 export const sessionSnapshotSchema = z.object({
   hostId: hostIdSchema,
   sessionId: sessionIdSchema,
+  sessionUuid: z.uuid().optional(),
+  workspaceId: z.uuid().nullable().optional(),
+  workspaceName: z.string().max(80).nullable().optional(),
+  name: z.string().min(1).max(80).optional(),
+  hasAgent: z.boolean().optional(),
   shells: z.array(z.object({ shellId: shellIdSchema }).strict()).max(256),
   layout: layoutSchema.nullable(),
   updatedAt: z.string().datetime({ offset: true }),
@@ -141,6 +146,7 @@ const emptyParamsSchema = z.object({}).strict();
 const subscriptionIdSchema = z.object({ subscriptionId: z.uuid() }).strict();
 const targetSchema = z.object({ target: hostRefSchema }).strict();
 const sessionTargetSchema = targetSchema.extend({ sessionId: sessionIdSchema }).strict();
+const workspaceSessionTargetSchema = targetSchema.extend({ workspaceId: z.uuid() }).strict();
 const shellTargetSchema = sessionTargetSchema.extend({ shellId: shellIdSchema }).strict();
 
 export const hostV1Methods = {
@@ -152,6 +158,7 @@ export const hostV1Methods = {
   "axo.host.subscribe": hostRefSchema,
   "axo.host.unsubscribe": subscriptionIdSchema,
   "axo.remote.session.create": targetSchema,
+  "axo.remote.workspace.session.create": workspaceSessionTargetSchema,
   "axo.remote.session.close": sessionTargetSchema,
   "axo.remote.shell.create": sessionTargetSchema,
   "axo.remote.shell.close": shellTargetSchema,
@@ -174,6 +181,7 @@ export const hostMutationMethods = [
   "axo.host.subscribe",
   "axo.host.unsubscribe",
   "axo.remote.session.create",
+  "axo.remote.workspace.session.create",
   "axo.remote.session.close",
   "axo.remote.shell.create",
   "axo.remote.shell.close",
@@ -234,6 +242,7 @@ export const hostV1Results = {
   "axo.host.subscribe": hostSubscribeResultSchema,
   "axo.host.unsubscribe": hostUnsubscribeResultSchema,
   "axo.remote.session.create": remoteSessionCreateResultSchema,
+  "axo.remote.workspace.session.create": remoteSessionCreateResultSchema,
   "axo.remote.session.close": remoteSessionCloseResultSchema,
   "axo.remote.shell.create": remoteShellCreateResultSchema,
   "axo.remote.shell.close": remoteShellCloseResultSchema,

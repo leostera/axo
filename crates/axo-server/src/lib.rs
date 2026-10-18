@@ -18,6 +18,7 @@ mod credential;
 mod pairing;
 mod relay;
 mod session;
+mod workspace_access;
 
 const MAX_SOCKET_PATH_BYTES: usize = 103;
 static SHUTDOWN_REQUESTED: AtomicBool = AtomicBool::new(false);
@@ -396,6 +397,9 @@ fn add_protocol_negotiate_method(handler: &mut IoHandler) {
                 "axo.daemon.health",
                 "axo.session.list",
                 "axo.session.create",
+                "axo.workspace.list",
+                "axo.workspace.create",
+                "axo.workspace.session.create",
                 "axo.session.close",
                 "axo.session.layout.set",
                 "axo.session.subscribe",

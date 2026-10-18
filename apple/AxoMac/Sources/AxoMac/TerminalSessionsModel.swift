@@ -6,6 +6,7 @@ import Foundation
 @MainActor
 final class TerminalSessionsModel: ObservableObject {
   @Published private(set) var sessions: [TerminalSession] = []
+  @Published private(set) var workspaces: [WorkspaceRecord] = []
   @Published var selectedSessionID: Int64? {
     didSet {
       guard oldValue != selectedSessionID, let selectedSessionDefaults else { return }
@@ -19,6 +20,7 @@ final class TerminalSessionsModel: ObservableObject {
   @Published private(set) var focusedShellID: Int64?
   @Published private(set) var layout: TerminalLayout?
   @Published private(set) var errorMessage: String?
+  @Published private(set) var workspaceCreationError: String?
 
   let helperURL: URL
 
@@ -29,6 +31,7 @@ final class TerminalSessionsModel: ObservableObject {
   private let selectedSessionDefaults: UserDefaults?
   private var negotiatedSocketPath: UnixSocketPath?
   private var layoutsBySession: [Int64: TerminalLayout] = [:]
+  private var recentSessionIDs: [Int64] = []
   private var pendingLayoutWrites: [Int64: SessionLayout] = [:]
   private var layoutWriteTasks: [Int64: Task<Void, Never>] = [:]
 
@@ -75,11 +78,13 @@ final class TerminalSessionsModel: ObservableObject {
       return
     }
 
+    let previouslySelectedSession = selectedSessionID.flatMap { session(for: $0) }
     do {
       if negotiatedSocketPath != socketPath {
         let negotiation = try await UnixSocketRPC.negotiate(at: socketPath)
         let requiredMethods: Set<String> = [
-          "axo.session.list", "axo.session.subscribe", "axo.session.events.next",
+          "axo.session.list", "axo.workspace.list", "axo.workspace.create",
+          "axo.workspace.session.create", "axo.session.subscribe", "axo.session.events.next",
           "axo.session.unsubscribe", "axo.terminal.input", "axo.terminal.resize",
         ]
         guard negotiation.protocolVersion == UnixSocketRPC.protocolVersion,
@@ -90,7 +95,11 @@ final class TerminalSessionsModel: ObservableObject {
         }
         negotiatedSocketPath = socketPath
       }
-      let updatedSessions = try await UnixSocketRPC.listSessions(at: socketPath)
+      async let updatedSessionsTask = UnixSocketRPC.listSessions(at: socketPath)
+      async let updatedWorkspacesTask = UnixSocketRPC.listWorkspaces(at: socketPath)
+      let updatedSessions = try await updatedSessionsTask
+      let updatedWorkspaces = try await updatedWorkspacesTask
+      workspaces = updatedWorkspaces
       let openSessionIDs = Set(updatedSessions.map(\.id))
       layoutsBySession = layoutsBySession.filter { openSessionIDs.contains($0.key) }
       pendingLayoutWrites = pendingLayoutWrites.filter { openSessionIDs.contains($0.key) }
@@ -119,7 +128,15 @@ final class TerminalSessionsModel: ObservableObject {
             id: session.id,
             initialPwd: session.initialPwd,
             shells: session.shells,
-            layout: normalizedLayout?.sessionLayout
+            layout: normalizedLayout?.sessionLayout,
+            sessionUuid: session.sessionUuid,
+            piSessionFile: session.piSessionFile,
+            piSessionId: session.piSessionId,
+            workspaceId: session.workspaceId,
+            workspaceName: session.workspaceName,
+            name: session.name,
+            emoji: session.emoji,
+            status: session.status
           )
         )
         if let normalizedLayout, serverLayout != normalizedLayout {
@@ -127,6 +144,15 @@ final class TerminalSessionsModel: ObservableObject {
         }
         if selectedSessionID == session.id, let newestShellID = newlyCreatedShellIDs.max() {
           focusedShellID = newestShellID
+        } else if selectedSessionID == session.id,
+          let previousFocus = focusedShellID,
+          sourceLayout?.contains(shellID: previousFocus) == true,
+          !shellIDs.contains(previousFocus)
+        {
+          focusedShellID = sourceLayout?.focusTargetAfterClosing(
+            previousFocus,
+            remainingShellIDs: shellIDs
+          ) ?? normalizedLayout?.firstShellID
         }
       }
       if sessions != normalizedSessions {
@@ -135,6 +161,15 @@ final class TerminalSessionsModel: ObservableObject {
 
       if let selectedSessionID, openSessionIDs.contains(selectedSessionID) {
         activate(selectedSessionID)
+      } else if let previouslySelectedSession {
+        selectedSessionID = sessionToSelect(afterClosing: previouslySelectedSession)
+        recentSessionIDs.removeAll { $0 == previouslySelectedSession.id }
+        if let selectedSessionID {
+          activate(selectedSessionID)
+        } else {
+          layout = nil
+          focusedShellID = nil
+        }
       } else {
         selectedSessionID = sessions.first?.id
         if let selectedSessionID {
@@ -147,6 +182,70 @@ final class TerminalSessionsModel: ObservableObject {
       errorMessage = nil
     } catch {
       errorMessage = error.localizedDescription
+    }
+  }
+
+  func createWorkspace(name: String, directoryPath: String, directoryBookmark: String?) async {
+    workspaceCreationError = nil
+    guard let socketPath else {
+      let message = socketPathError ?? "The axod socket path is unavailable."
+      errorMessage = message
+      workspaceCreationError = message
+      return
+    }
+    do {
+      let created = try await UnixSocketRPC.createWorkspace(
+        name: name,
+        directoryPath: directoryPath,
+        directoryBookmark: directoryBookmark,
+        at: socketPath
+      )
+      guard created.session.workspaceId == created.workspace.workspaceId else {
+        throw UnixSocketRPCError.invalidResponse(
+          "Workspace creation did not return its first Session.")
+      }
+      if !workspaces.contains(where: { $0.id == created.workspace.id }) {
+        workspaces.append(created.workspace)
+        workspaces.sort { $0.name.localizedStandardCompare($1.name) == .orderedAscending }
+      }
+      add(created.session)
+      selectedSessionID = created.session.id
+      activate(created.session.id)
+      errorMessage = nil
+      workspaceCreationError = nil
+    } catch {
+      errorMessage = error.localizedDescription
+      workspaceCreationError = error.localizedDescription
+    }
+  }
+
+  func dismissWorkspaceCreationError() {
+    workspaceCreationError = nil
+  }
+
+  func createSession(in workspaceID: String) async {
+    guard let socketPath else {
+      errorMessage = socketPathError ?? "The axod socket path is unavailable."
+      return
+    }
+    do {
+      let session = try await UnixSocketRPC.createSession(in: workspaceID, at: socketPath)
+      add(session)
+      selectedSessionID = session.id
+      activate(session.id)
+      errorMessage = nil
+    } catch {
+      errorMessage = error.localizedDescription
+    }
+  }
+
+  func createSessionInCurrentContext() async {
+    if let selectedSessionID,
+      let workspaceID = session(for: selectedSessionID)?.workspaceId
+    {
+      await createSession(in: workspaceID)
+    } else {
+      await createSession()
     }
   }
 
@@ -205,6 +304,7 @@ final class TerminalSessionsModel: ObservableObject {
       errorMessage = socketPathError ?? "The axod socket path is unavailable."
       return
     }
+    let closingSession = session(for: sessionID)
 
     do {
       let closed = try await UnixSocketRPC.closeSession(sessionID, at: socketPath)
@@ -215,7 +315,10 @@ final class TerminalSessionsModel: ObservableObject {
         add(replacement)
       }
       if selectedSessionID == sessionID {
-        selectedSessionID = sessions.first?.id
+        selectedSessionID = closingSession.map {
+          sessionToSelect(afterClosing: $0, replacement: closed.replacement)
+        } ?? sessions.first?.id
+        recentSessionIDs.removeAll { $0 == sessionID }
       }
       if let selectedSessionID {
         activate(selectedSessionID)
@@ -236,11 +339,27 @@ final class TerminalSessionsModel: ObservableObject {
 
   func closeShell(_ shellID: Int64) async {
     guard let socketPath,
-      let sessionID = sessions.first(where: { $0.shells.contains(where: { $0.id == shellID }) })?.id
+      let session = sessions.first(where: { $0.shells.contains(where: { $0.id == shellID }) })
     else {
       errorMessage = socketPathError ?? "The focused shell is no longer open."
       return
     }
+    let sessionID = session.id
+    let layoutBeforeClose =
+      layoutsBySession[sessionID] ?? session.layout.map(TerminalLayout.init)
+      ?? Self.defaultLayout(for: session.shells)
+    let remainingShellIDs = Set(session.shells.lazy.map(\.id).filter { $0 != shellID })
+    let focusAfterClose: Int64? = {
+      guard selectedSessionID == sessionID else { return nil }
+      guard let focusedShellID else { return layoutBeforeClose?.firstShellID }
+      if focusedShellID == shellID {
+        return layoutBeforeClose?.focusTargetAfterClosing(
+          shellID,
+          remainingShellIDs: remainingShellIDs
+        )
+      }
+      return remainingShellIDs.contains(focusedShellID) ? focusedShellID : nil
+    }()
 
     do {
       let closed = try await UnixSocketRPC.closeShell(shellID, in: sessionID, at: socketPath)
@@ -252,7 +371,8 @@ final class TerminalSessionsModel: ObservableObject {
           add(replacement)
         }
         if selectedSessionID == sessionID {
-          selectedSessionID = sessions.first?.id
+          selectedSessionID = sessionToSelect(afterClosing: session, replacement: closed.replacement)
+          recentSessionIDs.removeAll { $0 == sessionID }
           if let selectedSessionID {
             activate(selectedSessionID)
           } else {
@@ -261,15 +381,25 @@ final class TerminalSessionsModel: ObservableObject {
           }
         }
       } else {
-        guard let session = self.session(for: sessionID) else { return }
-        let remainingShells = session.shells.filter { $0.id != shellID }
-        replace(session, withShells: remainingShells)
-        if let currentLayout = layoutsBySession[sessionID] {
-          setLayout(currentLayout.removing(shellID: shellID), for: sessionID, persist: true)
+        guard let currentSession = self.session(for: sessionID) else { return }
+        let remainingShells = currentSession.shells.filter { $0.id != shellID }
+        let remainingShellIDs = Set(remainingShells.map(\.id))
+        replace(currentSession, withShells: remainingShells)
+
+        let baseLayout = layoutsBySession[sessionID] ?? layoutBeforeClose
+        let updatedLayout = baseLayout?.removing(shellID: shellID)
+        if let updatedLayout {
+          setLayout(updatedLayout, for: sessionID, persist: true)
         }
         if selectedSessionID == sessionID {
-          layout = layoutsBySession[sessionID]
-          focusedShellID = layout?.firstShellID
+          layout = updatedLayout
+          let currentFocus = focusedShellID.flatMap {
+            remainingShellIDs.contains($0) ? $0 : nil
+          }
+          let preferredFocus = focusAfterClose.flatMap {
+            remainingShellIDs.contains($0) ? $0 : nil
+          }
+          focusedShellID = currentFocus ?? preferredFocus ?? updatedLayout?.firstShellID
         }
       }
       errorMessage = nil
@@ -324,6 +454,7 @@ final class TerminalSessionsModel: ObservableObject {
     selectedSessionID = session.id
     layout = layoutsBySession[session.id]
     focusedShellID = shellID
+    rememberSessionFocus(session.id)
   }
 
   func session(for sessionID: Int64) -> TerminalSession? {
@@ -379,12 +510,44 @@ final class TerminalSessionsModel: ObservableObject {
     return (startingIndex + direction.rawValue + count) % count
   }
 
+  private func sessionToSelect(
+    afterClosing closedSession: TerminalSession,
+    replacement: TerminalSession? = nil
+  ) -> Int64? {
+    for recentID in recentSessionIDs where recentID != closedSession.id {
+      guard let candidate = session(for: recentID),
+        candidate.workspaceId == closedSession.workspaceId
+      else {
+        continue
+      }
+      return candidate.id
+    }
+
+    if let replacement,
+      replacement.workspaceId == closedSession.workspaceId,
+      session(for: replacement.id) != nil
+    {
+      return replacement.id
+    }
+    return sessions.first(where: { $0.workspaceId == closedSession.workspaceId })?.id
+      ?? sessions.first?.id
+  }
+
+  private func rememberSessionFocus(_ sessionID: Int64) {
+    recentSessionIDs.removeAll { $0 == sessionID }
+    recentSessionIDs.insert(sessionID, at: 0)
+    if recentSessionIDs.count > 128 {
+      recentSessionIDs.removeLast(recentSessionIDs.count - 128)
+    }
+  }
+
   private func activate(_ sessionID: Int64) {
     guard let session = session(for: sessionID) else {
       layout = nil
       focusedShellID = nil
       return
     }
+    rememberSessionFocus(sessionID)
     let currentLayout = layoutsBySession[sessionID] ?? Self.defaultLayout(for: session.shells)
     if layoutsBySession[sessionID] == nil {
       setLayout(currentLayout, for: sessionID, persist: true)
@@ -408,7 +571,15 @@ final class TerminalSessionsModel: ObservableObject {
         id: session.id,
         initialPwd: session.initialPwd,
         shells: session.shells,
-        layout: layout?.sessionLayout
+        layout: layout?.sessionLayout,
+        sessionUuid: session.sessionUuid,
+        piSessionFile: session.piSessionFile,
+        piSessionId: session.piSessionId,
+        workspaceId: session.workspaceId,
+        workspaceName: session.workspaceName,
+        name: session.name,
+        emoji: session.emoji,
+        status: session.status
       )
     )
     sessions.sort { $0.id < $1.id }
@@ -421,7 +592,15 @@ final class TerminalSessionsModel: ObservableObject {
       id: session.id,
       initialPwd: session.initialPwd,
       shells: shells,
-      layout: layout
+      layout: layout,
+      sessionUuid: session.sessionUuid,
+      piSessionFile: session.piSessionFile,
+      piSessionId: session.piSessionId,
+      workspaceId: session.workspaceId,
+      workspaceName: session.workspaceName,
+      name: session.name,
+      emoji: session.emoji,
+      status: session.status
     )
     guard let index = sessions.firstIndex(where: { $0.id == session.id }) else { return }
     sessions[index] = updated
@@ -436,7 +615,15 @@ final class TerminalSessionsModel: ObservableObject {
           id: session.id,
           initialPwd: session.initialPwd,
           shells: session.shells,
-          layout: layout?.sessionLayout
+          layout: layout?.sessionLayout,
+          sessionUuid: session.sessionUuid,
+          piSessionFile: session.piSessionFile,
+          piSessionId: session.piSessionId,
+          workspaceId: session.workspaceId,
+          workspaceName: session.workspaceName,
+          name: session.name,
+          emoji: session.emoji,
+          status: session.status
         )
       }
     }
@@ -635,6 +822,23 @@ indirect enum TerminalLayout: Equatable, Identifiable {
       }
       return nil
     }
+  }
+
+  func focusTargetAfterClosing(
+    _ shellID: Int64,
+    remainingShellIDs: Set<Int64>
+  ) -> Int64? {
+    let orderedIDs = orderedShellIDs
+    guard let index = orderedIDs.firstIndex(of: shellID) else { return nil }
+
+    let candidates: [Int64]
+    if index == 0 {
+      candidates = Array(orderedIDs.dropFirst())
+    } else {
+      candidates = Array(orderedIDs[..<index].reversed())
+        + Array(orderedIDs.dropFirst(index + 1))
+    }
+    return candidates.first(where: remainingShellIDs.contains)
   }
 
   func removing(shellID: Int64) -> TerminalLayout? {

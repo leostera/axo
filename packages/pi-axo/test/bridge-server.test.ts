@@ -8,6 +8,8 @@ import test from "node:test";
 import { AxoPiBridgeServer } from "../src/bridge-server.js";
 import type { PiBridgeRecord, PiSessionIdentity } from "../src/protocol.js";
 
+const bridgeToken = "11cfda23-bc7c-4812-9613-4336f44b498e";
+
 const identity: PiSessionIdentity = {
   axoSessionId: "82cfd1e8-1cc6-4473-a16d-6f0e77476311",
   axoPaneId: "9b9e14e0-d1c6-46b8-b289-bab4fda8774f",
@@ -52,7 +54,7 @@ test("exchanges events and scoped commands, and deduplicates command IDs", async
   const directory = await mkdtemp(join(tmpdir(), "axo-pi-bridge-"));
   const socketPath = join(directory, "bridge.sock");
   const handled: string[] = [];
-  const server = new AxoPiBridgeServer(socketPath, identity.axoSessionId, async command => {
+  const server = new AxoPiBridgeServer(socketPath, identity.axoSessionId, bridgeToken, async command => {
     handled.push(command.requestId);
     return { accepted: true };
   });
@@ -61,6 +63,8 @@ test("exchanges events and scoped commands, and deduplicates command IDs", async
     await server.start();
     server.bindIdentity(identity);
     const { socket, next } = await connectTo(socketPath);
+    socket.write(`${JSON.stringify({ type: "authenticate", protocolVersion: 1, token: bridgeToken })}\n`);
+    assert.deepEqual(await next(), { type: "authenticated", protocolVersion: 1 });
     assert.deepEqual(await next(), { type: "hello", protocolVersion: 1, identity });
 
     server.publish("message.end", { role: "assistant", text: "Done" });
@@ -104,8 +108,8 @@ test("exchanges events and scoped commands, and deduplicates command IDs", async
 test("does not unlink a socket path owned by another Pi process", async () => {
   const directory = await mkdtemp(join(tmpdir(), "axo-pi-bridge-owner-"));
   const socketPath = join(directory, "bridge.sock");
-  const owner = new AxoPiBridgeServer(socketPath, identity.axoSessionId, async () => ({ accepted: true }));
-  const contender = new AxoPiBridgeServer(socketPath, identity.axoSessionId, async () => ({ accepted: true }));
+  const owner = new AxoPiBridgeServer(socketPath, identity.axoSessionId, bridgeToken, async () => ({ accepted: true }));
+  const contender = new AxoPiBridgeServer(socketPath, identity.axoSessionId, bridgeToken, async () => ({ accepted: true }));
 
   try {
     await owner.start();

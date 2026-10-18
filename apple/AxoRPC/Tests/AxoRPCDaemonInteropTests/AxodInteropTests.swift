@@ -52,13 +52,14 @@ final class AxodInteropTests: XCTestCase {
 
     let initialSessions = try await UnixSocketRPC.listSessions(at: socketPath)
     XCTAssertEqual(initialSessions.count, 1)
+    let baselineSession = try XCTUnwrap(initialSessions.first)
 
     let createdSession = try await UnixSocketRPC.createSession(at: socketPath)
-    XCTAssertNotEqual(createdSession.id, initialSessions[0].id)
+    XCTAssertNotEqual(createdSession.id, baselineSession.id)
     let createdShell = try await UnixSocketRPC.createShell(in: createdSession.id, at: socketPath)
     let sessionsAfterCreate = try await UnixSocketRPC.listSessions(at: socketPath)
     XCTAssertEqual(
-      Set(sessionsAfterCreate.map(\.id)), Set([initialSessions[0].id, createdSession.id]))
+      Set(sessionsAfterCreate.map(\.id)), Set([baselineSession.id, createdSession.id]))
     let subscription = try await UnixSocketRPC.subscribe(to: createdSession.id, at: socketPath)
     let initialEvent = try await UnixSocketRPC.nextEvent(
       for: subscription,
@@ -101,7 +102,7 @@ final class AxodInteropTests: XCTestCase {
     XCTAssertEqual(closedSession.archivedSessionId, createdSession.id)
     XCTAssertNil(closedSession.replacement)
     let remainingSessions = try await UnixSocketRPC.listSessions(at: socketPath)
-    XCTAssertEqual(remainingSessions.map(\.id), [initialSessions[0].id])
+    XCTAssertEqual(remainingSessions.map(\.id), [baselineSession.id])
   }
 }
 

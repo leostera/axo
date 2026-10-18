@@ -70,6 +70,9 @@ if [[ ! "$build_number" =~ ^[1-9][0-9]*$ ]]; then
 fi
 export AXO_BUILD_NUMBER="$build_number"
 
+# Compile the Pi extension without running tests; axod loads it from the app bundle.
+npm --prefix packages/pi-axo run build
+
 # Keep packaging fast and predictable. Formatting, linting, and tests run through
 # their own commands; this script only builds and verifies the distributable app.
 stamp_flags=(--stamp "--embed_label=axo_build_${build_number}")
@@ -88,6 +91,8 @@ cleanup() {
 trap cleanup EXIT
 
 ditto -x -k "$app_archive" "$stage"
+mkdir -p "$app/Contents/Resources/AxoPi"
+cp packages/pi-axo/dist/*.js "$app/Contents/Resources/AxoPi/"
 git_commit=$(git rev-parse --short=8 HEAD)
 if ! git diff --quiet -- || [[ -n $(git ls-files --others --exclude-standard) ]]; then
   git_commit="${git_commit}-dirty"

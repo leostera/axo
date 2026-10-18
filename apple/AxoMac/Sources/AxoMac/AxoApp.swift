@@ -14,6 +14,7 @@ struct AxoApp: App {
   @StateObject private var ghostty: GhosttyRuntime
   @StateObject private var pairingLink = PairingLinkRouter.shared
   @State private var settingsSection = SettingsSection.general
+  @State private var isPresentingWorkspaceCreation = false
   private let isUITestApp: Bool
   @AppStorage("terminalSidebarIsCollapsed") private var isSidebarCollapsed = true
 
@@ -102,12 +103,17 @@ struct AxoApp: App {
         ghostty: ghostty,
         settingsSection: $settingsSection,
         pairingLink: pairingLink,
+        isPresentingWorkspaceCreation: $isPresentingWorkspaceCreation,
         daemonIsRunningOverride: isUITestApp ? true : nil
       )
       .task {
         guard isUITestApp else { return }
         NSApp.activate(ignoringOtherApps: true)
         await Self.positionUITestWindow()
+        await sessions.refresh()
+        if sessions.sessions.isEmpty {
+          await sessions.createSession()
+        }
         guard let path = ProcessInfo.processInfo.environment["AXO_UI_TEST_CONTROL_DIR"] else {
           return
         }
@@ -176,8 +182,13 @@ struct AxoApp: App {
       }
 
       CommandMenu("Terminal") {
+        Button("New Workspace…") {
+          isPresentingWorkspaceCreation = true
+        }
+        .keyboardShortcut("n", modifiers: .command)
+
         Button("New Session") {
-          Task { await sessions.createSession() }
+          Task { await sessions.createSessionInCurrentContext() }
         }
         .keyboardShortcut("t", modifiers: .command)
 
@@ -256,12 +267,14 @@ private struct TerminalAppWindow: View {
   @ObservedObject var ghostty: GhosttyRuntime
   @Binding var settingsSection: SettingsSection
   @ObservedObject var pairingLink: PairingLinkRouter
+  @Binding var isPresentingWorkspaceCreation: Bool
   var daemonIsRunningOverride: Bool?
 
   var body: some View {
     TerminalWorkbenchView(
       daemon: daemon,
       sessions: sessions,
+      isPresentingWorkspaceCreation: $isPresentingWorkspaceCreation,
       daemonIsRunningOverride: daemonIsRunningOverride
     )
     .environmentObject(ghostty)

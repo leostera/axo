@@ -1,5 +1,5 @@
 import { chmod, lstat, unlink } from "node:fs/promises";
-import { randomUUID } from "node:crypto";
+import { randomUUID, timingSafeEqual } from "node:crypto";
 import { createServer, type Server, type Socket } from "node:net";
 import {
   MAX_BRIDGE_RECORD_BYTES,
@@ -31,6 +31,7 @@ export class AxoPiBridgeServer {
   constructor(
     private readonly socketPath: string,
     private readonly axoSessionId: string,
+    private readonly bridgeToken: string,
     private readonly handleCommand: CommandHandler,
   ) {}
 
@@ -148,6 +149,12 @@ export class AxoPiBridgeServer {
         return;
       }
 
+      const peer = socket as SocketWithInput;
+      if (peer.axoAuthenticated !== true) {
+        if (!this.authenticate(value, peer)) this.protocolError(socket, "bridge authentication failed");
+        return;
+      }
+
       const parsed = parsePiControlCommand(value, this.axoSessionId);
       if (!parsed.ok) {
         const requestId = this.readRequestId(value);
@@ -183,6 +190,21 @@ export class AxoPiBridgeServer {
     });
   }
 
+  private authenticate(value: unknown, socket: SocketWithInput): boolean {
+    if (typeof value !== "object" || value === null || Array.isArray(value)) return false;
+    const record = value as Record<string, unknown>;
+    if (Object.keys(record).some(key => !["type", "protocolVersion", "token"].includes(key))) return false;
+    if (record.type !== "authenticate" || record.protocolVersion !== 1 || typeof record.token !== "string") return false;
+    const expected = Buffer.from(this.bridgeToken, "utf8");
+    const received = Buffer.from(record.token, "utf8");
+    if (expected.byteLength !== received.byteLength || !timingSafeEqual(expected, received)) return false;
+    socket.axoAuthenticated = true;
+    void this.send({ type: "authenticated", protocolVersion: 1 }, socket)
+      .then(() => this.sendHello(socket))
+      .catch(() => socket.destroy());
+    return true;
+  }
+
   private readRequestId(value: unknown): string | null {
     if (typeof value !== "object" || value === null || !("requestId" in value)) return null;
     const requestId = value.requestId;
@@ -201,7 +223,7 @@ export class AxoPiBridgeServer {
 
   private async sendHello(socket = this.socket): Promise<void> {
     const identity = this.identity;
-    if (identity === undefined) return;
+    if (identity === undefined || (socket as SocketWithInput | undefined)?.axoAuthenticated !== true) return;
     await this.send({ type: "hello", protocolVersion: 1, identity }, socket);
   }
 
@@ -249,4 +271,5 @@ export class AxoPiBridgeServer {
 
 interface SocketWithInput extends Socket {
   axoInput?: { buffer: Buffer };
+  axoAuthenticated?: boolean;
 }

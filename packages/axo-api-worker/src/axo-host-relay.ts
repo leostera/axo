@@ -52,6 +52,7 @@ type HostRegistrationMethods = {
 
 const hostRemoteMethods = {
   "axo.remote.session.create": hostV1Methods["axo.remote.session.create"],
+  "axo.remote.workspace.session.create": hostV1Methods["axo.remote.workspace.session.create"],
   "axo.remote.session.close": hostV1Methods["axo.remote.session.close"],
   "axo.remote.shell.create": hostV1Methods["axo.remote.shell.create"],
   "axo.remote.shell.close": hostV1Methods["axo.remote.shell.close"],

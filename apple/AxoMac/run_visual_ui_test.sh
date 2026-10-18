@@ -78,6 +78,9 @@ workspace_root=$(cd "$(dirname "$module_file")" && pwd -P)
 xcodeproj_runner=$(resolve_runfile "$AXO_XCODEPROJ_RUNNER") || fail "could not resolve the Bazel Xcode-project runner"
 axod=$(resolve_runfile "$AXO_UI_AXOD_RUNFILE") || fail "could not resolve the isolated axod binary"
 [[ -x "$axod" ]] || fail "the isolated axod binary is not executable: $axod"
+npm --prefix "$workspace_root/packages/pi-axo" run build
+pi_executable=$(command -v pi || true)
+[[ -n "$pi_executable" && -x "$pi_executable" ]] || fail "Pi CLI is required for the isolated Workspace E2E"
 
 [[ -f "$workspace_runfiles/apple/AxoMac/xcodeproj_execution_root_file" ]] ||
   fail "Xcode-project runner support files are missing from runfiles"
@@ -105,7 +108,11 @@ trap 'exit 143' TERM
 env -i \
   HOME="$root/home" \
   TMPDIR="$root/tmp" \
-  PATH=/usr/bin:/bin:/usr/sbin:/sbin \
+  PATH="$(dirname "$pi_executable"):/usr/bin:/bin:/usr/sbin:/sbin" \
+  PI_OFFLINE=1 \
+  AXO_PI_BRIDGE_DEBUG=1 \
+  AXO_PI_EXECUTABLE="$pi_executable" \
+  AXO_PI_EXTENSION_PATH="$workspace_root/packages/pi-axo/dist/index.js" \
   SHELL=/bin/zsh \
   USER="${USER:-$(id -un)}" \
   LOGNAME="${LOGNAME:-${USER:-$(id -un)}}" \
@@ -173,11 +180,16 @@ PY
 
 printf 'AXO_UI_XCRESULT=%s\n' "$result_bundle"
 xcodebuild_log="$TEST_UNDECLARED_OUTPUTS_DIR/xcodebuild.log"
+test_filter_args=()
+if [[ -n "${AXO_UI_TEST_ONLY:-}" ]]; then
+  test_filter_args=(-only-testing:"AxoVisualUITests/AxoVisualUITests/${AXO_UI_TEST_ONLY}")
+fi
 if xcodebuild test \
   -project "$project" \
   -scheme AxoVisualUITests \
   -destination "${AXO_UI_TEST_DESTINATION:-platform=macOS}" \
   -parallel-testing-enabled NO \
+  "${test_filter_args[@]}" \
   -resultBundlePath "$result_bundle" >"$xcodebuild_log" 2>&1
 then
   tail -n 80 "$xcodebuild_log"

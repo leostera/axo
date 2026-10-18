@@ -11,6 +11,7 @@ import type { PiBridgeRecord } from "../src/protocol.js";
 
 const axoSessionId = "82cfd1e8-1cc6-4473-a16d-6f0e77476311";
 const axoPaneId = "9b9e14e0-d1c6-46b8-b289-bab4fda8774f";
+const bridgeToken = "11cfda23-bc7c-4812-9613-4336f44b498e";
 
 function recordReader(socket: Socket): () => Promise<PiBridgeRecord> {
   let buffer = Buffer.alloc(0);
@@ -69,6 +70,7 @@ test("bridges Pi events and remote commands without owning the Pi process", asyn
     piSessionFile: "/private/axo/pi-session-1.jsonl",
     axoSessionId,
     axoPaneId,
+    bridgeToken,
   });
   try {
     const start = registered.get("session_start");
@@ -78,6 +80,8 @@ test("bridges Pi events and remote commands without owning the Pi process", asyn
     const socket = connect({ path: socketPath });
     const next = recordReader(socket);
     await once(socket, "connect");
+    socket.write(`${JSON.stringify({ type: "authenticate", protocolVersion: 1, token: bridgeToken })}\n`);
+    assert.deepEqual(await next(), { type: "authenticated", protocolVersion: 1 });
     const hello = await next();
     assert.equal(hello.type, "hello");
     if (hello.type !== "hello") throw new Error("expected Pi bridge identity");

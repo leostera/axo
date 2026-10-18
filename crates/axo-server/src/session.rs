@@ -1,9 +1,11 @@
 use std::collections::{HashMap, HashSet};
 use std::ffi::CStr;
 use std::fs;
+use std::fs::OpenOptions;
 use std::io::{self, Read, Write};
 use std::os::fd::{AsRawFd, FromRawFd, OwnedFd, RawFd};
-use std::os::unix::fs::PermissionsExt;
+use std::os::unix::ffi::OsStrExt;
+use std::os::unix::fs::{OpenOptionsExt, PermissionsExt};
 use std::os::unix::net::{UnixListener, UnixStream};
 use std::os::unix::process::CommandExt;
 use std::path::{Path, PathBuf};
@@ -14,6 +16,7 @@ use std::sync::{Arc, Mutex, Weak};
 use std::thread::{self, JoinHandle};
 use std::time::Duration;
 
+use crate::workspace_access::WorkspaceDirectoryAccess;
 use jsonrpc_core::{Error as RpcError, ErrorCode, IoHandler, Params};
 use rusqlite::{Connection, OptionalExtension, params};
 use serde::{Deserialize, Serialize};
@@ -169,6 +172,20 @@ struct SetSessionLayoutRequest {
 
 #[derive(Debug, Deserialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
+struct WorkspaceCreateRequest {
+    name: String,
+    directory_path: PathBuf,
+    directory_bookmark: Option<String>,
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+struct WorkspaceSessionCreateRequest {
+    workspace_id: String,
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
 struct SessionSubscribeRequest {
     session_id: Option<i64>,
 }
@@ -207,13 +224,17 @@ struct TerminalResizeRequest {
 #[derive(Debug)]
 struct SessionRecord {
     id: SessionId,
+    session_uuid: String,
     initial_pwd: PathBuf,
-    shell_ids: Vec<ShellId>,
+    pi_session_file: Option<PathBuf>,
+    shell_ids: Vec<(ShellId, PaneRole, Option<String>)>,
 }
 
 #[derive(Debug)]
 struct RunningShell {
     session_id: SessionId,
+    role: PaneRole,
+    pane_id: Option<String>,
     initial_pwd: PathBuf,
     child: Child,
     master: OwnedFd,
@@ -222,6 +243,9 @@ struct RunningShell {
     output_history: TerminalOutputHistory,
     output_sequence: u64,
     last_input_sequence: Option<u64>,
+    _writer_lock: Option<OwnedFd>,
+    pi_bridge_socket: Option<PathBuf>,
+    pi_bridge_token: Option<String>,
 }
 
 #[derive(Debug)]
@@ -260,12 +284,45 @@ impl TerminalOutputHistory {
 struct SessionState {
     database: Connection,
     running: HashMap<ShellId, RunningShell>,
+    pi_activity: HashMap<SessionId, PiRuntimeActivity>,
     initial_pwd: PathBuf,
+}
+
+#[derive(Clone, Copy, Debug, Serialize)]
+#[serde(rename_all = "camelCase")]
+enum SessionStatus {
+    Starting,
+    Ready,
+    Working,
+    NeedsAttention,
+    Unavailable,
+}
+
+#[derive(Clone, Copy, Debug, Default)]
+struct PiRuntimeActivity {
+    connected: bool,
+    working: bool,
+    ui_waits: u16,
+}
+
+impl PiRuntimeActivity {
+    fn status(self) -> SessionStatus {
+        if !self.connected {
+            SessionStatus::Unavailable
+        } else if self.ui_waits > 0 {
+            SessionStatus::NeedsAttention
+        } else if self.working {
+            SessionStatus::Working
+        } else {
+            SessionStatus::Ready
+        }
+    }
 }
 
 pub struct SessionManager {
     state: Mutex<SessionState>,
     attach_socket_path: PathBuf,
+    pi_session_directory: PathBuf,
     host_id: String,
     host_generation: String,
     stop_workers: Arc<AtomicBool>,
@@ -273,6 +330,7 @@ pub struct SessionManager {
     subscriptions: Mutex<HashMap<String, Receiver<Value>>>,
     subscribers: Mutex<Vec<LocalSubscriber>>,
     next_subscription_id: AtomicU64,
+    workspace_access: Mutex<HashMap<String, WorkspaceDirectoryAccess>>,
 }
 
 struct LocalSubscriber {
@@ -281,9 +339,18 @@ struct LocalSubscriber {
     sender: SyncSender<Value>,
 }
 
+#[derive(Clone, Copy, Debug, Deserialize, Eq, PartialEq, Serialize)]
+#[serde(rename_all = "camelCase")]
+enum PaneRole {
+    Pi,
+    Terminal,
+}
+
 #[derive(Debug)]
 struct ShellMetadata {
     id: ShellId,
+    pane_id: Option<String>,
+    role: PaneRole,
     process_id: u32,
     initial_pwd: PathBuf,
     slave_device: String,
@@ -294,6 +361,8 @@ impl ShellMetadata {
     fn to_json(&self) -> Value {
         json!({
             "id": self.id.0,
+            "paneId": self.pane_id,
+            "role": self.role,
             "processId": self.process_id,
             "initialPwd": self.initial_pwd,
             "ptyDevice": self.slave_device,
@@ -305,6 +374,14 @@ impl ShellMetadata {
 #[derive(Debug)]
 struct SessionMetadata {
     id: SessionId,
+    session_uuid: String,
+    pi_session_file: Option<PathBuf>,
+    pi_session_id: Option<String>,
+    workspace_id: Option<String>,
+    workspace_name: Option<String>,
+    name: String,
+    emoji: Option<String>,
+    status: SessionStatus,
     initial_pwd: PathBuf,
     shells: Vec<ShellMetadata>,
     layout: Option<SessionLayout>,
@@ -314,6 +391,14 @@ impl SessionMetadata {
     fn to_json(&self) -> Value {
         json!({
             "id": self.id.0,
+            "sessionUuid": self.session_uuid,
+            "piSessionFile": self.pi_session_file,
+            "piSessionId": self.pi_session_id,
+            "workspaceId": self.workspace_id,
+            "workspaceName": self.workspace_name,
+            "name": self.name,
+            "emoji": self.emoji,
+            "status": self.status,
             "initialPwd": self.initial_pwd,
             "shells": self.shells.iter().map(ShellMetadata::to_json).collect::<Vec<_>>(),
             "layout": self.layout,
@@ -321,11 +406,28 @@ impl SessionMetadata {
     }
 
     fn to_remote_json(&self, host_id: &str, updated_at: &str) -> Value {
+        let terminal_shell_ids: HashSet<_> = self
+            .shells
+            .iter()
+            .filter(|shell| shell.role == PaneRole::Terminal)
+            .map(|shell| ShellId(shell.id.0))
+            .collect();
+        let terminal_layout = self
+            .layout
+            .as_ref()
+            .and_then(|layout| layout.pruned_to(&terminal_shell_ids));
         json!({
             "hostId": host_id,
             "sessionId": self.id.0,
-            "shells": self.shells.iter().map(|shell| json!({ "shellId": shell.id.0 })).collect::<Vec<_>>(),
-            "layout": self.layout,
+            "sessionUuid": self.session_uuid,
+            "workspaceId": self.workspace_id,
+            "workspaceName": self.workspace_name,
+            "name": self.name,
+            "hasAgent": self.shells.iter().any(|shell| shell.role == PaneRole::Pi),
+            "shells": self.shells.iter()
+                .filter(|shell| shell.role == PaneRole::Terminal)
+                .map(|shell| json!({ "shellId": shell.id.0 })).collect::<Vec<_>>(),
+            "layout": terminal_layout,
             "updatedAt": updated_at,
         })
     }
@@ -350,6 +452,8 @@ impl ClosedShellMetadata {
 
 impl SessionManager {
     pub fn open(server_directory: &Path) -> Result<Arc<Self>, Box<dyn std::error::Error>> {
+        fs::create_dir_all(server_directory)?;
+        let server_directory = fs::canonicalize(server_directory)?;
         let database_path = server_directory.join(DATABASE_FILE);
         let attach_socket_path = server_directory.join(ATTACH_SOCKET_FILE);
         let initial_pwd = super::current_user_home_directory()?;
@@ -363,14 +467,20 @@ impl SessionManager {
         let host_id = load_or_create_host_id(&database)?;
         let host_generation = create_uuid_v4()?;
         fs::set_permissions(&database_path, fs::Permissions::from_mode(0o600))?;
+        let pi_session_directory = server_directory.join("pi-sessions");
+        fs::create_dir_all(&pi_session_directory)?;
+        fs::set_permissions(&pi_session_directory, fs::Permissions::from_mode(0o700))?;
 
+        let workspace_access = restore_workspace_accesses(&database)?;
         let manager = Arc::new(Self {
             state: Mutex::new(SessionState {
                 database,
                 running: HashMap::new(),
+                pi_activity: HashMap::new(),
                 initial_pwd,
             }),
             attach_socket_path,
+            pi_session_directory,
             host_id,
             host_generation,
             stop_workers: Arc::new(AtomicBool::new(false)),
@@ -378,9 +488,14 @@ impl SessionManager {
             subscriptions: Mutex::new(HashMap::new()),
             subscribers: Mutex::new(Vec::new()),
             next_subscription_id: AtomicU64::new(1),
+            workspace_access: Mutex::new(workspace_access),
         });
 
         manager.restore_open_sessions()?;
+        manager.ensure_open_workspace_sessions()?;
+        if let Some(session) = manager.ensure_home_session()? {
+            log::info!("event=session.default_created session_id={}", session.id.0);
+        }
         manager.start_attachment_listener()?;
         manager.start_reaper();
         Ok(manager)
@@ -430,8 +545,17 @@ impl SessionManager {
         Ok(session.to_remote_json(&self.host_id, updated_at))
     }
 
+    pub(crate) fn remote_create_workspace_session(
+        self: &Arc<Self>,
+        workspace_id: &str,
+        updated_at: &str,
+    ) -> io::Result<Value> {
+        let session = self.create_session_in_workspace(workspace_id)?;
+        Ok(session.to_remote_json(&self.host_id, updated_at))
+    }
+
     pub(crate) fn remote_close_session(
-        &self,
+        self: &Arc<Self>,
         session_id: i64,
         updated_at: &str,
     ) -> io::Result<Option<Value>> {
@@ -458,7 +582,11 @@ impl SessionManager {
         Ok(shell.id.0)
     }
 
-    pub(crate) fn remote_close_shell(&self, session_id: i64, shell_id: i64) -> io::Result<()> {
+    pub(crate) fn remote_close_shell(
+        self: &Arc<Self>,
+        session_id: i64,
+        shell_id: i64,
+    ) -> io::Result<()> {
         let (session_id, shell_id) = parse_session_shell_ids(session_id, shell_id)
             .map_err(|_| io::Error::new(io::ErrorKind::InvalidInput, "invalid shell identity"))?;
         let closed = self.close_shell(session_id, shell_id)?;
@@ -630,6 +758,52 @@ impl SessionManager {
         });
 
         let manager = Arc::clone(self);
+        handler.add_sync_method("axo.workspace.list", move |_| {
+            manager
+                .list_workspaces()
+                .map(|workspaces| json!({ "workspaces": workspaces }))
+                .map_err(internal_rpc_error)
+        });
+
+        let manager = Arc::clone(self);
+        handler.add_sync_method("axo.workspace.create", move |params: Params| {
+            let request: WorkspaceCreateRequest = params
+                .parse()
+                .map_err(|_| {
+                    invalid_params("expected {name, directoryPath, optional directoryBookmark}")
+                })?;
+            manager
+                .create_workspace(request)
+                .map_err(|error| match error.kind() {
+                    io::ErrorKind::InvalidInput => invalid_params(&error.to_string()),
+                    io::ErrorKind::NotFound => {
+                        invalid_params("Workspace directory no longer exists or is unavailable")
+                    }
+                    io::ErrorKind::PermissionDenied => invalid_params(
+                        "Axo cannot access the selected folder; choose it again in the folder picker",
+                    ),
+                    _ => internal_rpc_error(error),
+                })
+        });
+
+        let manager = Arc::clone(self);
+        handler.add_sync_method("axo.workspace.session.create", move |params: Params| {
+            let request: WorkspaceSessionCreateRequest = params
+                .parse()
+                .map_err(|_| invalid_params("expected {workspaceId}"))?;
+            manager
+                .create_session_in_workspace(&request.workspace_id)
+                .map(|session| session.to_json())
+                .map_err(|error| {
+                    if error.kind() == io::ErrorKind::InvalidInput {
+                        invalid_params("Workspace ID is invalid")
+                    } else {
+                        internal_rpc_error(error)
+                    }
+                })
+        });
+
+        let manager = Arc::clone(self);
         handler.add_sync_method("axo.session.create", move |_| {
             let session = manager.create_session().map_err(internal_rpc_error)?;
             manager
@@ -691,19 +865,45 @@ impl SessionManager {
     fn restore_open_sessions(self: &Arc<Self>) -> io::Result<()> {
         let mut state = self.lock_state()?;
         let records = read_open_sessions(&state.database)?;
-        if records.is_empty() {
-            create_session(&mut state, &self.attach_socket_path)?;
-        } else {
-            for record in records {
-                let has_shells = !record.shell_ids.is_empty();
-                for shell_id in record.shell_ids {
-                    let shell = spawn_shell(record.id, &record.initial_pwd)?;
-                    state.running.insert(shell_id, shell);
-                }
-                if !has_shells {
-                    create_shell(&mut state, record.id, &self.attach_socket_path)?;
-                }
+        let mut pi_shells = Vec::new();
+        for record in records {
+            if record.shell_ids.is_empty() {
+                archive_session(&mut state.database, record.id, "missing_open_pane")?;
+                continue;
             }
+            for (shell_id, role, pane_id) in record.shell_ids {
+                let running = match role {
+                    PaneRole::Terminal => spawn_shell(record.id, &record.initial_pwd),
+                    PaneRole::Pi => {
+                        let session_file = record.pi_session_file.as_ref().ok_or_else(|| {
+                            io::Error::new(
+                                io::ErrorKind::InvalidData,
+                                "Pi Session is missing its persisted history path",
+                            )
+                        })?;
+                        let bridge_socket =
+                            pi_bridge_socket_path(&self.pi_session_directory, &record.session_uuid);
+                        let pane_id = pane_id.ok_or_else(|| {
+                            io::Error::new(io::ErrorKind::InvalidData, "Pi pane ID is missing")
+                        })?;
+                        let running = spawn_pi(
+                            record.id,
+                            &record.initial_pwd,
+                            session_file,
+                            &bridge_socket,
+                            &record.session_uuid,
+                            &pane_id,
+                        )?;
+                        pi_shells.push(shell_id);
+                        Ok(running)
+                    }
+                }?;
+                state.running.insert(shell_id, running);
+            }
+        }
+        drop(state);
+        for shell_id in pi_shells {
+            self.start_pi_bridge_worker(shell_id)?;
         }
         Ok(())
     }
@@ -770,25 +970,15 @@ impl SessionManager {
 
     fn list_sessions(&self) -> io::Result<Vec<SessionMetadata>> {
         let state = self.lock_state()?;
-        let mut sessions: HashMap<SessionId, SessionMetadata> = HashMap::new();
-        for (shell_id, running) in &state.running {
-            let session = sessions
-                .entry(running.session_id)
-                .or_insert_with(|| SessionMetadata {
-                    id: running.session_id,
-                    initial_pwd: running.initial_pwd.clone(),
-                    shells: Vec::new(),
-                    layout: None,
-                });
-            session
-                .shells
-                .push(shell_metadata(*shell_id, running, &self.attach_socket_path));
-        }
-        let mut sessions: Vec<_> = sessions.into_values().collect();
-        for session in &mut sessions {
-            session.shells.sort_by_key(|shell| shell.id.0);
-            session.layout = read_session_layout(&state.database, session.id)?;
-        }
+        let ids: HashSet<_> = state
+            .running
+            .values()
+            .map(|running| running.session_id)
+            .collect();
+        let mut sessions = ids
+            .into_iter()
+            .map(|id| session_metadata(&state, id, &self.attach_socket_path))
+            .collect::<io::Result<Vec<_>>>()?;
         sessions.sort_by_key(|session| session.id.0);
         Ok(sessions)
     }
@@ -796,6 +986,15 @@ impl SessionManager {
     fn create_session(&self) -> io::Result<SessionMetadata> {
         let mut state = self.lock_state()?;
         create_session(&mut state, &self.attach_socket_path)
+    }
+
+    fn ensure_home_session(&self) -> io::Result<Option<SessionMetadata>> {
+        let mut state = self.lock_state()?;
+        if open_standalone_session_count(&state.database)? == 0 {
+            create_session(&mut state, &self.attach_socket_path).map(Some)
+        } else {
+            Ok(None)
+        }
     }
 
     fn set_layout(&self, session_id: SessionId, layout: SessionLayout) -> io::Result<()> {
@@ -1057,26 +1256,294 @@ impl SessionManager {
         create_shell(&mut state, session_id, &self.attach_socket_path)
     }
 
-    fn close_session(&self, id: SessionId) -> io::Result<Option<SessionMetadata>> {
+    fn start_pi_bridge_worker(self: &Arc<Self>, shell_id: ShellId) -> io::Result<()> {
+        let (
+            session_id,
+            session_uuid,
+            pane_id,
+            initial_pwd,
+            session_file,
+            bridge_socket,
+            bridge_token,
+            process_id,
+        ) = {
+            let state = self.lock_state()?;
+            let running = state
+                .running
+                .get(&shell_id)
+                .ok_or_else(|| io::Error::new(io::ErrorKind::NotFound, "Pi pane is not running"))?;
+            let session_uuid: String = state
+                .database
+                .query_row(
+                    "SELECT session_uuid FROM sessions WHERE id = ? AND state = 'open'",
+                    params![running.session_id.0],
+                    |row| row.get(0),
+                )
+                .map_err(io::Error::other)?;
+            let session_file = state
+                .database
+                .query_row(
+                    "SELECT pi_session_file FROM sessions WHERE id = ?",
+                    params![running.session_id.0],
+                    |row| row.get::<_, Option<String>>(0),
+                )
+                .map_err(io::Error::other)?
+                .map(PathBuf::from)
+                .ok_or_else(|| {
+                    io::Error::new(io::ErrorKind::InvalidData, "Pi history path is missing")
+                })?;
+            (
+                running.session_id,
+                session_uuid,
+                running.pane_id.clone().ok_or_else(|| {
+                    io::Error::new(io::ErrorKind::InvalidData, "Pi pane ID is missing")
+                })?,
+                running.initial_pwd.clone(),
+                session_file,
+                running.pi_bridge_socket.clone().ok_or_else(|| {
+                    io::Error::new(
+                        io::ErrorKind::InvalidData,
+                        "Pi bridge socket path is missing",
+                    )
+                })?,
+                running.pi_bridge_token.clone().ok_or_else(|| {
+                    io::Error::new(io::ErrorKind::InvalidData, "Pi bridge token is missing")
+                })?,
+                running.child.id(),
+            )
+        };
+        let manager = Arc::downgrade(self);
+        let stop = Arc::clone(&self.stop_workers);
+        let worker = thread::Builder::new()
+            .name(format!("axo-pi-bridge-{}", shell_id.0))
+            .spawn(move || {
+                run_pi_bridge_worker(
+                    manager,
+                    stop,
+                    session_id,
+                    shell_id,
+                    session_uuid,
+                    pane_id,
+                    initial_pwd,
+                    session_file,
+                    bridge_socket,
+                    bridge_token,
+                    process_id,
+                );
+            })?;
+        self.workers
+            .lock()
+            .map_err(|_| io::Error::other("session worker lock was poisoned"))?
+            .push(worker);
+        Ok(())
+    }
+
+    fn list_workspaces(&self) -> io::Result<Vec<Value>> {
+        let state = self.lock_state()?;
+        let mut statement = state.database.prepare(
+            "SELECT workspace_id, name, directory_path FROM workspaces WHERE state = 'open' ORDER BY name, workspace_id",
+        ).map_err(io::Error::other)?;
+        let rows = statement
+            .query_map([], |row| {
+                Ok(json!({
+                    "workspaceId": row.get::<_, String>(0)?,
+                    "name": row.get::<_, String>(1)?,
+                    "directoryPath": row.get::<_, String>(2)?,
+                }))
+            })
+            .map_err(io::Error::other)?;
+        rows.collect::<Result<Vec<_>, _>>()
+            .map_err(io::Error::other)
+    }
+
+    fn ensure_open_workspace_sessions(self: &Arc<Self>) -> io::Result<()> {
+        let sessions = {
+            let mut state = self.lock_state()?;
+            let workspace_ids = {
+                let mut statement = state
+                    .database
+                    .prepare(
+                        "SELECT w.workspace_id FROM workspaces w WHERE w.state = 'open' \
+                         AND NOT EXISTS (SELECT 1 FROM sessions s WHERE s.workspace_id = w.workspace_id \
+                         AND s.state = 'open') ORDER BY w.workspace_id",
+                    )
+                    .map_err(io::Error::other)?;
+                statement
+                    .query_map([], |row| row.get::<_, String>(0))
+                    .map_err(io::Error::other)?
+                    .collect::<Result<Vec<_>, _>>()
+                    .map_err(io::Error::other)?
+            };
+            workspace_ids
+                .iter()
+                .map(|workspace_id| {
+                    create_workspace_session(
+                        &mut state,
+                        &self.attach_socket_path,
+                        &self.pi_session_directory,
+                        workspace_id,
+                    )
+                })
+                .collect::<io::Result<Vec<_>>>()?
+        };
+
+        for session in sessions {
+            self.start_pi_bridge_for_session(&session)?;
+            self.publish_event(json!({ "type": "session.snapshot", "session": session.to_json() }));
+        }
+        Ok(())
+    }
+
+    fn create_workspace(self: &Arc<Self>, request: WorkspaceCreateRequest) -> io::Result<Value> {
+        validate_workspace_name(&request.name)?;
+        if !request.directory_path.is_absolute() {
+            return Err(io::Error::new(
+                io::ErrorKind::InvalidInput,
+                "Workspace root must be an absolute path",
+            ));
+        }
+        let directory_access = WorkspaceDirectoryAccess::open(
+            &request.directory_path,
+            request.directory_bookmark.as_deref(),
+        )?;
+        let directory = directory_access.path().to_path_buf();
+        let workspace_id = create_uuid_v4()?;
+        let mut state = self.lock_state()?;
+        state.database.execute(
+            "INSERT INTO workspaces (workspace_id, name, directory_path, directory_bookmark, state, created_at) VALUES (?, ?, ?, ?, 'open', ?)",
+            params![
+                workspace_id,
+                request.name,
+                directory.to_string_lossy(),
+                request.directory_bookmark,
+                unix_timestamp()
+            ],
+        ).map_err(io::Error::other)?;
+        let session = match create_workspace_session(
+            &mut state,
+            &self.attach_socket_path,
+            &self.pi_session_directory,
+            &workspace_id,
+        ) {
+            Ok(session) => session,
+            Err(error) => {
+                let _ = state.database.execute(
+                    "UPDATE workspaces SET state = 'archived', archived_at = ? WHERE workspace_id = ?",
+                    params![unix_timestamp(), workspace_id],
+                );
+                return Err(io::Error::other(error));
+            }
+        };
+        let pi_shell_id = session
+            .shells
+            .iter()
+            .find(|shell| shell.role == PaneRole::Pi)
+            .ok_or_else(|| {
+                io::Error::new(
+                    io::ErrorKind::InvalidData,
+                    "Workspace Session has no Pi pane",
+                )
+            })?
+            .id;
+        drop(state);
+        self.workspace_access
+            .lock()
+            .map_err(|_| io::Error::other("Workspace access registry is unavailable"))?
+            .insert(workspace_id.clone(), directory_access);
+        self.start_pi_bridge_worker(pi_shell_id)
+            .map_err(io::Error::other)?;
+        let workspace = json!({
+            "workspaceId": workspace_id,
+            "name": request.name,
+            "directoryPath": directory,
+            "state": "open",
+        });
+        self.publish_event(json!({ "type": "session.snapshot", "session": session.to_json() }));
+        Ok(json!({ "workspace": workspace, "session": session.to_json() }))
+    }
+
+    fn create_session_in_workspace(
+        self: &Arc<Self>,
+        workspace_id: &str,
+    ) -> io::Result<SessionMetadata> {
+        if !is_uuid_string(workspace_id) {
+            return Err(io::Error::new(
+                io::ErrorKind::InvalidInput,
+                "Workspace ID is invalid",
+            ));
+        }
+        let mut state = self.lock_state()?;
+        let session = create_workspace_session(
+            &mut state,
+            &self.attach_socket_path,
+            &self.pi_session_directory,
+            workspace_id,
+        )?;
+        let pi_shell_id = session
+            .shells
+            .iter()
+            .find(|shell| shell.role == PaneRole::Pi)
+            .ok_or_else(|| {
+                io::Error::new(
+                    io::ErrorKind::InvalidData,
+                    "Workspace Session has no Pi pane",
+                )
+            })?
+            .id;
+        drop(state);
+        self.start_pi_bridge_worker(pi_shell_id)?;
+        self.publish_event(json!({ "type": "session.snapshot", "session": session.to_json() }));
+        Ok(session)
+    }
+
+    fn close_session(self: &Arc<Self>, id: SessionId) -> io::Result<Option<SessionMetadata>> {
         let (replacement, shells_to_terminate) = {
             let mut state = self.lock_state()?;
-            close_session(&mut state, id, &self.attach_socket_path)?
+            close_session(
+                &mut state,
+                id,
+                &self.attach_socket_path,
+                &self.pi_session_directory,
+            )?
         };
         self.terminate_shells_in_background(shells_to_terminate);
+        if let Some(session) = &replacement {
+            self.start_pi_bridge_for_session(session)?;
+        }
         Ok(replacement)
     }
 
     fn close_shell(
-        &self,
+        self: &Arc<Self>,
         session_id: SessionId,
         shell_id: ShellId,
     ) -> io::Result<ClosedShellMetadata> {
         let (closed, shells_to_terminate) = {
             let mut state = self.lock_state()?;
-            close_shell(&mut state, session_id, shell_id, &self.attach_socket_path)?
+            close_shell(
+                &mut state,
+                session_id,
+                shell_id,
+                &self.attach_socket_path,
+                &self.pi_session_directory,
+            )?
         };
         self.terminate_shells_in_background(shells_to_terminate);
+        if let Some(session) = &closed.replacement {
+            self.start_pi_bridge_for_session(session)?;
+        }
         Ok(closed)
+    }
+
+    fn start_pi_bridge_for_session(self: &Arc<Self>, session: &SessionMetadata) -> io::Result<()> {
+        if let Some(pi_shell) = session
+            .shells
+            .iter()
+            .find(|shell| shell.role == PaneRole::Pi)
+        {
+            self.start_pi_bridge_worker(pi_shell.id)?;
+        }
+        Ok(())
     }
 
     fn terminate_shells_in_background(&self, shells: Vec<RunningShell>) {
@@ -1112,7 +1579,7 @@ impl SessionManager {
         }
     }
 
-    fn reap_exited_sessions(&self) -> io::Result<()> {
+    fn reap_exited_sessions(self: &Arc<Self>) -> io::Result<()> {
         let mut state = self.lock_state()?;
         let exited = state
             .running
@@ -1125,9 +1592,29 @@ impl SessionManager {
             .collect::<io::Result<Vec<_>>>()?;
 
         let exited_shell_ids: HashSet<_> = exited.iter().map(|(shell_id, _)| *shell_id).collect();
+        let exited_pi_sessions: HashSet<_> = exited
+            .iter()
+            .filter_map(|(shell_id, session_id)| {
+                state
+                    .running
+                    .get(shell_id)
+                    .is_some_and(|shell| shell.role == PaneRole::Pi)
+                    .then_some(*session_id)
+            })
+            .collect();
         let mut changed_sessions = HashSet::new();
         let mut removed_sessions = HashSet::new();
+        let mut shells_to_terminate = Vec::new();
+        for session_id in &exited_pi_sessions {
+            archive_session(&mut state.database, *session_id, "pi_exited")?;
+            state.pi_activity.remove(session_id);
+            shells_to_terminate.extend(remove_session_shells(&mut state, *session_id));
+            removed_sessions.insert(*session_id);
+        }
         for (shell_id, session_id) in &exited {
+            if exited_pi_sessions.contains(session_id) {
+                continue;
+            }
             let remaining_shell_ids: HashSet<_> = state
                 .running
                 .iter()
@@ -1147,17 +1634,14 @@ impl SessionManager {
             if remaining_shell_ids.is_empty() {
                 if removed_sessions.insert(*session_id) {
                     archive_session(&mut state.database, *session_id, "shell_exited")?;
+                    state.pi_activity.remove(session_id);
                 }
             } else {
                 changed_sessions.insert(*session_id);
             }
         }
-        let replacement = if state.running.is_empty() {
-            Some(create_session(&mut state, &self.attach_socket_path)?)
-        } else {
-            None
-        };
         drop(state);
+        self.terminate_shells_in_background(shells_to_terminate);
 
         for (shell_id, session_id) in exited {
             self.publish_shell_activity(session_id, shell_id, "exited");
@@ -1168,7 +1652,8 @@ impl SessionManager {
         for session_id in changed_sessions {
             self.publish_session_snapshot(session_id)?;
         }
-        if let Some(session) = replacement {
+        self.ensure_open_workspace_sessions()?;
+        if let Some(session) = self.ensure_home_session()? {
             self.publish_event(json!({ "type": "session.snapshot", "session": session.to_json() }));
         }
         Ok(())
@@ -1248,6 +1733,139 @@ impl SessionManager {
                 terminate_shell(&mut running.child);
             }
         }
+    }
+
+    fn pi_shell_is_open(&self, shell_id: ShellId) -> bool {
+        self.state
+            .lock()
+            .map(|state| {
+                state
+                    .running
+                    .get(&shell_id)
+                    .is_some_and(|running| running.role == PaneRole::Pi)
+            })
+            .unwrap_or(false)
+    }
+
+    fn set_pi_connection(
+        &self,
+        session_id: SessionId,
+        shell_id: ShellId,
+        connected: bool,
+    ) -> io::Result<()> {
+        let mut state = self.lock_state()?;
+        if !state
+            .running
+            .get(&shell_id)
+            .is_some_and(|shell| shell.session_id == session_id && shell.role == PaneRole::Pi)
+        {
+            return Ok(());
+        }
+        state.pi_activity.entry(session_id).or_default().connected = connected;
+        Ok(())
+    }
+
+    fn observe_pi_event(
+        &self,
+        session_id: SessionId,
+        shell_id: ShellId,
+        name: &str,
+        data: &Value,
+    ) -> io::Result<()> {
+        let changed = {
+            let mut state = self.lock_state()?;
+            if !state
+                .running
+                .get(&shell_id)
+                .is_some_and(|shell| shell.session_id == session_id && shell.role == PaneRole::Pi)
+            {
+                return Ok(());
+            }
+
+            match name {
+                "agent.start" => {
+                    let activity = state.pi_activity.entry(session_id).or_default();
+                    let changed = !activity.working;
+                    activity.working = true;
+                    changed
+                }
+                "agent.settled" => {
+                    let activity = state.pi_activity.entry(session_id).or_default();
+                    let changed = activity.working;
+                    activity.working = false;
+                    changed
+                }
+                "ui.prompt.start" => {
+                    let activity = state.pi_activity.entry(session_id).or_default();
+                    let previous_waits = activity.ui_waits;
+                    activity.ui_waits = activity.ui_waits.saturating_add(1);
+                    activity.ui_waits != previous_waits
+                }
+                "ui.prompt.end" => {
+                    let activity = state.pi_activity.entry(session_id).or_default();
+                    let previous_waits = activity.ui_waits;
+                    activity.ui_waits = activity.ui_waits.saturating_sub(1);
+                    activity.ui_waits != previous_waits
+                }
+                "session.info" => {
+                    let Some(title) = data["name"]
+                        .as_str()
+                        .filter(|title| valid_session_title(title))
+                    else {
+                        return Ok(());
+                    };
+                    state
+                        .database
+                        .execute(
+                            "UPDATE sessions SET name = ?1 WHERE id = ?2 AND state = 'open'",
+                            params![title, session_id.0],
+                        )
+                        .map_err(io::Error::other)?
+                        > 0
+                }
+                "axo.session.metadata" => {
+                    let title = data["title"]
+                        .as_str()
+                        .filter(|title| valid_session_title(title));
+                    let emoji = data["emoji"]
+                        .as_str()
+                        .filter(|emoji| valid_session_emoji(emoji));
+                    if title.is_none() && emoji.is_none() {
+                        return Ok(());
+                    }
+                    state.database.execute(
+                        "UPDATE sessions SET name = COALESCE(?1, name), emoji = COALESCE(?2, emoji) \
+                         WHERE id = ?3 AND state = 'open'",
+                        params![title, emoji, session_id.0],
+                    ).map_err(io::Error::other)? > 0
+                }
+                _ => false,
+            }
+        };
+        if changed && matches!(name, "session.info" | "axo.session.metadata") {
+            self.publish_session_snapshot(session_id)?;
+        }
+        Ok(())
+    }
+
+    fn persist_pi_session_id(
+        &self,
+        session_id: SessionId,
+        session_uuid: &str,
+        pi_session_id: &str,
+    ) -> io::Result<()> {
+        let state = self.lock_state()?;
+        let changed = state.database.execute(
+            "UPDATE sessions SET pi_session_id = ? WHERE id = ? AND session_uuid = ? AND state = 'open'",
+            params![pi_session_id, session_id.0, session_uuid],
+        ).map_err(io::Error::other)?;
+        if changed != 1 {
+            return Err(io::Error::new(
+                io::ErrorKind::NotFound,
+                "Pi Session binding changed",
+            ));
+        }
+        Ok(())
     }
 
     fn lock_state(&self) -> io::Result<std::sync::MutexGuard<'_, SessionState>> {
@@ -1333,6 +1951,7 @@ fn create_uuid_v4() -> io::Result<String> {
 }
 
 fn initialize_database(database: &mut Connection) -> rusqlite::Result<()> {
+    let old_version = database.query_row("PRAGMA user_version", [], |row| row.get::<_, i64>(0))?;
     let sessions_exist = database.query_row(
         "SELECT EXISTS(SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = 'sessions')",
         [],
@@ -1361,21 +1980,46 @@ fn initialize_database(database: &mut Connection) -> rusqlite::Result<()> {
         create_tables(&transaction)?;
     }
     ensure_session_layout_column(&transaction)?;
+    ensure_workspace_columns(&transaction)?;
+    if old_version < 4 {
+        transaction.execute(
+            "UPDATE shells SET state = 'archived', archived_at = ?, termination_reason = 'workspace_clean_cutover' WHERE state = 'open'",
+            params![unix_timestamp()],
+        )?;
+        transaction.execute(
+            "UPDATE sessions SET state = 'archived', archived_at = ?, termination_reason = 'workspace_clean_cutover' WHERE state = 'open'",
+            params![unix_timestamp()],
+        )?;
+    }
 
-    transaction.pragma_update(None, "user_version", 3)?;
+    transaction.pragma_update(None, "user_version", 5)?;
     transaction.commit()
 }
 
 fn create_tables(transaction: &rusqlite::Transaction<'_>) -> rusqlite::Result<()> {
     transaction.execute_batch(
-        "CREATE TABLE IF NOT EXISTS sessions (
+        "CREATE TABLE IF NOT EXISTS workspaces (
+            workspace_id TEXT PRIMARY KEY,
+            name TEXT NOT NULL,
+            directory_path TEXT NOT NULL,
+            directory_bookmark TEXT,
+            state TEXT NOT NULL CHECK (state IN ('open', 'archived')),
+            created_at INTEGER NOT NULL,
+            archived_at INTEGER
+        );
+        CREATE TABLE IF NOT EXISTS sessions (
             id INTEGER PRIMARY KEY AUTOINCREMENT,
             initial_pwd TEXT NOT NULL,
             state TEXT NOT NULL CHECK (state IN ('open', 'archived')),
             created_at INTEGER NOT NULL,
             archived_at INTEGER,
             termination_reason TEXT,
-            layout_json TEXT
+            layout_json TEXT,
+            workspace_id TEXT REFERENCES workspaces(workspace_id),
+            session_uuid TEXT,
+            name TEXT NOT NULL DEFAULT 'Session',
+            pi_session_file TEXT,
+            pi_session_id TEXT
         );
         CREATE TABLE IF NOT EXISTS shells (
             id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -1384,7 +2028,9 @@ fn create_tables(transaction: &rusqlite::Transaction<'_>) -> rusqlite::Result<()
             state TEXT NOT NULL CHECK (state IN ('open', 'archived')),
             created_at INTEGER NOT NULL,
             archived_at INTEGER,
-            termination_reason TEXT
+            termination_reason TEXT,
+            role TEXT NOT NULL DEFAULT 'terminal' CHECK (role IN ('pi', 'terminal')),
+            pane_id TEXT
         );
         CREATE INDEX IF NOT EXISTS shells_by_session_state
             ON shells(session_id, state, id);
@@ -1395,16 +2041,137 @@ fn create_tables(transaction: &rusqlite::Transaction<'_>) -> rusqlite::Result<()
     )
 }
 
+fn valid_session_title(title: &str) -> bool {
+    !title.is_empty()
+        && title.trim() == title
+        && title.encode_utf16().count() <= 80
+        && !title.chars().any(char::is_control)
+}
+
+fn valid_session_emoji(emoji: &str) -> bool {
+    !emoji.is_empty()
+        && emoji.chars().count() <= 16
+        && emoji.trim() == emoji
+        && !emoji.chars().any(char::is_whitespace)
+        && !emoji.chars().any(char::is_control)
+}
+
+fn validate_workspace_name(name: &str) -> io::Result<()> {
+    if name.is_empty()
+        || name.len() > 80
+        || name.trim() != name
+        || name.chars().any(char::is_control)
+    {
+        return Err(io::Error::new(
+            io::ErrorKind::InvalidInput,
+            "Workspace name is invalid",
+        ));
+    }
+    Ok(())
+}
+
+fn create_workspace_session(
+    state: &mut SessionState,
+    attach_socket_path: &Path,
+    pi_session_directory: &Path,
+    workspace_id: &str,
+) -> io::Result<SessionMetadata> {
+    let initial_pwd = state
+        .database
+        .query_row(
+            "SELECT directory_path FROM workspaces WHERE workspace_id = ? AND state = 'open'",
+            params![workspace_id],
+            |row| row.get::<_, String>(0),
+        )
+        .optional()
+        .map_err(io::Error::other)?
+        .map(PathBuf::from)
+        .ok_or_else(|| io::Error::new(io::ErrorKind::NotFound, "Workspace is not open"))?;
+    let ordinal: i64 = state
+        .database
+        .query_row(
+            "SELECT COUNT(*) + 1 FROM sessions WHERE workspace_id = ? AND state = 'open'",
+            params![workspace_id],
+            |row| row.get(0),
+        )
+        .map_err(io::Error::other)?;
+    let session_uuid = create_uuid_v4()?;
+    let pane_id = create_uuid_v4()?;
+    let pi_directory = pi_session_directory.join(workspace_id);
+    fs::create_dir_all(&pi_directory)?;
+    fs::set_permissions(&pi_directory, fs::Permissions::from_mode(0o700))?;
+    let pi_session_file = pi_directory.join(format!("{session_uuid}.jsonl"));
+    let bridge_socket = pi_bridge_socket_path(pi_session_directory, &session_uuid);
+    let session_name = format!("Session {ordinal}");
+    state.database.execute(
+        "INSERT INTO sessions (initial_pwd, state, created_at, workspace_id, session_uuid, name, pi_session_file)
+         VALUES (?, 'open', ?, ?, ?, ?, ?)",
+        params![initial_pwd.to_string_lossy(), unix_timestamp(), workspace_id, session_uuid, session_name, pi_session_file.to_string_lossy()],
+    ).map_err(io::Error::other)?;
+    let session_id = SessionId(state.database.last_insert_rowid());
+    state
+        .database
+        .execute(
+            "INSERT INTO shells (session_id, initial_pwd, state, created_at, role, pane_id)
+         VALUES (?, ?, 'open', ?, 'pi', ?)",
+            params![
+                session_id.0,
+                initial_pwd.to_string_lossy(),
+                unix_timestamp(),
+                pane_id
+            ],
+        )
+        .map_err(io::Error::other)?;
+    let pane = ShellId(state.database.last_insert_rowid());
+    let layout = SessionLayout::Pane { shell_id: pane.0 };
+    state
+        .database
+        .execute(
+            "UPDATE sessions SET layout_json = ? WHERE id = ?",
+            params![
+                serde_json::to_string(&layout).map_err(io::Error::other)?,
+                session_id.0
+            ],
+        )
+        .map_err(io::Error::other)?;
+    let running = match spawn_pi(
+        session_id,
+        &initial_pwd,
+        &pi_session_file,
+        &bridge_socket,
+        &session_uuid,
+        &pane_id,
+    ) {
+        Ok(running) => running,
+        Err(error) => {
+            archive_session(&mut state.database, session_id, "pi_spawn_failed")?;
+            return Err(error);
+        }
+    };
+    state.running.insert(pane, running);
+    session_metadata(state, session_id, attach_socket_path)
+}
+
 fn create_session(
     state: &mut SessionState,
     attach_socket_path: &Path,
 ) -> io::Result<SessionMetadata> {
     let initial_pwd = state.initial_pwd.clone();
+    let session_uuid = create_uuid_v4()?;
+    let ordinal: i64 = state
+        .database
+        .query_row(
+            "SELECT COUNT(*) + 1 FROM sessions WHERE workspace_id IS NULL AND state = 'open'",
+            [],
+            |row| row.get(0),
+        )
+        .map_err(io::Error::other)?;
+    let session_name = format!("Session {ordinal}");
     state
         .database
         .execute(
-            "INSERT INTO sessions (initial_pwd, state, created_at) VALUES (?1, 'open', ?2)",
-            params![initial_pwd.to_string_lossy(), unix_timestamp()],
+            "INSERT INTO sessions (initial_pwd, state, created_at, session_uuid, name) VALUES (?1, 'open', ?2, ?3, ?4)",
+            params![initial_pwd.to_string_lossy(), unix_timestamp(), session_uuid, session_name],
         )
         .map_err(io::Error::other)?;
     let id = SessionId(state.database.last_insert_rowid());
@@ -1448,10 +2215,21 @@ fn create_shell(
     Ok(metadata)
 }
 
+fn open_standalone_session_count(database: &Connection) -> io::Result<i64> {
+    database
+        .query_row(
+            "SELECT COUNT(*) FROM sessions WHERE workspace_id IS NULL AND state = 'open'",
+            [],
+            |row| row.get(0),
+        )
+        .map_err(io::Error::other)
+}
+
 fn close_session(
     state: &mut SessionState,
     id: SessionId,
     attach_socket_path: &Path,
+    pi_session_directory: &Path,
 ) -> io::Result<(Option<SessionMetadata>, Vec<RunningShell>)> {
     if !state.running.values().any(|shell| shell.session_id == id) {
         return Err(io::Error::new(
@@ -1460,18 +2238,42 @@ fn close_session(
         ));
     }
 
-    let open_session_ids: std::collections::HashSet<_> = state
-        .running
-        .values()
-        .map(|shell| shell.session_id)
-        .collect();
-    let replacement = if open_session_ids.len() == 1 {
+    let workspace_id: Option<String> = state
+        .database
+        .query_row(
+            "SELECT workspace_id FROM sessions WHERE id = ? AND state = 'open'",
+            params![id.0],
+            |row| row.get(0),
+        )
+        .map_err(io::Error::other)?;
+    let replacement = if let Some(workspace_id) = workspace_id {
+        let workspace_session_count: i64 = state
+            .database
+            .query_row(
+                "SELECT COUNT(*) FROM sessions WHERE workspace_id = ? AND state = 'open'",
+                params![workspace_id],
+                |row| row.get(0),
+            )
+            .map_err(io::Error::other)?;
+        (workspace_session_count == 1)
+            .then(|| {
+                create_workspace_session(
+                    state,
+                    attach_socket_path,
+                    pi_session_directory,
+                    &workspace_id,
+                )
+            })
+            .transpose()?
+    } else if open_standalone_session_count(&state.database)? == 1 {
+        // Workspace Sessions do not replace the standalone home Session.
         Some(create_session(state, attach_socket_path)?)
     } else {
         None
     };
 
     archive_session(&mut state.database, id, "explicit_close")?;
+    state.pi_activity.remove(&id);
     let shells = remove_session_shells(state, id);
     Ok((replacement, shells))
 }
@@ -1481,6 +2283,7 @@ fn close_shell(
     session_id: SessionId,
     shell_id: ShellId,
     attach_socket_path: &Path,
+    pi_session_directory: &Path,
 ) -> io::Result<(ClosedShellMetadata, Vec<RunningShell>)> {
     let shell = state
         .running
@@ -1492,14 +2295,16 @@ fn close_shell(
             "shell does not belong to this session",
         ));
     }
+    let role = shell.role;
 
     let sibling_count = state
         .running
         .values()
         .filter(|shell| shell.session_id == session_id)
         .count();
-    if sibling_count == 1 {
-        let (replacement, shells) = close_session(state, session_id, attach_socket_path)?;
+    if sibling_count == 1 || role == PaneRole::Pi {
+        let (replacement, shells) =
+            close_session(state, session_id, attach_socket_path, pi_session_directory)?;
         return Ok((
             ClosedShellMetadata {
                 archived_shell_id: shell_id,
@@ -1552,7 +2357,38 @@ fn session_metadata(
     id: SessionId,
     attach_socket_path: &Path,
 ) -> io::Result<SessionMetadata> {
-    let initial_pwd = session_initial_pwd(&state.database, id)?;
+    let (initial_pwd, session_uuid, workspace_id, name, pi_session_file, pi_session_id) = state.database.query_row(
+        "SELECT initial_pwd, session_uuid, workspace_id, name, pi_session_file, pi_session_id FROM sessions WHERE id = ?1 AND state = 'open'",
+        params![id.0],
+        |row| Ok((
+            PathBuf::from(row.get::<_, String>(0)?),
+            row.get::<_, String>(1)?,
+            row.get::<_, Option<String>>(2)?,
+            row.get::<_, String>(3)?,
+            row.get::<_, Option<String>>(4)?.map(PathBuf::from),
+            row.get::<_, Option<String>>(5)?,
+        )),
+    )
+    .map_err(io::Error::other)?;
+    let emoji = state
+        .database
+        .query_row(
+            "SELECT emoji FROM sessions WHERE id = ?1 AND state = 'open'",
+            params![id.0],
+            |row| row.get::<_, Option<String>>(0),
+        )
+        .map_err(io::Error::other)?;
+    let workspace_name = workspace_id
+        .as_ref()
+        .map(|workspace_id| {
+            state.database.query_row(
+                "SELECT name FROM workspaces WHERE workspace_id = ?1 AND state = 'open'",
+                params![workspace_id],
+                |row| row.get::<_, String>(0),
+            )
+        })
+        .transpose()
+        .map_err(io::Error::other)?;
     let mut shells: Vec<_> = state
         .running
         .iter()
@@ -1560,8 +2396,24 @@ fn session_metadata(
         .map(|(shell_id, running)| shell_metadata(*shell_id, running, attach_socket_path))
         .collect();
     shells.sort_by_key(|shell| shell.id.0);
+    let status = if shells.iter().any(|shell| shell.role == PaneRole::Pi) {
+        state
+            .pi_activity
+            .get(&id)
+            .map_or(SessionStatus::Starting, |activity| activity.status())
+    } else {
+        SessionStatus::Ready
+    };
     Ok(SessionMetadata {
         id,
+        session_uuid,
+        pi_session_file,
+        pi_session_id,
+        workspace_id,
+        workspace_name,
+        name,
+        emoji,
+        status,
         initial_pwd,
         shells,
         layout: read_session_layout(&state.database, id)?,
@@ -1571,6 +2423,8 @@ fn session_metadata(
 fn shell_metadata(id: ShellId, running: &RunningShell, attach_socket_path: &Path) -> ShellMetadata {
     ShellMetadata {
         id,
+        pane_id: running.pane_id.clone(),
+        role: running.role,
         process_id: running.child.id(),
         initial_pwd: running.initial_pwd.clone(),
         slave_device: running.slave_device.clone(),
@@ -1580,30 +2434,45 @@ fn shell_metadata(id: ShellId, running: &RunningShell, attach_socket_path: &Path
 
 fn read_open_sessions(database: &Connection) -> io::Result<Vec<SessionRecord>> {
     let mut statement = database
-        .prepare("SELECT id, initial_pwd FROM sessions WHERE state = 'open' ORDER BY id")
+        .prepare(
+            "SELECT id, session_uuid, initial_pwd, pi_session_file
+         FROM sessions WHERE state = 'open' ORDER BY id",
+        )
         .map_err(io::Error::other)?;
     let rows = statement
         .query_map([], |row| {
             Ok((
                 SessionId(row.get(0)?),
-                PathBuf::from(row.get::<_, String>(1)?),
+                row.get::<_, String>(1)?,
+                PathBuf::from(row.get::<_, String>(2)?),
+                row.get::<_, Option<String>>(3)?.map(PathBuf::from),
             ))
         })
         .map_err(io::Error::other)?;
     let mut records = Vec::new();
     for row in rows {
-        let (id, initial_pwd) = row.map_err(io::Error::other)?;
-        let mut shell_statement = database
-            .prepare("SELECT id FROM shells WHERE session_id = ?1 AND state = 'open' ORDER BY id")
-            .map_err(io::Error::other)?;
+        let (id, session_uuid, initial_pwd, pi_session_file) = row.map_err(io::Error::other)?;
+        let mut shell_statement = database.prepare(
+            "SELECT id, role, pane_id FROM shells WHERE session_id = ?1 AND state = 'open' ORDER BY id",
+        ).map_err(io::Error::other)?;
         let shell_ids = shell_statement
-            .query_map(params![id.0], |row| Ok(ShellId(row.get(0)?)))
+            .query_map(params![id.0], |row| {
+                let role: String = row.get(1)?;
+                let role = match role.as_str() {
+                    "pi" => PaneRole::Pi,
+                    "terminal" => PaneRole::Terminal,
+                    _ => return Err(rusqlite::Error::InvalidQuery),
+                };
+                Ok((ShellId(row.get(0)?), role, row.get(2)?))
+            })
             .map_err(io::Error::other)?
             .collect::<Result<Vec<_>, _>>()
             .map_err(io::Error::other)?;
         records.push(SessionRecord {
             id,
+            session_uuid,
             initial_pwd,
+            pi_session_file,
             shell_ids,
         });
     }
@@ -1642,6 +2511,94 @@ fn read_session_layout(database: &Connection, id: SessionId) -> io::Result<Optio
         return Ok(None);
     }
     Ok(Some(layout))
+}
+
+fn restore_workspace_accesses(
+    database: &Connection,
+) -> io::Result<HashMap<String, WorkspaceDirectoryAccess>> {
+    let workspace_records = {
+        let mut statement = database
+            .prepare(
+                "SELECT workspace_id, directory_path, directory_bookmark FROM workspaces \
+                 WHERE state = 'open'",
+            )
+            .map_err(io::Error::other)?;
+        statement
+            .query_map([], |row| {
+                Ok((
+                    row.get::<_, String>(0)?,
+                    row.get::<_, String>(1)?,
+                    row.get::<_, Option<String>>(2)?,
+                ))
+            })
+            .map_err(io::Error::other)?
+            .collect::<Result<Vec<_>, _>>()
+            .map_err(io::Error::other)?
+    };
+
+    let mut accesses = HashMap::new();
+    for (workspace_id, path, bookmark) in workspace_records {
+        match WorkspaceDirectoryAccess::open(Path::new(&path), bookmark.as_deref()) {
+            Ok(access) => {
+                accesses.insert(workspace_id, access);
+            }
+            Err(_) => {
+                log::warn!(
+                    "event=workspace.access_restore_failed workspace_id={} reason=directory_unavailable",
+                    workspace_id
+                );
+            }
+        }
+    }
+    Ok(accesses)
+}
+
+fn ensure_workspace_columns(transaction: &rusqlite::Transaction<'_>) -> rusqlite::Result<()> {
+    transaction.execute_batch(
+        "CREATE TABLE IF NOT EXISTS workspaces (
+            workspace_id TEXT PRIMARY KEY,
+            name TEXT NOT NULL,
+            directory_path TEXT NOT NULL,
+            directory_bookmark TEXT,
+            state TEXT NOT NULL CHECK (state IN ('open', 'archived')),
+            created_at INTEGER NOT NULL,
+            archived_at INTEGER
+        );",
+    )?;
+    for (table, column, definition) in [
+        ("workspaces", "directory_bookmark", "TEXT"),
+        (
+            "sessions",
+            "workspace_id",
+            "TEXT REFERENCES workspaces(workspace_id)",
+        ),
+        ("sessions", "session_uuid", "TEXT"),
+        ("sessions", "name", "TEXT NOT NULL DEFAULT 'Session'"),
+        ("sessions", "emoji", "TEXT"),
+        ("sessions", "pi_session_file", "TEXT"),
+        ("sessions", "pi_session_id", "TEXT"),
+        (
+            "shells",
+            "role",
+            "TEXT NOT NULL DEFAULT 'terminal' CHECK (role IN ('pi', 'terminal'))",
+        ),
+        ("shells", "pane_id", "TEXT"),
+    ] {
+        let columns = transaction
+            .prepare(&format!("PRAGMA table_info({table})"))?
+            .query_map([], |row| row.get::<_, String>(1))?
+            .collect::<Result<Vec<_>, _>>()?;
+        if !columns.iter().any(|existing| existing == column) {
+            transaction.execute(
+                &format!("ALTER TABLE {table} ADD COLUMN {column} {definition}"),
+                [],
+            )?;
+        }
+    }
+    transaction.execute_batch(
+        "CREATE INDEX IF NOT EXISTS sessions_by_workspace_state ON sessions(workspace_id, state, id);",
+    )?;
+    Ok(())
 }
 
 fn ensure_session_layout_column(transaction: &rusqlite::Transaction<'_>) -> rusqlite::Result<()> {
@@ -1855,6 +2812,8 @@ fn spawn_shell(session_id: SessionId, initial_pwd: &Path) -> io::Result<RunningS
     drop(slave);
     Ok(RunningShell {
         session_id,
+        role: PaneRole::Terminal,
+        pane_id: None,
         initial_pwd: initial_pwd.to_path_buf(),
         child,
         master,
@@ -1863,7 +2822,479 @@ fn spawn_shell(session_id: SessionId, initial_pwd: &Path) -> io::Result<RunningS
         output_history: TerminalOutputHistory::new(),
         output_sequence: 0,
         last_input_sequence: None,
+        _writer_lock: None,
+        pi_bridge_socket: None,
+        pi_bridge_token: None,
     })
+}
+
+fn pi_bridge_socket_path(pi_session_directory: &Path, session_uuid: &str) -> PathBuf {
+    let scoped_path = pi_session_directory.join(format!("{session_uuid}.sock"));
+    if scoped_path.as_os_str().as_bytes().len() <= 103 {
+        scoped_path
+    } else {
+        PathBuf::from("/tmp").join(format!("axo-pi-{session_uuid}.sock"))
+    }
+}
+
+fn spawn_pi(
+    session_id: SessionId,
+    initial_pwd: &Path,
+    session_file: &Path,
+    bridge_socket: &Path,
+    session_uuid: &str,
+    pane_id: &str,
+) -> io::Result<RunningShell> {
+    if bridge_socket.as_os_str().as_encoded_bytes().len() >= 104 {
+        return Err(io::Error::new(
+            io::ErrorKind::InvalidInput,
+            "Pi bridge socket path is too long",
+        ));
+    }
+    let lock_path = session_file.with_extension("jsonl.lock");
+    let lock = OpenOptions::new()
+        .create(true)
+        .read(true)
+        .write(true)
+        .mode(0o600)
+        .open(lock_path)?;
+    // SAFETY: lock is a valid file descriptor and flock only changes its advisory lock.
+    if unsafe { libc::flock(lock.as_raw_fd(), libc::LOCK_EX | libc::LOCK_NB) } == -1 {
+        return Err(io::Error::new(
+            io::ErrorKind::WouldBlock,
+            "Pi transcript is already owned by a writer",
+        ));
+    }
+    // Keep the advisory lock alive across exec. If axod is forcibly terminated,
+    // the Pi process retains the lock until it exits, preventing an unsafe resume.
+    // SAFETY: fcntl operates on the valid lock descriptor.
+    if unsafe { libc::fcntl(lock.as_raw_fd(), libc::F_SETFD, 0) } == -1 {
+        return Err(io::Error::last_os_error());
+    }
+
+    let extension = resolve_pi_extension_path()?;
+    let executable = resolve_pi_executable()?;
+    let home = super::current_user_home_directory()?;
+    let mut master_fd: RawFd = -1;
+    let mut slave_fd: RawFd = -1;
+    let mut size = libc::winsize {
+        ws_row: PTY_ROWS,
+        ws_col: PTY_COLUMNS,
+        ws_xpixel: 0,
+        ws_ypixel: 0,
+    };
+    // SAFETY: openpty initializes both descriptors and receives a valid winsize pointer.
+    if unsafe {
+        libc::openpty(
+            &mut master_fd,
+            &mut slave_fd,
+            std::ptr::null_mut(),
+            std::ptr::null_mut(),
+            &mut size,
+        )
+    } == -1
+    {
+        return Err(io::Error::last_os_error());
+    }
+    // SAFETY: openpty returned two new owned descriptors.
+    let master = unsafe { OwnedFd::from_raw_fd(master_fd) };
+    // SAFETY: openpty returned two new owned descriptors.
+    let slave = unsafe { OwnedFd::from_raw_fd(slave_fd) };
+    let slave_device = tty_device_path(slave.as_raw_fd())?;
+    let slave_raw_fd = slave.as_raw_fd();
+    let bridge_token = create_uuid_v4()?;
+    let mut command = Command::new(executable);
+    command
+        .arg("--session")
+        .arg(session_file)
+        .arg("--extension")
+        .arg(extension)
+        .current_dir(initial_pwd)
+        .env("HOME", &home)
+        .env("PWD", initial_pwd)
+        .env("TERM", "xterm-ghostty")
+        .env("AXO_SESSION_ID", session_uuid)
+        .env("AXO_PANE_ID", pane_id)
+        .env("AXO_PI_SESSION_FILE", session_file)
+        .env("AXO_PI_BRIDGE_SOCKET", bridge_socket)
+        .env("AXO_PI_BRIDGE_TOKEN", &bridge_token)
+        .stdin(Stdio::null())
+        .stdout(Stdio::null())
+        .stderr(Stdio::null());
+    if let Some(resources_directory) = bundled_ghostty_resources_directory() {
+        command.env("GHOSTTY_RESOURCES_DIR", resources_directory);
+    }
+    if let Some(terminfo_directory) = bundled_terminfo_directory() {
+        command.env("TERMINFO", terminfo_directory);
+    }
+    // SAFETY: this child-only setup creates a session, assigns the PTY as its
+    // controlling terminal, and connects all standard streams before exec.
+    unsafe {
+        command.pre_exec(move || {
+            if libc::setsid() == -1 {
+                return Err(io::Error::last_os_error());
+            }
+            if libc::ioctl(slave_raw_fd, libc::TIOCSCTTY as libc::c_ulong, 0) == -1 {
+                return Err(io::Error::last_os_error());
+            }
+            if libc::tcsetpgrp(slave_raw_fd, libc::getpgrp()) == -1 {
+                return Err(io::Error::last_os_error());
+            }
+            for target in [libc::STDIN_FILENO, libc::STDOUT_FILENO, libc::STDERR_FILENO] {
+                if libc::dup2(slave_raw_fd, target) == -1 {
+                    return Err(io::Error::last_os_error());
+                }
+            }
+            libc::close(slave_raw_fd);
+            Ok(())
+        });
+    }
+    let child = command.spawn()?;
+    drop(slave);
+    Ok(RunningShell {
+        session_id,
+        role: PaneRole::Pi,
+        pane_id: Some(pane_id.to_owned()),
+        initial_pwd: initial_pwd.to_path_buf(),
+        child,
+        master,
+        slave_device,
+        attached: false,
+        output_history: TerminalOutputHistory::new(),
+        output_sequence: 0,
+        last_input_sequence: None,
+        _writer_lock: Some(OwnedFd::from(lock)),
+        pi_bridge_socket: Some(bridge_socket.to_path_buf()),
+        pi_bridge_token: Some(bridge_token),
+    })
+}
+
+fn resolve_pi_executable() -> io::Result<PathBuf> {
+    let explicit = std::env::var_os("AXO_PI_EXECUTABLE").map(PathBuf::from);
+    let candidate = if let Some(path) = explicit {
+        path
+    } else {
+        let path = std::env::var_os("PATH").unwrap_or_default();
+        std::env::split_paths(&path)
+            .chain([
+                PathBuf::from("/opt/homebrew/bin"),
+                PathBuf::from("/usr/local/bin"),
+            ])
+            .map(|directory| directory.join("pi"))
+            .find(|candidate| candidate.is_file() && is_executable(candidate))
+            .ok_or_else(|| {
+                io::Error::new(
+                    io::ErrorKind::NotFound,
+                    "Pi executable was not found on PATH",
+                )
+            })?
+    };
+    if candidate.is_file() && is_executable(&candidate) {
+        Ok(candidate)
+    } else {
+        Err(io::Error::new(
+            io::ErrorKind::NotFound,
+            "configured Pi executable is not executable",
+        ))
+    }
+}
+
+fn resolve_pi_extension_path() -> io::Result<PathBuf> {
+    let mut candidates = Vec::new();
+    if let Some(path) = std::env::var_os("AXO_PI_EXTENSION_PATH") {
+        candidates.push(PathBuf::from(path));
+    }
+    if let Some(resources) = std::env::var_os("AXO_RESOURCES_DIR") {
+        candidates.push(PathBuf::from(resources).join("AxoPi/index.js"));
+    }
+    if let Ok(executable) = std::env::current_exe()
+        && let Some(contents_directory) = executable.parent().and_then(Path::parent)
+    {
+        candidates.push(contents_directory.join("Resources/AxoPi/index.js"));
+    }
+    candidates.push(
+        PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../../packages/pi-axo/dist/index.js"),
+    );
+    candidates
+        .into_iter()
+        .find(|path| path.is_file())
+        .ok_or_else(|| {
+            io::Error::new(
+                io::ErrorKind::NotFound,
+                "bundled Pi Axo extension was not found",
+            )
+        })
+}
+
+fn is_executable(path: &Path) -> bool {
+    fs::metadata(path)
+        .map(|metadata| metadata.permissions().mode() & 0o111 != 0)
+        .unwrap_or(false)
+}
+
+fn run_pi_bridge_worker(
+    manager: Weak<SessionManager>,
+    stop: Arc<AtomicBool>,
+    session_id: SessionId,
+    shell_id: ShellId,
+    session_uuid: String,
+    pane_id: String,
+    initial_pwd: PathBuf,
+    session_file: PathBuf,
+    bridge_socket: PathBuf,
+    bridge_token: String,
+    process_id: u32,
+) {
+    let mut has_connected = false;
+    while !stop.load(Ordering::Relaxed) {
+        let Some(owner) = manager.upgrade() else {
+            return;
+        };
+        if !owner.pi_shell_is_open(shell_id) {
+            return;
+        }
+        drop(owner);
+
+        let mut stream = match UnixStream::connect(&bridge_socket) {
+            Ok(stream) => {
+                if !has_connected {
+                    log::info!(
+                        "event=pi.bridge_connected session_id={} shell_id={}",
+                        session_id.0,
+                        shell_id.0
+                    );
+                    has_connected = true;
+                }
+                stream
+            }
+            Err(_) => {
+                thread::sleep(Duration::from_millis(100));
+                continue;
+            }
+        };
+        if stream
+            .set_read_timeout(Some(Duration::from_millis(200)))
+            .is_err()
+        {
+            return;
+        }
+        let auth = json!({ "type": "authenticate", "protocolVersion": 1, "token": bridge_token });
+        if write_json_line(&mut stream, &auth).is_err() {
+            continue;
+        }
+
+        let mut phase = 0_u8;
+        let mut buffer = Vec::new();
+        let mut pi_session_id: Option<String> = None;
+        let mut active_stream_id: Option<String> = None;
+        let mut last_sequence = 0_u64;
+        let mut connection_valid = true;
+        while connection_valid && !stop.load(Ordering::Relaxed) {
+            let Some(owner) = manager.upgrade() else {
+                return;
+            };
+            if !owner.pi_shell_is_open(shell_id) {
+                return;
+            }
+            drop(owner);
+            let mut chunk = [0_u8; 8192];
+            match stream.read(&mut chunk) {
+                Ok(0) => break,
+                Ok(length) => {
+                    buffer.extend_from_slice(&chunk[..length]);
+                    if buffer.len() > 8 * 1024 * 1024 && !buffer.contains(&b'\n') {
+                        break;
+                    }
+                    while let Some(newline) = buffer.iter().position(|byte| *byte == b'\n') {
+                        let line: Vec<_> = buffer.drain(..=newline).collect();
+                        if line.len() > 8 * 1024 * 1024 {
+                            connection_valid = false;
+                            break;
+                        }
+                        let Ok(record) = serde_json::from_slice::<Value>(&line[..line.len() - 1])
+                        else {
+                            connection_valid = false;
+                            break;
+                        };
+                        match phase {
+                            0 if record["type"] == "authenticated"
+                                && record["protocolVersion"] == 1 =>
+                            {
+                                phase = 1;
+                                log::info!(
+                                    "event=pi.bridge_authenticated session_id={} shell_id={}",
+                                    session_id.0,
+                                    shell_id.0
+                                );
+                            }
+                            1 if record["type"] == "hello" && record["protocolVersion"] == 1 => {
+                                let identity = &record["identity"];
+                                let file = session_file.to_string_lossy();
+                                let cwd = identity["cwd"].as_str();
+                                let expected_cwd = initial_pwd.to_string_lossy();
+                                let session_matches = identity["axoSessionId"] == session_uuid;
+                                let pane_matches = identity["axoPaneId"] == pane_id;
+                                let file_matches =
+                                    identity["sessionFile"].as_str() == Some(file.as_ref());
+                                let process_matches =
+                                    identity["processId"].as_u64() == Some(process_id as u64);
+                                let cwd_matches = cwd == Some(expected_cwd.as_ref());
+                                let exact = session_matches
+                                    && pane_matches
+                                    && file_matches
+                                    && process_matches
+                                    && cwd_matches;
+                                let Some(id) = identity["piSessionId"]
+                                    .as_str()
+                                    .filter(|id| !id.is_empty() && id.len() <= 128)
+                                else {
+                                    log::warn!(
+                                        "event=pi.binding_rejected session_id={} shell_id={} reason=invalid_pi_session_id",
+                                        session_id.0,
+                                        shell_id.0
+                                    );
+                                    connection_valid = false;
+                                    break;
+                                };
+                                if !exact {
+                                    log::warn!(
+                                        "event=pi.binding_rejected session_id={} shell_id={} session_match={} pane_match={} file_match={} process_match={} cwd_match={}",
+                                        session_id.0,
+                                        shell_id.0,
+                                        session_matches,
+                                        pane_matches,
+                                        file_matches,
+                                        process_matches,
+                                        cwd_matches
+                                    );
+                                    connection_valid = false;
+                                    break;
+                                }
+                                pi_session_id = Some(id.to_owned());
+                                if let Some(owner) = manager.upgrade() {
+                                    if owner
+                                        .persist_pi_session_id(session_id, &session_uuid, id)
+                                        .and_then(|()| {
+                                            owner.set_pi_connection(session_id, shell_id, true)
+                                        })
+                                        .is_err()
+                                    {
+                                        connection_valid = false;
+                                        break;
+                                    }
+                                } else {
+                                    return;
+                                }
+                                phase = 2;
+                                log::info!(
+                                    "event=pi.session_binding_verified session_id={} shell_id={}",
+                                    session_id.0,
+                                    shell_id.0
+                                );
+                            }
+                            2 if record["type"] == "event" => {
+                                let Some(owner) = manager.upgrade() else {
+                                    return;
+                                };
+                                let Some(stream_id) =
+                                    record["streamId"].as_str().filter(|id| is_uuid_string(id))
+                                else {
+                                    connection_valid = false;
+                                    break;
+                                };
+                                let Some(sequence) =
+                                    record["sequence"].as_u64().filter(|sequence| {
+                                        *sequence > last_sequence
+                                            && *sequence <= 9_007_199_254_740_991
+                                    })
+                                else {
+                                    connection_valid = false;
+                                    break;
+                                };
+                                let Some(name) = record["name"].as_str().filter(|name| {
+                                    !name.is_empty()
+                                        && name.len() <= 128
+                                        && !name.chars().any(char::is_control)
+                                }) else {
+                                    connection_valid = false;
+                                    break;
+                                };
+                                let data = &record["data"];
+                                if serde_json::to_vec(data)
+                                    .map(|encoded| encoded.len() > 60_000)
+                                    .unwrap_or(true)
+                                {
+                                    connection_valid = false;
+                                    break;
+                                }
+                                if active_stream_id
+                                    .as_deref()
+                                    .is_some_and(|active| active != stream_id)
+                                {
+                                    connection_valid = false;
+                                    break;
+                                }
+                                active_stream_id = Some(stream_id.to_owned());
+                                last_sequence = sequence;
+                                if owner
+                                    .observe_pi_event(session_id, shell_id, name, data)
+                                    .is_err()
+                                {
+                                    connection_valid = false;
+                                    break;
+                                }
+                                owner.publish_event(json!({
+                                    "type": "pi.event",
+                                    "sessionId": session_id.0,
+                                    "piSessionId": pi_session_id.as_deref().unwrap_or(""),
+                                    "streamId": stream_id,
+                                    "sequence": sequence,
+                                    "name": name,
+                                    "data": data,
+                                }));
+                            }
+                            _ => {
+                                log::warn!(
+                                    "event=pi.bridge_protocol_rejected session_id={} shell_id={} phase={}",
+                                    session_id.0,
+                                    shell_id.0,
+                                    phase
+                                );
+                                connection_valid = false;
+                                break;
+                            }
+                        }
+                    }
+                }
+                Err(error)
+                    if matches!(
+                        error.kind(),
+                        io::ErrorKind::WouldBlock
+                            | io::ErrorKind::TimedOut
+                            | io::ErrorKind::Interrupted
+                    ) =>
+                {
+                    continue;
+                }
+                Err(_) => break,
+            }
+        }
+        if phase == 2 {
+            if let Some(owner) = manager.upgrade() {
+                let _ = owner.set_pi_connection(session_id, shell_id, false);
+            }
+        }
+        if !connection_valid {
+            return;
+        }
+        thread::sleep(Duration::from_millis(100));
+    }
+}
+
+fn write_json_line(stream: &mut UnixStream, value: &Value) -> io::Result<()> {
+    let mut encoded = serde_json::to_vec(value).map_err(io::Error::other)?;
+    encoded.push(b'\n');
+    stream.write_all(&encoded)
 }
 
 fn tty_device_path(slave_fd: RawFd) -> io::Result<String> {
@@ -2284,9 +3715,19 @@ mod tests {
     fn remote_session_snapshots_exclude_local_process_and_filesystem_details() {
         let session = SessionMetadata {
             id: SessionId(9),
+            session_uuid: "a0b7d77a-5551-4cbc-8dfc-75b2d466dece".to_owned(),
+            pi_session_file: Some(PathBuf::from("/private/path/transcript.jsonl")),
+            pi_session_id: Some("pi-session-example".to_owned()),
+            workspace_id: Some("a0b7d77a-5551-4cbc-8dfc-75b2d466dece".to_owned()),
+            workspace_name: Some("private".to_owned()),
+            name: "Session 1".to_owned(),
+            emoji: Some("🦀".to_owned()),
+            status: SessionStatus::Ready,
             initial_pwd: PathBuf::from("/private/path"),
             shells: vec![ShellMetadata {
                 id: ShellId(12),
+                pane_id: None,
+                role: PaneRole::Terminal,
                 process_id: 1234,
                 initial_pwd: PathBuf::from("/private/path"),
                 slave_device: "/dev/ttys001".to_owned(),
@@ -2299,8 +3740,14 @@ mod tests {
             "2026-10-16T00:00:00Z",
         );
         let object = remote.as_object().unwrap();
-        assert_eq!(object.len(), 5);
+        assert_eq!(object.len(), 10);
         assert_eq!(object["sessionId"], 9);
+        assert_eq!(
+            object["sessionUuid"],
+            "a0b7d77a-5551-4cbc-8dfc-75b2d466dece"
+        );
+        assert_eq!(object["workspaceName"], "private");
+        assert_eq!(object["hasAgent"], false);
         assert_eq!(object["shells"], json!([{ "shellId": 12 }]));
         let serialized = remote.to_string();
         assert!(!serialized.contains("/private/path"));
@@ -2322,7 +3769,7 @@ mod tests {
     }
 
     #[test]
-    fn migrates_legacy_shell_sessions_into_tabs() {
+    fn archives_legacy_shell_sessions_during_workspace_cutover() {
         let mut database = Connection::open_in_memory().unwrap();
         database
             .execute_batch(
@@ -2341,26 +3788,22 @@ mod tests {
 
         initialize_database(&mut database).unwrap();
 
-        let (session_id, initial_pwd): (i64, String) = database
+        let session: (i64, String, String) = database
             .query_row(
-                "SELECT id, initial_pwd FROM sessions WHERE state = 'open'",
-                [],
-                |row| Ok((row.get(0)?, row.get(1)?)),
-            )
-            .unwrap();
-        let (shell_id, shell_session_id, shell_pwd): (i64, i64, String) = database
-            .query_row(
-                "SELECT id, session_id, initial_pwd FROM shells WHERE state = 'open'",
+                "SELECT id, initial_pwd, state FROM sessions WHERE id = 7",
                 [],
                 |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?)),
             )
             .unwrap();
-
-        assert_eq!(session_id, 7);
-        assert_eq!(initial_pwd, "/tmp");
-        assert_eq!(shell_id, 7);
-        assert_eq!(shell_session_id, session_id);
-        assert_eq!(shell_pwd, initial_pwd);
+        let shell: (i64, i64, String, String) = database
+            .query_row(
+                "SELECT id, session_id, initial_pwd, state FROM shells WHERE id = 7",
+                [],
+                |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?, row.get(3)?)),
+            )
+            .unwrap();
+        assert_eq!(session, (7, "/tmp".to_owned(), "archived".to_owned()));
+        assert_eq!(shell, (7, 7, "/tmp".to_owned(), "archived".to_owned()));
     }
 
     #[test]
@@ -2403,7 +3846,13 @@ mod tests {
             .query_row("PRAGMA user_version", [], |row| row.get(0))
             .unwrap();
         assert_eq!(layout, None);
-        assert_eq!(schema_version, 3);
+        assert_eq!(schema_version, 5);
+        let session_state: String = database
+            .query_row("SELECT state FROM sessions WHERE id = 1", [], |row| {
+                row.get(0)
+            })
+            .unwrap();
+        assert_eq!(session_state, "archived");
     }
 
     #[test]

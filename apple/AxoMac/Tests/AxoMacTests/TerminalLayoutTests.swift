@@ -31,6 +31,44 @@ final class TerminalLayoutTests: XCTestCase {
     XCTAssertEqual(layout.removing(shellID: 17), .pane(23))
   }
 
+  func testClosingPaneFocusesPreviousLeafInTreeOrder() {
+    let layout = TerminalLayout.split(
+      id: UUID(),
+      direction: .right,
+      ratio: 0.5,
+      first: .pane(17),
+      second: .split(
+        id: UUID(),
+        direction: .down,
+        ratio: 0.5,
+        first: .pane(23),
+        second: .pane(42)
+      )
+    )
+
+    XCTAssertEqual(
+      layout.focusTargetAfterClosing(42, remainingShellIDs: [17, 23]),
+      23,
+      "Closing a non-leftmost focused pane should focus its previous tree neighbor."
+    )
+  }
+
+  func testClosingLeftmostPaneFocusesNextLeafInTreeOrder() {
+    let layout = TerminalLayout.split(
+      id: UUID(),
+      direction: .right,
+      ratio: 0.5,
+      first: .pane(17),
+      second: .pane(23)
+    )
+
+    XCTAssertEqual(
+      layout.focusTargetAfterClosing(17, remainingShellIDs: [23]),
+      23,
+      "Closing the leftmost pane should focus the next tree neighbor."
+    )
+  }
+
   func testResizeChangesOnlyTheTargetSplitRatio() throws {
     let nestedSplitID = UUID()
     let layout = TerminalLayout.split(

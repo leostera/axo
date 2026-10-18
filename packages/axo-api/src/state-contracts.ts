@@ -87,7 +87,7 @@ export const desiredPaneSchema = z.object({
 }).strict();
 const panes = z.array(desiredPaneSchema).min(1).max(32);
 type DesiredPane = z.infer<typeof desiredPaneSchema>;
-function sessionPaneErrors(panes: DesiredPane[], sessionId: string): string[] {
+function sessionPaneErrors(panes: DesiredPane[], sessionId: string, workspaceId: string | null): string[] {
   const errors: string[] = [];
   if (new Set(panes.map(pane => pane.paneId)).size !== panes.length) {
     errors.push("pane IDs must be unique within a session");
@@ -97,11 +97,18 @@ function sessionPaneErrors(panes: DesiredPane[], sessionId: string): string[] {
   }
 
   const present = panes.filter(pane => pane.present);
-  if (present.filter(pane => pane.role.kind === "pi").length !== 1) {
-    errors.push("a session must have exactly one present Pi pane");
-  }
-  if (present.filter(pane => pane.role.kind !== "pi").length > 1) {
-    errors.push("a session can have at most one present terminal pane");
+  const piPaneCount = present.filter(pane => pane.role.kind === "pi").length;
+  if (workspaceId === null) {
+    if (present.length !== 1 || piPaneCount !== 0) {
+      errors.push("a Workspace-less Session must have one present terminal pane and no Pi pane");
+    }
+  } else {
+    if (piPaneCount !== 1) {
+      errors.push("a Workspace Session must have exactly one present Pi pane");
+    }
+    if (present.filter(pane => pane.role.kind !== "pi").length > 1) {
+      errors.push("a Workspace Session can have at most one present terminal pane");
+    }
   }
   if (new Set(present.map(pane => pane.ordinal)).size !== present.length) {
     errors.push("present pane ordinals must be unique within a session");
@@ -109,7 +116,7 @@ function sessionPaneErrors(panes: DesiredPane[], sessionId: string): string[] {
   return errors;
 }
 export const desiredSessionGraphSchema = z.object({ session: desiredSessionSchema, panes }).strict().superRefine((value, context) => {
-  for (const message of sessionPaneErrors(value.panes, value.session.sessionId)) {
+  for (const message of sessionPaneErrors(value.panes, value.session.sessionId, value.session.workspaceId)) {
     context.addIssue({ code: "custom", path: ["panes"], message });
   }
   for (const message of sessionLayoutErrors(value.session.layout, value.panes.filter(pane => pane.present))) {
@@ -145,7 +152,7 @@ const observedPane = z.object({ desired: desiredPaneSchema, availability, lastRu
 });
 export const stateSessionViewSchema = z.object({ session: desiredSessionSchema, panes: z.array(observedPane).min(1).max(32), readiness: z.enum(["ready", "materializing", "blocked", "stopped"]) }).strict().superRefine((value, context) => {
   const desiredPanes = value.panes.map(pane => pane.desired);
-  for (const message of sessionPaneErrors(desiredPanes, value.session.sessionId)) {
+  for (const message of sessionPaneErrors(desiredPanes, value.session.sessionId, value.session.workspaceId)) {
     context.addIssue({ code: "custom", path: ["panes"], message });
   }
   for (const message of sessionLayoutErrors(value.session.layout, desiredPanes.filter(pane => pane.present))) {

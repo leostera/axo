@@ -30,6 +30,9 @@
           "$ref": "#/$defs/RemoteSessionCreateCall"
         },
         {
+          "$ref": "#/$defs/RemoteWorkspaceSessionCreateCall"
+        },
+        {
           "$ref": "#/$defs/RemoteSessionCloseCall"
         },
         {
@@ -310,6 +313,27 @@
       "required": [
         "params"
       ]
+    },
+    "RemoteWorkspaceSessionCreateCall": {
+      "allOf": [
+        { "$ref": "#/$defs/BaseCall" },
+        {
+          "properties": {
+            "method": { "const": "axo.remote.workspace.session.create" },
+            "params": {
+              "type": "object",
+              "additionalProperties": false,
+              "required": ["target", "workspaceId"],
+              "properties": {
+                "target": { "$ref": "common.schema.json#/$defs/HostRef" },
+                "workspaceId": { "$ref": "common.schema.json#/$defs/HostId" }
+              }
+            }
+          }
+        }
+      ],
+      "unevaluatedProperties": false,
+      "required": ["params"]
     },
     "RemoteSessionCloseCall": {
       "allOf": [
@@ -649,6 +673,9 @@
           "$ref": "common.schema.json#/$defs/SessionSnapshot"
         }
       }
+    },
+    "RemoteWorkspaceSessionCreateResult": {
+      "$ref": "#/$defs/RemoteSessionCreateResult"
     },
     "RemoteSessionCloseResult": {
       "type": "object",

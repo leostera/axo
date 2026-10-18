@@ -29,6 +29,17 @@ export type PiCommandResult =
   | { accepted: true }
   | { accepted: false; reason: "invalid" | "busy" | "idle" | "stale" | "unavailable" };
 
+export interface PiBridgeAuthenticate {
+  type: "authenticate";
+  protocolVersion: typeof AXO_PI_PROTOCOL_VERSION;
+  token: string;
+}
+
+export interface PiBridgeAuthenticated {
+  type: "authenticated";
+  protocolVersion: typeof AXO_PI_PROTOCOL_VERSION;
+}
+
 export interface PiBridgeHello {
   type: "hello";
   protocolVersion: typeof AXO_PI_PROTOCOL_VERSION;
@@ -54,7 +65,7 @@ export interface PiBridgeProtocolError {
   message: string;
 }
 
-export type PiBridgeRecord = PiBridgeHello | PiBridgeEvent | PiBridgeCommandResult | PiBridgeProtocolError;
+export type PiBridgeRecord = PiBridgeAuthenticated | PiBridgeHello | PiBridgeEvent | PiBridgeCommandResult | PiBridgeProtocolError;
 
 export type ParseCommandResult =
   | { ok: true; command: PiControlCommand }

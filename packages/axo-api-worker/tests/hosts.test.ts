@@ -284,6 +284,22 @@ test("host subscriptions stream metadata and output; remote controls are routed 
   assert.ok("result" in createResult);
   assert.equal(remoteSessionCreateResultSchema.parse(createResult.result).session.sessionId, 4);
 
+  const workspaceSessionCreate = client.call("axo.remote.workspace.session.create", {
+    target: { hostId, hostGeneration },
+    workspaceId: "04d389d1-9896-420e-9b42-fc7835522937",
+  });
+  const workspaceCreateRequest = await daemon.next() as { id: string; method: string; params: { workspaceId: string } };
+  assert.equal(workspaceCreateRequest.method, "axo.remote.workspace.session.create");
+  assert.equal(workspaceCreateRequest.params.workspaceId, "04d389d1-9896-420e-9b42-fc7835522937");
+  daemon.send({
+    jsonrpc: "2.0",
+    id: workspaceCreateRequest.id,
+    result: { session: { ...initialSnapshot, sessionId: 5, workspaceId: workspaceCreateRequest.params.workspaceId, workspaceName: "Test workspace", hasAgent: true, shells: [], layout: null } },
+  });
+  const workspaceCreateResult = await workspaceSessionCreate;
+  assert.ok("result" in workspaceCreateResult);
+  assert.equal(remoteSessionCreateResultSchema.parse(workspaceCreateResult.result).session.sessionId, 5);
+
   const directoryStorage = await h.mf.unsafeGetDurableObjectStorage("api-test", "AxoHostDirectory", {
     name: "private-fleet",
   });

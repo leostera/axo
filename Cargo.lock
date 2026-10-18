@@ -65,6 +65,7 @@ dependencies = [
 name = "axo-server"
 version = "0.1.0"
 dependencies = [
+ "core-foundation",
  "httparse",
  "jsonrpc-core",
  "jsonrpc-ipc-server",

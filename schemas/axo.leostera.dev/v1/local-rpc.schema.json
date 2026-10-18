@@ -33,6 +33,15 @@
           "$ref": "#/$defs/SessionCreateCall"
         },
         {
+          "$ref": "#/$defs/WorkspaceListCall"
+        },
+        {
+          "$ref": "#/$defs/WorkspaceCreateCall"
+        },
+        {
+          "$ref": "#/$defs/WorkspaceSessionCreateCall"
+        },
+        {
           "$ref": "#/$defs/SessionCloseCall"
         },
         {
@@ -302,6 +311,58 @@
         }
       ],
       "unevaluatedProperties": false
+    },
+    "WorkspaceListCall": {
+      "allOf": [
+        { "$ref": "#/$defs/BaseCall" },
+        { "properties": { "method": { "const": "axo.workspace.list" }, "params": { "type": "object", "maxProperties": 0 } } }
+      ],
+      "unevaluatedProperties": false
+    },
+    "WorkspaceCreateCall": {
+      "allOf": [
+        { "$ref": "#/$defs/BaseCall" },
+        {
+          "properties": {
+            "method": { "const": "axo.workspace.create" },
+            "params": {
+              "type": "object",
+              "additionalProperties": false,
+              "required": ["name", "directoryPath"],
+              "properties": {
+                "name": { "type": "string", "minLength": 1, "maxLength": 80 },
+                "directoryPath": { "type": "string", "minLength": 1 },
+                "directoryBookmark": {
+                  "type": "string",
+                  "minLength": 1,
+                  "maxLength": 65536,
+                  "description": "Optional Base64-encoded macOS security-scoped bookmark; ordinary accessible folders are opened by path."
+                }
+              }
+            }
+          }
+        }
+      ],
+      "unevaluatedProperties": false,
+      "required": ["params"]
+    },
+    "WorkspaceSessionCreateCall": {
+      "allOf": [
+        { "$ref": "#/$defs/BaseCall" },
+        {
+          "properties": {
+            "method": { "const": "axo.workspace.session.create" },
+            "params": {
+              "type": "object",
+              "additionalProperties": false,
+              "required": ["workspaceId"],
+              "properties": { "workspaceId": { "$ref": "common.schema.json#/$defs/HostId" } }
+            }
+          }
+        }
+      ],
+      "unevaluatedProperties": false,
+      "required": ["params"]
     },
     "SessionCloseCall": {
       "allOf": [
@@ -751,6 +812,46 @@
         }
       }
     },
+    "WorkspaceListResult": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["workspaces"],
+      "properties": {
+        "workspaces": {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "additionalProperties": false,
+            "required": ["workspaceId", "name", "directoryPath"],
+            "properties": {
+              "workspaceId": { "$ref": "common.schema.json#/$defs/HostId" },
+              "name": { "type": "string", "minLength": 1, "maxLength": 80 },
+              "directoryPath": { "type": "string", "minLength": 1 }
+            }
+          }
+        }
+      }
+    },
+    "WorkspaceCreateResult": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["workspace", "session"],
+      "properties": {
+        "workspace": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["workspaceId", "name", "directoryPath", "state"],
+          "properties": {
+            "workspaceId": { "$ref": "common.schema.json#/$defs/HostId" },
+            "name": { "type": "string", "minLength": 1, "maxLength": 80 },
+            "directoryPath": { "type": "string", "minLength": 1 },
+            "state": { "const": "open" }
+          }
+        },
+        "session": { "$ref": "common.schema.json#/$defs/LocalSession" }
+      }
+    },
+    "WorkspaceSessionCreateResult": { "$ref": "common.schema.json#/$defs/LocalSession" },
     "SessionCreateResult": {
       "$ref": "common.schema.json#/$defs/LocalSession"
     },

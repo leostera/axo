@@ -74,6 +74,22 @@ const validWorkspaceGraph = {
   },
 };
 assert.equal(workspaceGraphSchema.safeParse(validWorkspaceGraph).success, true, "Workspace creation starts with Pi and a terminal");
+const standaloneGraph = structuredClone(validWorkspaceGraph.initialSession);
+standaloneGraph.session.workspaceId = null;
+standaloneGraph.session.layout = { kind: "pane", paneId: terminalPaneId };
+standaloneGraph.panes = [
+  { paneId: terminalPaneId, sessionId, role: { kind: "accountShell" }, present: true, ordinal: 0, configRevision: 0 },
+];
+assert.equal(desiredSessionGraphSchema.safeParse(standaloneGraph).success, true, "Workspace-less Sessions are one home terminal pane");
+const invalidStandaloneGraph = structuredClone(standaloneGraph);
+invalidStandaloneGraph.panes = [];
+assert.equal(desiredSessionGraphSchema.safeParse(invalidStandaloneGraph).success, false, "a Workspace-less Session cannot be empty");
+const standaloneView = {
+  session: standaloneGraph.session,
+  panes: standaloneGraph.panes.map(desired => ({ desired, availability: "materializing", lastRuntime: null, terminal: null })),
+  readiness: "materializing",
+};
+assert.equal(stateSessionViewSchema.safeParse(standaloneView).success, true, "observed home Sessions remain valid without a Pi pane");
 const missingPiGraph = structuredClone(validWorkspaceGraph);
 missingPiGraph.initialSession.panes[0].role = { kind: "profileShell", profileId: "zsh" };
 assert.equal(workspaceGraphSchema.safeParse(missingPiGraph).success, false, "a session requires exactly one Pi pane");

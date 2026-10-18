@@ -8,11 +8,12 @@ export function parseAxoPiExtensionConfig(environment: NodeJS.ProcessEnv): AxoPi
   const piSessionFile = environment.AXO_PI_SESSION_FILE;
   const axoSessionId = environment.AXO_SESSION_ID;
   const axoPaneId = environment.AXO_PANE_ID;
-  if (socketPath === undefined || piSessionFile === undefined || axoSessionId === undefined || axoPaneId === undefined) return null;
+  const bridgeToken = environment.AXO_PI_BRIDGE_TOKEN;
+  if (socketPath === undefined || piSessionFile === undefined || axoSessionId === undefined || axoPaneId === undefined || bridgeToken === undefined) return null;
   if (!socketPath.startsWith("/") || socketPath.includes("\0") || Buffer.byteLength(socketPath, "utf8") > 100) return null;
   if (!piSessionFile.startsWith("/") || piSessionFile.includes("\0") || Buffer.byteLength(piSessionFile, "utf8") > 4096) return null;
-  if (!UUID_PATTERN.test(axoSessionId) || !UUID_PATTERN.test(axoPaneId)) return null;
-  return { socketPath, piSessionFile, axoSessionId, axoPaneId };
+  if (!UUID_PATTERN.test(axoSessionId) || !UUID_PATTERN.test(axoPaneId) || !UUID_PATTERN.test(bridgeToken)) return null;
+  return { socketPath, piSessionFile, axoSessionId, axoPaneId, bridgeToken };
 }
 
 export { createAxoPiExtension, installAxoPiExtension, type AxoPiExtensionConfig } from "./extension.js";

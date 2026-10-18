@@ -80,6 +80,7 @@ sh_test(
         "AXO_WORKSPACE_MODULE": "$(rlocationpath //:MODULE.bazel)",
     },
     env_inherit = [
+        "AXO_UI_TEST_ONLY",
         "BAZEL_REAL",
         "BAZELISK_SKIP_WRAPPER",
         "DEVELOPER_DIR",

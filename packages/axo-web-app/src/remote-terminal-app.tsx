@@ -177,6 +177,9 @@ export function RemoteTerminalApp({
 
   const selectedHost = hosts.find((host) => host.hostId === selectedHostId) ?? null;
   const selectedSession = sessions.find((session) => session.sessionId === selectedSessionId) ?? null;
+  const selectedWorkspaceId = selectedSession?.workspaceId
+    ?? sessions.find((session) => session.workspaceId)?.workspaceId
+    ?? null;
   const active = Boolean(selectedHost && selectedHost.status === "online" && connectionState === "live");
   const apiLoginUrl = new URL("/app", apiBaseUrl).href;
 
@@ -328,14 +331,19 @@ export function RemoteTerminalApp({
 
   const openNewSession = useCallback(async () => {
     if (!selectedHost || !connectionRef.current?.active || newSessionBusy) return;
+    if (!selectedWorkspaceId) {
+      setError("Create a Workspace on this Mac before opening an agent Session remotely.");
+      return;
+    }
     setNewSessionBusy(true);
     setError(null);
     try {
-      const created = await connectionRef.current.call("axo.remote.session.create", {
+      const created = await connectionRef.current.call("axo.remote.workspace.session.create", {
         target: {
           hostId: selectedHost.hostId,
           hostGeneration: selectedHost.hostGeneration,
         },
+        workspaceId: selectedWorkspaceId,
       });
       const newSession = created.session;
       setSessions((current) => sessionsWithUpdate(current, newSession));
@@ -350,7 +358,7 @@ export function RemoteTerminalApp({
     } finally {
       setNewSessionBusy(false);
     }
-  }, [newSessionBusy, selectedHost]);
+  }, [newSessionBusy, selectedHost, selectedWorkspaceId]);
 
   useEffect(() => {
     const onKeyDown = (event: KeyboardEvent) => {
@@ -440,8 +448,8 @@ export function RemoteTerminalApp({
                 >
                   <span className="session-icon" aria-hidden="true">&gt;_</span>
                   <span className="session-copy">
-                    <span className="session-name">Session {session.sessionId}</span>
-                    <span className="session-meta">{session.shells.length} {session.shells.length === 1 ? "pane" : "panes"}</span>
+                    <span className="session-name">{session.name ?? `Session ${session.sessionId}`}</span>
+                    <span className="session-meta">{session.workspaceName ? `${session.workspaceName} · ` : ""}{session.hasAgent ? "agent" : `${session.shells.length} ${session.shells.length === 1 ? "pane" : "panes"}`}</span>
                   </span>
                 </button>
               ))}
@@ -472,7 +480,7 @@ export function RemoteTerminalApp({
                 {creatingPairing ? "Creating code…" : "Link a Mac"}
               </button>
             ) : null}
-            <button className="new-session-button" onClick={() => void openNewSession()} disabled={!active || newSessionBusy} title="New session (⌘T)">
+            <button className="new-session-button" onClick={() => void openNewSession()} disabled={!active || newSessionBusy || !selectedWorkspaceId} title={selectedWorkspaceId ? "New agent Session in this Workspace (⌘T)" : "Create a Workspace on the Mac first"}>
               <span className="plus">＋</span> New session <kbd>⌘T</kbd>
             </button>
             {onSignOut ? (
@@ -554,7 +562,7 @@ export function RemoteTerminalApp({
                       ))}
                     </div>
                   ) : (
-                    <div className="empty-terminal"><span>⌘</span><strong>No panes in this session</strong><p>Create a new session to open a terminal pane.</p></div>
+                    <div className="empty-terminal"><span>{selectedSession.hasAgent ? "✦" : "⌘"}</span><strong>{selectedSession.hasAgent ? "Agent Session is active" : "No panes in this session"}</strong><p>{selectedSession.hasAgent ? "Structured Pi events are kept in this Session’s private history." : "Create a Workspace Session on the host to start an agent."}</p></div>
                   )}
                 </div>
               </div>
@@ -563,11 +571,11 @@ export function RemoteTerminalApp({
                 <div className="empty-session-icon">＋</div>
                 <h2>{sessions.length ? "Choose a session" : "Nothing running yet"}</h2>
                 <p>{sessions.length ? "Select a session from the sidebar to view its panes." : "Open a session on this host to start a remote terminal."}</p>
-                {selectedHost.status === "online" ? <button className="new-session-button large" onClick={() => void openNewSession()} disabled={!active || newSessionBusy}>＋ Open a session <kbd>⌘T</kbd></button> : null}
+                {selectedHost.status === "online" ? <button className="new-session-button large" onClick={() => void openNewSession()} disabled={!active || newSessionBusy || !selectedWorkspaceId}>＋ Open an agent Session <kbd>⌘T</kbd></button> : null}
               </div>
             )}
             <footer className="workspace-footer">
-              <span>Terminal data is live-only. Axo stores host and session metadata, never terminal history.</span>
+              <span>Terminal bytes are live-only. Structured Pi events are stored as private Session history.</span>
               <span className="footer-connection">{connectionState === "live" ? "Live stream" : selectedHost.status === "offline" ? "Last-known metadata" : "Awaiting host"}</span>
             </footer>
           </div>

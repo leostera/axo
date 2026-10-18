@@ -108,8 +108,24 @@ public struct ProtocolNegotiation: Decodable, Equatable, Sendable {
   public let methods: [String]
 }
 
+public enum TerminalSessionStatus: String, Decodable, Equatable, Sendable {
+  case starting
+  case ready
+  case working
+  case needsAttention
+  case unavailable
+}
+
 public struct TerminalSession: Decodable, Equatable, Identifiable, Sendable {
   public let id: Int64
+  public let sessionUuid: String?
+  public let piSessionFile: String?
+  public let piSessionId: String?
+  public let workspaceId: String?
+  public let workspaceName: String?
+  public let name: String?
+  public let emoji: String?
+  public let status: TerminalSessionStatus?
   public let initialPwd: String
   public let shells: [TerminalShell]
   public let layout: SessionLayout?
@@ -118,9 +134,25 @@ public struct TerminalSession: Decodable, Equatable, Identifiable, Sendable {
     id: Int64,
     initialPwd: String,
     shells: [TerminalShell],
-    layout: SessionLayout? = nil
+    layout: SessionLayout? = nil,
+    sessionUuid: String? = nil,
+    piSessionFile: String? = nil,
+    piSessionId: String? = nil,
+    workspaceId: String? = nil,
+    workspaceName: String? = nil,
+    name: String? = nil,
+    emoji: String? = nil,
+    status: TerminalSessionStatus? = nil
   ) {
     self.id = id
+    self.sessionUuid = sessionUuid
+    self.piSessionFile = piSessionFile
+    self.piSessionId = piSessionId
+    self.workspaceId = workspaceId
+    self.workspaceName = workspaceName
+    self.name = name
+    self.emoji = emoji
+    self.status = status
     self.initialPwd = initialPwd
     self.shells = shells
     self.layout = layout
@@ -129,10 +161,42 @@ public struct TerminalSession: Decodable, Equatable, Identifiable, Sendable {
 
 public struct TerminalShell: Decodable, Equatable, Identifiable, Sendable {
   public let id: Int64
+  public let paneId: String?
+  public let role: String?
   public let processId: UInt32
   public let initialPwd: String
   public let ptyDevice: String
   public let attachSocketPath: String
+
+  public init(
+    id: Int64,
+    processId: UInt32,
+    initialPwd: String,
+    ptyDevice: String,
+    attachSocketPath: String,
+    paneId: String? = nil,
+    role: String? = nil
+  ) {
+    self.id = id
+    self.paneId = paneId
+    self.role = role
+    self.processId = processId
+    self.initialPwd = initialPwd
+    self.ptyDevice = ptyDevice
+    self.attachSocketPath = attachSocketPath
+  }
+}
+
+public struct WorkspaceRecord: Decodable, Equatable, Identifiable, Sendable {
+  public let workspaceId: String
+  public let name: String
+  public let directoryPath: String
+  public var id: String { workspaceId }
+}
+
+public struct CreatedWorkspace: Decodable, Equatable, Sendable {
+  public let workspace: WorkspaceRecord
+  public let session: TerminalSession
 }
 
 public enum TerminalShellActivity: String, Decodable, Equatable, Sendable {
@@ -197,6 +261,20 @@ public struct ClosedTerminalShell: Decodable, Equatable, Sendable {
 
 private struct TerminalSessionList: Decodable {
   let sessions: [TerminalSession]
+}
+
+private struct WorkspaceList: Decodable {
+  let workspaces: [WorkspaceRecord]
+}
+
+private struct WorkspaceCreateRequest: Encodable {
+  let name: String
+  let directoryPath: String
+  let directoryBookmark: String?
+}
+
+private struct WorkspaceSessionCreateRequest: Encodable {
+  let workspaceId: String
 }
 
 private struct ProtocolNegotiationRequest: Encodable {
@@ -294,6 +372,7 @@ public enum UnixSocketRPCError: Error, LocalizedError {
   case connectionFailed(String)
   case invalidSocketPath
   case invalidResponse(String)
+  case serverRejected(code: Int, message: String)
   case requestTimedOut
 
   public var errorDescription: String? {
@@ -301,6 +380,7 @@ public enum UnixSocketRPCError: Error, LocalizedError {
     case .connectionFailed(let message): "Could not connect to axod: \(message)"
     case .invalidSocketPath: "axod socket path must be absolute and fit in a local socket address."
     case .invalidResponse(let message): "Invalid response from axod: \(message)"
+    case .serverRejected(let code, let message): "axod rejected the request (\(code)): \(message)"
     case .requestTimedOut: "axod did not respond before the request timed out."
     }
   }
@@ -406,6 +486,42 @@ public enum UnixSocketRPC {
       try await session.response(to: "axo.session.list")
     }
     return response.sessions
+  }
+
+  public static func listWorkspaces(at socketPath: UnixSocketPath) async throws -> [WorkspaceRecord] {
+    let response: WorkspaceList = try await withResponse(at: socketPath) { session in
+      try await session.response(to: "axo.workspace.list")
+    }
+    return response.workspaces
+  }
+
+  public static func createWorkspace(
+    name: String,
+    directoryPath: String,
+    directoryBookmark: String?,
+    at socketPath: UnixSocketPath
+  ) async throws -> CreatedWorkspace {
+    try await withResponse(at: socketPath) { session in
+      try await session.response(
+        to: "axo.workspace.create",
+        params: WorkspaceCreateRequest(
+          name: name,
+          directoryPath: directoryPath,
+          directoryBookmark: directoryBookmark
+        )
+      )
+    }
+  }
+
+  public static func createSession(
+    in workspaceID: String,
+    at socketPath: UnixSocketPath
+  ) async throws -> TerminalSession {
+    try await withResponse(at: socketPath) { session in
+      try await session.response(
+        to: "axo.workspace.session.create",
+        params: WorkspaceSessionCreateRequest(workspaceId: workspaceID))
+    }
   }
 
   public static func subscribe(
@@ -566,20 +682,24 @@ public enum UnixSocketRPC {
     defer { transport.close() }
 
     let session = JSONRPCSession(channel: transport.dataChannel)
-    return try await withThrowingTaskGroup(of: Response.self) { group in
-      group.addTask {
-        try await request(session)
+    do {
+      return try await withThrowingTaskGroup(of: Response.self) { group in
+        group.addTask {
+          try await request(session)
+        }
+        group.addTask {
+          try await Task.sleep(nanoseconds: timeout.nanoseconds)
+          transport.close()
+          throw UnixSocketRPCError.requestTimedOut
+        }
+        defer { group.cancelAll() }
+        guard let response = try await group.next() else {
+          throw UnixSocketRPCError.requestTimedOut
+        }
+        return response
       }
-      group.addTask {
-        try await Task.sleep(nanoseconds: timeout.nanoseconds)
-        transport.close()
-        throw UnixSocketRPCError.requestTimedOut
-      }
-      defer { group.cancelAll() }
-      guard let response = try await group.next() else {
-        throw UnixSocketRPCError.requestTimedOut
-      }
-      return response
+    } catch let error as JSONRPC.AnyJSONRPCResponseError {
+      throw UnixSocketRPCError.serverRejected(code: error.code, message: error.message)
     }
   }
 }

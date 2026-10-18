@@ -1276,6 +1276,38 @@ fn set_read_timeout(
     }
 }
 
+fn prune_remote_layout(layout: &Value, shell_ids: &std::collections::HashSet<i64>) -> Value {
+    let Some(kind) = layout.get("kind").and_then(Value::as_str) else {
+        return Value::Null;
+    };
+    if kind == "pane" {
+        return layout
+            .get("shellId")
+            .and_then(Value::as_i64)
+            .filter(|id| shell_ids.contains(id))
+            .map(|_| layout.clone())
+            .unwrap_or(Value::Null);
+    }
+    if kind != "split" {
+        return Value::Null;
+    }
+    let first = prune_remote_layout(&layout["first"], shell_ids);
+    let second = prune_remote_layout(&layout["second"], shell_ids);
+    match (first.is_null(), second.is_null()) {
+        (true, true) => Value::Null,
+        (false, true) => first,
+        (true, false) => second,
+        (false, false) => json!({
+            "kind": "split",
+            "id": layout["id"],
+            "direction": layout["direction"],
+            "ratio": layout["ratio"],
+            "first": first,
+            "second": second,
+        }),
+    }
+}
+
 fn host_notification(local_event: Value, host_id: &str, host_generation: &str) -> Option<Value> {
     let event_type = local_event.get("type")?.as_str()?;
     let event = match event_type {
@@ -1283,17 +1315,30 @@ fn host_notification(local_event: Value, host_id: &str, host_generation: &str) -
             let session = local_event.get("session")?.as_object()?;
             let session_id = session.get("id")?.as_i64()?;
             let shells = session.get("shells")?.as_array()?;
-            let shell_ids = shells
+            let terminal_shell_ids = shells
                 .iter()
-                .map(|shell| Some(json!({ "shellId": shell.get("id")?.as_i64()? })))
+                .filter(|shell| shell.get("role").and_then(Value::as_str) != Some("pi"))
+                .map(|shell| shell.get("id").and_then(Value::as_i64))
                 .collect::<Option<Vec<_>>>()?;
+            let terminal_shell_id_set = terminal_shell_ids.iter().copied().collect();
+            let shell_ids = terminal_shell_ids
+                .iter()
+                .map(|shell_id| json!({ "shellId": shell_id }))
+                .collect::<Vec<_>>();
+            let layout = session.get("layout")?;
+            let terminal_layout = prune_remote_layout(layout, &terminal_shell_id_set);
             json!({
                 "type": "session.snapshot",
                 "snapshot": {
                     "hostId": host_id,
                     "sessionId": session_id,
+                    "sessionUuid": session.get("sessionUuid")?,
+                    "workspaceId": session.get("workspaceId")?,
+                    "workspaceName": session.get("workspaceName")?,
+                    "name": session.get("name")?,
+                    "hasAgent": shells.iter().any(|shell| shell.get("role").and_then(Value::as_str) == Some("pi")),
                     "shells": shell_ids,
-                    "layout": session.get("layout")?,
+                    "layout": terminal_layout,
                     "updatedAt": current_timestamp(),
                 }
             })
@@ -1319,6 +1364,21 @@ fn host_notification(local_event: Value, host_id: &str, host_generation: &str) -
                 "shellId": local_event.get("shellId")?.as_i64()?,
                 "sequence": sequence,
                 "data": local_event.get("data")?.as_str()?,
+            })
+        }
+        "pi.event" => {
+            let sequence = local_event.get("sequence")?.as_u64()?;
+            if sequence == 0 || sequence > 9_007_199_254_740_991 {
+                return None;
+            }
+            json!({
+                "type": "pi.event",
+                "sessionId": local_event.get("sessionId")?.as_i64()?,
+                "piSessionId": local_event.get("piSessionId")?.as_str()?,
+                "streamId": local_event.get("streamId")?.as_str()?,
+                "sequence": sequence,
+                "name": local_event.get("name")?.as_str()?,
+                "data": local_event.get("data")?,
             })
         }
         _ => return None,
@@ -1353,6 +1413,13 @@ struct TargetParams {
 struct SessionTargetParams {
     target: HostRef,
     session_id: i64,
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+struct WorkspaceSessionTargetParams {
+    target: HostRef,
+    workspace_id: String,
 }
 
 #[derive(Debug, Deserialize)]
@@ -1393,7 +1460,7 @@ struct TerminalResizeParams {
 
 fn remote_request_reply(
     message: &Value,
-    sessions: &SessionManager,
+    sessions: &Arc<SessionManager>,
     host_id: &str,
     host_generation: &str,
 ) -> Option<Value> {
@@ -1412,7 +1479,7 @@ fn remote_request_reply(
 fn dispatch_remote_call(
     method: &str,
     params: &Value,
-    sessions: &SessionManager,
+    sessions: &Arc<SessionManager>,
     host_id: &str,
     host_generation: &str,
 ) -> Result<Value, (i64, &'static str)> {
@@ -1436,6 +1503,14 @@ fn dispatch_remote_call(
             target_ok!(request.target);
             let session = sessions
                 .remote_create_session(&current_timestamp())
+                .map_err(map_operation_error)?;
+            Ok(json!({ "session": session }))
+        }
+        "axo.remote.workspace.session.create" => {
+            let request = parsed!(WorkspaceSessionTargetParams);
+            target_ok!(request.target);
+            let session = sessions
+                .remote_create_workspace_session(&request.workspace_id, &current_timestamp())
                 .map_err(map_operation_error)?;
             Ok(json!({ "session": session }))
         }
@@ -1910,6 +1985,59 @@ mod tests {
             })
             .is_err()
         );
+    }
+
+    #[test]
+    fn host_notifications_project_agent_metadata_and_relay_structured_pi_events() {
+        let snapshot = host_notification(
+            json!({
+                "type": "session.snapshot",
+                "session": {
+                    "id": 17,
+                    "sessionUuid": "70fa4f38-71d9-42f8-9013-43b4fd688693",
+                    "workspaceId": "7f1918d3-8b6d-4af4-a57e-7e6ae28e89e2",
+                    "workspaceName": "Axo",
+                    "name": "Session 1",
+                    "shells": [
+                        { "id": 20, "role": "pi" },
+                        { "id": 21, "role": "terminal" }
+                    ],
+                    "layout": {
+                        "kind": "split",
+                        "id": "0f00f22d-a24c-4cbc-9196-74dbed95ca80",
+                        "direction": "right",
+                        "ratio": 0.5,
+                        "first": { "kind": "pane", "shellId": 20 },
+                        "second": { "kind": "pane", "shellId": 21 }
+                    }
+                }
+            }),
+            "70fa4f38-71d9-42f8-9013-43b4fd688693",
+            "7f1918d3-8b6d-4af4-a57e-7e6ae28e89e2",
+        )
+        .unwrap();
+        let snapshot = &snapshot["params"]["event"]["snapshot"];
+        assert_eq!(snapshot["hasAgent"], true);
+        assert_eq!(snapshot["workspaceName"], "Axo");
+        assert_eq!(snapshot["shells"], json!([{ "shellId": 21 }]));
+        assert_eq!(snapshot["layout"], json!({ "kind": "pane", "shellId": 21 }));
+
+        let pi_event = host_notification(
+            json!({
+                "type": "pi.event",
+                "sessionId": 17,
+                "piSessionId": "pi-session-1",
+                "streamId": "0f00f22d-a24c-4cbc-9196-74dbed95ca80",
+                "sequence": 1,
+                "name": "message.end",
+                "data": { "role": "assistant", "text": "Persist me" }
+            }),
+            "70fa4f38-71d9-42f8-9013-43b4fd688693",
+            "7f1918d3-8b6d-4af4-a57e-7e6ae28e89e2",
+        )
+        .unwrap();
+        assert_eq!(pi_event["params"]["event"]["type"], "pi.event");
+        assert_eq!(pi_event["params"]["event"]["data"]["text"], "Persist me");
     }
 
     #[test]

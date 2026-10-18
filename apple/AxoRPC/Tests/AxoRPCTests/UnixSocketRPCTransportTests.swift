@@ -17,6 +17,31 @@ final class UnixSocketRPCTransportTests: XCTestCase {
     }
   }
 
+  func testServerRejectionPreservesItsRpcCodeAndMessage() async throws {
+    let fixture = try OneResponseUnixSocket(
+      response: #"{"jsonrpc":"2.0","id":1,"error":{"code":1,"message":"Workspace creation failed"}}"#
+    )
+    let responder = Task.detached {
+      try fixture.receiveOneRequestAndReply()
+    }
+
+    do {
+      _ = try await UnixSocketRPC.health(at: UnixSocketPath(fixture.path))
+      XCTFail("Expected the daemon's error response")
+    } catch let error as UnixSocketRPCError {
+      guard case .serverRejected(let code, let message) = error else {
+        return XCTFail("Unexpected RPC error: \(error)")
+      }
+      XCTAssertEqual(code, 1)
+      XCTAssertEqual(message, "Workspace creation failed")
+      XCTAssertEqual(
+        error.localizedDescription,
+        "axod rejected the request (1): Workspace creation failed"
+      )
+    }
+    _ = try await responder.value
+  }
+
   func testHealthAcceptsAnOlderDaemonWithoutVersionInItsResponse() async throws {
     let fixture = try OneResponseUnixSocket(
       response: #"{"jsonrpc":"2.0","id":1,"result":{"buildNumber":41,"status":"running"}}"#

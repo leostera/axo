@@ -2,12 +2,14 @@ import type { ExtensionAPI, ExtensionContext, ExtensionFactory } from "@earendil
 import { isAbsolute, resolve } from "node:path";
 import { AxoPiBridgeServer } from "./bridge-server.js";
 import { parsePiSessionIdentity, type PiControlCommand, type PiSessionIdentity } from "./protocol.js";
+import { installAxoSessionNaming } from "./title.js";
 
 export interface AxoPiExtensionConfig {
   socketPath: string;
   piSessionFile: string;
   axoSessionId: string;
   axoPaneId: string;
+  bridgeToken: string;
 }
 
 function currentIdentity(context: ExtensionContext, config: AxoPiExtensionConfig): PiSessionIdentity | null {
@@ -69,7 +71,7 @@ export async function installAxoPiExtension(pi: ExtensionAPI, config: AxoPiExten
     return { accepted: true as const };
   };
 
-  const bridge = new AxoPiBridgeServer(config.socketPath, config.axoSessionId, handleCommand);
+  const bridge = new AxoPiBridgeServer(config.socketPath, config.axoSessionId, config.bridgeToken, handleCommand);
   let bridgeAvailable = false;
   traceBridge("factory initialization started");
   const bridgeStarted = bridge.start().then(() => {
@@ -143,6 +145,15 @@ export async function installAxoPiExtension(pi: ExtensionAPI, config: AxoPiExten
   pi.on("tool_execution_update", event => publish("tool.update", event));
   pi.on("tool_execution_end", event => publish("tool.end", event));
   pi.on("session_info_changed", event => publish("session.info", event));
+  pi.on("ui_prompt_start", event => publish("ui.prompt.start", { kind: event.kind }));
+  pi.on("ui_prompt_end", event => publish("ui.prompt.end", { kind: event.kind }));
+
+  installAxoSessionNaming(
+    pi,
+    bridge,
+    () => identity,
+    sessionContext => currentIdentity(sessionContext, config),
+  );
 
   await bridgeStarted;
   traceBridge("factory initialization complete");

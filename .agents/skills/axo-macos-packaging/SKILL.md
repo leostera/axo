@@ -44,7 +44,7 @@ If a package fails validation, fix and repackage before reporting it ready. Afte
 
 ## Runtime and consent
 
-- Packaging is authorized routinely; live app/daemon/Pi stop, restart or relaunch, service reset, remote deployment and physical-device installation require applicable explicit consent or exact durable lifecycle authority.
+- In this non-production Axo development environment, the user authorizes rebuilding/redeploying the Mac app and restarting/relaunching Axo and axod after validated changes without asking each time. The local Axod SQLite database may be reset when needed for development, but preserve it by default; never delete Cloudflare or production storage without explicit target-specific authorization. Pi/session lifecycle actions still require exact durable lifecycle authority. Physical-device installation remains separately authorized.
 - Never adopt or signal PIDs discovered in files or process lists. Preserve accepted work and uncertain outcomes. Normal frontend exit does not stop daemon-owned work.
 - Service status and successful `launchctl` commands are not proof of the running binary or operational readiness. Verify actual host version and exact runtime capabilities through addressed diagnostics.
 - Ownership repair uses validated exclusive `owner.lock`, not refused sockets, empty cached catalogs or apparent process absence. Unregister/register only under the supported ownership procedure; release the lease before starting the captured service. `scripts/check-mac-owner-lease.sh` tests private fixture contention/metadata, not normal service handoff.

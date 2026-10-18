@@ -11,6 +11,7 @@ final class TerminalUITestAutomation {
     let character: String?
     let text: String?
     let minimumSurfaceCount: Int?
+    let sessionId: Int64?
   }
 
   private struct Response: Encodable {
@@ -67,6 +68,12 @@ final class TerminalUITestAutomation {
     case "wait-surface-count":
       try await waitForSurfaceCount(request.minimumSurfaceCount ?? 0)
     case "refresh":
+      await sessions.refresh()
+    case "select-session":
+      guard let sessionId = request.sessionId, sessions.session(for: sessionId) != nil else {
+        throw AutomationError.noSession
+      }
+      sessions.selectedSessionID = sessionId
       await sessions.refresh()
     default:
       throw AutomationError.unknownOperation(request.operation)
@@ -167,6 +174,7 @@ final class TerminalUITestAutomation {
 
 private enum AutomationError: Error, LocalizedError {
   case noFocusedTerminal
+  case noSession
   case terminalSurfaceTimedOut
   case surfaceCountTimedOut(Int, Int)
   case unknownOperation(String)
@@ -177,6 +185,7 @@ private enum AutomationError: Error, LocalizedError {
   var errorDescription: String? {
     switch self {
     case .noFocusedTerminal: "There is no focused terminal surface to receive text."
+    case .noSession: "The requested test Session is not open."
     case .terminalSurfaceTimedOut:
       "The selected shell did not create a Ghostty surface within ten seconds."
     case .surfaceCountTimedOut(let expected, let actual):

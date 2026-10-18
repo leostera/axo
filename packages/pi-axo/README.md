@@ -38,6 +38,12 @@ Axod-to-Pi records use `type: "command"`, a request ID, and the matching Axo Ses
 
 The extension forwards structured Pi events to Axod only. If Axod is disconnected, live events are not buffered in memory; Axod must reconcile from Pi's durable local session history. Terminal bytes never enter this channel. Pi remains the sole writer of its session file.
 
+## Session title, emoji, and activity
+
+On the first user turn of an unnamed conversation, the extension adds a structured prompt section asking Pi to call `axo_set_title` in that same turn with a concise title and one representative emoji. The title is persisted through Pi's public `setSessionName()` API; the emoji is saved as a Pi custom entry that does not enter model context. Axod receives only the validated title/emoji metadata through the exact bound bridge and stores the sidebar projection locally.
+
+The extension also forwards Pi's public agent-settled and blocking-UI-prompt lifecycle events. Axod derives sidebar status as ready, working, or needs attention from those events. A starting/disconnected Pi binding is not presented as ready. The attention indicator means Pi is currently waiting in a blocking UI prompt; arbitrary terminal output is never inspected to infer status.
+
 ## Session ownership
 
 The extension prevents Pi's `/new`, `/resume`, and `/fork` flows from switching the process to a conversation owned by a different Axo Session. Create and select Sessions through Axo instead. Branch navigation within the current Pi file remains Pi-owned.

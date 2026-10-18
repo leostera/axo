@@ -85,6 +85,37 @@ final class TerminalWorkbenchE2ETests: XCTestCase {
     XCTAssertEqual(reopenedModel.layout?.firstShellID, firstShell.id)
   }
 
+  func testClosingNewWorkspaceSessionReturnsToPreviousSessionInWorkspace() async throws {
+    let directory = FileManager.default.temporaryDirectory
+      .appendingPathComponent("axo-session-focus-\(UUID().uuidString)", isDirectory: true)
+    try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
+    defer { try? FileManager.default.removeItem(at: directory) }
+
+    try await withWorkbench { model, _ in
+      await model.createWorkspace(
+        name: "Session Focus",
+        directoryPath: directory.path,
+        directoryBookmark: nil
+      )
+      XCTAssertNil(model.workspaceCreationError)
+
+      let previousSessionID = try XCTUnwrap(model.selectedSessionID)
+      let workspaceID = try XCTUnwrap(model.session(for: previousSessionID)?.workspaceId)
+      await model.createSessionInCurrentContext()
+
+      let newSessionID = try XCTUnwrap(model.selectedSessionID)
+      XCTAssertNotEqual(newSessionID, previousSessionID)
+      XCTAssertEqual(model.session(for: newSessionID)?.workspaceId, workspaceID)
+      let shell = try XCTUnwrap(model.session(for: newSessionID)?.shells.first)
+
+      await model.closeShell(shell.id)
+
+      XCTAssertEqual(model.selectedSessionID, previousSessionID)
+      XCTAssertEqual(model.session(for: previousSessionID)?.workspaceId, workspaceID)
+      XCTAssertNil(model.errorMessage)
+    }
+  }
+
   func testPaneNavigationCyclesInLayoutOrder() async throws {
     try await withWorkbench { model, _ in
       let sessionID = try XCTUnwrap(model.selectedSessionID)
@@ -119,6 +150,9 @@ final class TerminalWorkbenchE2ETests: XCTestCase {
       await model.createSession()
       let secondSessionID = try XCTUnwrap(model.selectedSessionID)
       XCTAssertNotEqual(firstSessionID, secondSessionID)
+      let secondSession = try XCTUnwrap(model.session(for: secondSessionID))
+      XCTAssertNil(secondSession.workspaceId)
+      XCTAssertEqual(secondSession.initialPwd, NSHomeDirectory())
 
       model.showNextSession()
       XCTAssertEqual(model.selectedSessionID, firstSessionID)
@@ -150,7 +184,7 @@ final class TerminalWorkbenchE2ETests: XCTestCase {
       await model.closeFocusedShell()
 
       XCTAssertEqual(model.layout?.shellIDs, [firstShell.id, secondShell.id])
-      XCTAssertEqual(model.focusedShellID, firstShell.id)
+      XCTAssertEqual(model.focusedShellID, secondShell.id)
       try daemon.assertCanRunCommand(in: firstShell)
       try daemon.assertCanRunCommand(in: secondShell)
     }
@@ -290,6 +324,7 @@ final class TerminalWorkbenchE2ETests: XCTestCase {
     let model = TerminalSessionsModel(socketPath: socketPath, helperURL: daemon.executableURL)
     await model.refresh()
     XCTAssertNil(model.errorMessage)
+    if model.sessions.isEmpty { await model.createSession() }
     XCTAssertNotNil(model.selectedSessionID)
 
     try await test(model, daemon)

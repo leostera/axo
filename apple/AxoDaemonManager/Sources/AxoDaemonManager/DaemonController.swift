@@ -277,7 +277,7 @@ public final class DaemonController: ObservableObject {
         switch error {
         case .connectionFailed, .requestTimedOut:
           break
-        case .invalidSocketPath, .invalidResponse:
+        case .invalidSocketPath, .invalidResponse, .serverRejected:
           throw error
         }
       }

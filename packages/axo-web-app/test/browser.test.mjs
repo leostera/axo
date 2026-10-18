@@ -13,6 +13,7 @@ import { createServer as createViteServer } from "vite";
 const hostId = "1e1e7f91-3d8f-4f97-8f71-4fc7d53313c6";
 const hostGeneration = "f9c5761c-3b2d-42a8-bb19-9a8c0b8cf230";
 const subscriptionId = "53c8b056-a7ba-4354-9659-dda29f57850a";
+const workspaceId = "04d389d1-9896-420e-9b42-fc7835522937";
 const now = "2026-10-16T12:00:00.000Z";
 const siteRoot = resolve(import.meta.dirname, "../../../sites/axo.leostera.dev");
 const chromePath = process.env.CHROME_PATH ?? "/Applications/Google Chrome.app/Contents/MacOS/Google Chrome";
@@ -21,6 +22,9 @@ function session(sessionId, shellId) {
   return {
     hostId,
     sessionId,
+    workspaceId,
+    workspaceName: "Browser Workspace",
+    hasAgent: true,
     shells: [{ shellId }],
     layout: { kind: "pane", shellId },
     updatedAt: now,
@@ -89,6 +93,9 @@ test("browser discovers hosts, renders live PTY output, sends input, and uses Cm
   const sessions = [{
     hostId,
     sessionId: 1,
+    workspaceId,
+    workspaceName: "Browser Workspace",
+    hasAgent: true,
     shells: [{ shellId: 17 }, { shellId: 18 }],
     layout: {
       kind: "split",
@@ -212,9 +219,19 @@ test("browser discovers hosts, renders live PTY output, sends input, and uses Cm
             },
           }), 20);
         }
-      } else if (call.method === "axo.remote.session.create") {
+      } else if (call.method === "axo.remote.workspace.session.create") {
         sessionCreateCount++;
-        const created = session(2, 29);
+        assert.equal(call.params.workspaceId, workspaceId);
+        const created = {
+          hostId,
+          sessionId: 2,
+          workspaceId,
+          workspaceName: "Browser Workspace",
+          hasAgent: true,
+          shells: [],
+          layout: null,
+          updatedAt: now,
+        };
         sessions.push(created);
         reply({ session: created });
       } else {
@@ -316,10 +333,12 @@ test("browser discovers hosts, renders live PTY output, sends input, and uses Cm
     assert.ok(inputShellIds.length > 0 && inputShellIds.every((shellId) => shellId === 18));
 
     await page.keyboard.press("Meta+t");
-    await page.getByRole("button", { name: /Session 2/ }).waitFor({ timeout: 10_000 });
+    await page.getByRole("button", { name: /Session 2/ }).waitFor({ timeout: 10_000 }).catch(async (error) => {
+      throw new Error(`${error.message}\npage: ${pageErrors.join(" | ")}\ntext: ${await page.locator("body").innerText()}\nconsole: ${browserMessages.join(" | ")}\nmethods: ${methods.join(",")}`);
+    });
     assert.equal(sessionCreateCount, 1);
     assert.ok(methods.includes("axo.remote.terminal.input"));
-    assert.ok(methods.includes("axo.remote.session.create"));
+    assert.ok(methods.includes("axo.remote.workspace.session.create"));
 
     await page.goto(`${appUrl}/app`, { waitUntil: "networkidle" });
     await page.getByRole("link", { name: "Continue with Cloudflare" }).waitFor({ timeout: 10_000 });

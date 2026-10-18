@@ -18,6 +18,8 @@
     <dict>
         <key>AXO_RELAY_URL</key>
         <string>https://axo.leostera.dev</string>
+        <key>PATH</key>
+        <string>/opt/homebrew/bin:/usr/local/bin:/usr/bin:/bin:/usr/sbin:/sbin</string>
     </dict>
     <key>ProcessType</key>
     <string>Background</string>

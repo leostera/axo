@@ -24,8 +24,8 @@ enum AxoAppSelfTest {
     }
 
     let baselineSessions = try await UnixSocketRPC.listSessions(at: socketPath)
-    guard !baselineSessions.isEmpty else {
-      throw SelfTestError.defaultSessionMissing
+    guard baselineSessions.count == 1 else {
+      throw SelfTestError.unexpectedInitialSession
     }
     let session = try await UnixSocketRPC.createSession(at: socketPath)
     do {
@@ -224,7 +224,7 @@ private enum SelfTestError: Error, LocalizedError {
   case daemonUnavailable
   case createdSessionMissing
   case createdShellMissing
-  case defaultSessionMissing
+  case unexpectedInitialSession
   case independentSessionChanged
   case independentSessionCloseFailed
   case splitShellSetMismatch
@@ -247,8 +247,8 @@ private enum SelfTestError: Error, LocalizedError {
       "axod did not return the session created by the self-test."
     case .createdShellMissing:
       "axod did not return a shell in the self-test session."
-    case .defaultSessionMissing:
-      "axod did not provide its default session before the split test began."
+    case .unexpectedInitialSession:
+      "axod must start with exactly one default Session before the self-test begins."
     case .independentSessionChanged:
       "Splitting or closing a shell changed an unrelated session."
     case .independentSessionCloseFailed:

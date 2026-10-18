@@ -61,6 +61,7 @@ const rpcIdSchema = z.union([
 ]);
 const appRemoteResults = {
   "axo.remote.session.create": remoteSessionCreateResultSchema,
+  "axo.remote.workspace.session.create": remoteSessionCreateResultSchema,
   "axo.remote.terminal.input": remoteTerminalInputResultSchema,
   "axo.remote.terminal.resize": remoteTerminalResizeResultSchema,
 } as const;

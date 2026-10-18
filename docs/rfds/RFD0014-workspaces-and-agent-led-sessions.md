@@ -9,7 +9,7 @@
 
 ## Summary
 
-I propose making a host-local project Workspace the owner of multiple independent Axo Sessions. Each open Session has exactly one interactive Pi agent pane, zero or one optional terminal pane, its own persisted layout, and an exact Pi conversation binding. Axod owns the Pi PTY, supplies Pi with its session-file location, and relays structured Pi events to the connected API for durable server-side viewing by the owning account; sharing beyond that owner is undecided. Client commands travel back through Axod into Pi's session stream. Pi remains the writer of its canonical local conversation file; server-side event storage is a separate copy/projection. Terminal bytes are not persisted. This proposal changes the local data model, daemon lifecycle, shared contracts, Mac UI, remote event storage, and browser Workbench; it does not change Cloudflare Access policy.
+I propose making a host-local project Workspace the owner of multiple independent agent-led Axo Sessions, while retaining Workspace-less terminal Sessions rooted at `$HOME`. Axod always keeps at least one standalone home Session open and at least one Session in each open Workspace. Each Workspace Session has exactly one interactive Pi agent pane, zero or one optional terminal pane, its own persisted layout, and an exact Pi conversation binding. Axod owns the Pi PTY, supplies Pi with its session-file location, and relays structured Pi events to the connected API for durable server-side viewing by the owning account; sharing beyond that owner is undecided. Client commands travel back through Axod into Pi's session stream. Pi remains the writer of its canonical local conversation file; server-side event storage is a separate copy/projection. Terminal bytes are not persisted. This proposal changes the local data model, daemon lifecycle, shared contracts, Mac UI, remote event storage, and browser Workbench; it does not change Cloudflare Access policy.
 
 ## Motivation
 
@@ -17,13 +17,13 @@ Axo currently treats a session as a set of generic shells. `crates/axo-server/sr
 
 That model does not match how I work: I open a project, start an agent in one pane and a terminal beside it, and sometimes create multiple independent agent-led sessions in the same project. Closing one agent means that particular line of work is done; it should not close other sessions in the Workspace.
 
-Some shared TypeScript state contracts already sketch Workspace, Session, and Pi/terminal roles in `packages/axo-api/src/state-contracts.ts`. They are not yet enforced by the current Axod session implementation, and they do not yet encode the required Pi pane, optional-terminal, and pane-layout invariants proposed here.
+Some shared TypeScript state contracts already sketch Workspace, Session, and Pi/terminal roles in `packages/axo-api/src/state-contracts.ts`. They are not yet enforced by the current Axod session implementation, and they do not yet encode Workspace-less home Sessions alongside Workspace agent Sessions.
 
 ## Goals
 
 - Model a project root as a host-owned Workspace that can contain multiple Sessions.
 - Make each new Session start with one Pi agent PTY and optionally one terminal PTY. When present, Pi is on the left and the terminal is on the right.
-- Give each Session its own stable Pi conversation binding, even when several Sessions share a Workspace root.
+- Give each Workspace Session its own stable Pi conversation binding, even when several Sessions share a Workspace root; retain standalone terminal Sessions rooted at `$HOME`.
 - Let users add or remove the optional terminal pane without changing another Session's state.
 - Restore the desired Workspace/Session/Pane graph and Pi conversation after daemon restart without replaying prompts or shell input.
 - Keep the Mac app and browser Workbench as clients of Axod-owned session state.
@@ -43,7 +43,7 @@ Some shared TypeScript state contracts already sketch Workspace, Session, and Pi
 
 ### Mental model
 
-A Workspace is a project on one host. A Session is one independent agent-led thread inside that project. A Pane is a stable, role-bearing surface backed by a PTY.
+A Workspace is a project on one host. A Workspace Session is one independent agent-led thread inside that project. A Workspace-less Session is a standalone terminal rooted at the user's home directory. A Pane is a stable, role-bearing surface backed by a PTY.
 
 ```text
 Workspace (host-local project root)
@@ -53,11 +53,17 @@ Workspace (host-local project root)
   Session B
     Pi agent pane  |  optional terminal pane
     Session B layout and a different Pi conversation
+
+Workspace-less Sessions
+  Session 1 (terminal rooted at $HOME)
+  Session 2 (terminal rooted at $HOME)
 ```
 
-A new Workspace creates its first Session. **New Session** within a Workspace creates another Pi-backed Session using the same project root but a different Pi conversation. A terminal PTY is optional; when present, the default layout is a rightward split with the agent first/left and the terminal second/right. Without it, the layout contains only the Pi pane. Each Session owns its layout; changing one does not affect its siblings.
+A new Workspace creates its first Session. **New Session** within a Workspace creates another Pi-backed Session using the same project root but a different Pi conversation. A terminal PTY is optional; when present, the default layout is a rightward split with the agent first/left and the terminal second/right. Without it, the layout contains only the Pi pane. Each Workspace Session owns its layout; changing one does not affect its siblings.
 
-Closing the agent through Axo closes that Session and any terminal pane, but leaves the Workspace and its other Sessions intact. The Pi conversation file remains available. Removing the optional terminal pane leaves the Pi-backed Session open.
+The sidebar separates **Workspaces** (each with its Workspace Sessions) from **Sessions** (standalone terminal Sessions rooted at `$HOME`). Creating a Workspace uses ⌘N. ⌘T creates a Session in the selected Workspace when a Workspace Session is active; otherwise it creates a standalone terminal Session rooted at `$HOME`. Session rows are compact: they show a Pi-chosen title and emoji, plus a live ready/working/needs-attention indicator, not the current working-directory path. On the first user request, Pi sets the title and emoji in that same turn. Axod maintains at least one standalone Session rooted at `$HOME` and repairs any open Workspace that lacks a Session. Closing or reaping the last standalone Session immediately creates a replacement in `$HOME`; closing the last Session in a Workspace creates a replacement in that same Workspace. This preserves the standalone-Session and per-Workspace Session invariants independently.
+
+Closing an agent through Axo closes that Workspace Session and any terminal pane, but leaves the Workspace and its other Sessions intact. The Pi conversation file remains available. Removing the optional terminal pane leaves the Pi-backed Session open.
 
 ### Example: two sessions in one project
 
@@ -93,7 +99,7 @@ flowchart LR
   Store --> Browser
 ```
 
-The local socket is scoped to one expected Pi process/session binding. Axod validates the extension's reported Pi session ID, exact file path, Axo Session/Pane IDs, and managed process identity before accepting events or sending commands. Terminal bytes never cross the host boundary.
+The local socket is scoped to one expected Pi process/session binding. Axod validates the extension's reported Pi session ID, exact file path, Axo Session/Pane IDs, and managed process identity before accepting events or sending commands. Terminal bytes never cross the host boundary. For Workspace creation, Axod first opens the selected path using the user's normal filesystem permissions. If macOS requires a scoped extension for that folder, the Mac app opportunistically sends a security-scoped bookmark over local RPC; Axod resolves and holds it while the Workspace is open, and stores it locally to restore access after daemon restart. Ordinary accessible folders do not require a bookmark.
 
 ```mermaid
 sequenceDiagram
@@ -136,17 +142,17 @@ flowchart TD
 Conceptual records (exact SQLite names and wire names are implementation details):
 
 - `Workspace`: stable ID, owning host, local root directory, display metadata, lifecycle, and references to its Sessions.
-- `Session`: stable ID, Workspace ID, lifecycle, display metadata, Pane records, layout, and one Pi binding.
-- `Pane`: stable pane ID, Session ID, closed role (`pi` or `terminal`), desired lifecycle, and role-specific launch/runtime metadata. Each Session has one required Pi pane and at most one optional terminal pane.
-- `Pi binding`: exact Pi session ID and canonical session-file location, stored only on the owning host. Pi alone writes the local JSONL file; structured events are separately relayed to the API and stored for remote observation by the owning account.
+- `Session`: stable ID, nullable Workspace ID, lifecycle, Pi-chosen title/emoji display metadata, transient readiness/activity, Pane records, and layout. Workspace Sessions also have one Pi binding.
+- `Pane`: stable pane ID, Session ID, closed role (`pi` or `terminal`), desired lifecycle, and role-specific launch/runtime metadata. A Workspace-less Session has one terminal pane and no Pi pane; a Workspace Session has one required Pi pane and at most one optional terminal pane.
+- `Pi binding`: exact Pi session ID and canonical session-file location, stored only on the owning host for Workspace Sessions. Pi alone writes the local JSONL file; structured events are separately relayed to the API and stored for remote observation by the owning account.
 - `Layout`: a bounded split tree whose leaves reference pane IDs. Every present Pane occurs exactly once; it is not inferred from pane creation order.
 
 Required open-Session invariants:
 
-1. Exactly one present Pi pane and zero or one present terminal pane.
-2. One or two present panes/PTYs when the Session is ready.
+1. At least one standalone Workspace-less Session is always open, and every open Workspace always has at least one Session. Workspace-less Sessions have exactly one terminal pane and no Pi pane; Workspace Sessions have exactly one present Pi pane and zero or one present terminal pane.
+2. Every present pane has one PTY; an open Workspace Session has one or two present panes.
 3. Pane IDs are unique and all layout leaves refer to panes in that Session exactly once.
-4. Each Session's Pi binding is distinct, including within one Workspace. A host's path is not an identity for a Pi conversation.
+4. Each Workspace Session's Pi binding is distinct, including within one Workspace. A host's path is not an identity for a Pi conversation.
 5. Workspace root paths and Pi history paths are local-only. Account/relay control snapshots may publish labels, role-bearing pane IDs, layout, and bounded status, but never paths. Pi conversation content travels only through the separately authorized event/history channel; terminal bytes never do.
 
 Workspace creation and its first Session are accepted as one backend graph operation; a follow-up client request must not be required to launch Pi or attach its conversation to the Session. Creating a Session in an existing Workspace is likewise one protocol operation: Axod creates the Pi pane and binding, optionally creates the terminal pane, persists the layout/operation, and starts the owned Pi PTY. The client submits intent and renders the returned graph/readiness; it does not sequence process startup or link Pi afterward. Once connected, Axod forwards structured Pi events to the API, which persists them for remote viewing by the owning account; sharing beyond that owner is undecided. Readiness may be `materializing` or `blocked`; partial startup must not be reported as ready.
@@ -176,7 +182,7 @@ Pi and Axod must not concurrently write one conversation. Before starting a repl
 
 - Axod is the only authority for desired session topology and local PTY ownership; the frontend does not sequence shell and Pi startup.
 - Pi remains the only writer of the canonical local conversation file. Axod relays structured Pi events; the API stores a separate durable event/history copy for remote use.
-- Every open Session has exactly one Pi pane and at most one optional terminal pane; only an explicit Session lifecycle action removes the required agent.
+- Every Workspace Session has exactly one Pi pane and at most one optional terminal pane. Workspace-less home Sessions contain exactly one terminal pane and no Pi pane.
 - Every Session has one exact Pi history binding; missing evidence never means “continue latest” or “create a new chat.”
 - Restart never resubmits prompts, tool calls, or shell input.
 - A replacement Pi writer starts only after old-writer termination/ownership is proven.
@@ -187,7 +193,7 @@ Pi and Axod must not concurrently write one conversation. Before starting a repl
 
 The current Axod SQLite schema is version 3 and stores shell-only sessions plus shell-ID layout. Current `axo.session.*`/`axo.shell.*` RPC and `packages/axo-api/src/v1.ts` host snapshots do not represent Workspaces or Pane roles. This is a coordinated model transition, not a UI-only change.
 
-For the current developer-only rollout, use a clean cutover: legacy shell-only rows and PTYs do not need to be preserved or converted into Workspaces. Do not silently merge them based only on equal current directories. If Axo is prepared for users beyond the developers, revisit backup and migration needs before that rollout. New Workspace/Session creation must use the new graph API; the client must not fall back to the old create-one-shell choreography when the daemon lacks the new capability.
+For the current developer-only rollout, use a clean cutover: legacy shell-only rows and PTYs do not need to be preserved or converted into Workspaces. Do not silently merge them based only on equal current directories. After cutover, Axod maintains one or more Workspace-less `$HOME` terminal Sessions (creating one at startup or after the last one closes/exits) and at least one Session in every open Workspace. If Axo is prepared for users beyond the developers, revisit backup and migration needs before that rollout. Workspace creation and Workspace Session creation use the new graph API; standalone home Sessions remain a local Axod-owned session kind.
 
 ### Security, privacy, and observability
 
@@ -220,7 +226,7 @@ Rollback must preserve both Axod database contents and Pi history files. It must
 
 ### Proposed design
 
-A host-scoped Workspace groups a project's local root and multiple independent agent-led Sessions. Each Session owns its agent PTY, optional terminal PTY, layout, and exact Pi conversation. Axod is the process and protocol bridge: clients ask it to create/control the Session, and its Pi extension channel carries structured events in both directions. This matches the user's workflow while preventing two sessions in one directory from sharing whichever Pi session happens to be most recent.
+A host-scoped Workspace groups a project's local root and multiple independent agent-led Sessions, while standalone terminal Sessions remain available from `$HOME`. Each Workspace Session owns its agent PTY, optional terminal PTY, layout, and exact Pi conversation. Axod is the process and protocol bridge: clients ask it to create/control the Session, and its Pi extension channel carries structured events in both directions. This matches the user's workflow while preventing two Workspace Sessions in one directory from sharing whichever Pi session happens to be most recent.
 
 ### Keep sessions as arbitrary shell groups
 
@@ -266,4 +272,4 @@ Axo continues to restore generic shells and layouts but cannot guarantee an agen
 
 ## Future possibilities
 
-A later version may add Workspace-level presentation preferences, richer Pi attention/status, or additional pane roles. These do not change the initial rule that each Session has one Pi conversation and at most one optional terminal pane.
+The sidebar now reflects Pi's canonical session title, an Axo-specific emoji saved in the Pi session, and activity derived from the exact managed Pi bridge: connected/idle is ready, an active agent turn is working, and a blocking Pi UI prompt needs attention. Starting or disconnected Pi is shown as an unavailable/starting neutral state rather than being reported as ready. These details do not change the distinction between Workspace agent Sessions and Workspace-less home terminal Sessions.
