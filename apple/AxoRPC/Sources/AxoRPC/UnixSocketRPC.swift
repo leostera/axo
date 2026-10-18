@@ -47,8 +47,14 @@ public struct DaemonHealth: Decodable, Equatable, Sendable {
   public let status: String
 }
 
-public struct AgentCommandSettings: Decodable, Equatable, Sendable {
-  public let command: String
+public enum AxoConfigKey: String, Codable, Equatable, Sendable {
+  case agentCommand = "agent.command"
+  case shellCommand = "shell.command"
+}
+
+public struct AxoConfigValue: Decodable, Equatable, Sendable {
+  public let key: AxoConfigKey
+  public let value: String
 }
 
 public struct RemoteAccessSettings: Decodable, Equatable, Sendable {
@@ -271,8 +277,13 @@ private struct WorkspaceList: Decodable {
   let workspaces: [WorkspaceRecord]
 }
 
-private struct AgentCommandSetRequest: Encodable {
-  let command: String
+private struct ConfigGetRequest: Encodable {
+  let key: AxoConfigKey
+}
+
+private struct ConfigSetRequest: Encodable {
+  let key: AxoConfigKey
+  let value: String
 }
 
 private struct WorkspaceCreateRequest: Encodable {
@@ -489,22 +500,37 @@ public enum UnixSocketRPC {
     return health
   }
 
-  public static func agentCommand(at socketPath: UnixSocketPath) async throws -> AgentCommandSettings {
-    try await withResponse(at: socketPath) { session in
-      try await session.response(to: "axo.agent.command.get")
-    }
-  }
-
-  public static func setAgentCommand(
-    _ command: String,
+  public static func configValue(
+    for key: AxoConfigKey,
     at socketPath: UnixSocketPath
-  ) async throws -> AgentCommandSettings {
-    try await withResponse(at: socketPath) { session in
+  ) async throws -> AxoConfigValue {
+    let value: AxoConfigValue = try await withResponse(at: socketPath) { session in
       try await session.response(
-        to: "axo.agent.command.set",
-        params: AgentCommandSetRequest(command: command)
+        to: "axo.config.get",
+        params: ConfigGetRequest(key: key)
       )
     }
+    guard value.key == key else {
+      throw UnixSocketRPCError.invalidResponse("daemon returned configuration for a different key")
+    }
+    return value
+  }
+
+  public static func setConfigValue(
+    _ value: String,
+    for key: AxoConfigKey,
+    at socketPath: UnixSocketPath
+  ) async throws -> AxoConfigValue {
+    let saved: AxoConfigValue = try await withResponse(at: socketPath) { session in
+      try await session.response(
+        to: "axo.config.set",
+        params: ConfigSetRequest(key: key, value: value)
+      )
+    }
+    guard saved.key == key else {
+      throw UnixSocketRPCError.invalidResponse("daemon saved configuration under a different key")
+    }
+    return saved
   }
 
   public static func listSessions(at socketPath: UnixSocketPath) async throws -> [TerminalSession] {

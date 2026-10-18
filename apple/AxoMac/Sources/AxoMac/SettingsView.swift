@@ -188,9 +188,9 @@ private struct AgentSettingsView: View {
     defer { isLoading = false }
     do {
       let socketPath = try DaemonController.socketPath()
-      let settings = try await UnixSocketRPC.agentCommand(at: socketPath)
-      command = settings.command
-      savedCommand = settings.command
+      let settings = try await UnixSocketRPC.configValue(for: .agentCommand, at: socketPath)
+      command = settings.value
+      savedCommand = settings.value
       isLoaded = true
       errorMessage = nil
     } catch {
@@ -205,9 +205,109 @@ private struct AgentSettingsView: View {
     defer { isSaving = false }
     do {
       let socketPath = try DaemonController.socketPath()
-      let settings = try await UnixSocketRPC.setAgentCommand(command, at: socketPath)
-      command = settings.command
-      savedCommand = settings.command
+      let settings = try await UnixSocketRPC.setConfigValue(
+        command,
+        for: .agentCommand,
+        at: socketPath
+      )
+      command = settings.value
+      savedCommand = settings.value
+      errorMessage = nil
+    } catch {
+      errorMessage = error.localizedDescription
+    }
+  }
+}
+
+private struct ShellCommandSettingsSection: View {
+  @ObservedObject var daemon: DaemonController
+  @State private var command = ""
+  @State private var savedCommand = ""
+  @State private var errorMessage: String?
+  @State private var isLoading = false
+  @State private var isSaving = false
+  @State private var isLoaded = false
+
+  private var canSave: Bool {
+    isLoaded && !isLoading && !isSaving && command != savedCommand
+  }
+
+  var body: some View {
+    Section("Shell") {
+      TextField("Command", text: $command, prompt: Text("Your login shell"))
+        .disabled(!isLoaded || isLoading || isSaving)
+        .accessibilityIdentifier("default-shell-command")
+
+      Text(
+        "Axod runs this command in its own terminal session, not in Terminal.app. The default follows your login shell. Use an absolute executable path or a command on axod's PATH; arguments support shell-style quoting. Changes apply to new or restarted shell processes."
+      )
+      .font(.caption)
+      .foregroundStyle(.secondary)
+      .fixedSize(horizontal: false, vertical: true)
+
+      HStack {
+        if isLoading || isSaving {
+          ProgressView()
+            .controlSize(.small)
+        }
+        Spacer()
+        Button("Save") {
+          Task { await saveCommand() }
+        }
+        .disabled(!canSave)
+        .accessibilityIdentifier("save-default-shell-command")
+      }
+
+      if !isLoaded && !isLoading && errorMessage == nil {
+        Text("Start axod to view or change the configured shell.")
+          .font(.caption)
+          .foregroundStyle(.secondary)
+      }
+
+      if let errorMessage {
+        Label(errorMessage, systemImage: "exclamationmark.triangle.fill")
+          .font(.caption)
+          .foregroundStyle(.red)
+          .fixedSize(horizontal: false, vertical: true)
+          .accessibilityIdentifier("default-shell-command-error")
+      }
+    }
+    .task(id: daemon.status) {
+      guard case .running = daemon.status else { return }
+      await loadCommand()
+    }
+  }
+
+  @MainActor
+  private func loadCommand() async {
+    isLoading = true
+    defer { isLoading = false }
+    do {
+      let socketPath = try DaemonController.socketPath()
+      let settings = try await UnixSocketRPC.configValue(for: .shellCommand, at: socketPath)
+      command = settings.value
+      savedCommand = settings.value
+      isLoaded = true
+      errorMessage = nil
+    } catch {
+      isLoaded = false
+      errorMessage = error.localizedDescription
+    }
+  }
+
+  @MainActor
+  private func saveCommand() async {
+    isSaving = true
+    defer { isSaving = false }
+    do {
+      let socketPath = try DaemonController.socketPath()
+      let settings = try await UnixSocketRPC.setConfigValue(
+        command,
+        for: .shellCommand,
+        at: socketPath
+      )
+      command = settings.value
+      savedCommand = settings.value
       errorMessage = nil
     } catch {
       errorMessage = error.localizedDescription
@@ -255,6 +355,8 @@ private struct GeneralSettingsView: View {
           .foregroundStyle(.secondary)
         }
       }
+
+      ShellCommandSettingsSection(daemon: daemon)
 
       Section("axod") {
         LabeledContent("Daemon status", value: daemon.status.settingsTitle)

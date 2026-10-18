@@ -1,0 +1,9 @@
+{
+  "jsonrpc": "2.0",
+  "id": 1,
+  "method": "axo.config.set",
+  "params": {
+    "key": "shell.command",
+    "value": "/bin/zsh"
+  }
+}

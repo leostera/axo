@@ -1,8 +1,0 @@
-{
-  "jsonrpc": "2.0",
-  "id": 1,
-  "method": "axo.agent.command.set",
-  "params": {
-    "command": "pi --model 'claude-sonnet-4-5'"
-  }
-}

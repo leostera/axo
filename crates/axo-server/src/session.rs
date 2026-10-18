@@ -34,8 +34,8 @@ const MAX_LAYOUT_NODES: usize = 255;
 const MAX_SUBSCRIPTIONS: usize = 64;
 const MAX_QUEUED_EVENTS_PER_SUBSCRIPTION: usize = 128;
 const DEFAULT_AGENT_COMMAND: &str = "pi";
-const MAX_AGENT_COMMAND_BYTES: usize = 4096;
-const MAX_AGENT_COMMAND_ARGUMENTS: usize = 128;
+const MAX_COMMAND_LINE_BYTES: usize = 4096;
+const MAX_COMMAND_ARGUMENTS: usize = 128;
 
 #[derive(Clone, Copy, Debug, Eq, Hash, PartialEq)]
 struct SessionId(i64);
@@ -189,8 +189,15 @@ struct WorkspaceSessionCreateRequest {
 
 #[derive(Debug, Deserialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
-struct AgentCommandSetRequest {
-    command: String,
+struct ConfigGetRequest {
+    key: String,
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+struct ConfigSetRequest {
+    key: String,
+    value: String,
 }
 
 #[derive(Debug, Deserialize)]
@@ -293,45 +300,46 @@ impl TerminalOutputHistory {
 struct SessionState {
     database: Connection,
     agent_command: AgentCommand,
+    shell_command: ShellCommand,
     running: HashMap<ShellId, RunningShell>,
     pi_activity: HashMap<SessionId, PiRuntimeActivity>,
     initial_pwd: PathBuf,
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]
-struct AgentCommand {
+struct CommandLine {
     source: String,
     executable: String,
     arguments: Vec<String>,
 }
 
-impl AgentCommand {
+impl CommandLine {
     fn parse(source: &str) -> io::Result<Self> {
         let source = source.trim();
         if source.is_empty()
-            || source.len() > MAX_AGENT_COMMAND_BYTES
+            || source.len() > MAX_COMMAND_LINE_BYTES
             || source.chars().any(char::is_control)
         {
             return Err(io::Error::new(
                 io::ErrorKind::InvalidInput,
-                "agent command must be nonempty, control-free, and at most 4096 bytes",
+                "command must be nonempty, control-free, and at most 4096 bytes",
             ));
         }
 
         let arguments = shlex::split(source).ok_or_else(|| {
             io::Error::new(
                 io::ErrorKind::InvalidInput,
-                "agent command contains unmatched shell-style quotes",
+                "command contains unmatched shell-style quotes",
             )
         })?;
         if arguments.is_empty()
-            || arguments.len().saturating_sub(1) > MAX_AGENT_COMMAND_ARGUMENTS
+            || arguments.len().saturating_sub(1) > MAX_COMMAND_ARGUMENTS
             || arguments[0].is_empty()
             || arguments.iter().any(|argument| argument.contains('\0'))
         {
             return Err(io::Error::new(
                 io::ErrorKind::InvalidInput,
-                "agent command must have an executable and no more than 128 arguments",
+                "command must have an executable and no more than 128 arguments",
             ));
         }
 
@@ -339,10 +347,25 @@ impl AgentCommand {
         if executable.contains('/') && !Path::new(&executable).is_absolute() {
             return Err(io::Error::new(
                 io::ErrorKind::InvalidInput,
-                "agent executable paths must be absolute; bare command names are resolved on axod's PATH",
+                "executable paths must be absolute; bare command names are resolved on axod's PATH",
             ));
         }
-        if arguments.iter().skip(1).any(|argument| {
+
+        Ok(Self {
+            source: source.to_owned(),
+            executable,
+            arguments: arguments.into_iter().skip(1).collect(),
+        })
+    }
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+struct AgentCommand(CommandLine);
+
+impl AgentCommand {
+    fn parse(source: &str) -> io::Result<Self> {
+        let command = CommandLine::parse(source)?;
+        if command.arguments.iter().any(|argument| {
             let name = argument
                 .split_once('=')
                 .map_or(argument.as_str(), |(name, _)| name);
@@ -369,12 +392,66 @@ impl AgentCommand {
                 "agent command cannot override Axo's managed Pi session or interactive mode",
             ));
         }
+        Ok(Self(command))
+    }
+}
 
-        Ok(Self {
-            source: source.to_owned(),
-            executable,
-            arguments: arguments.into_iter().skip(1).collect(),
-        })
+#[derive(Clone, Debug, Eq, PartialEq)]
+struct ShellCommand(CommandLine);
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+enum ConfigKey {
+    AgentCommand,
+    ShellCommand,
+}
+
+impl ConfigKey {
+    fn parse(value: &str) -> io::Result<Self> {
+        match value {
+            "agent.command" => Ok(Self::AgentCommand),
+            "shell.command" => Ok(Self::ShellCommand),
+            _ => Err(io::Error::new(
+                io::ErrorKind::InvalidInput,
+                format!("unknown configuration key {value:?}"),
+            )),
+        }
+    }
+
+    fn as_str(self) -> &'static str {
+        match self {
+            Self::AgentCommand => "agent.command",
+            Self::ShellCommand => "shell.command",
+        }
+    }
+
+    fn metadata_key(self) -> &'static str {
+        match self {
+            Self::AgentCommand => "agent_command",
+            Self::ShellCommand => "shell_command",
+        }
+    }
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+struct ConfigValue {
+    key: ConfigKey,
+    value: String,
+}
+
+enum ParsedConfigValue {
+    AgentCommand(AgentCommand),
+    ShellCommand(ShellCommand),
+}
+
+impl ConfigValue {
+    fn to_json(&self) -> Value {
+        json!({ "key": self.key.as_str(), "value": self.value })
+    }
+}
+
+impl ShellCommand {
+    fn parse(source: &str) -> io::Result<Self> {
+        CommandLine::parse(source).map(Self)
     }
 }
 
@@ -556,6 +633,7 @@ impl SessionManager {
         initialize_database(&mut database)?;
         let host_id = load_or_create_host_id(&database)?;
         let agent_command = load_or_create_agent_command(&database)?;
+        let shell_command = load_or_create_shell_command(&database)?;
         let host_generation = create_uuid_v4()?;
         fs::set_permissions(&database_path, fs::Permissions::from_mode(0o600))?;
         let pi_session_directory = server_directory.join("pi-sessions");
@@ -567,6 +645,7 @@ impl SessionManager {
             state: Mutex::new(SessionState {
                 database,
                 agent_command,
+                shell_command,
                 running: HashMap::new(),
                 pi_activity: HashMap::new(),
                 initial_pwd,
@@ -739,21 +818,30 @@ impl SessionManager {
         });
 
         let manager = Arc::clone(self);
-        handler.add_sync_method("axo.agent.command.get", move |_| {
+        handler.add_sync_method("axo.config.get", move |params: Params| {
+            let request: ConfigGetRequest = params
+                .parse()
+                .map_err(|_| invalid_params("expected {key}"))?;
             manager
-                .agent_command()
-                .map(|command| json!({ "command": command }))
-                .map_err(internal_rpc_error)
+                .config_value(&request.key)
+                .map(|value| value.to_json())
+                .map_err(|error| {
+                    if error.kind() == io::ErrorKind::InvalidInput {
+                        invalid_params(&error.to_string())
+                    } else {
+                        internal_rpc_error(error)
+                    }
+                })
         });
 
         let manager = Arc::clone(self);
-        handler.add_sync_method("axo.agent.command.set", move |params: Params| {
-            let request: AgentCommandSetRequest = params
+        handler.add_sync_method("axo.config.set", move |params: Params| {
+            let request: ConfigSetRequest = params
                 .parse()
-                .map_err(|_| invalid_params("expected {command}"))?;
+                .map_err(|_| invalid_params("expected {key, value}"))?;
             manager
-                .set_agent_command(&request.command)
-                .map(|command| json!({ "command": command }))
+                .set_config_value(&request.key, &request.value)
+                .map(|value| value.to_json())
                 .map_err(|error| {
                     if error.kind() == io::ErrorKind::InvalidInput {
                         invalid_params(&error.to_string())
@@ -990,7 +1078,9 @@ impl SessionManager {
             }
             for (shell_id, role, pane_id) in record.shell_ids {
                 let running = match role {
-                    PaneRole::Terminal => spawn_shell(record.id, &record.initial_pwd),
+                    PaneRole::Terminal => {
+                        spawn_shell(&state.shell_command, record.id, &record.initial_pwd)
+                    }
                     PaneRole::Pi => {
                         let session_file = record.pi_session_file.as_ref().ok_or_else(|| {
                             io::Error::new(
@@ -1986,24 +2076,47 @@ impl SessionManager {
         Ok(())
     }
 
-    fn agent_command(&self) -> io::Result<String> {
-        Ok(self.lock_state()?.agent_command.source.clone())
+    fn config_value(&self, key: &str) -> io::Result<ConfigValue> {
+        let key = ConfigKey::parse(key)?;
+        let state = self.lock_state()?;
+        let value = match key {
+            ConfigKey::AgentCommand => state.agent_command.0.source.clone(),
+            ConfigKey::ShellCommand => state.shell_command.0.source.clone(),
+        };
+        Ok(ConfigValue { key, value })
     }
 
-    fn set_agent_command(&self, source: &str) -> io::Result<String> {
-        let command = AgentCommand::parse(source)?;
+    fn set_config_value(&self, key: &str, value: &str) -> io::Result<ConfigValue> {
+        let key = ConfigKey::parse(key)?;
+        let parsed = match key {
+            ConfigKey::AgentCommand => {
+                let command = AgentCommand::parse(value)?;
+                ParsedConfigValue::AgentCommand(command)
+            }
+            ConfigKey::ShellCommand => {
+                let command = ShellCommand::parse(value)?;
+                ParsedConfigValue::ShellCommand(command)
+            }
+        };
+        let value = match &parsed {
+            ParsedConfigValue::AgentCommand(command) => command.0.source.clone(),
+            ParsedConfigValue::ShellCommand(command) => command.0.source.clone(),
+        };
+
         let mut state = self.lock_state()?;
         state
             .database
             .execute(
-                "INSERT INTO daemon_metadata (key, value) VALUES ('agent_command', ?1) \
+                "INSERT INTO daemon_metadata (key, value) VALUES (?1, ?2) \
                  ON CONFLICT(key) DO UPDATE SET value = excluded.value",
-                params![command.source],
+                params![key.metadata_key(), value],
             )
             .map_err(io::Error::other)?;
-        let source = command.source.clone();
-        state.agent_command = command;
-        Ok(source)
+        match parsed {
+            ParsedConfigValue::AgentCommand(command) => state.agent_command = command,
+            ParsedConfigValue::ShellCommand(command) => state.shell_command = command,
+        }
+        Ok(ConfigValue { key, value })
     }
 
     fn lock_state(&self) -> io::Result<std::sync::MutexGuard<'_, SessionState>> {
@@ -2051,6 +2164,59 @@ fn load_or_create_agent_command(database: &Connection) -> io::Result<AgentComman
         io::Error::new(
             io::ErrorKind::InvalidData,
             format!("stored default agent command is invalid: {error}"),
+        )
+    })
+}
+
+fn load_or_create_shell_command(database: &Connection) -> io::Result<ShellCommand> {
+    let existing = database
+        .query_row(
+            "SELECT value FROM daemon_metadata WHERE key = 'shell_command'",
+            [],
+            |row| row.get::<_, String>(0),
+        )
+        .optional()
+        .map_err(io::Error::other)?;
+    let source = match existing {
+        Some(source) => source,
+        None => {
+            let source = default_shell_command()?;
+            database
+                .execute(
+                    "INSERT INTO daemon_metadata (key, value) VALUES ('shell_command', ?1)",
+                    params![source],
+                )
+                .map_err(io::Error::other)?;
+            source
+        }
+    };
+    ShellCommand::parse(&source).map_err(|error| {
+        io::Error::new(
+            io::ErrorKind::InvalidData,
+            format!("stored default shell command is invalid: {error}"),
+        )
+    })
+}
+
+fn default_shell_command() -> io::Result<String> {
+    let configured = std::env::var_os("SHELL").map(PathBuf::from);
+    let shell = configured
+        .filter(|path| path.is_absolute() && path.is_file() && is_executable(path))
+        .or_else(|| {
+            super::current_user_login_shell()
+                .ok()
+                .filter(|path| path.is_file() && is_executable(path))
+        })
+        .ok_or_else(|| {
+            io::Error::new(
+                io::ErrorKind::NotFound,
+                "could not determine an executable shell for the current user",
+            )
+        })?;
+    shell.to_str().map(str::to_owned).ok_or_else(|| {
+        io::Error::new(
+            io::ErrorKind::InvalidData,
+            "the current user's shell path is not valid UTF-8",
         )
     })
 }
@@ -2364,7 +2530,7 @@ fn create_shell(
         .map_err(io::Error::other)?;
     let shell_id = ShellId(state.database.last_insert_rowid());
 
-    let running = match spawn_shell(session_id, &initial_pwd) {
+    let running = match spawn_shell(&state.shell_command, session_id, &initial_pwd) {
         Ok(running) => running,
         Err(error) => {
             archive_shell(&state.database, shell_id, "spawn_failed")?;
@@ -2894,7 +3060,11 @@ fn bundled_terminfo_directory() -> Option<PathBuf> {
         .then_some(terminfo_directory)
 }
 
-fn spawn_shell(session_id: SessionId, initial_pwd: &Path) -> io::Result<RunningShell> {
+fn spawn_shell(
+    shell_command: &ShellCommand,
+    session_id: SessionId,
+    initial_pwd: &Path,
+) -> io::Result<RunningShell> {
     let mut master_fd: RawFd = -1;
     let mut slave_fd: RawFd = -1;
     let mut size = libc::winsize {
@@ -2923,17 +3093,16 @@ fn spawn_shell(session_id: SessionId, initial_pwd: &Path) -> io::Result<RunningS
     let slave = unsafe { OwnedFd::from_raw_fd(slave_fd) };
     let slave_device = tty_device_path(slave.as_raw_fd())?;
 
-    let shell = std::env::var_os("SHELL")
-        .map(PathBuf::from)
-        .filter(|path| path.is_absolute() && path.is_file())
-        .unwrap_or_else(|| PathBuf::from("/bin/zsh"));
+    let shell = resolve_shell_executable(&shell_command.0.executable)?;
     let home = super::current_user_home_directory()?;
     let slave_raw_fd = slave.as_raw_fd();
-    let mut command = Command::new(shell);
+    let mut command = Command::new(&shell);
     command
+        .args(&shell_command.0.arguments)
         .arg("-l")
         .current_dir(initial_pwd)
         .env("HOME", &home)
+        .env("SHELL", &shell)
         .env("PWD", initial_pwd)
         .env("TERM", "xterm-ghostty")
         .stdin(Stdio::null())
@@ -3035,7 +3204,7 @@ fn spawn_pi(
     }
 
     let extension = resolve_pi_extension_path()?;
-    let executable = resolve_pi_executable(&agent_command.executable)?;
+    let executable = resolve_pi_executable(&agent_command.0.executable)?;
     let home = super::current_user_home_directory()?;
     let mut master_fd: RawFd = -1;
     let mut slave_fd: RawFd = -1;
@@ -3067,7 +3236,7 @@ fn spawn_pi(
     let bridge_token = create_uuid_v4()?;
     let mut command = Command::new(executable);
     command
-        .args(&agent_command.arguments)
+        .args(&agent_command.0.arguments)
         .arg("--session")
         .arg(session_file)
         .arg("--extension")
@@ -3133,7 +3302,21 @@ fn spawn_pi(
 }
 
 fn resolve_pi_executable(program: &str) -> io::Result<PathBuf> {
-    let explicit = std::env::var_os("AXO_PI_EXECUTABLE").map(PathBuf::from);
+    resolve_command_executable(program, Some("AXO_PI_EXECUTABLE"), "agent")
+}
+
+fn resolve_shell_executable(program: &str) -> io::Result<PathBuf> {
+    resolve_command_executable(program, None, "shell")
+}
+
+fn resolve_command_executable(
+    program: &str,
+    override_variable: Option<&str>,
+    command_kind: &str,
+) -> io::Result<PathBuf> {
+    let explicit = override_variable
+        .and_then(std::env::var_os)
+        .map(PathBuf::from);
     let candidate = if let Some(path) = explicit {
         path
     } else if Path::new(program).is_absolute() {
@@ -3150,7 +3333,7 @@ fn resolve_pi_executable(program: &str) -> io::Result<PathBuf> {
             .ok_or_else(|| {
                 io::Error::new(
                     io::ErrorKind::NotFound,
-                    format!("agent executable {program:?} was not found on axod's PATH"),
+                    format!("{command_kind} executable {program:?} was not found on axod's PATH"),
                 )
             })?
     };
@@ -3159,7 +3342,7 @@ fn resolve_pi_executable(program: &str) -> io::Result<PathBuf> {
     } else {
         Err(io::Error::new(
             io::ErrorKind::NotFound,
-            format!("configured agent executable {program:?} is not executable"),
+            format!("configured {command_kind} executable {program:?} is not executable"),
         ))
     }
 }
@@ -4023,7 +4206,8 @@ mod tests {
     #[test]
     fn creates_a_shell_attached_to_a_real_pty() {
         let home = super::super::current_user_home_directory().unwrap();
-        let mut session = spawn_shell(SessionId(1), &home).unwrap();
+        let shell = ShellCommand::parse("/bin/zsh").unwrap();
+        let mut session = spawn_shell(&shell, SessionId(1), &home).unwrap();
         assert!(session.slave_device.starts_with("/dev/"));
 
         let master = session.master.as_raw_fd();

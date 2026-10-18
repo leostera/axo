@@ -672,33 +672,58 @@ fn workspace_creation_validates_name_and_existing_directory_without_a_bookmark()
 }
 
 #[test]
-fn stores_validated_agent_command_for_future_pi_launches() {
+fn stores_validated_allowlisted_configuration_for_future_processes() {
     let unique = SystemTime::now()
         .duration_since(UNIX_EPOCH)
         .unwrap()
         .as_nanos();
-    let directory = std::path::Path::new("/tmp")
-        .join(format!("axo-agent-command-{}-{unique}", std::process::id()));
+    let directory =
+        std::path::Path::new("/tmp").join(format!("axo-config-{}-{unique}", std::process::id()));
     let server_directory = directory.join("server");
     let socket = directory.join("axod.sock");
     std::fs::create_dir_all(&directory).unwrap();
 
     let mut daemon = start_axod(&server_directory, &socket);
     wait_for_socket(&socket, &mut daemon);
-    assert_eq!(
-        rpc(&socket, "axo.agent.command.get")["result"]["command"],
-        "pi"
-    );
+    let default_agent =
+        rpc_with_params(&socket, "axo.config.get", json!({ "key": "agent.command" }));
+    assert_eq!(default_agent["result"]["value"], "pi");
+    let default_shell =
+        rpc_with_params(&socket, "axo.config.get", json!({ "key": "shell.command" }));
+    let default_shell_value = default_shell["result"]["value"]
+        .as_str()
+        .expect("default shell command should be a string");
+    assert!(!default_shell_value.is_empty());
+    if let Ok(current_shell) = std::env::var("SHELL") {
+        let current_shell_path = std::path::Path::new(&current_shell);
+        if current_shell_path.is_absolute() && current_shell_path.is_file() {
+            assert_eq!(default_shell_value, current_shell);
+        }
+    }
 
-    let configured = "pi --model 'claude-sonnet-4-5'";
-    let saved = rpc_with_params(
+    let configured_agent = "pi --model 'claude-sonnet-4-5'";
+    let saved_agent = rpc_with_params(
         &socket,
-        "axo.agent.command.set",
-        json!({ "command": configured }),
+        "axo.config.set",
+        json!({ "key": "agent.command", "value": configured_agent }),
     );
-    assert_eq!(saved["result"]["command"], configured);
+    assert_eq!(saved_agent["result"]["value"], configured_agent);
 
-    for invalid_command in [
+    let configured_shell = "/bin/bash --noprofile";
+    let saved_shell = rpc_with_params(
+        &socket,
+        "axo.config.set",
+        json!({ "key": "shell.command", "value": configured_shell }),
+    );
+    assert_eq!(saved_shell["result"]["value"], configured_shell);
+    let invalid_shell = rpc_with_params(
+        &socket,
+        "axo.config.set",
+        json!({ "key": "shell.command", "value": "/bin/zsh 'unterminated" }),
+    );
+    assert_eq!(invalid_shell["error"]["code"], -32602);
+
+    for invalid_agent in [
         "pi --session /tmp/other",
         "pi --continue",
         "pi --no-extensions",
@@ -707,22 +732,28 @@ fn stores_validated_agent_command_for_future_pi_launches() {
     ] {
         let invalid = rpc_with_params(
             &socket,
-            "axo.agent.command.set",
-            json!({ "command": invalid_command }),
+            "axo.config.set",
+            json!({ "key": "agent.command", "value": invalid_agent }),
         );
         assert_eq!(invalid["error"]["code"], -32602);
     }
-    assert_eq!(
-        rpc(&socket, "axo.agent.command.get")["result"]["command"],
-        configured
+    let unknown_key = rpc_with_params(
+        &socket,
+        "axo.config.get",
+        json!({ "key": "arbitrary.database.key" }),
     );
+    assert_eq!(unknown_key["error"]["code"], -32602);
 
     daemon.stop();
     let mut restarted = start_axod(&server_directory, &socket);
     wait_for_socket(&socket, &mut restarted);
     assert_eq!(
-        rpc(&socket, "axo.agent.command.get")["result"]["command"],
-        configured
+        rpc_with_params(&socket, "axo.config.get", json!({ "key": "agent.command" }),)["result"]["value"],
+        configured_agent
+    );
+    assert_eq!(
+        rpc_with_params(&socket, "axo.config.get", json!({ "key": "shell.command" }),)["result"]["value"],
+        configured_shell
     );
     restarted.stop();
     let _ = std::fs::remove_dir_all(directory);

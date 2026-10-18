@@ -1,0 +1,4 @@
+{
+  "key": "agent.command",
+  "value": "pi --model 'claude-sonnet-4-5'"
+}

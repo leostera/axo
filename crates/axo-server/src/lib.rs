@@ -43,6 +43,51 @@ pub(crate) fn current_user_home_directory() -> io::Result<PathBuf> {
     resolve_home_directory(std::env::var_os("HOME").map(PathBuf::from))
 }
 
+pub(crate) fn current_user_login_shell() -> io::Result<PathBuf> {
+    let mut account = std::mem::MaybeUninit::<libc::passwd>::uninit();
+    let mut buffer = vec![0; 16 * 1024];
+    let mut result = std::ptr::null_mut();
+    // SAFETY: account, buffer, and result are valid writable storage for getpwuid_r.
+    let error = unsafe {
+        libc::getpwuid_r(
+            libc::getuid(),
+            account.as_mut_ptr(),
+            buffer.as_mut_ptr().cast(),
+            buffer.len(),
+            &mut result,
+        )
+    };
+    if error != 0 {
+        return Err(io::Error::from_raw_os_error(error));
+    }
+    if result.is_null() {
+        return Err(io::Error::new(
+            io::ErrorKind::NotFound,
+            "could not determine the current user's login shell",
+        ));
+    }
+
+    // SAFETY: getpwuid_r returned a non-null result and initialized account.
+    let shell = unsafe { account.assume_init() }.pw_shell;
+    if shell.is_null() {
+        return Err(io::Error::new(
+            io::ErrorKind::NotFound,
+            "the current user's account has no login shell",
+        ));
+    }
+
+    // SAFETY: pw_shell points to a NUL-terminated string in buffer, which remains alive here.
+    let shell = unsafe { CStr::from_ptr(shell) }.to_bytes();
+    let shell = PathBuf::from(OsStr::from_bytes(shell));
+    if !shell.is_absolute() {
+        return Err(io::Error::new(
+            io::ErrorKind::InvalidData,
+            "the current user's login shell path is not absolute",
+        ));
+    }
+    Ok(shell)
+}
+
 fn resolve_home_directory(configured_home: Option<PathBuf>) -> io::Result<PathBuf> {
     if let Some(home) = configured_home.filter(|path| path.is_absolute()) {
         return Ok(home);
@@ -395,8 +440,8 @@ fn add_protocol_negotiate_method(handler: &mut IoHandler) {
             "protocolVersion": 1,
             "methods": [
                 "axo.daemon.health",
-                "axo.agent.command.get",
-                "axo.agent.command.set",
+                "axo.config.get",
+                "axo.config.set",
                 "axo.session.list",
                 "axo.session.create",
                 "axo.workspace.list",

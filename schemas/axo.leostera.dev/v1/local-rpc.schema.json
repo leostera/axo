@@ -27,10 +27,10 @@
           "$ref": "#/$defs/RemoteAccessDisableCall"
         },
         {
-          "$ref": "#/$defs/AgentCommandGetCall"
+          "$ref": "#/$defs/ConfigGetCall"
         },
         {
-          "$ref": "#/$defs/AgentCommandSetCall"
+          "$ref": "#/$defs/ConfigSetCall"
         },
         {
           "$ref": "#/$defs/SessionListCall"
@@ -277,30 +277,41 @@
       ],
       "unevaluatedProperties": false
     },
-    "AgentCommandGetCall": {
-      "allOf": [
-        { "$ref": "#/$defs/BaseCall" },
-        {
-          "properties": {
-            "method": { "const": "axo.agent.command.get" },
-            "params": { "type": "object", "maxProperties": 0 }
-          }
-        }
-      ],
-      "unevaluatedProperties": false
+    "ConfigKey": {
+      "type": "string",
+      "enum": ["agent.command", "shell.command"]
     },
-    "AgentCommandSetCall": {
+    "ConfigGetCall": {
       "allOf": [
         { "$ref": "#/$defs/BaseCall" },
         {
           "properties": {
-            "method": { "const": "axo.agent.command.set" },
+            "method": { "const": "axo.config.get" },
             "params": {
               "type": "object",
               "additionalProperties": false,
-              "required": ["command"],
+              "required": ["key"],
+              "properties": { "key": { "$ref": "#/$defs/ConfigKey" } }
+            }
+          }
+        }
+      ],
+      "unevaluatedProperties": false,
+      "required": ["params"]
+    },
+    "ConfigSetCall": {
+      "allOf": [
+        { "$ref": "#/$defs/BaseCall" },
+        {
+          "properties": {
+            "method": { "const": "axo.config.set" },
+            "params": {
+              "type": "object",
+              "additionalProperties": false,
+              "required": ["key", "value"],
               "properties": {
-                "command": { "type": "string", "minLength": 1, "maxLength": 4096 }
+                "key": { "$ref": "#/$defs/ConfigKey" },
+                "value": { "type": "string", "minLength": 1, "maxLength": 4096 }
               }
             }
           }
@@ -835,12 +846,13 @@
         "disabled": { "const": true }
       }
     },
-    "AgentCommandResult": {
+    "ConfigValueResult": {
       "type": "object",
       "additionalProperties": false,
-      "required": ["command"],
+      "required": ["key", "value"],
       "properties": {
-        "command": { "type": "string", "minLength": 1, "maxLength": 4096 }
+        "key": { "$ref": "#/$defs/ConfigKey" },
+        "value": { "type": "string", "minLength": 1, "maxLength": 4096 }
       }
     },
     "SessionListResult": {

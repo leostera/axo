@@ -167,11 +167,16 @@ validateWith(localCallSchema, await fixture("remote-access-status.call.json"));
 validateWith(localCallSchema, await fixture("remote-access-connect.call.json"));
 validateWith(localCallSchema, await fixture("remote-access-configure.call.json"));
 validateWith(localCallSchema, await fixture("remote-access-disable.call.json"));
-validateWith(localCallSchema, await fixture("agent-command.get.call.json"));
-validateWith(localCallSchema, await fixture("agent-command.set.call.json"));
+validateWith(localCallSchema, await fixture("config.get.call.json"));
+validateWith(localCallSchema, await fixture("config.set.agent.call.json"));
+validateWith(localCallSchema, await fixture("config.set.shell.call.json"));
 validateWith(
-  "https://schemas.axo.leostera.dev/v1/local-rpc.schema.json#/$defs/AgentCommandResult",
-  await fixture("agent-command.result.json"),
+  "https://schemas.axo.leostera.dev/v1/local-rpc.schema.json#/$defs/ConfigValueResult",
+  await fixture("config.value.agent.json"),
+);
+validateWith(
+  "https://schemas.axo.leostera.dev/v1/local-rpc.schema.json#/$defs/ConfigValueResult",
+  await fixture("config.value.shell.json"),
 );
 validateWith(
   "https://schemas.axo.leostera.dev/v1/local-rpc.schema.json#/$defs/NegotiateResult",
@@ -269,6 +274,14 @@ assert.equal(hostPairingRedeemRequestSchema.safeParse(invalidCredential).success
 const redeemResult = await fixture("host-pairing-redeem.result.json");
 validateWith(`${pairingSchema}HostPairingRedeemResult`, redeemResult);
 assert.equal(hostPairingRedeemResultSchema.safeParse(redeemResult).success, true);
+
+const unknownConfigKey = await fixture("config.get.call.json");
+unknownConfigKey.params.key = "arbitrary.database.key";
+assert.equal(
+  ajv.getSchema(localCallSchema)(unknownConfigKey),
+  false,
+  "configuration RPC only accepts known typed keys",
+);
 
 const invalidRelayConfiguration = await fixture("remote-access-configure.call.json");
 invalidRelayConfiguration.params.clientSecret = "unexpected";
