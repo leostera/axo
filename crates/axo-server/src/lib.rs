@@ -395,6 +395,8 @@ fn add_protocol_negotiate_method(handler: &mut IoHandler) {
             "protocolVersion": 1,
             "methods": [
                 "axo.daemon.health",
+                "axo.agent.command.get",
+                "axo.agent.command.set",
                 "axo.session.list",
                 "axo.session.create",
                 "axo.workspace.list",

@@ -1,0 +1,3 @@
+{
+  "command": "pi --model 'claude-sonnet-4-5'"
+}

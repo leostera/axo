@@ -1,5 +1,6 @@
 import AppKit
 import AxoDaemonManager
+import AxoRPC
 import SwiftUI
 
 enum AppearanceTheme: String, CaseIterable, Identifiable {
@@ -29,6 +30,7 @@ enum AppearanceTheme: String, CaseIterable, Identifiable {
 enum SettingsSection: String, CaseIterable, Identifiable {
   case general
   case appearance
+  case agent
   case remoteAccess
   case about
 
@@ -38,6 +40,7 @@ enum SettingsSection: String, CaseIterable, Identifiable {
     switch self {
     case .general: "General"
     case .appearance: "Appearance"
+    case .agent: "Agent"
     case .remoteAccess: "Remote Access"
     case .about: "About"
     }
@@ -47,6 +50,7 @@ enum SettingsSection: String, CaseIterable, Identifiable {
     switch self {
     case .general: "gearshape"
     case .appearance: "paintbrush"
+    case .agent: "terminal"
     case .remoteAccess: "network"
     case .about: "info.circle"
     }
@@ -84,6 +88,8 @@ struct SettingsView: View {
           GeneralSettingsView(daemon: daemon, ghostty: ghostty)
         case .appearance:
           AppearanceSettingsView(theme: $appearanceTheme)
+        case .agent:
+          AgentSettingsView(daemon: daemon)
         case .remoteAccess:
           RemoteAccessSettingsView(daemon: daemon, pairingCode: $pairingLink.pendingCode)
         case .about:
@@ -111,6 +117,101 @@ private struct AppearanceSettingsView: View {
       .accessibilityIdentifier("appearance-theme-picker")
     }
     .formStyle(.grouped)
+  }
+}
+
+private struct AgentSettingsView: View {
+  @ObservedObject var daemon: DaemonController
+  @State private var command = "pi"
+  @State private var savedCommand = "pi"
+  @State private var errorMessage: String?
+  @State private var isLoading = false
+  @State private var isSaving = false
+  @State private var isLoaded = false
+
+  private var canSave: Bool {
+    isLoaded && !isLoading && !isSaving && command != savedCommand
+  }
+
+  var body: some View {
+    Form {
+      Section("Default Agent") {
+        TextField("Command", text: $command, prompt: Text("pi"))
+          .disabled(!isLoaded || isLoading || isSaving)
+          .accessibilityIdentifier("default-agent-command")
+
+        Text(
+          "Enter the full command line. Use an absolute executable path or a command on axod's PATH. Arguments support shell-style quoting; Axod launches it directly without a shell and appends its managed Pi session and extension arguments. Changes apply to new Agent sessions."
+        )
+        .font(.caption)
+        .foregroundStyle(.secondary)
+        .fixedSize(horizontal: false, vertical: true)
+
+        HStack {
+          if isLoading || isSaving {
+            ProgressView()
+              .controlSize(.small)
+          }
+          Spacer()
+          Button("Save") {
+            Task { await saveCommand() }
+          }
+          .disabled(!canSave)
+          .accessibilityIdentifier("save-default-agent-command")
+        }
+
+        if !isLoaded && !isLoading && errorMessage == nil {
+          Text("Start axod to view or change the configured command.")
+            .font(.caption)
+            .foregroundStyle(.secondary)
+        }
+
+        if let errorMessage {
+          Label(errorMessage, systemImage: "exclamationmark.triangle.fill")
+            .font(.caption)
+            .foregroundStyle(.red)
+            .fixedSize(horizontal: false, vertical: true)
+            .accessibilityIdentifier("default-agent-command-error")
+        }
+      }
+    }
+    .formStyle(.grouped)
+    .task(id: daemon.status) {
+      guard case .running = daemon.status else { return }
+      await loadCommand()
+    }
+  }
+
+  @MainActor
+  private func loadCommand() async {
+    isLoading = true
+    defer { isLoading = false }
+    do {
+      let socketPath = try DaemonController.socketPath()
+      let settings = try await UnixSocketRPC.agentCommand(at: socketPath)
+      command = settings.command
+      savedCommand = settings.command
+      isLoaded = true
+      errorMessage = nil
+    } catch {
+      isLoaded = false
+      errorMessage = error.localizedDescription
+    }
+  }
+
+  @MainActor
+  private func saveCommand() async {
+    isSaving = true
+    defer { isSaving = false }
+    do {
+      let socketPath = try DaemonController.socketPath()
+      let settings = try await UnixSocketRPC.setAgentCommand(command, at: socketPath)
+      command = settings.command
+      savedCommand = settings.command
+      errorMessage = nil
+    } catch {
+      errorMessage = error.localizedDescription
+    }
   }
 }
 

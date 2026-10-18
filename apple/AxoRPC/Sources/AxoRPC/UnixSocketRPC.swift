@@ -47,6 +47,10 @@ public struct DaemonHealth: Decodable, Equatable, Sendable {
   public let status: String
 }
 
+public struct AgentCommandSettings: Decodable, Equatable, Sendable {
+  public let command: String
+}
+
 public struct RemoteAccessSettings: Decodable, Equatable, Sendable {
   public let enabled: Bool
   public let relayUrl: String?
@@ -267,6 +271,10 @@ private struct WorkspaceList: Decodable {
   let workspaces: [WorkspaceRecord]
 }
 
+private struct AgentCommandSetRequest: Encodable {
+  let command: String
+}
+
 private struct WorkspaceCreateRequest: Encodable {
   let name: String
   let directoryPath: String
@@ -479,6 +487,24 @@ public enum UnixSocketRPC {
       throw UnixSocketRPCError.invalidResponse("build number must be positive")
     }
     return health
+  }
+
+  public static func agentCommand(at socketPath: UnixSocketPath) async throws -> AgentCommandSettings {
+    try await withResponse(at: socketPath) { session in
+      try await session.response(to: "axo.agent.command.get")
+    }
+  }
+
+  public static func setAgentCommand(
+    _ command: String,
+    at socketPath: UnixSocketPath
+  ) async throws -> AgentCommandSettings {
+    try await withResponse(at: socketPath) { session in
+      try await session.response(
+        to: "axo.agent.command.set",
+        params: AgentCommandSetRequest(command: command)
+      )
+    }
   }
 
   public static func listSessions(at socketPath: UnixSocketPath) async throws -> [TerminalSession] {

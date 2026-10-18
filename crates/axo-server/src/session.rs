@@ -33,6 +33,9 @@ const MAX_LAYOUT_DEPTH: usize = 64;
 const MAX_LAYOUT_NODES: usize = 255;
 const MAX_SUBSCRIPTIONS: usize = 64;
 const MAX_QUEUED_EVENTS_PER_SUBSCRIPTION: usize = 128;
+const DEFAULT_AGENT_COMMAND: &str = "pi";
+const MAX_AGENT_COMMAND_BYTES: usize = 4096;
+const MAX_AGENT_COMMAND_ARGUMENTS: usize = 128;
 
 #[derive(Clone, Copy, Debug, Eq, Hash, PartialEq)]
 struct SessionId(i64);
@@ -186,6 +189,12 @@ struct WorkspaceSessionCreateRequest {
 
 #[derive(Debug, Deserialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
+struct AgentCommandSetRequest {
+    command: String,
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
 struct SessionSubscribeRequest {
     session_id: Option<i64>,
 }
@@ -283,9 +292,90 @@ impl TerminalOutputHistory {
 
 struct SessionState {
     database: Connection,
+    agent_command: AgentCommand,
     running: HashMap<ShellId, RunningShell>,
     pi_activity: HashMap<SessionId, PiRuntimeActivity>,
     initial_pwd: PathBuf,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+struct AgentCommand {
+    source: String,
+    executable: String,
+    arguments: Vec<String>,
+}
+
+impl AgentCommand {
+    fn parse(source: &str) -> io::Result<Self> {
+        let source = source.trim();
+        if source.is_empty()
+            || source.len() > MAX_AGENT_COMMAND_BYTES
+            || source.chars().any(char::is_control)
+        {
+            return Err(io::Error::new(
+                io::ErrorKind::InvalidInput,
+                "agent command must be nonempty, control-free, and at most 4096 bytes",
+            ));
+        }
+
+        let arguments = shlex::split(source).ok_or_else(|| {
+            io::Error::new(
+                io::ErrorKind::InvalidInput,
+                "agent command contains unmatched shell-style quotes",
+            )
+        })?;
+        if arguments.is_empty()
+            || arguments.len().saturating_sub(1) > MAX_AGENT_COMMAND_ARGUMENTS
+            || arguments[0].is_empty()
+            || arguments.iter().any(|argument| argument.contains('\0'))
+        {
+            return Err(io::Error::new(
+                io::ErrorKind::InvalidInput,
+                "agent command must have an executable and no more than 128 arguments",
+            ));
+        }
+
+        let executable = arguments[0].clone();
+        if executable.contains('/') && !Path::new(&executable).is_absolute() {
+            return Err(io::Error::new(
+                io::ErrorKind::InvalidInput,
+                "agent executable paths must be absolute; bare command names are resolved on axod's PATH",
+            ));
+        }
+        if arguments.iter().skip(1).any(|argument| {
+            let name = argument
+                .split_once('=')
+                .map_or(argument.as_str(), |(name, _)| name);
+            matches!(
+                name,
+                "--" | "-c"
+                    | "-p"
+                    | "-r"
+                    | "--continue"
+                    | "--fork"
+                    | "--mode"
+                    | "--no-extensions"
+                    | "--no-session"
+                    | "--print"
+                    | "--resume"
+                    | "--rpc"
+                    | "--session"
+                    | "--session-dir"
+                    | "--session-id"
+            )
+        }) {
+            return Err(io::Error::new(
+                io::ErrorKind::InvalidInput,
+                "agent command cannot override Axo's managed Pi session or interactive mode",
+            ));
+        }
+
+        Ok(Self {
+            source: source.to_owned(),
+            executable,
+            arguments: arguments.into_iter().skip(1).collect(),
+        })
+    }
 }
 
 #[derive(Clone, Copy, Debug, Serialize)]
@@ -465,6 +555,7 @@ impl SessionManager {
         database.pragma_update(None, "foreign_keys", "ON")?;
         initialize_database(&mut database)?;
         let host_id = load_or_create_host_id(&database)?;
+        let agent_command = load_or_create_agent_command(&database)?;
         let host_generation = create_uuid_v4()?;
         fs::set_permissions(&database_path, fs::Permissions::from_mode(0o600))?;
         let pi_session_directory = server_directory.join("pi-sessions");
@@ -475,6 +566,7 @@ impl SessionManager {
         let manager = Arc::new(Self {
             state: Mutex::new(SessionState {
                 database,
+                agent_command,
                 running: HashMap::new(),
                 pi_activity: HashMap::new(),
                 initial_pwd,
@@ -644,6 +736,31 @@ impl SessionManager {
                 .list_sessions()
                 .map(|sessions| json!({ "sessions": sessions.iter().map(SessionMetadata::to_json).collect::<Vec<_>>() }))
                 .map_err(internal_rpc_error)
+        });
+
+        let manager = Arc::clone(self);
+        handler.add_sync_method("axo.agent.command.get", move |_| {
+            manager
+                .agent_command()
+                .map(|command| json!({ "command": command }))
+                .map_err(internal_rpc_error)
+        });
+
+        let manager = Arc::clone(self);
+        handler.add_sync_method("axo.agent.command.set", move |params: Params| {
+            let request: AgentCommandSetRequest = params
+                .parse()
+                .map_err(|_| invalid_params("expected {command}"))?;
+            manager
+                .set_agent_command(&request.command)
+                .map(|command| json!({ "command": command }))
+                .map_err(|error| {
+                    if error.kind() == io::ErrorKind::InvalidInput {
+                        invalid_params(&error.to_string())
+                    } else {
+                        internal_rpc_error(error)
+                    }
+                })
         });
 
         let manager = Arc::clone(self);
@@ -887,6 +1004,7 @@ impl SessionManager {
                             io::Error::new(io::ErrorKind::InvalidData, "Pi pane ID is missing")
                         })?;
                         let running = spawn_pi(
+                            &state.agent_command,
                             record.id,
                             &record.initial_pwd,
                             session_file,
@@ -1868,6 +1986,26 @@ impl SessionManager {
         Ok(())
     }
 
+    fn agent_command(&self) -> io::Result<String> {
+        Ok(self.lock_state()?.agent_command.source.clone())
+    }
+
+    fn set_agent_command(&self, source: &str) -> io::Result<String> {
+        let command = AgentCommand::parse(source)?;
+        let mut state = self.lock_state()?;
+        state
+            .database
+            .execute(
+                "INSERT INTO daemon_metadata (key, value) VALUES ('agent_command', ?1) \
+                 ON CONFLICT(key) DO UPDATE SET value = excluded.value",
+                params![command.source],
+            )
+            .map_err(io::Error::other)?;
+        let source = command.source.clone();
+        state.agent_command = command;
+        Ok(source)
+    }
+
     fn lock_state(&self) -> io::Result<std::sync::MutexGuard<'_, SessionState>> {
         self.state
             .lock()
@@ -1893,6 +2031,28 @@ impl Drop for SessionManager {
         }
         let _ = fs::remove_file(&self.attach_socket_path);
     }
+}
+
+fn load_or_create_agent_command(database: &Connection) -> io::Result<AgentCommand> {
+    database
+        .execute(
+            "INSERT OR IGNORE INTO daemon_metadata (key, value) VALUES ('agent_command', ?1)",
+            params![DEFAULT_AGENT_COMMAND],
+        )
+        .map_err(io::Error::other)?;
+    let source = database
+        .query_row(
+            "SELECT value FROM daemon_metadata WHERE key = 'agent_command'",
+            [],
+            |row| row.get::<_, String>(0),
+        )
+        .map_err(io::Error::other)?;
+    AgentCommand::parse(&source).map_err(|error| {
+        io::Error::new(
+            io::ErrorKind::InvalidData,
+            format!("stored default agent command is invalid: {error}"),
+        )
+    })
 }
 
 fn load_or_create_host_id(database: &Connection) -> io::Result<String> {
@@ -2135,6 +2295,7 @@ fn create_workspace_session(
         )
         .map_err(io::Error::other)?;
     let running = match spawn_pi(
+        &state.agent_command,
         session_id,
         &initial_pwd,
         &pi_session_file,
@@ -2838,6 +2999,7 @@ fn pi_bridge_socket_path(pi_session_directory: &Path, session_uuid: &str) -> Pat
 }
 
 fn spawn_pi(
+    agent_command: &AgentCommand,
     session_id: SessionId,
     initial_pwd: &Path,
     session_file: &Path,
@@ -2873,7 +3035,7 @@ fn spawn_pi(
     }
 
     let extension = resolve_pi_extension_path()?;
-    let executable = resolve_pi_executable()?;
+    let executable = resolve_pi_executable(&agent_command.executable)?;
     let home = super::current_user_home_directory()?;
     let mut master_fd: RawFd = -1;
     let mut slave_fd: RawFd = -1;
@@ -2905,6 +3067,7 @@ fn spawn_pi(
     let bridge_token = create_uuid_v4()?;
     let mut command = Command::new(executable);
     command
+        .args(&agent_command.arguments)
         .arg("--session")
         .arg(session_file)
         .arg("--extension")
@@ -2969,10 +3132,12 @@ fn spawn_pi(
     })
 }
 
-fn resolve_pi_executable() -> io::Result<PathBuf> {
+fn resolve_pi_executable(program: &str) -> io::Result<PathBuf> {
     let explicit = std::env::var_os("AXO_PI_EXECUTABLE").map(PathBuf::from);
     let candidate = if let Some(path) = explicit {
         path
+    } else if Path::new(program).is_absolute() {
+        PathBuf::from(program)
     } else {
         let path = std::env::var_os("PATH").unwrap_or_default();
         std::env::split_paths(&path)
@@ -2980,12 +3145,12 @@ fn resolve_pi_executable() -> io::Result<PathBuf> {
                 PathBuf::from("/opt/homebrew/bin"),
                 PathBuf::from("/usr/local/bin"),
             ])
-            .map(|directory| directory.join("pi"))
+            .map(|directory| directory.join(program))
             .find(|candidate| candidate.is_file() && is_executable(candidate))
             .ok_or_else(|| {
                 io::Error::new(
                     io::ErrorKind::NotFound,
-                    "Pi executable was not found on PATH",
+                    format!("agent executable {program:?} was not found on axod's PATH"),
                 )
             })?
     };
@@ -2994,7 +3159,7 @@ fn resolve_pi_executable() -> io::Result<PathBuf> {
     } else {
         Err(io::Error::new(
             io::ErrorKind::NotFound,
-            "configured Pi executable is not executable",
+            format!("configured agent executable {program:?} is not executable"),
         ))
     }
 }

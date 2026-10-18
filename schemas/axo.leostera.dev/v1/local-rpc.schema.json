@@ -27,6 +27,12 @@
           "$ref": "#/$defs/RemoteAccessDisableCall"
         },
         {
+          "$ref": "#/$defs/AgentCommandGetCall"
+        },
+        {
+          "$ref": "#/$defs/AgentCommandSetCall"
+        },
+        {
           "$ref": "#/$defs/SessionListCall"
         },
         {
@@ -270,6 +276,38 @@
         }
       ],
       "unevaluatedProperties": false
+    },
+    "AgentCommandGetCall": {
+      "allOf": [
+        { "$ref": "#/$defs/BaseCall" },
+        {
+          "properties": {
+            "method": { "const": "axo.agent.command.get" },
+            "params": { "type": "object", "maxProperties": 0 }
+          }
+        }
+      ],
+      "unevaluatedProperties": false
+    },
+    "AgentCommandSetCall": {
+      "allOf": [
+        { "$ref": "#/$defs/BaseCall" },
+        {
+          "properties": {
+            "method": { "const": "axo.agent.command.set" },
+            "params": {
+              "type": "object",
+              "additionalProperties": false,
+              "required": ["command"],
+              "properties": {
+                "command": { "type": "string", "minLength": 1, "maxLength": 4096 }
+              }
+            }
+          }
+        }
+      ],
+      "unevaluatedProperties": false,
+      "required": ["params"]
     },
     "SessionListCall": {
       "$ref": "#/$defs/NoParamsSessionListCall"
@@ -795,6 +833,14 @@
       "required": ["disabled"],
       "properties": {
         "disabled": { "const": true }
+      }
+    },
+    "AgentCommandResult": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["command"],
+      "properties": {
+        "command": { "type": "string", "minLength": 1, "maxLength": 4096 }
       }
     },
     "SessionListResult": {

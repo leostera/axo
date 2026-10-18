@@ -167,6 +167,12 @@ validateWith(localCallSchema, await fixture("remote-access-status.call.json"));
 validateWith(localCallSchema, await fixture("remote-access-connect.call.json"));
 validateWith(localCallSchema, await fixture("remote-access-configure.call.json"));
 validateWith(localCallSchema, await fixture("remote-access-disable.call.json"));
+validateWith(localCallSchema, await fixture("agent-command.get.call.json"));
+validateWith(localCallSchema, await fixture("agent-command.set.call.json"));
+validateWith(
+  "https://schemas.axo.leostera.dev/v1/local-rpc.schema.json#/$defs/AgentCommandResult",
+  await fixture("agent-command.result.json"),
+);
 validateWith(
   "https://schemas.axo.leostera.dev/v1/local-rpc.schema.json#/$defs/NegotiateResult",
   await fixture("negotiate.result.json"),

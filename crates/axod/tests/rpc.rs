@@ -672,6 +672,63 @@ fn workspace_creation_validates_name_and_existing_directory_without_a_bookmark()
 }
 
 #[test]
+fn stores_validated_agent_command_for_future_pi_launches() {
+    let unique = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .unwrap()
+        .as_nanos();
+    let directory = std::path::Path::new("/tmp")
+        .join(format!("axo-agent-command-{}-{unique}", std::process::id()));
+    let server_directory = directory.join("server");
+    let socket = directory.join("axod.sock");
+    std::fs::create_dir_all(&directory).unwrap();
+
+    let mut daemon = start_axod(&server_directory, &socket);
+    wait_for_socket(&socket, &mut daemon);
+    assert_eq!(
+        rpc(&socket, "axo.agent.command.get")["result"]["command"],
+        "pi"
+    );
+
+    let configured = "pi --model 'claude-sonnet-4-5'";
+    let saved = rpc_with_params(
+        &socket,
+        "axo.agent.command.set",
+        json!({ "command": configured }),
+    );
+    assert_eq!(saved["result"]["command"], configured);
+
+    for invalid_command in [
+        "pi --session /tmp/other",
+        "pi --continue",
+        "pi --no-extensions",
+        "pi --model 'unterminated",
+        "",
+    ] {
+        let invalid = rpc_with_params(
+            &socket,
+            "axo.agent.command.set",
+            json!({ "command": invalid_command }),
+        );
+        assert_eq!(invalid["error"]["code"], -32602);
+    }
+    assert_eq!(
+        rpc(&socket, "axo.agent.command.get")["result"]["command"],
+        configured
+    );
+
+    daemon.stop();
+    let mut restarted = start_axod(&server_directory, &socket);
+    wait_for_socket(&socket, &mut restarted);
+    assert_eq!(
+        rpc(&socket, "axo.agent.command.get")["result"]["command"],
+        configured
+    );
+    restarted.stop();
+    let _ = std::fs::remove_dir_all(directory);
+}
+
+#[test]
 fn keeps_one_standalone_session_open_while_workspaces_exist() {
     let unique = SystemTime::now()
         .duration_since(UNIX_EPOCH)
