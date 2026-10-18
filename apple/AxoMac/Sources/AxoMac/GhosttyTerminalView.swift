@@ -20,6 +20,8 @@ struct GhosttyTerminalView: NSViewRepresentable {
   let isFocused: Bool
   let onFocus: () -> Void
   let onStatusChange: (String) -> Void
+  let onSplit: (TerminalSplitDirection) -> Void
+  let onClose: () -> Void
 
   func makeNSView(context: Context) -> GhosttySurfaceHostNSView {
     let surfaceView = runtime.surfaceView(
@@ -29,7 +31,9 @@ struct GhosttyTerminalView: NSViewRepresentable {
         runtime.setFocusedShellID(shell.id)
         onFocus()
       },
-      onStatusChange: onStatusChange
+      onStatusChange: onStatusChange,
+      onSplit: onSplit,
+      onClose: onClose
     )
     guard let host = runtime.surfaceHost(for: shell.id) else {
       preconditionFailure("Ghostty runtime did not retain a host for shell \(shell.id).")
@@ -51,7 +55,9 @@ struct GhosttyTerminalView: NSViewRepresentable {
         runtime.setFocusedShellID(shell.id)
         onFocus()
       },
-      onStatusChange: onStatusChange
+      onStatusChange: onStatusChange,
+      onSplit: onSplit,
+      onClose: onClose
     )
     host.attachSurface(surfaceView)
     if host.bounds.size != size {
@@ -109,13 +115,18 @@ final class GhosttySurfaceHostNSView: NSView {
 }
 
 @MainActor
-final class GhosttySurfaceNSView: NSView, @preconcurrency NSTextInputClient {
+final class GhosttySurfaceNSView: NSView, @preconcurrency NSTextInputClient,
+  @preconcurrency NSServicesMenuRequestor
+{
   private(set) var surface: ghostty_surface_t?
+  let shellID: Int64
   var status = "Starting Ghostty surface…" {
     didSet { onStatusChange?(status) }
   }
   var onFocus: (() -> Void)?
   var onStatusChange: ((String) -> Void)?
+  var onSplit: ((TerminalSplitDirection) -> Void)?
+  var onClose: (() -> Void)?
 
   private weak var runtime: GhosttyRuntime?
   private var markedText = NSMutableAttributedString()
@@ -132,10 +143,12 @@ final class GhosttySurfaceNSView: NSView, @preconcurrency NSTextInputClient {
   private var trackingArea: NSTrackingArea?
   private var contentSize: CGSize?
 
-  init(runtime: GhosttyRuntime, onFocus: @escaping () -> Void) {
+  init(runtime: GhosttyRuntime, shellID: Int64, onFocus: @escaping () -> Void) {
     self.runtime = runtime
+    self.shellID = shellID
     self.onFocus = onFocus
     super.init(frame: .zero)
+    setAccessibilityIdentifier("axo-terminal-surface")
     registerForDraggedTypes([.string, .fileURL])
     localEventMonitor = NSEvent.addLocalMonitorForEvents(
       matching: [.keyUp, .leftMouseDown]
@@ -306,6 +319,30 @@ final class GhosttySurfaceNSView: NSView, @preconcurrency NSTextInputClient {
     sendMouseButton(event, state: GHOSTTY_MOUSE_RELEASE, button: button)
   }
 
+  override func draggingEntered(_ sender: NSDraggingInfo) -> NSDragOperation {
+    TerminalDropInput.accepts(sender.draggingPasteboard.types ?? []) ? .copy : []
+  }
+
+  override func draggingUpdated(_ sender: NSDraggingInfo) -> NSDragOperation {
+    draggingEntered(sender)
+  }
+
+  override func prepareForDragOperation(_ sender: NSDraggingInfo) -> Bool {
+    TerminalDropInput.accepts(sender.draggingPasteboard.types ?? [])
+  }
+
+  override func performDragOperation(_ sender: NSDraggingInfo) -> Bool {
+    let pasteboard = sender.draggingPasteboard
+    let hasFileURLs = pasteboard.pasteboardItems?.contains { $0.types.contains(.fileURL) } ?? false
+    let plainText = hasFileURLs ? nil : pasteboard.string(forType: .string)
+    let fileURLs = hasFileURLs ? Self.fileURLs(from: pasteboard) : nil
+    guard !hasFileURLs || fileURLs != nil,
+      let text = TerminalDropInput.text(plainText: plainText, fileURLs: fileURLs)
+    else { return false }
+    runtime?.pasteText(text, into: shellID)
+    return true
+  }
+
   override func mouseMoved(with event: NSEvent) {
     sendMousePosition(event)
   }
@@ -356,7 +393,9 @@ final class GhosttySurfaceNSView: NSView, @preconcurrency NSTextInputClient {
       currentStage: event.stage,
       forceClickEnabled: UserDefaults.standard.bool(forKey: "com.apple.trackpad.forceClick")
     )
-    previousPressureStage = event.stage
+    if previousPressureStage < 2 {
+      previousPressureStage = event.stage
+    }
     guard shouldShowQuickLook else { return }
     quickLook(with: event)
   }
@@ -609,6 +648,153 @@ final class GhosttySurfaceNSView: NSView, @preconcurrency NSTextInputClient {
     runtime?.pasteClipboard()
   }
 
+  @objc private func splitRight(_ sender: Any?) {
+    onSplit?(.right)
+  }
+
+  @objc private func splitDown(_ sender: Any?) {
+    onSplit?(.down)
+  }
+
+  @objc private func closePane(_ sender: Any?) {
+    onClose?()
+  }
+
+  override func menu(for event: NSEvent) -> NSMenu? {
+    guard let surface else { return nil }
+    switch event.type {
+    case .rightMouseDown:
+      break
+    case .leftMouseDown:
+      guard event.modifierFlags.contains(.control), !ghostty_surface_mouse_captured(surface) else {
+        return nil
+      }
+      sendMouseButton(event, state: GHOSTTY_MOUSE_PRESS, button: GHOSTTY_MOUSE_RIGHT)
+    default:
+      return nil
+    }
+
+    window?.makeFirstResponder(self)
+    onFocus?()
+    let menu = NSMenu()
+    menu.autoenablesItems = false
+    for item in TerminalContextMenuPolicy.items(
+      hasSelection: ghostty_surface_has_selection(surface))
+    {
+      let title: String
+      let action: Selector
+      switch item {
+      case .copy:
+        title = "Copy"
+        action = #selector(copy(_:))
+      case .paste:
+        title = "Paste"
+        action = #selector(paste(_:))
+      case .separator:
+        menu.addItem(.separator())
+        continue
+      case .splitRight:
+        title = "Split Right"
+        action = #selector(splitRight(_:))
+      case .splitDown:
+        title = "Split Down"
+        action = #selector(splitDown(_:))
+      case .closePane:
+        title = "Close Pane"
+        action = #selector(closePane(_:))
+      }
+      menu.addItem(withTitle: title, action: action, keyEquivalent: "").target = self
+    }
+    return menu
+  }
+
+  override func isAccessibilityElement() -> Bool { true }
+
+  override func accessibilityRole() -> NSAccessibility.Role? { .textArea }
+
+  override func accessibilityLabel() -> String? { "Terminal" }
+
+  override func accessibilityHelp() -> String? {
+    "Terminal content area. Only visible screen text is exposed."
+  }
+
+  override func accessibilityValue() -> Any? { accessibilityVisibleText() }
+
+  override func accessibilitySelectedTextRange() -> NSRange {
+    TerminalAccessibilitySnapshot.selectedRange(
+      selectedRange(), visibleText: accessibilityVisibleText())
+  }
+
+  override func accessibilitySelectedText() -> String? {
+    let visibleText = accessibilityVisibleText()
+    let range = TerminalAccessibilitySnapshot.selectedRange(selectedRange(), visibleText: visibleText)
+    guard range.location != NSNotFound, range.length > 0 else { return nil }
+    return TerminalAccessibilitySnapshot.string(visibleText, in: range)
+  }
+
+  override func accessibilityNumberOfCharacters() -> Int {
+    (accessibilityVisibleText() as NSString).length
+  }
+
+  override func accessibilityVisibleCharacterRange() -> NSRange {
+    NSRange(location: 0, length: accessibilityNumberOfCharacters())
+  }
+
+  override func accessibilityLine(for index: Int) -> Int {
+    TerminalAccessibilitySnapshot.line(for: index, in: accessibilityVisibleText())
+  }
+
+  override func accessibilityString(for range: NSRange) -> String? {
+    TerminalAccessibilitySnapshot.string(accessibilityVisibleText(), in: range)
+  }
+
+  override func accessibilityAttributedString(for range: NSRange) -> NSAttributedString? {
+    guard let surface, let value = accessibilityString(for: range) else { return nil }
+    var attributes: [NSAttributedString.Key: Any] = [:]
+    if let fontRaw = ghostty_surface_quicklook_font(surface) {
+      let font = Unmanaged<CTFont>.fromOpaque(fontRaw)
+      attributes[.font] = font.takeUnretainedValue()
+      font.release()
+    }
+    return NSAttributedString(string: value, attributes: attributes)
+  }
+
+  override func validRequestor(
+    forSendType sendType: NSPasteboard.PasteboardType?,
+    returnType: NSPasteboard.PasteboardType?
+  ) -> Any? {
+    guard let surface,
+      TerminalServicesPolicy.canServe(
+        sendType: sendType,
+        returnType: returnType,
+        hasSelection: ghostty_surface_has_selection(surface))
+    else {
+      return super.validRequestor(forSendType: sendType, returnType: returnType)
+    }
+    return self
+  }
+
+  func writeSelection(to pasteboard: NSPasteboard, types: [NSPasteboard.PasteboardType]) -> Bool {
+    guard !types.isEmpty, types.allSatisfy(TerminalServicesPolicy.textTypes.contains),
+      let surface
+    else { return false }
+    var selection = ghostty_text_s()
+    guard ghostty_surface_read_selection(surface, &selection) else { return false }
+    defer { ghostty_surface_free_text(surface, &selection) }
+    guard let text = selection.text else { return false }
+    let value = String(decoding: Data(bytes: text, count: Int(selection.text_len)), as: UTF8.self)
+    pasteboard.declareTypes([.string], owner: nil)
+    return pasteboard.setString(value, forType: .string)
+  }
+
+  func readSelection(from pasteboard: NSPasteboard) -> Bool {
+    guard let text = TerminalServicesPolicy.textTypes.lazy.compactMap({
+      pasteboard.string(forType: $0)
+    }).first else { return false }
+    runtime?.pasteText(text, into: shellID)
+    return true
+  }
+
   func insertText(_ string: Any, replacementRange: NSRange) {
     guard NSApp.currentEvent != nil,
       let text = committedTextDecoder.decode(string)
@@ -744,6 +930,43 @@ final class GhosttySurfaceNSView: NSView, @preconcurrency NSTextInputClient {
   private var isFocusedKeyResponder: Bool {
     guard let window else { return false }
     return NSApp.isActive && window.isKeyWindow && window.firstResponder === self
+  }
+
+  private func accessibilityVisibleText() -> String {
+    guard let surface else { return "" }
+    var visible = ghostty_text_s()
+    let viewport = ghostty_selection_s(
+      top_left: ghostty_point_s(
+        tag: GHOSTTY_POINT_VIEWPORT,
+        coord: GHOSTTY_POINT_COORD_TOP_LEFT,
+        x: 0,
+        y: 0),
+      bottom_right: ghostty_point_s(
+        tag: GHOSTTY_POINT_VIEWPORT,
+        coord: GHOSTTY_POINT_COORD_BOTTOM_RIGHT,
+        x: 0,
+        y: 0),
+      rectangle: false)
+    guard ghostty_surface_read_text(surface, viewport, &visible) else { return "" }
+    defer { ghostty_surface_free_text(surface, &visible) }
+    guard let pointer = visible.text else { return "" }
+    let byteCount = min(Int(visible.text_len), TerminalAccessibilitySnapshot.maximumUTF8Bytes)
+    let bytes = UnsafeRawBufferPointer(start: UnsafeRawPointer(pointer), count: byteCount)
+    return TerminalAccessibilitySnapshot.bounded(String(decoding: bytes, as: UTF8.self))
+  }
+
+  private static func fileURLs(from pasteboard: NSPasteboard) -> [URL]? {
+    let fileItems = (pasteboard.pasteboardItems ?? []).filter { $0.types.contains(.fileURL) }
+    guard !fileItems.isEmpty else { return nil }
+    let fileURLs = fileItems.compactMap { item -> URL? in
+      guard let propertyList = item.propertyList(forType: .fileURL),
+        let url = NSURL(pasteboardPropertyList: propertyList, ofType: .fileURL) as URL?,
+        url.isFileURL
+      else { return nil }
+      return url
+    }
+    guard fileURLs.count == fileItems.count else { return nil }
+    return fileURLs
   }
 
   private func handleFocusOnlyLeftClick(_ event: NSEvent) -> Bool {

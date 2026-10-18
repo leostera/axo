@@ -67,6 +67,44 @@ final class TerminalPointerInputTests: XCTestCase {
       ))
   }
 
+  func testContextMenuOffersOnlyAxoOwnedTerminalActions() {
+    XCTAssertEqual(
+      TerminalContextMenuPolicy.items(hasSelection: false),
+      [.paste, .separator, .splitRight, .splitDown, .separator, .closePane])
+    XCTAssertEqual(
+      TerminalContextMenuPolicy.items(hasSelection: true),
+      [.copy, .paste, .separator, .splitRight, .splitDown, .separator, .closePane])
+  }
+
+  func testServicesOnlyAdvertiseBoundedPlainTextTransfers() {
+    let plainText = NSPasteboard.PasteboardType.string
+    let utf8PlainText = NSPasteboard.PasteboardType("public.utf8-plain-text")
+    let html = NSPasteboard.PasteboardType.html
+
+    XCTAssertTrue(TerminalServicesPolicy.canServe(
+      sendType: plainText, returnType: utf8PlainText, hasSelection: true))
+    XCTAssertFalse(TerminalServicesPolicy.canServe(
+      sendType: plainText, returnType: nil, hasSelection: false))
+    XCTAssertFalse(TerminalServicesPolicy.canServe(
+      sendType: nil, returnType: html, hasSelection: true))
+    XCTAssertTrue(TerminalServicesPolicy.canServe(
+      sendType: nil, returnType: nil, hasSelection: false))
+  }
+
+  func testDroppedTextAndFileURLsUseOnlySupportedContent() {
+    XCTAssertTrue(TerminalDropInput.accepts([.string]))
+    XCTAssertTrue(TerminalDropInput.accepts([.fileURL]))
+    XCTAssertFalse(TerminalDropInput.accepts([.html]))
+    XCTAssertEqual(TerminalDropInput.text(plainText: "echo hello", fileURLs: nil), "echo hello")
+    XCTAssertEqual(
+      TerminalDropInput.text(
+        plainText: nil,
+        fileURLs: [URL(fileURLWithPath: "/tmp/one"), URL(fileURLWithPath: "/tmp/two")]),
+      "/tmp/one\n/tmp/two")
+    XCTAssertNil(TerminalDropInput.text(plainText: nil, fileURLs: [URL(string: "https://example.com")!]))
+    XCTAssertNil(TerminalDropInput.text(plainText: "", fileURLs: nil))
+  }
+
   func testQuickLookOnlyRunsOnEnabledForceClickTransition() {
     XCTAssertTrue(
       TerminalPressurePolicy.shouldShowQuickLook(

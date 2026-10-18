@@ -98,6 +98,269 @@ final class AxoVisualUITests: XCTestCase {
       try Data(contentsOf: commandPeriodURL), Data([0x1b, 0x5b, 0x34, 0x36, 0x3b, 0x39, 0x75]))
   }
 
+  func testFocusOnlyClickIsNotReportedToTerminalMouseMode() async throws {
+    try assertNoAxoUITestAppIsAlreadyRunning()
+    let app = XCUIApplication(bundleIdentifier: "dev.leostera.axo.ui-tests")
+    let fixture = try UITestFixture(app: app)
+    defer { fixture.stop() }
+    let readyURL = fixture.root.appendingPathComponent("mouse-reporting-ready")
+    let reportURL = fixture.root.appendingPathComponent("mouse-reporting-event")
+    let scriptURL = fixture.root.appendingPathComponent("mouse-reporting-probe.py")
+    let script = #"""
+      import os, select, sys, termios, time, tty
+      ready_path = \#(try pythonStringLiteral(readyURL.path))
+      report_path = \#(try pythonStringLiteral(reportURL.path))
+      fd = sys.stdin.fileno()
+      previous_terminal = termios.tcgetattr(fd)
+      tty.setraw(fd)
+      try:
+          sys.stdout.write(chr(27) + "[?1000h")
+          sys.stdout.flush()
+          open(ready_path, "wb").close()
+          deadline = time.monotonic() + 10
+          data = bytearray()
+          report_prefix = bytes([27, 91, 77])
+          while time.monotonic() < deadline:
+              readable, _, _ = select.select([fd], [], [], 0.05)
+              if readable:
+                  data.extend(os.read(fd, 1))
+                  if report_prefix in data and len(data) >= data.index(report_prefix) + 6:
+                      with open(report_path, "wb") as report:
+                          report.write(data)
+                      break
+      finally:
+          sys.stdout.write(chr(27) + "[?1000l")
+          sys.stdout.flush()
+          termios.tcsetattr(fd, termios.TCSANOW, previous_terminal)
+      """#
+    try script.write(to: scriptURL, atomically: true, encoding: .utf8)
+    fixture.launchApp()
+    try await fixture.waitForWindow()
+    try await fixture.waitForTerminalReady()
+    let model = TerminalSessionsModel(
+      socketPath: try UnixSocketPath(fixture.socketURL.path), helperURL: fixture.helperURL)
+    try await waitForSessionCount(1, model: model)
+    let sessionID = try XCTUnwrap(model.sessions.first?.id)
+    fixture.terminalWindow.typeKey("d", modifierFlags: .command)
+    try await waitForShellCount(2, sessionID: sessionID, model: model)
+    try await fixture.waitForSurfaceCount(2)
+    try await fixture.typeText("python3 '\(scriptURL.path)'\n")
+    _ = try await waitForFile(at: readyURL, timeout: 5)
+
+    fixture.terminalWindow.typeKey("[", modifierFlags: .command)
+    let rightPane = fixture.terminalWindow.coordinate(withNormalizedOffset: CGVector(dx: 0.75, dy: 0.5))
+    rightPane.click()
+    try await Task.sleep(for: .milliseconds(400))
+    XCTAssertFalse(FileManager.default.fileExists(atPath: reportURL.path))
+    rightPane.click()
+    _ = try await waitForFile(at: reportURL, timeout: 5)
+    XCTAssertTrue(String(decoding: try Data(contentsOf: reportURL), as: UTF8.self).contains("M"))
+  }
+
+  func testTerminalContextMenuRoutesSplitsAndCloseThroughAxo() async throws {
+    try assertNoAxoUITestAppIsAlreadyRunning()
+    let app = XCUIApplication(bundleIdentifier: "dev.leostera.axo.ui-tests")
+    let fixture = try UITestFixture(app: app)
+    defer { fixture.stop() }
+    fixture.launchApp()
+
+    let model = TerminalSessionsModel(
+      socketPath: try UnixSocketPath(fixture.socketURL.path),
+      helperURL: fixture.helperURL
+    )
+    try await fixture.waitForWindow()
+    try await fixture.waitForTerminalReady()
+    try await waitForSessionCount(1, model: model)
+    let sessionID = try XCTUnwrap(model.sessions.first?.id)
+    let window = fixture.terminalWindow
+    window.rightClick()
+    let splitRight = app.menuItems["Split Right"]
+    XCTAssertTrue(splitRight.waitForExistence(timeout: 3))
+    splitRight.click()
+    try await waitForShellCount(2, sessionID: sessionID, model: model)
+
+    window.rightClick()
+    let closePane = app.menuItems["Close Pane"]
+    XCTAssertTrue(closePane.waitForExistence(timeout: 3))
+    closePane.click()
+    try await waitForShellCount(1, sessionID: sessionID, model: model)
+  }
+
+  func testTerminalAccessibilityExposesVisibleScreenText() async throws {
+    try assertNoAxoUITestAppIsAlreadyRunning()
+    let app = XCUIApplication(bundleIdentifier: "dev.leostera.axo.ui-tests")
+    let fixture = try UITestFixture(app: app)
+    defer { fixture.stop() }
+    fixture.launchApp()
+    try await fixture.waitForWindow()
+    try await fixture.waitForTerminalReady()
+    let window = fixture.terminalWindow
+    window.click()
+    window.typeText("printf 'AXO_ACCESSIBILITY_BACKLOG_5207\\n'; seq 1 80; printf 'AXO_ACCESSIBILITY_VISIBLE_5207\\n'\n")
+
+    let terminal = app.descendants(matching: .any)
+      .matching(identifier: "axo-terminal-surface").firstMatch
+    XCTAssertTrue(terminal.waitForExistence(timeout: 5))
+    let deadline = Date().addingTimeInterval(5)
+    while Date() < deadline {
+      let value = terminal.value as? String ?? ""
+      if value.contains("AXO_ACCESSIBILITY_VISIBLE_5207") { break }
+      try await Task.sleep(for: .milliseconds(50))
+    }
+    let value = terminal.value as? String ?? ""
+    XCTAssertTrue(value.contains("AXO_ACCESSIBILITY_VISIBLE_5207"))
+    XCTAssertFalse(value.contains("AXO_ACCESSIBILITY_BACKLOG_5207"))
+  }
+
+  func testClipboardReadsRequireApprovalAndRejectDenialOrCancellation() async throws {
+    try assertNoAxoUITestAppIsAlreadyRunning()
+    let pasteboardSnapshot = PasteboardSnapshot()
+    defer { pasteboardSnapshot.restore() }
+    let app = XCUIApplication(bundleIdentifier: "dev.leostera.axo.ui-tests")
+    let fixture = try UITestFixture(app: app)
+    defer { fixture.stop() }
+
+    let responseURL = fixture.root.appendingPathComponent("clipboard-read-response")
+    let scriptURL = fixture.root.appendingPathComponent("clipboard-read-probe.py")
+    let script = #"""
+      import os, select, sys, termios, time, tty
+      response_path = \#(try pythonStringLiteral(responseURL.path))
+      fd = sys.stdin.fileno()
+      previous_terminal = termios.tcgetattr(fd)
+      tty.setraw(fd)
+      try:
+          os.write(sys.stdout.fileno(), b"\x1b]52;c;?\x07")
+          deadline = time.monotonic() + 10
+          data = bytearray()
+          while time.monotonic() < deadline and not data.endswith(b"\x1b\\"):
+              readable, _, _ = select.select([fd], [], [], 0.05)
+              if readable:
+                  data.extend(os.read(fd, 1))
+          if not data.endswith(b"\x1b\\"):
+              raise TimeoutError("clipboard query did not receive an OSC 52 response")
+          with open(response_path, "wb") as response:
+              response.write(data)
+      finally:
+          termios.tcsetattr(fd, termios.TCSANOW, previous_terminal)
+      """#
+    try script.write(to: scriptURL, atomically: true, encoding: .utf8)
+    fixture.launchApp()
+    try await fixture.waitForWindow()
+    try await fixture.waitForTerminalReady()
+
+    func queryClipboard() async throws -> Data {
+      try? FileManager.default.removeItem(at: responseURL)
+      fixture.terminalWindow.typeText("python3 '\(scriptURL.path)'\n")
+      return try await waitForFile(at: responseURL, timeout: 12)
+    }
+
+    func respond(_ button: String? = nil) throws {
+      let alert = app.alerts.firstMatch
+      XCTAssertTrue(alert.waitForExistence(timeout: 5), app.debugDescription)
+      if let button {
+        alert.buttons[button].click()
+      } else {
+        alert.typeKey(XCUIKeyboardKey.escape, modifierFlags: [])
+      }
+    }
+
+    NSPasteboard.general.clearContents()
+    NSPasteboard.general.setString("NEVER_DISCLOSE_ON_DENY", forType: .string)
+    let deniedTask = Task { try await queryClipboard() }
+    try respond("Don't Allow")
+    let deniedResponse = try await deniedTask.value
+    XCTAssertEqual(
+      Array(deniedResponse), Array([0x1b] + Array("]52;c;".utf8) + [0x1b, 0x5c]))
+    XCTAssertEqual(NSPasteboard.general.string(forType: .string), "NEVER_DISCLOSE_ON_DENY")
+
+    NSPasteboard.general.clearContents()
+    NSPasteboard.general.setString("APPROVED_CLIPBOARD_TEXT", forType: .string)
+    let approvedTask = Task { try await queryClipboard() }
+    try respond("Allow")
+    let approvedResponse = try await approvedTask.value
+    let encoded = String(decoding: approvedResponse.dropFirst(7).dropLast(2), as: UTF8.self)
+    XCTAssertEqual(Data(base64Encoded: encoded), Data("APPROVED_CLIPBOARD_TEXT".utf8))
+
+    NSPasteboard.general.clearContents()
+    NSPasteboard.general.setString("NEVER_DISCLOSE_ON_CANCEL", forType: .string)
+    let cancelledTask = Task { try await queryClipboard() }
+    try respond()
+    let cancelledResponse = try await cancelledTask.value
+    XCTAssertEqual(
+      Array(cancelledResponse), Array([0x1b] + Array("]52;c;".utf8) + [0x1b, 0x5c]))
+    XCTAssertEqual(NSPasteboard.general.string(forType: .string), "NEVER_DISCLOSE_ON_CANCEL")
+  }
+
+  func testClipboardWritesRequireApprovalAndRejectDenialOrCancellation() async throws {
+    try assertNoAxoUITestAppIsAlreadyRunning()
+    let pasteboardSnapshot = PasteboardSnapshot()
+    let selectionPasteboard = NSPasteboard(name: .init(TerminalClipboardPolicy.selectionPasteboardName))
+    let selectionSnapshot = PasteboardSnapshot(pasteboard: selectionPasteboard)
+    defer {
+      pasteboardSnapshot.restore()
+      selectionSnapshot.restore(to: selectionPasteboard)
+    }
+    let app = XCUIApplication(bundleIdentifier: "dev.leostera.axo.ui-tests")
+    let fixture = try UITestFixture(app: app)
+    defer { fixture.stop() }
+    let scriptURL = fixture.root.appendingPathComponent("clipboard-write-probe.py")
+    fixture.launchApp()
+    try await fixture.waitForWindow()
+    try await fixture.waitForTerminalReady()
+
+    func triggerWrite(_ text: String, clipboard: String = "c") throws {
+      let encoded = Data(text.utf8).base64EncodedString()
+      let script = """
+        import sys
+        sys.stdout.write(chr(27) + "]52;\(clipboard);\(encoded)" + chr(7))
+        sys.stdout.flush()
+        """
+      try script.write(to: scriptURL, atomically: true, encoding: .utf8)
+      fixture.terminalWindow.typeText("python3 '\(scriptURL.path)'\n")
+    }
+
+    func respond(_ button: String? = nil) {
+      let alert = app.alerts.firstMatch
+      XCTAssertTrue(alert.waitForExistence(timeout: 5), app.debugDescription)
+      if let button {
+        alert.buttons[button].click()
+      } else {
+        alert.typeKey(XCUIKeyboardKey.escape, modifierFlags: [])
+      }
+    }
+
+    NSPasteboard.general.clearContents()
+    NSPasteboard.general.setString("PRESERVED_BEFORE_DENIAL", forType: .string)
+    try triggerWrite("DENIED_TERMINAL_WRITE")
+    respond("Don't Allow")
+    XCTAssertEqual(NSPasteboard.general.string(forType: .string), "PRESERVED_BEFORE_DENIAL")
+
+    try triggerWrite("APPROVED_TERMINAL_WRITE")
+    respond("Allow")
+    let approvedDeadline = Date().addingTimeInterval(3)
+    while Date() < approvedDeadline
+      && NSPasteboard.general.string(forType: .string) != "APPROVED_TERMINAL_WRITE"
+    {
+      try await Task.sleep(for: .milliseconds(50))
+    }
+    XCTAssertEqual(NSPasteboard.general.string(forType: .string), "APPROVED_TERMINAL_WRITE")
+
+    selectionPasteboard.clearContents()
+    try triggerWrite("SELECTION_TERMINAL_WRITE", clipboard: "s")
+    respond("Allow")
+    let selectionDeadline = Date().addingTimeInterval(3)
+    while Date() < selectionDeadline
+      && selectionPasteboard.string(forType: .string) != "SELECTION_TERMINAL_WRITE"
+    {
+      try await Task.sleep(for: .milliseconds(50))
+    }
+    XCTAssertEqual(selectionPasteboard.string(forType: .string), "SELECTION_TERMINAL_WRITE")
+
+    try triggerWrite("CANCELLED_TERMINAL_WRITE")
+    respond()
+    XCTAssertEqual(NSPasteboard.general.string(forType: .string), "APPROVED_TERMINAL_WRITE")
+  }
+
   func testCreateWorkspaceShowsFirstSessionAndPiSurvivesAppCloseAndReopen() async throws {
     try assertNoAxoUITestAppIsAlreadyRunning()
     let app = XCUIApplication(bundleIdentifier: "dev.leostera.axo.ui-tests")
@@ -281,6 +544,9 @@ final class AxoVisualUITests: XCTestCase {
     NSPasteboard.general.clearContents()
     NSPasteboard.general.setString("printf 'AXO VISUAL PASTE RIGHT 6482\\n'\n", forType: .string)
     window.typeKey("v", modifierFlags: .command)
+    let pasteConfirmation = app.alerts.firstMatch
+    XCTAssertTrue(pasteConfirmation.waitForExistence(timeout: 5), app.debugDescription)
+    pasteConfirmation.buttons["Allow"].click()
     window.typeText("\n")
     try await Task.sleep(for: .milliseconds(500))
     let pastedIntoRight = try fixture.capture("03b-paste-focused-pane", in: window)

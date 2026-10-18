@@ -85,6 +85,59 @@ enum TerminalCursorPolicy {
   }
 }
 
+enum TerminalContextMenuItem: Equatable {
+  case copy
+  case paste
+  case separator
+  case splitRight
+  case splitDown
+  case closePane
+}
+
+enum TerminalContextMenuPolicy {
+  static func items(hasSelection: Bool) -> [TerminalContextMenuItem] {
+    var items: [TerminalContextMenuItem] = []
+    if hasSelection { items.append(.copy) }
+    items.append(contentsOf: [.paste, .separator, .splitRight, .splitDown, .separator, .closePane])
+    return items
+  }
+}
+
+enum TerminalServicesPolicy {
+  static let textTypes: [NSPasteboard.PasteboardType] = [
+    .string,
+    NSPasteboard.PasteboardType("public.utf8-plain-text"),
+  ]
+
+  static func supports(
+    sendType: NSPasteboard.PasteboardType?,
+    returnType: NSPasteboard.PasteboardType?
+  ) -> Bool {
+    (sendType.map(textTypes.contains) ?? true)
+      && (returnType.map(textTypes.contains) ?? true)
+  }
+
+  static func canServe(
+    sendType: NSPasteboard.PasteboardType?,
+    returnType: NSPasteboard.PasteboardType?,
+    hasSelection: Bool
+  ) -> Bool {
+    supports(sendType: sendType, returnType: returnType) && (sendType == nil || hasSelection)
+  }
+}
+
+enum TerminalDropInput {
+  static func accepts(_ types: [NSPasteboard.PasteboardType]) -> Bool {
+    types.contains(.string) || types.contains(.fileURL)
+  }
+
+  static func text(plainText: String?, fileURLs: [URL]?) -> String? {
+    if let plainText, !plainText.isEmpty { return plainText }
+    guard let fileURLs, !fileURLs.isEmpty, fileURLs.allSatisfy(\.isFileURL) else { return nil }
+    return fileURLs.map(\.path).joined(separator: "\n")
+  }
+}
+
 enum TerminalPressurePolicy {
   static func shouldShowQuickLook(
     previousStage: Int,

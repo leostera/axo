@@ -557,7 +557,9 @@ private struct TerminalPaneView: View {
         onFocus: { sessions.focus(shell.id) },
         onStatusChange: { status in
           terminalError = status.hasPrefix("Connected to ") ? nil : status
-        }
+        },
+        onSplit: { direction in Task { await sessions.split(direction) } },
+        onClose: { Task { await sessions.closeShell(shell.id) } }
       )
     }
     .frame(maxWidth: .infinity, maxHeight: .infinity)
