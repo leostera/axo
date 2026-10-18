@@ -9,6 +9,95 @@ import XCTest
 
 @MainActor
 final class AxoVisualUITests: XCTestCase {
+  func testKittyKeyboardNegotiationEncodesReturnAndShiftEnter() async throws {
+    try assertNoAxoUITestAppIsAlreadyRunning()
+    let app = XCUIApplication(bundleIdentifier: "dev.leostera.axo.ui-tests")
+    let fixture = try UITestFixture(app: app)
+    defer { fixture.stop() }
+
+    let readyURL = fixture.root.appendingPathComponent("kitty-keyboard-ready")
+    let enterURL = fixture.root.appendingPathComponent("kitty-keyboard-enter")
+    let shiftEnterURL = fixture.root.appendingPathComponent("kitty-keyboard-shift-enter")
+    let commandPeriodURL = fixture.root.appendingPathComponent("kitty-keyboard-command-period")
+    let scriptURL = fixture.root.appendingPathComponent("kitty-keyboard-probe.py")
+    let script = #"""
+      import os, select, sys, termios, time, tty
+
+      ready_path = \#(try pythonStringLiteral(readyURL.path))
+      enter_path = \#(try pythonStringLiteral(enterURL.path))
+      shift_enter_path = \#(try pythonStringLiteral(shiftEnterURL.path))
+      command_period_path = \#(try pythonStringLiteral(commandPeriodURL.path))
+      fd = sys.stdin.fileno()
+      previous_terminal = termios.tcgetattr(fd)
+
+      def read_one_key(timeout):
+          deadline = time.monotonic() + timeout
+          data = bytearray()
+          while time.monotonic() < deadline:
+              readable, _, _ = select.select([fd], [], [], 0.05)
+              if not readable:
+                  continue
+              data.extend(os.read(fd, 1))
+              if data in (b"\r", b"\n"):
+                  return bytes(data)
+              if data.startswith(b"\x1b[") and data.endswith(b"u"):
+                  return bytes(data)
+          raise TimeoutError("timed out waiting for a keyboard event")
+
+      def write_until(marker, timeout):
+          deadline = time.monotonic() + timeout
+          data = bytearray()
+          while marker not in data and time.monotonic() < deadline:
+              readable, _, _ = select.select([fd], [], [], 0.05)
+              if readable:
+                  data.extend(os.read(fd, 1))
+          if marker not in data:
+              raise TimeoutError("terminal did not answer the Kitty keyboard query")
+          return bytes(data)
+
+      tty.setraw(fd)
+      try:
+          sys.stdout.write("\x1b[>7u\x1b[?u")
+          sys.stdout.flush()
+          response = write_until(b"\x1b[?7u", 5)
+          with open(ready_path, "wb") as ready:
+              ready.write(response)
+          with open(enter_path, "wb") as enter:
+              enter.write(read_one_key(10))
+          with open(shift_enter_path, "wb") as shift_enter:
+              shift_enter.write(read_one_key(10))
+          with open(command_period_path, "wb") as command_period:
+              command_period.write(read_one_key(10))
+      finally:
+          sys.stdout.write("\x1b[<u")
+          sys.stdout.flush()
+          termios.tcsetattr(fd, termios.TCSANOW, previous_terminal)
+      """#
+    try script.write(to: scriptURL, atomically: true, encoding: .utf8)
+
+    fixture.launchApp()
+    try await fixture.waitForWindow()
+    try await fixture.waitForTerminalReady()
+    try await fixture.typeText("python3 '\(scriptURL.path)'\n")
+    let protocolResponse = try await waitForFile(at: readyURL, timeout: 8)
+    XCTAssertTrue(String(decoding: protocolResponse, as: UTF8.self).contains("\u{1B}[?7u"))
+
+    fixture.terminalWindow.click()
+    fixture.terminalWindow.typeKey(XCUIKeyboardKey.return, modifierFlags: [])
+    _ = try await waitForFile(at: enterURL, timeout: 5)
+    fixture.terminalWindow.typeKey(XCUIKeyboardKey.return, modifierFlags: .shift)
+    _ = try await waitForFile(at: shiftEnterURL, timeout: 5)
+
+    XCTAssertEqual(try Data(contentsOf: enterURL), Data([0x0d]))
+    XCTAssertEqual(
+      try Data(contentsOf: shiftEnterURL), Data([0x1b, 0x5b, 0x31, 0x33, 0x3b, 0x32, 0x75]))
+
+    fixture.terminalWindow.typeKey(".", modifierFlags: .command)
+    _ = try await waitForFile(at: commandPeriodURL, timeout: 5)
+    XCTAssertEqual(
+      try Data(contentsOf: commandPeriodURL), Data([0x1b, 0x5b, 0x34, 0x36, 0x3b, 0x39, 0x75]))
+  }
+
   func testCreateWorkspaceShowsFirstSessionAndPiSurvivesAppCloseAndReopen() async throws {
     try assertNoAxoUITestAppIsAlreadyRunning()
     let app = XCUIApplication(bundleIdentifier: "dev.leostera.axo.ui-tests")
@@ -384,6 +473,20 @@ final class AxoVisualUITests: XCTestCase {
     guard let running else { return }
     throw UITestError.frontendAlreadyRunning(
       "\(testBundleID) (pid \(running.processIdentifier))")
+  }
+
+  private func waitForFile(at url: URL, timeout: TimeInterval) async throws -> Data {
+    let deadline = Date().addingTimeInterval(timeout)
+    while Date() < deadline {
+      if let data = try? Data(contentsOf: url) { return data }
+      try await Task.sleep(for: .milliseconds(50))
+    }
+    throw UITestError.timedOut("isolated terminal probe did not create \(url.lastPathComponent)")
+  }
+
+  private func pythonStringLiteral(_ value: String) throws -> String {
+    let encoded = try JSONEncoder().encode(value)
+    return String(decoding: encoded, as: UTF8.self)
   }
 
   private func waitForPiTranscript(at path: String, containing marker: String) async throws {

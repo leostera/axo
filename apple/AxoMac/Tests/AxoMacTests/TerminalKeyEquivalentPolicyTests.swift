@@ -7,21 +7,32 @@ import XCTest
 final class TerminalKeyEquivalentPolicyTests: XCTestCase {
   func testAxoMenuTakesPrecedenceOverMatchingGhosttyBinding() {
     XCTAssertEqual(
-      TerminalKeyEquivalentPolicy.route(appMenuHandled: true, ghosttyBindingMatched: true),
+      TerminalKeyEquivalentPolicy.route(
+        appMenuHandled: true, terminalFocused: false, ghosttyBindingMatched: true),
       .axoMenu
     )
   }
 
   func testGhosttyBindingRunsWhenNoAxoMenuItemMatches() {
     XCTAssertEqual(
-      TerminalKeyEquivalentPolicy.route(appMenuHandled: false, ghosttyBindingMatched: true),
+      TerminalKeyEquivalentPolicy.route(
+        appMenuHandled: false, terminalFocused: true, ghosttyBindingMatched: true),
       .ghosttyBinding
     )
   }
 
   func testUnmatchedKeyEquivalentFallsThroughToAppKit() {
     XCTAssertEqual(
-      TerminalKeyEquivalentPolicy.route(appMenuHandled: false, ghosttyBindingMatched: false),
+      TerminalKeyEquivalentPolicy.route(
+        appMenuHandled: false, terminalFocused: true, ghosttyBindingMatched: false),
+      .appKit
+    )
+  }
+
+  func testUnfocusedSurfaceDoesNotClaimTerminalBindings() {
+    XCTAssertEqual(
+      TerminalKeyEquivalentPolicy.route(
+        appMenuHandled: false, terminalFocused: false, ghosttyBindingMatched: true),
       .appKit
     )
   }
@@ -54,23 +65,27 @@ final class TerminalKeyEquivalentPolicyTests: XCTestCase {
     XCTAssertFalse(TerminalKeyEquivalentPolicy.shouldForwardCommandKeyUp(commandKeyDown))
   }
 
-  func testRedispatchRequiresTheSameNonAmbiguousEventTimestamp() {
+  func testRedispatchRequiresTheSameNonAmbiguousEventTimestamp() throws {
     XCTAssertTrue(TerminalKeyEquivalentPolicy.matchesRedispatch(eventTimestamp: 1.25, previousTimestamp: 1.25))
     XCTAssertFalse(TerminalKeyEquivalentPolicy.matchesRedispatch(eventTimestamp: 1.25, previousTimestamp: 1.5))
     XCTAssertFalse(TerminalKeyEquivalentPolicy.matchesRedispatch(eventTimestamp: 1.25, previousTimestamp: nil))
+
+    let syntheticCommandEvent = try keyEvent(".", modifiers: .command, timestamp: 0)
+    XCTAssertFalse(TerminalKeyEquivalentPolicy.shouldRedispatchThroughAppKit(syntheticCommandEvent))
   }
 
   private func keyEvent(
     _ characters: String,
     type: NSEvent.EventType = .keyDown,
-    modifiers: NSEvent.ModifierFlags
+    modifiers: NSEvent.ModifierFlags,
+    timestamp: TimeInterval = 1.25
   ) throws -> NSEvent {
     try XCTUnwrap(
       NSEvent.keyEvent(
         with: type,
         location: .zero,
         modifierFlags: modifiers,
-        timestamp: 1.25,
+        timestamp: timestamp,
         windowNumber: 1,
         context: nil,
         characters: characters,

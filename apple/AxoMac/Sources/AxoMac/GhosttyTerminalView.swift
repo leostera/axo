@@ -435,22 +435,28 @@ final class GhosttySurfaceNSView: NSView, @preconcurrency NSTextInputClient {
     // Give Axo's application menu first refusal so its commands win shortcut collisions.
     let appMenuHandled = super.performKeyEquivalent(with: event)
       || (NSApp.mainMenu?.performKeyEquivalent(with: event) ?? false)
-    if !appMenuHandled, performAxoFallbackKeyEquivalent(event) {
+    let terminalFocused = isFocusedKeyResponder && surface != nil
+    if !appMenuHandled, terminalFocused, performAxoFallbackKeyEquivalent(event) {
       return true
     }
-    let bindingMatched = matchesGhosttyKeyBinding(event)
+    let bindingMatched = terminalFocused && matchesGhosttyKeyBinding(event)
     switch TerminalKeyEquivalentPolicy.route(
       appMenuHandled: appMenuHandled,
+      terminalFocused: terminalFocused,
       ghosttyBindingMatched: bindingMatched
     ) {
     case .axoMenu:
+      lastPerformKeyEvent = nil
       return true
     case .ghosttyBinding:
       lastPerformKeyEvent = nil
       keyDown(with: event)
       return true
     case .appKit:
-      break
+      guard terminalFocused else {
+        lastPerformKeyEvent = nil
+        return false
+      }
     }
 
     if let equivalent = TerminalKeyEquivalentPolicy.normalizedControlEquivalent(for: event) {
@@ -458,8 +464,7 @@ final class GhosttySurfaceNSView: NSView, @preconcurrency NSTextInputClient {
       return true
     }
 
-    guard event.timestamp != 0 else { return false }
-    guard TerminalKeyEquivalentPolicy.hasCommandOrControl(event) else {
+    guard TerminalKeyEquivalentPolicy.shouldRedispatchThroughAppKit(event) else {
       lastPerformKeyEvent = nil
       return false
     }
@@ -488,15 +493,19 @@ final class GhosttySurfaceNSView: NSView, @preconcurrency NSTextInputClient {
     guard event.modifierFlags.contains(.command), let runtime else { return false }
     switch event.charactersIgnoringModifiers?.lowercased() {
     case "c":
+      lastPerformKeyEvent = nil
       runtime.copySelection()
       return true
     case "v":
+      lastPerformKeyEvent = nil
       runtime.pasteClipboard()
       return true
     case "x":
+      lastPerformKeyEvent = nil
       runtime.copySelection()
       return true
     case "a", "z":
+      lastPerformKeyEvent = nil
       return runtime.forwardKeyEquivalent(event)
     default:
       return false
@@ -592,10 +601,14 @@ final class GhosttySurfaceNSView: NSView, @preconcurrency NSTextInputClient {
   }
 
   override func doCommand(by selector: Selector) {
-    guard let lastPerformKeyEvent,
+    guard let lastPerformKeyEvent else { return }
+    guard isFocusedKeyResponder, surface != nil,
       let currentEvent = NSApp.currentEvent,
       currentEvent.timestamp == lastPerformKeyEvent
-    else { return }
+    else {
+      self.lastPerformKeyEvent = nil
+      return
+    }
     NSApp.sendEvent(currentEvent)
   }
 
@@ -864,8 +877,13 @@ enum TerminalKeyEquivalentPolicy {
     case appKit
   }
 
-  static func route(appMenuHandled: Bool, ghosttyBindingMatched: Bool) -> Route {
+  static func route(
+    appMenuHandled: Bool,
+    terminalFocused: Bool,
+    ghosttyBindingMatched: Bool
+  ) -> Route {
     if appMenuHandled { return .axoMenu }
+    if !terminalFocused { return .appKit }
     if ghosttyBindingMatched { return .ghosttyBinding }
     return .appKit
   }
@@ -884,8 +902,8 @@ enum TerminalKeyEquivalentPolicy {
     }
   }
 
-  static func hasCommandOrControl(_ event: NSEvent) -> Bool {
-    !event.modifierFlags.isDisjoint(with: [.command, .control])
+  static func shouldRedispatchThroughAppKit(_ event: NSEvent) -> Bool {
+    event.timestamp != 0 && !event.modifierFlags.isDisjoint(with: [.command, .control])
   }
 
   static func shouldForwardCommandKeyUp(_ event: NSEvent) -> Bool {
