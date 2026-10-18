@@ -21,6 +21,22 @@ test("parses a scoped send command into a trusted value", () => {
   });
 });
 
+test("parses a graceful shutdown command for takeover", () => {
+  assert.deepEqual(parsePiControlCommand({
+    type: "command",
+    requestId: "takeover-1",
+    axoSessionId: sessionId,
+    action: { kind: "shutdown" },
+  }, sessionId), {
+    ok: true,
+    command: {
+      requestId: "takeover-1",
+      axoSessionId: sessionId,
+      action: { kind: "shutdown" },
+    },
+  });
+});
+
 test("rejects commands for a different Session and unknown fields", () => {
   const otherSessionId = "e1cd03bd-5fcc-4b5a-a1fa-47653e5fa822";
   assert.deepEqual(parsePiControlCommand({

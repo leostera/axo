@@ -43,6 +43,7 @@ test("bridges Pi events and remote commands without owning the Pi process", asyn
   const registered = new Map<string, (event: never, context: never) => unknown>();
   const sentMessages: Array<{ text: string; options?: unknown }> = [];
   let aborted = 0;
+  let shutdowns = 0;
   let idle = true;
 
   const pi = {
@@ -59,6 +60,7 @@ test("bridges Pi events and remote commands without owning the Pi process", asyn
     hasUI: false,
     isIdle: () => idle,
     abort: () => { aborted += 1; },
+    shutdown: () => { shutdowns += 1; },
     sessionManager: {
       getSessionId: () => "pi-session-1",
       getSessionFile: () => "/private/axo/pi-session-1.jsonl",
@@ -134,6 +136,17 @@ test("bridges Pi events and remote commands without owning the Pi process", asyn
     })}\n`);
     assert.deepEqual(await next(), { type: "commandResult", requestId: "cancel-1", result: { accepted: true } });
     assert.equal(aborted, 1);
+
+    socket.write(`${JSON.stringify({
+      type: "command",
+      requestId: "takeover-1",
+      axoSessionId,
+      action: { kind: "shutdown" },
+    })}\n`);
+    assert.deepEqual(await next(), { type: "commandResult", requestId: "takeover-1", result: { accepted: true } });
+    await new Promise<void>(resolve => setImmediate(resolve));
+    assert.equal(aborted, 2);
+    assert.equal(shutdowns, 1);
 
     const beforeSwitch = registered.get("session_before_switch");
     assert.ok(beforeSwitch);

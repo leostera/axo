@@ -2,7 +2,7 @@ use std::collections::{HashMap, HashSet};
 use std::ffi::CStr;
 use std::fs;
 use std::fs::OpenOptions;
-use std::io::{self, Read, Write};
+use std::io::{self, BufRead, BufReader, Read, Write};
 use std::os::fd::{AsRawFd, FromRawFd, OwnedFd, RawFd};
 use std::os::unix::ffi::OsStrExt;
 use std::os::unix::fs::{OpenOptionsExt, PermissionsExt};
@@ -14,7 +14,7 @@ use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::mpsc::{self, Receiver, RecvTimeoutError, SyncSender, TrySendError};
 use std::sync::{Arc, Mutex, Weak};
 use std::thread::{self, JoinHandle};
-use std::time::Duration;
+use std::time::{Duration, Instant};
 
 use crate::workspace_access::WorkspaceDirectoryAccess;
 use jsonrpc_core::{Error as RpcError, ErrorCode, IoHandler, Params};
@@ -36,6 +36,8 @@ const MAX_QUEUED_EVENTS_PER_SUBSCRIPTION: usize = 128;
 const DEFAULT_AGENT_COMMAND: &str = "pi";
 const MAX_COMMAND_LINE_BYTES: usize = 4096;
 const MAX_COMMAND_ARGUMENTS: usize = 128;
+const PI_TAKEOVER_TIMEOUT: Duration = Duration::from_secs(10);
+const MAX_PI_BRIDGE_RECORD_BYTES: usize = 8 * 1024 * 1024;
 
 #[derive(Clone, Copy, Debug, Eq, Hash, PartialEq)]
 struct SessionId(i64);
@@ -1094,6 +1096,7 @@ impl SessionManager {
                             io::Error::new(io::ErrorKind::InvalidData, "Pi pane ID is missing")
                         })?;
                         let running = spawn_pi(
+                            &state.database,
                             &state.agent_command,
                             record.id,
                             &record.initial_pwd,
@@ -2461,6 +2464,7 @@ fn create_workspace_session(
         )
         .map_err(io::Error::other)?;
     let running = match spawn_pi(
+        &state.database,
         &state.agent_command,
         session_id,
         &initial_pwd,
@@ -3167,21 +3171,160 @@ fn pi_bridge_socket_path(pi_session_directory: &Path, session_uuid: &str) -> Pat
     }
 }
 
-fn spawn_pi(
-    agent_command: &AgentCommand,
-    session_id: SessionId,
-    initial_pwd: &Path,
-    session_file: &Path,
-    bridge_socket: &Path,
-    session_uuid: &str,
-    pane_id: &str,
-) -> io::Result<RunningShell> {
-    if bridge_socket.as_os_str().as_encoded_bytes().len() >= 104 {
+fn read_pi_bridge_record(reader: &mut BufReader<UnixStream>) -> io::Result<Value> {
+    let mut line = Vec::new();
+    let mut limited = reader.take((MAX_PI_BRIDGE_RECORD_BYTES + 1) as u64);
+    let length = limited.read_until(b'\n', &mut line)?;
+    if length == 0 {
         return Err(io::Error::new(
-            io::ErrorKind::InvalidInput,
-            "Pi bridge socket path is too long",
+            io::ErrorKind::UnexpectedEof,
+            "Pi bridge closed before completing its response",
         ));
     }
+    if length > MAX_PI_BRIDGE_RECORD_BYTES || line.last() != Some(&b'\n') {
+        return Err(io::Error::new(
+            io::ErrorKind::InvalidData,
+            "Pi bridge record exceeds its size limit",
+        ));
+    }
+    serde_json::from_slice(&line[..line.len() - 1]).map_err(io::Error::other)
+}
+
+fn request_pi_shutdown(
+    bridge_socket: &Path,
+    token: &str,
+    session_uuid: &str,
+    pane_id: &str,
+    initial_pwd: &Path,
+    session_file: &Path,
+) -> io::Result<()> {
+    let mut stream = UnixStream::connect(bridge_socket)?;
+    stream.set_read_timeout(Some(Duration::from_secs(2)))?;
+    stream.set_write_timeout(Some(Duration::from_secs(2)))?;
+    write_json_line(
+        &mut stream,
+        &json!({ "type": "authenticate", "protocolVersion": 1, "token": token }),
+    )?;
+    let mut reader = BufReader::new(stream);
+    let mut authenticated = false;
+    let mut hello_received = false;
+    while !hello_received {
+        let record = read_pi_bridge_record(&mut reader)?;
+        match record["type"].as_str() {
+            Some("authenticated") if record["protocolVersion"] == 1 => authenticated = true,
+            Some("hello") if authenticated && record["protocolVersion"] == 1 => {
+                let identity = &record["identity"];
+                let exact_identity = identity["axoSessionId"] == session_uuid
+                    && identity["axoPaneId"] == pane_id
+                    && identity["sessionFile"] == session_file.to_string_lossy().as_ref()
+                    && identity["cwd"] == initial_pwd.to_string_lossy().as_ref()
+                    && identity["processId"].as_u64().is_some_and(|pid| pid > 0);
+                if !exact_identity {
+                    return Err(io::Error::new(
+                        io::ErrorKind::PermissionDenied,
+                        "Pi bridge identity did not match the Session being taken over",
+                    ));
+                }
+                hello_received = true;
+            }
+            Some("protocolError") => {
+                return Err(io::Error::new(
+                    io::ErrorKind::PermissionDenied,
+                    "Pi bridge rejected takeover authentication",
+                ));
+            }
+            Some("event") => {}
+            _ => {
+                return Err(io::Error::new(
+                    io::ErrorKind::InvalidData,
+                    "Pi bridge sent an invalid takeover handshake",
+                ));
+            }
+        }
+    }
+
+    let request_id = format!("takeover-{}", create_uuid_v4()?);
+    write_json_line(
+        reader.get_mut(),
+        &json!({
+            "type": "command",
+            "requestId": request_id,
+            "axoSessionId": session_uuid,
+            "action": { "kind": "shutdown" }
+        }),
+    )?;
+    loop {
+        let record = read_pi_bridge_record(&mut reader)?;
+        if record["type"] != "commandResult" || record["requestId"] != request_id {
+            continue;
+        }
+        if record["result"]["accepted"] == true {
+            return Ok(());
+        }
+        return Err(io::Error::new(
+            io::ErrorKind::WouldBlock,
+            "Pi did not accept the graceful takeover request",
+        ));
+    }
+}
+
+fn wait_for_pi_writer_lock(session_file: &Path) -> io::Result<OwnedFd> {
+    let deadline = Instant::now() + PI_TAKEOVER_TIMEOUT;
+    loop {
+        match acquire_pi_writer_lock(session_file) {
+            Ok(lock) => return Ok(lock),
+            Err(error) if error.kind() == io::ErrorKind::WouldBlock => {
+                if Instant::now() >= deadline {
+                    return Err(io::Error::new(
+                        io::ErrorKind::TimedOut,
+                        "Pi accepted graceful shutdown but did not release its transcript lock",
+                    ));
+                }
+                thread::sleep(Duration::from_millis(100));
+            }
+            Err(error) => return Err(error),
+        }
+    }
+}
+
+fn pi_bridge_token_key(session_uuid: &str) -> String {
+    format!("pi_bridge_token:{session_uuid}")
+}
+
+fn load_pi_bridge_token(database: &Connection, session_uuid: &str) -> io::Result<Option<String>> {
+    let token = database
+        .query_row(
+            "SELECT value FROM daemon_metadata WHERE key = ?1",
+            params![pi_bridge_token_key(session_uuid)],
+            |row| row.get::<_, String>(0),
+        )
+        .optional()
+        .map_err(io::Error::other)?;
+    if token.as_ref().is_some_and(|token| !is_uuid_string(token)) {
+        return Err(io::Error::new(
+            io::ErrorKind::InvalidData,
+            "Pi bridge credential is invalid",
+        ));
+    }
+    Ok(token)
+}
+
+fn store_pi_bridge_token(
+    database: &Connection,
+    session_uuid: &str,
+    token: &str,
+) -> io::Result<()> {
+    database
+        .execute(
+            "INSERT INTO daemon_metadata (key, value) VALUES (?1, ?2)
+             ON CONFLICT(key) DO UPDATE SET value = excluded.value",
+            params![pi_bridge_token_key(session_uuid), token],
+        )
+        .map_err(io::Error::other)?;
+    Ok(())
+}
+
+fn acquire_pi_writer_lock(session_file: &Path) -> io::Result<OwnedFd> {
     let lock_path = session_file.with_extension("jsonl.lock");
     let lock = OpenOptions::new()
         .create(true)
@@ -3196,6 +3339,60 @@ fn spawn_pi(
             "Pi transcript is already owned by a writer",
         ));
     }
+    Ok(OwnedFd::from(lock))
+}
+
+fn spawn_pi(
+    database: &Connection,
+    agent_command: &AgentCommand,
+    session_id: SessionId,
+    initial_pwd: &Path,
+    session_file: &Path,
+    bridge_socket: &Path,
+    session_uuid: &str,
+    pane_id: &str,
+) -> io::Result<RunningShell> {
+    if bridge_socket.as_os_str().as_encoded_bytes().len() >= 104 {
+        return Err(io::Error::new(
+            io::ErrorKind::InvalidInput,
+            "Pi bridge socket path is too long",
+        ));
+    }
+    let previous_token = load_pi_bridge_token(database, session_uuid)?;
+    let lock = match acquire_pi_writer_lock(session_file) {
+        Ok(lock) => lock,
+        Err(error) if error.kind() == io::ErrorKind::WouldBlock => {
+            let Some(token) = previous_token.as_deref() else {
+                return Err(io::Error::new(
+                    io::ErrorKind::WouldBlock,
+                    "Pi transcript is held by a legacy writer that cannot be controlled by RPC",
+                ));
+            };
+            log::info!(
+                "event=session.pi_takeover_requested session_id={}",
+                session_id.0
+            );
+            request_pi_shutdown(
+                bridge_socket,
+                token,
+                session_uuid,
+                pane_id,
+                initial_pwd,
+                session_file,
+            )?;
+            let lock = wait_for_pi_writer_lock(session_file)?;
+            log::info!(
+                "event=session.pi_takeover_completed session_id={}",
+                session_id.0
+            );
+            lock
+        }
+        Err(error) => return Err(error),
+    };
+    // Rotate after acquiring the exclusive transcript lock so an old process
+    // cannot use its credential to control the replacement Pi process.
+    let bridge_token = create_uuid_v4()?;
+    store_pi_bridge_token(database, session_uuid, &bridge_token)?;
     // Keep the advisory lock alive across exec. If axod is forcibly terminated,
     // the Pi process retains the lock until it exits, preventing an unsafe resume.
     // SAFETY: fcntl operates on the valid lock descriptor.
@@ -3233,7 +3430,6 @@ fn spawn_pi(
     let slave = unsafe { OwnedFd::from_raw_fd(slave_fd) };
     let slave_device = tty_device_path(slave.as_raw_fd())?;
     let slave_raw_fd = slave.as_raw_fd();
-    let bridge_token = create_uuid_v4()?;
     let mut command = Command::new(executable);
     command
         .args(&agent_command.0.arguments)
@@ -3281,7 +3477,16 @@ fn spawn_pi(
             Ok(())
         });
     }
-    let child = command.spawn()?;
+    let mut child = command.spawn()?;
+    // The child inherited this descriptor, but the parent must not pass it to
+    // later Pi launches; otherwise the newest Pi process can retain every
+    // earlier Session's transcript lock.
+    // SAFETY: fcntl updates descriptor flags on the parent's valid lock fd.
+    if unsafe { libc::fcntl(lock.as_raw_fd(), libc::F_SETFD, libc::FD_CLOEXEC) } == -1 {
+        let error = io::Error::last_os_error();
+        terminate_shell(&mut child);
+        return Err(error);
+    }
     drop(slave);
     Ok(RunningShell {
         session_id,
@@ -3295,7 +3500,7 @@ fn spawn_pi(
         output_history: TerminalOutputHistory::new(),
         output_sequence: 0,
         last_input_sequence: None,
-        _writer_lock: Some(OwnedFd::from(lock)),
+        _writer_lock: Some(lock),
         pi_bridge_socket: Some(bridge_socket.to_path_buf()),
         pi_bridge_token: Some(bridge_token),
     })
@@ -4114,6 +4319,27 @@ mod tests {
 
         history.record(b"later output");
         assert!(history.replay().is_empty());
+    }
+
+    #[test]
+    fn pi_bridge_credential_is_persisted_per_session() {
+        let mut database = Connection::open_in_memory().unwrap();
+        initialize_database(&mut database).unwrap();
+        let session_uuid = create_uuid_v4().unwrap();
+        let first_token = create_uuid_v4().unwrap();
+        let second_token = create_uuid_v4().unwrap();
+
+        assert_eq!(load_pi_bridge_token(&database, &session_uuid).unwrap(), None);
+        store_pi_bridge_token(&database, &session_uuid, &first_token).unwrap();
+        assert_eq!(
+            load_pi_bridge_token(&database, &session_uuid).unwrap(),
+            Some(first_token)
+        );
+        store_pi_bridge_token(&database, &session_uuid, &second_token).unwrap();
+        assert_eq!(
+            load_pi_bridge_token(&database, &session_uuid).unwrap(),
+            Some(second_token)
+        );
     }
 
     #[test]

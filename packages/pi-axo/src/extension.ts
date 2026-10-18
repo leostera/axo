@@ -53,6 +53,12 @@ export async function installAxoPiExtension(pi: ExtensionAPI, config: AxoPiExten
       return { accepted: false as const, reason: "stale" as const };
     }
 
+    if (command.action.kind === "shutdown") {
+      if (!activeContext.isIdle()) activeContext.abort();
+      setImmediate(() => activeContext.shutdown());
+      return { accepted: true as const };
+    }
+
     if (command.action.kind === "cancel") {
       if (activeContext.isIdle()) return { accepted: false as const, reason: "idle" as const };
       activeContext.abort();
