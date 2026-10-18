@@ -19,7 +19,16 @@ final class AxoVisualUITests: XCTestCase {
     let enterURL = fixture.root.appendingPathComponent("kitty-keyboard-enter")
     let shiftEnterURL = fixture.root.appendingPathComponent("kitty-keyboard-shift-enter")
     let commandPeriodURL = fixture.root.appendingPathComponent("kitty-keyboard-command-period")
+    let ghosttyBindingURL = fixture.root.appendingPathComponent("ghostty-binding-output")
     let scriptURL = fixture.root.appendingPathComponent("kitty-keyboard-probe.py")
+    let ghosttyConfigDirectory = fixture.root.appendingPathComponent("home/.config/ghostty")
+    try FileManager.default.createDirectory(
+      at: ghosttyConfigDirectory, withIntermediateDirectories: true)
+    try "keybind = super+shift+f=text:AXO_GHOSTTY_BINDING\n".write(
+      to: ghosttyConfigDirectory.appendingPathComponent("config"),
+      atomically: true,
+      encoding: .utf8
+    )
     let script = #"""
       import os, select, sys, termios, time, tty
 
@@ -27,8 +36,20 @@ final class AxoVisualUITests: XCTestCase {
       enter_path = \#(try pythonStringLiteral(enterURL.path))
       shift_enter_path = \#(try pythonStringLiteral(shiftEnterURL.path))
       command_period_path = \#(try pythonStringLiteral(commandPeriodURL.path))
+      ghostty_binding_path = \#(try pythonStringLiteral(ghosttyBindingURL.path))
       fd = sys.stdin.fileno()
       previous_terminal = termios.tcgetattr(fd)
+
+      def read_exact(size, timeout):
+          deadline = time.monotonic() + timeout
+          data = bytearray()
+          while len(data) < size and time.monotonic() < deadline:
+              readable, _, _ = select.select([fd], [], [], 0.05)
+              if readable:
+                  data.extend(os.read(fd, size - len(data)))
+          if len(data) != size:
+              raise TimeoutError("timed out waiting for a configured Ghostty binding")
+          return bytes(data)
 
       def read_one_key(timeout):
           deadline = time.monotonic() + timeout
@@ -62,6 +83,8 @@ final class AxoVisualUITests: XCTestCase {
           response = write_until(b"\x1b[?7u", 5)
           with open(ready_path, "wb") as ready:
               ready.write(response)
+          with open(ghostty_binding_path, "wb") as binding:
+              binding.write(read_exact(len(b"AXO_GHOSTTY_BINDING"), 10))
           with open(enter_path, "wb") as enter:
               enter.write(read_one_key(10))
           with open(shift_enter_path, "wb") as shift_enter:
@@ -81,6 +104,9 @@ final class AxoVisualUITests: XCTestCase {
     try await fixture.typeText("python3 '\(scriptURL.path)'\n")
     let protocolResponse = try await waitForFile(at: readyURL, timeout: 8)
     XCTAssertTrue(String(decoding: protocolResponse, as: UTF8.self).contains("\u{1B}[?7u"))
+    fixture.terminalWindow.typeKey("f", modifierFlags: [.command, .shift])
+    _ = try await waitForFile(at: ghosttyBindingURL, timeout: 5)
+    XCTAssertEqual(try Data(contentsOf: ghosttyBindingURL), Data("AXO_GHOSTTY_BINDING".utf8))
 
     fixture.terminalWindow.click()
     fixture.terminalWindow.typeKey(XCUIKeyboardKey.return, modifierFlags: [])
