@@ -117,6 +117,35 @@ test("HTTP metadata calls include browser Access credentials and validate the AP
   assert.equal(requests[1].url.searchParams.get("hostGeneration"), hostGeneration);
 });
 
+test("Pi event history uses the account-private cursor API and validates each event", async () => {
+  const streamId = "fca4eff5-13aa-4b1b-a4d0-e2b17a860fdd";
+  const requests = [];
+  const api = new RemoteAxoApi("https://api.example.test", async (input, init) => {
+    requests.push({ url: new URL(input), init });
+    return Response.json({
+      events: [{
+        id: 4,
+        hostGeneration,
+        piSessionId: "pi-session-1",
+        streamId,
+        sequence: 2,
+        name: "message.end",
+        data: { message: { role: "assistant", content: [{ type: "text", text: "Hello" }] } },
+        receivedAt: 1_797_600_000_000,
+      }],
+      next: null,
+    });
+  });
+
+  const page = await api.listPiEvents(reference, 9, 0, 50);
+  assert.equal(page.events[0].name, "message.end");
+  assert.equal(requests[0].url.pathname, `/api/v1/account/hosts/${hostId}/sessions/9/events`);
+  assert.equal(requests[0].url.searchParams.get("after"), "0");
+  assert.equal(requests[0].url.searchParams.get("limit"), "50");
+  assert.equal(requests[0].init.credentials, "include");
+  assert.equal(requests[0].init.cache, "no-store");
+});
+
 test("WebSocket negotiates, subscribes, dispatches live events, and calls session controls", async () => {
   let socket;
   const receivedEvents = [];

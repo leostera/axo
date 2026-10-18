@@ -9,6 +9,7 @@ import {
   type Session,
 } from "@axo/app";
 import type { Layout } from "@axo/protocol/v1";
+import { conversationMessageFromPiEvent, PiHistoryPane, type PiConversationMessage } from "./pi-history-pane";
 import { lazy, Suspense, useCallback, useEffect, useMemo, useRef, useState, type ComponentProps, type CSSProperties } from "react";
 import type { TerminalRegistry } from "./terminal-pane";
 
@@ -46,6 +47,82 @@ function messageFor(error: unknown): string {
 function sessionsWithUpdate(sessions: Session[], updated: Session): Session[] {
   return [...sessions.filter(({ sessionId }) => sessionId !== updated.sessionId), updated]
     .sort((left, right) => left.sessionId - right.sessionId);
+}
+
+function isAgentSession(session: Session): boolean {
+  return session.hasAgent ?? Boolean(session.workspaceId);
+}
+
+function groupedSessions(sessions: Session[]): { workspaces: Array<{ id: string; name: string; sessions: Session[] }>; standalone: Session[] } {
+  const workspaces = new Map<string, { id: string; name: string; sessions: Session[] }>();
+  const standalone: Session[] = [];
+  for (const session of sessions) {
+    if (!session.workspaceId) {
+      standalone.push(session);
+      continue;
+    }
+    let workspace = workspaces.get(session.workspaceId);
+    if (!workspace) {
+      workspace = { id: session.workspaceId, name: session.workspaceName ?? "Workspace", sessions: [] };
+      workspaces.set(workspace.id, workspace);
+    }
+    workspace.sessions.push(session);
+  }
+  return {
+    workspaces: [...workspaces.values()].sort((left, right) => left.name.localeCompare(right.name)),
+    standalone,
+  };
+}
+
+function mergeConversationMessages(
+  existing: PiConversationMessage[],
+  incoming: PiConversationMessage[],
+): PiConversationMessage[] {
+  const messages = new Map(existing.map(message => [message.key, message]));
+  for (const message of incoming) {
+    if (!messages.has(message.key)) messages.set(message.key, message);
+  }
+  return [...messages.values()].sort((left, right) => left.receivedAt - right.receivedAt);
+}
+
+function SessionRow({
+  session,
+  selected,
+  onSelect,
+}: {
+  session: Session;
+  selected: boolean;
+  onSelect: (sessionId: number) => void;
+}) {
+  const agent = isAgentSession(session);
+  const status = session.status ?? "unknown";
+  const statusText = {
+    starting: "Starting",
+    ready: "Ready",
+    working: "Working",
+    needsAttention: "Needs attention",
+    unavailable: "Disconnected",
+    unknown: "Agent",
+  }[status];
+  const paneCount = session.shells.length;
+  const metadata = agent
+    ? statusText
+    : `Terminal · ${paneCount} ${paneCount === 1 ? "pane" : "panes"}`;
+  return (
+    <button
+      className={`session-card ${selected ? "selected" : ""}`}
+      onClick={() => onSelect(session.sessionId)}
+    >
+      <span className={`session-icon ${agent ? "agent-session-icon" : ""}`} aria-hidden="true">
+        {agent ? session.emoji ?? "✦" : ">_"}
+      </span>
+      <span className="session-copy">
+        <span className="session-name">{session.name ?? `Session ${session.sessionId}`}</span>
+        <span className="session-meta">{metadata}</span>
+      </span>
+      {agent ? <span className={`sidebar-agent-dot status-${status}`} title={statusText} aria-label={`Agent ${statusText}`} /> : null}
+    </button>
+  );
 }
 
 function TerminalPaneSlot(props: ComponentProps<typeof TerminalPane>) {
@@ -174,12 +251,24 @@ export function RemoteTerminalApp({
   const [loadingSessions, setLoadingSessions] = useState(false);
   const [newSessionBusy, setNewSessionBusy] = useState(false);
   const [notice, setNotice] = useState<string | null>(null);
+  const [piMessages, setPiMessages] = useState<PiConversationMessage[]>([]);
+  const [piHistoryCursor, setPiHistoryCursor] = useState<number | null>(null);
+  const [piHistoryLoading, setPiHistoryLoading] = useState(false);
+  const [piHistoryLoadingMore, setPiHistoryLoadingMore] = useState(false);
+  const [piHistoryError, setPiHistoryError] = useState<string | null>(null);
+  const piHistoryTargetRef = useRef<{ key: string; hostId: string; sessionId: number } | null>(null);
 
   const selectedHost = hosts.find((host) => host.hostId === selectedHostId) ?? null;
   const selectedSession = sessions.find((session) => session.sessionId === selectedSessionId) ?? null;
-  const selectedWorkspaceId = selectedSession?.workspaceId
-    ?? sessions.find((session) => session.workspaceId)?.workspaceId
-    ?? null;
+  const selectedWorkspaceId = selectedSession?.workspaceId ?? null;
+  const piHistoryTarget = selectedHost && selectedSession && isAgentSession(selectedSession)
+    ? {
+        key: `${selectedHost.hostId}:${selectedSession.sessionId}`,
+        hostId: selectedHost.hostId,
+        sessionId: selectedSession.sessionId,
+      }
+    : null;
+  piHistoryTargetRef.current = piHistoryTarget;
   const active = Boolean(selectedHost && selectedHost.status === "online" && connectionState === "live");
   const apiLoginUrl = new URL("/app", apiBaseUrl).href;
 
@@ -245,6 +334,51 @@ export function RemoteTerminalApp({
     return () => controller.abort();
   }, [api, selectedHost?.hostId, selectedHost?.hostGeneration]);
 
+  useEffect(() => {
+    if (!selectedHost || !selectedSession || !isAgentSession(selectedSession) || !piHistoryTarget) {
+      setPiMessages([]);
+      setPiHistoryCursor(null);
+      setPiHistoryLoading(false);
+      setPiHistoryLoadingMore(false);
+      setPiHistoryError(null);
+      return;
+    }
+
+    const key = piHistoryTarget.key;
+    const reference: HostRef = {
+      hostId: selectedHost.hostId,
+      hostGeneration: selectedHost.hostGeneration,
+    };
+    const controller = new AbortController();
+    setPiMessages([]);
+    setPiHistoryCursor(null);
+    setPiHistoryLoadingMore(false);
+    setPiHistoryError(null);
+    setPiHistoryLoading(true);
+    void api.listPiEvents(reference, selectedSession.sessionId, 0, 50, controller.signal).then(page => {
+      if (controller.signal.aborted || piHistoryTargetRef.current?.key !== key) return;
+      const messages = page.events.flatMap(event => {
+        const message = conversationMessageFromPiEvent(event);
+        return message ? [message] : [];
+      });
+      setPiMessages(current => mergeConversationMessages(current, messages));
+      setPiHistoryCursor(page.next);
+    }).catch(historyError => {
+      if (!controller.signal.aborted) setPiHistoryError(messageFor(historyError));
+    }).finally(() => {
+      if (!controller.signal.aborted) setPiHistoryLoading(false);
+    });
+    return () => controller.abort();
+  }, [
+    api,
+    selectedHost?.hostId,
+    selectedHost?.hostGeneration,
+    selectedSession?.sessionId,
+    selectedSession?.workspaceId,
+    selectedSession?.hasAgent,
+    piHistoryTarget?.key,
+  ]);
+
   const applyEvent = useCallback((event: HostEvent) => {
     if (event.type === "host.presence") {
       setHosts((current) => current.map((host) => host.hostId === event.hostId
@@ -261,7 +395,6 @@ export function RemoteTerminalApp({
         : host));
       setSessions((current) => sessionsWithUpdate(current, data.snapshot));
       setSelectedSessionId((current) => current ?? data.snapshot.sessionId);
-      setNotice(`Session ${data.snapshot.sessionId} updated`);
       return;
     }
     if (data.type === "session.removed") {
@@ -279,6 +412,13 @@ export function RemoteTerminalApp({
     }
     if (data.type === "terminal.output") {
       registry.current.get(terminalKey(data.sessionId, data.shellId))?.write(decodeBase64(data.data));
+      return;
+    }
+    if (data.type === "pi.event") {
+      const target = piHistoryTargetRef.current;
+      if (!target || target.hostId !== event.hostId || target.sessionId !== data.sessionId) return;
+      const message = conversationMessageFromPiEvent({ ...data, receivedAt: Date.now() });
+      if (message) setPiMessages(current => mergeConversationMessages(current, [message]));
     }
   }, []);
 
@@ -331,20 +471,19 @@ export function RemoteTerminalApp({
 
   const openNewSession = useCallback(async () => {
     if (!selectedHost || !connectionRef.current?.active || newSessionBusy) return;
-    if (!selectedWorkspaceId) {
-      setError("Create a Workspace on this Mac before opening an agent Session remotely.");
-      return;
-    }
     setNewSessionBusy(true);
     setError(null);
     try {
-      const created = await connectionRef.current.call("axo.remote.workspace.session.create", {
-        target: {
-          hostId: selectedHost.hostId,
-          hostGeneration: selectedHost.hostGeneration,
-        },
-        workspaceId: selectedWorkspaceId,
-      });
+      const target = {
+        hostId: selectedHost.hostId,
+        hostGeneration: selectedHost.hostGeneration,
+      };
+      const created = selectedWorkspaceId
+        ? await connectionRef.current.call("axo.remote.workspace.session.create", {
+            target,
+            workspaceId: selectedWorkspaceId,
+          })
+        : await connectionRef.current.call("axo.remote.session.create", { target });
       const newSession = created.session;
       setSessions((current) => sessionsWithUpdate(current, newSession));
       setHosts((current) => current.map((host) => host.hostId === selectedHost.hostId
@@ -352,13 +491,40 @@ export function RemoteTerminalApp({
         : host));
       setSelectedSessionId(newSession.sessionId);
       setFocusedShellId(newSession.shells[0]?.shellId ?? null);
-      setNotice(`Session ${newSession.sessionId} opened`);
+      setNotice(selectedWorkspaceId
+        ? `New Session opened in ${newSession.workspaceName ?? "Workspace"}`
+        : "New standalone Session opened");
     } catch (requestError) {
       setError(messageFor(requestError));
     } finally {
       setNewSessionBusy(false);
     }
   }, [newSessionBusy, selectedHost, selectedWorkspaceId]);
+
+  const loadEarlierPiHistory = useCallback(async () => {
+    if (!selectedHost || !selectedSession || !piHistoryTarget || piHistoryCursor === null || piHistoryLoadingMore) return;
+    const key = piHistoryTarget.key;
+    const reference: HostRef = {
+      hostId: selectedHost.hostId,
+      hostGeneration: selectedHost.hostGeneration,
+    };
+    setPiHistoryLoadingMore(true);
+    setPiHistoryError(null);
+    try {
+      const page = await api.listPiEvents(reference, selectedSession.sessionId, piHistoryCursor, 50);
+      if (piHistoryTargetRef.current?.key !== key) return;
+      const messages = page.events.flatMap(event => {
+        const message = conversationMessageFromPiEvent(event);
+        return message ? [message] : [];
+      });
+      setPiMessages(current => mergeConversationMessages(current, messages));
+      setPiHistoryCursor(page.next);
+    } catch (historyError) {
+      if (piHistoryTargetRef.current?.key === key) setPiHistoryError(messageFor(historyError));
+    } finally {
+      if (piHistoryTargetRef.current?.key === key) setPiHistoryLoadingMore(false);
+    }
+  }, [api, piHistoryCursor, piHistoryLoadingMore, piHistoryTarget, selectedHost, selectedSession]);
 
   useEffect(() => {
     const onKeyDown = (event: KeyboardEvent) => {
@@ -403,6 +569,7 @@ export function RemoteTerminalApp({
     const allShellsHavePane = selectedSession.shells.every(({ shellId }) => paneIds.has(shellId));
     return allShellsHavePane ? selectedSession.layout : null;
   }, [selectedSession]);
+  const sessionGroups = groupedSessions(sessions);
 
   return (
     <main className="remote-app">
@@ -435,25 +602,45 @@ export function RemoteTerminalApp({
         {selectedHost ? (
           <>
             <div className="sidebar-heading sessions-heading">
-              <span>Sessions</span>
-              <span className="count-pill">{sessions.length}</span>
+              <span>Workspaces</span>
+              <span className="count-pill">{sessionGroups.workspaces.length}</span>
             </div>
-            <div className="session-list" aria-label="Sessions">
-              {loadingSessions && sessions.length === 0 ? <p className="sidebar-empty">Loading sessions…</p> : null}
-              {sessions.map((session) => (
-                <button
-                  className={`session-card ${selectedSessionId === session.sessionId ? "selected" : ""}`}
+            {loadingSessions && sessions.length === 0 ? <p className="sidebar-empty">Loading sessions…</p> : null}
+            {sessionGroups.workspaces.map(workspace => (
+              <section className="workspace-session-group" key={workspace.id}>
+                <div className="workspace-group-heading">
+                  <span title={workspace.name}>{workspace.name}</span>
+                  <span className="count-pill">{workspace.sessions.length}</span>
+                </div>
+                <div className="session-list" aria-label={`${workspace.name} Sessions`}>
+                  {workspace.sessions.map(session => (
+                    <SessionRow
+                      key={session.sessionId}
+                      session={session}
+                      selected={selectedSessionId === session.sessionId}
+                      onSelect={selectSession}
+                    />
+                  ))}
+                </div>
+              </section>
+            ))}
+            {!loadingSessions && sessionGroups.workspaces.length === 0 ? (
+              <p className="sidebar-empty">Create a Workspace on the Mac to start an agent Session.</p>
+            ) : null}
+            <div className="sidebar-heading standalone-heading">
+              <span>Standalone Sessions</span>
+              <span className="count-pill">{sessionGroups.standalone.length}</span>
+            </div>
+            <div className="session-list" aria-label="Standalone Sessions">
+              {sessionGroups.standalone.map(session => (
+                <SessionRow
                   key={session.sessionId}
-                  onClick={() => selectSession(session.sessionId)}
-                >
-                  <span className="session-icon" aria-hidden="true">&gt;_</span>
-                  <span className="session-copy">
-                    <span className="session-name">{session.name ?? `Session ${session.sessionId}`}</span>
-                    <span className="session-meta">{session.workspaceName ? `${session.workspaceName} · ` : ""}{session.hasAgent ? "agent" : `${session.shells.length} ${session.shells.length === 1 ? "pane" : "panes"}`}</span>
-                  </span>
-                </button>
+                  session={session}
+                  selected={selectedSessionId === session.sessionId}
+                  onSelect={selectSession}
+                />
               ))}
-              {!loadingSessions && sessions.length === 0 ? <p className="sidebar-empty">This host has no sessions.</p> : null}
+              {!loadingSessions && sessions.length === 0 ? <p className="sidebar-empty">This host has no Sessions.</p> : null}
             </div>
           </>
         ) : null}
@@ -468,7 +655,12 @@ export function RemoteTerminalApp({
         <header className="topbar">
           <div className="breadcrumbs">
             <span className="breadcrumb-muted">{selectedHost?.label ?? "Your workspace"}</span>
-            {selectedSession ? <><span className="breadcrumb-separator">/</span><h1 className="breadcrumb-session">Session {selectedSession.sessionId}</h1></> : null}
+            {selectedSession ? <>
+              <span className="breadcrumb-separator">/</span>
+              <span className="breadcrumb-muted">{selectedSession.workspaceId ? selectedSession.workspaceName ?? "Workspace" : "Standalone"}</span>
+              <span className="breadcrumb-separator">/</span>
+              <h1 className="breadcrumb-session">{selectedSession.emoji ? `${selectedSession.emoji} ` : ""}{selectedSession.name ?? `Session ${selectedSession.sessionId}`}</h1>
+            </> : null}
           </div>
           <div className="topbar-actions">
             <span className={`connection-chip ${connectionState}`}>
@@ -480,8 +672,8 @@ export function RemoteTerminalApp({
                 {creatingPairing ? "Creating code…" : "Link a Mac"}
               </button>
             ) : null}
-            <button className="new-session-button" onClick={() => void openNewSession()} disabled={!active || newSessionBusy || !selectedWorkspaceId} title={selectedWorkspaceId ? "New agent Session in this Workspace (⌘T)" : "Create a Workspace on the Mac first"}>
-              <span className="plus">＋</span> New session <kbd>⌘T</kbd>
+            <button className="new-session-button" onClick={() => void openNewSession()} disabled={!active || newSessionBusy} title={selectedWorkspaceId ? "New agent Session in this Workspace (⌘T)" : "New standalone terminal Session (⌘T)"}>
+              <span className="plus">＋</span> {selectedWorkspaceId ? "New agent Session" : "New terminal Session"} <kbd>⌘T</kbd>
             </button>
             {onSignOut ? (
               <div className="account-actions">
@@ -529,41 +721,54 @@ export function RemoteTerminalApp({
 
             {selectedSession ? (
               <div className="terminal-frame">
-                <div className="terminal-canvas">
-                  {branch ? (
-                    <LayoutBranch
-                      layout={branch}
+                <div className={`terminal-canvas ${isAgentSession(selectedSession) ? "agent-session-canvas" : ""}`}>
+                  {isAgentSession(selectedSession) ? (
+                    <PiHistoryPane
                       session={selectedSession}
-                      hostGeneration={selectedHost.hostGeneration}
-                      connection={connectionRef.current}
-                      active={active}
-                      registry={registry.current}
-                      activities={activities}
-                      focusedShellId={focusedShellId}
-                      setFocusedShellId={setFocusedShellId}
-                      onInputError={reportInputError}
+                      messages={piMessages}
+                      loading={piHistoryLoading}
+                      loadingMore={piHistoryLoadingMore}
+                      hasMore={piHistoryCursor !== null}
+                      error={piHistoryError}
+                      onLoadMore={() => void loadEarlierPiHistory()}
                     />
-                  ) : selectedSession.shells.length > 0 ? (
-                    <div className="layout-grid" style={{ "--pane-count": selectedSession.shells.length } as CSSProperties}>
-                      {selectedSession.shells.map(({ shellId }) => (
-                        <TerminalPaneSlot
-                          key={shellId}
-                          session={selectedSession}
-                          shellId={shellId}
-                          hostGeneration={selectedHost.hostGeneration}
-                          connection={connectionRef.current}
-                          active={active}
-                          registry={registry.current}
-                          activity={activities[shellId] ?? "unknown"}
-                          focused={focusedShellId === shellId}
-                          onFocus={() => setFocusedShellId(shellId)}
-                          onInputError={reportInputError}
-                        />
-                      ))}
-                    </div>
-                  ) : (
-                    <div className="empty-terminal"><span>{selectedSession.hasAgent ? "✦" : "⌘"}</span><strong>{selectedSession.hasAgent ? "Agent Session is active" : "No panes in this session"}</strong><p>{selectedSession.hasAgent ? "Structured Pi events are kept in this Session’s private history." : "Create a Workspace Session on the host to start an agent."}</p></div>
-                  )}
+                  ) : null}
+                  <div className="terminal-layout">
+                    {branch ? (
+                      <LayoutBranch
+                        layout={branch}
+                        session={selectedSession}
+                        hostGeneration={selectedHost.hostGeneration}
+                        connection={connectionRef.current}
+                        active={active}
+                        registry={registry.current}
+                        activities={activities}
+                        focusedShellId={focusedShellId}
+                        setFocusedShellId={setFocusedShellId}
+                        onInputError={reportInputError}
+                      />
+                    ) : selectedSession.shells.length > 0 ? (
+                      <div className="layout-grid" style={{ "--pane-count": selectedSession.shells.length } as CSSProperties}>
+                        {selectedSession.shells.map(({ shellId }) => (
+                          <TerminalPaneSlot
+                            key={shellId}
+                            session={selectedSession}
+                            shellId={shellId}
+                            hostGeneration={selectedHost.hostGeneration}
+                            connection={connectionRef.current}
+                            active={active}
+                            registry={registry.current}
+                            activity={activities[shellId] ?? "unknown"}
+                            focused={focusedShellId === shellId}
+                            onFocus={() => setFocusedShellId(shellId)}
+                            onInputError={reportInputError}
+                          />
+                        ))}
+                      </div>
+                    ) : (
+                      <div className="empty-terminal"><span>{isAgentSession(selectedSession) ? "✦" : "⌘"}</span><strong>{isAgentSession(selectedSession) ? "No terminal pane" : "No panes in this Session"}</strong><p>{isAgentSession(selectedSession) ? "This Workspace Session currently has an agent pane only." : "Open a terminal Session on the host to view its panes."}</p></div>
+                    )}
+                  </div>
                 </div>
               </div>
             ) : (
@@ -571,7 +776,7 @@ export function RemoteTerminalApp({
                 <div className="empty-session-icon">＋</div>
                 <h2>{sessions.length ? "Choose a session" : "Nothing running yet"}</h2>
                 <p>{sessions.length ? "Select a session from the sidebar to view its panes." : "Open a session on this host to start a remote terminal."}</p>
-                {selectedHost.status === "online" ? <button className="new-session-button large" onClick={() => void openNewSession()} disabled={!active || newSessionBusy || !selectedWorkspaceId}>＋ Open an agent Session <kbd>⌘T</kbd></button> : null}
+                {selectedHost.status === "online" ? <button className="new-session-button large" onClick={() => void openNewSession()} disabled={!active || newSessionBusy}>＋ {selectedWorkspaceId ? "Open an agent Session" : "Open a standalone Session"} <kbd>⌘T</kbd></button> : null}
               </div>
             )}
             <footer className="workspace-footer">

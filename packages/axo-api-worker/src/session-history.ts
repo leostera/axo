@@ -1,6 +1,15 @@
 import { DurableObject } from "cloudflare:workers";
 import { z } from "zod";
-import { uuid } from "@axo/protocol";
+import {
+  piEventPageResultSchema,
+  storedPiEventSchema,
+  type StoredPiEvent,
+  uuid,
+} from "@axo/protocol";
+
+export { storedPiEventSchema };
+export type { StoredPiEvent };
+export const sessionEventPageResultSchema = piEventPageResultSchema;
 
 const SESSION_EVENT_MAX_BYTES = 60_000;
 const sessionIdSchema = z.number().int().positive().max(Number.MAX_SAFE_INTEGER);
@@ -35,22 +44,6 @@ export const sessionEventPageRequestSchema = z.object({
   after: z.number().int().min(0).max(Number.MAX_SAFE_INTEGER).default(0),
   limit: z.number().int().min(1).max(50).default(20),
 }).strict();
-
-export const storedPiEventSchema = z.object({
-  id: z.number().int().positive().max(Number.MAX_SAFE_INTEGER),
-  hostGeneration: uuid,
-  piSessionId: piSessionIdSchema,
-  streamId: uuid,
-  sequence: streamSequenceSchema,
-  name: z.string().min(1).max(128),
-  data: eventDataSchema,
-  receivedAt: z.number().int().nonnegative().max(Number.MAX_SAFE_INTEGER),
-}).strict();
-export const sessionEventPageResultSchema = z.object({
-  events: z.array(storedPiEventSchema).max(50),
-  next: z.number().int().positive().max(Number.MAX_SAFE_INTEGER).nullable(),
-}).strict();
-export type StoredPiEvent = z.infer<typeof storedPiEventSchema>;
 
 type SessionIdentity = {
   account_id: string;

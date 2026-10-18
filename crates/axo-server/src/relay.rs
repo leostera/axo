@@ -1336,6 +1336,8 @@ fn host_notification(local_event: Value, host_id: &str, host_generation: &str) -
                     "workspaceId": session.get("workspaceId")?,
                     "workspaceName": session.get("workspaceName")?,
                     "name": session.get("name")?,
+                    "emoji": session.get("emoji")?,
+                    "status": session.get("status")?,
                     "hasAgent": shells.iter().any(|shell| shell.get("role").and_then(Value::as_str) == Some("pi")),
                     "shells": shell_ids,
                     "layout": terminal_layout,
@@ -1998,6 +2000,8 @@ mod tests {
                     "workspaceId": "7f1918d3-8b6d-4af4-a57e-7e6ae28e89e2",
                     "workspaceName": "Axo",
                     "name": "Session 1",
+                    "emoji": "🦀",
+                    "status": "working",
                     "shells": [
                         { "id": 20, "role": "pi" },
                         { "id": 21, "role": "terminal" }
@@ -2019,6 +2023,8 @@ mod tests {
         let snapshot = &snapshot["params"]["event"]["snapshot"];
         assert_eq!(snapshot["hasAgent"], true);
         assert_eq!(snapshot["workspaceName"], "Axo");
+        assert_eq!(snapshot["emoji"], "🦀");
+        assert_eq!(snapshot["status"], "working");
         assert_eq!(snapshot["shells"], json!([{ "shellId": 21 }]));
         assert_eq!(snapshot["layout"], json!({ "kind": "pane", "shellId": 21 }));
 

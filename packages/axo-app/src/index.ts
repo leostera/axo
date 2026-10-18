@@ -1,8 +1,13 @@
 import {
+  piEventPageResultSchema,
+  type PiEventPageResult,
+} from "@axo/protocol";
+import {
   hostListResultSchema,
   hostNotificationSchema,
   hostRefSchema,
   hostSessionsListResultSchema,
+  sessionIdSchema,
   hostSubscribeResultSchema,
   hostUnsubscribeResultSchema,
   remoteSessionCreateResultSchema,
@@ -119,6 +124,23 @@ export class RemoteAxoApi {
       throw new Error("Axo API returned metadata for a different host generation");
     }
     return result.sessions;
+  }
+
+  async listPiEvents(
+    reference: HostRef,
+    sessionId: number,
+    after = 0,
+    limit = 20,
+    signal?: AbortSignal,
+  ): Promise<PiEventPageResult> {
+    const host = hostRefSchema.parse(reference);
+    const session = sessionIdSchema.parse(sessionId);
+    const query = new URLSearchParams({ after: String(after), limit: String(limit) });
+    const response = await this.get(
+      `/api/v1/account/hosts/${encodeURIComponent(host.hostId)}/sessions/${session}/events?${query}`,
+      signal,
+    );
+    return piEventPageResultSchema.parse(await response.json());
   }
 
   connectHost(

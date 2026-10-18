@@ -95,6 +95,8 @@
         "workspaceId": { "anyOf": [{ "$ref": "#/$defs/HostId" }, { "type": "null" }] },
         "workspaceName": { "anyOf": [{ "type": "string", "maxLength": 80 }, { "type": "null" }] },
         "name": { "type": "string", "minLength": 1, "maxLength": 80 },
+        "emoji": { "anyOf": [{ "type": "string", "minLength": 1, "maxLength": 16 }, { "type": "null" }] },
+        "status": { "type": "string", "enum": ["starting", "ready", "working", "needsAttention", "unavailable"] },
         "hasAgent": { "type": "boolean" },
         "shells": {
           "type": "array",

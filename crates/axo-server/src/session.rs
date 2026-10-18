@@ -592,6 +592,8 @@ impl SessionMetadata {
             "workspaceId": self.workspace_id,
             "workspaceName": self.workspace_name,
             "name": self.name,
+            "emoji": self.emoji,
+            "status": self.status,
             "hasAgent": self.shells.iter().any(|shell| shell.role == PaneRole::Pi),
             "shells": self.shells.iter()
                 .filter(|shell| shell.role == PaneRole::Terminal)
@@ -1972,7 +1974,13 @@ impl SessionManager {
         {
             return Ok(());
         }
-        state.pi_activity.entry(session_id).or_default().connected = connected;
+        let activity = state.pi_activity.entry(session_id).or_default();
+        let changed = activity.connected != connected;
+        activity.connected = connected;
+        drop(state);
+        if changed {
+            self.publish_session_snapshot(session_id)?;
+        }
         Ok(())
     }
 
@@ -2053,7 +2061,7 @@ impl SessionManager {
                 _ => false,
             }
         };
-        if changed && matches!(name, "session.info" | "axo.session.metadata") {
+        if changed {
             self.publish_session_snapshot(session_id)?;
         }
         Ok(())
@@ -4293,13 +4301,15 @@ mod tests {
             "2026-10-16T00:00:00Z",
         );
         let object = remote.as_object().unwrap();
-        assert_eq!(object.len(), 10);
+        assert_eq!(object.len(), 12);
         assert_eq!(object["sessionId"], 9);
         assert_eq!(
             object["sessionUuid"],
             "a0b7d77a-5551-4cbc-8dfc-75b2d466dece"
         );
         assert_eq!(object["workspaceName"], "private");
+        assert_eq!(object["emoji"], "🦀");
+        assert_eq!(object["status"], "ready");
         assert_eq!(object["hasAgent"], false);
         assert_eq!(object["shells"], json!([{ "shellId": 12 }]));
         let serialized = remote.to_string();

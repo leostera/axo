@@ -5,6 +5,7 @@ import { hostMethods, hostResults } from "./host-contracts.js";
 import { stateRemoteMethods, stateLocalMethods, stateResults } from "./state-contracts.js";
 export { uuid, destinationSchema } from "./identity.js";
 export * from "./runtime-contracts.js";
+export * from "./pi-history.js";
 export * from "./pane-records.js";
 export * from "./host-contracts.js";
 export * from "./state-contracts.js";

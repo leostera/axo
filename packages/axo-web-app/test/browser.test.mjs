@@ -24,6 +24,9 @@ function session(sessionId, shellId) {
     sessionId,
     workspaceId,
     workspaceName: "Browser Workspace",
+    name: sessionId === 1 ? "Browser Agent" : `Session ${sessionId}`,
+    emoji: "🦀",
+    status: "ready",
     hasAgent: true,
     shells: [{ shellId }],
     layout: { kind: "pane", shellId },
@@ -95,6 +98,9 @@ test("browser discovers hosts, renders live PTY output, sends input, and uses Cm
     sessionId: 1,
     workspaceId,
     workspaceName: "Browser Workspace",
+    name: "Browser Agent",
+    emoji: "🦀",
+    status: "ready",
     hasAgent: true,
     shells: [{ shellId: 17 }, { shellId: 18 }],
     layout: {
@@ -106,6 +112,16 @@ test("browser discovers hosts, renders live PTY output, sends input, and uses Cm
       second: { kind: "pane", shellId: 18 },
     },
     updatedAt: now,
+  }, {
+    hostId,
+    sessionId: 3,
+    workspaceId: null,
+    workspaceName: null,
+    name: "Standalone Shell",
+    hasAgent: false,
+    shells: [{ shellId: 19 }],
+    layout: { kind: "pane", shellId: 19 },
+    updatedAt: now,
   }];
   const sockets = new Set();
   const methods = [];
@@ -113,6 +129,7 @@ test("browser discovers hosts, renders live PTY output, sends input, and uses Cm
   const apiRequests = [];
   let inputText = "";
   let sessionCreateCount = 0;
+  let standaloneCreateCount = 0;
   let authenticated = false;
   let pairingRequestCount = 0;
   const apiHttp = createHttpServer((request, response) => {
@@ -164,6 +181,34 @@ test("browser discovers hosts, renders live PTY output, sends input, and uses Cm
         return;
       }
       json(response, { host: host(sessions), sessions }, origin);
+      return;
+    }
+    if (request.method === "GET" && url.pathname === `/api/v1/account/hosts/${hostId}/sessions/1/events`) {
+      json(response, {
+        events: [
+          {
+            id: 1,
+            hostGeneration,
+            piSessionId: "pi-session-1",
+            streamId: "41c77dd7-f2dc-4e91-b481-1507b62ec118",
+            sequence: 1,
+            name: "message.end",
+            data: { message: { role: "user", content: [{ type: "text", text: "Review the latest changes." }] } },
+            receivedAt: 1_797_600_000_000,
+          },
+          {
+            id: 2,
+            hostGeneration,
+            piSessionId: "pi-session-1",
+            streamId: "41c77dd7-f2dc-4e91-b481-1507b62ec118",
+            sequence: 2,
+            name: "message.end",
+            data: { message: { role: "assistant", content: [{ type: "text", text: "I’ll take a look." }] } },
+            receivedAt: 1_797_600_000_001,
+          },
+        ],
+        next: null,
+      }, origin);
       return;
     }
     response.statusCode = 404;
@@ -227,7 +272,25 @@ test("browser discovers hosts, renders live PTY output, sends input, and uses Cm
           sessionId: 2,
           workspaceId,
           workspaceName: "Browser Workspace",
+          name: "Session 2",
+          emoji: "🌱",
+          status: "starting",
           hasAgent: true,
+          shells: [],
+          layout: null,
+          updatedAt: now,
+        };
+        sessions.push(created);
+        reply({ session: created });
+      } else if (call.method === "axo.remote.session.create") {
+        standaloneCreateCount++;
+        const created = {
+          hostId,
+          sessionId: 4,
+          workspaceId: null,
+          workspaceName: null,
+          name: "Session 4",
+          hasAgent: false,
           shells: [],
           layout: null,
           updatedAt: now,
@@ -295,7 +358,11 @@ test("browser discovers hosts, renders live PTY output, sends input, and uses Cm
     await page.getByRole("button", { name: /Browser fixture Mac/ }).waitFor({ timeout: 10_000 }).catch(async (error) => {
       throw new Error(`${error.message}\npage: ${pageErrors.join(" | ")}\ntext: ${await page.locator("body").innerText()}\nconsole: ${browserMessages.join(" | ")}\napi: ${apiRequests.join(" | ")}`);
     });
-    await page.getByRole("button", { name: /Session 1/ }).waitFor({ timeout: 10_000 });
+    await page.getByRole("button", { name: /Browser Agent/ }).waitFor({ timeout: 10_000 });
+    await page.getByText("Workspaces", { exact: true }).waitFor({ timeout: 10_000 });
+    await page.getByText("Standalone Sessions", { exact: true }).waitFor({ timeout: 10_000 });
+    await page.getByRole("heading", { name: /Browser Agent/ }).waitFor({ timeout: 10_000 });
+    await page.getByText("I’ll take a look.", { exact: true }).waitFor({ timeout: 10_000 });
     await page.waitForFunction(() => document.querySelector(".connection-chip.live"), null, { timeout: 10_000 });
     await page.locator(".terminal-output .xterm-rows").first().waitFor({ timeout: 10_000 });
     assert.equal(await page.locator(".terminal-pane").count(), 2);
@@ -337,8 +404,13 @@ test("browser discovers hosts, renders live PTY output, sends input, and uses Cm
       throw new Error(`${error.message}\npage: ${pageErrors.join(" | ")}\ntext: ${await page.locator("body").innerText()}\nconsole: ${browserMessages.join(" | ")}\nmethods: ${methods.join(",")}`);
     });
     assert.equal(sessionCreateCount, 1);
+    await page.getByRole("button", { name: /Standalone Shell/ }).click();
+    await page.keyboard.press("Meta+t");
+    await page.getByRole("button", { name: /Session 4/ }).waitFor({ timeout: 10_000 });
+    assert.equal(standaloneCreateCount, 1);
     assert.ok(methods.includes("axo.remote.terminal.input"));
     assert.ok(methods.includes("axo.remote.workspace.session.create"));
+    assert.ok(methods.includes("axo.remote.session.create"));
 
     await page.goto(`${appUrl}/app`, { waitUntil: "networkidle" });
     await page.getByRole("link", { name: "Continue with Cloudflare" }).waitFor({ timeout: 10_000 });
@@ -348,7 +420,7 @@ test("browser discovers hosts, renders live PTY output, sends input, and uses Cm
 
     authenticated = true;
     await page.reload({ waitUntil: "networkidle" });
-    await page.getByRole("heading", { name: "Session 1" }).waitFor({ timeout: 10_000 });
+    await page.getByRole("heading", { name: /Browser Agent/ }).waitFor({ timeout: 10_000 });
     await page.waitForFunction(() => document.querySelector(".connection-chip.live"), null, { timeout: 10_000 });
     assert.equal(await page.locator(".terminal-pane").count(), 2);
     await page.getByRole("button", { name: "Link a Mac" }).click();

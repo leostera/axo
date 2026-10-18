@@ -44,6 +44,8 @@ export const sessionSnapshotSchema = z.object({
   workspaceId: z.uuid().nullable().optional(),
   workspaceName: z.string().max(80).nullable().optional(),
   name: z.string().min(1).max(80).optional(),
+  emoji: z.string().min(1).max(16).refine(value => value.trim() === value && !/[\p{Cc}\p{White_Space}]/u.test(value)).nullable().optional(),
+  status: z.enum(["starting", "ready", "working", "needsAttention", "unavailable"]).optional(),
   hasAgent: z.boolean().optional(),
   shells: z.array(z.object({ shellId: shellIdSchema }).strict()).max(256),
   layout: layoutSchema.nullable(),
