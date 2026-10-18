@@ -5,6 +5,12 @@ import Foundation
 import GhosttyKit
 import SwiftUI
 
+// AppKit invokes local key monitors synchronously on the main event thread. The wrapper lets
+// the monitor's sendable callback hand the same event to its MainActor-isolated surface view.
+private struct MainActorNSEvent: @unchecked Sendable {
+  let value: NSEvent
+}
+
 struct GhosttyTerminalView: NSViewRepresentable {
   let runtime: GhosttyRuntime
   let shell: TerminalShell
@@ -113,6 +119,8 @@ final class GhosttySurfaceNSView: NSView, @preconcurrency NSTextInputClient {
   private weak var runtime: GhosttyRuntime?
   private var markedText = NSMutableAttributedString()
   private var committedText: [String]?
+  private var keyUpEventMonitor: Any?
+  private var lastPerformKeyEvent: TimeInterval?
   private var shouldRequestFocus = false
   private var focusTask: Task<Void, Never>?
   private var trackingArea: NSTrackingArea?
@@ -123,6 +131,26 @@ final class GhosttySurfaceNSView: NSView, @preconcurrency NSTextInputClient {
     self.onFocus = onFocus
     super.init(frame: .zero)
     registerForDraggedTypes([.string, .fileURL])
+    keyUpEventMonitor = NSEvent.addLocalMonitorForEvents(matching: .keyUp) { [weak self] event in
+      guard let self else { return event }
+      let actorEvent = MainActorNSEvent(value: event)
+      let shouldConsume = MainActor.assumeIsolated {
+        let event = actorEvent.value
+        guard TerminalKeyEquivalentPolicy.shouldForwardCommandKeyUp(event),
+          self.isFocusedKeyResponder,
+          self.surface != nil
+        else { return false }
+        self.keyUp(with: event)
+        return true
+      }
+      return shouldConsume ? nil : event
+    }
+  }
+
+  deinit {
+    if let keyUpEventMonitor {
+      NSEvent.removeMonitor(keyUpEventMonitor)
+    }
   }
 
   required init?(coder: NSCoder) {
@@ -293,6 +321,7 @@ final class GhosttySurfaceNSView: NSView, @preconcurrency NSTextInputClient {
   // Keep native key translation and IME handling aligned with Ghostty's AppKit surface bridge
   // at 81598385d608dda4946093d6d6a234d204a2f225; Axo keeps its own command-key routing below.
   override func keyDown(with event: NSEvent) {
+    lastPerformKeyEvent = nil
     guard surface != nil else {
       interpretKeyEvents([event])
       return
@@ -401,11 +430,62 @@ final class GhosttySurfaceNSView: NSView, @preconcurrency NSTextInputClient {
   }
 
   override func performKeyEquivalent(with event: NSEvent) -> Bool {
-    guard event.type == .keyDown,
-      event.modifierFlags.contains(.command),
-      let runtime
-    else { return super.performKeyEquivalent(with: event) }
+    guard event.type == .keyDown else { return super.performKeyEquivalent(with: event) }
 
+    // Give Axo's application menu first refusal so its commands win shortcut collisions.
+    let appMenuHandled = super.performKeyEquivalent(with: event)
+      || (NSApp.mainMenu?.performKeyEquivalent(with: event) ?? false)
+    if !appMenuHandled, performAxoFallbackKeyEquivalent(event) {
+      return true
+    }
+    let bindingMatched = matchesGhosttyKeyBinding(event)
+    switch TerminalKeyEquivalentPolicy.route(
+      appMenuHandled: appMenuHandled,
+      ghosttyBindingMatched: bindingMatched
+    ) {
+    case .axoMenu:
+      return true
+    case .ghosttyBinding:
+      lastPerformKeyEvent = nil
+      keyDown(with: event)
+      return true
+    case .appKit:
+      break
+    }
+
+    if let equivalent = TerminalKeyEquivalentPolicy.normalizedControlEquivalent(for: event) {
+      sendKeyEquivalent(event, characters: equivalent)
+      return true
+    }
+
+    guard event.timestamp != 0 else { return false }
+    guard TerminalKeyEquivalentPolicy.hasCommandOrControl(event) else {
+      lastPerformKeyEvent = nil
+      return false
+    }
+
+    if TerminalKeyEquivalentPolicy.matchesRedispatch(
+      eventTimestamp: event.timestamp,
+      previousTimestamp: lastPerformKeyEvent
+    ) {
+      lastPerformKeyEvent = nil
+      sendKeyEquivalent(event, characters: event.characters ?? "")
+      return true
+    }
+
+    // AppKit may divert a Command/control key through doCommand before keyDown. Keep the event
+    // timestamp so doCommand can redispatch this exact event if that happens.
+    lastPerformKeyEvent = event.timestamp
+    return false
+  }
+
+  func forwardKeyEquivalent(_ event: NSEvent) {
+    sendKey(event, action: GHOSTTY_ACTION_PRESS, text: nil)
+    sendKey(event, action: GHOSTTY_ACTION_RELEASE, text: nil)
+  }
+
+  private func performAxoFallbackKeyEquivalent(_ event: NSEvent) -> Bool {
+    guard event.modifierFlags.contains(.command), let runtime else { return false }
     switch event.charactersIgnoringModifiers?.lowercased() {
     case "c":
       runtime.copySelection()
@@ -419,13 +499,8 @@ final class GhosttySurfaceNSView: NSView, @preconcurrency NSTextInputClient {
     case "a", "z":
       return runtime.forwardKeyEquivalent(event)
     default:
-      return super.performKeyEquivalent(with: event)
+      return false
     }
-  }
-
-  func forwardKeyEquivalent(_ event: NSEvent) {
-    sendKey(event, action: GHOSTTY_ACTION_PRESS, text: nil)
-    sendKey(event, action: GHOSTTY_ACTION_RELEASE, text: nil)
   }
 
   @IBAction override func selectAll(_ sender: Any?) {
@@ -516,7 +591,46 @@ final class GhosttySurfaceNSView: NSView, @preconcurrency NSTextInputClient {
     return window.convertToScreen(convert(localRect, to: nil))
   }
 
-  override func doCommand(by selector: Selector) {}
+  override func doCommand(by selector: Selector) {
+    guard let lastPerformKeyEvent,
+      let currentEvent = NSApp.currentEvent,
+      currentEvent.timestamp == lastPerformKeyEvent
+    else { return }
+    NSApp.sendEvent(currentEvent)
+  }
+
+  private var isFocusedKeyResponder: Bool {
+    guard let window else { return false }
+    return NSApp.isActive && window.isKeyWindow && window.firstResponder === self
+  }
+
+  private func sendKeyEquivalent(_ event: NSEvent, characters: String) {
+    guard let translatedEvent = NSEvent.keyEvent(
+      with: .keyDown,
+      location: event.locationInWindow,
+      modifierFlags: event.modifierFlags,
+      timestamp: event.timestamp,
+      windowNumber: event.windowNumber,
+      context: nil,
+      characters: characters,
+      charactersIgnoringModifiers: characters,
+      isARepeat: event.isARepeat,
+      keyCode: event.keyCode
+    ) else { return }
+    lastPerformKeyEvent = nil
+    keyDown(with: translatedEvent)
+  }
+
+  private func matchesGhosttyKeyBinding(_ event: NSEvent) -> Bool {
+    guard let surface else { return false }
+    var keyEvent = makeKeyEvent(event, action: GHOSTTY_ACTION_PRESS)
+    let text = event.characters ?? ""
+    return text.withCString { pointer in
+      keyEvent.text = pointer
+      var flags = ghostty_binding_flags_e(0)
+      return ghostty_surface_key_is_binding(surface, keyEvent, &flags)
+    }
+  }
 
   private func translationEvent(for event: NSEvent) -> NSEvent {
     guard let surface else { return event }
@@ -605,9 +719,34 @@ final class GhosttySurfaceNSView: NSView, @preconcurrency NSTextInputClient {
     composing: Bool? = nil
   ) {
     guard let surface else { return }
+    var keyEvent = makeKeyEvent(
+      event,
+      action: action,
+      translationEvent: translationEvent,
+      composing: composing
+    )
+
+    guard let text = Self.keyEventText(text) else {
+      keyEvent.text = nil
+      _ = ghostty_surface_key(surface, keyEvent)
+      return
+    }
+    text.withCString { pointer in
+      keyEvent.text = pointer
+      _ = ghostty_surface_key(surface, keyEvent)
+    }
+  }
+
+  private func makeKeyEvent(
+    _ event: NSEvent,
+    action: ghostty_input_action_e,
+    translationEvent: NSEvent? = nil,
+    composing: Bool? = nil
+  ) -> ghostty_input_key_s {
     var keyEvent = ghostty_input_key_s()
     keyEvent.action = action
     keyEvent.keycode = UInt32(event.keyCode)
+    keyEvent.text = nil
     keyEvent.composing = composing ?? hasMarkedText()
     keyEvent.mods = Self.ghosttyMods(event.modifierFlags)
     keyEvent.consumed_mods = Self.ghosttyMods(
@@ -619,16 +758,7 @@ final class GhosttySurfaceNSView: NSView, @preconcurrency NSTextInputClient {
     {
       keyEvent.unshifted_codepoint = scalar.value
     }
-
-    guard let text = Self.keyEventText(text) else {
-      keyEvent.text = nil
-      _ = ghostty_surface_key(surface, keyEvent)
-      return
-    }
-    text.withCString { pointer in
-      keyEvent.text = pointer
-      _ = ghostty_surface_key(surface, keyEvent)
-    }
+    return keyEvent
   }
 
   private func sendMouseButton(
@@ -724,5 +854,45 @@ final class GhosttySurfaceNSView: NSView, @preconcurrency NSTextInputClient {
     if rawFlags & UInt(NX_DEVICERALTKEYMASK) != 0 { value |= GHOSTTY_MODS_ALT_RIGHT.rawValue }
     if rawFlags & UInt(NX_DEVICERCMDKEYMASK) != 0 { value |= GHOSTTY_MODS_SUPER_RIGHT.rawValue }
     return ghostty_input_mods_e(value)
+  }
+}
+
+enum TerminalKeyEquivalentPolicy {
+  enum Route: Equatable {
+    case axoMenu
+    case ghosttyBinding
+    case appKit
+  }
+
+  static func route(appMenuHandled: Bool, ghosttyBindingMatched: Bool) -> Route {
+    if appMenuHandled { return .axoMenu }
+    if ghosttyBindingMatched { return .ghosttyBinding }
+    return .appKit
+  }
+
+  static func normalizedControlEquivalent(for event: NSEvent) -> String? {
+    switch event.charactersIgnoringModifiers {
+    case "\r":
+      return event.modifierFlags.contains(.control) ? "\r" : nil
+    case "/":
+      guard event.modifierFlags.contains(.control),
+        event.modifierFlags.isDisjoint(with: [.shift, .command, .option])
+      else { return nil }
+      return "_"
+    default:
+      return nil
+    }
+  }
+
+  static func hasCommandOrControl(_ event: NSEvent) -> Bool {
+    !event.modifierFlags.isDisjoint(with: [.command, .control])
+  }
+
+  static func shouldForwardCommandKeyUp(_ event: NSEvent) -> Bool {
+    event.type == .keyUp && event.modifierFlags.contains(.command)
+  }
+
+  static func matchesRedispatch(eventTimestamp: TimeInterval, previousTimestamp: TimeInterval?) -> Bool {
+    previousTimestamp == eventTimestamp
   }
 }
