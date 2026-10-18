@@ -6,6 +6,14 @@ fail() {
   exit 1
 }
 
+check_no_axo_frontend() {
+  local pids
+  pids=$(/usr/bin/pgrep -x Axo || true)
+  [[ -z "$pids" ]] || fail "refusing to launch UI tests while Axo frontend PID(s) are running: ${pids//$'\n'/, }; close them manually first"
+}
+
+check_no_axo_frontend
+
 resolve_runfile() {
   local relative_path="$1"
   local runfiles_root="${RUNFILES_DIR:-${TEST_SRCDIR:-}}"
@@ -179,6 +187,7 @@ with open(scheme_path, "w", encoding="utf-8") as scheme_file:
 PY
 
 printf 'AXO_UI_XCRESULT=%s\n' "$result_bundle"
+check_no_axo_frontend
 xcodebuild_log="$TEST_UNDECLARED_OUTPUTS_DIR/xcodebuild.log"
 test_filter_args=()
 if [[ -n "${AXO_UI_TEST_ONLY:-}" ]]; then

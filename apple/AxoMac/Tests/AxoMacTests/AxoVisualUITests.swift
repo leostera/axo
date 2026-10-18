@@ -758,13 +758,17 @@ final class AxoVisualUITests: XCTestCase {
   }
 
   private func assertNoAxoUITestAppIsAlreadyRunning() throws {
-    let testBundleID = "dev.leostera.axo.ui-tests"
+    let frontendBundleIDs: Set<String> = [
+      "dev.leostera.axo",
+      "dev.leostera.axo.ui-tests",
+    ]
     let running = NSWorkspace.shared.runningApplications.first {
-      $0.bundleIdentifier == testBundleID && !$0.isTerminated
+      guard let bundleIdentifier = $0.bundleIdentifier else { return false }
+      return frontendBundleIDs.contains(bundleIdentifier) && !$0.isTerminated
     }
     guard let running else { return }
     throw UITestError.frontendAlreadyRunning(
-      "\(testBundleID) (pid \(running.processIdentifier))")
+      "\(running.bundleIdentifier ?? "unknown Axo bundle") (pid \(running.processIdentifier))")
   }
 
   private func waitForFile(at url: URL, timeout: TimeInterval) async throws -> Data {
