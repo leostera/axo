@@ -12,6 +12,9 @@ struct TerminalWorkbenchView: View {
   @EnvironmentObject private var ghostty: GhosttyRuntime
   @AppStorage("terminalSidebarIsCollapsed.v2") private var isSidebarCollapsed = false
   @State private var collapsedWorkspaceIDs = Set<String>()
+  @State private var renameTarget: SidebarRenameTarget?
+  @State private var renameDraft = ""
+  @State private var sidebarActionError: String?
 
   private var daemonIsRunning: Bool {
     if let daemonIsRunningOverride { return daemonIsRunningOverride }
@@ -86,35 +89,55 @@ struct TerminalWorkbenchView: View {
 
           ForEach(sessions.workspaces) { workspace in
             VStack(alignment: .leading, spacing: 0) {
-              Button {
-                withAnimation(.easeInOut(duration: 0.12)) {
-                  if collapsedWorkspaceIDs.contains(workspace.id) {
-                    collapsedWorkspaceIDs.remove(workspace.id)
-                  } else {
-                    collapsedWorkspaceIDs.insert(workspace.id)
+              Group {
+                if renameTarget?.id == "workspace-\(workspace.workspaceId)" {
+                  SidebarInlineRenameEditor(
+                    text: $renameDraft,
+                    identifier: "rename-workspace-\(workspace.workspaceId)",
+                    onSave: commitRename,
+                    onCancel: cancelRename
+                  )
+                  .padding(.horizontal, 8)
+                  .frame(minHeight: 28)
+                } else {
+                  Button {
+                    withAnimation(.easeInOut(duration: 0.12)) {
+                      if collapsedWorkspaceIDs.contains(workspace.id) {
+                        collapsedWorkspaceIDs.remove(workspace.id)
+                      } else {
+                        collapsedWorkspaceIDs.insert(workspace.id)
+                      }
+                    }
+                  } label: {
+                    HStack(spacing: 6) {
+                      Image(systemName: collapsedWorkspaceIDs.contains(workspace.id) ? "chevron.right" : "chevron.down")
+                        .font(.system(size: 10, weight: .semibold))
+                        .foregroundStyle(.secondary)
+                        .frame(width: 10)
+                      Text(workspace.name)
+                        .font(.system(size: 13, weight: .medium))
+                      Spacer(minLength: 0)
+                    }
+                    .padding(.horizontal, 8)
+                    .frame(maxWidth: .infinity, minHeight: 24, alignment: .leading)
+                    .contentShape(Rectangle())
                   }
+                  .buttonStyle(.plain)
+                  .accessibilityLabel(workspace.name)
+                  .accessibilityValue(collapsedWorkspaceIDs.contains(workspace.id) ? "Collapsed" : "Expanded")
+                  .accessibilityIdentifier("workspace-row-\(workspace.workspaceId)")
                 }
-              } label: {
-                HStack(spacing: 6) {
-                  Image(systemName: collapsedWorkspaceIDs.contains(workspace.id) ? "chevron.right" : "chevron.down")
-                    .font(.system(size: 10, weight: .semibold))
-                    .foregroundStyle(.secondary)
-                    .frame(width: 10)
-                  Text(workspace.name)
-                    .font(.system(size: 13, weight: .medium))
-                  Spacer(minLength: 0)
-                }
-                .padding(.horizontal, 8)
-                .frame(maxWidth: .infinity, minHeight: 24, alignment: .leading)
-                .contentShape(Rectangle())
               }
-              .buttonStyle(.plain)
-              .accessibilityLabel(workspace.name)
-              .accessibilityValue(collapsedWorkspaceIDs.contains(workspace.id) ? "Collapsed" : "Expanded")
-              .accessibilityIdentifier("workspace-row-\(workspace.workspaceId)")
               .contextMenu {
                 Button("New Session in Workspace") {
                   Task { await sessions.createSession(in: workspace.workspaceId) }
+                }
+                Divider()
+                Button("Rename Workspace") {
+                  beginRenaming(.workspace(workspace))
+                }
+                Button("Archive Workspace and Sessions", role: .destructive) {
+                  archiveWorkspaceFromMenu(workspace)
                 }
               }
 
@@ -154,6 +177,16 @@ struct TerminalWorkbenchView: View {
         }
       }
 
+      if let error = sidebarActionError {
+        Label(error, systemImage: "exclamationmark.triangle.fill")
+          .font(.caption)
+          .foregroundStyle(.red)
+          .fixedSize(horizontal: false, vertical: true)
+          .padding(.horizontal, 8)
+          .padding(.vertical, 4)
+          .accessibilityIdentifier("sidebar-action-error")
+      }
+
       if let error = sessions.workspaceCreationError {
         HStack(alignment: .top, spacing: 8) {
           Label(error, systemImage: "exclamationmark.triangle.fill")
@@ -185,19 +218,99 @@ struct TerminalWorkbenchView: View {
   }
 
   private func sessionButton(for session: TerminalSession) -> some View {
-    Button {
-      sessions.showSession(session.id)
-    } label: {
-      SessionSidebarRow(
-        session: session,
-        isSelected: sessions.selectedSessionID == session.id
-      )
+    Group {
+      if renameTarget?.id == "session-\(session.id)" {
+        SidebarInlineRenameEditor(
+          text: $renameDraft,
+          identifier: "rename-session-\(session.id)",
+          onSave: commitRename,
+          onCancel: cancelRename
+        )
+        .padding(.horizontal, 8)
+        .frame(minHeight: 36)
+      } else {
+        Button {
+          sessions.showSession(session.id)
+        } label: {
+          SessionSidebarRow(
+            session: session,
+            isSelected: sessions.selectedSessionID == session.id
+          )
+        }
+        .buttonStyle(.plain)
+        .accessibilityIdentifier("session-row-\(session.id)")
+      }
     }
-    .buttonStyle(.plain)
-    .accessibilityIdentifier("session-row-\(session.id)")
     .contextMenu {
-      Button("Close Session", role: .destructive) {
-        Task { await sessions.closeSession(session.id) }
+      sessionContextMenu(for: session)
+    }
+  }
+
+  @ViewBuilder
+  private func sessionContextMenu(for session: TerminalSession) -> some View {
+    Button("Rename Session") {
+      beginRenaming(.session(session))
+    }
+    Divider()
+    Button("Archive Session", role: .destructive) {
+      archiveSessionFromMenu(session)
+    }
+  }
+
+  private func beginRenaming(_ target: SidebarRenameTarget) {
+    sidebarActionError = nil
+    if isSidebarCollapsed { isSidebarCollapsed = false }
+    renameDraft = target.name
+    renameTarget = target
+  }
+
+  private func cancelRename() {
+    renameTarget = nil
+    renameDraft = ""
+  }
+
+  private func commitRename() {
+    guard let target = renameTarget else { return }
+    let name = renameDraft.trimmingCharacters(in: .whitespacesAndNewlines)
+    guard !name.isEmpty, name.utf16.count <= 80 else {
+      sidebarActionError = "Names must contain 1–80 characters."
+      return
+    }
+
+    Task {
+      do {
+        switch target {
+        case .session(let session):
+          try await sessions.renameSession(session.id, to: name)
+        case .workspace(let workspace):
+          try await sessions.renameWorkspace(workspace.workspaceId, to: name)
+        }
+        cancelRename()
+        sidebarActionError = nil
+      } catch {
+        sidebarActionError = error.localizedDescription
+      }
+    }
+  }
+
+  private func archiveSessionFromMenu(_ session: TerminalSession) {
+    Task {
+      do {
+        try await sessions.archiveSession(session.id)
+        sidebarActionError = nil
+      } catch {
+        sidebarActionError = error.localizedDescription
+      }
+    }
+  }
+
+  private func archiveWorkspaceFromMenu(_ workspace: WorkspaceRecord) {
+    Task {
+      do {
+        try await sessions.archiveWorkspace(workspace.workspaceId)
+        sidebarActionError = nil
+      } catch {
+        sidebarActionError = error.localizedDescription
       }
     }
   }
@@ -226,18 +339,22 @@ struct TerminalWorkbenchView: View {
               )
             }
             .buttonStyle(.plain)
-            .help(session.name ?? "Session \(session.id)")
-            .accessibilityLabel("\(session.name ?? "Session \(session.id)"), \(sidebarStatus(for: session).accessibilityDescription)")
+            .help(session.displayName)
+            .accessibilityLabel("\(session.displayName), \(sidebarStatus(for: session).accessibilityDescription)")
             .contextMenu {
-              Button("Close Session", role: .destructive) {
-                Task { await sessions.closeSession(session.id) }
-              }
+              sessionContextMenu(for: session)
             }
           }
         }
         .padding(.horizontal, 8)
       }
 
+      if let sidebarActionError {
+        Image(systemName: "exclamationmark.triangle.fill")
+          .foregroundStyle(.red)
+          .help(sidebarActionError)
+          .accessibilityLabel(sidebarActionError)
+      }
       Spacer(minLength: 0)
       sidebarToggle(isCollapsed: true)
     }
@@ -282,6 +399,62 @@ struct TerminalWorkbenchView: View {
         systemImage: "terminal"
       )
     }
+  }
+}
+
+private enum SidebarRenameTarget: Identifiable {
+  case session(TerminalSession)
+  case workspace(WorkspaceRecord)
+
+  var id: String {
+    switch self {
+    case .session(let session): "session-\(session.id)"
+    case .workspace(let workspace): "workspace-\(workspace.workspaceId)"
+    }
+  }
+
+  var name: String {
+    switch self {
+    case .session(let session): session.displayName
+    case .workspace(let workspace): workspace.name
+    }
+  }
+}
+
+private struct SidebarInlineRenameEditor: View {
+  @Binding var text: String
+  let identifier: String
+  let onSave: () -> Void
+  let onCancel: () -> Void
+  @FocusState private var isFocused: Bool
+
+  var body: some View {
+    HStack(spacing: 6) {
+      TextField("Name", text: $text)
+        .textFieldStyle(.plain)
+        .lineLimit(1)
+        .focused($isFocused)
+        .onSubmit(onSave)
+        .onExitCommand(perform: onCancel)
+        .accessibilityIdentifier(identifier)
+
+      Button(action: onSave) {
+        Image(systemName: "checkmark")
+      }
+      .buttonStyle(.plain)
+      .help("Save name")
+      .accessibilityLabel("Save name")
+      .accessibilityIdentifier("inline-rename-save")
+
+      Button(action: onCancel) {
+        Image(systemName: "xmark")
+      }
+      .buttonStyle(.plain)
+      .help("Cancel rename")
+      .accessibilityLabel("Cancel rename")
+      .accessibilityIdentifier("inline-rename-cancel")
+    }
+    .onAppear { isFocused = true }
   }
 }
 
@@ -437,7 +610,7 @@ private struct SessionSidebarRow: View {
         .frame(width: 9)
       sessionGlyph(for: session, size: 12)
         .frame(width: 14)
-      Text(session.name ?? "Session \(session.id)")
+      Text(session.displayName)
         .font(.system(size: 12))
         .lineLimit(1)
         .truncationMode(.tail)
@@ -452,7 +625,7 @@ private struct SessionSidebarRow: View {
     )
     .contentShape(Rectangle())
     .accessibilityElement(children: .combine)
-    .accessibilityLabel("\(session.name ?? "Session \(session.id)"), \(sidebarStatus(for: session).accessibilityDescription)")
+    .accessibilityLabel("\(session.displayName), \(sidebarStatus(for: session).accessibilityDescription)")
   }
 }
 
@@ -545,31 +718,78 @@ private struct TerminalPaneView: View {
   let sessions: TerminalSessionsModel
   @EnvironmentObject private var ghostty: GhosttyRuntime
   @State private var terminalError: String?
+  @State private var piRestartError: String?
+  @State private var isRestartingPi = false
 
+  @ViewBuilder
   var body: some View {
-    GeometryReader { geometry in
-      GhosttyTerminalView(
-        runtime: ghostty,
-        shell: shell,
-        helperURL: sessions.helperURL,
-        size: geometry.size,
-        isFocused: sessions.focusedShellID == shell.id,
-        onFocus: { sessions.focus(shell.id) },
-        onStatusChange: { status in
-          terminalError = status.hasPrefix("Connected to ") ? nil : status
-        },
-        onSplit: { direction in Task { await sessions.split(direction) } },
-        onClose: { Task { await sessions.closeShell(shell.id) } }
-      )
-    }
-    .frame(maxWidth: .infinity, maxHeight: .infinity)
-    .background(Color(nsColor: .textBackgroundColor))
-    .overlay(alignment: .topLeading) {
-      if let terminalError {
-        Text(terminalError)
+    if !shell.isAvailable {
+      VStack(spacing: 12) {
+        ContentUnavailableViewPlaceholder(
+          title: "Pi Session Unavailable",
+          message: shell.availabilityReason
+            ?? "Axo could not recover this Pi session. Its conversation history is preserved.",
+          systemImage: "exclamationmark.triangle"
+        )
+        Text("Restarting stops the Pi process attached to this pane and starts it again from its existing conversation history.")
           .font(.caption)
           .foregroundStyle(.secondary)
-          .padding(8)
+          .multilineTextAlignment(.center)
+          .frame(maxWidth: 400)
+        Button("Restart Pi") {
+          guard !isRestartingPi else { return }
+          isRestartingPi = true
+          piRestartError = nil
+          Task {
+            defer { isRestartingPi = false }
+            do {
+              try await sessions.restartPiSession(shell.id)
+            } catch {
+              piRestartError = error.localizedDescription
+            }
+          }
+        }
+        .disabled(isRestartingPi)
+        .accessibilityIdentifier("restart-pi-\(shell.id)")
+        if isRestartingPi {
+          ProgressView("Restarting Pi…")
+            .controlSize(.small)
+        }
+        if let piRestartError {
+          Text(piRestartError)
+            .font(.caption)
+            .foregroundStyle(.secondary)
+            .multilineTextAlignment(.center)
+            .frame(maxWidth: 400)
+        }
+      }
+      .frame(maxWidth: .infinity, maxHeight: .infinity)
+      .background(Color(nsColor: .textBackgroundColor))
+    } else {
+      GeometryReader { geometry in
+        GhosttyTerminalView(
+          runtime: ghostty,
+          shell: shell,
+          helperURL: sessions.helperURL,
+          size: geometry.size,
+          isFocused: sessions.focusedShellID == shell.id,
+          onFocus: { sessions.focus(shell.id) },
+          onStatusChange: { status in
+            terminalError = status.hasPrefix("Connected to ") ? nil : status
+          },
+          onSplit: { direction in Task { await sessions.split(direction) } },
+          onClose: { Task { await sessions.closeShell(shell.id) } }
+        )
+      }
+      .frame(maxWidth: .infinity, maxHeight: .infinity)
+      .background(Color(nsColor: .textBackgroundColor))
+      .overlay(alignment: .topLeading) {
+        if let terminalError {
+          Text(terminalError)
+            .font(.caption)
+            .foregroundStyle(.secondary)
+            .padding(8)
+        }
       }
     }
   }

@@ -134,11 +134,14 @@ public struct TerminalSession: Decodable, Equatable, Identifiable, Sendable {
   public let workspaceId: String?
   public let workspaceName: String?
   public let name: String?
+  public let manualName: String?
   public let emoji: String?
   public let status: TerminalSessionStatus?
   public let initialPwd: String
   public let shells: [TerminalShell]
   public let layout: SessionLayout?
+
+  public var displayName: String { manualName ?? name ?? "Session \(id)" }
 
   public init(
     id: Int64,
@@ -151,6 +154,7 @@ public struct TerminalSession: Decodable, Equatable, Identifiable, Sendable {
     workspaceId: String? = nil,
     workspaceName: String? = nil,
     name: String? = nil,
+    manualName: String? = nil,
     emoji: String? = nil,
     status: TerminalSessionStatus? = nil
   ) {
@@ -161,6 +165,7 @@ public struct TerminalSession: Decodable, Equatable, Identifiable, Sendable {
     self.workspaceId = workspaceId
     self.workspaceName = workspaceName
     self.name = name
+    self.manualName = manualName
     self.emoji = emoji
     self.status = status
     self.initialPwd = initialPwd
@@ -177,6 +182,10 @@ public struct TerminalShell: Decodable, Equatable, Identifiable, Sendable {
   public let initialPwd: String
   public let ptyDevice: String
   public let attachSocketPath: String
+  public let available: Bool?
+  public let availabilityReason: String?
+
+  public var isAvailable: Bool { available != false }
 
   public init(
     id: Int64,
@@ -185,7 +194,9 @@ public struct TerminalShell: Decodable, Equatable, Identifiable, Sendable {
     ptyDevice: String,
     attachSocketPath: String,
     paneId: String? = nil,
-    role: String? = nil
+    role: String? = nil,
+    available: Bool? = nil,
+    availabilityReason: String? = nil
   ) {
     self.id = id
     self.paneId = paneId
@@ -194,6 +205,8 @@ public struct TerminalShell: Decodable, Equatable, Identifiable, Sendable {
     self.initialPwd = initialPwd
     self.ptyDevice = ptyDevice
     self.attachSocketPath = attachSocketPath
+    self.available = available
+    self.availabilityReason = availabilityReason
   }
 }
 
@@ -202,6 +215,11 @@ public struct WorkspaceRecord: Decodable, Equatable, Identifiable, Sendable {
   public let name: String
   public let directoryPath: String
   public var id: String { workspaceId }
+}
+
+public struct ArchivedWorkspace: Decodable, Equatable, Sendable {
+  public let archivedWorkspaceId: String
+  public let archivedSessionIds: [Int64]
 }
 
 public struct CreatedWorkspace: Decodable, Equatable, Sendable {
@@ -296,6 +314,20 @@ private struct WorkspaceSessionCreateRequest: Encodable {
   let workspaceId: String
 }
 
+private struct SessionRenameRequest: Encodable {
+  let sessionId: Int64
+  let name: String
+}
+
+private struct WorkspaceRenameRequest: Encodable {
+  let workspaceId: String
+  let name: String
+}
+
+private struct WorkspaceArchiveRequest: Encodable {
+  let workspaceId: String
+}
+
 private struct ProtocolNegotiationRequest: Encodable {
   let protocolVersion: UInt32
 }
@@ -314,6 +346,11 @@ private struct HostPairingRequest: Encodable {
 
 private struct CloseTerminalSessionRequest: Encodable {
   let sessionId: Int64
+}
+
+private struct RestartPiSessionRequest: Encodable {
+  let sessionId: Int64
+  let shellId: Int64
 }
 
 private struct CreateTerminalShellRequest: Encodable {
@@ -565,6 +602,44 @@ public enum UnixSocketRPC {
     }
   }
 
+  public static func renameSession(
+    _ sessionID: Int64,
+    to name: String,
+    at socketPath: UnixSocketPath
+  ) async throws -> TerminalSession {
+    try await withResponse(at: socketPath) { session in
+      try await session.response(
+        to: "axo.session.rename",
+        params: SessionRenameRequest(sessionId: sessionID, name: name)
+      )
+    }
+  }
+
+  public static func renameWorkspace(
+    _ workspaceID: String,
+    to name: String,
+    at socketPath: UnixSocketPath
+  ) async throws -> WorkspaceRecord {
+    try await withResponse(at: socketPath) { session in
+      try await session.response(
+        to: "axo.workspace.rename",
+        params: WorkspaceRenameRequest(workspaceId: workspaceID, name: name)
+      )
+    }
+  }
+
+  public static func archiveWorkspace(
+    _ workspaceID: String,
+    at socketPath: UnixSocketPath
+  ) async throws -> ArchivedWorkspace {
+    try await withResponse(at: socketPath) { session in
+      try await session.response(
+        to: "axo.workspace.archive",
+        params: WorkspaceArchiveRequest(workspaceId: workspaceID)
+      )
+    }
+  }
+
   public static func createSession(
     in workspaceID: String,
     at socketPath: UnixSocketPath
@@ -677,6 +752,19 @@ public enum UnixSocketRPC {
       try await session.response(
         to: "axo.session.close",
         params: CloseTerminalSessionRequest(sessionId: sessionID)
+      )
+    }
+  }
+
+  public static func restartPiSession(
+    shellID: Int64,
+    in sessionID: Int64,
+    at socketPath: UnixSocketPath
+  ) async throws -> TerminalSession {
+    try await withResponse(at: socketPath, timeout: .seconds(20)) { session in
+      try await session.response(
+        to: "axo.session.pi.restart.force.v2",
+        params: RestartPiSessionRequest(sessionId: sessionID, shellId: shellID)
       )
     }
   }

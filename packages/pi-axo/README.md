@@ -11,7 +11,7 @@ Axod passes these environment variables when launching Pi and explicitly loads t
 - `AXO_PANE_ID`: required Pi pane UUID.
 - `AXO_PI_SESSION_FILE`: exact absolute Pi session-file path for this Axo Session.
 
-Axod must create the socket's parent directory and session-file parent directory with mode `0700`. The extension creates the socket with mode `0600`; it does not remove a pre-existing socket path. Axod owns stale-socket cleanup and must use a distinct path for each Pi process/session binding. Keep the socket path short enough for macOS Unix-domain socket limits. Pi may leave a new session file absent until meaningful interaction; Axod must not pre-create or write it.
+Axod persists the chosen socket path in the session record and passes that same absolute path as `AXO_PI_BRIDGE_SOCKET` on launch and recovery; neither side independently picks a port or re-derives the address. It uses `~/.axo/server/pi-sessions/<session-uuid>.sock`, falling back to `/tmp/axo-pi-<session-uuid>.sock` when the scoped path would exceed 100 UTF-8 bytes. The 100-byte limit is shared with Axod and intentionally leaves room below macOS's Unix-domain socket limit. Axod creates the socket's parent directory and session-file parent directory with mode `0700`. The extension creates the socket with mode `0600`; it does not remove a pre-existing socket path. Axod owns stale-socket cleanup and uses a distinct path for each Pi session. Pi may leave a new session file absent until meaningful interaction; Axod must not pre-create or write it.
 
 ```sh
 npm ci --prefix /path/to/packages/pi-axo
@@ -40,7 +40,7 @@ The extension forwards structured Pi events to Axod only. If Axod is disconnecte
 
 ## Session title, emoji, and activity
 
-On the first user turn of an unnamed conversation, the extension adds a structured prompt section asking Pi to call `axo_set_title` in that same turn with a concise title and one representative emoji. The title is persisted through Pi's public `setSessionName()` API; the emoji is saved as a Pi custom entry that does not enter model context. Axod receives only the validated title/emoji metadata through the exact bound bridge and stores the sidebar projection locally.
+On the first user turn of an unnamed conversation, the extension adds a structured prompt section asking Pi to call `axo_set_title` in that same turn with a concise title and one representative emoji. The tool remains available to update both when the conversation's focus materially changes; the prompt discourages renaming on routine turns. Titles are persisted through Pi's public `setSessionName()` API, and the current emoji is saved as a Pi custom entry that does not enter model context. Axod receives only validated title/emoji metadata through the exact bound bridge and stores the sidebar projection locally.
 
 The extension also forwards Pi's public agent-settled and blocking-UI-prompt lifecycle events. Axod derives sidebar status as ready, working, or needs attention from those events. A starting/disconnected Pi binding is not presented as ready. The attention indicator means Pi is currently waiting in a blocking UI prompt; arbitrary terminal output is never inspected to infer status.
 

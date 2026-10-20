@@ -45,10 +45,19 @@
           "$ref": "#/$defs/WorkspaceCreateCall"
         },
         {
+          "$ref": "#/$defs/WorkspaceRenameCall"
+        },
+        {
+          "$ref": "#/$defs/WorkspaceArchiveCall"
+        },
+        {
           "$ref": "#/$defs/WorkspaceSessionCreateCall"
         },
         {
           "$ref": "#/$defs/SessionCloseCall"
+        },
+        {
+          "$ref": "#/$defs/SessionRenameCall"
         },
         {
           "$ref": "#/$defs/LayoutSetCall"
@@ -395,6 +404,45 @@
       "unevaluatedProperties": false,
       "required": ["params"]
     },
+    "WorkspaceRenameCall": {
+      "allOf": [
+        { "$ref": "#/$defs/BaseCall" },
+        {
+          "properties": {
+            "method": { "const": "axo.workspace.rename" },
+            "params": {
+              "type": "object",
+              "additionalProperties": false,
+              "required": ["workspaceId", "name"],
+              "properties": {
+                "workspaceId": { "$ref": "common.schema.json#/$defs/HostId" },
+                "name": { "type": "string", "minLength": 1, "maxLength": 80 }
+              }
+            }
+          }
+        }
+      ],
+      "unevaluatedProperties": false,
+      "required": ["params"]
+    },
+    "WorkspaceArchiveCall": {
+      "allOf": [
+        { "$ref": "#/$defs/BaseCall" },
+        {
+          "properties": {
+            "method": { "const": "axo.workspace.archive" },
+            "params": {
+              "type": "object",
+              "additionalProperties": false,
+              "required": ["workspaceId"],
+              "properties": { "workspaceId": { "$ref": "common.schema.json#/$defs/HostId" } }
+            }
+          }
+        }
+      ],
+      "unevaluatedProperties": false,
+      "required": ["params"]
+    },
     "WorkspaceSessionCreateCall": {
       "allOf": [
         { "$ref": "#/$defs/BaseCall" },
@@ -433,6 +481,27 @@
       "required": [
         "params"
       ]
+    },
+    "SessionRenameCall": {
+      "allOf": [
+        { "$ref": "#/$defs/BaseCall" },
+        {
+          "properties": {
+            "method": { "const": "axo.session.rename" },
+            "params": {
+              "type": "object",
+              "additionalProperties": false,
+              "required": ["sessionId", "name"],
+              "properties": {
+                "sessionId": { "$ref": "common.schema.json#/$defs/SessionId" },
+                "name": { "type": "string", "minLength": 1, "maxLength": 80 }
+              }
+            }
+          }
+        }
+      ],
+      "unevaluatedProperties": false,
+      "required": ["params"]
     },
     "LayoutSetCall": {
       "allOf": [
@@ -909,10 +978,33 @@
         "session": { "$ref": "common.schema.json#/$defs/LocalSession" }
       }
     },
+    "WorkspaceRenameResult": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["workspaceId", "name", "directoryPath"],
+      "properties": {
+        "workspaceId": { "$ref": "common.schema.json#/$defs/HostId" },
+        "name": { "type": "string", "minLength": 1, "maxLength": 80 },
+        "directoryPath": { "type": "string", "minLength": 1 }
+      }
+    },
+    "WorkspaceArchiveResult": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["archivedWorkspaceId", "archivedSessionIds"],
+      "properties": {
+        "archivedWorkspaceId": { "$ref": "common.schema.json#/$defs/HostId" },
+        "archivedSessionIds": {
+          "type": "array",
+          "items": { "$ref": "common.schema.json#/$defs/SessionId" }
+        }
+      }
+    },
     "WorkspaceSessionCreateResult": { "$ref": "common.schema.json#/$defs/LocalSession" },
     "SessionCreateResult": {
       "$ref": "common.schema.json#/$defs/LocalSession"
     },
+    "SessionRenameResult": { "$ref": "common.schema.json#/$defs/LocalSession" },
     "SessionCloseResult": {
       "type": "object",
       "additionalProperties": false,

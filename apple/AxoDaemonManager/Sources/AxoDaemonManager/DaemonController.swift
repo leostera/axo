@@ -42,7 +42,8 @@ public final class DaemonController: ObservableObject {
   private static let registrationIntentKey = "dev.leostera.axo.axod.registrationRequested"
   private static let registrationReceiptKey = "dev.leostera.axo.axod.registrationSucceeded"
   private static let servicePlistName = "dev.leostera.axo.axod.plist"
-  private static let daemonStartupTimeout: Duration = .seconds(3)
+  // Launchd can take longer than a health-check window to restore active PTYs and Pi bridges.
+  private static let daemonStartupTimeout: Duration = .seconds(30)
 
   private let service = SMAppService.agent(plistName: servicePlistName)
   private let logger = Logger(subsystem: "dev.leostera.axo", category: "daemon")

@@ -18,7 +18,7 @@ final class AxoVisualUITests: XCTestCase {
     let readyURL = fixture.root.appendingPathComponent("kitty-keyboard-ready")
     let enterURL = fixture.root.appendingPathComponent("kitty-keyboard-enter")
     let shiftEnterURL = fixture.root.appendingPathComponent("kitty-keyboard-shift-enter")
-    let commandPeriodURL = fixture.root.appendingPathComponent("kitty-keyboard-command-period")
+    let commandKeyURL = fixture.root.appendingPathComponent("kitty-keyboard-command-key")
     let ghosttyBindingURL = fixture.root.appendingPathComponent("ghostty-binding-output")
     let scriptURL = fixture.root.appendingPathComponent("kitty-keyboard-probe.py")
     let ghosttyConfigDirectory = fixture.root.appendingPathComponent("home/.config/ghostty")
@@ -35,7 +35,7 @@ final class AxoVisualUITests: XCTestCase {
       ready_path = \#(try pythonStringLiteral(readyURL.path))
       enter_path = \#(try pythonStringLiteral(enterURL.path))
       shift_enter_path = \#(try pythonStringLiteral(shiftEnterURL.path))
-      command_period_path = \#(try pythonStringLiteral(commandPeriodURL.path))
+      command_key_path = \#(try pythonStringLiteral(commandKeyURL.path))
       ghostty_binding_path = \#(try pythonStringLiteral(ghosttyBindingURL.path))
       fd = sys.stdin.fileno()
       previous_terminal = termios.tcgetattr(fd)
@@ -89,8 +89,8 @@ final class AxoVisualUITests: XCTestCase {
               enter.write(read_one_key(10))
           with open(shift_enter_path, "wb") as shift_enter:
               shift_enter.write(read_one_key(10))
-          with open(command_period_path, "wb") as command_period:
-              command_period.write(read_one_key(10))
+          with open(command_key_path, "wb") as command_key:
+              command_key.write(read_one_key(10))
       finally:
           sys.stdout.write("\x1b[<u")
           sys.stdout.flush()
@@ -115,13 +115,16 @@ final class AxoVisualUITests: XCTestCase {
     _ = try await waitForFile(at: shiftEnterURL, timeout: 5)
 
     XCTAssertEqual(try Data(contentsOf: enterURL), Data([0x0d]))
-    XCTAssertEqual(
-      try Data(contentsOf: shiftEnterURL), Data([0x1b, 0x5b, 0x31, 0x33, 0x3b, 0x32, 0x75]))
+    let shiftEnter = try Data(contentsOf: shiftEnterURL)
+    let shiftEnterHex = shiftEnter.map { String(format: "%02x", $0) }.joined(separator: " ")
+    XCTAssertEqual(shiftEnterHex, "1b 5b 31 33 3b 32 75")
 
-    fixture.terminalWindow.typeKey(".", modifierFlags: .command)
-    _ = try await waitForFile(at: commandPeriodURL, timeout: 5)
+    fixture.terminalWindow.typeKey("j", modifierFlags: .command)
+    _ = try await waitForFile(at: commandKeyURL, timeout: 5)
     XCTAssertEqual(
-      try Data(contentsOf: commandPeriodURL), Data([0x1b, 0x5b, 0x34, 0x36, 0x3b, 0x39, 0x75]))
+      try Data(contentsOf: commandKeyURL),
+      Data([0x1b, 0x5b, 0x31, 0x30, 0x36, 0x3b, 0x39, 0x75])
+    )
   }
 
   func testFocusOnlyClickIsNotReportedToTerminalMouseMode() async throws {
@@ -199,17 +202,106 @@ final class AxoVisualUITests: XCTestCase {
     try await waitForSessionCount(1, model: model)
     let sessionID = try XCTUnwrap(model.sessions.first?.id)
     let window = fixture.terminalWindow
-    window.rightClick()
+    let rightPane = window.coordinate(withNormalizedOffset: CGVector(dx: 0.75, dy: 0.5))
+    rightPane.rightClick()
     let splitRight = app.menuItems["Split Right"]
     XCTAssertTrue(splitRight.waitForExistence(timeout: 3))
     splitRight.click()
     try await waitForShellCount(2, sessionID: sessionID, model: model)
 
-    window.rightClick()
+    rightPane.rightClick()
     let closePane = app.menuItems["Close Pane"]
     XCTAssertTrue(closePane.waitForExistence(timeout: 3))
     closePane.click()
     try await waitForShellCount(1, sessionID: sessionID, model: model)
+  }
+
+  func testSessionSidebarContextMenuRenamesAndArchives() async throws {
+    try assertNoAxoUITestAppIsAlreadyRunning()
+    let app = XCUIApplication(bundleIdentifier: "dev.leostera.axo.ui-tests")
+    let fixture = try UITestFixture(app: app)
+    defer { fixture.stop() }
+    let model = TerminalSessionsModel(
+      socketPath: try UnixSocketPath(fixture.socketURL.path),
+      helperURL: fixture.helperURL
+    )
+
+    fixture.launchApp()
+    try await fixture.waitForWindow()
+    try await fixture.waitForTerminalReady()
+    try await waitForSessionCount(1, model: model)
+    let original = try XCTUnwrap(model.sessions.first)
+    let row = app.descendants(matching: .any)
+      .matching(identifier: "session-row-\(original.id)").firstMatch
+
+    row.rightClick()
+    let rename = app.menuItems["Rename Session"]
+    XCTAssertTrue(rename.waitForExistence(timeout: 3))
+    XCTAssertTrue(app.menuItems["Archive Session"].exists)
+    rename.click()
+
+    let field = app.textFields["rename-session-\(original.id)"]
+    XCTAssertTrue(field.waitForExistence(timeout: 3))
+    field.click()
+    field.typeKey("a", modifierFlags: .command)
+    field.typeText("Manual sidebar label")
+    app.buttons["inline-rename-save"].click()
+
+    let renamedDeadline = Date().addingTimeInterval(5)
+    while Date() < renamedDeadline {
+      await model.refresh()
+      if model.session(for: original.id)?.manualName == "Manual sidebar label" { break }
+      try await Task.sleep(for: .milliseconds(100))
+    }
+    XCTAssertEqual(model.session(for: original.id)?.name, original.name)
+    XCTAssertEqual(model.session(for: original.id)?.manualName, "Manual sidebar label")
+
+    row.rightClick()
+    app.menuItems["Archive Session"].click()
+
+    let replacementDeadline = Date().addingTimeInterval(10)
+    while Date() < replacementDeadline {
+      await model.refresh()
+      if model.sessions.contains(where: { $0.id != original.id }) { break }
+      try await Task.sleep(for: .milliseconds(100))
+    }
+    XCTAssertFalse(model.sessions.contains(where: { $0.id == original.id }))
+    XCTAssertEqual(model.sessions.count, 1)
+  }
+
+  func testWorkspaceNameFieldReceivesPasteShortcut() async throws {
+    try assertNoAxoUITestAppIsAlreadyRunning()
+    let pasteboardSnapshot = PasteboardSnapshot()
+    defer { pasteboardSnapshot.restore() }
+    let app = XCUIApplication(bundleIdentifier: "dev.leostera.axo.ui-tests")
+    let fixture = try UITestFixture(app: app)
+    defer { fixture.stop() }
+    fixture.launchApp()
+    try await fixture.waitForWindow()
+    try await fixture.waitForTerminalReady()
+
+    let createWorkspaceButton = app.buttons["new-workspace-button"]
+    XCTAssertTrue(createWorkspaceButton.waitForExistence(timeout: 5), app.debugDescription)
+    createWorkspaceButton.click()
+
+    let nameField = app.textFields["workspace-name-field"]
+    XCTAssertTrue(nameField.waitForExistence(timeout: 5), app.debugDescription)
+    nameField.click()
+
+    let pastedName = "AXO_WORKSPACE_PASTE_\(UUID().uuidString)"
+    NSPasteboard.general.clearContents()
+    NSPasteboard.general.setString(pastedName, forType: .string)
+    nameField.typeKey("v", modifierFlags: .command)
+
+    let deadline = Date().addingTimeInterval(3)
+    while Date() < deadline, (nameField.value as? String) != pastedName {
+      try await Task.sleep(for: .milliseconds(50))
+    }
+    XCTAssertEqual(nameField.value as? String, pastedName)
+    try await Task.sleep(for: .milliseconds(300))
+    let terminal = app.descendants(matching: .any)
+      .matching(identifier: "axo-terminal-surface").firstMatch
+    XCTAssertFalse((terminal.value as? String ?? "").contains(pastedName))
   }
 
   func testTerminalAccessibilityExposesVisibleScreenText() async throws {
@@ -276,7 +368,7 @@ final class AxoVisualUITests: XCTestCase {
 
     func queryClipboard() async throws -> Data {
       try? FileManager.default.removeItem(at: responseURL)
-      fixture.terminalWindow.typeText("python3 '\(scriptURL.path)'\n")
+      try await fixture.typeText("python3 '\(scriptURL.path)'\n")
       return try await waitForFile(at: responseURL, timeout: 12)
     }
 
@@ -334,7 +426,7 @@ final class AxoVisualUITests: XCTestCase {
     try await fixture.waitForWindow()
     try await fixture.waitForTerminalReady()
 
-    func triggerWrite(_ text: String, clipboard: String = "c") throws {
+    func triggerWrite(_ text: String, clipboard: String = "c") async throws {
       let encoded = Data(text.utf8).base64EncodedString()
       let script = """
         import sys
@@ -342,7 +434,7 @@ final class AxoVisualUITests: XCTestCase {
         sys.stdout.flush()
         """
       try script.write(to: scriptURL, atomically: true, encoding: .utf8)
-      fixture.terminalWindow.typeText("python3 '\(scriptURL.path)'\n")
+      try await fixture.typeText("python3 '\(scriptURL.path)'\n")
     }
 
     func respond(_ button: String? = nil) {
@@ -357,11 +449,11 @@ final class AxoVisualUITests: XCTestCase {
 
     NSPasteboard.general.clearContents()
     NSPasteboard.general.setString("PRESERVED_BEFORE_DENIAL", forType: .string)
-    try triggerWrite("DENIED_TERMINAL_WRITE")
+    try await triggerWrite("DENIED_TERMINAL_WRITE")
     respond("Don't Allow")
     XCTAssertEqual(NSPasteboard.general.string(forType: .string), "PRESERVED_BEFORE_DENIAL")
 
-    try triggerWrite("APPROVED_TERMINAL_WRITE")
+    try await triggerWrite("APPROVED_TERMINAL_WRITE")
     respond("Allow")
     let approvedDeadline = Date().addingTimeInterval(3)
     while Date() < approvedDeadline
@@ -372,7 +464,7 @@ final class AxoVisualUITests: XCTestCase {
     XCTAssertEqual(NSPasteboard.general.string(forType: .string), "APPROVED_TERMINAL_WRITE")
 
     selectionPasteboard.clearContents()
-    try triggerWrite("SELECTION_TERMINAL_WRITE", clipboard: "s")
+    try await triggerWrite("SELECTION_TERMINAL_WRITE", clipboard: "s")
     respond("Allow")
     let selectionDeadline = Date().addingTimeInterval(3)
     while Date() < selectionDeadline
@@ -382,7 +474,7 @@ final class AxoVisualUITests: XCTestCase {
     }
     XCTAssertEqual(selectionPasteboard.string(forType: .string), "SELECTION_TERMINAL_WRITE")
 
-    try triggerWrite("CANCELLED_TERMINAL_WRITE")
+    try await triggerWrite("CANCELLED_TERMINAL_WRITE")
     respond()
     XCTAssertEqual(NSPasteboard.general.string(forType: .string), "APPROVED_TERMINAL_WRITE")
   }
@@ -427,6 +519,13 @@ final class AxoVisualUITests: XCTestCase {
         .waitForExistence(timeout: 3),
       "The Workspace's first Session should appear in the sidebar immediately."
     )
+    let workspaceRow = app.descendants(matching: .any)
+      .matching(identifier: "workspace-row-\(workspaceID)").firstMatch
+    workspaceRow.rightClick()
+    XCTAssertTrue(app.menuItems["Rename Workspace"].waitForExistence(timeout: 3))
+    XCTAssertTrue(app.menuItems["Archive Workspace and Sessions"].exists)
+    app.typeKey(XCUIKeyboardKey.escape, modifierFlags: [])
+
     let originalShell = try XCTUnwrap(original.shells.first)
     let transcriptPath = try XCTUnwrap(original.piSessionFile)
     let interactionMarker = "AXO_PI_SESSION_E2E_\(UUID().uuidString)"
@@ -781,7 +880,9 @@ final class AxoVisualUITests: XCTestCase {
   }
 
   private func pythonStringLiteral(_ value: String) throws -> String {
-    let encoded = try JSONEncoder().encode(value)
+    let encoder = JSONEncoder()
+    encoder.outputFormatting = [.withoutEscapingSlashes]
+    let encoded = try encoder.encode(value)
     return String(decoding: encoded, as: UTF8.self)
   }
 
@@ -928,7 +1029,7 @@ private final class UITestFixture {
     XCTAssertTrue(chooseDirectory.waitForExistence(timeout: 5), app.debugDescription)
     app.typeKey("g", modifierFlags: [.command, .shift])
 
-    let goToFolder = app.sheets.firstMatch
+    let goToFolder = app.sheets["GoToWindow"]
     XCTAssertTrue(goToFolder.waitForExistence(timeout: 3), app.debugDescription)
     let pathField = goToFolder.textFields.firstMatch
     XCTAssertTrue(pathField.waitForExistence(timeout: 2), app.debugDescription)

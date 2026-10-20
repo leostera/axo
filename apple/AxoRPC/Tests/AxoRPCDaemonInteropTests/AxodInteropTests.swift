@@ -31,7 +31,9 @@ final class AxodInteropTests: XCTestCase {
     XCTAssertEqual(negotiation.protocolVersion, UnixSocketRPC.protocolVersion)
     for method in [
       "axo.session.create", "axo.session.subscribe", "axo.session.events.next",
-      "axo.session.unsubscribe", "axo.terminal.input", "axo.terminal.resize",
+      "axo.session.unsubscribe", "axo.session.pi.restart.force.v2", "axo.session.rename",
+      "axo.workspace.rename", "axo.workspace.archive",
+      "axo.terminal.input", "axo.terminal.resize",
       "axo.relay.settings", "axo.relay.configure", "axo.relay.link", "axo.relay.disable",
       "axo.relay.status", "axo.relay.connect",
     ] {
@@ -53,6 +55,28 @@ final class AxodInteropTests: XCTestCase {
     let initialSessions = try await UnixSocketRPC.listSessions(at: socketPath)
     XCTAssertEqual(initialSessions.count, 1)
     let baselineSession = try XCTUnwrap(initialSessions.first)
+    let baselineShell = try XCTUnwrap(baselineSession.shells.first)
+    do {
+      _ = try await UnixSocketRPC.restartPiSession(
+        shellID: baselineShell.id,
+        in: baselineSession.id,
+        at: socketPath
+      )
+      XCTFail("restart must reject a terminal pane")
+    } catch let error as UnixSocketRPCError {
+      guard case .serverRejected(_, let message) = error else {
+        return XCTFail("unexpected error: \(error)")
+      }
+      XCTAssertEqual(message, "This Pi pane is no longer available to restart.")
+    }
+
+    let renamedBaseline = try await UnixSocketRPC.renameSession(
+      baselineSession.id,
+      to: "Sidebar label",
+      at: socketPath
+    )
+    XCTAssertEqual(renamedBaseline.manualName, "Sidebar label")
+    XCTAssertEqual(renamedBaseline.name, baselineSession.name)
 
     let createdSession = try await UnixSocketRPC.createSession(at: socketPath)
     XCTAssertNotEqual(createdSession.id, baselineSession.id)

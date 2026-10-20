@@ -30,6 +30,43 @@ final class BoundaryValueTests: XCTestCase {
     XCTAssertEqual(try JSONDecoder().decode(SessionLayout.self, from: data), layout)
   }
 
+  func testUnavailablePiPaneDecodesWithoutMakingItAttachable() throws {
+    let sessionJSON = """
+      {
+        "id": 7,
+        "initialPwd": "/tmp",
+        "status": "unavailable",
+        "shells": [{
+          "id": 19,
+          "paneId": "pi-pane",
+          "role": "pi",
+          "processId": 0,
+          "initialPwd": "/tmp",
+          "ptyDevice": "",
+          "attachSocketPath": "/tmp/attach.sock",
+          "available": false,
+          "availabilityReason": "Pi recovery failed."
+        }],
+        "layout": { "kind": "pane", "shellId": 19 }
+      }
+      """.data(using: .utf8)!
+
+    let session = try JSONDecoder().decode(TerminalSession.self, from: sessionJSON)
+    let shell = try XCTUnwrap(session.shells.first)
+    XCTAssertFalse(shell.isAvailable)
+    XCTAssertEqual(shell.availabilityReason, "Pi recovery failed.")
+    XCTAssertEqual(session.status, .unavailable)
+
+    let legacyShell = TerminalShell(
+      id: 20,
+      processId: 123,
+      initialPwd: "/tmp",
+      ptyDevice: "/dev/ttys001",
+      attachSocketPath: "/tmp/attach.sock"
+    )
+    XCTAssertTrue(legacyShell.isAvailable)
+  }
+
   func testBuildNumbersMustBePositiveCanonicalIntegers() {
     XCTAssertEqual(BuildNumber(bundleValue: "42")?.value, 42)
     XCTAssertNil(BuildNumber(bundleValue: "0"))

@@ -89,6 +89,19 @@ struct AxoApp: App {
     }
   }
 
+  // Custom SwiftUI menu actions must preserve AppKit editing for non-terminal responders.
+  @MainActor
+  private func routeTextEditingCommand(
+    _ responderAction: Selector,
+    terminalAction: () -> Void
+  ) {
+    guard ghostty.keyWindowFocusedShellID == nil else {
+      terminalAction()
+      return
+    }
+    _ = NSApp.sendAction(responderAction, to: nil, from: nil)
+  }
+
   var body: some Scene {
     MenuBarExtra {
       AxoMenu(daemon: daemon, settingsSection: $settingsSection)
@@ -130,50 +143,53 @@ struct AxoApp: App {
 
       CommandGroup(replacing: .textEditing) {
         Button("Undo") {
-          _ = ghostty.perform(.undo)
+          routeTextEditingCommand(Selector(("undo:"))) { _ = ghostty.perform(.undo) }
         }
         .keyboardShortcut("z", modifiers: .command)
-        .disabled(sessions.focusedShellID == nil)
 
         Button("Redo") {
-          _ = ghostty.perform(.redo)
+          routeTextEditingCommand(Selector(("redo:"))) { _ = ghostty.perform(.redo) }
         }
         .keyboardShortcut("z", modifiers: [.command, .shift])
-        .disabled(sessions.focusedShellID == nil)
 
         Divider()
 
         Button("Select All") {
-          _ = ghostty.perform(.selectAll)
+          routeTextEditingCommand(#selector(NSText.selectAll(_:))) {
+            _ = ghostty.perform(.selectAll)
+          }
         }
         .keyboardShortcut("a", modifiers: .command)
-        .disabled(sessions.focusedShellID == nil)
       }
 
       CommandGroup(replacing: .pasteboard) {
         Button("Cut") {
-          ghostty.copySelection()
+          routeTextEditingCommand(#selector(NSText.cut(_:))) {
+            ghostty.copySelection()
+          }
         }
         .keyboardShortcut("x", modifiers: .command)
-        .disabled(sessions.focusedShellID == nil)
 
         Button("Copy") {
-          ghostty.copySelection()
+          routeTextEditingCommand(#selector(NSText.copy(_:))) {
+            ghostty.copySelection()
+          }
         }
         .keyboardShortcut("c", modifiers: .command)
-        .disabled(sessions.focusedShellID == nil)
 
         Button("Paste") {
-          ghostty.pasteClipboard()
+          routeTextEditingCommand(#selector(NSText.paste(_:))) {
+            ghostty.pasteClipboard()
+          }
         }
         .keyboardShortcut("v", modifiers: .command)
-        .disabled(sessions.focusedShellID == nil)
 
         Button("Paste and Match Style") {
-          ghostty.pasteClipboard()
+          routeTextEditingCommand(#selector(NSText.paste(_:))) {
+            ghostty.pasteClipboard()
+          }
         }
         .keyboardShortcut("v", modifiers: [.command, .option, .shift])
-        .disabled(sessions.focusedShellID == nil)
       }
 
       CommandGroup(replacing: .sidebar) {

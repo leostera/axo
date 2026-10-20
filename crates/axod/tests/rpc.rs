@@ -868,9 +868,13 @@ fn daemon_starts_with_and_restores_a_default_pty_session_after_restart() {
         "axo.session.subscribe",
         "axo.session.events.next",
         "axo.session.unsubscribe",
+        "axo.session.pi.restart.force.v2",
         "axo.workspace.list",
         "axo.workspace.create",
+        "axo.workspace.rename",
+        "axo.workspace.archive",
         "axo.workspace.session.create",
+        "axo.session.rename",
         "axo.terminal.input",
         "axo.terminal.resize",
     ] {

@@ -1,10 +1,9 @@
 use std::collections::{HashMap, HashSet};
-use std::ffi::CStr;
+use std::ffi::{CStr, OsStr};
 use std::fs;
 use std::fs::OpenOptions;
 use std::io::{self, BufRead, BufReader, Read, Write};
 use std::os::fd::{AsRawFd, FromRawFd, OwnedFd, RawFd};
-use std::os::unix::ffi::OsStrExt;
 use std::os::unix::fs::{OpenOptionsExt, PermissionsExt};
 use std::os::unix::net::{UnixListener, UnixStream};
 use std::os::unix::process::CommandExt;
@@ -37,13 +36,103 @@ const DEFAULT_AGENT_COMMAND: &str = "pi";
 const MAX_COMMAND_LINE_BYTES: usize = 4096;
 const MAX_COMMAND_ARGUMENTS: usize = 128;
 const PI_TAKEOVER_TIMEOUT: Duration = Duration::from_secs(10);
+const PI_RESTART_GRACE_PERIOD: Duration = Duration::from_secs(2);
+const PI_TERMINATE_GRACE_PERIOD: Duration = Duration::from_secs(2);
+const PI_KILL_WAIT: Duration = Duration::from_secs(5);
 const MAX_PI_BRIDGE_RECORD_BYTES: usize = 8 * 1024 * 1024;
+const MAX_PI_BRIDGE_SOCKET_PATH_BYTES: usize = 100;
 
 #[derive(Clone, Copy, Debug, Eq, Hash, PartialEq)]
 struct SessionId(i64);
 
 #[derive(Clone, Copy, Debug, Eq, Hash, PartialEq)]
 struct ShellId(i64);
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+struct PiBridgeSocketPath(PathBuf);
+
+impl PiBridgeSocketPath {
+    fn parse(path: PathBuf) -> io::Result<Self> {
+        let bytes = path.as_os_str().as_encoded_bytes();
+        if !path.is_absolute()
+            || bytes.len() > MAX_PI_BRIDGE_SOCKET_PATH_BYTES
+            || bytes.contains(&0)
+            || path.to_str().is_none()
+        {
+            return Err(io::Error::new(
+                io::ErrorKind::InvalidInput,
+                "Pi bridge socket path must be absolute UTF-8 within the supported byte limit",
+            ));
+        }
+        Ok(Self(path))
+    }
+
+    fn for_session(pi_session_directory: &Path, session_uuid: &str) -> io::Result<Self> {
+        if !is_uuid_string(session_uuid) {
+            return Err(io::Error::new(
+                io::ErrorKind::InvalidInput,
+                "Pi session UUID is invalid",
+            ));
+        }
+        let scoped = pi_session_directory.join(format!("{session_uuid}.sock"));
+        if let Ok(path) = Self::parse(scoped) {
+            return Ok(path);
+        }
+        Self::parse(PathBuf::from("/tmp").join(format!("axo-pi-{session_uuid}.sock")))
+    }
+
+    fn as_path(&self) -> &Path {
+        &self.0
+    }
+
+    fn database_value(&self) -> &str {
+        self.0
+            .to_str()
+            .expect("validated Pi bridge socket paths are UTF-8")
+    }
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+struct VerifiedPiProcessId(libc::pid_t);
+
+impl VerifiedPiProcessId {
+    fn parse(value: &Value) -> io::Result<Self> {
+        let Some(pid) = value.as_u64() else {
+            return Err(io::Error::new(
+                io::ErrorKind::InvalidData,
+                "Pi bridge process ID is invalid",
+            ));
+        };
+        if pid <= 1 || pid > libc::pid_t::MAX as u64 || pid == u64::from(std::process::id()) {
+            return Err(io::Error::new(
+                io::ErrorKind::InvalidData,
+                "Pi bridge process ID is outside the permitted range",
+            ));
+        }
+        Ok(Self(pid as libc::pid_t))
+    }
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+enum PiTakeoverPolicy {
+    PreserveExistingProcess,
+    ExplicitUserRestart,
+}
+
+// Keep the authenticated PID even if Pi rejects or misses the graceful-shutdown response.
+// An explicit user restart may still terminate only this verified process group.
+struct PiShutdownAttempt {
+    process_id: VerifiedPiProcessId,
+    graceful_shutdown: io::Result<()>,
+}
+
+#[derive(Clone, Debug)]
+struct PiLockOwner {
+    process_id: libc::pid_t,
+    user_id: libc::uid_t,
+    process_group_id: libc::pid_t,
+    command: String,
+}
 
 #[derive(Clone, Debug, Deserialize, PartialEq, Serialize)]
 #[serde(
@@ -177,6 +266,33 @@ struct SetSessionLayoutRequest {
 
 #[derive(Debug, Deserialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
+struct RestartPiSessionRequest {
+    session_id: i64,
+    shell_id: i64,
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+struct SessionRenameRequest {
+    session_id: i64,
+    name: String,
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+struct WorkspaceRenameRequest {
+    workspace_id: String,
+    name: String,
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+struct WorkspaceArchiveRequest {
+    workspace_id: String,
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
 struct WorkspaceCreateRequest {
     name: String,
     directory_path: PathBuf,
@@ -245,6 +361,7 @@ struct SessionRecord {
     session_uuid: String,
     initial_pwd: PathBuf,
     pi_session_file: Option<PathBuf>,
+    pi_bridge_socket: Option<PiBridgeSocketPath>,
     shell_ids: Vec<(ShellId, PaneRole, Option<String>)>,
 }
 
@@ -262,7 +379,7 @@ struct RunningShell {
     output_sequence: u64,
     last_input_sequence: Option<u64>,
     _writer_lock: Option<OwnedFd>,
-    pi_bridge_socket: Option<PathBuf>,
+    pi_bridge_socket: Option<PiBridgeSocketPath>,
     pi_bridge_token: Option<String>,
 }
 
@@ -304,7 +421,15 @@ struct SessionState {
     agent_command: AgentCommand,
     shell_command: ShellCommand,
     running: HashMap<ShellId, RunningShell>,
+    unavailable_pi_shells: HashMap<ShellId, UnavailablePiShell>,
     pi_activity: HashMap<SessionId, PiRuntimeActivity>,
+    initial_pwd: PathBuf,
+}
+
+#[derive(Debug)]
+struct UnavailablePiShell {
+    session_id: SessionId,
+    pane_id: Option<String>,
     initial_pwd: PathBuf,
 }
 
@@ -524,6 +649,8 @@ struct ShellMetadata {
     initial_pwd: PathBuf,
     slave_device: String,
     attach_socket_path: PathBuf,
+    available: bool,
+    availability_reason: Option<&'static str>,
 }
 
 impl ShellMetadata {
@@ -536,6 +663,8 @@ impl ShellMetadata {
             "initialPwd": self.initial_pwd,
             "ptyDevice": self.slave_device,
             "attachSocketPath": self.attach_socket_path,
+            "available": self.available,
+            "availabilityReason": self.availability_reason,
         })
     }
 }
@@ -549,6 +678,7 @@ struct SessionMetadata {
     workspace_id: Option<String>,
     workspace_name: Option<String>,
     name: String,
+    manual_name: Option<String>,
     emoji: Option<String>,
     status: SessionStatus,
     initial_pwd: PathBuf,
@@ -566,6 +696,7 @@ impl SessionMetadata {
             "workspaceId": self.workspace_id,
             "workspaceName": self.workspace_name,
             "name": self.name,
+            "manualName": self.manual_name,
             "emoji": self.emoji,
             "status": self.status,
             "initialPwd": self.initial_pwd,
@@ -643,6 +774,7 @@ impl SessionManager {
         let pi_session_directory = server_directory.join("pi-sessions");
         fs::create_dir_all(&pi_session_directory)?;
         fs::set_permissions(&pi_session_directory, fs::Permissions::from_mode(0o700))?;
+        ensure_pi_bridge_socket_paths(&database, &pi_session_directory)?;
 
         let workspace_access = restore_workspace_accesses(&database)?;
         let manager = Arc::new(Self {
@@ -651,6 +783,7 @@ impl SessionManager {
                 agent_command,
                 shell_command,
                 running: HashMap::new(),
+                unavailable_pi_shells: HashMap::new(),
                 pi_activity: HashMap::new(),
                 initial_pwd,
             }),
@@ -975,6 +1108,45 @@ impl SessionManager {
         });
 
         let manager = Arc::clone(self);
+        handler.add_sync_method("axo.workspace.rename", move |params: Params| {
+            let request: WorkspaceRenameRequest = params
+                .parse()
+                .map_err(|_| invalid_params("expected {workspaceId, name}"))?;
+            manager
+                .rename_workspace(&request.workspace_id, &request.name)
+                .map_err(|error| {
+                    if error.kind() == io::ErrorKind::InvalidInput {
+                        invalid_params("Workspace ID or name is invalid")
+                    } else {
+                        internal_rpc_error(error)
+                    }
+                })
+        });
+
+        let manager = Arc::clone(self);
+        handler.add_sync_method("axo.workspace.archive", move |params: Params| {
+            let request: WorkspaceArchiveRequest = params
+                .parse()
+                .map_err(|_| invalid_params("expected {workspaceId}"))?;
+            let workspace_id = request.workspace_id;
+            manager
+                .archive_workspace(&workspace_id)
+                .map(|session_ids| {
+                    json!({
+                        "archivedWorkspaceId": workspace_id,
+                        "archivedSessionIds": session_ids.iter().map(|id| id.0).collect::<Vec<_>>(),
+                    })
+                })
+                .map_err(|error| {
+                    if error.kind() == io::ErrorKind::InvalidInput {
+                        invalid_params("Workspace ID is invalid")
+                    } else {
+                        internal_rpc_error(error)
+                    }
+                })
+        });
+
+        let manager = Arc::clone(self);
         handler.add_sync_method("axo.workspace.create", move |params: Params| {
             let request: WorkspaceCreateRequest = params
                 .parse()
@@ -1037,6 +1209,39 @@ impl SessionManager {
         });
 
         let manager = Arc::clone(self);
+        handler.add_sync_method("axo.session.rename", move |params: Params| {
+            let request: SessionRenameRequest = params
+                .parse()
+                .map_err(|_| invalid_params("expected {sessionId, name}"))?;
+            if request.session_id <= 0 {
+                return Err(invalid_params("sessionId must be a positive integer"));
+            }
+            manager
+                .rename_session(SessionId(request.session_id), &request.name)
+                .map(|session| session.to_json())
+                .map_err(|error| {
+                    if error.kind() == io::ErrorKind::InvalidInput {
+                        invalid_params("Session name is invalid")
+                    } else {
+                        internal_rpc_error(error)
+                    }
+                })
+        });
+
+        let manager = Arc::clone(self);
+        handler.add_sync_method("axo.session.pi.restart.force.v2", move |params: Params| {
+            let request: RestartPiSessionRequest = params
+                .parse()
+                .map_err(|_| invalid_params("expected {sessionId, shellId}"))?;
+            let (session_id, shell_id) =
+                parse_session_shell_ids(request.session_id, request.shell_id)?;
+            manager
+                .restart_unavailable_pi(session_id, shell_id)
+                .map(|session| session.to_json())
+                .map_err(|error| pi_restart_rpc_error(session_id, shell_id, error))
+        });
+
+        let manager = Arc::clone(self);
         handler.add_sync_method("axo.shell.create", move |params| {
             let id = parse_session_id(params)?;
             let shell = manager.create_shell(id).map_err(internal_rpc_error)?;
@@ -1081,37 +1286,82 @@ impl SessionManager {
                 continue;
             }
             for (shell_id, role, pane_id) in record.shell_ids {
+                if role == PaneRole::Pi && state.unavailable_pi_shells.contains_key(&shell_id) {
+                    continue;
+                }
+
                 let running = match role {
-                    PaneRole::Terminal => {
-                        spawn_shell(&state.shell_command, record.id, &record.initial_pwd)
-                    }
+                    PaneRole::Terminal => Some(spawn_shell(
+                        &state.shell_command,
+                        record.id,
+                        &record.initial_pwd,
+                    )?),
                     PaneRole::Pi => {
-                        let session_file = record.pi_session_file.as_ref().ok_or_else(|| {
-                            io::Error::new(
-                                io::ErrorKind::InvalidData,
-                                "Pi Session is missing its persisted history path",
+                        let recovery = (|| {
+                            let session_file =
+                                record.pi_session_file.as_ref().ok_or_else(|| {
+                                    io::Error::new(
+                                        io::ErrorKind::InvalidData,
+                                        "Pi Session is missing its persisted history path",
+                                    )
+                                })?;
+                            let bridge_socket =
+                                record.pi_bridge_socket.as_ref().ok_or_else(|| {
+                                    io::Error::new(
+                                        io::ErrorKind::InvalidData,
+                                        "Pi Session is missing its persisted bridge socket path",
+                                    )
+                                })?;
+                            let pane_id = pane_id.as_deref().ok_or_else(|| {
+                                io::Error::new(io::ErrorKind::InvalidData, "Pi pane ID is missing")
+                            })?;
+                            spawn_pi(
+                                &state.database,
+                                &state.agent_command,
+                                record.id,
+                                &record.initial_pwd,
+                                session_file,
+                                bridge_socket,
+                                &record.session_uuid,
+                                pane_id,
+                                PiTakeoverPolicy::PreserveExistingProcess,
                             )
-                        })?;
-                        let bridge_socket =
-                            pi_bridge_socket_path(&self.pi_session_directory, &record.session_uuid);
-                        let pane_id = pane_id.ok_or_else(|| {
-                            io::Error::new(io::ErrorKind::InvalidData, "Pi pane ID is missing")
-                        })?;
-                        let running = spawn_pi(
-                            &state.database,
-                            &state.agent_command,
-                            record.id,
-                            &record.initial_pwd,
-                            session_file,
-                            &bridge_socket,
-                            &record.session_uuid,
-                            &pane_id,
-                        )?;
-                        pi_shells.push(shell_id);
-                        Ok(running)
+                        })();
+                        match recovery {
+                            Ok(running) => {
+                                pi_shells.push(shell_id);
+                                Some(running)
+                            }
+                            Err(error) => {
+                                log::error!(
+                                    "event=session.pi_restore_unavailable session_id={} shell_id={} error_kind={:?}",
+                                    record.id.0,
+                                    shell_id.0,
+                                    error.kind()
+                                );
+                                state.unavailable_pi_shells.insert(
+                                    shell_id,
+                                    UnavailablePiShell {
+                                        session_id: record.id,
+                                        pane_id,
+                                        initial_pwd: record.initial_pwd.clone(),
+                                    },
+                                );
+                                state.pi_activity.insert(
+                                    record.id,
+                                    PiRuntimeActivity {
+                                        connected: false,
+                                        ..PiRuntimeActivity::default()
+                                    },
+                                );
+                                None
+                            }
+                        }
                     }
-                }?;
-                state.running.insert(shell_id, running);
+                };
+                if let Some(running) = running {
+                    state.running.insert(shell_id, running);
+                }
             }
         }
         drop(state);
@@ -1187,6 +1437,12 @@ impl SessionManager {
             .running
             .values()
             .map(|running| running.session_id)
+            .chain(
+                state
+                    .unavailable_pi_shells
+                    .values()
+                    .map(|shell| shell.session_id),
+            )
             .collect();
         let mut sessions = ids
             .into_iter()
@@ -1213,11 +1469,7 @@ impl SessionManager {
     fn set_layout(&self, session_id: SessionId, layout: SessionLayout) -> io::Result<()> {
         let shell_ids = layout.shell_ids()?;
         let state = self.lock_state()?;
-        let open_shell_ids: HashSet<_> = state
-            .running
-            .iter()
-            .filter_map(|(shell_id, shell)| (shell.session_id == session_id).then_some(*shell_id))
-            .collect();
+        let open_shell_ids = open_shell_ids(&state, session_id);
         if open_shell_ids.is_empty() {
             return Err(io::Error::new(
                 io::ErrorKind::NotFound,
@@ -1569,6 +1821,124 @@ impl SessionManager {
             .map_err(io::Error::other)
     }
 
+    fn rename_session(&self, session_id: SessionId, name: &str) -> io::Result<SessionMetadata> {
+        if !valid_session_title(name) {
+            return Err(io::Error::new(
+                io::ErrorKind::InvalidInput,
+                "Session name must be between 1 and 80 characters",
+            ));
+        }
+        let session = {
+            let state = self.lock_state()?;
+            let changed = state
+                .database
+                .execute(
+                    "UPDATE sessions SET manual_name = ?1 WHERE id = ?2 AND state = 'open'",
+                    params![name, session_id.0],
+                )
+                .map_err(io::Error::other)?;
+            if changed != 1 {
+                return Err(io::Error::new(
+                    io::ErrorKind::NotFound,
+                    "Session is not open",
+                ));
+            }
+            session_metadata(&state, session_id, &self.attach_socket_path)?
+        };
+        self.publish_event(json!({ "type": "session.snapshot", "session": session.to_json() }));
+        Ok(session)
+    }
+
+    fn rename_workspace(&self, workspace_id: &str, name: &str) -> io::Result<Value> {
+        if !is_uuid_string(workspace_id) {
+            return Err(io::Error::new(
+                io::ErrorKind::InvalidInput,
+                "Workspace ID is invalid",
+            ));
+        }
+        validate_workspace_name(name)?;
+        let (workspace, session_ids) = {
+            let state = self.lock_state()?;
+            let changed = state
+                .database
+                .execute(
+                    "UPDATE workspaces SET name = ?1 WHERE workspace_id = ?2 AND state = 'open'",
+                    params![name, workspace_id],
+                )
+                .map_err(io::Error::other)?;
+            if changed != 1 {
+                return Err(io::Error::new(
+                    io::ErrorKind::NotFound,
+                    "Workspace is not open",
+                ));
+            }
+            let directory_path: String = state
+                .database
+                .query_row(
+                    "SELECT directory_path FROM workspaces WHERE workspace_id = ?1",
+                    params![workspace_id],
+                    |row| row.get(0),
+                )
+                .map_err(io::Error::other)?;
+            let session_ids = {
+                let mut statement = state
+                    .database
+                    .prepare("SELECT id FROM sessions WHERE workspace_id = ?1 AND state = 'open'")
+                    .map_err(io::Error::other)?;
+                statement
+                    .query_map(params![workspace_id], |row| row.get::<_, i64>(0))
+                    .map_err(io::Error::other)?
+                    .map(|id| id.map(SessionId))
+                    .collect::<Result<Vec<_>, _>>()
+                    .map_err(io::Error::other)?
+            };
+            (
+                json!({
+                    "workspaceId": workspace_id,
+                    "name": name,
+                    "directoryPath": directory_path,
+                }),
+                session_ids,
+            )
+        };
+        for session_id in session_ids {
+            self.publish_session_snapshot(session_id)?;
+        }
+        Ok(workspace)
+    }
+
+    fn archive_workspace(self: &Arc<Self>, workspace_id: &str) -> io::Result<Vec<SessionId>> {
+        if !is_uuid_string(workspace_id) {
+            return Err(io::Error::new(
+                io::ErrorKind::InvalidInput,
+                "Workspace ID is invalid",
+            ));
+        }
+        let (session_ids, shells) = {
+            let mut state = self.lock_state()?;
+            let session_ids = archive_workspace_records(&mut state.database, workspace_id)?;
+            let mut shells = Vec::new();
+            for session_id in &session_ids {
+                state.pi_activity.remove(session_id);
+                shells.extend(remove_session_shells(&mut state, *session_id));
+            }
+            (session_ids, shells)
+        };
+        self.terminate_shells_in_background(shells);
+        match self.workspace_access.lock() {
+            Ok(mut access) => {
+                access.remove(workspace_id);
+            }
+            Err(_) => log::error!(
+                "event=workspace.archive_access_release_failed workspace_id={workspace_id}"
+            ),
+        }
+        for session_id in &session_ids {
+            self.publish_session_removed(*session_id);
+        }
+        Ok(session_ids)
+    }
+
     fn ensure_open_workspace_sessions(self: &Arc<Self>) -> io::Result<()> {
         let sessions = {
             let mut state = self.lock_state()?;
@@ -1709,6 +2079,77 @@ impl SessionManager {
         Ok(session)
     }
 
+    fn restart_unavailable_pi(
+        self: &Arc<Self>,
+        session_id: SessionId,
+        shell_id: ShellId,
+    ) -> io::Result<SessionMetadata> {
+        let session = {
+            let mut state = self.lock_state()?;
+            let unavailable = state
+                .unavailable_pi_shells
+                .get(&shell_id)
+                .filter(|shell| shell.session_id == session_id)
+                .ok_or_else(|| {
+                    io::Error::new(
+                        io::ErrorKind::NotFound,
+                        "the requested Pi pane is not unavailable",
+                    )
+                })?;
+            let pane_id = unavailable.pane_id.as_deref().ok_or_else(|| {
+                io::Error::new(io::ErrorKind::InvalidData, "Pi pane ID is missing")
+            })?;
+            let initial_pwd = unavailable.initial_pwd.clone();
+            let (session_uuid, session_file, bridge_socket_path) = state
+                .database
+                .query_row(
+                    "SELECT session_uuid, pi_session_file, pi_bridge_socket_path FROM sessions
+                     WHERE id = ?1 AND state = 'open'",
+                    params![session_id.0],
+                    |row| {
+                        Ok((
+                            row.get::<_, String>(0)?,
+                            row.get::<_, Option<String>>(1)?.map(PathBuf::from),
+                            row.get::<_, Option<String>>(2)?,
+                        ))
+                    },
+                )
+                .map_err(io::Error::other)?;
+            let session_file = session_file.ok_or_else(|| {
+                io::Error::new(
+                    io::ErrorKind::InvalidData,
+                    "Pi Session is missing its persisted history path",
+                )
+            })?;
+            let bridge_socket =
+                PiBridgeSocketPath::parse(PathBuf::from(bridge_socket_path.ok_or_else(|| {
+                    io::Error::new(
+                        io::ErrorKind::InvalidData,
+                        "Pi Session is missing its persisted bridge socket path",
+                    )
+                })?))?;
+            let running = spawn_pi(
+                &state.database,
+                &state.agent_command,
+                session_id,
+                &initial_pwd,
+                &session_file,
+                &bridge_socket,
+                &session_uuid,
+                pane_id,
+                PiTakeoverPolicy::ExplicitUserRestart,
+            )?;
+            state.unavailable_pi_shells.remove(&shell_id);
+            state.running.insert(shell_id, running);
+            state.pi_activity.remove(&session_id);
+            session_metadata(&state, session_id, &self.attach_socket_path)?
+        };
+
+        self.start_pi_bridge_worker(shell_id)?;
+        self.publish_session_snapshot(session_id)?;
+        Ok(session)
+    }
+
     fn close_session(self: &Arc<Self>, id: SessionId) -> io::Result<Option<SessionMetadata>> {
         let (replacement, shells_to_terminate) = {
             let mut state = self.lock_state()?;
@@ -1828,13 +2269,9 @@ impl SessionManager {
             if exited_pi_sessions.contains(session_id) {
                 continue;
             }
-            let remaining_shell_ids: HashSet<_> = state
-                .running
-                .iter()
-                .filter_map(|(candidate_id, shell)| {
-                    (shell.session_id == *session_id && !exited_shell_ids.contains(candidate_id))
-                        .then_some(*candidate_id)
-                })
+            let remaining_shell_ids: HashSet<_> = open_shell_ids(&state, *session_id)
+                .into_iter()
+                .filter(|candidate_id| !exited_shell_ids.contains(candidate_id))
                 .collect();
             archive_shell_and_prune_layout(
                 &mut state.database,
@@ -2329,7 +2766,7 @@ fn initialize_database(database: &mut Connection) -> rusqlite::Result<()> {
         )?;
     }
 
-    transaction.pragma_update(None, "user_version", 5)?;
+    transaction.pragma_update(None, "user_version", 7)?;
     transaction.commit()
 }
 
@@ -2355,8 +2792,10 @@ fn create_tables(transaction: &rusqlite::Transaction<'_>) -> rusqlite::Result<()
             workspace_id TEXT REFERENCES workspaces(workspace_id),
             session_uuid TEXT,
             name TEXT NOT NULL DEFAULT 'Session',
+            manual_name TEXT,
             pi_session_file TEXT,
-            pi_session_id TEXT
+            pi_session_id TEXT,
+            pi_bridge_socket_path TEXT
         );
         CREATE TABLE IF NOT EXISTS shells (
             id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -2438,12 +2877,21 @@ fn create_workspace_session(
     fs::create_dir_all(&pi_directory)?;
     fs::set_permissions(&pi_directory, fs::Permissions::from_mode(0o700))?;
     let pi_session_file = pi_directory.join(format!("{session_uuid}.jsonl"));
-    let bridge_socket = pi_bridge_socket_path(pi_session_directory, &session_uuid);
+    let bridge_socket = PiBridgeSocketPath::for_session(pi_session_directory, &session_uuid)?;
     let session_name = format!("Session {ordinal}");
     state.database.execute(
-        "INSERT INTO sessions (initial_pwd, state, created_at, workspace_id, session_uuid, name, pi_session_file)
-         VALUES (?, 'open', ?, ?, ?, ?, ?)",
-        params![initial_pwd.to_string_lossy(), unix_timestamp(), workspace_id, session_uuid, session_name, pi_session_file.to_string_lossy()],
+        "INSERT INTO sessions
+            (initial_pwd, state, created_at, workspace_id, session_uuid, name, pi_session_file, pi_bridge_socket_path)
+         VALUES (?, 'open', ?, ?, ?, ?, ?, ?)",
+        params![
+            initial_pwd.to_string_lossy(),
+            unix_timestamp(),
+            workspace_id,
+            session_uuid,
+            session_name,
+            pi_session_file.to_string_lossy(),
+            bridge_socket.database_value(),
+        ],
     ).map_err(io::Error::other)?;
     let session_id = SessionId(state.database.last_insert_rowid());
     state
@@ -2480,6 +2928,7 @@ fn create_workspace_session(
         &bridge_socket,
         &session_uuid,
         &pane_id,
+        PiTakeoverPolicy::PreserveExistingProcess,
     ) {
         Ok(running) => running,
         Err(error) => {
@@ -2570,7 +3019,7 @@ fn close_session(
     attach_socket_path: &Path,
     pi_session_directory: &Path,
 ) -> io::Result<(Option<SessionMetadata>, Vec<RunningShell>)> {
-    if !state.running.values().any(|shell| shell.session_id == id) {
+    if open_shell_ids(state, id).is_empty() {
         return Err(io::Error::new(
             io::ErrorKind::NotFound,
             "session is not open",
@@ -2624,23 +3073,27 @@ fn close_shell(
     attach_socket_path: &Path,
     pi_session_directory: &Path,
 ) -> io::Result<(ClosedShellMetadata, Vec<RunningShell>)> {
-    let shell = state
-        .running
-        .get(&shell_id)
-        .ok_or_else(|| io::Error::new(io::ErrorKind::NotFound, "shell is not open"))?;
-    if shell.session_id != session_id {
-        return Err(io::Error::new(
-            io::ErrorKind::InvalidInput,
-            "shell does not belong to this session",
-        ));
-    }
-    let role = shell.role;
+    let role = if let Some(shell) = state.running.get(&shell_id) {
+        if shell.session_id != session_id {
+            return Err(io::Error::new(
+                io::ErrorKind::InvalidInput,
+                "shell does not belong to this session",
+            ));
+        }
+        shell.role
+    } else if let Some(shell) = state.unavailable_pi_shells.get(&shell_id) {
+        if shell.session_id != session_id {
+            return Err(io::Error::new(
+                io::ErrorKind::InvalidInput,
+                "shell does not belong to this session",
+            ));
+        }
+        PaneRole::Pi
+    } else {
+        return Err(io::Error::new(io::ErrorKind::NotFound, "shell is not open"));
+    };
 
-    let sibling_count = state
-        .running
-        .values()
-        .filter(|shell| shell.session_id == session_id)
-        .count();
+    let sibling_count = open_shell_ids(state, session_id).len();
     if sibling_count == 1 || role == PaneRole::Pi {
         let (replacement, shells) =
             close_session(state, session_id, attach_socket_path, pi_session_directory)?;
@@ -2654,12 +3107,9 @@ fn close_shell(
         ));
     }
 
-    let remaining_shell_ids: HashSet<_> = state
-        .running
-        .iter()
-        .filter_map(|(candidate_id, shell)| {
-            (shell.session_id == session_id && *candidate_id != shell_id).then_some(*candidate_id)
-        })
+    let remaining_shell_ids = open_shell_ids(state, session_id)
+        .into_iter()
+        .filter(|candidate_id| *candidate_id != shell_id)
         .collect();
     archive_shell_and_prune_layout(
         &mut state.database,
@@ -2669,6 +3119,7 @@ fn close_shell(
         &remaining_shell_ids,
     )?;
     let shell = state.running.remove(&shell_id).into_iter().collect();
+    state.unavailable_pi_shells.remove(&shell_id);
     Ok((
         ClosedShellMetadata {
             archived_shell_id: shell_id,
@@ -2679,12 +3130,31 @@ fn close_shell(
     ))
 }
 
+fn open_shell_ids(state: &SessionState, session_id: SessionId) -> HashSet<ShellId> {
+    state
+        .running
+        .iter()
+        .filter_map(|(shell_id, shell)| (shell.session_id == session_id).then_some(*shell_id))
+        .chain(
+            state
+                .unavailable_pi_shells
+                .iter()
+                .filter_map(|(shell_id, shell)| {
+                    (shell.session_id == session_id).then_some(*shell_id)
+                }),
+        )
+        .collect()
+}
+
 fn remove_session_shells(state: &mut SessionState, session_id: SessionId) -> Vec<RunningShell> {
     let shell_ids: Vec<_> = state
         .running
         .iter()
         .filter_map(|(shell_id, shell)| (shell.session_id == session_id).then_some(*shell_id))
         .collect();
+    state
+        .unavailable_pi_shells
+        .retain(|_, shell| shell.session_id != session_id);
     shell_ids
         .into_iter()
         .filter_map(|shell_id| state.running.remove(&shell_id))
@@ -2696,17 +3166,29 @@ fn session_metadata(
     id: SessionId,
     attach_socket_path: &Path,
 ) -> io::Result<SessionMetadata> {
-    let (initial_pwd, session_uuid, workspace_id, name, pi_session_file, pi_session_id) = state.database.query_row(
-        "SELECT initial_pwd, session_uuid, workspace_id, name, pi_session_file, pi_session_id FROM sessions WHERE id = ?1 AND state = 'open'",
+    let (
+        initial_pwd,
+        session_uuid,
+        workspace_id,
+        name,
+        manual_name,
+        pi_session_file,
+        pi_session_id,
+    ) = state.database.query_row(
+        "SELECT initial_pwd, session_uuid, workspace_id, name, manual_name, pi_session_file, pi_session_id
+         FROM sessions WHERE id = ?1 AND state = 'open'",
         params![id.0],
-        |row| Ok((
-            PathBuf::from(row.get::<_, String>(0)?),
-            row.get::<_, String>(1)?,
-            row.get::<_, Option<String>>(2)?,
-            row.get::<_, String>(3)?,
-            row.get::<_, Option<String>>(4)?.map(PathBuf::from),
-            row.get::<_, Option<String>>(5)?,
-        )),
+        |row| {
+            Ok((
+                PathBuf::from(row.get::<_, String>(0)?),
+                row.get::<_, String>(1)?,
+                row.get::<_, Option<String>>(2)?,
+                row.get::<_, String>(3)?,
+                row.get::<_, Option<String>>(4)?,
+                row.get::<_, Option<String>>(5)?.map(PathBuf::from),
+                row.get::<_, Option<String>>(6)?,
+            ))
+        },
     )
     .map_err(io::Error::other)?;
     let emoji = state
@@ -2734,8 +3216,19 @@ fn session_metadata(
         .filter(|&(_, running)| running.session_id == id)
         .map(|(shell_id, running)| shell_metadata(*shell_id, running, attach_socket_path))
         .collect();
+    shells.extend(
+        state
+            .unavailable_pi_shells
+            .iter()
+            .filter(|&(_, shell)| shell.session_id == id)
+            .map(|(shell_id, shell)| {
+                unavailable_pi_shell_metadata(*shell_id, shell, attach_socket_path)
+            }),
+    );
     shells.sort_by_key(|shell| shell.id.0);
-    let status = if shells.iter().any(|shell| shell.role == PaneRole::Pi) {
+    let status = if shells.iter().any(|shell| !shell.available) {
+        SessionStatus::Unavailable
+    } else if shells.iter().any(|shell| shell.role == PaneRole::Pi) {
         state
             .pi_activity
             .get(&id)
@@ -2751,6 +3244,7 @@ fn session_metadata(
         workspace_id,
         workspace_name,
         name,
+        manual_name,
         emoji,
         status,
         initial_pwd,
@@ -2768,13 +3262,35 @@ fn shell_metadata(id: ShellId, running: &RunningShell, attach_socket_path: &Path
         initial_pwd: running.initial_pwd.clone(),
         slave_device: running.slave_device.clone(),
         attach_socket_path: attach_socket_path.to_path_buf(),
+        available: true,
+        availability_reason: None,
+    }
+}
+
+fn unavailable_pi_shell_metadata(
+    id: ShellId,
+    shell: &UnavailablePiShell,
+    attach_socket_path: &Path,
+) -> ShellMetadata {
+    ShellMetadata {
+        id,
+        pane_id: shell.pane_id.clone(),
+        role: PaneRole::Pi,
+        process_id: 0,
+        initial_pwd: shell.initial_pwd.clone(),
+        slave_device: String::new(),
+        attach_socket_path: attach_socket_path.to_path_buf(),
+        available: false,
+        availability_reason: Some(
+            "Axo could not recover this Pi session. Its conversation history is preserved.",
+        ),
     }
 }
 
 fn read_open_sessions(database: &Connection) -> io::Result<Vec<SessionRecord>> {
     let mut statement = database
         .prepare(
-            "SELECT id, session_uuid, initial_pwd, pi_session_file
+            "SELECT id, session_uuid, initial_pwd, pi_session_file, pi_bridge_socket_path
          FROM sessions WHERE state = 'open' ORDER BY id",
         )
         .map_err(io::Error::other)?;
@@ -2785,12 +3301,17 @@ fn read_open_sessions(database: &Connection) -> io::Result<Vec<SessionRecord>> {
                 row.get::<_, String>(1)?,
                 PathBuf::from(row.get::<_, String>(2)?),
                 row.get::<_, Option<String>>(3)?.map(PathBuf::from),
+                row.get::<_, Option<String>>(4)?,
             ))
         })
         .map_err(io::Error::other)?;
     let mut records = Vec::new();
     for row in rows {
-        let (id, session_uuid, initial_pwd, pi_session_file) = row.map_err(io::Error::other)?;
+        let (id, session_uuid, initial_pwd, pi_session_file, bridge_socket_path) =
+            row.map_err(io::Error::other)?;
+        let pi_bridge_socket = bridge_socket_path
+            .map(|path| PiBridgeSocketPath::parse(PathBuf::from(path)))
+            .transpose()?;
         let mut shell_statement = database.prepare(
             "SELECT id, role, pane_id FROM shells WHERE session_id = ?1 AND state = 'open' ORDER BY id",
         ).map_err(io::Error::other)?;
@@ -2812,6 +3333,7 @@ fn read_open_sessions(database: &Connection) -> io::Result<Vec<SessionRecord>> {
             session_uuid,
             initial_pwd,
             pi_session_file,
+            pi_bridge_socket,
             shell_ids,
         });
     }
@@ -2913,9 +3435,11 @@ fn ensure_workspace_columns(transaction: &rusqlite::Transaction<'_>) -> rusqlite
         ),
         ("sessions", "session_uuid", "TEXT"),
         ("sessions", "name", "TEXT NOT NULL DEFAULT 'Session'"),
+        ("sessions", "manual_name", "TEXT"),
         ("sessions", "emoji", "TEXT"),
         ("sessions", "pi_session_file", "TEXT"),
         ("sessions", "pi_session_id", "TEXT"),
+        ("sessions", "pi_bridge_socket_path", "TEXT"),
         (
             "shells",
             "role",
@@ -2937,6 +3461,61 @@ fn ensure_workspace_columns(transaction: &rusqlite::Transaction<'_>) -> rusqlite
     transaction.execute_batch(
         "CREATE INDEX IF NOT EXISTS sessions_by_workspace_state ON sessions(workspace_id, state, id);",
     )?;
+    Ok(())
+}
+
+fn ensure_pi_bridge_socket_paths(
+    database: &Connection,
+    pi_session_directory: &Path,
+) -> io::Result<()> {
+    let records = {
+        let mut statement = database
+            .prepare(
+                "SELECT id, session_uuid, pi_bridge_socket_path FROM sessions
+                 WHERE session_uuid IS NOT NULL",
+            )
+            .map_err(io::Error::other)?;
+        statement
+            .query_map([], |row| {
+                Ok((
+                    row.get::<_, i64>(0)?,
+                    row.get::<_, String>(1)?,
+                    row.get::<_, Option<String>>(2)?,
+                ))
+            })
+            .map_err(io::Error::other)?
+            .collect::<Result<Vec<_>, _>>()
+            .map_err(io::Error::other)?
+    };
+
+    for (session_id, session_uuid, stored_path) in records {
+        match stored_path {
+            Some(path) => {
+                PiBridgeSocketPath::parse(PathBuf::from(path)).map_err(|error| {
+                    io::Error::new(
+                        io::ErrorKind::InvalidData,
+                        format!("stored Pi bridge socket path for session {session_id} is invalid: {error}"),
+                    )
+                })?;
+            }
+            None => {
+                let socket_path =
+                    PiBridgeSocketPath::for_session(pi_session_directory, &session_uuid)?;
+                let changed = database
+                    .execute(
+                        "UPDATE sessions SET pi_bridge_socket_path = ?1
+                         WHERE id = ?2 AND pi_bridge_socket_path IS NULL",
+                        params![socket_path.database_value(), session_id],
+                    )
+                    .map_err(io::Error::other)?;
+                if changed != 1 {
+                    return Err(io::Error::other(
+                        "could not persist the Pi bridge socket address",
+                    ));
+                }
+            }
+        }
+    }
     Ok(())
 }
 
@@ -3023,6 +3602,56 @@ fn archive_shell_and_prune_layout(
     }
 
     transaction.commit().map_err(io::Error::other)
+}
+
+fn archive_workspace_records(
+    database: &mut Connection,
+    workspace_id: &str,
+) -> io::Result<Vec<SessionId>> {
+    let transaction = database.transaction().map_err(io::Error::other)?;
+    let session_ids = {
+        let mut statement = transaction
+            .prepare("SELECT id FROM sessions WHERE workspace_id = ?1 AND state = 'open'")
+            .map_err(io::Error::other)?;
+        statement
+            .query_map(params![workspace_id], |row| row.get::<_, i64>(0))
+            .map_err(io::Error::other)?
+            .map(|id| id.map(SessionId))
+            .collect::<Result<Vec<_>, _>>()
+            .map_err(io::Error::other)?
+    };
+    let archived_at = unix_timestamp();
+    transaction
+        .execute(
+            "UPDATE shells SET state = 'archived', archived_at = ?1, termination_reason = 'workspace_archived'
+             WHERE state = 'open' AND session_id IN (
+                 SELECT id FROM sessions WHERE workspace_id = ?2 AND state = 'open'
+             )",
+            params![archived_at, workspace_id],
+        )
+        .map_err(io::Error::other)?;
+    transaction
+        .execute(
+            "UPDATE sessions SET state = 'archived', archived_at = ?1, termination_reason = 'workspace_archived'
+             WHERE workspace_id = ?2 AND state = 'open'",
+            params![archived_at, workspace_id],
+        )
+        .map_err(io::Error::other)?;
+    let changed = transaction
+        .execute(
+            "UPDATE workspaces SET state = 'archived', archived_at = ?1
+             WHERE workspace_id = ?2 AND state = 'open'",
+            params![archived_at, workspace_id],
+        )
+        .map_err(io::Error::other)?;
+    if changed != 1 {
+        return Err(io::Error::new(
+            io::ErrorKind::NotFound,
+            "Workspace is not open",
+        ));
+    }
+    transaction.commit().map_err(io::Error::other)?;
+    Ok(session_ids)
 }
 
 fn archive_session(database: &mut Connection, id: SessionId, reason: &str) -> io::Result<()> {
@@ -3170,15 +3799,6 @@ fn spawn_shell(
     })
 }
 
-fn pi_bridge_socket_path(pi_session_directory: &Path, session_uuid: &str) -> PathBuf {
-    let scoped_path = pi_session_directory.join(format!("{session_uuid}.sock"));
-    if scoped_path.as_os_str().as_bytes().len() <= 103 {
-        scoped_path
-    } else {
-        PathBuf::from("/tmp").join(format!("axo-pi-{session_uuid}.sock"))
-    }
-}
-
 fn read_pi_bridge_record(reader: &mut BufReader<UnixStream>) -> io::Result<Value> {
     let mut line = Vec::new();
     let mut limited = reader.take((MAX_PI_BRIDGE_RECORD_BYTES + 1) as u64);
@@ -3198,14 +3818,14 @@ fn read_pi_bridge_record(reader: &mut BufReader<UnixStream>) -> io::Result<Value
     serde_json::from_slice(&line[..line.len() - 1]).map_err(io::Error::other)
 }
 
-fn request_pi_shutdown(
+fn connect_to_pi_bridge(
     bridge_socket: &Path,
     token: &str,
     session_uuid: &str,
     pane_id: &str,
     initial_pwd: &Path,
     session_file: &Path,
-) -> io::Result<()> {
+) -> io::Result<(BufReader<UnixStream>, VerifiedPiProcessId)> {
     let mut stream = UnixStream::connect(bridge_socket)?;
     stream.set_read_timeout(Some(Duration::from_secs(2)))?;
     stream.set_write_timeout(Some(Duration::from_secs(2)))?;
@@ -3215,25 +3835,24 @@ fn request_pi_shutdown(
     )?;
     let mut reader = BufReader::new(stream);
     let mut authenticated = false;
-    let mut hello_received = false;
-    while !hello_received {
+    loop {
         let record = read_pi_bridge_record(&mut reader)?;
         match record["type"].as_str() {
             Some("authenticated") if record["protocolVersion"] == 1 => authenticated = true,
             Some("hello") if authenticated && record["protocolVersion"] == 1 => {
                 let identity = &record["identity"];
+                let process_id = VerifiedPiProcessId::parse(&identity["processId"])?;
                 let exact_identity = identity["axoSessionId"] == session_uuid
                     && identity["axoPaneId"] == pane_id
                     && identity["sessionFile"] == session_file.to_string_lossy().as_ref()
-                    && identity["cwd"] == initial_pwd.to_string_lossy().as_ref()
-                    && identity["processId"].as_u64().is_some_and(|pid| pid > 0);
+                    && identity["cwd"] == initial_pwd.to_string_lossy().as_ref();
                 if !exact_identity {
                     return Err(io::Error::new(
                         io::ErrorKind::PermissionDenied,
                         "Pi bridge identity did not match the Session being taken over",
                     ));
                 }
-                hello_received = true;
+                return Ok((reader, process_id));
             }
             Some("protocolError") => {
                 return Err(io::Error::new(
@@ -3250,9 +3869,26 @@ fn request_pi_shutdown(
             }
         }
     }
+}
 
+fn request_pi_shutdown(
+    bridge_socket: &Path,
+    token: &str,
+    session_uuid: &str,
+    pane_id: &str,
+    initial_pwd: &Path,
+    session_file: &Path,
+) -> io::Result<PiShutdownAttempt> {
+    let (mut reader, process_id) = connect_to_pi_bridge(
+        bridge_socket,
+        token,
+        session_uuid,
+        pane_id,
+        initial_pwd,
+        session_file,
+    )?;
     let request_id = format!("takeover-{}", create_uuid_v4()?);
-    write_json_line(
+    let graceful_shutdown = write_json_line(
         reader.get_mut(),
         &json!({
             "type": "command",
@@ -3260,24 +3896,33 @@ fn request_pi_shutdown(
             "axoSessionId": session_uuid,
             "action": { "kind": "shutdown" }
         }),
-    )?;
-    loop {
-        let record = read_pi_bridge_record(&mut reader)?;
-        if record["type"] != "commandResult" || record["requestId"] != request_id {
-            continue;
+    )
+    .and_then(|()| {
+        loop {
+            let record = match read_pi_bridge_record(&mut reader) {
+                Ok(record) => record,
+                Err(error) => break Err(error),
+            };
+            if record["type"] != "commandResult" || record["requestId"] != request_id {
+                continue;
+            }
+            if record["result"]["accepted"] == true {
+                break Ok(());
+            }
+            break Err(io::Error::new(
+                io::ErrorKind::WouldBlock,
+                "Pi did not accept the graceful takeover request",
+            ));
         }
-        if record["result"]["accepted"] == true {
-            return Ok(());
-        }
-        return Err(io::Error::new(
-            io::ErrorKind::WouldBlock,
-            "Pi did not accept the graceful takeover request",
-        ));
-    }
+    });
+    Ok(PiShutdownAttempt {
+        process_id,
+        graceful_shutdown,
+    })
 }
 
-fn wait_for_pi_writer_lock(session_file: &Path) -> io::Result<OwnedFd> {
-    let deadline = Instant::now() + PI_TAKEOVER_TIMEOUT;
+fn wait_for_pi_writer_lock(session_file: &Path, timeout: Duration) -> io::Result<OwnedFd> {
+    let deadline = Instant::now() + timeout;
     loop {
         match acquire_pi_writer_lock(session_file) {
             Ok(lock) => return Ok(lock),
@@ -3285,7 +3930,7 @@ fn wait_for_pi_writer_lock(session_file: &Path) -> io::Result<OwnedFd> {
                 if Instant::now() >= deadline {
                     return Err(io::Error::new(
                         io::ErrorKind::TimedOut,
-                        "Pi accepted graceful shutdown but did not release its transcript lock",
+                        "Pi did not release its transcript lock",
                     ));
                 }
                 thread::sleep(Duration::from_millis(100));
@@ -3293,6 +3938,256 @@ fn wait_for_pi_writer_lock(session_file: &Path) -> io::Result<OwnedFd> {
             Err(error) => return Err(error),
         }
     }
+}
+
+fn wait_then_terminate_verified_pi(
+    session_file: &Path,
+    process_id: VerifiedPiProcessId,
+) -> io::Result<OwnedFd> {
+    match wait_for_pi_writer_lock(session_file, PI_RESTART_GRACE_PERIOD) {
+        Ok(lock) => return Ok(lock),
+        Err(error) if error.kind() == io::ErrorKind::TimedOut => {}
+        Err(error) => return Err(error),
+    }
+    match acquire_pi_writer_lock(session_file) {
+        Ok(lock) => return Ok(lock),
+        Err(error) if error.kind() == io::ErrorKind::WouldBlock => {}
+        Err(error) => return Err(error),
+    }
+
+    log::warn!(
+        "event=session.pi_force_termination_started pid={}",
+        process_id.0
+    );
+    signal_verified_pi_process(process_id, libc::SIGTERM)?;
+    match wait_for_pi_writer_lock(session_file, PI_TERMINATE_GRACE_PERIOD) {
+        Ok(lock) => {
+            log::info!("event=session.pi_force_termination_completed signal=term");
+            return Ok(lock);
+        }
+        Err(error) if error.kind() == io::ErrorKind::TimedOut => {}
+        Err(error) => return Err(error),
+    }
+    match acquire_pi_writer_lock(session_file) {
+        Ok(lock) => return Ok(lock),
+        Err(error) if error.kind() == io::ErrorKind::WouldBlock => {}
+        Err(error) => return Err(error),
+    }
+
+    signal_verified_pi_process(process_id, libc::SIGKILL)?;
+    let lock = wait_for_pi_writer_lock(session_file, PI_KILL_WAIT).map_err(|error| {
+        if error.kind() == io::ErrorKind::TimedOut {
+            io::Error::new(
+                io::ErrorKind::TimedOut,
+                "Pi still holds its transcript lock after termination",
+            )
+        } else {
+            error
+        }
+    })?;
+    log::info!("event=session.pi_force_termination_completed signal=kill");
+    Ok(lock)
+}
+
+fn signal_verified_pi_process(
+    process_id: VerifiedPiProcessId,
+    signal: libc::c_int,
+) -> io::Result<()> {
+    // Pi is launched as a new session, so its authenticated PID must still lead its own group.
+    // SAFETY: getpgid only inspects the validated PID returned by the Pi bridge.
+    let process_group = unsafe { libc::getpgid(process_id.0) };
+    if process_group == -1 {
+        let error = io::Error::last_os_error();
+        if error.raw_os_error() == Some(libc::ESRCH) {
+            return Ok(());
+        }
+        return Err(error);
+    }
+    if process_group != process_id.0 {
+        return Err(io::Error::new(
+            io::ErrorKind::PermissionDenied,
+            "authenticated Pi process is no longer its own session leader",
+        ));
+    }
+
+    // SAFETY: the group ID equals the PID from the exact authenticated session/pane identity.
+    if unsafe { libc::kill(-process_id.0, signal) } == 0 {
+        return Ok(());
+    }
+    let error = io::Error::last_os_error();
+    if error.raw_os_error() == Some(libc::ESRCH) {
+        return Ok(());
+    }
+    Err(error)
+}
+
+fn pi_shutdown_attempt_from_lock(
+    session_id: SessionId,
+    session_file: &Path,
+    error: io::Error,
+) -> io::Result<PiShutdownAttempt> {
+    let process_id = pi_writer_process_id_from_lock(session_file)?;
+    log::warn!(
+        "event=session.pi_process_verified_by_lock session_id={} pid={}",
+        session_id.0,
+        process_id.0
+    );
+    Ok(PiShutdownAttempt {
+        process_id,
+        graceful_shutdown: Err(error),
+    })
+}
+
+fn pi_bridge_unavailable_for_restart(error: &io::Error) -> bool {
+    matches!(
+        error.kind(),
+        io::ErrorKind::ConnectionRefused
+            | io::ErrorKind::TimedOut
+            | io::ErrorKind::WouldBlock
+            | io::ErrorKind::UnexpectedEof
+            | io::ErrorKind::BrokenPipe
+            | io::ErrorKind::ConnectionReset
+            | io::ErrorKind::NotFound
+    )
+}
+
+fn pi_writer_process_id_from_lock(session_file: &Path) -> io::Result<VerifiedPiProcessId> {
+    let lock_path = session_file.with_extension("jsonl.lock");
+    let output = Command::new("/usr/sbin/lsof")
+        .arg("-t")
+        .arg(&lock_path)
+        .output()?;
+    if !output.status.success() {
+        return Err(io::Error::new(
+            io::ErrorKind::NotFound,
+            "no process owns the Pi transcript lock",
+        ));
+    }
+
+    let process_ids = String::from_utf8(output.stdout)
+        .map_err(io::Error::other)?
+        .lines()
+        .map(|line| {
+            line.parse::<libc::pid_t>().map_err(|_| {
+                io::Error::new(
+                    io::ErrorKind::InvalidData,
+                    "lsof returned an invalid process ID",
+                )
+            })
+        })
+        .collect::<io::Result<HashSet<_>>>()?;
+    if process_ids.is_empty() {
+        return Err(io::Error::new(
+            io::ErrorKind::NotFound,
+            "no process owns the Pi transcript lock",
+        ));
+    }
+
+    let mut owners = Vec::with_capacity(process_ids.len());
+    for process_id in process_ids {
+        let output = Command::new("/bin/ps")
+            .args([
+                "-p",
+                &process_id.to_string(),
+                "-o",
+                "uid=",
+                "-o",
+                "pgid=",
+                "-o",
+                "comm=",
+            ])
+            .output()?;
+        if !output.status.success() {
+            return Err(io::Error::new(
+                io::ErrorKind::NotFound,
+                "Pi transcript lock owner exited during verification",
+            ));
+        }
+        let output = String::from_utf8(output.stdout).map_err(io::Error::other)?;
+        let mut fields = output.split_whitespace();
+        let user_id = fields
+            .next()
+            .and_then(|value| value.parse::<libc::uid_t>().ok())
+            .ok_or_else(|| io::Error::new(io::ErrorKind::InvalidData, "Pi owner UID is invalid"))?;
+        let process_group_id = fields
+            .next()
+            .and_then(|value| value.parse::<libc::pid_t>().ok())
+            .ok_or_else(|| {
+                io::Error::new(
+                    io::ErrorKind::InvalidData,
+                    "Pi owner process group is invalid",
+                )
+            })?;
+        let command = fields.next().ok_or_else(|| {
+            io::Error::new(io::ErrorKind::InvalidData, "Pi owner command is missing")
+        })?;
+        owners.push(PiLockOwner {
+            process_id,
+            user_id,
+            process_group_id,
+            command: command.to_owned(),
+        });
+    }
+
+    let process_id = verified_pi_lock_owner(&owners, unsafe { libc::getuid() })?;
+    // SAFETY: getpgid inspects the process that lsof and ps identified as this user's Pi lock owner.
+    if unsafe { libc::getpgid(process_id.0) } != process_id.0 {
+        return Err(io::Error::new(
+            io::ErrorKind::PermissionDenied,
+            "Pi transcript lock owner is no longer its own process-group leader",
+        ));
+    }
+    match acquire_pi_writer_lock(session_file) {
+        Err(error) if error.kind() == io::ErrorKind::WouldBlock => Ok(process_id),
+        Ok(lock) => {
+            drop(lock);
+            Err(io::Error::new(
+                io::ErrorKind::NotFound,
+                "Pi released its transcript lock during process verification",
+            ))
+        }
+        Err(error) => Err(error),
+    }
+}
+
+fn verified_pi_lock_owner(
+    owners: &[PiLockOwner],
+    current_user_id: libc::uid_t,
+) -> io::Result<VerifiedPiProcessId> {
+    let mut process_groups = owners.iter().map(|owner| owner.process_group_id);
+    let Some(process_group) = process_groups.next() else {
+        return Err(io::Error::new(
+            io::ErrorKind::NotFound,
+            "no Pi process owns the transcript lock",
+        ));
+    };
+    if owners
+        .iter()
+        .any(|owner| owner.user_id != current_user_id || owner.process_group_id != process_group)
+    {
+        return Err(io::Error::new(
+            io::ErrorKind::PermissionDenied,
+            "transcript lock is shared outside one user-owned process group",
+        ));
+    }
+    let leaders = owners.iter().filter(|owner| {
+        owner.process_id == process_group
+            && Path::new(&owner.command).file_name() == Some(OsStr::new("pi"))
+    });
+    let mut leaders = leaders;
+    let Some(leader) = leaders.next() else {
+        return Err(io::Error::new(
+            io::ErrorKind::PermissionDenied,
+            "transcript lock owner is not a Pi process-group leader",
+        ));
+    };
+    if leaders.next().is_some() || process_group <= 1 {
+        return Err(io::Error::new(
+            io::ErrorKind::PermissionDenied,
+            "transcript lock has an ambiguous Pi process-group owner",
+        ));
+    }
+    Ok(VerifiedPiProcessId(leader.process_id))
 }
 
 fn pi_bridge_token_key(session_uuid: &str) -> String {
@@ -3317,11 +4212,7 @@ fn load_pi_bridge_token(database: &Connection, session_uuid: &str) -> io::Result
     Ok(token)
 }
 
-fn store_pi_bridge_token(
-    database: &Connection,
-    session_uuid: &str,
-    token: &str,
-) -> io::Result<()> {
+fn store_pi_bridge_token(database: &Connection, session_uuid: &str, token: &str) -> io::Result<()> {
     database
         .execute(
             "INSERT INTO daemon_metadata (key, value) VALUES (?1, ?2)
@@ -3356,39 +4247,70 @@ fn spawn_pi(
     session_id: SessionId,
     initial_pwd: &Path,
     session_file: &Path,
-    bridge_socket: &Path,
+    bridge_socket: &PiBridgeSocketPath,
     session_uuid: &str,
     pane_id: &str,
+    takeover_policy: PiTakeoverPolicy,
 ) -> io::Result<RunningShell> {
-    if bridge_socket.as_os_str().as_encoded_bytes().len() >= 104 {
-        return Err(io::Error::new(
-            io::ErrorKind::InvalidInput,
-            "Pi bridge socket path is too long",
-        ));
-    }
     let previous_token = load_pi_bridge_token(database, session_uuid)?;
     let lock = match acquire_pi_writer_lock(session_file) {
         Ok(lock) => lock,
         Err(error) if error.kind() == io::ErrorKind::WouldBlock => {
-            let Some(token) = previous_token.as_deref() else {
-                return Err(io::Error::new(
-                    io::ErrorKind::WouldBlock,
-                    "Pi transcript is held by a legacy writer that cannot be controlled by RPC",
-                ));
-            };
             log::info!(
                 "event=session.pi_takeover_requested session_id={}",
                 session_id.0
             );
-            request_pi_shutdown(
-                bridge_socket,
-                token,
-                session_uuid,
-                pane_id,
-                initial_pwd,
-                session_file,
-            )?;
-            let lock = wait_for_pi_writer_lock(session_file)?;
+            let shutdown_attempt = match previous_token.as_deref() {
+                Some(token) => match request_pi_shutdown(
+                    bridge_socket.as_path(),
+                    token,
+                    session_uuid,
+                    pane_id,
+                    initial_pwd,
+                    session_file,
+                ) {
+                    Ok(attempt) => attempt,
+                    Err(error)
+                        if takeover_policy == PiTakeoverPolicy::ExplicitUserRestart
+                            && pi_bridge_unavailable_for_restart(&error) =>
+                    {
+                        pi_shutdown_attempt_from_lock(session_id, session_file, error)?
+                    }
+                    Err(error) => return Err(error),
+                },
+                None if takeover_policy == PiTakeoverPolicy::ExplicitUserRestart => {
+                    pi_shutdown_attempt_from_lock(
+                        session_id,
+                        session_file,
+                        io::Error::new(
+                            io::ErrorKind::ConnectionRefused,
+                            "Pi bridge credential is unavailable",
+                        ),
+                    )?
+                }
+                None => {
+                    return Err(io::Error::new(
+                        io::ErrorKind::WouldBlock,
+                        "Pi transcript is held by a legacy writer that cannot be controlled by RPC",
+                    ));
+                }
+            };
+            let lock = match takeover_policy {
+                PiTakeoverPolicy::PreserveExistingProcess => {
+                    shutdown_attempt.graceful_shutdown?;
+                    wait_for_pi_writer_lock(session_file, PI_TAKEOVER_TIMEOUT)?
+                }
+                PiTakeoverPolicy::ExplicitUserRestart => {
+                    if let Err(error) = &shutdown_attempt.graceful_shutdown {
+                        log::warn!(
+                            "event=session.pi_shutdown_unconfirmed session_id={} error_kind={:?}",
+                            session_id.0,
+                            error.kind()
+                        );
+                    }
+                    wait_then_terminate_verified_pi(session_file, shutdown_attempt.process_id)?
+                }
+            };
             log::info!(
                 "event=session.pi_takeover_completed session_id={}",
                 session_id.0
@@ -3452,7 +4374,7 @@ fn spawn_pi(
         .env("AXO_SESSION_ID", session_uuid)
         .env("AXO_PANE_ID", pane_id)
         .env("AXO_PI_SESSION_FILE", session_file)
-        .env("AXO_PI_BRIDGE_SOCKET", bridge_socket)
+        .env("AXO_PI_BRIDGE_SOCKET", bridge_socket.as_path())
         .env("AXO_PI_BRIDGE_TOKEN", &bridge_token)
         .stdin(Stdio::null())
         .stdout(Stdio::null())
@@ -3509,7 +4431,7 @@ fn spawn_pi(
         output_sequence: 0,
         last_input_sequence: None,
         _writer_lock: Some(lock),
-        pi_bridge_socket: Some(bridge_socket.to_path_buf()),
+        pi_bridge_socket: Some(bridge_socket.clone()),
         pi_bridge_token: Some(bridge_token),
     })
 }
@@ -3602,7 +4524,7 @@ fn run_pi_bridge_worker(
     pane_id: String,
     initial_pwd: PathBuf,
     session_file: PathBuf,
-    bridge_socket: PathBuf,
+    bridge_socket: PiBridgeSocketPath,
     bridge_token: String,
     process_id: u32,
 ) {
@@ -3616,7 +4538,7 @@ fn run_pi_bridge_worker(
         }
         drop(owner);
 
-        let mut stream = match UnixStream::connect(&bridge_socket) {
+        let mut stream = match UnixStream::connect(bridge_socket.as_path()) {
             Ok(stream) => {
                 if !has_connected {
                     log::info!(
@@ -4107,6 +5029,36 @@ fn internal_rpc_error(error: io::Error) -> RpcError {
     }
 }
 
+fn pi_restart_rpc_error(session_id: SessionId, shell_id: ShellId, error: io::Error) -> RpcError {
+    log::error!(
+        "event=session.pi_restart_failed session_id={} shell_id={} error_kind={:?}",
+        session_id.0,
+        shell_id.0,
+        error.kind()
+    );
+    let message = match error.kind() {
+        io::ErrorKind::ConnectionRefused => {
+            "The previous Pi process is not accepting control connections. Its transcript was left untouched."
+        }
+        io::ErrorKind::PermissionDenied => {
+            "Axo could not verify the previous Pi process for this pane, so it was not terminated."
+        }
+        io::ErrorKind::WouldBlock => {
+            "Axo could not establish safe control of the previous Pi process, so it was not terminated."
+        }
+        io::ErrorKind::TimedOut => {
+            "Axo could not acquire the Pi conversation lock after stopping the pane's process. Its history was left untouched."
+        }
+        io::ErrorKind::NotFound => "This Pi pane is no longer available to restart.",
+        _ => "Axo could not restart this Pi session. Its conversation history was preserved.",
+    };
+    RpcError {
+        code: ErrorCode::InternalError,
+        message: message.to_owned(),
+        data: None,
+    }
+}
+
 fn decode_base64(input: &str) -> io::Result<Vec<u8>> {
     let (chunks, trailing_bytes) = input.as_bytes().as_chunks::<4>();
     if input.is_empty() || input.len() > 65_536 || !trailing_bytes.is_empty() {
@@ -4238,6 +5190,17 @@ impl Drop for RunningShell {
 mod tests {
     use super::*;
 
+    struct ChildProcessGuard(Child);
+
+    impl Drop for ChildProcessGuard {
+        fn drop(&mut self) {
+            if !matches!(self.0.try_wait(), Ok(Some(_))) {
+                let _ = self.0.kill();
+                let _ = self.0.wait();
+            }
+        }
+    }
+
     #[test]
     fn host_identity_persists_while_generation_rotates() {
         let directory =
@@ -4273,6 +5236,87 @@ mod tests {
     }
 
     #[test]
+    fn manual_session_rename_is_separate_and_workspace_archive_preserves_history() {
+        let directory = PathBuf::from("/tmp").join(format!("axor-{}", create_uuid_v4().unwrap()));
+        fs::create_dir_all(&directory).unwrap();
+        let manager = SessionManager::open(&directory).unwrap();
+        let workspace_id = create_uuid_v4().unwrap();
+        let session_uuid = create_uuid_v4().unwrap();
+        let session_id = SessionId(702);
+        let history = directory.join("pi-session.jsonl");
+        fs::write(&history, b"canonical Pi history").unwrap();
+        {
+            let state = manager.lock_state().unwrap();
+            state
+                .database
+                .execute(
+                    "INSERT INTO workspaces
+                     (workspace_id, name, directory_path, state, created_at)
+                     VALUES (?1, 'Original Workspace', '/tmp', 'open', ?2)",
+                    params![workspace_id, unix_timestamp()],
+                )
+                .unwrap();
+            state
+                .database
+                .execute(
+                    "INSERT INTO sessions
+                     (id, initial_pwd, state, created_at, workspace_id, session_uuid, name, pi_session_file)
+                     VALUES (?1, '/tmp', 'open', ?2, ?3, ?4, 'Pi conversation title', ?5)",
+                    params![
+                        session_id.0,
+                        unix_timestamp(),
+                        workspace_id,
+                        session_uuid,
+                        history.to_string_lossy(),
+                    ],
+                )
+                .unwrap();
+        }
+
+        let renamed_session = manager.rename_session(session_id, "Sidebar label").unwrap();
+        assert_eq!(renamed_session.name, "Pi conversation title");
+        assert_eq!(
+            renamed_session.manual_name.as_deref(),
+            Some("Sidebar label")
+        );
+        assert_eq!(renamed_session.to_json()["manualName"], "Sidebar label");
+
+        let renamed_workspace = manager
+            .rename_workspace(&workspace_id, "Renamed Workspace")
+            .unwrap();
+        assert_eq!(renamed_workspace["name"], "Renamed Workspace");
+        let session_after_workspace_rename =
+            manager.rename_session(session_id, "Sidebar label").unwrap();
+        assert_eq!(
+            session_after_workspace_rename.workspace_name.as_deref(),
+            Some("Renamed Workspace")
+        );
+
+        let archived_sessions = manager.archive_workspace(&workspace_id).unwrap();
+        assert_eq!(archived_sessions, vec![session_id]);
+        assert!(manager.list_workspaces().unwrap().is_empty());
+        let state = manager.lock_state().unwrap();
+        let archived_state: (String, String) = state
+            .database
+            .query_row(
+                "SELECT state, termination_reason FROM sessions WHERE id = ?1",
+                params![session_id.0],
+                |row| Ok((row.get(0)?, row.get(1)?)),
+            )
+            .unwrap();
+        assert_eq!(
+            archived_state,
+            ("archived".to_owned(), "workspace_archived".to_owned())
+        );
+        drop(state);
+        assert_eq!(fs::read(&history).unwrap(), b"canonical Pi history");
+
+        manager.shutdown();
+        drop(manager);
+        fs::remove_dir_all(directory).unwrap();
+    }
+
+    #[test]
     fn remote_session_snapshots_exclude_local_process_and_filesystem_details() {
         let session = SessionMetadata {
             id: SessionId(9),
@@ -4282,6 +5326,7 @@ mod tests {
             workspace_id: Some("a0b7d77a-5551-4cbc-8dfc-75b2d466dece".to_owned()),
             workspace_name: Some("private".to_owned()),
             name: "Session 1".to_owned(),
+            manual_name: Some("Manual label".to_owned()),
             emoji: Some("🦀".to_owned()),
             status: SessionStatus::Ready,
             initial_pwd: PathBuf::from("/private/path"),
@@ -4293,6 +5338,8 @@ mod tests {
                 initial_pwd: PathBuf::from("/private/path"),
                 slave_device: "/dev/ttys001".to_owned(),
                 attach_socket_path: PathBuf::from("/private/path/attach.sock"),
+                available: true,
+                availability_reason: None,
             }],
             layout: Some(SessionLayout::Pane { shell_id: 12 }),
         };
@@ -4339,7 +5386,10 @@ mod tests {
         let first_token = create_uuid_v4().unwrap();
         let second_token = create_uuid_v4().unwrap();
 
-        assert_eq!(load_pi_bridge_token(&database, &session_uuid).unwrap(), None);
+        assert_eq!(
+            load_pi_bridge_token(&database, &session_uuid).unwrap(),
+            None
+        );
         store_pi_bridge_token(&database, &session_uuid, &first_token).unwrap();
         assert_eq!(
             load_pi_bridge_token(&database, &session_uuid).unwrap(),
@@ -4350,6 +5400,291 @@ mod tests {
             load_pi_bridge_token(&database, &session_uuid).unwrap(),
             Some(second_token)
         );
+    }
+
+    #[test]
+    fn pi_bridge_socket_path_is_stable_and_within_the_shared_byte_limit() {
+        let session_uuid = "82cfd1e8-1cc6-4473-a16d-6f0e77476311";
+        let exact_limit_directory = PathBuf::from(format!("/{}", "d".repeat(57)));
+        let exact_limit =
+            PiBridgeSocketPath::for_session(&exact_limit_directory, session_uuid).unwrap();
+        assert_eq!(
+            exact_limit.0.as_os_str().as_encoded_bytes().len(),
+            MAX_PI_BRIDGE_SOCKET_PATH_BYTES
+        );
+
+        let too_long_directory = PathBuf::from(format!("/{}", "d".repeat(58)));
+        let fallback = PiBridgeSocketPath::for_session(&too_long_directory, session_uuid).unwrap();
+        assert_eq!(
+            fallback.as_path(),
+            Path::new(&format!("/tmp/axo-pi-{session_uuid}.sock"))
+        );
+        assert!(
+            fallback.as_path().as_os_str().as_encoded_bytes().len()
+                <= MAX_PI_BRIDGE_SOCKET_PATH_BYTES
+        );
+
+        assert!(PiBridgeSocketPath::parse(PathBuf::from(format!("/{}", "x".repeat(100)))).is_err());
+        assert!(PiBridgeSocketPath::parse(PathBuf::from("relative.sock")).is_err());
+        assert!(PiBridgeSocketPath::for_session(&too_long_directory, "not-a-uuid").is_err());
+    }
+
+    #[test]
+    fn authenticated_pi_process_ids_reject_invalid_or_self_targets() {
+        for value in [
+            json!(0),
+            json!(1),
+            json!(-1),
+            json!(u64::MAX),
+            json!(std::process::id()),
+        ] {
+            assert!(VerifiedPiProcessId::parse(&value).is_err());
+        }
+    }
+
+    #[test]
+    fn pi_lock_fallback_requires_one_user_owned_pi_process_group() {
+        let owners = [
+            PiLockOwner {
+                process_id: 42,
+                user_id: 501,
+                process_group_id: 42,
+                command: "/opt/homebrew/bin/pi".to_owned(),
+            },
+            PiLockOwner {
+                process_id: 43,
+                user_id: 501,
+                process_group_id: 42,
+                command: "node".to_owned(),
+            },
+        ];
+        assert_eq!(verified_pi_lock_owner(&owners, 501).unwrap().0, 42);
+
+        let mut foreign_group = owners.clone();
+        foreign_group[1].process_group_id = 44;
+        assert!(verified_pi_lock_owner(&foreign_group, 501).is_err());
+
+        let mut foreign_user = owners.clone();
+        foreign_user[0].user_id = 502;
+        assert!(verified_pi_lock_owner(&foreign_user, 501).is_err());
+
+        let mut non_pi_leader = owners;
+        non_pi_leader[0].command = "shell".to_owned();
+        assert!(verified_pi_lock_owner(&non_pi_leader, 501).is_err());
+    }
+
+    #[test]
+    fn bridge_fallback_is_limited_to_unavailable_transport_errors() {
+        for kind in [
+            io::ErrorKind::ConnectionRefused,
+            io::ErrorKind::TimedOut,
+            io::ErrorKind::WouldBlock,
+            io::ErrorKind::UnexpectedEof,
+            io::ErrorKind::BrokenPipe,
+            io::ErrorKind::ConnectionReset,
+            io::ErrorKind::NotFound,
+        ] {
+            assert!(pi_bridge_unavailable_for_restart(&io::Error::from(kind)));
+        }
+        assert!(!pi_bridge_unavailable_for_restart(&io::Error::from(
+            io::ErrorKind::PermissionDenied
+        )));
+        assert!(!pi_bridge_unavailable_for_restart(&io::Error::from(
+            io::ErrorKind::InvalidData
+        )));
+    }
+
+    #[test]
+    fn explicit_pi_restart_terminates_only_the_authenticated_pane_and_preserves_history() {
+        let directory = PathBuf::from("/tmp").join(format!("axor-{}", create_uuid_v4().unwrap()));
+        let server_directory = directory.join("server");
+        let pi_session_directory = server_directory.join("pi-sessions");
+        fs::create_dir_all(&pi_session_directory).unwrap();
+
+        let session_id = SessionId(701);
+        let shell_id = ShellId(801);
+        let session_uuid = create_uuid_v4().unwrap();
+        let pane_id = create_uuid_v4().unwrap();
+        let session_file = pi_session_directory.join(format!("{session_uuid}.jsonl"));
+        fs::write(&session_file, b"preserved Pi transcript\n").unwrap();
+        let lock_path = session_file.with_extension("jsonl.lock");
+        let lock = OpenOptions::new()
+            .create(true)
+            .read(true)
+            .write(true)
+            .open(&lock_path)
+            .unwrap();
+        // SAFETY: lock is a live file descriptor opened by this isolated test.
+        assert_eq!(
+            unsafe { libc::flock(lock.as_raw_fd(), libc::LOCK_EX | libc::LOCK_NB) },
+            0
+        );
+        // Make the locked open-file description survive exec so the fixture Pi owns the lock.
+        let lock_fd = lock.as_raw_fd();
+        let mut old_pi_command = Command::new("/bin/sh");
+        old_pi_command.args(["-c", "trap '' TERM; exec /bin/sleep 60"]);
+        // SAFETY: the child-only hook clears close-on-exec on the fixture lock descriptor.
+        unsafe {
+            old_pi_command.pre_exec(move || {
+                if libc::setsid() == -1 {
+                    return Err(io::Error::last_os_error());
+                }
+                if libc::fcntl(lock_fd, libc::F_SETFD, 0) == -1 {
+                    return Err(io::Error::last_os_error());
+                }
+                Ok(())
+            });
+        }
+        let mut old_pi = ChildProcessGuard(old_pi_command.spawn().unwrap());
+        let old_pi_process_id = old_pi.0.id();
+        drop(lock);
+
+        let mut database = Connection::open(server_directory.join(DATABASE_FILE)).unwrap();
+        initialize_database(&mut database).unwrap();
+        database
+            .execute(
+                "INSERT INTO sessions
+                    (id, initial_pwd, state, created_at, layout_json, session_uuid, name, pi_session_file)
+                 VALUES (?1, '/tmp', 'open', ?2, ?3, ?4, 'Recovery fixture', ?5)",
+                params![
+                    session_id.0,
+                    unix_timestamp(),
+                    serde_json::to_string(&SessionLayout::Pane { shell_id: shell_id.0 }).unwrap(),
+                    session_uuid,
+                    session_file.to_string_lossy(),
+                ],
+            )
+            .unwrap();
+        database
+            .execute(
+                "INSERT INTO shells (id, session_id, initial_pwd, state, created_at, role, pane_id)
+                 VALUES (?1, ?2, '/tmp', 'open', ?3, 'pi', ?4)",
+                params![shell_id.0, session_id.0, unix_timestamp(), pane_id],
+            )
+            .unwrap();
+        let bridge_token = create_uuid_v4().unwrap();
+        store_pi_bridge_token(&database, &session_uuid, &bridge_token).unwrap();
+        drop(database);
+
+        let bridge_socket =
+            PiBridgeSocketPath::for_session(&pi_session_directory, &session_uuid).unwrap();
+        drop(UnixListener::bind(bridge_socket.as_path()).unwrap());
+
+        let manager = SessionManager::open(&server_directory).unwrap();
+        let stored_bridge_socket: String = manager
+            .lock_state()
+            .unwrap()
+            .database
+            .query_row(
+                "SELECT pi_bridge_socket_path FROM sessions WHERE id = ?1",
+                params![session_id.0],
+                |row| row.get(0),
+            )
+            .unwrap();
+        assert_eq!(PathBuf::from(stored_bridge_socket), bridge_socket.0);
+        let sessions = manager.list_sessions().unwrap();
+        assert_eq!(sessions.len(), 1);
+        assert_eq!(sessions[0].id, session_id);
+        assert!(matches!(sessions[0].status, SessionStatus::Unavailable));
+        assert_eq!(
+            sessions[0].layout,
+            Some(SessionLayout::Pane {
+                shell_id: shell_id.0
+            })
+        );
+        assert_eq!(sessions[0].shells.len(), 1);
+        assert_eq!(sessions[0].shells[0].id, shell_id);
+        assert!(!sessions[0].shells[0].available);
+        assert_eq!(sessions[0].shells[0].process_id, 0);
+        assert!(sessions[0].shells[0].availability_reason.is_some());
+        assert_eq!(sessions[0].to_json()["shells"][0]["available"], false);
+        manager
+            .set_layout(
+                session_id,
+                SessionLayout::Pane {
+                    shell_id: shell_id.0,
+                },
+            )
+            .unwrap();
+        let restart_error = manager
+            .restart_unavailable_pi(session_id, shell_id)
+            .unwrap_err();
+        assert_eq!(restart_error.kind(), io::ErrorKind::PermissionDenied);
+        assert!(old_pi.0.try_wait().unwrap().is_none());
+        assert!(!manager.list_sessions().unwrap()[0].shells[0].available);
+
+        manager.restore_open_sessions().unwrap();
+        assert_eq!(manager.list_sessions().unwrap().len(), 1);
+        assert!(!manager.list_sessions().unwrap()[0].shells[0].available);
+
+        fs::remove_file(bridge_socket.as_path()).unwrap();
+        let listener = UnixListener::bind(bridge_socket.as_path()).unwrap();
+        let handshake_session_file = session_file.to_string_lossy().into_owned();
+        let handshake_session_uuid = session_uuid.clone();
+        let handshake_pane_id = pane_id.clone();
+        let handshake_bridge_token = bridge_token.clone();
+        let bridge_server = thread::spawn(move || {
+            let (stream, _) = listener.accept().unwrap();
+            let mut reader = BufReader::new(stream);
+            let authentication = read_pi_bridge_record(&mut reader).unwrap();
+            assert_eq!(authentication["token"], handshake_bridge_token);
+            write_json_line(
+                reader.get_mut(),
+                &json!({ "type": "authenticated", "protocolVersion": 1 }),
+            )
+            .unwrap();
+            write_json_line(
+                reader.get_mut(),
+                &json!({
+                    "type": "hello",
+                    "protocolVersion": 1,
+                    "identity": {
+                        "axoSessionId": handshake_session_uuid,
+                        "axoPaneId": handshake_pane_id,
+                        "sessionFile": handshake_session_file,
+                        "cwd": "/tmp",
+                        "processId": old_pi_process_id
+                    }
+                }),
+            )
+            .unwrap();
+            let shutdown = read_pi_bridge_record(&mut reader).unwrap();
+            assert_eq!(shutdown["action"]["kind"], "shutdown");
+            write_json_line(
+                reader.get_mut(),
+                &json!({
+                    "type": "commandResult",
+                    "requestId": shutdown["requestId"],
+                    "result": { "accepted": false, "reason": "stale" }
+                }),
+            )
+            .unwrap();
+        });
+
+        let fake_pi = directory.join("fake-pi");
+        fs::write(&fake_pi, "#!/bin/sh\nexec /bin/sleep 60\n").unwrap();
+        fs::set_permissions(&fake_pi, fs::Permissions::from_mode(0o700)).unwrap();
+        manager.lock_state().unwrap().agent_command =
+            AgentCommand::parse(fake_pi.to_str().unwrap()).unwrap();
+
+        let restarted = manager
+            .restart_unavailable_pi(session_id, shell_id)
+            .unwrap();
+        bridge_server.join().unwrap();
+        assert_eq!(restarted.id, session_id);
+        assert_eq!(restarted.shells.len(), 1);
+        assert_eq!(restarted.shells[0].id, shell_id);
+        assert!(restarted.shells[0].available);
+        assert!(restarted.shells[0].process_id > 0);
+        assert!(manager.list_sessions().unwrap()[0].shells[0].available);
+        assert!(old_pi.0.try_wait().unwrap().is_some());
+        assert_eq!(
+            fs::read(&session_file).unwrap(),
+            b"preserved Pi transcript\n"
+        );
+        manager.shutdown();
+        drop(manager);
+        fs::remove_dir_all(directory).unwrap();
     }
 
     #[test]
@@ -4430,7 +5765,23 @@ mod tests {
             .query_row("PRAGMA user_version", [], |row| row.get(0))
             .unwrap();
         assert_eq!(layout, None);
-        assert_eq!(schema_version, 5);
+        assert_eq!(schema_version, 7);
+        let manual_name_column: i64 = database
+            .query_row(
+                "SELECT COUNT(*) FROM pragma_table_info('sessions') WHERE name = 'manual_name'",
+                [],
+                |row| row.get(0),
+            )
+            .unwrap();
+        assert_eq!(manual_name_column, 1);
+        let bridge_socket_column: i64 = database
+            .query_row(
+                "SELECT COUNT(*) FROM pragma_table_info('sessions') WHERE name = 'pi_bridge_socket_path'",
+                [],
+                |row| row.get(0),
+            )
+            .unwrap();
+        assert_eq!(bridge_socket_column, 1);
         let session_state: String = database
             .query_row("SELECT state FROM sessions WHERE id = 1", [], |row| {
                 row.get(0)

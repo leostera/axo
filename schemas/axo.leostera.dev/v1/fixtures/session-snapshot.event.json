@@ -8,13 +8,16 @@
       "session": {
         "id": 9,
         "initialPwd": "/Users/example",
+        "manualName": null,
         "shells": [
           {
             "id": 12,
             "processId": 4801,
             "initialPwd": "/Users/example",
             "ptyDevice": "/dev/ttys001",
-            "attachSocketPath": "/tmp/axo/attach.sock"
+            "attachSocketPath": "/tmp/axo/attach.sock",
+            "available": true,
+            "availabilityReason": null
           }
         ],
         "layout": { "kind": "pane", "shellId": 12 }

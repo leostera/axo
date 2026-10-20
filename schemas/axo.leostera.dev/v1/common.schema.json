@@ -54,21 +54,23 @@
     "LocalShell": {
       "type": "object",
       "additionalProperties": false,
-      "required": ["id", "processId", "initialPwd", "ptyDevice", "attachSocketPath"],
+      "required": ["id", "processId", "initialPwd", "ptyDevice", "attachSocketPath", "available", "availabilityReason"],
       "properties": {
         "id": { "$ref": "#/$defs/ShellId" },
         "paneId": { "anyOf": [{ "$ref": "#/$defs/HostId" }, { "type": "null" }] },
         "role": { "type": "string", "enum": ["pi", "terminal"] },
-        "processId": { "type": "integer", "minimum": 1, "maximum": 4294967295 },
+        "processId": { "type": "integer", "minimum": 0, "maximum": 4294967295 },
         "initialPwd": { "type": "string", "minLength": 1 },
-        "ptyDevice": { "type": "string", "minLength": 1 },
-        "attachSocketPath": { "type": "string", "minLength": 1 }
+        "ptyDevice": { "type": "string" },
+        "attachSocketPath": { "type": "string", "minLength": 1 },
+        "available": { "type": "boolean" },
+        "availabilityReason": { "anyOf": [{ "type": "string", "minLength": 1 }, { "type": "null" }] }
       }
     },
     "LocalSession": {
       "type": "object",
       "additionalProperties": false,
-      "required": ["id", "initialPwd", "shells"],
+      "required": ["id", "initialPwd", "shells", "manualName"],
       "properties": {
         "id": { "$ref": "#/$defs/SessionId" },
         "sessionUuid": { "$ref": "#/$defs/HostId" },
@@ -77,6 +79,7 @@
         "workspaceId": { "anyOf": [{ "$ref": "#/$defs/HostId" }, { "type": "null" }] },
         "workspaceName": { "anyOf": [{ "type": "string", "minLength": 1 }, { "type": "null" }] },
         "name": { "type": "string", "minLength": 1, "maxLength": 80 },
+        "manualName": { "anyOf": [{ "type": "string", "minLength": 1, "maxLength": 80 }, { "type": "null" }] },
         "emoji": { "anyOf": [{ "type": "string", "minLength": 1, "maxLength": 64 }, { "type": "null" }] },
         "status": { "type": "string", "enum": ["starting", "ready", "working", "needsAttention", "unavailable"] },
         "initialPwd": { "type": "string", "minLength": 1 },

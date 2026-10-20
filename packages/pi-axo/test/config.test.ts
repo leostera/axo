@@ -10,6 +10,13 @@ const environment = {
   AXO_PI_BRIDGE_TOKEN: "11cfda23-bc7c-4812-9613-4336f44b498e",
 };
 
+test("accepts socket paths only within the shared 100-byte limit", () => {
+  const exactlyAtLimit = `/${"x".repeat(99)}`;
+  const tooLong = `/${"x".repeat(100)}`;
+  assert.ok(parseAxoPiExtensionConfig({ ...environment, AXO_PI_BRIDGE_SOCKET: exactlyAtLimit }));
+  assert.equal(parseAxoPiExtensionConfig({ ...environment, AXO_PI_BRIDGE_SOCKET: tooLong }), null);
+});
+
 test("requires Axod's complete, absolute, session-scoped launch binding", () => {
   assert.deepEqual(parseAxoPiExtensionConfig(environment), {
     socketPath: environment.AXO_PI_BRIDGE_SOCKET,

@@ -48,9 +48,16 @@ test("bridges Pi events and remote commands without owning the Pi process", asyn
 
   const pi = {
     on(name: string, handler: (event: never, context: never) => unknown) {
-      registered.set(name, handler);
+      const previous = registered.get(name);
+      registered.set(name, previous === undefined
+        ? handler
+        : async (event, context) => {
+          await previous(event, context);
+          return handler(event, context);
+        });
       return () => registered.delete(name);
     },
+    registerTool() {},
     sendUserMessage(text: string, options?: unknown) {
       sentMessages.push({ text, options });
     },
@@ -64,6 +71,8 @@ test("bridges Pi events and remote commands without owning the Pi process", asyn
     sessionManager: {
       getSessionId: () => "pi-session-1",
       getSessionFile: () => "/private/axo/pi-session-1.jsonl",
+      getSessionName: () => undefined,
+      getBranch: () => [],
     },
   } as unknown as ExtensionContext;
 

@@ -3,13 +3,16 @@
     {
       "id": 9,
       "initialPwd": "/tmp",
+      "manualName": null,
       "shells": [
         {
           "id": 12,
           "processId": 4321,
           "initialPwd": "/tmp",
           "ptyDevice": "/dev/ttys001",
-          "attachSocketPath": "/tmp/axo/attach.sock"
+          "attachSocketPath": "/tmp/axo/attach.sock",
+          "available": true,
+          "availabilityReason": null
         }
       ],
       "layout": {

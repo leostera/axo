@@ -135,6 +135,7 @@ final class TerminalSessionsModel: ObservableObject {
             workspaceId: session.workspaceId,
             workspaceName: session.workspaceName,
             name: session.name,
+            manualName: session.manualName,
             emoji: session.emoji,
             status: session.status
           )
@@ -142,7 +143,10 @@ final class TerminalSessionsModel: ObservableObject {
         if let normalizedLayout, serverLayout != normalizedLayout {
           scheduleLayoutPersistence(for: session.id)
         }
-        if selectedSessionID == session.id, let newestShellID = newlyCreatedShellIDs.max() {
+        if selectedSessionID == session.id,
+          let newestShellID = session.shells.filter(\.isAvailable).map(\.id)
+            .filter(newlyCreatedShellIDs.contains).max()
+        {
           focusedShellID = newestShellID
         } else if selectedSessionID == session.id,
           let previousFocus = focusedShellID,
@@ -300,36 +304,139 @@ final class TerminalSessionsModel: ObservableObject {
   }
 
   func closeSession(_ sessionID: Int64) async {
-    guard let socketPath else {
-      errorMessage = socketPathError ?? "The axod socket path is unavailable."
-      return
-    }
-    let closingSession = session(for: sessionID)
-
     do {
-      let closed = try await UnixSocketRPC.closeSession(sessionID, at: socketPath)
-      layoutsBySession.removeValue(forKey: sessionID)
-      discardPendingLayoutWrite(for: sessionID)
-      sessions.removeAll { $0.id == sessionID }
-      if let replacement = closed.replacement {
-        add(replacement)
-      }
-      if selectedSessionID == sessionID {
-        selectedSessionID = closingSession.map {
-          sessionToSelect(afterClosing: $0, replacement: closed.replacement)
-        } ?? sessions.first?.id
-        recentSessionIDs.removeAll { $0 == sessionID }
-      }
-      if let selectedSessionID {
-        activate(selectedSessionID)
-      } else {
-        layout = nil
-        focusedShellID = nil
-      }
-      await refresh()
+      try await archiveSession(sessionID)
     } catch {
       errorMessage = error.localizedDescription
     }
+  }
+
+  func archiveSession(_ sessionID: Int64) async throws {
+    guard let socketPath else {
+      throw UnixSocketRPCError.invalidResponse(
+        socketPathError ?? "The axod socket path is unavailable.")
+    }
+    let closingSession = session(for: sessionID)
+    let closed = try await UnixSocketRPC.closeSession(sessionID, at: socketPath)
+    layoutsBySession.removeValue(forKey: sessionID)
+    discardPendingLayoutWrite(for: sessionID)
+    sessions.removeAll { $0.id == sessionID }
+    if let replacement = closed.replacement {
+      add(replacement)
+    }
+    if selectedSessionID == sessionID {
+      selectedSessionID = closingSession.map {
+        sessionToSelect(afterClosing: $0, replacement: closed.replacement)
+      } ?? sessions.first?.id
+      recentSessionIDs.removeAll { $0 == sessionID }
+    }
+    if let selectedSessionID {
+      activate(selectedSessionID)
+    } else {
+      layout = nil
+      focusedShellID = nil
+    }
+    await refresh()
+  }
+
+  func renameSession(_ sessionID: Int64, to name: String) async throws {
+    guard let socketPath else {
+      throw UnixSocketRPCError.invalidResponse(
+        socketPathError ?? "The axod socket path is unavailable.")
+    }
+    try await requireMethod("axo.session.rename", at: socketPath)
+    let renamed = try await UnixSocketRPC.renameSession(sessionID, to: name, at: socketPath)
+    guard renamed.id == sessionID, renamed.manualName == name else {
+      throw UnixSocketRPCError.invalidResponse("axod did not apply the Session name.")
+    }
+    await refresh()
+  }
+
+  func renameWorkspace(_ workspaceID: String, to name: String) async throws {
+    guard let socketPath else {
+      throw UnixSocketRPCError.invalidResponse(
+        socketPathError ?? "The axod socket path is unavailable.")
+    }
+    try await requireMethod("axo.workspace.rename", at: socketPath)
+    let renamed = try await UnixSocketRPC.renameWorkspace(workspaceID, to: name, at: socketPath)
+    guard renamed.workspaceId == workspaceID, renamed.name == name else {
+      throw UnixSocketRPCError.invalidResponse("axod did not apply the Workspace name.")
+    }
+    await refresh()
+  }
+
+  func archiveWorkspace(_ workspaceID: String) async throws {
+    guard let socketPath else {
+      throw UnixSocketRPCError.invalidResponse(
+        socketPathError ?? "The axod socket path is unavailable.")
+    }
+    try await requireMethod("axo.workspace.archive", at: socketPath)
+    let archived = try await UnixSocketRPC.archiveWorkspace(workspaceID, at: socketPath)
+    guard archived.archivedWorkspaceId == workspaceID else {
+      throw UnixSocketRPCError.invalidResponse("axod archived a different Workspace.")
+    }
+
+    let archivedSessionIDs = Set(archived.archivedSessionIds)
+    for sessionID in archivedSessionIDs {
+      layoutsBySession.removeValue(forKey: sessionID)
+      discardPendingLayoutWrite(for: sessionID)
+    }
+    sessions.removeAll { archivedSessionIDs.contains($0.id) }
+    workspaces.removeAll { $0.workspaceId == workspaceID }
+    if let selectedID = selectedSessionID, archivedSessionIDs.contains(selectedID) {
+      selectedSessionID = sessions.first(where: { $0.workspaceId == nil })?.id ?? sessions.first?.id
+    }
+    if let selectedSessionID {
+      activate(selectedSessionID)
+    } else {
+      layout = nil
+      focusedShellID = nil
+    }
+    await refresh()
+  }
+
+  private func requireMethod(_ method: String, at socketPath: UnixSocketPath) async throws {
+    let negotiation = try await UnixSocketRPC.negotiate(at: socketPath)
+    guard negotiation.protocolVersion == UnixSocketRPC.protocolVersion,
+      negotiation.methods.contains(method)
+    else {
+      throw UnixSocketRPCError.invalidResponse(
+        "This action requires a newer Axod. Your Sessions and Workspace are unchanged.")
+    }
+  }
+
+  func restartPiSession(_ shellID: Int64) async throws {
+    guard let socketPath else {
+      throw UnixSocketRPCError.invalidResponse(
+        socketPathError ?? "The axod socket path is unavailable.")
+    }
+    guard let sessionID = selectedSessionID,
+      let shell = shell(for: shellID),
+      shell.role == "pi",
+      !shell.isAvailable
+    else {
+      throw UnixSocketRPCError.invalidResponse("This Pi pane is no longer available to restart.")
+    }
+
+    let negotiation = try await UnixSocketRPC.negotiate(at: socketPath)
+    guard negotiation.protocolVersion == UnixSocketRPC.protocolVersion,
+      negotiation.methods.contains("axo.session.pi.restart.force.v2")
+    else {
+      throw UnixSocketRPCError.invalidResponse(
+        "Pi recovery is not yet supported by the running Axod. Your session history is preserved.")
+    }
+
+    let restarted = try await UnixSocketRPC.restartPiSession(
+      shellID: shellID,
+      in: sessionID,
+      at: socketPath
+    )
+    guard restarted.id == sessionID,
+      restarted.shells.contains(where: { $0.id == shellID && $0.isAvailable })
+    else {
+      throw UnixSocketRPCError.invalidResponse("axod did not restore the requested Pi pane.")
+    }
+    await refresh()
   }
 
   func closeFocusedShell() async {
@@ -447,8 +554,9 @@ final class TerminalSessionsModel: ObservableObject {
   }
 
   func focus(_ shellID: Int64) {
-    guard let session = sessions.first(where: { $0.shells.contains(where: { $0.id == shellID }) })
-    else {
+    guard let session = sessions.first(where: {
+      $0.shells.contains(where: { $0.id == shellID && $0.isAvailable })
+    }) else {
       return
     }
     selectedSessionID = session.id
@@ -468,7 +576,7 @@ final class TerminalSessionsModel: ObservableObject {
 
   private func focusAdjacentPane(_ direction: TerminalNavigationDirection) {
     guard let layout else { return }
-    let paneIDs = layout.orderedShellIDs
+    let paneIDs = layout.orderedShellIDs.filter { shell(for: $0)?.isAvailable == true }
     let currentIndex = focusedShellID.flatMap { focusedID in
       paneIDs.firstIndex(of: focusedID)
     }
@@ -557,10 +665,13 @@ final class TerminalSessionsModel: ObservableObject {
       focusedShellID = nil
       return
     }
-    if let focusedShellID, currentLayout.contains(shellID: focusedShellID) {
+    if let focusedShellID,
+      currentLayout.contains(shellID: focusedShellID),
+      session.shells.contains(where: { $0.id == focusedShellID && $0.isAvailable })
+    {
       return
     }
-    focusedShellID = session.shells.map(\.id).max() ?? currentLayout.firstShellID
+    focusedShellID = session.shells.filter(\.isAvailable).map(\.id).max()
   }
 
   private func add(_ session: TerminalSession) {
@@ -578,6 +689,7 @@ final class TerminalSessionsModel: ObservableObject {
         workspaceId: session.workspaceId,
         workspaceName: session.workspaceName,
         name: session.name,
+        manualName: session.manualName,
         emoji: session.emoji,
         status: session.status
       )
@@ -599,6 +711,7 @@ final class TerminalSessionsModel: ObservableObject {
       workspaceId: session.workspaceId,
       workspaceName: session.workspaceName,
       name: session.name,
+      manualName: session.manualName,
       emoji: session.emoji,
       status: session.status
     )
@@ -622,6 +735,7 @@ final class TerminalSessionsModel: ObservableObject {
           workspaceId: session.workspaceId,
           workspaceName: session.workspaceName,
           name: session.name,
+          manualName: session.manualName,
           emoji: session.emoji,
           status: session.status
         )
