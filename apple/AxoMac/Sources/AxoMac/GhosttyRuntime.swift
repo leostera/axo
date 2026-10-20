@@ -98,7 +98,7 @@ final class GhosttyRuntime: ObservableObject {
   }
 
   func reconcileSurfaces(with shells: [TerminalShell]) {
-    let openShells = Dictionary(uniqueKeysWithValues: shells.map { ($0.id, $0) })
+    let openShells = Dictionary(uniqueKeysWithValues: shells.filter(\.isAvailable).map { ($0.id, $0) })
     let closedShellIDs = terminalSurfaces.compactMap { shellID, entry in
       openShells[shellID] == entry.shell ? nil : shellID
     }

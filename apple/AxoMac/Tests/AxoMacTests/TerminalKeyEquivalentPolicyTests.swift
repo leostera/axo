@@ -5,11 +5,19 @@ import XCTest
 
 @MainActor
 final class TerminalKeyEquivalentPolicyTests: XCTestCase {
-  func testAxoMenuTakesPrecedenceOverMatchingGhosttyBinding() {
+  func testFocusedAxoMenuTakesPrecedenceOverMatchingGhosttyBinding() {
+    XCTAssertEqual(
+      TerminalKeyEquivalentPolicy.route(
+        appMenuHandled: true, terminalFocused: true, ghosttyBindingMatched: true),
+      .axoMenu
+    )
+  }
+
+  func testUnfocusedSurfaceLeavesAppMenuEquivalentToAppKit() {
     XCTAssertEqual(
       TerminalKeyEquivalentPolicy.route(
         appMenuHandled: true, terminalFocused: false, ghosttyBindingMatched: true),
-      .axoMenu
+      .appKit
     )
   }
 

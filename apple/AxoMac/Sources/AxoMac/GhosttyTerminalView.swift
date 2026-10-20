@@ -75,6 +75,8 @@ struct GhosttyTerminalView: NSViewRepresentable {
 final class GhosttySurfaceHostNSView: NSView {
   private var terminalView: NSView?
 
+  override var wantsDefaultClipping: Bool { true }
+
   func attachSurface(_ view: NSView) {
     guard terminalView !== view || view.superview !== self else { return }
     if let terminalView, terminalView !== view {
@@ -553,14 +555,21 @@ final class GhosttySurfaceNSView: NSView, @preconcurrency NSTextInputClient,
   override func performKeyEquivalent(with event: NSEvent) -> Bool {
     guard event.type == .keyDown else { return super.performKeyEquivalent(with: event) }
 
-    // Give Axo's application menu first refusal so its commands win shortcut collisions.
+    // A non-terminal first responder, such as a settings field or sheet, owns its editing
+    // shortcuts. Let AppKit deliver them instead of invoking the terminal-oriented app menu.
+    let terminalFocused = isFocusedKeyResponder && surface != nil
+    guard terminalFocused else {
+      lastPerformKeyEvent = nil
+      return false
+    }
+
+    // Give Axo's application menu first refusal so its commands win Ghostty binding collisions.
     let appMenuHandled = super.performKeyEquivalent(with: event)
       || (NSApp.mainMenu?.performKeyEquivalent(with: event) ?? false)
-    let terminalFocused = isFocusedKeyResponder && surface != nil
-    if !appMenuHandled, terminalFocused, performAxoFallbackKeyEquivalent(event) {
+    if !appMenuHandled, performAxoFallbackKeyEquivalent(event) {
       return true
     }
-    let bindingMatched = terminalFocused && matchesGhosttyKeyBinding(event)
+    let bindingMatched = matchesGhosttyKeyBinding(event)
     switch TerminalKeyEquivalentPolicy.route(
       appMenuHandled: appMenuHandled,
       terminalFocused: terminalFocused,
@@ -574,10 +583,7 @@ final class GhosttySurfaceNSView: NSView, @preconcurrency NSTextInputClient,
       keyDown(with: event)
       return true
     case .appKit:
-      guard terminalFocused else {
-        lastPerformKeyEvent = nil
-        return false
-      }
+      break
     }
 
     if let equivalent = TerminalKeyEquivalentPolicy.normalizedControlEquivalent(for: event) {
@@ -1254,8 +1260,8 @@ enum TerminalKeyEquivalentPolicy {
     terminalFocused: Bool,
     ghosttyBindingMatched: Bool
   ) -> Route {
+    guard terminalFocused else { return .appKit }
     if appMenuHandled { return .axoMenu }
-    if !terminalFocused { return .appKit }
     if ghosttyBindingMatched { return .ghosttyBinding }
     return .appKit
   }

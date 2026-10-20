@@ -43,12 +43,14 @@ struct TerminalSplitView<First: View, Second: View>: View {
             width: direction == .right ? firstLength : size.width,
             height: direction == .down ? firstLength : size.height
           )
+          .clipped()
 
         second
           .frame(
             width: direction == .right ? secondLength : size.width,
             height: direction == .down ? secondLength : size.height
           )
+          .clipped()
           .offset(
             x: direction == .right ? firstLength + dividerThickness : 0,
             y: direction == .down ? firstLength + dividerThickness : 0
@@ -68,6 +70,8 @@ struct TerminalSplitView<First: View, Second: View>: View {
             onRatioChange(0.5)
           }
       }
+      .frame(width: size.width, height: size.height, alignment: .topLeading)
+      .clipped()
       .coordinateSpace(name: coordinateSpaceName)
     }
   }
