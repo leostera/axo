@@ -30,6 +30,7 @@ type HostRow = {
   principal: string;
   label: string;
   host_kind: string;
+  capabilities_json: string | null;
   host_generation: string;
   last_seen_at: number;
 };
@@ -51,10 +52,15 @@ export class AxoHostDirectory extends DurableObject<Env> {
         principal TEXT NOT NULL,
         label TEXT NOT NULL,
         host_kind TEXT NOT NULL,
+        capabilities_json TEXT,
         host_generation TEXT NOT NULL,
         last_seen_at INTEGER NOT NULL
       )
     `);
+    const hostColumns = ctx.storage.sql.exec<{ name: string }>("PRAGMA table_info(hosts_v1)").toArray();
+    if (!hostColumns.some(column => column.name === "capabilities_json")) {
+      ctx.storage.sql.exec("ALTER TABLE hosts_v1 ADD COLUMN capabilities_json TEXT");
+    }
     ctx.storage.sql.exec(`
       CREATE TABLE IF NOT EXISTS host_sessions_v1 (
         host_id TEXT NOT NULL REFERENCES hosts_v1(host_id) ON DELETE CASCADE,
@@ -215,18 +221,20 @@ export class AxoHostDirectory extends DurableObject<Env> {
 
     this.ctx.storage.transactionSync(() => {
       sql.exec(
-        `INSERT INTO hosts_v1 (host_id, principal, label, host_kind, host_generation, last_seen_at)
-         VALUES (?, ?, ?, ?, ?, ?)
+        `INSERT INTO hosts_v1 (host_id, principal, label, host_kind, capabilities_json, host_generation, last_seen_at)
+         VALUES (?, ?, ?, ?, ?, ?, ?)
          ON CONFLICT(host_id) DO UPDATE SET
            principal = excluded.principal,
            label = excluded.label,
            host_kind = excluded.host_kind,
+           capabilities_json = excluded.capabilities_json,
            host_generation = excluded.host_generation,
            last_seen_at = excluded.last_seen_at`,
         input.hostId,
         principal,
         input.label,
         input.hostKind,
+        input.capabilities === undefined ? null : JSON.stringify(input.capabilities),
         input.hostGeneration,
         now,
       );
@@ -248,6 +256,7 @@ export class AxoHostDirectory extends DurableObject<Env> {
       hostGeneration: input.hostGeneration,
       label: input.label,
       hostKind: input.hostKind,
+      ...(input.capabilities === undefined ? {} : { capabilities: input.capabilities }),
       status: "online",
       stale: false,
       lastSeenAt: storedAt,
@@ -411,6 +420,7 @@ export class AxoHostDirectory extends DurableObject<Env> {
       hostGeneration: row.host_generation,
       label: row.label,
       hostKind: row.host_kind,
+      ...(row.capabilities_json === null ? {} : { capabilities: JSON.parse(row.capabilities_json) as unknown }),
       status: online ? "online" : "offline",
       stale: !online,
       lastSeenAt: new Date(row.last_seen_at).toISOString(),

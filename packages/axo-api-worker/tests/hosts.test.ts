@@ -67,6 +67,7 @@ test("host metadata is available without Worker JWT validation and becomes stale
     hostGeneration,
     label: "Axo Mac metadata fixture",
     hostKind: "macos",
+    capabilities: [{ id: "agent.pi", version: 1 }, { id: "terminal.pty", version: 1 }],
     sessions: [{
       hostId,
       sessionId: 9,
@@ -93,6 +94,10 @@ test("host metadata is available without Worker JWT validation and becomes stale
   const listed = hostListResultSchema.parse(await listResponse.json());
   assert.equal(listed.hosts.length, 1);
   assert.equal(listed.hosts[0].hostId, hostId);
+  assert.deepEqual(listed.hosts[0].capabilities, [
+    { id: "agent.pi", version: 1 },
+    { id: "terminal.pty", version: 1 },
+  ]);
   assert.equal(listed.hosts[0].sessions[0].sessionId, 9);
 
   const sessionsURL = new URL(`v1/hosts/${hostId}/sessions`, h.url);

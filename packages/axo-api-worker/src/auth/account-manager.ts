@@ -35,6 +35,7 @@ type AccountHostRow = {
   credential_verifier: string;
   label: string;
   host_kind: string;
+  capabilities_json: string | null;
   linked_at: number;
   last_seen_at: number;
   revoked_at: number | null;
@@ -78,9 +79,13 @@ export class AxoAccountManager extends AxoHostRelay {
     )`);
     ctx.storage.sql.exec(`CREATE TABLE IF NOT EXISTS account_hosts (
       host_id TEXT PRIMARY KEY, host_generation TEXT NOT NULL, credential_id TEXT NOT NULL UNIQUE,
-      credential_verifier TEXT NOT NULL, label TEXT NOT NULL, host_kind TEXT NOT NULL,
+      credential_verifier TEXT NOT NULL, label TEXT NOT NULL, host_kind TEXT NOT NULL, capabilities_json TEXT,
       linked_at INTEGER NOT NULL, last_seen_at INTEGER NOT NULL, revoked_at INTEGER
     )`);
+    const hostColumns = ctx.storage.sql.exec<{ name: string }>("PRAGMA table_info(account_hosts)").toArray();
+    if (!hostColumns.some(column => column.name === "capabilities_json")) {
+      ctx.storage.sql.exec("ALTER TABLE account_hosts ADD COLUMN capabilities_json TEXT");
+    }
     ctx.storage.sql.exec(`CREATE TABLE IF NOT EXISTS host_sessions_v1 (
       host_id TEXT NOT NULL REFERENCES account_hosts(host_id) ON DELETE CASCADE,
       session_id INTEGER NOT NULL, snapshot_json TEXT NOT NULL CHECK (json_valid(snapshot_json)),
@@ -296,12 +301,14 @@ export class AxoAccountManager extends AxoHostRelay {
     const storedAt = Date.now();
     const sessions = input.sessions.map((session) => sessionSnapshotSchema.parse({ ...session, updatedAt: new Date(storedAt).toISOString() }));
     this.ctx.storage.transactionSync(() => {
-      this.ctx.storage.sql.exec(`UPDATE account_hosts SET host_generation = ?, label = ?, host_kind = ?, last_seen_at = ?
-        WHERE host_id = ? AND revoked_at IS NULL`, input.hostGeneration, input.label, input.hostKind, storedAt, input.hostId);
+      this.ctx.storage.sql.exec(`UPDATE account_hosts SET host_generation = ?, label = ?, host_kind = ?, capabilities_json = ?, last_seen_at = ?
+        WHERE host_id = ? AND revoked_at IS NULL`, input.hostGeneration, input.label, input.hostKind,
+        input.capabilities === undefined ? null : JSON.stringify(input.capabilities), storedAt, input.hostId);
       this.replaceHostSessions(input.hostId, sessions);
     });
     return hostSnapshotSchema.parse({ hostId: input.hostId, hostGeneration: input.hostGeneration, label: input.label,
-      hostKind: input.hostKind, status: "online", stale: false, lastSeenAt: new Date(storedAt).toISOString(), sessions });
+      hostKind: input.hostKind, ...(input.capabilities === undefined ? {} : { capabilities: input.capabilities }),
+      status: "online", stale: false, lastSeenAt: new Date(storedAt).toISOString(), sessions });
   }
 
   protected override async storeHostHeartbeat(reference: unknown, principal: string): Promise<{ acknowledged: true; lastSeenAt: string }> {
@@ -404,6 +411,7 @@ export class AxoAccountManager extends AxoHostRelay {
     ).toArray().map((session) => sessionSnapshotSchema.parse(JSON.parse(session.snapshot_json)));
     return hostSnapshotSchema.parse({
       hostId: row.host_id, hostGeneration: row.host_generation, label: row.label, hostKind: row.host_kind,
+      ...(row.capabilities_json === null ? {} : { capabilities: JSON.parse(row.capabilities_json) as unknown }),
       status: online ? "online" : "offline", stale: !online,
       lastSeenAt: new Date(row.last_seen_at).toISOString(), sessions,
     });

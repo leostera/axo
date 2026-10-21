@@ -71,6 +71,11 @@ test("one AccountManager owns pairing, host metadata, and live relays for multip
       hostGeneration: host.hostGeneration,
       label: host.label,
       hostKind: host.hostKind,
+      ...(index === 0 ? { capabilities: [
+        { id: "agent.pi", version: 1 },
+        { id: "terminal.pty", version: 1 },
+        { id: "workspace.filesystem", version: 1 },
+      ] } : {}),
       sessions: [],
     });
     assert.ok("result" in registered);
@@ -81,6 +86,13 @@ test("one AccountManager owns pairing, host metadata, and live relays for multip
   const hosts = hostListResultSchema.parse(await listResponse.json()).hosts;
   assert.equal(hosts.length, 2);
   assert.equal(hosts.every((host) => host.status === "online" && !host.stale), true);
+  assert.deepEqual(hosts.find((host) => host.hostId === first.hostId)?.capabilities, [
+    { id: "agent.pi", version: 1 },
+    { id: "terminal.pty", version: 1 },
+    { id: "workspace.filesystem", version: 1 },
+  ], "the account manager persists host capability advertisements");
+  assert.equal(hosts.find((host) => host.hostId === second.hostId)?.capabilities, undefined,
+    "hosts that do not advertise capabilities remain distinguishable from hosts with an empty manifest");
   const routes = await managerStorage.exec<{ count: number }>("SELECT COUNT(*) AS count FROM route");
   assert.equal(routes[0].count, 2, "both daemon sockets terminate on the account manager DO");
 

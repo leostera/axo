@@ -3,6 +3,17 @@ import { z } from "zod";
 export const protocolVersion = 1 as const;
 export const hostIdSchema = z.uuid();
 export const hostGenerationSchema = z.uuid();
+export const hostCapabilitySchema = z.object({
+  id: z.enum(["agent.pi", "terminal.pty", "workspace.filesystem"]),
+  version: z.number().int().positive().max(255),
+}).strict();
+export const hostCapabilitiesSchema = z.array(hostCapabilitySchema).max(32).superRefine((capabilities, context) => {
+  const ids = new Set<string>();
+  capabilities.forEach((capability, index) => {
+    if (ids.has(capability.id)) context.addIssue({ code: "custom", path: [index, "id"], message: "host capability IDs must be unique" });
+    ids.add(capability.id);
+  });
+});
 export const sessionIdSchema = z.number().int().positive().max(Number.MAX_SAFE_INTEGER);
 export const shellIdSchema = z.number().int().positive().max(Number.MAX_SAFE_INTEGER);
 export const hostRefSchema = z.object({
@@ -114,6 +125,7 @@ export const hostSnapshotSchema = z.object({
   hostGeneration: hostGenerationSchema,
   label: z.string().min(1).max(128),
   hostKind: z.string().regex(/^[a-z][a-z0-9-]{0,63}$/),
+  capabilities: hostCapabilitiesSchema.optional(),
   status: z.enum(["online", "offline"]),
   stale: z.boolean(),
   lastSeenAt: z.string().datetime({ offset: true }),
@@ -132,6 +144,7 @@ export const hostRegisterSchema = z.object({
   hostGeneration: hostGenerationSchema,
   label: z.string().min(1).max(128),
   hostKind: z.string().regex(/^[a-z][a-z0-9-]{0,63}$/),
+  capabilities: hostCapabilitiesSchema.optional(),
   sessions: z.array(sessionSnapshotSchema).max(256),
 }).strict().superRefine((registration, context) => {
   checkSessionOwnership(registration.hostId, registration.sessions, context);

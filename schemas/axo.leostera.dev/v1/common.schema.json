@@ -114,6 +114,20 @@
         "updatedAt": { "type": "string", "format": "date-time" }
       }
     },
+    "HostCapability": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["id", "version"],
+      "properties": {
+        "id": { "type": "string", "enum": ["agent.pi", "terminal.pty", "workspace.filesystem"] },
+        "version": { "type": "integer", "minimum": 1, "maximum": 255 }
+      }
+    },
+    "HostCapabilities": {
+      "type": "array",
+      "maxItems": 32,
+      "items": { "$ref": "#/$defs/HostCapability" }
+    },
     "HostSnapshot": {
       "type": "object",
       "additionalProperties": false,
@@ -123,6 +137,7 @@
         "hostGeneration": { "$ref": "#/$defs/HostGeneration" },
         "label": { "type": "string", "minLength": 1, "maxLength": 128 },
         "hostKind": { "type": "string", "pattern": "^[a-z][a-z0-9-]{0,63}$" },
+        "capabilities": { "$ref": "#/$defs/HostCapabilities" },
         "status": { "type": "string", "enum": ["online", "offline"] },
         "stale": { "type": "boolean" },
         "lastSeenAt": { "type": "string", "format": "date-time" },

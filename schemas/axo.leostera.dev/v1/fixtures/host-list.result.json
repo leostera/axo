@@ -5,6 +5,11 @@
       "hostGeneration": "c3b6da28-55c0-4bb0-ac04-dd458fd41a2b",
       "label": "Axo Mac",
       "hostKind": "macos",
+      "capabilities": [
+        { "id": "agent.pi", "version": 1 },
+        { "id": "terminal.pty", "version": 1 },
+        { "id": "workspace.filesystem", "version": 1 }
+      ],
       "status": "offline",
       "stale": true,
       "lastSeenAt": "2026-10-16T00:00:00Z",

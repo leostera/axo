@@ -226,6 +226,9 @@ validateWith(
 assert.equal(hostListResultSchema.safeParse(hostList).success, true, "Zod must match the offline host fixture");
 const register = await fixture("host-register.call.json");
 assert.equal(hostRegisterSchema.safeParse(register.params).success, true, "registration fixture must satisfy runtime validation");
+const duplicateHostCapability = structuredClone(register.params);
+duplicateHostCapability.capabilities.push(duplicateHostCapability.capabilities[0]);
+assert.equal(hostRegisterSchema.safeParse(duplicateHostCapability).success, false, "host capability IDs must be unique");
 const hostEvent = await fixture("host-session-snapshot.event.json");
 assert.equal(hostNotificationSchema.safeParse(hostEvent).success, true, "client host events must satisfy runtime validation");
 const relayHostEvent = await fixture("host-session-snapshot.relay.event.json");
