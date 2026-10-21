@@ -294,7 +294,9 @@ fn connect_terminal_attachment(
             Err(error)
                 if matches!(
                     error.kind(),
-                    io::ErrorKind::AddrInUse | io::ErrorKind::UnexpectedEof
+                    io::ErrorKind::AddrInUse
+                        | io::ErrorKind::WouldBlock
+                        | io::ErrorKind::UnexpectedEof
                 ) && Instant::now() < deadline =>
             {
                 thread::sleep(ATTACH_RETRY_DELAY);
@@ -320,7 +322,7 @@ fn open_terminal_attachment(
 
 fn receive_terminal_output_history(control: &mut UnixStream) -> io::Result<Vec<u8>> {
     let mut length_bytes = [0_u8; size_of::<u64>()];
-    control.read_exact(&mut length_bytes)?;
+    read_exact_with_progress(control, &mut length_bytes, "history length")?;
     let length = u64::from_be_bytes(length_bytes);
     if length == ATTACH_REJECTION_MARKER {
         let mut code = [0_u8; 1];
@@ -331,6 +333,10 @@ fn receive_terminal_output_history(control: &mut UnixStream) -> io::Result<Vec<u
                 "shell already has a terminal attachment",
             ),
             2 => (io::ErrorKind::NotFound, "shell is no longer open"),
+            4 => (
+                io::ErrorKind::WouldBlock,
+                "daemon is busy attaching terminals",
+            ),
             _ => (
                 io::ErrorKind::Other,
                 "daemon rejected the terminal attachment",
@@ -346,8 +352,41 @@ fn receive_terminal_output_history(control: &mut UnixStream) -> io::Result<Vec<u
     }
 
     let mut replay = vec![0_u8; length as usize];
-    control.read_exact(&mut replay)?;
+    read_exact_with_progress(control, &mut replay, "history payload")?;
     Ok(replay)
+}
+
+fn read_exact_with_progress(
+    reader: &mut impl Read,
+    buffer: &mut [u8],
+    phase: &str,
+) -> io::Result<()> {
+    let mut received = 0;
+    while received < buffer.len() {
+        match reader.read(&mut buffer[received..]) {
+            Ok(0) => {
+                return Err(io::Error::new(
+                    io::ErrorKind::UnexpectedEof,
+                    format!(
+                        "{phase}: received {received} of {} bytes before the connection closed",
+                        buffer.len()
+                    ),
+                ));
+            }
+            Ok(count) => received += count,
+            Err(error) if error.kind() == io::ErrorKind::Interrupted => continue,
+            Err(error) => {
+                return Err(io::Error::new(
+                    error.kind(),
+                    format!(
+                        "{phase}: received {received} of {} bytes: {error}",
+                        buffer.len()
+                    ),
+                ));
+            }
+        }
+    }
+    Ok(())
 }
 
 fn receive_pty_master(control: &UnixStream) -> io::Result<OwnedFd> {
@@ -476,6 +515,70 @@ mod tests {
         assert_eq!(error.kind(), io::ErrorKind::AddrInUse);
         assert_eq!(error.to_string(), "shell already has a terminal attachment");
         response.join().unwrap();
+    }
+
+    #[test]
+    fn terminal_attach_reports_truncated_history_progress() {
+        let (mut client, mut server) = UnixStream::pair().unwrap();
+        server.write_all(&[0, 0, 0]).unwrap();
+        drop(server);
+
+        let error = receive_terminal_output_history(&mut client).unwrap_err();
+        assert_eq!(error.kind(), io::ErrorKind::UnexpectedEof);
+        assert!(
+            error
+                .to_string()
+                .contains("history length: received 3 of 8 bytes")
+        );
+    }
+
+    #[test]
+    fn terminal_attach_reports_when_daemon_is_busy() {
+        let (mut server, mut client) = UnixStream::pair().unwrap();
+        let response = thread::spawn(move || {
+            server
+                .write_all(&ATTACH_REJECTION_MARKER.to_be_bytes())
+                .unwrap();
+            server.write_all(&[4]).unwrap();
+        });
+
+        let error = receive_terminal_output_history(&mut client).unwrap_err();
+        assert_eq!(error.kind(), io::ErrorKind::WouldBlock);
+        assert_eq!(error.to_string(), "daemon is busy attaching terminals");
+        response.join().unwrap();
+    }
+
+    #[test]
+    fn terminal_attach_retries_when_daemon_reports_capacity() {
+        let unique = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .unwrap()
+            .as_nanos();
+        let socket_path = std::env::temp_dir().join(format!(
+            "axo-attach-capacity-{}-{unique}.sock",
+            std::process::id()
+        ));
+        let listener = UnixListener::bind(&socket_path).unwrap();
+        let descriptor = File::open("/dev/null").unwrap();
+        let server = thread::spawn(move || {
+            let (mut first, _) = listener.accept().unwrap();
+            first
+                .write_all(&ATTACH_REJECTION_MARKER.to_be_bytes())
+                .unwrap();
+            first.write_all(&[4]).unwrap();
+            drop(first);
+
+            let (mut second, _) = listener.accept().unwrap();
+            second.write_all(&0_u64.to_be_bytes()).unwrap();
+            send_test_file_descriptor(second.as_raw_fd(), descriptor.as_raw_fd());
+        });
+
+        let (control, replay, master) = connect_terminal_attachment(&socket_path, 1).unwrap();
+        assert!(replay.is_empty());
+        drop(master);
+        drop(control);
+        server.join().unwrap();
+        std::fs::remove_file(socket_path).unwrap();
     }
 
     #[test]

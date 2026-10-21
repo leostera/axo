@@ -9,7 +9,7 @@ use std::os::unix::net::{UnixListener, UnixStream};
 use std::os::unix::process::CommandExt;
 use std::path::{Path, PathBuf};
 use std::process::{Child, Command, Stdio};
-use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicU64, AtomicUsize, Ordering};
 use std::sync::mpsc::{self, Receiver, RecvTimeoutError, SyncSender, TrySendError};
 use std::sync::{Arc, Mutex, Weak};
 use std::thread::{self, JoinHandle};
@@ -32,6 +32,9 @@ const MAX_LAYOUT_DEPTH: usize = 64;
 const MAX_LAYOUT_NODES: usize = 255;
 const MAX_SUBSCRIPTIONS: usize = 64;
 const MAX_QUEUED_EVENTS_PER_SUBSCRIPTION: usize = 128;
+const MAX_CONCURRENT_TERMINAL_ATTACHMENTS: usize = 256;
+const ATTACH_REQUEST_TIMEOUT: Duration = Duration::from_secs(3);
+const MAX_ATTACH_SHELL_ID_DIGITS: usize = 19;
 const DEFAULT_AGENT_COMMAND: &str = "pi";
 const MAX_COMMAND_LINE_BYTES: usize = 4096;
 const MAX_COMMAND_ARGUMENTS: usize = 128;
@@ -381,6 +384,34 @@ struct RunningShell {
     _writer_lock: Option<OwnedFd>,
     pi_bridge_socket: Option<PiBridgeSocketPath>,
     pi_bridge_token: Option<String>,
+}
+
+struct AttachmentPermit(Arc<AtomicUsize>);
+
+impl AttachmentPermit {
+    fn try_acquire(active: Arc<AtomicUsize>) -> Option<Self> {
+        let mut current = active.load(Ordering::Relaxed);
+        loop {
+            if current >= MAX_CONCURRENT_TERMINAL_ATTACHMENTS {
+                return None;
+            }
+            match active.compare_exchange_weak(
+                current,
+                current + 1,
+                Ordering::Relaxed,
+                Ordering::Relaxed,
+            ) {
+                Ok(_) => return Some(Self(active)),
+                Err(actual) => current = actual,
+            }
+        }
+    }
+}
+
+impl Drop for AttachmentPermit {
+    fn drop(&mut self) {
+        self.0.fetch_sub(1, Ordering::Relaxed);
+    }
 }
 
 #[derive(Debug)]
@@ -1407,17 +1438,51 @@ impl SessionManager {
         listener.set_nonblocking(true)?;
 
         let manager = Arc::downgrade(self);
+        let active_attachments = Arc::new(AtomicUsize::new(0));
         let stop_workers = Arc::clone(&self.stop_workers);
         let worker = thread::Builder::new()
             .name("axo-pty-attachments".into())
             .spawn(move || {
                 while !stop_workers.load(Ordering::Relaxed) {
                     match listener.accept() {
-                        Ok((stream, _)) => {
+                        Ok((mut stream, _)) => {
+                            let Some(permit) =
+                                AttachmentPermit::try_acquire(Arc::clone(&active_attachments))
+                            else {
+                                log::warn!("event=session.attach_rejected reason=capacity");
+                                let error = io::Error::new(
+                                    io::ErrorKind::WouldBlock,
+                                    "daemon is at its terminal attachment limit",
+                                );
+                                let _ = write_attachment_rejection(&mut stream, &error);
+                                continue;
+                            };
+                            let mut rejection_stream = match stream.try_clone() {
+                                Ok(stream) => stream,
+                                Err(error) => {
+                                    log::error!(
+                                        "event=session.attach_worker_start_failed phase=clone_socket error_kind={:?}",
+                                        error.kind()
+                                    );
+                                    let _ = write_attachment_rejection(&mut stream, &error);
+                                    continue;
+                                }
+                            };
                             let manager = manager.clone();
-                            let _ = thread::Builder::new()
+                            if let Err(error) = thread::Builder::new()
                                 .name("axo-pty-attachment".into())
-                                .spawn(move || handle_attachment(stream, manager));
+                                .spawn(move || handle_attachment(stream, manager, permit))
+                            {
+                                log::error!(
+                                    "event=session.attach_worker_start_failed phase=spawn error_kind={:?}",
+                                    error.kind()
+                                );
+                                let rejection = io::Error::new(
+                                    io::ErrorKind::WouldBlock,
+                                    "daemon could not start a terminal attachment worker",
+                                );
+                                let _ = write_attachment_rejection(&mut rejection_stream, &rejection);
+                            }
                         }
                         Err(error) if error.kind() == io::ErrorKind::WouldBlock => {
                             thread::sleep(Duration::from_millis(20));
@@ -4132,6 +4197,8 @@ fn spawn_shell(
     let master = unsafe { OwnedFd::from_raw_fd(master_fd) };
     // SAFETY: openpty returned two new owned descriptors.
     let slave = unsafe { OwnedFd::from_raw_fd(slave_fd) };
+    set_descriptor_cloexec(master.as_raw_fd())?;
+    set_descriptor_cloexec(slave.as_raw_fd())?;
     let slave_device = tty_device_path(slave.as_raw_fd())?;
 
     let shell = resolve_shell_executable(&shell_command.0.executable)?;
@@ -4634,6 +4701,7 @@ fn acquire_pi_writer_lock(session_file: &Path) -> io::Result<OwnedFd> {
     let lock_path = session_file.with_extension("jsonl.lock");
     let lock = OpenOptions::new()
         .create(true)
+        .truncate(false)
         .read(true)
         .write(true)
         .mode(0o600)
@@ -4766,6 +4834,8 @@ fn spawn_pi(
     let master = unsafe { OwnedFd::from_raw_fd(master_fd) };
     // SAFETY: openpty returned two new owned descriptors.
     let slave = unsafe { OwnedFd::from_raw_fd(slave_fd) };
+    set_descriptor_cloexec(master.as_raw_fd())?;
+    set_descriptor_cloexec(slave.as_raw_fd())?;
     let slave_device = tty_device_path(slave.as_raw_fd())?;
     let slave_raw_fd = slave.as_raw_fd();
     let mut command = Command::new(executable);
@@ -5216,6 +5286,19 @@ fn write_json_line(stream: &mut UnixStream, value: &Value) -> io::Result<()> {
     stream.write_all(&encoded)
 }
 
+fn set_descriptor_cloexec(descriptor: RawFd) -> io::Result<()> {
+    // SAFETY: fcntl reads descriptor flags from an open descriptor.
+    let flags = unsafe { libc::fcntl(descriptor, libc::F_GETFD) };
+    if flags == -1 {
+        return Err(io::Error::last_os_error());
+    }
+    // SAFETY: fcntl updates only the close-on-exec flag on this open descriptor.
+    if unsafe { libc::fcntl(descriptor, libc::F_SETFD, flags | libc::FD_CLOEXEC) } == -1 {
+        return Err(io::Error::last_os_error());
+    }
+    Ok(())
+}
+
 fn tty_device_path(slave_fd: RawFd) -> io::Result<String> {
     let mut bytes = vec![0_i8; libc::PATH_MAX as usize];
     // SAFETY: bytes is writable storage and slave_fd is an open PTY slave.
@@ -5275,25 +5358,117 @@ fn wait_for_shell_exit(child: &mut Child, timeout: Duration) -> bool {
     child.try_wait().ok().flatten().is_some()
 }
 
-fn handle_attachment(mut stream: UnixStream, manager: Weak<SessionManager>) {
-    let mut request = Vec::new();
+struct TerminalAttachmentLease<'a> {
+    manager: &'a SessionManager,
+    shell_id: ShellId,
+}
+
+impl Drop for TerminalAttachmentLease<'_> {
+    fn drop(&mut self) {
+        self.manager.mark_detached(self.shell_id);
+    }
+}
+
+fn read_attachment_request(stream: &mut UnixStream) -> io::Result<ShellId> {
+    let deadline = Instant::now() + ATTACH_REQUEST_TIMEOUT;
+    let mut request = Vec::with_capacity(MAX_ATTACH_SHELL_ID_DIGITS);
     let mut byte = [0_u8; 1];
-    while request.len() <= 20 {
+    loop {
+        wait_for_attachment_request_data(stream.as_raw_fd(), deadline)?;
         match stream.read(&mut byte) {
-            Ok(0) => return,
-            Ok(_) if byte[0] == b'\n' => break,
-            Ok(_) if byte[0].is_ascii_digit() => request.push(byte[0]),
-            Ok(_) => return,
-            Err(_) => return,
+            Ok(0) => {
+                return Err(io::Error::new(
+                    io::ErrorKind::UnexpectedEof,
+                    "attachment request ended before its newline",
+                ));
+            }
+            Ok(_) if byte[0] == b'\n' && !request.is_empty() => break,
+            Ok(_) if byte[0].is_ascii_digit() && request.len() < MAX_ATTACH_SHELL_ID_DIGITS => {
+                request.push(byte[0]);
+            }
+            Ok(_) => {
+                return Err(io::Error::new(
+                    io::ErrorKind::InvalidInput,
+                    "attachment request must contain one positive shell ID",
+                ));
+            }
+            Err(error)
+                if matches!(
+                    error.kind(),
+                    io::ErrorKind::Interrupted | io::ErrorKind::WouldBlock
+                ) =>
+            {
+                continue;
+            }
+            Err(error) => return Err(error),
         }
     }
-    let Ok(text) = std::str::from_utf8(&request) else {
-        return;
+
+    let text = std::str::from_utf8(&request)
+        .map_err(|_| io::Error::new(io::ErrorKind::InvalidInput, "shell ID is not UTF-8"))?;
+    let shell_id = text
+        .parse::<i64>()
+        .map_err(|_| io::Error::new(io::ErrorKind::InvalidInput, "shell ID is invalid"))?;
+    if shell_id <= 0 {
+        return Err(io::Error::new(
+            io::ErrorKind::InvalidInput,
+            "shell ID must be positive",
+        ));
+    }
+    Ok(ShellId(shell_id))
+}
+
+fn wait_for_attachment_request_data(file_descriptor: RawFd, deadline: Instant) -> io::Result<()> {
+    loop {
+        let remaining = deadline.saturating_duration_since(Instant::now());
+        if remaining.is_zero() {
+            return Err(io::Error::new(
+                io::ErrorKind::TimedOut,
+                "attachment request timed out",
+            ));
+        }
+        let timeout_millis =
+            remaining.as_millis().clamp(1, libc::c_int::MAX as u128) as libc::c_int;
+        let mut descriptor = libc::pollfd {
+            fd: file_descriptor,
+            events: libc::POLLIN,
+            revents: 0,
+        };
+        // SAFETY: descriptor points to one initialized pollfd for an open socket.
+        let ready = unsafe { libc::poll(&mut descriptor, 1, timeout_millis) };
+        if ready > 0 {
+            return Ok(());
+        }
+        if ready == 0 {
+            return Err(io::Error::new(
+                io::ErrorKind::TimedOut,
+                "attachment request timed out",
+            ));
+        }
+        let error = io::Error::last_os_error();
+        if error.kind() != io::ErrorKind::Interrupted {
+            return Err(error);
+        }
+    }
+}
+
+fn handle_attachment(
+    mut stream: UnixStream,
+    manager: Weak<SessionManager>,
+    _permit: AttachmentPermit,
+) {
+    let started_at = Instant::now();
+    let id = match read_attachment_request(&mut stream) {
+        Ok(id) => id,
+        Err(error) => {
+            log::debug!(
+                "event=session.attach_rejected reason=invalid_request error_kind={:?}",
+                error.kind()
+            );
+            let _ = write_attachment_rejection(&mut stream, &error);
+            return;
+        }
     };
-    let Ok(raw_id) = text.parse::<i64>() else {
-        return;
-    };
-    let id = ShellId(raw_id);
     let Some(manager) = manager.upgrade() else {
         return;
     };
@@ -5301,30 +5476,57 @@ fn handle_attachment(mut stream: UnixStream, manager: Weak<SessionManager>) {
         Ok(attachment) => attachment,
         Err(error) => {
             log::warn!(
-                "event=session.attach_rejected shell_id={} reason={error}",
-                id.0
+                "event=session.attach_rejected shell_id={} error_kind={:?}",
+                id.0,
+                error.kind()
             );
             if let Err(write_error) = write_attachment_rejection(&mut stream, &error) {
                 log::debug!(
-                    "event=session.attach_rejection_write_failed shell_id={} reason={write_error}",
-                    id.0
+                    "event=session.attach_rejection_write_failed shell_id={} error_kind={:?}",
+                    id.0,
+                    write_error.kind()
                 );
             }
             return;
         }
     };
+    let _attachment_lease = TerminalAttachmentLease {
+        manager: &manager,
+        shell_id: id,
+    };
 
     manager.publish_shell_activity(session_id, id, "attached");
     let replay_length = (replay.len() as u64).to_be_bytes();
-    if stream
+    let mut phase = "history_header";
+    let response = stream
         .write_all(&replay_length)
-        .and_then(|()| stream.write_all(&replay))
-        .and_then(|()| send_file_descriptor(stream.as_raw_fd(), master.as_raw_fd()))
-        .is_err()
-    {
-        manager.mark_detached(id);
+        .and_then(|()| {
+            phase = "history";
+            stream.write_all(&replay)
+        })
+        .and_then(|()| {
+            phase = "pty_descriptor";
+            send_file_descriptor(stream.as_raw_fd(), master.as_raw_fd())
+        });
+    if let Err(error) = response {
+        log::warn!(
+            "event=session.attach_failed session_id={} shell_id={} phase={} replay_bytes={} elapsed_ms={} error_kind={:?}",
+            session_id.0,
+            id.0,
+            phase,
+            replay.len(),
+            started_at.elapsed().as_millis(),
+            error.kind()
+        );
         return;
     }
+    log::info!(
+        "event=session.attach_ready session_id={} shell_id={} replay_bytes={} elapsed_ms={}",
+        session_id.0,
+        id.0,
+        replay.len(),
+        started_at.elapsed().as_millis()
+    );
 
     // The attachment helper tees PTY output back over this control connection
     // so the next Ghostty surface can replay the terminal's complete VT stream.
@@ -5333,26 +5535,34 @@ fn handle_attachment(mut stream: UnixStream, manager: Weak<SessionManager>) {
         match stream.read(&mut output) {
             Ok(0) => break,
             Ok(count) => manager.record_terminal_output(id, &output[..count]),
+            Err(error) if error.kind() == io::ErrorKind::Interrupted => continue,
             Err(error)
                 if matches!(
                     error.kind(),
-                    io::ErrorKind::Interrupted
-                        | io::ErrorKind::WouldBlock
-                        | io::ErrorKind::TimedOut
+                    io::ErrorKind::WouldBlock | io::ErrorKind::TimedOut
                 ) =>
             {
                 thread::sleep(Duration::from_millis(20));
             }
-            Err(_) => break,
+            Err(error) => {
+                log::debug!(
+                    "event=session.attach_stream_ended session_id={} shell_id={} elapsed_ms={} error_kind={:?}",
+                    session_id.0,
+                    id.0,
+                    started_at.elapsed().as_millis(),
+                    error.kind()
+                );
+                break;
+            }
         }
     }
-    manager.mark_detached(id);
 }
 
 fn write_attachment_rejection(stream: &mut UnixStream, error: &io::Error) -> io::Result<()> {
     let code = match error.kind() {
         io::ErrorKind::AddrInUse => 1,
         io::ErrorKind::NotFound => 2,
+        io::ErrorKind::WouldBlock => 4,
         _ => 3,
     };
     stream.write_all(&ATTACH_REJECTION_MARKER.to_be_bytes())?;
@@ -5821,6 +6031,48 @@ mod tests {
     }
 
     #[test]
+    fn terminal_attachment_requests_are_bounded_and_positive() {
+        let (mut client, mut server) = UnixStream::pair().unwrap();
+        server.write_all(b"42\n").unwrap();
+        assert_eq!(read_attachment_request(&mut client).unwrap(), ShellId(42));
+
+        let (mut client, mut server) = UnixStream::pair().unwrap();
+        server.write_all(b"0\n").unwrap();
+        assert_eq!(
+            read_attachment_request(&mut client).unwrap_err().kind(),
+            io::ErrorKind::InvalidInput
+        );
+
+        let (mut client, mut server) = UnixStream::pair().unwrap();
+        server.write_all(b"12345678901234567890\n").unwrap();
+        assert_eq!(
+            read_attachment_request(&mut client).unwrap_err().kind(),
+            io::ErrorKind::InvalidInput
+        );
+    }
+
+    #[test]
+    fn terminal_attachment_permits_are_bounded_and_released() {
+        let active = Arc::new(AtomicUsize::new(0));
+        let mut permits = Vec::new();
+        for _ in 0..MAX_CONCURRENT_TERMINAL_ATTACHMENTS {
+            match AttachmentPermit::try_acquire(Arc::clone(&active)) {
+                Some(permit) => permits.push(permit),
+                None => panic!("attachment capacity should be available"),
+            }
+        }
+        assert!(AttachmentPermit::try_acquire(Arc::clone(&active)).is_none());
+        assert_eq!(
+            active.load(Ordering::Relaxed),
+            MAX_CONCURRENT_TERMINAL_ATTACHMENTS
+        );
+
+        drop(permits);
+        assert_eq!(active.load(Ordering::Relaxed), 0);
+        assert!(AttachmentPermit::try_acquire(active).is_some());
+    }
+
+    #[test]
     fn terminal_output_history_replays_only_complete_streams() {
         let mut history = TerminalOutputHistory::new();
         history.record(b"initial screen");
@@ -5965,6 +6217,7 @@ mod tests {
         let lock_path = session_file.with_extension("jsonl.lock");
         let lock = OpenOptions::new()
             .create(true)
+            .truncate(false)
             .read(true)
             .write(true)
             .open(&lock_path)
@@ -6525,6 +6778,11 @@ mod tests {
         let shell = ShellCommand::parse("/bin/zsh").unwrap();
         let mut session = spawn_shell(&shell, SessionId(1), &home).unwrap();
         assert!(session.slave_device.starts_with("/dev/"));
+        // The child should receive only the slave as stdio, never the PTY master.
+        // SAFETY: the test owns this open PTY master descriptor.
+        let master_flags = unsafe { libc::fcntl(session.master.as_raw_fd(), libc::F_GETFD) };
+        assert_ne!(master_flags, -1);
+        assert_ne!(master_flags & libc::FD_CLOEXEC, 0);
 
         let master = session.master.as_raw_fd();
         let command = b"printf 'AXO_PTY_READY\\n'\n";
