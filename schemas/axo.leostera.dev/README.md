@@ -26,7 +26,7 @@ This directory is the versioned wire-contract source for Axo clients and relays.
 | `axo.shell.close` | AxoMac → axod | session and shell IDs | `ShellCloseResult` |
 | `axo.session.subscribe` / `axo.session.events.next` / `axo.session.unsubscribe` | AxoMac → axod | optional session filter / bounded poll / subscription ID | subscription ID / event or timeout / acknowledgement |
 | `axo.terminal.input` / `axo.terminal.resize` | AxoMac → axod | session/shell, sequence and base64 bytes / rows and columns | accepted sequence / accepted size |
-| `axo.host.register` / `axo.host.heartbeat` | axod → API | stable host ID, boot generation, platform label/kind, current metadata | accepted host / heartbeat acknowledgement |
+| `axo.host.register` / `axo.host.heartbeat` | host → API | stable host ID, boot generation, platform label/kind, optional versioned capability manifest, current metadata | accepted host / heartbeat acknowledgement |
 | `axo.host.sessions.publish` | axod → API | host reference and full current session snapshot | persistence acknowledgement |
 | `axo.host.list` / `axo.host.sessions.list` | web app → API | none / host reference | host summaries / host-scoped snapshots |
 | `axo.host.subscribe` / `axo.host.unsubscribe` | web app → API | host reference / subscription ID | subscription ID / acknowledgement |
@@ -35,7 +35,70 @@ This directory is the versioned wire-contract source for Axo clients and relays.
 | `axo.remote.session.layout.set` | web app → API → axod | host reference, session ID, layout tree | persistence acknowledgement |
 | `axo.remote.terminal.input` / `axo.remote.terminal.resize` | web app → API → axod | host, session, shell IDs, sequence and base64 bytes / rows and columns | accepted sequence / accepted size |
 
-Session and shell IDs are scoped by their host. Every persisted session snapshot includes its `hostId`; every remote action includes both the stable `hostId` and current `hostGeneration`, so a reconnect cannot route to an old process. A host ID is stable for one Axod installation; the generation changes on daemon restart. `hostKind` is an open slug, not a closed enum, so a future host provider can implement v1 without changing existing records. Snapshot publication replaces that host's current session projection atomically. A missed lease marks the host offline but retains its last snapshot and timestamp.
+Session and shell IDs are scoped by their host. Every persisted session snapshot includes its `hostId`; every remote action includes both the stable `hostId` and current `hostGeneration`, so a reconnect cannot route to an old process. A host ID is stable for one host installation; the generation changes when that host runtime restarts. `hostKind` is an open slug, not a closed enum, so a future host provider can implement v1 without changing existing records. Snapshot publication replaces that host's current session projection atomically. A missed lease marks the host offline but retains its last snapshot and timestamp.
+
+## Host capabilities
+
+`axo.host.register` may include an optional `capabilities` array. The shared definition is `HostCapabilities` in [`common.schema.json`](v1/common.schema.json), referenced by the registration parameters and by `HostSnapshot`. Each entry is a capability `id` and positive integer `version`; IDs must be unique within a manifest. V1 currently recognizes:
+
+| Capability ID | Advertises support for |
+| --- | --- |
+| `agent.pi` | Running Pi as the Session's agent |
+| `terminal.pty` | Providing terminal sessions backed by a PTY |
+| `workspace.filesystem` | Providing filesystem access for a Workspace |
+
+The manifest is optional to preserve compatibility with hosts that have not upgraded. Omitted means **not declared**; `[]` means **declared to provide none**. Capability IDs and versions describe host support; they do not request access to the user's Mac, carry credentials, or grant a Session permission to use a capability. Host-wide support and any future per-Workspace/per-Session grants are separate concepts. RPC method negotiation is also separate: a negotiated method only says that a peer understands a wire operation, not that a host supports or authorizes the underlying capability.
+
+The current local Axod registration advertises the capabilities it implements. A cloud host can use the same manifest and Workspace/Session protocol when its runtime is implemented; advertising a capability alone does not implement cloud execution.
+
+### Registration and discovery
+
+```mermaid
+sequenceDiagram
+    participant Host as Workspace host
+    participant API as Axo API and host directory
+    participant Client as Axo client
+    Host->>API: axo.host.register with identity, capabilities, and session snapshots
+    API->>API: Validate manifest and fence host generation
+    API-->>Host: Accepted HostSnapshot
+    Client->>API: axo.host.list
+    API-->>Client: HostSnapshot list with advertised capabilities
+    Client->>Client: Use manifest to understand host availability
+```
+
+Host identity fences routing, while the manifest describes implementation support:
+
+```mermaid
+flowchart LR
+    Mac[Axo Mac] -->|local JSON-RPC| Axod[Local Axod host]
+    Axod -->|register and publish| Directory[Axo host directory]
+    Cloud[Cloud host implementation] -.->|same host registration contract| Directory
+    Directory -->|host metadata and capabilities| Client[Axo client]
+    Client -->|remote Workspace and Session RPC| Directory
+    Directory -->|route by host ID and generation| HostRuntime[Owning host runtime]
+    HostRuntime --> Workspace[Workspace state and filesystem]
+    Workspace --> Session[Session lifecycle]
+    Session --> Pi[Optional Pi agent]
+    Session --> PTY[Optional terminal PTY]
+```
+
+The dotted cloud edge shows a protocol extension point, not a claim that cloud execution is already available. Workspaces remain owned by their host; the client routes through that host rather than treating local and cloud Workspaces as different protocol types.
+
+### Capability is not authorization
+
+```mermaid
+flowchart TD
+    Manifest[Host capability manifest] --> Availability[Host availability and UI selection]
+    Availability --> Choose[Choose a host for a Workspace]
+    Grants[Explicit Workspace or Session grants] --> Authorize[Authorize a particular operation]
+    Negotiate[RPC method negotiation] --> Wire[Understand the wire method]
+    Choose --> Route[Route to owning host]
+    Authorize --> Execute[Host decides whether operation is allowed]
+    Wire --> Route
+    Route --> Execute
+```
+
+A client must not infer authorization from the manifest or from successful method negotiation. The host remains responsible for enforcing any actual capability grants.
 
 Terminal output and input payloads are base64-encoded bytes. Output is an event stream only and must not be persisted by the relay. Host identity and the latest session/layout metadata are persisted server-side; disconnected hosts retain their last snapshot marked offline/stale. Session snapshots intentionally omit local socket paths and raw terminal output.
 
