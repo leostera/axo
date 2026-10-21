@@ -936,6 +936,12 @@
           "items": {
             "$ref": "common.schema.json#/$defs/LocalSession"
           }
+        },
+        "resumeSessionId": {
+          "oneOf": [
+            { "$ref": "common.schema.json#/$defs/SessionId" },
+            { "type": "null" }
+          ]
         }
       }
     },

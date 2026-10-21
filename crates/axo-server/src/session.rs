@@ -624,6 +624,7 @@ pub struct SessionManager {
     subscriptions: Mutex<HashMap<String, Receiver<Value>>>,
     subscribers: Mutex<Vec<LocalSubscriber>>,
     next_subscription_id: AtomicU64,
+    pending_resume_focus: Mutex<Option<SessionId>>,
     workspace_access: Mutex<HashMap<String, WorkspaceDirectoryAccess>>,
 }
 
@@ -796,6 +797,7 @@ impl SessionManager {
             subscriptions: Mutex::new(HashMap::new()),
             subscribers: Mutex::new(Vec::new()),
             next_subscription_id: AtomicU64::new(1),
+            pending_resume_focus: Mutex::new(None),
             workspace_access: Mutex::new(workspace_access),
         });
 
@@ -950,7 +952,13 @@ impl SessionManager {
         handler.add_sync_method("axo.session.list", move |_| {
             manager
                 .list_sessions()
-                .map(|sessions| json!({ "sessions": sessions.iter().map(SessionMetadata::to_json).collect::<Vec<_>>() }))
+                .and_then(|sessions| {
+                    let resume_session_id = manager.take_pending_resume_focus()?;
+                    Ok(json!({
+                        "sessions": sessions.iter().map(SessionMetadata::to_json).collect::<Vec<_>>(),
+                        "resumeSessionId": resume_session_id.map(|id| id.0),
+                    }))
+                })
                 .map_err(internal_rpc_error)
         });
 
@@ -2263,33 +2271,49 @@ impl SessionManager {
             })
             .collect::<io::Result<Vec<_>>>()?;
 
-        let exited_shell_ids: HashSet<_> = exited.iter().map(|(shell_id, _)| *shell_id).collect();
-        let exited_pi_sessions: HashSet<_> = exited
+        let exited_pi_shells: Vec<_> = exited
             .iter()
             .filter_map(|(shell_id, session_id)| {
                 state
                     .running
                     .get(shell_id)
                     .is_some_and(|shell| shell.role == PaneRole::Pi)
-                    .then_some(*session_id)
+                    .then_some((*shell_id, *session_id))
+            })
+            .collect();
+        let exited_pi_shell_ids: HashSet<_> = exited_pi_shells
+            .iter()
+            .map(|(shell_id, _)| *shell_id)
+            .collect();
+        let exited_non_pi_shell_ids: HashSet<_> = exited
+            .iter()
+            .filter_map(|(shell_id, _)| {
+                (!exited_pi_shell_ids.contains(shell_id)).then_some(*shell_id)
             })
             .collect();
         let mut changed_sessions = HashSet::new();
         let mut removed_sessions = HashSet::new();
-        let mut shells_to_terminate = Vec::new();
-        for session_id in &exited_pi_sessions {
-            archive_session(&mut state.database, *session_id, "pi_exited")?;
-            state.pi_activity.remove(session_id);
-            shells_to_terminate.extend(remove_session_shells(&mut state, *session_id));
-            removed_sessions.insert(*session_id);
+        for (shell_id, session_id) in &exited_pi_shells {
+            if let Some(shell) = state.running.remove(shell_id) {
+                state.unavailable_pi_shells.insert(
+                    *shell_id,
+                    UnavailablePiShell {
+                        session_id: *session_id,
+                        pane_id: shell.pane_id.clone(),
+                        initial_pwd: shell.initial_pwd.clone(),
+                    },
+                );
+                state.pi_activity.remove(session_id);
+                changed_sessions.insert(*session_id);
+            }
         }
         for (shell_id, session_id) in &exited {
-            if exited_pi_sessions.contains(session_id) {
+            if exited_pi_shell_ids.contains(shell_id) {
                 continue;
             }
             let remaining_shell_ids: HashSet<_> = open_shell_ids(&state, *session_id)
                 .into_iter()
-                .filter(|candidate_id| !exited_shell_ids.contains(candidate_id))
+                .filter(|candidate_id| !exited_non_pi_shell_ids.contains(candidate_id))
                 .collect();
             archive_shell_and_prune_layout(
                 &mut state.database,
@@ -2309,7 +2333,6 @@ impl SessionManager {
             }
         }
         drop(state);
-        self.terminate_shells_in_background(shells_to_terminate);
 
         for (shell_id, session_id) in exited {
             self.publish_shell_activity(session_id, shell_id, "exited");
@@ -2437,6 +2460,313 @@ impl SessionManager {
             self.publish_session_snapshot(session_id)?;
         }
         Ok(())
+    }
+
+    fn resume_archived_pi_session(
+        self: &Arc<Self>,
+        requester_session_id: SessionId,
+        requester_shell_id: ShellId,
+        requested_session_file: &str,
+    ) -> io::Result<SessionId> {
+        if requested_session_file.is_empty()
+            || requested_session_file.len() > MAX_COMMAND_LINE_BYTES
+            || requested_session_file.contains('\0')
+        {
+            return Err(io::Error::new(
+                io::ErrorKind::InvalidInput,
+                "Pi session path is invalid",
+            ));
+        }
+        let session_file = PathBuf::from(requested_session_file);
+        let canonical_directory = fs::canonicalize(&self.pi_session_directory)?;
+        let canonical_file = fs::canonicalize(&session_file)?;
+        if !canonical_file.starts_with(&canonical_directory)
+            || !fs::metadata(&canonical_file)?.is_file()
+        {
+            return Err(io::Error::new(
+                io::ErrorKind::PermissionDenied,
+                "Pi session is not an Axo-owned history file",
+            ));
+        }
+
+        let (session_id, state_name, initial_pwd, workspace_id) = {
+            let state = self.lock_state()?;
+            if !state.running.get(&requester_shell_id).is_some_and(|shell| {
+                shell.session_id == requester_session_id && shell.role == PaneRole::Pi
+            }) {
+                return Err(io::Error::new(
+                    io::ErrorKind::PermissionDenied,
+                    "Pi resume request came from a stale pane",
+                ));
+            }
+            let mut statement = state
+                .database
+                .prepare(
+                    "SELECT id, state, initial_pwd, workspace_id FROM sessions WHERE pi_session_file = ?1",
+                )
+                .map_err(io::Error::other)?;
+            let records = statement
+                .query_map(params![requested_session_file], |row| {
+                    Ok((
+                        SessionId(row.get(0)?),
+                        row.get::<_, String>(1)?,
+                        PathBuf::from(row.get::<_, String>(2)?),
+                        row.get::<_, Option<String>>(3)?,
+                    ))
+                })
+                .map_err(io::Error::other)?
+                .collect::<Result<Vec<_>, _>>()
+                .map_err(io::Error::other)?;
+            drop(statement);
+            if records.len() != 1 {
+                return Err(io::Error::new(
+                    io::ErrorKind::NotFound,
+                    "no unique Axo Session owns this Pi history",
+                ));
+            }
+            records.into_iter().next().expect("one matching Session")
+        };
+
+        if state_name == "open" {
+            self.request_session_focus(session_id)?;
+            self.publish_session_snapshot(session_id)?;
+            return Ok(session_id);
+        }
+        if state_name != "archived" {
+            return Err(io::Error::new(
+                io::ErrorKind::InvalidData,
+                "Pi Session has an unsupported lifecycle state",
+            ));
+        }
+        let workspace_access = if let Some(workspace_id) = &workspace_id {
+            let (directory_path, bookmark) = {
+                let state = self.lock_state()?;
+                state
+                    .database
+                    .query_row(
+                        "SELECT directory_path, directory_bookmark FROM workspaces WHERE workspace_id = ?1",
+                        params![workspace_id],
+                        |row| Ok((row.get::<_, String>(0)?, row.get::<_, Option<String>>(1)?)),
+                    )
+                    .map_err(io::Error::other)?
+            };
+            let access =
+                WorkspaceDirectoryAccess::open(Path::new(&directory_path), bookmark.as_deref())?;
+            if !initial_pwd.starts_with(access.path()) {
+                return Err(io::Error::new(
+                    io::ErrorKind::PermissionDenied,
+                    "Session working directory is outside its Workspace",
+                ));
+            }
+            Some((workspace_id.clone(), access))
+        } else {
+            if !initial_pwd.is_dir() {
+                return Err(io::Error::new(
+                    io::ErrorKind::NotFound,
+                    "the Session's working directory is unavailable",
+                ));
+            }
+            None
+        };
+
+        let pi_shell_count: i64 = {
+            let state = self.lock_state()?;
+            state
+                .database
+                .query_row(
+                    "SELECT COUNT(*) FROM shells WHERE session_id = ?1 AND role = 'pi' AND state = 'archived'",
+                    params![session_id.0],
+                    |row| row.get(0),
+                )
+                .map_err(io::Error::other)?
+        };
+        if pi_shell_count != 1 {
+            return Err(io::Error::new(
+                io::ErrorKind::InvalidData,
+                "archived Session does not have exactly one Pi pane",
+            ));
+        }
+
+        let pi_shells = {
+            let mut state = self.lock_state()?;
+            if state
+                .running
+                .values()
+                .any(|shell| shell.session_id == session_id)
+                || state
+                    .unavailable_pi_shells
+                    .values()
+                    .any(|shell| shell.session_id == session_id)
+            {
+                return Err(io::Error::new(
+                    io::ErrorKind::AlreadyExists,
+                    "archived Session still has live Axo process state",
+                ));
+            }
+
+            let transaction = state.database.transaction().map_err(io::Error::other)?;
+            if let Some(workspace_id) = &workspace_id {
+                let workspace_exists: bool = transaction
+                    .query_row(
+                        "SELECT EXISTS(SELECT 1 FROM workspaces WHERE workspace_id = ?1)",
+                        params![workspace_id],
+                        |row| row.get(0),
+                    )
+                    .map_err(io::Error::other)?;
+                if !workspace_exists {
+                    return Err(io::Error::new(
+                        io::ErrorKind::NotFound,
+                        "archived Session's Workspace is missing",
+                    ));
+                }
+                transaction
+                    .execute(
+                        "UPDATE workspaces SET state = 'open', archived_at = NULL WHERE workspace_id = ?1",
+                        params![workspace_id],
+                    )
+                    .map_err(io::Error::other)?;
+            }
+            let changed = transaction
+                .execute(
+                    "UPDATE sessions SET state = 'open', archived_at = NULL, termination_reason = NULL
+                     WHERE id = ?1 AND state = 'archived'",
+                    params![session_id.0],
+                )
+                .map_err(io::Error::other)?;
+            if changed != 1 {
+                return Err(io::Error::new(
+                    io::ErrorKind::AlreadyExists,
+                    "Session changed while it was being resumed",
+                ));
+            }
+            transaction
+                .execute(
+                    "UPDATE shells SET state = 'open', archived_at = NULL, termination_reason = NULL
+                     WHERE session_id = ?1 AND state = 'archived'",
+                    params![session_id.0],
+                )
+                .map_err(io::Error::other)?;
+            transaction.commit().map_err(io::Error::other)?;
+            if let Some((workspace_id, access)) = workspace_access {
+                self.workspace_access
+                    .lock()
+                    .map_err(|_| io::Error::other("Workspace access lock was poisoned"))?
+                    .insert(workspace_id, access);
+            }
+
+            let record = read_open_sessions(&state.database)?
+                .into_iter()
+                .find(|record| record.id == session_id)
+                .ok_or_else(|| {
+                    io::Error::new(io::ErrorKind::NotFound, "resumed Session record is missing")
+                })?;
+            let mut remaining_shell_ids: HashSet<_> = record
+                .shell_ids
+                .iter()
+                .map(|(shell_id, _, _)| *shell_id)
+                .collect();
+            let mut pi_shells = Vec::new();
+            for (shell_id, role, pane_id) in record.shell_ids {
+                match role {
+                    PaneRole::Terminal => {
+                        match spawn_shell(&state.shell_command, session_id, &record.initial_pwd) {
+                            Ok(shell) => {
+                                state.running.insert(shell_id, shell);
+                            }
+                            Err(error) => {
+                                log::warn!(
+                                    "event=session.terminal_restore_unavailable session_id={} shell_id={} error_kind={:?}",
+                                    session_id.0,
+                                    shell_id.0,
+                                    error.kind()
+                                );
+                                remaining_shell_ids.remove(&shell_id);
+                                archive_shell_and_prune_layout(
+                                    &mut state.database,
+                                    shell_id,
+                                    session_id,
+                                    "resume_spawn_failed",
+                                    &remaining_shell_ids,
+                                )?;
+                            }
+                        }
+                    }
+                    PaneRole::Pi => {
+                        let recovery = (|| {
+                            let session_file =
+                                record.pi_session_file.as_ref().ok_or_else(|| {
+                                    io::Error::new(
+                                        io::ErrorKind::InvalidData,
+                                        "Pi Session is missing its persisted history path",
+                                    )
+                                })?;
+                            let bridge_socket =
+                                record.pi_bridge_socket.as_ref().ok_or_else(|| {
+                                    io::Error::new(
+                                        io::ErrorKind::InvalidData,
+                                        "Pi Session is missing its persisted bridge socket path",
+                                    )
+                                })?;
+                            let pane_id = pane_id.as_deref().ok_or_else(|| {
+                                io::Error::new(io::ErrorKind::InvalidData, "Pi pane ID is missing")
+                            })?;
+                            spawn_pi(
+                                &state.database,
+                                &state.agent_command,
+                                session_id,
+                                &record.initial_pwd,
+                                session_file,
+                                bridge_socket,
+                                &record.session_uuid,
+                                pane_id,
+                                PiTakeoverPolicy::PreserveExistingProcess,
+                            )
+                        })();
+                        match recovery {
+                            Ok(shell) => {
+                                pi_shells.push(shell_id);
+                                state.running.insert(shell_id, shell);
+                            }
+                            Err(error) => {
+                                log::warn!(
+                                    "event=session.pi_restore_unavailable session_id={} shell_id={} error_kind={:?}",
+                                    session_id.0,
+                                    shell_id.0,
+                                    error.kind()
+                                );
+                                state.unavailable_pi_shells.insert(
+                                    shell_id,
+                                    UnavailablePiShell {
+                                        session_id,
+                                        pane_id,
+                                        initial_pwd: record.initial_pwd.clone(),
+                                    },
+                                );
+                                state.pi_activity.insert(
+                                    session_id,
+                                    PiRuntimeActivity {
+                                        connected: false,
+                                        ..PiRuntimeActivity::default()
+                                    },
+                                );
+                            }
+                        }
+                    }
+                }
+            }
+            pi_shells
+        };
+
+        for shell_id in pi_shells {
+            self.start_pi_bridge_worker(shell_id)?;
+        }
+        self.request_session_focus(session_id)?;
+        self.publish_session_snapshot(session_id)?;
+        log::info!(
+            "event=session.pi_resume_completed session_id={}",
+            session_id.0
+        );
+        Ok(session_id)
     }
 
     fn observe_pi_event(
@@ -2583,6 +2913,23 @@ impl SessionManager {
             ParsedConfigValue::ShellCommand(command) => state.shell_command = command,
         }
         Ok(ConfigValue { key, value })
+    }
+
+    fn request_session_focus(&self, session_id: SessionId) -> io::Result<()> {
+        *self
+            .pending_resume_focus
+            .lock()
+            .map_err(|_| io::Error::other("pending resume focus lock was poisoned"))? =
+            Some(session_id);
+        Ok(())
+    }
+
+    fn take_pending_resume_focus(&self) -> io::Result<Option<SessionId>> {
+        Ok(self
+            .pending_resume_focus
+            .lock()
+            .map_err(|_| io::Error::other("pending resume focus lock was poisoned"))?
+            .take())
     }
 
     fn lock_state(&self) -> io::Result<std::sync::MutexGuard<'_, SessionState>> {
@@ -4745,6 +5092,34 @@ fn run_pi_bridge_worker(
                                 }
                                 active_stream_id = Some(stream_id.to_owned());
                                 last_sequence = sequence;
+                                if name == "session.resume.requested" {
+                                    let target_session_file = data
+                                        .as_object()
+                                        .filter(|record| record.len() == 1)
+                                        .and_then(|record| record.get("targetSessionFile"))
+                                        .and_then(Value::as_str);
+                                    let Some(target_session_file) = target_session_file else {
+                                        log::warn!(
+                                            "event=session.pi_resume_rejected session_id={} shell_id={} reason=invalid_request",
+                                            session_id.0,
+                                            shell_id.0
+                                        );
+                                        continue;
+                                    };
+                                    if let Err(error) = owner.resume_archived_pi_session(
+                                        session_id,
+                                        shell_id,
+                                        target_session_file,
+                                    ) {
+                                        log::warn!(
+                                            "event=session.pi_resume_rejected session_id={} shell_id={} error_kind={:?}",
+                                            session_id.0,
+                                            shell_id.0,
+                                            error.kind()
+                                        );
+                                    }
+                                    continue;
+                                }
                                 if owner
                                     .observe_pi_event(session_id, shell_id, name, data)
                                     .is_err()
@@ -5749,10 +6124,237 @@ mod tests {
         assert!(restarted.shells[0].process_id > 0);
         assert!(manager.list_sessions().unwrap()[0].shells[0].available);
         assert!(old_pi.0.try_wait().unwrap().is_some());
+        let terminal_shell = manager.create_shell(session_id).unwrap();
+        manager
+            .set_layout(
+                session_id,
+                SessionLayout::Split {
+                    id: create_uuid_v4().unwrap(),
+                    direction: LayoutDirection::Right,
+                    ratio: 0.5,
+                    first: Box::new(SessionLayout::Pane {
+                        shell_id: shell_id.0,
+                    }),
+                    second: Box::new(SessionLayout::Pane {
+                        shell_id: terminal_shell.id.0,
+                    }),
+                },
+            )
+            .unwrap();
         assert_eq!(
             fs::read(&session_file).unwrap(),
             b"preserved Pi transcript\n"
         );
+
+        {
+            let mut state = manager.lock_state().unwrap();
+            state
+                .running
+                .get_mut(&shell_id)
+                .unwrap()
+                .child
+                .kill()
+                .unwrap();
+        }
+        let deadline = Instant::now() + Duration::from_secs(2);
+        loop {
+            manager.reap_exited_sessions().unwrap();
+            let sessions = manager.list_sessions().unwrap();
+            if sessions.len() == 1
+                && sessions[0]
+                    .shells
+                    .iter()
+                    .any(|shell| shell.id == shell_id && !shell.available)
+            {
+                break;
+            }
+            assert!(Instant::now() < deadline, "Pi exit was not reconciled");
+            thread::sleep(Duration::from_millis(10));
+        }
+        let sessions = manager.list_sessions().unwrap();
+        assert_eq!(sessions.len(), 1);
+        assert_eq!(sessions[0].id, session_id);
+        assert_eq!(
+            sessions[0].pi_session_file.as_deref(),
+            Some(session_file.as_path())
+        );
+        assert_eq!(sessions[0].shells.len(), 2);
+        assert!(
+            !sessions[0]
+                .shells
+                .iter()
+                .find(|shell| shell.id == shell_id)
+                .unwrap()
+                .available
+        );
+        assert!(
+            sessions[0]
+                .shells
+                .iter()
+                .find(|shell| shell.id == terminal_shell.id)
+                .unwrap()
+                .available
+        );
+        assert_eq!(
+            fs::read(&session_file).unwrap(),
+            b"preserved Pi transcript\n"
+        );
+        {
+            let state = manager.lock_state().unwrap();
+            let session_state: (String, Option<String>) = state
+                .database
+                .query_row(
+                    "SELECT state, termination_reason FROM sessions WHERE id = ?1",
+                    params![session_id.0],
+                    |row| Ok((row.get(0)?, row.get(1)?)),
+                )
+                .unwrap();
+            assert_eq!(session_state, ("open".to_owned(), None));
+        }
+        manager.shutdown();
+        drop(manager);
+        fs::remove_dir_all(directory).unwrap();
+    }
+
+    #[test]
+    fn pi_resume_reopens_archived_axo_session_without_replacing_history() {
+        let directory = PathBuf::from("/tmp").join(format!("axor-{}", create_uuid_v4().unwrap()));
+        let server_directory = directory.join("server");
+        let pi_session_directory = server_directory.join("pi-sessions");
+        fs::create_dir_all(&pi_session_directory).unwrap();
+        let database_path = server_directory.join(DATABASE_FILE);
+        let session_id = SessionId(901);
+        let shell_id = ShellId(902);
+        let session_uuid = create_uuid_v4().unwrap();
+        let pane_id = create_uuid_v4().unwrap();
+        let workspace_id = create_uuid_v4().unwrap();
+        let workspace_root = PathBuf::from("/tmp").canonicalize().unwrap();
+        let workspace_root_string = workspace_root.to_string_lossy().into_owned();
+        let session_file = pi_session_directory.join(format!("{session_uuid}.jsonl"));
+        let history = b"archived Pi conversation must remain canonical\n";
+        fs::write(&session_file, history).unwrap();
+
+        let mut database = Connection::open(&database_path).unwrap();
+        initialize_database(&mut database).unwrap();
+        database
+            .execute(
+                "INSERT INTO workspaces (workspace_id, name, directory_path, state, created_at, archived_at)
+                 VALUES (?1, 'Archived Workspace', ?2, 'archived', ?3, ?4)",
+                params![
+                    workspace_id,
+                    workspace_root_string,
+                    unix_timestamp(),
+                    unix_timestamp()
+                ],
+            )
+            .unwrap();
+        database
+            .execute(
+                "INSERT INTO sessions
+                    (id, initial_pwd, state, created_at, archived_at, termination_reason,
+                     layout_json, workspace_id, session_uuid, pi_session_file, pi_session_id)
+                 VALUES (?1, ?2, 'archived', ?3, ?4, 'pi_exited', ?5, ?6, ?7, ?8, 'pi-session-archived')",
+                params![
+                    session_id.0,
+                    workspace_root_string,
+                    unix_timestamp(),
+                    unix_timestamp(),
+                    serde_json::to_string(&SessionLayout::Pane { shell_id: shell_id.0 }).unwrap(),
+                    workspace_id,
+                    session_uuid,
+                    session_file.to_string_lossy(),
+                ],
+            )
+            .unwrap();
+        database
+            .execute(
+                "INSERT INTO shells
+                    (id, session_id, initial_pwd, state, created_at, archived_at, termination_reason, role, pane_id)
+                 VALUES (?1, ?2, ?3, 'archived', ?4, ?5, 'pi_exited', 'pi', ?6)",
+                params![
+                    shell_id.0,
+                    session_id.0,
+                    workspace_root_string,
+                    unix_timestamp(),
+                    unix_timestamp(),
+                    pane_id
+                ],
+            )
+            .unwrap();
+        drop(database);
+
+        let manager = SessionManager::open(&server_directory).unwrap();
+        let fake_pi = directory.join("fake-pi");
+        fs::write(&fake_pi, "#!/bin/sh\nexec /bin/sleep 60\n").unwrap();
+        fs::set_permissions(&fake_pi, fs::Permissions::from_mode(0o700)).unwrap();
+        manager.lock_state().unwrap().agent_command =
+            AgentCommand::parse(fake_pi.to_str().unwrap()).unwrap();
+        let active_workspace = manager
+            .create_workspace(WorkspaceCreateRequest {
+                name: "Active Workspace".to_owned(),
+                directory_path: PathBuf::from("/tmp").canonicalize().unwrap(),
+                directory_bookmark: None,
+            })
+            .unwrap();
+        let requester_session_id = SessionId(active_workspace["session"]["id"].as_i64().unwrap());
+        let requester_shell_id = ShellId(
+            active_workspace["session"]["shells"][0]["id"]
+                .as_i64()
+                .unwrap(),
+        );
+        let unrelated_history = directory.join("unowned.jsonl");
+        fs::write(&unrelated_history, b"not an Axo transcript").unwrap();
+        let rejected = manager
+            .resume_archived_pi_session(
+                requester_session_id,
+                requester_shell_id,
+                unrelated_history.to_str().unwrap(),
+            )
+            .unwrap_err();
+        assert_eq!(rejected.kind(), io::ErrorKind::PermissionDenied);
+
+        assert_eq!(
+            manager
+                .resume_archived_pi_session(
+                    requester_session_id,
+                    requester_shell_id,
+                    session_file.to_str().unwrap(),
+                )
+                .unwrap(),
+            session_id
+        );
+        assert_eq!(
+            manager.take_pending_resume_focus().unwrap(),
+            Some(session_id)
+        );
+        assert_eq!(manager.take_pending_resume_focus().unwrap(), None);
+        let resumed = manager
+            .list_sessions()
+            .unwrap()
+            .into_iter()
+            .find(|session| session.id == session_id)
+            .unwrap();
+        assert_eq!(
+            resumed.pi_session_file.as_deref(),
+            Some(session_file.as_path())
+        );
+        assert_eq!(resumed.workspace_id.as_deref(), Some(workspace_id.as_str()));
+        assert_eq!(resumed.shells.len(), 1);
+        assert_eq!(resumed.shells[0].id, shell_id);
+        assert!(resumed.shells[0].available);
+        assert_eq!(fs::read(&session_file).unwrap(), history);
+        let workspace_state: String = manager
+            .lock_state()
+            .unwrap()
+            .database
+            .query_row(
+                "SELECT state FROM workspaces WHERE workspace_id = ?1",
+                params![workspace_id],
+                |row| row.get(0),
+            )
+            .unwrap();
+        assert_eq!(workspace_state, "open");
+
         manager.shutdown();
         drop(manager);
         fs::remove_dir_all(directory).unwrap();

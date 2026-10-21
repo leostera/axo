@@ -136,9 +136,10 @@ final class TerminalSessionsModel: ObservableObject {
         }
         negotiatedSocketPath = socketPath
       }
-      async let updatedSessionsTask = UnixSocketRPC.listSessions(at: socketPath)
+      async let updatedSessionSnapshotTask = UnixSocketRPC.listSessionSnapshot(at: socketPath)
       async let updatedWorkspacesTask = UnixSocketRPC.listWorkspaces(at: socketPath)
-      let updatedSessions = try await updatedSessionsTask
+      let updatedSessionSnapshot = try await updatedSessionSnapshotTask
+      let updatedSessions = updatedSessionSnapshot.sessions
       let updatedWorkspaces = try await updatedWorkspacesTask
       workspaces = updatedWorkspaces
       let openSessionIDs = Set(updatedSessions.map(\.id))
@@ -202,6 +203,12 @@ final class TerminalSessionsModel: ObservableObject {
       }
       if sessions != normalizedSessions {
         sessions = normalizedSessions
+      }
+
+      if let resumedSessionID = updatedSessionSnapshot.resumeSessionId,
+        openSessionIDs.contains(resumedSessionID)
+      {
+        selectedSessionID = resumedSessionID
       }
 
       if let selectedSessionID, openSessionIDs.contains(selectedSessionID) {

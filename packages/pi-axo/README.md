@@ -36,7 +36,7 @@ Pi-to-Axod records:
 
 Axod-to-Pi records use `type: "command"`, a request ID, and the matching Axo Session ID. V1 supports `send` (normal, steer, or follow-up delivery) and `cancel`. Commands for a different Session are rejected. Duplicate request IDs return the cached result while this Pi process remains alive; after an ambiguous disconnect, Axod must not blindly replay a command.
 
-The extension forwards structured Pi events to Axod only. If Axod is disconnected, live events are not buffered in memory; Axod must reconcile from Pi's durable local session history. Terminal bytes never enter this channel. Pi remains the sole writer of its session file.
+The extension forwards structured Pi events to Axod only. Its `/resume` request includes a selected transcript path but is consumed locally by Axod and is never relayed. If Axod is disconnected, live events are not buffered in memory; Axod must reconcile from Pi's durable local session history. Terminal bytes never enter this channel. Pi remains the sole writer of its session file.
 
 ## Session title, emoji, and activity
 
@@ -46,6 +46,6 @@ The extension also forwards Pi's public agent-settled and blocking-UI-prompt lif
 
 ## Session ownership
 
-The extension prevents Pi's `/new`, `/resume`, and `/fork` flows from switching the process to a conversation owned by a different Axo Session. Create and select Sessions through Axo instead. Branch navigation within the current Pi file remains Pi-owned.
+The extension prevents Pi from switching or forking a transcript behind Axod. `/resume` is forwarded as a local resume request; Axod accepts only an exact transcript path already owned by an Axo Session, reopens its archived Session record, and starts Pi against that same file. The Pi switch remains canceled so Axod keeps sole ownership; the Mac app selects the reopened Session in its sidebar. Unknown or missing files are not adopted. `/new` and `/fork` remain blocked and must be initiated through Axo. Branch navigation within the current Pi file remains Pi-owned.
 
 The Unix socket is local to the host. Axod must place it in a private per-session directory and verify the `hello` identity against its stored Pane/Session binding. Mode `0600` excludes other local user accounts, but does not authenticate a different process running as the same user; v1 has no challenge/capability handshake, so the first local peer must be treated as trusted. Do not expose or forward this socket to remote clients, and do not relay Pi event content to server-side storage until Axod implements the host/session authorization and the event retention/sharing policy.

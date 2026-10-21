@@ -190,6 +190,20 @@ test("bridges Pi events and remote commands without owning the Pi process", asyn
 
     const beforeSwitch = registered.get("session_before_switch");
     assert.ok(beforeSwitch);
+    assert.deepEqual(
+      await beforeSwitch(
+        { reason: "resume", targetSessionFile: "/private/axo/archived-session.jsonl" } as never,
+        context as never,
+      ),
+      { cancel: true },
+    );
+    const resumeRequest = await next();
+    assert.equal(resumeRequest.type, "event");
+    if (resumeRequest.type !== "event") throw new Error("expected a resume request");
+    assert.equal(resumeRequest.name, "session.resume.requested");
+    assert.deepEqual(resumeRequest.data, {
+      targetSessionFile: "/private/axo/archived-session.jsonl",
+    });
     assert.deepEqual(await beforeSwitch({ reason: "new" } as never, context as never), { cancel: true });
     socket.destroy();
 

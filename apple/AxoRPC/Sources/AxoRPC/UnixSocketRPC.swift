@@ -126,6 +126,11 @@ public enum TerminalSessionStatus: String, Decodable, Equatable, Sendable {
   case unavailable
 }
 
+public struct TerminalSessionListSnapshot: Decodable, Sendable {
+  public let sessions: [TerminalSession]
+  public let resumeSessionId: Int64?
+}
+
 public struct TerminalSession: Decodable, Equatable, Identifiable, Sendable {
   public let id: Int64
   public let sessionUuid: String?
@@ -285,10 +290,6 @@ public struct ClosedTerminalShell: Decodable, Equatable, Sendable {
   public let archivedShellId: Int64
   public let archivedSessionId: Int64?
   public let replacement: TerminalSession?
-}
-
-private struct TerminalSessionList: Decodable {
-  let sessions: [TerminalSession]
 }
 
 private struct WorkspaceList: Decodable {
@@ -571,10 +572,16 @@ public enum UnixSocketRPC {
   }
 
   public static func listSessions(at socketPath: UnixSocketPath) async throws -> [TerminalSession] {
-    let response: TerminalSessionList = try await withResponse(at: socketPath) { session in
+    let snapshot = try await listSessionSnapshot(at: socketPath)
+    return snapshot.sessions
+  }
+
+  public static func listSessionSnapshot(
+    at socketPath: UnixSocketPath
+  ) async throws -> TerminalSessionListSnapshot {
+    try await withResponse(at: socketPath) { session in
       try await session.response(to: "axo.session.list")
     }
-    return response.sessions
   }
 
   public static func listWorkspaces(at socketPath: UnixSocketPath) async throws -> [WorkspaceRecord] {

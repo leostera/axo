@@ -126,7 +126,24 @@ export async function installAxoPiExtension(pi: ExtensionAPI, config: AxoPiExten
     await bridge.close();
   });
 
-  pi.on("session_before_switch", async (_event, sessionContext) => {
+  pi.on("session_before_switch", async (event, sessionContext) => {
+    const targetSessionFile = event.targetSessionFile;
+    if (
+      event.reason === "resume" &&
+      typeof targetSessionFile === "string" &&
+      isAbsolute(targetSessionFile) &&
+      Buffer.byteLength(targetSessionFile, "utf8") <= 4096
+    ) {
+      await publish("session.resume.requested", { targetSessionFile });
+      if (sessionContext.hasUI) {
+        sessionContext.ui.notify(
+          "Axo is checking this saved session. If it belongs to Axo, it will appear in the sidebar; select it there to continue.",
+          "warning",
+        );
+      }
+      return { cancel: true };
+    }
+
     if (sessionContext.hasUI) {
       sessionContext.ui.notify("This Pi session is owned by Axo. Create or select Sessions in Axo instead.", "warning");
     }
