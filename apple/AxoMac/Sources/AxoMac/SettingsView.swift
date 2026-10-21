@@ -59,6 +59,7 @@ enum SettingsSection: String, CaseIterable, Identifiable {
 
 struct SettingsView: View {
   @ObservedObject var daemon: DaemonController
+  @ObservedObject var sleepPrevention: SleepPreventionController
   let ghostty: GhosttyRuntime
   @Binding var selection: SettingsSection
   @Binding var appearanceTheme: AppearanceTheme
@@ -85,7 +86,11 @@ struct SettingsView: View {
       Group {
         switch selection {
         case .general:
-          GeneralSettingsView(daemon: daemon, ghostty: ghostty)
+          GeneralSettingsView(
+            daemon: daemon,
+            ghostty: ghostty,
+            sleepPrevention: sleepPrevention
+          )
         case .appearance:
           AppearanceSettingsView(theme: $appearanceTheme)
         case .agent:
@@ -318,6 +323,7 @@ private struct ShellCommandSettingsSection: View {
 private struct GeneralSettingsView: View {
   @ObservedObject var daemon: DaemonController
   @ObservedObject var ghostty: GhosttyRuntime
+  @ObservedObject var sleepPrevention: SleepPreventionController
 
   private var scrollSensitivityPosition: Binding<Double> {
     Binding(
@@ -354,6 +360,19 @@ private struct GeneralSettingsView: View {
           .font(.caption)
           .foregroundStyle(.secondary)
         }
+      }
+
+      Section("Power") {
+        Toggle(
+          "Prevent sleep while Axo is running",
+          isOn: Binding(
+            get: { sleepPrevention.isEnabled },
+            set: { sleepPrevention.setEnabled($0) }
+          )
+        )
+        Text("Prevents idle system sleep. Manual sleep and closing the lid are unaffected.")
+          .font(.caption)
+          .foregroundStyle(.secondary)
       }
 
       ShellCommandSettingsSection(daemon: daemon)

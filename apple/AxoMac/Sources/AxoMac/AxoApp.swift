@@ -12,6 +12,7 @@ struct AxoApp: App {
   @StateObject private var sessions: TerminalSessionsModel
   @NSApplicationDelegateAdaptor(AxoURLSchemeDelegate.self) private var urlSchemeDelegate
   @StateObject private var ghostty: GhosttyRuntime
+  @StateObject private var sleepPrevention: SleepPreventionController
   @StateObject private var pairingLink = PairingLinkRouter.shared
   @State private var settingsSection = SettingsSection.general
   @State private var isPresentingWorkspaceCreation = false
@@ -25,6 +26,7 @@ struct AxoApp: App {
     _daemon = StateObject(wrappedValue: daemon)
     _sessions = StateObject(wrappedValue: Self.makeSessions(isUITestApp: isUITestApp))
     _ghostty = StateObject(wrappedValue: GhosttyRuntime())
+    _sleepPrevention = StateObject(wrappedValue: SleepPreventionController())
     self.isUITestApp = isUITestApp
 
     if ProcessInfo.processInfo.arguments.contains("--self-test") {
@@ -238,13 +240,13 @@ struct AxoApp: App {
           sessions.showPreviousSession()
         }
         .keyboardShortcut("]", modifiers: [.command, .shift])
-        .disabled(sessions.sessions.count < 2)
+        .disabled(sessions.sidebarOrderedSessions.count < 2)
 
         Button("Next Session") {
           sessions.showNextSession()
         }
         .keyboardShortcut("[", modifiers: [.command, .shift])
-        .disabled(sessions.sessions.count < 2)
+        .disabled(sessions.sidebarOrderedSessions.count < 2)
 
         Divider()
 
@@ -259,7 +261,7 @@ struct AxoApp: App {
 
         Button("Close Session", role: .destructive) {
           if let sessionID = sessions.selectedSessionID {
-            Task { await sessions.closeSession(sessionID) }
+            Task { await sessions.requestCloseSession(sessionID) }
           }
         }
         .disabled(sessions.selectedSessionID == nil)
@@ -269,6 +271,7 @@ struct AxoApp: App {
     Window("Axo Settings", id: "settings") {
       SettingsView(
         daemon: daemon,
+        sleepPrevention: sleepPrevention,
         ghostty: ghostty,
         selection: $settingsSection,
         appearanceTheme: $appearanceTheme,

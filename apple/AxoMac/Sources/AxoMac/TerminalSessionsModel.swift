@@ -3,6 +3,14 @@ import AxoRPC
 import Combine
 import Foundation
 
+struct WorkspaceArchiveConfirmation: Equatable, Identifiable {
+  let workspaceID: String
+  let workspaceName: String
+  let sessionID: Int64
+
+  var id: String { workspaceID }
+}
+
 @MainActor
 final class TerminalSessionsModel: ObservableObject {
   @Published private(set) var sessions: [TerminalSession] = []
@@ -21,6 +29,7 @@ final class TerminalSessionsModel: ObservableObject {
   @Published private(set) var layout: TerminalLayout?
   @Published private(set) var errorMessage: String?
   @Published private(set) var workspaceCreationError: String?
+  @Published private(set) var pendingWorkspaceArchiveConfirmation: WorkspaceArchiveConfirmation?
 
   let helperURL: URL
 
@@ -34,6 +43,20 @@ final class TerminalSessionsModel: ObservableObject {
   private var recentSessionIDs: [Int64] = []
   private var pendingLayoutWrites: [Int64: SessionLayout] = [:]
   private var layoutWriteTasks: [Int64: Task<Void, Never>] = [:]
+
+  var sidebarOrderedSessions: [TerminalSession] {
+    var sessionsByWorkspace: [String: [TerminalSession]] = [:]
+    var standaloneSessions: [TerminalSession] = []
+    for session in sessions {
+      if let workspaceID = session.workspaceId {
+        sessionsByWorkspace[workspaceID, default: []].append(session)
+      } else {
+        standaloneSessions.append(session)
+      }
+    }
+
+    return workspaces.flatMap { sessionsByWorkspace[$0.workspaceId] ?? [] } + standaloneSessions
+  }
 
   init() {
     let defaults = UserDefaults.standard
@@ -306,6 +329,57 @@ final class TerminalSessionsModel: ObservableObject {
   func closeSession(_ sessionID: Int64) async {
     do {
       try await archiveSession(sessionID)
+    } catch {
+      errorMessage = error.localizedDescription
+    }
+  }
+
+  func requestCloseSession(_ sessionID: Int64) async {
+    guard let closingSession = session(for: sessionID) else { return }
+    errorMessage = nil
+
+    if let workspaceID = closingSession.workspaceId,
+      sessions.filter({ $0.workspaceId == workspaceID }).count == 1
+    {
+      guard let workspace = workspaces.first(where: { $0.workspaceId == workspaceID }) else {
+        errorMessage = "The Workspace is unavailable, so the last Session was not closed."
+        return
+      }
+      pendingWorkspaceArchiveConfirmation = WorkspaceArchiveConfirmation(
+        workspaceID: workspaceID,
+        workspaceName: workspace.name,
+        sessionID: sessionID
+      )
+      return
+    }
+
+    await closeSession(sessionID)
+  }
+
+  func cancelWorkspaceArchiveConfirmation() {
+    pendingWorkspaceArchiveConfirmation = nil
+  }
+
+  func confirmWorkspaceArchiveAndCloseSession(
+    _ confirmation: WorkspaceArchiveConfirmation
+  ) async {
+    if pendingWorkspaceArchiveConfirmation == confirmation {
+      pendingWorkspaceArchiveConfirmation = nil
+    }
+
+    let workspaceSessionIDs = sessions
+      .filter { $0.workspaceId == confirmation.workspaceID }
+      .map(\.id)
+    guard workspaceSessionIDs == [confirmation.sessionID],
+      workspaces.contains(where: { $0.workspaceId == confirmation.workspaceID })
+    else {
+      errorMessage = "The Workspace changed before it could be archived. Please review it again."
+      return
+    }
+
+    do {
+      try await archiveWorkspace(confirmation.workspaceID)
+      errorMessage = nil
     } catch {
       errorMessage = error.localizedDescription
     }
@@ -593,19 +667,20 @@ final class TerminalSessionsModel: ObservableObject {
   }
 
   private func showAdjacentSession(_ direction: TerminalNavigationDirection) {
+    let orderedSessions = sidebarOrderedSessions
     let currentIndex = selectedSessionID.flatMap { selectedID in
-      sessions.firstIndex { $0.id == selectedID }
+      orderedSessions.firstIndex { $0.id == selectedID }
     }
     guard
       let targetIndex = Self.adjacentIndex(
         from: currentIndex,
-        count: sessions.count,
+        count: orderedSessions.count,
         direction: direction
       )
     else {
       return
     }
-    showSession(sessions[targetIndex].id)
+    showSession(orderedSessions[targetIndex].id)
   }
 
   private static func adjacentIndex(

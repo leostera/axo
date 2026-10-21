@@ -165,6 +165,77 @@ final class TerminalWorkbenchE2ETests: XCTestCase {
     }
   }
 
+  func testSessionNavigationFollowsWorkspaceThenStandaloneSidebarOrder() async throws {
+    let directory = FileManager.default.temporaryDirectory
+      .appendingPathComponent("axo-sidebar-order-\(UUID().uuidString)", isDirectory: true)
+    try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
+    defer { try? FileManager.default.removeItem(at: directory) }
+
+    try await withWorkbench { model, _ in
+      let firstStandaloneID = try XCTUnwrap(model.selectedSessionID)
+      await model.createWorkspace(
+        name: "Sidebar Order",
+        directoryPath: directory.path,
+        directoryBookmark: nil
+      )
+      let firstWorkspaceSessionID = try XCTUnwrap(model.selectedSessionID)
+      let workspaceID = try XCTUnwrap(model.session(for: firstWorkspaceSessionID)?.workspaceId)
+      await model.createSession(in: workspaceID)
+      let secondWorkspaceSessionID = try XCTUnwrap(model.selectedSessionID)
+      await model.createSession()
+      let secondStandaloneID = try XCTUnwrap(model.selectedSessionID)
+
+      let sidebarOrder = [
+        firstWorkspaceSessionID,
+        secondWorkspaceSessionID,
+        firstStandaloneID,
+        secondStandaloneID,
+      ]
+      XCTAssertEqual(model.sidebarOrderedSessions.map(\.id), sidebarOrder)
+
+      model.showNextSession()
+      XCTAssertEqual(model.selectedSessionID, firstWorkspaceSessionID)
+      model.showNextSession()
+      XCTAssertEqual(model.selectedSessionID, secondWorkspaceSessionID)
+      model.showPreviousSession()
+      XCTAssertEqual(model.selectedSessionID, firstWorkspaceSessionID)
+      model.showPreviousSession()
+      XCTAssertEqual(model.selectedSessionID, secondStandaloneID)
+    }
+  }
+
+  func testClosingLastWorkspaceSessionRequiresConfirmationToArchiveWorkspace() async throws {
+    let directory = FileManager.default.temporaryDirectory
+      .appendingPathComponent("axo-last-session-\(UUID().uuidString)", isDirectory: true)
+    try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
+    defer { try? FileManager.default.removeItem(at: directory) }
+
+    try await withWorkbench { model, _ in
+      await model.createWorkspace(
+        name: "Last Session",
+        directoryPath: directory.path,
+        directoryBookmark: nil
+      )
+      let sessionID = try XCTUnwrap(model.selectedSessionID)
+      let workspaceID = try XCTUnwrap(model.session(for: sessionID)?.workspaceId)
+
+      await model.requestCloseSession(sessionID)
+
+      XCTAssertEqual(model.pendingWorkspaceArchiveConfirmation?.workspaceID, workspaceID)
+      XCTAssertEqual(model.pendingWorkspaceArchiveConfirmation?.sessionID, sessionID)
+      XCTAssertNotNil(model.session(for: sessionID))
+      XCTAssertTrue(model.workspaces.contains { $0.workspaceId == workspaceID })
+
+      let confirmation = try XCTUnwrap(model.pendingWorkspaceArchiveConfirmation)
+      await model.confirmWorkspaceArchiveAndCloseSession(confirmation)
+
+      XCTAssertNil(model.pendingWorkspaceArchiveConfirmation)
+      XCTAssertNil(model.session(for: sessionID))
+      XCTAssertFalse(model.workspaces.contains { $0.workspaceId == workspaceID })
+      XCTAssertNil(model.errorMessage)
+    }
+  }
+
   func testCommandWClosureCollapsesNestedPaneWithoutKillingSiblings() async throws {
     try await withWorkbench { model, daemon in
       let sessionID = try XCTUnwrap(model.selectedSessionID)

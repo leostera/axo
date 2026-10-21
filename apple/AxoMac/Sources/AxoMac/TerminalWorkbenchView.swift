@@ -39,6 +39,33 @@ struct TerminalWorkbenchView: View {
     .sheet(isPresented: $isPresentingWorkspaceCreation) {
       WorkspaceCreationSheet(sessions: sessions)
     }
+    .confirmationDialog(
+      "Archive \(sessions.pendingWorkspaceArchiveConfirmation?.workspaceName ?? "Workspace")?",
+      isPresented: Binding(
+        get: { sessions.pendingWorkspaceArchiveConfirmation != nil },
+        set: { isPresented in
+          if !isPresented { sessions.cancelWorkspaceArchiveConfirmation() }
+        }
+      ),
+      titleVisibility: .visible
+    ) {
+      Button("Archive Workspace and Sessions", role: .destructive) {
+        guard let confirmation = sessions.pendingWorkspaceArchiveConfirmation else { return }
+        Task { await sessions.confirmWorkspaceArchiveAndCloseSession(confirmation) }
+      }
+      .accessibilityIdentifier("confirm-archive-workspace-last-session")
+
+      Button("Cancel", role: .cancel) {
+        sessions.cancelWorkspaceArchiveConfirmation()
+      }
+    } message: {
+      if let confirmation = sessions.pendingWorkspaceArchiveConfirmation {
+        Text(
+          "This is the last Session in “\(confirmation.workspaceName)”. "
+            + "Archiving this Workspace will close its Sessions and preserve their histories."
+        )
+      }
+    }
     .task(id: daemonIsRunning) {
       guard daemonIsRunning else {
         ghostty.reconcileSurfaces(with: [])
@@ -64,15 +91,7 @@ struct TerminalWorkbenchView: View {
   }
 
   private var expandedSidebar: some View {
-    var sessionsByWorkspace: [String: [TerminalSession]] = [:]
-    var standaloneSessions: [TerminalSession] = []
-    for session in sessions.sessions {
-      if let workspaceID = session.workspaceId {
-        sessionsByWorkspace[workspaceID, default: []].append(session)
-      } else {
-        standaloneSessions.append(session)
-      }
-    }
+    let orderedSessions = sessions.sidebarOrderedSessions
 
     return VStack(spacing: 0) {
       ScrollView {
@@ -142,7 +161,9 @@ struct TerminalWorkbenchView: View {
               }
 
               if !collapsedWorkspaceIDs.contains(workspace.id) {
-                ForEach(sessionsByWorkspace[workspace.workspaceId] ?? []) { session in
+                ForEach(
+                  orderedSessions.filter { $0.workspaceId == workspace.workspaceId }
+                ) { session in
                   sessionButton(for: session)
                 }
               }
@@ -159,7 +180,7 @@ struct TerminalWorkbenchView: View {
             Task { await sessions.createSession() }
           }
 
-          ForEach(standaloneSessions) { session in
+          ForEach(orderedSessions.filter { $0.workspaceId == nil }) { session in
             sessionButton(for: session)
           }
         }
@@ -295,12 +316,8 @@ struct TerminalWorkbenchView: View {
 
   private func archiveSessionFromMenu(_ session: TerminalSession) {
     Task {
-      do {
-        try await sessions.archiveSession(session.id)
-        sidebarActionError = nil
-      } catch {
-        sidebarActionError = error.localizedDescription
-      }
+      await sessions.requestCloseSession(session.id)
+      sidebarActionError = sessions.errorMessage
     }
   }
 
@@ -319,7 +336,7 @@ struct TerminalWorkbenchView: View {
     VStack(spacing: 0) {
       ScrollView {
         VStack(spacing: 4) {
-          ForEach(sessions.sessions) { session in
+          ForEach(sessions.sidebarOrderedSessions) { session in
             Button {
               sessions.showSession(session.id)
             } label: {
