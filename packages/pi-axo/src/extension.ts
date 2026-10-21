@@ -137,7 +137,7 @@ export async function installAxoPiExtension(pi: ExtensionAPI, config: AxoPiExten
       await publish("session.resume.requested", { targetSessionFile });
       if (sessionContext.hasUI) {
         sessionContext.ui.notify(
-          "Axo is checking this saved session. If it belongs to Axo, it will appear in the sidebar; select it there to continue.",
+          "Axo is resuming the selected saved Session. If successful, Axo will archive this Session and switch to the resumed one.",
           "warning",
         );
       }

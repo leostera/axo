@@ -2528,9 +2528,7 @@ impl SessionManager {
         };
 
         if state_name == "open" {
-            self.request_session_focus(session_id)?;
-            self.publish_session_snapshot(session_id)?;
-            return Ok(session_id);
+            return self.complete_pi_resume(requester_session_id, session_id);
         }
         if state_name != "archived" {
             return Err(io::Error::new(
@@ -2760,13 +2758,50 @@ impl SessionManager {
         for shell_id in pi_shells {
             self.start_pi_bridge_worker(shell_id)?;
         }
-        self.request_session_focus(session_id)?;
-        self.publish_session_snapshot(session_id)?;
+        self.complete_pi_resume(requester_session_id, session_id)
+    }
+
+    fn complete_pi_resume(
+        self: &Arc<Self>,
+        requester_session_id: SessionId,
+        target_session_id: SessionId,
+    ) -> io::Result<SessionId> {
+        let target = self
+            .list_sessions()?
+            .into_iter()
+            .find(|session| session.id == target_session_id)
+            .ok_or_else(|| {
+                io::Error::new(io::ErrorKind::NotFound, "resumed Session is not open")
+            })?;
+        let target_pi_is_available = target
+            .shells
+            .iter()
+            .any(|shell| shell.role == PaneRole::Pi && shell.available);
+        if !target_pi_is_available {
+            return Err(io::Error::new(
+                io::ErrorKind::WouldBlock,
+                "resumed Pi pane is not available",
+            ));
+        }
+
+        if requester_session_id != target_session_id {
+            let replacement = self.close_session(requester_session_id)?;
+            self.publish_session_removed(requester_session_id);
+            if let Some(replacement) = replacement {
+                self.publish_event(json!({
+                    "type": "session.snapshot",
+                    "session": replacement.to_json(),
+                }));
+            }
+        }
+
+        self.request_session_focus(target_session_id)?;
+        self.publish_session_snapshot(target_session_id)?;
         log::info!(
             "event=session.pi_resume_completed session_id={}",
-            session_id.0
+            target_session_id.0
         );
-        Ok(session_id)
+        Ok(target_session_id)
     }
 
     fn observe_pi_event(
@@ -6343,6 +6378,27 @@ mod tests {
         assert_eq!(resumed.shells[0].id, shell_id);
         assert!(resumed.shells[0].available);
         assert_eq!(fs::read(&session_file).unwrap(), history);
+        assert!(
+            manager
+                .list_sessions()
+                .unwrap()
+                .iter()
+                .all(|session| session.id != requester_session_id)
+        );
+        let requester_state: (String, Option<String>) = manager
+            .lock_state()
+            .unwrap()
+            .database
+            .query_row(
+                "SELECT state, termination_reason FROM sessions WHERE id = ?1",
+                params![requester_session_id.0],
+                |row| Ok((row.get(0)?, row.get(1)?)),
+            )
+            .unwrap();
+        assert_eq!(
+            requester_state,
+            ("archived".to_owned(), Some("explicit_close".to_owned()))
+        );
         let workspace_state: String = manager
             .lock_state()
             .unwrap()
