@@ -11,6 +11,16 @@ Without `--socket`, the server uses `~/Library/Application Support/Axo/run/axod.
 
 The PID file is diagnostic metadata, not a process-control mechanism: launchd remains the source of truth for service lifetime, and a forced kill may leave a stale PID file until the next successful start replaces it. On macOS, `SMAppService` registers the bundled executable as a per-user LaunchAgent; launchd owns its process lifetime.
 
+## Runtime and attachment invariants
+
+- A durable pane ID is not a process identity. Each launch gets a daemon-local runtime ID; attachment output/detachment, Pi bridge metadata/activity, and resume requests are checked against that runtime. Late callbacks from a replaced process cannot modify its replacement.
+- Accepted terminal sockets explicitly use bounded blocking I/O, including on macOS where accepted sockets can inherit the listener's nonblocking mode. Stalled replay writes release their attachment lease; idle attachments observe shutdown and runtime replacement.
+- Child wait failures are reported once per runtime and isolated from other children. An uncertain child remains represented; Axod does not infer completion or signal a possibly reused PID after losing wait ownership.
+- Shutdown drains runtime ownership before slow child cleanup, without holding the catalog mutex while waiting for processes. Cleanup is idempotent, avoids joining its own worker, and retains cleanup responsibility if a background cleanup thread cannot start.
+- Only the intended Pi child inherits its transcript writer lock across exec. The parent keeps close-on-exec set throughout launch so unrelated child processes cannot accidentally retain that lock. No transcript content is rewritten by these lifecycle operations.
+
+These guarantees do not make a daemon restart transparent: restarting Axod still replaces its PTYs/processes. Automatic Pi recovery remains idle-only and non-forcing, and restoration can leave a pane unavailable when the original transcript or safe writer ownership is unavailable.
+
 ## Cloudflare host relay
 
 The packaged LaunchAgent supplies the Axo API URL. Axod attempts to connect automatically when it starts and retries with backoff; **Axo.app → Settings → Remote Access** reports the actual relay connection state and lets you request an immediate retry. The host name is read from existing local host metadata (or the system hostname on first setup), and the platform is reported as macOS. There is no API URL or editable host-name setup in the app.

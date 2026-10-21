@@ -1664,7 +1664,12 @@ mod tests {
         let deadline = Instant::now() + Duration::from_secs(5);
         loop {
             match listener.accept() {
-                Ok((stream, _)) => return stream,
+                Ok((stream, _)) => {
+                    // Darwin can inherit O_NONBLOCK from the listener; a read
+                    // timeout alone does not turn the accepted socket blocking.
+                    stream.set_nonblocking(false).unwrap();
+                    return stream;
+                }
                 Err(error) if error.kind() == io::ErrorKind::WouldBlock => {
                     assert!(
                         Instant::now() < deadline,

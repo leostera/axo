@@ -561,14 +561,14 @@ mod tests {
         let listener = UnixListener::bind(&socket_path).unwrap();
         let descriptor = File::open("/dev/null").unwrap();
         let server = thread::spawn(move || {
-            let (mut first, _) = listener.accept().unwrap();
+            let mut first = accept_test_attachment(&listener);
             first
                 .write_all(&ATTACH_REJECTION_MARKER.to_be_bytes())
                 .unwrap();
             first.write_all(&[4]).unwrap();
             drop(first);
 
-            let (mut second, _) = listener.accept().unwrap();
+            let mut second = accept_test_attachment(&listener);
             second.write_all(&0_u64.to_be_bytes()).unwrap();
             send_test_file_descriptor(second.as_raw_fd(), descriptor.as_raw_fd());
         });
@@ -594,11 +594,11 @@ mod tests {
         let listener = UnixListener::bind(&socket_path).unwrap();
         let descriptor = File::open("/dev/null").unwrap();
         let server = thread::spawn(move || {
-            let (mut first, _) = listener.accept().unwrap();
+            let mut first = accept_test_attachment(&listener);
             first.write_all(&[0, 0, 0]).unwrap();
             drop(first);
 
-            let (mut second, _) = listener.accept().unwrap();
+            let mut second = accept_test_attachment(&listener);
             second.write_all(&0_u64.to_be_bytes()).unwrap();
             send_test_file_descriptor(second.as_raw_fd(), descriptor.as_raw_fd());
         });
@@ -609,6 +609,19 @@ mod tests {
         drop(control);
         server.join().unwrap();
         std::fs::remove_file(socket_path).unwrap();
+    }
+
+    fn accept_test_attachment(listener: &UnixListener) -> UnixStream {
+        let (mut stream, _) = listener.accept().unwrap();
+        stream
+            .set_read_timeout(Some(Duration::from_secs(2)))
+            .unwrap();
+        let mut request = [0; 2];
+        stream.read_exact(&mut request).unwrap();
+        assert_eq!(&request, b"1\n");
+        // Consume the request before closing: unread socket data can otherwise
+        // reset the peer and race its request write instead of testing retries.
+        stream
     }
 
     fn send_test_file_descriptor(socket_fd: RawFd, descriptor: RawFd) {

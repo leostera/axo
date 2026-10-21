@@ -51,6 +51,38 @@ struct SessionId(i64);
 #[derive(Clone, Copy, Debug, Eq, Hash, PartialEq)]
 struct ShellId(i64);
 
+// A pane survives restarts; its runtime identity does not. Async callbacks must
+// carry this identity rather than applying to whichever process now owns a pane.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+struct RuntimeId(u64);
+
+impl RuntimeId {
+    fn new() -> Self {
+        static NEXT: AtomicU64 = AtomicU64::new(1);
+        Self(
+            NEXT.try_update(Ordering::Relaxed, Ordering::Relaxed, |id| id.checked_add(1))
+                .expect("runtime identity space exhausted"),
+        )
+    }
+}
+
+#[derive(Clone, Copy, Debug)]
+struct PiRuntimeBinding {
+    session_id: SessionId,
+    shell_id: ShellId,
+    runtime_id: RuntimeId,
+}
+
+impl PiRuntimeBinding {
+    fn is_current(self, state: &SessionState) -> bool {
+        state.running.get(&self.shell_id).is_some_and(|shell| {
+            shell.session_id == self.session_id
+                && shell.role == PaneRole::Pi
+                && shell.runtime_id == self.runtime_id
+        })
+    }
+}
+
 #[derive(Clone, Debug, Eq, PartialEq)]
 struct PiBridgeSocketPath(PathBuf);
 
@@ -370,11 +402,13 @@ struct SessionRecord {
 
 #[derive(Debug)]
 struct RunningShell {
+    runtime_id: RuntimeId,
     session_id: SessionId,
     role: PaneRole,
     pane_id: Option<String>,
     initial_pwd: PathBuf,
     child: Child,
+    wait_error_reported: bool,
     master: OwnedFd,
     slave_device: String,
     attached: bool,
@@ -1821,6 +1855,7 @@ impl SessionManager {
             bridge_socket,
             bridge_token,
             process_id,
+            runtime_id,
         ) = {
             let state = self.lock_state()?;
             let running = state
@@ -1865,6 +1900,7 @@ impl SessionManager {
                     io::Error::new(io::ErrorKind::InvalidData, "Pi bridge token is missing")
                 })?,
                 running.child.id(),
+                running.runtime_id,
             )
         };
         let manager = Arc::downgrade(self);
@@ -1875,8 +1911,11 @@ impl SessionManager {
                 run_pi_bridge_worker(
                     manager,
                     stop,
-                    session_id,
-                    shell_id,
+                    PiRuntimeBinding {
+                        session_id,
+                        shell_id,
+                        runtime_id,
+                    },
                     session_uuid,
                     pane_id,
                     initial_pwd,
@@ -2292,13 +2331,15 @@ impl SessionManager {
     }
 
     fn terminate_shells_in_background(&self, shells: Vec<RunningShell>) {
-        for mut shell in shells {
+        for shell in shells {
             let process_id = shell.child.id() as libc::pid_t;
-            signal_shell(-process_id, process_id, libc::SIGTERM);
+            let cleanup = ShellCleanup(shell);
             let worker_name = format!("axo-shell-cleanup-{process_id}");
-            match thread::Builder::new().name(worker_name).spawn(move || {
-                terminate_shell(&mut shell.child);
-            }) {
+            // The guard also cleans up if spawning fails and drops the closure.
+            match thread::Builder::new()
+                .name(worker_name)
+                .spawn(move || drop(cleanup))
+            {
                 Ok(worker) => match self.workers.lock() {
                     Ok(mut workers) => {
                         let previous_workers = std::mem::take(&mut *workers);
@@ -2330,11 +2371,24 @@ impl SessionManager {
             .running
             .iter_mut()
             .filter_map(|(shell_id, running)| match running.child.try_wait() {
-                Ok(Some(_)) => Some(Ok((*shell_id, running.session_id))),
+                Ok(Some(status)) => {
+                    log::info!("event=session.child_exited session_id={} shell_id={} runtime_id={} pid={} status={status}",
+                        running.session_id.0, shell_id.0, running.runtime_id.0, running.child.id());
+                    Some((*shell_id, running.session_id))
+                }
                 Ok(None) => None,
-                Err(error) => Some(Err(error)),
+                Err(error) => {
+                    if !running.wait_error_reported {
+                        log::error!("event=session.child_wait_failed session_id={} shell_id={} runtime_id={} pid={} error_kind={:?}",
+                            running.session_id.0, shell_id.0, running.runtime_id.0, running.child.id(), error.kind());
+                        running.wait_error_reported = true;
+                    }
+                    // Do not guess that the child exited or signal a potentially
+                    // reused PID. One uncertain child must not stop other reaping.
+                    None
+                }
             })
-            .collect::<io::Result<Vec<_>>>()?;
+            .collect::<Vec<_>>();
 
         let exited_pi_shells: Vec<_> = exited
             .iter()
@@ -2415,7 +2469,10 @@ impl SessionManager {
         Ok(())
     }
 
-    fn duplicate_master(&self, id: ShellId) -> io::Result<(OwnedFd, Vec<u8>, SessionId)> {
+    fn duplicate_master(
+        &self,
+        id: ShellId,
+    ) -> io::Result<(OwnedFd, Vec<u8>, SessionId, RuntimeId)> {
         let mut state = self.lock_state()?;
         let running = state
             .running
@@ -2435,10 +2492,15 @@ impl SessionManager {
         let replay = running.output_history.replay().to_vec();
         let session_id = running.session_id;
         // SAFETY: fcntl returned a new, owned descriptor.
-        Ok((unsafe { OwnedFd::from_raw_fd(fd) }, replay, session_id))
+        Ok((
+            unsafe { OwnedFd::from_raw_fd(fd) },
+            replay,
+            session_id,
+            running.runtime_id,
+        ))
     }
 
-    fn record_terminal_output(&self, id: ShellId, output: &[u8]) {
+    fn record_terminal_output(&self, id: ShellId, runtime_id: RuntimeId, output: &[u8]) {
         let event = {
             let Ok(mut state) = self.state.lock() else {
                 return;
@@ -2446,6 +2508,9 @@ impl SessionManager {
             let Some(running) = state.running.get_mut(&id) else {
                 return;
             };
+            if running.runtime_id != runtime_id {
+                return;
+            }
             running.output_history.record(output);
             let sequence = running.output_sequence;
             running.output_sequence = running.output_sequence.saturating_add(1);
@@ -2460,7 +2525,7 @@ impl SessionManager {
         self.publish_event(event);
     }
 
-    fn mark_detached(&self, id: ShellId) {
+    fn mark_detached(&self, id: ShellId, runtime_id: RuntimeId) {
         let session_id = {
             let Ok(mut state) = self.state.lock() else {
                 return;
@@ -2468,6 +2533,9 @@ impl SessionManager {
             let Some(running) = state.running.get_mut(&id) else {
                 return;
             };
+            if running.runtime_id != runtime_id {
+                return;
+            }
             running.attached = false;
             running.session_id
         };
@@ -2481,42 +2549,32 @@ impl SessionManager {
             .lock()
             .map(|mut workers| std::mem::take(&mut *workers))
             .unwrap_or_default();
-        for worker in workers {
-            let _ = worker.join();
-        }
-        if let Ok(mut state) = self.state.lock() {
-            for running in state.running.values_mut() {
-                terminate_shell(&mut running.child);
-            }
+        join_session_workers(workers);
+        // Slow child cleanup must not monopolize the catalog/PTY lock. Drain
+        // runtime ownership once so repeated shutdown (including Drop) is safe.
+        let running = self
+            .state
+            .lock()
+            .map(|mut state| std::mem::take(&mut state.running))
+            .unwrap_or_default();
+        for (_, mut shell) in running {
+            terminate_shell(&mut shell.child);
         }
     }
 
-    fn pi_shell_is_open(&self, shell_id: ShellId) -> bool {
+    fn pi_runtime_is_current(&self, binding: PiRuntimeBinding) -> bool {
         self.state
             .lock()
-            .map(|state| {
-                state
-                    .running
-                    .get(&shell_id)
-                    .is_some_and(|running| running.role == PaneRole::Pi)
-            })
+            .map(|state| binding.is_current(&state))
             .unwrap_or(false)
     }
 
-    fn set_pi_connection(
-        &self,
-        session_id: SessionId,
-        shell_id: ShellId,
-        connected: bool,
-    ) -> io::Result<()> {
+    fn set_pi_connection(&self, binding: PiRuntimeBinding, connected: bool) -> io::Result<()> {
         let mut state = self.lock_state()?;
-        if !state
-            .running
-            .get(&shell_id)
-            .is_some_and(|shell| shell.session_id == session_id && shell.role == PaneRole::Pi)
-        {
+        if !binding.is_current(&state) {
             return Ok(());
         }
+        let session_id = binding.session_id;
         let activity = state.pi_activity.entry(session_id).or_default();
         let changed = activity.connected != connected;
         activity.connected = connected;
@@ -2529,8 +2587,7 @@ impl SessionManager {
 
     fn resume_archived_pi_session(
         self: &Arc<Self>,
-        requester_session_id: SessionId,
-        requester_shell_id: ShellId,
+        requester: PiRuntimeBinding,
         requested_session_file: &str,
     ) -> io::Result<SessionId> {
         if requested_session_file.is_empty()
@@ -2556,9 +2613,7 @@ impl SessionManager {
 
         let (session_id, state_name, initial_pwd, workspace_id) = {
             let state = self.lock_state()?;
-            if !state.running.get(&requester_shell_id).is_some_and(|shell| {
-                shell.session_id == requester_session_id && shell.role == PaneRole::Pi
-            }) {
+            if !requester.is_current(&state) {
                 return Err(io::Error::new(
                     io::ErrorKind::PermissionDenied,
                     "Pi resume request came from a stale pane",
@@ -2593,7 +2648,7 @@ impl SessionManager {
         };
 
         if state_name == "open" {
-            return self.complete_pi_resume(requester_session_id, session_id);
+            return self.complete_pi_resume(requester, session_id);
         }
         if state_name != "archived" {
             return Err(io::Error::new(
@@ -2823,14 +2878,15 @@ impl SessionManager {
         for shell_id in pi_shells {
             self.start_pi_bridge_worker(shell_id)?;
         }
-        self.complete_pi_resume(requester_session_id, session_id)
+        self.complete_pi_resume(requester, session_id)
     }
 
     fn complete_pi_resume(
         self: &Arc<Self>,
-        requester_session_id: SessionId,
+        requester: PiRuntimeBinding,
         target_session_id: SessionId,
     ) -> io::Result<SessionId> {
+        let requester_session_id = requester.session_id;
         let target = self
             .list_sessions()?
             .into_iter()
@@ -2850,7 +2906,25 @@ impl SessionManager {
         }
 
         if requester_session_id != target_session_id {
-            let replacement = self.close_session(requester_session_id)?;
+            let (replacement, shells) = {
+                let mut state = self.lock_state()?;
+                if !requester.is_current(&state) {
+                    return Err(io::Error::new(
+                        io::ErrorKind::NotFound,
+                        "requesting Pi runtime was replaced",
+                    ));
+                }
+                close_session(
+                    &mut state,
+                    requester_session_id,
+                    &self.attach_socket_path,
+                    &self.pi_session_directory,
+                )?
+            };
+            self.terminate_shells_in_background(shells);
+            if let Some(session) = &replacement {
+                self.start_pi_bridge_for_session(session)?;
+            }
             self.publish_session_removed(requester_session_id);
             if let Some(replacement) = replacement {
                 self.publish_event(json!({
@@ -2871,19 +2945,15 @@ impl SessionManager {
 
     fn observe_pi_event(
         &self,
-        session_id: SessionId,
-        shell_id: ShellId,
+        binding: PiRuntimeBinding,
         name: &str,
         data: &Value,
-    ) -> io::Result<()> {
+    ) -> io::Result<bool> {
+        let session_id = binding.session_id;
         let changed = {
             let mut state = self.lock_state()?;
-            if !state
-                .running
-                .get(&shell_id)
-                .is_some_and(|shell| shell.session_id == session_id && shell.role == PaneRole::Pi)
-            {
-                return Ok(());
+            if !binding.is_current(&state) {
+                return Ok(false);
             }
 
             match name {
@@ -2916,7 +2986,7 @@ impl SessionManager {
                         .as_str()
                         .filter(|title| valid_session_title(title))
                     else {
-                        return Ok(());
+                        return Ok(true);
                     };
                     state
                         .database
@@ -2935,7 +3005,7 @@ impl SessionManager {
                         .as_str()
                         .filter(|emoji| valid_session_emoji(emoji));
                     if title.is_none() && emoji.is_none() {
-                        return Ok(());
+                        return Ok(true);
                     }
                     state.database.execute(
                         "UPDATE sessions SET name = COALESCE(?1, name), emoji = COALESCE(?2, emoji) \
@@ -2949,16 +3019,23 @@ impl SessionManager {
         if changed {
             self.publish_session_snapshot(session_id)?;
         }
-        Ok(())
+        Ok(true)
     }
 
     fn persist_pi_session_id(
         &self,
-        session_id: SessionId,
+        binding: PiRuntimeBinding,
         session_uuid: &str,
         pi_session_id: &str,
     ) -> io::Result<()> {
         let state = self.lock_state()?;
+        if !binding.is_current(&state) {
+            return Err(io::Error::new(
+                io::ErrorKind::NotFound,
+                "Pi runtime was replaced",
+            ));
+        }
+        let session_id = binding.session_id;
         let changed = state.database.execute(
             "UPDATE sessions SET pi_session_id = ? WHERE id = ? AND session_uuid = ? AND state = 'open'",
             params![pi_session_id, session_id.0, session_uuid],
@@ -3041,21 +3118,19 @@ impl SessionManager {
 
 impl Drop for SessionManager {
     fn drop(&mut self) {
-        self.stop_workers.store(true, Ordering::Relaxed);
-        let workers = self
-            .workers
-            .get_mut()
-            .map(std::mem::take)
-            .unwrap_or_default();
-        for worker in workers {
+        self.shutdown();
+        let _ = fs::remove_file(&self.attach_socket_path);
+    }
+}
+
+fn join_session_workers(workers: Vec<JoinHandle<()>>) {
+    let current_thread = thread::current().id();
+    for worker in workers {
+        // A worker may release the last upgraded Arc and run SessionManager's
+        // destructor itself. Joining that same thread would deadlock/panic.
+        if worker.thread().id() != current_thread {
             let _ = worker.join();
         }
-        if let Ok(state) = self.state.get_mut() {
-            for running in state.running.values_mut() {
-                terminate_shell(&mut running.child);
-            }
-        }
-        let _ = fs::remove_file(&self.attach_socket_path);
     }
 }
 
@@ -4249,11 +4324,13 @@ fn spawn_shell(
     let child = command.spawn()?;
     drop(slave);
     Ok(RunningShell {
+        runtime_id: RuntimeId::new(),
         session_id,
         role: PaneRole::Terminal,
         pane_id: None,
         initial_pwd: initial_pwd.to_path_buf(),
         child,
+        wait_error_reported: false,
         master,
         slave_device,
         attached: false,
@@ -4799,13 +4876,6 @@ fn spawn_pi(
     // cannot use its credential to control the replacement Pi process.
     let bridge_token = create_uuid_v4()?;
     store_pi_bridge_token(database, session_uuid, &bridge_token)?;
-    // Keep the advisory lock alive across exec. If axod is forcibly terminated,
-    // the Pi process retains the lock until it exits, preventing an unsafe resume.
-    // SAFETY: fcntl operates on the valid lock descriptor.
-    if unsafe { libc::fcntl(lock.as_raw_fd(), libc::F_SETFD, 0) } == -1 {
-        return Err(io::Error::last_os_error());
-    }
-
     let extension = resolve_pi_extension_path()?;
     let executable = resolve_pi_executable(&agent_command.0.executable)?;
     let home = super::current_user_home_directory()?;
@@ -4838,6 +4908,7 @@ fn spawn_pi(
     set_descriptor_cloexec(slave.as_raw_fd())?;
     let slave_device = tty_device_path(slave.as_raw_fd())?;
     let slave_raw_fd = slave.as_raw_fd();
+    let lock_raw_fd = lock.as_raw_fd();
     let mut command = Command::new(executable);
     command
         .args(&agent_command.0.arguments)
@@ -4882,26 +4953,25 @@ fn spawn_pi(
                 }
             }
             libc::close(slave_raw_fd);
+            // Inherit only this Pi's writer lock. Clearing CLOEXEC in the
+            // parent would leak it into unrelated concurrent child launches.
+            // Pi retains the lock even if Axod crashes; the parent stays CLOEXEC.
+            if libc::fcntl(lock_raw_fd, libc::F_SETFD, 0) == -1 {
+                return Err(io::Error::last_os_error());
+            }
             Ok(())
         });
     }
-    let mut child = command.spawn()?;
-    // The child inherited this descriptor, but the parent must not pass it to
-    // later Pi launches; otherwise the newest Pi process can retain every
-    // earlier Session's transcript lock.
-    // SAFETY: fcntl updates descriptor flags on the parent's valid lock fd.
-    if unsafe { libc::fcntl(lock.as_raw_fd(), libc::F_SETFD, libc::FD_CLOEXEC) } == -1 {
-        let error = io::Error::last_os_error();
-        terminate_shell(&mut child);
-        return Err(error);
-    }
+    let child = command.spawn()?;
     drop(slave);
     Ok(RunningShell {
+        runtime_id: RuntimeId::new(),
         session_id,
         role: PaneRole::Pi,
         pane_id: Some(pane_id.to_owned()),
         initial_pwd: initial_pwd.to_path_buf(),
         child,
+        wait_error_reported: false,
         master,
         slave_device,
         attached: false,
@@ -4996,8 +5066,7 @@ fn is_executable(path: &Path) -> bool {
 fn run_pi_bridge_worker(
     manager: Weak<SessionManager>,
     stop: Arc<AtomicBool>,
-    session_id: SessionId,
-    shell_id: ShellId,
+    binding: PiRuntimeBinding,
     session_uuid: String,
     pane_id: String,
     initial_pwd: PathBuf,
@@ -5006,12 +5075,17 @@ fn run_pi_bridge_worker(
     bridge_token: String,
     process_id: u32,
 ) {
+    let PiRuntimeBinding {
+        session_id,
+        shell_id,
+        ..
+    } = binding;
     let mut has_connected = false;
     while !stop.load(Ordering::Relaxed) {
         let Some(owner) = manager.upgrade() else {
             return;
         };
-        if !owner.pi_shell_is_open(shell_id) {
+        if !owner.pi_runtime_is_current(binding) {
             return;
         }
         drop(owner);
@@ -5035,6 +5109,7 @@ fn run_pi_bridge_worker(
         };
         if stream
             .set_read_timeout(Some(Duration::from_millis(200)))
+            .and_then(|()| stream.set_write_timeout(Some(Duration::from_secs(2))))
             .is_err()
         {
             return;
@@ -5054,7 +5129,7 @@ fn run_pi_bridge_worker(
             let Some(owner) = manager.upgrade() else {
                 return;
             };
-            if !owner.pi_shell_is_open(shell_id) {
+            if !owner.pi_runtime_is_current(binding) {
                 return;
             }
             drop(owner);
@@ -5134,10 +5209,8 @@ fn run_pi_bridge_worker(
                                 pi_session_id = Some(id.to_owned());
                                 if let Some(owner) = manager.upgrade() {
                                     if owner
-                                        .persist_pi_session_id(session_id, &session_uuid, id)
-                                        .and_then(|()| {
-                                            owner.set_pi_connection(session_id, shell_id, true)
-                                        })
+                                        .persist_pi_session_id(binding, &session_uuid, id)
+                                        .and_then(|()| owner.set_pi_connection(binding, true))
                                         .is_err()
                                     {
                                         connection_valid = false;
@@ -5211,11 +5284,9 @@ fn run_pi_bridge_worker(
                                         );
                                         continue;
                                     };
-                                    if let Err(error) = owner.resume_archived_pi_session(
-                                        session_id,
-                                        shell_id,
-                                        target_session_file,
-                                    ) {
+                                    if let Err(error) = owner
+                                        .resume_archived_pi_session(binding, target_session_file)
+                                    {
                                         log::warn!(
                                             "event=session.pi_resume_rejected session_id={} shell_id={} error_kind={:?}",
                                             session_id.0,
@@ -5225,9 +5296,7 @@ fn run_pi_bridge_worker(
                                     }
                                     continue;
                                 }
-                                if owner
-                                    .observe_pi_event(session_id, shell_id, name, data)
-                                    .is_err()
+                                if !matches!(owner.observe_pi_event(binding, name, data), Ok(true))
                                 {
                                     connection_valid = false;
                                     break;
@@ -5268,10 +5337,10 @@ fn run_pi_bridge_worker(
                 Err(_) => break,
             }
         }
-        if phase == 2 {
-            if let Some(owner) = manager.upgrade() {
-                let _ = owner.set_pi_connection(session_id, shell_id, false);
-            }
+        if phase == 2
+            && let Some(owner) = manager.upgrade()
+        {
+            let _ = owner.set_pi_connection(binding, false);
         }
         if !connection_valid {
             return;
@@ -5314,9 +5383,26 @@ fn tty_device_path(slave_fd: RawFd) -> io::Result<String> {
         .map_err(|_| io::Error::new(io::ErrorKind::InvalidData, "PTY path is not UTF-8"))
 }
 
+struct ShellCleanup(RunningShell);
+
+impl Drop for ShellCleanup {
+    fn drop(&mut self) {
+        terminate_shell(&mut self.0.child);
+    }
+}
+
 fn terminate_shell(child: &mut Child) {
-    if child.try_wait().ok().flatten().is_some() {
-        return;
+    match child.try_wait() {
+        Ok(Some(_)) => return,
+        Ok(None) => {}
+        Err(error) => {
+            log::error!(
+                "event=session.shell_stop_unconfirmed pid={} phase=before_signal error_kind={:?}",
+                child.id(),
+                error.kind()
+            );
+            return;
+        }
     }
     let process_id = child.id() as libc::pid_t;
     let process_group = -process_id;
@@ -5325,16 +5411,29 @@ fn terminate_shell(child: &mut Child) {
     // covers a shell that changed its process group for interactive job control.
     signal_shell(process_group, process_id, libc::SIGTERM);
 
-    if wait_for_shell_exit(child, Duration::from_millis(500)) {
-        log::info!("event=session.shell_stopped pid={process_id}");
-        return;
+    match wait_for_shell_exit(child, Duration::from_millis(500)) {
+        Ok(true) => {
+            log::info!("event=session.shell_stopped pid={process_id}");
+            return;
+        }
+        Ok(false) => {}
+        Err(error) => {
+            log::error!(
+                "event=session.shell_stop_unconfirmed pid={process_id} phase=term_wait error_kind={:?}",
+                error.kind()
+            );
+            return;
+        }
     }
 
     signal_shell(process_group, process_id, libc::SIGKILL);
-    if wait_for_shell_exit(child, Duration::from_secs(2)) {
-        log::info!("event=session.shell_stopped pid={process_id}");
-    } else {
-        log::error!("event=session.shell_stop_timed_out pid={process_id}");
+    match wait_for_shell_exit(child, Duration::from_secs(2)) {
+        Ok(true) => log::info!("event=session.shell_stopped pid={process_id}"),
+        Ok(false) => log::error!("event=session.shell_stop_timed_out pid={process_id}"),
+        Err(error) => log::error!(
+            "event=session.shell_stop_unconfirmed pid={process_id} phase=kill_wait error_kind={:?}",
+            error.kind()
+        ),
     }
 }
 
@@ -5346,26 +5445,26 @@ fn signal_shell(process_group: libc::pid_t, process_id: libc::pid_t, signal: lib
     }
 }
 
-fn wait_for_shell_exit(child: &mut Child, timeout: Duration) -> bool {
-    let deadline = std::time::Instant::now() + timeout;
-    while std::time::Instant::now() < deadline {
-        match child.try_wait() {
-            Ok(Some(_)) => return true,
-            Ok(None) => thread::sleep(Duration::from_millis(25)),
-            Err(_) => return false,
+fn wait_for_shell_exit(child: &mut Child, timeout: Duration) -> io::Result<bool> {
+    let deadline = Instant::now() + timeout;
+    while Instant::now() < deadline {
+        match child.try_wait()? {
+            Some(_) => return Ok(true),
+            None => thread::sleep(Duration::from_millis(25)),
         }
     }
-    child.try_wait().ok().flatten().is_some()
+    Ok(child.try_wait()?.is_some())
 }
 
 struct TerminalAttachmentLease<'a> {
     manager: &'a SessionManager,
     shell_id: ShellId,
+    runtime_id: RuntimeId,
 }
 
 impl Drop for TerminalAttachmentLease<'_> {
     fn drop(&mut self) {
-        self.manager.mark_detached(self.shell_id);
+        self.manager.mark_detached(self.shell_id, self.runtime_id);
     }
 }
 
@@ -5458,6 +5557,17 @@ fn handle_attachment(
     _permit: AttachmentPermit,
 ) {
     let started_at = Instant::now();
+    // Accepted sockets can inherit nonblocking mode on macOS. Use bounded
+    // blocking I/O so write_all cannot abandon a partially sent replay on EAGAIN.
+    if stream
+        .set_nonblocking(false)
+        .and_then(|()| stream.set_read_timeout(Some(Duration::from_millis(200))))
+        .and_then(|()| stream.set_write_timeout(Some(Duration::from_secs(2))))
+        .is_err()
+    {
+        log::warn!("event=session.attach_rejected reason=socket_setup");
+        return;
+    }
     let id = match read_attachment_request(&mut stream) {
         Ok(id) => id,
         Err(error) => {
@@ -5472,7 +5582,7 @@ fn handle_attachment(
     let Some(manager) = manager.upgrade() else {
         return;
     };
-    let (master, replay, session_id) = match manager.duplicate_master(id) {
+    let (master, replay, session_id, runtime_id) = match manager.duplicate_master(id) {
         Ok(attachment) => attachment,
         Err(error) => {
             log::warn!(
@@ -5493,6 +5603,7 @@ fn handle_attachment(
     let _attachment_lease = TerminalAttachmentLease {
         manager: &manager,
         shell_id: id,
+        runtime_id,
     };
 
     manager.publish_shell_activity(session_id, id, "attached");
@@ -5531,10 +5642,23 @@ fn handle_attachment(
     // The attachment helper tees PTY output back over this control connection
     // so the next Ghostty surface can replay the terminal's complete VT stream.
     let mut output = [0_u8; 8192];
-    loop {
+    while !manager.stop_workers.load(Ordering::Relaxed) {
+        let current = manager
+            .state
+            .lock()
+            .map(|state| {
+                state
+                    .running
+                    .get(&id)
+                    .is_some_and(|shell| shell.runtime_id == runtime_id)
+            })
+            .unwrap_or(false);
+        if !current {
+            break;
+        }
         match stream.read(&mut output) {
             Ok(0) => break,
-            Ok(count) => manager.record_terminal_output(id, &output[..count]),
+            Ok(count) => manager.record_terminal_output(id, runtime_id, &output[..count]),
             Err(error) if error.kind() == io::ErrorKind::Interrupted => continue,
             Err(error)
                 if matches!(
@@ -5844,13 +5968,6 @@ fn unix_timestamp() -> i64 {
         .as_secs() as i64
 }
 
-impl Drop for RunningShell {
-    fn drop(&mut self) {
-        // Closing the master PTY sends SIGHUP to its controlling session, so a
-        // daemon restart tears down the shell without archiving its DB record.
-    }
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -5864,6 +5981,361 @@ mod tests {
                 let _ = self.0.wait();
             }
         }
+    }
+
+    struct LifecycleFixture {
+        directory: PathBuf,
+        manager: Arc<SessionManager>,
+    }
+
+    impl LifecycleFixture {
+        fn new() -> Self {
+            let directory =
+                PathBuf::from("/tmp").join(format!("axo-life-{}", create_uuid_v4().unwrap()));
+            let manager = SessionManager::open(&directory).unwrap();
+            // Keep state transitions deterministic: these tests drive the reaper
+            // explicitly, rather than racing its periodic background tick.
+            manager.stop_workers.store(true, Ordering::Relaxed);
+            let workers = std::mem::take(&mut *manager.workers.lock().unwrap());
+            join_session_workers(workers);
+            Self { directory, manager }
+        }
+    }
+
+    impl Drop for LifecycleFixture {
+        fn drop(&mut self) {
+            self.manager.shutdown();
+            let _ = fs::remove_dir_all(&self.directory);
+        }
+    }
+
+    #[test]
+    fn stale_runtime_callbacks_cannot_mutate_a_replacement_pi() {
+        let fixture = LifecycleFixture::new();
+        let manager = &fixture.manager;
+        let session = manager.list_sessions().unwrap().remove(0);
+        let shell_id = session.shells[0].id;
+        let old_runtime = manager.lock_state().unwrap().running[&shell_id].runtime_id;
+        let old_binding = PiRuntimeBinding {
+            session_id: session.id,
+            shell_id,
+            runtime_id: old_runtime,
+        };
+        let old_attachment = TerminalAttachmentLease {
+            manager,
+            shell_id,
+            runtime_id: old_runtime,
+        };
+        let mut replacement = spawn_shell(
+            &ShellCommand::parse("/bin/sh").unwrap(),
+            session.id,
+            &fixture.directory,
+        )
+        .unwrap();
+        replacement.role = PaneRole::Pi;
+        replacement.attached = true;
+        let binding = PiRuntimeBinding {
+            runtime_id: replacement.runtime_id,
+            ..old_binding
+        };
+        let mut old = manager
+            .lock_state()
+            .unwrap()
+            .running
+            .insert(shell_id, replacement)
+            .unwrap();
+        terminate_shell(&mut old.child);
+
+        manager.set_pi_connection(binding, true).unwrap();
+        assert!(
+            manager
+                .observe_pi_event(binding, "agent.start", &json!({}))
+                .unwrap()
+        );
+        manager
+            .persist_pi_session_id(binding, &session.session_uuid, "replacement")
+            .unwrap();
+        manager.record_terminal_output(shell_id, binding.runtime_id, b"new screen");
+
+        drop(old_attachment);
+        manager.record_terminal_output(shell_id, old_runtime, b"stale screen");
+        manager.set_pi_connection(old_binding, false).unwrap();
+        assert!(
+            !manager
+                .observe_pi_event(old_binding, "agent.settled", &json!({}))
+                .unwrap()
+        );
+        assert!(
+            !manager
+                .observe_pi_event(
+                    old_binding,
+                    "session.info",
+                    &json!({ "name": "stale title" }),
+                )
+                .unwrap()
+        );
+        assert_eq!(
+            manager
+                .persist_pi_session_id(old_binding, &session.session_uuid, "old")
+                .unwrap_err()
+                .kind(),
+            io::ErrorKind::NotFound
+        );
+        assert!(!manager.pi_runtime_is_current(old_binding));
+        assert!(manager.pi_runtime_is_current(binding));
+        let history = manager.pi_session_directory.join("resume.jsonl");
+        fs::write(&history, b"unchanged transcript").unwrap();
+        assert_eq!(
+            manager
+                .resume_archived_pi_session(old_binding, history.to_str().unwrap())
+                .unwrap_err()
+                .kind(),
+            io::ErrorKind::PermissionDenied
+        );
+
+        let state = manager.lock_state().unwrap();
+        assert!(state.running[&shell_id].attached);
+        assert_eq!(
+            state.running[&shell_id].output_history.replay(),
+            b"new screen"
+        );
+        assert_eq!(state.running[&shell_id].output_sequence, 1);
+        assert!(state.pi_activity[&session.id].connected);
+        assert!(state.pi_activity[&session.id].working);
+        let updated = session_metadata(&state, session.id, &manager.attach_socket_path).unwrap();
+        assert_eq!(updated.pi_session_id.as_deref(), Some("replacement"));
+        assert_eq!(updated.name, session.name);
+    }
+
+    #[test]
+    fn reaper_isolates_wait_errors_without_guessing_process_exit() {
+        let fixture = LifecycleFixture::new();
+        let manager = &fixture.manager;
+        let uncertain = manager.create_session().unwrap();
+        let exited = manager.create_session().unwrap();
+        let uncertain_shell = uncertain.shells[0].id;
+        let exited_shell = exited.shells[0].id;
+        {
+            let mut state = manager.lock_state().unwrap();
+            let child = &mut state.running.get_mut(&uncertain_shell).unwrap().child;
+            child.kill().unwrap();
+            let mut status = 0;
+            // SAFETY: this fixture owns the still-unreaped child. Reaping outside
+            // Child deliberately simulates lost wait ownership (ECHILD).
+            assert_eq!(
+                unsafe { libc::waitpid(child.id() as libc::pid_t, &mut status, 0) },
+                child.id() as libc::pid_t
+            );
+            let child = &mut state.running.get_mut(&exited_shell).unwrap().child;
+            child.kill().unwrap();
+            assert!(wait_for_shell_exit(child, Duration::from_secs(2)).unwrap());
+        }
+        manager.reap_exited_sessions().unwrap();
+        manager.reap_exited_sessions().unwrap();
+        let state = manager.lock_state().unwrap();
+        assert!(state.running[&uncertain_shell].wait_error_reported);
+        assert!(!state.running.contains_key(&exited_shell));
+        let uncertain_state: String = state
+            .database
+            .query_row(
+                "SELECT state FROM sessions WHERE id = ?",
+                params![uncertain.id.0],
+                |row| row.get(0),
+            )
+            .unwrap();
+        assert_eq!(uncertain_state, "open");
+        let exited_state: String = state
+            .database
+            .query_row(
+                "SELECT state FROM sessions WHERE id = ?",
+                params![exited.id.0],
+                |row| row.get(0),
+            )
+            .unwrap();
+        assert_eq!(exited_state, "archived");
+    }
+
+    #[test]
+    fn shutdown_does_not_hold_the_catalog_lock_during_child_cleanup() {
+        let fixture = LifecycleFixture::new();
+        let manager = &fixture.manager;
+        let session = manager.list_sessions().unwrap().remove(0);
+        let shell_id = session.shells[0].id;
+        {
+            let state = manager.lock_state().unwrap();
+            let master = state.running[&shell_id].master.as_raw_fd();
+            write_fd_all(master, b"trap '' TERM; printf '%s%s\\n' AXO_STOP_ READY\n").unwrap();
+            assert!(read_until(
+                master,
+                b"AXO_STOP_READY",
+                Duration::from_secs(3)
+            ));
+        }
+        let (done, completed) = mpsc::channel();
+        let owner = Arc::clone(manager);
+        let shutdown = thread::spawn(move || {
+            owner.shutdown();
+            done.send(()).unwrap();
+        });
+        let deadline = Instant::now() + Duration::from_millis(400);
+        loop {
+            if let Ok(state) = manager.state.try_lock()
+                && state.running.is_empty()
+            {
+                break;
+            }
+            assert!(
+                Instant::now() < deadline,
+                "shutdown held the catalog lock while stopping a child"
+            );
+            thread::sleep(Duration::from_millis(5));
+        }
+        completed.recv_timeout(Duration::from_secs(5)).unwrap();
+        shutdown.join().unwrap();
+        manager.shutdown(); // Idempotent: no repeat signals or joins.
+    }
+
+    #[test]
+    fn shutdown_releases_an_idle_terminal_attachment() {
+        let fixture = LifecycleFixture::new();
+        let manager = &fixture.manager;
+        manager.stop_workers.store(false, Ordering::Relaxed);
+        let session = manager.list_sessions().unwrap().remove(0);
+        let shell_id = session.shells[0].id;
+        let (mut client, server) = UnixStream::pair().unwrap();
+        client
+            .set_read_timeout(Some(Duration::from_secs(3)))
+            .unwrap();
+        writeln!(client, "{}", shell_id.0).unwrap();
+        let permit = AttachmentPermit::try_acquire(Arc::new(AtomicUsize::new(0))).unwrap();
+        let weak = Arc::downgrade(manager);
+        let (done, completed) = mpsc::channel();
+        let worker = thread::spawn(move || {
+            handle_attachment(server, weak, permit);
+            done.send(()).unwrap();
+        });
+        let mut header = [0; 8];
+        client.read_exact(&mut header).unwrap();
+        assert_eq!(u64::from_be_bytes(header), 0);
+        manager.shutdown();
+        completed.recv_timeout(Duration::from_secs(3)).unwrap();
+        worker.join().unwrap();
+        assert!(manager.lock_state().unwrap().running.is_empty());
+        assert_eq!(Arc::strong_count(manager), 1);
+    }
+
+    #[test]
+    fn stalled_replay_releases_the_attachment_lease() {
+        let fixture = LifecycleFixture::new();
+        let manager = &fixture.manager;
+        manager.stop_workers.store(false, Ordering::Relaxed);
+        let session = manager.list_sessions().unwrap().remove(0);
+        let shell_id = session.shells[0].id;
+        manager
+            .lock_state()
+            .unwrap()
+            .running
+            .get_mut(&shell_id)
+            .unwrap()
+            .output_history
+            .record(&vec![b'x'; MAX_TERMINAL_OUTPUT_HISTORY_BYTES]);
+        let (mut client, server) = UnixStream::pair().unwrap();
+        let buffer_size: libc::c_int = 4096;
+        // SAFETY: setsockopt borrows the fixture socket and initialized size.
+        assert_eq!(
+            unsafe {
+                libc::setsockopt(
+                    server.as_raw_fd(),
+                    libc::SOL_SOCKET,
+                    libc::SO_SNDBUF,
+                    (&buffer_size as *const libc::c_int).cast(),
+                    std::mem::size_of_val(&buffer_size) as _,
+                )
+            },
+            0
+        );
+        writeln!(client, "{}", shell_id.0).unwrap();
+        let permit = AttachmentPermit::try_acquire(Arc::new(AtomicUsize::new(0))).unwrap();
+        let weak = Arc::downgrade(manager);
+        let (done, completed) = mpsc::channel();
+        let worker = thread::spawn(move || {
+            handle_attachment(server, weak, permit);
+            done.send(()).unwrap();
+        });
+        // Intentionally never consume the replay, keeping the socket saturated.
+        completed.recv_timeout(Duration::from_secs(5)).unwrap();
+        worker.join().unwrap();
+        assert!(!manager.lock_state().unwrap().running[&shell_id].attached);
+        let (master, replay, _, runtime_id) = manager.duplicate_master(shell_id).unwrap();
+        assert_eq!(replay.len(), MAX_TERMINAL_OUTPUT_HISTORY_BYTES);
+        drop(master);
+        manager.mark_detached(shell_id, runtime_id);
+    }
+
+    #[test]
+    fn pi_writer_lock_is_inherited_only_by_its_pi_child() {
+        let fixture = LifecycleFixture::new();
+        let fake_pi = fixture.directory.join("fake-pi");
+        fs::write(&fake_pi, "#!/bin/sh\nexec /bin/sleep 60\n").unwrap();
+        fs::set_permissions(&fake_pi, fs::Permissions::from_mode(0o700)).unwrap();
+        let agent = AgentCommand::parse(fake_pi.to_str().unwrap()).unwrap();
+        let session_uuid = create_uuid_v4().unwrap();
+        let pane_id = create_uuid_v4().unwrap();
+        let file = fixture
+            .manager
+            .pi_session_directory
+            .join(format!("{session_uuid}.jsonl"));
+        fs::write(&file, b"preserved history").unwrap();
+        let socket =
+            PiBridgeSocketPath::for_session(&fixture.manager.pi_session_directory, &session_uuid)
+                .unwrap();
+        let mut pi = {
+            let state = fixture.manager.lock_state().unwrap();
+            spawn_pi(
+                &state.database,
+                &agent,
+                SessionId(900),
+                &fixture.directory,
+                &file,
+                &socket,
+                &session_uuid,
+                &pane_id,
+                PiTakeoverPolicy::PreserveExistingProcess,
+            )
+            .unwrap()
+        };
+        // Guard the owned fixture child even if an assertion below fails.
+        let mut child = ChildProcessGuard(pi.child);
+        let lock = pi._writer_lock.take().unwrap();
+        // SAFETY: lock is a live descriptor owned by this fixture.
+        assert_ne!(
+            unsafe { libc::fcntl(lock.as_raw_fd(), libc::F_GETFD) } & libc::FD_CLOEXEC,
+            0
+        );
+        let mut unrelated =
+            ChildProcessGuard(Command::new("/bin/sleep").arg("60").spawn().unwrap());
+        drop(lock);
+        assert_eq!(
+            acquire_pi_writer_lock(&file).unwrap_err().kind(),
+            io::ErrorKind::WouldBlock
+        );
+        terminate_shell(&mut child.0);
+        let recovered = acquire_pi_writer_lock(&file).unwrap();
+        assert!(unrelated.0.try_wait().unwrap().is_none());
+        assert_eq!(fs::read(&file).unwrap(), b"preserved history");
+        drop(recovered);
+    }
+
+    #[test]
+    fn worker_cleanup_never_joins_itself() {
+        let (sender, receiver) = mpsc::channel::<JoinHandle<()>>();
+        let (done, completed) = mpsc::channel();
+        let worker = thread::spawn(move || {
+            join_session_workers(vec![receiver.recv().unwrap()]);
+            done.send(()).unwrap();
+        });
+        sender.send(worker).unwrap();
+        completed.recv_timeout(Duration::from_secs(2)).unwrap();
     }
 
     #[test]
@@ -6590,24 +7062,21 @@ mod tests {
                 .as_i64()
                 .unwrap(),
         );
+        let requester = PiRuntimeBinding {
+            session_id: requester_session_id,
+            shell_id: requester_shell_id,
+            runtime_id: manager.lock_state().unwrap().running[&requester_shell_id].runtime_id,
+        };
         let unrelated_history = directory.join("unowned.jsonl");
         fs::write(&unrelated_history, b"not an Axo transcript").unwrap();
         let rejected = manager
-            .resume_archived_pi_session(
-                requester_session_id,
-                requester_shell_id,
-                unrelated_history.to_str().unwrap(),
-            )
+            .resume_archived_pi_session(requester, unrelated_history.to_str().unwrap())
             .unwrap_err();
         assert_eq!(rejected.kind(), io::ErrorKind::PermissionDenied);
 
         assert_eq!(
             manager
-                .resume_archived_pi_session(
-                    requester_session_id,
-                    requester_shell_id,
-                    session_file.to_str().unwrap(),
-                )
+                .resume_archived_pi_session(requester, session_file.to_str().unwrap())
                 .unwrap(),
             session_id
         );
