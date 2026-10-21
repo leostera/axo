@@ -8,6 +8,11 @@
     "hostGeneration": "c3b6da28-55c0-4bb0-ac04-dd458fd41a2b",
     "label": "Axo Mac",
     "hostKind": "macos",
+    "capabilities": [
+      { "id": "agent.pi", "version": 1 },
+      { "id": "terminal.pty", "version": 1 },
+      { "id": "workspace.filesystem", "version": 1 }
+    ],
     "sessions": [
       {
         "hostId": "18355f00-95fd-4c93-8586-a71a8a52bf73",

@@ -786,6 +786,11 @@ fn run_connection(
         "hostGeneration": host_generation,
         "label": config.host_label,
         "hostKind": config.host_kind,
+        "capabilities": [
+            { "id": "agent.pi", "version": 1 },
+            { "id": "terminal.pty", "version": 1 },
+            { "id": "workspace.filesystem", "version": 1 },
+        ],
         "sessions": snapshots,
     });
     if let Err(error) = rpc_call(
