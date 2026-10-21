@@ -1229,6 +1229,23 @@ impl SessionManager {
         });
 
         let manager = Arc::clone(self);
+        handler.add_sync_method("axo.session.pi.restart.auto.v1", move |params: Params| {
+            let request: RestartPiSessionRequest = params
+                .parse()
+                .map_err(|_| invalid_params("expected {sessionId, shellId}"))?;
+            let (session_id, shell_id) =
+                parse_session_shell_ids(request.session_id, request.shell_id)?;
+            manager
+                .restart_unavailable_pi(
+                    session_id,
+                    shell_id,
+                    PiTakeoverPolicy::PreserveExistingProcess,
+                )
+                .map(|session| session.to_json())
+                .map_err(|error| automatic_pi_restart_rpc_error(session_id, shell_id, error))
+        });
+
+        let manager = Arc::clone(self);
         handler.add_sync_method("axo.session.pi.restart.force.v2", move |params: Params| {
             let request: RestartPiSessionRequest = params
                 .parse()
@@ -1236,7 +1253,7 @@ impl SessionManager {
             let (session_id, shell_id) =
                 parse_session_shell_ids(request.session_id, request.shell_id)?;
             manager
-                .restart_unavailable_pi(session_id, shell_id)
+                .restart_unavailable_pi(session_id, shell_id, PiTakeoverPolicy::ExplicitUserRestart)
                 .map(|session| session.to_json())
                 .map_err(|error| pi_restart_rpc_error(session_id, shell_id, error))
         });
@@ -2083,6 +2100,7 @@ impl SessionManager {
         self: &Arc<Self>,
         session_id: SessionId,
         shell_id: ShellId,
+        takeover_policy: PiTakeoverPolicy,
     ) -> io::Result<SessionMetadata> {
         let session = {
             let mut state = self.lock_state()?;
@@ -2137,7 +2155,7 @@ impl SessionManager {
                 &bridge_socket,
                 &session_uuid,
                 pane_id,
-                PiTakeoverPolicy::ExplicitUserRestart,
+                takeover_policy,
             )?;
             state.unavailable_pi_shells.remove(&shell_id);
             state.running.insert(shell_id, running);
@@ -3878,6 +3896,7 @@ fn request_pi_shutdown(
     pane_id: &str,
     initial_pwd: &Path,
     session_file: &Path,
+    takeover_policy: PiTakeoverPolicy,
 ) -> io::Result<PiShutdownAttempt> {
     let (mut reader, process_id) = connect_to_pi_bridge(
         bridge_socket,
@@ -3894,7 +3913,13 @@ fn request_pi_shutdown(
             "type": "command",
             "requestId": request_id,
             "axoSessionId": session_uuid,
-            "action": { "kind": "shutdown" }
+            "action": {
+                "kind": if takeover_policy == PiTakeoverPolicy::PreserveExistingProcess {
+                    "shutdownIfIdle"
+                } else {
+                    "shutdown"
+                }
+            }
         }),
     )
     .and_then(|()| {
@@ -4268,6 +4293,7 @@ fn spawn_pi(
                     pane_id,
                     initial_pwd,
                     session_file,
+                    takeover_policy,
                 ) {
                     Ok(attempt) => attempt,
                     Err(error)
@@ -5029,6 +5055,25 @@ fn internal_rpc_error(error: io::Error) -> RpcError {
     }
 }
 
+fn automatic_pi_restart_rpc_error(
+    session_id: SessionId,
+    shell_id: ShellId,
+    error: io::Error,
+) -> RpcError {
+    log::debug!(
+        "event=session.pi_auto_restart_deferred session_id={} shell_id={} error_kind={:?}",
+        session_id.0,
+        shell_id.0,
+        error.kind()
+    );
+    RpcError {
+        code: ErrorCode::InternalError,
+        message: "Automatic Pi restart is waiting for a safe opportunity; the existing process was not force-stopped."
+            .to_owned(),
+        data: None,
+    }
+}
+
 fn pi_restart_rpc_error(session_id: SessionId, shell_id: ShellId, error: io::Error) -> RpcError {
     log::error!(
         "event=session.pi_restart_failed session_id={} shell_id={} error_kind={:?}",
@@ -5495,7 +5540,7 @@ mod tests {
     }
 
     #[test]
-    fn explicit_pi_restart_terminates_only_the_authenticated_pane_and_preserves_history() {
+    fn automatic_pi_restart_preserves_busy_pi_and_explicit_restart_preserves_history() {
         let directory = PathBuf::from("/tmp").join(format!("axor-{}", create_uuid_v4().unwrap()));
         let server_directory = directory.join("server");
         let pi_session_directory = server_directory.join("pi-sessions");
@@ -5606,8 +5651,19 @@ mod tests {
                 },
             )
             .unwrap();
+        assert!(
+            manager
+                .restart_unavailable_pi(
+                    session_id,
+                    shell_id,
+                    PiTakeoverPolicy::PreserveExistingProcess,
+                )
+                .is_err()
+        );
+        assert!(old_pi.0.try_wait().unwrap().is_none());
+
         let restart_error = manager
-            .restart_unavailable_pi(session_id, shell_id)
+            .restart_unavailable_pi(session_id, shell_id, PiTakeoverPolicy::ExplicitUserRestart)
             .unwrap_err();
         assert_eq!(restart_error.kind(), io::ErrorKind::PermissionDenied);
         assert!(old_pi.0.try_wait().unwrap().is_none());
@@ -5624,41 +5680,45 @@ mod tests {
         let handshake_pane_id = pane_id.clone();
         let handshake_bridge_token = bridge_token.clone();
         let bridge_server = thread::spawn(move || {
-            let (stream, _) = listener.accept().unwrap();
-            let mut reader = BufReader::new(stream);
-            let authentication = read_pi_bridge_record(&mut reader).unwrap();
-            assert_eq!(authentication["token"], handshake_bridge_token);
-            write_json_line(
-                reader.get_mut(),
-                &json!({ "type": "authenticated", "protocolVersion": 1 }),
-            )
-            .unwrap();
-            write_json_line(
-                reader.get_mut(),
-                &json!({
-                    "type": "hello",
-                    "protocolVersion": 1,
-                    "identity": {
-                        "axoSessionId": handshake_session_uuid,
-                        "axoPaneId": handshake_pane_id,
-                        "sessionFile": handshake_session_file,
-                        "cwd": "/tmp",
-                        "processId": old_pi_process_id
-                    }
-                }),
-            )
-            .unwrap();
-            let shutdown = read_pi_bridge_record(&mut reader).unwrap();
-            assert_eq!(shutdown["action"]["kind"], "shutdown");
-            write_json_line(
-                reader.get_mut(),
-                &json!({
-                    "type": "commandResult",
-                    "requestId": shutdown["requestId"],
-                    "result": { "accepted": false, "reason": "stale" }
-                }),
-            )
-            .unwrap();
+            for (expected_action, result_reason) in
+                [("shutdownIfIdle", "busy"), ("shutdown", "stale")]
+            {
+                let (stream, _) = listener.accept().unwrap();
+                let mut reader = BufReader::new(stream);
+                let authentication = read_pi_bridge_record(&mut reader).unwrap();
+                assert_eq!(authentication["token"], handshake_bridge_token);
+                write_json_line(
+                    reader.get_mut(),
+                    &json!({ "type": "authenticated", "protocolVersion": 1 }),
+                )
+                .unwrap();
+                write_json_line(
+                    reader.get_mut(),
+                    &json!({
+                        "type": "hello",
+                        "protocolVersion": 1,
+                        "identity": {
+                            "axoSessionId": handshake_session_uuid,
+                            "axoPaneId": handshake_pane_id,
+                            "sessionFile": handshake_session_file,
+                            "cwd": "/tmp",
+                            "processId": old_pi_process_id
+                        }
+                    }),
+                )
+                .unwrap();
+                let shutdown = read_pi_bridge_record(&mut reader).unwrap();
+                assert_eq!(shutdown["action"]["kind"], expected_action);
+                write_json_line(
+                    reader.get_mut(),
+                    &json!({
+                        "type": "commandResult",
+                        "requestId": shutdown["requestId"],
+                        "result": { "accepted": false, "reason": result_reason }
+                    }),
+                )
+                .unwrap();
+            }
         });
 
         let fake_pi = directory.join("fake-pi");
@@ -5667,8 +5727,19 @@ mod tests {
         manager.lock_state().unwrap().agent_command =
             AgentCommand::parse(fake_pi.to_str().unwrap()).unwrap();
 
+        let automatic_error = manager
+            .restart_unavailable_pi(
+                session_id,
+                shell_id,
+                PiTakeoverPolicy::PreserveExistingProcess,
+            )
+            .unwrap_err();
+        assert_eq!(automatic_error.kind(), io::ErrorKind::WouldBlock);
+        assert!(old_pi.0.try_wait().unwrap().is_none());
+        assert!(!manager.list_sessions().unwrap()[0].shells[0].available);
+
         let restarted = manager
-            .restart_unavailable_pi(session_id, shell_id)
+            .restart_unavailable_pi(session_id, shell_id, PiTakeoverPolicy::ExplicitUserRestart)
             .unwrap();
         bridge_server.join().unwrap();
         assert_eq!(restarted.id, session_id);

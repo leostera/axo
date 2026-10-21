@@ -271,6 +271,7 @@ struct AxoApp: App {
     Window("Axo Settings", id: "settings") {
       SettingsView(
         daemon: daemon,
+        sessions: sessions,
         sleepPrevention: sleepPrevention,
         ghostty: ghostty,
         selection: $settingsSection,

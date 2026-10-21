@@ -30,6 +30,7 @@ swift_test(
     srcs = [
         "Tests/AxoMacTests/GhosttyResourceLocatorTests.swift",
         "Tests/AxoMacTests/PairingLinkRouterTests.swift",
+        "Tests/AxoMacTests/AgentAutoRestartPreferenceTests.swift",
         "Tests/AxoMacTests/SleepPreventionControllerTests.swift",
         "Tests/AxoMacTests/TerminalKeyEquivalentPolicyTests.swift",
         "Tests/AxoMacTests/TerminalTextInputTests.swift",

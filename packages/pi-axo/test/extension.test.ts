@@ -148,6 +148,37 @@ test("bridges Pi events and remote commands without owning the Pi process", asyn
 
     socket.write(`${JSON.stringify({
       type: "command",
+      requestId: "automatic-takeover-busy",
+      axoSessionId,
+      action: { kind: "shutdownIfIdle" },
+    })}\n`);
+    assert.deepEqual(await next(), {
+      type: "commandResult",
+      requestId: "automatic-takeover-busy",
+      result: { accepted: false, reason: "busy" },
+    });
+    assert.equal(aborted, 1);
+    assert.equal(shutdowns, 0);
+
+    idle = true;
+    socket.write(`${JSON.stringify({
+      type: "command",
+      requestId: "automatic-takeover-idle",
+      axoSessionId,
+      action: { kind: "shutdownIfIdle" },
+    })}\n`);
+    assert.deepEqual(await next(), {
+      type: "commandResult",
+      requestId: "automatic-takeover-idle",
+      result: { accepted: true },
+    });
+    await new Promise<void>(resolve => setImmediate(resolve));
+    assert.equal(aborted, 1);
+    assert.equal(shutdowns, 1);
+
+    idle = false;
+    socket.write(`${JSON.stringify({
+      type: "command",
       requestId: "takeover-1",
       axoSessionId,
       action: { kind: "shutdown" },
@@ -155,7 +186,7 @@ test("bridges Pi events and remote commands without owning the Pi process", asyn
     assert.deepEqual(await next(), { type: "commandResult", requestId: "takeover-1", result: { accepted: true } });
     await new Promise<void>(resolve => setImmediate(resolve));
     assert.equal(aborted, 2);
-    assert.equal(shutdowns, 1);
+    assert.equal(shutdowns, 2);
 
     const beforeSwitch = registered.get("session_before_switch");
     assert.ok(beforeSwitch);

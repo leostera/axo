@@ -753,6 +753,16 @@ private struct TerminalPaneView: View {
           .foregroundStyle(.secondary)
           .multilineTextAlignment(.center)
           .frame(maxWidth: 400)
+        if sessions.automaticallyRestartUnavailablePi {
+          Label(
+            "Auto-restart will retry when Pi is idle or its transcript is unowned.",
+            systemImage: "arrow.clockwise"
+          )
+          .font(.caption)
+          .foregroundStyle(.secondary)
+          .multilineTextAlignment(.center)
+          .frame(maxWidth: 400)
+        }
         Button("Restart Pi") {
           guard !isRestartingPi else { return }
           isRestartingPi = true

@@ -452,6 +452,7 @@ fn add_protocol_negotiate_method(handler: &mut IoHandler) {
                 "axo.session.close",
                 "axo.session.rename",
                 "axo.session.pi.restart.force.v2",
+                "axo.session.pi.restart.auto.v1",
                 "axo.session.layout.set",
                 "axo.session.subscribe",
                 "axo.session.events.next",

@@ -3,6 +3,10 @@ import AxoRPC
 import Combine
 import Foundation
 
+private enum AutomaticPiRestartError: Error {
+  case unsupportedAxod
+}
+
 struct WorkspaceArchiveConfirmation: Equatable, Identifiable {
   let workspaceID: String
   let workspaceName: String
@@ -30,19 +34,24 @@ final class TerminalSessionsModel: ObservableObject {
   @Published private(set) var errorMessage: String?
   @Published private(set) var workspaceCreationError: String?
   @Published private(set) var pendingWorkspaceArchiveConfirmation: WorkspaceArchiveConfirmation?
+  @Published private(set) var automaticallyRestartUnavailablePi: Bool
 
   let helperURL: URL
 
   private static let selectedSessionPreferenceKey = "terminalSelectedSession.v1"
+  private static let automaticPiRestartPreferenceKey = "agent.autoRestartUnavailablePi.v1"
 
   private let socketPath: UnixSocketPath?
   private let socketPathError: String?
   private let selectedSessionDefaults: UserDefaults?
+  private let preferenceDefaults: UserDefaults
   private var negotiatedSocketPath: UnixSocketPath?
   private var layoutsBySession: [Int64: TerminalLayout] = [:]
   private var recentSessionIDs: [Int64] = []
   private var pendingLayoutWrites: [Int64: SessionLayout] = [:]
   private var layoutWriteTasks: [Int64: Task<Void, Never>] = [:]
+  private var automaticPiRestartTasks: [Int64: Task<Void, Never>] = [:]
+  private var automaticPiRestartTaskIDs: [Int64: UUID] = [:]
 
   var sidebarOrderedSessions: [TerminalSession] {
     var sessionsByWorkspace: [String: [TerminalSession]] = [:]
@@ -61,7 +70,11 @@ final class TerminalSessionsModel: ObservableObject {
   init() {
     let defaults = UserDefaults.standard
     selectedSessionDefaults = defaults
+    preferenceDefaults = defaults
     _selectedSessionID = Published(initialValue: Self.storedSelectedSessionID(from: defaults))
+    _automaticallyRestartUnavailablePi = Published(
+      initialValue: defaults.bool(forKey: Self.automaticPiRestartPreferenceKey)
+    )
     helperURL = Bundle.main.bundleURL.appendingPathComponent("Contents/Helpers/axod")
     do {
       socketPath = try DaemonController.socketPath()
@@ -81,8 +94,13 @@ final class TerminalSessionsModel: ObservableObject {
     socketPathError = nil
     self.helperURL = helperURL
     self.selectedSessionDefaults = selectedSessionDefaults
+    let preferenceDefaults = selectedSessionDefaults ?? .standard
+    self.preferenceDefaults = preferenceDefaults
     _selectedSessionID = Published(
       initialValue: Self.storedSelectedSessionID(from: selectedSessionDefaults)
+    )
+    _automaticallyRestartUnavailablePi = Published(
+      initialValue: preferenceDefaults.bool(forKey: Self.automaticPiRestartPreferenceKey)
     )
   }
 
@@ -207,8 +225,23 @@ final class TerminalSessionsModel: ObservableObject {
         }
       }
       errorMessage = nil
+      scheduleAutomaticPiRestarts()
     } catch {
       errorMessage = error.localizedDescription
+    }
+  }
+
+  func setAutomaticPiRestartEnabled(_ enabled: Bool) {
+    guard automaticallyRestartUnavailablePi != enabled else { return }
+    automaticallyRestartUnavailablePi = enabled
+    preferenceDefaults.set(enabled, forKey: Self.automaticPiRestartPreferenceKey)
+
+    if enabled {
+      scheduleAutomaticPiRestarts()
+    } else {
+      for task in automaticPiRestartTasks.values { task.cancel() }
+      automaticPiRestartTasks.removeAll()
+      automaticPiRestartTaskIDs.removeAll()
     }
   }
 
@@ -480,37 +513,98 @@ final class TerminalSessionsModel: ObservableObject {
   }
 
   func restartPiSession(_ shellID: Int64) async throws {
+    automaticPiRestartTasks[shellID]?.cancel()
+    automaticPiRestartTasks.removeValue(forKey: shellID)
+    automaticPiRestartTaskIDs.removeValue(forKey: shellID)
+    try await restartPiSession(shellID, automatically: false)
+  }
+
+  private func restartPiSession(_ shellID: Int64, automatically: Bool) async throws {
     guard let socketPath else {
       throw UnixSocketRPCError.invalidResponse(
         socketPathError ?? "The axod socket path is unavailable.")
     }
-    guard let sessionID = selectedSessionID,
-      let shell = shell(for: shellID),
+    guard let targetSession = sessions.first(where: { session in
+      session.shells.contains(where: { $0.id == shellID })
+    }),
+      let shell = targetSession.shells.first(where: { $0.id == shellID }),
       shell.role == "pi",
-      !shell.isAvailable
+      !shell.isAvailable,
+      automatically || selectedSessionID == targetSession.id
     else {
       throw UnixSocketRPCError.invalidResponse("This Pi pane is no longer available to restart.")
     }
 
+    let restartMethod = automatically
+      ? "axo.session.pi.restart.auto.v1"
+      : "axo.session.pi.restart.force.v2"
     let negotiation = try await UnixSocketRPC.negotiate(at: socketPath)
     guard negotiation.protocolVersion == UnixSocketRPC.protocolVersion,
-      negotiation.methods.contains("axo.session.pi.restart.force.v2")
+      negotiation.methods.contains(restartMethod)
     else {
+      if automatically { throw AutomaticPiRestartError.unsupportedAxod }
       throw UnixSocketRPCError.invalidResponse(
         "Pi recovery is not yet supported by the running Axod. Your session history is preserved.")
     }
 
-    let restarted = try await UnixSocketRPC.restartPiSession(
-      shellID: shellID,
-      in: sessionID,
-      at: socketPath
-    )
-    guard restarted.id == sessionID,
+    let restarted: TerminalSession
+    if automatically {
+      restarted = try await UnixSocketRPC.automaticallyRestartPiSession(
+        shellID: shellID,
+        in: targetSession.id,
+        at: socketPath
+      )
+    } else {
+      restarted = try await UnixSocketRPC.restartPiSession(
+        shellID: shellID,
+        in: targetSession.id,
+        at: socketPath
+      )
+    }
+    guard restarted.id == targetSession.id,
       restarted.shells.contains(where: { $0.id == shellID && $0.isAvailable })
     else {
       throw UnixSocketRPCError.invalidResponse("axod did not restore the requested Pi pane.")
     }
     await refresh()
+  }
+
+  private func scheduleAutomaticPiRestarts() {
+    guard automaticallyRestartUnavailablePi else { return }
+    for shell in sessions.flatMap(\.shells)
+    where shell.role == "pi" && !shell.isAvailable && automaticPiRestartTasks[shell.id] == nil {
+      let taskID = UUID()
+      automaticPiRestartTaskIDs[shell.id] = taskID
+      automaticPiRestartTasks[shell.id] = Task { [weak self] in
+        await self?.retryAutomaticPiRestart(shellID: shell.id, taskID: taskID)
+      }
+    }
+  }
+
+  private func retryAutomaticPiRestart(shellID: Int64, taskID: UUID) async {
+    defer {
+      if automaticPiRestartTaskIDs[shellID] == taskID {
+        automaticPiRestartTaskIDs.removeValue(forKey: shellID)
+        automaticPiRestartTasks.removeValue(forKey: shellID)
+      }
+    }
+
+    var delaySeconds = 1
+    while !Task.isCancelled && automaticallyRestartUnavailablePi {
+      guard let shell = shell(for: shellID), shell.role == "pi", !shell.isAvailable else {
+        return
+      }
+
+      do {
+        try await restartPiSession(shellID, automatically: true)
+        return
+      } catch AutomaticPiRestartError.unsupportedAxod {
+        try? await Task.sleep(for: .seconds(30))
+      } catch {
+        try? await Task.sleep(for: .seconds(delaySeconds))
+        delaySeconds = min(delaySeconds * 2, 30)
+      }
+    }
   }
 
   func closeFocusedShell() async {

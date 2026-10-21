@@ -37,6 +37,22 @@ test("parses a graceful shutdown command for takeover", () => {
   });
 });
 
+test("parses the idle-only shutdown command for automatic recovery", () => {
+  assert.deepEqual(parsePiControlCommand({
+    type: "command",
+    requestId: "automatic-takeover-1",
+    axoSessionId: sessionId,
+    action: { kind: "shutdownIfIdle" },
+  }, sessionId), {
+    ok: true,
+    command: {
+      requestId: "automatic-takeover-1",
+      axoSessionId: sessionId,
+      action: { kind: "shutdownIfIdle" },
+    },
+  });
+});
+
 test("rejects commands for a different Session and unknown fields", () => {
   const otherSessionId = "e1cd03bd-5fcc-4b5a-a1fa-47653e5fa822";
   assert.deepEqual(parsePiControlCommand({

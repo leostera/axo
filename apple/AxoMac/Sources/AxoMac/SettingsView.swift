@@ -59,6 +59,7 @@ enum SettingsSection: String, CaseIterable, Identifiable {
 
 struct SettingsView: View {
   @ObservedObject var daemon: DaemonController
+  @ObservedObject var sessions: TerminalSessionsModel
   @ObservedObject var sleepPrevention: SleepPreventionController
   let ghostty: GhosttyRuntime
   @Binding var selection: SettingsSection
@@ -94,7 +95,7 @@ struct SettingsView: View {
         case .appearance:
           AppearanceSettingsView(theme: $appearanceTheme)
         case .agent:
-          AgentSettingsView(daemon: daemon)
+          AgentSettingsView(daemon: daemon, sessions: sessions)
         case .remoteAccess:
           RemoteAccessSettingsView(daemon: daemon, pairingCode: $pairingLink.pendingCode)
         case .about:
@@ -127,6 +128,7 @@ private struct AppearanceSettingsView: View {
 
 private struct AgentSettingsView: View {
   @ObservedObject var daemon: DaemonController
+  @ObservedObject var sessions: TerminalSessionsModel
   @State private var command = "pi"
   @State private var savedCommand = "pi"
   @State private var errorMessage: String?
@@ -140,6 +142,24 @@ private struct AgentSettingsView: View {
 
   var body: some View {
     Form {
+      Section("Recovery") {
+        Toggle(
+          "Automatically restart unavailable Pi sessions",
+          isOn: Binding(
+            get: { sessions.automaticallyRestartUnavailablePi },
+            set: { sessions.setAutomaticPiRestartEnabled($0) }
+          )
+        )
+        .accessibilityIdentifier("auto-restart-unavailable-pi-toggle")
+
+        Text(
+          "Axo retries recovery only when Pi reports it is idle or its transcript is unowned. It never force-stops a Pi automatically; if the state is uncertain, Restart Pi remains available."
+        )
+        .font(.caption)
+        .foregroundStyle(.secondary)
+        .fixedSize(horizontal: false, vertical: true)
+      }
+
       Section("Default Agent") {
         TextField("Command", text: $command, prompt: Text("pi"))
           .disabled(!isLoaded || isLoading || isSaving)

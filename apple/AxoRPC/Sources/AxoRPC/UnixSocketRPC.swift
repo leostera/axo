@@ -769,6 +769,19 @@ public enum UnixSocketRPC {
     }
   }
 
+  public static func automaticallyRestartPiSession(
+    shellID: Int64,
+    in sessionID: Int64,
+    at socketPath: UnixSocketPath
+  ) async throws -> TerminalSession {
+    try await withResponse(at: socketPath, timeout: .seconds(20)) { session in
+      try await session.response(
+        to: "axo.session.pi.restart.auto.v1",
+        params: RestartPiSessionRequest(sessionId: sessionID, shellId: shellID)
+      )
+    }
+  }
+
   public static func createShell(
     in sessionID: Int64,
     at socketPath: UnixSocketPath

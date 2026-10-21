@@ -31,7 +31,8 @@ final class AxodInteropTests: XCTestCase {
     XCTAssertEqual(negotiation.protocolVersion, UnixSocketRPC.protocolVersion)
     for method in [
       "axo.session.create", "axo.session.subscribe", "axo.session.events.next",
-      "axo.session.unsubscribe", "axo.session.pi.restart.force.v2", "axo.session.rename",
+      "axo.session.unsubscribe", "axo.session.pi.restart.force.v2",
+      "axo.session.pi.restart.auto.v1", "axo.session.rename",
       "axo.workspace.rename", "axo.workspace.archive",
       "axo.terminal.input", "axo.terminal.resize",
       "axo.relay.settings", "axo.relay.configure", "axo.relay.link", "axo.relay.disable",

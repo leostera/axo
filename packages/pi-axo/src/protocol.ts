@@ -18,7 +18,8 @@ export interface PiSessionIdentity {
 export type PiControlAction =
   | { kind: "send"; text: string; delivery?: "steer" | "followUp" }
   | { kind: "cancel" }
-  | { kind: "shutdown" };
+  | { kind: "shutdown" }
+  | { kind: "shutdownIfIdle" };
 
 export interface PiControlCommand {
   requestId: string;
@@ -101,6 +102,9 @@ function parseAction(value: unknown): PiControlAction | null {
   }
   if (value.kind === "shutdown" && hasOnlyKeys(value, ["kind"])) {
     return { kind: "shutdown" };
+  }
+  if (value.kind === "shutdownIfIdle" && hasOnlyKeys(value, ["kind"])) {
+    return { kind: "shutdownIfIdle" };
   }
   return null;
 }
