@@ -239,13 +239,13 @@ struct AxoApp: App {
         Button("Previous Session") {
           sessions.showPreviousSession()
         }
-        .keyboardShortcut("]", modifiers: [.command, .shift])
+        .keyboardShortcut("[", modifiers: [.command, .shift])
         .disabled(sessions.sidebarOrderedSessions.count < 2)
 
         Button("Next Session") {
           sessions.showNextSession()
         }
-        .keyboardShortcut("[", modifiers: [.command, .shift])
+        .keyboardShortcut("]", modifiers: [.command, .shift])
         .disabled(sessions.sidebarOrderedSessions.count < 2)
 
         Divider()
