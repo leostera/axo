@@ -4,7 +4,7 @@ use std::fs;
 use std::fs::OpenOptions;
 use std::io::{self, BufRead, BufReader, Read, Write};
 use std::os::fd::{AsRawFd, FromRawFd, OwnedFd, RawFd};
-use std::os::unix::fs::{OpenOptionsExt, PermissionsExt};
+use std::os::unix::fs::{MetadataExt, OpenOptionsExt, PermissionsExt};
 use std::os::unix::net::{UnixListener, UnixStream};
 use std::os::unix::process::CommandExt;
 use std::path::{Path, PathBuf};
@@ -39,6 +39,8 @@ const DEFAULT_AGENT_COMMAND: &str = "pi";
 const MAX_COMMAND_LINE_BYTES: usize = 4096;
 const MAX_COMMAND_ARGUMENTS: usize = 128;
 const PI_TAKEOVER_TIMEOUT: Duration = Duration::from_secs(10);
+const PI_BRIDGE_REQUEST_TIMEOUT: Duration = Duration::from_secs(2);
+const PI_RECOVERY_POLL_INTERVAL: Duration = Duration::from_millis(100);
 const PI_RESTART_GRACE_PERIOD: Duration = Duration::from_secs(2);
 const PI_TERMINATE_GRACE_PERIOD: Duration = Duration::from_secs(2);
 const PI_KILL_WAIT: Duration = Duration::from_secs(5);
@@ -393,10 +395,7 @@ struct TerminalResizeRequest {
 #[derive(Debug)]
 struct SessionRecord {
     id: SessionId,
-    session_uuid: String,
     initial_pwd: PathBuf,
-    pi_session_file: Option<PathBuf>,
-    pi_bridge_socket: Option<PiBridgeSocketPath>,
     shell_ids: Vec<(ShellId, PaneRole, Option<String>)>,
 }
 
@@ -487,6 +486,7 @@ struct SessionState {
     shell_command: ShellCommand,
     running: HashMap<ShellId, RunningShell>,
     unavailable_pi_shells: HashMap<ShellId, UnavailablePiShell>,
+    shutting_down: bool,
     pi_activity: HashMap<SessionId, PiRuntimeActivity>,
     initial_pwd: PathBuf,
 }
@@ -496,6 +496,86 @@ struct UnavailablePiShell {
     session_id: SessionId,
     pane_id: Option<String>,
     initial_pwd: PathBuf,
+    recovery_id: Option<RuntimeId>,
+}
+
+// A reservation keeps the unavailable pane in the catalog while recovery waits
+// outside its mutex. Close/removal/shutdown invalidates it; failures release it.
+struct PiRecoveryLease<'a> {
+    manager: &'a SessionManager,
+    session_id: SessionId,
+    shell_id: ShellId,
+    recovery_id: RuntimeId,
+}
+
+impl PiRecoveryLease<'_> {
+    fn is_current(&self, state: &SessionState) -> bool {
+        !state.shutting_down
+            && state
+                .unavailable_pi_shells
+                .get(&self.shell_id)
+                .is_some_and(|shell| {
+                    shell.session_id == self.session_id
+                        && shell.recovery_id == Some(self.recovery_id)
+                })
+    }
+
+    fn ensure_current(&self) -> io::Result<()> {
+        let state = self.manager.lock_state()?;
+        self.check_state(&state)
+    }
+
+    fn check_state(&self, state: &SessionState) -> io::Result<()> {
+        if self.is_current(state) {
+            Ok(())
+        } else {
+            Err(io::Error::new(
+                io::ErrorKind::Interrupted,
+                "Pi recovery was cancelled",
+            ))
+        }
+    }
+
+    fn signal_current(
+        &self,
+        process_id: VerifiedPiProcessId,
+        signal: libc::c_int,
+    ) -> io::Result<()> {
+        let state = self.manager.lock_state()?;
+        self.check_state(&state)?;
+        // Only these short syscalls run under the catalog mutex. Cancellation
+        // and signal dispatch are ordered, with no socket/child waits here.
+        signal_verified_pi_process(process_id, signal)
+    }
+}
+
+impl Drop for PiRecoveryLease<'_> {
+    fn drop(&mut self) {
+        if let Ok(mut state) = self.manager.state.lock()
+            && let Some(shell) = state.unavailable_pi_shells.get_mut(&self.shell_id)
+            && shell.recovery_id == Some(self.recovery_id)
+        {
+            shell.recovery_id = None;
+        }
+    }
+}
+
+#[derive(Debug, Eq, PartialEq)]
+struct PiHistoryIdentity {
+    device: u64,
+    inode: u64,
+}
+
+// Owned launch inputs: waiting/exec must not borrow the catalog or its database.
+struct PiLaunchRequest {
+    agent_command: AgentCommand,
+    session_id: SessionId,
+    initial_pwd: PathBuf,
+    session_file: PathBuf,
+    bridge_socket: PiBridgeSocketPath,
+    session_uuid: String,
+    pane_id: String,
+    previous_token: Option<String>,
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -850,6 +930,7 @@ impl SessionManager {
                 shell_command,
                 running: HashMap::new(),
                 unavailable_pi_shells: HashMap::new(),
+                shutting_down: false,
                 pi_activity: HashMap::new(),
                 initial_pwd,
             }),
@@ -1368,6 +1449,12 @@ impl SessionManager {
 
     fn restore_open_sessions(self: &Arc<Self>) -> io::Result<()> {
         let mut state = self.lock_state()?;
+        if state.shutting_down {
+            return Err(io::Error::new(
+                io::ErrorKind::Interrupted,
+                "Axod is shutting down",
+            ));
+        }
         let records = read_open_sessions(&state.database)?;
         let mut pi_shells = Vec::new();
         for record in records {
@@ -1376,7 +1463,9 @@ impl SessionManager {
                 continue;
             }
             for (shell_id, role, pane_id) in record.shell_ids {
-                if role == PaneRole::Pi && state.unavailable_pi_shells.contains_key(&shell_id) {
+                if state.running.contains_key(&shell_id)
+                    || state.unavailable_pi_shells.contains_key(&shell_id)
+                {
                     continue;
                 }
 
@@ -1387,66 +1476,17 @@ impl SessionManager {
                         &record.initial_pwd,
                     )?),
                     PaneRole::Pi => {
-                        let recovery = (|| {
-                            let session_file =
-                                record.pi_session_file.as_ref().ok_or_else(|| {
-                                    io::Error::new(
-                                        io::ErrorKind::InvalidData,
-                                        "Pi Session is missing its persisted history path",
-                                    )
-                                })?;
-                            let bridge_socket =
-                                record.pi_bridge_socket.as_ref().ok_or_else(|| {
-                                    io::Error::new(
-                                        io::ErrorKind::InvalidData,
-                                        "Pi Session is missing its persisted bridge socket path",
-                                    )
-                                })?;
-                            let pane_id = pane_id.as_deref().ok_or_else(|| {
-                                io::Error::new(io::ErrorKind::InvalidData, "Pi pane ID is missing")
-                            })?;
-                            spawn_pi(
-                                &state.database,
-                                &state.agent_command,
-                                record.id,
-                                &record.initial_pwd,
-                                session_file,
-                                bridge_socket,
-                                &record.session_uuid,
+                        state.unavailable_pi_shells.insert(
+                            shell_id,
+                            UnavailablePiShell {
+                                session_id: record.id,
                                 pane_id,
-                                PiTakeoverPolicy::PreserveExistingProcess,
-                            )
-                        })();
-                        match recovery {
-                            Ok(running) => {
-                                pi_shells.push(shell_id);
-                                Some(running)
-                            }
-                            Err(error) => {
-                                log::error!(
-                                    "event=session.pi_restore_unavailable session_id={} shell_id={} error_kind={:?}",
-                                    record.id.0,
-                                    shell_id.0,
-                                    error.kind()
-                                );
-                                state.unavailable_pi_shells.insert(
-                                    shell_id,
-                                    UnavailablePiShell {
-                                        session_id: record.id,
-                                        pane_id,
-                                        initial_pwd: record.initial_pwd.clone(),
-                                    },
-                                );
-                                state.pi_activity.insert(
-                                    record.id,
-                                    PiRuntimeActivity {
-                                        connected: false,
-                                        ..PiRuntimeActivity::default()
-                                    },
-                                );
-                                None
-                            }
-                        }
+                                initial_pwd: record.initial_pwd.clone(),
+                                recovery_id: None,
+                            },
+                        );
+                        pi_shells.push((record.id, shell_id));
+                        None
                     }
                 };
                 if let Some(running) = running {
@@ -1455,10 +1495,25 @@ impl SessionManager {
             }
         }
         drop(state);
-        for shell_id in pi_shells {
-            self.start_pi_bridge_worker(shell_id)?;
-        }
+        self.recover_pi_shells(pi_shells);
         Ok(())
+    }
+
+    fn recover_pi_shells(self: &Arc<Self>, panes: Vec<(SessionId, ShellId)>) {
+        for (session_id, shell_id) in panes {
+            if let Err(error) = self.restart_unavailable_pi(
+                session_id,
+                shell_id,
+                PiTakeoverPolicy::PreserveExistingProcess,
+            ) {
+                log::warn!(
+                    "event=session.pi_restore_unavailable session_id={} shell_id={} error_kind={:?}",
+                    session_id.0,
+                    shell_id.0,
+                    error.kind()
+                );
+            }
+        }
     }
 
     fn start_attachment_listener(self: &Arc<Self>) -> io::Result<()> {
@@ -2214,8 +2269,14 @@ impl SessionManager {
         shell_id: ShellId,
         takeover_policy: PiTakeoverPolicy,
     ) -> io::Result<SessionMetadata> {
-        let session = {
+        let (request, recovery) = {
             let mut state = self.lock_state()?;
+            if state.shutting_down {
+                return Err(io::Error::new(
+                    io::ErrorKind::Interrupted,
+                    "Axod is shutting down",
+                ));
+            }
             let unavailable = state
                 .unavailable_pi_shells
                 .get(&shell_id)
@@ -2226,7 +2287,13 @@ impl SessionManager {
                         "the requested Pi pane is not unavailable",
                     )
                 })?;
-            let pane_id = unavailable.pane_id.as_deref().ok_or_else(|| {
+            if unavailable.recovery_id.is_some() {
+                return Err(io::Error::new(
+                    io::ErrorKind::WouldBlock,
+                    "Pi recovery is already in progress",
+                ));
+            }
+            let pane_id = unavailable.pane_id.clone().ok_or_else(|| {
                 io::Error::new(io::ErrorKind::InvalidData, "Pi pane ID is missing")
             })?;
             let initial_pwd = unavailable.initial_pwd.clone();
@@ -2258,26 +2325,108 @@ impl SessionManager {
                         "Pi Session is missing its persisted bridge socket path",
                     )
                 })?))?;
-            let running = spawn_pi(
-                &state.database,
-                &state.agent_command,
+            let owner_count: i64 = state
+                .database
+                .query_row(
+                    "SELECT COUNT(*) FROM sessions WHERE pi_session_file = ?1",
+                    params![session_file.to_string_lossy()],
+                    |row| row.get(0),
+                )
+                .map_err(io::Error::other)?;
+            if owner_count != 1 {
+                return Err(io::Error::new(
+                    io::ErrorKind::InvalidData,
+                    "Pi history has ambiguous Session ownership",
+                ));
+            }
+            let request = PiLaunchRequest {
+                agent_command: state.agent_command.clone(),
                 session_id,
-                &initial_pwd,
-                &session_file,
-                &bridge_socket,
-                &session_uuid,
+                initial_pwd,
+                session_file,
+                bridge_socket,
+                previous_token: load_pi_bridge_token(&state.database, &session_uuid)?,
+                session_uuid,
                 pane_id,
-                takeover_policy,
-            )?;
-            state.unavailable_pi_shells.remove(&shell_id);
-            state.running.insert(shell_id, running);
-            state.pi_activity.remove(&session_id);
-            session_metadata(&state, session_id, &self.attach_socket_path)?
+            };
+            let recovery_id = RuntimeId::new();
+            state
+                .unavailable_pi_shells
+                .get_mut(&shell_id)
+                .expect("checked pane")
+                .recovery_id = Some(recovery_id);
+            let recovery = PiRecoveryLease {
+                manager: self,
+                session_id,
+                shell_id,
+                recovery_id,
+            };
+            (request, recovery)
         };
 
+        let check_current = || recovery.ensure_current();
+        let history = request.ensure_existing_history(&self.pi_session_directory)?;
+        let lock = request.acquire_writer_lock(takeover_policy, &recovery)?;
+        if request.ensure_existing_history(&self.pi_session_directory)? != history {
+            return Err(io::Error::new(
+                io::ErrorKind::InvalidData,
+                "Pi history changed while recovery was waiting",
+            ));
+        }
+        let bridge_token = create_uuid_v4()?;
+        {
+            let state = self.lock_state()?;
+            if !recovery.is_current(&state) {
+                return Err(io::Error::new(
+                    io::ErrorKind::Interrupted,
+                    "Pi recovery was cancelled",
+                ));
+            }
+            // Rotate only while owning the original exclusive transcript lock.
+            store_pi_bridge_token(&state.database, &request.session_uuid, &bridge_token)?;
+        }
+        check_current()?;
+        let pending = spawn_pi(&request, lock, bridge_token)?;
+        let session = self.commit_pi_recovery(&recovery, pending)?;
         self.start_pi_bridge_worker(shell_id)?;
         self.publish_session_snapshot(session_id)?;
         Ok(session)
+    }
+
+    fn commit_pi_recovery(
+        &self,
+        recovery: &PiRecoveryLease<'_>,
+        running: RunningShell,
+    ) -> io::Result<SessionMetadata> {
+        let PiRecoveryLease {
+            session_id,
+            shell_id,
+            ..
+        } = *recovery;
+        let mut pending = Some(running);
+        let result = (|| {
+            let mut state = self.lock_state()?;
+            if !recovery.is_current(&state) {
+                return Err(io::Error::new(
+                    io::ErrorKind::Interrupted,
+                    "Pi recovery was cancelled",
+                ));
+            }
+            // Build metadata after installing the process; only this reservation
+            // may replace the unavailable entry, never a concurrent newer launch.
+            state.unavailable_pi_shells.remove(&shell_id);
+            state
+                .running
+                .insert(shell_id, pending.take().expect("pending Pi launch"));
+            state.pi_activity.remove(&session_id);
+            session_metadata(&state, session_id, &self.attach_socket_path)
+        })();
+        if let Some(mut cancelled) = pending {
+            // A close/shutdown may win during exec. Keep cleanup outside the
+            // catalog lock and retain the writer lock until the child exits.
+            terminate_shell(&mut cancelled.child);
+        }
+        result
     }
 
     fn close_session(self: &Arc<Self>, id: SessionId) -> io::Result<Option<SessionMetadata>> {
@@ -2420,6 +2569,7 @@ impl SessionManager {
                         session_id: *session_id,
                         pane_id: shell.pane_id.clone(),
                         initial_pwd: shell.initial_pwd.clone(),
+                        recovery_id: None,
                     },
                 );
                 state.pi_activity.remove(session_id);
@@ -2543,6 +2693,11 @@ impl SessionManager {
     }
 
     pub fn shutdown(&self) {
+        // Fence in-flight launches before joining workers or draining processes.
+        // stop_workers alone is also used to quiesce background fixture workers.
+        if let Ok(mut state) = self.state.lock() {
+            state.shutting_down = true;
+        }
         self.stop_workers.store(true, Ordering::Relaxed);
         let workers = self
             .workers
@@ -2707,6 +2862,12 @@ impl SessionManager {
 
         let pi_shells = {
             let mut state = self.lock_state()?;
+            if state.shutting_down || !requester.is_current(&state) {
+                return Err(io::Error::new(
+                    io::ErrorKind::Interrupted,
+                    "Pi resume request is no longer current",
+                ));
+            }
             if state
                 .running
                 .values()
@@ -2810,74 +2971,23 @@ impl SessionManager {
                         }
                     }
                     PaneRole::Pi => {
-                        let recovery = (|| {
-                            let session_file =
-                                record.pi_session_file.as_ref().ok_or_else(|| {
-                                    io::Error::new(
-                                        io::ErrorKind::InvalidData,
-                                        "Pi Session is missing its persisted history path",
-                                    )
-                                })?;
-                            let bridge_socket =
-                                record.pi_bridge_socket.as_ref().ok_or_else(|| {
-                                    io::Error::new(
-                                        io::ErrorKind::InvalidData,
-                                        "Pi Session is missing its persisted bridge socket path",
-                                    )
-                                })?;
-                            let pane_id = pane_id.as_deref().ok_or_else(|| {
-                                io::Error::new(io::ErrorKind::InvalidData, "Pi pane ID is missing")
-                            })?;
-                            spawn_pi(
-                                &state.database,
-                                &state.agent_command,
+                        state.unavailable_pi_shells.insert(
+                            shell_id,
+                            UnavailablePiShell {
                                 session_id,
-                                &record.initial_pwd,
-                                session_file,
-                                bridge_socket,
-                                &record.session_uuid,
                                 pane_id,
-                                PiTakeoverPolicy::PreserveExistingProcess,
-                            )
-                        })();
-                        match recovery {
-                            Ok(shell) => {
-                                pi_shells.push(shell_id);
-                                state.running.insert(shell_id, shell);
-                            }
-                            Err(error) => {
-                                log::warn!(
-                                    "event=session.pi_restore_unavailable session_id={} shell_id={} error_kind={:?}",
-                                    session_id.0,
-                                    shell_id.0,
-                                    error.kind()
-                                );
-                                state.unavailable_pi_shells.insert(
-                                    shell_id,
-                                    UnavailablePiShell {
-                                        session_id,
-                                        pane_id,
-                                        initial_pwd: record.initial_pwd.clone(),
-                                    },
-                                );
-                                state.pi_activity.insert(
-                                    session_id,
-                                    PiRuntimeActivity {
-                                        connected: false,
-                                        ..PiRuntimeActivity::default()
-                                    },
-                                );
-                            }
-                        }
+                                initial_pwd: record.initial_pwd.clone(),
+                                recovery_id: None,
+                            },
+                        );
+                        pi_shells.push((session_id, shell_id));
                     }
                 }
             }
             pi_shells
         };
 
-        for shell_id in pi_shells {
-            self.start_pi_bridge_worker(shell_id)?;
-        }
+        self.recover_pi_shells(pi_shells);
         self.complete_pi_resume(requester, session_id)
     }
 
@@ -2887,40 +2997,40 @@ impl SessionManager {
         target_session_id: SessionId,
     ) -> io::Result<SessionId> {
         let requester_session_id = requester.session_id;
-        let target = self
-            .list_sessions()?
-            .into_iter()
-            .find(|session| session.id == target_session_id)
-            .ok_or_else(|| {
-                io::Error::new(io::ErrorKind::NotFound, "resumed Session is not open")
-            })?;
-        let target_pi_is_available = target
-            .shells
-            .iter()
-            .any(|shell| shell.role == PaneRole::Pi && shell.available);
-        if !target_pi_is_available {
-            return Err(io::Error::new(
-                io::ErrorKind::WouldBlock,
-                "resumed Pi pane is not available",
-            ));
-        }
-
-        if requester_session_id != target_session_id {
-            let (replacement, shells) = {
-                let mut state = self.lock_state()?;
-                if !requester.is_current(&state) {
-                    return Err(io::Error::new(
-                        io::ErrorKind::NotFound,
-                        "requesting Pi runtime was replaced",
-                    ));
-                }
+        let (replacement, shells) = {
+            let mut state = self.lock_state()?;
+            if state.shutting_down || !requester.is_current(&state) {
+                return Err(io::Error::new(
+                    io::ErrorKind::Interrupted,
+                    "requesting Pi runtime is no longer current",
+                ));
+            }
+            // Target readiness and requester archival are one catalog transition.
+            // A concurrent target close/recovery cannot slip between these checks.
+            let target = session_metadata(&state, target_session_id, &self.attach_socket_path)?;
+            if !target
+                .shells
+                .iter()
+                .any(|shell| shell.role == PaneRole::Pi && shell.available)
+            {
+                return Err(io::Error::new(
+                    io::ErrorKind::WouldBlock,
+                    "resumed Pi pane is not available",
+                ));
+            }
+            if requester_session_id != target_session_id {
                 close_session(
                     &mut state,
                     requester_session_id,
                     &self.attach_socket_path,
                     &self.pi_session_directory,
                 )?
-            };
+            } else {
+                (None, Vec::new())
+            }
+        };
+
+        if requester_session_id != target_session_id {
             self.terminate_shells_in_background(shells);
             if let Some(session) = &replacement {
                 self.start_pi_bridge_for_session(session)?;
@@ -3459,7 +3569,7 @@ fn create_workspace_session(
             ],
         )
         .map_err(io::Error::other)?;
-    let running = match spawn_pi(
+    let running = match spawn_new_pi(
         &state.database,
         &state.agent_command,
         session_id,
@@ -3468,7 +3578,6 @@ fn create_workspace_session(
         &bridge_socket,
         &session_uuid,
         &pane_id,
-        PiTakeoverPolicy::PreserveExistingProcess,
     ) {
         Ok(running) => running,
         Err(error) => {
@@ -3829,29 +3938,19 @@ fn unavailable_pi_shell_metadata(
 
 fn read_open_sessions(database: &Connection) -> io::Result<Vec<SessionRecord>> {
     let mut statement = database
-        .prepare(
-            "SELECT id, session_uuid, initial_pwd, pi_session_file, pi_bridge_socket_path
-         FROM sessions WHERE state = 'open' ORDER BY id",
-        )
+        .prepare("SELECT id, initial_pwd FROM sessions WHERE state = 'open' ORDER BY id")
         .map_err(io::Error::other)?;
     let rows = statement
         .query_map([], |row| {
             Ok((
                 SessionId(row.get(0)?),
-                row.get::<_, String>(1)?,
-                PathBuf::from(row.get::<_, String>(2)?),
-                row.get::<_, Option<String>>(3)?.map(PathBuf::from),
-                row.get::<_, Option<String>>(4)?,
+                PathBuf::from(row.get::<_, String>(1)?),
             ))
         })
         .map_err(io::Error::other)?;
     let mut records = Vec::new();
     for row in rows {
-        let (id, session_uuid, initial_pwd, pi_session_file, bridge_socket_path) =
-            row.map_err(io::Error::other)?;
-        let pi_bridge_socket = bridge_socket_path
-            .map(|path| PiBridgeSocketPath::parse(PathBuf::from(path)))
-            .transpose()?;
+        let (id, initial_pwd) = row.map_err(io::Error::other)?;
         let mut shell_statement = database.prepare(
             "SELECT id, role, pane_id FROM shells WHERE session_id = ?1 AND state = 'open' ORDER BY id",
         ).map_err(io::Error::other)?;
@@ -3870,10 +3969,7 @@ fn read_open_sessions(database: &Connection) -> io::Result<Vec<SessionRecord>> {
             .map_err(io::Error::other)?;
         records.push(SessionRecord {
             id,
-            session_uuid,
             initial_pwd,
-            pi_session_file,
-            pi_bridge_socket,
             shell_ids,
         });
     }
@@ -4343,6 +4439,7 @@ fn spawn_shell(
     })
 }
 
+#[cfg(test)]
 fn read_pi_bridge_record(reader: &mut BufReader<UnixStream>) -> io::Result<Value> {
     let mut line = Vec::new();
     let mut limited = reader.take((MAX_PI_BRIDGE_RECORD_BYTES + 1) as u64);
@@ -4362,6 +4459,171 @@ fn read_pi_bridge_record(reader: &mut BufReader<UnixStream>) -> io::Result<Value
     serde_json::from_slice(&line[..line.len() - 1]).map_err(io::Error::other)
 }
 
+// A socket read timeout alone restarts on every byte/event. Recovery must have
+// one deadline even when a bridge dribbles bytes or streams unrelated events.
+fn read_pi_bridge_record_until(
+    reader: &mut BufReader<UnixStream>,
+    deadline: Instant,
+    check_current: &impl Fn() -> io::Result<()>,
+) -> io::Result<Value> {
+    let mut line = Vec::new();
+    loop {
+        check_current()?;
+        let remaining = deadline
+            .checked_duration_since(Instant::now())
+            .filter(|time| !time.is_zero())
+            .ok_or_else(|| {
+                io::Error::new(
+                    io::ErrorKind::TimedOut,
+                    "Pi bridge recovery request timed out",
+                )
+            })?;
+        reader
+            .get_ref()
+            .set_read_timeout(Some(remaining.min(PI_RECOVERY_POLL_INTERVAL)))?;
+        let buffer = match reader.fill_buf() {
+            Ok([]) => {
+                return Err(io::Error::new(
+                    io::ErrorKind::UnexpectedEof,
+                    "Pi bridge closed before completing its response",
+                ));
+            }
+            Ok(buffer) => buffer,
+            Err(error)
+                if matches!(
+                    error.kind(),
+                    io::ErrorKind::WouldBlock
+                        | io::ErrorKind::TimedOut
+                        | io::ErrorKind::Interrupted
+                ) =>
+            {
+                continue;
+            }
+            Err(error) => return Err(error),
+        };
+        let newline = buffer.iter().position(|byte| *byte == b'\n');
+        let length = newline.map_or(buffer.len(), |index| index + 1);
+        if line.len().saturating_add(length) > MAX_PI_BRIDGE_RECORD_BYTES {
+            return Err(io::Error::new(
+                io::ErrorKind::InvalidData,
+                "Pi bridge record exceeds its size limit",
+            ));
+        }
+        line.extend_from_slice(&buffer[..length]);
+        reader.consume(length);
+        if newline.is_some() {
+            return serde_json::from_slice(&line[..line.len() - 1]).map_err(io::Error::other);
+        }
+    }
+}
+
+fn connect_pi_socket_until(
+    path: &Path,
+    deadline: Instant,
+    check_current: &impl Fn() -> io::Result<()>,
+) -> io::Result<UnixStream> {
+    // Nonblocking connect matters too: an unresponsive listener with a full
+    // accept queue can otherwise pin recovery (or a worker join) in the kernel.
+    check_current()?;
+    let bytes = path.as_os_str().as_encoded_bytes();
+    // SAFETY: sockaddr_un is plain data and zeroing supplies the NUL terminator.
+    let mut address: libc::sockaddr_un = unsafe { std::mem::zeroed() };
+    if bytes.contains(&0) || bytes.len() >= address.sun_path.len() {
+        return Err(io::Error::new(
+            io::ErrorKind::InvalidInput,
+            "Pi socket path is invalid",
+        ));
+    }
+    address.sun_family = libc::AF_UNIX as libc::sa_family_t;
+    #[cfg(target_os = "macos")]
+    {
+        address.sun_len = std::mem::size_of_val(&address) as u8;
+    }
+    for (target, byte) in address.sun_path.iter_mut().zip(bytes) {
+        *target = *byte as libc::c_char;
+    }
+    // SAFETY: socket returns a fresh descriptor, owned immediately below.
+    let raw = unsafe { libc::socket(libc::AF_UNIX, libc::SOCK_STREAM, 0) };
+    if raw == -1 {
+        return Err(io::Error::last_os_error());
+    }
+    // SAFETY: raw is the newly created descriptor.
+    let socket = unsafe { OwnedFd::from_raw_fd(raw) };
+    set_descriptor_cloexec(raw)?;
+    // SAFETY: these fcntl calls only inspect/update this owned descriptor.
+    let flags = unsafe { libc::fcntl(raw, libc::F_GETFL) };
+    if flags == -1 || unsafe { libc::fcntl(raw, libc::F_SETFL, flags | libc::O_NONBLOCK) } == -1 {
+        return Err(io::Error::last_os_error());
+    }
+    // SAFETY: address is initialized and has the specified sockaddr_un length.
+    if unsafe {
+        libc::connect(
+            raw,
+            &address as *const _ as *const libc::sockaddr,
+            std::mem::size_of_val(&address) as libc::socklen_t,
+        )
+    } == -1
+    {
+        let error = io::Error::last_os_error();
+        if error.raw_os_error() != Some(libc::EINPROGRESS) {
+            return Err(error);
+        }
+        loop {
+            check_current()?;
+            let remaining = deadline
+                .checked_duration_since(Instant::now())
+                .filter(|time| !time.is_zero())
+                .ok_or_else(|| {
+                    io::Error::new(io::ErrorKind::TimedOut, "Pi bridge connection timed out")
+                })?;
+            let mut poll = libc::pollfd {
+                fd: raw,
+                events: libc::POLLOUT,
+                revents: 0,
+            };
+            let timeout =
+                remaining.min(PI_RECOVERY_POLL_INTERVAL).as_millis().max(1) as libc::c_int;
+            // SAFETY: poll receives one initialized descriptor record.
+            let ready = unsafe { libc::poll(&mut poll, 1, timeout) };
+            if ready == -1 {
+                let error = io::Error::last_os_error();
+                if error.kind() == io::ErrorKind::Interrupted {
+                    continue;
+                }
+                return Err(error);
+            }
+            if ready == 0 {
+                continue;
+            }
+            let mut error = 0 as libc::c_int;
+            let mut length = std::mem::size_of_val(&error) as libc::socklen_t;
+            // SAFETY: SO_ERROR writes one int to the correctly sized output.
+            if unsafe {
+                libc::getsockopt(
+                    raw,
+                    libc::SOL_SOCKET,
+                    libc::SO_ERROR,
+                    &mut error as *mut _ as *mut libc::c_void,
+                    &mut length,
+                )
+            } == -1
+            {
+                return Err(io::Error::last_os_error());
+            }
+            if error != 0 {
+                return Err(io::Error::from_raw_os_error(error));
+            }
+            break;
+        }
+    }
+    check_current()?;
+    // SAFETY: restore blocking mode on our connected, still-owned descriptor.
+    if unsafe { libc::fcntl(raw, libc::F_SETFL, flags) } == -1 {
+        return Err(io::Error::last_os_error());
+    }
+    Ok(UnixStream::from(socket))
+}
+
 fn connect_to_pi_bridge(
     bridge_socket: &Path,
     token: &str,
@@ -4369,8 +4631,10 @@ fn connect_to_pi_bridge(
     pane_id: &str,
     initial_pwd: &Path,
     session_file: &Path,
+    deadline: Instant,
+    check_current: &impl Fn() -> io::Result<()>,
 ) -> io::Result<(BufReader<UnixStream>, VerifiedPiProcessId)> {
-    let mut stream = UnixStream::connect(bridge_socket)?;
+    let mut stream = connect_pi_socket_until(bridge_socket, deadline, check_current)?;
     stream.set_read_timeout(Some(Duration::from_secs(2)))?;
     stream.set_write_timeout(Some(Duration::from_secs(2)))?;
     write_json_line(
@@ -4380,7 +4644,7 @@ fn connect_to_pi_bridge(
     let mut reader = BufReader::new(stream);
     let mut authenticated = false;
     loop {
-        let record = read_pi_bridge_record(&mut reader)?;
+        let record = read_pi_bridge_record_until(&mut reader, deadline, check_current)?;
         match record["type"].as_str() {
             Some("authenticated") if record["protocolVersion"] == 1 => authenticated = true,
             Some("hello") if authenticated && record["protocolVersion"] == 1 => {
@@ -4423,7 +4687,10 @@ fn request_pi_shutdown(
     initial_pwd: &Path,
     session_file: &Path,
     takeover_policy: PiTakeoverPolicy,
+    check_current: &impl Fn() -> io::Result<()>,
 ) -> io::Result<PiShutdownAttempt> {
+    check_current()?;
+    let deadline = Instant::now() + PI_BRIDGE_REQUEST_TIMEOUT;
     let (mut reader, process_id) = connect_to_pi_bridge(
         bridge_socket,
         token,
@@ -4431,7 +4698,10 @@ fn request_pi_shutdown(
         pane_id,
         initial_pwd,
         session_file,
+        deadline,
+        check_current,
     )?;
+    check_current()?;
     let request_id = format!("takeover-{}", create_uuid_v4()?);
     let graceful_shutdown = write_json_line(
         reader.get_mut(),
@@ -4450,7 +4720,7 @@ fn request_pi_shutdown(
     )
     .and_then(|()| {
         loop {
-            let record = match read_pi_bridge_record(&mut reader) {
+            let record = match read_pi_bridge_record_until(&mut reader, deadline, check_current) {
                 Ok(record) => record,
                 Err(error) => break Err(error),
             };
@@ -4472,9 +4742,14 @@ fn request_pi_shutdown(
     })
 }
 
-fn wait_for_pi_writer_lock(session_file: &Path, timeout: Duration) -> io::Result<OwnedFd> {
+fn wait_for_pi_writer_lock(
+    session_file: &Path,
+    timeout: Duration,
+    check_current: &impl Fn() -> io::Result<()>,
+) -> io::Result<OwnedFd> {
     let deadline = Instant::now() + timeout;
     loop {
+        check_current()?;
         match acquire_pi_writer_lock(session_file) {
             Ok(lock) => return Ok(lock),
             Err(error) if error.kind() == io::ErrorKind::WouldBlock => {
@@ -4494,8 +4769,10 @@ fn wait_for_pi_writer_lock(session_file: &Path, timeout: Duration) -> io::Result
 fn wait_then_terminate_verified_pi(
     session_file: &Path,
     process_id: VerifiedPiProcessId,
+    recovery: &PiRecoveryLease<'_>,
 ) -> io::Result<OwnedFd> {
-    match wait_for_pi_writer_lock(session_file, PI_RESTART_GRACE_PERIOD) {
+    let check_current = &|| recovery.ensure_current();
+    match wait_for_pi_writer_lock(session_file, PI_RESTART_GRACE_PERIOD, check_current) {
         Ok(lock) => return Ok(lock),
         Err(error) if error.kind() == io::ErrorKind::TimedOut => {}
         Err(error) => return Err(error),
@@ -4510,8 +4787,8 @@ fn wait_then_terminate_verified_pi(
         "event=session.pi_force_termination_started pid={}",
         process_id.0
     );
-    signal_verified_pi_process(process_id, libc::SIGTERM)?;
-    match wait_for_pi_writer_lock(session_file, PI_TERMINATE_GRACE_PERIOD) {
+    recovery.signal_current(process_id, libc::SIGTERM)?;
+    match wait_for_pi_writer_lock(session_file, PI_TERMINATE_GRACE_PERIOD, check_current) {
         Ok(lock) => {
             log::info!("event=session.pi_force_termination_completed signal=term");
             return Ok(lock);
@@ -4525,17 +4802,18 @@ fn wait_then_terminate_verified_pi(
         Err(error) => return Err(error),
     }
 
-    signal_verified_pi_process(process_id, libc::SIGKILL)?;
-    let lock = wait_for_pi_writer_lock(session_file, PI_KILL_WAIT).map_err(|error| {
-        if error.kind() == io::ErrorKind::TimedOut {
-            io::Error::new(
-                io::ErrorKind::TimedOut,
-                "Pi still holds its transcript lock after termination",
-            )
-        } else {
-            error
-        }
-    })?;
+    recovery.signal_current(process_id, libc::SIGKILL)?;
+    let lock =
+        wait_for_pi_writer_lock(session_file, PI_KILL_WAIT, check_current).map_err(|error| {
+            if error.kind() == io::ErrorKind::TimedOut {
+                io::Error::new(
+                    io::ErrorKind::TimedOut,
+                    "Pi still holds its transcript lock after termination",
+                )
+            } else {
+                error
+            }
+        })?;
     log::info!("event=session.pi_force_termination_completed signal=kill");
     Ok(lock)
 }
@@ -4782,18 +5060,148 @@ fn acquire_pi_writer_lock(session_file: &Path) -> io::Result<OwnedFd> {
         .read(true)
         .write(true)
         .mode(0o600)
+        .custom_flags(libc::O_NOFOLLOW)
         .open(lock_path)?;
+    if !lock.metadata()?.is_file() {
+        return Err(io::Error::new(
+            io::ErrorKind::InvalidData,
+            "Pi writer lock is not a regular file",
+        ));
+    }
     // SAFETY: lock is a valid file descriptor and flock only changes its advisory lock.
     if unsafe { libc::flock(lock.as_raw_fd(), libc::LOCK_EX | libc::LOCK_NB) } == -1 {
-        return Err(io::Error::new(
-            io::ErrorKind::WouldBlock,
-            "Pi transcript is already owned by a writer",
-        ));
+        let error = io::Error::last_os_error();
+        return Err(if error.raw_os_error() == Some(libc::EWOULDBLOCK) {
+            io::Error::new(
+                io::ErrorKind::WouldBlock,
+                "Pi transcript is already owned by a writer",
+            )
+        } else {
+            error
+        });
     }
     Ok(OwnedFd::from(lock))
 }
 
-fn spawn_pi(
+impl PiLaunchRequest {
+    fn ensure_existing_history(&self, directory: &Path) -> io::Result<PiHistoryIdentity> {
+        let directory = fs::canonicalize(directory)?;
+        let canonical = fs::canonicalize(&self.session_file)?;
+        let metadata = fs::metadata(&canonical)?;
+        if fs::symlink_metadata(&self.session_file)?
+            .file_type()
+            .is_symlink()
+            || !canonical.starts_with(directory)
+            || !metadata.is_file()
+        {
+            return Err(io::Error::new(
+                io::ErrorKind::PermissionDenied,
+                "Pi recovery requires its original Axo-owned history file",
+            ));
+        }
+        Ok(PiHistoryIdentity {
+            device: metadata.dev(),
+            inode: metadata.ino(),
+        })
+    }
+
+    fn acquire_writer_lock(
+        &self,
+        takeover_policy: PiTakeoverPolicy,
+        recovery: &PiRecoveryLease<'_>,
+    ) -> io::Result<OwnedFd> {
+        let check_current = &|| recovery.ensure_current();
+        let Self {
+            session_id,
+            initial_pwd,
+            session_file,
+            bridge_socket,
+            session_uuid,
+            pane_id,
+            previous_token,
+            ..
+        } = self;
+        check_current()?;
+        match acquire_pi_writer_lock(session_file) {
+            Ok(lock) => Ok(lock),
+            Err(error) if error.kind() == io::ErrorKind::WouldBlock => {
+                log::info!(
+                    "event=session.pi_takeover_requested session_id={}",
+                    session_id.0
+                );
+                let shutdown_attempt = match previous_token.as_deref() {
+                    Some(token) => match request_pi_shutdown(
+                        bridge_socket.as_path(),
+                        token,
+                        session_uuid,
+                        pane_id,
+                        initial_pwd,
+                        session_file,
+                        takeover_policy,
+                        check_current,
+                    ) {
+                        Ok(attempt) => attempt,
+                        Err(error)
+                            if takeover_policy == PiTakeoverPolicy::ExplicitUserRestart
+                                && pi_bridge_unavailable_for_restart(&error) =>
+                        {
+                            check_current()?;
+                            pi_shutdown_attempt_from_lock(*session_id, session_file, error)?
+                        }
+                        Err(error) => return Err(error),
+                    },
+                    None if takeover_policy == PiTakeoverPolicy::ExplicitUserRestart => {
+                        check_current()?;
+                        pi_shutdown_attempt_from_lock(
+                            *session_id,
+                            session_file,
+                            io::Error::new(
+                                io::ErrorKind::ConnectionRefused,
+                                "Pi bridge credential is unavailable",
+                            ),
+                        )?
+                    }
+                    None => {
+                        return Err(io::Error::new(
+                            io::ErrorKind::WouldBlock,
+                            "Pi transcript is held by a legacy writer that cannot be controlled by RPC",
+                        ));
+                    }
+                };
+                let lock = match takeover_policy {
+                    PiTakeoverPolicy::PreserveExistingProcess => {
+                        shutdown_attempt.graceful_shutdown?;
+                        wait_for_pi_writer_lock(session_file, PI_TAKEOVER_TIMEOUT, check_current)?
+                    }
+                    PiTakeoverPolicy::ExplicitUserRestart => {
+                        if let Err(error) = &shutdown_attempt.graceful_shutdown {
+                            log::warn!(
+                                "event=session.pi_shutdown_unconfirmed session_id={} error_kind={:?}",
+                                session_id.0,
+                                error.kind()
+                            );
+                        }
+                        wait_then_terminate_verified_pi(
+                            session_file,
+                            shutdown_attempt.process_id,
+                            recovery,
+                        )?
+                    }
+                };
+                log::info!(
+                    "event=session.pi_takeover_completed session_id={}",
+                    session_id.0
+                );
+                Ok(lock)
+            }
+            Err(error) => Err(error),
+        }
+    }
+}
+
+// New Session admission never takes over an existing writer. Recovery has a
+// separate reservation/commit path, so no takeover wait can hide under its lock.
+fn spawn_new_pi(
     database: &Connection,
     agent_command: &AgentCommand,
     session_id: SessionId,
@@ -4802,80 +5210,38 @@ fn spawn_pi(
     bridge_socket: &PiBridgeSocketPath,
     session_uuid: &str,
     pane_id: &str,
-    takeover_policy: PiTakeoverPolicy,
 ) -> io::Result<RunningShell> {
-    let previous_token = load_pi_bridge_token(database, session_uuid)?;
-    let lock = match acquire_pi_writer_lock(session_file) {
-        Ok(lock) => lock,
-        Err(error) if error.kind() == io::ErrorKind::WouldBlock => {
-            log::info!(
-                "event=session.pi_takeover_requested session_id={}",
-                session_id.0
-            );
-            let shutdown_attempt = match previous_token.as_deref() {
-                Some(token) => match request_pi_shutdown(
-                    bridge_socket.as_path(),
-                    token,
-                    session_uuid,
-                    pane_id,
-                    initial_pwd,
-                    session_file,
-                    takeover_policy,
-                ) {
-                    Ok(attempt) => attempt,
-                    Err(error)
-                        if takeover_policy == PiTakeoverPolicy::ExplicitUserRestart
-                            && pi_bridge_unavailable_for_restart(&error) =>
-                    {
-                        pi_shutdown_attempt_from_lock(session_id, session_file, error)?
-                    }
-                    Err(error) => return Err(error),
-                },
-                None if takeover_policy == PiTakeoverPolicy::ExplicitUserRestart => {
-                    pi_shutdown_attempt_from_lock(
-                        session_id,
-                        session_file,
-                        io::Error::new(
-                            io::ErrorKind::ConnectionRefused,
-                            "Pi bridge credential is unavailable",
-                        ),
-                    )?
-                }
-                None => {
-                    return Err(io::Error::new(
-                        io::ErrorKind::WouldBlock,
-                        "Pi transcript is held by a legacy writer that cannot be controlled by RPC",
-                    ));
-                }
-            };
-            let lock = match takeover_policy {
-                PiTakeoverPolicy::PreserveExistingProcess => {
-                    shutdown_attempt.graceful_shutdown?;
-                    wait_for_pi_writer_lock(session_file, PI_TAKEOVER_TIMEOUT)?
-                }
-                PiTakeoverPolicy::ExplicitUserRestart => {
-                    if let Err(error) = &shutdown_attempt.graceful_shutdown {
-                        log::warn!(
-                            "event=session.pi_shutdown_unconfirmed session_id={} error_kind={:?}",
-                            session_id.0,
-                            error.kind()
-                        );
-                    }
-                    wait_then_terminate_verified_pi(session_file, shutdown_attempt.process_id)?
-                }
-            };
-            log::info!(
-                "event=session.pi_takeover_completed session_id={}",
-                session_id.0
-            );
-            lock
-        }
-        Err(error) => return Err(error),
-    };
-    // Rotate after acquiring the exclusive transcript lock so an old process
-    // cannot use its credential to control the replacement Pi process.
+    let lock = acquire_pi_writer_lock(session_file)?;
     let bridge_token = create_uuid_v4()?;
     store_pi_bridge_token(database, session_uuid, &bridge_token)?;
+    let request = PiLaunchRequest {
+        agent_command: agent_command.clone(),
+        session_id,
+        initial_pwd: initial_pwd.to_owned(),
+        session_file: session_file.to_owned(),
+        bridge_socket: bridge_socket.clone(),
+        session_uuid: session_uuid.to_owned(),
+        pane_id: pane_id.to_owned(),
+        previous_token: None,
+    };
+    spawn_pi(&request, lock, bridge_token)
+}
+
+fn spawn_pi(
+    request: &PiLaunchRequest,
+    lock: OwnedFd,
+    bridge_token: String,
+) -> io::Result<RunningShell> {
+    let PiLaunchRequest {
+        agent_command,
+        session_id,
+        initial_pwd,
+        session_file,
+        bridge_socket,
+        session_uuid,
+        pane_id,
+        ..
+    } = request;
     let extension = resolve_pi_extension_path()?;
     let executable = resolve_pi_executable(&agent_command.0.executable)?;
     let home = super::current_user_home_directory()?;
@@ -4966,7 +5332,7 @@ fn spawn_pi(
     drop(slave);
     Ok(RunningShell {
         runtime_id: RuntimeId::new(),
-        session_id,
+        session_id: *session_id,
         role: PaneRole::Pi,
         pane_id: Some(pane_id.to_owned()),
         initial_pwd: initial_pwd.to_path_buf(),
@@ -5090,7 +5456,25 @@ fn run_pi_bridge_worker(
         }
         drop(owner);
 
-        let mut stream = match UnixStream::connect(bridge_socket.as_path()) {
+        let check_current = || {
+            if stop.load(Ordering::Relaxed)
+                || !manager
+                    .upgrade()
+                    .is_some_and(|owner| owner.pi_runtime_is_current(binding))
+            {
+                Err(io::Error::new(
+                    io::ErrorKind::Interrupted,
+                    "Pi bridge runtime is no longer current",
+                ))
+            } else {
+                Ok(())
+            }
+        };
+        let mut stream = match connect_pi_socket_until(
+            bridge_socket.as_path(),
+            Instant::now() + PI_BRIDGE_REQUEST_TIMEOUT,
+            &check_current,
+        ) {
             Ok(stream) => {
                 if !has_connected {
                     log::info!(
@@ -5992,6 +6376,25 @@ mod tests {
         fn new() -> Self {
             let directory =
                 PathBuf::from("/tmp").join(format!("axo-life-{}", create_uuid_v4().unwrap()));
+            fs::create_dir_all(&directory).unwrap();
+            // Lifecycle tests must not race real login-profile initialization or
+            // read/write the user's shell history. Seed only this private catalog.
+            let shell = directory.join("fixture-shell");
+            fs::write(
+                &shell,
+                "#!/bin/sh\nunset ENV BASH_ENV\nexport HISTFILE=/dev/null\nexec /bin/sh -i\n",
+            )
+            .unwrap();
+            fs::set_permissions(&shell, fs::Permissions::from_mode(0o700)).unwrap();
+            let mut database = Connection::open(directory.join(DATABASE_FILE)).unwrap();
+            initialize_database(&mut database).unwrap();
+            database
+                .execute(
+                    "INSERT INTO daemon_metadata (key, value) VALUES ('shell_command', ?1)",
+                    params![shell.to_string_lossy()],
+                )
+                .unwrap();
+            drop(database);
             let manager = SessionManager::open(&directory).unwrap();
             // Keep state transitions deterministic: these tests drive the reaper
             // explicitly, rather than racing its periodic background tick.
@@ -6007,6 +6410,769 @@ mod tests {
             self.manager.shutdown();
             let _ = fs::remove_dir_all(&self.directory);
         }
+    }
+
+    struct PiRecoveryFixture {
+        lifecycle: LifecycleFixture,
+        session_id: SessionId,
+        shell_id: ShellId,
+        session_uuid: String,
+        pane_id: String,
+        file: PathBuf,
+        socket: PiBridgeSocketPath,
+        token: String,
+    }
+
+    impl PiRecoveryFixture {
+        fn new() -> Self {
+            let lifecycle = LifecycleFixture::new();
+            let manager = &lifecycle.manager;
+            let session_uuid = create_uuid_v4().unwrap();
+            let pane_id = create_uuid_v4().unwrap();
+            let token = create_uuid_v4().unwrap();
+            let file = manager
+                .pi_session_directory
+                .join(format!("{session_uuid}.jsonl"));
+            let socket =
+                PiBridgeSocketPath::for_session(&manager.pi_session_directory, &session_uuid)
+                    .unwrap();
+            fs::write(&file, b"original history\n").unwrap();
+            let executable = lifecycle.directory.join("fake-pi");
+            fs::write(&executable, "#!/bin/sh\nexec /bin/sleep 60\n").unwrap();
+            fs::set_permissions(&executable, fs::Permissions::from_mode(0o700)).unwrap();
+            let (session_id, shell_id) = {
+                let mut state = manager.lock_state().unwrap();
+                state.agent_command = AgentCommand::parse(executable.to_str().unwrap()).unwrap();
+                state.database.execute(
+                    "INSERT INTO sessions (initial_pwd, state, created_at, session_uuid, pi_session_file, pi_bridge_socket_path)
+                     VALUES (?1, 'open', ?2, ?3, ?4, ?5)",
+                    params![lifecycle.directory.to_string_lossy(), unix_timestamp(), session_uuid, file.to_string_lossy(), socket.database_value()],
+                ).unwrap();
+                let session_id = SessionId(state.database.last_insert_rowid());
+                state.database.execute(
+                    "INSERT INTO shells (session_id, initial_pwd, state, created_at, role, pane_id) VALUES (?1, ?2, 'open', ?3, 'pi', ?4)",
+                    params![session_id.0, lifecycle.directory.to_string_lossy(), unix_timestamp(), pane_id],
+                ).unwrap();
+                let shell_id = ShellId(state.database.last_insert_rowid());
+                state
+                    .database
+                    .execute(
+                        "UPDATE sessions SET layout_json = ?1 WHERE id = ?2",
+                        params![
+                            serde_json::to_string(&SessionLayout::Pane {
+                                shell_id: shell_id.0
+                            })
+                            .unwrap(),
+                            session_id.0
+                        ],
+                    )
+                    .unwrap();
+                store_pi_bridge_token(&state.database, &session_uuid, &token).unwrap();
+                state.unavailable_pi_shells.insert(
+                    shell_id,
+                    UnavailablePiShell {
+                        session_id,
+                        pane_id: Some(pane_id.clone()),
+                        initial_pwd: lifecycle.directory.clone(),
+                        recovery_id: None,
+                    },
+                );
+                (session_id, shell_id)
+            };
+            Self {
+                lifecycle,
+                session_id,
+                shell_id,
+                session_uuid,
+                pane_id,
+                file,
+                socket,
+                token,
+            }
+        }
+
+        fn begin_recovery(
+            &self,
+            policy: PiTakeoverPolicy,
+        ) -> (JoinHandle<io::Result<()>>, BufReader<UnixStream>) {
+            let session_id = self.session_id;
+            let shell_id = self.shell_id;
+            self.observe_operation(move |manager| {
+                manager
+                    .restart_unavailable_pi(session_id, shell_id, policy)
+                    .map(|_| ())
+            })
+        }
+
+        fn observe_operation(
+            &self,
+            operation: impl FnOnce(Arc<SessionManager>) -> io::Result<()> + Send + 'static,
+        ) -> (JoinHandle<io::Result<()>>, BufReader<UnixStream>) {
+            let listener = UnixListener::bind(self.socket.as_path()).unwrap();
+            listener.set_nonblocking(true).unwrap();
+            let manager = Arc::clone(&self.lifecycle.manager);
+            let worker = thread::spawn(move || operation(manager));
+            let deadline = Instant::now() + Duration::from_secs(3);
+            let stream = loop {
+                match listener.accept() {
+                    Ok((stream, _)) => break stream,
+                    Err(error)
+                        if error.kind() == io::ErrorKind::WouldBlock
+                            && Instant::now() < deadline =>
+                    {
+                        thread::sleep(Duration::from_millis(5))
+                    }
+                    Err(error) => panic!("recovery never reached the fixture bridge: {error}"),
+                }
+            };
+            stream.set_nonblocking(false).unwrap();
+            stream
+                .set_read_timeout(Some(Duration::from_secs(2)))
+                .unwrap();
+            stream
+                .set_write_timeout(Some(Duration::from_secs(2)))
+                .unwrap();
+            let mut reader = BufReader::new(stream);
+            let auth = read_pi_bridge_record(&mut reader).unwrap();
+            assert_eq!(auth["token"], self.token);
+            (worker, reader)
+        }
+
+        fn accept_shutdown(&self, reader: &mut BufReader<UnixStream>, process_id: u32) {
+            write_json_line(
+                reader.get_mut(),
+                &json!({ "type": "authenticated", "protocolVersion": 1 }),
+            )
+            .unwrap();
+            write_json_line(reader.get_mut(), &json!({
+                "type": "hello", "protocolVersion": 1,
+                "identity": { "axoSessionId": self.session_uuid, "axoPaneId": self.pane_id,
+                    "sessionFile": self.file, "cwd": self.lifecycle.directory, "processId": process_id }
+            })).unwrap();
+            let command = read_pi_bridge_record(reader).unwrap();
+            assert_eq!(command["type"], "command");
+            write_json_line(reader.get_mut(), &json!({
+                "type": "commandResult", "requestId": command["requestId"], "result": { "accepted": true }
+            })).unwrap();
+        }
+
+        fn assert_preserved(&self) {
+            assert_eq!(fs::read(&self.file).unwrap(), b"original history\n");
+        }
+    }
+
+    #[test]
+    fn stalled_pi_recovery_keeps_catalog_and_sibling_ptys_responsive() {
+        let fixture = PiRecoveryFixture::new();
+        let manager = &fixture.lifecycle.manager;
+        let lock = acquire_pi_writer_lock(&fixture.file).unwrap();
+        let (worker, _bridge) = fixture.begin_recovery(PiTakeoverPolicy::PreserveExistingProcess);
+        let start = Instant::now();
+        assert!(
+            manager.state.try_lock().is_ok(),
+            "recovery held the shared catalog lock during authentication"
+        );
+        let home = manager
+            .list_sessions()
+            .unwrap()
+            .into_iter()
+            .find(|session| session.id != fixture.session_id)
+            .unwrap();
+        manager.rename_session(home.id, "Still responsive").unwrap();
+        let (_, _, _, runtime) = manager.duplicate_master(home.shells[0].id).unwrap();
+        manager.mark_detached(home.shells[0].id, runtime);
+        let error = manager
+            .restart_unavailable_pi(
+                fixture.session_id,
+                fixture.shell_id,
+                PiTakeoverPolicy::ExplicitUserRestart,
+            )
+            .unwrap_err();
+        assert_eq!(error.kind(), io::ErrorKind::WouldBlock);
+        assert!(start.elapsed() < Duration::from_secs(1));
+        assert_eq!(
+            worker.join().unwrap().unwrap_err().kind(),
+            io::ErrorKind::TimedOut
+        );
+        let state = manager.lock_state().unwrap();
+        assert_eq!(
+            state.unavailable_pi_shells[&fixture.shell_id].recovery_id,
+            None
+        );
+        assert_eq!(
+            load_pi_bridge_token(&state.database, &fixture.session_uuid)
+                .unwrap()
+                .as_deref(),
+            Some(fixture.token.as_str())
+        );
+        drop(state);
+        drop(lock);
+        fixture.assert_preserved();
+    }
+
+    #[test]
+    fn closing_a_pi_pane_cancels_pending_takeover_without_escalating() {
+        for policy in [
+            PiTakeoverPolicy::PreserveExistingProcess,
+            PiTakeoverPolicy::ExplicitUserRestart,
+        ] {
+            let fixture = PiRecoveryFixture::new();
+            let lock = acquire_pi_writer_lock(&fixture.file).unwrap();
+            let mut command = Command::new("/bin/sleep");
+            command.arg("60");
+            // SAFETY: isolated test child creates its own process group.
+            unsafe {
+                command.pre_exec(|| {
+                    if libc::setsid() == -1 {
+                        Err(io::Error::last_os_error())
+                    } else {
+                        Ok(())
+                    }
+                });
+            }
+            let mut old_pi = ChildProcessGuard(command.spawn().unwrap());
+            let (worker, mut bridge) = fixture.begin_recovery(policy);
+            fixture.accept_shutdown(&mut bridge, old_pi.0.id());
+            let start = Instant::now();
+            fixture
+                .lifecycle
+                .manager
+                .close_session(fixture.session_id)
+                .unwrap();
+            assert_eq!(
+                worker.join().unwrap().unwrap_err().kind(),
+                io::ErrorKind::Interrupted
+            );
+            assert!(start.elapsed() < Duration::from_secs(1));
+            assert!(
+                old_pi.0.try_wait().unwrap().is_none(),
+                "cancelled recovery signalled the old process"
+            );
+            let state = fixture.lifecycle.manager.lock_state().unwrap();
+            assert!(!state.running.contains_key(&fixture.shell_id));
+            assert!(!state.unavailable_pi_shells.contains_key(&fixture.shell_id));
+            let lifecycle: String = state
+                .database
+                .query_row(
+                    "SELECT state FROM sessions WHERE id = ?1",
+                    params![fixture.session_id.0],
+                    |row| row.get(0),
+                )
+                .unwrap();
+            assert_eq!(lifecycle, "archived");
+            drop(state);
+            drop(lock);
+            fixture.assert_preserved();
+        }
+    }
+
+    #[test]
+    fn shutdown_fences_pending_pi_recovery_and_future_restarts() {
+        let fixture = PiRecoveryFixture::new();
+        let lock = acquire_pi_writer_lock(&fixture.file).unwrap();
+        let (worker, _bridge) = fixture.begin_recovery(PiTakeoverPolicy::PreserveExistingProcess);
+        let start = Instant::now();
+        fixture.lifecycle.manager.shutdown();
+        assert_eq!(
+            worker.join().unwrap().unwrap_err().kind(),
+            io::ErrorKind::Interrupted
+        );
+        assert!(start.elapsed() < Duration::from_secs(1));
+        assert!(
+            fixture
+                .lifecycle
+                .manager
+                .lock_state()
+                .unwrap()
+                .running
+                .is_empty()
+        );
+        assert_eq!(
+            fixture
+                .lifecycle
+                .manager
+                .restart_unavailable_pi(
+                    fixture.session_id,
+                    fixture.shell_id,
+                    PiTakeoverPolicy::ExplicitUserRestart
+                )
+                .unwrap_err()
+                .kind(),
+            io::ErrorKind::Interrupted
+        );
+        drop(lock);
+        fixture.assert_preserved();
+    }
+
+    #[test]
+    fn failed_pi_exec_releases_recovery_reservation_and_original_writer_lock() {
+        let fixture = PiRecoveryFixture::new();
+        let manager = &fixture.lifecycle.manager;
+        let original_command = manager.lock_state().unwrap().agent_command.clone();
+        let broken_executable = fixture.lifecycle.directory.join("broken-pi");
+        fs::write(
+            &broken_executable,
+            "#!/nonexistent/axo-fixture-interpreter\n",
+        )
+        .unwrap();
+        fs::set_permissions(&broken_executable, fs::Permissions::from_mode(0o700)).unwrap();
+        manager.lock_state().unwrap().agent_command =
+            AgentCommand::parse(broken_executable.to_str().unwrap()).unwrap();
+        assert_eq!(
+            manager
+                .restart_unavailable_pi(
+                    fixture.session_id,
+                    fixture.shell_id,
+                    PiTakeoverPolicy::PreserveExistingProcess
+                )
+                .unwrap_err()
+                .kind(),
+            io::ErrorKind::NotFound
+        );
+        assert_eq!(
+            manager.lock_state().unwrap().unavailable_pi_shells[&fixture.shell_id].recovery_id,
+            None
+        );
+        // Concurrent forked fixture children may briefly hold CLOEXEC copies
+        // until exec. Bound the wait rather than requiring instantaneous release.
+        drop(wait_for_pi_writer_lock(&fixture.file, Duration::from_secs(1), &|| Ok(())).unwrap());
+        manager.lock_state().unwrap().agent_command = original_command;
+        let recovered = manager
+            .restart_unavailable_pi(
+                fixture.session_id,
+                fixture.shell_id,
+                PiTakeoverPolicy::PreserveExistingProcess,
+            )
+            .unwrap();
+        assert!(
+            recovered
+                .shells
+                .iter()
+                .any(|shell| shell.id == fixture.shell_id && shell.available)
+        );
+        assert_eq!(
+            acquire_pi_writer_lock(&fixture.file).unwrap_err().kind(),
+            io::ErrorKind::WouldBlock
+        );
+        fixture.assert_preserved();
+    }
+
+    #[test]
+    fn cancelled_pi_launch_is_cleaned_up_instead_of_resurrecting_the_pane() {
+        let fixture = PiRecoveryFixture::new();
+        let manager = &fixture.lifecycle.manager;
+        let recovery_id = RuntimeId::new();
+        let pending = {
+            let mut state = manager.lock_state().unwrap();
+            state
+                .unavailable_pi_shells
+                .get_mut(&fixture.shell_id)
+                .unwrap()
+                .recovery_id = Some(recovery_id);
+            spawn_new_pi(
+                &state.database,
+                &state.agent_command,
+                fixture.session_id,
+                &fixture.lifecycle.directory,
+                &fixture.file,
+                &fixture.socket,
+                &fixture.session_uuid,
+                &fixture.pane_id,
+            )
+            .unwrap()
+        };
+        let recovery = PiRecoveryLease {
+            manager,
+            session_id: fixture.session_id,
+            shell_id: fixture.shell_id,
+            recovery_id,
+        };
+        manager.close_session(fixture.session_id).unwrap();
+        assert_eq!(
+            manager
+                .commit_pi_recovery(&recovery, pending)
+                .unwrap_err()
+                .kind(),
+            io::ErrorKind::Interrupted
+        );
+        assert!(
+            !manager
+                .lock_state()
+                .unwrap()
+                .running
+                .contains_key(&fixture.shell_id)
+        );
+        // Both parent and child lock copies must be released by cleanup. Other
+        // concurrent fixture forks can retain CLOEXEC copies briefly until exec.
+        drop(wait_for_pi_writer_lock(&fixture.file, Duration::from_secs(1), &|| Ok(())).unwrap());
+        fixture.assert_preserved();
+    }
+
+    #[test]
+    fn pi_recovery_rejects_missing_and_ambiguously_owned_history() {
+        let fixture = PiRecoveryFixture::new();
+        let manager = &fixture.lifecycle.manager;
+        fs::remove_file(&fixture.file).unwrap();
+        assert_eq!(
+            manager
+                .restart_unavailable_pi(
+                    fixture.session_id,
+                    fixture.shell_id,
+                    PiTakeoverPolicy::PreserveExistingProcess
+                )
+                .unwrap_err()
+                .kind(),
+            io::ErrorKind::NotFound
+        );
+        assert!(!fixture.file.exists());
+        assert!(!fixture.file.with_extension("jsonl.lock").exists());
+        fs::write(&fixture.file, b"original history\n").unwrap();
+        manager.lock_state().unwrap().database.execute(
+            "INSERT INTO sessions (initial_pwd, state, created_at, session_uuid, pi_session_file) VALUES ('/tmp', 'archived', ?1, ?2, ?3)",
+            params![unix_timestamp(), create_uuid_v4().unwrap(), fixture.file.to_string_lossy()],
+        ).unwrap();
+        assert_eq!(
+            manager
+                .restart_unavailable_pi(
+                    fixture.session_id,
+                    fixture.shell_id,
+                    PiTakeoverPolicy::ExplicitUserRestart
+                )
+                .unwrap_err()
+                .kind(),
+            io::ErrorKind::InvalidData
+        );
+        assert!(!fixture.file.with_extension("jsonl.lock").exists());
+        fixture.assert_preserved();
+    }
+
+    #[test]
+    fn pi_recovery_rejects_history_replaced_during_takeover() {
+        let fixture = PiRecoveryFixture::new();
+        let lock = acquire_pi_writer_lock(&fixture.file).unwrap();
+        let (worker, mut bridge) =
+            fixture.begin_recovery(PiTakeoverPolicy::PreserveExistingProcess);
+        // The unavailable writer's identity must never turn into a different
+        // history merely because the path was reused while takeover waited.
+        let original = fixture.file.with_extension("saved.jsonl");
+        fs::rename(&fixture.file, &original).unwrap();
+        fs::write(&fixture.file, b"replacement history\n").unwrap();
+        fixture.accept_shutdown(&mut bridge, 2);
+        drop(lock);
+        assert_eq!(
+            worker.join().unwrap().unwrap_err().kind(),
+            io::ErrorKind::InvalidData
+        );
+        assert_eq!(fs::read(&fixture.file).unwrap(), b"replacement history\n");
+        assert_eq!(fs::read(&original).unwrap(), b"original history\n");
+        let state = fixture.lifecycle.manager.lock_state().unwrap();
+        assert!(!state.running.contains_key(&fixture.shell_id));
+        assert_eq!(
+            state.unavailable_pi_shells[&fixture.shell_id].recovery_id,
+            None
+        );
+        assert_eq!(
+            load_pi_bridge_token(&state.database, &fixture.session_uuid)
+                .unwrap()
+                .as_deref(),
+            Some(fixture.token.as_str())
+        );
+    }
+
+    #[test]
+    fn pi_writer_lock_rejects_symlink_without_touching_its_target() {
+        let fixture = PiRecoveryFixture::new();
+        let target = fixture.lifecycle.directory.join("not-a-lock");
+        fs::write(&target, b"untouched lock target\n").unwrap();
+        std::os::unix::fs::symlink(&target, fixture.file.with_extension("jsonl.lock")).unwrap();
+        assert!(acquire_pi_writer_lock(&fixture.file).is_err());
+        assert_eq!(fs::read(&target).unwrap(), b"untouched lock target\n");
+        fixture.assert_preserved();
+    }
+
+    #[test]
+    fn pi_recovery_rejects_symlinked_and_outside_history_without_touching_it() {
+        let fixture = PiRecoveryFixture::new();
+        let manager = &fixture.lifecycle.manager;
+        let original = fixture.file.with_extension("original.jsonl");
+        fs::rename(&fixture.file, &original).unwrap();
+        std::os::unix::fs::symlink(&original, &fixture.file).unwrap();
+        assert_eq!(
+            manager
+                .restart_unavailable_pi(
+                    fixture.session_id,
+                    fixture.shell_id,
+                    PiTakeoverPolicy::PreserveExistingProcess
+                )
+                .unwrap_err()
+                .kind(),
+            io::ErrorKind::PermissionDenied
+        );
+        assert_eq!(fs::read(&original).unwrap(), b"original history\n");
+        assert!(!fixture.file.with_extension("jsonl.lock").exists());
+        fs::remove_file(&fixture.file).unwrap();
+        fs::rename(&original, &fixture.file).unwrap();
+        let outside = fixture.lifecycle.directory.join("outside.jsonl");
+        fs::write(&outside, b"not an owned Pi history\n").unwrap();
+        manager
+            .lock_state()
+            .unwrap()
+            .database
+            .execute(
+                "UPDATE sessions SET pi_session_file = ?1 WHERE id = ?2",
+                params![outside.to_string_lossy(), fixture.session_id.0],
+            )
+            .unwrap();
+        assert_eq!(
+            manager
+                .restart_unavailable_pi(
+                    fixture.session_id,
+                    fixture.shell_id,
+                    PiTakeoverPolicy::ExplicitUserRestart
+                )
+                .unwrap_err()
+                .kind(),
+            io::ErrorKind::PermissionDenied
+        );
+        assert_eq!(fs::read(&outside).unwrap(), b"not an owned Pi history\n");
+        assert!(!outside.with_extension("jsonl.lock").exists());
+        fixture.assert_preserved();
+    }
+
+    #[test]
+    fn session_restore_waits_outside_the_catalog_lock_and_isolates_pi_failure() {
+        let fixture = PiRecoveryFixture::new();
+        let manager = &fixture.lifecycle.manager;
+        let lock = acquire_pi_writer_lock(&fixture.file).unwrap();
+        manager
+            .lock_state()
+            .unwrap()
+            .unavailable_pi_shells
+            .remove(&fixture.shell_id);
+        let (worker, mut bridge) =
+            fixture.observe_operation(|manager| manager.restore_open_sessions());
+        assert!(
+            manager.state.try_lock().is_ok(),
+            "startup restoration held the shared catalog lock during takeover"
+        );
+        let home = manager
+            .list_sessions()
+            .unwrap()
+            .into_iter()
+            .find(|session| session.id != fixture.session_id)
+            .unwrap();
+        assert!(home.shells.iter().any(|shell| shell.available));
+        write_json_line(bridge.get_mut(), &json!({ "type": "protocolError" })).unwrap();
+        worker.join().unwrap().unwrap();
+        let sessions = manager.list_sessions().unwrap();
+        let target = sessions
+            .iter()
+            .find(|session| session.id == fixture.session_id)
+            .unwrap();
+        assert!(!target.shells[0].available);
+        assert!(sessions.iter().any(|session| session.id == home.id));
+        drop(lock);
+        fixture.assert_preserved();
+    }
+
+    #[test]
+    fn restoring_sessions_does_not_replace_an_existing_runtime() {
+        let fixture = LifecycleFixture::new();
+        let session = fixture.manager.list_sessions().unwrap().remove(0);
+        let shell_id = session.shells[0].id;
+        let runtime = fixture.manager.lock_state().unwrap().running[&shell_id].runtime_id;
+        fixture.manager.restore_open_sessions().unwrap();
+        assert_eq!(
+            fixture.manager.lock_state().unwrap().running[&shell_id].runtime_id,
+            runtime
+        );
+    }
+
+    #[test]
+    fn resume_handoff_preserves_requester_when_target_or_runtime_is_unavailable() {
+        let fixture = PiRecoveryFixture::new();
+        let manager = &fixture.lifecycle.manager;
+        let home = manager
+            .list_sessions()
+            .unwrap()
+            .into_iter()
+            .find(|session| session.id != fixture.session_id)
+            .unwrap();
+        let requester = {
+            let mut state = manager.lock_state().unwrap();
+            let shell = state.running.get_mut(&home.shells[0].id).unwrap();
+            shell.role = PaneRole::Pi;
+            PiRuntimeBinding {
+                session_id: home.id,
+                shell_id: home.shells[0].id,
+                runtime_id: shell.runtime_id,
+            }
+        };
+        assert_eq!(
+            manager
+                .complete_pi_resume(requester, fixture.session_id)
+                .unwrap_err()
+                .kind(),
+            io::ErrorKind::WouldBlock
+        );
+        manager.close_session(fixture.session_id).unwrap();
+        assert!(
+            manager
+                .complete_pi_resume(requester, fixture.session_id)
+                .is_err()
+        );
+        let stale = PiRuntimeBinding {
+            runtime_id: RuntimeId::new(),
+            ..requester
+        };
+        assert_eq!(
+            manager
+                .complete_pi_resume(stale, home.id)
+                .unwrap_err()
+                .kind(),
+            io::ErrorKind::Interrupted
+        );
+        assert!(manager.pi_runtime_is_current(requester));
+        assert!(
+            manager
+                .list_sessions()
+                .unwrap()
+                .iter()
+                .any(|session| session.id == home.id)
+        );
+        assert_eq!(manager.take_pending_resume_focus().unwrap(), None);
+        fixture.assert_preserved();
+    }
+
+    #[test]
+    fn stale_recovery_lease_cannot_release_a_newer_reservation() {
+        let fixture = PiRecoveryFixture::new();
+        let manager = &fixture.lifecycle.manager;
+        let old_id = RuntimeId::new();
+        let new_id = RuntimeId::new();
+        let old = PiRecoveryLease {
+            manager,
+            session_id: fixture.session_id,
+            shell_id: fixture.shell_id,
+            recovery_id: old_id,
+        };
+        manager
+            .lock_state()
+            .unwrap()
+            .unavailable_pi_shells
+            .get_mut(&fixture.shell_id)
+            .unwrap()
+            .recovery_id = Some(new_id);
+        assert_eq!(
+            old.ensure_current().unwrap_err().kind(),
+            io::ErrorKind::Interrupted
+        );
+        drop(old);
+        assert_eq!(
+            manager.lock_state().unwrap().unavailable_pi_shells[&fixture.shell_id].recovery_id,
+            Some(new_id)
+        );
+    }
+
+    #[test]
+    fn recovery_connect_is_bounded_when_the_accept_queue_is_full() {
+        let fixture = LifecycleFixture::new();
+        let path = fixture.directory.join("full.sock");
+        let listener = UnixListener::bind(&path).unwrap();
+        // SAFETY: reset the backlog only on this test's owned listener.
+        assert_eq!(unsafe { libc::listen(listener.as_raw_fd(), 1) }, 0);
+        let mut connections = Vec::new();
+        let mut full = false;
+        let start = Instant::now();
+        for _ in 0..16 {
+            match connect_pi_socket_until(
+                &path,
+                Instant::now() + Duration::from_millis(50),
+                &|| Ok(()),
+            ) {
+                Ok(stream) => connections.push(stream),
+                Err(error) => {
+                    assert!(
+                        matches!(
+                            error.kind(),
+                            io::ErrorKind::WouldBlock
+                                | io::ErrorKind::TimedOut
+                                | io::ErrorKind::ConnectionRefused
+                        ),
+                        "unexpected full-backlog error: {error}"
+                    );
+                    full = true;
+                    break;
+                }
+            }
+        }
+        assert!(
+            !connections.is_empty(),
+            "fixture listener never accepted a connection"
+        );
+        assert!(full, "fixture never filled its bounded accept queue");
+        assert!(start.elapsed() < Duration::from_secs(2));
+        assert_eq!(
+            connect_pi_socket_until(&path, Instant::now() + Duration::from_secs(2), &|| Err(
+                io::Error::from(io::ErrorKind::Interrupted)
+            ))
+            .unwrap_err()
+            .kind(),
+            io::ErrorKind::Interrupted
+        );
+    }
+
+    #[test]
+    fn recovery_deadline_bounds_a_dribbling_partial_record() {
+        let (mut writer, reader) = UnixStream::pair().unwrap();
+        let producer = thread::spawn(move || {
+            for _ in 0..100 {
+                if writer.write_all(b" ").is_err() {
+                    break;
+                }
+                thread::sleep(Duration::from_millis(10));
+            }
+        });
+        let mut reader = BufReader::new(reader);
+        let start = Instant::now();
+        let error = read_pi_bridge_record_until(
+            &mut reader,
+            start + Duration::from_millis(150),
+            &|| Ok(()),
+        )
+        .unwrap_err();
+        assert_eq!(error.kind(), io::ErrorKind::TimedOut);
+        assert!(start.elapsed() < Duration::from_secs(1));
+        drop(reader);
+        producer.join().unwrap();
+    }
+
+    #[test]
+    fn recovery_deadline_bounds_a_stream_of_unrelated_events() {
+        let (mut writer, reader) = UnixStream::pair().unwrap();
+        let producer = thread::spawn(move || {
+            for _ in 0..100 {
+                if write_json_line(&mut writer, &json!({ "type": "event" })).is_err() {
+                    break;
+                }
+                thread::sleep(Duration::from_millis(10));
+            }
+        });
+        let mut reader = BufReader::new(reader);
+        let start = Instant::now();
+        let deadline = start + Duration::from_millis(150);
+        loop {
+            match read_pi_bridge_record_until(&mut reader, deadline, &|| Ok(())) {
+                Ok(record) => assert_eq!(record["type"], "event"),
+                Err(error) => {
+                    assert_eq!(error.kind(), io::ErrorKind::TimedOut);
+                    break;
+                }
+            }
+        }
+        assert!(start.elapsed() < Duration::from_secs(1));
+        drop(reader);
+        producer.join().unwrap();
     }
 
     #[test]
@@ -6291,7 +7457,7 @@ mod tests {
                 .unwrap();
         let mut pi = {
             let state = fixture.manager.lock_state().unwrap();
-            spawn_pi(
+            spawn_new_pi(
                 &state.database,
                 &agent,
                 SessionId(900),
@@ -6300,7 +7466,6 @@ mod tests {
                 &socket,
                 &session_uuid,
                 &pane_id,
-                PiTakeoverPolicy::PreserveExistingProcess,
             )
             .unwrap()
         };
