@@ -17,7 +17,7 @@ Startup restoration and archived-session resume register unavailable panes befor
 
 Recovery rejects missing, ambiguously owned, leaf-symlinked, outside-directory, or replaced history rather than creating a new transcript at the old path. Writer-lock opens reject symlinks/nonregular files and do not truncate existing contents.
 
-## Verification
+## Initial recovery-pass verification (`9ae1ebaf`)
 
 Executed against isolated fixture catalogs/processes, not the normal database or Pi histories:
 
@@ -41,13 +41,31 @@ git diff --check
 
 Packaging and packaged-helper RPC results are reported with the delivered bundle/build/source stamp, rather than inferred from these source tests. Building/replacing the bundle does not upgrade running processes.
 
+## Bounded owner-inspection follow-up
+
+The explicit bridge-unavailable fallback now runs `lsof` and all subsequent `ps` calls with a **single two-second inspection deadline**, cancellation checks between nonblocking reads/waits, a **16 KiB stdout cap per tool**, and at most **32 unique owner PIDs**. Stderr is discarded; tool output and command arguments are not logged. `lsof` avoids hostname/port-name lookups. Rejected inspections report only Session ID, elapsed time, and error kind, and never authorize force termination from partial results.
+
+Inspection utilities start in their own owned process groups. Error cleanup confirms retained child/wait ownership with `waitid(WNOWAIT)`, stops only that inspection group, and uses a separate bounded two-second reap budget. A leader is not reaped while descendants retain stdout, preserving the group identity needed for cleanup. Lost wait ownership or unconfirmed cleanup is logged and is not permission to signal an adopted/reused PID. This runner is for the fixed metadata tools, not a general supervisor for arbitrary daemons or descendants that escape their group.
+
+Owner-list parsing rejects reserved/self/out-of-range PIDs, invalid encoding, excessive owners, malformed UID/group/command records, and multi-process `ps` responses. Existing exact-user/one-Pi-process-group checks remain mandatory. Automatic recovery never enters this explicit-only fallback.
+
+Follow-up verification:
+
+- `cargo test -p axo-server -p axod --locked`: **74 server tests, 7 helper tests, 7 daemon/RPC tests passed**.
+- The entire **74-test server suite passed three additional consecutive runs**.
+- Both `//crates/axo-server:axo_server_tests` and `//crates/axod:rpc_tests` passed with cache disabled in Bazel's default and optimized configurations.
+- Eleven new tests cover exact output limits/floods; hung tools with open or closed stdout; cancellation; pre-spawn expiry/cancellation; one deadline across sequential tools; exited-leader/descendant-pipe cleanup; lost wait ownership; bounded PID/owner parsing; and cancellation through the real lock-inspection entrypoint.
+- Clippy passed with the same three pre-existing lint categories allowed above. Formatting and diff checks passed.
+
+The first Bazel attempt exposed an undeclared local Pi-extension dependency in existing launch fixtures. Tests now declare an inert extension runfile, and daemon RPC fixtures use an explicitly owned inert Pi executable rather than loading ambient account Pi configuration. These fixtures verify catalog/PTY/lifecycle behavior, **not real Pi extension or model behavior**. Extension resource paths are made absolute before crossing from Axod's cwd into a Workspace child.
+
 ## Remaining boundaries
 
 This pass is not proof that every lifecycle operation is nonblocking or that a daemon restart is transparent:
 
 - New Session admission still performs local filesystem work and process creation under the catalog mutex, but never performs takeover of an existing writer there.
 - Bootstrap recovery remains sequential before daemon startup completes. Releasing the catalog mutex does not itself provide parallel boot admission or a startup-wide deadline.
-- Explicit bridge-unavailable fallback still invokes system process-inspection utilities (`lsof`/`ps`). Those subprocesses are outside the catalog mutex but do not yet have their own cancellation/output/deadline contract.
+- Metadata inspection now has bounded running-tool/output/cancellation behavior, but kernel/filesystem process creation via `Command::spawn` cannot itself be preempted by this userspace deadline. Cleanup has a separate reap budget and reports uncertainty rather than claiming success when ownership or termination cannot be proved.
 - Shutdown fences recovery commits; an in-flight exec may still finish before its caller cleans up the rejected launch. This is not a durable completion receipt for arbitrary process crashes/power loss.
 - External filesystem mutation after the final history check is outside Axod's cooperating-writer lock protocol. Device/inode revalidation detects replacement during takeover, not arbitrary hostile changes at every subsequent instruction.
 - Packaged UI/physical input acceptance and normal live-service handoff remain separate. No real frontend/service was stopped or restarted during this pass.

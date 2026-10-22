@@ -21,8 +21,12 @@ rust_test(
     name = "rpc_tests",
     srcs = ["tests/rpc.rs"],
     edition = crate_edition(),
-    data = [":axod"],
-    env = {"AXOD_BINARY": "$(rootpath :axod)"},
+    data = [":axod", "//crates/axo-server:pi_extension_fixture", "testdata/pi-fixture.sh"],
+    env = {
+        "AXOD_BINARY": "$(rootpath :axod)",
+        "AXO_PI_EXTENSION_PATH": "$(rootpath //crates/axo-server:pi_extension_fixture)",
+        "AXO_TEST_PI_EXECUTABLE": "$(rootpath testdata/pi-fixture.sh)",
+    },
     timeout = "short",
     deps = all_crate_deps(normal = True, normal_dev = True),
 )

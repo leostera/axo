@@ -124,7 +124,16 @@ fn axod_binary() -> std::path::PathBuf {
 
 fn start_axod(directory: &std::path::Path, socket: &std::path::Path) -> ChildGuard {
     std::fs::create_dir_all(directory).unwrap();
+    let fixture_pi = std::env::var_os("AXO_TEST_PI_EXECUTABLE")
+        .map(std::path::PathBuf::from)
+        .unwrap_or_else(|| {
+            std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("testdata/pi-fixture.sh")
+        });
     let child = Command::new(axod_binary())
+        .env(
+            "AXO_PI_EXECUTABLE",
+            std::fs::canonicalize(fixture_pi).expect("declared Pi fixture executable"),
+        )
         .arg("--socket")
         .arg(socket)
         .arg("--server-dir")

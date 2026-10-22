@@ -16,6 +16,7 @@ use serde_json::json;
 
 mod credential;
 mod pairing;
+mod process_inspection;
 mod relay;
 mod session;
 mod workspace_access;

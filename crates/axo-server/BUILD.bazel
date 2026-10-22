@@ -3,9 +3,15 @@ load("@rules_rust//rust:defs.bzl", "rust_library", "rust_test")
 
 package(default_visibility = ["//visibility:public"])
 
+filegroup(
+    name = "pi_extension_fixture",
+    srcs = ["testdata/pi-extension.js"],
+    testonly = True,
+)
+
 rust_library(
     name = "axo_server",
-    srcs = ["src/lib.rs", "src/session.rs", "src/relay.rs", "src/credential.rs", "src/pairing.rs", "src/workspace_access.rs"],
+    srcs = ["src/lib.rs", "src/session.rs", "src/relay.rs", "src/credential.rs", "src/pairing.rs", "src/workspace_access.rs", "src/process_inspection.rs"],
     edition = crate_edition(),
     rustc_env_files = ["build_number.env"],
     stamp = 1,
@@ -14,7 +20,9 @@ rust_library(
 
 rust_test(
     name = "axo_server_tests",
-    srcs = ["src/lib.rs", "src/session.rs", "src/relay.rs", "src/credential.rs", "src/pairing.rs", "src/workspace_access.rs"],
+    srcs = ["src/lib.rs", "src/session.rs", "src/relay.rs", "src/credential.rs", "src/pairing.rs", "src/workspace_access.rs", "src/process_inspection.rs"],
+    data = [":pi_extension_fixture"],
+    env = {"AXO_PI_EXTENSION_PATH": "$(rootpath :pi_extension_fixture)"},
     edition = crate_edition(),
     rustc_env_files = ["build_number.env"],
     stamp = 1,

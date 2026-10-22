@@ -15,6 +15,7 @@ use std::sync::{Arc, Mutex, Weak};
 use std::thread::{self, JoinHandle};
 use std::time::{Duration, Instant};
 
+use crate::process_inspection;
 use crate::workspace_access::WorkspaceDirectoryAccess;
 use jsonrpc_core::{Error as RpcError, ErrorCode, IoHandler, Params};
 use rusqlite::{Connection, OptionalExtension, params};
@@ -40,6 +41,8 @@ const MAX_COMMAND_LINE_BYTES: usize = 4096;
 const MAX_COMMAND_ARGUMENTS: usize = 128;
 const PI_TAKEOVER_TIMEOUT: Duration = Duration::from_secs(10);
 const PI_BRIDGE_REQUEST_TIMEOUT: Duration = Duration::from_secs(2);
+const PI_OWNER_INSPECTION_TIMEOUT: Duration = Duration::from_secs(2);
+const MAX_PI_LOCK_OWNERS: usize = 32;
 const PI_RECOVERY_POLL_INTERVAL: Duration = Duration::from_millis(100);
 const PI_RESTART_GRACE_PERIOD: Duration = Duration::from_secs(2);
 const PI_TERMINATE_GRACE_PERIOD: Duration = Duration::from_secs(2);
@@ -4854,12 +4857,20 @@ fn pi_shutdown_attempt_from_lock(
     session_id: SessionId,
     session_file: &Path,
     error: io::Error,
+    check_current: &impl Fn() -> io::Result<()>,
 ) -> io::Result<PiShutdownAttempt> {
-    let process_id = pi_writer_process_id_from_lock(session_file)?;
+    let started = Instant::now();
+    let process_id = pi_writer_process_id_from_lock(session_file, check_current).inspect_err(|error| {
+        log::info!(
+            "event=session.pi_lock_inspection_rejected session_id={} elapsed_ms={} error_kind={:?}",
+            session_id.0, started.elapsed().as_millis(), error.kind()
+        );
+    })?;
     log::warn!(
-        "event=session.pi_process_verified_by_lock session_id={} pid={}",
+        "event=session.pi_process_verified_by_lock session_id={} pid={} elapsed_ms={}",
         session_id.0,
-        process_id.0
+        process_id.0,
+        started.elapsed().as_millis()
     );
     Ok(PiShutdownAttempt {
         process_id,
@@ -4880,12 +4891,19 @@ fn pi_bridge_unavailable_for_restart(error: &io::Error) -> bool {
     )
 }
 
-fn pi_writer_process_id_from_lock(session_file: &Path) -> io::Result<VerifiedPiProcessId> {
+fn pi_writer_process_id_from_lock(
+    session_file: &Path,
+    check_current: &impl Fn() -> io::Result<()>,
+) -> io::Result<VerifiedPiProcessId> {
+    let deadline = Instant::now() + PI_OWNER_INSPECTION_TIMEOUT;
     let lock_path = session_file.with_extension("jsonl.lock");
-    let output = Command::new("/usr/sbin/lsof")
-        .arg("-t")
-        .arg(&lock_path)
-        .output()?;
+    let output = process_inspection::run(
+        Command::new("/usr/sbin/lsof")
+            .args(["-n", "-P", "-t"])
+            .arg(&lock_path),
+        deadline,
+        check_current,
+    )?;
     if !output.status.success() {
         return Err(io::Error::new(
             io::ErrorKind::NotFound,
@@ -4893,29 +4911,12 @@ fn pi_writer_process_id_from_lock(session_file: &Path) -> io::Result<VerifiedPiP
         ));
     }
 
-    let process_ids = String::from_utf8(output.stdout)
-        .map_err(io::Error::other)?
-        .lines()
-        .map(|line| {
-            line.parse::<libc::pid_t>().map_err(|_| {
-                io::Error::new(
-                    io::ErrorKind::InvalidData,
-                    "lsof returned an invalid process ID",
-                )
-            })
-        })
-        .collect::<io::Result<HashSet<_>>>()?;
-    if process_ids.is_empty() {
-        return Err(io::Error::new(
-            io::ErrorKind::NotFound,
-            "no process owns the Pi transcript lock",
-        ));
-    }
+    let process_ids = parse_pi_lock_process_ids(&output.stdout)?;
 
     let mut owners = Vec::with_capacity(process_ids.len());
     for process_id in process_ids {
-        let output = Command::new("/bin/ps")
-            .args([
+        let output = process_inspection::run(
+            Command::new("/bin/ps").args([
                 "-p",
                 &process_id.to_string(),
                 "-o",
@@ -4924,40 +4925,26 @@ fn pi_writer_process_id_from_lock(session_file: &Path) -> io::Result<VerifiedPiP
                 "pgid=",
                 "-o",
                 "comm=",
-            ])
-            .output()?;
+            ]),
+            deadline,
+            check_current,
+        )?;
         if !output.status.success() {
             return Err(io::Error::new(
                 io::ErrorKind::NotFound,
                 "Pi transcript lock owner exited during verification",
             ));
         }
-        let output = String::from_utf8(output.stdout).map_err(io::Error::other)?;
-        let mut fields = output.split_whitespace();
-        let user_id = fields
-            .next()
-            .and_then(|value| value.parse::<libc::uid_t>().ok())
-            .ok_or_else(|| io::Error::new(io::ErrorKind::InvalidData, "Pi owner UID is invalid"))?;
-        let process_group_id = fields
-            .next()
-            .and_then(|value| value.parse::<libc::pid_t>().ok())
-            .ok_or_else(|| {
-                io::Error::new(
-                    io::ErrorKind::InvalidData,
-                    "Pi owner process group is invalid",
-                )
-            })?;
-        let command = fields.next().ok_or_else(|| {
-            io::Error::new(io::ErrorKind::InvalidData, "Pi owner command is missing")
-        })?;
-        owners.push(PiLockOwner {
-            process_id,
-            user_id,
-            process_group_id,
-            command: command.to_owned(),
-        });
+        owners.push(parse_pi_lock_owner(process_id, &output.stdout)?);
     }
 
+    check_current()?;
+    if Instant::now() >= deadline {
+        return Err(io::Error::new(
+            io::ErrorKind::TimedOut,
+            "Pi owner inspection timed out",
+        ));
+    }
     let process_id = verified_pi_lock_owner(&owners, unsafe { libc::getuid() })?;
     // SAFETY: getpgid inspects the process that lsof and ps identified as this user's Pi lock owner.
     if unsafe { libc::getpgid(process_id.0) } != process_id.0 {
@@ -4977,6 +4964,90 @@ fn pi_writer_process_id_from_lock(session_file: &Path) -> io::Result<VerifiedPiP
         }
         Err(error) => Err(error),
     }
+}
+
+fn parse_pi_lock_process_ids(output: &[u8]) -> io::Result<HashSet<libc::pid_t>> {
+    if output.len() > process_inspection::MAX_INSPECTION_OUTPUT_BYTES {
+        return Err(io::Error::new(
+            io::ErrorKind::InvalidData,
+            "Pi owner list exceeds its size limit",
+        ));
+    }
+    let output = std::str::from_utf8(output)
+        .map_err(|_| io::Error::new(io::ErrorKind::InvalidData, "Pi owner list is not UTF-8"))?;
+    let mut process_ids = HashSet::new();
+    for line in output.lines() {
+        let process_id = line
+            .parse::<libc::pid_t>()
+            .ok()
+            .filter(|pid| *pid > 1 && *pid != std::process::id() as libc::pid_t)
+            .ok_or_else(|| {
+                io::Error::new(
+                    io::ErrorKind::InvalidData,
+                    "lsof returned an invalid process ID",
+                )
+            })?;
+        process_ids.insert(process_id);
+        if process_ids.len() > MAX_PI_LOCK_OWNERS {
+            return Err(io::Error::new(
+                io::ErrorKind::InvalidData,
+                "Pi transcript has too many lock owners",
+            ));
+        }
+    }
+    if process_ids.is_empty() {
+        return Err(io::Error::new(
+            io::ErrorKind::NotFound,
+            "no process owns the Pi transcript lock",
+        ));
+    }
+    Ok(process_ids)
+}
+
+fn parse_pi_lock_owner(process_id: libc::pid_t, output: &[u8]) -> io::Result<PiLockOwner> {
+    if output.len() > process_inspection::MAX_INSPECTION_OUTPUT_BYTES || output.contains(&0) {
+        return Err(io::Error::new(
+            io::ErrorKind::InvalidData,
+            "Pi owner record is invalid",
+        ));
+    }
+    let output = std::str::from_utf8(output)
+        .map_err(|_| io::Error::new(io::ErrorKind::InvalidData, "Pi owner record is not UTF-8"))?
+        .trim();
+    if output.lines().count() != 1 {
+        return Err(io::Error::new(
+            io::ErrorKind::InvalidData,
+            "Pi owner record must contain exactly one process",
+        ));
+    }
+    let mut fields = output.split_whitespace();
+    let user_id = fields
+        .next()
+        .and_then(|value| value.parse::<libc::uid_t>().ok())
+        .ok_or_else(|| io::Error::new(io::ErrorKind::InvalidData, "Pi owner UID is invalid"))?;
+    let process_group_id = fields
+        .next()
+        .and_then(|value| value.parse::<libc::pid_t>().ok())
+        .filter(|pid| *pid > 1)
+        .ok_or_else(|| {
+            io::Error::new(
+                io::ErrorKind::InvalidData,
+                "Pi owner process group is invalid",
+            )
+        })?;
+    let command = fields.collect::<Vec<_>>().join(" ");
+    if command.is_empty() {
+        return Err(io::Error::new(
+            io::ErrorKind::InvalidData,
+            "Pi owner command is missing",
+        ));
+    }
+    Ok(PiLockOwner {
+        process_id,
+        user_id,
+        process_group_id,
+        command,
+    })
 }
 
 fn verified_pi_lock_owner(
@@ -5146,7 +5217,12 @@ impl PiLaunchRequest {
                                 && pi_bridge_unavailable_for_restart(&error) =>
                         {
                             check_current()?;
-                            pi_shutdown_attempt_from_lock(*session_id, session_file, error)?
+                            pi_shutdown_attempt_from_lock(
+                                *session_id,
+                                session_file,
+                                error,
+                                check_current,
+                            )?
                         }
                         Err(error) => return Err(error),
                     },
@@ -5159,6 +5235,7 @@ impl PiLaunchRequest {
                                 io::ErrorKind::ConnectionRefused,
                                 "Pi bridge credential is unavailable",
                             ),
+                            check_current,
                         )?
                     }
                     None => {
@@ -5412,7 +5489,7 @@ fn resolve_pi_extension_path() -> io::Result<PathBuf> {
     candidates.push(
         PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../../packages/pi-axo/dist/index.js"),
     );
-    candidates
+    let path = candidates
         .into_iter()
         .find(|path| path.is_file())
         .ok_or_else(|| {
@@ -5420,7 +5497,10 @@ fn resolve_pi_extension_path() -> io::Result<PathBuf> {
                 io::ErrorKind::NotFound,
                 "bundled Pi Axo extension was not found",
             )
-        })
+        })?;
+    // Pi runs in the Workspace, not Axod's cwd. Resolve relative resource
+    // overrides before handing them across that process boundary.
+    fs::canonicalize(path)
 }
 
 fn is_executable(path: &Path) -> bool {
@@ -7784,6 +7864,124 @@ mod tests {
         ] {
             assert!(VerifiedPiProcessId::parse(&value).is_err());
         }
+    }
+
+    #[test]
+    fn pi_lock_owner_pid_parser_is_bounded_and_rejects_unsafe_values() {
+        let ids = (0..MAX_PI_LOCK_OWNERS)
+            .map(|index| format!("{}\n", 1_000_000 + index))
+            .collect::<String>();
+        assert_eq!(
+            parse_pi_lock_process_ids(ids.as_bytes()).unwrap().len(),
+            MAX_PI_LOCK_OWNERS
+        );
+        assert_eq!(
+            parse_pi_lock_process_ids(b"2000000\n2000000\n")
+                .unwrap()
+                .len(),
+            1
+        );
+        let too_many = format!("{ids}2000000\n");
+        assert_eq!(
+            parse_pi_lock_process_ids(too_many.as_bytes())
+                .unwrap_err()
+                .kind(),
+            io::ErrorKind::InvalidData
+        );
+        let self_id = std::process::id().to_string();
+        for input in [
+            b"0".as_slice(),
+            b"1",
+            b"-2",
+            b"2147483648",
+            b"pid",
+            b"2\n\n3",
+            b"2\0",
+            &[0xff],
+            self_id.as_bytes(),
+        ] {
+            assert_eq!(
+                parse_pi_lock_process_ids(input).unwrap_err().kind(),
+                io::ErrorKind::InvalidData
+            );
+        }
+        assert_eq!(
+            parse_pi_lock_process_ids(b"").unwrap_err().kind(),
+            io::ErrorKind::NotFound
+        );
+        assert_eq!(
+            parse_pi_lock_process_ids(&vec![
+                b'2';
+                process_inspection::MAX_INSPECTION_OUTPUT_BYTES + 1
+            ])
+            .unwrap_err()
+            .kind(),
+            io::ErrorKind::InvalidData
+        );
+    }
+
+    #[test]
+    fn pi_lock_owner_record_parser_requires_one_complete_process_record() {
+        let owner = parse_pi_lock_owner(123, b"  501  123 /fixture/My Tools/pi\n").unwrap();
+        assert_eq!(owner.user_id, 501);
+        assert_eq!(owner.process_group_id, 123);
+        assert_eq!(
+            Path::new(&owner.command).file_name(),
+            Some(OsStr::new("pi"))
+        );
+        for input in [
+            b"".as_slice(),
+            b"501",
+            b"501 123",
+            b"x 123 pi",
+            b"501 -1 pi",
+            b"501 0 pi",
+            b"501 1 pi",
+            b"501 123 pi\n501 123 other",
+            b"501 123 pi\0",
+            &[0xff],
+        ] {
+            assert_eq!(
+                parse_pi_lock_owner(123, input).unwrap_err().kind(),
+                io::ErrorKind::InvalidData
+            );
+        }
+        assert!(
+            parse_pi_lock_owner(
+                123,
+                &vec![b' '; process_inspection::MAX_INSPECTION_OUTPUT_BYTES + 1]
+            )
+            .is_err()
+        );
+    }
+
+    #[test]
+    fn pi_lock_owner_inspection_cancellation_cannot_authorize_takeover() {
+        let fixture = PiRecoveryFixture::new();
+        let lock = acquire_pi_writer_lock(&fixture.file).unwrap();
+        let checks = AtomicUsize::new(0);
+        let error = pi_writer_process_id_from_lock(&fixture.file, &|| {
+            if checks.fetch_add(1, Ordering::Relaxed) == 0 {
+                Ok(())
+            } else {
+                Err(io::Error::from(io::ErrorKind::Interrupted))
+            }
+        })
+        .unwrap_err();
+        assert_eq!(error.kind(), io::ErrorKind::Interrupted);
+        assert!(checks.load(Ordering::Relaxed) >= 2);
+        assert_eq!(
+            fixture
+                .lifecycle
+                .manager
+                .lock_state()
+                .unwrap()
+                .unavailable_pi_shells[&fixture.shell_id]
+                .recovery_id,
+            None
+        );
+        drop(lock);
+        fixture.assert_preserved();
     }
 
     #[test]
