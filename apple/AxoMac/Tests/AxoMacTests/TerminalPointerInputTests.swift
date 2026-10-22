@@ -40,6 +40,82 @@ final class TerminalPointerInputTests: XCTestCase {
       TerminalMouseInput.scrollFlags(isPrecise: true, momentumPhase: .ended), 9)
   }
 
+  func testPreciseScrollDeltasMatchGhosttyAppMultiplier() {
+    XCTAssertEqual(TerminalMouseInput.scrollDeviceMultiplier(isPrecise: true), 2.0)
+    XCTAssertEqual(TerminalMouseInput.scrollDeviceMultiplier(isPrecise: false), 1.0)
+  }
+
+  func testScrollbarDocumentHeightCoversScrollbackAndViewportPadding() {
+    let state = TerminalScrollbarState(total: 1_000, offset: 960, length: 40)
+    XCTAssertEqual(
+      TerminalScrollbarGeometry.documentHeight(for: state, cellHeight: 16, contentHeight: 650),
+      16_010)
+    XCTAssertEqual(
+      TerminalScrollbarGeometry.documentHeight(for: nil, cellHeight: 16, contentHeight: 650), 650)
+    XCTAssertEqual(
+      TerminalScrollbarGeometry.documentHeight(for: state, cellHeight: 0, contentHeight: 650), 650)
+  }
+
+  func testScrollbarOriginInvertsGhosttyTopOffsetIntoAppKitBottomOrigin() {
+    XCTAssertEqual(
+      TerminalScrollbarGeometry.scrollOrigin(
+        for: TerminalScrollbarState(total: 1_000, offset: 960, length: 40), cellHeight: 16),
+      0)
+    XCTAssertEqual(
+      TerminalScrollbarGeometry.scrollOrigin(
+        for: TerminalScrollbarState(total: 1_000, offset: 0, length: 40), cellHeight: 16),
+      15_360)
+    XCTAssertEqual(
+      TerminalScrollbarGeometry.scrollOrigin(
+        for: TerminalScrollbarState(total: 10, offset: 8, length: 40), cellHeight: 16),
+      0)
+  }
+
+  func testScrollbarDragMapsBackToTopOriginRow() {
+    let state = TerminalScrollbarState(total: 1_000, offset: 300, length: 40)
+    let documentHeight = TerminalScrollbarGeometry.documentHeight(
+      for: state, cellHeight: 16, contentHeight: 640)
+    let origin = TerminalScrollbarGeometry.scrollOrigin(for: state, cellHeight: 16)
+    XCTAssertEqual(
+      TerminalScrollbarGeometry.row(
+        documentHeight: documentHeight, visibleOriginY: origin, visibleHeight: 640,
+        cellHeight: 16),
+      300)
+    XCTAssertEqual(
+      TerminalScrollbarGeometry.row(
+        documentHeight: documentHeight, visibleOriginY: documentHeight, visibleHeight: 640,
+        cellHeight: 16),
+      0)
+    XCTAssertNil(
+      TerminalScrollbarGeometry.row(
+        documentHeight: 640, visibleOriginY: 0, visibleHeight: 640, cellHeight: 0))
+  }
+
+  func testScrollbarConfigFollowsGhosttyRules() {
+    XCTAssertTrue(TerminalScrollbarConfig.showsScrollbar(configValue: "system"))
+    XCTAssertTrue(TerminalScrollbarConfig.showsScrollbar(configValue: nil))
+    XCTAssertFalse(TerminalScrollbarConfig.showsScrollbar(configValue: "never"))
+    XCTAssertTrue(TerminalScrollbarConfig.isDarkBackground(red: 0x28, green: 0x2c, blue: 0x34))
+    XCTAssertFalse(TerminalScrollbarConfig.isDarkBackground(red: 0xff, green: 0xff, blue: 0xff))
+  }
+
+  func testScrollbarOverlayOnlyHitTestsItsScroller() {
+    let host = NSView(frame: CGRect(x: 0, y: 0, width: 400, height: 300))
+    let overlay = TerminalScrollbarOverlayView(frame: host.bounds)
+    host.addSubview(overlay)
+    overlay.update(
+      state: TerminalScrollbarState(total: 200, offset: 100, length: 20), cellHeight: 15)
+    overlay.layoutSubtreeIfNeeded()
+    overlay.tile()
+
+    XCTAssertNil(overlay.hitTest(CGPoint(x: 100, y: 150)), "terminal area must reach the surface")
+    let scroller = try? XCTUnwrap(overlay.verticalScroller)
+    if let scroller {
+      let point = host.convert(CGPoint(x: scroller.bounds.midX, y: scroller.bounds.midY), from: scroller)
+      XCTAssertNotNil(overlay.hitTest(point))
+    }
+  }
+
   func testOnlyActiveWindowFocusTransfersConsumeLeftClick() {
     XCTAssertTrue(
       TerminalMouseInput.shouldConsumeFocusOnlyClick(

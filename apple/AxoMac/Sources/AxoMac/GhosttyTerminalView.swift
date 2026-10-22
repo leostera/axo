@@ -74,6 +74,8 @@ struct GhosttyTerminalView: NSViewRepresentable {
 @MainActor
 final class GhosttySurfaceHostNSView: NSView {
   private var terminalView: NSView?
+  // Created only for Ghostty surfaces; it mirrors Ghostty.app's native overlay scrollbar.
+  private var scrollbarOverlay: TerminalScrollbarOverlayView?
 
   override var wantsDefaultClipping: Bool { true }
 
@@ -91,6 +93,40 @@ final class GhosttySurfaceHostNSView: NSView {
     view.frame = bounds
     view.autoresizingMask = [.width, .height]
     addSubview(view)
+    if let surfaceView = view as? GhosttySurfaceNSView {
+      attachScrollbar(to: surfaceView)
+    }
+  }
+
+  private func attachScrollbar(to surfaceView: GhosttySurfaceNSView) {
+    let overlay = scrollbarOverlay ?? TerminalScrollbarOverlayView(frame: bounds)
+    scrollbarOverlay = overlay
+    overlay.frame = bounds
+    overlay.autoresizingMask = [.width, .height]
+    overlay.wheelTarget = surfaceView
+    overlay.onScrollToRow = { [weak surfaceView] row in surfaceView?.scrollToRow(row) }
+    if overlay.superview !== self {
+      addSubview(overlay, positioned: .above, relativeTo: surfaceView)
+    }
+    surfaceView.onScrollbarChange = { [weak self, weak surfaceView] in
+      guard let self, let surfaceView, self.terminalView === surfaceView else { return }
+      self.synchronizeScrollbar(with: surfaceView)
+    }
+    synchronizeScrollbar(with: surfaceView)
+  }
+
+  private func synchronizeScrollbar(with surfaceView: GhosttySurfaceNSView) {
+    guard let scrollbarOverlay else { return }
+    scrollbarOverlay.isHidden = !surfaceView.showsScrollbar
+    scrollbarOverlay.setAppearance(darkBackground: surfaceView.hasDarkBackground)
+    scrollbarOverlay.update(state: surfaceView.scrollbarState, cellHeight: surfaceView.cellHeight)
+  }
+
+  private func removeScrollbar() {
+    scrollbarOverlay?.removeFromSuperview()
+    scrollbarOverlay?.onScrollToRow = nil
+    scrollbarOverlay?.wheelTarget = nil
+    scrollbarOverlay = nil
   }
 
   func detachSurface() {
@@ -101,6 +137,7 @@ final class GhosttySurfaceHostNSView: NSView {
   fileprivate func releaseSurface(_ view: NSView) {
     guard terminalView === view else { return }
     terminalView = nil
+    removeScrollbar()
     if view.superview === self {
       view.removeFromSuperview()
     }
@@ -110,6 +147,7 @@ final class GhosttySurfaceHostNSView: NSView {
     super.layout()
     guard let terminalView, terminalView.superview === self else { return }
     terminalView.frame = bounds
+    scrollbarOverlay?.frame = bounds
   }
 }
 
@@ -126,6 +164,8 @@ final class GhosttySurfaceNSView: NSView, @preconcurrency NSTextInputClient,
   var onStatusChange: ((String) -> Void)?
   var onSplit: ((TerminalSplitDirection) -> Void)?
   var onClose: (() -> Void)?
+  var onScrollbarChange: (() -> Void)?
+  private(set) var scrollbarState: TerminalScrollbarState?
 
   private weak var runtime: GhosttyRuntime?
   private var markedText = NSMutableAttributedString()
@@ -368,9 +408,35 @@ final class GhosttySurfaceNSView: NSView, @preconcurrency NSTextInputClient,
     ghostty_surface_mouse_pos(surface, -1, -1, Self.ghosttyMods(event.modifierFlags))
   }
 
+  /// Ghostty's cell height in points, used to map scrollback rows onto the overlay scroller.
+  var cellHeight: CGFloat {
+    guard let surface else { return 0 }
+    let backingScale = max(window?.backingScaleFactor ?? NSScreen.main?.backingScaleFactor ?? 1, 1)
+    return CGFloat(ghostty_surface_size(surface).cell_height_px) / backingScale
+  }
+
+  var showsScrollbar: Bool { runtime?.showsScrollbar ?? true }
+  var hasDarkBackground: Bool { runtime?.hasDarkBackground ?? true }
+
+  func updateScrollbar(_ state: TerminalScrollbarState?) {
+    scrollbarState = state
+    onScrollbarChange?()
+  }
+
+  func cellSizeDidChange() {
+    onScrollbarChange?()
+  }
+
+  func scrollToRow(_ row: Int) {
+    guard let surface, row >= 0 else { return }
+    let action = "scroll_to_row:\(row)"
+    _ = action.withCString { ghostty_surface_binding_action(surface, $0, UInt(action.utf8.count)) }
+  }
+
   override func scrollWheel(with event: NSEvent) {
     guard let surface else { return }
-    let deviceMultiplier = event.hasPreciseScrollingDeltas ? 1.5 : 1.0
+    let deviceMultiplier = TerminalMouseInput.scrollDeviceMultiplier(
+      isPrecise: event.hasPreciseScrollingDeltas)
     let sensitivity = runtime?.scrollSensitivity ?? TerminalScrollSensitivity.defaultMultiplier
     let multiplier = sensitivity * deviceMultiplier
     ghostty_surface_mouse_scroll(

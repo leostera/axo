@@ -17,6 +17,7 @@ check_no_axo_frontend
 all_test_cases=(
   testKittyKeyboardNegotiationEncodesReturnAndShiftEnter
   testFocusOnlyClickIsNotReportedToTerminalMouseMode
+  testTerminalScrollWheelReachesMouseReportingChild
   testTerminalContextMenuRoutesSplitsAndCloseThroughAxo
   testSessionSidebarContextMenuRenamesAndArchives
   testWorkspaceNameFieldReceivesPasteShortcut

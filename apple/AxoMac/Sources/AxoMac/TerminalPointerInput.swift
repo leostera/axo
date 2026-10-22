@@ -20,6 +20,11 @@ enum TerminalMouseInput {
     }
   }
 
+  /// Ghostty.app doubles precise (trackpad/Magic Mouse) deltas; discrete wheel ticks pass through.
+  static func scrollDeviceMultiplier(isPrecise: Bool) -> Double {
+    isPrecise ? 2.0 : 1.0
+  }
+
   static func scrollFlags(
     isPrecise: Bool,
     momentumPhase: NSEvent.Phase

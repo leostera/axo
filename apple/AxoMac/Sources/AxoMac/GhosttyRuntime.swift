@@ -9,6 +9,8 @@ import QuartzCore
 final class GhosttyRuntime: ObservableObject {
   @Published private(set) var errorMessage: String?
   @Published private(set) var scrollSensitivity: Double
+  private(set) var showsScrollbar = true
+  private(set) var hasDarkBackground = true
 
   private struct SurfaceEntry {
     let shell: TerminalShell
@@ -304,6 +306,7 @@ final class GhosttyRuntime: ObservableObject {
     ghostty_config_load_default_files(config)
     ghostty_config_load_recursive_files(config)
     ghostty_config_finalize(config)
+    readScrollbarConfig(from: config)
 
     var runtimeConfig = ghostty_runtime_config_s(
       userdata: Unmanaged.passUnretained(self).toOpaque(),
@@ -357,6 +360,23 @@ final class GhosttyRuntime: ObservableObject {
     self.app = app
     ghostty_app_set_focus(app, NSApp.isActive)
     observeApplicationState()
+  }
+
+  private func readScrollbarConfig(from config: ghostty_config_t) {
+    var scrollbarValue: UnsafePointer<CChar>?
+    let scrollbarKey = "scrollbar"
+    if ghostty_config_get(config, &scrollbarValue, scrollbarKey, UInt(scrollbarKey.utf8.count)),
+      let scrollbarValue
+    {
+      showsScrollbar = TerminalScrollbarConfig.showsScrollbar(
+        configValue: String(cString: scrollbarValue))
+    }
+    var background = ghostty_config_color_s()
+    let backgroundKey = "background"
+    if ghostty_config_get(config, &background, backgroundKey, UInt(backgroundKey.utf8.count)) {
+      hasDarkBackground = TerminalScrollbarConfig.isDarkBackground(
+        red: background.r, green: background.g, blue: background.b)
+    }
   }
 
   private func configureGhosttyResources() {
@@ -632,6 +652,15 @@ final class GhosttyRuntime: ObservableObject {
     switch action.tag {
     case GHOSTTY_ACTION_MOUSE_SHAPE:
       view.setCursorShape(action.action.mouse_shape)
+      return true
+    case GHOSTTY_ACTION_SCROLLBAR:
+      let scrollbar = action.action.scrollbar
+      view.updateScrollbar(
+        TerminalScrollbarState(
+          total: scrollbar.total, offset: scrollbar.offset, length: scrollbar.len))
+      return true
+    case GHOSTTY_ACTION_CELL_SIZE:
+      view.cellSizeDidChange()
       return true
     case GHOSTTY_ACTION_MOUSE_VISIBILITY:
       switch action.action.mouse_visibility {

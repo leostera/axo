@@ -186,6 +186,59 @@ final class AxoVisualUITests: XCTestCase {
     XCTAssertTrue(String(decoding: try Data(contentsOf: reportURL), as: UTF8.self).contains("M"))
   }
 
+  func testTerminalScrollWheelReachesMouseReportingChild() async throws {
+    try assertNoAxoUITestAppIsAlreadyRunning()
+    let app = XCUIApplication(bundleIdentifier: "dev.leostera.axo.ui-tests")
+    let fixture = try UITestFixture(app: app)
+    defer { fixture.stop() }
+    let readyURL = fixture.root.appendingPathComponent("scroll-reporting-ready")
+    let reportURL = fixture.root.appendingPathComponent("scroll-reporting-event")
+    let scriptURL = fixture.root.appendingPathComponent("scroll-reporting-probe.py")
+    let script = #"""
+      import os, select, sys, termios, time, tty
+      ready_path = \#(try pythonStringLiteral(readyURL.path))
+      report_path = \#(try pythonStringLiteral(reportURL.path))
+      fd = sys.stdin.fileno()
+      previous_terminal = termios.tcgetattr(fd)
+      tty.setraw(fd)
+      try:
+          sys.stdout.write(chr(27) + "[?1000h")
+          sys.stdout.flush()
+          open(ready_path, "wb").close()
+          deadline = time.monotonic() + 10
+          data = bytearray()
+          report_prefix = bytes([27, 91, 77])
+          while time.monotonic() < deadline:
+              readable, _, _ = select.select([fd], [], [], 0.05)
+              if readable:
+                  data.extend(os.read(fd, 1))
+                  if report_prefix in data and len(data) >= data.index(report_prefix) + 6:
+                      with open(report_path, "wb") as report:
+                          report.write(data)
+                      break
+      finally:
+          sys.stdout.write(chr(27) + "[?1000l")
+          sys.stdout.flush()
+          termios.tcsetattr(fd, termios.TCSANOW, previous_terminal)
+      """#
+    try script.write(to: scriptURL, atomically: true, encoding: .utf8)
+    fixture.launchApp()
+    try await fixture.waitForWindow()
+    try await fixture.waitForTerminalReady()
+    try await fixture.typeText("python3 '\(scriptURL.path)'\n")
+    _ = try await waitForFile(at: readyURL, timeout: 5)
+    try await Task.sleep(for: .milliseconds(300))
+
+    let terminal = fixture.terminalWindow.coordinate(
+      withNormalizedOffset: CGVector(dx: 0.5, dy: 0.5))
+    terminal.scroll(byDeltaX: 0, deltaY: 64)
+    _ = try await waitForFile(at: reportURL, timeout: 5)
+    let report = try Data(contentsOf: reportURL)
+    XCTAssertGreaterThanOrEqual(report.count, 6)
+    XCTAssertEqual(Array(report.prefix(3)), [0x1b, 0x5b, 0x4d])
+    XCTAssertTrue([96, 97].contains(Int(report[3])), "Expected a wheel-up or wheel-down report")
+  }
+
   func testTerminalContextMenuRoutesSplitsAndCloseThroughAxo() async throws {
     try assertNoAxoUITestAppIsAlreadyRunning()
     let app = XCUIApplication(bundleIdentifier: "dev.leostera.axo.ui-tests")
