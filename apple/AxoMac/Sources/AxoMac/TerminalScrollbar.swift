@@ -173,3 +173,42 @@ final class TerminalScrollbarOverlayView: NSScrollView {
     onScrollToRow?(row)
   }
 }
+
+/// Re-reports a surface's window state when it changes, matching Ghostty.app: occlusion follows
+/// `didChangeOcclusionState` (so hidden windows stop rendering and restored ones resume), and
+/// focus follows key-window changes.
+@MainActor
+final class TerminalWindowStateObserver {
+  private var tokens: [NSObjectProtocol] = []
+  private weak var window: NSWindow?
+
+  func observe(
+    _ window: NSWindow?,
+    onOcclusionChange: @escaping () -> Void,
+    onKeyChange: @escaping () -> Void
+  ) {
+    guard window !== self.window || tokens.isEmpty else { return }
+    stop()
+    self.window = window
+    guard let window else { return }
+    let center = NotificationCenter.default
+    tokens.append(
+      center.addObserver(
+        forName: NSWindow.didChangeOcclusionStateNotification, object: window, queue: .main
+      ) { _ in MainActor.assumeIsolated(onOcclusionChange) })
+    for name in [NSWindow.didBecomeKeyNotification, NSWindow.didResignKeyNotification] {
+      tokens.append(
+        center.addObserver(forName: name, object: window, queue: .main) { _ in
+          MainActor.assumeIsolated(onKeyChange)
+        })
+    }
+  }
+
+  func stop() {
+    tokens.forEach(NotificationCenter.default.removeObserver)
+    tokens.removeAll()
+    window = nil
+  }
+
+  var observedWindow: NSWindow? { window }
+}

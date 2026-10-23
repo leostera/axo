@@ -179,6 +179,7 @@ final class GhosttySurfaceNSView: NSView, @preconcurrency NSTextInputClient,
   var onHoveredLinkChange: (() -> Void)?
   private(set) var scrollbarState: TerminalScrollbarState?
   private(set) var hoveredLink: String?
+  private let windowStateObserver = TerminalWindowStateObserver()
 
   func updateHoveredLink(_ link: String?) {
     guard hoveredLink != link else { return }
@@ -251,6 +252,10 @@ final class GhosttySurfaceNSView: NSView, @preconcurrency NSTextInputClient,
     updateSurfaceScaleAndSize()
     updateSurfaceFocus()
     updateSurfaceOcclusion()
+    windowStateObserver.observe(
+      window,
+      onOcclusionChange: { [weak self] in self?.updateSurfaceOcclusion() },
+      onKeyChange: { [weak self] in self?.updateSurfaceFocus() })
     if shouldRequestFocus {
       requestFocus()
     }
