@@ -38,8 +38,8 @@ Status: **match** = equivalent today; **port** = gap to implement (goal task in 
 | Ghostty behavior | Status |
 | --- | --- |
 | Wakeup → `ghostty_app_tick` on main | match |
-| Occlusion updated on `NSWindow.didChangeOcclusionState` | **port**: Axo sets it only on `viewDidMoveToWindow`, so hidden windows keep rendering and restored windows can stay occluded [rendering-parity] |
-| Focus updated on key-window and app-active changes | match (app active); verify key-window changes [rendering-parity] |
+| Occlusion updated on `NSWindow.didChangeOcclusionState` | match since `3fa34e8` |
+| Focus updated on key-window and app-active changes | match since `3fa34e8` |
 | Render speed vs Ghostty.app | **measure** [rendering-parity] |
 
 ## Ghostty actions (`action_cb`)
@@ -49,12 +49,12 @@ Axo handles today: `MOUSE_SHAPE`, `MOUSE_VISIBILITY`, `SCROLLBAR`, `CELL_SIZE`. 
 
 | Action | Status |
 | --- | --- |
-| `MOUSE_OVER_LINK`, `OPEN_URL` | **port** with Ghostty `UntrustedURL` rules [links] |
+| `MOUSE_OVER_LINK`, `OPEN_URL` | match since `924ffd7` (Ghostty `UntrustedURL` rules, hover banner) |
 | `START_SEARCH`, `END_SEARCH`, `SEARCH_TOTAL`, `SEARCH_SELECTED` | **port** [find-search] |
-| `PROGRESS_REPORT`, `RING_BELL`, `DESKTOP_NOTIFICATION`, `COMMAND_FINISHED` | **port**, gated by Ghostty config, feeding Axo attention status [attention-signals] |
-| `SECURE_INPUT`, `KEY_SEQUENCE`, `KEY_TABLE`, `READONLY`, `RENDERER_HEALTH`, `SHOW_CHILD_EXITED` | **port** [surface-state] |
-| `SET_TITLE`, `PWD` | **port** as presentation hints only; never rename sessions [surface-state] |
-| `COLOR_CHANGE`, `CONFIG_CHANGE`, `RELOAD_CONFIG` | **port** scrollbar appearance/config refresh [surface-state] |
+| `PROGRESS_REPORT`, `RING_BELL`, `DESKTOP_NOTIFICATION`, `COMMAND_FINISHED` | match since `9322e32`; bell `audio`/`title`/`border` features unsupported (titles are sidebar-owned, panes have no bell border) |
+| `SECURE_INPUT`, `KEY_SEQUENCE`, `KEY_TABLE`, `READONLY`, `RENDERER_HEALTH`, `SHOW_CHILD_EXITED` | match since `9322e32` (pane status badge; secure event input only while focused) |
+| `SET_TITLE`, `PWD` | match since `9322e32`: stored as presentation-only state; never rename sessions |
+| `COLOR_CHANGE`, `CONFIG_CHANGE`, `RELOAD_CONFIG` | unsupported for now: Axo loads Ghostty config once at launch; changes apply after relaunch (owner decision pending) |
 | `SELECTION_CHANGED`, `UNDO`, `REDO` | match: selection is read on demand; undo/redo route through Axo commands |
 | `COPY_TITLE_TO_CLIPBOARD` | unsupported: title is not a terminal-owned value in Axo |
 | `NEW_SPLIT`, `GOTO_SPLIT`, `RESIZE_SPLIT`, `EQUALIZE_SPLITS`, `TOGGLE_SPLIT_ZOOM` | unsupported: Axo splits are Axod-owned panes; Ghostty keybinds must not create surfaces |
