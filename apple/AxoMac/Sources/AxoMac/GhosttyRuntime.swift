@@ -1,5 +1,6 @@
 import AppKit
 import AxoRPC
+import Carbon
 import Darwin
 import Foundation
 import GhosttyKit
@@ -10,6 +11,10 @@ final class GhosttyRuntime: ObservableObject {
   @Published private(set) var errorMessage: String?
   @Published private(set) var scrollSensitivity: Double
   private(set) var showsScrollbar = true
+  /// Shells whose bell or finished command has not yet been seen by focusing the pane.
+  @Published private(set) var attentionShellIDs: Set<Int64> = []
+  private(set) var attentionConfig = TerminalAttentionConfig()
+  private var secureInputEnabled = false
   private(set) var hasDarkBackground = true
 
   private struct SurfaceEntry {
@@ -86,6 +91,25 @@ final class GhosttyRuntime: ObservableObject {
 
   func setFocusedShellID(_ shellID: Int64?) {
     focusedShellID = shellID
+    if let shellID { attentionShellIDs.remove(shellID) }
+    refreshSecureInput()
+  }
+
+  /// Ghostty.app enables macOS secure event input only while a surface that requested it is
+  /// the focused key responder. Calls stay balanced through `secureInputEnabled`.
+  func refreshSecureInput() {
+    let wanted = terminalSurfaces.values.contains { $0.view.surfaceStatus.secureInput && $0.view.isFocusedTerminal }
+    guard wanted != secureInputEnabled else { return }
+    secureInputEnabled = wanted
+    if wanted { EnableSecureEventInput() } else { DisableSecureEventInput() }
+  }
+
+  func ringBell(for view: GhosttySurfaceNSView) {
+    let effects = TerminalAttentionPolicy.bellEffects(attentionConfig.bellFeatures)
+    if effects.beep { NSSound.beep() }
+    guard effects.requestAttention, !view.isFocusedTerminal else { return }
+    attentionShellIDs.insert(view.shellID)
+    NSApp.requestUserAttention(.informationalRequest)
   }
 
   func detachSurface(from host: GhosttySurfaceHostNSView) {
@@ -307,6 +331,7 @@ final class GhosttyRuntime: ObservableObject {
     ghostty_config_load_recursive_files(config)
     ghostty_config_finalize(config)
     readScrollbarConfig(from: config)
+    attentionConfig = TerminalAttentionConfig(config: config)
 
     var runtimeConfig = ghostty_runtime_config_s(
       userdata: Unmanaged.passUnretained(self).toOpaque(),
@@ -668,6 +693,85 @@ final class GhosttyRuntime: ObservableObject {
       return true
     case GHOSTTY_ACTION_CELL_SIZE:
       view.cellSizeDidChange()
+      return true
+    case GHOSTTY_ACTION_RING_BELL:
+      view.runtime?.ringBell(for: view)
+      return true
+    case GHOSTTY_ACTION_DESKTOP_NOTIFICATION:
+      guard let runtime = view.runtime,
+        TerminalAttentionPolicy.shouldPostDesktopNotification(config: runtime.attentionConfig)
+      else { return true }
+      let note = action.action.desktop_notification
+      TerminalNotifications.post(
+        title: note.title.map { String(cString: $0) } ?? "",
+        body: note.body.map { String(cString: $0) } ?? "")
+      return true
+    case GHOSTTY_ACTION_COMMAND_FINISHED:
+      guard let runtime = view.runtime else { return true }
+      let finished = action.action.command_finished
+      let effects = TerminalAttentionPolicy.commandFinished(
+        exitCode: finished.exit_code, durationNanoseconds: finished.duration,
+        surfaceFocused: view.isFocusedTerminal, config: runtime.attentionConfig)
+      if effects.bell { runtime.ringBell(for: view) }
+      if let note = effects.notification { TerminalNotifications.post(title: note.title, body: note.body) }
+      return true
+    case GHOSTTY_ACTION_SECURE_INPUT:
+      let mode = action.action.secure_input
+      view.apply(.secureInput(mode == GHOSTTY_SECURE_INPUT_ON ? .on : mode == GHOSTTY_SECURE_INPUT_OFF ? .off : .toggle))
+      view.runtime?.refreshSecureInput()
+      return true
+    case GHOSTTY_ACTION_READONLY:
+      view.apply(.readonly(action.action.readonly == GHOSTTY_READONLY_ON))
+      return true
+    case GHOSTTY_ACTION_RENDERER_HEALTH:
+      view.apply(.rendererHealthy(action.action.renderer_health == GHOSTTY_RENDERER_HEALTH_HEALTHY))
+      return true
+    case GHOSTTY_ACTION_KEY_SEQUENCE:
+      view.apply(.keySequence(active: action.action.key_sequence.active))
+      return true
+    case GHOSTTY_ACTION_KEY_TABLE:
+      let table = action.action.key_table
+      switch table.tag {
+      case GHOSTTY_KEY_TABLE_ACTIVATE:
+        let name = TerminalLinkPolicy.string(table.value.activate.name, length: Int(table.value.activate.len)) ?? ""
+        view.apply(.keyTableActivate(name))
+      case GHOSTTY_KEY_TABLE_DEACTIVATE: view.apply(.keyTableDeactivate)
+      default: view.apply(.keyTableDeactivateAll)
+      }
+      return true
+    case GHOSTTY_ACTION_PROGRESS_REPORT:
+      let report = action.action.progress_report
+      let state: TerminalSurfaceStatus.Event.ProgressState
+      switch report.state {
+      case GHOSTTY_PROGRESS_STATE_REMOVE: state = .remove
+      case GHOSTTY_PROGRESS_STATE_SET: state = .set
+      case GHOSTTY_PROGRESS_STATE_ERROR: state = .error
+      case GHOSTTY_PROGRESS_STATE_PAUSE: state = .pause
+      default: state = .indeterminate
+      }
+      view.apply(.progress(state, percent: report.progress))
+      return true
+    case GHOSTTY_ACTION_SHOW_CHILD_EXITED:
+      let exited = action.action.child_exited
+      view.apply(.childExited(.init(exitCode: exited.exit_code, runtimeMilliseconds: exited.timetime_ms)))
+      return true
+    case GHOSTTY_ACTION_SET_TITLE:
+      view.apply(.title(action.action.set_title.title.map { String(cString: $0) }))
+      return true
+    case GHOSTTY_ACTION_PWD:
+      view.apply(.pwd(action.action.pwd.pwd.map { String(cString: $0) }))
+      return true
+    case GHOSTTY_ACTION_START_SEARCH:
+      view.apply(.startSearch(action.action.start_search.needle.map { String(cString: $0) } ?? ""))
+      return true
+    case GHOSTTY_ACTION_END_SEARCH:
+      view.apply(.endSearch)
+      return true
+    case GHOSTTY_ACTION_SEARCH_TOTAL:
+      view.apply(.searchTotal(Int(action.action.search_total.total)))
+      return true
+    case GHOSTTY_ACTION_SEARCH_SELECTED:
+      view.apply(.searchSelected(Int(action.action.search_selected.selected)))
       return true
     case GHOSTTY_ACTION_MOUSE_OVER_LINK:
       let link = action.action.mouse_over_link

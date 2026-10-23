@@ -342,9 +342,9 @@ struct TerminalWorkbenchView: View {
             } label: {
               ZStack(alignment: .bottomTrailing) {
                 sessionGlyph(for: session, size: 15)
-                Image(systemName: sidebarStatus(for: session).symbolName)
+                Image(systemName: sidebarStatus(for: session, attention: ghostty.attentionShellIDs).symbolName)
                   .font(.system(size: 8, weight: .bold))
-                  .foregroundStyle(sidebarStatus(for: session).color)
+                  .foregroundStyle(sidebarStatus(for: session, attention: ghostty.attentionShellIDs).color)
                   .background(Color(nsColor: .windowBackgroundColor), in: Circle())
               }
               .frame(width: 36, height: 36)
@@ -357,7 +357,7 @@ struct TerminalWorkbenchView: View {
             }
             .buttonStyle(.plain)
             .help(session.displayName)
-            .accessibilityLabel("\(session.displayName), \(sidebarStatus(for: session).accessibilityDescription)")
+            .accessibilityLabel("\(session.displayName), \(sidebarStatus(for: session, attention: ghostty.attentionShellIDs).accessibilityDescription)")
             .contextMenu {
               sessionContextMenu(for: session)
             }
@@ -618,12 +618,13 @@ private struct SidebarSectionHeader: View {
 private struct SessionSidebarRow: View {
   let session: TerminalSession
   let isSelected: Bool
+  @EnvironmentObject private var ghostty: GhosttyRuntime
 
   var body: some View {
     HStack(spacing: 4) {
-      Image(systemName: sidebarStatus(for: session).symbolName)
+      Image(systemName: sidebarStatus(for: session, attention: ghostty.attentionShellIDs).symbolName)
         .font(.system(size: 8, weight: .semibold))
-        .foregroundStyle(sidebarStatus(for: session).color)
+        .foregroundStyle(sidebarStatus(for: session, attention: ghostty.attentionShellIDs).color)
         .frame(width: 9)
       sessionGlyph(for: session, size: 12)
         .frame(width: 14)
@@ -642,12 +643,16 @@ private struct SessionSidebarRow: View {
     )
     .contentShape(Rectangle())
     .accessibilityElement(children: .combine)
-    .accessibilityLabel("\(session.displayName), \(sidebarStatus(for: session).accessibilityDescription)")
+    .accessibilityLabel("\(session.displayName), \(sidebarStatus(for: session, attention: ghostty.attentionShellIDs).accessibilityDescription)")
   }
 }
 
-private func sidebarStatus(for session: TerminalSession) -> TerminalSessionStatus {
-  session.status ?? (session.shells.contains(where: { $0.role == "pi" }) ? .starting : .ready)
+private func sidebarStatus(
+  for session: TerminalSession, attention: Set<Int64>
+) -> TerminalSessionStatus {
+  // A local terminal bell or finished command marks the session until one of its panes is focused.
+  if session.shells.contains(where: { attention.contains($0.id) }) { return .needsAttention }
+  return session.status ?? (session.shells.contains(where: { $0.role == "pi" }) ? .starting : .ready)
 }
 
 @ViewBuilder

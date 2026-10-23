@@ -77,6 +77,7 @@ final class GhosttySurfaceHostNSView: NSView {
   // Created only for Ghostty surfaces; it mirrors Ghostty.app's native overlay scrollbar.
   private var scrollbarOverlay: TerminalScrollbarOverlayView?
   private var linkHover: TerminalLinkHoverView?
+  private var statusBadge: TerminalStatusBadgeView?
 
   override var wantsDefaultClipping: Bool { true }
 
@@ -121,6 +122,14 @@ final class GhosttySurfaceHostNSView: NSView {
       self.linkHover?.show(surfaceView.hoveredLink, in: self.bounds)
     }
     hover.show(surfaceView.hoveredLink, in: bounds)
+    let badge = statusBadge ?? TerminalStatusBadgeView()
+    statusBadge = badge
+    if badge.superview !== self { addSubview(badge, positioned: .above, relativeTo: overlay) }
+    surfaceView.onSurfaceStatusChange = { [weak self, weak surfaceView] in
+      guard let self, let surfaceView, self.terminalView === surfaceView else { return }
+      self.statusBadge?.show(surfaceView.surfaceStatus, in: self.bounds)
+    }
+    badge.show(surfaceView.surfaceStatus, in: bounds)
     synchronizeScrollbar(with: surfaceView)
   }
 
@@ -138,6 +147,8 @@ final class GhosttySurfaceHostNSView: NSView {
     scrollbarOverlay = nil
     linkHover?.removeFromSuperview()
     linkHover = nil
+    statusBadge?.removeFromSuperview()
+    statusBadge = nil
   }
 
   func detachSurface() {
@@ -179,6 +190,15 @@ final class GhosttySurfaceNSView: NSView, @preconcurrency NSTextInputClient,
   var onHoveredLinkChange: (() -> Void)?
   private(set) var scrollbarState: TerminalScrollbarState?
   private(set) var hoveredLink: String?
+  private(set) var surfaceStatus = TerminalSurfaceStatus()
+  var onSurfaceStatusChange: (() -> Void)?
+  var isFocusedTerminal: Bool { isFocusedKeyResponder }
+
+  func apply(_ event: TerminalSurfaceStatus.Event) {
+    let previous = surfaceStatus
+    surfaceStatus.apply(event)
+    if surfaceStatus != previous { onSurfaceStatusChange?() }
+  }
   private let windowStateObserver = TerminalWindowStateObserver()
 
   func updateHoveredLink(_ link: String?) {
@@ -187,7 +207,7 @@ final class GhosttySurfaceNSView: NSView, @preconcurrency NSTextInputClient,
     onHoveredLinkChange?()
   }
 
-  private weak var runtime: GhosttyRuntime?
+  private(set) weak var runtime: GhosttyRuntime?
   private var markedText = NSMutableAttributedString()
   private var committedText: [String]?
   private var committedTextDecoder = TerminalCommittedText()
@@ -1183,6 +1203,7 @@ final class GhosttySurfaceNSView: NSView, @preconcurrency NSTextInputClient,
     guard let surface else { return }
     let hasFocus = focused ?? (window?.isKeyWindow == true && window?.firstResponder === self)
     ghostty_surface_set_focus(surface, hasFocus)
+    runtime?.refreshSecureInput()
   }
 
   private func updateSurfaceOcclusion() {
