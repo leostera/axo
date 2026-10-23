@@ -76,6 +76,7 @@ final class GhosttySurfaceHostNSView: NSView {
   private var terminalView: NSView?
   // Created only for Ghostty surfaces; it mirrors Ghostty.app's native overlay scrollbar.
   private var scrollbarOverlay: TerminalScrollbarOverlayView?
+  private var linkHover: TerminalLinkHoverView?
 
   override var wantsDefaultClipping: Bool { true }
 
@@ -112,6 +113,14 @@ final class GhosttySurfaceHostNSView: NSView {
       guard let self, let surfaceView, self.terminalView === surfaceView else { return }
       self.synchronizeScrollbar(with: surfaceView)
     }
+    let hover = linkHover ?? TerminalLinkHoverView()
+    linkHover = hover
+    if hover.superview !== self { addSubview(hover, positioned: .above, relativeTo: overlay) }
+    surfaceView.onHoveredLinkChange = { [weak self, weak surfaceView] in
+      guard let self, let surfaceView, self.terminalView === surfaceView else { return }
+      self.linkHover?.show(surfaceView.hoveredLink, in: self.bounds)
+    }
+    hover.show(surfaceView.hoveredLink, in: bounds)
     synchronizeScrollbar(with: surfaceView)
   }
 
@@ -127,6 +136,8 @@ final class GhosttySurfaceHostNSView: NSView {
     scrollbarOverlay?.onScrollToRow = nil
     scrollbarOverlay?.wheelTarget = nil
     scrollbarOverlay = nil
+    linkHover?.removeFromSuperview()
+    linkHover = nil
   }
 
   func detachSurface() {
@@ -165,7 +176,15 @@ final class GhosttySurfaceNSView: NSView, @preconcurrency NSTextInputClient,
   var onSplit: ((TerminalSplitDirection) -> Void)?
   var onClose: (() -> Void)?
   var onScrollbarChange: (() -> Void)?
+  var onHoveredLinkChange: (() -> Void)?
   private(set) var scrollbarState: TerminalScrollbarState?
+  private(set) var hoveredLink: String?
+
+  func updateHoveredLink(_ link: String?) {
+    guard hoveredLink != link else { return }
+    hoveredLink = link
+    onHoveredLinkChange?()
+  }
 
   private weak var runtime: GhosttyRuntime?
   private var markedText = NSMutableAttributedString()

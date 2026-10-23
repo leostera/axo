@@ -644,6 +644,13 @@ final class GhosttyRuntime: ObservableObject {
     target: ghostty_target_s,
     action: ghostty_action_s
   ) -> Bool {
+    if action.tag == GHOSTTY_ACTION_OPEN_URL {
+      let openURL = action.action.open_url
+      guard let value = TerminalLinkPolicy.string(openURL.url, length: Int(openURL.len)) else {
+        return true
+      }
+      return TerminalLinkPolicy.open(kind: TerminalLinkKind(openURL.kind), value: value)
+    }
     guard target.tag == GHOSTTY_TARGET_SURFACE,
       let surface = target.target.surface,
       let userdata = ghostty_surface_userdata(surface)
@@ -661,6 +668,10 @@ final class GhosttyRuntime: ObservableObject {
       return true
     case GHOSTTY_ACTION_CELL_SIZE:
       view.cellSizeDidChange()
+      return true
+    case GHOSTTY_ACTION_MOUSE_OVER_LINK:
+      let link = action.action.mouse_over_link
+      view.updateHoveredLink(TerminalLinkPolicy.string(link.url, length: Int(link.len)))
       return true
     case GHOSTTY_ACTION_MOUSE_VISIBILITY:
       switch action.action.mouse_visibility {
