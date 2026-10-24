@@ -58,13 +58,13 @@ enum SettingsSection: String, CaseIterable, Identifiable {
 }
 
 struct SettingsView: View {
-  @ObservedObject var daemon: DaemonController
-  @ObservedObject var sessions: TerminalSessionsModel
-  @ObservedObject var sleepPrevention: SleepPreventionController
+  var daemon: DaemonController
+  var sessions: TerminalSessionsModel
+  var sleepPrevention: SleepPreventionController
   let ghostty: GhosttyRuntime
   @Binding var selection: SettingsSection
   @Binding var appearanceTheme: AppearanceTheme
-  @ObservedObject var pairingLink: PairingLinkRouter
+  @Bindable var pairingLink: PairingLinkRouter
 
   private var sidebarSelection: Binding<SettingsSection?> {
     Binding(
@@ -127,8 +127,8 @@ private struct AppearanceSettingsView: View {
 }
 
 private struct AgentSettingsView: View {
-  @ObservedObject var daemon: DaemonController
-  @ObservedObject var sessions: TerminalSessionsModel
+  var daemon: DaemonController
+  var sessions: TerminalSessionsModel
   @State private var command = "pi"
   @State private var savedCommand = "pi"
   @State private var errorMessage: String?
@@ -245,7 +245,7 @@ private struct AgentSettingsView: View {
 }
 
 private struct ShellCommandSettingsSection: View {
-  @ObservedObject var daemon: DaemonController
+  var daemon: DaemonController
   @State private var command = ""
   @State private var savedCommand = ""
   @State private var errorMessage: String?
@@ -341,9 +341,9 @@ private struct ShellCommandSettingsSection: View {
 }
 
 private struct GeneralSettingsView: View {
-  @ObservedObject var daemon: DaemonController
-  @ObservedObject var ghostty: GhosttyRuntime
-  @ObservedObject var sleepPrevention: SleepPreventionController
+  var daemon: DaemonController
+  var ghostty: GhosttyRuntime
+  var sleepPrevention: SleepPreventionController
 
   private var scrollSensitivityPosition: Binding<Double> {
     Binding(
@@ -429,7 +429,7 @@ private struct GeneralSettingsView: View {
 }
 
 private struct AboutSettingsView: View {
-  @ObservedObject var daemon: DaemonController
+  var daemon: DaemonController
 
   private var appVersion: String {
     Bundle.main.infoDictionary?["CFBundleShortVersionString"] as? String ?? "Unknown"

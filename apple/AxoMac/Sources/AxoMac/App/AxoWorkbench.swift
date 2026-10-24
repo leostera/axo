@@ -1,6 +1,5 @@
 import AxoDaemonManager
 import AxoRPC
-import Combine
 import Foundation
 
 /// App-lifetime coordination between the daemon connection, the session catalog and Ghostty
@@ -11,15 +10,16 @@ final class AxoWorkbench {
   let sessions: TerminalSessionsModel
   let ghostty: GhosttyRuntime
   private let catalogSync: TerminalCatalogSync?
-  private var subscriptions: Set<AnyCancellable> = []
+  private var observations: [ObservationLoop] = []
   private var focusTask: Task<Void, Never>?
   private var isConnected = false
 
-  /// - Parameter daemonIsRunning: whether Axod is reachable. UI fixtures pass a constant `true`.
+  /// - Parameter daemonIsRunning: whether Axod is reachable, read under observation tracking.
+  ///   UI fixtures pass `{ true }`.
   init(
     sessions: TerminalSessionsModel,
     ghostty: GhosttyRuntime,
-    daemonIsRunning: AnyPublisher<Bool, Never>
+    daemonIsRunning: @escaping @MainActor () -> Bool
   ) {
     self.sessions = sessions
     self.ghostty = ghostty
@@ -27,38 +27,22 @@ final class AxoWorkbench {
       TerminalCatalogSync(sessions: sessions, client: $0)
     }
 
-    daemonIsRunning
-      .removeDuplicates()
-      .sink { [weak self] in self?.setConnected($0) }
-      .store(in: &subscriptions)
-    // Reconcile after the catalog publishes, so surfaces track daemon truth, not view lifetime.
-    sessions.$sessions
-      .sink { [weak self] sessions in
+    observations = [
+      ObservationLoop.observe(daemonIsRunning) { [weak self] in self?.setConnected($0) },
+      // Surfaces track daemon truth, not view lifetime.
+      ObservationLoop.observe({ sessions.sessions.flatMap(\.shells) }) { [weak self] shells in
         guard let self, self.isConnected else { return }
-        self.ghostty.reconcileSurfaces(with: sessions.flatMap(\.shells))
-      }
-      .store(in: &subscriptions)
-    sessions.$focusedShellID
-      .removeDuplicates()
-      .sink { [weak self] in self?.focus($0) }
-      .store(in: &subscriptions)
-  }
-
-  convenience init(
-    sessions: TerminalSessionsModel, ghostty: GhosttyRuntime, daemon: DaemonController
-  ) {
-    self.init(
-      sessions: sessions,
-      ghostty: ghostty,
-      daemonIsRunning: daemon.$status
-        .map { if case .running = $0 { true } else { false } }
-        .eraseToAnyPublisher())
+        self.ghostty.reconcileSurfaces(with: shells)
+      },
+      ObservationLoop.observe({ sessions.focusedShellID }) { [weak self] in self?.focus($0) },
+    ]
   }
 
   private func setConnected(_ connected: Bool) {
     isConnected = connected
     if connected {
       catalogSync?.start()
+      ghostty.reconcileSurfaces(with: sessions.sessions.flatMap(\.shells))
     } else {
       catalogSync?.stop()
       ghostty.reconcileSurfaces(with: [])

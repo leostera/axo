@@ -1,16 +1,17 @@
-import Combine
 import Foundation
+import Observation
 
 @MainActor
-final class SleepPreventionController: ObservableObject {
+@Observable
+final class SleepPreventionController {
   static let preferenceKey = AxoPreferenceKey.preventSystemSleep
 
-  @Published private(set) var isEnabled: Bool
+  private(set) var isEnabled: Bool
 
   private let defaults: UserDefaults
   private let beginActivity: () -> NSObjectProtocol
   private let endActivity: (NSObjectProtocol) -> Void
-  private var activity: NSObjectProtocol?
+  @ObservationIgnored private var activity: NSObjectProtocol?
 
   init(
     defaults: UserDefaults = .standard,

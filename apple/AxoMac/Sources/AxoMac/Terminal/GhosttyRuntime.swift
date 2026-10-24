@@ -7,14 +7,15 @@ import GhosttyKit
 import QuartzCore
 
 @MainActor
-final class GhosttyRuntime: ObservableObject {
-  @Published private(set) var errorMessage: String?
-  @Published private(set) var scrollSensitivity: Double
+@Observable
+final class GhosttyRuntime {
+  private(set) var errorMessage: String?
+  private(set) var scrollSensitivity: Double
   private(set) var showsScrollbar = true
   /// Shells whose bell or finished command has not yet been seen by focusing the pane.
-  @Published private(set) var attentionShellIDs: Set<ShellID> = []
+  private(set) var attentionShellIDs: Set<ShellID> = []
   private(set) var attentionConfig = TerminalAttentionConfig()
-  private var secureInputEnabled = false
+  @ObservationIgnored private var secureInputEnabled = false
   private(set) var hasDarkBackground = true
 
   private struct SurfaceEntry {
@@ -23,13 +24,13 @@ final class GhosttyRuntime: ObservableObject {
     let view: GhosttySurfaceNSView
   }
 
-  private var config: ghostty_config_t?
-  private var app: ghostty_app_t?
+  @ObservationIgnored private var config: ghostty_config_t?
+  @ObservationIgnored private var app: ghostty_app_t?
   private(set) var focusedShellID: ShellID?
   // Retain each view until its surface is freed: Ghostty passes this unretained per-surface
   // userdata pointer back to the clipboard callbacks, even after SwiftUI pane identities change.
-  private var terminalSurfaces: [ShellID: SurfaceEntry] = [:]
-  private var notificationTokens: [NSObjectProtocol] = []
+  @ObservationIgnored private var terminalSurfaces: [ShellID: SurfaceEntry] = [:]
+  @ObservationIgnored private var notificationTokens: [NSObjectProtocol] = []
 
   init(initializeGhostty: Bool = true) {
     let storedSensitivity =

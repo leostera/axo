@@ -5,12 +5,12 @@ import SwiftUI
 
 @main
 struct AxoApp: App {
-  @StateObject private var daemon: DaemonController
-  @StateObject private var sessions: TerminalSessionsModel
+  @State private var daemon: DaemonController
+  @State private var sessions: TerminalSessionsModel
   @NSApplicationDelegateAdaptor(AxoURLSchemeDelegate.self) private var urlSchemeDelegate
-  @StateObject private var ghostty: GhosttyRuntime
-  @StateObject private var sleepPrevention: SleepPreventionController
-  @StateObject private var pairingLink = PairingLinkRouter.shared
+  @State private var ghostty: GhosttyRuntime
+  @State private var sleepPrevention: SleepPreventionController
+  @State private var pairingLink = PairingLinkRouter.shared
   @State private var settingsSection = SettingsSection.general
   @State private var isPresentingWorkspaceCreation = false
   @AppStorage(AxoPreferenceKey.appearanceTheme) private var appearanceTheme: AppearanceTheme = .system
@@ -22,10 +22,10 @@ struct AxoApp: App {
     let daemon = DaemonController()
     let environment = AxoAppEnvironment.current(daemon: daemon)
     let ghostty = GhosttyRuntime()
-    _daemon = StateObject(wrappedValue: daemon)
-    _sessions = StateObject(wrappedValue: environment.sessions)
-    _ghostty = StateObject(wrappedValue: ghostty)
-    _sleepPrevention = StateObject(wrappedValue: SleepPreventionController())
+    _daemon = State(initialValue: daemon)
+    _sessions = State(initialValue: environment.sessions)
+    _ghostty = State(initialValue: ghostty)
+    _sleepPrevention = State(initialValue: SleepPreventionController())
     self.environment = environment
     // App.init runs once per process; the workbench owns the catalog and focus loops.
     workbench = AxoWorkbench(
@@ -232,11 +232,11 @@ struct AxoApp: App {
 
 private struct TerminalAppWindow: View {
   @Environment(\.openWindow) private var openWindow
-  @ObservedObject var daemon: DaemonController
-  @ObservedObject var sessions: TerminalSessionsModel
-  @ObservedObject var ghostty: GhosttyRuntime
+  var daemon: DaemonController
+  var sessions: TerminalSessionsModel
+  var ghostty: GhosttyRuntime
   @Binding var settingsSection: SettingsSection
-  @ObservedObject var pairingLink: PairingLinkRouter
+  var pairingLink: PairingLinkRouter
   @Binding var isPresentingWorkspaceCreation: Bool
   var isDaemonRunningOverride: Bool?
 
@@ -247,13 +247,13 @@ private struct TerminalAppWindow: View {
       isPresentingWorkspaceCreation: $isPresentingWorkspaceCreation,
       daemonIsRunningOverride: isDaemonRunningOverride
     )
-    .environmentObject(ghostty)
+    .environment(ghostty)
   }
 }
 
 private struct AxoMenuBarLabel: View {
   @Environment(\.openWindow) private var openWindow
-  @ObservedObject var pairingLink: PairingLinkRouter
+  var pairingLink: PairingLinkRouter
   @Binding var settingsSection: SettingsSection
   let opensTerminalWindow: Bool
   @State private var didOpenTerminal = false
@@ -282,7 +282,7 @@ private struct AxoMenuBarLabel: View {
 
 private struct AxoMenu: View {
   @Environment(\.openWindow) private var openWindow
-  @ObservedObject var daemon: DaemonController
+  var daemon: DaemonController
   @Binding var settingsSection: SettingsSection
 
   var body: some View {

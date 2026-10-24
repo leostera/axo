@@ -1,5 +1,4 @@
 import AxoDaemonManager
-import Combine
 import Foundation
 
 /// Process-level launch configuration. Release builds only ever produce `production`; the
@@ -7,7 +6,8 @@ import Foundation
 @MainActor
 struct AxoAppEnvironment {
   var sessions: TerminalSessionsModel
-  var daemonIsRunning: AnyPublisher<Bool, Never>
+  /// Whether Axod is reachable; read under observation tracking, so it must read observable state.
+  var daemonIsRunning: @MainActor () -> Bool
   /// Whether to register/connect the installed LaunchAgent helper.
   var startsDaemon = true
   /// Whether launching opens the terminal window automatically.
@@ -20,9 +20,7 @@ struct AxoAppEnvironment {
   static func production(daemon: DaemonController) -> AxoAppEnvironment {
     AxoAppEnvironment(
       sessions: TerminalSessionsModel(),
-      daemonIsRunning: daemon.$status
-        .map { if case .running = $0 { true } else { false } }
-        .eraseToAnyPublisher())
+      daemonIsRunning: { daemon.status.isRunning })
   }
 
   static func current(daemon: DaemonController) -> AxoAppEnvironment {

@@ -1,11 +1,12 @@
 import AxoRPC
-import Combine
 import Foundation
+import Observation
 import OSLog
 import ServiceManagement
 
 @MainActor
-public final class DaemonController: ObservableObject {
+@Observable
+public final class DaemonController {
   public enum Status: Equatable {
     case starting
     case running(version: String, buildNumber: BuildNumber)
@@ -13,6 +14,10 @@ public final class DaemonController: ObservableObject {
     case requiresApproval
     case disabled
     case failed(String)
+
+    public var isRunning: Bool {
+      if case .running = self { true } else { false }
+    }
 
     public var menuTitle: String {
       switch self {
@@ -37,7 +42,7 @@ public final class DaemonController: ObservableObject {
     }
   }
 
-  @Published public private(set) var status: Status = .starting
+  public private(set) var status: Status = .starting
 
   private static let registrationIntentKey = "dev.leostera.axo.axod.registrationRequested"
   private static let registrationReceiptKey = "dev.leostera.axo.axod.registrationSucceeded"
@@ -47,7 +52,7 @@ public final class DaemonController: ObservableObject {
 
   private let service = SMAppService.agent(plistName: servicePlistName)
   private let logger = Logger(subsystem: "dev.leostera.axo", category: "daemon")
-  private var startTask: Task<Void, Never>?
+  @ObservationIgnored private var startTask: Task<Void, Never>?
 
   public init() {}
 

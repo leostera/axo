@@ -3,7 +3,7 @@ import AxoRPC
 import SwiftUI
 
 struct RemoteAccessSettingsView: View {
-  @ObservedObject var daemon: DaemonController
+  var daemon: DaemonController
   @Binding var pairingCode: HostPairingCode?
 
   @State private var pairingCodeText = ""

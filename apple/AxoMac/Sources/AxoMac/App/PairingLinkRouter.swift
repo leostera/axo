@@ -1,13 +1,14 @@
 import AxoRPC
-import Combine
 import Foundation
+import Observation
 
 @MainActor
-final class PairingLinkRouter: ObservableObject {
+@Observable
+final class PairingLinkRouter {
   static let shared = PairingLinkRouter()
 
-  @Published var pendingCode: HostPairingCode?
-  @Published private(set) var routeRevision = 0
+  var pendingCode: HostPairingCode?
+  private(set) var routeRevision = 0
 
   func receive(_ url: URL) -> Bool {
     guard let code = HostPairingCode.fromPairingURL(url) else { return false }

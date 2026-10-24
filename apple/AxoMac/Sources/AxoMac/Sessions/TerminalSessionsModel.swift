@@ -1,7 +1,7 @@
 import AxoDaemonManager
 import AxoRPC
-import Combine
 import Foundation
+import Observation
 
 /// A Session command that failed for an app-level reason (no daemon, unsupported Axod, or an
 /// unexpected result), worded for the user.
@@ -23,13 +23,14 @@ struct WorkspaceArchiveConfirmation: Equatable, Identifiable {
 /// pane layouts). Axod remains authoritative for Sessions and shells: commands are sent to Axod
 /// and their results reconciled; `TerminalCatalogSync` streams everything else in via `apply(_:)`.
 ///
-/// Every published property is assigned only when its value changes, because each publish
-/// re-renders the whole workbench.
+/// Observed properties are assigned only when their value changes: Observation notifies on every
+/// write, even an equal one.
 @MainActor
-final class TerminalSessionsModel: ObservableObject {
-  @Published private(set) var sessions: [TerminalSession] = []
-  @Published private(set) var workspaces: [WorkspaceRecord] = []
-  @Published var selectedSessionID: SessionID? {
+@Observable
+final class TerminalSessionsModel {
+  private(set) var sessions: [TerminalSession] = []
+  private(set) var workspaces: [WorkspaceRecord] = []
+  var selectedSessionID: SessionID? {
     didSet {
       guard oldValue != selectedSessionID, let selectedSessionDefaults else { return }
       if let selectedSessionID {
@@ -39,13 +40,13 @@ final class TerminalSessionsModel: ObservableObject {
       }
     }
   }
-  @Published private(set) var focusedShellID: ShellID?
-  @Published private(set) var layout: TerminalLayout?
-  @Published private(set) var errorMessage: String?
-  @Published private(set) var workspaceCreationError: String?
-  @Published private(set) var pendingWorkspaceArchiveConfirmation: WorkspaceArchiveConfirmation?
-  @Published private(set) var pendingTerminalSplit: PendingTerminalSplit?
-  @Published private(set) var automaticallyRestartUnavailablePi: Bool
+  private(set) var focusedShellID: ShellID?
+  private(set) var layout: TerminalLayout?
+  private(set) var errorMessage: String?
+  private(set) var workspaceCreationError: String?
+  private(set) var pendingWorkspaceArchiveConfirmation: WorkspaceArchiveConfirmation?
+  private(set) var pendingTerminalSplit: PendingTerminalSplit?
+  private(set) var automaticallyRestartUnavailablePi: Bool
 
   /// Methods every supported Axod must offer; checked once per connection.
   static let requiredMethods: Set<String> = [
@@ -65,9 +66,9 @@ final class TerminalSessionsModel: ObservableObject {
   private let layoutWriter: TerminalLayoutWriter
   private let piRestarter: AutomaticPiRestarter
   /// Methods offered by the connected Axod; `nil` until negotiated on this connection.
-  private var daemonMethods: Set<String>?
-  private var layoutsBySession: [SessionID: TerminalLayout] = [:]
-  private var recentSessions = RecentSessions()
+  @ObservationIgnored private var daemonMethods: Set<String>?
+  @ObservationIgnored private var layoutsBySession: [SessionID: TerminalLayout] = [:]
+  @ObservationIgnored private var recentSessions = RecentSessions()
 
   // MARK: - Initialization
 
@@ -127,9 +128,8 @@ final class TerminalSessionsModel: ObservableObject {
     let preferenceDefaults = selectedSessionDefaults ?? .standard
     self.preferenceDefaults = preferenceDefaults
     let restartsAutomatically = preferenceDefaults.bool(forKey: AxoPreferenceKey.automaticPiRestart)
-    _selectedSessionID = Published(
-      initialValue: Self.storedSelectedSessionID(from: selectedSessionDefaults))
-    _automaticallyRestartUnavailablePi = Published(initialValue: restartsAutomatically)
+    selectedSessionID = Self.storedSelectedSessionID(from: selectedSessionDefaults)
+    automaticallyRestartUnavailablePi = restartsAutomatically
     layoutWriter = TerminalLayoutWriter(client: client)
     piRestarter = AutomaticPiRestarter(isEnabled: restartsAutomatically)
 

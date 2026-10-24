@@ -5,11 +5,11 @@ import SwiftUI
 import UniformTypeIdentifiers
 
 struct TerminalWorkbenchView: View {
-  @ObservedObject var daemon: DaemonController
-  @ObservedObject var sessions: TerminalSessionsModel
+  var daemon: DaemonController
+  var sessions: TerminalSessionsModel
   @Binding var isPresentingWorkspaceCreation: Bool
   var daemonIsRunningOverride: Bool? = nil
-  @EnvironmentObject private var ghostty: GhosttyRuntime
+  @Environment(GhosttyRuntime.self) private var ghostty
   @AppStorage(AxoPreferenceKey.sidebarIsCollapsed) private var isSidebarCollapsed = false
   @State private var collapsedWorkspaceIDs = Set<String>()
   @State private var renameTarget: SidebarRenameTarget?
@@ -463,7 +463,7 @@ private struct SidebarInlineRenameEditor: View {
 }
 
 private struct WorkspaceCreationSheet: View {
-  @ObservedObject var sessions: TerminalSessionsModel
+  var sessions: TerminalSessionsModel
   @Environment(\.dismiss) private var dismiss
   @State private var name = ""
   @State private var directoryURL: URL?
@@ -605,7 +605,7 @@ private struct SidebarSectionHeader: View {
 private struct SessionSidebarRow: View {
   let session: TerminalSession
   let isSelected: Bool
-  @EnvironmentObject private var ghostty: GhosttyRuntime
+  @Environment(GhosttyRuntime.self) private var ghostty
 
   var body: some View {
     HStack(spacing: 4) {
@@ -686,7 +686,7 @@ private extension TerminalSessionStatus {
 
 private struct TerminalLayoutView: View {
   let layout: TerminalLayoutPresentation
-  @ObservedObject var sessions: TerminalSessionsModel
+  var sessions: TerminalSessionsModel
 
   @ViewBuilder
   var body: some View {
@@ -733,7 +733,7 @@ private struct TerminalLayoutView: View {
 
 private struct PendingTerminalPaneView: View {
   let pending: PendingTerminalSplit
-  @ObservedObject var sessions: TerminalSessionsModel
+  var sessions: TerminalSessionsModel
 
   var body: some View {
     VStack(spacing: 10) {
@@ -773,7 +773,7 @@ private struct PendingTerminalPaneView: View {
 private struct TerminalPaneView: View {
   let shell: TerminalShell
   let sessions: TerminalSessionsModel
-  @EnvironmentObject private var ghostty: GhosttyRuntime
+  @Environment(GhosttyRuntime.self) private var ghostty
   @State private var terminalError: String?
   @State private var piRestartError: String?
   @State private var isRestartingPi = false

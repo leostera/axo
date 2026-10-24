@@ -1,5 +1,5 @@
 import AxoRPC
-import Combine
+import Observation
 import XCTest
 
 @testable import AxoMac
@@ -76,13 +76,15 @@ final class TerminalSessionsModelPublishingTests: XCTestCase {
     let model = TerminalSessionsModel(client: client, helperURL: URL(fileURLWithPath: "/"))
     await model.refresh()
 
-    var publishes = 0
-    let observation = model.objectWillChange.sink { publishes += 1 }
-    defer { observation.cancel() }
-    await model.apply(.sessionSnapshot(model.sessions[0]))
-    await model.refresh()
+    let changed = await observesChange(of: {
+      _ = (model.sessions, model.workspaces, model.selectedSessionID, model.focusedShellID,
+        model.layout, model.errorMessage)
+    }) {
+      await model.apply(.sessionSnapshot(model.sessions[0]))
+      await model.refresh()
+    }
 
-    XCTAssertEqual(publishes, 0, "re-applying identical state must not re-render the workbench")
+    XCTAssertFalse(changed, "re-applying identical state must not re-render the workbench")
   }
 
   func testUnsupportedCommandReportsUserFacingError() async {

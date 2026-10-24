@@ -1,21 +1,19 @@
 import AppKit
-import Combine
 import XCTest
 
 @testable import AxoMac
 
 @MainActor
 final class TerminalRenderFeedbackTests: XCTestCase {
-  func testRepeatedFocusWithoutAttentionDoesNotPublishViewInvalidations() {
+  func testRepeatedFocusWithoutAttentionDoesNotInvalidateAttentionObservers() async {
     let runtime = GhosttyRuntime(initializeGhostty: false)
-    var invalidations = 0
-    let subscription = runtime.objectWillChange.sink { invalidations += 1 }
-    for _ in 0..<100 {
-      runtime.setFocusedShellID(42)
-      runtime.setFocusedShellID(nil)
+    let changed = await observesChange(of: { _ = runtime.attentionShellIDs }) {
+      for _ in 0..<100 {
+        runtime.setFocusedShellID(42)
+        runtime.setFocusedShellID(nil)
+      }
     }
-    XCTAssertEqual(invalidations, 0)
-    withExtendedLifetime(subscription) {}
+    XCTAssertFalse(changed)
   }
 
   func testStatusDeliveryIsDeferredAndUsesCurrentCallback() async {

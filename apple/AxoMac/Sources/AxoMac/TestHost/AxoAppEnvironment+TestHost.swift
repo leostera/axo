@@ -1,7 +1,6 @@
 import AppKit
 import AxoDaemonManager
 import AxoRPC
-import Combine
 import Darwin
 import Foundation
 
@@ -53,7 +52,7 @@ extension AxoAppEnvironment {
     return AxoAppEnvironment(
       sessions: TerminalSessionsModel(
         socketPath: socketPath, helperURL: URL(fileURLWithPath: helper)),
-      daemonIsRunning: Just(true).eraseToAnyPublisher(),
+      daemonIsRunning: { true },
       startsDaemon: false,
       prepareTerminalWindow: { sessions, ghostty in
         NSApp.activate(ignoringOtherApps: true)
