@@ -1,3 +1,6 @@
+import AppKit
+import SwiftUI
+import AxoDaemonManager
 import AxoRPC
 import Darwin
 import GhosttyKit
@@ -136,6 +139,66 @@ final class TerminalWorkbenchE2ETests: XCTestCase {
       runtime.sizeOffscreenSurfaces(
         layouts: [.pane(shell.id)], terminalAreaSize: CGSize(width: 900, height: 700), backingScale: 2)
       XCTAssertEqual(surfaceGrid(), settledGrid)
+    }
+  }
+
+  /// Times switching Sessions in the real workbench view (SwiftUI + AppKit + libghostty) hosted
+  /// in an offscreen window. A benchmark, not a pass/fail bound: read `BENCH` in the test log.
+  func testBenchmarkSwitchingSessions() async throws {
+    try await withWorkbench { model, _ in
+      let runtime = GhosttyRuntime()
+      try XCTSkipIf(runtime.errorMessage != nil, "libghostty unavailable: \(runtime.errorMessage ?? "")")
+      for _ in 0..<7 { await model.createSession() }
+      for session in model.sessions {
+        model.showSession(session.id)
+        await model.split(.right)
+      }
+      let sessionIDs = model.sessions.map(\.id)
+      XCTAssertEqual(sessionIDs.count, 8)
+
+      let suite = "axo-bench-\(UUID().uuidString)"
+      let defaults = try XCTUnwrap(UserDefaults(suiteName: suite))
+      defer { defaults.removePersistentDomain(forName: suite) }
+      let root = TerminalWorkbenchView(
+        daemon: DaemonController(defaults: defaults), sessions: model,
+        isPresentingWorkspaceCreation: .constant(false), daemonIsRunningOverride: true
+      ).environment(runtime)
+      let window = NSWindow(
+        contentRect: CGRect(x: 0, y: 0, width: 1600, height: 1000),
+        styleMask: [.titled, .resizable, .fullSizeContentView], backing: .buffered, defer: false)
+      window.isReleasedWhenClosed = false
+      let host = NSHostingView(rootView: root)
+      window.contentView = host
+      defer { window.close() }
+
+      func settle() {
+        host.layoutSubtreeIfNeeded()
+        window.displayIfNeeded()
+        CATransaction.flush()
+      }
+      // Warm up: show every Session once and let its surfaces attach.
+      for id in sessionIDs {
+        model.showSession(id)
+        settle()
+        try await Task.sleep(for: .milliseconds(150))
+        settle()
+      }
+
+      var samples: [Double] = []
+      for round in 0..<5 {
+        for id in (round.isMultiple(of: 2) ? sessionIDs : sessionIDs.reversed()) {
+          let start = ContinuousClock.now
+          model.showSession(id)
+          settle()
+          let elapsed = ContinuousClock.now - start
+          samples.append(Double(elapsed.components.attoseconds) / 1e15 + Double(elapsed.components.seconds) * 1_000)
+          try await Task.sleep(for: .milliseconds(20))
+        }
+      }
+      samples.sort()
+      let median = samples[samples.count / 2]
+      let p90 = samples[samples.count * 9 / 10]
+      print("BENCH session_switch_ms n=\(samples.count) p50=\(String(format: "%.1f", median)) p90=\(String(format: "%.1f", p90)) max=\(String(format: "%.1f", samples.last ?? 0))")
     }
   }
 

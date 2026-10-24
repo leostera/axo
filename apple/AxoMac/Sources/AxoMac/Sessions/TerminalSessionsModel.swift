@@ -63,9 +63,15 @@ final class TerminalSessionsModel {
   /// Every Session's layout, for sizing panes that are not shown.
   private(set) var sessionLayouts: [SessionLayout] = []
   private(set) var hasSessions = false
-  private(set) var workspaces: [WorkspaceRecord] = []
+  /// Which menu commands apply. The menus read only this, so Session updates and switches that
+  /// leave every command's availability alone do not re-evaluate the App scene and its menus.
+  private(set) var commandAvailability = TerminalCommandAvailability()
+  private(set) var workspaces: [WorkspaceRecord] = [] {
+    didSet { projectCommandAvailability() }
+  }
   var selectedSessionID: SessionID? {
     didSet {
+      projectCommandAvailability()
       guard oldValue != selectedSessionID, let selectedSessionDefaults else { return }
       if let selectedSessionID {
         selectedSessionDefaults.set(selectedSessionID.rawValue, forKey: AxoPreferenceKey.selectedSession)
@@ -74,8 +80,12 @@ final class TerminalSessionsModel {
       }
     }
   }
-  private(set) var focusedShellID: ShellID?
-  private(set) var layout: TerminalLayout?
+  private(set) var focusedShellID: ShellID? {
+    didSet { projectCommandAvailability() }
+  }
+  private(set) var layout: TerminalLayout? {
+    didSet { projectCommandAvailability() }
+  }
   private(set) var errorMessage: String?
   private(set) var catalogConnection = CatalogConnection.connecting
   private(set) var workspaceCreationError: String?
@@ -210,6 +220,17 @@ final class TerminalSessionsModel {
     assign(\.shellsByID, Dictionary(shells.map { ($0.id, $0) }, uniquingKeysWith: { _, last in last }))
     assign(\.sessionLayouts, sessions.compactMap(\.layout))
     assign(\.hasSessions, !sessions.isEmpty)
+    projectCommandAvailability()
+  }
+
+  private func projectCommandAvailability() {
+    assign(
+      \.commandAvailability,
+      TerminalCommandAvailability(
+        canNavigatePanes: (layout?.orderedShellIDs.count ?? 0) >= 2,
+        canNavigateSessions: sidebarOrderedSessions.count >= 2,
+        hasFocusedShell: focusedShellID != nil,
+        hasSelectedSession: selectedSessionID != nil))
   }
 
   // MARK: - Synchronization
@@ -950,4 +971,12 @@ final class TerminalSessionsModel {
       layoutWriter.schedule(layout.sessionLayout, for: sessionID)
     }
   }
+}
+
+/// Whether each menu command applies; see `TerminalSessionsModel.commandAvailability`.
+struct TerminalCommandAvailability: Equatable {
+  var canNavigatePanes = false
+  var canNavigateSessions = false
+  var hasFocusedShell = false
+  var hasSelectedSession = false
 }

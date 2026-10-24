@@ -220,6 +220,36 @@ final class TerminalCatalogTests: XCTestCase {
     XCTAssertFalse(invalidated)
   }
 
+  /// The App scene's menus read only `commandAvailability`; Session updates and switches that
+  /// keep every command's availability must not re-evaluate the scene.
+  func testCommandAvailabilityChangesOnlyWhenACommandsAvailabilityDoes() async {
+    let client = FakeAxodClient()
+    client.sessions = [session(1, shells: [10, 11]), session(2, shells: [20, 21])]
+    let model = makeModel(client)
+    await model.refresh()
+    XCTAssertEqual(
+      model.commandAvailability,
+      TerminalCommandAvailability(
+        canNavigatePanes: true, canNavigateSessions: true, hasFocusedShell: true,
+        hasSelectedSession: true))
+
+    var invalidated = false
+    withObservationTracking {
+      _ = model.commandAvailability
+    } onChange: {
+      invalidated = true
+    }
+    await model.apply(.sessionSnapshot(session(1, shells: [10, 11], name: "Working")))
+    model.showSession(2)
+    model.focusNextPane()
+    XCTAssertEqual(model.selectedSessionID, 2)
+    XCTAssertFalse(invalidated)
+
+    await model.apply(.sessionSnapshot(session(2, shells: [20])))
+    XCTAssertTrue(invalidated)
+    XCTAssertFalse(model.commandAvailability.canNavigatePanes)
+  }
+
   func testShellChangesUpdatePaneProjections() async {
     let client = FakeAxodClient()
     client.sessions = [session(1, shells: [10])]

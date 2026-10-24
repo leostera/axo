@@ -174,25 +174,25 @@ struct AxoApp<Launch: AxoLaunchMode>: App {
           sessions.focusPreviousPane()
         }
         .keyboardShortcut("[", modifiers: .command)
-        .disabled((sessions.layout?.orderedShellIDs.count ?? 0) < 2)
+        .disabled(!sessions.commandAvailability.canNavigatePanes)
 
         Button("Next Pane") {
           sessions.focusNextPane()
         }
         .keyboardShortcut("]", modifiers: .command)
-        .disabled((sessions.layout?.orderedShellIDs.count ?? 0) < 2)
+        .disabled(!sessions.commandAvailability.canNavigatePanes)
 
         Button("Previous Session") {
           sessions.showPreviousSession()
         }
         .keyboardShortcut("[", modifiers: [.command, .shift])
-        .disabled(sessions.sidebarOrderedSessions.count < 2)
+        .disabled(!sessions.commandAvailability.canNavigateSessions)
 
         Button("Next Session") {
           sessions.showNextSession()
         }
         .keyboardShortcut("]", modifiers: [.command, .shift])
-        .disabled(sessions.sidebarOrderedSessions.count < 2)
+        .disabled(!sessions.commandAvailability.canNavigateSessions)
 
         Divider()
 
@@ -205,14 +205,14 @@ struct AxoApp<Launch: AxoLaunchMode>: App {
           Task { await sessions.requestCloseShell(shellID) }
         }
         .keyboardShortcut("w", modifiers: .command)
-        .disabled(sessions.focusedShellID == nil)
+        .disabled(!sessions.commandAvailability.hasFocusedShell)
 
         Button("Close Session", role: .destructive) {
           if let sessionID = sessions.selectedSessionID {
             Task { await sessions.requestCloseSession(sessionID) }
           }
         }
-        .disabled(sessions.selectedSessionID == nil)
+        .disabled(!sessions.commandAvailability.hasSelectedSession)
       }
     }
 

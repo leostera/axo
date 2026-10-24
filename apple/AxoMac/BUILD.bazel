@@ -75,9 +75,12 @@ swift_test(
         "AXO_PI_EXTENSION_PATH": "$(rootpath //crates/axo-server:pi_extension_fixture)",
         "AXO_TEST_PI_EXECUTABLE": "$(rootpath //crates/axod:testdata/pi-fixture.sh)",
     },
-    deps = [":AxoMac"],
+    deps = [
+        ":AxoMac",
+        "//apple/AxoDaemonManager",
+    ],
     tags = ["no-sandbox"],
-    timeout = "short",
+    timeout = "moderate",
 )
 
 swift_library(
