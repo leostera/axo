@@ -1,6 +1,6 @@
 use std::collections::{HashMap, HashSet};
 use std::fs;
-use std::io::{self, Read, Write};
+use std::io::{self, Write};
 use std::os::fd::{AsRawFd, FromRawFd, OwnedFd, RawFd};
 use std::os::unix::fs::PermissionsExt;
 use std::os::unix::net::{UnixListener, UnixStream};
@@ -15,7 +15,7 @@ use crate::workspace_access::WorkspaceDirectoryAccess;
 use axo_ipc::{EventQueue, PushOutcome, TypedMethods};
 use axo_pi::takeover::{self, TakeoverPolicy, TakeoverTarget, VerifiedProcessId};
 use axo_pi::{
-    AgentCommand, BridgeSocketPath, PiLaunch, PiProcess, SocketCleanup, WriterLock, bridge,
+    AgentCommand, BridgeSocketPath, PiLaunch, PiProcess, SocketCleanup, WriterLock, worker,
 };
 use axo_protocol::rpc::{self, method};
 use axo_protocol::{
@@ -31,7 +31,7 @@ use axo_pty::{
 use jsonrpc_core::{Error as RpcError, ErrorCode, IoHandler};
 use rusqlite::{Connection, OptionalExtension, params};
 use serde::Serialize;
-use serde_json::{Value, json};
+use serde_json::Value;
 
 const DATABASE_FILE: &str = "axo.db";
 /// The longest transcript path Pi may ask to resume; the extension enforces the same bound.
@@ -1575,30 +1575,29 @@ impl SessionManager {
                 running.runtime_id,
             )
         };
-        let manager = Arc::downgrade(self);
+        let host = PiBridgeHost {
+            manager: Arc::downgrade(self),
+            binding: PiRuntimeBinding {
+                session_id,
+                shell_id,
+                runtime_id,
+            },
+            session_uuid: session_uuid.clone(),
+        };
+        let config = worker::WorkerConfig {
+            log_context: host.log_context(),
+            session_uuid,
+            pane_id,
+            initial_pwd,
+            session_file,
+            bridge_socket,
+            bridge_token,
+            process_id,
+        };
         let stop = Arc::clone(&self.stop_workers);
         let worker = thread::Builder::new()
             .name(format!("axo-pi-bridge-{}", shell_id.get()))
-            .spawn(move || {
-                run_pi_bridge_worker(
-                    manager,
-                    stop,
-                    PiRuntimeBinding {
-                        session_id,
-                        shell_id,
-                        runtime_id,
-                    },
-                    PiBridgeWorkerConfig {
-                        session_uuid,
-                        pane_id,
-                        initial_pwd,
-                        session_file,
-                        bridge_socket,
-                        bridge_token,
-                        process_id,
-                    },
-                );
-            })?;
+            .spawn(move || worker::run(&host, &stop, &config))?;
         self.workers
             .lock()
             .map_err(|_| io::Error::other("session worker lock was poisoned"))?
@@ -4155,320 +4154,85 @@ fn resolve_shell_executable(program: &str) -> io::Result<PathBuf> {
     axo_pty::command::resolve_executable(program, None, "shell")
 }
 
-/// Everything a bridge worker needs to reach and verify one running Pi.
-struct PiBridgeWorkerConfig {
+/// Connects one running Pi's bridge to the catalog while it is the pane's current process.
+struct PiBridgeHost {
+    manager: Weak<SessionManager>,
+    binding: PiRuntimeBinding,
     session_uuid: String,
-    pane_id: String,
-    initial_pwd: PathBuf,
-    session_file: PathBuf,
-    bridge_socket: BridgeSocketPath,
-    bridge_token: String,
-    process_id: u32,
 }
 
-fn run_pi_bridge_worker(
-    manager: Weak<SessionManager>,
-    stop: Arc<AtomicBool>,
-    binding: PiRuntimeBinding,
-    config: PiBridgeWorkerConfig,
-) {
-    let PiBridgeWorkerConfig {
-        session_uuid,
-        pane_id,
-        initial_pwd,
-        session_file,
-        bridge_socket,
-        bridge_token,
-        process_id,
-    } = config;
-    let PiRuntimeBinding {
-        session_id,
-        shell_id,
-        ..
-    } = binding;
-    let mut has_connected = false;
-    while !stop.load(Ordering::Relaxed) {
-        let Some(owner) = manager.upgrade() else {
-            return;
-        };
-        if !owner.pi_runtime_is_current(binding) {
-            return;
-        }
-        drop(owner);
+impl PiBridgeHost {
+    fn log_context(&self) -> String {
+        format!(
+            "session_id={} shell_id={}",
+            self.binding.session_id.get(),
+            self.binding.shell_id.get()
+        )
+    }
+}
 
-        let check_current = || {
-            if stop.load(Ordering::Relaxed)
-                || !manager
-                    .upgrade()
-                    .is_some_and(|owner| owner.pi_runtime_is_current(binding))
-            {
-                Err(io::Error::new(
-                    io::ErrorKind::Interrupted,
-                    "Pi bridge runtime is no longer current",
-                ))
-            } else {
-                Ok(())
-            }
-        };
-        let mut stream = match bridge::connect_until(
-            bridge_socket.as_path(),
-            Instant::now() + takeover::BRIDGE_REQUEST_TIMEOUT,
-            &check_current,
-        ) {
-            Ok(stream) => {
-                if !has_connected {
-                    log::info!(
-                        "event=pi.bridge_connected session_id={} shell_id={}",
-                        session_id.get(),
-                        shell_id.get()
-                    );
-                    has_connected = true;
-                }
-                stream
-            }
-            Err(_) => {
-                thread::sleep(Duration::from_millis(100));
-                continue;
-            }
-        };
-        if stream
-            .set_read_timeout(Some(Duration::from_millis(200)))
-            .and_then(|()| stream.set_write_timeout(Some(Duration::from_secs(2))))
-            .is_err()
-        {
-            return;
-        }
-        let auth = json!({ "type": "authenticate", "protocolVersion": 1, "token": bridge_token });
-        if bridge::write_record(&mut stream, &auth).is_err() {
-            continue;
-        }
+impl worker::BridgeHost for PiBridgeHost {
+    fn is_current(&self) -> bool {
+        self.manager
+            .upgrade()
+            .is_some_and(|owner| owner.pi_runtime_is_current(self.binding))
+    }
 
-        let mut phase = 0_u8;
-        let mut buffer = Vec::new();
-        let mut pi_session_id: Option<String> = None;
-        let mut active_stream_id: Option<String> = None;
-        let mut last_sequence = 0_u64;
-        let mut connection_valid = true;
-        while connection_valid && !stop.load(Ordering::Relaxed) {
-            let Some(owner) = manager.upgrade() else {
-                return;
-            };
-            if !owner.pi_runtime_is_current(binding) {
-                return;
-            }
-            drop(owner);
-            let mut chunk = [0_u8; 8192];
-            match stream.read(&mut chunk) {
-                Ok(0) => break,
-                Ok(length) => {
-                    buffer.extend_from_slice(&chunk[..length]);
-                    if buffer.len() > 8 * 1024 * 1024 && !buffer.contains(&b'\n') {
-                        break;
-                    }
-                    while let Some(newline) = buffer.iter().position(|byte| *byte == b'\n') {
-                        let line: Vec<_> = buffer.drain(..=newline).collect();
-                        if line.len() > 8 * 1024 * 1024 {
-                            connection_valid = false;
-                            break;
-                        }
-                        let Ok(record) = serde_json::from_slice::<Value>(&line[..line.len() - 1])
-                        else {
-                            connection_valid = false;
-                            break;
-                        };
-                        match phase {
-                            0 if record["type"] == "authenticated"
-                                && record["protocolVersion"] == 1 =>
-                            {
-                                phase = 1;
-                                log::info!(
-                                    "event=pi.bridge_authenticated session_id={} shell_id={}",
-                                    session_id.get(),
-                                    shell_id.get()
-                                );
-                            }
-                            1 if record["type"] == "hello" && record["protocolVersion"] == 1 => {
-                                let identity = &record["identity"];
-                                let file = session_file.to_string_lossy();
-                                let cwd = identity["cwd"].as_str();
-                                let expected_cwd = initial_pwd.to_string_lossy();
-                                let session_matches = identity["axoSessionId"] == session_uuid;
-                                let pane_matches = identity["axoPaneId"] == pane_id;
-                                let file_matches =
-                                    identity["sessionFile"].as_str() == Some(file.as_ref());
-                                let process_matches =
-                                    identity["processId"].as_u64() == Some(process_id as u64);
-                                let cwd_matches = cwd == Some(expected_cwd.as_ref());
-                                let exact = session_matches
-                                    && pane_matches
-                                    && file_matches
-                                    && process_matches
-                                    && cwd_matches;
-                                let Some(id) = identity["piSessionId"]
-                                    .as_str()
-                                    .filter(|id| !id.is_empty() && id.len() <= 128)
-                                else {
-                                    log::warn!(
-                                        "event=pi.binding_rejected session_id={} shell_id={} reason=invalid_pi_session_id",
-                                        session_id.get(),
-                                        shell_id.get()
-                                    );
-                                    connection_valid = false;
-                                    break;
-                                };
-                                if !exact {
-                                    log::warn!(
-                                        "event=pi.binding_rejected session_id={} shell_id={} session_match={} pane_match={} file_match={} process_match={} cwd_match={}",
-                                        session_id.get(),
-                                        shell_id.get(),
-                                        session_matches,
-                                        pane_matches,
-                                        file_matches,
-                                        process_matches,
-                                        cwd_matches
-                                    );
-                                    connection_valid = false;
-                                    break;
-                                }
-                                pi_session_id = Some(id.to_owned());
-                                if let Some(owner) = manager.upgrade() {
-                                    if owner
-                                        .persist_pi_session_id(binding, &session_uuid, id)
-                                        .and_then(|()| owner.set_pi_connection(binding, true))
-                                        .is_err()
-                                    {
-                                        connection_valid = false;
-                                        break;
-                                    }
-                                } else {
-                                    return;
-                                }
-                                phase = 2;
-                                log::info!(
-                                    "event=pi.session_binding_verified session_id={} shell_id={}",
-                                    session_id.get(),
-                                    shell_id.get()
-                                );
-                            }
-                            2 if record["type"] == "event" => {
-                                let Some(owner) = manager.upgrade() else {
-                                    return;
-                                };
-                                let Some(stream_id) =
-                                    record["streamId"].as_str().filter(|id| is_uuid(id))
-                                else {
-                                    connection_valid = false;
-                                    break;
-                                };
-                                let Some(sequence) =
-                                    record["sequence"].as_u64().filter(|sequence| {
-                                        *sequence > last_sequence
-                                            && *sequence <= 9_007_199_254_740_991
-                                    })
-                                else {
-                                    connection_valid = false;
-                                    break;
-                                };
-                                let Some(name) = record["name"].as_str().filter(|name| {
-                                    !name.is_empty()
-                                        && name.len() <= 128
-                                        && !name.chars().any(char::is_control)
-                                }) else {
-                                    connection_valid = false;
-                                    break;
-                                };
-                                let data = &record["data"];
-                                if serde_json::to_vec(data)
-                                    .map(|encoded| encoded.len() > 60_000)
-                                    .unwrap_or(true)
-                                {
-                                    connection_valid = false;
-                                    break;
-                                }
-                                if active_stream_id
-                                    .as_deref()
-                                    .is_some_and(|active| active != stream_id)
-                                {
-                                    connection_valid = false;
-                                    break;
-                                }
-                                active_stream_id = Some(stream_id.to_owned());
-                                last_sequence = sequence;
-                                if name == "session.resume.requested" {
-                                    let target_session_file = data
-                                        .as_object()
-                                        .filter(|record| record.len() == 1)
-                                        .and_then(|record| record.get("targetSessionFile"))
-                                        .and_then(Value::as_str);
-                                    let Some(target_session_file) = target_session_file else {
-                                        log::warn!(
-                                            "event=session.pi_resume_rejected session_id={} shell_id={} reason=invalid_request",
-                                            session_id.get(),
-                                            shell_id.get()
-                                        );
-                                        continue;
-                                    };
-                                    if let Err(error) = owner
-                                        .resume_archived_pi_session(binding, target_session_file)
-                                    {
-                                        log::warn!(
-                                            "event=session.pi_resume_rejected session_id={} shell_id={} error_kind={:?}",
-                                            session_id.get(),
-                                            shell_id.get(),
-                                            error.kind()
-                                        );
-                                    }
-                                    continue;
-                                }
-                                if !matches!(owner.observe_pi_event(binding, name, data), Ok(true))
-                                {
-                                    connection_valid = false;
-                                    break;
-                                }
-                                owner.publish_event(Event::PiEvent {
-                                    session_id,
-                                    pi_session_id: pi_session_id.clone().unwrap_or_default(),
-                                    stream_id: stream_id.to_owned(),
-                                    sequence,
-                                    name: name.to_owned(),
-                                    data: data.clone(),
-                                });
-                            }
-                            _ => {
-                                log::warn!(
-                                    "event=pi.bridge_protocol_rejected session_id={} shell_id={} phase={}",
-                                    session_id.get(),
-                                    shell_id.get(),
-                                    phase
-                                );
-                                connection_valid = false;
-                                break;
-                            }
-                        }
-                    }
-                }
-                Err(error)
-                    if matches!(
-                        error.kind(),
-                        io::ErrorKind::WouldBlock
-                            | io::ErrorKind::TimedOut
-                            | io::ErrorKind::Interrupted
-                    ) =>
-                {
-                    continue;
-                }
-                Err(_) => break,
-            }
+    fn bound(&self, pi_session_id: &str) -> io::Result<()> {
+        let owner = self
+            .manager
+            .upgrade()
+            .ok_or_else(|| io::Error::new(io::ErrorKind::Interrupted, "Axod is stopping"))?;
+        owner.persist_pi_session_id(self.binding, &self.session_uuid, pi_session_id)?;
+        owner.set_pi_connection(self.binding, true)
+    }
+
+    fn disconnected(&self) {
+        if let Some(owner) = self.manager.upgrade() {
+            let _ = owner.set_pi_connection(self.binding, false);
         }
-        if phase == 2
-            && let Some(owner) = manager.upgrade()
-        {
-            let _ = owner.set_pi_connection(binding, false);
-        }
-        if !connection_valid {
+    }
+
+    fn resume_requested(&self, target_session_file: Option<&str>) {
+        let context = self.log_context();
+        let Some(target_session_file) = target_session_file else {
+            log::warn!("event=session.pi_resume_rejected {context} reason=invalid_request");
             return;
+        };
+        let Some(owner) = self.manager.upgrade() else {
+            return;
+        };
+        if let Err(error) = owner.resume_archived_pi_session(self.binding, target_session_file) {
+            log::warn!(
+                "event=session.pi_resume_rejected {context} error_kind={:?}",
+                error.kind()
+            );
         }
-        thread::sleep(Duration::from_millis(100));
+    }
+
+    fn event(
+        &self,
+        pi_session_id: &str,
+        stream_id: &str,
+        sequence: u64,
+        name: &str,
+        data: Value,
+    ) -> bool {
+        let Some(owner) = self.manager.upgrade() else {
+            return false;
+        };
+        if !matches!(owner.observe_pi_event(self.binding, name, &data), Ok(true)) {
+            return false;
+        }
+        owner.publish_event(Event::PiEvent {
+            session_id: self.binding.session_id,
+            pi_session_id: pi_session_id.to_owned(),
+            stream_id: stream_id.to_owned(),
+            sequence,
+            name: name.to_owned(),
+            data,
+        });
+        true
     }
 }
 
@@ -4914,10 +4678,12 @@ fn unix_timestamp() -> i64 {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use axo_pi::bridge;
     use axo_protocol::LayoutDirection;
     use serde_json::{Value, json};
     use std::fs::OpenOptions;
     use std::io::BufReader;
+    use std::io::Read;
 
     fn sid(value: i64) -> SessionId {
         SessionId::new(value).unwrap()
@@ -5162,7 +4928,7 @@ mod tests {
                 .set_write_timeout(Some(Duration::from_secs(2)))
                 .unwrap();
             let mut reader = BufReader::new(stream);
-            let auth = bridge::read_record(&mut reader).unwrap();
+            let auth = bridge::read_record::<Value>(&mut reader).unwrap();
             assert_eq!(auth["token"], self.token);
             (worker, reader)
         }
@@ -5175,10 +4941,10 @@ mod tests {
             .unwrap();
             bridge::write_record(reader.get_mut(), &json!({
                 "type": "hello", "protocolVersion": 1,
-                "identity": { "axoSessionId": self.session_uuid, "axoPaneId": self.pane_id,
+                "identity": { "axoSessionId": self.session_uuid, "axoPaneId": self.pane_id, "piSessionId": "pi-takeover",
                     "sessionFile": self.file, "cwd": self.lifecycle.directory, "processId": process_id }
             })).unwrap();
-            let command = bridge::read_record(reader).unwrap();
+            let command = bridge::read_record::<Value>(reader).unwrap();
             assert_eq!(command["type"], "command");
             bridge::write_record(reader.get_mut(), &json!({
                 "type": "commandResult", "requestId": command["requestId"], "result": { "accepted": true }
@@ -6501,7 +6267,7 @@ mod tests {
             {
                 let (stream, _) = listener.accept().unwrap();
                 let mut reader = BufReader::new(stream);
-                let authentication = bridge::read_record(&mut reader).unwrap();
+                let authentication = bridge::read_record::<Value>(&mut reader).unwrap();
                 assert_eq!(authentication["token"], handshake_bridge_token);
                 bridge::write_record(
                     reader.get_mut(),
@@ -6516,6 +6282,7 @@ mod tests {
                         "identity": {
                             "axoSessionId": handshake_session_uuid,
                             "axoPaneId": handshake_pane_id,
+                            "piSessionId": "pi-takeover",
                             "sessionFile": handshake_session_file,
                             "cwd": "/tmp",
                             "processId": old_pi_process_id
@@ -6523,7 +6290,7 @@ mod tests {
                     }),
                 )
                 .unwrap();
-                let shutdown = bridge::read_record(&mut reader).unwrap();
+                let shutdown = bridge::read_record::<Value>(&mut reader).unwrap();
                 assert_eq!(shutdown["action"]["kind"], expected_action);
                 bridge::write_record(
                     reader.get_mut(),

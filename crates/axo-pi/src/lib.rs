@@ -8,12 +8,15 @@
 pub mod activity;
 pub mod bridge;
 mod command;
+pub mod connection;
 mod history;
 mod launch;
 mod lock;
 mod process_inspection;
+pub mod protocol;
 mod socket;
 pub mod takeover;
+pub mod worker;
 
 pub use activity::Activity;
 pub use command::AgentCommand;

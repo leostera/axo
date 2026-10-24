@@ -10,8 +10,8 @@ use std::process::Command;
 use std::time::{Duration, Instant};
 
 use axo_protocol::{SessionId, new_uuid_v4};
-use serde_json::{Value, json};
 
+use crate::protocol::{Action, CommandResult, Outgoing, ProtocolVersion, Record};
 use crate::{BridgeSocketPath, WriterLock, bridge, process_inspection};
 
 const TAKEOVER_TIMEOUT: Duration = Duration::from_secs(10);
@@ -26,13 +26,8 @@ const KILL_WAIT: Duration = Duration::from_secs(5);
 pub struct VerifiedProcessId(libc::pid_t);
 
 impl VerifiedProcessId {
-    pub fn parse(value: &Value) -> io::Result<Self> {
-        let Some(pid) = value.as_u64() else {
-            return Err(io::Error::new(
-                io::ErrorKind::InvalidData,
-                "Pi bridge process ID is invalid",
-            ));
-        };
+    /// A PID a Pi reported, if it could name a Pi: above 1, a valid `pid_t`, and not Axod.
+    pub fn new(pid: u64) -> io::Result<Self> {
         if pid <= 1 || pid > libc::pid_t::MAX as u64 || pid == u64::from(std::process::id()) {
             return Err(io::Error::new(
                 io::ErrorKind::InvalidData,
@@ -260,21 +255,22 @@ fn connect_to_bridge(
     stream.set_write_timeout(Some(Duration::from_secs(2)))?;
     bridge::write_record(
         &mut stream,
-        &json!({ "type": "authenticate", "protocolVersion": 1, "token": token }),
+        &Outgoing::Authenticate {
+            protocol_version: ProtocolVersion,
+            token,
+        },
     )?;
     let mut reader = BufReader::new(stream);
     let mut authenticated = false;
     loop {
-        let record = bridge::read_record_until(&mut reader, deadline, check_current)?;
-        match record["type"].as_str() {
-            Some("authenticated") if record["protocolVersion"] == 1 => authenticated = true,
-            Some("hello") if authenticated && record["protocolVersion"] == 1 => {
-                let identity = &record["identity"];
-                let process_id = VerifiedProcessId::parse(&identity["processId"])?;
-                let exact_identity = identity["axoSessionId"] == session_uuid
-                    && identity["axoPaneId"] == pane_id
-                    && identity["sessionFile"] == session_file.to_string_lossy().as_ref()
-                    && identity["cwd"] == initial_pwd.to_string_lossy().as_ref();
+        match bridge::read_record_until(&mut reader, deadline, check_current)? {
+            Record::Authenticated { .. } => authenticated = true,
+            Record::Hello { identity, .. } if authenticated => {
+                let process_id = VerifiedProcessId::new(identity.process_id)?;
+                let exact_identity = identity.axo_session_id == session_uuid
+                    && identity.axo_pane_id == pane_id
+                    && identity.session_file.as_deref() == Some(session_file)
+                    && identity.cwd == initial_pwd;
                 if !exact_identity {
                     return Err(io::Error::new(
                         io::ErrorKind::PermissionDenied,
@@ -283,14 +279,14 @@ fn connect_to_bridge(
                 }
                 return Ok((reader, process_id));
             }
-            Some("protocolError") => {
+            Record::ProtocolError { .. } => {
                 return Err(io::Error::new(
                     io::ErrorKind::PermissionDenied,
                     "Pi bridge rejected takeover authentication",
                 ));
             }
-            Some("event") => {}
-            _ => {
+            Record::Event { .. } => {}
+            Record::Hello { .. } | Record::CommandResult { .. } => {
                 return Err(io::Error::new(
                     io::ErrorKind::InvalidData,
                     "Pi bridge sent an invalid takeover handshake",
@@ -311,37 +307,32 @@ fn request_shutdown(
     let (mut reader, process_id) = connect_to_bridge(target, deadline, check_current)?;
     check_current()?;
     let request_id = format!("takeover-{}", new_uuid_v4()?);
-    let graceful_shutdown = bridge::write_record(
-        reader.get_mut(),
-        &json!({
-            "type": "command",
-            "requestId": request_id,
-            "axoSessionId": session_uuid,
-            "action": {
-                "kind": if takeover_policy == TakeoverPolicy::PreserveExistingProcess {
-                    "shutdownIfIdle"
-                } else {
-                    "shutdown"
-                }
-            }
-        }),
-    )
-    .and_then(|()| {
+    let action = match takeover_policy {
+        TakeoverPolicy::PreserveExistingProcess => Action::ShutdownIfIdle,
+        TakeoverPolicy::ExplicitUserRestart => Action::Shutdown,
+    };
+    let command = Outgoing::Command {
+        request_id: &request_id,
+        axo_session_id: session_uuid,
+        action,
+    };
+    let graceful_shutdown = bridge::write_record(reader.get_mut(), &command).and_then(|()| {
         loop {
-            let record = match bridge::read_record_until(&mut reader, deadline, check_current) {
-                Ok(record) => record,
-                Err(error) => break Err(error),
-            };
-            if record["type"] != "commandResult" || record["requestId"] != request_id {
-                continue;
+            match bridge::read_record_until(&mut reader, deadline, check_current)? {
+                Record::CommandResult {
+                    request_id: answered,
+                    result,
+                } if answered == request_id => {
+                    return match result {
+                        CommandResult::Accepted => Ok(()),
+                        CommandResult::Rejected(_) => Err(io::Error::new(
+                            io::ErrorKind::WouldBlock,
+                            "Pi did not accept the graceful takeover request",
+                        )),
+                    };
+                }
+                _ => continue,
             }
-            if record["result"]["accepted"] == true {
-                break Ok(());
-            }
-            break Err(io::Error::new(
-                io::ErrorKind::WouldBlock,
-                "Pi did not accept the graceful takeover request",
-            ));
         }
     });
     Ok(ShutdownAttempt {
@@ -626,15 +617,16 @@ mod tests {
 
     #[test]
     fn authenticated_pi_process_ids_reject_invalid_or_self_targets() {
-        for value in [
-            json!(0),
-            json!(1),
-            json!(-1),
-            json!(u64::MAX),
-            json!(std::process::id()),
+        for pid in [
+            0,
+            1,
+            u64::MAX,
+            libc::pid_t::MAX as u64 + 1,
+            u64::from(std::process::id()),
         ] {
-            assert!(VerifiedProcessId::parse(&value).is_err());
+            assert!(VerifiedProcessId::new(pid).is_err());
         }
+        assert_eq!(VerifiedProcessId::new(4242).unwrap().get(), 4242);
     }
 
     #[test]

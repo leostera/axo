@@ -7,13 +7,14 @@ use std::path::Path;
 use std::time::{Duration, Instant};
 
 use axo_pty::process;
-use serde_json::Value;
+use serde::Serialize;
+use serde::de::DeserializeOwned;
 
 pub const MAX_RECORD_BYTES: usize = 8 * 1024 * 1024;
 pub(crate) const POLL_INTERVAL: Duration = Duration::from_millis(100);
 
 /// Reads one record, blocking up to the stream's read timeout.
-pub fn read_record(reader: &mut BufReader<UnixStream>) -> io::Result<Value> {
+pub fn read_record<T: DeserializeOwned>(reader: &mut BufReader<UnixStream>) -> io::Result<T> {
     let mut line = Vec::new();
     let mut limited = reader.take((MAX_RECORD_BYTES + 1) as u64);
     let length = limited.read_until(b'\n', &mut line)?;
@@ -34,11 +35,11 @@ pub fn read_record(reader: &mut BufReader<UnixStream>) -> io::Result<Value> {
 
 // A socket read timeout alone restarts on every byte/event. Recovery must have
 // one deadline even when a bridge dribbles bytes or streams unrelated events.
-pub fn read_record_until(
+pub fn read_record_until<T: DeserializeOwned>(
     reader: &mut BufReader<UnixStream>,
     deadline: Instant,
     check_current: &impl Fn() -> io::Result<()>,
-) -> io::Result<Value> {
+) -> io::Result<T> {
     let mut line = Vec::new();
     loop {
         check_current()?;
@@ -196,7 +197,7 @@ pub fn connect_until(
     Ok(UnixStream::from(socket))
 }
 
-pub fn write_record(stream: &mut UnixStream, value: &Value) -> io::Result<()> {
+pub fn write_record(stream: &mut UnixStream, value: &impl Serialize) -> io::Result<()> {
     let mut encoded = serde_json::to_vec(value).map_err(io::Error::other)?;
     encoded.push(b'\n');
     stream.write_all(&encoded)
@@ -271,8 +272,12 @@ mod tests {
         });
         let mut reader = BufReader::new(reader);
         let start = Instant::now();
-        let error = read_record_until(&mut reader, start + Duration::from_millis(150), &|| Ok(()))
-            .unwrap_err();
+        let error = read_record_until::<serde_json::Value>(
+            &mut reader,
+            start + Duration::from_millis(150),
+            &|| Ok(()),
+        )
+        .unwrap_err();
         assert_eq!(error.kind(), io::ErrorKind::TimedOut);
         assert!(start.elapsed() < Duration::from_secs(1));
         drop(reader);
@@ -294,7 +299,7 @@ mod tests {
         let start = Instant::now();
         let deadline = start + Duration::from_millis(150);
         loop {
-            match read_record_until(&mut reader, deadline, &|| Ok(())) {
+            match read_record_until::<serde_json::Value>(&mut reader, deadline, &|| Ok(())) {
                 Ok(record) => assert_eq!(record["type"], "event"),
                 Err(error) => {
                     assert_eq!(error.kind(), io::ErrorKind::TimedOut);
