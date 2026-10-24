@@ -1,6 +1,6 @@
 # Axo.app audit, second pass
 
-Status: audit, 2026-10-24. Follows `docs/axo-app-architecture-audit.md` (all of its findings resolved). Scope: `apple/*` plus the Axod event/subscription contract the app now depends on.
+Status: resolved, 2026-10-24 (see Resolution). Follows `docs/axo-app-architecture-audit.md` (all of its findings resolved). Scope: `apple/*` plus the Axod event/subscription contract the app now depends on.
 
 ## P0 — correctness
 
@@ -39,3 +39,27 @@ Status: audit, 2026-10-24. Follows `docs/axo-app-architecture-audit.md` (all of 
 3. Fixes 7–10: focus, paste and status typing, event-only command reconciliation.
 4. Fixes 5–6 and 11: settings client and events, batched `events.next`.
 5. P2 items, with the UX decisions in item 13 confirmed by the user first.
+
+## Resolution
+
+| Item | Fix |
+| --- | --- |
+| 1 Pi events on catalog stream | `EventScope`: catalog subscribers never receive `terminal.output` or `pi.event` (`e858847`). |
+| 2 Lock held across long-poll | Registry stores `Arc<LocalSubscription>`; waits happen on a per-subscription receiver lock. Unit test proves a concurrent poll returns immediately while another subscriber waits. Initial snapshots now go only to the new subscriber (`e858847`). |
+| 3 Invisible connection loss | `CatalogConnection` (`connecting`/`live`/`reconnecting`) with a workbench banner; after 3 consecutive failures `DaemonController.checkHealth()` runs once per outage (`e7c63b3`). |
+| 4 Slow start restarts axod | Startup timeout now reports `.failed`; restarting the LaunchAgent requires the confirmed **Restart axod…** action or a build mismatch (`e7c63b3`). |
+| 5 Settings bypass client | `AxodSettingsClient`; one `DaemonCommandSettingSection` for agent and shell (`a7e632a`). |
+| 6 Remote-access polling | axod publishes `relay.status` catalog events on real state changes; `RemoteAccessModel` is fed by the catalog stream (`a7e632a`). |
+| 7 String status | `TerminalSurfaceConnection` enum (`e7c63b3`). |
+| 8 Focus polling | Single deferred `requestFocus()` path via `GhosttyRuntime.requestFocus(for:)` (`e7c63b3`). |
+| 9 Paste polling | Synchronous `pasteText`, returning success to drag/drop and Services (`e7c63b3`). |
+| 10 Double fetch | Rename, archive and Pi restart apply Axod's returned records; split still relists on an ambiguous outcome (`e7c63b3`). |
+| 11 One event per connection | `events.next` `maxEvents` (≤256) returns ordered batches; the app requests 256 (`e858847`, `e7c63b3`). |
+| 12 Placeholder view | `ContentUnavailableView` (`e7c63b3`). |
+| 13 Menus | Toggle Sidebar ⌃⌘S; Cut-as-copy kept (user decision); ⌘W asks via `axo.shell.busy` when a foreground job or Pi turn is running, and asks when busy state is unknown (`e858847`, `e7c63b3`). |
+| 14 Large views | Workbench split into sidebar row, rename editor, workspace sheet and pane files; Settings split into General, About, command section and remote-access model. |
+| 15 Double compile | `AxoMac` library has no `@main`; `AxoMacMain` and `AxoMacTestHost` entry targets link it (`7250992`). |
+| 16 Daemon defaults | `DaemonPreferenceKey`, injectable `UserDefaults`, `Duration` sleeps; uniqueness test (`7250992`). |
+| 17 Clippy | Parameter objects for the Pi bridge paths; `is_multiple_of`/`as_chunks`. `cargo clippy --workspace --all-targets` is clean (`2fe4d0f`). |
+
+Not verified here: the real-UI visual suite (blocked while the user's Axo is open) and live behavior on the running daemon, which is still an older build.
