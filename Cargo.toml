@@ -1,3 +1,3 @@
 [workspace]
-members = ["crates/axo-server", "crates/axod"]
+members = ["crates/axo-server", "crates/axod", "crates/axod-loadtest"]
 resolver = "3"

@@ -24,6 +24,9 @@ const MAX_IN_FLIGHT_PER_CONNECTION: usize = 64;
 const STOP_POLL_INTERVAL: Duration = Duration::from_millis(20);
 /// Grace period for in-flight blocking handlers when the daemon stops.
 const SHUTDOWN_GRACE: Duration = Duration::from_secs(2);
+/// Requests slower than this are logged once with their method and duration. Long-polls
+/// (`axo.session.events.next`) wait by design and are excluded.
+const SLOW_REQUEST: Duration = Duration::from_millis(100);
 
 /// Registers synchronous handlers so they run off the executor.
 pub(crate) trait BlockingMethods {
@@ -152,7 +155,10 @@ async fn serve_connection(stream: UnixStream, handler: Arc<IoHandler>) {
         let responses = responses.clone();
         tokio::spawn(async move {
             let _permit = permit;
-            if let Some(response) = handler.handle_request(&request).await {
+            let started = std::time::Instant::now();
+            let response = handler.handle_request(&request).await;
+            log_if_slow(&request, started.elapsed());
+            if let Some(response) = response {
                 let _ = responses.send(response).await;
             }
         });
@@ -160,4 +166,29 @@ async fn serve_connection(stream: UnixStream, handler: Arc<IoHandler>) {
     // In-flight requests keep their own sender; the writer finishes after the last response.
     drop(responses);
     let _ = writer_task.await;
+}
+
+#[derive(serde::Deserialize)]
+struct MethodName<'a> {
+    #[serde(borrow)]
+    method: Option<&'a str>,
+}
+
+fn log_if_slow(request: &str, elapsed: Duration) {
+    if elapsed < SLOW_REQUEST {
+        return;
+    }
+    // Only the method name is logged: parameters can carry terminal input or paths.
+    let method = serde_json::from_str::<MethodName>(request)
+        .ok()
+        .and_then(|name| name.method)
+        .filter(|method| method.len() <= 64 && method.bytes().all(|b| b.is_ascii_graphic()));
+    if method == Some("axo.session.events.next") {
+        return;
+    }
+    log::warn!(
+        "event=ipc.slow_request method={} elapsed_ms={}",
+        method.unwrap_or("unknown"),
+        elapsed.as_millis()
+    );
 }

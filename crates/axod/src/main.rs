@@ -93,6 +93,7 @@ fn main() {
         std::process::id(),
         axo_server::build_number()
     );
+    raise_open_file_limit();
     if let Err(error) = axo_server::serve_ipc(
         cli.socket.as_deref(),
         &server_directory,
@@ -102,6 +103,40 @@ fn main() {
         std::process::exit(1);
     }
     log::info!("event=daemon.stopped");
+}
+
+/// launchd starts agents with a soft limit of 256 descriptors. Every pane costs about four (PTY
+/// master, attach socket, pump wake pipe, child pipes) plus one per client connection, so a few
+/// dozen panes with the app and web clients attached would exhaust it. Raise the soft limit to
+/// the hard limit, capped at macOS's per-process maximum (`OPEN_MAX`).
+fn raise_open_file_limit() {
+    const TARGET: libc::rlim_t = 10_240;
+    let mut limit = libc::rlimit {
+        rlim_cur: 0,
+        rlim_max: 0,
+    };
+    // SAFETY: getrlimit/setrlimit read and write one initialized rlimit.
+    if unsafe { libc::getrlimit(libc::RLIMIT_NOFILE, &mut limit) } != 0 {
+        log::warn!(
+            "event=daemon.nofile_unknown error_kind={:?}",
+            io::Error::last_os_error().kind()
+        );
+        return;
+    }
+    let wanted = TARGET.min(limit.rlim_max);
+    if limit.rlim_cur >= wanted {
+        return;
+    }
+    let previous = limit.rlim_cur;
+    limit.rlim_cur = wanted;
+    if unsafe { libc::setrlimit(libc::RLIMIT_NOFILE, &limit) } == 0 {
+        log::info!("event=daemon.nofile_raised from={previous} to={wanted}");
+    } else {
+        log::warn!(
+            "event=daemon.nofile_raise_failed from={previous} wanted={wanted} error_kind={:?}",
+            io::Error::last_os_error().kind()
+        );
+    }
 }
 
 fn attach_terminal(socket_path: &Path, shell_id: i64) -> io::Result<()> {

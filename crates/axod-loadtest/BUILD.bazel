@@ -1,0 +1,43 @@
+load("@crates//:defs.bzl", "all_crate_deps", "crate_edition")
+load("@rules_rust//rust:defs.bzl", "rust_binary", "rust_test")
+
+package(default_visibility = ["//visibility:public"])
+
+# Heavy profile (the pass bar, control-plane p99 < 10 ms):
+#   bazel run -c opt //crates/axod-loadtest -- --profile heavy
+rust_binary(
+    name = "axod-loadtest",
+    srcs = glob(["src/*.rs"]),
+    data = ["//crates/axod", "//crates/axod:testdata/pi-fixture.sh", "//crates/axo-server:pi_extension_fixture"],
+    edition = crate_edition(),
+    env = {
+        "AXOD_BINARY": "$(rootpath //crates/axod)",
+        "AXO_PI_EXTENSION_PATH": "$(rootpath //crates/axo-server:pi_extension_fixture)",
+        "AXO_TEST_PI_EXECUTABLE": "$(rootpath //crates/axod:testdata/pi-fixture.sh)",
+    },
+    proc_macro_deps = all_crate_deps(proc_macro = True),
+    testonly = True,
+    deps = all_crate_deps(normal = True),
+)
+
+rust_test(
+    name = "unit_tests",
+    crate = ":axod-loadtest",
+    edition = crate_edition(),
+)
+
+# Smoke profile: every request succeeds and nothing stalls.
+rust_test(
+    name = "smoke_test",
+    srcs = ["tests/smoke.rs"],
+    data = [":axod-loadtest", "//crates/axod", "//crates/axod:testdata/pi-fixture.sh", "//crates/axo-server:pi_extension_fixture"],
+    edition = crate_edition(),
+    env = {
+        "AXOD_LOADTEST_BINARY": "$(rootpath :axod-loadtest)",
+        "AXOD_BINARY": "$(rootpath //crates/axod)",
+        "AXO_PI_EXTENSION_PATH": "$(rootpath //crates/axo-server:pi_extension_fixture)",
+        "AXO_TEST_PI_EXECUTABLE": "$(rootpath //crates/axod:testdata/pi-fixture.sh)",
+    },
+    tags = ["exclusive"],
+    timeout = "short",
+)

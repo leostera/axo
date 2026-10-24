@@ -2139,8 +2139,7 @@ impl SessionManager {
         if result == -1 {
             return Err(io::Error::last_os_error());
         }
-        let process_id = running.child.id() as libc::pid_t;
-        signal_shell(-process_id, process_id, libc::SIGWINCH);
+        signal_shell(&running.child, libc::SIGWINCH);
         Ok(())
     }
 
@@ -2970,9 +2969,10 @@ impl SessionManager {
             .lock()
             .map(|mut state| std::mem::take(&mut state.running))
             .unwrap_or_default();
-        for (_, mut shell) in running {
-            terminate_shell(&mut shell.child);
-        }
+        let mut shells: Vec<RunningShell> = running.into_values().collect();
+        let mut children: Vec<&mut Child> =
+            shells.iter_mut().map(|shell| &mut shell.child).collect();
+        terminate_shells(&mut children);
     }
 
     fn pi_runtime_is_current(&self, binding: PiRuntimeBinding) -> bool {
@@ -6128,55 +6128,83 @@ impl Drop for ShellCleanup {
 }
 
 fn terminate_shell(child: &mut Child) {
-    match child.try_wait() {
-        Ok(Some(_)) => return,
-        Ok(None) => {}
-        Err(error) => {
-            log::error!(
+    terminate_shells(&mut [child]);
+}
+
+/// How long stopped shells get to exit after SIGHUP/SIGTERM before SIGKILL.
+const SHELL_STOP_GRACE: Duration = Duration::from_millis(500);
+/// How long to wait for the kernel to reap after SIGKILL before reporting a stuck process.
+const SHELL_KILL_WAIT: Duration = Duration::from_secs(2);
+
+/// Stops every child with one shared timeout policy: all are signalled together and waited on
+/// together, so stopping N shells takes one grace period, not N.
+///
+/// SIGHUP is what a closing terminal sends: interactive shells ignore SIGTERM but exit on SIGHUP
+/// and forward it to their jobs. SIGTERM covers non-shell agents. Survivors get SIGKILL.
+fn terminate_shells(children: &mut [&mut Child]) {
+    let mut running: Vec<&mut Child> = Vec::with_capacity(children.len());
+    for child in children.iter_mut() {
+        match child.try_wait() {
+            Ok(Some(_)) => {}
+            Ok(None) => running.push(child),
+            Err(error) => log::error!(
                 "event=session.shell_stop_unconfirmed pid={} phase=before_signal error_kind={:?}",
                 child.id(),
                 error.kind()
-            );
-            return;
+            ),
         }
     }
-    let process_id = child.id() as libc::pid_t;
-    let process_group = -process_id;
-    log::info!("event=session.shell_stop_started pid={process_id}");
-    // The process-group signal covers foreground jobs; the direct signal also
-    // covers a shell that changed its process group for interactive job control.
-    signal_shell(process_group, process_id, libc::SIGTERM);
-
-    match wait_for_shell_exit(child, Duration::from_millis(500)) {
-        Ok(true) => {
-            log::info!("event=session.shell_stopped pid={process_id}");
-            return;
-        }
-        Ok(false) => {}
-        Err(error) => {
-            log::error!(
-                "event=session.shell_stop_unconfirmed pid={process_id} phase=term_wait error_kind={:?}",
-                error.kind()
-            );
-            return;
-        }
+    for child in &running {
+        log::info!("event=session.shell_stop_started pid={}", child.id());
+        signal_shell(child, libc::SIGHUP);
+        signal_shell(child, libc::SIGTERM);
     }
-
-    signal_shell(process_group, process_id, libc::SIGKILL);
-    match wait_for_shell_exit(child, Duration::from_secs(2)) {
-        Ok(true) => log::info!("event=session.shell_stopped pid={process_id}"),
-        Ok(false) => log::error!("event=session.shell_stop_timed_out pid={process_id}"),
-        Err(error) => log::error!(
-            "event=session.shell_stop_unconfirmed pid={process_id} phase=kill_wait error_kind={:?}",
-            error.kind()
-        ),
+    let survivors = wait_for_exits(running, SHELL_STOP_GRACE, "term_wait");
+    for child in &survivors {
+        signal_shell(child, libc::SIGKILL);
+    }
+    for child in wait_for_exits(survivors, SHELL_KILL_WAIT, "kill_wait") {
+        log::error!("event=session.shell_stop_timed_out pid={}", child.id());
     }
 }
 
-fn signal_shell(process_group: libc::pid_t, process_id: libc::pid_t, signal: libc::c_int) {
-    // SAFETY: process_group and process_id come from the child this manager spawned.
+/// Waits until `timeout` for the children to exit; returns the ones still running.
+fn wait_for_exits<'a>(
+    mut running: Vec<&'a mut Child>,
+    timeout: Duration,
+    phase: &str,
+) -> Vec<&'a mut Child> {
+    let deadline = Instant::now() + timeout;
+    loop {
+        running.retain_mut(|child| match child.try_wait() {
+            Ok(Some(_)) => {
+                log::info!("event=session.shell_stopped pid={}", child.id());
+                false
+            }
+            Ok(None) => true,
+            Err(error) => {
+                log::error!(
+                    "event=session.shell_stop_unconfirmed pid={} phase={phase} error_kind={:?}",
+                    child.id(),
+                    error.kind()
+                );
+                false
+            }
+        });
+        if running.is_empty() || Instant::now() >= deadline {
+            return running;
+        }
+        thread::sleep(Duration::from_millis(10));
+    }
+}
+
+/// Signals the child's process group (its foreground jobs) and the child itself (a shell that
+/// moved to another group for job control).
+fn signal_shell(child: &Child, signal: libc::c_int) {
+    let process_id = child.id() as libc::pid_t;
+    // SAFETY: the pid comes from a child this manager spawned and has not yet reaped.
     unsafe {
-        libc::kill(process_group, signal);
+        libc::kill(-process_id, signal);
         libc::kill(process_id, signal);
     }
 }
@@ -6213,6 +6241,7 @@ fn wait_until_readable(descriptor: RawFd, timeout: Duration) -> bool {
     ready != 0
 }
 
+#[cfg(test)]
 fn wait_for_shell_exit(child: &mut Child, timeout: Duration) -> io::Result<bool> {
     let deadline = Instant::now() + timeout;
     while Instant::now() < deadline {
@@ -7808,6 +7837,49 @@ mod tests {
             )
             .unwrap();
         assert_eq!(exited_state, "archived");
+    }
+
+    /// A child in its own process group (like a PTY shell) running `script` under `sh`.
+    fn spawn_group_leader(script: &str) -> Child {
+        let mut command = Command::new("/bin/sh");
+        command.args(["-c", script]).process_group(0);
+        let child = command.spawn().unwrap();
+        // Give sh time to install its traps before it is signalled.
+        thread::sleep(Duration::from_millis(100));
+        child
+    }
+
+    #[test]
+    fn shells_that_ignore_sigterm_stop_on_sighup_without_waiting_for_sigkill() {
+        // Interactive shells ignore SIGTERM; a terminal closing sends SIGHUP.
+        let mut child = spawn_group_leader("trap '' TERM; while :; do sleep 1; done");
+        let started = Instant::now();
+        terminate_shell(&mut child);
+        assert!(child.try_wait().unwrap().is_some());
+        assert!(
+            started.elapsed() < SHELL_STOP_GRACE,
+            "took {:?}",
+            started.elapsed()
+        );
+    }
+
+    #[test]
+    fn stopping_many_stubborn_shells_costs_one_grace_period() {
+        let mut children: Vec<Child> = (0..6)
+            .map(|_| spawn_group_leader("trap '' HUP TERM; while :; do sleep 1; done"))
+            .collect();
+        let started = Instant::now();
+        let mut refs: Vec<&mut Child> = children.iter_mut().collect();
+        terminate_shells(&mut refs);
+        let elapsed = started.elapsed();
+        for child in &mut children {
+            assert!(child.try_wait().unwrap().is_some());
+        }
+        // Sequential stops would take 6 × 500 ms.
+        assert!(
+            elapsed >= SHELL_STOP_GRACE && elapsed < SHELL_STOP_GRACE * 2,
+            "took {elapsed:?}"
+        );
     }
 
     #[test]
