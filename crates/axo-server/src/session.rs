@@ -1243,6 +1243,7 @@ impl SessionManager {
         fs::create_dir_all(&pi_session_directory)?;
         fs::set_permissions(&pi_session_directory, fs::Permissions::from_mode(0o700))?;
         ensure_pi_bridge_socket_paths(&database, &pi_session_directory)?;
+        remove_abandoned_pi_bridge_sockets(&database)?;
 
         let workspace_access = restore_workspace_accesses(&database)?;
         let subscribers = EventBus::default();
@@ -5326,6 +5327,99 @@ fn store_pi_bridge_token(database: &Connection, session_uuid: &str, token: &str)
     Ok(())
 }
 
+/// Removes the socket file a killed Pi left at `path`. Callers must have proven that no Pi for
+/// the Session is alive (they hold its writer lock, or found it free). Anything that is not a
+/// socket is left in place.
+fn remove_abandoned_pi_bridge_socket(session_id: SessionId, path: &Path) -> io::Result<()> {
+    use std::os::unix::fs::FileTypeExt;
+    match fs::symlink_metadata(path) {
+        Ok(metadata) if metadata.file_type().is_socket() => {
+            fs::remove_file(path)?;
+            log::info!(
+                "event=pi.bridge_socket_removed session_id={} reason=abandoned",
+                session_id.0
+            );
+            Ok(())
+        }
+        Ok(_) => {
+            log::warn!(
+                "event=pi.bridge_socket_blocked session_id={} reason=not_a_socket",
+                session_id.0
+            );
+            Ok(())
+        }
+        Err(error) if error.kind() == io::ErrorKind::NotFound => Ok(()),
+        Err(error) => Err(error),
+    }
+}
+
+/// Startup reconciliation: a Session's bridge socket is abandoned when no Pi holds the
+/// Session's writer lock. Sessions whose Pi is still alive (an orphan of a crashed Axod) keep
+/// theirs. Failures are logged and skipped; they must not keep Axod from starting.
+fn remove_abandoned_pi_bridge_sockets(database: &Connection) -> io::Result<()> {
+    let records = {
+        let mut statement = database
+            .prepare(
+                "SELECT id, pi_session_file, pi_bridge_socket_path FROM sessions
+                 WHERE pi_session_file IS NOT NULL AND pi_bridge_socket_path IS NOT NULL",
+            )
+            .map_err(io::Error::other)?;
+        statement
+            .query_map([], |row| {
+                Ok((
+                    SessionId(row.get(0)?),
+                    PathBuf::from(row.get::<_, String>(1)?),
+                    PathBuf::from(row.get::<_, String>(2)?),
+                ))
+            })
+            .map_err(io::Error::other)?
+            .collect::<Result<Vec<_>, _>>()
+            .map_err(io::Error::other)?
+    };
+    for (session_id, session_file, socket_path) in records {
+        let result = pi_writer_is_alive(&session_file).and_then(|alive| {
+            if alive {
+                Ok(())
+            } else {
+                remove_abandoned_pi_bridge_socket(session_id, &socket_path)
+            }
+        });
+        if let Err(error) = result {
+            log::warn!(
+                "event=pi.bridge_socket_reconcile_failed session_id={} error_kind={:?}",
+                session_id.0,
+                error.kind()
+            );
+        }
+    }
+    Ok(())
+}
+
+/// Whether a Pi holds the Session's writer lock. Never creates the lock file: without one, no
+/// Pi can be holding it.
+fn pi_writer_is_alive(session_file: &Path) -> io::Result<bool> {
+    let lock = match OpenOptions::new()
+        .read(true)
+        .custom_flags(libc::O_NOFOLLOW)
+        .open(session_file.with_extension("jsonl.lock"))
+    {
+        Ok(lock) => lock,
+        Err(error) if error.kind() == io::ErrorKind::NotFound => return Ok(false),
+        Err(error) => return Err(error),
+    };
+    // SAFETY: lock is a valid file descriptor and flock only changes its advisory lock. The
+    // probe's lock is released when `lock` closes.
+    if unsafe { libc::flock(lock.as_raw_fd(), libc::LOCK_EX | libc::LOCK_NB) } == 0 {
+        return Ok(false);
+    }
+    let error = io::Error::last_os_error();
+    if error.raw_os_error() == Some(libc::EWOULDBLOCK) {
+        Ok(true)
+    } else {
+        Err(error)
+    }
+}
+
 fn acquire_pi_writer_lock(session_file: &Path) -> io::Result<OwnedFd> {
     let lock_path = session_file.with_extension("jsonl.lock");
     let lock = OpenOptions::new()
@@ -5506,6 +5600,9 @@ fn spawn_pi(
         pane_id,
         ..
     } = request;
+    // Holding `lock` proves no earlier Pi for this Session is alive (each Pi inherits the
+    // lock), so a socket file at its bridge path is abandoned; Pi cannot listen over one.
+    remove_abandoned_pi_bridge_socket(*session_id, bridge_socket.as_path())?;
     let extension = resolve_pi_extension_path()?;
     let executable = resolve_pi_executable(&agent_command.0.executable)?;
     let home = super::current_user_home_directory()?;
@@ -6402,6 +6499,86 @@ fn unix_timestamp() -> i64 {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// A socket file whose listener is gone, as a killed Pi leaves it.
+    fn abandoned_socket(path: &Path) {
+        drop(UnixListener::bind(path).unwrap());
+        assert!(fs::symlink_metadata(path).is_ok());
+    }
+
+    fn bridge_socket_directory() -> PathBuf {
+        // /tmp, not the per-user temp directory: socket paths are limited to 104 bytes.
+        let directory =
+            PathBuf::from("/tmp").join(format!("axo-bridge-{}", create_uuid_v4().unwrap()));
+        fs::create_dir_all(&directory).unwrap();
+        directory
+    }
+
+    #[test]
+    fn abandoned_bridge_socket_is_removed_but_other_files_are_not() {
+        let directory = bridge_socket_directory();
+        let socket = directory.join("abandoned.sock");
+        abandoned_socket(&socket);
+        remove_abandoned_pi_bridge_socket(SessionId(1), &socket).unwrap();
+        assert!(!socket.exists());
+
+        remove_abandoned_pi_bridge_socket(SessionId(1), &socket).unwrap();
+
+        let regular = directory.join("regular.sock");
+        fs::write(&regular, b"not a socket").unwrap();
+        remove_abandoned_pi_bridge_socket(SessionId(1), &regular).unwrap();
+        assert!(regular.exists());
+        fs::remove_dir_all(directory).unwrap();
+    }
+
+    #[test]
+    fn pi_writer_liveness_follows_the_writer_lock() {
+        let directory = bridge_socket_directory();
+        let session_file = directory.join("session.jsonl");
+        assert!(!pi_writer_is_alive(&session_file).unwrap());
+        assert!(
+            !session_file.with_extension("jsonl.lock").exists(),
+            "probing must not create the lock file"
+        );
+
+        let writer = acquire_pi_writer_lock(&session_file).unwrap();
+        assert!(pi_writer_is_alive(&session_file).unwrap());
+        drop(writer);
+        assert!(!pi_writer_is_alive(&session_file).unwrap());
+        fs::remove_dir_all(directory).unwrap();
+    }
+
+    #[test]
+    fn startup_reconciliation_keeps_sockets_of_live_pis_only() {
+        let directory = bridge_socket_directory();
+        let database = Connection::open_in_memory().unwrap();
+        database
+            .execute_batch(
+                "CREATE TABLE sessions (id INTEGER PRIMARY KEY, pi_session_file TEXT, pi_bridge_socket_path TEXT);",
+            )
+            .unwrap();
+        let live_file = directory.join("live.jsonl");
+        let live_socket = directory.join("live.sock");
+        let dead_file = directory.join("dead.jsonl");
+        let dead_socket = directory.join("dead.sock");
+        for (id, file, socket) in [(1, &live_file, &live_socket), (2, &dead_file, &dead_socket)] {
+            abandoned_socket(socket);
+            database
+                .execute(
+                    "INSERT INTO sessions VALUES (?1, ?2, ?3)",
+                    params![id, file.to_string_lossy(), socket.to_string_lossy()],
+                )
+                .unwrap();
+        }
+        let live_writer = acquire_pi_writer_lock(&live_file).unwrap();
+
+        remove_abandoned_pi_bridge_sockets(&database).unwrap();
+
+        assert!(live_socket.exists(), "a live Pi keeps its socket");
+        assert!(!dead_socket.exists());
+        drop(live_writer);
+        fs::remove_dir_all(directory).unwrap();
+    }
     use std::os::unix::process::CommandExt;
     use std::sync::mpsc;
 
