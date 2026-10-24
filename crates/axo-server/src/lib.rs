@@ -11,10 +11,12 @@ use std::thread;
 use std::time::Duration;
 
 use jsonrpc_core::{IoHandler, Params};
-use jsonrpc_ipc_server::{Separator, ServerBuilder};
+use ipc::BlockingMethods;
 use serde_json::json;
 
 mod credential;
+mod event_queue;
+mod ipc;
 mod pairing;
 mod process_inspection;
 mod relay;
@@ -190,14 +192,13 @@ pub fn serve_ipc(
         relay_control,
         credential_store,
     );
-    let server = ServerBuilder::new(handler)
-        .request_separators(Separator::Byte(b'\n'), Separator::Byte(b'\n'))
-        .start(path_as_str(&socket_path.0)?)?;
+    let listener = std::os::unix::net::UnixListener::bind(&socket_path.0)?;
     fs::set_permissions(&socket_path.0, fs::Permissions::from_mode(0o600))?;
     let _pid_file = PidFile::write(&server_directory.join("axo.pid"))?;
     let signal_handlers = SignalHandlers::install()?;
     let stop_watcher = Arc::new(AtomicBool::new(false));
-    let close_server = server.close_handle();
+    let stop_server = Arc::new(AtomicBool::new(false));
+    let close_server = Arc::clone(&stop_server);
     let watcher_stop = Arc::clone(&stop_watcher);
     let signal_watcher = thread::Builder::new()
         .name("axo-shutdown-signals".into())
@@ -207,7 +208,7 @@ pub fn serve_ipc(
                     if let Some(relay_stop) = &relay_stop {
                         relay_stop.store(true, Ordering::Relaxed);
                     }
-                    close_server.close();
+                    close_server.store(true, Ordering::Relaxed);
                     break;
                 }
                 thread::sleep(Duration::from_millis(20));
@@ -215,7 +216,7 @@ pub fn serve_ipc(
         })?;
 
     log::info!("event=daemon.ready pid={}", std::process::id());
-    server.wait();
+    let served = ipc::serve(listener, handler, stop_server);
     stop_watcher.store(true, Ordering::Relaxed);
     let _ = signal_watcher.join();
     if let Some(relay) = remote_relay.as_mut() {
@@ -224,6 +225,7 @@ pub fn serve_ipc(
     sessions.shutdown();
     drop(signal_handlers);
     log::info!("event=daemon.server_stopped");
+    served?;
     Ok(())
 }
 
@@ -309,7 +311,7 @@ fn add_relay_methods(
     credential_store: Arc<dyn credential::HostCredentialStore>,
 ) {
     let settings_path = server_directory.join(relay::CONFIG_FILE);
-    handler.add_sync_method("axo.relay.settings", move |_| {
+    handler.add_blocking_method("axo.relay.settings", move |_| {
         serde_json::to_value(
             relay::settings(&settings_path).map_err(|_| jsonrpc_core::Error {
                 code: jsonrpc_core::ErrorCode::InternalError,
@@ -327,7 +329,7 @@ fn add_relay_methods(
     let configure_path = server_directory.join(relay::CONFIG_FILE);
     let configure_control = relay_control.clone();
     let configure_credentials = Arc::clone(&credential_store);
-    handler.add_sync_method("axo.relay.configure", move |params: Params| {
+    handler.add_blocking_method("axo.relay.configure", move |params: Params| {
         let request = params
             .parse::<relay::ConfigureRelayRequest>()
             .map_err(|_| invalid_params("invalid remote access settings"))?;
@@ -350,7 +352,7 @@ fn add_relay_methods(
     let disable_path = server_directory.join(relay::CONFIG_FILE);
     let disable_control = relay_control.clone();
     let disable_credentials = Arc::clone(&credential_store);
-    handler.add_sync_method("axo.relay.disable", move |_| {
+    handler.add_blocking_method("axo.relay.disable", move |_| {
         relay::disable(&disable_path, disable_credentials.as_ref()).map_err(|_| {
             jsonrpc_core::Error {
                 code: jsonrpc_core::ErrorCode::InternalError,
@@ -368,7 +370,7 @@ fn add_relay_methods(
     let link_sessions = Arc::clone(&sessions);
     let link_credentials = Arc::clone(&credential_store);
     let link_control = relay_control.clone();
-    handler.add_sync_method("axo.relay.link", move |params: Params| {
+    handler.add_blocking_method("axo.relay.link", move |params: Params| {
         let request = params
             .parse::<HostPairingRequest>()
             .map_err(|_| invalid_params("expected {code}"))?;
@@ -397,7 +399,7 @@ fn add_relay_methods(
     });
 
     let status_control = relay_control.clone();
-    handler.add_sync_method("axo.relay.status", move |_| {
+    handler.add_blocking_method("axo.relay.status", move |_| {
         let status = match &status_control {
             Some(control) => control.snapshot().map_err(|_| jsonrpc_core::Error {
                 code: jsonrpc_core::ErrorCode::InternalError,
@@ -413,7 +415,7 @@ fn add_relay_methods(
         })
     });
 
-    handler.add_sync_method("axo.relay.connect", move |_| {
+    handler.add_blocking_method("axo.relay.connect", move |_| {
         let requested = match &relay_control {
             Some(control) => {
                 control.request_connect().map_err(|_| jsonrpc_core::Error {
@@ -430,7 +432,7 @@ fn add_relay_methods(
 }
 
 fn add_protocol_negotiate_method(handler: &mut IoHandler) {
-    handler.add_sync_method("axo.protocol.negotiate", |params: Params| {
+    handler.add_blocking_method("axo.protocol.negotiate", |params: Params| {
         let request: ProtocolNegotiationRequest = params
             .parse()
             .map_err(|_| invalid_params("expected {protocolVersion}"))?;
@@ -495,7 +497,7 @@ fn invalid_params(message: &str) -> jsonrpc_core::Error {
 }
 
 fn add_health_method(handler: &mut IoHandler, daemon_version: &'static str) {
-    handler.add_sync_method("axo.daemon.health", move |_| {
+    handler.add_blocking_method("axo.daemon.health", move |_| {
         Ok(json!({
             "version": daemon_version,
             "buildNumber": build_number(),
@@ -524,15 +526,6 @@ fn default_socket_path() -> Result<SocketPath, Box<dyn std::error::Error>> {
     Ok(SocketPath::parse(
         current_user_home_directory()?.join("Library/Application Support/Axo/run/axod.sock"),
     )?)
-}
-
-fn path_as_str(path: &Path) -> Result<&str, io::Error> {
-    path.to_str().ok_or_else(|| {
-        io::Error::new(
-            io::ErrorKind::InvalidInput,
-            "socket path must be valid UTF-8 for the IPC transport",
-        )
-    })
 }
 
 fn prepare_runtime_directory(socket_path: &Path) -> io::Result<()> {

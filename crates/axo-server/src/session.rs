@@ -10,11 +10,12 @@ use std::os::unix::process::CommandExt;
 use std::path::{Path, PathBuf};
 use std::process::{Child, Command, Stdio};
 use std::sync::atomic::{AtomicBool, AtomicU64, AtomicUsize, Ordering};
-use std::sync::mpsc::{self, Receiver, RecvTimeoutError, SyncSender, TrySendError};
 use std::sync::{Arc, Mutex, Weak};
 use std::thread::{self, JoinHandle};
 use std::time::{Duration, Instant};
 
+use crate::event_queue::{EventQueue, PushOutcome};
+use crate::ipc::BlockingMethods;
 use crate::process_inspection;
 use crate::workspace_access::WorkspaceDirectoryAccess;
 use jsonrpc_core::{Error as RpcError, ErrorCode, IoHandler, Params};
@@ -35,6 +36,7 @@ const MAX_SUBSCRIPTIONS: usize = 64;
 const MAX_QUEUED_EVENTS_PER_SUBSCRIPTION: usize = 128;
 const SUBSCRIPTION_IDLE_EXPIRY: Duration = Duration::from_secs(60);
 const MAX_EVENTS_PER_POLL: usize = 256;
+const ATTACH_STOP_POLL_INTERVAL: Duration = Duration::from_millis(100);
 const PENDING_FOCUS_LIFETIME: Duration = Duration::from_secs(10);
 const MAX_CONCURRENT_TERMINAL_ATTACHMENTS: usize = 256;
 const ATTACH_REQUEST_TIMEOUT: Duration = Duration::from_secs(3);
@@ -807,8 +809,7 @@ struct LocalSubscriber {
     id: String,
     session_id: Option<SessionId>,
     scope: EventScope,
-    lagged: Arc<AtomicBool>,
-    sender: SyncSender<Value>,
+    queue: Arc<EventQueue>,
 }
 
 /// Which events a subscription carries. High-volume stream events (`terminal.output`, `pi.event`)
@@ -837,17 +838,15 @@ impl EventScope {
     }
 }
 
-/// Consumer side of a local event subscription. A full queue never blocks publishers; it marks
-/// the subscription lagged so the next poll reports `subscription.lagged` instead of silently
-/// presenting a gapped stream. Subscriptions nobody polls for `SUBSCRIPTION_IDLE_EXPIRY` are
-/// reclaimed so crashed clients cannot exhaust capacity.
+/// Consumer side of a local event subscription; see `EventQueue` for lag semantics.
+/// Subscriptions nobody polls for `SUBSCRIPTION_IDLE_EXPIRY` are reclaimed so crashed clients
+/// cannot exhaust capacity.
 ///
 /// The registry mutex only guards membership. A poll clones the `Arc` out and waits on the
-/// subscription's own receiver lock, so one long-poll never blocks other subscribers, the relay,
+/// subscription's own queue, so one long-poll never blocks other subscribers, the relay,
 /// `subscribe` or `unsubscribe`.
 struct LocalSubscription {
-    receiver: Mutex<Receiver<Value>>,
-    lagged: Arc<AtomicBool>,
+    queue: Arc<EventQueue>,
     last_polled: Mutex<Instant>,
 }
 
@@ -1193,7 +1192,7 @@ impl SessionManager {
 
     pub fn register_rpc_methods(self: &Arc<Self>, handler: &mut IoHandler) {
         let manager = Arc::clone(self);
-        handler.add_sync_method("axo.session.list", move |_| {
+        handler.add_blocking_method("axo.session.list", move |_| {
             manager
                 .list_sessions()
                 .and_then(|sessions| {
@@ -1207,7 +1206,7 @@ impl SessionManager {
         });
 
         let manager = Arc::clone(self);
-        handler.add_sync_method("axo.config.get", move |params: Params| {
+        handler.add_blocking_method("axo.config.get", move |params: Params| {
             let request: ConfigGetRequest = params
                 .parse()
                 .map_err(|_| invalid_params("expected {key}"))?;
@@ -1224,7 +1223,7 @@ impl SessionManager {
         });
 
         let manager = Arc::clone(self);
-        handler.add_sync_method("axo.config.set", move |params: Params| {
+        handler.add_blocking_method("axo.config.set", move |params: Params| {
             let request: ConfigSetRequest = params
                 .parse()
                 .map_err(|_| invalid_params("expected {key, value}"))?;
@@ -1241,7 +1240,7 @@ impl SessionManager {
         });
 
         let manager = Arc::clone(self);
-        handler.add_sync_method("axo.session.layout.set", move |params: Params| {
+        handler.add_blocking_method("axo.session.layout.set", move |params: Params| {
             let request: SetSessionLayoutRequest = params
                 .parse()
                 .map_err(|_| invalid_params("expected {sessionId, layout}"))?;
@@ -1266,7 +1265,7 @@ impl SessionManager {
         });
 
         let manager = Arc::clone(self);
-        handler.add_sync_method("axo.session.subscribe", move |params: Params| {
+        handler.add_blocking_method("axo.session.subscribe", move |params: Params| {
             let request: SessionSubscribeRequest = params
                 .parse()
                 .map_err(|_| invalid_params("expected {sessionId?, includeTerminalOutput?}"))?;
@@ -1287,29 +1286,37 @@ impl SessionManager {
         });
 
         let manager = Arc::clone(self);
-        handler.add_sync_method("axo.session.events.next", move |params: Params| {
-            let request: SessionEventsNextRequest = params
-                .parse()
-                .map_err(|_| invalid_params("expected {subscriptionId, timeoutMs, maxEvents?}"))?;
-            if request.timeout_ms == 0 || request.timeout_ms > 20_000 {
-                return Err(invalid_params("timeoutMs must be between 1 and 20000"));
-            }
-            let timeout = Duration::from_millis(request.timeout_ms);
-            match request.max_events {
-                None => manager
-                    .next_event(&request.subscription_id, timeout)
-                    .map(|event| json!({ "event": event }))
-                    .map_err(internal_rpc_error),
-                Some(max_events) if (1..=MAX_EVENTS_PER_POLL).contains(&max_events) => manager
-                    .next_events(&request.subscription_id, timeout, max_events)
-                    .map(|events| json!({ "events": events }))
-                    .map_err(internal_rpc_error),
-                Some(_) => Err(invalid_params("maxEvents must be between 1 and 256")),
+        // Long-polls wait as futures, never on a thread (see `ipc`).
+        handler.add_method("axo.session.events.next", move |params: Params| {
+            let manager = Arc::clone(&manager);
+            async move {
+                let request: SessionEventsNextRequest = params.parse().map_err(|_| {
+                    invalid_params("expected {subscriptionId, timeoutMs, maxEvents?}")
+                })?;
+                if request.timeout_ms == 0 || request.timeout_ms > 20_000 {
+                    return Err(invalid_params("timeoutMs must be between 1 and 20000"));
+                }
+                let timeout = Duration::from_millis(request.timeout_ms);
+                let max_events = match request.max_events {
+                    None => 1,
+                    Some(max_events) if (1..=MAX_EVENTS_PER_POLL).contains(&max_events) => {
+                        max_events
+                    }
+                    Some(_) => return Err(invalid_params("maxEvents must be between 1 and 256")),
+                };
+                let events = manager
+                    .next_events_async(&request.subscription_id, timeout, max_events)
+                    .await
+                    .map_err(internal_rpc_error)?;
+                Ok(match request.max_events {
+                    None => json!({ "event": events.into_iter().next() }),
+                    Some(_) => json!({ "events": events }),
+                })
             }
         });
 
         let manager = Arc::clone(self);
-        handler.add_sync_method("axo.session.unsubscribe", move |params: Params| {
+        handler.add_blocking_method("axo.session.unsubscribe", move |params: Params| {
             let request: SessionUnsubscribeRequest = params
                 .parse()
                 .map_err(|_| invalid_params("expected {subscriptionId}"))?;
@@ -1320,7 +1327,7 @@ impl SessionManager {
         });
 
         let manager = Arc::clone(self);
-        handler.add_sync_method("axo.terminal.input", move |params: Params| {
+        handler.add_blocking_method("axo.terminal.input", move |params: Params| {
             let request: TerminalInputRequest = params
                 .parse()
                 .map_err(|_| invalid_params("expected {sessionId, shellId, sequence, data}"))?;
@@ -1339,7 +1346,7 @@ impl SessionManager {
         });
 
         let manager = Arc::clone(self);
-        handler.add_sync_method("axo.terminal.resize", move |params: Params| {
+        handler.add_blocking_method("axo.terminal.resize", move |params: Params| {
             let request: TerminalResizeRequest = params
                 .parse()
                 .map_err(|_| invalid_params("expected {sessionId, shellId, rows, columns}"))?;
@@ -1357,7 +1364,7 @@ impl SessionManager {
         });
 
         let manager = Arc::clone(self);
-        handler.add_sync_method("axo.shell.busy", move |params: Params| {
+        handler.add_blocking_method("axo.shell.busy", move |params: Params| {
             let request: ShellBusyRequest = params
                 .parse()
                 .map_err(|_| invalid_params("expected {sessionId, shellId}"))?;
@@ -1372,7 +1379,7 @@ impl SessionManager {
         });
 
         let manager = Arc::clone(self);
-        handler.add_sync_method("axo.workspace.list", move |_| {
+        handler.add_blocking_method("axo.workspace.list", move |_| {
             manager
                 .list_workspaces()
                 .map(|workspaces| json!({ "workspaces": workspaces }))
@@ -1380,7 +1387,7 @@ impl SessionManager {
         });
 
         let manager = Arc::clone(self);
-        handler.add_sync_method("axo.workspace.rename", move |params: Params| {
+        handler.add_blocking_method("axo.workspace.rename", move |params: Params| {
             let request: WorkspaceRenameRequest = params
                 .parse()
                 .map_err(|_| invalid_params("expected {workspaceId, name}"))?;
@@ -1396,7 +1403,7 @@ impl SessionManager {
         });
 
         let manager = Arc::clone(self);
-        handler.add_sync_method("axo.workspace.archive", move |params: Params| {
+        handler.add_blocking_method("axo.workspace.archive", move |params: Params| {
             let request: WorkspaceArchiveRequest = params
                 .parse()
                 .map_err(|_| invalid_params("expected {workspaceId}"))?;
@@ -1419,7 +1426,7 @@ impl SessionManager {
         });
 
         let manager = Arc::clone(self);
-        handler.add_sync_method("axo.workspace.create", move |params: Params| {
+        handler.add_blocking_method("axo.workspace.create", move |params: Params| {
             let request: WorkspaceCreateRequest = params
                 .parse()
                 .map_err(|_| {
@@ -1440,7 +1447,7 @@ impl SessionManager {
         });
 
         let manager = Arc::clone(self);
-        handler.add_sync_method("axo.workspace.session.create", move |params: Params| {
+        handler.add_blocking_method("axo.workspace.session.create", move |params: Params| {
             let request: WorkspaceSessionCreateRequest = params
                 .parse()
                 .map_err(|_| invalid_params("expected {workspaceId}"))?;
@@ -1457,7 +1464,7 @@ impl SessionManager {
         });
 
         let manager = Arc::clone(self);
-        handler.add_sync_method("axo.session.create", move |_| {
+        handler.add_blocking_method("axo.session.create", move |_| {
             let session = manager.create_session().map_err(internal_rpc_error)?;
             manager
                 .publish_event(json!({ "type": "session.snapshot", "session": session.to_json() }));
@@ -1465,7 +1472,7 @@ impl SessionManager {
         });
 
         let manager = Arc::clone(self);
-        handler.add_sync_method("axo.session.close", move |params| {
+        handler.add_blocking_method("axo.session.close", move |params| {
             let id = parse_session_id(params)?;
             let replacement = manager.close_session(id).map_err(internal_rpc_error)?;
             manager.publish_session_removed(id);
@@ -1481,7 +1488,7 @@ impl SessionManager {
         });
 
         let manager = Arc::clone(self);
-        handler.add_sync_method("axo.session.rename", move |params: Params| {
+        handler.add_blocking_method("axo.session.rename", move |params: Params| {
             let request: SessionRenameRequest = params
                 .parse()
                 .map_err(|_| invalid_params("expected {sessionId, name}"))?;
@@ -1501,7 +1508,7 @@ impl SessionManager {
         });
 
         let manager = Arc::clone(self);
-        handler.add_sync_method("axo.session.pi.restart.auto.v1", move |params: Params| {
+        handler.add_blocking_method("axo.session.pi.restart.auto.v1", move |params: Params| {
             let request: RestartPiSessionRequest = params
                 .parse()
                 .map_err(|_| invalid_params("expected {sessionId, shellId}"))?;
@@ -1518,7 +1525,7 @@ impl SessionManager {
         });
 
         let manager = Arc::clone(self);
-        handler.add_sync_method("axo.session.pi.restart.force.v2", move |params: Params| {
+        handler.add_blocking_method("axo.session.pi.restart.force.v2", move |params: Params| {
             let request: RestartPiSessionRequest = params
                 .parse()
                 .map_err(|_| invalid_params("expected {sessionId, shellId}"))?;
@@ -1531,7 +1538,7 @@ impl SessionManager {
         });
 
         let manager = Arc::clone(self);
-        handler.add_sync_method("axo.shell.create", move |params| {
+        handler.add_blocking_method("axo.shell.create", move |params| {
             let id = parse_session_id(params)?;
             let shell = manager.create_shell(id).map_err(internal_rpc_error)?;
             manager
@@ -1542,7 +1549,7 @@ impl SessionManager {
         });
 
         let manager = Arc::clone(self);
-        handler.add_sync_method("axo.shell.close", move |params| {
+        handler.add_blocking_method("axo.shell.close", move |params| {
             let (session_id, shell_id) = parse_shell_ids(params)?;
             let closed = manager
                 .close_shell(session_id, shell_id)
@@ -1651,6 +1658,10 @@ impl SessionManager {
             .name("axo-pty-attachments".into())
             .spawn(move || {
                 while !stop_workers.load(Ordering::Relaxed) {
+                    // Wake as soon as a client connects; the timeout only bounds the stop check.
+                    if !wait_until_readable(listener.as_raw_fd(), ATTACH_STOP_POLL_INTERVAL) {
+                        continue;
+                    }
                     match listener.accept() {
                         Ok((mut stream, _)) => {
                             let Some(permit) =
@@ -1691,9 +1702,7 @@ impl SessionManager {
                                 let _ = write_attachment_rejection(&mut rejection_stream, &rejection);
                             }
                         }
-                        Err(error) if error.kind() == io::ErrorKind::WouldBlock => {
-                            thread::sleep(Duration::from_millis(20));
-                        }
+                        Err(error) if error.kind() == io::ErrorKind::WouldBlock => {}
                         Err(_) => thread::sleep(Duration::from_millis(50)),
                     }
                 }
@@ -1811,7 +1820,7 @@ impl SessionManager {
             "00000000-0000-4000-8000-{:012x}",
             ((std::process::id() as u64) << 32 | id) & 0x0000_ffff_ffff_ffff
         );
-        let (sender, receiver) = mpsc::sync_channel(MAX_QUEUED_EVENTS_PER_SUBSCRIPTION);
+        let queue = Arc::new(EventQueue::new(MAX_QUEUED_EVENTS_PER_SUBSCRIPTION));
         let mut subscriptions = self
             .subscriptions
             .lock()
@@ -1825,7 +1834,9 @@ impl SessionManager {
             .map(|(id, _)| id.clone())
             .collect();
         for id in &expired {
-            subscriptions.remove(id);
+            if let Some(subscription) = subscriptions.remove(id) {
+                subscription.queue.close();
+            }
         }
         if subscriptions.len() >= MAX_SUBSCRIPTIONS {
             return Err(io::Error::new(
@@ -1844,22 +1855,18 @@ impl SessionManager {
                 expired.len()
             );
         }
-        let lagged = Arc::new(AtomicBool::new(false));
         subscriptions.insert(
             subscription_id.clone(),
             Arc::new(LocalSubscription {
-                receiver: Mutex::new(receiver),
-                lagged: Arc::clone(&lagged),
+                queue: Arc::clone(&queue),
                 last_polled: Mutex::new(now),
             }),
         );
-        let initial_sender = sender.clone();
         subscribers.push(LocalSubscriber {
             id: subscription_id.clone(),
             session_id,
             scope: EventScope::from_include_streams(include_streams),
-            lagged: Arc::clone(&lagged),
-            sender,
+            queue: Arc::clone(&queue),
         });
         drop(subscribers);
         drop(subscriptions);
@@ -1874,8 +1881,7 @@ impl SessionManager {
         for session in sessions {
             if session_id.is_none_or(|expected| expected == session.id) {
                 let snapshot = json!({ "type": "session.snapshot", "session": session.to_json() });
-                if initial_sender.try_send(snapshot).is_err() {
-                    lagged.store(true, Ordering::Release);
+                if queue.push(snapshot) != PushOutcome::Queued {
                     break;
                 }
             }
@@ -1887,8 +1893,7 @@ impl SessionManager {
         Ok(self.next_events(id, timeout, 1)?.into_iter().next())
     }
 
-    /// Waits up to `timeout` for the first event, then drains up to `max_events` already queued.
-    fn next_events(&self, id: &str, timeout: Duration, max_events: usize) -> io::Result<Vec<Value>> {
+    fn subscription(&self, id: &str) -> io::Result<Arc<LocalSubscription>> {
         let subscription = self
             .subscriptions
             .lock()
@@ -1897,35 +1902,29 @@ impl SessionManager {
             .cloned()
             .ok_or_else(|| io::Error::new(io::ErrorKind::NotFound, "subscription is not open"))?;
         subscription.mark_polled();
-        let receiver = subscription
-            .receiver
-            .lock()
-            .map_err(|_| io::Error::other("session subscription receiver lock was poisoned"))?;
-        if subscription.lagged.swap(false, Ordering::AcqRel) {
-            // Discard the gapped backlog; the client must resynchronize from a fresh listing.
-            while receiver.try_recv().is_ok() {}
-            return Ok(vec![json!({ "type": "subscription.lagged" })]);
-        }
-        let first = receiver.recv_timeout(timeout);
+        Ok(subscription)
+    }
+
+    /// Blocks up to `timeout` for the first event, then drains up to `max_events` already queued.
+    /// For the relay thread and tests; RPC uses `next_events_async`.
+    fn next_events(&self, id: &str, timeout: Duration, max_events: usize) -> io::Result<Vec<Value>> {
+        let subscription = self.subscription(id)?;
+        let events = subscription.queue.wait_blocking(timeout, max_events);
         subscription.mark_polled();
-        let first = match first {
-            Ok(event) => event,
-            Err(RecvTimeoutError::Timeout) => return Ok(Vec::new()),
-            Err(RecvTimeoutError::Disconnected) => {
-                return Err(io::Error::new(
-                    io::ErrorKind::NotFound,
-                    "subscription is closed",
-                ));
-            }
-        };
-        let mut events = vec![first];
-        while events.len() < max_events.max(1) {
-            match receiver.try_recv() {
-                Ok(event) => events.push(event),
-                Err(_) => break,
-            }
-        }
-        Ok(events)
+        events
+    }
+
+    /// Like `next_events`, but waits without occupying a thread.
+    pub(crate) async fn next_events_async(
+        &self,
+        id: &str,
+        timeout: Duration,
+        max_events: usize,
+    ) -> io::Result<Vec<Value>> {
+        let subscription = self.subscription(id)?;
+        let events = subscription.queue.wait(timeout, max_events).await;
+        subscription.mark_polled();
+        events
     }
 
     fn unsubscribe(&self, id: &str) -> io::Result<()> {
@@ -1933,12 +1932,13 @@ impl SessionManager {
             .subscriptions
             .lock()
             .map_err(|_| io::Error::other("session subscription lock was poisoned"))?;
-        if subscriptions.remove(id).is_none() {
+        let Some(subscription) = subscriptions.remove(id) else {
             return Err(io::Error::new(
                 io::ErrorKind::NotFound,
                 "subscription is not open",
             ));
-        }
+        };
+        subscription.queue.close();
         let mut subscribers = self
             .subscribers
             .lock()
@@ -1967,16 +1967,13 @@ impl SessionManager {
             {
                 return true;
             }
-            match subscriber.sender.try_send(event.clone()) {
-                Ok(()) => {
+            match subscriber.queue.push(event.clone()) {
+                PushOutcome::Queued => {
                     delivered += 1;
                     true
                 }
-                Err(TrySendError::Full(_)) => {
-                    subscriber.lagged.store(true, Ordering::Release);
-                    true
-                }
-                Err(TrySendError::Disconnected(_)) => false,
+                PushOutcome::Lagged => true,
+                PushOutcome::Closed => false,
             }
         });
         delivered
@@ -6176,6 +6173,20 @@ fn process_name(_process_id: libc::pid_t) -> Option<String> {
     None
 }
 
+/// Waits until `descriptor` is readable or `timeout` passes. Errors count as readable so the
+/// caller's own call reports them.
+fn wait_until_readable(descriptor: RawFd, timeout: Duration) -> bool {
+    let mut poll_descriptor = libc::pollfd {
+        fd: descriptor,
+        events: libc::POLLIN,
+        revents: 0,
+    };
+    let timeout_millis = timeout.as_millis().clamp(1, libc::c_int::MAX as u128) as libc::c_int;
+    // SAFETY: poll reads one initialized pollfd for the duration of the call.
+    let ready = unsafe { libc::poll(&mut poll_descriptor, 1, timeout_millis) };
+    ready != 0
+}
+
 fn wait_for_shell_exit(child: &mut Child, timeout: Duration) -> io::Result<bool> {
     let deadline = Instant::now() + timeout;
     while Instant::now() < deadline {
@@ -6702,6 +6713,7 @@ fn unix_timestamp() -> i64 {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::sync::mpsc;
 
     struct ChildProcessGuard(Child);
 

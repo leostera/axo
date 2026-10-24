@@ -48,18 +48,24 @@ struct TerminalLayoutView: View {
 }
 
 struct PendingTerminalPaneView: View {
+  /// Creation normally completes in a few milliseconds; only a slow daemon shows progress.
+  static let progressDelay: Duration = .milliseconds(150)
+
   let pending: PendingTerminalSplit
   var sessions: TerminalSessionsModel
+  @State private var showsProgress = false
 
   var body: some View {
     VStack(spacing: 10) {
       switch pending.status {
       case .creating:
-        ProgressView()
-          .controlSize(.small)
-        Text("Creating pane…")
-          .font(.callout)
-          .foregroundStyle(.secondary)
+        if showsProgress {
+          ProgressView()
+            .controlSize(.small)
+          Text("Creating pane…")
+            .font(.callout)
+            .foregroundStyle(.secondary)
+        }
       case .rejected(let message):
         Image(systemName: "exclamationmark.triangle")
           .foregroundStyle(.secondary)
@@ -83,6 +89,10 @@ struct PendingTerminalPaneView: View {
     .frame(maxWidth: .infinity, maxHeight: .infinity)
     .background(Color(nsColor: .textBackgroundColor))
     .accessibilityIdentifier("pending-terminal-pane")
+    .task(id: pending.id) {
+      try? await Task.sleep(for: Self.progressDelay)
+      showsProgress = true
+    }
   }
 }
 

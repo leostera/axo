@@ -670,6 +670,78 @@ fn local_protocol_streams_events_and_controls_the_pty() {
 }
 
 #[test]
+fn long_polls_never_delay_unrelated_requests() {
+    let unique = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .unwrap()
+        .as_nanos();
+    let root =
+        std::path::PathBuf::from("/tmp").join(format!("axo-lp-{}-{unique}", std::process::id()));
+    let server_directory = root.join("server");
+    let socket = root.join("axod.sock");
+    let mut daemon = start_axod(&server_directory, &socket);
+    wait_for_socket(&socket, &mut daemon);
+    let session_id = create_session(&socket)["id"].as_i64().unwrap();
+
+    // Regression: axod used to serve requests one at a time, so each waiting long-poll delayed
+    // every other request by up to its full timeout.
+    let subscriptions: Vec<String> = (0..16)
+        .map(|_| {
+            let subscription = rpc_with_params(
+                &socket,
+                "axo.session.subscribe",
+                json!({ "includeTerminalOutput": false }),
+            )["result"]["subscriptionId"]
+                .as_str()
+                .unwrap()
+                .to_owned();
+            // Drain the initial snapshots so the next poll really waits.
+            rpc_with_params(
+                &socket,
+                "axo.session.events.next",
+                json!({ "subscriptionId": subscription, "timeoutMs": 1, "maxEvents": 256 }),
+            );
+            subscription
+        })
+        .collect();
+    let pollers: Vec<_> = (0..64)
+        .map(|index| {
+            let socket = socket.clone();
+            let subscription = subscriptions[index % subscriptions.len()].clone();
+            std::thread::spawn(move || {
+                rpc_with_params(
+                    &socket,
+                    "axo.session.events.next",
+                    json!({ "subscriptionId": subscription, "timeoutMs": 3000, "maxEvents": 256 }),
+                )
+            })
+        })
+        .collect();
+    std::thread::sleep(Duration::from_millis(200));
+
+    for method in ["axo.session.list", "axo.shell.create"] {
+        let started = Instant::now();
+        let response = if method == "axo.shell.create" {
+            rpc_with_params(&socket, method, json!({ "sessionId": session_id }))
+        } else {
+            rpc_with_params(&socket, method, json!({}))
+        };
+        let elapsed = started.elapsed();
+        assert!(response.get("result").is_some(), "{method} failed: {response}");
+        assert!(
+            elapsed < Duration::from_millis(250),
+            "{method} waited {elapsed:?} behind long-polls"
+        );
+    }
+    for poller in pollers {
+        let response = poller.join().unwrap();
+        assert!(response["result"]["events"].is_array(), "{response}");
+    }
+    daemon.stop();
+    let _ = std::fs::remove_dir_all(root);
+}
+
+#[test]
 fn workspace_creation_validates_name_and_existing_directory_without_a_bookmark() {
     let unique = SystemTime::now()
         .duration_since(UNIX_EPOCH)
