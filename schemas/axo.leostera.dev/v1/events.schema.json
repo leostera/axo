@@ -16,6 +16,15 @@
         },
         {
           "$ref": "#/$defs/TerminalOutputEvent"
+        },
+        {
+          "$ref": "#/$defs/WorkspaceChangedEvent"
+        },
+        {
+          "$ref": "#/$defs/SessionFocusEvent"
+        },
+        {
+          "$ref": "#/$defs/SubscriptionLaggedEvent"
         }
       ]
     },
@@ -186,6 +195,54 @@
         },
         "session": {
           "$ref": "common.schema.json#/$defs/LocalSession"
+        }
+      }
+    },
+    "WorkspaceChangedEvent": {
+      "description": "A workspace was created, renamed or archived; reload the workspace list.",
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "type",
+        "workspaceId"
+      ],
+      "properties": {
+        "type": {
+          "const": "workspace.changed"
+        },
+        "workspaceId": {
+          "type": "string",
+          "format": "uuid"
+        }
+      }
+    },
+    "SessionFocusEvent": {
+      "description": "Axod asks clients to show this session, for example after /resume.",
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "type",
+        "sessionId"
+      ],
+      "properties": {
+        "type": {
+          "const": "session.focus"
+        },
+        "sessionId": {
+          "$ref": "common.schema.json#/$defs/SessionId"
+        }
+      }
+    },
+    "SubscriptionLaggedEvent": {
+      "description": "The subscription queue overflowed and earlier events were discarded; resynchronize from a fresh listing.",
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "type"
+      ],
+      "properties": {
+        "type": {
+          "const": "subscription.lagged"
         }
       }
     },

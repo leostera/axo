@@ -66,28 +66,6 @@ struct TerminalWorkbenchView: View {
         )
       }
     }
-    .task(id: daemonIsRunning) {
-      guard daemonIsRunning else {
-        ghostty.reconcileSurfaces(with: [])
-        return
-      }
-      while !Task.isCancelled {
-        await sessions.refresh()
-        ghostty.reconcileSurfaces(with: sessions.sessions.flatMap(\.shells))
-        try? await Task.sleep(for: .seconds(1))
-      }
-    }
-    .task(id: sessions.focusedShellID) {
-      guard let focusedShellID = sessions.focusedShellID else {
-        ghostty.setFocusedShellID(nil)
-        return
-      }
-      ghostty.setFocusedShellID(focusedShellID)
-      for _ in 0..<40 {
-        if ghostty.focusSurface(for: focusedShellID) { return }
-        try? await Task.sleep(for: .milliseconds(25))
-      }
-    }
   }
 
   private var expandedSidebar: some View {

@@ -1194,12 +1194,24 @@ fn relay_session(
             next_heartbeat = Instant::now() + HEARTBEAT_INTERVAL;
         }
 
-        let notification = context
+        let events = match context
             .sessions
             .next_remote_event(context.subscription_id, Duration::ZERO)?
-            .and_then(|event| host_notification(event, context.host_id, context.host_generation));
-        if let Some(notification) = notification {
-            send_json(socket, &notification)?;
+        {
+            // The local queue overflowed; replace the gap with current snapshots.
+            Some(event) if event["type"] == "subscription.lagged" => {
+                log::warn!("event=relay.events_lagged action=resync");
+                context.sessions.remote_resync_events()?
+            }
+            Some(event) => vec![event],
+            None => Vec::new(),
+        };
+        for event in events {
+            if let Some(notification) =
+                host_notification(event, context.host_id, context.host_generation)
+            {
+                send_json(socket, &notification)?;
+            }
         }
 
         let Some(raw) = read_text(socket)? else {

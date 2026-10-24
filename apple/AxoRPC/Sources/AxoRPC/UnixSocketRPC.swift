@@ -2,296 +2,6 @@ import Foundation
 import JSONRPC
 import Network
 
-public struct BuildNumber: Equatable, Sendable, CustomStringConvertible {
-  public let value: UInt64
-
-  public init?(_ value: UInt64) {
-    guard value > 0 else { return nil }
-    self.value = value
-  }
-
-  public init?(bundleValue: Any?) {
-    guard
-      let text = bundleValue as? String,
-      let value = UInt64(text),
-      value > 0,
-      String(value) == text
-    else {
-      return nil
-    }
-    self.value = value
-  }
-
-  public var description: String { String(value) }
-}
-
-public struct UnixSocketPath: Equatable, Sendable {
-  public let value: String
-
-  public init(_ value: String) throws {
-    let address = sockaddr_un()
-    let pathCapacity = MemoryLayout.size(ofValue: address.sun_path)
-    guard value.hasPrefix("/"),
-      !value.utf8.contains(0),
-      value.utf8.count < pathCapacity
-    else {
-      throw UnixSocketRPCError.invalidSocketPath
-    }
-    self.value = value
-  }
-}
-
-public struct DaemonHealth: Decodable, Equatable, Sendable {
-  public let version: String?
-  public let buildNumber: UInt64
-  public let status: String
-}
-
-public enum AxoConfigKey: String, Codable, Equatable, Sendable {
-  case agentCommand = "agent.command"
-  case shellCommand = "shell.command"
-}
-
-public struct AxoConfigValue: Decodable, Equatable, Sendable {
-  public let key: AxoConfigKey
-  public let value: String
-}
-
-public struct RemoteAccessSettings: Decodable, Equatable, Sendable {
-  public let enabled: Bool
-  public let relayUrl: String?
-  public let hostLabel: String?
-  public let hostKind: String?
-
-  public init(
-    enabled: Bool,
-    relayUrl: String?,
-    hostLabel: String?,
-    hostKind: String?
-  ) {
-    self.enabled = enabled
-    self.relayUrl = relayUrl
-    self.hostLabel = hostLabel
-    self.hostKind = hostKind
-  }
-}
-
-public enum RemoteAccessConnectionState: String, Decodable, Equatable, Sendable {
-  case connecting
-  case connected
-  case disconnected
-}
-
-public struct RemoteAccessStatus: Decodable, Equatable, Sendable {
-  public let state: RemoteAccessConnectionState
-  public let connectedSinceUnixMillis: UInt64?
-  public let hostName: String
-  public let hostKind: String
-  public let lastError: String?
-
-  public var isConnected: Bool { state == .connected }
-}
-
-public struct HostPairingResult: Decodable, Equatable, Sendable {
-  public let linked: Bool
-  public let hostLabel: String
-}
-
-public struct RemoteAccessConfiguration: Encodable, Sendable {
-  public let relayUrl: String
-  public let hostLabel: String
-  public let hostKind: String
-
-  public init(
-    relayUrl: String,
-    hostLabel: String,
-    hostKind: String = "macos"
-  ) {
-    self.relayUrl = relayUrl
-    self.hostLabel = hostLabel
-    self.hostKind = hostKind
-  }
-}
-
-public struct ProtocolNegotiation: Decodable, Equatable, Sendable {
-  public let protocolVersion: UInt32
-  public let methods: [String]
-}
-
-public enum TerminalSessionStatus: String, Decodable, Equatable, Sendable {
-  case starting
-  case ready
-  case working
-  case needsAttention
-  case unavailable
-}
-
-public struct TerminalSessionListSnapshot: Decodable, Sendable {
-  public let sessions: [TerminalSession]
-  public let resumeSessionId: Int64?
-}
-
-public struct TerminalSession: Decodable, Equatable, Identifiable, Sendable {
-  public let id: Int64
-  public let sessionUuid: String?
-  public let piSessionFile: String?
-  public let piSessionId: String?
-  public let workspaceId: String?
-  public let workspaceName: String?
-  public let name: String?
-  public let manualName: String?
-  public let emoji: String?
-  public let status: TerminalSessionStatus?
-  public let initialPwd: String
-  public let shells: [TerminalShell]
-  public let layout: SessionLayout?
-
-  public var displayName: String { manualName ?? name ?? "Session \(id)" }
-
-  public init(
-    id: Int64,
-    initialPwd: String,
-    shells: [TerminalShell],
-    layout: SessionLayout? = nil,
-    sessionUuid: String? = nil,
-    piSessionFile: String? = nil,
-    piSessionId: String? = nil,
-    workspaceId: String? = nil,
-    workspaceName: String? = nil,
-    name: String? = nil,
-    manualName: String? = nil,
-    emoji: String? = nil,
-    status: TerminalSessionStatus? = nil
-  ) {
-    self.id = id
-    self.sessionUuid = sessionUuid
-    self.piSessionFile = piSessionFile
-    self.piSessionId = piSessionId
-    self.workspaceId = workspaceId
-    self.workspaceName = workspaceName
-    self.name = name
-    self.manualName = manualName
-    self.emoji = emoji
-    self.status = status
-    self.initialPwd = initialPwd
-    self.shells = shells
-    self.layout = layout
-  }
-}
-
-public struct TerminalShell: Decodable, Equatable, Identifiable, Sendable {
-  public let id: Int64
-  public let paneId: String?
-  public let role: String?
-  public let processId: UInt32
-  public let initialPwd: String
-  public let ptyDevice: String
-  public let attachSocketPath: String
-  public let available: Bool?
-  public let availabilityReason: String?
-
-  public var isAvailable: Bool { available != false }
-
-  public init(
-    id: Int64,
-    processId: UInt32,
-    initialPwd: String,
-    ptyDevice: String,
-    attachSocketPath: String,
-    paneId: String? = nil,
-    role: String? = nil,
-    available: Bool? = nil,
-    availabilityReason: String? = nil
-  ) {
-    self.id = id
-    self.paneId = paneId
-    self.role = role
-    self.processId = processId
-    self.initialPwd = initialPwd
-    self.ptyDevice = ptyDevice
-    self.attachSocketPath = attachSocketPath
-    self.available = available
-    self.availabilityReason = availabilityReason
-  }
-}
-
-public struct WorkspaceRecord: Decodable, Equatable, Identifiable, Sendable {
-  public let workspaceId: String
-  public let name: String
-  public let directoryPath: String
-  public var id: String { workspaceId }
-}
-
-public struct ArchivedWorkspace: Decodable, Equatable, Sendable {
-  public let archivedWorkspaceId: String
-  public let archivedSessionIds: [Int64]
-}
-
-public struct CreatedWorkspace: Decodable, Equatable, Sendable {
-  public let workspace: WorkspaceRecord
-  public let session: TerminalSession
-}
-
-public enum TerminalShellActivity: String, Decodable, Equatable, Sendable {
-  case started
-  case exited
-  case attached
-  case detached
-}
-
-public enum TerminalSessionEvent: Decodable, Equatable, Sendable {
-  case sessionSnapshot(TerminalSession)
-  case sessionRemoved(sessionID: Int64)
-  case shellActivity(sessionID: Int64, shellID: Int64, activity: TerminalShellActivity)
-  case terminalOutput(sessionID: Int64, shellID: Int64, sequence: UInt64, data: Data)
-
-  private enum CodingKeys: String, CodingKey {
-    case type, session, sessionId, shellId, activity, sequence, data
-  }
-
-  public init(from decoder: Decoder) throws {
-    let container = try decoder.container(keyedBy: CodingKeys.self)
-    switch try container.decode(String.self, forKey: .type) {
-    case "session.snapshot":
-      self = .sessionSnapshot(try container.decode(TerminalSession.self, forKey: .session))
-    case "session.removed":
-      self = .sessionRemoved(sessionID: try container.decode(Int64.self, forKey: .sessionId))
-    case "shell.activity":
-      self = .shellActivity(
-        sessionID: try container.decode(Int64.self, forKey: .sessionId),
-        shellID: try container.decode(Int64.self, forKey: .shellId),
-        activity: try container.decode(TerminalShellActivity.self, forKey: .activity))
-    case "terminal.output":
-      let encoded = try container.decode(String.self, forKey: .data)
-      guard let data = Data(base64Encoded: encoded) else {
-        throw UnixSocketRPCError.invalidResponse("terminal output was not base64")
-      }
-      self = .terminalOutput(
-        sessionID: try container.decode(Int64.self, forKey: .sessionId),
-        shellID: try container.decode(Int64.self, forKey: .shellId),
-        sequence: try container.decode(UInt64.self, forKey: .sequence),
-        data: data)
-    default:
-      throw UnixSocketRPCError.invalidResponse("daemon sent an unknown session event")
-    }
-  }
-}
-
-public struct TerminalSubscriptionID: Decodable, Equatable, Sendable {
-  public let subscriptionId: String
-}
-
-public struct ClosedTerminalSession: Decodable, Equatable, Sendable {
-  public let archivedSessionId: Int64
-  public let replacement: TerminalSession?
-}
-
-public struct ClosedTerminalShell: Decodable, Equatable, Sendable {
-  public let archivedShellId: Int64
-  public let archivedSessionId: Int64?
-  public let replacement: TerminalSession?
-}
-
 private struct WorkspaceList: Decodable {
   let workspaces: [WorkspaceRecord]
 }
@@ -374,13 +84,15 @@ private struct CloseTerminalShellRequest: Encodable {
 
 private struct SessionSubscribeRequest: Encodable {
   let sessionId: Int64?
+  let includeTerminalOutput: Bool
 
   func encode(to encoder: Encoder) throws {
     var container = encoder.container(keyedBy: CodingKeys.self)
     if let sessionId { try container.encode(sessionId, forKey: .sessionId) }
+    try container.encode(includeTerminalOutput, forKey: .includeTerminalOutput)
   }
 
-  private enum CodingKeys: String, CodingKey { case sessionId }
+  private enum CodingKeys: String, CodingKey { case sessionId, includeTerminalOutput }
 }
 
 private struct SessionEventsNextRequest: Encodable {
@@ -398,49 +110,6 @@ private struct SessionUnsubscribeRequest: Encodable {
 
 private struct SessionUnsubscribeResponse: Decodable {
   let unsubscribed: Bool
-}
-
-private struct TerminalInputRequest: Encodable {
-  let sessionId: Int64
-  let shellId: Int64
-  let sequence: UInt64
-  let data: String
-}
-
-private struct TerminalInputResponse: Decodable {
-  let accepted: Bool
-  let sequence: UInt64
-}
-
-private struct TerminalResizeRequest: Encodable {
-  let sessionId: Int64
-  let shellId: Int64
-  let rows: UInt32
-  let columns: UInt32
-}
-
-private struct TerminalResizeResponse: Decodable {
-  let accepted: Bool
-  let rows: UInt32
-  let columns: UInt32
-}
-
-public enum UnixSocketRPCError: Error, LocalizedError {
-  case connectionFailed(String)
-  case invalidSocketPath
-  case invalidResponse(String)
-  case serverRejected(code: Int, message: String)
-  case requestTimedOut
-
-  public var errorDescription: String? {
-    switch self {
-    case .connectionFailed(let message): "Could not connect to axod: \(message)"
-    case .invalidSocketPath: "axod socket path must be absolute and fit in a local socket address."
-    case .invalidResponse(let message): "Invalid response from axod: \(message)"
-    case .serverRejected(let code, let message): "axod rejected the request (\(code)): \(message)"
-    case .requestTimedOut: "axod did not respond before the request timed out."
-    }
-  }
 }
 
 public enum UnixSocketRPC {
@@ -658,14 +327,17 @@ public enum UnixSocketRPC {
     }
   }
 
+  /// Opens an event subscription. Catalog consumers pass `includeTerminalOutput: false`.
   public static func subscribe(
     to sessionID: Int64? = nil,
+    includeTerminalOutput: Bool = true,
     at socketPath: UnixSocketPath
   ) async throws -> TerminalSubscriptionID {
     try await withResponse(at: socketPath) { session in
       try await session.response(
         to: "axo.session.subscribe",
-        params: SessionSubscribeRequest(sessionId: sessionID))
+        params: SessionSubscribeRequest(
+          sessionId: sessionID, includeTerminalOutput: includeTerminalOutput))
     }
   }
 
@@ -703,47 +375,7 @@ public enum UnixSocketRPC {
     }
   }
 
-  public static func sendTerminalInput(
-    _ data: Data,
-    to shellID: Int64,
-    in sessionID: Int64,
-    sequence: UInt64,
-    at socketPath: UnixSocketPath
-  ) async throws {
-    let response: TerminalInputResponse = try await withResponse(at: socketPath) { session in
-      try await session.response(
-        to: "axo.terminal.input",
-        params: TerminalInputRequest(
-          sessionId: sessionID,
-          shellId: shellID,
-          sequence: sequence,
-          data: data.base64EncodedString()))
-    }
-    guard response.accepted, response.sequence == sequence else {
-      throw UnixSocketRPCError.invalidResponse("daemon did not accept terminal input")
-    }
-  }
 
-  public static func resizeTerminal(
-    shellID: Int64,
-    in sessionID: Int64,
-    rows: UInt32,
-    columns: UInt32,
-    at socketPath: UnixSocketPath
-  ) async throws {
-    let response: TerminalResizeResponse = try await withResponse(at: socketPath) { session in
-      try await session.response(
-        to: "axo.terminal.resize",
-        params: TerminalResizeRequest(
-          sessionId: sessionID,
-          shellId: shellID,
-          rows: rows,
-          columns: columns))
-    }
-    guard response.accepted, response.rows == rows, response.columns == columns else {
-      throw UnixSocketRPCError.invalidResponse("daemon did not apply terminal dimensions")
-    }
-  }
 
   public static func createSession(at socketPath: UnixSocketPath) async throws -> TerminalSession {
     try await withResponse(at: socketPath) { session in
@@ -860,174 +492,6 @@ public enum UnixSocketRPC {
       }
     } catch let error as JSONRPC.AnyJSONRPCResponseError {
       throw UnixSocketRPCError.serverRejected(code: error.code, message: error.message)
-    }
-  }
-}
-
-extension Duration {
-  fileprivate var milliseconds: Int {
-    let components = components
-    guard components.seconds >= 0 else { return 1 }
-    guard components.seconds < 20 else { return 20_000 }
-    let whole = components.seconds * 1_000
-    let fractional = components.attoseconds / 1_000_000_000_000_000
-    return Int(min(20_000, max(1, whole + fractional)))
-  }
-
-  fileprivate var nanoseconds: UInt64 {
-    let components = components
-    let seconds = UInt64(max(0, components.seconds))
-    let attoseconds = UInt64(max(0, components.attoseconds))
-    return seconds * 1_000_000_000 + attoseconds / 1_000_000_000
-  }
-}
-
-private final class UnixSocketTransport: @unchecked Sendable {
-  private static let maximumMessageBytes = 64 * 1024
-  private static let connectionTimeout: DispatchTimeInterval = .seconds(1)
-
-  private let connection: NWConnection
-  private let queue = DispatchQueue(label: "dev.leostera.axo.rpc")
-  private let stateLock = NSLock()
-  private let dataContinuation: AsyncStream<Data>.Continuation
-  private var readiness: CheckedContinuation<Void, Error>?
-  private var pendingData = Data()
-
-  private let dataSequence: AsyncStream<Data>
-
-  init(socketPath: UnixSocketPath) {
-    let (dataSequence, dataContinuation) = AsyncStream<Data>.makeStream()
-    self.dataSequence = dataSequence
-    self.dataContinuation = dataContinuation
-    self.connection = NWConnection(
-      to: .unix(path: socketPath.value),
-      using: .tcp
-    )
-  }
-
-  var dataChannel: JSONRPC.DataChannel {
-    JSONRPC.DataChannel(
-      writeHandler: { [self] data in try await send(data) },
-      dataSequence: dataSequence
-    )
-  }
-
-  func connect() async throws {
-    try await withCheckedThrowingContinuation { (continuation: CheckedContinuation<Void, Error>) in
-      stateLock.lock()
-      readiness = continuation
-      stateLock.unlock()
-
-      connection.stateUpdateHandler = { [weak self] state in
-        self?.handle(state: state)
-      }
-      connection.start(queue: queue)
-      queue.asyncAfter(deadline: .now() + Self.connectionTimeout) { [weak self] in
-        guard let self,
-          self.finishReadiness(
-            .failure(UnixSocketRPCError.connectionFailed("connection timed out")))
-        else {
-          return
-        }
-        self.connection.cancel()
-        self.dataContinuation.finish()
-      }
-    }
-  }
-
-  func close() {
-    connection.cancel()
-    dataContinuation.finish()
-  }
-
-  private func handle(state: NWConnection.State) {
-    switch state {
-    case .ready:
-      guard finishReadiness(.success(())) else { return }
-      receiveNext()
-    case .failed(let error):
-      finishReadiness(.failure(UnixSocketRPCError.connectionFailed(error.localizedDescription)))
-      dataContinuation.finish()
-    case .cancelled:
-      finishReadiness(.failure(UnixSocketRPCError.connectionFailed("connection was cancelled")))
-      dataContinuation.finish()
-    case .setup, .preparing, .waiting:
-      break
-    @unknown default:
-      finishReadiness(.failure(UnixSocketRPCError.connectionFailed("unknown connection state")))
-      dataContinuation.finish()
-    }
-  }
-
-  @discardableResult
-  private func finishReadiness(_ result: Result<Void, Error>) -> Bool {
-    stateLock.lock()
-    let continuation = readiness
-    readiness = nil
-    stateLock.unlock()
-    guard let continuation else { return false }
-    continuation.resume(with: result)
-    return true
-  }
-
-  private func receiveNext() {
-    connection.receive(minimumIncompleteLength: 1, maximumLength: Self.maximumMessageBytes) {
-      [weak self] data, _, isComplete, error in
-      guard let self else { return }
-      if error != nil {
-        self.dataContinuation.finish()
-        self.connection.cancel()
-        return
-      }
-      if let data, !data.isEmpty {
-        self.receive(data)
-      }
-      if isComplete {
-        self.dataContinuation.finish()
-      } else {
-        self.receiveNext()
-      }
-    }
-  }
-
-  private func receive(_ data: Data) {
-    pendingData.append(data)
-
-    while let newline = pendingData.firstIndex(of: 0x0A) {
-      let message = Data(pendingData[..<newline])
-      pendingData.removeSubrange(pendingData.startIndex...newline)
-      guard message.count <= Self.maximumMessageBytes else {
-        dataContinuation.finish()
-        connection.cancel()
-        return
-      }
-      if !message.isEmpty {
-        dataContinuation.yield(message)
-      }
-    }
-
-    if pendingData.count > Self.maximumMessageBytes {
-      dataContinuation.finish()
-      connection.cancel()
-    }
-  }
-
-  private func send(_ message: Data) async throws {
-    var framedMessage = message
-    framedMessage.append(0x0A)
-
-    try await withCheckedThrowingContinuation { (continuation: CheckedContinuation<Void, Error>) in
-      connection.send(
-        content: framedMessage,
-        completion: .contentProcessed { error in
-          if let error {
-            continuation.resume(
-              throwing: UnixSocketRPCError.connectionFailed(error.localizedDescription)
-            )
-          } else {
-            continuation.resume()
-          }
-        })
     }
   }
 }

@@ -4,6 +4,8 @@ load("@rules_rust//rust:defs.bzl", "rust_binary", "rust_test")
 
 package(default_visibility = ["//visibility:public"])
 
+exports_files(["testdata/pi-fixture.sh"])
+
 cargo_toml_env_vars(
     name = "cargo_env",
     src = "Cargo.toml",

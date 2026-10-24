@@ -145,14 +145,14 @@ final class TerminalWorkbenchE2ETests: XCTestCase {
   }
 
   func testSessionNavigationCyclesInSessionOrder() async throws {
-    try await withWorkbench { model, _ in
+    try await withWorkbench { model, daemon in
       let firstSessionID = try XCTUnwrap(model.selectedSessionID)
       await model.createSession()
       let secondSessionID = try XCTUnwrap(model.selectedSessionID)
       XCTAssertNotEqual(firstSessionID, secondSessionID)
       let secondSession = try XCTUnwrap(model.session(for: secondSessionID))
       XCTAssertNil(secondSession.workspaceId)
-      XCTAssertEqual(secondSession.initialPwd, NSHomeDirectory())
+      XCTAssertEqual(secondSession.initialPwd, daemon.homeDirectory.path)
 
       model.showNextSession()
       XCTAssertEqual(model.selectedSessionID, firstSessionID)
@@ -436,6 +436,8 @@ final class TerminalWorkbenchE2ETests: XCTestCase {
 private final class DaemonFixture {
   let executableURL: URL
   let socketPath: URL
+  /// The daemon's `HOME`; standalone Sessions start here.
+  let homeDirectory: URL
   private let root: URL
   private let daemon: Process
 
@@ -448,11 +450,21 @@ private final class DaemonFixture {
       )
     socketPath = root.appendingPathComponent("axod.sock")
     let serverDirectory = root.appendingPathComponent("server", isDirectory: true)
+    homeDirectory = root.appendingPathComponent("home", isDirectory: true)
     try FileManager.default.createDirectory(at: serverDirectory, withIntermediateDirectories: true)
+    try FileManager.default.createDirectory(at: homeDirectory, withIntermediateDirectories: true)
 
     daemon = Process()
     daemon.executableURL = executableURL
     daemon.arguments = ["--socket", socketPath.path, "--server-dir", serverDirectory.path]
+    // Pi panes run the declared inert fixtures, never the developer's Pi or extension.
+    var environment = ProcessInfo.processInfo.environment
+    environment["HOME"] = homeDirectory.path
+    environment["AXO_PI_EXTENSION_PATH"] = try Self.runfile(
+      named: "AXO_PI_EXTENSION_PATH", executable: false
+    ).path
+    environment["AXO_PI_EXECUTABLE"] = try Self.runfile(named: "AXO_TEST_PI_EXECUTABLE").path
+    daemon.environment = environment
     daemon.standardOutput = FileHandle.nullDevice
     daemon.standardError = FileHandle.nullDevice
     try daemon.run()
@@ -547,7 +559,7 @@ private final class DaemonFixture {
     }
   }
 
-  private static func runfile(named variable: String) throws -> URL {
+  private static func runfile(named variable: String, executable: Bool = true) throws -> URL {
     guard let relativePath = ProcessInfo.processInfo.environment[variable] else {
       throw E2EError.missingRunfile(variable)
     }
@@ -565,7 +577,12 @@ private final class DaemonFixture {
       candidates.append(
         runfiles.appendingPathComponent("_main").appendingPathComponent(relativePath))
     }
-    guard let file = candidates.first(where: { fileManager.isExecutableFile(atPath: $0.path) })
+    guard
+      let file = candidates.first(where: {
+        executable
+          ? fileManager.isExecutableFile(atPath: $0.path)
+          : fileManager.fileExists(atPath: $0.path)
+      })
     else {
       throw E2EError.runfileNotFound(relativePath)
     }

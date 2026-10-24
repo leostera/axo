@@ -33,6 +33,8 @@ const MAX_LAYOUT_DEPTH: usize = 64;
 const MAX_LAYOUT_NODES: usize = 255;
 const MAX_SUBSCRIPTIONS: usize = 64;
 const MAX_QUEUED_EVENTS_PER_SUBSCRIPTION: usize = 128;
+const SUBSCRIPTION_IDLE_EXPIRY: Duration = Duration::from_secs(60);
+const PENDING_FOCUS_LIFETIME: Duration = Duration::from_secs(10);
 const MAX_CONCURRENT_TERMINAL_ATTACHMENTS: usize = 256;
 const ATTACH_REQUEST_TIMEOUT: Duration = Duration::from_secs(3);
 const MAX_ATTACH_SHELL_ID_DIGITS: usize = 19;
@@ -362,6 +364,13 @@ struct ConfigSetRequest {
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 struct SessionSubscribeRequest {
     session_id: Option<i64>,
+    /// Catalog clients pass `false`; terminal bytes would otherwise dominate their queue.
+    #[serde(default = "default_true")]
+    include_terminal_output: bool,
+}
+
+fn default_true() -> bool {
+    true
 }
 
 #[derive(Debug, Deserialize)]
@@ -769,17 +778,29 @@ pub struct SessionManager {
     host_generation: String,
     stop_workers: Arc<AtomicBool>,
     workers: Mutex<Vec<JoinHandle<()>>>,
-    subscriptions: Mutex<HashMap<String, Receiver<Value>>>,
+    subscriptions: Mutex<HashMap<String, LocalSubscription>>,
     subscribers: Mutex<Vec<LocalSubscriber>>,
     next_subscription_id: AtomicU64,
-    pending_resume_focus: Mutex<Option<SessionId>>,
+    pending_resume_focus: Mutex<Option<(SessionId, Instant)>>,
     workspace_access: Mutex<HashMap<String, WorkspaceDirectoryAccess>>,
 }
 
 struct LocalSubscriber {
     id: String,
     session_id: Option<SessionId>,
+    include_terminal_output: bool,
+    lagged: Arc<AtomicBool>,
     sender: SyncSender<Value>,
+}
+
+/// Consumer side of a local event subscription. A full queue never blocks publishers; it marks
+/// the subscription lagged so the next poll reports `subscription.lagged` instead of silently
+/// presenting a gapped stream. Subscriptions nobody polls for `SUBSCRIPTION_IDLE_EXPIRY` are
+/// reclaimed so crashed clients cannot exhaust capacity.
+struct LocalSubscription {
+    receiver: Receiver<Value>,
+    lagged: Arc<AtomicBool>,
+    last_polled: Instant,
 }
 
 #[derive(Clone, Copy, Debug, Deserialize, Eq, PartialEq, Serialize)]
@@ -983,7 +1004,7 @@ impl SessionManager {
     }
 
     pub(crate) fn subscribe_remote_events(&self) -> io::Result<String> {
-        self.subscribe(None)
+        self.subscribe(None, true)
     }
 
     pub(crate) fn next_remote_event(
@@ -992,6 +1013,15 @@ impl SessionManager {
         timeout: Duration,
     ) -> io::Result<Option<Value>> {
         self.next_event(subscription_id, timeout)
+    }
+
+    /// Current snapshots, as local events, for resynchronizing a lagged remote stream.
+    pub(crate) fn remote_resync_events(&self) -> io::Result<Vec<Value>> {
+        Ok(self
+            .list_sessions()?
+            .iter()
+            .map(|session| json!({ "type": "session.snapshot", "session": session.to_json() }))
+            .collect())
     }
 
     pub(crate) fn unsubscribe_remote_events(&self, subscription_id: &str) -> io::Result<()> {
@@ -1174,7 +1204,7 @@ impl SessionManager {
         handler.add_sync_method("axo.session.subscribe", move |params: Params| {
             let request: SessionSubscribeRequest = params
                 .parse()
-                .map_err(|_| invalid_params("expected {sessionId?}"))?;
+                .map_err(|_| invalid_params("expected {sessionId?, includeTerminalOutput?}"))?;
             let session_id = request
                 .session_id
                 .map(|id| {
@@ -1186,7 +1216,7 @@ impl SessionManager {
                 })
                 .transpose()?;
             manager
-                .subscribe(session_id)
+                .subscribe(session_id, request.include_terminal_output)
                 .map(|subscription_id| json!({ "subscriptionId": subscription_id }))
                 .map_err(internal_rpc_error)
         });
@@ -1682,7 +1712,11 @@ impl SessionManager {
         Ok(())
     }
 
-    fn subscribe(&self, session_id: Option<SessionId>) -> io::Result<String> {
+    fn subscribe(
+        &self,
+        session_id: Option<SessionId>,
+        include_terminal_output: bool,
+    ) -> io::Result<String> {
         if let Some(session_id) = session_id {
             let state = self.lock_state()?;
             session_initial_pwd(&state.database, session_id)?;
@@ -1697,6 +1731,17 @@ impl SessionManager {
             .subscriptions
             .lock()
             .map_err(|_| io::Error::other("session subscription lock was poisoned"))?;
+        let now = Instant::now();
+        let expired: Vec<String> = subscriptions
+            .iter()
+            .filter(|(_, subscription)| {
+                now.duration_since(subscription.last_polled) >= SUBSCRIPTION_IDLE_EXPIRY
+            })
+            .map(|(id, _)| id.clone())
+            .collect();
+        for id in &expired {
+            subscriptions.remove(id);
+        }
         if subscriptions.len() >= MAX_SUBSCRIPTIONS {
             return Err(io::Error::new(
                 io::ErrorKind::WouldBlock,
@@ -1707,10 +1752,27 @@ impl SessionManager {
             .subscribers
             .lock()
             .map_err(|_| io::Error::other("session subscriber lock was poisoned"))?;
-        subscriptions.insert(subscription_id.clone(), receiver);
+        if !expired.is_empty() {
+            subscribers.retain(|subscriber| !expired.contains(&subscriber.id));
+            log::info!(
+                "event=session.subscriptions_expired count={}",
+                expired.len()
+            );
+        }
+        let lagged = Arc::new(AtomicBool::new(false));
+        subscriptions.insert(
+            subscription_id.clone(),
+            LocalSubscription {
+                receiver,
+                lagged: Arc::clone(&lagged),
+                last_polled: now,
+            },
+        );
         subscribers.push(LocalSubscriber {
             id: subscription_id.clone(),
             session_id,
+            include_terminal_output,
+            lagged,
             sender,
         });
         drop(subscribers);
@@ -1737,9 +1799,16 @@ impl SessionManager {
             .subscriptions
             .lock()
             .map_err(|_| io::Error::other("session subscription lock was poisoned"))?;
-        let receiver = subscriptions
+        let subscription = subscriptions
             .get_mut(id)
             .ok_or_else(|| io::Error::new(io::ErrorKind::NotFound, "subscription is not open"))?;
+        subscription.last_polled = Instant::now();
+        if subscription.lagged.swap(false, Ordering::AcqRel) {
+            // Discard the gapped backlog; the client must resynchronize from a fresh listing.
+            while subscription.receiver.try_recv().is_ok() {}
+            return Ok(Some(json!({ "type": "subscription.lagged" })));
+        }
+        let receiver = &subscription.receiver;
         match receiver.recv_timeout(timeout) {
             Ok(event) => Ok(Some(event)),
             Err(RecvTimeoutError::Timeout) => Ok(None),
@@ -1769,27 +1838,43 @@ impl SessionManager {
         Ok(())
     }
 
-    fn publish_event(&self, event: Value) {
+    /// Returns how many subscribers accepted the event.
+    fn publish_event(&self, event: Value) -> usize {
+        let is_terminal_output = event["type"] == "terminal.output";
         let session_id = event.get("sessionId").and_then(Value::as_i64).or_else(|| {
             event
                 .get("session")
                 .and_then(|session| session["id"].as_i64())
         });
         let Ok(mut subscribers) = self.subscribers.lock() else {
-            return;
+            return 0;
         };
+        let mut delivered = 0;
         subscribers.retain(|subscriber| {
             if subscriber
                 .session_id
                 .is_some_and(|expected| session_id != Some(expected.0))
+                || (is_terminal_output && !subscriber.include_terminal_output)
             {
                 return true;
             }
             match subscriber.sender.try_send(event.clone()) {
-                Ok(()) | Err(TrySendError::Full(_)) => true,
+                Ok(()) => {
+                    delivered += 1;
+                    true
+                }
+                Err(TrySendError::Full(_)) => {
+                    subscriber.lagged.store(true, Ordering::Release);
+                    true
+                }
                 Err(TrySendError::Disconnected(_)) => false,
             }
         });
+        delivered
+    }
+
+    fn publish_workspace_changed(&self, workspace_id: &str) {
+        self.publish_event(json!({ "type": "workspace.changed", "workspaceId": workspace_id }));
     }
 
     fn publish_session_snapshot(&self, session_id: SessionId) -> io::Result<()> {
@@ -2091,6 +2176,7 @@ impl SessionManager {
         for session_id in session_ids {
             self.publish_session_snapshot(session_id)?;
         }
+        self.publish_workspace_changed(workspace_id);
         Ok(workspace)
     }
 
@@ -2123,6 +2209,7 @@ impl SessionManager {
         for session_id in &session_ids {
             self.publish_session_removed(*session_id);
         }
+        self.publish_workspace_changed(workspace_id);
         Ok(session_ids)
     }
 
@@ -2229,6 +2316,7 @@ impl SessionManager {
             "state": "open",
         });
         self.publish_event(json!({ "type": "session.snapshot", "session": session.to_json() }));
+        self.publish_workspace_changed(&workspace_id);
         Ok(json!({ "workspace": workspace, "session": session.to_json() }))
     }
 
@@ -3206,11 +3294,14 @@ impl SessionManager {
     }
 
     fn request_session_focus(&self, session_id: SessionId) -> io::Result<()> {
+        // Live catalog subscribers focus immediately. Listing clients get the same request for a
+        // short window only, so a much later resync cannot replay a stale focus change.
+        self.publish_event(json!({ "type": "session.focus", "sessionId": session_id.0 }));
         *self
             .pending_resume_focus
             .lock()
             .map_err(|_| io::Error::other("pending resume focus lock was poisoned"))? =
-            Some(session_id);
+            Some((session_id, Instant::now()));
         Ok(())
     }
 
@@ -3219,7 +3310,9 @@ impl SessionManager {
             .pending_resume_focus
             .lock()
             .map_err(|_| io::Error::other("pending resume focus lock was poisoned"))?
-            .take())
+            .take()
+            .filter(|(_, requested)| requested.elapsed() < PENDING_FOCUS_LIFETIME)
+            .map(|(session_id, _)| session_id))
     }
 
     fn lock_state(&self) -> io::Result<std::sync::MutexGuard<'_, SessionState>> {
@@ -7615,6 +7708,120 @@ mod tests {
             b'8' | b'9' | b'a' | b'b'
         ));
         fs::remove_dir_all(directory).unwrap();
+    }
+
+    #[test]
+    fn local_subscriptions_signal_lag_filter_output_and_expire() {
+        let directory = PathBuf::from("/tmp").join(format!("axos-{}", create_uuid_v4().unwrap()));
+        fs::create_dir_all(&directory).unwrap();
+        let manager = SessionManager::open(&directory).unwrap();
+        let drain = |id: &str| {
+            while manager
+                .next_event(id, Duration::from_millis(1))
+                .unwrap()
+                .is_some()
+            {}
+        };
+        let catalog = manager.subscribe(None, false).unwrap();
+        let output = manager.subscribe(None, true).unwrap();
+        drain(&catalog);
+        drain(&output);
+
+        let terminal_output = json!({ "type": "terminal.output", "sessionId": 1, "shellId": 1 });
+        manager.publish_event(terminal_output);
+        assert_eq!(
+            manager
+                .next_event(&catalog, Duration::from_millis(1))
+                .unwrap(),
+            None,
+            "catalog subscriptions must not carry terminal bytes"
+        );
+        assert_eq!(
+            manager
+                .next_event(&output, Duration::from_millis(1))
+                .unwrap()
+                .unwrap()["type"],
+            "terminal.output"
+        );
+
+        manager.publish_workspace_changed("workspace");
+        let changed = manager
+            .next_event(&catalog, Duration::from_millis(1))
+            .unwrap()
+            .unwrap();
+        assert_eq!(changed["type"], "workspace.changed");
+        assert_eq!(changed["workspaceId"], "workspace");
+        drain(&output);
+
+        for _ in 0..=MAX_QUEUED_EVENTS_PER_SUBSCRIPTION {
+            manager.publish_workspace_changed("flood");
+        }
+        assert_eq!(
+            manager
+                .next_event(&catalog, Duration::from_millis(1))
+                .unwrap()
+                .unwrap()["type"],
+            "subscription.lagged",
+            "a full queue must be reported, never silently gapped"
+        );
+        assert_eq!(
+            manager
+                .next_event(&catalog, Duration::from_millis(1))
+                .unwrap(),
+            None
+        );
+        drain(&output);
+
+        manager.request_session_focus(SessionId(5)).unwrap();
+        let focus = manager
+            .next_event(&catalog, Duration::from_millis(1))
+            .unwrap()
+            .unwrap();
+        assert_eq!(focus["type"], "session.focus");
+        assert_eq!(focus["sessionId"], 5);
+        assert_eq!(
+            manager.take_pending_resume_focus().unwrap(),
+            Some(SessionId(5))
+        );
+        *manager.pending_resume_focus.lock().unwrap() = Some((
+            SessionId(6),
+            Instant::now().checked_sub(PENDING_FOCUS_LIFETIME).unwrap(),
+        ));
+        assert_eq!(
+            manager.take_pending_resume_focus().unwrap(),
+            None,
+            "a stale focus request must not be replayed by a later listing"
+        );
+
+        manager
+            .subscriptions
+            .lock()
+            .unwrap()
+            .get_mut(&catalog)
+            .unwrap()
+            .last_polled = Instant::now()
+            .checked_sub(SUBSCRIPTION_IDLE_EXPIRY)
+            .unwrap();
+        let replacement = manager.subscribe(None, false).unwrap();
+        assert_eq!(
+            manager
+                .next_event(&catalog, Duration::from_millis(1))
+                .unwrap_err()
+                .kind(),
+            io::ErrorKind::NotFound,
+            "unpolled subscriptions are reclaimed"
+        );
+        assert!(
+            manager
+                .subscribers
+                .lock()
+                .unwrap()
+                .iter()
+                .all(|s| s.id != catalog)
+        );
+        manager.unsubscribe(&replacement).unwrap();
+        manager.unsubscribe(&output).unwrap();
+        let _ = fs::remove_dir_all(directory);
     }
 
     #[test]

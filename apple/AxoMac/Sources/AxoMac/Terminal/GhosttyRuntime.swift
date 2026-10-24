@@ -337,8 +337,9 @@ final class GhosttyRuntime: ObservableObject {
     ghostty_surface_set_size(surface, width, height)
   }
 
+
   private func initialize() {
-    configureGhosttyResources()
+    Self.configureGhosttyResources()
 
     guard ghostty_init(UInt(CommandLine.argc), CommandLine.unsafeArgv) == GHOSTTY_SUCCESS else {
       errorMessage = "libghostty could not initialize."
@@ -350,11 +351,13 @@ final class GhosttyRuntime: ObservableObject {
     }
 
     // Load Axo's macOS default first so explicit Ghostty config values can override it.
-    loadAxoConfigDefaults(into: config)
+    if let error = Self.loadAxoConfigDefaults(into: config) { errorMessage = error }
     ghostty_config_load_default_files(config)
     ghostty_config_load_recursive_files(config)
     ghostty_config_finalize(config)
-    readScrollbarConfig(from: config)
+    let appearance = Self.scrollbarAppearance(from: config)
+    showsScrollbar = appearance.showsScrollbar
+    hasDarkBackground = appearance.hasDarkBackground
     attentionConfig = TerminalAttentionConfig(config: config)
 
     var runtimeConfig = ghostty_runtime_config_s(
@@ -366,7 +369,7 @@ final class GhosttyRuntime: ObservableObject {
         // updates AppKit state synchronously on that same thread.
         guard Thread.isMainThread else { return false }
         return MainActor.assumeIsolated {
-          GhosttyRuntime.handlePointerAction(target: target, action: action)
+          GhosttyRuntime.handleAction(target: target, action: action)
         }
       },
       read_clipboard_cb: { userdata, location, state, mimes, count, list in
@@ -407,252 +410,9 @@ final class GhosttyRuntime: ObservableObject {
 
     self.config = config
     self.app = app
-    ghostty_app_set_focus(app, NSApp.isActive)
+    // `NSApp` is nil until NSApplication finishes launching; activation observers catch up.
+    ghostty_app_set_focus(app, NSApp?.isActive ?? false)
     observeApplicationState()
-  }
-
-  private func readScrollbarConfig(from config: ghostty_config_t) {
-    var scrollbarValue: UnsafePointer<CChar>?
-    let scrollbarKey = "scrollbar"
-    if ghostty_config_get(config, &scrollbarValue, scrollbarKey, UInt(scrollbarKey.utf8.count)),
-      let scrollbarValue
-    {
-      showsScrollbar = TerminalScrollbarConfig.showsScrollbar(
-        configValue: String(cString: scrollbarValue))
-    }
-    var background = ghostty_config_color_s()
-    let backgroundKey = "background"
-    if ghostty_config_get(config, &background, backgroundKey, UInt(backgroundKey.utf8.count)) {
-      hasDarkBackground = TerminalScrollbarConfig.isDarkBackground(
-        red: background.r, green: background.g, blue: background.b)
-    }
-  }
-
-  private func configureGhosttyResources() {
-    if let configuredDirectory = ProcessInfo.processInfo.environment["GHOSTTY_RESOURCES_DIR"],
-      !configuredDirectory.isEmpty
-    {
-      return
-    }
-
-    let installedAppURL = NSWorkspace.shared.urlForApplication(
-      withBundleIdentifier: "com.mitchellh.ghostty"
-    )
-    let bundledResourcesURL = Bundle.main.resourceURL?.appendingPathComponent(
-      "ghostty-resources", isDirectory: true
-    )
-    guard
-      let resourceDirectory = GhosttyResourceLocator.resolve(
-        installedGhosttyAppURL: installedAppURL,
-        bundledResourcesURL: bundledResourcesURL
-      )
-    else {
-      return
-    }
-    setenv("GHOSTTY_RESOURCES_DIR", resourceDirectory.path, 1)
-  }
-
-  private func loadAxoConfigDefaults(into config: ghostty_config_t) {
-    let configURL = FileManager.default.temporaryDirectory
-      .appendingPathComponent("axo-ghostty-default-\(UUID().uuidString).ghostty")
-    do {
-      try "copy-on-select = clipboard\n".write(to: configURL, atomically: true, encoding: .utf8)
-    } catch {
-      errorMessage = "Axo could not enable copy-on-select: \(error.localizedDescription)"
-      return
-    }
-    defer { try? FileManager.default.removeItem(at: configURL) }
-    configURL.path.withCString { ghostty_config_load_file(config, $0) }
-  }
-
-  private static func readClipboard(
-    userdata: UnsafeMutableRawPointer?,
-    location: ghostty_clipboard_e,
-    state: UnsafeMutableRawPointer?,
-    mimes: UnsafePointer<UnsafePointer<CChar>?>?,
-    count: Int,
-    list: Bool
-  ) -> ghostty_clipboard_read_result_e {
-    guard let view = clipboardView(userdata), let surface = view.surface,
-      let pasteboard = TerminalClipboardPolicy.pasteboard(for: location)
-    else { return GHOSTTY_CLIPBOARD_READ_UNSUPPORTED }
-
-    var requestedMIMEs = Set<String>()
-    if let mimes {
-      for index in 0..<count {
-        guard let mime = mimes[index] else { continue }
-        requestedMIMEs.insert(String(cString: mime))
-      }
-    }
-    let requestsPlainText = requestedMIMEs.contains(TerminalClipboardPolicy.textMIMEType)
-    guard requestsPlainText || list else { return GHOSTTY_CLIPBOARD_READ_UNSUPPORTED }
-
-    let hasPlainText = pasteboard.types?.contains(.string) == true
-    let text = requestsPlainText ? pasteboard.string(forType: .string) : nil
-    guard text != nil || list else {
-      return GHOSTTY_CLIPBOARD_READ_UNAVAILABLE
-    }
-    // This is an exact snapshot for Ghostty's confirmation callback; the text is not sent to
-    // the terminal until the user approves that request.
-    completeClipboardRequest(
-      surface: surface,
-      state: state,
-      text: text,
-      available: list ? TerminalClipboardPolicy.availableMIMETypes(hasPlainText: hasPlainText) : []
-    )
-    return GHOSTTY_CLIPBOARD_READ_STARTED
-  }
-
-  private static func confirmClipboardRead(
-    userdata: UnsafeMutableRawPointer?,
-    confirm: UnsafePointer<ghostty_clipboard_confirm_s>?,
-    state: UnsafeMutableRawPointer?,
-    request: ghostty_clipboard_request_e
-  ) {
-    guard let view = clipboardView(userdata), let surface = view.surface, let confirm else {
-      if let surface = clipboardView(userdata)?.surface {
-        ghostty_surface_deny_clipboard_request(surface, state)
-      }
-      return
-    }
-    let payload = confirm.pointee
-    if payload.available_len > 0 {
-      guard let available = payload.available,
-        (0..<payload.available_len).allSatisfy({ index in
-          guard let mime = available[index] else { return false }
-          return String(cString: mime) == TerminalClipboardPolicy.textMIMEType
-        })
-      else {
-        ghostty_surface_deny_clipboard_request(surface, state)
-        return
-      }
-    }
-    let text: String
-    if request == GHOSTTY_CLIPBOARD_REQUEST_LIST && payload.contents_len == 0 {
-      text = ""
-    } else {
-      guard payload.contents_len == 1, let contents = payload.contents,
-        let mime = contents[0].mime, String(cString: mime) == TerminalClipboardPolicy.textMIMEType
-      else {
-        ghostty_surface_deny_clipboard_request(surface, state)
-        return
-      }
-      let length = Int(contents[0].len)
-      let data: Data
-      if length == 0 {
-        data = Data()
-      } else if let dataPointer = contents[0].data {
-        data = Data(bytes: dataPointer, count: length)
-      } else {
-        ghostty_surface_deny_clipboard_request(surface, state)
-        return
-      }
-      guard let decodedText = String(data: data, encoding: .utf8) else {
-        ghostty_surface_deny_clipboard_request(surface, state)
-        return
-      }
-      text = decodedText
-    }
-    guard TerminalClipboardConsent.requestAccess(for: request, text: text) else {
-      ghostty_surface_deny_clipboard_request(surface, state)
-      return
-    }
-    var approved = ghostty_clipboard_complete_s(
-      contents: payload.contents,
-      contents_len: payload.contents_len,
-      available: payload.available,
-      available_len: payload.available_len,
-      confirmed: true,
-      remember: false
-    )
-    ghostty_surface_complete_clipboard_request(surface, &approved, state)
-  }
-
-  private static func writeClipboard(
-    location: ghostty_clipboard_e,
-    content: UnsafePointer<ghostty_clipboard_content_s>?,
-    count: Int,
-    confirm: Bool
-  ) {
-    guard let pasteboard = TerminalClipboardPolicy.pasteboard(for: location),
-      let content, count > 0
-    else { return }
-    var contents: [TerminalClipboardContent] = []
-    for index in 0..<count {
-      guard let mime = content[index].mime else { continue }
-      let length = Int(content[index].len)
-      let data: Data
-      if length == 0 {
-        data = Data()
-      } else if let pointer = content[index].data {
-        data = Data(bytes: pointer, count: length)
-      } else {
-        return
-      }
-      contents.append(TerminalClipboardContent(mimeType: String(cString: mime), data: data))
-    }
-    guard let text = TerminalClipboardPolicy.singlePlainText(from: contents) else { return }
-    if confirm && !TerminalClipboardConsent.requestAccess(
-      for: GHOSTTY_CLIPBOARD_REQUEST_OSC_52_WRITE,
-      text: text
-    ) { return }
-    pasteboard.clearContents()
-    pasteboard.setString(text, forType: .string)
-  }
-
-  private static func clipboardView(_ userdata: UnsafeMutableRawPointer?) -> GhosttySurfaceNSView? {
-    guard let userdata else { return nil }
-    return Unmanaged<GhosttySurfaceNSView>.fromOpaque(userdata).takeUnretainedValue()
-  }
-
-  private static func completeClipboardRequest(
-    surface: ghostty_surface_t,
-    state: UnsafeMutableRawPointer?,
-    text: String?,
-    available: [String]
-  ) {
-    let textData = text.map { Data($0.utf8) }
-    let mime = textData == nil ? nil : strdup(TerminalClipboardPolicy.textMIMEType)
-    let contentData = textData.map { data -> UnsafeMutableRawPointer in
-      let buffer = UnsafeMutableRawPointer.allocate(byteCount: max(1, data.count), alignment: 1)
-      data.withUnsafeBytes { bytes in
-        if let baseAddress = bytes.baseAddress {
-          buffer.copyMemory(from: baseAddress, byteCount: bytes.count)
-        }
-      }
-      return buffer
-    }
-    defer {
-      if let mime { free(mime) }
-      contentData?.deallocate()
-    }
-    let availableStrings = available.compactMap { strdup($0) }
-    defer { availableStrings.forEach { free($0) } }
-    let availablePointers: [UnsafePointer<CChar>?] = availableStrings.map { UnsafePointer($0) }
-
-    let complete: (UnsafePointer<ghostty_clipboard_content_s>?) -> Void = { contentPointer in
-      availablePointers.withUnsafeBufferPointer { availableBuffer in
-        var completion = ghostty_clipboard_complete_s(
-          contents: contentPointer,
-          contents_len: textData == nil ? 0 : 1,
-          available: availableBuffer.baseAddress,
-          available_len: availableBuffer.count,
-          confirmed: false,
-          remember: false
-        )
-        ghostty_surface_complete_clipboard_request(surface, &completion, state)
-      }
-    }
-    if let textData, let mime, let contentData {
-      var content = ghostty_clipboard_content_s(
-        mime: mime,
-        data: contentData.assumingMemoryBound(to: CChar.self),
-        len: textData.count
-      )
-      withUnsafePointer(to: &content, complete)
-    } else {
-      complete(nil)
-    }
   }
 
   private func observeApplicationState() {
@@ -687,134 +447,6 @@ final class GhosttyRuntime: ObservableObject {
         }
       }
     )
-  }
-
-  private static func handlePointerAction(
-    target: ghostty_target_s,
-    action: ghostty_action_s
-  ) -> Bool {
-    if action.tag == GHOSTTY_ACTION_OPEN_URL {
-      let openURL = action.action.open_url
-      guard let value = TerminalLinkPolicy.string(openURL.url, length: Int(openURL.len)) else {
-        return true
-      }
-      return TerminalLinkPolicy.open(kind: TerminalLinkKind(openURL.kind), value: value)
-    }
-    guard target.tag == GHOSTTY_TARGET_SURFACE,
-      let surface = target.target.surface,
-      let userdata = ghostty_surface_userdata(surface)
-    else { return false }
-    let view = Unmanaged<GhosttySurfaceNSView>.fromOpaque(userdata).takeUnretainedValue()
-    switch action.tag {
-    case GHOSTTY_ACTION_MOUSE_SHAPE:
-      view.setCursorShape(action.action.mouse_shape)
-      return true
-    case GHOSTTY_ACTION_SCROLLBAR:
-      let scrollbar = action.action.scrollbar
-      view.updateScrollbar(
-        TerminalScrollbarState(
-          total: scrollbar.total, offset: scrollbar.offset, length: scrollbar.len))
-      return true
-    case GHOSTTY_ACTION_CELL_SIZE:
-      view.cellSizeDidChange()
-      return true
-    case GHOSTTY_ACTION_RING_BELL:
-      view.runtime?.ringBell(for: view)
-      return true
-    case GHOSTTY_ACTION_DESKTOP_NOTIFICATION:
-      guard let runtime = view.runtime,
-        TerminalAttentionPolicy.shouldPostDesktopNotification(config: runtime.attentionConfig)
-      else { return true }
-      let note = action.action.desktop_notification
-      TerminalNotifications.post(
-        title: note.title.map { String(cString: $0) } ?? "",
-        body: note.body.map { String(cString: $0) } ?? "")
-      return true
-    case GHOSTTY_ACTION_COMMAND_FINISHED:
-      guard let runtime = view.runtime else { return true }
-      let finished = action.action.command_finished
-      let effects = TerminalAttentionPolicy.commandFinished(
-        exitCode: finished.exit_code, durationNanoseconds: finished.duration,
-        surfaceFocused: view.isFocusedTerminal, config: runtime.attentionConfig)
-      if effects.bell { runtime.ringBell(for: view) }
-      if let note = effects.notification { TerminalNotifications.post(title: note.title, body: note.body) }
-      return true
-    case GHOSTTY_ACTION_SECURE_INPUT:
-      let mode = action.action.secure_input
-      view.apply(.secureInput(mode == GHOSTTY_SECURE_INPUT_ON ? .on : mode == GHOSTTY_SECURE_INPUT_OFF ? .off : .toggle))
-      view.runtime?.refreshSecureInput()
-      return true
-    case GHOSTTY_ACTION_READONLY:
-      view.apply(.readonly(action.action.readonly == GHOSTTY_READONLY_ON))
-      return true
-    case GHOSTTY_ACTION_RENDERER_HEALTH:
-      view.apply(.rendererHealthy(action.action.renderer_health == GHOSTTY_RENDERER_HEALTH_HEALTHY))
-      return true
-    case GHOSTTY_ACTION_KEY_SEQUENCE:
-      view.apply(.keySequence(active: action.action.key_sequence.active))
-      return true
-    case GHOSTTY_ACTION_KEY_TABLE:
-      let table = action.action.key_table
-      switch table.tag {
-      case GHOSTTY_KEY_TABLE_ACTIVATE:
-        let name = TerminalLinkPolicy.string(table.value.activate.name, length: Int(table.value.activate.len)) ?? ""
-        view.apply(.keyTableActivate(name))
-      case GHOSTTY_KEY_TABLE_DEACTIVATE: view.apply(.keyTableDeactivate)
-      default: view.apply(.keyTableDeactivateAll)
-      }
-      return true
-    case GHOSTTY_ACTION_PROGRESS_REPORT:
-      let report = action.action.progress_report
-      let state: TerminalSurfaceStatus.Event.ProgressState
-      switch report.state {
-      case GHOSTTY_PROGRESS_STATE_REMOVE: state = .remove
-      case GHOSTTY_PROGRESS_STATE_SET: state = .set
-      case GHOSTTY_PROGRESS_STATE_ERROR: state = .error
-      case GHOSTTY_PROGRESS_STATE_PAUSE: state = .pause
-      default: state = .indeterminate
-      }
-      view.apply(.progress(state, percent: report.progress))
-      return true
-    case GHOSTTY_ACTION_SHOW_CHILD_EXITED:
-      let exited = action.action.child_exited
-      view.apply(.childExited(.init(exitCode: exited.exit_code, runtimeMilliseconds: exited.timetime_ms)))
-      return true
-    case GHOSTTY_ACTION_SET_TITLE:
-      view.apply(.title(action.action.set_title.title.map { String(cString: $0) }))
-      return true
-    case GHOSTTY_ACTION_PWD:
-      view.apply(.pwd(action.action.pwd.pwd.map { String(cString: $0) }))
-      return true
-    case GHOSTTY_ACTION_START_SEARCH:
-      view.apply(.startSearch(action.action.start_search.needle.map { String(cString: $0) } ?? ""))
-      return true
-    case GHOSTTY_ACTION_END_SEARCH:
-      view.apply(.endSearch)
-      return true
-    case GHOSTTY_ACTION_SEARCH_TOTAL:
-      view.apply(.searchTotal(Int(action.action.search_total.total)))
-      return true
-    case GHOSTTY_ACTION_SEARCH_SELECTED:
-      view.apply(.searchSelected(Int(action.action.search_selected.selected)))
-      return true
-    case GHOSTTY_ACTION_MOUSE_OVER_LINK:
-      let link = action.action.mouse_over_link
-      view.updateHoveredLink(TerminalLinkPolicy.string(link.url, length: Int(link.len)))
-      return true
-    case GHOSTTY_ACTION_MOUSE_VISIBILITY:
-      switch action.action.mouse_visibility {
-      case GHOSTTY_MOUSE_VISIBLE:
-        view.setCursorVisibility(true)
-        return true
-      case GHOSTTY_MOUSE_HIDDEN:
-        view.setCursorVisibility(false)
-        return true
-      default:
-        return false
-      }
-    default:
-      return false
-    }
   }
 
   private static func wakeup(_ userdata: UnsafeMutableRawPointer?) {

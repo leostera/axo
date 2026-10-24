@@ -13,16 +13,33 @@ exports_files([
     "Resources/dev.leostera.axo.axod.plist",
 ])
 
+AXO_MAC_DEPS = [
+    "//apple/AxoDaemonManager:AxoDaemonManager",
+    "//apple/AxoRPC:AxoRPC",
+    "@ghostty//:GhosttyKit",
+]
+
+# The shipped app. Fixture entrypoints in Sources/AxoMac/TestHost are never compiled in.
 swift_library(
     name = "AxoMac",
     module_name = "AxoMac",
+    srcs = glob(
+        ["Sources/AxoMac/**/*.swift"],
+        exclude = ["Sources/AxoMac/TestHost/**"],
+    ),
+    copts = ["-swift-version", "5"],
+    deps = AXO_MAC_DEPS,
+)
+
+# The same app plus self-test and UI-automation launch modes, for AxoUITestApp only.
+swift_library(
+    name = "AxoMacTestHost",
+    # A distinct module name keeps outputs separate; nothing imports this module.
+    module_name = "AxoMacTestHost",
     srcs = glob(["Sources/AxoMac/**/*.swift"]),
     copts = ["-swift-version", "5"],
-    deps = [
-        "//apple/AxoDaemonManager:AxoDaemonManager",
-        "//apple/AxoRPC:AxoRPC",
-        "@ghostty//:GhosttyKit",
-    ],
+    defines = ["AXO_TEST_HOST"],
+    deps = AXO_MAC_DEPS,
 )
 
 swift_test(
@@ -44,9 +61,15 @@ swift_test(
     name = "TerminalWorkbenchE2ETests",
     srcs = ["Tests/AxoMacTests/TerminalWorkbenchE2ETests.swift"],
     copts = ["-swift-version", "5"],
-    data = ["//crates/axod:axod"],
+    data = [
+        "//crates/axo-server:pi_extension_fixture",
+        "//crates/axod:axod",
+        "//crates/axod:testdata/pi-fixture.sh",
+    ],
     env = {
         "AXOD_TEST_BINARY": "$(rootpath //crates/axod:axod)",
+        "AXO_PI_EXTENSION_PATH": "$(rootpath //crates/axo-server:pi_extension_fixture)",
+        "AXO_TEST_PI_EXECUTABLE": "$(rootpath //crates/axod:testdata/pi-fixture.sh)",
     },
     deps = [":AxoMac"],
     tags = ["no-sandbox"],
@@ -99,9 +122,9 @@ swift_test(
     name = "AxoAppSelfTestTests",
     srcs = ["Tests/AxoMacTests/TerminalAppE2ETests.swift"],
     copts = ["-swift-version", "5"],
-    data = [":AxoApp"],
+    data = [":AxoUITestApp"],
     env = {
-        "AXO_APP_BUNDLE_ZIP": "$(rootpath :AxoApp)",
+        "AXO_APP_BUNDLE_ZIP": "$(rootpath :AxoUITestApp)",
     },
     tags = ["no-sandbox"],
     timeout = "short",
@@ -154,7 +177,7 @@ macos_application(
         "@ghostty//:resources": "Resources",
         "@ghostty//:terminfo": "Resources",
     },
-    deps = [":AxoMac"],
+    deps = [":AxoMacTestHost"],
 )
 
 xcodeproj(

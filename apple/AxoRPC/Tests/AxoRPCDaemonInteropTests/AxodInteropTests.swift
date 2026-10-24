@@ -95,20 +95,6 @@ final class AxodInteropTests: XCTestCase {
       return XCTFail("subscription should begin with a current session snapshot")
     }
     XCTAssertEqual(snapshot.id, createdSession.id)
-    try await UnixSocketRPC.resizeTerminal(
-      shellID: createdShell.id,
-      in: createdSession.id,
-      rows: 44,
-      columns: 120,
-      at: socketPath
-    )
-    try await UnixSocketRPC.sendTerminalInput(
-      Data("echo AXO_SWIFT_PROTOCOL_INPUT\n".utf8),
-      to: createdShell.id,
-      in: createdSession.id,
-      sequence: 0,
-      at: socketPath
-    )
     try await UnixSocketRPC.unsubscribe(subscription, at: socketPath)
     XCTAssertEqual(
       sessionsAfterCreate.first(where: { $0.id == createdSession.id })?.shells.map(\.id),

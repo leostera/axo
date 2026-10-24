@@ -1,13 +1,10 @@
 import AppKit
 import AxoDaemonManager
 import AxoRPC
-import Darwin
 import SwiftUI
 
 @main
 struct AxoApp: App {
-  private static let uiTestBundleIdentifier = "dev.leostera.axo.ui-tests"
-
   @StateObject private var daemon: DaemonController
   @StateObject private var sessions: TerminalSessionsModel
   @NSApplicationDelegateAdaptor(AxoURLSchemeDelegate.self) private var urlSchemeDelegate
@@ -16,78 +13,27 @@ struct AxoApp: App {
   @StateObject private var pairingLink = PairingLinkRouter.shared
   @State private var settingsSection = SettingsSection.general
   @State private var isPresentingWorkspaceCreation = false
-  private let isUITestApp: Bool
   @AppStorage(AxoPreferenceKey.appearanceTheme) private var appearanceTheme: AppearanceTheme = .system
   @AppStorage(AxoPreferenceKey.sidebarIsCollapsed) private var isSidebarCollapsed = false
+  private let environment: AxoAppEnvironment
+  private let workbench: AxoWorkbench
 
   init() {
     let daemon = DaemonController()
-    let isUITestApp = Bundle.main.bundleIdentifier == Self.uiTestBundleIdentifier
+    let environment = AxoAppEnvironment.current(daemon: daemon)
+    let ghostty = GhosttyRuntime()
     _daemon = StateObject(wrappedValue: daemon)
-    _sessions = StateObject(wrappedValue: Self.makeSessions(isUITestApp: isUITestApp))
-    _ghostty = StateObject(wrappedValue: GhosttyRuntime())
+    _sessions = StateObject(wrappedValue: environment.sessions)
+    _ghostty = StateObject(wrappedValue: ghostty)
     _sleepPrevention = StateObject(wrappedValue: SleepPreventionController())
-    self.isUITestApp = isUITestApp
-
-    if ProcessInfo.processInfo.arguments.contains("--self-test") {
-      Task.detached {
-        do {
-          try await AxoAppSelfTest.run()
-          try? FileHandle.standardOutput.write(
-            contentsOf: Data("AXO_SELF_TEST_OK\n".utf8)
-          )
-          Darwin.exit(0)
-        } catch {
-          let message = "AXO_SELF_TEST_FAILED: \(error.localizedDescription)\n"
-          try? FileHandle.standardError.write(contentsOf: Data(message.utf8))
-          Darwin.exit(1)
-        }
-      }
-    } else if !isUITestApp {
+    self.environment = environment
+    // App.init runs once per process; the workbench owns the catalog and focus loops.
+    workbench = AxoWorkbench(
+      sessions: environment.sessions,
+      ghostty: ghostty,
+      daemonIsRunning: environment.daemonIsRunning)
+    if environment.startsDaemon {
       daemon.startIfNeeded()
-    }
-  }
-
-  @MainActor
-  private static func positionUITestWindow() async {
-    for _ in 0..<20 {
-      if let window = NSApp.windows.first(where: { $0.title == "Axo Terminal" }),
-        let screen = NSScreen.main
-      {
-        let visibleFrame = screen.visibleFrame
-        let size = NSSize(
-          width: min(1000, visibleFrame.width),
-          height: min(680, visibleFrame.height)
-        )
-        let origin = NSPoint(
-          x: visibleFrame.midX - size.width / 2,
-          y: visibleFrame.midY - size.height / 2
-        )
-        window.setFrame(NSRect(origin: origin, size: size), display: true)
-        window.makeKeyAndOrderFront(nil)
-        return
-      }
-      try? await Task.sleep(for: .milliseconds(50))
-    }
-  }
-
-  private static func makeSessions(isUITestApp: Bool) -> TerminalSessionsModel {
-    guard isUITestApp else { return TerminalSessionsModel() }
-    let environment = ProcessInfo.processInfo.environment
-    guard let socket = environment["AXO_UI_TEST_SOCKET"],
-      let helper = environment["AXO_UI_TEST_HELPER"],
-      let controlDirectory = environment["AXO_UI_TEST_CONTROL_DIR"],
-      FileManager.default.fileExists(atPath: controlDirectory)
-    else {
-      fatalError("The Axo UI-test app requires isolated socket, helper, and control paths.")
-    }
-    do {
-      return TerminalSessionsModel(
-        socketPath: try UnixSocketPath(socket),
-        helperURL: URL(fileURLWithPath: helper)
-      )
-    } catch {
-      fatalError("The Axo UI-test socket path is invalid: \(error)")
     }
   }
 
@@ -108,7 +54,10 @@ struct AxoApp: App {
     MenuBarExtra {
       AxoMenu(daemon: daemon, settingsSection: $settingsSection)
     } label: {
-      AxoMenuBarLabel(pairingLink: pairingLink, settingsSection: $settingsSection)
+      AxoMenuBarLabel(
+        pairingLink: pairingLink,
+        settingsSection: $settingsSection,
+        opensTerminalWindow: environment.opensTerminalWindow)
     }
     .menuBarExtraStyle(.menu)
 
@@ -120,23 +69,10 @@ struct AxoApp: App {
         settingsSection: $settingsSection,
         pairingLink: pairingLink,
         isPresentingWorkspaceCreation: $isPresentingWorkspaceCreation,
-        daemonIsRunningOverride: isUITestApp ? true : nil
+        isDaemonRunningOverride: environment.startsDaemon ? nil : true
       )
       .preferredColorScheme(appearanceTheme.colorScheme)
-      .task {
-        guard isUITestApp else { return }
-        NSApp.activate(ignoringOtherApps: true)
-        await Self.positionUITestWindow()
-        await sessions.refresh()
-        if sessions.sessions.isEmpty {
-          await sessions.createSession()
-        }
-        guard let path = ProcessInfo.processInfo.environment["AXO_UI_TEST_CONTROL_DIR"] else {
-          return
-        }
-        await TerminalUITestAutomation(sessions: sessions, ghostty: ghostty)
-          .run(in: URL(fileURLWithPath: path, isDirectory: true))
-      }
+      .task { await environment.prepareTerminalWindow(sessions, ghostty) }
     }
     .windowStyle(.hiddenTitleBar)
     .defaultSize(width: 1000, height: 680)
@@ -302,14 +238,14 @@ private struct TerminalAppWindow: View {
   @Binding var settingsSection: SettingsSection
   @ObservedObject var pairingLink: PairingLinkRouter
   @Binding var isPresentingWorkspaceCreation: Bool
-  var daemonIsRunningOverride: Bool?
+  var isDaemonRunningOverride: Bool?
 
   var body: some View {
     TerminalWorkbenchView(
       daemon: daemon,
       sessions: sessions,
       isPresentingWorkspaceCreation: $isPresentingWorkspaceCreation,
-      daemonIsRunningOverride: daemonIsRunningOverride
+      daemonIsRunningOverride: isDaemonRunningOverride
     )
     .environmentObject(ghostty)
   }
@@ -319,6 +255,7 @@ private struct AxoMenuBarLabel: View {
   @Environment(\.openWindow) private var openWindow
   @ObservedObject var pairingLink: PairingLinkRouter
   @Binding var settingsSection: SettingsSection
+  let opensTerminalWindow: Bool
   @State private var didOpenTerminal = false
 
   var body: some View {
@@ -326,8 +263,7 @@ private struct AxoMenuBarLabel: View {
       .task {
         if !didOpenTerminal {
           didOpenTerminal = true
-          guard !ProcessInfo.processInfo.arguments.contains("--self-test") else { return }
-          openWindow(id: "terminal")
+          if opensTerminalWindow { openWindow(id: "terminal") }
         }
         if pairingLink.pendingCode != nil {
           openPairingSettings()

@@ -608,6 +608,11 @@
               "properties": {
                 "sessionId": {
                   "$ref": "common.schema.json#/$defs/SessionId"
+                },
+                "includeTerminalOutput": {
+                  "type": "boolean",
+                  "default": true,
+                  "description": "Catalog subscribers pass false to receive only session, workspace and focus events."
                 }
               }
             }

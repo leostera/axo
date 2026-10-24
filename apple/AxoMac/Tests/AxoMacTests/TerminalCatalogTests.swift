@@ -1,0 +1,217 @@
+import AxoRPC
+import XCTest
+
+@testable import AxoMac
+
+/// An in-memory Axod for catalog tests: listing returns `sessions`, events come from `events`.
+@MainActor
+final class FakeAxodClient: AxodClient {
+  var sessions: [TerminalSession] = []
+  var workspaces: [WorkspaceRecord] = []
+  var resumeSessionID: Int64?
+  var methods: [String] = Array(TerminalSessionsModel.requiredMethods) + [
+    "axo.session.rename", "axo.workspace.rename", "axo.workspace.archive",
+  ]
+  private(set) var listCount = 0
+  private(set) var workspaceListCount = 0
+  private(set) var subscribeCount = 0
+  private(set) var unsubscribed: [TerminalSubscriptionID] = []
+  private(set) var layoutWrites: [(Int64, SessionLayout)] = []
+  private var queuedEvents: [TerminalSessionEvent] = []
+  private var waiters: [CheckedContinuation<TerminalSessionEvent?, Error>] = []
+
+  func push(_ event: TerminalSessionEvent) {
+    if waiters.isEmpty {
+      queuedEvents.append(event)
+    } else {
+      waiters.removeFirst().resume(returning: event)
+    }
+  }
+
+  func negotiate() async throws -> ProtocolNegotiation {
+    ProtocolNegotiation(protocolVersion: UnixSocketRPC.protocolVersion, methods: methods)
+  }
+
+  func listSessionSnapshot() async throws -> TerminalSessionListSnapshot {
+    listCount += 1
+    return TerminalSessionListSnapshot(sessions: sessions, resumeSessionId: resumeSessionID)
+  }
+
+  func listWorkspaces() async throws -> [WorkspaceRecord] {
+    workspaceListCount += 1
+    return workspaces
+  }
+
+  func subscribeToCatalog() async throws -> TerminalSubscriptionID {
+    subscribeCount += 1
+    return TerminalSubscriptionID(subscriptionId: "sub-\(subscribeCount)")
+  }
+
+  func nextEvent(for subscription: TerminalSubscriptionID) async throws -> TerminalSessionEvent? {
+    if !queuedEvents.isEmpty { return queuedEvents.removeFirst() }
+    return try await withCheckedThrowingContinuation { waiters.append($0) }
+  }
+
+  func unsubscribe(_ subscription: TerminalSubscriptionID) async throws {
+    unsubscribed.append(subscription)
+  }
+
+  func createSession() async throws -> TerminalSession { throw Unsupported() }
+  func createSession(inWorkspace workspaceID: String) async throws -> TerminalSession {
+    throw Unsupported()
+  }
+  func createWorkspace(
+    name: String, directoryPath: String, directoryBookmark: String?
+  ) async throws -> CreatedWorkspace { throw Unsupported() }
+  func closeSession(_ sessionID: Int64) async throws -> ClosedTerminalSession {
+    throw Unsupported()
+  }
+  func renameSession(_ sessionID: Int64, to name: String) async throws -> TerminalSession {
+    throw Unsupported()
+  }
+  func renameWorkspace(_ workspaceID: String, to name: String) async throws -> WorkspaceRecord {
+    throw Unsupported()
+  }
+  func archiveWorkspace(_ workspaceID: String) async throws -> ArchivedWorkspace {
+    throw Unsupported()
+  }
+  func createShell(inSession sessionID: Int64) async throws -> TerminalShell { throw Unsupported() }
+  func closeShell(_ shellID: Int64, inSession sessionID: Int64) async throws -> ClosedTerminalShell {
+    throw Unsupported()
+  }
+  func setLayout(_ layout: SessionLayout, forSession sessionID: Int64) async throws {
+    layoutWrites.append((sessionID, layout))
+  }
+  func restartPi(shellID: Int64, inSession sessionID: Int64, automatically: Bool) async throws
+    -> TerminalSession
+  { throw Unsupported() }
+
+  struct Unsupported: Error {}
+}
+
+@MainActor
+final class TerminalCatalogTests: XCTestCase {
+  private func shell(_ id: Int64) -> TerminalShell {
+    TerminalShell(
+      id: id, processId: 1, initialPwd: "/tmp", ptyDevice: "/dev/null",
+      attachSocketPath: "/tmp/\(id).sock")
+  }
+
+  private func session(_ id: Int64, shells: [Int64], name: String? = nil) -> TerminalSession {
+    TerminalSession(id: id, initialPwd: "/tmp", shells: shells.map(shell), name: name)
+  }
+
+  private func makeModel(_ client: FakeAxodClient) -> TerminalSessionsModel {
+    TerminalSessionsModel(client: client, helperURL: URL(fileURLWithPath: "/usr/bin/false"))
+  }
+
+  func testRefreshListsCatalogAndSelectsFirstSession() async {
+    let client = FakeAxodClient()
+    client.sessions = [session(1, shells: [10]), session(2, shells: [20])]
+    let model = makeModel(client)
+
+    await model.refresh()
+
+    XCTAssertEqual(model.sessions.map(\.id), [1, 2])
+    XCTAssertEqual(model.selectedSessionID, 1)
+    XCTAssertEqual(model.focusedShellID, 10)
+    XCTAssertNil(model.errorMessage)
+  }
+
+  func testRefreshRejectsDaemonWithoutSubscriptions() async {
+    let client = FakeAxodClient()
+    client.methods = ["axo.session.list", "axo.workspace.list"]
+    let model = makeModel(client)
+
+    await model.refresh()
+
+    XCTAssertNotNil(model.errorMessage)
+    XCTAssertEqual(client.listCount, 0)
+  }
+
+  func testSnapshotEventInsertsAndUpdatesSessionsWithoutListing() async {
+    let client = FakeAxodClient()
+    client.sessions = [session(1, shells: [10])]
+    let model = makeModel(client)
+    await model.refresh()
+
+    let inserted = await model.apply(.sessionSnapshot(session(3, shells: [30])))
+    let updated = await model.apply(.sessionSnapshot(session(1, shells: [10], name: "Renamed")))
+    XCTAssertTrue(inserted)
+    XCTAssertTrue(updated)
+
+    XCTAssertEqual(model.sessions.map(\.id), [1, 3])
+    XCTAssertEqual(model.session(for: 1)?.name, "Renamed")
+    XCTAssertEqual(client.listCount, 1)
+  }
+
+  func testRemovedSelectedSessionMovesSelection() async {
+    let client = FakeAxodClient()
+    client.sessions = [session(1, shells: [10]), session(2, shells: [20])]
+    let model = makeModel(client)
+    await model.refresh()
+    model.showSession(2)
+
+    let applied = await model.apply(.sessionRemoved(sessionID: 2))
+    XCTAssertTrue(applied)
+
+    XCTAssertEqual(model.sessions.map(\.id), [1])
+    XCTAssertEqual(model.selectedSessionID, 1)
+  }
+
+  func testWorkspaceChangedRelistsOnlyWorkspaces() async {
+    let client = FakeAxodClient()
+    let model = makeModel(client)
+    await model.refresh()
+    client.workspaces = [WorkspaceRecord(workspaceId: "w", name: "Work", directoryPath: "/tmp")]
+
+    let applied = await model.apply(.workspaceChanged(workspaceID: "w"))
+    XCTAssertTrue(applied)
+
+    XCTAssertEqual(model.workspaces.map(\.workspaceId), ["w"])
+    XCTAssertEqual(client.listCount, 1)
+  }
+
+  func testLaggedEventRequestsResync() async {
+    let model = makeModel(FakeAxodClient())
+    let shouldContinue = await model.apply(.subscriptionLagged)
+    XCTAssertFalse(shouldContinue)
+  }
+
+  func testSyncSubscribesBeforeListingAndResyncsAfterLag() async throws {
+    let client = FakeAxodClient()
+    client.sessions = [session(1, shells: [10])]
+    let model = makeModel(client)
+    let sync = TerminalCatalogSync(
+      sessions: model, client: client, minimumBackoff: .milliseconds(1))
+    sync.start()
+    defer { sync.stop() }
+
+    try await waitUntil { model.sessions.count == 1 }
+    XCTAssertEqual(client.subscribeCount, 1)
+
+    client.push(.sessionSnapshot(session(2, shells: [20])))
+    try await waitUntil { model.sessions.count == 2 }
+    XCTAssertEqual(client.listCount, 1, "events must not trigger full listings")
+
+    client.sessions = [session(1, shells: [10]), session(2, shells: [20]), session(4, shells: [40])]
+    client.push(.subscriptionLagged)
+    try await waitUntil { model.sessions.count == 3 }
+    XCTAssertEqual(client.subscribeCount, 2)
+    XCTAssertEqual(client.listCount, 2)
+    XCTAssertEqual(client.unsubscribed.map(\.subscriptionId), ["sub-1"])
+  }
+
+  private func waitUntil(
+    timeout: Duration = .seconds(2), _ condition: @MainActor () -> Bool
+  ) async throws {
+    let deadline = ContinuousClock.now + timeout
+    while !condition() {
+      guard ContinuousClock.now < deadline else {
+        XCTFail("condition not met before timeout")
+        return
+      }
+      try await Task.sleep(for: .milliseconds(5))
+    }
+  }
+}
