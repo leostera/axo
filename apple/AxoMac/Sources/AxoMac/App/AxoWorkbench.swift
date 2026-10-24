@@ -40,9 +40,9 @@ final class AxoWorkbench {
     observations = [
       ObservationLoop.observe(daemonIsRunning) { [weak self] in self?.setConnected($0) },
       // Surfaces track daemon truth, not view lifetime.
-      ObservationLoop.observe({ sessions.sessions.flatMap(\.shells) }) { [weak self] shells in
+      ObservationLoop.observe({ sessions.shellsByID }) { [weak self] shells in
         guard let self, self.isConnected else { return }
-        self.ghostty.reconcileSurfaces(with: shells)
+        self.ghostty.reconcileSurfaces(with: Array(shells.values))
       },
       ObservationLoop.observe({ sessions.focusedShellID }) { [weak self] in self?.focus($0) },
     ]
@@ -52,7 +52,7 @@ final class AxoWorkbench {
     isConnected = connected
     if connected {
       catalogSync?.start()
-      ghostty.reconcileSurfaces(with: sessions.sessions.flatMap(\.shells))
+      ghostty.reconcileSurfaces(with: Array(sessions.shellsByID.values))
     } else {
       catalogSync?.stop()
       remoteAccess.reset()

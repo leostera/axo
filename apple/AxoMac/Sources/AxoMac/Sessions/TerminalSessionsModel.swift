@@ -53,7 +53,16 @@ struct WorkspaceArchiveConfirmation: Equatable, Identifiable {
 @MainActor
 @Observable
 final class TerminalSessionsModel {
-  private(set) var sessions: [TerminalSession] = []
+  /// Every open Session. Pi turns change Session status, names and emoji often; views that only
+  /// need panes read the narrower projections below, which change only when their part does.
+  private(set) var sessions: [TerminalSession] = [] {
+    didSet { projectCatalog() }
+  }
+  /// Every open shell by id, across Sessions. Unchanged by Session status or name updates.
+  private(set) var shellsByID: [ShellID: TerminalShell] = [:]
+  /// Every Session's layout, for sizing panes that are not shown.
+  private(set) var sessionLayouts: [SessionLayout] = []
+  private(set) var hasSessions = false
   private(set) var workspaces: [WorkspaceRecord] = []
   var selectedSessionID: SessionID? {
     didSet {
@@ -189,10 +198,18 @@ final class TerminalSessionsModel {
     sessions.first(where: { $0.id == sessionID })
   }
 
-  /// A shell of the selected Session.
+  /// An open shell of any Session.
   func shell(for shellID: ShellID) -> TerminalShell? {
-    guard let selectedSessionID else { return nil }
-    return session(for: selectedSessionID)?.shells.first(where: { $0.id == shellID })
+    shellsByID[shellID]
+  }
+
+  /// Updates the projections of `sessions`, writing (and so invalidating observers) only those
+  /// that changed.
+  private func projectCatalog() {
+    let shells = sessions.lazy.flatMap(\.shells)
+    assign(\.shellsByID, Dictionary(shells.map { ($0.id, $0) }, uniquingKeysWith: { _, last in last }))
+    assign(\.sessionLayouts, sessions.compactMap(\.layout))
+    assign(\.hasSessions, !sessions.isEmpty)
   }
 
   // MARK: - Synchronization

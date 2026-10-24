@@ -1,4 +1,5 @@
 import AxoRPC
+import Observation
 import XCTest
 
 @testable import AxoMac
@@ -190,6 +191,53 @@ final class TerminalCatalogTests: XCTestCase {
     XCTAssertEqual(model.sessions.map(\.id), [1, 3])
     XCTAssertEqual(model.session(for: 1)?.name, "Renamed")
     XCTAssertEqual(client.listCount, 1)
+  }
+
+  /// Pi turns update Session names and status constantly. The terminal area reads only the
+  /// pane projections, so those updates must not invalidate it.
+  func testSessionNameUpdateLeavesPaneProjectionsUntouched() async {
+    let client = FakeAxodClient()
+    client.sessions = [session(1, shells: [10, 11]), session(2, shells: [20])]
+    let model = makeModel(client)
+    await model.refresh()
+    XCTAssertEqual(Set(model.shellsByID.keys), [10, 11, 20])
+    XCTAssertEqual(model.shell(for: 20)?.id, 20)
+
+    var invalidated = false
+    withObservationTracking {
+      _ = model.shellsByID
+      _ = model.sessionLayouts
+      _ = model.hasSessions
+      _ = model.layout
+      _ = model.focusedShellID
+    } onChange: {
+      invalidated = true
+    }
+    await model.apply(.sessionSnapshot(session(1, shells: [10, 11], name: "Working on it")))
+    await model.apply(.sessionSnapshot(session(2, shells: [20], name: "Done")))
+
+    XCTAssertEqual(model.session(for: 1)?.name, "Working on it")
+    XCTAssertFalse(invalidated)
+  }
+
+  func testShellChangesUpdatePaneProjections() async {
+    let client = FakeAxodClient()
+    client.sessions = [session(1, shells: [10])]
+    let model = makeModel(client)
+    await model.refresh()
+
+    var invalidated = false
+    withObservationTracking {
+      _ = model.shellsByID
+    } onChange: {
+      invalidated = true
+    }
+    await model.apply(.sessionSnapshot(session(1, shells: [10, 12])))
+
+    XCTAssertTrue(invalidated)
+    XCTAssertEqual(Set(model.shellsByID.keys), [10, 12])
+    XCTAssertEqual(model.sessionLayouts.count, 1)
+    XCTAssertTrue(model.hasSessions)
   }
 
   func testRemovedSelectedSessionMovesSelection() async {
