@@ -162,6 +162,7 @@ validateWith(localCallSchema, await fixture("negotiate.call.json"));
 validateWith(localCallSchema, await fixture("events-next.call.json"));
 validateWith(localCallSchema, await fixture("terminal-input.local.call.json"));
 validateWith(localCallSchema, await fixture("terminal-resize.local.call.json"));
+validateWith(localCallSchema, await fixture("client-viewport-set.local.call.json"));
 validateWith(localCallSchema, await fixture("remote-access-settings.call.json"));
 validateWith(localCallSchema, await fixture("remote-access-status.call.json"));
 validateWith(localCallSchema, await fixture("remote-access-connect.call.json"));

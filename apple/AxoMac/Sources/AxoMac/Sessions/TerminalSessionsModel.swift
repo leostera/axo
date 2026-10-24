@@ -93,6 +93,7 @@ final class TerminalSessionsModel {
   private let preferenceDefaults: UserDefaults
   private let layoutWriter: TerminalLayoutWriter
   private let piRestarter: AutomaticPiRestarter
+  private let viewportReporter: ViewportReporter
   /// Methods offered by the connected Axod; `nil` until negotiated on this connection.
   @ObservationIgnored private var daemonMethods: Set<String>?
   @ObservationIgnored private var layoutsBySession: [SessionID: TerminalLayout] = [:]
@@ -153,6 +154,7 @@ final class TerminalSessionsModel {
     automaticallyRestartUnavailablePi = restartsAutomatically
     layoutWriter = TerminalLayoutWriter(client: client)
     piRestarter = AutomaticPiRestarter(isEnabled: restartsAutomatically)
+    viewportReporter = ViewportReporter(client: client)
 
     layoutWriter.isSessionOpen = { [weak self] in self?.session(for: $0) != nil }
     layoutWriter.onError = { [weak self] in self?.errorMessage = $0.localizedDescription }
@@ -160,6 +162,10 @@ final class TerminalSessionsModel {
       guard let shell = self?.sessions.lazy.flatMap(\.shells).first(where: { $0.id == shellID })
       else { return false }
       return shell.role == "pi" && !shell.isAvailable
+    }
+    viewportReporter.isSupported = { [weak self] in
+      guard let self, let client = self.client else { return false }
+      return try await self.supports(UnixSocketRPC.viewportMethod, using: client)
     }
     piRestarter.restart = { [weak self] shellID in
       try await self?.restartPiSession(shellID, automatically: true)
@@ -206,6 +212,12 @@ final class TerminalSessionsModel {
   func resynchronize() async throws {
     daemonMethods = nil
     try await reloadCatalog()
+    viewportReporter.reconnected()
+  }
+
+  /// Where this window draws terminals; Axod sizes panes no surface shows from the latest one.
+  func reportViewport(_ viewport: ClientViewport) {
+    viewportReporter.report(viewport)
   }
 
   func setCatalogConnection(_ connection: CatalogConnection) {

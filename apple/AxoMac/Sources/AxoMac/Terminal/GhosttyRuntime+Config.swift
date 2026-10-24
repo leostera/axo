@@ -1,4 +1,5 @@
 import AppKit
+import AxoRPC
 import GhosttyKit
 
 /// Pure configuration helpers: they return values and never mutate runtime state.
@@ -52,12 +53,18 @@ extension GhosttyRuntime {
     setenv("GHOSTTY_RESOURCES_DIR", resourceDirectory.path, 1)
   }
 
+  /// The window padding Axo configures, in points. `window-padding-y` gives the surface
+  /// breathing room above and below; libghostty paints it in the terminal background, as
+  /// Ghostty.app does. `-x` is Ghostty's own default, stated so Axod can size panes with it.
+  /// libghostty cannot report padding, so a user override makes panes Axod sizes before they
+  /// are shown off by a cell until they are shown.
+  static let axoWindowPadding = ClientViewport.Padding(top: 10, bottom: 10, left: 2, right: 2)
+
   /// Axo's Ghostty settings, loaded before user config so explicit Ghostty settings win.
-  /// `window-padding-y` gives the surface breathing room above and below; libghostty paints it
-  /// in the terminal background, as Ghostty.app does.
   static let axoConfigDefaults = """
     copy-on-select = clipboard
-    window-padding-y = 10
+    window-padding-x = \(axoWindowPadding.left),\(axoWindowPadding.right)
+    window-padding-y = \(axoWindowPadding.top),\(axoWindowPadding.bottom)
     """
 
   /// Returns a user-facing error when the defaults could not be applied.

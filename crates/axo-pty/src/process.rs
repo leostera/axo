@@ -170,6 +170,34 @@ pub fn resize(master: &OwnedFd, child: &Child, size: WindowSize) -> io::Result<(
     Ok(())
 }
 
+/// The PTY's current size.
+pub fn window_size(master: &OwnedFd) -> io::Result<WindowSize> {
+    let mut size = libc::winsize {
+        ws_row: 0,
+        ws_col: 0,
+        ws_xpixel: 0,
+        ws_ypixel: 0,
+    };
+    // SAFETY: size is writable and the master descriptor is open.
+    if unsafe { libc::ioctl(master.as_raw_fd(), libc::TIOCGWINSZ, &mut size) } == -1 {
+        return Err(io::Error::last_os_error());
+    }
+    Ok(WindowSize {
+        rows: size.ws_row,
+        columns: size.ws_col,
+    })
+}
+
+/// Resizes only when the size differs, so an unchanged layout never interrupts the program
+/// with a SIGWINCH. Returns whether it resized.
+pub fn resize_if_changed(master: &OwnedFd, child: &Child, size: WindowSize) -> io::Result<bool> {
+    if window_size(master)? == size {
+        return Ok(false);
+    }
+    resize(master, child, size)?;
+    Ok(true)
+}
+
 pub fn set_cloexec(descriptor: RawFd) -> io::Result<()> {
     // SAFETY: fcntl reads descriptor flags from an open descriptor.
     let flags = unsafe { libc::fcntl(descriptor, libc::F_GETFD) };

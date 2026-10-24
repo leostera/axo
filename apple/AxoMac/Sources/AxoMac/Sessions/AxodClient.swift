@@ -29,6 +29,7 @@ protocol AxodClient: AnyObject {
   func closeShell(_ shellID: ShellID, inSession sessionID: SessionID) async throws -> ClosedTerminalShell
   func shellBusy(_ shellID: ShellID, inSession sessionID: SessionID) async throws -> TerminalShellBusy
   func setLayout(_ layout: SessionLayout, forSession sessionID: SessionID) async throws
+  func setViewport(_ viewport: ClientViewport) async throws
 
   func restartPi(shellID: ShellID, inSession sessionID: SessionID, automatically: Bool) async throws
     -> TerminalSession
@@ -148,6 +149,10 @@ final class UnixSocketAxodClient: AxodClient, AxodSettingsClient {
 
   func setLayout(_ layout: SessionLayout, forSession sessionID: SessionID) async throws {
     try await UnixSocketRPC.setLayout(layout, for: sessionID, at: socketPath)
+  }
+
+  func setViewport(_ viewport: ClientViewport) async throws {
+    try await UnixSocketRPC.setViewport(viewport, at: socketPath)
   }
 
   func restartPi(shellID: ShellID, inSession sessionID: SessionID, automatically: Bool) async throws

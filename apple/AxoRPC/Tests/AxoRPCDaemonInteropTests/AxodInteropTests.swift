@@ -34,12 +34,18 @@ final class AxodInteropTests: XCTestCase {
       "axo.session.unsubscribe", "axo.session.pi.restart.force.v2",
       "axo.session.pi.restart.auto.v1", "axo.session.rename",
       "axo.workspace.rename", "axo.workspace.archive",
-      "axo.terminal.input", "axo.terminal.resize",
+      "axo.terminal.input", "axo.terminal.resize", UnixSocketRPC.viewportMethod,
       "axo.relay.settings", "axo.relay.configure", "axo.relay.link", "axo.relay.disable",
       "axo.relay.status", "axo.relay.connect",
     ] {
       XCTAssertTrue(negotiation.methods.contains(method), "axod should advertise \(method)")
     }
+    let viewport = try XCTUnwrap(
+      ClientViewport(
+        terminalArea: .init(width: 1180.5, height: 742), backingScale: 2,
+        cell: .init(width: 16, height: 34),
+        padding: .init(top: 10, bottom: 10, left: 2, right: 2), dividerThickness: 1))
+    try await UnixSocketRPC.setViewport(viewport, at: socketPath)
     let health = try await UnixSocketRPC.health(at: socketPath)
     XCTAssertEqual(health.version, "0.1.0")
     XCTAssertGreaterThan(health.buildNumber, 0)

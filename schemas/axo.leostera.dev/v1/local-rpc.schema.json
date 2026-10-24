@@ -84,6 +84,9 @@
           "$ref": "#/$defs/TerminalResizeCall"
         },
         {
+          "$ref": "#/$defs/ClientViewportSetCall"
+        },
+        {
           "$ref": "#/$defs/ShellBusyCall"
         }
       ]
@@ -751,6 +754,60 @@
         "params"
       ]
     },
+    "ClientViewportSetCall": {
+      "description": "Where the client draws terminals. The latest client to report a viewport sizes every pane no client is attached to, and new panes start at that size.",
+      "allOf": [
+        { "$ref": "#/$defs/BaseCall" },
+        {
+          "properties": {
+            "method": { "const": "axo.client.viewport.set" },
+            "params": {
+              "type": "object",
+              "additionalProperties": false,
+              "required": ["terminalArea", "backingScale", "cell", "padding", "dividerThickness"],
+              "properties": {
+                "terminalArea": {
+                  "description": "The area panes split, in points.",
+                  "type": "object",
+                  "additionalProperties": false,
+                  "required": ["width", "height"],
+                  "properties": {
+                    "width": { "type": "number", "exclusiveMinimum": 0, "maximum": 100000 },
+                    "height": { "type": "number", "exclusiveMinimum": 0, "maximum": 100000 }
+                  }
+                },
+                "backingScale": { "description": "Device pixels per point.", "type": "number", "exclusiveMinimum": 0, "maximum": 8 },
+                "cell": {
+                  "description": "One terminal cell, in device pixels.",
+                  "type": "object",
+                  "additionalProperties": false,
+                  "required": ["width", "height"],
+                  "properties": {
+                    "width": { "type": "integer", "minimum": 1, "maximum": 4096 },
+                    "height": { "type": "integer", "minimum": 1, "maximum": 4096 }
+                  }
+                },
+                "padding": {
+                  "description": "Ghostty window padding, in points.",
+                  "type": "object",
+                  "additionalProperties": false,
+                  "required": ["top", "bottom", "left", "right"],
+                  "properties": {
+                    "top": { "type": "integer", "minimum": 0, "maximum": 1000 },
+                    "bottom": { "type": "integer", "minimum": 0, "maximum": 1000 },
+                    "left": { "type": "integer", "minimum": 0, "maximum": 1000 },
+                    "right": { "type": "integer", "minimum": 0, "maximum": 1000 }
+                  }
+                },
+                "dividerThickness": { "description": "Points between split panes.", "type": "number", "minimum": 0, "maximum": 100 }
+              }
+            }
+          }
+        }
+      ],
+      "unevaluatedProperties": false,
+      "required": ["params"]
+    },
     "SessionIdParams": {
       "type": "object",
       "additionalProperties": false,
@@ -1189,6 +1246,12 @@
           "description": "Foreground process name, a presentation hint only."
         }
       }
+    },
+    "ClientViewportSetResult": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["accepted"],
+      "properties": { "accepted": { "const": true } }
     },
     "TerminalResizeResult": {
       "type": "object",

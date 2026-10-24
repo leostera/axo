@@ -47,6 +47,10 @@ private struct RemoteAccessConnectResponse: Decodable {
   let requested: Bool
 }
 
+private struct ViewportAcknowledgement: Decodable {
+  let accepted: Bool
+}
+
 private struct HostPairingRequest: Encodable {
   let code: String
 }
@@ -435,6 +439,21 @@ public enum UnixSocketRPC {
       )
     }
   }
+
+  public static func setViewport(
+    _ viewport: ClientViewport,
+    at socketPath: UnixSocketPath
+  ) async throws {
+    let acknowledgement: ViewportAcknowledgement = try await withResponse(at: socketPath) { session in
+      try await session.response(to: viewportMethod, params: viewport)
+    }
+    guard acknowledgement.accepted else {
+      throw UnixSocketRPCError.invalidResponse("daemon did not accept the viewport")
+    }
+  }
+
+  /// Older daemons do not offer this; check negotiation first.
+  public static let viewportMethod = "axo.client.viewport.set"
 
   public static func shellBusy(
     _ shellID: ShellID,

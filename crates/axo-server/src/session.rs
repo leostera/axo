@@ -19,9 +19,10 @@ use axo_pi::{
 };
 use axo_protocol::rpc::{self, method};
 use axo_protocol::{
-    Availability, ConfigKey, Event, EventScope, Layout, LayoutNode, PaneRole, RelayStatus,
-    RemoteSessionSnapshot, SessionId, SessionRecord, SessionStatus, ShellActivity, ShellId,
-    ShellRecord, WorkspaceRecord, WorkspaceState, is_uuid, new_uuid_v4,
+    Availability, ConfigKey, Event, EventScope, GridSize, Layout, LayoutDirection, LayoutNode,
+    PaneRole, RelayStatus, RemoteSessionSnapshot, SessionId, SessionRecord, SessionStatus,
+    ShellActivity, ShellId, ShellRecord, Viewport, WorkspaceRecord, WorkspaceState, is_uuid,
+    new_uuid_v4,
 };
 use axo_pty::process::{self, PtyProcess};
 use axo_pty::{
@@ -159,9 +160,87 @@ struct SessionState {
     initial_pwd: PathBuf,
     /// Every shell's output is published here once it enters the catalog.
     events: EventBus,
+    /// The latest client's terminal area; panes no client is attached to are sized from it.
+    viewport: Option<Viewport>,
 }
 
 impl SessionState {
+    /// The size a pane should start at: its place in the Session's layout, or the whole terminal
+    /// area for a pane the layout does not have yet (a new Session's only pane, or a split the
+    /// client is about to place).
+    fn pane_size(&self, session_id: SessionId, shell_id: ShellId) -> WindowSize {
+        let Some(viewport) = self.viewport else {
+            return WindowSize::DEFAULT;
+        };
+        let placed = self.effective_layout(session_id).and_then(|layout| {
+            viewport
+                .grid_sizes(layout.root())
+                .into_iter()
+                .find(|(id, _)| *id == shell_id)
+        });
+        window_size(placed.map_or_else(|| viewport.full_grid(), |(_, grid)| grid))
+    }
+
+    /// The layout clients show: the stored one, or, like the client's `defaultLayout`, the
+    /// open panes side by side in creation order.
+    fn effective_layout(&self, session_id: SessionId) -> Option<Layout> {
+        if let Ok(Some(layout)) = read_session_layout(&self.database, session_id) {
+            return Some(layout);
+        }
+        let mut shell_ids: Vec<_> = open_shell_ids(self, session_id).into_iter().collect();
+        shell_ids.sort();
+        let (first, rest) = shell_ids.split_first()?;
+        let root = rest.iter().try_fold(
+            LayoutNode::Pane { shell_id: *first },
+            |layout, shell_id| -> io::Result<LayoutNode> {
+                Ok(LayoutNode::Split {
+                    id: new_uuid_v4()?,
+                    direction: LayoutDirection::Right,
+                    ratio: 0.5,
+                    first: Box::new(layout),
+                    second: Box::new(LayoutNode::Pane {
+                        shell_id: *shell_id,
+                    }),
+                })
+            },
+        );
+        root.ok().and_then(|root| Layout::try_from(root).ok())
+    }
+
+    /// Sizes the Session's panes that no client is attached to from the viewport. Attached
+    /// panes are sized by their client, so the two never contend for one PTY.
+    fn fit_unattached_panes(&self, session_id: SessionId, layout: &Layout) {
+        let Some(viewport) = self.viewport else {
+            return;
+        };
+        for (shell_id, grid) in viewport.grid_sizes(layout.root()) {
+            let Some(running) = self
+                .running
+                .get(&shell_id)
+                .filter(|running| running.session_id == session_id && running.attachments == 0)
+            else {
+                continue;
+            };
+            let size = window_size(grid);
+            match process::resize_if_changed(&running.master, &running.child, size) {
+                Ok(true) => log::debug!(
+                    "event=pane.fitted_to_viewport session_id={} shell_id={} rows={} columns={}",
+                    session_id.get(),
+                    shell_id.get(),
+                    size.rows(),
+                    size.columns()
+                ),
+                Ok(false) => {}
+                Err(error) => log::warn!(
+                    "event=pane.fit_failed session_id={} shell_id={} error_kind={:?}",
+                    session_id.get(),
+                    shell_id.get(),
+                    error.kind()
+                ),
+            }
+        }
+    }
+
     /// The only way a process enters the catalog: binds its output stream to its pane identity
     /// so `terminal.output` events start flowing.
     fn install_running(
@@ -261,6 +340,8 @@ struct PiLaunchRequest {
     session_uuid: String,
     pane_id: String,
     previous_token: Option<String>,
+    /// The PTY size Pi starts with.
+    size: WindowSize,
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -556,6 +637,7 @@ impl SessionManager {
         let host_id = load_or_create_host_id(&database)?;
         let agent_command = load_or_create_agent_command(&database)?;
         let shell_command = load_or_create_shell_command(&database)?;
+        let viewport = load_viewport(&database)?;
         let host_generation = new_uuid_v4()?;
         fs::set_permissions(&database_path, fs::Permissions::from_mode(0o600))?;
         let pi_session_directory = server_directory.join("pi-sessions");
@@ -577,6 +659,7 @@ impl SessionManager {
                 pi_activity: HashMap::new(),
                 initial_pwd,
                 events: subscribers.clone(),
+                viewport,
             }),
             attach_socket_path,
             pi_session_directory,
@@ -732,6 +815,18 @@ impl SessionManager {
                         rows: request.rows,
                         columns: request.columns,
                     })
+                    .map_err(internal_rpc_error)
+            },
+        );
+
+        let manager = Arc::clone(self);
+        handler.add_typed(
+            method::CLIENT_VIEWPORT_SET,
+            "expected {terminalArea, backingScale, cell, padding, dividerThickness} in range",
+            move |viewport: Viewport| {
+                manager
+                    .set_viewport(viewport)
+                    .map(|()| rpc::ViewportAccepted { accepted: true })
                     .map_err(internal_rpc_error)
             },
         );
@@ -1026,6 +1121,7 @@ impl SessionManager {
                         &state.shell_command,
                         record.id,
                         &record.initial_pwd,
+                        state.pane_size(record.id, shell_id),
                     )?),
                     PaneRole::Pi => {
                         state.unavailable_pi_shells.insert(
@@ -1221,6 +1317,26 @@ impl SessionManager {
                 io::ErrorKind::NotFound,
                 "session record is missing",
             ));
+        }
+        state.fit_unattached_panes(session_id, &layout);
+        Ok(())
+    }
+
+    /// Records the latest client's viewport and sizes every pane no client is attached to.
+    fn set_viewport(&self, viewport: Viewport) -> io::Result<()> {
+        let mut state = self.lock_state()?;
+        if state.viewport == Some(viewport) {
+            return Ok(());
+        }
+        store_viewport(&state.database, &viewport)?;
+        state.viewport = Some(viewport);
+        let session_ids = read_open_sessions(&state.database)?
+            .into_iter()
+            .map(|record| record.id);
+        for session_id in session_ids {
+            if let Some(layout) = state.effective_layout(session_id) {
+                state.fit_unattached_panes(session_id, &layout);
+            }
         }
         Ok(())
     }
@@ -1974,6 +2090,7 @@ impl SessionManager {
                 previous_token: load_pi_bridge_token(&state.database, &session_uuid)?,
                 session_uuid,
                 pane_id,
+                size: state.pane_size(session_id, shell_id),
             };
             let recovery_id = RuntimeId::new();
             state
@@ -2552,7 +2669,13 @@ impl SessionManager {
             for (shell_id, role, pane_id) in record.shell_ids {
                 match role {
                     PaneRole::Terminal => {
-                        match spawn_shell(&state.shell_command, session_id, &record.initial_pwd) {
+                        let size = state.pane_size(session_id, shell_id);
+                        match spawn_shell(
+                            &state.shell_command,
+                            session_id,
+                            &record.initial_pwd,
+                            size,
+                        ) {
                             Ok(shell) => {
                                 state.install_running(shell_id, shell);
                             }
@@ -3161,6 +3284,7 @@ fn create_workspace_session(
         session_uuid: session_uuid.clone(),
         pane_id: pane_id.clone(),
         previous_token: None,
+        size: state.pane_size(session_id, pane),
     };
     let running = match spawn_new_pi(&state.database, &request) {
         Ok(running) => running,
@@ -3224,7 +3348,8 @@ fn create_shell(
         .map_err(io::Error::other)?;
     let shell_id = inserted_shell_id(&state.database)?;
 
-    let running = match spawn_shell(&state.shell_command, session_id, &initial_pwd) {
+    let size = state.pane_size(session_id, shell_id);
+    let running = match spawn_shell(&state.shell_command, session_id, &initial_pwd, size) {
         Ok(running) => running,
         Err(error) => {
             archive_shell(&state.database, shell_id, "spawn_failed")?;
@@ -3943,6 +4068,7 @@ fn spawn_shell(
     shell_command: &ShellCommand,
     session_id: SessionId,
     initial_pwd: &Path,
+    size: WindowSize,
 ) -> io::Result<RunningShell> {
     let shell = resolve_shell_executable(&shell_command.0.executable)?;
     let home = super::current_user_home_directory()?;
@@ -3961,7 +4087,7 @@ fn spawn_shell(
         master,
         device: slave_device,
         output,
-    } = process::spawn(command, WindowSize::DEFAULT, &[])?;
+    } = process::spawn(command, size, &[])?;
     Ok(RunningShell {
         runtime_id: RuntimeId::new(),
         session_id,
@@ -4045,7 +4171,7 @@ fn spawn_pi(
         &request.launch(&home, &environment),
         lock,
         &bridge_token,
-        WindowSize::DEFAULT,
+        request.size,
     )?;
     log_socket_cleanup(request.session_id, socket_cleanup);
     Ok(RunningShell {
@@ -4148,6 +4274,48 @@ impl PiLaunchRequest {
             previous_token: self.previous_token.as_deref(),
         }
     }
+}
+
+fn window_size(grid: GridSize) -> WindowSize {
+    // A grid is at least 1x1 and fits u16, so this always succeeds.
+    WindowSize::new(u32::from(grid.rows()), u32::from(grid.columns()))
+        .unwrap_or(WindowSize::DEFAULT)
+}
+
+/// Where the latest client's viewport is kept across restarts, so restored panes start at
+/// the size they will be shown at.
+const VIEWPORT_METADATA_KEY: &str = "client_viewport";
+
+fn load_viewport(database: &Connection) -> io::Result<Option<Viewport>> {
+    let stored: Option<String> = database
+        .query_row(
+            "SELECT value FROM daemon_metadata WHERE key = ?1",
+            params![VIEWPORT_METADATA_KEY],
+            |row| row.get(0),
+        )
+        .optional()
+        .map_err(io::Error::other)?;
+    Ok(
+        stored.and_then(|stored| match serde_json::from_str(&stored) {
+            Ok(viewport) => Some(viewport),
+            Err(error) => {
+                log::warn!("event=viewport.stored_invalid reason={error}");
+                None
+            }
+        }),
+    )
+}
+
+fn store_viewport(database: &Connection, viewport: &Viewport) -> io::Result<()> {
+    let value = serde_json::to_string(viewport).map_err(io::Error::other)?;
+    database
+        .execute(
+            "INSERT INTO daemon_metadata (key, value) VALUES (?1, ?2)
+             ON CONFLICT(key) DO UPDATE SET value = excluded.value",
+            params![VIEWPORT_METADATA_KEY, value],
+        )
+        .map_err(io::Error::other)?;
+    Ok(())
 }
 
 fn resolve_shell_executable(program: &str) -> io::Result<PathBuf> {
@@ -4679,7 +4847,6 @@ fn unix_timestamp() -> i64 {
 mod tests {
     use super::*;
     use axo_pi::bridge;
-    use axo_protocol::LayoutDirection;
     use serde_json::{Value, json};
     use std::fs::OpenOptions;
     use std::io::BufReader;
@@ -5175,6 +5342,7 @@ mod tests {
                     session_uuid: fixture.session_uuid.clone(),
                     pane_id: fixture.pane_id.clone(),
                     previous_token: None,
+                    size: WindowSize::DEFAULT,
                 },
             )
             .unwrap()
@@ -5481,6 +5649,7 @@ mod tests {
             &ShellCommand::parse("/bin/sh").unwrap(),
             session.id,
             &fixture.directory,
+            WindowSize::DEFAULT,
         )
         .unwrap();
         replacement.role = PaneRole::Pi;
@@ -5740,6 +5909,7 @@ mod tests {
                     session_uuid: session_uuid.clone(),
                     pane_id: pane_id.clone(),
                     previous_token: None,
+                    size: WindowSize::DEFAULT,
                 },
             )
             .unwrap()
@@ -6688,7 +6858,7 @@ mod tests {
     fn creates_a_shell_attached_to_a_real_pty() {
         let home = super::super::current_user_home_directory().unwrap();
         let shell = ShellCommand::parse("/bin/zsh").unwrap();
-        let mut session = spawn_shell(&shell, sid(1), &home).unwrap();
+        let mut session = spawn_shell(&shell, sid(1), &home, WindowSize::DEFAULT).unwrap();
         assert!(session.slave_device.starts_with("/dev/"));
         // The child should receive only the slave as stdio, never the PTY master.
         // SAFETY: the test owns this open PTY master descriptor.
@@ -6731,5 +6901,68 @@ mod tests {
             }
         }
         false
+    }
+
+    fn pty_size(manager: &SessionManager, shell_id: ShellId) -> (u16, u16) {
+        let state = manager.lock_state().unwrap();
+        let size = process::window_size(&state.running[&shell_id].master).unwrap();
+        (size.rows(), size.columns())
+    }
+
+    fn test_viewport(width: f64) -> Viewport {
+        serde_json::from_value(json!({
+            "terminalArea": { "width": width, "height": 600.0 },
+            "backingScale": 2.0,
+            "cell": { "width": 16, "height": 34 },
+            "padding": { "top": 10, "bottom": 10, "left": 2, "right": 2 },
+            "dividerThickness": 1.0
+        }))
+        .unwrap()
+    }
+
+    #[test]
+    fn the_latest_viewport_sizes_unattached_panes_and_new_ones() {
+        let fixture = LifecycleFixture::new();
+        let manager = &fixture.manager;
+        let session = manager.list_sessions().unwrap().remove(0);
+        let first = session.shells[0].id;
+        assert_eq!(pty_size(manager, first), (24, 80));
+
+        manager.set_viewport(test_viewport(1000.0)).unwrap();
+        assert_eq!(pty_size(manager, first), (34, 124));
+
+        // A new pane starts at the whole area until the client's layout places it.
+        let second = manager.create_shell(session.id).unwrap().id;
+        assert_eq!(pty_size(manager, second), (34, 124));
+        let split = LayoutNode::Split {
+            id: new_uuid_v4().unwrap(),
+            direction: LayoutDirection::Right,
+            ratio: 0.5,
+            first: Box::new(LayoutNode::Pane { shell_id: first }),
+            second: Box::new(LayoutNode::Pane { shell_id: second }),
+        };
+        manager
+            .set_layout(session.id, Layout::try_from(split).unwrap())
+            .unwrap();
+        assert_eq!(pty_size(manager, first), (34, 61));
+        assert_eq!(pty_size(manager, second), (34, 61));
+
+        // An attached pane belongs to its client; the latest viewport resizes the rest.
+        manager
+            .lock_state()
+            .unwrap()
+            .running
+            .get_mut(&first)
+            .unwrap()
+            .attachments = 1;
+        manager.set_viewport(test_viewport(500.0)).unwrap();
+        assert_eq!(pty_size(manager, first), (34, 61));
+        assert_eq!(pty_size(manager, second), (34, 30));
+
+        let state = manager.lock_state().unwrap();
+        assert_eq!(
+            load_viewport(&state.database).unwrap(),
+            Some(test_viewport(500.0))
+        );
     }
 }

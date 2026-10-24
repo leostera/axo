@@ -11,6 +11,7 @@ mod layout;
 mod model;
 mod relay;
 pub mod rpc;
+mod viewport;
 
 #[cfg(test)]
 mod conformance;
@@ -23,3 +24,4 @@ pub use model::{
     SessionStatus, ShellRecord, WorkspaceRecord, WorkspaceState,
 };
 pub use relay::{HostKind, RelayState, RelayStatus};
+pub use viewport::{GridSize, Padding, PixelSize, Size, Viewport, ViewportError};

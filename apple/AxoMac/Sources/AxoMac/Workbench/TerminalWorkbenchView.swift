@@ -49,6 +49,12 @@ struct TerminalWorkbenchView: View {
         terminalAreaSize: sizing.area,
         backingScale: sizing.scale)
     }
+    .onChange(of: ViewportReport(area: terminalAreaSize, scale: displayScale, cell: ghostty.cellPixelSize), initial: true) {
+      _, report in
+      if let viewport = ghostty.viewport(terminalAreaSize: report.area, backingScale: report.scale) {
+        sessions.reportViewport(viewport)
+      }
+    }
     // Full-height content: the terminal reaches the window's top edge; the sidebar's
     // WindowDragStrip stands in for the hidden title bar.
     .ignoresSafeArea(.container, edges: .top)
@@ -410,6 +416,13 @@ struct TerminalWorkbenchView: View {
     var area: CGSize
     var scale: CGFloat
     var layouts: [SessionLayout]
+  }
+
+  /// What Axod sizes unshown panes from: the terminal area, its scale, and the cell size.
+  private struct ViewportReport: Equatable {
+    var area: CGSize
+    var scale: CGFloat
+    var cell: ClientViewport.PixelSize?
   }
 
   private var presentedTerminalLayout: TerminalLayoutPresentation? {

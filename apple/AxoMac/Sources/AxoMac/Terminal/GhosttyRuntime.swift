@@ -17,6 +17,8 @@ final class GhosttyRuntime {
   private(set) var attentionConfig = TerminalAttentionConfig()
   @ObservationIgnored private var secureInputEnabled = false
   private(set) var hasDarkBackground = true
+  /// One cell of the most recently sized surface, in device pixels; `nil` before any surface.
+  private(set) var cellPixelSize: ClientViewport.PixelSize?
 
   private struct SurfaceEntry {
     let shell: TerminalShell
@@ -390,6 +392,26 @@ final class GhosttyRuntime {
     guard width > 0, height > 0 else { return }
     ghostty_surface_set_content_scale(surface, scale, scale)
     ghostty_surface_set_size(surface, width, height)
+    recordCellSize(of: surface)
+  }
+
+  private func recordCellSize(of surface: ghostty_surface_t) {
+    let size = ghostty_surface_size(surface)
+    guard size.cell_width_px > 0, size.cell_height_px > 0 else { return }
+    let cell = ClientViewport.PixelSize(width: size.cell_width_px, height: size.cell_height_px)
+    if cellPixelSize != cell { cellPixelSize = cell }
+  }
+
+  /// Where this window draws terminals, for Axod to size panes no surface shows yet; `nil`
+  /// until a surface has measured its cells.
+  func viewport(terminalAreaSize: CGSize, backingScale: CGFloat) -> ClientViewport? {
+    guard let cellPixelSize else { return nil }
+    return ClientViewport(
+      terminalArea: .init(width: terminalAreaSize.width, height: terminalAreaSize.height),
+      backingScale: backingScale,
+      cell: cellPixelSize,
+      padding: Self.axoWindowPadding,
+      dividerThickness: TerminalPaneGeometry.dividerThickness)
   }
 
   func updateSurfaceSize(in view: GhosttySurfaceNSView, contentSize: CGSize) {
@@ -420,6 +442,7 @@ final class GhosttyRuntime {
     let height = UInt32(max(0, backingSize.height))
     guard width > 0, height > 0 else { return }
     ghostty_surface_set_size(surface, width, height)
+    recordCellSize(of: surface)
   }
 
 

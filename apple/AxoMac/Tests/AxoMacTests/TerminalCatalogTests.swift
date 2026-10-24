@@ -95,6 +95,10 @@ final class FakeAxodClient: AxodClient {
   func setLayout(_ layout: SessionLayout, forSession sessionID: SessionID) async throws {
     layoutWrites.append((sessionID, layout))
   }
+  private(set) var viewports: [ClientViewport] = []
+  func setViewport(_ viewport: ClientViewport) async throws {
+    viewports.append(viewport)
+  }
   func restartPi(shellID: ShellID, inSession sessionID: SessionID, automatically: Bool) async throws
     -> TerminalSession
   { throw Unsupported() }

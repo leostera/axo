@@ -34,6 +34,7 @@ pub mod method {
     pub const SHELL_BUSY: &str = "axo.shell.busy";
     pub const TERMINAL_INPUT: &str = "axo.terminal.input";
     pub const TERMINAL_RESIZE: &str = "axo.terminal.resize";
+    pub const CLIENT_VIEWPORT_SET: &str = "axo.client.viewport.set";
     pub const RELAY_SETTINGS: &str = "axo.relay.settings";
     pub const RELAY_CONFIGURE: &str = "axo.relay.configure";
     pub const RELAY_LINK: &str = "axo.relay.link";
@@ -66,6 +67,7 @@ pub mod method {
         SHELL_BUSY,
         TERMINAL_INPUT,
         TERMINAL_RESIZE,
+        CLIENT_VIEWPORT_SET,
         RELAY_SETTINGS,
         RELAY_CONFIGURE,
         RELAY_LINK,
@@ -289,6 +291,13 @@ pub struct Unsubscribed {
 pub struct InputAccepted {
     pub accepted: bool,
     pub sequence: u64,
+}
+
+/// `axo.client.viewport.set` took effect; its parameters are a [`crate::Viewport`].
+#[derive(Debug, Deserialize, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ViewportAccepted {
+    pub accepted: bool,
 }
 
 #[derive(Debug, Deserialize, Serialize)]

@@ -1058,6 +1058,7 @@ fn daemon_starts_with_and_restores_a_default_pty_session_after_restart() {
         "axo.shell.busy",
         "axo.terminal.input",
         "axo.terminal.resize",
+        "axo.client.viewport.set",
     ] {
         assert!(
             negotiated["result"]["methods"]
@@ -1256,4 +1257,66 @@ fn daemon_starts_with_and_restores_a_default_pty_session_after_restart() {
     restarted.stop();
     drop(restarted);
     let _ = std::fs::remove_dir_all(directory);
+}
+
+fn pty_size(master: &OwnedFd) -> (u16, u16) {
+    let mut size = libc::winsize {
+        ws_row: 0,
+        ws_col: 0,
+        ws_xpixel: 0,
+        ws_ypixel: 0,
+    };
+    // SAFETY: size is writable and the descriptor is an open PTY master.
+    assert_eq!(
+        unsafe { libc::ioctl(master.as_raw_fd(), libc::TIOCGWINSZ, &mut size) },
+        0
+    );
+    (size.ws_row, size.ws_col)
+}
+
+#[test]
+fn new_panes_start_at_the_latest_clients_viewport_across_restarts() {
+    let unique = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .unwrap()
+        .as_nanos();
+    let mut cleanup = SessionProcessCleanup::default();
+    let directory =
+        std::path::Path::new("/tmp").join(format!("axo-vp-{}-{unique}", std::process::id()));
+    let server_directory = directory.join("server");
+    let socket = directory.join("axod.sock");
+    let viewport = json!({
+        "terminalArea": { "width": 1000.0, "height": 600.0 },
+        "backingScale": 2.0,
+        "cell": { "width": 16, "height": 34 },
+        "padding": { "top": 10, "bottom": 10, "left": 2, "right": 2 },
+        "dividerThickness": 1.0
+    });
+
+    let mut daemon = start_axod(&server_directory, &socket);
+    wait_for_socket(&socket, &mut daemon);
+    let mut invalid = viewport.clone();
+    invalid["backingScale"] = json!(0);
+    assert_eq!(
+        rpc_with_params(&socket, "axo.client.viewport.set", invalid)["error"]["code"],
+        -32602
+    );
+    assert_eq!(
+        rpc_with_params(&socket, "axo.client.viewport.set", viewport)["result"]["accepted"],
+        true
+    );
+    let session = create_session(&socket);
+    cleanup.track(&session);
+    let (_control, master) = open_shell(&session["shells"][0]);
+    // 2000x1200 px minus Ghostty's scaled padding, in 16x34 px cells.
+    assert_eq!(pty_size(&master), (34, 124));
+    drop(daemon);
+
+    // The viewport outlives the daemon, so panes it starts before any client connects fit too.
+    let mut daemon = start_axod(&server_directory, &socket);
+    wait_for_socket(&socket, &mut daemon);
+    let session = create_session(&socket);
+    cleanup.track(&session);
+    let (_control, master) = open_shell(&session["shells"][0]);
+    assert_eq!(pty_size(&master), (34, 124));
 }

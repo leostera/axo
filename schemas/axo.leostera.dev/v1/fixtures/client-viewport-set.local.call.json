@@ -1,0 +1,23 @@
+{
+  "jsonrpc": "2.0",
+  "id": 5,
+  "method": "axo.client.viewport.set",
+  "params": {
+    "terminalArea": {
+      "width": 1180.5,
+      "height": 742.0
+    },
+    "backingScale": 2.0,
+    "cell": {
+      "width": 16,
+      "height": 34
+    },
+    "padding": {
+      "top": 10,
+      "bottom": 10,
+      "left": 2,
+      "right": 2
+    },
+    "dividerThickness": 1.0
+  }
+}

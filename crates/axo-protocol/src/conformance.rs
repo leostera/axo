@@ -42,6 +42,9 @@ fn exactly_specified_fixtures_round_trip() {
     round_trips::<NextEvents>(&json(fixture!("events-next.call.json"))["params"]);
     round_trips::<TerminalInput>(&json(fixture!("terminal-input.local.call.json"))["params"]);
     round_trips::<TerminalResize>(&json(fixture!("terminal-resize.local.call.json"))["params"]);
+    round_trips::<crate::Viewport>(
+        &json(fixture!("client-viewport-set.local.call.json"))["params"],
+    );
     round_trips::<ProtocolNegotiated>(&json(fixture!("negotiate.result.json")));
     round_trips::<ConfigValue>(&json(fixture!("config.value.shell.json")));
     round_trips::<ConfigValue>(&json(fixture!("config.value.agent.json")));
