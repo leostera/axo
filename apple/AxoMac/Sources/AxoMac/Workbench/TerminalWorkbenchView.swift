@@ -39,6 +39,9 @@ struct TerminalWorkbenchView: View {
           }
         }
     }
+    // Full-height content: the terminal reaches the window's top edge; the sidebar's
+    // WindowDragStrip stands in for the hidden title bar.
+    .ignoresSafeArea(.container, edges: .top)
     .frame(minWidth: 760, maxWidth: .infinity, minHeight: 480, maxHeight: .infinity)
     .sheet(isPresented: $isPresentingWorkspaceCreation) {
       WorkspaceCreationSheet(sessions: sessions)
@@ -98,6 +101,8 @@ struct TerminalWorkbenchView: View {
     let orderedSessions = sessions.sidebarOrderedSessions
 
     return VStack(spacing: 0) {
+      WindowDragStrip()
+        .frame(height: WindowDragStrip.height)
       ScrollView {
         LazyVStack(alignment: .leading, spacing: 0) {
           SidebarSectionHeader(
@@ -340,6 +345,8 @@ struct TerminalWorkbenchView: View {
 
   private var collapsedSidebar: some View {
     VStack(spacing: 0) {
+      WindowDragStrip()
+        .frame(height: WindowDragStrip.height)
       ScrollView {
         VStack(spacing: 4) {
           ForEach(sessions.sidebarOrderedSessions) { session in
@@ -365,8 +372,8 @@ struct TerminalWorkbenchView: View {
       Spacer(minLength: 0)
       sidebarToggle(isCollapsed: true)
     }
-    .padding(.vertical, 6)
-    .frame(width: 56)
+    .padding(.bottom, 6)
+    .frame(width: WindowDragStrip.minimumSidebarWidth)
     .frame(maxHeight: .infinity)
     .background(Color(nsColor: .windowBackgroundColor))
   }
