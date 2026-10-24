@@ -45,15 +45,12 @@ final class AxodInteropTests: XCTestCase {
     XCTAssertGreaterThan(health.buildNumber, 0)
     XCTAssertEqual(health.status, "running")
 
-    let relaySettings = try await UnixSocketRPC.remoteAccessSettings(at: socketPath)
-    XCTAssertFalse(relaySettings.enabled)
     let relayStatus = try await UnixSocketRPC.remoteAccessStatus(at: socketPath)
     XCTAssertEqual(relayStatus.state, .disconnected)
     XCTAssertFalse(relayStatus.hostName.isEmpty)
     XCTAssertEqual(relayStatus.hostKind, "macos")
-    try await UnixSocketRPC.disableRemoteAccess(at: socketPath)
 
-    let initialSessions = try await UnixSocketRPC.listSessions(at: socketPath)
+    let initialSessions = try await UnixSocketRPC.listSessionSnapshot(at: socketPath).sessions
     XCTAssertEqual(initialSessions.count, 1)
     let baselineSession = try XCTUnwrap(initialSessions.first)
     let baselineShell = try XCTUnwrap(baselineSession.shells.first)
@@ -82,7 +79,7 @@ final class AxodInteropTests: XCTestCase {
     let createdSession = try await UnixSocketRPC.createSession(at: socketPath)
     XCTAssertNotEqual(createdSession.id, baselineSession.id)
     let createdShell = try await UnixSocketRPC.createShell(in: createdSession.id, at: socketPath)
-    let sessionsAfterCreate = try await UnixSocketRPC.listSessions(at: socketPath)
+    let sessionsAfterCreate = try await UnixSocketRPC.listSessionSnapshot(at: socketPath).sessions
     XCTAssertEqual(
       Set(sessionsAfterCreate.map(\.id)), Set([baselineSession.id, createdSession.id]))
     let subscription = try await UnixSocketRPC.subscribe(to: createdSession.id, at: socketPath)
@@ -112,7 +109,7 @@ final class AxodInteropTests: XCTestCase {
     let closedSession = try await UnixSocketRPC.closeSession(createdSession.id, at: socketPath)
     XCTAssertEqual(closedSession.archivedSessionId, createdSession.id)
     XCTAssertNil(closedSession.replacement)
-    let remainingSessions = try await UnixSocketRPC.listSessions(at: socketPath)
+    let remainingSessions = try await UnixSocketRPC.listSessionSnapshot(at: socketPath).sessions
     XCTAssertEqual(remainingSessions.map(\.id), [baselineSession.id])
   }
 }

@@ -23,7 +23,7 @@ enum AxoAppSelfTest {
       throw SelfTestError.daemonUnavailable
     }
 
-    let baselineSessions = try await UnixSocketRPC.listSessions(at: socketPath)
+    let baselineSessions = try await UnixSocketRPC.listSessionSnapshot(at: socketPath).sessions
     guard baselineSessions.count == 1 else {
       throw SelfTestError.unexpectedInitialSession
     }
@@ -95,7 +95,7 @@ enum AxoAppSelfTest {
       else {
         throw SelfTestError.lastShellDidNotReplaceSession
       }
-      let remainingSessions = try await UnixSocketRPC.listSessions(at: socketPath)
+      let remainingSessions = try await UnixSocketRPC.listSessionSnapshot(at: socketPath).sessions
       guard remainingSessions.contains(where: { $0.id == replacement.id }),
         !remainingSessions.contains(where: { $0.id == session.id })
       else {
@@ -113,7 +113,7 @@ enum AxoAppSelfTest {
     at socketPath: UnixSocketPath,
     helperURL: URL
   ) async throws {
-    let sessions = try await UnixSocketRPC.listSessions(at: socketPath)
+    let sessions = try await UnixSocketRPC.listSessionSnapshot(at: socketPath).sessions
     guard let listedSession = sessions.first(where: { $0.id == session.id }) else {
       throw SelfTestError.createdSessionMissing
     }
@@ -129,7 +129,7 @@ enum AxoAppSelfTest {
     _ expectedSessions: [TerminalSession],
     at socketPath: UnixSocketPath
   ) async throws {
-    let activeSessions = try await UnixSocketRPC.listSessions(at: socketPath)
+    let activeSessions = try await UnixSocketRPC.listSessionSnapshot(at: socketPath).sessions
     guard expectedSessions.allSatisfy({ activeSessions.contains($0) }) else {
       throw SelfTestError.independentSessionChanged
     }

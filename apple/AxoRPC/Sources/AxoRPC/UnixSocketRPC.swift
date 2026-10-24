@@ -43,10 +43,6 @@ private struct ProtocolNegotiationRequest: Encodable {
   let protocolVersion: UInt32
 }
 
-private struct RemoteAccessDisabled: Decodable {
-  let disabled: Bool
-}
-
 private struct RemoteAccessConnectResponse: Decodable {
   let requested: Bool
 }
@@ -124,14 +120,6 @@ public enum UnixSocketRPC {
     }
   }
 
-  public static func remoteAccessSettings(
-    at socketPath: UnixSocketPath
-  ) async throws -> RemoteAccessSettings {
-    try await withResponse(at: socketPath) { session in
-      try await session.response(to: "axo.relay.settings")
-    }
-  }
-
   public static func remoteAccessStatus(
     at socketPath: UnixSocketPath
   ) async throws -> RemoteAccessStatus {
@@ -165,27 +153,6 @@ public enum UnixSocketRPC {
       throw UnixSocketRPCError.invalidResponse("axod did not confirm host pairing")
     }
     return result
-  }
-
-  public static func configureRemoteAccess(
-    _ configuration: RemoteAccessConfiguration,
-    at socketPath: UnixSocketPath
-  ) async throws -> RemoteAccessSettings {
-    try await withResponse(at: socketPath) { session in
-      try await session.response(
-        to: "axo.relay.configure",
-        params: configuration
-      )
-    }
-  }
-
-  public static func disableRemoteAccess(at socketPath: UnixSocketPath) async throws {
-    let response: RemoteAccessDisabled = try await withResponse(at: socketPath) { session in
-      try await session.response(to: "axo.relay.disable")
-    }
-    guard response.disabled else {
-      throw UnixSocketRPCError.invalidResponse("daemon did not disable remote access")
-    }
   }
 
   public static func health(at socketPath: UnixSocketPath) async throws -> DaemonHealth {
@@ -238,11 +205,6 @@ public enum UnixSocketRPC {
       throw UnixSocketRPCError.invalidResponse("daemon saved configuration under a different key")
     }
     return saved
-  }
-
-  public static func listSessions(at socketPath: UnixSocketPath) async throws -> [TerminalSession] {
-    let snapshot = try await listSessionSnapshot(at: socketPath)
-    return snapshot.sessions
   }
 
   public static func listSessionSnapshot(

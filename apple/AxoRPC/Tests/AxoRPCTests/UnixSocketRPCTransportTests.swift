@@ -58,36 +58,6 @@ final class UnixSocketRPCTransportTests: XCTestCase {
     XCTAssertEqual(health.status, "running")
   }
 
-  func testRemoteAccessConfigurationSendsOnlyConnectionMetadata() async throws {
-    let fixture = try OneResponseUnixSocket(
-      response:
-        #"{"jsonrpc":"2.0","id":1,"result":{"enabled":true,"relayUrl":"https://api.example.test","hostLabel":"My Mac","hostKind":"macos"}}"#
-    )
-    let responder = Task.detached {
-      try fixture.receiveOneRequestAndReply()
-    }
-
-    let settings = try await UnixSocketRPC.configureRemoteAccess(
-      RemoteAccessConfiguration(
-        relayUrl: "https://api.example.test",
-        hostLabel: "My Mac"
-      ),
-      at: UnixSocketPath(fixture.path)
-    )
-    let requestData = try await responder.value
-    let request = try XCTUnwrap(
-      JSONSerialization.jsonObject(with: requestData) as? [String: Any]
-    )
-    let params = try XCTUnwrap(request["params"] as? [String: Any])
-
-    XCTAssertTrue(settings.enabled)
-    XCTAssertEqual(request["method"] as? String, "axo.relay.configure")
-    XCTAssertEqual(params["relayUrl"] as? String, "https://api.example.test")
-    XCTAssertEqual(params["hostLabel"] as? String, "My Mac")
-    XCTAssertNil(params["clientId"])
-    XCTAssertNil(params["clientSecret"])
-  }
-
   func testRemoteAccessStatusReportsActualRelayState() async throws {
     let fixture = try OneResponseUnixSocket(
       response:

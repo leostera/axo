@@ -375,7 +375,7 @@ final class TerminalWorkbenchE2ETests: XCTestCase {
   ) async throws {
     let deadline = Date().addingTimeInterval(5)
     while Date() < deadline {
-      let sessions = try await UnixSocketRPC.listSessions(at: socketPath)
+      let sessions = try await UnixSocketRPC.listSessionSnapshot(at: socketPath).sessions
       if let storedLayout = sessions.first(where: { $0.id == sessionID })?.layout,
         TerminalLayout(storedLayout) == expected
       {
