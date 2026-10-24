@@ -3,8 +3,7 @@ import AxoDaemonManager
 import AxoRPC
 import SwiftUI
 
-@main
-struct AxoApp: App {
+struct AxoApp<Launch: AxoLaunchMode>: App {
   @State private var daemon: DaemonController
   @State private var sessions: TerminalSessionsModel
   @NSApplicationDelegateAdaptor(AxoURLSchemeDelegate.self) private var urlSchemeDelegate
@@ -20,7 +19,7 @@ struct AxoApp: App {
 
   init() {
     let daemon = DaemonController()
-    let environment = AxoAppEnvironment.current(daemon: daemon)
+    let environment = Launch.environment(daemon: daemon)
     let ghostty = GhosttyRuntime()
     _daemon = State(initialValue: daemon)
     _sessions = State(initialValue: environment.sessions)

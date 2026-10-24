@@ -19,27 +19,32 @@ AXO_MAC_DEPS = [
     "@ghostty//:GhosttyKit",
 ]
 
-# The shipped app. Fixture entrypoints in Sources/AxoMac/TestHost are never compiled in.
+# All app code, compiled once and shared by the shipped app, the fixture app and unit tests.
 swift_library(
     name = "AxoMac",
     module_name = "AxoMac",
-    srcs = glob(
-        ["Sources/AxoMac/**/*.swift"],
-        exclude = ["Sources/AxoMac/TestHost/**"],
-    ),
+    srcs = glob(["Sources/AxoMac/**/*.swift"]),
     copts = ["-swift-version", "5"],
     deps = AXO_MAC_DEPS,
 )
 
-# The same app plus self-test and UI-automation launch modes, for AxoUITestApp only.
+# The shipped app's @main entry: production launch only.
+swift_library(
+    name = "AxoMacMain",
+    module_name = "AxoMacMain",
+    srcs = glob(["Sources/AxoMacMain/*.swift"]),
+    copts = ["-swift-version", "5"],
+    deps = [":AxoMac"],
+)
+
+# The fixture app's @main entry plus self-test and UI-automation launch modes, for
+# AxoUITestApp only. Uses `@testable import AxoMac`, so it builds in non-optimized modes only.
 swift_library(
     name = "AxoMacTestHost",
-    # A distinct module name keeps outputs separate; nothing imports this module.
     module_name = "AxoMacTestHost",
-    srcs = glob(["Sources/AxoMac/**/*.swift"]),
+    srcs = glob(["Sources/AxoMacTestHost/*.swift"]),
     copts = ["-swift-version", "5"],
-    defines = ["AXO_TEST_HOST"],
-    deps = AXO_MAC_DEPS,
+    deps = AXO_MAC_DEPS + [":AxoMac"],
 )
 
 swift_test(
@@ -159,7 +164,7 @@ macos_application(
         "@ghostty//:resources": "Resources",
         "@ghostty//:terminfo": "Resources",
     },
-    deps = [":AxoMac"],
+    deps = [":AxoMacMain"],
 )
 
 macos_application(

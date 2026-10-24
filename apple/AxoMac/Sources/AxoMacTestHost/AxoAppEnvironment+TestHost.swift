@@ -4,8 +4,10 @@ import AxoRPC
 import Darwin
 import Foundation
 
-/// Fixture launch modes. This file is compiled only into `AxoMacTestHost`/`AxoUITestApp`; the
-/// shipped app has no self-test, file-driven automation or test-window placement.
+@testable import AxoMac
+
+/// Fixture launch modes, compiled only into `AxoMacTestHost`/`AxoUITestApp`; the shipped app
+/// has no self-test, file-driven automation or test-window placement.
 extension AxoAppEnvironment {
   private static let uiTestBundleIdentifier = "dev.leostera.axo.ui-tests"
 
@@ -83,5 +85,19 @@ extension AxoAppEnvironment {
       }
       try? await Task.sleep(for: .milliseconds(50))
     }
+  }
+}
+
+enum TestHostLaunch: AxoLaunchMode {
+  static func environment(daemon: DaemonController) -> AxoAppEnvironment {
+    .testHost(daemon: daemon)
+  }
+}
+
+/// The fixture app's entry: the same compiled `AxoMac` library with test launch modes.
+@main
+enum AxoTestHostMain {
+  @MainActor static func main() {
+    AxoApp<TestHostLaunch>.main()
   }
 }

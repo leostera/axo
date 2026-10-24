@@ -2,6 +2,8 @@ import AxoRPC
 import Darwin
 import Foundation
 
+@testable import AxoMac
+
 /// Exercises the bundled app-to-daemon contract without registering or changing a LaunchAgent.
 @MainActor
 enum AxoAppSelfTest {

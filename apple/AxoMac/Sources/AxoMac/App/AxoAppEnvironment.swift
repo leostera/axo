@@ -1,8 +1,8 @@
 import AxoDaemonManager
 import Foundation
 
-/// Process-level launch configuration. Release builds only ever produce `production`; the
-/// `AxoMacTestHost` build (compiled with `AXO_TEST_HOST`) adds fixture modes in `TestHost/`.
+/// Process-level launch configuration. The shipped app uses `ProductionLaunch`; the separate
+/// `AxoMacTestHost` entry target (Sources/AxoMacTestHost) supplies fixture launch modes.
 @MainActor
 struct AxoAppEnvironment {
   var sessions: TerminalSessionsModel
@@ -25,12 +25,23 @@ struct AxoAppEnvironment {
       daemonIsRunning: { daemon.status.isRunning },
       daemonUnreachable: { daemon.checkHealth() })
   }
+}
 
-  static func current(daemon: DaemonController) -> AxoAppEnvironment {
-    #if AXO_TEST_HOST
-      testHost(daemon: daemon)
-    #else
-      production(daemon: daemon)
-    #endif
+/// Chooses the environment an `AxoApp` launches with. Each executable picks one at its entry
+/// point, so test-only modes never exist in the shipped binary.
+protocol AxoLaunchMode {
+  @MainActor static func environment(daemon: DaemonController) -> AxoAppEnvironment
+}
+
+enum ProductionLaunch: AxoLaunchMode {
+  static func environment(daemon: DaemonController) -> AxoAppEnvironment {
+    .production(daemon: daemon)
+  }
+}
+
+/// The shipped app's entry point, called from the `AxoMacMain` target.
+public enum AxoAppEntryPoint {
+  @MainActor public static func main() {
+    AxoApp<ProductionLaunch>.main()
   }
 }

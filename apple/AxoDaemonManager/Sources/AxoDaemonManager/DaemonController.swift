@@ -44,8 +44,6 @@ public final class DaemonController {
 
   public private(set) var status: Status = .starting
 
-  private static let registrationIntentKey = "dev.leostera.axo.axod.registrationRequested"
-  private static let registrationReceiptKey = "dev.leostera.axo.axod.registrationSucceeded"
   private static let servicePlistName = "dev.leostera.axo.axod.plist"
   // Launchd can take longer than a health-check window to restore active PTYs and Pi bridges.
   private static let daemonStartupTimeout: Duration = .seconds(30)
@@ -55,7 +53,11 @@ public final class DaemonController {
   private let logger = Logger(subsystem: "dev.leostera.axo", category: "daemon")
   @ObservationIgnored private var startTask: Task<Void, Never>?
 
-  public init() {}
+  @ObservationIgnored private let defaults: UserDefaults
+
+  public init(defaults: UserDefaults = .standard) {
+    self.defaults = defaults
+  }
 
   /// Publishes only real transitions; observers (menu bar, workbench) re-render on each publish.
   private func setStatus(_ newStatus: Status) {
@@ -152,11 +154,11 @@ public final class DaemonController {
     )
     let decision = RegistrationDecision.resolve(
       serviceStatus: serviceStatus,
-      registrationIntentRecorded: UserDefaults.standard.bool(forKey: Self.registrationIntentKey)
+      registrationIntentRecorded: defaults.bool(forKey: DaemonPreferenceKey.registrationRequested)
     )
     switch decision {
     case .alreadyEnabled:
-      UserDefaults.standard.set(true, forKey: Self.registrationReceiptKey)
+      defaults.set(true, forKey: DaemonPreferenceKey.registrationSucceeded)
       return true
     case .approvalRequired:
       setStatus(.requiresApproval)
@@ -168,7 +170,7 @@ public final class DaemonController {
       return false
     case .registerOnce:
       logger.info("event=daemon.registration_started")
-      UserDefaults.standard.set(true, forKey: Self.registrationIntentKey)
+      defaults.set(true, forKey: DaemonPreferenceKey.registrationRequested)
       do {
         try service.register()
       } catch {
@@ -190,14 +192,14 @@ public final class DaemonController {
     do {
       switch service.status {
       case .enabled:
-        UserDefaults.standard.set(true, forKey: Self.registrationReceiptKey)
+        defaults.set(true, forKey: DaemonPreferenceKey.registrationSucceeded)
         try await checkBuildAndRestartIfNeeded()
       case .requiresApproval:
         setStatus(.requiresApproval)
       case .notFound:
         throw DaemonControllerError.missingServiceDefinition
       case .notRegistered:
-        UserDefaults.standard.set(true, forKey: Self.registrationIntentKey)
+        defaults.set(true, forKey: DaemonPreferenceKey.registrationRequested)
         do {
           try service.register()
         } catch {
@@ -220,13 +222,13 @@ public final class DaemonController {
   private func recordRegistrationResult() throws -> Bool {
     switch service.status {
     case .enabled:
-      UserDefaults.standard.set(true, forKey: Self.registrationReceiptKey)
+      defaults.set(true, forKey: DaemonPreferenceKey.registrationSucceeded)
       return true
     case .requiresApproval:
       setStatus(.requiresApproval)
       return false
     case .notRegistered:
-      if UserDefaults.standard.bool(forKey: Self.registrationReceiptKey) {
+      if defaults.bool(forKey: DaemonPreferenceKey.registrationSucceeded) {
         setStatus(.disabled)
         return false
       }

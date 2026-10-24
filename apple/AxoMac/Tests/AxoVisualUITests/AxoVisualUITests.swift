@@ -8,7 +8,7 @@ import XCTest
 @testable import AxoMac
 
 
-/// Real-UI acceptance tests against an isolated Axod, driven through the AXO_TEST_HOST app.
+/// Real-UI acceptance tests against an isolated Axod, driven through the AxoUITestApp fixture app (AxoMacTestHost entry).
 /// Tests live in per-feature extensions so `-only-testing:AxoVisualUITests/AxoVisualUITests/<test>`
 /// keeps working; shared fixture code is in `UITestFixture.swift`.
 @MainActor

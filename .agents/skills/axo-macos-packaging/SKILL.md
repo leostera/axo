@@ -9,7 +9,7 @@ Resolve paths from the Axo root (`../../..`). **Repackage `dist/Axo.app` after e
 
 ## The package
 
-- One signed `dist/Axo.app` built from `//apple/AxoMac:AxoApp` (production module only, no `TestHost/` code). It embeds `Contents/Helpers/axod`, the Pi extension at `Contents/Resources/AxoPi/`, Ghostty resources/terminfo and the per-user LaunchAgent plist `dev.leostera.axo.axod.plist`. Vanilla Pi is an external runtime dependency.
+- One signed `dist/Axo.app` built from `//apple/AxoMac:AxoApp` (the `AxoMacMain` entry over the `AxoMac` library; never `AxoMacTestHost`). It embeds `Contents/Helpers/axod`, the Pi extension at `Contents/Resources/AxoPi/`, Ghostty resources/terminfo and the per-user LaunchAgent plist `dev.leostera.axo.axod.plist`. Vanilla Pi is an external runtime dependency.
 - Signed with an Apple Development or Developer ID identity; not notarized. Ad-hoc signing is unsupported because launchd must accept the helper. App and helper must share a team.
 - Minimum macOS is 14.0 for both executables (`build-mac.sh` checks `vtool` minos against `LSMinimumSystemVersion`).
 - `DaemonController` registers the LaunchAgent through `SMAppService` and restarts axod when its build number differs from the app's.

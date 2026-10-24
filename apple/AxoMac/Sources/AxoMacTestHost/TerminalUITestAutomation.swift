@@ -2,6 +2,8 @@ import AppKit
 import AxoRPC
 import Foundation
 
+@testable import AxoMac
+
 @MainActor
 final class TerminalUITestAutomation {
   private struct Request: Decodable {

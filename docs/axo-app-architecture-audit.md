@@ -65,7 +65,7 @@ All findings were addressed in independently tested commits (`b54423d`..HEAD):
 | --- | --- |
 | 1 Polling | `TerminalCatalogSync`: one catalog subscription (`includeTerminalOutput: false`), event application in `TerminalSessionsModel.apply`, resubscribe + `resynchronize()` on lag/reconnect. Axod gained lag signalling, idle subscription expiry, `workspace.changed` and `session.focus`. |
 | 2 View-owned loops | `AxoWorkbench`, created once in `AxoApp.init`, owns sync, surface reconciliation and focus via `ObservationLoop`. |
-| 3 Test modes in release | `TestHost/` compiles only into `AxoMacTestHost` (`AXO_TEST_HOST`) for `AxoUITestApp`; the shipped binary contains no self-test or automation strings. |
+| 3 Test modes in release | Test launch modes live in the separate `AxoMacTestHost` entry target (see audit 2, item 15) used only by `AxoUITestApp`; the shipped binary contains no self-test or automation strings. |
 | 4 God object | `AxodClient`, `TerminalLayoutWriter`, `AutomaticPiRestarter`, `SessionNavigation`/`RecentSessions` and `TerminalLayout.defaultLayout` extracted; duplicated command paths collapsed; negotiation cached per connection; `SessionCommandError` for app-level failures. |
 | 5 Identity | Typed `SessionID`/`ShellID` (wire-compatible integers). Axod's AUTOINCREMENT IDs are never reused, so they are the single identity; `sessionUuid` is no longer compared. |
 | 6–7 Ghostty files | View split into `Terminal/Surface/*`; runtime into `+Config`, `+Callbacks`, `+Actions`, `+Clipboard`. One guarded `syncSurfaceSize()` path. |
