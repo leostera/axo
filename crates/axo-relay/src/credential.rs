@@ -2,14 +2,14 @@ use std::io;
 
 const KEYCHAIN_SERVICE: &str = "dev.leostera.axo.host-credential";
 
-pub(crate) trait HostCredentialStore: Send + Sync {
+pub trait HostCredentialStore: Send + Sync {
     fn store(&self, credential_id: &str, secret: &[u8]) -> io::Result<()>;
     fn load(&self, credential_id: &str) -> io::Result<Vec<u8>>;
     fn delete(&self, credential_id: &str) -> io::Result<()>;
 }
 
 #[derive(Clone, Copy, Default)]
-pub(crate) struct MacOSKeychain;
+pub struct MacOSKeychain;
 
 #[cfg(target_os = "macos")]
 impl HostCredentialStore for MacOSKeychain {
@@ -62,14 +62,14 @@ impl HostCredentialStore for MacOSKeychain {
 }
 
 #[cfg(test)]
-pub(crate) mod testing {
+pub mod testing {
     use super::HostCredentialStore;
     use std::collections::HashMap;
     use std::io;
     use std::sync::Mutex;
 
     #[derive(Default)]
-    pub(crate) struct MemoryCredentialStore(Mutex<HashMap<String, Vec<u8>>>);
+    pub struct MemoryCredentialStore(Mutex<HashMap<String, Vec<u8>>>);
 
     impl HostCredentialStore for MemoryCredentialStore {
         fn store(&self, credential_id: &str, secret: &[u8]) -> io::Result<()> {

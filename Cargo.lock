@@ -81,24 +81,35 @@ dependencies = [
 ]
 
 [[package]]
+name = "axo-relay"
+version = "0.1.0"
+dependencies = [
+ "httparse",
+ "libc",
+ "log",
+ "native-tls",
+ "security-framework",
+ "serde",
+ "serde_json",
+ "tungstenite",
+ "url",
+]
+
+[[package]]
 name = "axo-server"
 version = "0.1.0"
 dependencies = [
  "axo-ipc",
  "axo-pty",
+ "axo-relay",
  "core-foundation",
- "httparse",
  "jsonrpc-core",
  "libc",
  "log",
- "native-tls",
  "rusqlite",
- "security-framework",
  "serde",
  "serde_json",
  "shlex",
- "tungstenite",
- "url",
 ]
 
 [[package]]

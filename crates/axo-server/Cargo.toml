@@ -7,18 +7,14 @@ build = "build.rs"
 [dependencies]
 axo-ipc = { path = "../axo-ipc" }
 axo-pty = { path = "../axo-pty" }
+axo-relay = { path = "../axo-relay" }
 jsonrpc-core = "18.0.0"
 libc = "0.2"
 log = "0.4"
-httparse = "1.10.1"
-native-tls = "0.2.18"
 rusqlite = { version = "0.39.0", features = ["bundled"] }
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
 shlex = "2.0.1"
-tungstenite = { version = "0.30.0", features = ["native-tls", "url"] }
-url = "2.5.8"
 
 [target.'cfg(target_os = "macos")'.dependencies]
 core-foundation = "0.10.1"
-security-framework = "3.7.0"

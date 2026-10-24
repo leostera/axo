@@ -1,5 +1,5 @@
 use crate::credential::HostCredentialStore;
-use crate::session::SessionManager;
+use crate::host::RelayHost;
 use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
 use std::fs::{self, OpenOptions};
@@ -20,7 +20,7 @@ use tungstenite::stream::MaybeTlsStream;
 use tungstenite::{Message, WebSocket};
 use url::{Host, Url};
 
-pub(super) const CONFIG_FILE: &str = "relay.json";
+pub const CONFIG_FILE: &str = "relay.json";
 const MAX_CONFIG_BYTES: u64 = 16 * 1024;
 const MAX_FRAME_BYTES: usize = 65_536;
 const SOCKET_READ_TIMEOUT: Duration = Duration::from_millis(20);
@@ -61,7 +61,7 @@ enum LoopbackAccess {
 
 #[derive(Deserialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
-pub(crate) struct ConfigureRelayRequest {
+pub struct ConfigureRelayRequest {
     relay_url: String,
     host_label: String,
     host_kind: String,
@@ -69,7 +69,7 @@ pub(crate) struct ConfigureRelayRequest {
 
 #[derive(Debug, Serialize)]
 #[serde(rename_all = "camelCase")]
-pub(crate) struct RelaySettings {
+pub struct RelaySettings {
     enabled: bool,
     relay_url: Option<String>,
     host_label: Option<String>,
@@ -95,7 +95,7 @@ impl std::fmt::Debug for LoopbackAccess {
 
 #[derive(Clone, Debug, Eq, PartialEq, Serialize)]
 #[serde(rename_all = "camelCase")]
-pub(crate) struct RelayStatus {
+pub struct RelayStatus {
     state: String,
     connected_since_unix_millis: Option<u64>,
     host_name: String,
@@ -105,7 +105,7 @@ pub(crate) struct RelayStatus {
 
 type RelayStatusObserver = Box<dyn Fn(&RelayStatus) + Send + Sync>;
 
-pub(crate) struct RelayControl {
+pub struct RelayControl {
     status: Mutex<RelayStatus>,
     reconnect_requested: AtomicBool,
     /// Told about every status change, outside the status lock (publishes `relay.status`).
@@ -149,14 +149,14 @@ impl RelayControl {
         Ok(())
     }
 
-    pub(crate) fn snapshot(&self) -> io::Result<RelayStatus> {
+    pub fn snapshot(&self) -> io::Result<RelayStatus> {
         self.status
             .lock()
             .map(|status| status.clone())
             .map_err(|_| io::Error::other("relay status lock was poisoned"))
     }
 
-    pub(crate) fn request_connect(&self) -> io::Result<()> {
+    pub fn request_connect(&self) -> io::Result<()> {
         self.reconnect_requested.store(true, Ordering::Relaxed);
         self.update(Self::connecting)
     }
@@ -190,15 +190,15 @@ impl RelayControl {
     }
 }
 
-pub(crate) struct RelayWorker {
+pub struct RelayWorker {
     stop: Arc<AtomicBool>,
     control: Arc<RelayControl>,
     thread: Option<JoinHandle<()>>,
 }
 
 impl RelayWorker {
-    pub(crate) fn start(
-        sessions: Arc<SessionManager>,
+    pub fn start(
+        sessions: Arc<dyn RelayHost>,
         server_directory: &Path,
         credentials: Arc<dyn HostCredentialStore>,
     ) -> io::Result<Self> {
@@ -234,15 +234,15 @@ impl RelayWorker {
         })
     }
 
-    pub(crate) fn stop_handle(&self) -> Arc<AtomicBool> {
+    pub fn stop_handle(&self) -> Arc<AtomicBool> {
         Arc::clone(&self.stop)
     }
 
-    pub(crate) fn control_handle(&self) -> Arc<RelayControl> {
+    pub fn control_handle(&self) -> Arc<RelayControl> {
         Arc::clone(&self.control)
     }
 
-    pub(crate) fn shutdown(&mut self) {
+    pub fn shutdown(&mut self) {
         self.stop.store(true, Ordering::Relaxed);
         if let Some(worker) = self.thread.take() {
             let _ = worker.join();
@@ -333,7 +333,7 @@ fn local_host_name() -> String {
     "This Mac".to_owned()
 }
 
-pub(crate) fn unavailable_status() -> RelayStatus {
+pub fn unavailable_status() -> RelayStatus {
     RelayStatus {
         state: "disconnected".to_owned(),
         connected_since_unix_millis: None,
@@ -492,7 +492,7 @@ fn parse_config(raw: RawRelayConfig) -> io::Result<RelayConfig> {
     })
 }
 
-pub(crate) fn settings(path: &Path) -> io::Result<RelaySettings> {
+pub fn settings(path: &Path) -> io::Result<RelaySettings> {
     let Some(raw) = read_raw_config(path)? else {
         return Ok(RelaySettings {
             enabled: false,
@@ -510,10 +510,10 @@ pub(crate) fn settings(path: &Path) -> io::Result<RelaySettings> {
     })
 }
 
-pub(crate) fn link_host(
+pub fn link_host(
     path: &Path,
     raw_code: &str,
-    sessions: &SessionManager,
+    sessions: &dyn RelayHost,
     credentials: &dyn HostCredentialStore,
 ) -> io::Result<String> {
     crate::pairing::validate_code(raw_code)?;
@@ -591,7 +591,7 @@ pub(crate) fn link_host(
     Ok(raw.host_label)
 }
 
-pub(crate) fn configure(
+pub fn configure(
     path: &Path,
     request: ConfigureRelayRequest,
     credentials: &dyn HostCredentialStore,
@@ -626,7 +626,7 @@ pub(crate) fn configure(
     settings(path)
 }
 
-pub(crate) fn disable(path: &Path, credentials: &dyn HostCredentialStore) -> io::Result<()> {
+pub fn disable(path: &Path, credentials: &dyn HostCredentialStore) -> io::Result<()> {
     let credential_ids = read_raw_config(path)?
         .map(|raw| [raw.credential_id, raw.pending_credential_id])
         .unwrap_or_default();
@@ -709,7 +709,7 @@ fn is_loopback(url: &Url) -> bool {
 
 fn run_reconnect_loop(
     config_path: PathBuf,
-    sessions: Arc<SessionManager>,
+    sessions: Arc<dyn RelayHost>,
     stop: Arc<AtomicBool>,
     control: Arc<RelayControl>,
     credentials: Arc<dyn HostCredentialStore>,
@@ -777,7 +777,7 @@ fn wait_for_reconnect(control: &RelayControl, stop: &AtomicBool, delay: Duration
 
 fn run_connection(
     config: &RelayConfig,
-    sessions: &Arc<SessionManager>,
+    sessions: &Arc<dyn RelayHost>,
     stop: &AtomicBool,
     control: &RelayControl,
     credentials: &dyn HostCredentialStore,
@@ -1167,7 +1167,7 @@ fn rpc_call(
     request_number: &mut u64,
     method: &str,
     params: Value,
-    sessions: &Arc<SessionManager>,
+    sessions: &Arc<dyn RelayHost>,
     host_id: &str,
     host_generation: &str,
 ) -> io::Result<Value> {
@@ -1196,7 +1196,7 @@ fn rpc_call(
 }
 
 struct RelaySessionContext<'a> {
-    sessions: &'a Arc<SessionManager>,
+    sessions: &'a Arc<dyn RelayHost>,
     host_id: &'a str,
     host_generation: &'a str,
     subscription_id: &'a str,
@@ -1512,7 +1512,7 @@ struct TerminalResizeParams {
 
 fn remote_request_reply(
     message: &Value,
-    sessions: &Arc<SessionManager>,
+    sessions: &Arc<dyn RelayHost>,
     host_id: &str,
     host_generation: &str,
 ) -> Option<Value> {
@@ -1531,7 +1531,7 @@ fn remote_request_reply(
 fn dispatch_remote_call(
     method: &str,
     params: &Value,
-    sessions: &Arc<SessionManager>,
+    sessions: &Arc<dyn RelayHost>,
     host_id: &str,
     host_generation: &str,
 ) -> Result<Value, (i64, &'static str)> {

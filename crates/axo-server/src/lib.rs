@@ -14,10 +14,7 @@ use axo_ipc::BlockingMethods;
 use jsonrpc_core::{IoHandler, Params};
 use serde_json::json;
 
-mod credential;
-mod pairing;
 mod process_inspection;
-mod relay;
 mod session;
 mod workspace_access;
 
@@ -166,10 +163,10 @@ pub fn serve_ipc(
     remove_stale_socket(&socket_path.0)?;
 
     let sessions = session::SessionManager::open(server_directory)?;
-    let credential_store: Arc<dyn credential::HostCredentialStore> =
-        Arc::new(credential::MacOSKeychain);
-    let mut remote_relay = match relay::RelayWorker::start(
-        Arc::clone(&sessions),
+    let credential_store: Arc<dyn axo_relay::credential::HostCredentialStore> =
+        Arc::new(axo_relay::credential::MacOSKeychain);
+    let mut remote_relay = match axo_relay::RelayWorker::start(
+        Arc::new(session::RelayHostAdapter(Arc::clone(&sessions))),
         server_directory,
         Arc::clone(&credential_store),
     ) {
@@ -179,10 +176,12 @@ pub fn serve_ipc(
             None
         }
     };
-    let relay_stop = remote_relay.as_ref().map(relay::RelayWorker::stop_handle);
+    let relay_stop = remote_relay
+        .as_ref()
+        .map(axo_relay::RelayWorker::stop_handle);
     let relay_control = remote_relay
         .as_ref()
-        .map(relay::RelayWorker::control_handle);
+        .map(axo_relay::RelayWorker::control_handle);
     let handler = rpc_handler(
         Arc::clone(&sessions),
         daemon_version,
@@ -284,8 +283,8 @@ fn rpc_handler(
     sessions: Arc<session::SessionManager>,
     daemon_version: &'static str,
     server_directory: PathBuf,
-    relay_control: Option<Arc<relay::RelayControl>>,
-    credential_store: Arc<dyn credential::HostCredentialStore>,
+    relay_control: Option<Arc<axo_relay::RelayControl>>,
+    credential_store: Arc<dyn axo_relay::credential::HostCredentialStore>,
 ) -> IoHandler {
     let mut handler = IoHandler::new();
     add_protocol_negotiate_method(&mut handler);
@@ -305,18 +304,18 @@ fn add_relay_methods(
     handler: &mut IoHandler,
     server_directory: PathBuf,
     sessions: Arc<session::SessionManager>,
-    relay_control: Option<Arc<relay::RelayControl>>,
-    credential_store: Arc<dyn credential::HostCredentialStore>,
+    relay_control: Option<Arc<axo_relay::RelayControl>>,
+    credential_store: Arc<dyn axo_relay::credential::HostCredentialStore>,
 ) {
-    let settings_path = server_directory.join(relay::CONFIG_FILE);
+    let settings_path = server_directory.join(axo_relay::CONFIG_FILE);
     handler.add_blocking_method("axo.relay.settings", move |_| {
-        serde_json::to_value(
-            relay::settings(&settings_path).map_err(|_| jsonrpc_core::Error {
+        serde_json::to_value(axo_relay::settings(&settings_path).map_err(|_| {
+            jsonrpc_core::Error {
                 code: jsonrpc_core::ErrorCode::InternalError,
                 message: "could not read remote access settings".to_owned(),
                 data: None,
-            })?,
-        )
+            }
+        })?)
         .map_err(|_| jsonrpc_core::Error {
             code: jsonrpc_core::ErrorCode::InternalError,
             message: "could not encode remote access settings".to_owned(),
@@ -324,19 +323,20 @@ fn add_relay_methods(
         })
     });
 
-    let configure_path = server_directory.join(relay::CONFIG_FILE);
+    let configure_path = server_directory.join(axo_relay::CONFIG_FILE);
     let configure_control = relay_control.clone();
     let configure_credentials = Arc::clone(&credential_store);
     handler.add_blocking_method("axo.relay.configure", move |params: Params| {
         let request = params
-            .parse::<relay::ConfigureRelayRequest>()
+            .parse::<axo_relay::ConfigureRelayRequest>()
             .map_err(|_| invalid_params("invalid remote access settings"))?;
-        let settings = relay::configure(&configure_path, request, configure_credentials.as_ref())
-            .map_err(|_| jsonrpc_core::Error {
-            code: jsonrpc_core::ErrorCode::InvalidParams,
-            message: "could not save remote access settings".to_owned(),
-            data: None,
-        })?;
+        let settings =
+            axo_relay::configure(&configure_path, request, configure_credentials.as_ref())
+                .map_err(|_| jsonrpc_core::Error {
+                    code: jsonrpc_core::ErrorCode::InvalidParams,
+                    message: "could not save remote access settings".to_owned(),
+                    data: None,
+                })?;
         if let Some(control) = &configure_control {
             let _ = control.request_connect();
         }
@@ -347,11 +347,11 @@ fn add_relay_methods(
         })
     });
 
-    let disable_path = server_directory.join(relay::CONFIG_FILE);
+    let disable_path = server_directory.join(axo_relay::CONFIG_FILE);
     let disable_control = relay_control.clone();
     let disable_credentials = Arc::clone(&credential_store);
     handler.add_blocking_method("axo.relay.disable", move |_| {
-        relay::disable(&disable_path, disable_credentials.as_ref()).map_err(|_| {
+        axo_relay::disable(&disable_path, disable_credentials.as_ref()).map_err(|_| {
             jsonrpc_core::Error {
                 code: jsonrpc_core::ErrorCode::InternalError,
                 message: "could not disable remote access".to_owned(),
@@ -364,8 +364,8 @@ fn add_relay_methods(
         Ok(json!({ "disabled": true }))
     });
 
-    let link_path = server_directory.join(relay::CONFIG_FILE);
-    let link_sessions = Arc::clone(&sessions);
+    let link_path = server_directory.join(axo_relay::CONFIG_FILE);
+    let link_host = session::RelayHostAdapter(Arc::clone(&sessions));
     let link_credentials = Arc::clone(&credential_store);
     let link_control = relay_control.clone();
     handler.add_blocking_method("axo.relay.link", move |params: Params| {
@@ -377,10 +377,10 @@ fn add_relay_methods(
             message: "host relay is unavailable".to_owned(),
             data: None,
         })?;
-        let host_label = relay::link_host(
+        let host_label = axo_relay::link_host(
             &link_path,
             &request.code,
-            &link_sessions,
+            &link_host,
             link_credentials.as_ref(),
         )
         .map_err(|_| jsonrpc_core::Error {
@@ -404,7 +404,7 @@ fn add_relay_methods(
                 message: "could not read remote connection status".to_owned(),
                 data: None,
             })?,
-            None => relay::unavailable_status(),
+            None => axo_relay::unavailable_status(),
         };
         serde_json::to_value(status).map_err(|_| jsonrpc_core::Error {
             code: jsonrpc_core::ErrorCode::InternalError,

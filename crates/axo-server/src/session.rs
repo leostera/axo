@@ -805,6 +805,165 @@ pub struct SessionManager {
     workspace_access: Mutex<HashMap<String, WorkspaceDirectoryAccess>>,
 }
 
+/// Exposes the session manager to the cloud relay.
+pub(crate) struct RelayHostAdapter(pub(crate) Arc<SessionManager>);
+
+impl axo_relay::RelayHost for RelayHostAdapter {
+    fn host_id(&self) -> &str {
+        &self.0.host_id
+    }
+
+    fn host_generation(&self) -> &str {
+        &self.0.host_generation
+    }
+
+    fn remote_session_snapshots(&self, updated_at: &str) -> io::Result<Vec<Value>> {
+        let sessions = self.0.list_sessions()?;
+        if sessions.len() > 256 || sessions.iter().any(|session| session.shells.len() > 256) {
+            return Err(io::Error::new(
+                io::ErrorKind::InvalidData,
+                "host session snapshot exceeds the protocol limit",
+            ));
+        }
+        Ok(sessions
+            .iter()
+            .map(|session| session.to_remote_json(&self.0.host_id, updated_at))
+            .collect())
+    }
+
+    fn subscribe_remote_events(&self) -> io::Result<String> {
+        self.0.subscribe(None, true)
+    }
+
+    fn next_remote_event(
+        &self,
+        subscription_id: &str,
+        timeout: Duration,
+    ) -> io::Result<Option<Value>> {
+        self.0.next_event(subscription_id, timeout)
+    }
+
+    /// Current snapshots, as local events, for resynchronizing a lagged remote stream.
+    fn remote_resync_events(&self) -> io::Result<Vec<Value>> {
+        Ok(self
+            .0
+            .list_sessions()?
+            .iter()
+            .map(|session| json!({ "type": "session.snapshot", "session": session.to_json() }))
+            .collect())
+    }
+
+    fn unsubscribe_remote_events(&self, subscription_id: &str) -> io::Result<()> {
+        self.0.unsubscribe(subscription_id)
+    }
+
+    fn remote_create_session(&self, updated_at: &str) -> io::Result<Value> {
+        let session = self.0.create_session()?;
+        self.0
+            .publish_event(json!({ "type": "session.snapshot", "session": session.to_json() }));
+        Ok(session.to_remote_json(&self.0.host_id, updated_at))
+    }
+
+    fn remote_create_workspace_session(
+        &self,
+        workspace_id: &str,
+        updated_at: &str,
+    ) -> io::Result<Value> {
+        let session = self.0.create_session_in_workspace(workspace_id)?;
+        Ok(session.to_remote_json(&self.0.host_id, updated_at))
+    }
+
+    fn remote_close_session(&self, session_id: i64, updated_at: &str) -> io::Result<Option<Value>> {
+        if session_id <= 0 {
+            return Err(io::Error::new(
+                io::ErrorKind::InvalidInput,
+                "session ID must be positive",
+            ));
+        }
+        let session_id = SessionId(session_id);
+        let replacement = self.0.close_session(session_id)?;
+        self.0.publish_session_removed(session_id);
+        if let Some(session) = &replacement {
+            self.0
+                .publish_event(json!({ "type": "session.snapshot", "session": session.to_json() }));
+        }
+        Ok(replacement.map(|session| session.to_remote_json(&self.0.host_id, updated_at)))
+    }
+
+    fn remote_create_shell(&self, session_id: i64) -> io::Result<i64> {
+        let session_id = SessionId(session_id);
+        let shell = self.0.create_shell(session_id)?;
+        self.0.publish_session_snapshot(session_id)?;
+        self.0
+            .publish_shell_activity(session_id, shell.id, "started");
+        Ok(shell.id.0)
+    }
+
+    fn remote_close_shell(&self, session_id: i64, shell_id: i64) -> io::Result<()> {
+        let (session_id, shell_id) = parse_session_shell_ids(session_id, shell_id)
+            .map_err(|_| io::Error::new(io::ErrorKind::InvalidInput, "invalid shell identity"))?;
+        let closed = self.0.close_shell(session_id, shell_id)?;
+        if closed.archived_session_id.is_some() {
+            self.0.publish_session_removed(session_id);
+            if let Some(replacement) = &closed.replacement {
+                self.0.publish_event(
+                    json!({ "type": "session.snapshot", "session": replacement.to_json() }),
+                );
+            }
+        } else {
+            self.0.publish_session_snapshot(session_id)?;
+        }
+        self.0
+            .publish_shell_activity(session_id, shell_id, "exited");
+        Ok(())
+    }
+
+    fn remote_set_layout(&self, session_id: i64, layout: Value) -> io::Result<()> {
+        let session_id = SessionId(session_id);
+        let layout: SessionLayout = serde_json::from_value(layout)
+            .map_err(|_| io::Error::new(io::ErrorKind::InvalidInput, "invalid session layout"))?;
+        layout.shell_ids()?;
+        self.0.set_layout(session_id, layout)?;
+        self.0.publish_session_snapshot(session_id)
+    }
+
+    fn remote_terminal_input(
+        &self,
+        session_id: i64,
+        shell_id: i64,
+        sequence: u64,
+        data: &str,
+    ) -> io::Result<()> {
+        let (session_id, shell_id) = parse_session_shell_ids(session_id, shell_id)
+            .map_err(|_| io::Error::new(io::ErrorKind::InvalidInput, "invalid shell identity"))?;
+        self.0
+            .write_terminal_input(session_id, shell_id, sequence, data)
+    }
+
+    fn remote_terminal_resize(
+        &self,
+        session_id: i64,
+        shell_id: i64,
+        rows: u32,
+        columns: u32,
+    ) -> io::Result<()> {
+        let (session_id, shell_id) = parse_session_shell_ids(session_id, shell_id)
+            .map_err(|_| io::Error::new(io::ErrorKind::InvalidInput, "invalid shell identity"))?;
+        let size = WindowSize::new(rows, columns).ok_or_else(|| {
+            io::Error::new(
+                io::ErrorKind::InvalidInput,
+                "terminal dimensions are outside the supported range",
+            )
+        })?;
+        self.0.resize_terminal(session_id, shell_id, size)
+    }
+
+    fn publish_relay_status(&self, status: &axo_relay::RelayStatus) {
+        self.0
+            .publish_event(json!({ "type": "relay.status", "status": status }));
+    }
+}
+
 /// Local event subscribers, shared with every shell's output pump.
 #[derive(Clone, Default)]
 struct EventBus(Arc<Mutex<Vec<LocalSubscriber>>>);
@@ -1120,157 +1279,6 @@ impl SessionManager {
         manager.start_attachment_listener()?;
         manager.start_reaper();
         Ok(manager)
-    }
-
-    pub(crate) fn host_id(&self) -> &str {
-        &self.host_id
-    }
-
-    pub(crate) fn host_generation(&self) -> &str {
-        &self.host_generation
-    }
-
-    pub(crate) fn remote_session_snapshots(&self, updated_at: &str) -> io::Result<Vec<Value>> {
-        let sessions = self.list_sessions()?;
-        if sessions.len() > 256 || sessions.iter().any(|session| session.shells.len() > 256) {
-            return Err(io::Error::new(
-                io::ErrorKind::InvalidData,
-                "host session snapshot exceeds the protocol limit",
-            ));
-        }
-        Ok(sessions
-            .iter()
-            .map(|session| session.to_remote_json(&self.host_id, updated_at))
-            .collect())
-    }
-
-    pub(crate) fn subscribe_remote_events(&self) -> io::Result<String> {
-        self.subscribe(None, true)
-    }
-
-    pub(crate) fn next_remote_event(
-        &self,
-        subscription_id: &str,
-        timeout: Duration,
-    ) -> io::Result<Option<Value>> {
-        self.next_event(subscription_id, timeout)
-    }
-
-    /// Current snapshots, as local events, for resynchronizing a lagged remote stream.
-    pub(crate) fn remote_resync_events(&self) -> io::Result<Vec<Value>> {
-        Ok(self
-            .list_sessions()?
-            .iter()
-            .map(|session| json!({ "type": "session.snapshot", "session": session.to_json() }))
-            .collect())
-    }
-
-    pub(crate) fn unsubscribe_remote_events(&self, subscription_id: &str) -> io::Result<()> {
-        self.unsubscribe(subscription_id)
-    }
-
-    pub(crate) fn remote_create_session(&self, updated_at: &str) -> io::Result<Value> {
-        let session = self.create_session()?;
-        self.publish_event(json!({ "type": "session.snapshot", "session": session.to_json() }));
-        Ok(session.to_remote_json(&self.host_id, updated_at))
-    }
-
-    pub(crate) fn remote_create_workspace_session(
-        self: &Arc<Self>,
-        workspace_id: &str,
-        updated_at: &str,
-    ) -> io::Result<Value> {
-        let session = self.create_session_in_workspace(workspace_id)?;
-        Ok(session.to_remote_json(&self.host_id, updated_at))
-    }
-
-    pub(crate) fn remote_close_session(
-        self: &Arc<Self>,
-        session_id: i64,
-        updated_at: &str,
-    ) -> io::Result<Option<Value>> {
-        if session_id <= 0 {
-            return Err(io::Error::new(
-                io::ErrorKind::InvalidInput,
-                "session ID must be positive",
-            ));
-        }
-        let session_id = SessionId(session_id);
-        let replacement = self.close_session(session_id)?;
-        self.publish_session_removed(session_id);
-        if let Some(session) = &replacement {
-            self.publish_event(json!({ "type": "session.snapshot", "session": session.to_json() }));
-        }
-        Ok(replacement.map(|session| session.to_remote_json(&self.host_id, updated_at)))
-    }
-
-    pub(crate) fn remote_create_shell(&self, session_id: i64) -> io::Result<i64> {
-        let session_id = SessionId(session_id);
-        let shell = self.create_shell(session_id)?;
-        self.publish_session_snapshot(session_id)?;
-        self.publish_shell_activity(session_id, shell.id, "started");
-        Ok(shell.id.0)
-    }
-
-    pub(crate) fn remote_close_shell(
-        self: &Arc<Self>,
-        session_id: i64,
-        shell_id: i64,
-    ) -> io::Result<()> {
-        let (session_id, shell_id) = parse_session_shell_ids(session_id, shell_id)
-            .map_err(|_| io::Error::new(io::ErrorKind::InvalidInput, "invalid shell identity"))?;
-        let closed = self.close_shell(session_id, shell_id)?;
-        if closed.archived_session_id.is_some() {
-            self.publish_session_removed(session_id);
-            if let Some(replacement) = &closed.replacement {
-                self.publish_event(
-                    json!({ "type": "session.snapshot", "session": replacement.to_json() }),
-                );
-            }
-        } else {
-            self.publish_session_snapshot(session_id)?;
-        }
-        self.publish_shell_activity(session_id, shell_id, "exited");
-        Ok(())
-    }
-
-    pub(crate) fn remote_set_layout(&self, session_id: i64, layout: Value) -> io::Result<()> {
-        let session_id = SessionId(session_id);
-        let layout: SessionLayout = serde_json::from_value(layout)
-            .map_err(|_| io::Error::new(io::ErrorKind::InvalidInput, "invalid session layout"))?;
-        layout.shell_ids()?;
-        self.set_layout(session_id, layout)?;
-        self.publish_session_snapshot(session_id)
-    }
-
-    pub(crate) fn remote_terminal_input(
-        &self,
-        session_id: i64,
-        shell_id: i64,
-        sequence: u64,
-        data: &str,
-    ) -> io::Result<()> {
-        let (session_id, shell_id) = parse_session_shell_ids(session_id, shell_id)
-            .map_err(|_| io::Error::new(io::ErrorKind::InvalidInput, "invalid shell identity"))?;
-        self.write_terminal_input(session_id, shell_id, sequence, data)
-    }
-
-    pub(crate) fn remote_terminal_resize(
-        &self,
-        session_id: i64,
-        shell_id: i64,
-        rows: u32,
-        columns: u32,
-    ) -> io::Result<()> {
-        let (session_id, shell_id) = parse_session_shell_ids(session_id, shell_id)
-            .map_err(|_| io::Error::new(io::ErrorKind::InvalidInput, "invalid shell identity"))?;
-        let size = WindowSize::new(rows, columns).ok_or_else(|| {
-            io::Error::new(
-                io::ErrorKind::InvalidInput,
-                "terminal dimensions are outside the supported range",
-            )
-        })?;
-        self.resize_terminal(session_id, shell_id, size)
     }
 
     pub fn register_rpc_methods(self: &Arc<Self>, handler: &mut IoHandler) {
@@ -2038,10 +2046,6 @@ impl SessionManager {
     }
 
     /// Remote-access state changed; a catalog event so Settings never polls for it.
-    pub(crate) fn publish_relay_status(&self, status: &impl Serialize) {
-        self.publish_event(json!({ "type": "relay.status", "status": status }));
-    }
-
     fn publish_workspace_changed(&self, workspace_id: &str) {
         self.publish_event(json!({ "type": "workspace.changed", "workspaceId": workspace_id }));
     }

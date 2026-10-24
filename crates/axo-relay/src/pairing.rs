@@ -13,12 +13,12 @@ const MAX_RESPONSE_BYTES: usize = 65_536;
 const MAX_RESPONSE_HEADERS: usize = 64;
 const HTTP_TIMEOUT: Duration = Duration::from_secs(10);
 
-pub(crate) struct PairingResult {
+pub struct PairingResult {
     pub account_id: String,
     pub credential_id: String,
 }
 
-pub(crate) struct RedemptionRequest<'a> {
+pub struct RedemptionRequest<'a> {
     pub relay_url: &'a Url,
     pub code: &'a str,
     pub host_id: &'a str,
@@ -84,12 +84,12 @@ impl PairingCode {
     }
 }
 
-pub(crate) fn validate_code(raw: &str) -> io::Result<()> {
+pub fn validate_code(raw: &str) -> io::Result<()> {
     PairingCode::parse(raw).map(|_| ())
 }
 
 /// Creates a fresh host credential and stores it before any network request.
-pub(crate) fn prepare_credential(credentials: &dyn HostCredentialStore) -> io::Result<String> {
+pub fn prepare_credential(credentials: &dyn HostCredentialStore) -> io::Result<String> {
     let credential_id = create_uuid_v4()?;
     let mut secret = [0_u8; CREDENTIAL_BYTES];
     std::fs::File::open("/dev/urandom")?.read_exact(&mut secret)?;
@@ -100,7 +100,7 @@ pub(crate) fn prepare_credential(credentials: &dyn HostCredentialStore) -> io::R
 }
 
 /// Redeems a one-time code using the Keychain credential reserved for this attempt.
-pub(crate) fn redeem(
+pub fn redeem(
     request: RedemptionRequest<'_>,
     credentials: &dyn HostCredentialStore,
 ) -> io::Result<PairingResult> {
@@ -391,7 +391,7 @@ fn create_uuid_v4() -> io::Result<String> {
     ))
 }
 
-pub(crate) fn encode_base64url(bytes: &[u8]) -> String {
+pub fn encode_base64url(bytes: &[u8]) -> String {
     const ALPHABET: &[u8; 64] = b"ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789-_";
     let mut encoded = String::with_capacity((bytes.len() * 4).div_ceil(3));
     for chunk in bytes.chunks(3) {
