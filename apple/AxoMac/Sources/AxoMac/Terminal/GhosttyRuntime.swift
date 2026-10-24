@@ -284,9 +284,23 @@ final class GhosttyRuntime {
     ghostty_surface_free(surface)
   }
 
-  func tick() {
+  /// How long libghostty may wait for the main thread to tick before it is reported.
+  static let tickDelayReportThreshold: Duration = .milliseconds(50)
+
+  /// Runs libghostty's main-thread work (surface messages, frame presentation). `requestedAt`
+  /// is when libghostty asked for it; the wait is how long a busy main thread held it back.
+  func tick(requestedAt: ContinuousClock.Instant? = nil) {
     guard let app else { return }
+    let started = ContinuousClock.now
+    let state = AxoTrace.signposter.beginInterval("ghostty.tick")
     ghostty_app_tick(app)
+    AxoTrace.signposter.endInterval("ghostty.tick", state)
+    guard let requestedAt else { return }
+    let waited = started - requestedAt
+    if waited > Self.tickDelayReportThreshold {
+      AxoTrace.latency.notice(
+        "event=ghostty.tick_delayed waited_ms=\(AxoTrace.milliseconds(waited), privacy: .public) tick_ms=\(AxoTrace.elapsed(since: started), privacy: .public)")
+    }
   }
 
   func updateFocus(_ focused: Bool) {

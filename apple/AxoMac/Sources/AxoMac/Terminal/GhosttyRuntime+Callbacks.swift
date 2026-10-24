@@ -61,8 +61,9 @@ extension GhosttyRuntime {
   static func wakeup(_ userdata: UnsafeMutableRawPointer?) {
     guard let userdata else { return }
     let runtime = Unmanaged<GhosttyRuntime>.fromOpaque(userdata).takeUnretainedValue()
+    let requested = ContinuousClock.now
     DispatchQueue.main.async {
-      MainActor.assumeIsolated { runtime.tick() }
+      MainActor.assumeIsolated { runtime.tick(requestedAt: requested) }
     }
   }
 }

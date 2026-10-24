@@ -12,6 +12,7 @@ final class AxoWorkbench {
   let remoteAccess: RemoteAccessModel
   private let catalogSync: TerminalCatalogSync?
   private var observations: [ObservationLoop] = []
+  private let stallMonitor = MainThreadStallMonitor()
   private var isConnected = false
 
   /// - Parameters:
@@ -35,6 +36,7 @@ final class AxoWorkbench {
         onUnreachable: daemonUnreachable)
     }
 
+    stallMonitor.start()
     observations = [
       ObservationLoop.observe(daemonIsRunning) { [weak self] in self?.setConnected($0) },
       // Surfaces track daemon truth, not view lifetime.

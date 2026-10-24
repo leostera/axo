@@ -6,7 +6,22 @@ import Carbon
 extension GhosttySurfaceNSView {
   // Keep native key translation and IME handling aligned with Ghostty's AppKit surface bridge
   // at 81598385d608dda4946093d6d6a234d204a2f225; Axo keeps its own command-key routing below.
+  /// How long a key event may wait for the main thread before it is reported.
+  static let keyDeliveryReportThreshold: TimeInterval = 0.05
+
+  /// Logs key events the main thread delivered late: typing lag that happened before Axo or
+  /// libghostty saw the key.
+  private static func reportDelayedDelivery(of event: NSEvent) {
+    let waited = ProcessInfo.processInfo.systemUptime - event.timestamp
+    guard waited > keyDeliveryReportThreshold else { return }
+    AxoTrace.latency.notice(
+      "event=key.delivery_delayed waited_ms=\(String(format: "%.1f", waited * 1_000), privacy: .public)")
+  }
+
   override func keyDown(with event: NSEvent) {
+    let signpost = AxoTrace.signposter.beginInterval("key.down")
+    defer { AxoTrace.signposter.endInterval("key.down", signpost) }
+    Self.reportDelayedDelivery(of: event)
     lastPerformKeyEvent = nil
     guard surface != nil else {
       interpretKeyEvents([event])
