@@ -126,7 +126,7 @@ final class GhosttyRuntime: ObservableObject {
     let effects = TerminalAttentionPolicy.bellEffects(attentionConfig.bellFeatures)
     if effects.beep { NSSound.beep() }
     guard effects.requestAttention, !view.isFocusedTerminal else { return }
-    attentionShellIDs.insert(view.shellID)
+    if !attentionShellIDs.contains(view.shellID) { attentionShellIDs.insert(view.shellID) }
     NSApp.requestUserAttention(.informationalRequest)
   }
 
@@ -392,10 +392,11 @@ final class GhosttyRuntime: ObservableObject {
             userdata: userdata, confirm: confirm, state: state, request: request)
         }
       },
-      write_clipboard_cb: { _, location, content, count, confirm in
+      write_clipboard_cb: { userdata, location, content, count, confirm in
         guard Thread.isMainThread else { return }
         MainActor.assumeIsolated {
           GhosttyRuntime.writeClipboard(
+            view: GhosttyRuntime.clipboardView(userdata),
             location: location, content: content, count: count, confirm: confirm)
         }
       },

@@ -91,22 +91,24 @@ extension GhosttyRuntime {
       }
       text = decodedText
     }
-    guard TerminalClipboardConsent.requestAccess(for: request, text: text) else {
-      ghostty_surface_deny_clipboard_request(surface, state)
-      return
+    // The payload is borrowed for this call only; the decision arrives later, so complete with
+    // owned copies of exactly what the user reviewed (never re-reading the clipboard).
+    let approvedText: String? = payload.contents_len == 0 ? nil : text
+    let available = Array(repeating: TerminalClipboardPolicy.textMIMEType, count: payload.available_len)
+    TerminalClipboardConsent.requestAccess(for: request, text: text, in: view.window) { allowed in
+      // The surface may have closed while the sheet was up; its request state died with it.
+      guard let surface = view.surface else { return }
+      guard allowed else {
+        ghostty_surface_deny_clipboard_request(surface, state)
+        return
+      }
+      completeClipboardRequest(
+        surface: surface, state: state, text: approvedText, available: available, confirmed: true)
     }
-    var approved = ghostty_clipboard_complete_s(
-      contents: payload.contents,
-      contents_len: payload.contents_len,
-      available: payload.available,
-      available_len: payload.available_len,
-      confirmed: true,
-      remember: false
-    )
-    ghostty_surface_complete_clipboard_request(surface, &approved, state)
   }
 
   static func writeClipboard(
+    view: GhosttySurfaceNSView?,
     location: ghostty_clipboard_e,
     content: UnsafePointer<ghostty_clipboard_content_s>?,
     count: Int,
@@ -130,12 +132,18 @@ extension GhosttyRuntime {
       contents.append(TerminalClipboardContent(mimeType: String(cString: mime), data: data))
     }
     guard let text = TerminalClipboardPolicy.singlePlainText(from: contents) else { return }
-    if confirm && !TerminalClipboardConsent.requestAccess(
-      for: GHOSTTY_CLIPBOARD_REQUEST_OSC_52_WRITE,
-      text: text
-    ) { return }
-    pasteboard.clearContents()
-    pasteboard.setString(text, forType: .string)
+    guard confirm else {
+      pasteboard.clearContents()
+      pasteboard.setString(text, forType: .string)
+      return
+    }
+    TerminalClipboardConsent.requestAccess(
+      for: GHOSTTY_CLIPBOARD_REQUEST_OSC_52_WRITE, text: text, in: view?.window
+    ) { allowed in
+      guard allowed else { return }
+      pasteboard.clearContents()
+      pasteboard.setString(text, forType: .string)
+    }
   }
 
   static func clipboardView(_ userdata: UnsafeMutableRawPointer?) -> GhosttySurfaceNSView? {
@@ -147,7 +155,8 @@ extension GhosttyRuntime {
     surface: ghostty_surface_t,
     state: UnsafeMutableRawPointer?,
     text: String?,
-    available: [String]
+    available: [String],
+    confirmed: Bool = false
   ) {
     let textData = text.map { Data($0.utf8) }
     let mime = textData == nil ? nil : strdup(TerminalClipboardPolicy.textMIMEType)
@@ -175,7 +184,7 @@ extension GhosttyRuntime {
           contents_len: textData == nil ? 0 : 1,
           available: availableBuffer.baseAddress,
           available_len: availableBuffer.count,
-          confirmed: false,
+          confirmed: confirmed,
           remember: false
         )
         ghostty_surface_complete_clipboard_request(surface, &completion, state)

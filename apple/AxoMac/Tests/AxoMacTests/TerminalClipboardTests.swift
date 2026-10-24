@@ -12,6 +12,24 @@ final class TerminalClipboardTests: XCTestCase {
     XCTAssertFalse(TerminalClipboardConsent.isApproved(.cancel))
   }
 
+  @MainActor
+  func testConsentWithoutWindowIsDeniedImmediately() {
+    var decision: Bool?
+    TerminalClipboardConsent.requestAccess(
+      for: GHOSTTY_CLIPBOARD_REQUEST_PASTE, text: "rm -rf ~", in: nil
+    ) { decision = $0 }
+    XCTAssertEqual(decision, false)
+  }
+
+  func testConsentAlertDefaultsToDenyAndRejectsUnknownRequests() throws {
+    let alert = try XCTUnwrap(
+      TerminalClipboardConsent.makeAlert(for: GHOSTTY_CLIPBOARD_REQUEST_PASTE, text: "x"))
+    XCTAssertEqual(alert.buttons.map(\.title), ["Don't Allow", "Allow"])
+    XCTAssertNotNil(alert.accessoryView, "users must see the exact text before allowing it")
+    XCTAssertNil(
+      TerminalClipboardConsent.makeAlert(for: ghostty_clipboard_request_e(rawValue: 999), text: ""))
+  }
+
   func testClipboardWritesRequireExactlyOneValidPlainTextRepresentation() {
     XCTAssertNil(TerminalClipboardPolicy.singlePlainText(from: []))
     XCTAssertEqual(

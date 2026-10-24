@@ -51,6 +51,11 @@ public final class DaemonController: ObservableObject {
 
   public init() {}
 
+  /// Publishes only real transitions; observers (menu bar, workbench) re-render on each publish.
+  private func setStatus(_ newStatus: Status) {
+    if status != newStatus { status = newStatus }
+  }
+
   public static var appBuildNumberLabel: String {
     BuildNumber(bundleValue: Bundle.main.infoDictionary?["CFBundleVersion"])?.description
       ?? "Unknown"
@@ -88,14 +93,14 @@ public final class DaemonController: ObservableObject {
   }
 
   private func start() async {
-    status = .starting
+    setStatus(.starting)
     do {
       guard try ensureRegistered() else { return }
       try await checkBuildAndRestartIfNeeded()
     } catch {
       logger.error(
         "event=daemon.start_failed reason=\(error.localizedDescription, privacy: .private)")
-      status = .failed(error.localizedDescription)
+      setStatus(.failed(error.localizedDescription))
     }
   }
 
@@ -113,12 +118,12 @@ public final class DaemonController: ObservableObject {
       UserDefaults.standard.set(true, forKey: Self.registrationReceiptKey)
       return true
     case .approvalRequired:
-      status = .requiresApproval
+      setStatus(.requiresApproval)
       return false
     case .missingService:
       throw DaemonControllerError.missingServiceDefinition
     case .userDisabled:
-      status = .disabled
+      setStatus(.disabled)
       return false
     case .registerOnce:
       logger.info("event=daemon.registration_started")
@@ -127,7 +132,7 @@ public final class DaemonController: ObservableObject {
         try service.register()
       } catch {
         if service.status == .requiresApproval {
-          status = .requiresApproval
+          setStatus(.requiresApproval)
           return false
         }
         throw error
@@ -140,14 +145,14 @@ public final class DaemonController: ObservableObject {
   }
 
   private func registerFromExplicitUserAction() async {
-    status = .starting
+    setStatus(.starting)
     do {
       switch service.status {
       case .enabled:
         UserDefaults.standard.set(true, forKey: Self.registrationReceiptKey)
         try await checkBuildAndRestartIfNeeded()
       case .requiresApproval:
-        status = .requiresApproval
+        setStatus(.requiresApproval)
       case .notFound:
         throw DaemonControllerError.missingServiceDefinition
       case .notRegistered:
@@ -156,7 +161,7 @@ public final class DaemonController: ObservableObject {
           try service.register()
         } catch {
           if service.status == .requiresApproval {
-            status = .requiresApproval
+            setStatus(.requiresApproval)
             return
           }
           throw error
@@ -167,7 +172,7 @@ public final class DaemonController: ObservableObject {
         throw DaemonControllerError.unknownServiceStatus
       }
     } catch {
-      status = .failed(error.localizedDescription)
+      setStatus(.failed(error.localizedDescription))
     }
   }
 
@@ -177,11 +182,11 @@ public final class DaemonController: ObservableObject {
       UserDefaults.standard.set(true, forKey: Self.registrationReceiptKey)
       return true
     case .requiresApproval:
-      status = .requiresApproval
+      setStatus(.requiresApproval)
       return false
     case .notRegistered:
       if UserDefaults.standard.bool(forKey: Self.registrationReceiptKey) {
-        status = .disabled
+        setStatus(.disabled)
         return false
       }
       throw DaemonControllerError.registrationDidNotComplete
@@ -202,27 +207,27 @@ public final class DaemonController: ObservableObject {
       daemon = try await waitForDaemon(at: socketPath, expectedBuild: nil)
     } catch DaemonControllerError.startupTimedOut {
       logger.warning("event=daemon.health_check_timed_out action=restart")
-      status = .updating
+      setStatus(.updating)
       guard
         let restartedDaemon =
           try await restartDaemon(at: socketPath, expectedBuild: appBuildNumber)
       else { return }
-      status = .running(version: restartedDaemon.version ?? "Unknown", buildNumber: appBuildNumber)
+      setStatus(.running(version: restartedDaemon.version ?? "Unknown", buildNumber: appBuildNumber))
       return
     }
 
     logger.info("event=daemon.health_check_succeeded build=\(daemon.buildNumber, privacy: .public)")
     guard daemon.buildNumber != appBuildNumber.value else {
-      status = .running(version: daemon.version ?? "Unknown", buildNumber: appBuildNumber)
+      setStatus(.running(version: daemon.version ?? "Unknown", buildNumber: appBuildNumber))
       return
     }
 
-    status = .updating
+    setStatus(.updating)
     guard
       let restartedDaemon =
         try await restartDaemon(at: socketPath, expectedBuild: appBuildNumber)
     else { return }
-    status = .running(version: restartedDaemon.version ?? "Unknown", buildNumber: appBuildNumber)
+    setStatus(.running(version: restartedDaemon.version ?? "Unknown", buildNumber: appBuildNumber))
   }
 
   private func restartDaemon(
@@ -236,7 +241,7 @@ public final class DaemonController: ObservableObject {
     } catch {
       if service.status == .requiresApproval {
         logger.warning("event=daemon.restart_requires_approval")
-        status = .requiresApproval
+        setStatus(.requiresApproval)
         return nil
       }
       throw error

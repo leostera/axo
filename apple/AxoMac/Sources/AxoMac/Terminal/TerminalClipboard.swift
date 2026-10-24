@@ -45,11 +45,30 @@ enum TerminalClipboardConsent {
     response == .alertSecondButtonReturn
   }
 
+  /// Asks the user, as a sheet on `window`, whether to allow a clipboard `request`. Never blocks:
+  /// `completion` runs once with the decision. Without a window there is nobody to ask, so the
+  /// request is denied.
+  @MainActor
   static func requestAccess(
     for request: ghostty_clipboard_request_e,
-    text: String
-  ) -> Bool {
-    guard Thread.isMainThread else { return false }
+    text: String,
+    in window: NSWindow?,
+    completion: @escaping @MainActor (Bool) -> Void
+  ) {
+    guard let window, let alert = makeAlert(for: request, text: text) else {
+      completion(false)
+      return
+    }
+    // Ghostty may invoke clipboard callbacks with the renderer mutex held; present on the next
+    // main-loop turn so AppKit cannot re-enter a render callback before it is released.
+    DispatchQueue.main.async {
+      alert.beginSheetModal(for: window) { response in
+        MainActor.assumeIsolated { completion(isApproved(response)) }
+      }
+    }
+  }
+
+  static func makeAlert(for request: ghostty_clipboard_request_e, text: String) -> NSAlert? {
     let alert = NSAlert()
     alert.alertStyle = .warning
     alert.addButton(withTitle: "Don't Allow")
@@ -75,13 +94,13 @@ enum TerminalClipboardConsent {
       alert.messageText = "Allow Terminal to Inspect Clipboard Types?"
       alert.informativeText = "A program in this terminal wants to know whether plain text is available on the clipboard."
     default:
-      return false
+      return nil
     }
 
     if request != GHOSTTY_CLIPBOARD_REQUEST_LIST {
       alert.accessoryView = textPreview(text)
     }
-    return isApproved(alert.runModal())
+    return alert
   }
 
   private static func textPreview(_ text: String) -> NSView {
