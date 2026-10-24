@@ -3,7 +3,7 @@ import Foundation
 
 @MainActor
 final class SleepPreventionController: ObservableObject {
-  static let preferenceKey = "preventSystemSleep"
+  static let preferenceKey = AxoPreferenceKey.preventSystemSleep
 
   @Published private(set) var isEnabled: Bool
 

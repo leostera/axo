@@ -86,7 +86,7 @@ struct RemoteAccessSettingsView: View {
     .onAppear {
       applyPairingCode(pairingCode)
     }
-    .onChange(of: pairingCode) { code in
+    .onChange(of: pairingCode) { _, code in
       applyPairingCode(code)
     }
     .task(id: daemon.status) {

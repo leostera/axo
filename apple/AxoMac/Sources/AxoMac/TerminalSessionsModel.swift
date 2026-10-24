@@ -55,8 +55,8 @@ final class TerminalSessionsModel: ObservableObject {
 
   let helperURL: URL
 
-  private static let selectedSessionPreferenceKey = "terminalSelectedSession.v1"
-  private static let automaticPiRestartPreferenceKey = "agent.autoRestartUnavailablePi.v1"
+  private static let selectedSessionPreferenceKey = AxoPreferenceKey.selectedSession
+  private static let automaticPiRestartPreferenceKey = AxoPreferenceKey.automaticPiRestart
 
   private let socketPath: UnixSocketPath?
   private let socketPathError: String?

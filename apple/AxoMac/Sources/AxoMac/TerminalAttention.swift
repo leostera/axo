@@ -120,14 +120,15 @@ enum TerminalAttentionPolicy {
 enum TerminalNotifications {
   static func post(title: String, body: String) {
     // Notification content comes from terminal output; never log it.
-    let center = UNUserNotificationCenter.current()
-    center.requestAuthorization(options: [.alert, .sound]) { granted, _ in
-      guard granted else { return }
+    Task {
+      let center = UNUserNotificationCenter.current()
+      guard (try? await center.requestAuthorization(options: [.alert, .sound])) == true else { return }
       let content = UNMutableNotificationContent()
       content.title = title
       content.body = body
       content.sound = .default
-      center.add(UNNotificationRequest(identifier: UUID().uuidString, content: content, trigger: nil))
+      try? await center.add(
+        UNNotificationRequest(identifier: UUID().uuidString, content: content, trigger: nil))
     }
   }
 }

@@ -17,8 +17,8 @@ struct AxoApp: App {
   @State private var settingsSection = SettingsSection.general
   @State private var isPresentingWorkspaceCreation = false
   private let isUITestApp: Bool
-  @AppStorage("appearance.theme") private var appearanceTheme: AppearanceTheme = .system
-  @AppStorage("terminalSidebarIsCollapsed") private var isSidebarCollapsed = true
+  @AppStorage(AxoPreferenceKey.appearanceTheme) private var appearanceTheme: AppearanceTheme = .system
+  @AppStorage(AxoPreferenceKey.sidebarIsCollapsed) private var isSidebarCollapsed = false
 
   init() {
     let daemon = DaemonController()
@@ -333,7 +333,7 @@ private struct AxoMenuBarLabel: View {
           openPairingSettings()
         }
       }
-      .onChange(of: pairingLink.routeRevision) { _ in
+      .onChange(of: pairingLink.routeRevision) {
         openPairingSettings()
       }
   }
@@ -378,8 +378,6 @@ private struct AxoMenu: View {
     }
     .keyboardShortcut(",")
 
-    Button("Check for Updates…", action: showUpdateNotice)
-
     Divider()
 
     Button("Quit Axo") {
@@ -389,14 +387,6 @@ private struct AxoMenu: View {
     .keyboardShortcut("q")
   }
 
-  private func showUpdateNotice() {
-    let alert = NSAlert()
-    alert.messageText = "Axo updates are not configured yet"
-    alert.informativeText = "The update action will be connected when Axo has a release channel."
-    alert.alertStyle = .informational
-    alert.addButton(withTitle: "OK")
-    alert.runModal()
-  }
 }
 
 private struct AxoApplicationCommands: Commands {

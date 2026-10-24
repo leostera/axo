@@ -10,7 +10,7 @@ struct TerminalWorkbenchView: View {
   @Binding var isPresentingWorkspaceCreation: Bool
   var daemonIsRunningOverride: Bool? = nil
   @EnvironmentObject private var ghostty: GhosttyRuntime
-  @AppStorage("terminalSidebarIsCollapsed.v2") private var isSidebarCollapsed = false
+  @AppStorage(AxoPreferenceKey.sidebarIsCollapsed) private var isSidebarCollapsed = false
   @State private var collapsedWorkspaceIDs = Set<String>()
   @State private var renameTarget: SidebarRenameTarget?
   @State private var renameDraft = ""

@@ -27,24 +27,15 @@ swift_library(
 
 swift_test(
     name = "AxoMacTests",
-    srcs = [
-        "Tests/AxoMacTests/GhosttyResourceLocatorTests.swift",
-        "Tests/AxoMacTests/PairingLinkRouterTests.swift",
-        "Tests/AxoMacTests/AgentAutoRestartPreferenceTests.swift",
-        "Tests/AxoMacTests/SleepPreventionControllerTests.swift",
-        "Tests/AxoMacTests/TerminalKeyEquivalentPolicyTests.swift",
-        "Tests/AxoMacTests/TerminalTextInputTests.swift",
-        "Tests/AxoMacTests/TerminalPointerInputTests.swift",
-        "Tests/AxoMacTests/TerminalClipboardTests.swift",
-        "Tests/AxoMacTests/TerminalAccessibilityTests.swift",
-        "Tests/AxoMacTests/TerminalLayoutTests.swift",
-        "Tests/AxoMacTests/TerminalScrollSensitivityTests.swift",
-        "Tests/AxoMacTests/UntrustedURLTests.swift",
-        "Tests/AxoMacTests/TerminalSurfaceStatusTests.swift",
-        "Tests/AxoMacTests/TerminalRenderFeedbackTests.swift",
-        "Tests/AxoMacTests/TerminalSurfaceViewportTests.swift",
-        "Tests/AxoMacTests/TerminalSplitE2ETests.swift",
-    ],
+    srcs = glob(
+        ["Tests/AxoMacTests/*.swift"],
+        # These need a live daemon, packaged app or UI runner; see their own targets.
+        exclude = [
+            "Tests/AxoMacTests/AxoVisualUITests.swift",
+            "Tests/AxoMacTests/TerminalAppE2ETests.swift",
+            "Tests/AxoMacTests/TerminalWorkbenchE2ETests.swift",
+        ],
+    ),
     copts = ["-swift-version", "5"],
     deps = [":AxoMac"],
 )
@@ -138,7 +129,7 @@ macos_application(
     bundle_name = "Axo",
     executable_name = "Axo",
     infoplists = ["Info.plist"],
-    minimum_os_version = "13.0",
+    minimum_os_version = "14.0",
     version = ":build_version",
     additional_contents = {
         ":launch_agent_plist": "Library/LaunchAgents",
@@ -155,7 +146,7 @@ macos_application(
     bundle_name = "Axo",
     executable_name = "Axo",
     infoplists = ["AxoUITest-Info.plist"],
-    minimum_os_version = "13.0",
+    minimum_os_version = "14.0",
     version = ":build_version",
     additional_contents = {
         ":launch_agent_plist": "Library/LaunchAgents",

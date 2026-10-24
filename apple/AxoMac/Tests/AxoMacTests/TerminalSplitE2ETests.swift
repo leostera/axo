@@ -392,7 +392,7 @@ private struct PaneFrameProbe: View {
     GeometryReader { geometry in
       Color.clear
         .onAppear { frames.record(name, frame: geometry.frame(in: .named(space))) }
-        .onChange(of: geometry.frame(in: .named(space))) { frame in
+        .onChange(of: geometry.frame(in: .named(space))) { _, frame in
           frames.record(name, frame: frame)
         }
     }
