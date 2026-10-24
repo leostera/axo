@@ -116,7 +116,8 @@ pub fn spawn(mut command: Command, size: WindowSize, inherit: &[RawFd]) -> io::R
             output,
         }),
         Err(error) => {
-            stop(&mut child);
+            // It never started serving; no reason to wait long.
+            stop(&mut child, SHELL_STOP_GRACE);
             Err(error)
         }
     }
@@ -226,27 +227,44 @@ fn device_path(slave_fd: RawFd) -> io::Result<String> {
         .map_err(|_| io::Error::new(io::ErrorKind::InvalidData, "PTY path is not UTF-8"))
 }
 
-pub fn stop(child: &mut Child) {
-    stop_all(&mut [child]);
+pub fn stop(child: &mut Child, grace: Duration) {
+    stop_all(vec![Stopping { child, grace }]);
 }
 
-/// How long stopped shells get to exit after SIGHUP/SIGTERM before SIGKILL.
-pub const STOP_GRACE: Duration = Duration::from_millis(500);
+/// How long a stopped shell gets to exit after SIGHUP/SIGTERM before SIGKILL.
+pub const SHELL_STOP_GRACE: Duration = Duration::from_millis(500);
 
 /// How long to wait for the kernel to reap after SIGKILL before reporting a stuck process.
 pub const KILL_WAIT: Duration = Duration::from_secs(2);
 
-/// Stops every child with one shared timeout policy: all are signalled together and waited on
-/// together, so stopping N shells takes one grace period, not N.
+/// A child to stop, and how long it may take to exit before it is killed.
+pub struct Stopping<'a> {
+    pub child: &'a mut Child,
+    pub grace: Duration,
+}
+
+/// Stops every child at once: all are signalled together and waited on together, so stopping
+/// N children takes the longest grace among them, not the sum. Each is killed when its own
+/// grace runs out.
 ///
 /// SIGHUP is what a closing terminal sends: interactive shells ignore SIGTERM but exit on SIGHUP
 /// and forward it to their jobs. SIGTERM covers non-shell agents. Survivors get SIGKILL.
-pub fn stop_all(children: &mut [&mut Child]) {
-    let mut running: Vec<&mut Child> = Vec::with_capacity(children.len());
-    for child in children.iter_mut() {
+pub fn stop_all(children: Vec<Stopping<'_>>) {
+    let started = Instant::now();
+    let mut pending: Vec<Pending<'_>> = Vec::with_capacity(children.len());
+    for Stopping { child, grace } in children {
         match child.try_wait() {
             Ok(Some(_)) => {}
-            Ok(None) => running.push(child),
+            Ok(None) => {
+                log::info!("event=session.shell_stop_started pid={}", child.id());
+                signal(child, libc::SIGHUP);
+                signal(child, libc::SIGTERM);
+                pending.push(Pending {
+                    child,
+                    deadline: started + grace,
+                    killed: false,
+                });
+            }
             Err(error) => log::error!(
                 "event=session.shell_stop_unconfirmed pid={} phase=before_signal error_kind={:?}",
                 child.id(),
@@ -254,47 +272,56 @@ pub fn stop_all(children: &mut [&mut Child]) {
             ),
         }
     }
-    for child in &running {
-        log::info!("event=session.shell_stop_started pid={}", child.id());
-        signal(child, libc::SIGHUP);
-        signal(child, libc::SIGTERM);
-    }
-    let survivors = wait_for_exits(running, STOP_GRACE, "term_wait");
-    for child in &survivors {
-        signal(child, libc::SIGKILL);
-    }
-    for child in wait_for_exits(survivors, KILL_WAIT, "kill_wait") {
-        log::error!("event=session.shell_stop_timed_out pid={}", child.id());
+    while !pending.is_empty() {
+        let now = Instant::now();
+        pending.retain_mut(|stopping| stopping.advance(now));
+        if !pending.is_empty() {
+            thread::sleep(Duration::from_millis(10));
+        }
     }
 }
 
-/// Waits until `timeout` for the children to exit; returns the ones still running.
-fn wait_for_exits<'a>(
-    mut running: Vec<&'a mut Child>,
-    timeout: Duration,
-    phase: &str,
-) -> Vec<&'a mut Child> {
-    let deadline = Instant::now() + timeout;
-    loop {
-        running.retain_mut(|child| match child.try_wait() {
+/// One child on its way out: terminated until `deadline`, then killed until a new deadline.
+struct Pending<'a> {
+    child: &'a mut Child,
+    deadline: Instant,
+    killed: bool,
+}
+
+impl Pending<'_> {
+    /// Returns whether the child still needs waiting on.
+    fn advance(&mut self, now: Instant) -> bool {
+        let phase = if self.killed {
+            "kill_wait"
+        } else {
+            "term_wait"
+        };
+        match self.child.try_wait() {
             Ok(Some(_)) => {
-                log::info!("event=session.shell_stopped pid={}", child.id());
-                false
+                log::info!("event=session.shell_stopped pid={}", self.child.id());
+                return false;
             }
-            Ok(None) => true,
+            Ok(None) => {}
             Err(error) => {
                 log::error!(
                     "event=session.shell_stop_unconfirmed pid={} phase={phase} error_kind={:?}",
-                    child.id(),
+                    self.child.id(),
                     error.kind()
                 );
-                false
+                return false;
             }
-        });
-        if running.is_empty() || Instant::now() >= deadline {
-            return running;
         }
-        thread::sleep(Duration::from_millis(10));
+        if now < self.deadline {
+            return true;
+        }
+        if self.killed {
+            log::error!("event=session.shell_stop_timed_out pid={}", self.child.id());
+            return false;
+        }
+        signal(self.child, libc::SIGKILL);
+        self.killed = true;
+        self.deadline = now + KILL_WAIT;
+        true
     }
 }
 
@@ -373,10 +400,10 @@ mod tests {
         // Interactive shells ignore SIGTERM; a terminal closing sends SIGHUP.
         let mut child = spawn_group_leader("trap '' TERM; while :; do sleep 1; done");
         let started = Instant::now();
-        stop(&mut child);
+        stop(&mut child, SHELL_STOP_GRACE);
         assert!(child.try_wait().unwrap().is_some());
         assert!(
-            started.elapsed() < STOP_GRACE,
+            started.elapsed() < SHELL_STOP_GRACE,
             "took {:?}",
             started.elapsed()
         );
@@ -388,16 +415,67 @@ mod tests {
             .map(|_| spawn_group_leader("trap '' HUP TERM; while :; do sleep 1; done"))
             .collect();
         let started = Instant::now();
-        let mut refs: Vec<&mut Child> = children.iter_mut().collect();
-        stop_all(&mut refs);
+        stop_all(
+            children
+                .iter_mut()
+                .map(|child| Stopping {
+                    child,
+                    grace: SHELL_STOP_GRACE,
+                })
+                .collect(),
+        );
         let elapsed = started.elapsed();
         for child in &mut children {
             assert!(child.try_wait().unwrap().is_some());
         }
         // Sequential stops would take 6 × 500 ms.
         assert!(
-            elapsed >= STOP_GRACE && elapsed < STOP_GRACE * 2,
+            elapsed >= SHELL_STOP_GRACE && elapsed < SHELL_STOP_GRACE * 2,
             "took {elapsed:?}"
+        );
+    }
+
+    #[test]
+    fn each_child_is_killed_when_its_own_grace_runs_out() {
+        let short = Duration::from_millis(200);
+        let long = Duration::from_millis(1_000);
+        let mut stubborn = spawn_group_leader("trap '' HUP TERM; while :; do sleep 1; done");
+        // Exits on SIGTERM only after cleaning up for a while, like Pi saving its state. It
+        // reports when its trap is installed, so the signal cannot beat it under load.
+        let ready = std::env::temp_dir().join(format!("axo-stop-ready-{}", std::process::id()));
+        let _ = std::fs::remove_file(&ready);
+        let mut slow = spawn_group_leader(&format!(
+            "trap 'sleep 0.5; exit 0' HUP TERM; : > '{}'; while :; do sleep 0.05; done",
+            ready.display()
+        ));
+        let deadline = Instant::now() + Duration::from_secs(5);
+        while !ready.exists() {
+            assert!(
+                Instant::now() < deadline,
+                "the slow child never installed its trap"
+            );
+            thread::sleep(Duration::from_millis(10));
+        }
+        let _ = std::fs::remove_file(&ready);
+        let started = Instant::now();
+        stop_all(vec![
+            Stopping {
+                child: &mut stubborn,
+                grace: short,
+            },
+            Stopping {
+                child: &mut slow,
+                grace: long,
+            },
+        ]);
+        let elapsed = started.elapsed();
+        assert!(elapsed < long, "took {elapsed:?}");
+        assert!(stubborn.try_wait().unwrap().is_some());
+        // Past the stubborn child's grace, yet not killed: it had its own, longer one.
+        assert_eq!(
+            slow.try_wait().unwrap().unwrap().code(),
+            Some(0),
+            "the slow child finished cleaning up"
         );
     }
 
@@ -437,6 +515,6 @@ mod tests {
             String::from_utf8_lossy(&seen)
         );
         let mut child = process.child;
-        stop(&mut child);
+        stop(&mut child, SHELL_STOP_GRACE);
     }
 }

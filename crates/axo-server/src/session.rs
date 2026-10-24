@@ -113,6 +113,16 @@ struct RunningShell {
     pi_bridge_token: Option<String>,
 }
 
+impl RunningShell {
+    /// How long this pane's process gets to exit when stopped, before SIGKILL.
+    fn stop_grace(&self) -> Duration {
+        match self.role {
+            PaneRole::Terminal => process::SHELL_STOP_GRACE,
+            PaneRole::Pi => axo_pi::STOP_GRACE,
+        }
+    }
+}
+
 impl Drop for RunningShell {
     fn drop(&mut self) {
         // Removing a shell from the catalog ends its output stream even if a stray process
@@ -2173,7 +2183,8 @@ impl SessionManager {
         if let Some(mut cancelled) = pending {
             // A close/shutdown may win during exec. Keep cleanup outside the
             // catalog lock and retain the writer lock until the child exits.
-            process::stop(&mut cancelled.child);
+            let grace = cancelled.stop_grace();
+            process::stop(&mut cancelled.child, grace);
         }
         result
     }
@@ -2433,9 +2444,15 @@ impl SessionManager {
             .map(|mut state| std::mem::take(&mut state.running))
             .unwrap_or_default();
         let mut shells: Vec<RunningShell> = running.into_values().collect();
-        let mut children: Vec<&mut Child> =
-            shells.iter_mut().map(|shell| &mut shell.child).collect();
-        process::stop_all(&mut children);
+        process::stop_all(
+            shells
+                .iter_mut()
+                .map(|shell| process::Stopping {
+                    grace: shell.stop_grace(),
+                    child: &mut shell.child,
+                })
+                .collect(),
+        );
     }
 
     fn pi_runtime_is_current(&self, binding: PiRuntimeBinding) -> bool {
@@ -4408,7 +4425,8 @@ struct ShellCleanup(RunningShell);
 
 impl Drop for ShellCleanup {
     fn drop(&mut self) {
-        process::stop(&mut self.0.child);
+        let grace = self.0.stop_grace();
+        process::stop(&mut self.0.child, grace);
     }
 }
 
@@ -4928,7 +4946,7 @@ mod tests {
 
     impl Drop for RunningShellGuard {
         fn drop(&mut self) {
-            process::stop(&mut self.0.child);
+            process::stop(&mut self.0.child, process::SHELL_STOP_GRACE);
         }
     }
 
@@ -5663,7 +5681,7 @@ mod tests {
             .unwrap()
             .install_running(shell_id, replacement)
             .unwrap();
-        process::stop(&mut old.child);
+        process::stop(&mut old.child, process::SHELL_STOP_GRACE);
 
         manager.set_pi_connection(binding, true).unwrap();
         assert!(
@@ -5929,7 +5947,7 @@ mod tests {
             WriterLock::acquire(&file).unwrap_err().kind(),
             io::ErrorKind::WouldBlock
         );
-        process::stop(&mut child.0.child);
+        process::stop(&mut child.0.child, process::SHELL_STOP_GRACE);
         let recovered = WriterLock::acquire(&file).unwrap();
         assert!(unrelated.0.try_wait().unwrap().is_none());
         assert_eq!(fs::read(&file).unwrap(), b"preserved history");
@@ -6877,7 +6895,7 @@ mod tests {
             b"AXO_PTY_READY",
             Duration::from_secs(3)
         ));
-        process::stop(&mut session.child);
+        process::stop(&mut session.child, process::SHELL_STOP_GRACE);
     }
 
     fn read_until(output: &OutputSubscriber, needle: &[u8], timeout: Duration) -> bool {

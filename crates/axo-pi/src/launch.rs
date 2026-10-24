@@ -5,10 +5,16 @@ use std::io;
 use std::os::fd::AsRawFd;
 use std::path::{Path, PathBuf};
 use std::process::Command;
+use std::time::Duration;
 
 use axo_pty::process::{self, PtyProcess, WindowSize};
 
 use crate::{AgentCommand, BridgeSocketPath, SocketCleanup, WriterLock};
+
+/// How long a stopped Pi gets before SIGKILL. On SIGTERM/SIGHUP Pi disposes its runtime (the
+/// pi-axo extension closes and unlinks its bridge socket), then drains terminal input for up to
+/// a second before exiting; a shell's half second would kill it partway and strand the socket.
+pub const STOP_GRACE: Duration = Duration::from_secs(3);
 
 /// Everything a Pi launch needs, borrowed from the caller's request.
 pub struct PiLaunch<'a> {

@@ -21,7 +21,7 @@ pub mod worker;
 pub use activity::Activity;
 pub use command::AgentCommand;
 pub use history::{HistoryIdentity, ensure_existing_history};
-pub use launch::{PiLaunch, PiProcess, spawn};
+pub use launch::{PiLaunch, PiProcess, STOP_GRACE, spawn};
 pub use lock::WriterLock;
 pub use socket::{BridgeSocketPath, MAX_SOCKET_PATH_BYTES, SocketCleanup};
 
