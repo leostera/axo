@@ -5,6 +5,7 @@ edition = "2024"
 build = "build.rs"
 
 [dependencies]
+axo-pi = { path = "../axo-pi" }
 axo-ipc = { path = "../axo-ipc" }
 axo-protocol = { path = "../axo-protocol" }
 axo-pty = { path = "../axo-pty" }
