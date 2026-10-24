@@ -29,7 +29,7 @@ const SHUTDOWN_GRACE: Duration = Duration::from_secs(2);
 const SLOW_REQUEST: Duration = Duration::from_millis(100);
 
 /// Registers synchronous handlers so they run off the executor.
-pub(crate) trait BlockingMethods {
+pub trait BlockingMethods {
     fn add_blocking_method<F>(&mut self, name: &str, method: F)
     where
         F: Fn(Params) -> jsonrpc_core::Result<Value> + Send + Sync + 'static;
@@ -66,7 +66,7 @@ fn handler_failed() -> RpcError {
 }
 
 /// Serves `handler` on `listener` until `stop` is set. Blocks the calling thread.
-pub(crate) fn serve(
+pub fn serve(
     listener: StdUnixListener,
     handler: IoHandler,
     stop: Arc<AtomicBool>,

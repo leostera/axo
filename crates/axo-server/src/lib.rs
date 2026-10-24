@@ -10,13 +10,11 @@ use std::sync::atomic::{AtomicBool, Ordering};
 use std::thread;
 use std::time::Duration;
 
-use ipc::BlockingMethods;
+use axo_ipc::BlockingMethods;
 use jsonrpc_core::{IoHandler, Params};
 use serde_json::json;
 
 mod credential;
-mod event_queue;
-mod ipc;
 mod pairing;
 mod process_inspection;
 mod relay;
@@ -217,7 +215,7 @@ pub fn serve_ipc(
         })?;
 
     log::info!("event=daemon.ready pid={}", std::process::id());
-    let served = ipc::serve(listener, handler, stop_server);
+    let served = axo_ipc::serve(listener, handler, stop_server);
     stop_watcher.store(true, Ordering::Relaxed);
     let _ = signal_watcher.join();
     if let Some(relay) = remote_relay.as_mut() {

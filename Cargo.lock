@@ -62,9 +62,21 @@ dependencies = [
 ]
 
 [[package]]
+name = "axo-ipc"
+version = "0.1.0"
+dependencies = [
+ "jsonrpc-core",
+ "log",
+ "serde",
+ "serde_json",
+ "tokio",
+]
+
+[[package]]
 name = "axo-server"
 version = "0.1.0"
 dependencies = [
+ "axo-ipc",
  "core-foundation",
  "httparse",
  "jsonrpc-core",
@@ -76,7 +88,6 @@ dependencies = [
  "serde",
  "serde_json",
  "shlex",
- "tokio",
  "tungstenite",
  "url",
 ]

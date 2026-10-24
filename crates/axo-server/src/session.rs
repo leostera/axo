@@ -14,11 +14,10 @@ use std::sync::{Arc, Mutex, Weak};
 use std::thread::{self, JoinHandle};
 use std::time::{Duration, Instant};
 
-use crate::event_queue::{EventQueue, PushOutcome};
-use crate::ipc::BlockingMethods;
 use crate::process_inspection;
 use crate::terminal_output::{NextOutput, OutputSubscriber, TerminalOutput, TerminalOutputSink};
 use crate::workspace_access::WorkspaceDirectoryAccess;
+use axo_ipc::{BlockingMethods, EventQueue, PushOutcome};
 use jsonrpc_core::{Error as RpcError, ErrorCode, IoHandler, Params};
 use rusqlite::{Connection, OptionalExtension, params};
 use serde::{Deserialize, Serialize};
@@ -871,7 +870,7 @@ struct LocalSubscriber {
     id: String,
     session_id: Option<SessionId>,
     scope: EventScope,
-    queue: Arc<EventQueue>,
+    queue: Arc<EventQueue<Value>>,
 }
 
 impl LocalSubscriber {
@@ -916,7 +915,7 @@ impl EventScope {
 /// subscription's own queue, so one long-poll never blocks other subscribers, the relay,
 /// `subscribe` or `unsubscribe`.
 struct LocalSubscription {
-    queue: Arc<EventQueue>,
+    queue: Arc<EventQueue<Value>>,
     last_polled: Mutex<Instant>,
 }
 
@@ -1892,7 +1891,10 @@ impl SessionManager {
             "00000000-0000-4000-8000-{:012x}",
             ((std::process::id() as u64) << 32 | id) & 0x0000_ffff_ffff_ffff
         );
-        let queue = Arc::new(EventQueue::new(MAX_QUEUED_EVENTS_PER_SUBSCRIPTION));
+        let queue = Arc::new(EventQueue::new(
+            MAX_QUEUED_EVENTS_PER_SUBSCRIPTION,
+            || json!({ "type": "subscription.lagged" }),
+        ));
         let mut subscriptions = self
             .subscriptions
             .lock()
