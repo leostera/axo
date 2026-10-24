@@ -26,7 +26,7 @@ struct GhosttyTerminalView: NSViewRepresentable {
   func makeNSView(context: Context) -> GhosttySurfaceHostNSView {
     let presentation = makeSurfacePresentation()
     presentation.host.attachSurface(presentation.view)
-    presentation.view.updateContentSize(size)
+    presentation.view.reportStatus()
     updateFocus(of: presentation.view)
     return presentation.host
   }
@@ -34,10 +34,9 @@ struct GhosttyTerminalView: NSViewRepresentable {
   func updateNSView(_ host: GhosttySurfaceHostNSView, context: Context) {
     let presentation = makeSurfacePresentation()
     host.attachSurface(presentation.view)
-    if host.bounds.size != size {
-      host.needsLayout = true
-    }
-    presentation.view.updateContentSize(size)
+    // GeometryReader supplies a creation seed, not the final AppKit viewport.
+    // Reparenting after a close may settle the native bounds after this update.
+    host.needsLayout = true
     updateFocus(of: presentation.view)
   }
 
@@ -49,6 +48,7 @@ struct GhosttyTerminalView: NSViewRepresentable {
     runtime.surfacePresentation(
       for: shell,
       helperURL: helperURL,
+      initialSize: size,
       onFocus: {
         runtime.setFocusedShellID(shell.id)
         onFocus()
@@ -65,7 +65,7 @@ struct GhosttyTerminalView: NSViewRepresentable {
       view.cancelFocusRequest()
       return
     }
-    runtime.setFocusedShellID(shell.id)
+    // Actual responder acquisition reports focus outside the representable update.
     view.requestFocus()
   }
 
@@ -78,6 +78,7 @@ final class GhosttySurfaceHostNSView: NSView {
   private var scrollbarOverlay: TerminalScrollbarOverlayView?
   private var linkHover: TerminalLinkHoverView?
   private var statusBadge: TerminalStatusBadgeView?
+  private var findBar: TerminalFindBarView?
 
   override var wantsDefaultClipping: Bool { true }
 
@@ -125,11 +126,23 @@ final class GhosttySurfaceHostNSView: NSView {
     let badge = statusBadge ?? TerminalStatusBadgeView()
     statusBadge = badge
     if badge.superview !== self { addSubview(badge, positioned: .above, relativeTo: overlay) }
+    let find = findBar ?? TerminalFindBarView()
+    findBar = find
+    if find.superview !== self { addSubview(find, positioned: .above, relativeTo: badge) }
+    find.onAction = { [weak surfaceView] action in
+      surfaceView?.performFind(action)
+    }
     surfaceView.onSurfaceStatusChange = { [weak self, weak surfaceView] in
       guard let self, let surfaceView, self.terminalView === surfaceView else { return }
       self.statusBadge?.show(surfaceView.surfaceStatus, in: self.bounds)
+      let wasSearching = self.findBar?.isHidden == false
+      self.findBar?.show(surfaceView.surfaceStatus.search, in: self.bounds)
+      if wasSearching, surfaceView.surfaceStatus.search == nil {
+        self.window?.makeFirstResponder(surfaceView)
+      }
     }
     badge.show(surfaceView.surfaceStatus, in: bounds)
+    find.show(surfaceView.surfaceStatus.search, in: bounds)
     synchronizeScrollbar(with: surfaceView)
   }
 
@@ -149,6 +162,9 @@ final class GhosttySurfaceHostNSView: NSView {
     linkHover = nil
     statusBadge?.removeFromSuperview()
     statusBadge = nil
+    findBar?.onAction = nil
+    findBar?.removeFromSuperview()
+    findBar = nil
   }
 
   func detachSurface() {
@@ -169,6 +185,7 @@ final class GhosttySurfaceHostNSView: NSView {
     super.layout()
     guard let terminalView, terminalView.superview === self else { return }
     terminalView.frame = bounds
+    (terminalView as? GhosttySurfaceNSView)?.updateContentSize(terminalView.bounds.size)
     scrollbarOverlay?.frame = bounds
   }
 }
@@ -180,8 +197,20 @@ final class GhosttySurfaceNSView: NSView, @preconcurrency NSTextInputClient,
   private(set) var surface: ghostty_surface_t?
   let shellID: Int64
   var status = "Starting Ghostty surface…" {
-    didSet { onStatusChange?(status) }
+    didSet {
+      guard status != oldValue else { return }
+      reportStatus()
+    }
   }
+  // Surface creation can happen inside makeNSView. Deliver state callbacks only
+  // after that SwiftUI update, using the latest callback/status for this view.
+  func reportStatus() {
+    Task { @MainActor [weak self] in
+      guard let self else { return }
+      self.onStatusChange?(self.status)
+    }
+  }
+
   var onFocus: (() -> Void)?
   var onStatusChange: ((String) -> Void)?
   var onSplit: ((TerminalSplitDirection) -> Void)?
@@ -220,13 +249,18 @@ final class GhosttySurfaceNSView: NSView, @preconcurrency NSTextInputClient,
   private var shouldRequestFocus = false
   private var focusTask: Task<Void, Never>?
   private var trackingArea: NSTrackingArea?
-  private var contentSize: CGSize?
+  private(set) var contentSize: CGSize?
 
-  init(runtime: GhosttyRuntime, shellID: Int64, onFocus: @escaping () -> Void) {
+  init(
+    runtime: GhosttyRuntime,
+    shellID: Int64,
+    initialFrameSize: CGSize,
+    onFocus: @escaping () -> Void
+  ) {
     self.runtime = runtime
     self.shellID = shellID
     self.onFocus = onFocus
-    super.init(frame: .zero)
+    super.init(frame: CGRect(origin: .zero, size: initialFrameSize))
     setAccessibilityIdentifier("axo-terminal-surface")
     registerForDraggedTypes([.string, .fileURL])
     localEventMonitor = NSEvent.addLocalMonitorForEvents(
@@ -286,9 +320,19 @@ final class GhosttySurfaceNSView: NSView, @preconcurrency NSTextInputClient,
     updateSurfaceScaleAndSize()
   }
 
+  override func setFrameSize(_ newSize: NSSize) {
+    super.setFrameSize(newSize)
+    updateContentSize(bounds.size)
+  }
+
+  override func setBoundsSize(_ newSize: NSSize) {
+    super.setBoundsSize(newSize)
+    updateContentSize(bounds.size)
+  }
+
   override func layout() {
     super.layout()
-    updateSurfaceScaleAndSize()
+    updateContentSize(bounds.size)
   }
 
   override func becomeFirstResponder() -> Bool {
@@ -354,7 +398,9 @@ final class GhosttySurfaceNSView: NSView, @preconcurrency NSTextInputClient,
   }
 
   func updateContentSize(_ size: CGSize) {
-    guard size.width > 0, size.height > 0 else { return }
+    // Ignore transient zero-sized detach/reparent passes; never shrink the PTY
+    // to an invalid viewport while waiting for the new host's final layout.
+    guard size.width.isFinite, size.height.isFinite, size.width > 0, size.height > 0 else { return }
     contentSize = size
     runtime?.updateSurfaceSize(in: self, contentSize: size)
   }
@@ -469,6 +515,22 @@ final class GhosttySurfaceNSView: NSView, @preconcurrency NSTextInputClient,
 
   func cellSizeDidChange() {
     onScrollbarChange?()
+  }
+
+  func performFind(_ action: TerminalFindAction) {
+    guard let surface else { return }
+    let binding = action.bindingAction
+    _ = binding.withCString { ghostty_surface_binding_action(surface, $0, UInt(binding.utf8.count)) }
+  }
+
+  @objc func performFindPanelAction(_ sender: Any?) {
+    let tag = (sender as? NSMenuItem)?.tag ?? Int(NSFindPanelAction.showFindPanel.rawValue)
+    switch NSFindPanelAction(rawValue: UInt(tag)) {
+    case .next: performFind(.next)
+    case .previous: performFind(.previous)
+    case .setFindString: performFind(.selection)
+    default: performFind(.start)
+    }
   }
 
   func scrollToRow(_ row: Int) {

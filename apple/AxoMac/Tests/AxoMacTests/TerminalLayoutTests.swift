@@ -18,6 +18,35 @@ final class TerminalLayoutTests: XCTestCase {
     }
   }
 
+  func testPendingSplitPreviewInsertsAViewOnlyLeafBesideCapturedAnchor() throws {
+    let original = TerminalLayout.split(
+      id: UUID(),
+      direction: .right,
+      ratio: 0.6,
+      first: .pane(17),
+      second: .pane(23)
+    )
+    let pending = PendingTerminalSplit(
+      id: UUID(),
+      sessionID: 9,
+      sessionUuid: "session-uuid",
+      anchorShellID: 23,
+      direction: .down,
+      ratio: 0.4,
+      status: .creating
+    )
+
+    let preview = try XCTUnwrap(TerminalLayoutPresentation(original).inserting(pending))
+    let insertedPending = try XCTUnwrap(pendingLeaf(in: preview))
+    let insertedSplit = try XCTUnwrap(pendingSplit(in: preview))
+
+    XCTAssertEqual(insertedPending, pending)
+    XCTAssertEqual(insertedSplit.direction, .down)
+    XCTAssertEqual(insertedSplit.ratio, 0.4)
+    XCTAssertEqual(original.shellIDs, [17, 23], "The preview must not mutate persisted layout.")
+    XCTAssertNotEqual(preview.structuralIdentity, TerminalLayoutPresentation(original).structuralIdentity)
+  }
+
   func testInsertAddsSiblingPaneInRequestedDirection() throws {
     let original = TerminalLayout.pane(17)
 
@@ -32,6 +61,24 @@ final class TerminalLayoutTests: XCTestCase {
     XCTAssertEqual(ratio, 0.5)
     XCTAssertEqual(first, .pane(17))
     XCTAssertEqual(second, .pane(23))
+  }
+
+  func testPlacingAnAlreadyObservedShellRepositionsItWithoutDuplicates() throws {
+    let existing = TerminalLayout.split(
+      id: UUID(),
+      direction: .right,
+      ratio: 0.5,
+      first: .pane(17),
+      second: .pane(23)
+    )
+
+    let placed = existing.placing(shellID: 23, direction: .down, beside: 17, ratio: 0.35)
+
+    XCTAssertEqual(placed.shellIDs, [17, 23])
+    guard case .split(_, .down, let ratio, .pane(17), .pane(23)) = placed else {
+      return XCTFail("the observed shell should be placed beside its captured anchor")
+    }
+    XCTAssertEqual(ratio, 0.35)
   }
 
   func testRemovingPaneCollapsesEmptySplit() {
@@ -137,6 +184,31 @@ final class TerminalLayoutTests: XCTestCase {
 
     XCTAssertEqual(original.structuralIdentity, resized.structuralIdentity)
     XCTAssertNotEqual(original.structuralIdentity, changed.structuralIdentity)
+  }
+
+  private func pendingLeaf(in layout: TerminalLayoutPresentation) -> PendingTerminalSplit? {
+    switch layout {
+    case .pane:
+      return nil
+    case .pending(let pending):
+      return pending
+    case .split(_, _, _, _, let first, let second):
+      return pendingLeaf(in: first) ?? pendingLeaf(in: second)
+    }
+  }
+
+  private func pendingSplit(
+    in layout: TerminalLayoutPresentation
+  ) -> (direction: TerminalSplitDirection, ratio: Double)? {
+    switch layout {
+    case .pane:
+      return nil
+    case .pending:
+      return nil
+    case .split(_, let direction, let ratio, let isPending, let first, let second):
+      if isPending { return (direction, ratio) }
+      return pendingSplit(in: first) ?? pendingSplit(in: second)
+    }
   }
 
   func testOrderedShellIDsFollowSplitTreeOrder() {

@@ -15,6 +15,22 @@ struct WorkspaceArchiveConfirmation: Equatable, Identifiable {
   var id: String { workspaceID }
 }
 
+enum PendingTerminalSplitStatus: Equatable {
+  case creating
+  case rejected(String)
+  case outcomeUnknown(String)
+}
+
+struct PendingTerminalSplit: Equatable, Identifiable {
+  let id: UUID
+  let sessionID: Int64
+  let sessionUuid: String?
+  let anchorShellID: Int64
+  let direction: TerminalSplitDirection
+  var ratio: Double
+  var status: PendingTerminalSplitStatus
+}
+
 @MainActor
 final class TerminalSessionsModel: ObservableObject {
   @Published private(set) var sessions: [TerminalSession] = []
@@ -34,6 +50,7 @@ final class TerminalSessionsModel: ObservableObject {
   @Published private(set) var errorMessage: String?
   @Published private(set) var workspaceCreationError: String?
   @Published private(set) var pendingWorkspaceArchiveConfirmation: WorkspaceArchiveConfirmation?
+  @Published private(set) var pendingTerminalSplit: PendingTerminalSplit?
   @Published private(set) var automaticallyRestartUnavailablePi: Bool
 
   let helperURL: URL
@@ -334,6 +351,7 @@ final class TerminalSessionsModel: ObservableObject {
   }
 
   func split(_ direction: TerminalSplitDirection) async {
+    guard pendingTerminalSplit == nil else { return }
     guard let socketPath else {
       errorMessage = socketPathError ?? "The axod socket path is unavailable."
       return
@@ -346,24 +364,79 @@ final class TerminalSessionsModel: ObservableObject {
       return
     }
 
+    let pending = PendingTerminalSplit(
+      id: UUID(),
+      sessionID: sessionID,
+      sessionUuid: session.sessionUuid,
+      anchorShellID: anchorShellID,
+      direction: direction,
+      ratio: 0.5,
+      status: .creating
+    )
+    pendingTerminalSplit = pending
+    errorMessage = nil
+
     do {
       let shell = try await UnixSocketRPC.createShell(in: sessionID, at: socketPath)
-      replace(session, withShells: session.shells + [shell])
-      if let currentLayout = layoutsBySession[sessionID] ?? Self.defaultLayout(for: session.shells),
-        !currentLayout.contains(shellID: shell.id)
-      {
-        layoutBySession(
-          sessionID, inserting: shell.id, direction: direction, beside: anchorShellID,
-          fallback: currentLayout)
+      guard pendingTerminalSplit?.id == pending.id,
+        let currentSession = self.session(for: sessionID),
+        currentSession.sessionUuid == pending.sessionUuid
+      else {
+        pendingTerminalSplit = nil
+        await refresh()
+        return
       }
+
+      let currentLayout = layoutsBySession[sessionID]
+        ?? currentSession.layout.map(TerminalLayout.init)
+        ?? Self.defaultLayout(for: currentSession.shells)
+      let updatedLayout = currentLayout?.placing(
+        shellID: shell.id,
+        direction: direction,
+        beside: anchorShellID,
+        ratio: pending.ratio
+      ) ?? .pane(shell.id)
+      let updatedShells = currentSession.shells.contains(where: { $0.id == shell.id })
+        ? currentSession.shells
+        : currentSession.shells + [shell]
+
+      replace(currentSession, withShells: updatedShells)
+      // Clear the optimistic leaf in the same main-actor turn as installing the real one.
+      pendingTerminalSplit = nil
+      setLayout(updatedLayout, for: sessionID, persist: true)
       if selectedSessionID == sessionID {
-        layout = layoutsBySession[sessionID]
+        layout = updatedLayout
         focusedShellID = shell.id
       }
       errorMessage = nil
     } catch {
-      errorMessage = error.localizedDescription
+      guard pendingTerminalSplit?.id == pending.id else { return }
+      if let rpcError = error as? UnixSocketRPCError, case .serverRejected = rpcError {
+        pendingTerminalSplit?.status = .rejected(error.localizedDescription)
+        errorMessage = error.localizedDescription
+        return
+      }
+
+      // A lost response may follow a committed create. Reconcile by reading the catalog; never
+      // retry this non-idempotent operation automatically.
+      await refresh()
+      guard pendingTerminalSplit?.id == pending.id else { return }
+      pendingTerminalSplit?.status = .outcomeUnknown(error.localizedDescription)
+      errorMessage = "Axo couldn't confirm pane creation. Check the session before trying again."
     }
+  }
+
+  func resizePendingTerminalSplit(_ id: UUID, to ratio: Double) {
+    guard var pending = pendingTerminalSplit, pending.id == id,
+      case .creating = pending.status
+    else { return }
+    pending.ratio = min(max(ratio, 0.01), 0.99)
+    pendingTerminalSplit = pending
+  }
+
+  func dismissPendingTerminalSplit(_ id: UUID) {
+    guard pendingTerminalSplit?.id == id else { return }
+    pendingTerminalSplit = nil
   }
 
   func closeSession(_ sessionID: Int64) async {
@@ -1078,40 +1151,67 @@ indirect enum TerminalLayout: Equatable, Identifiable {
   func inserting(
     shellID newShellID: Int64,
     direction: TerminalSplitDirection,
-    beside targetShellID: Int64
+    beside targetShellID: Int64,
+    ratio: Double = 0.5
   ) -> TerminalLayout? {
     switch self {
     case .pane(let currentID) where currentID == targetShellID:
       return .split(
         id: UUID(),
         direction: direction,
-        ratio: 0.5,
+        ratio: min(max(ratio, 0.01), 0.99),
         first: self,
         second: .pane(newShellID)
       )
     case .pane:
       return nil
-    case .split(let id, let existingDirection, let ratio, let first, let second):
+    case .split(let id, let existingDirection, let existingRatio, let first, let second):
       if let updatedFirst = first.inserting(
         shellID: newShellID,
         direction: direction,
-        beside: targetShellID
+        beside: targetShellID,
+        ratio: ratio
       ) {
         return .split(
-          id: id, direction: existingDirection, ratio: ratio, first: updatedFirst, second: second
+          id: id,
+          direction: existingDirection,
+          ratio: existingRatio,
+          first: updatedFirst,
+          second: second
         )
       }
       if let updatedSecond = second.inserting(
         shellID: newShellID,
         direction: direction,
-        beside: targetShellID
+        beside: targetShellID,
+        ratio: ratio
       ) {
         return .split(
-          id: id, direction: existingDirection, ratio: ratio, first: first, second: updatedSecond
+          id: id,
+          direction: existingDirection,
+          ratio: existingRatio,
+          first: first,
+          second: updatedSecond
         )
       }
       return nil
     }
+  }
+
+  func placing(
+    shellID: Int64,
+    direction: TerminalSplitDirection,
+    beside anchorShellID: Int64,
+    ratio: Double
+  ) -> TerminalLayout {
+    let base = contains(shellID: shellID) ? removing(shellID: shellID) : self
+    guard let base, !base.contains(shellID: shellID) else { return .pane(shellID) }
+    return base.inserting(
+      shellID: shellID,
+      direction: direction,
+      beside: anchorShellID,
+      ratio: ratio
+    ) ?? base.adding([shellID])
   }
 
   func focusTargetAfterClosing(
@@ -1226,6 +1326,98 @@ indirect enum TerminalLayout: Equatable, Identifiable {
 
     private indirect enum Representation: Hashable {
       case pane(Int64)
+      case split(TerminalSplitDirection, StructuralIdentity, StructuralIdentity)
+    }
+  }
+}
+
+indirect enum TerminalLayoutPresentation: Equatable {
+  case pane(Int64)
+  case pending(PendingTerminalSplit)
+  case split(
+    id: UUID,
+    direction: TerminalSplitDirection,
+    ratio: Double,
+    isPending: Bool,
+    first: TerminalLayoutPresentation,
+    second: TerminalLayoutPresentation
+  )
+
+  init(_ layout: TerminalLayout) {
+    switch layout {
+    case .pane(let shellID):
+      self = .pane(shellID)
+    case .split(let id, let direction, let ratio, let first, let second):
+      self = .split(
+        id: id,
+        direction: direction,
+        ratio: ratio,
+        isPending: false,
+        first: TerminalLayoutPresentation(first),
+        second: TerminalLayoutPresentation(second)
+      )
+    }
+  }
+
+  func inserting(_ pending: PendingTerminalSplit) -> TerminalLayoutPresentation? {
+    switch self {
+    case .pane(let shellID) where shellID == pending.anchorShellID:
+      return .split(
+        id: pending.id,
+        direction: pending.direction,
+        ratio: pending.ratio,
+        isPending: true,
+        first: self,
+        second: .pending(pending)
+      )
+    case .pane, .pending:
+      return nil
+    case .split(let id, let direction, let ratio, let isPending, let first, let second):
+      if let updatedFirst = first.inserting(pending) {
+        return .split(
+          id: id,
+          direction: direction,
+          ratio: ratio,
+          isPending: isPending,
+          first: updatedFirst,
+          second: second
+        )
+      }
+      if let updatedSecond = second.inserting(pending) {
+        return .split(
+          id: id,
+          direction: direction,
+          ratio: ratio,
+          isPending: isPending,
+          first: first,
+          second: updatedSecond
+        )
+      }
+      return nil
+    }
+  }
+
+  var structuralIdentity: StructuralIdentity {
+    StructuralIdentity(self)
+  }
+
+  struct StructuralIdentity: Hashable {
+    private let representation: Representation
+
+    init(_ layout: TerminalLayoutPresentation) {
+      switch layout {
+      case .pane(let shellID):
+        representation = .pane(shellID)
+      case .pending(let split):
+        representation = .pending(split.id)
+      case .split(_, let direction, _, _, let first, let second):
+        representation = .split(direction, first.structuralIdentity, second.structuralIdentity)
+      }
+    }
+
+    private indirect enum Representation: Hashable {
+      case pane(Int64)
+      case pending(UUID)
       case split(TerminalSplitDirection, StructuralIdentity, StructuralIdentity)
     }
   }

@@ -396,6 +396,15 @@ struct TerminalWorkbenchView: View {
     .accessibilityLabel(isCollapsed ? "Expand sidebar" : "Collapse sidebar")
   }
 
+  private var presentedTerminalLayout: TerminalLayoutPresentation? {
+    guard let layout = sessions.layout else { return nil }
+    let presentation = TerminalLayoutPresentation(layout)
+    guard let pending = sessions.pendingTerminalSplit,
+      pending.sessionID == sessions.selectedSessionID
+    else { return presentation }
+    return presentation.inserting(pending) ?? presentation
+  }
+
   @ViewBuilder
   private var terminalContent: some View {
     if let message = sessions.errorMessage, sessions.sessions.isEmpty {
@@ -404,7 +413,7 @@ struct TerminalWorkbenchView: View {
         message: message,
         systemImage: "exclamationmark.triangle"
       )
-    } else if let layout = sessions.layout {
+    } else if let layout = presentedTerminalLayout {
       TerminalLayoutView(layout: layout, sessions: sessions)
         .id(layout.structuralIdentity)
     } else {
@@ -698,7 +707,7 @@ private extension TerminalSessionStatus {
 }
 
 private struct TerminalLayoutView: View {
-  let layout: TerminalLayout
+  let layout: TerminalLayoutPresentation
   @ObservedObject var sessions: TerminalSessionsModel
 
   @ViewBuilder
@@ -718,12 +727,21 @@ private struct TerminalLayoutView: View {
           systemImage: "terminal"
         )
       }
-    case .split(let id, let direction, let ratio, let first, let second):
+    case .pending(let pending):
+      PendingTerminalPaneView(pending: pending, sessions: sessions)
+        .id(pending.id)
+    case .split(let id, let direction, let ratio, let isPending, let first, let second):
       TerminalSplitView(
         id: id,
         direction: direction,
         ratio: ratio,
-        onRatioChange: { sessions.resizeSplit(id, to: $0) },
+        onRatioChange: { ratio in
+          if isPending {
+            sessions.resizePendingTerminalSplit(id, to: ratio)
+          } else {
+            sessions.resizeSplit(id, to: ratio)
+          }
+        },
         first: {
           TerminalLayoutView(layout: first, sessions: sessions)
         },
@@ -732,6 +750,45 @@ private struct TerminalLayoutView: View {
         }
       )
     }
+  }
+}
+
+private struct PendingTerminalPaneView: View {
+  let pending: PendingTerminalSplit
+  @ObservedObject var sessions: TerminalSessionsModel
+
+  var body: some View {
+    VStack(spacing: 10) {
+      switch pending.status {
+      case .creating:
+        ProgressView()
+          .controlSize(.small)
+        Text("Creating pane…")
+          .font(.callout)
+          .foregroundStyle(.secondary)
+      case .rejected(let message):
+        Image(systemName: "exclamationmark.triangle")
+          .foregroundStyle(.secondary)
+        Text(message)
+          .font(.callout)
+          .foregroundStyle(.secondary)
+          .multilineTextAlignment(.center)
+        Button("Dismiss") { sessions.dismissPendingTerminalSplit(pending.id) }
+          .controlSize(.small)
+      case .outcomeUnknown:
+        Image(systemName: "questionmark.circle")
+          .foregroundStyle(.secondary)
+        Text("Creation outcome is unknown. Check the session before retrying.")
+          .font(.callout)
+          .foregroundStyle(.secondary)
+          .multilineTextAlignment(.center)
+        Button("Dismiss") { sessions.dismissPendingTerminalSplit(pending.id) }
+          .controlSize(.small)
+      }
+    }
+    .frame(maxWidth: .infinity, maxHeight: .infinity)
+    .background(Color(nsColor: .textBackgroundColor))
+    .accessibilityIdentifier("pending-terminal-pane")
   }
 }
 

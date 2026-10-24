@@ -162,6 +162,16 @@ struct AxoApp: App {
           }
         }
         .keyboardShortcut("a", modifiers: .command)
+
+        Divider()
+        Button("Find…") { ghostty.performFind(.start) }
+          .keyboardShortcut("f", modifiers: .command)
+        Button("Find Next") { ghostty.performFind(.next) }
+          .keyboardShortcut("g", modifiers: .command)
+        Button("Find Previous") { ghostty.performFind(.previous) }
+          .keyboardShortcut("g", modifiers: [.command, .shift])
+        Button("Use Selection for Find") { ghostty.performFind(.selection) }
+          .keyboardShortcut("e", modifiers: .command)
       }
 
       CommandGroup(replacing: .pasteboard) {

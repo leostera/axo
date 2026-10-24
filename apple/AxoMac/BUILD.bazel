@@ -41,6 +41,7 @@ swift_test(
         "Tests/AxoMacTests/TerminalScrollSensitivityTests.swift",
         "Tests/AxoMacTests/UntrustedURLTests.swift",
         "Tests/AxoMacTests/TerminalSurfaceStatusTests.swift",
+        "Tests/AxoMacTests/TerminalRenderFeedbackTests.swift",
         "Tests/AxoMacTests/TerminalSurfaceViewportTests.swift",
         "Tests/AxoMacTests/TerminalSplitE2ETests.swift",
     ],

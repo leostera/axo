@@ -31,7 +31,7 @@ final class GhosttyRuntime: ObservableObject {
   private var terminalSurfaces: [Int64: SurfaceEntry] = [:]
   private var notificationTokens: [NSObjectProtocol] = []
 
-  init() {
+  init(initializeGhostty: Bool = true) {
     let storedSensitivity =
       UserDefaults.standard.object(
         forKey: TerminalScrollSensitivity.preferenceKey
@@ -39,7 +39,7 @@ final class GhosttyRuntime: ObservableObject {
     scrollSensitivity = TerminalScrollSensitivity.boundedMultiplier(
       storedSensitivity ?? TerminalScrollSensitivity.defaultMultiplier
     )
-    initialize()
+    if initializeGhostty { initialize() }
   }
 
   deinit {
@@ -63,6 +63,7 @@ final class GhosttyRuntime: ObservableObject {
   func surfacePresentation(
     for shell: TerminalShell,
     helperURL: URL,
+    initialSize: CGSize,
     onFocus: @escaping () -> Void,
     onStatusChange: @escaping (String) -> Void,
     onSplit: @escaping (TerminalSplitDirection) -> Void,
@@ -73,12 +74,16 @@ final class GhosttyRuntime: ObservableObject {
       existing.view.onStatusChange = onStatusChange
       existing.view.onSplit = onSplit
       existing.view.onClose = onClose
-      onStatusChange(existing.view.status)
       return (existing.host, existing.view)
     }
 
     destroySurface(shellID: shell.id)
-    let view = GhosttySurfaceNSView(runtime: self, shellID: shell.id, onFocus: onFocus)
+    let view = GhosttySurfaceNSView(
+      runtime: self,
+      shellID: shell.id,
+      initialFrameSize: Self.seededSurfaceSize(for: initialSize),
+      onFocus: onFocus
+    )
     let host = GhosttySurfaceHostNSView()
     view.onStatusChange = onStatusChange
     view.onSplit = onSplit
@@ -89,9 +94,22 @@ final class GhosttyRuntime: ObservableObject {
     return (host, view)
   }
 
+  static func seededSurfaceSize(for proposedSize: CGSize) -> CGSize {
+    guard proposedSize.width.isFinite, proposedSize.height.isFinite,
+      proposedSize.width > 0, proposedSize.height > 0
+    else {
+      return CGSize(width: 800, height: 600)
+    }
+    return proposedSize
+  }
+
   func setFocusedShellID(_ shellID: Int64?) {
     focusedShellID = shellID
-    if let shellID { attentionShellIDs.remove(shellID) }
+    // @Published emits even when Set.remove finds nothing. Focus reconciliation
+    // must not invalidate every terminal representable on every render pass.
+    if let shellID, attentionShellIDs.contains(shellID) {
+      attentionShellIDs.remove(shellID)
+    }
     refreshSecureInput()
   }
 
@@ -243,6 +261,12 @@ final class GhosttyRuntime: ObservableObject {
     return action.rawValue.withCString {
       ghostty_surface_binding_action(surface, $0, UInt(action.rawValue.utf8.count))
     }
+  }
+
+  /// Routes Axo's Find menu to the focused terminal surface only.
+  func performFind(_ action: TerminalFindAction) {
+    guard let shellID = focusedShellID else { return }
+    terminalSurfaces[shellID]?.view.performFind(action)
   }
 
   func forwardKeyEquivalent(_ event: NSEvent) -> Bool {

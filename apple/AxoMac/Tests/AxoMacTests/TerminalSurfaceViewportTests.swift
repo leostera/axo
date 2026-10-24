@@ -9,6 +9,66 @@ final class TerminalSurfaceViewportTests: XCTestCase {
     XCTAssertTrue(GhosttySurfaceHostNSView().wantsDefaultClipping)
   }
 
+  func testInitialSurfaceSizeUsesMeasuredBoundsOrNonzeroRendererSeed() {
+    XCTAssertEqual(
+      GhosttyRuntime.seededSurfaceSize(for: CGSize(width: 420, height: 280)),
+      CGSize(width: 420, height: 280)
+    )
+    XCTAssertEqual(
+      GhosttyRuntime.seededSurfaceSize(for: .zero),
+      CGSize(width: 800, height: 600)
+    )
+  }
+
+  func testNativeFrameResizeReplacesTheCachedSplitSize() {
+    let runtime = GhosttyRuntime(initializeGhostty: false)
+    let view = GhosttySurfaceNSView(
+      runtime: runtime, shellID: 1, initialFrameSize: CGSize(width: 400, height: 300), onFocus: {})
+    view.updateContentSize(CGSize(width: 400, height: 300))
+    view.setFrameSize(CGSize(width: 1000, height: 600))
+    XCTAssertEqual(view.contentSize, view.bounds.size)
+    XCTAssertEqual(view.contentSize, CGSize(width: 1000, height: 600))
+    view.setBoundsSize(CGSize(width: 900, height: 500))
+    XCTAssertEqual(view.contentSize, view.bounds.size)
+    XCTAssertEqual(view.contentSize?.width ?? 0, 900, accuracy: 0.001)
+    XCTAssertEqual(view.contentSize?.height ?? 0, 500, accuracy: 0.001)
+  }
+
+  func testSurvivingPaneUsesExpandedHostAfterHorizontalOrVerticalClose() {
+    let runtime = GhosttyRuntime(initializeGhostty: false)
+    for splitSize in [CGSize(width: 400, height: 600), CGSize(width: 1000, height: 300)] {
+      let view = GhosttySurfaceNSView(
+        runtime: runtime, shellID: 1, initialFrameSize: splitSize, onFocus: {})
+      let oldHost = GhosttySurfaceHostNSView(frame: CGRect(origin: .zero, size: splitSize))
+      oldHost.attachSurface(view)
+      oldHost.layout()
+      XCTAssertEqual(view.contentSize, splitSize)
+
+      let expanded = CGSize(width: 1000, height: 600)
+      let newHost = GhosttySurfaceHostNSView(frame: CGRect(origin: .zero, size: expanded))
+      newHost.attachSurface(view)
+      newHost.layout()
+      XCTAssertTrue(view.superview === newHost)
+      XCTAssertEqual(view.contentSize, expanded)
+      oldHost.layout()
+      XCTAssertEqual(view.contentSize, expanded, "the released host cannot restore the old split size")
+    }
+  }
+
+  func testTransientEmptyViewportPreservesLastValidSizeUntilRelayout() {
+    let runtime = GhosttyRuntime(initializeGhostty: false)
+    let initial = CGSize(width: 400, height: 300)
+    let view = GhosttySurfaceNSView(
+      runtime: runtime, shellID: 1, initialFrameSize: initial, onFocus: {})
+    view.updateContentSize(initial)
+    view.setFrameSize(.zero)
+    view.layout()
+    XCTAssertEqual(view.contentSize, initial)
+    view.setFrameSize(CGSize(width: 1000, height: 600))
+    view.layout()
+    XCTAssertEqual(view.contentSize, CGSize(width: 1000, height: 600))
+  }
+
   func testWindowStateObserverReportsOcclusionAndKeyChangesForItsWindowOnly() {
     let window = NSWindow(
       contentRect: .init(x: 0, y: 0, width: 100, height: 100), styleMask: [], backing: .buffered,

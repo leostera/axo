@@ -110,3 +110,46 @@ final class TerminalSurfaceStatusTests: XCTestCase {
     XCTAssertFalse(TerminalAttentionPolicy.shouldPostDesktopNotification(config: config))
   }
 }
+
+@MainActor
+final class TerminalFindTests: XCTestCase {
+  func testFindActionsMatchGhosttyBindings() {
+    XCTAssertEqual(TerminalFindAction.start.bindingAction, "start_search")
+    XCTAssertEqual(TerminalFindAction.selection.bindingAction, "search_selection")
+    XCTAssertEqual(TerminalFindAction.end.bindingAction, "end_search")
+    XCTAssertEqual(TerminalFindAction.next.bindingAction, "navigate_search:next")
+    XCTAssertEqual(TerminalFindAction.previous.bindingAction, "navigate_search:previous")
+    XCTAssertEqual(TerminalFindAction.search("a b").bindingAction, "search:a b")
+  }
+
+  func testCountLabel() {
+    XCTAssertEqual(TerminalFindAction.countLabel(nil), "")
+    XCTAssertEqual(TerminalFindAction.countLabel(.init(needle: "x", total: nil, selected: nil)), "")
+    XCTAssertEqual(TerminalFindAction.countLabel(.init(needle: "x", total: 1, selected: nil)), "1 match")
+    XCTAssertEqual(TerminalFindAction.countLabel(.init(needle: "x", total: 5, selected: 1)), "2 of 5")
+    XCTAssertEqual(TerminalFindAction.countLabel(.init(needle: "x", total: 0, selected: nil)), "0 matches")
+  }
+
+  func testFindBarFollowsSearchStateAndSendsQueries() {
+    let bar = TerminalFindBarView()
+    var sent: [TerminalFindAction] = []
+    bar.onAction = { sent.append($0) }
+    let bounds = NSRect(x: 0, y: 0, width: 600, height: 400)
+
+    bar.show(.init(needle: "foo", total: 3, selected: 0), in: bounds)
+    XCTAssertFalse(bar.isHidden)
+    XCTAssertEqual(bar.field.stringValue, "foo")
+    bar.controlTextDidChange(Notification(name: NSControl.textDidChangeNotification))
+    XCTAssertEqual(sent, [], "an unchanged needle is not re-sent")
+
+    bar.field.stringValue = "food"
+    bar.controlTextDidChange(Notification(name: NSControl.textDidChangeNotification))
+    XCTAssertEqual(sent, [.search("food")])
+    XCTAssertTrue(
+      bar.control(bar.field, textView: NSTextView(), doCommandBy: #selector(NSResponder.cancelOperation(_:))))
+    XCTAssertEqual(sent.last, .end)
+
+    bar.show(nil, in: bounds)
+    XCTAssertTrue(bar.isHidden)
+  }
+}
