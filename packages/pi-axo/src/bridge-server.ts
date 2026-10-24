@@ -1,6 +1,6 @@
 import { chmod, lstat, unlink } from "node:fs/promises";
 import { randomUUID, timingSafeEqual } from "node:crypto";
-import { createServer, type Server, type Socket } from "node:net";
+import { connect, createServer, type Server, type Socket } from "node:net";
 import {
   MAX_BRIDGE_RECORD_BYTES,
   parsePiControlCommand,
@@ -38,6 +38,29 @@ export class AxoPiBridgeServer {
   async start(): Promise<void> {
     if (this.server !== undefined) return;
 
+    try {
+      await this.listen();
+    } catch (error) {
+      // A Pi that was killed (not shut down) leaves its socket file behind, and Node will not
+      // listen over it. Every later Pi for this Session would then fail the same way, so an
+      // abandoned file is removed; a socket some process still answers on is never taken.
+      if ((error as NodeJS.ErrnoException).code !== "EADDRINUSE" || !(await isAbandonedSocket(this.socketPath))) {
+        throw error;
+      }
+      traceBridge("removing abandoned socket file");
+      await this.removeSocketFile();
+      await this.listen();
+    }
+    this.ownsSocketPath = true;
+    try {
+      await chmod(this.socketPath, 0o600);
+    } catch (error) {
+      await this.close();
+      throw error;
+    }
+  }
+
+  private async listen(): Promise<void> {
     const server = createServer(socket => this.accept(socket));
     server.on("error", () => this.socket?.destroy());
     this.server = server;
@@ -55,13 +78,6 @@ export class AxoPiBridgeServer {
       server.once("listening", onListening);
       server.listen(this.socketPath);
     });
-    this.ownsSocketPath = true;
-    try {
-      await chmod(this.socketPath, 0o600);
-    } catch (error) {
-      await this.close();
-      throw error;
-    }
   }
 
   bindIdentity(identity: PiSessionIdentity): void {
@@ -272,4 +288,19 @@ export class AxoPiBridgeServer {
 interface SocketWithInput extends Socket {
   axoInput?: { buffer: Buffer };
   axoAuthenticated?: boolean;
+}
+
+/** True when nothing listens on `path`: connecting is refused, or the file has gone. */
+function isAbandonedSocket(path: string): Promise<boolean> {
+  return new Promise(resolve => {
+    const probe = connect(path);
+    probe.once("connect", () => {
+      probe.destroy();
+      resolve(false);
+    });
+    probe.once("error", error => {
+      const code = (error as NodeJS.ErrnoException).code;
+      resolve(code === "ECONNREFUSED" || code === "ENOENT");
+    });
+  });
 }

@@ -3,7 +3,8 @@ import { mkdtemp, stat } from "node:fs/promises";
 import { once } from "node:events";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { connect, type Socket } from "node:net";
+import { connect, createServer, type Socket } from "node:net";
+import { spawn } from "node:child_process";
 import test from "node:test";
 import { AxoPiBridgeServer } from "../src/bridge-server.js";
 import type { PiBridgeRecord, PiSessionIdentity } from "../src/protocol.js";
@@ -119,5 +120,29 @@ test("does not unlink a socket path owned by another Pi process", async () => {
   } finally {
     await contender.close();
     await owner.close();
+  }
+});
+
+test("takes over a socket file abandoned by a killed Pi", async () => {
+  const directory = await mkdtemp(join(tmpdir(), "axo-pi-bridge-stale-"));
+  const socketPath = join(directory, "bridge.sock");
+  // A listener SIGKILLed without unlinking its path, as a killed Pi leaves it.
+  const listener = spawn(process.execPath, [
+    "-e",
+    `require("node:net").createServer().listen(${JSON.stringify(socketPath)}, () => console.log("ready"))`,
+  ]);
+  await once(listener.stdout, "data");
+  listener.kill("SIGKILL");
+  await once(listener, "exit");
+  assert.equal((await stat(socketPath)).isSocket(), true);
+
+  const bridge = new AxoPiBridgeServer(socketPath, identity.axoSessionId, bridgeToken, async () => ({ accepted: true }));
+  try {
+    await bridge.start();
+    const client = connect(socketPath);
+    await once(client, "connect");
+    client.destroy();
+  } finally {
+    await bridge.close();
   }
 });
