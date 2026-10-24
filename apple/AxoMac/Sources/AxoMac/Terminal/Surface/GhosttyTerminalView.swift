@@ -4,7 +4,6 @@ import SwiftUI
 struct GhosttyTerminalView: NSViewRepresentable {
   let runtime: GhosttyRuntime
   let shell: TerminalShell
-  let helperURL: URL
   let size: CGSize
   let isFocused: Bool
   let onFocus: () -> Void
@@ -36,7 +35,6 @@ struct GhosttyTerminalView: NSViewRepresentable {
   ) {
     runtime.surfacePresentation(
       for: shell,
-      helperURL: helperURL,
       initialSize: size,
       onFocus: {
         runtime.setFocusedShellID(shell.id)

@@ -56,7 +56,6 @@ final class TerminalWorkbenchE2ETests: XCTestCase {
     defer { defaults.removePersistentDomain(forName: defaultsSuite) }
     let firstModel = TerminalSessionsModel(
       socketPath: socketPath,
-      helperURL: daemon.executableURL,
       selectedSessionDefaults: defaults
     )
     await firstModel.refresh()
@@ -75,7 +74,6 @@ final class TerminalWorkbenchE2ETests: XCTestCase {
 
     let reopenedModel = TerminalSessionsModel(
       socketPath: socketPath,
-      helperURL: daemon.executableURL,
       selectedSessionDefaults: defaults
     )
     await reopenedModel.refresh()
@@ -392,7 +390,7 @@ final class TerminalWorkbenchE2ETests: XCTestCase {
     let daemon = try DaemonFixture()
     defer { daemon.stop() }
     let socketPath = try UnixSocketPath(daemon.socketPath.path)
-    let model = TerminalSessionsModel(socketPath: socketPath, helperURL: daemon.executableURL)
+    let model = TerminalSessionsModel(socketPath: socketPath)
     await model.refresh()
     XCTAssertNil(model.errorMessage)
     if model.sessions.isEmpty { await model.createSession() }

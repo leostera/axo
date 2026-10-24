@@ -73,7 +73,7 @@ final class TerminalSessionsModelPublishingTests: XCTestCase {
       id: 10, processId: 1, initialPwd: "/", ptyDevice: "/dev/null", attachSocketPath: "/tmp/s")
     let session = TerminalSession(id: 1, initialPwd: "/", shells: [shell])
     client.sessions = [session]
-    let model = TerminalSessionsModel(client: client, helperURL: URL(fileURLWithPath: "/"))
+    let model = TerminalSessionsModel(client: client)
     await model.refresh()
 
     let changed = await observesChange(of: {
@@ -90,7 +90,7 @@ final class TerminalSessionsModelPublishingTests: XCTestCase {
   func testUnsupportedCommandReportsUserFacingError() async {
     let client = FakeAxodClient()
     client.methods = Array(TerminalSessionsModel.requiredMethods)
-    let model = TerminalSessionsModel(client: client, helperURL: URL(fileURLWithPath: "/"))
+    let model = TerminalSessionsModel(client: client)
     do {
       try await model.renameSession(1, to: "x")
       XCTFail("rename must require axo.session.rename")

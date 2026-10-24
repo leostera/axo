@@ -44,16 +44,15 @@ extension AxoAppEnvironment {
   private static func uiTest() -> AxoAppEnvironment {
     let environment = ProcessInfo.processInfo.environment
     guard let socket = environment["AXO_UI_TEST_SOCKET"],
-      let helper = environment["AXO_UI_TEST_HELPER"],
       let controlDirectory = environment["AXO_UI_TEST_CONTROL_DIR"],
       FileManager.default.fileExists(atPath: controlDirectory),
       let socketPath = try? UnixSocketPath(socket)
     else {
-      fatalError("The Axo UI-test app requires isolated socket, helper, and control paths.")
+      fatalError("The Axo UI-test app requires isolated socket and control paths.")
     }
     return AxoAppEnvironment(
       sessions: TerminalSessionsModel(
-        socketPath: socketPath, helperURL: URL(fileURLWithPath: helper)),
+        socketPath: socketPath),
       daemonIsRunning: { true },
       startsDaemon: false,
       prepareTerminalWindow: { sessions, ghostty in

@@ -163,7 +163,6 @@ struct TerminalPaneView: View {
         GhosttyTerminalView(
           runtime: ghostty,
           shell: shell,
-          helperURL: sessions.helperURL,
           size: geometry.size,
           isFocused: sessions.focusedShellID == shell.id,
           onFocus: { sessions.focus(shell.id) },

@@ -18,8 +18,7 @@ extension AxoVisualUITests {
     fixture.launchApp()
 
     let model = TerminalSessionsModel(
-      socketPath: try UnixSocketPath(fixture.socketURL.path),
-      helperURL: fixture.helperURL
+      socketPath: try UnixSocketPath(fixture.socketURL.path)
     )
     try await fixture.waitForWindow()
     try await fixture.waitForTerminalReady()
@@ -46,8 +45,7 @@ extension AxoVisualUITests {
     let fixture = try UITestFixture(app: app)
     defer { fixture.stop() }
     let model = TerminalSessionsModel(
-      socketPath: try UnixSocketPath(fixture.socketURL.path),
-      helperURL: fixture.helperURL
+      socketPath: try UnixSocketPath(fixture.socketURL.path)
     )
 
     fixture.launchApp()
@@ -136,7 +134,7 @@ extension AxoVisualUITests {
     try FileManager.default.createDirectory(at: workspaceDirectory, withIntermediateDirectories: true)
 
     let socketPath = try UnixSocketPath(fixture.socketURL.path)
-    let model = TerminalSessionsModel(socketPath: socketPath, helperURL: fixture.helperURL)
+    let model = TerminalSessionsModel(socketPath: socketPath)
     fixture.launchApp()
     try await fixture.waitForWindow()
     try await fixture.createWorkspace(at: workspaceDirectory)
@@ -271,8 +269,7 @@ extension AxoVisualUITests {
     fixture.launchApp()
 
     let model = TerminalSessionsModel(
-      socketPath: try UnixSocketPath(fixture.socketURL.path),
-      helperURL: fixture.helperURL
+      socketPath: try UnixSocketPath(fixture.socketURL.path)
     )
     try await fixture.waitForWindow()
     XCTAssertTrue(app.menuBars.menuBarItems["Axo"].waitForExistence(timeout: 2))

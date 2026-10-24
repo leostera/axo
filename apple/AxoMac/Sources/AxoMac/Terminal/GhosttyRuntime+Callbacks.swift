@@ -47,7 +47,14 @@ extension GhosttyRuntime {
             location: location, content: content, count: count, confirm: confirm)
         }
       },
-      close_surface_cb: { _, _ in }
+      close_surface_cb: { userdata, _ in
+        // With external I/O this means axod ended the output stream. Never free a surface
+        // inside its own callback; handle it on the next main-queue turn.
+        guard let view = GhosttyRuntime.clipboardView(userdata) else { return }
+        DispatchQueue.main.async {
+          MainActor.assumeIsolated { view.runtime?.surfaceOutputEnded(view) }
+        }
+      }
     )
   }
 

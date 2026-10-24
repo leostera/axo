@@ -16,6 +16,8 @@ final class GhosttySurfaceNSView: NSView, @MainActor NSTextInputClient,
 {
   private(set) var surface: ghostty_surface_t?
   let shellID: ShellID
+  /// Increments per attach attempt so a slow, superseded attach never installs its surface.
+  var attachGeneration = 0
   var connection = TerminalSurfaceConnection.starting {
     didSet {
       guard connection != oldValue else { return }

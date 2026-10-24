@@ -82,7 +82,6 @@ final class TerminalSessionsModel {
     "axo.session.unsubscribe",
   ]
 
-  let helperURL: URL
   /// The daemon client, for collaborators such as `TerminalCatalogSync`.
   var catalogClient: AxodClient? { client }
   /// The same daemon connection, for Settings (nil for in-memory test clients).
@@ -101,7 +100,7 @@ final class TerminalSessionsModel {
 
   // MARK: - Initialization
 
-  /// The production model: talks to the installed Axod socket and the bundled helper.
+  /// The production model: talks to the installed Axod socket.
   convenience init() {
     let client: AxodClient?
     let clientError: String?
@@ -115,30 +114,25 @@ final class TerminalSessionsModel {
     self.init(
       client: client,
       clientError: clientError,
-      helperURL: Bundle.main.bundleURL.appendingPathComponent("Contents/Helpers/axod"),
       selectedSessionDefaults: .standard)
   }
 
   convenience init(
     socketPath: UnixSocketPath,
-    helperURL: URL,
     selectedSessionDefaults: UserDefaults? = nil
   ) {
     self.init(
       client: UnixSocketAxodClient(socketPath: socketPath),
-      helperURL: helperURL,
       selectedSessionDefaults: selectedSessionDefaults)
   }
 
   convenience init(
     client: AxodClient,
-    helperURL: URL,
     selectedSessionDefaults: UserDefaults? = nil
   ) {
     self.init(
       client: client,
       clientError: nil,
-      helperURL: helperURL,
       selectedSessionDefaults: selectedSessionDefaults)
   }
 
@@ -147,12 +141,10 @@ final class TerminalSessionsModel {
   private init(
     client: AxodClient?,
     clientError: String?,
-    helperURL: URL,
     selectedSessionDefaults: UserDefaults?
   ) {
     self.client = client
     self.clientError = clientError
-    self.helperURL = helperURL
     self.selectedSessionDefaults = selectedSessionDefaults
     let preferenceDefaults = selectedSessionDefaults ?? .standard
     self.preferenceDefaults = preferenceDefaults

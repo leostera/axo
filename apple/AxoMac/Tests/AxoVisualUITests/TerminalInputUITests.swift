@@ -168,7 +168,7 @@ extension AxoVisualUITests {
     try await fixture.waitForWindow()
     try await fixture.waitForTerminalReady()
     let model = TerminalSessionsModel(
-      socketPath: try UnixSocketPath(fixture.socketURL.path), helperURL: fixture.helperURL)
+      socketPath: try UnixSocketPath(fixture.socketURL.path))
     try await waitForSessionCount(1, model: model)
     let sessionID = try XCTUnwrap(model.sessions.first?.id)
     fixture.terminalWindow.typeKey("d", modifierFlags: .command)

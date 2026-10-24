@@ -145,7 +145,7 @@ final class TerminalCatalogTests: XCTestCase {
   }
 
   private func makeModel(_ client: FakeAxodClient) -> TerminalSessionsModel {
-    TerminalSessionsModel(client: client, helperURL: URL(fileURLWithPath: "/usr/bin/false"))
+    TerminalSessionsModel(client: client)
   }
 
   func testRefreshListsCatalogAndSelectsFirstSession() async {

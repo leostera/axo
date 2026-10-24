@@ -11,11 +11,9 @@ final class AgentAutoRestartPreferenceTests: XCTestCase {
     let defaults = try XCTUnwrap(UserDefaults(suiteName: suiteName))
     defer { defaults.removePersistentDomain(forName: suiteName) }
     let socketPath = try UnixSocketPath("/tmp/axo-agent-auto-restart.sock")
-    let helperURL = URL(fileURLWithPath: "/bin/false")
 
     let firstModel = TerminalSessionsModel(
       socketPath: socketPath,
-      helperURL: helperURL,
       selectedSessionDefaults: defaults
     )
     XCTAssertFalse(firstModel.automaticallyRestartUnavailablePi)
@@ -25,7 +23,6 @@ final class AgentAutoRestartPreferenceTests: XCTestCase {
 
     let reopenedModel = TerminalSessionsModel(
       socketPath: socketPath,
-      helperURL: helperURL,
       selectedSessionDefaults: defaults
     )
     XCTAssertTrue(reopenedModel.automaticallyRestartUnavailablePi)

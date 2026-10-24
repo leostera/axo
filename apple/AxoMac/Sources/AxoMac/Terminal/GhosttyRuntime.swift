@@ -31,6 +31,7 @@ final class GhosttyRuntime {
   // userdata pointer back to the clipboard callbacks, even after SwiftUI pane identities change.
   @ObservationIgnored private var terminalSurfaces: [ShellID: SurfaceEntry] = [:]
   @ObservationIgnored private var notificationTokens: [NSObjectProtocol] = []
+  @ObservationIgnored private var lastReattach: [ShellID: ContinuousClock.Instant] = [:]
 
   init(initializeGhostty: Bool = true) {
     let storedSensitivity =
@@ -63,7 +64,6 @@ final class GhosttyRuntime {
 
   func surfacePresentation(
     for shell: TerminalShell,
-    helperURL: URL,
     initialSize: CGSize,
     onFocus: @escaping () -> Void,
     onStatusChange: @escaping (TerminalSurfaceConnection) -> Void,
@@ -89,7 +89,7 @@ final class GhosttyRuntime {
     view.onStatusChange = onStatusChange
     view.onSplit = onSplit
     view.onClose = onClose
-    createSurface(in: view, shell: shell, helperURL: helperURL)
+    createSurface(in: view, shell: shell)
     host.attachSurface(view)
     terminalSurfaces[shell.id] = SurfaceEntry(shell: shell, host: host, view: view)
     return (host, view)
@@ -153,6 +153,7 @@ final class GhosttyRuntime {
   }
 
   private func destroySurface(shellID: ShellID) {
+    lastReattach[shellID] = nil
     guard let entry = terminalSurfaces.removeValue(forKey: shellID) else { return }
     entry.view.removeFromSuperview()
     if let surface = entry.view.detach() {
@@ -160,19 +161,60 @@ final class GhosttyRuntime {
     }
   }
 
-  private func createSurface(
-    in view: GhosttySurfaceNSView,
-    shell: TerminalShell,
-    helperURL: URL
-  ) {
-    guard let app else {
+  /// Attaches to the shell off the main thread, then creates (or replaces) the view's surface.
+  /// Axod owns the PTY and is its only reader: the surface reads the attach stream and uses the
+  /// PTY descriptor only for input, resizing and termios queries (Ghostty external I/O patch).
+  private func createSurface(in view: GhosttySurfaceNSView, shell: TerminalShell) {
+    guard app != nil else {
       view.connection = .failed(errorMessage ?? "libghostty is unavailable.")
       return
     }
-    guard FileManager.default.isExecutableFile(atPath: helperURL.path) else {
-      view.connection = .failed("The bundled axod terminal-attach helper is missing.")
+    let socketPath: UnixSocketPath
+    do {
+      socketPath = try UnixSocketPath(shell.attachSocketPath)
+    } catch {
+      view.connection = .failed("axod reported an invalid terminal socket path.")
       return
     }
+    view.attachGeneration += 1
+    let generation = view.attachGeneration
+    let shellID = shell.id
+    Task.detached(priority: .userInitiated) { [weak self, weak view] in
+      let result = Result { try TerminalAttachment.open(socketPath: socketPath, shellID: shellID) }
+      await MainActor.run {
+        guard let self, let view else {
+          if case .success(let attachment) = result { attachment.close() }
+          return
+        }
+        self.adopt(result, in: view, shell: shell, generation: generation)
+      }
+    }
+  }
+
+  private func adopt(
+    _ result: Result<TerminalAttachment, Error>,
+    in view: GhosttySurfaceNSView,
+    shell: TerminalShell,
+    generation: Int
+  ) {
+    let attachment: TerminalAttachment
+    switch result {
+    case .success(let opened):
+      attachment = opened
+    case .failure(let error):
+      guard view.attachGeneration == generation else { return }
+      // A replacement attempt for an exited shell keeps the final screen; the catalog
+      // removes the pane.
+      if view.surface != nil, case TerminalAttachmentError.rejected(.shellNotOpen) = error { return }
+      view.connection = .failed("Could not attach to the terminal: \(error)")
+      return
+    }
+    // Ghostty duplicates both descriptors, so ours close whatever happens below.
+    defer { attachment.close() }
+    guard view.attachGeneration == generation,
+      terminalSurfaces[shell.id]?.view === view,
+      let app
+    else { return }
 
     var surfaceConfig = ghostty_surface_config_new()
     surfaceConfig.userdata = Unmanaged.passUnretained(view).toOpaque()
@@ -185,29 +227,35 @@ final class GhosttyRuntime {
     )
     surfaceConfig.font_size = 0
     surfaceConfig.context = GHOSTTY_SURFACE_CONTEXT_WINDOW
-
-    let command = Self.terminalAttachCommand(
-      helperPath: helperURL.path,
-      socketPath: shell.attachSocketPath,
-      shellID: shell.id
-    )
+    surfaceConfig.external_io = true
+    surfaceConfig.external_output_fd = attachment.outputDescriptor
+    surfaceConfig.external_pty_fd = attachment.ptyDescriptor
 
     let createdSurface = shell.initialPwd.withCString { workingDirectory in
-      command.withCString { command in
-        surfaceConfig.working_directory = workingDirectory
-        surfaceConfig.command = command
-        return ghostty_surface_new(app, &surfaceConfig)
-      }
+      surfaceConfig.working_directory = workingDirectory
+      return ghostty_surface_new(app, &surfaceConfig)
     }
-
     guard let createdSurface else {
       view.connection = .failed("Ghostty could not create a terminal surface.")
       return
     }
-
+    if let previous = view.detach() {
+      ghostty_surface_free(previous)
+    }
     view.attach(createdSurface)
     view.connection = .connected
     updateSurfaceSize(in: view, contentSize: view.bounds.size)
+  }
+
+  /// Axod ended a surface's output stream. If the shell still runs (the client fell behind, or
+  /// axod restarted the attachment) reattach; if it exited, the reattach is rejected and the
+  /// catalog closes the pane. Reattaching is rate-limited so a failing stream cannot spin.
+  func surfaceOutputEnded(_ view: GhosttySurfaceNSView) {
+    guard let entry = terminalSurfaces[view.shellID], entry.view === view else { return }
+    let now = ContinuousClock.now
+    if let last = lastReattach[view.shellID], now - last < .seconds(2) { return }
+    lastReattach[view.shellID] = now
+    createSurface(in: view, shell: entry.shell)
   }
 
   func destroySurface(in view: GhosttySurfaceNSView) {
@@ -399,27 +447,6 @@ final class GhosttyRuntime {
         }
       }
     )
-  }
-
-  private static func terminalAttachCommand(
-    helperPath: String,
-    socketPath: String,
-    shellID: ShellID
-  ) -> String {
-    [
-      helperPath,
-      "terminal-attach",
-      "--attach-socket",
-      socketPath,
-      "--shell-id",
-      shellID.description,
-    ]
-    .map(shellQuoted)
-    .joined(separator: " ")
-  }
-
-  private static func shellQuoted(_ value: String) -> String {
-    "'" + value.replacingOccurrences(of: "'", with: "'\\''") + "'"
   }
 }
 

@@ -26,6 +26,10 @@ def _ghostty_repository_impl(ctx):
         output = "source",
     )
 
+    # Axo carries a small patch set on the pinned commit; see third_party/ghostty/README.md.
+    for patch in ctx.attr.patches:
+        ctx.patch(patch, strip = 1)
+
     zig = ctx.path("zig-toolchain/zig")
     source = ctx.path("source")
     result = ctx.execute(
@@ -87,5 +91,11 @@ ghostty_repository = repository_rule(
     implementation = _ghostty_repository_impl,
     doc = "Builds a pinned GhosttyKit XCFramework and its runtime resources with the pinned Zig toolchain.",
     local = False,
+    attrs = {
+        "patches": attr.label_list(
+            default = [Label("//third_party/ghostty:0001-external-terminal-io.patch")],
+            doc = "Patches applied to the pinned Ghostty source before building.",
+        ),
+    },
     environ = ["HOME", "SSL_CERT_FILE", "ZIG_GLOBAL_CACHE_DIR"],
 )

@@ -1,0 +1,302 @@
+diff --git a/source/include/ghostty.h b/source/include/ghostty.h
+index 9a12b9c..f84691f 100644
+--- a/source/include/ghostty.h
++++ b/source/include/ghostty.h
+@@ -518,6 +518,14 @@ typedef struct {
+   const char* initial_input;
+   bool wait_after_command;
+   ghostty_surface_context_e context;
++  // Axo patch: external terminal I/O. When external_io is true no subprocess
++  // is spawned. Output is read from external_output_fd until end of file,
++  // which is reported as a child exit. Input, resizes and termios/foreground
++  // queries go to external_pty_fd, whose file status flags are never changed.
++  // The surface duplicates both descriptors; the caller keeps the originals.
++  bool external_io;
++  int external_output_fd;
++  int external_pty_fd;
+ } ghostty_surface_config_s;
+ 
+ typedef struct {
+diff --git a/source/src/Surface.zig b/source/src/Surface.zig
+index 568b74d..fd9b9f9 100644
+--- a/source/src/Surface.zig
++++ b/source/src/Surface.zig
+@@ -679,6 +679,10 @@ pub fn init(
+             .working_directory = if (config.@"working-directory") |wd| wd.value() else null,
+             .resources_dir = global.resourcesDir().host(),
+             .term = config.term,
++            .external_io = if (comptime @hasDecl(apprt.runtime.Surface, "externalIo"))
++                rt_surface.externalIo()
++            else
++                null,
+             .rt_pre_exec_info = .init(config),
+             .rt_post_fork_info = .init(config),
+         });
+diff --git a/source/src/apprt/embedded.zig b/source/src/apprt/embedded.zig
+index 3c6b2c1..709eb09 100644
+--- a/source/src/apprt/embedded.zig
++++ b/source/src/apprt/embedded.zig
+@@ -454,6 +454,9 @@ pub const Surface = struct {
+     cursor_pos: apprt.CursorPos,
+     inspector: ?*Inspector = null,
+ 
++    /// Axo patch: externally owned terminal I/O, if requested.
++    external_io: ?apprt.surface.ExternalIo = null,
++
+     /// The current title of the surface. The embedded apprt saves this so
+     /// that getTitle works without the implementer needing to save it.
+     title: ?[:0]const u8 = null,
+@@ -499,6 +502,11 @@ pub const Surface = struct {
+ 
+         /// Context for the new surface
+         context: apprt.surface.NewSurfaceContext = .window,
++
++        /// Axo patch: externally owned terminal I/O. See ghostty.h.
++        external_io: bool = false,
++        external_output_fd: c_int = -1,
++        external_pty_fd: c_int = -1,
+     };
+ 
+     pub fn init(self: *Surface, app: *App, opts: Options) !void {
+@@ -513,6 +521,10 @@ pub const Surface = struct {
+             },
+             .size = .{ .width = 800, .height = 600 },
+             .cursor_pos = .{ .x = -1, .y = -1 },
++            .external_io = if (opts.external_io) .{
++                .output_fd = opts.external_output_fd,
++                .pty_fd = opts.external_pty_fd,
++            } else null,
+         };
+ 
+         // Add ourselves to the list of surfaces on the app.
+@@ -631,6 +643,11 @@ pub const Surface = struct {
+         }
+     }
+ 
++    /// Axo patch: read by the core surface when it builds its termio backend.
++    pub fn externalIo(self: *const Surface) ?apprt.surface.ExternalIo {
++        return self.external_io;
++    }
++
+     pub fn deinit(self: *Surface) void {
+         // Shut down our inspector
+         self.freeInspector();
+diff --git a/source/src/apprt/surface.zig b/source/src/apprt/surface.zig
+index 3b1a04d..ce69761 100644
+--- a/source/src/apprt/surface.zig
++++ b/source/src/apprt/surface.zig
+@@ -207,6 +207,15 @@ pub const Mailbox = struct {
+ };
+ 
+ /// Context for new surface creation to determine inheritance behavior
++/// Axo patch: a surface whose terminal I/O is owned by another process.
++/// See `ghostty_surface_config_s.external_io`.
++pub const ExternalIo = struct {
++    /// Read until end of file; never written.
++    output_fd: std.posix.fd_t,
++    /// A PTY master used for input, resizing and termios/foreground queries.
++    pty_fd: std.posix.fd_t,
++};
++
+ pub const NewSurfaceContext = enum(c_int) {
+     window = 0,
+     tab = 1,
+diff --git a/source/src/termio/Exec.zig b/source/src/termio/Exec.zig
+index 2dfb1e5..4652938 100644
+--- a/source/src/termio/Exec.zig
++++ b/source/src/termio/Exec.zig
+@@ -114,7 +114,10 @@ pub fn threadEnter(
+         // as a special case in os/flatpak.zig) since the
+         // command is on the host.
+         .flatpak => null,
+-    } else return error.ProcessNotStarted;
++    } else if (self.subprocess.external_io != null)
++        null
++    else
++        return error.ProcessNotStarted;
+     errdefer if (process) |*p| p.deinit();
+ 
+     // Track our process start time for abnormal exits
+@@ -576,10 +579,20 @@ pub const Config = struct {
+     resources_dir: ?[]const u8,
+     term: []const u8,
+ 
++    /// Axo patch: when set, no process is spawned. See `apprt.surface.ExternalIo`.
++    external_io: ?apprt.surface.ExternalIo = null,
++
+     rt_pre_exec_info: Command.RtPreExecInfo,
+     rt_post_fork_info: Command.RtPostForkInfo,
+ };
+ 
++/// Axo patch: duplicate a descriptor with close-on-exec set.
++fn dupCloexec(fd: posix.fd_t) !posix.fd_t {
++    const duplicate = posix.system.fcntl(fd, posix.F.DUPFD_CLOEXEC, @as(c_int, 0));
++    if (duplicate < 0) return error.ExternalIoDuplicateFailed;
++    return @intCast(duplicate);
++}
++
+ const Subprocess = struct {
+     const c = @import("posix_c");
+ 
+@@ -592,6 +605,10 @@ const Subprocess = struct {
+     pty: ?Pty = null,
+     process: ?Process = null,
+ 
++    /// Axo patch: owned duplicates of the external descriptors. `pty_fd`
++    /// moves into `pty` on start, after which `pty` closes it.
++    external_io: ?apprt.surface.ExternalIo = null,
++
+     rt_pre_exec_info: Command.RtPreExecInfo,
+     rt_post_fork_info: Command.RtPostForkInfo,
+ 
+@@ -624,6 +641,18 @@ const Subprocess = struct {
+         errdefer arena.deinit();
+         const alloc = arena.allocator();
+ 
++        // Axo patch: own duplicates so the caller's descriptors stay theirs.
++        const external_io: ?apprt.surface.ExternalIo = if (cfg.external_io) |external| external: {
++            const output_fd = try dupCloexec(external.output_fd);
++            errdefer _ = posix.system.close(output_fd);
++            const pty_fd = try dupCloexec(external.pty_fd);
++            break :external .{ .output_fd = output_fd, .pty_fd = pty_fd };
++        } else null;
++        errdefer if (external_io) |external| {
++            _ = posix.system.close(external.output_fd);
++            _ = posix.system.close(external.pty_fd);
++        };
++
+         // Get our env. If a default env isn't provided by the caller
+         // then we get it ourselves.
+         var env = cfg.env;
+@@ -871,6 +900,7 @@ const Subprocess = struct {
+ 
+             .rt_pre_exec_info = cfg.rt_pre_exec_info,
+             .rt_post_fork_info = cfg.rt_post_fork_info,
++            .external_io = external_io,
+ 
+             // Should be initialized with initTerminal call.
+             .grid_size = .{},
+@@ -881,19 +911,41 @@ const Subprocess = struct {
+     /// Clean up the subprocess. This will stop the subprocess if it is started.
+     pub fn deinit(self: *Subprocess) void {
+         self.stop();
++        if (self.external_io) |external| {
++            _ = posix.system.close(external.output_fd);
++            if (self.pty == null) _ = posix.system.close(external.pty_fd);
++        }
+         if (self.pty) |*pty| pty.deinit();
+         if (self.env) |*env| env.deinit();
+         self.arena.deinit();
+         self.* = undefined;
+     }
+ 
++    /// Axo patch: adopt the external descriptors instead of forking.
++    fn startExternal(self: *Subprocess, external: apprt.surface.ExternalIo) StartFds {
++        assert(self.pty == null);
++        self.pty = .{ .master = external.pty_fd, .slave = -1 };
++        // Give the shell our size now, as Pty.open would for a new process.
++        self.resize(self.grid_size, self.screen_size) catch |err| {
++            log.warn("error sizing external pty err={}", .{err});
++        };
++        log.info("adopted external terminal io output_fd={} pty_fd={}", .{
++            external.output_fd,
++            external.pty_fd,
++        });
++        return .{ .read = external.output_fd, .write = external.pty_fd };
++    }
++
+     /// Start the subprocess. If the subprocess is already started this
+     /// will crash.
+-    pub fn start(self: *Subprocess, alloc: Allocator) !struct {
++    const StartFds = struct {
+         read: Pty.Fd,
+         write: Pty.Fd,
+-    } {
++    };
++
++    pub fn start(self: *Subprocess, alloc: Allocator) !StartFds {
+         assert(self.pty == null and self.process == null);
++        if (self.external_io) |external| return self.startExternal(external);
+ 
+         // This function is funny because on POSIX systems it can
+         // fail in the forked process. This is flipped to true if
+@@ -1400,6 +1452,14 @@ pub const ReadThread = struct {
+         /// remaining batches and then exits.
+         done: bool = false,
+ 
++        /// Axo patch: the fd is an external output stream, where a
++        /// zero-byte read is end of file rather than a PTY quirk.
++        external: bool = false,
++
++        /// Axo patch: set by the gather stage when the stream ended
++        /// on its own (not by a quit signal).
++        ended_by_eof: bool = false,
++
+         /// The buffer storage itself.
+         bufs: [buffer_count][buffer_capacity]u8 = undefined,
+     };
+@@ -1434,7 +1494,23 @@ pub const ReadThread = struct {
+         }
+ 
+         // Shared pipeline
+-        var pipeline: Pipeline = .{};
++        var pipeline: Pipeline = .{
++            .external = io.backend.exec.subprocess.external_io != null,
++        };
++
++        // Axo patch: an external stream has no process to watch, so its
++        // end of file is the child exit. Runs after the gather stage is
++        // joined and every batch is parsed (defers run in reverse).
++        defer if (pipeline.external and pipeline.ended_by_eof) {
++            _ = io.surface_mailbox.push(.{
++                .child_exited = .{
++                    .exit_code = 0,
++                    // The shell's lifetime is the host's concern; never
++                    // show Ghostty's abnormal-exit UI for it.
++                    .runtime_ms = std.math.maxInt(u64),
++                },
++            }, .{ .forever = {} });
++        };
+ 
+         // The idle self-pipe (see the Pipeline field docs). If we
+         // can't create it we still run correctly, bridge polls are
+@@ -1667,6 +1743,7 @@ pub const ReadThread = struct {
+                     error.InputOutput,
+                     => {
+                         log.info("io gather exiting", .{});
++                        pipeline.ended_by_eof = true;
+                         fatal = true;
+                         break :gather;
+                     },
+@@ -1680,7 +1757,13 @@ pub const ReadThread = struct {
+                 // This happens on macOS instead of WouldBlock when the
+                 // child process dies. Deliver what we have and let the
+                 // outer poll detect HUP.
+-                if (n == 0) break :gather;
++                if (n == 0) {
++                    if (pipeline.external) {
++                        pipeline.ended_by_eof = true;
++                        fatal = true;
++                    }
++                    break :gather;
++                }
+ 
+                 total += n;
+ 
+@@ -1722,6 +1805,7 @@ pub const ReadThread = struct {
+             // read thread.
+             if (pollfds[0].revents & posix.POLL.HUP != 0) {
+                 log.info("pty fd closed, read thread exiting", .{});
++                pipeline.ended_by_eof = true;
+                 return;
+             }
+         }
+@@ -1749,6 +1833,8 @@ pub const ReadThread = struct {
+     }
+ 
+     /// Sets the fd to non-blocking mode. Returns false on failure.
++    /// Axo patch: only ever applied to the output fd, which external I/O
++    /// keeps separate from the shared PTY file description.
+     fn setNonblock(fd: posix.fd_t) bool {
+         const flags = posix.system.fcntl(fd, posix.F.GETFL);
+         if (flags == -1) {

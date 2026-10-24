@@ -112,6 +112,57 @@ final class AxodInteropTests: XCTestCase {
     let remainingSessions = try await UnixSocketRPC.listSessionSnapshot(at: socketPath).sessions
     XCTAssertEqual(remainingSessions.map(\.id), [baselineSession.id])
   }
+
+  func testTerminalAttachmentsShareOneShellWithoutReadingThePTY() async throws {
+    let directory = URL(fileURLWithPath: "/tmp", isDirectory: true)
+      .appendingPathComponent("axo-attach-\(UUID().uuidString.prefix(8))", isDirectory: true)
+    try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
+    defer { try? FileManager.default.removeItem(at: directory) }
+    let socketPath = try UnixSocketPath(directory.appendingPathComponent("axod.sock").path)
+    let daemon = Process()
+    daemon.executableURL = try axodExecutable()
+    daemon.arguments = [
+      "--socket", socketPath.value,
+      "--server-dir", directory.appendingPathComponent("server").path,
+    ]
+    daemon.standardOutput = FileHandle.nullDevice
+    daemon.standardError = FileHandle.nullDevice
+    try daemon.run()
+    defer { stop(daemon) }
+    try await waitForSocket(at: socketPath, from: daemon)
+
+    let sessions = try await UnixSocketRPC.listSessionSnapshot(at: socketPath).sessions
+    let session = try XCTUnwrap(sessions.first)
+    let shell = try XCTUnwrap(session.shells.first)
+    let attachSocket = try UnixSocketPath(shell.attachSocketPath)
+    let first = try TerminalAttachment.open(socketPath: attachSocket, shellID: shell.id)
+    defer { first.close() }
+    let second = try TerminalAttachment.open(socketPath: attachSocket, shellID: shell.id)
+    defer { second.close() }
+
+    // Input goes to the PTY descriptor; output arrives on every attachment's stream.
+    let command = Array("printf '%s%s\\n' AXO_SWIFT_ ATTACH_OK\n".utf8)
+    XCTAssertEqual(command.withUnsafeBytes { write(first.ptyDescriptor, $0.baseAddress, $0.count) }, command.count)
+    for attachment in [first, second] {
+      XCTAssertTrue(
+        readUntil(attachment.outputDescriptor, contains: "AXO_SWIFT_ATTACH_OK", timeout: 5),
+        "every attachment should receive the shell's output")
+    }
+
+    let third = try TerminalAttachment.open(socketPath: attachSocket, shellID: shell.id)
+    defer { third.close() }
+    XCTAssertGreaterThan(third.replayByteCount, 0)
+    XCTAssertTrue(
+      readUntil(third.outputDescriptor, contains: "AXO_SWIFT_ATTACH_OK", timeout: 5),
+      "a late attachment should replay earlier output")
+
+    do {
+      _ = try TerminalAttachment.open(socketPath: attachSocket, shellID: ShellID(rawValue: 999_999))
+      XCTFail("attaching to an unknown shell must be rejected")
+    } catch let error as TerminalAttachmentError {
+      XCTAssertEqual(error, .rejected(.shellNotOpen))
+    }
+  }
 }
 
 private func axodExecutable() throws -> URL {
@@ -183,4 +234,19 @@ private enum AxodInteropError: LocalizedError {
       "axod exited before creating its Unix-domain socket."
     }
   }
+}
+
+private func readUntil(_ descriptor: Int32, contains needle: String, timeout: TimeInterval) -> Bool {
+  let deadline = Date().addingTimeInterval(timeout)
+  var received = Data()
+  var buffer = [UInt8](repeating: 0, count: 4096)
+  while Date() < deadline {
+    var poller = pollfd(fd: descriptor, events: Int16(POLLIN), revents: 0)
+    guard poll(&poller, 1, 100) > 0 else { continue }
+    let count = buffer.withUnsafeMutableBytes { read(descriptor, $0.baseAddress, $0.count) }
+    guard count > 0 else { return false }
+    received.append(contentsOf: buffer[0..<count])
+    if String(decoding: received, as: UTF8.self).contains(needle) { return true }
+  }
+  return false
 }
