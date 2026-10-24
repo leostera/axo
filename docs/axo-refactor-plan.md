@@ -120,14 +120,26 @@ booleans; parse wire data into domain types at the boundary.
 
 ### 2e. Performance
 
-- **One persistent RPC connection** (in this refactor) instead of a new `NWConnection` per call. axod already serves
-  many in-flight requests per connection. This removes connect/teardown from every command and
-  prepares push-based events (replacing long-polling).
+Phase 2 moved ahead of the rest of Phase 1: measured axod forwarding (attach echo p50 113 µs,
+p99 274 µs) is not where the felt lag is.
+
+- **Done (`447c858`):** hidden surfaces follow window geometry only after it holds still for
+  150 ms, instead of reflowing (and SIGWINCHing every hidden program) on each fullscreen or
+  window-drag animation frame.
+- **Done (`d046f2e`):** Pi status/name updates no longer invalidate the terminal area. The model
+  projects `shellsByID`, `sessionLayouts` and `hasSessions`; the sidebar is its own view.
+- **Persistent RPC connection: deferred.** Measured with the Swift client against axod, a whole
+  call including `NWConnection` setup and teardown is p50 0.28 ms, p99 0.70 ms (200 sequential
+  `axo.health` calls). It is not a latency problem; it stays as groundwork for push events.
 - Profile the ⌘W and new-session paths with the AxoTrace data from build 144, and fix what it
   shows.
 
 ### 2f. Observability
 
+- **Done (`46b27f5`):** main-thread stalls (`event=main.stall`, run-loop observer), delayed
+  libghostty ticks (`event=ghostty.tick_delayed`) and late key delivery
+  (`event=key.delivery_delayed`), category `latency`, plus `key.down`/`ghostty.tick`/`main.busy`
+  signposts.
 - Turn AxoTrace into `OSSignposter` intervals for commands (key → RPC → UI applied), so they show
   in Instruments too. Bounded fields only: no paths, names or terminal content.
 
@@ -146,5 +158,6 @@ and the audit docs.
 ## Decisions
 
 - Order: Phase 0, Phase 1 (axod), Phase 2 (app), Phase 3 (docs).
-- The persistent RPC connection is part of Phase 2.
+- The persistent RPC connection is deferred: per-call connection cost is measured at 0.28 ms p50.
+- Phase 2 (app) runs before the rest of Phase 1: the felt lag is in the app, not axod.
 - Load-test pass bar: control-plane p99 < 10 ms.
