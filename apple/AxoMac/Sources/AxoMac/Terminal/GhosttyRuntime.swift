@@ -105,9 +105,9 @@ final class GhosttyRuntime {
   }
 
   func setFocusedShellID(_ shellID: ShellID?) {
-    focusedShellID = shellID
-    // @Published emits even when Set.remove finds nothing. Focus reconciliation
-    // must not invalidate every terminal representable on every render pass.
+    // Observation notifies on every write, even an unchanged value or a Set.remove that finds
+    // nothing; focus reconciliation must not invalidate every terminal view on each pass.
+    if focusedShellID != shellID { focusedShellID = shellID }
     if let shellID, attentionShellIDs.contains(shellID) {
       attentionShellIDs.remove(shellID)
     }
