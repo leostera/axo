@@ -46,7 +46,7 @@ final class TerminalCatalogSync {
       do {
         let opened = try await client.subscribeToCatalog()
         subscription = opened
-        await sessions.refresh()
+        await sessions.resynchronize()
         backoff = minimumBackoff
         while !Task.isCancelled {
           guard let event = try await client.nextEvent(for: opened) else { continue }

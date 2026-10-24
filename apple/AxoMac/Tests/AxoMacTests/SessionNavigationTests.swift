@@ -1,0 +1,102 @@
+import AxoRPC
+import Combine
+import XCTest
+
+@testable import AxoMac
+
+final class SessionNavigationTests: XCTestCase {
+  private func session(_ id: SessionID, workspace: String? = nil) -> TerminalSession {
+    TerminalSession(id: id, initialPwd: "/", shells: [], workspaceId: workspace)
+  }
+
+  func testRecentSessionsAreNewestFirstUniqueAndBounded() {
+    var recent = RecentSessions()
+    recent.remember(1)
+    recent.remember(2)
+    recent.remember(1)
+    XCTAssertEqual(recent.ids, [1, 2])
+    recent.forget(1)
+    XCTAssertEqual(recent.ids, [2])
+    for id in 0..<Int64(RecentSessions.capacity + 10) { recent.remember(SessionID(rawValue: id)) }
+    XCTAssertEqual(recent.ids.count, RecentSessions.capacity)
+  }
+
+  func testSidebarOrderGroupsByWorkspaceOrderThenStandalone() {
+    let workspaces = [
+      WorkspaceRecord(workspaceId: "b", name: "B", directoryPath: "/"),
+      WorkspaceRecord(workspaceId: "a", name: "A", directoryPath: "/"),
+    ]
+    let sessions = [session(1), session(2, workspace: "a"), session(3, workspace: "b")]
+    XCTAssertEqual(
+      SessionNavigation.sidebarOrder(sessions, workspaces: workspaces).map(\.id), [3, 2, 1])
+  }
+
+  func testAdjacentIndexWrapsAndStartsAtEnds() {
+    XCTAssertEqual(SessionNavigation.adjacentIndex(from: 2, count: 3, direction: .next), 0)
+    XCTAssertEqual(SessionNavigation.adjacentIndex(from: 0, count: 3, direction: .previous), 2)
+    XCTAssertEqual(SessionNavigation.adjacentIndex(from: nil, count: 3, direction: .next), 0)
+    XCTAssertEqual(SessionNavigation.adjacentIndex(from: nil, count: 3, direction: .previous), 2)
+    XCTAssertNil(SessionNavigation.adjacentIndex(from: nil, count: 0, direction: .next))
+  }
+
+  func testSuccessorPrefersRecentSiblingThenReplacementThenWorkspaceThenAny() {
+    let closed = session(1, workspace: "w")
+    let sessions = [closed, session(2, workspace: "w"), session(3, workspace: "w"), session(4)]
+    var recent = RecentSessions()
+    recent.remember(4)
+    recent.remember(3)
+    recent.remember(1)
+    XCTAssertEqual(
+      SessionNavigation.successor(afterClosing: closed, in: sessions, recent: recent), 3)
+    XCTAssertEqual(
+      SessionNavigation.successor(
+        afterClosing: closed, in: sessions, recent: RecentSessions(),
+        replacement: session(3, workspace: "w")), 3)
+    XCTAssertEqual(
+      SessionNavigation.successor(afterClosing: closed, in: sessions, recent: RecentSessions()), 2)
+    XCTAssertEqual(
+      SessionNavigation.successor(
+        afterClosing: closed, in: [closed, session(4)], recent: RecentSessions()), 4)
+  }
+
+  func testDefaultLayoutPlacesPanesInCreationOrder() {
+    XCTAssertNil(TerminalLayout.defaultLayout(for: []))
+    XCTAssertEqual(TerminalLayout.defaultLayout(for: [7, 8, 9])?.orderedShellIDs, [7, 8, 9])
+  }
+}
+
+@MainActor
+final class TerminalSessionsModelPublishingTests: XCTestCase {
+  func testUnchangedCatalogEventDoesNotRepublish() async {
+    let client = FakeAxodClient()
+    let shell = TerminalShell(
+      id: 10, processId: 1, initialPwd: "/", ptyDevice: "/dev/null", attachSocketPath: "/tmp/s")
+    let session = TerminalSession(id: 1, initialPwd: "/", shells: [shell])
+    client.sessions = [session]
+    let model = TerminalSessionsModel(client: client, helperURL: URL(fileURLWithPath: "/"))
+    await model.refresh()
+
+    var publishes = 0
+    let observation = model.objectWillChange.sink { publishes += 1 }
+    defer { observation.cancel() }
+    await model.apply(.sessionSnapshot(model.sessions[0]))
+    await model.refresh()
+
+    XCTAssertEqual(publishes, 0, "re-applying identical state must not re-render the workbench")
+  }
+
+  func testUnsupportedCommandReportsUserFacingError() async {
+    let client = FakeAxodClient()
+    client.methods = Array(TerminalSessionsModel.requiredMethods)
+    let model = TerminalSessionsModel(client: client, helperURL: URL(fileURLWithPath: "/"))
+    do {
+      try await model.renameSession(1, to: "x")
+      XCTFail("rename must require axo.session.rename")
+    } catch {
+      XCTAssertEqual(
+        error as? SessionCommandError,
+        SessionCommandError(
+          "This action requires a newer Axod. Your Sessions and Workspace are unchanged."))
+    }
+  }
+}

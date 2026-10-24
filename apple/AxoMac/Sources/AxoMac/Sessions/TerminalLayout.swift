@@ -70,6 +70,14 @@ indirect enum TerminalLayout: Equatable, Identifiable {
     }
   }
 
+  /// Panes side by side in creation order; used when Axod has no stored layout.
+  static func defaultLayout(for shellIDs: [ShellID]) -> TerminalLayout? {
+    guard let first = shellIDs.first else { return nil }
+    return shellIDs.dropFirst().reduce(TerminalLayout.pane(first)) { layout, shellID in
+      .split(id: UUID(), direction: .right, ratio: 0.5, first: layout, second: .pane(shellID))
+    }
+  }
+
   var firstShellID: ShellID? {
     switch self {
     case .pane(let shellID): shellID

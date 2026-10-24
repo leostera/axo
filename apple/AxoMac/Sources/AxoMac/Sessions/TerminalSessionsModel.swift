@@ -3,6 +3,13 @@ import AxoRPC
 import Combine
 import Foundation
 
+/// A Session command that failed for an app-level reason (no daemon, unsupported Axod, or an
+/// unexpected result), worded for the user.
+struct SessionCommandError: LocalizedError, Equatable {
+  let message: String
+  init(_ message: String) { self.message = message }
+  var errorDescription: String? { message }
+}
 
 struct WorkspaceArchiveConfirmation: Equatable, Identifiable {
   let workspaceID: String
@@ -12,6 +19,12 @@ struct WorkspaceArchiveConfirmation: Equatable, Identifiable {
   var id: String { workspaceID }
 }
 
+/// The app's view of Axod's Session catalog plus local presentation state (selection, focus,
+/// pane layouts). Axod remains authoritative for Sessions and shells: commands are sent to Axod
+/// and their results reconciled; `TerminalCatalogSync` streams everything else in via `apply(_:)`.
+///
+/// Every published property is assigned only when its value changes, because each publish
+/// re-renders the whole workbench.
 @MainActor
 final class TerminalSessionsModel: ObservableObject {
   @Published private(set) var sessions: [TerminalSession] = []
@@ -19,10 +32,10 @@ final class TerminalSessionsModel: ObservableObject {
   @Published var selectedSessionID: SessionID? {
     didSet {
       guard oldValue != selectedSessionID, let selectedSessionDefaults else { return }
-      if let selectedSessionID, selectedSessionID > 0 {
-        selectedSessionDefaults.set(selectedSessionID.rawValue, forKey: Self.selectedSessionPreferenceKey)
+      if let selectedSessionID {
+        selectedSessionDefaults.set(selectedSessionID.rawValue, forKey: AxoPreferenceKey.selectedSession)
       } else {
-        selectedSessionDefaults.removeObject(forKey: Self.selectedSessionPreferenceKey)
+        selectedSessionDefaults.removeObject(forKey: AxoPreferenceKey.selectedSession)
       }
     }
   }
@@ -34,37 +47,29 @@ final class TerminalSessionsModel: ObservableObject {
   @Published private(set) var pendingTerminalSplit: PendingTerminalSplit?
   @Published private(set) var automaticallyRestartUnavailablePi: Bool
 
-  let helperURL: URL
+  /// Methods every supported Axod must offer; checked once per connection.
+  static let requiredMethods: Set<String> = [
+    "axo.session.list", "axo.workspace.list", "axo.workspace.create",
+    "axo.workspace.session.create", "axo.session.subscribe", "axo.session.events.next",
+    "axo.session.unsubscribe",
+  ]
 
-  private static let selectedSessionPreferenceKey = AxoPreferenceKey.selectedSession
-  private static let automaticPiRestartPreferenceKey = AxoPreferenceKey.automaticPiRestart
+  let helperURL: URL
+  /// The daemon client, for collaborators such as `TerminalCatalogSync`.
+  var catalogClient: AxodClient? { client }
 
   private let client: AxodClient?
   private let clientError: String?
-
-  /// The daemon client, for collaborators such as `TerminalCatalogSync`.
-  var catalogClient: AxodClient? { client }
   private let selectedSessionDefaults: UserDefaults?
   private let preferenceDefaults: UserDefaults
-  private var hasNegotiatedProtocol = false
-  private var layoutsBySession: [SessionID: TerminalLayout] = [:]
-  private var recentSessionIDs: [SessionID] = []
   private let layoutWriter: TerminalLayoutWriter
   private let piRestarter: AutomaticPiRestarter
+  /// Methods offered by the connected Axod; `nil` until negotiated on this connection.
+  private var daemonMethods: Set<String>?
+  private var layoutsBySession: [SessionID: TerminalLayout] = [:]
+  private var recentSessions = RecentSessions()
 
-  var sidebarOrderedSessions: [TerminalSession] {
-    var sessionsByWorkspace: [String: [TerminalSession]] = [:]
-    var standaloneSessions: [TerminalSession] = []
-    for session in sessions {
-      if let workspaceID = session.workspaceId {
-        sessionsByWorkspace[workspaceID, default: []].append(session)
-      } else {
-        standaloneSessions.append(session)
-      }
-    }
-
-    return workspaces.flatMap { sessionsByWorkspace[$0.workspaceId] ?? [] } + standaloneSessions
-  }
+  // MARK: - Initialization
 
   /// The production model: talks to the installed Axod socket and the bundled helper.
   convenience init() {
@@ -121,8 +126,7 @@ final class TerminalSessionsModel: ObservableObject {
     self.selectedSessionDefaults = selectedSessionDefaults
     let preferenceDefaults = selectedSessionDefaults ?? .standard
     self.preferenceDefaults = preferenceDefaults
-    let restartsAutomatically = preferenceDefaults.bool(
-      forKey: Self.automaticPiRestartPreferenceKey)
+    let restartsAutomatically = preferenceDefaults.bool(forKey: AxoPreferenceKey.automaticPiRestart)
     _selectedSessionID = Published(
       initialValue: Self.storedSelectedSessionID(from: selectedSessionDefaults))
     _automaticallyRestartUnavailablePi = Published(initialValue: restartsAutomatically)
@@ -142,53 +146,56 @@ final class TerminalSessionsModel: ObservableObject {
   }
 
   private static func storedSelectedSessionID(from defaults: UserDefaults?) -> SessionID? {
-    guard let rawValue = defaults?.object(forKey: selectedSessionPreferenceKey) as? Int64,
+    guard let rawValue = defaults?.object(forKey: AxoPreferenceKey.selectedSession) as? Int64,
       rawValue > 0
-    else {
-      return nil
-    }
+    else { return nil }
     return SessionID(rawValue: rawValue)
   }
 
-  /// Full resynchronization: negotiate once, then replace the catalog with a fresh listing.
-  /// Used at startup, after a lagged event stream and after commands whose result must be
-  /// reconciled. Steady-state updates arrive through `apply(_:)`.
+  // MARK: - Queries
+
+  var sidebarOrderedSessions: [TerminalSession] {
+    SessionNavigation.sidebarOrder(sessions, workspaces: workspaces)
+  }
+
+  func session(for sessionID: SessionID) -> TerminalSession? {
+    sessions.first(where: { $0.id == sessionID })
+  }
+
+  /// A shell of the selected Session.
+  func shell(for shellID: ShellID) -> TerminalShell? {
+    guard let selectedSessionID else { return nil }
+    return session(for: selectedSessionID)?.shells.first(where: { $0.id == shellID })
+  }
+
+  // MARK: - Synchronization
+
+  /// Re-reads the whole catalog. Used after commands whose outcome must be reconciled; the
+  /// connection-level resync is `resynchronize()`.
   func refresh() async {
-    guard let client else {
-      errorMessage = clientError ?? "Axo can’t locate axod’s socket."
-      return
-    }
     do {
-      if !hasNegotiatedProtocol {
-        let negotiation = try await client.negotiate()
-        guard negotiation.protocolVersion == UnixSocketRPC.protocolVersion,
-          Self.requiredMethods.isSubset(of: Set(negotiation.methods))
-        else {
-          throw UnixSocketRPCError.invalidResponse(
-            "daemon does not support the required Axo protocol")
-        }
-        hasNegotiatedProtocol = true
-      }
+      let client = try requireClient()
+      try await negotiateIfNeeded(using: client)
       async let snapshotTask = client.listSessionSnapshot()
       async let workspacesTask = client.listWorkspaces()
       let snapshot = try await snapshotTask
-      let updatedWorkspaces = try await workspacesTask
-      if workspaces != updatedWorkspaces { workspaces = updatedWorkspaces }
+      assign(\.workspaces, try await workspacesTask)
       applyCatalog(snapshot.sessions, focusing: snapshot.resumeSessionId)
-      errorMessage = nil
+      assign(\.errorMessage, nil)
     } catch {
-      errorMessage = error.localizedDescription
+      report(error)
     }
   }
 
-  static let requiredMethods: Set<String> = [
-    "axo.session.list", "axo.workspace.list", "axo.workspace.create",
-    "axo.workspace.session.create", "axo.session.subscribe", "axo.session.events.next",
-    "axo.session.unsubscribe",
-  ]
+  /// Renegotiates (Axod may have been upgraded or restarted) and re-reads the catalog. Called by
+  /// `TerminalCatalogSync` whenever it (re)subscribes.
+  func resynchronize() async {
+    daemonMethods = nil
+    await refresh()
+  }
 
   /// Applies one catalog event. Returns `false` when the stream lagged and the caller must
-  /// resynchronize with `refresh()`.
+  /// resubscribe and resynchronize.
   @discardableResult
   func apply(_ event: TerminalSessionEvent) async -> Bool {
     switch event {
@@ -202,15 +209,14 @@ final class TerminalSessionsModel: ObservableObject {
       }
       applyCatalog(updated, focusing: nil)
     case .sessionRemoved(let sessionID):
-      guard sessions.contains(where: { $0.id == sessionID }) else { return true }
+      guard session(for: sessionID) != nil else { return true }
       applyCatalog(sessions.filter { $0.id != sessionID }, focusing: nil)
     case .workspaceChanged:
       guard let client else { return true }
       do {
-        let updatedWorkspaces = try await client.listWorkspaces()
-        if workspaces != updatedWorkspaces { workspaces = updatedWorkspaces }
+        assign(\.workspaces, try await client.listWorkspaces())
       } catch {
-        errorMessage = error.localizedDescription
+        report(error)
       }
     case .sessionFocus(let sessionID):
       showSession(sessionID)
@@ -223,119 +229,97 @@ final class TerminalSessionsModel: ObservableObject {
     return true
   }
 
-  /// Replaces the catalog with daemon `daemonSessions`, normalizing layouts and repairing
-  /// selection/focus. Pure with respect to I/O apart from scheduling layout persistence.
+  /// Replaces the catalog with Axod's `daemonSessions`, normalizing layouts (keeping local edits,
+  /// dropping closed panes, appending new ones) and repairing selection and focus.
   private func applyCatalog(_ daemonSessions: [TerminalSession], focusing resumeSessionID: SessionID?) {
-    let updatedSessions = daemonSessions
-    let previouslySelectedSession = selectedSessionID.flatMap { session(for: $0) }
-    let openSessionIDs = Set(updatedSessions.map(\.id))
+    let previouslySelectedSession = selectedSessionID.flatMap(session(for:))
+    let openSessionIDs = Set(daemonSessions.map(\.id))
     layoutsBySession = layoutsBySession.filter { openSessionIDs.contains($0.key) }
     layoutWriter.retain(sessionIDs: openSessionIDs)
 
     var normalizedSessions: [TerminalSession] = []
-    for session in updatedSessions {
+    for session in daemonSessions {
       let shellIDs = Set(session.shells.map(\.id))
       let serverLayout = session.layout.map(TerminalLayout.init)
       let sourceLayout = layoutsBySession[session.id] ?? serverLayout
       let normalizedLayout: TerminalLayout?
-      let newlyCreatedShellIDs: Set<ShellID>
+      let newShellIDs: Set<ShellID>
       if let sourceLayout, let pruned = sourceLayout.pruned(to: shellIDs) {
-        newlyCreatedShellIDs = shellIDs.subtracting(pruned.shellIDs)
-        normalizedLayout = pruned.adding(newlyCreatedShellIDs)
+        newShellIDs = shellIDs.subtracting(pruned.shellIDs)
+        normalizedLayout = pruned.adding(newShellIDs)
       } else {
-        newlyCreatedShellIDs = []
-        normalizedLayout = Self.defaultLayout(for: session.shells)
+        newShellIDs = []
+        normalizedLayout = TerminalLayout.defaultLayout(for: session.shells.map(\.id))
       }
 
       layoutsBySession[session.id] = normalizedLayout
       normalizedSessions.append(
-        session.replacing(shells: session.shells, layout: normalizedLayout?.sessionLayout)
-      )
+        session.replacing(shells: session.shells, layout: normalizedLayout?.sessionLayout))
       if let normalizedLayout, serverLayout != normalizedLayout {
-        scheduleLayoutPersistence(for: session.id)
+        layoutWriter.schedule(normalizedLayout.sessionLayout, for: session.id)
       }
-      if selectedSessionID == session.id,
-        let newestShellID = session.shells.filter(\.isAvailable).map(\.id)
-          .filter(newlyCreatedShellIDs.contains).max()
+
+      guard selectedSessionID == session.id else { continue }
+      if let newestShellID = session.shells.filter(\.isAvailable).map(\.id)
+        .filter(newShellIDs.contains).max()
       {
-        focusedShellID = newestShellID
-      } else if selectedSessionID == session.id,
-        let previousFocus = focusedShellID,
+        assign(\.focusedShellID, newestShellID)
+      } else if let previousFocus = focusedShellID,
         sourceLayout?.contains(shellID: previousFocus) == true,
         !shellIDs.contains(previousFocus)
       {
-        focusedShellID = sourceLayout?.focusTargetAfterClosing(
-          previousFocus,
-          remainingShellIDs: shellIDs
-        ) ?? normalizedLayout?.firstShellID
+        assign(
+          \.focusedShellID,
+          sourceLayout?.focusTargetAfterClosing(previousFocus, remainingShellIDs: shellIDs)
+            ?? normalizedLayout?.firstShellID)
       }
     }
-    if sessions != normalizedSessions {
-      sessions = normalizedSessions
-    }
+    assign(\.sessions, normalizedSessions)
 
     if let resumeSessionID, openSessionIDs.contains(resumeSessionID) {
-      selectedSessionID = resumeSessionID
-    }
-
-    if let selectedSessionID, openSessionIDs.contains(selectedSessionID) {
+      select(resumeSessionID)
+    } else if let selectedSessionID, openSessionIDs.contains(selectedSessionID) {
       activate(selectedSessionID)
     } else if let previouslySelectedSession {
-      selectedSessionID = sessionToSelect(afterClosing: previouslySelectedSession)
-      recentSessionIDs.removeAll { $0 == previouslySelectedSession.id }
-      if let selectedSessionID {
-        activate(selectedSessionID)
-      } else {
-        layout = nil
-        focusedShellID = nil
-      }
+      recentSessions.forget(previouslySelectedSession.id)
+      select(
+        SessionNavigation.successor(
+          afterClosing: previouslySelectedSession, in: sessions, recent: recentSessions))
     } else {
-      selectedSessionID = sessions.first?.id
-      if let selectedSessionID {
-        activate(selectedSessionID)
-      } else {
-        layout = nil
-        focusedShellID = nil
-      }
+      select(sessions.first?.id)
     }
     piRestarter.schedule(for: sessions)
   }
+
+  // MARK: - Preferences
 
   func setAutomaticPiRestartEnabled(_ enabled: Bool) {
     guard automaticallyRestartUnavailablePi != enabled else { return }
     automaticallyRestartUnavailablePi = enabled
-    preferenceDefaults.set(enabled, forKey: Self.automaticPiRestartPreferenceKey)
-
+    preferenceDefaults.set(enabled, forKey: AxoPreferenceKey.automaticPiRestart)
     piRestarter.isEnabled = enabled
     piRestarter.schedule(for: sessions)
   }
 
+  // MARK: - Sessions and Workspaces
+
   func createWorkspace(name: String, directoryPath: String, directoryBookmark: String?) async {
     workspaceCreationError = nil
-    guard let client else {
-      let message = clientError ?? "Axo can’t locate axod’s socket."
-      errorMessage = message
-      workspaceCreationError = message
-      return
-    }
     do {
-      let created = try await client.createWorkspace(
+      let created = try await requireClient().createWorkspace(
         name: name, directoryPath: directoryPath, directoryBookmark: directoryBookmark)
       guard created.session.workspaceId == created.workspace.workspaceId else {
-        throw UnixSocketRPCError.invalidResponse(
+        throw SessionCommandError(
           "Workspace creation did not return its first Session.")
       }
       if !workspaces.contains(where: { $0.id == created.workspace.id }) {
-        workspaces.append(created.workspace)
-        workspaces.sort { $0.name.localizedStandardCompare($1.name) == .orderedAscending }
+        workspaces = (workspaces + [created.workspace]).sorted {
+          $0.name.localizedStandardCompare($1.name) == .orderedAscending
+        }
       }
-      add(created.session)
-      selectedSessionID = created.session.id
-      activate(created.session.id)
-      errorMessage = nil
-      workspaceCreationError = nil
+      adopt(created.session)
     } catch {
-      errorMessage = error.localizedDescription
+      report(error)
       workspaceCreationError = error.localizedDescription
     }
   }
@@ -345,56 +329,136 @@ final class TerminalSessionsModel: ObservableObject {
   }
 
   func createSession(in workspaceID: String) async {
-    guard let client else {
-      errorMessage = clientError ?? "Axo can’t locate axod’s socket."
-      return
-    }
     do {
-      let session = try await client.createSession(inWorkspace: workspaceID)
-      add(session)
-      selectedSessionID = session.id
-      activate(session.id)
-      errorMessage = nil
+      adopt(try await requireClient().createSession(inWorkspace: workspaceID))
     } catch {
-      errorMessage = error.localizedDescription
+      report(error)
+    }
+  }
+
+  func createSession() async {
+    do {
+      adopt(try await requireClient().createSession())
+    } catch {
+      report(error)
     }
   }
 
   func createSessionInCurrentContext() async {
-    if let selectedSessionID,
-      let workspaceID = session(for: selectedSessionID)?.workspaceId
-    {
+    if let workspaceID = selectedSessionID.flatMap(session(for:))?.workspaceId {
       await createSession(in: workspaceID)
     } else {
       await createSession()
     }
   }
 
-  func createSession() async {
-    guard let client else {
-      errorMessage = clientError ?? "Axo can’t locate axod’s socket."
-      return
-    }
-
+  func closeSession(_ sessionID: SessionID) async {
     do {
-      let session = try await client.createSession()
-      add(session)
-      selectedSessionID = session.id
-      activate(session.id)
-      errorMessage = nil
+      try await archiveSession(sessionID)
     } catch {
-      errorMessage = error.localizedDescription
+      report(error)
     }
   }
 
-  func split(_ direction: TerminalSplitDirection) async {
-    guard pendingTerminalSplit == nil else { return }
-    guard let client else {
-      errorMessage = clientError ?? "Axo can’t locate axod’s socket."
+  /// Closes a Session, first asking for confirmation when it is the last one in its Workspace
+  /// (closing it archives the Workspace).
+  func requestCloseSession(_ sessionID: SessionID) async {
+    guard let closingSession = session(for: sessionID) else { return }
+    errorMessage = nil
+
+    if let workspaceID = closingSession.workspaceId,
+      sessions.filter({ $0.workspaceId == workspaceID }).count == 1
+    {
+      guard let workspace = workspaces.first(where: { $0.workspaceId == workspaceID }) else {
+        errorMessage = "The Workspace is unavailable, so the last Session was not closed."
+        return
+      }
+      pendingWorkspaceArchiveConfirmation = WorkspaceArchiveConfirmation(
+        workspaceID: workspaceID, workspaceName: workspace.name, sessionID: sessionID)
       return
     }
+
+    await closeSession(sessionID)
+  }
+
+  func cancelWorkspaceArchiveConfirmation() {
+    pendingWorkspaceArchiveConfirmation = nil
+  }
+
+  func confirmWorkspaceArchiveAndCloseSession(_ confirmation: WorkspaceArchiveConfirmation) async {
+    if pendingWorkspaceArchiveConfirmation == confirmation {
+      pendingWorkspaceArchiveConfirmation = nil
+    }
+    let workspaceSessionIDs = sessions
+      .filter { $0.workspaceId == confirmation.workspaceID }
+      .map(\.id)
+    guard workspaceSessionIDs == [confirmation.sessionID],
+      workspaces.contains(where: { $0.workspaceId == confirmation.workspaceID })
+    else {
+      errorMessage = "The Workspace changed before it could be archived. Please review it again."
+      return
+    }
+    do {
+      try await archiveWorkspace(confirmation.workspaceID)
+      errorMessage = nil
+    } catch {
+      report(error)
+    }
+  }
+
+  func archiveSession(_ sessionID: SessionID) async throws {
+    let closingSession = session(for: sessionID)
+    let closed = try await requireClient().closeSession(sessionID)
+    removeSessions([sessionID], closing: closingSession, replacement: closed.replacement)
+    await refresh()
+  }
+
+  func renameSession(_ sessionID: SessionID, to name: String) async throws {
+    let client = try requireClient()
+    try await requireMethod("axo.session.rename", using: client)
+    let renamed = try await client.renameSession(sessionID, to: name)
+    guard renamed.id == sessionID, renamed.manualName == name else {
+      throw SessionCommandError("axod did not apply the Session name.")
+    }
+    await refresh()
+  }
+
+  func renameWorkspace(_ workspaceID: String, to name: String) async throws {
+    let client = try requireClient()
+    try await requireMethod("axo.workspace.rename", using: client)
+    let renamed = try await client.renameWorkspace(workspaceID, to: name)
+    guard renamed.workspaceId == workspaceID, renamed.name == name else {
+      throw SessionCommandError("axod did not apply the Workspace name.")
+    }
+    await refresh()
+  }
+
+  func archiveWorkspace(_ workspaceID: String) async throws {
+    let client = try requireClient()
+    try await requireMethod("axo.workspace.archive", using: client)
+    let archived = try await client.archiveWorkspace(workspaceID)
+    guard archived.archivedWorkspaceId == workspaceID else {
+      throw SessionCommandError("axod archived a different Workspace.")
+    }
+    workspaces.removeAll { $0.workspaceId == workspaceID }
+    // With the Workspace gone, prefer a standalone Session over another Workspace's.
+    removeSessions(
+      Set(archived.archivedSessionIds), closing: nil, replacement: nil,
+      fallback: { $0.first(where: { $0.workspaceId == nil })?.id ?? $0.first?.id })
+    await refresh()
+  }
+
+  // MARK: - Panes
+
+  /// Adds a pane beside the focused one. The new pane is shown optimistically
+  /// (`pendingTerminalSplit`) until Axod confirms it; an unconfirmed outcome is reconciled from
+  /// the catalog and never retried, because shell creation is not idempotent.
+  func split(_ direction: TerminalSplitDirection) async {
+    guard pendingTerminalSplit == nil else { return }
+    let client: AxodClient
+    do { client = try requireClient() } catch { return report(error) }
     guard let sessionID = selectedSessionID,
-      let session = self.session(for: sessionID),
+      let session = session(for: sessionID),
       let anchorShellID = focusedShellID ?? layoutsBySession[sessionID]?.firstShellID
     else {
       errorMessage = "Select a session before splitting the terminal."
@@ -424,26 +488,18 @@ final class TerminalSessionsModel: ObservableObject {
         return
       }
 
-      let currentLayout = layoutsBySession[sessionID]
-        ?? currentSession.layout.map(TerminalLayout.init)
-        ?? Self.defaultLayout(for: currentSession.shells)
-      let updatedLayout = currentLayout?.placing(
-        shellID: shell.id,
-        direction: direction,
-        beside: anchorShellID,
-        ratio: pending.ratio
+      let updatedLayout = currentLayout(of: currentSession)?.placing(
+        shellID: shell.id, direction: direction, beside: anchorShellID, ratio: pending.ratio
       ) ?? .pane(shell.id)
-      let updatedShells = currentSession.shells.contains(where: { $0.id == shell.id })
-        ? currentSession.shells
-        : currentSession.shells + [shell]
-
-      replace(currentSession, withShells: updatedShells)
+      if !currentSession.shells.contains(where: { $0.id == shell.id }) {
+        replace(currentSession, withShells: currentSession.shells + [shell])
+      }
       // Clear the optimistic leaf in the same main-actor turn as installing the real one.
       pendingTerminalSplit = nil
       setLayout(updatedLayout, for: sessionID, persist: true)
       if selectedSessionID == sessionID {
-        layout = updatedLayout
-        focusedShellID = shell.id
+        assign(\.layout, updatedLayout)
+        assign(\.focusedShellID, shell.id)
       }
       errorMessage = nil
     } catch {
@@ -453,9 +509,7 @@ final class TerminalSessionsModel: ObservableObject {
         errorMessage = error.localizedDescription
         return
       }
-
-      // A lost response may follow a committed create. Reconcile by reading the catalog; never
-      // retry this non-idempotent operation automatically.
+      // A lost response may follow a committed create. Reconcile by reading the catalog.
       await refresh()
       guard pendingTerminalSplit?.id == pending.id else { return }
       pendingTerminalSplit?.status = .outcomeUnknown(error.localizedDescription)
@@ -476,208 +530,23 @@ final class TerminalSessionsModel: ObservableObject {
     pendingTerminalSplit = nil
   }
 
-  func closeSession(_ sessionID: SessionID) async {
-    do {
-      try await archiveSession(sessionID)
-    } catch {
-      errorMessage = error.localizedDescription
-    }
+  func resizeSplit(_ splitID: UUID, to ratio: Double) {
+    guard let selectedSessionID,
+      let currentLayout = layoutsBySession[selectedSessionID],
+      ratio.isFinite,
+      let updated = currentLayout.resizing(splitID: splitID, to: min(max(ratio, 0.01), 0.99))
+    else { return }
+    setLayout(updated, for: selectedSessionID, persist: true)
+    assign(\.layout, updated)
   }
-
-  func requestCloseSession(_ sessionID: SessionID) async {
-    guard let closingSession = session(for: sessionID) else { return }
-    errorMessage = nil
-
-    if let workspaceID = closingSession.workspaceId,
-      sessions.filter({ $0.workspaceId == workspaceID }).count == 1
-    {
-      guard let workspace = workspaces.first(where: { $0.workspaceId == workspaceID }) else {
-        errorMessage = "The Workspace is unavailable, so the last Session was not closed."
-        return
-      }
-      pendingWorkspaceArchiveConfirmation = WorkspaceArchiveConfirmation(
-        workspaceID: workspaceID,
-        workspaceName: workspace.name,
-        sessionID: sessionID
-      )
-      return
-    }
-
-    await closeSession(sessionID)
-  }
-
-  func cancelWorkspaceArchiveConfirmation() {
-    pendingWorkspaceArchiveConfirmation = nil
-  }
-
-  func confirmWorkspaceArchiveAndCloseSession(
-    _ confirmation: WorkspaceArchiveConfirmation
-  ) async {
-    if pendingWorkspaceArchiveConfirmation == confirmation {
-      pendingWorkspaceArchiveConfirmation = nil
-    }
-
-    let workspaceSessionIDs = sessions
-      .filter { $0.workspaceId == confirmation.workspaceID }
-      .map(\.id)
-    guard workspaceSessionIDs == [confirmation.sessionID],
-      workspaces.contains(where: { $0.workspaceId == confirmation.workspaceID })
-    else {
-      errorMessage = "The Workspace changed before it could be archived. Please review it again."
-      return
-    }
-
-    do {
-      try await archiveWorkspace(confirmation.workspaceID)
-      errorMessage = nil
-    } catch {
-      errorMessage = error.localizedDescription
-    }
-  }
-
-  func archiveSession(_ sessionID: SessionID) async throws {
-    guard let client else {
-      throw UnixSocketRPCError.invalidResponse(
-        clientError ?? "Axo can’t locate axod’s socket.")
-    }
-    let closingSession = session(for: sessionID)
-    let closed = try await client.closeSession(sessionID)
-    layoutsBySession.removeValue(forKey: sessionID)
-    layoutWriter.discard(sessionID: sessionID)
-    sessions.removeAll { $0.id == sessionID }
-    if let replacement = closed.replacement {
-      add(replacement)
-    }
-    if selectedSessionID == sessionID {
-      selectedSessionID = closingSession.map {
-        sessionToSelect(afterClosing: $0, replacement: closed.replacement)
-      } ?? sessions.first?.id
-      recentSessionIDs.removeAll { $0 == sessionID }
-    }
-    if let selectedSessionID {
-      activate(selectedSessionID)
-    } else {
-      layout = nil
-      focusedShellID = nil
-    }
-    await refresh()
-  }
-
-  func renameSession(_ sessionID: SessionID, to name: String) async throws {
-    guard let client else {
-      throw UnixSocketRPCError.invalidResponse(
-        clientError ?? "Axo can’t locate axod’s socket.")
-    }
-    try await requireMethod("axo.session.rename", using: client)
-    let renamed = try await client.renameSession(sessionID, to: name)
-    guard renamed.id == sessionID, renamed.manualName == name else {
-      throw UnixSocketRPCError.invalidResponse("axod did not apply the Session name.")
-    }
-    await refresh()
-  }
-
-  func renameWorkspace(_ workspaceID: String, to name: String) async throws {
-    guard let client else {
-      throw UnixSocketRPCError.invalidResponse(
-        clientError ?? "Axo can’t locate axod’s socket.")
-    }
-    try await requireMethod("axo.workspace.rename", using: client)
-    let renamed = try await client.renameWorkspace(workspaceID, to: name)
-    guard renamed.workspaceId == workspaceID, renamed.name == name else {
-      throw UnixSocketRPCError.invalidResponse("axod did not apply the Workspace name.")
-    }
-    await refresh()
-  }
-
-  func archiveWorkspace(_ workspaceID: String) async throws {
-    guard let client else {
-      throw UnixSocketRPCError.invalidResponse(
-        clientError ?? "Axo can’t locate axod’s socket.")
-    }
-    try await requireMethod("axo.workspace.archive", using: client)
-    let archived = try await client.archiveWorkspace(workspaceID)
-    guard archived.archivedWorkspaceId == workspaceID else {
-      throw UnixSocketRPCError.invalidResponse("axod archived a different Workspace.")
-    }
-
-    let archivedSessionIDs = Set(archived.archivedSessionIds)
-    for sessionID in archivedSessionIDs {
-      layoutsBySession.removeValue(forKey: sessionID)
-      layoutWriter.discard(sessionID: sessionID)
-    }
-    sessions.removeAll { archivedSessionIDs.contains($0.id) }
-    workspaces.removeAll { $0.workspaceId == workspaceID }
-    if let selectedID = selectedSessionID, archivedSessionIDs.contains(selectedID) {
-      selectedSessionID = sessions.first(where: { $0.workspaceId == nil })?.id ?? sessions.first?.id
-    }
-    if let selectedSessionID {
-      activate(selectedSessionID)
-    } else {
-      layout = nil
-      focusedShellID = nil
-    }
-    await refresh()
-  }
-
-  private func requireMethod(_ method: String, using client: AxodClient) async throws {
-    let negotiation = try await client.negotiate()
-    guard negotiation.protocolVersion == UnixSocketRPC.protocolVersion,
-      negotiation.methods.contains(method)
-    else {
-      throw UnixSocketRPCError.invalidResponse(
-        "This action requires a newer Axod. Your Sessions and Workspace are unchanged.")
-    }
-  }
-
-  func restartPiSession(_ shellID: ShellID) async throws {
-    piRestarter.cancel(shellID: shellID)
-    try await restartPiSession(shellID, automatically: false)
-  }
-
-  private func restartPiSession(_ shellID: ShellID, automatically: Bool) async throws {
-    guard let client else {
-      throw UnixSocketRPCError.invalidResponse(
-        clientError ?? "Axo can’t locate axod’s socket.")
-    }
-    guard let targetSession = sessions.first(where: { session in
-      session.shells.contains(where: { $0.id == shellID })
-    }),
-      let shell = targetSession.shells.first(where: { $0.id == shellID }),
-      shell.role == "pi",
-      !shell.isAvailable,
-      automatically || selectedSessionID == targetSession.id
-    else {
-      throw UnixSocketRPCError.invalidResponse("This Pi pane is no longer available to restart.")
-    }
-
-    let restartMethod = automatically
-      ? "axo.session.pi.restart.auto.v1"
-      : "axo.session.pi.restart.force.v2"
-    let negotiation = try await client.negotiate()
-    guard negotiation.protocolVersion == UnixSocketRPC.protocolVersion,
-      negotiation.methods.contains(restartMethod)
-    else {
-      if automatically { throw AutomaticPiRestarter.Failure.unsupportedAxod }
-      throw UnixSocketRPCError.invalidResponse(
-        "Pi recovery is not yet supported by the running Axod. Your session history is preserved.")
-    }
-
-    let restarted = try await client.restartPi(
-      shellID: shellID, inSession: targetSession.id, automatically: automatically)
-    guard restarted.id == targetSession.id,
-      restarted.shells.contains(where: { $0.id == shellID && $0.isAvailable })
-    else {
-      throw UnixSocketRPCError.invalidResponse("axod did not restore the requested Pi pane.")
-    }
-    await refresh()
-  }
-
 
   func closeFocusedShell() async {
     guard let focusedShellID else { return }
     await closeShell(focusedShellID)
   }
 
+  /// Closes one pane. Closing a Session's last pane archives the Session (Axod may return a
+  /// replacement); otherwise focus moves to the pane the layout places next to the closed one.
   func closeShell(_ shellID: ShellID) async {
     guard let client,
       let session = sessions.first(where: { $0.shells.contains(where: { $0.id == shellID }) })
@@ -686,18 +555,14 @@ final class TerminalSessionsModel: ObservableObject {
       return
     }
     let sessionID = session.id
-    let layoutBeforeClose =
-      layoutsBySession[sessionID] ?? session.layout.map(TerminalLayout.init)
-      ?? Self.defaultLayout(for: session.shells)
+    let layoutBeforeClose = currentLayout(of: session)
     let remainingShellIDs = Set(session.shells.lazy.map(\.id).filter { $0 != shellID })
     let focusAfterClose: ShellID? = {
       guard selectedSessionID == sessionID else { return nil }
       guard let focusedShellID else { return layoutBeforeClose?.firstShellID }
       if focusedShellID == shellID {
         return layoutBeforeClose?.focusTargetAfterClosing(
-          shellID,
-          remainingShellIDs: remainingShellIDs
-        )
+          shellID, remainingShellIDs: remainingShellIDs)
       }
       return remainingShellIDs.contains(focusedShellID) ? focusedShellID : nil
     }()
@@ -705,199 +570,222 @@ final class TerminalSessionsModel: ObservableObject {
     do {
       let closed = try await client.closeShell(shellID, inSession: sessionID)
       if closed.archivedSessionId != nil {
-        layoutsBySession.removeValue(forKey: sessionID)
-        layoutWriter.discard(sessionID: sessionID)
-        sessions.removeAll { $0.id == sessionID }
-        if let replacement = closed.replacement {
-          add(replacement)
-        }
-        if selectedSessionID == sessionID {
-          selectedSessionID = sessionToSelect(afterClosing: session, replacement: closed.replacement)
-          recentSessionIDs.removeAll { $0 == sessionID }
-          if let selectedSessionID {
-            activate(selectedSessionID)
-          } else {
-            layout = nil
-            focusedShellID = nil
-          }
-        }
-      } else {
-        guard let currentSession = self.session(for: sessionID) else { return }
+        removeSessions([sessionID], closing: session, replacement: closed.replacement)
+      } else if let currentSession = self.session(for: sessionID) {
         let remainingShells = currentSession.shells.filter { $0.id != shellID }
         let remainingShellIDs = Set(remainingShells.map(\.id))
         replace(currentSession, withShells: remainingShells)
 
-        let baseLayout = layoutsBySession[sessionID] ?? layoutBeforeClose
-        let updatedLayout = baseLayout?.removing(shellID: shellID)
+        let updatedLayout = (layoutsBySession[sessionID] ?? layoutBeforeClose)?
+          .removing(shellID: shellID)
         if let updatedLayout {
           setLayout(updatedLayout, for: sessionID, persist: true)
         }
         if selectedSessionID == sessionID {
-          layout = updatedLayout
-          let currentFocus = focusedShellID.flatMap {
-            remainingShellIDs.contains($0) ? $0 : nil
-          }
+          assign(\.layout, updatedLayout)
+          let currentFocus = focusedShellID.flatMap { remainingShellIDs.contains($0) ? $0 : nil }
           let preferredFocus = focusAfterClose.flatMap {
             remainingShellIDs.contains($0) ? $0 : nil
           }
-          focusedShellID = currentFocus ?? preferredFocus ?? updatedLayout?.firstShellID
+          assign(\.focusedShellID, currentFocus ?? preferredFocus ?? updatedLayout?.firstShellID)
         }
       }
       errorMessage = nil
     } catch {
-      errorMessage = error.localizedDescription
+      report(error)
     }
   }
+
+  /// Explicit, user-requested Pi recovery for the selected Session's unavailable Pi pane.
+  func restartPiSession(_ shellID: ShellID) async throws {
+    piRestarter.cancel(shellID: shellID)
+    try await restartPiSession(shellID, automatically: false)
+  }
+
+  private func restartPiSession(_ shellID: ShellID, automatically: Bool) async throws {
+    let client = try requireClient()
+    guard let targetSession = sessions.first(where: { session in
+      session.shells.contains(where: { $0.id == shellID })
+    }),
+      let shell = targetSession.shells.first(where: { $0.id == shellID }),
+      shell.role == "pi",
+      !shell.isAvailable,
+      automatically || selectedSessionID == targetSession.id
+    else {
+      throw SessionCommandError("This Pi pane is no longer available to restart.")
+    }
+
+    let restartMethod = automatically
+      ? "axo.session.pi.restart.auto.v1"
+      : "axo.session.pi.restart.force.v2"
+    guard try await supports(restartMethod, using: client) else {
+      if automatically { throw AutomaticPiRestarter.Failure.unsupportedAxod }
+      throw SessionCommandError(
+        "Pi recovery is not yet supported by the running Axod. Your session history is preserved.")
+    }
+
+    let restarted = try await client.restartPi(
+      shellID: shellID, inSession: targetSession.id, automatically: automatically)
+    guard restarted.id == targetSession.id,
+      restarted.shells.contains(where: { $0.id == shellID && $0.isAvailable })
+    else {
+      throw SessionCommandError("axod did not restore the requested Pi pane.")
+    }
+    await refresh()
+  }
+
+  // MARK: - Navigation
 
   func showSession(_ sessionID: SessionID) {
-    guard sessions.contains(where: { $0.id == sessionID }) else { return }
-    selectedSessionID = sessionID
-    activate(sessionID)
-    errorMessage = nil
+    guard session(for: sessionID) != nil else { return }
+    select(sessionID)
+    assign(\.errorMessage, nil)
   }
 
-  func focusPreviousPane() {
-    focusAdjacentPane(.previous)
-  }
+  func showPreviousSession() { showAdjacentSession(.previous) }
+  func showNextSession() { showAdjacentSession(.next) }
+  func focusPreviousPane() { focusAdjacentPane(.previous) }
+  func focusNextPane() { focusAdjacentPane(.next) }
 
-  func focusNextPane() {
-    focusAdjacentPane(.next)
-  }
-
-  func showPreviousSession() {
-    showAdjacentSession(.previous)
-  }
-
-  func showNextSession() {
-    showAdjacentSession(.next)
-  }
-
-  func resizeSplit(_ splitID: UUID, to ratio: Double) {
-    guard let selectedSessionID,
-      let currentLayout = layoutsBySession[selectedSessionID],
-      ratio.isFinite,
-      let updated = currentLayout.resizing(
-        splitID: splitID,
-        to: min(max(ratio, 0.01), 0.99)
-      )
-    else {
-      return
-    }
-    setLayout(updated, for: selectedSessionID, persist: true)
-    layout = updated
-  }
-
+  /// Focuses an available pane in any Session, selecting that Session.
   func focus(_ shellID: ShellID) {
     guard let session = sessions.first(where: {
       $0.shells.contains(where: { $0.id == shellID && $0.isAvailable })
-    }) else {
-      return
-    }
+    }) else { return }
     selectedSessionID = session.id
-    layout = layoutsBySession[session.id]
-    focusedShellID = shellID
-    rememberSessionFocus(session.id)
+    assign(\.layout, layoutsBySession[session.id])
+    assign(\.focusedShellID, shellID)
+    recentSessions.remember(session.id)
   }
 
-  func session(for sessionID: SessionID) -> TerminalSession? {
-    sessions.first(where: { $0.id == sessionID })
-  }
-
-  func shell(for shellID: ShellID) -> TerminalShell? {
-    guard let selectedSessionID else { return nil }
-    return session(for: selectedSessionID)?.shells.first(where: { $0.id == shellID })
+  private func showAdjacentSession(_ direction: TerminalNavigationDirection) {
+    let ordered = sidebarOrderedSessions
+    let currentIndex = selectedSessionID.flatMap { id in ordered.firstIndex { $0.id == id } }
+    guard
+      let target = SessionNavigation.adjacentIndex(
+        from: currentIndex, count: ordered.count, direction: direction)
+    else { return }
+    showSession(ordered[target].id)
   }
 
   private func focusAdjacentPane(_ direction: TerminalNavigationDirection) {
     guard let layout else { return }
     let paneIDs = layout.orderedShellIDs.filter { shell(for: $0)?.isAvailable == true }
-    let currentIndex = focusedShellID.flatMap { focusedID in
-      paneIDs.firstIndex(of: focusedID)
-    }
+    let currentIndex = focusedShellID.flatMap { paneIDs.firstIndex(of: $0) }
     guard
-      let targetIndex = Self.adjacentIndex(
-        from: currentIndex,
-        count: paneIDs.count,
-        direction: direction
-      )
+      let target = SessionNavigation.adjacentIndex(
+        from: currentIndex, count: paneIDs.count, direction: direction)
+    else { return }
+    focus(paneIDs[target])
+  }
+
+  // MARK: - State helpers
+
+  private func requireClient() throws -> AxodClient {
+    guard let client else {
+      throw SessionCommandError(clientError ?? "Axo can’t locate axod’s socket.")
+    }
+    return client
+  }
+
+  private func report(_ error: Error) {
+    assign(\.errorMessage, error.localizedDescription)
+  }
+
+  /// Assigns a published property only when the value changes.
+  private func assign<Value: Equatable>(
+    _ keyPath: ReferenceWritableKeyPath<TerminalSessionsModel, Value>, _ value: Value
+  ) {
+    if self[keyPath: keyPath] != value { self[keyPath: keyPath] = value }
+  }
+
+  private func negotiateIfNeeded(using client: AxodClient) async throws {
+    guard daemonMethods == nil else { return }
+    let negotiation = try await client.negotiate()
+    let methods = Set(negotiation.methods)
+    guard negotiation.protocolVersion == UnixSocketRPC.protocolVersion,
+      Self.requiredMethods.isSubset(of: methods)
     else {
+      throw SessionCommandError(
+        "The running axod is incompatible with this version of Axo. Restart axod from the menu bar.")
+    }
+    daemonMethods = methods
+  }
+
+  private func supports(_ method: String, using client: AxodClient) async throws -> Bool {
+    try await negotiateIfNeeded(using: client)
+    return daemonMethods?.contains(method) == true
+  }
+
+  private func requireMethod(_ method: String, using client: AxodClient) async throws {
+    guard try await supports(method, using: client) else {
+      throw SessionCommandError(
+        "This action requires a newer Axod. Your Sessions and Workspace are unchanged.")
+    }
+  }
+
+  /// Inserts a Session Axod just created and shows it.
+  private func adopt(_ session: TerminalSession) {
+    add(session)
+    select(session.id)
+    assign(\.errorMessage, nil)
+    workspaceCreationError = nil
+  }
+
+  /// Drops Sessions Axod archived, installs any replacement, and moves selection away from a
+  /// removed Session: by default to `closing`'s successor, else to `fallback`'s choice.
+  private func removeSessions(
+    _ sessionIDs: Set<SessionID>,
+    closing: TerminalSession?,
+    replacement: TerminalSession?,
+    fallback: ([TerminalSession]) -> SessionID? = { $0.first?.id }
+  ) {
+    for sessionID in sessionIDs {
+      layoutsBySession.removeValue(forKey: sessionID)
+      layoutWriter.discard(sessionID: sessionID)
+      recentSessions.forget(sessionID)
+    }
+    sessions.removeAll { sessionIDs.contains($0.id) }
+    if let replacement { add(replacement) }
+
+    guard let selectedSessionID, sessionIDs.contains(selectedSessionID) else {
+      if let selectedSessionID { activate(selectedSessionID) }
       return
     }
-    focus(paneIDs[targetIndex])
+    let successor = closing.flatMap {
+      SessionNavigation.successor(
+        afterClosing: $0, in: sessions, recent: recentSessions, replacement: replacement)
+    }
+    select(successor ?? fallback(sessions))
   }
 
-  private func showAdjacentSession(_ direction: TerminalNavigationDirection) {
-    let orderedSessions = sidebarOrderedSessions
-    let currentIndex = selectedSessionID.flatMap { selectedID in
-      orderedSessions.firstIndex { $0.id == selectedID }
-    }
-    guard
-      let targetIndex = Self.adjacentIndex(
-        from: currentIndex,
-        count: orderedSessions.count,
-        direction: direction
-      )
-    else {
-      return
-    }
-    showSession(orderedSessions[targetIndex].id)
-  }
-
-  private static func adjacentIndex(
-    from currentIndex: Int?,
-    count: Int,
-    direction: TerminalNavigationDirection
-  ) -> Int? {
-    guard count > 0 else { return nil }
-    let startingIndex = currentIndex ?? (direction == .next ? count - 1 : 0)
-    return (startingIndex + direction.rawValue + count) % count
-  }
-
-  private func sessionToSelect(
-    afterClosing closedSession: TerminalSession,
-    replacement: TerminalSession? = nil
-  ) -> SessionID? {
-    for recentID in recentSessionIDs where recentID != closedSession.id {
-      guard let candidate = session(for: recentID),
-        candidate.workspaceId == closedSession.workspaceId
-      else {
-        continue
-      }
-      return candidate.id
-    }
-
-    if let replacement,
-      replacement.workspaceId == closedSession.workspaceId,
-      session(for: replacement.id) != nil
-    {
-      return replacement.id
-    }
-    return sessions.first(where: { $0.workspaceId == closedSession.workspaceId })?.id
-      ?? sessions.first?.id
-  }
-
-  private func rememberSessionFocus(_ sessionID: SessionID) {
-    recentSessionIDs.removeAll { $0 == sessionID }
-    recentSessionIDs.insert(sessionID, at: 0)
-    if recentSessionIDs.count > 128 {
-      recentSessionIDs.removeLast(recentSessionIDs.count - 128)
+  /// Selects `sessionID` (or nothing) and shows its layout and focus.
+  private func select(_ sessionID: SessionID?) {
+    selectedSessionID = sessionID
+    if let sessionID {
+      activate(sessionID)
+    } else {
+      assign(\.layout, nil)
+      assign(\.focusedShellID, nil)
     }
   }
 
+  /// Presents `sessionID`'s layout, keeping focus if it is still a valid pane, else focusing the
+  /// newest available pane.
   private func activate(_ sessionID: SessionID) {
     guard let session = session(for: sessionID) else {
-      layout = nil
-      focusedShellID = nil
+      assign(\.layout, nil)
+      assign(\.focusedShellID, nil)
       return
     }
-    rememberSessionFocus(sessionID)
-    let currentLayout = layoutsBySession[sessionID] ?? Self.defaultLayout(for: session.shells)
+    recentSessions.remember(sessionID)
+    let currentLayout = currentLayout(of: session)
     if layoutsBySession[sessionID] == nil {
       setLayout(currentLayout, for: sessionID, persist: true)
     }
-    layout = currentLayout
+    assign(\.layout, currentLayout)
     guard let currentLayout else {
-      focusedShellID = nil
+      assign(\.focusedShellID, nil)
       return
     }
     if let focusedShellID,
@@ -906,24 +794,30 @@ final class TerminalSessionsModel: ObservableObject {
     {
       return
     }
-    focusedShellID = session.shells.filter(\.isAvailable).map(\.id).max()
+    assign(\.focusedShellID, session.shells.filter(\.isAvailable).map(\.id).max())
+  }
+
+  /// The local layout, else Axod's stored one, else the default for its shells.
+  private func currentLayout(of session: TerminalSession) -> TerminalLayout? {
+    layoutsBySession[session.id]
+      ?? session.layout.map(TerminalLayout.init)
+      ?? TerminalLayout.defaultLayout(for: session.shells.map(\.id))
   }
 
   private func add(_ session: TerminalSession) {
-    sessions.removeAll { $0.id == session.id }
-    let layout = session.layout.map(TerminalLayout.init) ?? Self.defaultLayout(for: session.shells)
-    sessions.append(
-      session.replacing(shells: session.shells, layout: layout?.sessionLayout)
-    )
-    sessions.sort { $0.id < $1.id }
+    let layout = session.layout.map(TerminalLayout.init)
+      ?? TerminalLayout.defaultLayout(for: session.shells.map(\.id))
+    var updated = sessions.filter { $0.id != session.id }
+    updated.append(session.replacing(shells: session.shells, layout: layout?.sessionLayout))
+    updated.sort { $0.id < $1.id }
+    sessions = updated
     setLayout(layout, for: session.id, persist: session.layout == nil)
   }
 
   private func replace(_ session: TerminalSession, withShells shells: [TerminalShell]) {
-    let layout = layoutsBySession[session.id]?.sessionLayout ?? session.layout
-    let updated = session.replacing(shells: shells, layout: layout)
     guard let index = sessions.firstIndex(where: { $0.id == session.id }) else { return }
-    sessions[index] = updated
+    let layout = layoutsBySession[session.id]?.sessionLayout ?? session.layout
+    sessions[index] = session.replacing(shells: shells, layout: layout)
   }
 
   private func setLayout(_ layout: TerminalLayout?, for sessionID: SessionID, persist: Bool) {
@@ -934,27 +828,8 @@ final class TerminalSessionsModel: ObservableObject {
         sessions[index] = session.replacing(shells: session.shells, layout: layout?.sessionLayout)
       }
     }
-    if persist, layout != nil {
-      scheduleLayoutPersistence(for: sessionID)
-    }
-  }
-
-  private func scheduleLayoutPersistence(for sessionID: SessionID) {
-    guard let layout = layoutsBySession[sessionID] else { return }
-    layoutWriter.schedule(layout.sessionLayout, for: sessionID)
-  }
-
-
-  private static func defaultLayout(for shells: [TerminalShell]) -> TerminalLayout? {
-    guard let first = shells.first else { return nil }
-    return shells.dropFirst().reduce(TerminalLayout.pane(first.id)) { layout, shell in
-      .split(
-        id: UUID(),
-        direction: .right,
-        ratio: 0.5,
-        first: layout,
-        second: .pane(shell.id)
-      )
+    if persist, let layout {
+      layoutWriter.schedule(layout.sessionLayout, for: sessionID)
     }
   }
 }
