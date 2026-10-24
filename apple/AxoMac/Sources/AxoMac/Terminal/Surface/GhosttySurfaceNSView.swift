@@ -75,6 +75,7 @@ final class GhosttySurfaceNSView: NSView, @MainActor NSTextInputClient,
   private var focusTask: Task<Void, Never>?
   private var trackingArea: NSTrackingArea?
   private(set) var contentSize: CGSize?
+  private var ptySizeReporter: TerminalPTYSizeReporter?
 
   init(
     runtime: GhosttyRuntime,
@@ -134,7 +135,11 @@ final class GhosttySurfaceNSView: NSView, @MainActor NSTextInputClient,
     windowStateObserver.observe(
       window,
       onOcclusionChange: { [weak self] in self?.updateSurfaceOcclusion() },
-      onKeyChange: { [weak self] in self?.updateSurfaceFocus() })
+      onKeyChange: { [weak self] in
+        guard let self else { return }
+        self.updateSurfaceFocus()
+        if self.window?.isKeyWindow == true { self.reportPTYSize() }
+      })
     if shouldRequestFocus {
       requestFocus()
     }
@@ -164,6 +169,7 @@ final class GhosttySurfaceNSView: NSView, @MainActor NSTextInputClient,
     cancelFocusRequest()
     onFocus?()
     updateSurfaceFocus(true)
+    reportPTYSize()
     return true
   }
 
@@ -211,15 +217,31 @@ final class GhosttySurfaceNSView: NSView, @MainActor NSTextInputClient,
     focusTask = nil
   }
 
-  func attach(_ surface: ghostty_surface_t) {
+  /// `ptyDescriptor` is the attachment's PTY master; the view keeps its own duplicate.
+  func attach(_ surface: ghostty_surface_t, ptyDescriptor: Int32) {
     self.surface = surface
+    ptySizeReporter = TerminalPTYSizeReporter(ptyDescriptor: ptyDescriptor, shellID: shellID.rawValue)
     syncSurfaceSize()
+    reportPTYSize()
   }
 
   func detach() -> ghostty_surface_t? {
     let surface = self.surface
     self.surface = nil
+    ptySizeReporter = nil
     return surface
+  }
+
+  /// Re-asserts this surface's grid on its PTY; see `TerminalPTYSizeReporter`.
+  func reportPTYSize() {
+    guard let surface, let ptySizeReporter else { return }
+    let size = ghostty_surface_size(surface)
+    guard
+      let grid = TerminalGridSize(
+        columns: UInt32(size.columns), rows: UInt32(size.rows),
+        widthPixels: size.width_px, heightPixels: size.height_px)
+    else { return }
+    ptySizeReporter.report(grid)
   }
 
   /// The single path from AppKit geometry to libghostty. Runs on attach, window and backing

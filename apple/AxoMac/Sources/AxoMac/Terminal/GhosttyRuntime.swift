@@ -253,9 +253,10 @@ final class GhosttyRuntime {
     if let previous = view.detach() {
       ghostty_surface_free(previous)
     }
-    view.attach(createdSurface)
+    view.attach(createdSurface, ptyDescriptor: attachment.ptyDescriptor)
     view.connection = .connected
     updateSurfaceSize(in: view, contentSize: view.bounds.size)
+    view.reportPTYSize()
   }
 
   /// Axod ended a surface's output stream. If the shell still runs (the client fell behind, or
