@@ -202,6 +202,19 @@ validateWith(
   "https://schemas.axo.leostera.dev/v1/local-rpc.schema.json#/$defs/EventsNextResult",
   { events: [{ type: "subscription.lagged" }] },
 );
+validateWith(
+  "https://schemas.axo.leostera.dev/v1/events.schema.json#/$defs/LocalEvent",
+  {
+    type: "relay.status",
+    status: {
+      state: "connected",
+      connectedSinceUnixMillis: 1792000000000,
+      hostName: "Test Mac",
+      hostKind: "macos",
+      lastError: null,
+    },
+  },
+);
 validateWith(localCallSchema, {
   jsonrpc: "2.0",
   id: 1,

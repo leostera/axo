@@ -9,6 +9,7 @@ import Foundation
 final class AxoWorkbench {
   let sessions: TerminalSessionsModel
   let ghostty: GhosttyRuntime
+  let remoteAccess: RemoteAccessModel
   private let catalogSync: TerminalCatalogSync?
   private var observations: [ObservationLoop] = []
   private var isConnected = false
@@ -26,8 +27,12 @@ final class AxoWorkbench {
   ) {
     self.sessions = sessions
     self.ghostty = ghostty
+    let remoteAccess = RemoteAccessModel(client: sessions.settingsClient)
+    self.remoteAccess = remoteAccess
     catalogSync = sessions.catalogClient.map {
-      TerminalCatalogSync(sessions: sessions, client: $0, onUnreachable: daemonUnreachable)
+      TerminalCatalogSync(
+        sessions: sessions, remoteAccess: remoteAccess, client: $0,
+        onUnreachable: daemonUnreachable)
     }
 
     observations = [
@@ -48,6 +53,7 @@ final class AxoWorkbench {
       ghostty.reconcileSurfaces(with: sessions.sessions.flatMap(\.shells))
     } else {
       catalogSync?.stop()
+      remoteAccess.reset()
       ghostty.reconcileSurfaces(with: [])
     }
   }

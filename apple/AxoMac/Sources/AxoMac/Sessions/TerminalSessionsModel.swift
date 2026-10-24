@@ -85,6 +85,8 @@ final class TerminalSessionsModel {
   let helperURL: URL
   /// The daemon client, for collaborators such as `TerminalCatalogSync`.
   var catalogClient: AxodClient? { client }
+  /// The same daemon connection, for Settings (nil for in-memory test clients).
+  var settingsClient: AxodSettingsClient? { client as? AxodSettingsClient }
 
   private let client: AxodClient?
   private let clientError: String?
@@ -250,7 +252,7 @@ final class TerminalSessionsModel {
       showSession(sessionID)
     case .subscriptionLagged:
       return false
-    case .shellActivity, .terminalOutput, .unknown:
+    case .shellActivity, .terminalOutput, .relayStatus, .unknown:
       // Session snapshots carry the state the catalog presents; terminal bytes go to Ghostty.
       break
     }

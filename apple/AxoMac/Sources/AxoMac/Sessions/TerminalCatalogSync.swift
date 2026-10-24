@@ -13,6 +13,7 @@ final class TerminalCatalogSync {
   static let unreachableThreshold = 3
 
   private let sessions: TerminalSessionsModel
+  private let remoteAccess: RemoteAccessModel?
   private let client: AxodClient
   private let minimumBackoff: Duration
   private let maximumBackoff: Duration
@@ -23,12 +24,14 @@ final class TerminalCatalogSync {
   ///   failures, so the daemon lifecycle owner can re-check health.
   init(
     sessions: TerminalSessionsModel,
+    remoteAccess: RemoteAccessModel? = nil,
     client: AxodClient,
     minimumBackoff: Duration = .milliseconds(250),
     maximumBackoff: Duration = .seconds(5),
     onUnreachable: @escaping @MainActor () -> Void = {}
   ) {
     self.sessions = sessions
+    self.remoteAccess = remoteAccess
     self.client = client
     self.minimumBackoff = minimumBackoff
     self.maximumBackoff = maximumBackoff
@@ -57,13 +60,17 @@ final class TerminalCatalogSync {
         let opened = try await client.subscribeToCatalog()
         subscription = opened
         try await sessions.resynchronize()
+        await remoteAccess?.refresh()
         sessions.setCatalogConnection(.live)
         backoff = minimumBackoff
         consecutiveFailures = 0
         streaming: while !Task.isCancelled {
           for event in try await client.nextEvents(for: opened) {
-            // Lagged: resubscribe and relist.
-            if await !sessions.apply(event) { break streaming }
+            if case .relayStatus(let status) = event {
+              remoteAccess?.apply(status)
+            } else if await !sessions.apply(event) {
+              break streaming  // Lagged: resubscribe and relist.
+            }
           }
         }
       } catch {

@@ -14,6 +14,17 @@ public struct RemoteAccessStatus: Decodable, Equatable, Sendable {
   public let lastError: String?
 
   public var isConnected: Bool { state == .connected }
+
+  public init(
+    state: RemoteAccessConnectionState, connectedSinceUnixMillis: UInt64?, hostName: String,
+    hostKind: String, lastError: String?
+  ) {
+    self.state = state
+    self.connectedSinceUnixMillis = connectedSinceUnixMillis
+    self.hostName = hostName
+    self.hostKind = hostKind
+    self.lastError = lastError
+  }
 }
 
 public struct HostPairingResult: Decodable, Equatable, Sendable {

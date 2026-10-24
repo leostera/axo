@@ -24,6 +24,9 @@
           "$ref": "#/$defs/SessionFocusEvent"
         },
         {
+          "$ref": "#/$defs/RelayStatusEvent"
+        },
+        {
           "$ref": "#/$defs/SubscriptionLaggedEvent"
         }
       ]
@@ -213,6 +216,23 @@
         "workspaceId": {
           "type": "string",
           "format": "uuid"
+        }
+      }
+    },
+    "RelayStatusEvent": {
+      "description": "Remote-access connection state changed; carries the same value as axo.relay.status.",
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "type",
+        "status"
+      ],
+      "properties": {
+        "type": {
+          "const": "relay.status"
+        },
+        "status": {
+          "$ref": "local-rpc.schema.json#/$defs/RemoteAccessStatusResult"
         }
       }
     },

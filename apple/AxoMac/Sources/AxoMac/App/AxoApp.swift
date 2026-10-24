@@ -221,6 +221,8 @@ struct AxoApp: App {
         sessions: sessions,
         sleepPrevention: sleepPrevention,
         ghostty: ghostty,
+        settingsClient: sessions.settingsClient,
+        remoteAccess: workbench.remoteAccess,
         selection: $settingsSection,
         appearanceTheme: $appearanceTheme,
         pairingLink: pairingLink

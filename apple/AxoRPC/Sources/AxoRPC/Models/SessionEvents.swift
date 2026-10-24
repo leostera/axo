@@ -16,13 +16,15 @@ public enum TerminalSessionEvent: Decodable, Equatable, Sendable {
   case workspaceChanged(workspaceID: String)
   /// Axod asks clients to show this session, for example after `/resume`.
   case sessionFocus(sessionID: SessionID)
+  /// Remote-access connection state changed.
+  case relayStatus(RemoteAccessStatus)
   /// Earlier events were discarded; the consumer must resynchronize from a fresh listing.
   case subscriptionLagged
   /// An event type this client does not understand. Ignored for forward compatibility.
   case unknown(type: String)
 
   private enum CodingKeys: String, CodingKey {
-    case type, session, sessionId, shellId, activity, sequence, data, workspaceId
+    case type, session, sessionId, shellId, activity, sequence, data, workspaceId, status
   }
 
   public init(from decoder: Decoder) throws {
@@ -47,6 +49,8 @@ public enum TerminalSessionEvent: Decodable, Equatable, Sendable {
         shellID: try container.decode(ShellID.self, forKey: .shellId),
         sequence: try container.decode(UInt64.self, forKey: .sequence),
         data: data)
+    case "relay.status":
+      self = .relayStatus(try container.decode(RemoteAccessStatus.self, forKey: .status))
     case "workspace.changed":
       self = .workspaceChanged(workspaceID: try container.decode(String.self, forKey: .workspaceId))
     case "session.focus":

@@ -34,9 +34,20 @@ protocol AxodClient: AnyObject {
     -> TerminalSession
 }
 
+/// The daemon operations Settings depends on, separate from the catalog so settings views never
+/// talk to the socket directly and stay testable with fakes.
+@MainActor
+protocol AxodSettingsClient: AnyObject {
+  func configValue(for key: AxoConfigKey) async throws -> AxoConfigValue
+  func setConfigValue(_ value: String, for key: AxoConfigKey) async throws -> AxoConfigValue
+  func remoteAccessStatus() async throws -> RemoteAccessStatus
+  func requestRemoteAccessConnection() async throws
+  func linkHost(using code: HostPairingCode) async throws -> HostPairingResult
+}
+
 /// `AxodClient` over Axod's local JSON-RPC socket.
 @MainActor
-final class UnixSocketAxodClient: AxodClient {
+final class UnixSocketAxodClient: AxodClient, AxodSettingsClient {
   /// Long-poll window; the daemon caps waits at 20 seconds.
   static let eventPollTimeout: Duration = .seconds(15)
 
@@ -69,6 +80,26 @@ final class UnixSocketAxodClient: AxodClient {
 
   func unsubscribe(_ subscription: TerminalSubscriptionID) async throws {
     try await UnixSocketRPC.unsubscribe(subscription, at: socketPath)
+  }
+
+  func configValue(for key: AxoConfigKey) async throws -> AxoConfigValue {
+    try await UnixSocketRPC.configValue(for: key, at: socketPath)
+  }
+
+  func setConfigValue(_ value: String, for key: AxoConfigKey) async throws -> AxoConfigValue {
+    try await UnixSocketRPC.setConfigValue(value, for: key, at: socketPath)
+  }
+
+  func remoteAccessStatus() async throws -> RemoteAccessStatus {
+    try await UnixSocketRPC.remoteAccessStatus(at: socketPath)
+  }
+
+  func requestRemoteAccessConnection() async throws {
+    try await UnixSocketRPC.requestRemoteAccessConnection(at: socketPath)
+  }
+
+  func linkHost(using code: HostPairingCode) async throws -> HostPairingResult {
+    try await UnixSocketRPC.linkHost(using: code, at: socketPath)
   }
 
   func createSession() async throws -> TerminalSession {

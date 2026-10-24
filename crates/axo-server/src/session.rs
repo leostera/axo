@@ -1982,6 +1982,11 @@ impl SessionManager {
         delivered
     }
 
+    /// Remote-access state changed; a catalog event so Settings never polls for it.
+    pub(crate) fn publish_relay_status(&self, status: &impl Serialize) {
+        self.publish_event(json!({ "type": "relay.status", "status": status }));
+    }
+
     fn publish_workspace_changed(&self, workspace_id: &str) {
         self.publish_event(json!({ "type": "workspace.changed", "workspaceId": workspace_id }));
     }

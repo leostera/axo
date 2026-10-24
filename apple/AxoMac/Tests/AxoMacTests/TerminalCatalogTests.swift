@@ -102,6 +102,36 @@ final class FakeAxodClient: AxodClient {
   struct Unsupported: Error {}
 }
 
+extension RemoteAccessStatus {
+  static func fixture(_ state: RemoteAccessConnectionState, error: String? = nil) -> Self {
+    RemoteAccessStatus(
+      state: state, connectedSinceUnixMillis: state == .connected ? 1 : nil,
+      hostName: "Test Mac", hostKind: "macos", lastError: error)
+  }
+}
+
+/// Settings operations over the same fake; counts status reads to prove there is no polling.
+@MainActor
+final class FakeSettingsClient: AxodSettingsClient {
+  var status = RemoteAccessStatus.fixture(.disconnected)
+  private(set) var statusReads = 0
+  private(set) var connectRequests = 0
+
+  func configValue(for key: AxoConfigKey) async throws -> AxoConfigValue { throw FakeAxodClient.Unsupported() }
+  func setConfigValue(_ value: String, for key: AxoConfigKey) async throws -> AxoConfigValue {
+    throw FakeAxodClient.Unsupported()
+  }
+  func remoteAccessStatus() async throws -> RemoteAccessStatus {
+    statusReads += 1
+    return status
+  }
+  func requestRemoteAccessConnection() async throws {
+    connectRequests += 1
+    status = .fixture(.connecting)
+  }
+  func linkHost(using code: HostPairingCode) async throws -> HostPairingResult { throw FakeAxodClient.Unsupported() }
+}
+
 @MainActor
 final class TerminalCatalogTests: XCTestCase {
   private func shell(_ id: ShellID) -> TerminalShell {
@@ -286,6 +316,36 @@ final class TerminalCatalogTests: XCTestCase {
     await model.requestCloseShell(11)
     XCTAssertEqual(model.pendingShellCloseConfirmation?.reason, .unknown)
     XCTAssertEqual(client.closedShells, [])
+  }
+
+  func testRelayStatusEventsUpdateRemoteAccessWithoutPolling() async throws {
+    let client = FakeAxodClient()
+    let settings = FakeSettingsClient()
+    let model = makeModel(client)
+    let remoteAccess = RemoteAccessModel(client: settings)
+    let sync = TerminalCatalogSync(sessions: model, remoteAccess: remoteAccess, client: client)
+    sync.start()
+    defer { sync.stop() }
+
+    try await waitUntil { remoteAccess.status == .fixture(.disconnected) }
+    XCTAssertEqual(settings.statusReads, 1, "one read when the catalog connects")
+
+    client.push(.relayStatus(.fixture(.connected)))
+    try await waitUntil { remoteAccess.status == .fixture(.connected) }
+    XCTAssertEqual(settings.statusReads, 1, "pushed changes need no status reads")
+    XCTAssertEqual(client.listCount, 1, "relay events never touch the Session catalog")
+
+    remoteAccess.reset()
+    XCTAssertNil(remoteAccess.status)
+    XCTAssertEqual(remoteAccess.statusError, "axod is not running.")
+  }
+
+  func testRemoteAccessConnectRequestsAndRefreshes() async throws {
+    let settings = FakeSettingsClient()
+    let remoteAccess = RemoteAccessModel(client: settings)
+    try await remoteAccess.connect()
+    XCTAssertEqual(settings.connectRequests, 1)
+    XCTAssertEqual(remoteAccess.status, .fixture(.connecting))
   }
 
   private func waitUntil(

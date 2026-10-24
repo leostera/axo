@@ -62,6 +62,8 @@ struct SettingsView: View {
   var sessions: TerminalSessionsModel
   var sleepPrevention: SleepPreventionController
   let ghostty: GhosttyRuntime
+  let settingsClient: AxodSettingsClient?
+  var remoteAccess: RemoteAccessModel
   @Binding var selection: SettingsSection
   @Binding var appearanceTheme: AppearanceTheme
   @Bindable var pairingLink: PairingLinkRouter
@@ -89,15 +91,17 @@ struct SettingsView: View {
         case .general:
           GeneralSettingsView(
             daemon: daemon,
+            settingsClient: settingsClient,
             ghostty: ghostty,
             sleepPrevention: sleepPrevention
           )
         case .appearance:
           AppearanceSettingsView(theme: $appearanceTheme)
         case .agent:
-          AgentSettingsView(daemon: daemon, sessions: sessions)
+          AgentSettingsView(daemon: daemon, sessions: sessions, settingsClient: settingsClient)
         case .remoteAccess:
-          RemoteAccessSettingsView(daemon: daemon, pairingCode: $pairingLink.pendingCode)
+          RemoteAccessSettingsView(
+            daemon: daemon, remoteAccess: remoteAccess, pairingCode: $pairingLink.pendingCode)
         case .about:
           AboutSettingsView(daemon: daemon)
         }
@@ -129,16 +133,7 @@ private struct AppearanceSettingsView: View {
 private struct AgentSettingsView: View {
   var daemon: DaemonController
   var sessions: TerminalSessionsModel
-  @State private var command = "pi"
-  @State private var savedCommand = "pi"
-  @State private var errorMessage: String?
-  @State private var isLoading = false
-  @State private var isSaving = false
-  @State private var isLoaded = false
-
-  private var canSave: Bool {
-    isLoaded && !isLoading && !isSaving && command != savedCommand
-  }
+  let settingsClient: AxodSettingsClient?
 
   var body: some View {
     Form {
@@ -160,188 +155,15 @@ private struct AgentSettingsView: View {
         .fixedSize(horizontal: false, vertical: true)
       }
 
-      Section("Default Agent") {
-        TextField("Command", text: $command, prompt: Text("pi"))
-          .disabled(!isLoaded || isLoading || isSaving)
-          .accessibilityIdentifier("default-agent-command")
-
-        Text(
-          "Enter the full command line. Use an absolute executable path or a command on axod's PATH. Arguments support shell-style quoting; Axod launches it directly without a shell and appends its managed Pi session and extension arguments. Changes apply to new Agent sessions."
-        )
-        .font(.caption)
-        .foregroundStyle(.secondary)
-        .fixedSize(horizontal: false, vertical: true)
-
-        HStack {
-          if isLoading || isSaving {
-            ProgressView()
-              .controlSize(.small)
-          }
-          Spacer()
-          Button("Save") {
-            Task { await saveCommand() }
-          }
-          .disabled(!canSave)
-          .accessibilityIdentifier("save-default-agent-command")
-        }
-
-        if !isLoaded && !isLoading && errorMessage == nil {
-          Text("Start axod to view or change the configured command.")
-            .font(.caption)
-            .foregroundStyle(.secondary)
-        }
-
-        if let errorMessage {
-          Label(errorMessage, systemImage: "exclamationmark.triangle.fill")
-            .font(.caption)
-            .foregroundStyle(.red)
-            .fixedSize(horizontal: false, vertical: true)
-            .accessibilityIdentifier("default-agent-command-error")
-        }
-      }
+      DaemonCommandSettingSection(setting: .agent, daemon: daemon, client: settingsClient)
     }
     .formStyle(.grouped)
-    .task(id: daemon.status) {
-      guard case .running = daemon.status else { return }
-      await loadCommand()
-    }
-  }
-
-  @MainActor
-  private func loadCommand() async {
-    isLoading = true
-    defer { isLoading = false }
-    do {
-      let socketPath = try DaemonController.socketPath()
-      let settings = try await UnixSocketRPC.configValue(for: .agentCommand, at: socketPath)
-      command = settings.value
-      savedCommand = settings.value
-      isLoaded = true
-      errorMessage = nil
-    } catch {
-      isLoaded = false
-      errorMessage = error.localizedDescription
-    }
-  }
-
-  @MainActor
-  private func saveCommand() async {
-    isSaving = true
-    defer { isSaving = false }
-    do {
-      let socketPath = try DaemonController.socketPath()
-      let settings = try await UnixSocketRPC.setConfigValue(
-        command,
-        for: .agentCommand,
-        at: socketPath
-      )
-      command = settings.value
-      savedCommand = settings.value
-      errorMessage = nil
-    } catch {
-      errorMessage = error.localizedDescription
-    }
-  }
-}
-
-private struct ShellCommandSettingsSection: View {
-  var daemon: DaemonController
-  @State private var command = ""
-  @State private var savedCommand = ""
-  @State private var errorMessage: String?
-  @State private var isLoading = false
-  @State private var isSaving = false
-  @State private var isLoaded = false
-
-  private var canSave: Bool {
-    isLoaded && !isLoading && !isSaving && command != savedCommand
-  }
-
-  var body: some View {
-    Section("Shell") {
-      TextField("Command", text: $command, prompt: Text("Your login shell"))
-        .disabled(!isLoaded || isLoading || isSaving)
-        .accessibilityIdentifier("default-shell-command")
-
-      Text(
-        "Axod runs this command in its own terminal session, not in Terminal.app. The default follows your login shell. Use an absolute executable path or a command on axod's PATH; arguments support shell-style quoting. Changes apply to new or restarted shell processes."
-      )
-      .font(.caption)
-      .foregroundStyle(.secondary)
-      .fixedSize(horizontal: false, vertical: true)
-
-      HStack {
-        if isLoading || isSaving {
-          ProgressView()
-            .controlSize(.small)
-        }
-        Spacer()
-        Button("Save") {
-          Task { await saveCommand() }
-        }
-        .disabled(!canSave)
-        .accessibilityIdentifier("save-default-shell-command")
-      }
-
-      if !isLoaded && !isLoading && errorMessage == nil {
-        Text("Start axod to view or change the configured shell.")
-          .font(.caption)
-          .foregroundStyle(.secondary)
-      }
-
-      if let errorMessage {
-        Label(errorMessage, systemImage: "exclamationmark.triangle.fill")
-          .font(.caption)
-          .foregroundStyle(.red)
-          .fixedSize(horizontal: false, vertical: true)
-          .accessibilityIdentifier("default-shell-command-error")
-      }
-    }
-    .task(id: daemon.status) {
-      guard case .running = daemon.status else { return }
-      await loadCommand()
-    }
-  }
-
-  @MainActor
-  private func loadCommand() async {
-    isLoading = true
-    defer { isLoading = false }
-    do {
-      let socketPath = try DaemonController.socketPath()
-      let settings = try await UnixSocketRPC.configValue(for: .shellCommand, at: socketPath)
-      command = settings.value
-      savedCommand = settings.value
-      isLoaded = true
-      errorMessage = nil
-    } catch {
-      isLoaded = false
-      errorMessage = error.localizedDescription
-    }
-  }
-
-  @MainActor
-  private func saveCommand() async {
-    isSaving = true
-    defer { isSaving = false }
-    do {
-      let socketPath = try DaemonController.socketPath()
-      let settings = try await UnixSocketRPC.setConfigValue(
-        command,
-        for: .shellCommand,
-        at: socketPath
-      )
-      command = settings.value
-      savedCommand = settings.value
-      errorMessage = nil
-    } catch {
-      errorMessage = error.localizedDescription
-    }
   }
 }
 
 private struct GeneralSettingsView: View {
   var daemon: DaemonController
+  let settingsClient: AxodSettingsClient?
   var ghostty: GhosttyRuntime
   var sleepPrevention: SleepPreventionController
   @State private var isConfirmingRestart = false
@@ -396,7 +218,7 @@ private struct GeneralSettingsView: View {
           .foregroundStyle(.secondary)
       }
 
-      ShellCommandSettingsSection(daemon: daemon)
+      DaemonCommandSettingSection(setting: .shell, daemon: daemon, client: settingsClient)
 
       Section("axod") {
         LabeledContent("Daemon status", value: daemon.status.settingsTitle)

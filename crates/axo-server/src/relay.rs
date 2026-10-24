@@ -93,7 +93,7 @@ impl std::fmt::Debug for LoopbackAccess {
     }
 }
 
-#[derive(Clone, Debug, Serialize)]
+#[derive(Clone, Debug, Eq, PartialEq, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub(crate) struct RelayStatus {
     state: String,
@@ -103,9 +103,13 @@ pub(crate) struct RelayStatus {
     last_error: Option<String>,
 }
 
+type RelayStatusObserver = Box<dyn Fn(&RelayStatus) + Send + Sync>;
+
 pub(crate) struct RelayControl {
     status: Mutex<RelayStatus>,
     reconnect_requested: AtomicBool,
+    /// Told about every status change, outside the status lock (publishes `relay.status`).
+    observer: Option<RelayStatusObserver>,
 }
 
 impl RelayControl {
@@ -119,7 +123,30 @@ impl RelayControl {
                 last_error: None,
             }),
             reconnect_requested: AtomicBool::new(false),
+            observer: None,
         }
+    }
+
+    fn with_observer(mut self, observer: RelayStatusObserver) -> Self {
+        self.observer = Some(observer);
+        self
+    }
+
+    /// Applies `change` and notifies the observer only when the status actually changed.
+    fn update(&self, change: impl FnOnce(&mut RelayStatus)) -> io::Result<()> {
+        let changed = {
+            let mut status = self
+                .status
+                .lock()
+                .map_err(|_| io::Error::other("relay status lock was poisoned"))?;
+            let before = status.clone();
+            change(&mut status);
+            (*status != before).then(|| status.clone())
+        };
+        if let (Some(status), Some(observer)) = (changed, &self.observer) {
+            observer(&status);
+        }
+        Ok(())
     }
 
     pub(crate) fn snapshot(&self) -> io::Result<RelayStatus> {
@@ -131,38 +158,35 @@ impl RelayControl {
 
     pub(crate) fn request_connect(&self) -> io::Result<()> {
         self.reconnect_requested.store(true, Ordering::Relaxed);
-        let mut status = self
-            .status
-            .lock()
-            .map_err(|_| io::Error::other("relay status lock was poisoned"))?;
+        self.update(Self::connecting)
+    }
+
+    fn connecting(status: &mut RelayStatus) {
         status.state = "connecting".to_owned();
         status.connected_since_unix_millis = None;
         status.last_error = None;
-        Ok(())
     }
 
     fn mark_connecting(&self) {
-        if let Ok(mut status) = self.status.lock() {
-            status.state = "connecting".to_owned();
-            status.connected_since_unix_millis = None;
-            status.last_error = None;
-        }
+        let _ = self.update(Self::connecting);
     }
 
     fn mark_connected(&self) {
-        if let Ok(mut status) = self.status.lock() {
-            status.state = "connected".to_owned();
-            status.connected_since_unix_millis = Some(unix_timestamp_millis());
+        let _ = self.update(|status| {
+            if status.state != "connected" {
+                status.state = "connected".to_owned();
+                status.connected_since_unix_millis = Some(unix_timestamp_millis());
+            }
             status.last_error = None;
-        }
+        });
     }
 
     fn mark_disconnected(&self, error: impl std::fmt::Display) {
-        if let Ok(mut status) = self.status.lock() {
+        let _ = self.update(|status| {
             status.state = "disconnected".to_owned();
             status.connected_since_unix_millis = None;
             status.last_error = Some(error.to_string().chars().take(512).collect());
-        }
+        });
     }
 }
 
@@ -180,7 +204,16 @@ impl RelayWorker {
     ) -> io::Result<Self> {
         let config_path = server_directory.join(CONFIG_FILE);
         let stop = Arc::new(AtomicBool::new(false));
-        let control = Arc::new(RelayControl::new(local_host_name(), "macos".to_owned()));
+        let observed_sessions = Arc::downgrade(&sessions);
+        let control = Arc::new(
+            RelayControl::new(local_host_name(), "macos".to_owned()).with_observer(Box::new(
+                move |status| {
+                    if let Some(sessions) = observed_sessions.upgrade() {
+                        sessions.publish_relay_status(status);
+                    }
+                },
+            )),
+        );
         let worker_stop = Arc::clone(&stop);
         let worker_control = Arc::clone(&control);
         let worker = thread::Builder::new()
@@ -1931,6 +1964,30 @@ mod tests {
         assert_eq!(retrying.connected_since_unix_millis, None);
         assert_eq!(retrying.last_error, None);
         assert!(control.reconnect_requested.swap(false, Ordering::Relaxed));
+    }
+
+    #[test]
+    fn relay_status_observer_sees_only_real_changes() {
+        let seen = Arc::new(Mutex::new(Vec::new()));
+        let recorder = Arc::clone(&seen);
+        let control = RelayControl::new("Test Mac".to_owned(), "macos".to_owned()).with_observer(
+            Box::new(move |status| recorder.lock().unwrap().push(status.state.clone())),
+        );
+        control.mark_connecting();
+        control.mark_connecting();
+        control.mark_connected();
+        let connected_since = control.snapshot().unwrap().connected_since_unix_millis;
+        control.mark_connected();
+        assert_eq!(
+            control.snapshot().unwrap().connected_since_unix_millis,
+            connected_since,
+            "a repeated connected mark must not reset the connection time"
+        );
+        control.mark_disconnected("gone");
+        assert_eq!(
+            *seen.lock().unwrap(),
+            ["connecting", "connected", "disconnected"]
+        );
     }
 
     #[test]

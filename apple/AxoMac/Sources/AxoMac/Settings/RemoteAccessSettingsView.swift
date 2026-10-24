@@ -4,15 +4,17 @@ import SwiftUI
 
 struct RemoteAccessSettingsView: View {
   var daemon: DaemonController
+  var remoteAccess: RemoteAccessModel
   @Binding var pairingCode: HostPairingCode?
 
   @State private var pairingCodeText = ""
   @State private var pairingError: String?
   @State private var pairingSuccess: String?
   @State private var isLinking = false
-  @State private var connection: RemoteAccessStatus?
-  @State private var statusError: String?
+  @State private var connectError: String?
   @State private var isRequestingConnection = false
+
+  private var connection: RemoteAccessStatus? { remoteAccess.status }
 
   private var daemonIsRunning: Bool {
     if case .running = daemon.status { return true }
@@ -71,7 +73,7 @@ struct RemoteAccessSettingsView: View {
           status: connection,
           daemonIsRunning: daemonIsRunning,
           notRunningActionTitle: notRunningActionTitle,
-          requestError: statusError,
+          requestError: connectError ?? remoteAccess.statusError,
           isRequestingConnection: isRequestingConnection,
           connect: connect
         )
@@ -89,8 +91,9 @@ struct RemoteAccessSettingsView: View {
     .onChange(of: pairingCode) { _, code in
       applyPairingCode(code)
     }
-    .task(id: daemon.status) {
-      await monitorConnection()
+    .task {
+      // Axod pushes later changes; this only covers opening Settings.
+      await remoteAccess.refresh()
     }
   }
 
@@ -116,45 +119,12 @@ struct RemoteAccessSettingsView: View {
     Task {
       defer { isLinking = false }
       do {
-        let result = try await UnixSocketRPC.linkHost(
-          using: code,
-          at: DaemonController.socketPath()
-        )
+        let result = try await remoteAccess.link(using: code)
         pairingCodeText = ""
         pairingSuccess = "\(result.hostLabel) is linked. axod will connect automatically."
-        await refreshConnection()
       } catch {
         pairingError = error.localizedDescription
       }
-    }
-  }
-
-  private func monitorConnection() async {
-    while !Task.isCancelled {
-      await refreshConnection()
-      do {
-        try await Task.sleep(for: .seconds(1))
-      } catch {
-        return
-      }
-    }
-  }
-
-  private func refreshConnection() async {
-    guard daemonIsRunning else {
-      connection = nil
-      statusError = "axod is not running."
-      return
-    }
-
-    do {
-      connection = try await UnixSocketRPC.remoteAccessStatus(
-        at: DaemonController.socketPath()
-      )
-      statusError = nil
-    } catch {
-      connection = nil
-      statusError = error.localizedDescription
     }
   }
 
@@ -173,14 +143,11 @@ struct RemoteAccessSettingsView: View {
     Task {
       defer { isRequestingConnection = false }
       do {
-        try await UnixSocketRPC.requestRemoteAccessConnection(
-          at: DaemonController.socketPath()
-        )
-        statusError = nil
+        try await remoteAccess.connect()
+        connectError = nil
       } catch {
-        statusError = error.localizedDescription
+        connectError = error.localizedDescription
       }
-      await refreshConnection()
     }
   }
 }
