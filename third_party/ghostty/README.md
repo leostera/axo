@@ -24,3 +24,9 @@ reader, so a surface must not spawn a process or read the PTY itself:
 
 Without this, the app needs `axod terminal-attach` as a bridge process with a
 second PTY between Ghostty and the shell.
+
+It also exposes `window-padding-x` and `window-padding-y` through
+`ghostty_config_get` (`ghostty_config_padding_s`, points before DPI scaling).
+Axod sizes panes that no surface shows yet from the client's viewport, so Axo
+must report the padding the final config (including the user's Ghostty config)
+uses, not the default it loaded first.

@@ -17,6 +17,8 @@ final class GhosttyRuntime {
   private(set) var attentionConfig = TerminalAttentionConfig()
   @ObservationIgnored private var secureInputEnabled = false
   private(set) var hasDarkBackground = true
+  /// The padding libghostty draws around every grid, in points; see `windowPadding(from:)`.
+  @ObservationIgnored private(set) var windowPadding = GhosttyRuntime.axoWindowPadding
   /// One cell of the most recently sized surface, in device pixels; `nil` before any surface.
   private(set) var cellPixelSize: ClientViewport.PixelSize?
 
@@ -471,7 +473,7 @@ final class GhosttyRuntime {
       terminalArea: .init(width: terminalAreaSize.width, height: terminalAreaSize.height),
       backingScale: backingScale,
       cell: cellPixelSize,
-      padding: Self.axoWindowPadding,
+      padding: windowPadding,
       dividerThickness: TerminalPaneGeometry.dividerThickness)
   }
 
@@ -528,6 +530,7 @@ final class GhosttyRuntime {
     let appearance = Self.scrollbarAppearance(from: config)
     showsScrollbar = appearance.showsScrollbar
     hasDarkBackground = appearance.hasDarkBackground
+    windowPadding = Self.windowPadding(from: config)
     attentionConfig = TerminalAttentionConfig(config: config)
 
     var runtimeConfig = Self.makeRuntimeConfig(

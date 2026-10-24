@@ -1,5 +1,5 @@
 diff --git a/source/include/ghostty.h b/source/include/ghostty.h
-index 9a12b9c..f84691f 100644
+index 9a12b9c..6075408 100644
 --- a/source/include/ghostty.h
 +++ b/source/include/ghostty.h
 @@ -518,6 +518,14 @@ typedef struct {
@@ -17,6 +17,19 @@ index 9a12b9c..f84691f 100644
  } ghostty_surface_config_s;
  
  typedef struct {
+@@ -544,6 +552,12 @@ typedef struct {
+   uint8_t b;
+ } ghostty_config_color_s;
+ 
++// window-padding-x / window-padding-y, in points before DPI scaling.
++typedef struct {
++  uint32_t top_left;
++  uint32_t bottom_right;
++} ghostty_config_padding_s;
++
+ // config.ColorList
+ typedef struct {
+   const ghostty_config_color_s* colors;
 diff --git a/source/src/Surface.zig b/source/src/Surface.zig
 index 568b74d..fd9b9f9 100644
 --- a/source/src/Surface.zig
@@ -101,6 +114,27 @@ index 3b1a04d..ce69761 100644
  pub const NewSurfaceContext = enum(c_int) {
      window = 0,
      tab = 1,
+diff --git a/source/src/config/Config.zig b/source/src/config/Config.zig
+index fd6d8cf..4f8a6d2 100644
+--- a/source/src/config/Config.zig
++++ b/source/src/config/Config.zig
+@@ -10428,6 +10428,16 @@ pub const WindowPadding = struct {
+     top_left: u32 = 0,
+     bottom_right: u32 = 0,
+ 
++    /// ghostty_config_padding_s: the padding in points, before DPI scaling.
++    pub const C = extern struct {
++        top_left: u32,
++        bottom_right: u32,
++    };
++
++    pub fn cval(self: Self) C {
++        return .{ .top_left = self.top_left, .bottom_right = self.bottom_right };
++    }
++
+     pub fn clone(self: Self, _: Allocator) error{}!Self {
+         return self;
+     }
 diff --git a/source/src/termio/Exec.zig b/source/src/termio/Exec.zig
 index 2dfb1e5..c6115b1 100644
 --- a/source/src/termio/Exec.zig

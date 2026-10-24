@@ -28,6 +28,25 @@ extension GhosttyRuntime {
     return appearance
   }
 
+  /// The window padding `config` resolved to, in points: Axo's default unless the user's Ghostty
+  /// config overrides it. Axod sizes panes no surface shows yet with it.
+  static func windowPadding(from config: ghostty_config_t) -> ClientViewport.Padding {
+    func padding(_ key: String) -> ghostty_config_padding_s? {
+      var value = ghostty_config_padding_s()
+      return ghostty_config_get(config, &value, key, UInt(key.utf8.count)) ? value : nil
+    }
+    var resolved = axoWindowPadding
+    if let x = padding("window-padding-x") {
+      resolved.left = x.top_left
+      resolved.right = x.bottom_right
+    }
+    if let y = padding("window-padding-y") {
+      resolved.top = y.top_left
+      resolved.bottom = y.bottom_right
+    }
+    return resolved
+  }
+
   /// Points libghostty at installed Ghostty.app resources, else Axo's bundled copy, unless the
   /// environment already chose a directory.
   static func configureGhosttyResources() {
@@ -56,8 +75,7 @@ extension GhosttyRuntime {
   /// The window padding Axo configures, in points. `window-padding-y` gives the surface
   /// breathing room above and below; libghostty paints it in the terminal background, as
   /// Ghostty.app does. `-x` is Ghostty's own default, stated so Axod can size panes with it.
-  /// libghostty cannot report padding, so a user override makes panes Axod sizes before they
-  /// are shown off by a cell until they are shown.
+  /// A user's Ghostty config may override it; `windowPadding(from:)` reads what applies.
   static let axoWindowPadding = ClientViewport.Padding(top: 10, bottom: 10, left: 2, right: 2)
 
   /// Axo's Ghostty settings, loaded before user config so explicit Ghostty settings win.
