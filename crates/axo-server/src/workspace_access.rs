@@ -160,12 +160,12 @@ fn scoped_access_error(error: io::Error, scope_started: bool) -> io::Error {
 fn decode_bookmark(encoded: &str) -> io::Result<Vec<u8>> {
     let invalid = invalid_bookmark();
     let bytes = encoded.as_bytes();
-    if bytes.is_empty() || bytes.len() > 65_536 || bytes.len() % 4 != 0 {
+    if bytes.is_empty() || bytes.len() > 65_536 || !bytes.len().is_multiple_of(4) {
         return Err(invalid);
     }
 
     let mut decoded = Vec::with_capacity(bytes.len() / 4 * 3);
-    for (index, chunk) in bytes.chunks_exact(4).enumerate() {
+    for (index, chunk) in bytes.as_chunks::<4>().0.iter().enumerate() {
         let is_last = index + 1 == bytes.len() / 4;
         let a = base64_value(chunk[0]).ok_or_else(invalid_bookmark)?;
         let b = base64_value(chunk[1]).ok_or_else(invalid_bookmark)?;

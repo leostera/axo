@@ -2208,13 +2208,15 @@ impl SessionManager {
                         shell_id,
                         runtime_id,
                     },
-                    session_uuid,
-                    pane_id,
-                    initial_pwd,
-                    session_file,
-                    bridge_socket,
-                    bridge_token,
-                    process_id,
+                    PiBridgeWorkerConfig {
+                        session_uuid,
+                        pane_id,
+                        initial_pwd,
+                        session_file,
+                        bridge_socket,
+                        bridge_token,
+                        process_id,
+                    },
                 );
             })?;
         self.workers
@@ -3814,16 +3816,17 @@ fn create_workspace_session(
             ],
         )
         .map_err(io::Error::other)?;
-    let running = match spawn_new_pi(
-        &state.database,
-        &state.agent_command,
+    let request = PiLaunchRequest {
+        agent_command: state.agent_command.clone(),
         session_id,
-        &initial_pwd,
-        &pi_session_file,
-        &bridge_socket,
-        &session_uuid,
-        &pane_id,
-    ) {
+        initial_pwd: initial_pwd.clone(),
+        session_file: pi_session_file.clone(),
+        bridge_socket: bridge_socket.clone(),
+        session_uuid: session_uuid.clone(),
+        pane_id: pane_id.clone(),
+        previous_token: None,
+    };
+    let running = match spawn_new_pi(&state.database, &request) {
         Ok(running) => running,
         Err(error) => {
             archive_session(&mut state.database, session_id, "pi_spawn_failed")?;
@@ -4869,16 +4872,30 @@ fn connect_pi_socket_until(
     Ok(UnixStream::from(socket))
 }
 
+/// The exact Pi pane a bridge connection must prove it serves, and how to reach it.
+#[derive(Clone, Copy)]
+struct PiBridgeTarget<'a> {
+    bridge_socket: &'a Path,
+    token: &'a str,
+    session_uuid: &'a str,
+    pane_id: &'a str,
+    initial_pwd: &'a Path,
+    session_file: &'a Path,
+}
+
 fn connect_to_pi_bridge(
-    bridge_socket: &Path,
-    token: &str,
-    session_uuid: &str,
-    pane_id: &str,
-    initial_pwd: &Path,
-    session_file: &Path,
+    target: PiBridgeTarget<'_>,
     deadline: Instant,
     check_current: &impl Fn() -> io::Result<()>,
 ) -> io::Result<(BufReader<UnixStream>, VerifiedPiProcessId)> {
+    let PiBridgeTarget {
+        bridge_socket,
+        token,
+        session_uuid,
+        pane_id,
+        initial_pwd,
+        session_file,
+    } = target;
     let mut stream = connect_pi_socket_until(bridge_socket, deadline, check_current)?;
     stream.set_read_timeout(Some(Duration::from_secs(2)))?;
     stream.set_write_timeout(Some(Duration::from_secs(2)))?;
@@ -4925,27 +4942,14 @@ fn connect_to_pi_bridge(
 }
 
 fn request_pi_shutdown(
-    bridge_socket: &Path,
-    token: &str,
-    session_uuid: &str,
-    pane_id: &str,
-    initial_pwd: &Path,
-    session_file: &Path,
+    target: PiBridgeTarget<'_>,
     takeover_policy: PiTakeoverPolicy,
     check_current: &impl Fn() -> io::Result<()>,
 ) -> io::Result<PiShutdownAttempt> {
+    let session_uuid = target.session_uuid;
     check_current()?;
     let deadline = Instant::now() + PI_BRIDGE_REQUEST_TIMEOUT;
-    let (mut reader, process_id) = connect_to_pi_bridge(
-        bridge_socket,
-        token,
-        session_uuid,
-        pane_id,
-        initial_pwd,
-        session_file,
-        deadline,
-        check_current,
-    )?;
+    let (mut reader, process_id) = connect_to_pi_bridge(target, deadline, check_current)?;
     check_current()?;
     let request_id = format!("takeover-{}", create_uuid_v4()?);
     let graceful_shutdown = write_json_line(
@@ -5444,12 +5448,14 @@ impl PiLaunchRequest {
                 );
                 let shutdown_attempt = match previous_token.as_deref() {
                     Some(token) => match request_pi_shutdown(
-                        bridge_socket.as_path(),
-                        token,
-                        session_uuid,
-                        pane_id,
-                        initial_pwd,
-                        session_file,
+                        PiBridgeTarget {
+                            bridge_socket: bridge_socket.as_path(),
+                            token,
+                            session_uuid,
+                            pane_id,
+                            initial_pwd,
+                            session_file,
+                        },
                         takeover_policy,
                         check_current,
                     ) {
@@ -5520,30 +5526,12 @@ impl PiLaunchRequest {
 
 // New Session admission never takes over an existing writer. Recovery has a
 // separate reservation/commit path, so no takeover wait can hide under its lock.
-fn spawn_new_pi(
-    database: &Connection,
-    agent_command: &AgentCommand,
-    session_id: SessionId,
-    initial_pwd: &Path,
-    session_file: &Path,
-    bridge_socket: &PiBridgeSocketPath,
-    session_uuid: &str,
-    pane_id: &str,
-) -> io::Result<RunningShell> {
-    let lock = acquire_pi_writer_lock(session_file)?;
+/// Starts Pi for a pane with no previous process (`request.previous_token` is ignored).
+fn spawn_new_pi(database: &Connection, request: &PiLaunchRequest) -> io::Result<RunningShell> {
+    let lock = acquire_pi_writer_lock(&request.session_file)?;
     let bridge_token = create_uuid_v4()?;
-    store_pi_bridge_token(database, session_uuid, &bridge_token)?;
-    let request = PiLaunchRequest {
-        agent_command: agent_command.clone(),
-        session_id,
-        initial_pwd: initial_pwd.to_owned(),
-        session_file: session_file.to_owned(),
-        bridge_socket: bridge_socket.clone(),
-        session_uuid: session_uuid.to_owned(),
-        pane_id: pane_id.to_owned(),
-        previous_token: None,
-    };
-    spawn_pi(&request, lock, bridge_token)
+    store_pi_bridge_token(database, &request.session_uuid, &bridge_token)?;
+    spawn_pi(request, lock, bridge_token)
 }
 
 fn spawn_pi(
@@ -5751,10 +5739,8 @@ fn is_executable(path: &Path) -> bool {
         .unwrap_or(false)
 }
 
-fn run_pi_bridge_worker(
-    manager: Weak<SessionManager>,
-    stop: Arc<AtomicBool>,
-    binding: PiRuntimeBinding,
+/// Everything a bridge worker needs to reach and verify one running Pi.
+struct PiBridgeWorkerConfig {
     session_uuid: String,
     pane_id: String,
     initial_pwd: PathBuf,
@@ -5762,7 +5748,23 @@ fn run_pi_bridge_worker(
     bridge_socket: PiBridgeSocketPath,
     bridge_token: String,
     process_id: u32,
+}
+
+fn run_pi_bridge_worker(
+    manager: Weak<SessionManager>,
+    stop: Arc<AtomicBool>,
+    binding: PiRuntimeBinding,
+    config: PiBridgeWorkerConfig,
 ) {
+    let PiBridgeWorkerConfig {
+        session_uuid,
+        pane_id,
+        initial_pwd,
+        session_file,
+        bridge_socket,
+        bridge_token,
+        process_id,
+    } = config;
     let PiRuntimeBinding {
         session_id,
         shell_id,
@@ -7116,13 +7118,16 @@ mod tests {
                 .recovery_id = Some(recovery_id);
             spawn_new_pi(
                 &state.database,
-                &state.agent_command,
-                fixture.session_id,
-                &fixture.lifecycle.directory,
-                &fixture.file,
-                &fixture.socket,
-                &fixture.session_uuid,
-                &fixture.pane_id,
+                &PiLaunchRequest {
+                    agent_command: state.agent_command.clone(),
+                    session_id: fixture.session_id,
+                    initial_pwd: fixture.lifecycle.directory.clone(),
+                    session_file: fixture.file.clone(),
+                    bridge_socket: fixture.socket.clone(),
+                    session_uuid: fixture.session_uuid.clone(),
+                    pane_id: fixture.pane_id.clone(),
+                    previous_token: None,
+                },
             )
             .unwrap()
         };
@@ -7804,13 +7809,16 @@ mod tests {
             let state = fixture.manager.lock_state().unwrap();
             spawn_new_pi(
                 &state.database,
-                &agent,
-                SessionId(900),
-                &fixture.directory,
-                &file,
-                &socket,
-                &session_uuid,
-                &pane_id,
+                &PiLaunchRequest {
+                    agent_command: agent.clone(),
+                    session_id: SessionId(900),
+                    initial_pwd: fixture.directory.clone(),
+                    session_file: file.clone(),
+                    bridge_socket: socket.clone(),
+                    session_uuid: session_uuid.clone(),
+                    pane_id: pane_id.clone(),
+                    previous_token: None,
+                },
             )
             .unwrap()
         };
