@@ -4,6 +4,7 @@ version = "0.1.0"
 edition = "2024"
 
 [dependencies]
+axo-protocol = { path = "../axo-protocol" }
 httparse = "1.10.1"
 native-tls = "0.2.18"
 tungstenite = { version = "0.30.0", features = ["native-tls", "url"] }

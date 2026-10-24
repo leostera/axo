@@ -73,6 +73,14 @@ dependencies = [
 ]
 
 [[package]]
+name = "axo-protocol"
+version = "0.1.0"
+dependencies = [
+ "serde",
+ "serde_json",
+]
+
+[[package]]
 name = "axo-pty"
 version = "0.1.0"
 dependencies = [
@@ -84,6 +92,7 @@ dependencies = [
 name = "axo-relay"
 version = "0.1.0"
 dependencies = [
+ "axo-protocol",
  "httparse",
  "libc",
  "log",
@@ -100,6 +109,7 @@ name = "axo-server"
 version = "0.1.0"
 dependencies = [
  "axo-ipc",
+ "axo-protocol",
  "axo-pty",
  "axo-relay",
  "core-foundation",

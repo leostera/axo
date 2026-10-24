@@ -1,0 +1,7 @@
+package(default_visibility = ["//visibility:public"])
+
+# The v1 wire contract, for conformance tests of its implementations.
+filegroup(
+    name = "v1",
+    srcs = glob(["*.schema.json", "fixtures/*.json"]),
+)

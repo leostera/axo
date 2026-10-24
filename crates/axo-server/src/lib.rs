@@ -10,9 +10,9 @@ use std::sync::atomic::{AtomicBool, Ordering};
 use std::thread;
 use std::time::Duration;
 
-use axo_ipc::BlockingMethods;
-use jsonrpc_core::{IoHandler, Params};
-use serde_json::json;
+use axo_ipc::{ErrorCode, RpcError, TypedMethods};
+use axo_protocol::rpc::{self, method};
+use jsonrpc_core::IoHandler;
 
 mod process_inspection;
 mod session;
@@ -307,201 +307,150 @@ fn add_relay_methods(
     relay_control: Option<Arc<axo_relay::RelayControl>>,
     credential_store: Arc<dyn axo_relay::credential::HostCredentialStore>,
 ) {
-    let settings_path = server_directory.join(axo_relay::CONFIG_FILE);
-    handler.add_blocking_method("axo.relay.settings", move |_| {
-        serde_json::to_value(axo_relay::settings(&settings_path).map_err(|_| {
-            jsonrpc_core::Error {
-                code: jsonrpc_core::ErrorCode::InternalError,
-                message: "could not read remote access settings".to_owned(),
-                data: None,
+    let config_path = server_directory.join(axo_relay::CONFIG_FILE);
+
+    let path = config_path.clone();
+    handler.add_typed(
+        method::RELAY_SETTINGS,
+        "expected no parameters",
+        move |_: rpc::NoParams| {
+            axo_relay::settings(&path)
+                .map_err(|_| internal_error("could not read remote access settings"))
+        },
+    );
+
+    let path = config_path.clone();
+    let control = relay_control.clone();
+    let credentials = Arc::clone(&credential_store);
+    handler.add_typed(
+        method::RELAY_CONFIGURE,
+        "invalid remote access settings",
+        move |request: axo_relay::ConfigureRelayRequest| {
+            let settings = axo_relay::configure(&path, request, credentials.as_ref())
+                .map_err(|_| invalid_params("could not save remote access settings"))?;
+            if let Some(control) = &control {
+                let _ = control.request_connect();
             }
-        })?)
-        .map_err(|_| jsonrpc_core::Error {
-            code: jsonrpc_core::ErrorCode::InternalError,
-            message: "could not encode remote access settings".to_owned(),
-            data: None,
-        })
-    });
+            Ok(settings)
+        },
+    );
 
-    let configure_path = server_directory.join(axo_relay::CONFIG_FILE);
-    let configure_control = relay_control.clone();
-    let configure_credentials = Arc::clone(&credential_store);
-    handler.add_blocking_method("axo.relay.configure", move |params: Params| {
-        let request = params
-            .parse::<axo_relay::ConfigureRelayRequest>()
-            .map_err(|_| invalid_params("invalid remote access settings"))?;
-        let settings =
-            axo_relay::configure(&configure_path, request, configure_credentials.as_ref())
-                .map_err(|_| jsonrpc_core::Error {
-                    code: jsonrpc_core::ErrorCode::InvalidParams,
-                    message: "could not save remote access settings".to_owned(),
-                    data: None,
-                })?;
-        if let Some(control) = &configure_control {
-            let _ = control.request_connect();
-        }
-        serde_json::to_value(settings).map_err(|_| jsonrpc_core::Error {
-            code: jsonrpc_core::ErrorCode::InternalError,
-            message: "could not encode remote access settings".to_owned(),
-            data: None,
-        })
-    });
-
-    let disable_path = server_directory.join(axo_relay::CONFIG_FILE);
-    let disable_control = relay_control.clone();
-    let disable_credentials = Arc::clone(&credential_store);
-    handler.add_blocking_method("axo.relay.disable", move |_| {
-        axo_relay::disable(&disable_path, disable_credentials.as_ref()).map_err(|_| {
-            jsonrpc_core::Error {
-                code: jsonrpc_core::ErrorCode::InternalError,
-                message: "could not disable remote access".to_owned(),
-                data: None,
+    let path = config_path.clone();
+    let control = relay_control.clone();
+    let credentials = Arc::clone(&credential_store);
+    handler.add_typed(
+        method::RELAY_DISABLE,
+        "expected no parameters",
+        move |_: rpc::NoParams| {
+            axo_relay::disable(&path, credentials.as_ref())
+                .map_err(|_| internal_error("could not disable remote access"))?;
+            if let Some(control) = &control {
+                let _ = control.request_connect();
             }
-        })?;
-        if let Some(control) = &disable_control {
-            let _ = control.request_connect();
-        }
-        Ok(json!({ "disabled": true }))
-    });
+            Ok(rpc::RelayDisabled { disabled: true })
+        },
+    );
 
-    let link_path = server_directory.join(axo_relay::CONFIG_FILE);
-    let link_host = session::RelayHostAdapter(Arc::clone(&sessions));
-    let link_credentials = Arc::clone(&credential_store);
-    let link_control = relay_control.clone();
-    handler.add_blocking_method("axo.relay.link", move |params: Params| {
-        let request = params
-            .parse::<HostPairingRequest>()
-            .map_err(|_| invalid_params("expected {code}"))?;
-        let control = link_control.as_ref().ok_or_else(|| jsonrpc_core::Error {
-            code: jsonrpc_core::ErrorCode::InternalError,
-            message: "host relay is unavailable".to_owned(),
-            data: None,
-        })?;
-        let host_label = axo_relay::link_host(
-            &link_path,
-            &request.code,
-            &link_host,
-            link_credentials.as_ref(),
-        )
-        .map_err(|_| jsonrpc_core::Error {
-            code: jsonrpc_core::ErrorCode::InternalError,
-            message: "could not link this Mac".to_owned(),
-            data: None,
-        })?;
-        control.request_connect().map_err(|_| jsonrpc_core::Error {
-            code: jsonrpc_core::ErrorCode::InternalError,
-            message: "could not start the host relay".to_owned(),
-            data: None,
-        })?;
-        Ok(json!({ "linked": true, "hostLabel": host_label }))
-    });
+    let path = config_path;
+    let host = session::RelayHostAdapter(Arc::clone(&sessions));
+    let control = relay_control.clone();
+    handler.add_typed(
+        method::RELAY_LINK,
+        "expected {code}",
+        move |request: rpc::LinkHost| {
+            let control = control
+                .as_ref()
+                .ok_or_else(|| internal_error("host relay is unavailable"))?;
+            let host_label =
+                axo_relay::link_host(&path, &request.code, &host, credential_store.as_ref())
+                    .map_err(|_| internal_error("could not link this Mac"))?;
+            control
+                .request_connect()
+                .map_err(|_| internal_error("could not start the host relay"))?;
+            Ok(rpc::HostLinked {
+                linked: true,
+                host_label,
+            })
+        },
+    );
 
-    let status_control = relay_control.clone();
-    handler.add_blocking_method("axo.relay.status", move |_| {
-        let status = match &status_control {
-            Some(control) => control.snapshot().map_err(|_| jsonrpc_core::Error {
-                code: jsonrpc_core::ErrorCode::InternalError,
-                message: "could not read remote connection status".to_owned(),
-                data: None,
-            })?,
-            None => axo_relay::unavailable_status(),
-        };
-        serde_json::to_value(status).map_err(|_| jsonrpc_core::Error {
-            code: jsonrpc_core::ErrorCode::InternalError,
-            message: "could not encode remote connection status".to_owned(),
-            data: None,
-        })
-    });
+    let control = relay_control.clone();
+    handler.add_typed(
+        method::RELAY_STATUS,
+        "expected no parameters",
+        move |_: rpc::NoParams| match &control {
+            Some(control) => control
+                .snapshot()
+                .map_err(|_| internal_error("could not read remote connection status")),
+            None => Ok(axo_relay::unavailable_status()),
+        },
+    );
 
-    handler.add_blocking_method("axo.relay.connect", move |_| {
-        let requested = match &relay_control {
-            Some(control) => {
-                control.request_connect().map_err(|_| jsonrpc_core::Error {
-                    code: jsonrpc_core::ErrorCode::InternalError,
-                    message: "could not request remote connection".to_owned(),
-                    data: None,
-                })?;
-                true
-            }
-            None => false,
-        };
-        Ok(json!({ "requested": requested }))
-    });
+    handler.add_typed(
+        method::RELAY_CONNECT,
+        "expected no parameters",
+        move |_: rpc::NoParams| {
+            let requested = match &relay_control {
+                Some(control) => {
+                    control
+                        .request_connect()
+                        .map_err(|_| internal_error("could not request remote connection"))?;
+                    true
+                }
+                None => false,
+            };
+            Ok(rpc::ConnectRequested { requested })
+        },
+    );
 }
 
 fn add_protocol_negotiate_method(handler: &mut IoHandler) {
-    handler.add_blocking_method("axo.protocol.negotiate", |params: Params| {
-        let request: ProtocolNegotiationRequest = params
-            .parse()
-            .map_err(|_| invalid_params("expected {protocolVersion}"))?;
-        if request.protocol_version != 1 {
-            return Err(invalid_params("unsupported protocol version"));
-        }
-        Ok(json!({
-            "protocolVersion": 1,
-            "methods": [
-                "axo.daemon.health",
-                "axo.config.get",
-                "axo.config.set",
-                "axo.session.list",
-                "axo.session.create",
-                "axo.workspace.list",
-                "axo.workspace.create",
-                "axo.workspace.rename",
-                "axo.workspace.archive",
-                "axo.workspace.session.create",
-                "axo.session.close",
-                "axo.session.rename",
-                "axo.session.pi.restart.force.v2",
-                "axo.session.pi.restart.auto.v1",
-                "axo.session.layout.set",
-                "axo.session.subscribe",
-                "axo.session.events.next",
-                "axo.session.unsubscribe",
-                "axo.shell.create",
-                "axo.shell.close",
-                "axo.shell.busy",
-                "axo.terminal.input",
-                "axo.terminal.resize",
-                "axo.relay.settings",
-                "axo.relay.configure",
-                "axo.relay.link",
-                "axo.relay.disable",
-                "axo.relay.status",
-                "axo.relay.connect"
-            ]
-        }))
-    });
+    handler.add_typed(
+        method::PROTOCOL_NEGOTIATE,
+        "expected {protocolVersion}",
+        |request: rpc::NegotiateProtocol| {
+            if request.protocol_version != rpc::PROTOCOL_VERSION {
+                return Err(invalid_params("unsupported protocol version"));
+            }
+            Ok(rpc::ProtocolNegotiated {
+                protocol_version: rpc::PROTOCOL_VERSION,
+                methods: method::ADVERTISED
+                    .iter()
+                    .map(|&name| name.to_owned())
+                    .collect(),
+            })
+        },
+    );
 }
 
-#[derive(serde::Deserialize)]
-#[serde(rename_all = "camelCase", deny_unknown_fields)]
-struct HostPairingRequest {
-    code: String,
+fn add_health_method(handler: &mut IoHandler, daemon_version: &'static str) {
+    handler.add_typed(
+        method::DAEMON_HEALTH,
+        "expected no parameters",
+        move |_: rpc::NoParams| {
+            Ok(rpc::DaemonHealth {
+                version: daemon_version.to_owned(),
+                build_number: build_number(),
+                status: rpc::DaemonStatus::Running,
+            })
+        },
+    );
 }
 
-#[derive(serde::Deserialize)]
-#[serde(rename_all = "camelCase", deny_unknown_fields)]
-struct ProtocolNegotiationRequest {
-    protocol_version: u32,
-}
-
-fn invalid_params(message: &str) -> jsonrpc_core::Error {
-    jsonrpc_core::Error {
-        code: jsonrpc_core::ErrorCode::InvalidParams,
+fn invalid_params(message: &str) -> RpcError {
+    RpcError {
+        code: ErrorCode::InvalidParams,
         message: message.to_owned(),
         data: None,
     }
 }
 
-fn add_health_method(handler: &mut IoHandler, daemon_version: &'static str) {
-    handler.add_blocking_method("axo.daemon.health", move |_| {
-        Ok(json!({
-            "version": daemon_version,
-            "buildNumber": build_number(),
-            "status": "running"
-        }))
-    });
+fn internal_error(message: &str) -> RpcError {
+    RpcError {
+        code: ErrorCode::InternalError,
+        message: message.to_owned(),
+        data: None,
+    }
 }
 
 #[derive(Debug, Eq, PartialEq)]

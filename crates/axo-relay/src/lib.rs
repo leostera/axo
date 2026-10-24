@@ -8,6 +8,6 @@ mod relay;
 
 pub use host::RelayHost;
 pub use relay::{
-    CONFIG_FILE, ConfigureRelayRequest, RelayControl, RelayStatus, RelayWorker, configure, disable,
-    link_host, settings, unavailable_status,
+    CONFIG_FILE, ConfigureRelayRequest, RelayControl, RelayWorker, configure, disable, link_host,
+    settings, unavailable_status,
 };

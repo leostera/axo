@@ -15,25 +15,28 @@ use std::time::{Duration, Instant};
 
 use crate::process_inspection;
 use crate::workspace_access::WorkspaceDirectoryAccess;
-use axo_ipc::{BlockingMethods, EventQueue, PushOutcome};
+use axo_ipc::{EventQueue, PushOutcome, TypedMethods};
+use axo_protocol::rpc::{self, method};
+use axo_protocol::{
+    Availability, ConfigKey, Event, EventScope, Layout, LayoutNode, PaneRole, RelayStatus,
+    RemoteSessionSnapshot, SessionId, SessionRecord, SessionStatus, ShellActivity, ShellId,
+    ShellRecord, WorkspaceRecord, WorkspaceState, is_uuid,
+};
 use axo_pty::process::{self, PtyProcess};
 use axo_pty::{
     NextOutput, OutputSubscriber, TerminalOutput, TerminalOutputSink, WindowSize, attach,
 };
-use jsonrpc_core::{Error as RpcError, ErrorCode, IoHandler, Params};
+use jsonrpc_core::{Error as RpcError, ErrorCode, IoHandler};
 use rusqlite::{Connection, OptionalExtension, params};
-use serde::{Deserialize, Serialize};
+use serde::Serialize;
 use serde_json::{Value, json};
 
 const DATABASE_FILE: &str = "axo.db";
 const ATTACH_SOCKET_FILE: &str = "attach.sock";
 const REAPER_INTERVAL: Duration = Duration::from_millis(100);
-const MAX_LAYOUT_DEPTH: usize = 64;
-const MAX_LAYOUT_NODES: usize = 255;
 const MAX_SUBSCRIPTIONS: usize = 64;
 const MAX_QUEUED_EVENTS_PER_SUBSCRIPTION: usize = 128;
 const SUBSCRIPTION_IDLE_EXPIRY: Duration = Duration::from_secs(60);
-const MAX_EVENTS_PER_POLL: usize = 256;
 const ATTACH_STOP_POLL_INTERVAL: Duration = Duration::from_millis(100);
 const PENDING_FOCUS_LIFETIME: Duration = Duration::from_secs(10);
 const MAX_CONCURRENT_TERMINAL_ATTACHMENTS: usize = 256;
@@ -56,12 +59,6 @@ const PI_TERMINATE_GRACE_PERIOD: Duration = Duration::from_secs(2);
 const PI_KILL_WAIT: Duration = Duration::from_secs(5);
 const MAX_PI_BRIDGE_RECORD_BYTES: usize = 8 * 1024 * 1024;
 const MAX_PI_BRIDGE_SOCKET_PATH_BYTES: usize = 100;
-
-#[derive(Clone, Copy, Debug, Eq, Hash, PartialEq)]
-pub(crate) struct SessionId(pub(crate) i64);
-
-#[derive(Clone, Copy, Debug, Eq, Hash, PartialEq)]
-pub(crate) struct ShellId(pub(crate) i64);
 
 // A pane survives restarts; its runtime identity does not. Async callbacks must
 // carry this identity rather than applying to whichever process now owns a pane.
@@ -115,7 +112,7 @@ impl PiBridgeSocketPath {
     }
 
     fn for_session(pi_session_directory: &Path, session_uuid: &str) -> io::Result<Self> {
-        if !is_uuid_string(session_uuid) {
+        if !is_uuid(session_uuid) {
             return Err(io::Error::new(
                 io::ErrorKind::InvalidInput,
                 "Pi session UUID is invalid",
@@ -181,253 +178,9 @@ struct PiLockOwner {
     command: String,
 }
 
-#[derive(Clone, Debug, Deserialize, PartialEq, Serialize)]
-#[serde(
-    tag = "kind",
-    rename_all = "camelCase",
-    rename_all_fields = "camelCase",
-    deny_unknown_fields
-)]
-enum SessionLayout {
-    Pane {
-        shell_id: i64,
-    },
-    Split {
-        id: String,
-        direction: LayoutDirection,
-        ratio: f64,
-        first: Box<SessionLayout>,
-        second: Box<SessionLayout>,
-    },
-}
-
-#[derive(Clone, Copy, Debug, Deserialize, PartialEq, Serialize)]
-#[serde(rename_all = "camelCase")]
-enum LayoutDirection {
-    Right,
-    Down,
-}
-
-impl SessionLayout {
-    fn shell_ids(&self) -> io::Result<HashSet<ShellId>> {
-        let mut shell_ids = HashSet::new();
-        let mut split_ids = HashSet::new();
-        let mut node_count = 0;
-        self.collect_shell_ids(0, &mut node_count, &mut shell_ids, &mut split_ids)?;
-        Ok(shell_ids)
-    }
-
-    fn pruned_to(&self, open_shell_ids: &HashSet<ShellId>) -> Option<Self> {
-        match self {
-            Self::Pane { shell_id } => open_shell_ids
-                .contains(&ShellId(*shell_id))
-                .then(|| self.clone()),
-            Self::Split {
-                id,
-                direction,
-                ratio,
-                first,
-                second,
-            } => match (
-                first.pruned_to(open_shell_ids),
-                second.pruned_to(open_shell_ids),
-            ) {
-                (None, None) => None,
-                (Some(remaining), None) | (None, Some(remaining)) => Some(remaining),
-                (Some(first), Some(second)) => Some(Self::Split {
-                    id: id.clone(),
-                    direction: *direction,
-                    ratio: *ratio,
-                    first: Box::new(first),
-                    second: Box::new(second),
-                }),
-            },
-        }
-    }
-
-    fn collect_shell_ids(
-        &self,
-        depth: usize,
-        node_count: &mut usize,
-        shell_ids: &mut HashSet<ShellId>,
-        split_ids: &mut HashSet<String>,
-    ) -> io::Result<()> {
-        *node_count += 1;
-        if depth > MAX_LAYOUT_DEPTH || *node_count > MAX_LAYOUT_NODES {
-            return Err(io::Error::new(
-                io::ErrorKind::InvalidInput,
-                "session layout exceeds its structural limits",
-            ));
-        }
-
-        match self {
-            Self::Pane { shell_id } => {
-                if *shell_id <= 0 || !shell_ids.insert(ShellId(*shell_id)) {
-                    return Err(io::Error::new(
-                        io::ErrorKind::InvalidInput,
-                        "session layout contains an invalid or duplicate shell ID",
-                    ));
-                }
-            }
-            Self::Split {
-                id,
-                ratio,
-                first,
-                second,
-                ..
-            } => {
-                if !is_uuid_string(id) || !split_ids.insert(id.clone()) {
-                    return Err(io::Error::new(
-                        io::ErrorKind::InvalidInput,
-                        "session layout contains an invalid or duplicate split ID",
-                    ));
-                }
-                if !ratio.is_finite() || !(0.01..=0.99).contains(ratio) {
-                    return Err(io::Error::new(
-                        io::ErrorKind::InvalidInput,
-                        "session layout split ratio must be between 0.01 and 0.99",
-                    ));
-                }
-                first.collect_shell_ids(depth + 1, node_count, shell_ids, split_ids)?;
-                second.collect_shell_ids(depth + 1, node_count, shell_ids, split_ids)?;
-            }
-        }
-        Ok(())
-    }
-}
-
-fn is_uuid_string(value: &str) -> bool {
-    value.len() == 36
-        && value.bytes().enumerate().all(|(index, byte)| match index {
-            8 | 13 | 18 | 23 => byte == b'-',
-            _ => byte.is_ascii_hexdigit(),
-        })
-}
-
-#[derive(Debug, Deserialize)]
-#[serde(rename_all = "camelCase", deny_unknown_fields)]
-struct SetSessionLayoutRequest {
-    session_id: i64,
-    layout: SessionLayout,
-}
-
-#[derive(Debug, Deserialize)]
-#[serde(rename_all = "camelCase", deny_unknown_fields)]
-struct RestartPiSessionRequest {
-    session_id: i64,
-    shell_id: i64,
-}
-
-#[derive(Debug, Deserialize)]
-#[serde(rename_all = "camelCase", deny_unknown_fields)]
-struct SessionRenameRequest {
-    session_id: i64,
-    name: String,
-}
-
-#[derive(Debug, Deserialize)]
-#[serde(rename_all = "camelCase", deny_unknown_fields)]
-struct WorkspaceRenameRequest {
-    workspace_id: String,
-    name: String,
-}
-
-#[derive(Debug, Deserialize)]
-#[serde(rename_all = "camelCase", deny_unknown_fields)]
-struct WorkspaceArchiveRequest {
-    workspace_id: String,
-}
-
-#[derive(Debug, Deserialize)]
-#[serde(rename_all = "camelCase", deny_unknown_fields)]
-struct WorkspaceCreateRequest {
-    name: String,
-    directory_path: PathBuf,
-    directory_bookmark: Option<String>,
-}
-
-#[derive(Debug, Deserialize)]
-#[serde(rename_all = "camelCase", deny_unknown_fields)]
-struct WorkspaceSessionCreateRequest {
-    workspace_id: String,
-}
-
-#[derive(Debug, Deserialize)]
-#[serde(rename_all = "camelCase", deny_unknown_fields)]
-struct ConfigGetRequest {
-    key: String,
-}
-
-#[derive(Debug, Deserialize)]
-#[serde(rename_all = "camelCase", deny_unknown_fields)]
-struct ConfigSetRequest {
-    key: String,
-    value: String,
-}
-
-#[derive(Debug, Deserialize)]
-#[serde(rename_all = "camelCase", deny_unknown_fields)]
-struct SessionSubscribeRequest {
-    session_id: Option<i64>,
-    /// Catalog clients pass `false`; terminal bytes would otherwise dominate their queue.
-    #[serde(default = "default_true")]
-    include_terminal_output: bool,
-}
-
-fn default_true() -> bool {
-    true
-}
-
-#[derive(Debug, Deserialize)]
-#[serde(rename_all = "camelCase", deny_unknown_fields)]
-struct SessionEventsNextRequest {
-    subscription_id: String,
-    timeout_ms: u64,
-    max_events: Option<usize>,
-}
-
-#[derive(Debug, Deserialize)]
-#[serde(rename_all = "camelCase", deny_unknown_fields)]
-struct SessionUnsubscribeRequest {
-    subscription_id: String,
-}
-
-#[derive(Debug, Deserialize)]
-#[serde(rename_all = "camelCase", deny_unknown_fields)]
-struct TerminalInputRequest {
-    session_id: i64,
-    shell_id: i64,
-    sequence: u64,
-    data: String,
-}
-
-#[derive(Debug, Deserialize)]
-#[serde(rename_all = "camelCase", deny_unknown_fields)]
-struct TerminalResizeRequest {
-    session_id: i64,
-    shell_id: i64,
-    rows: u32,
-    columns: u32,
-}
-
-#[derive(Debug, Deserialize)]
-#[serde(rename_all = "camelCase", deny_unknown_fields)]
-struct ShellBusyRequest {
-    session_id: i64,
-    shell_id: i64,
-}
-
-/// Whether closing a shell would interrupt work: a foreground job other than the shell itself
-/// (terminal panes) or a Pi turn in progress (Pi panes).
-#[derive(Debug, Eq, PartialEq)]
-struct ShellBusy {
-    busy: bool,
-    /// Name of the foreground process when it is not the shell; never authoritative.
-    foreground_process: Option<String>,
-}
-
+/// An open session as stored, before its processes are restored.
 #[derive(Debug)]
-struct SessionRecord {
+struct StoredSession {
     id: SessionId,
     initial_pwd: PathBuf,
     shell_ids: Vec<(ShellId, PaneRole, Option<String>)>,
@@ -512,7 +265,11 @@ impl SessionState {
     ) -> Option<RunningShell> {
         let session_id = running.session_id;
         running.output.bind(
-            format!("session_id={} shell_id={}", session_id.0, shell_id.0),
+            format!(
+                "session_id={} shell_id={}",
+                session_id.get(),
+                shell_id.get()
+            ),
             Arc::new(ShellOutputSink {
                 events: self.events.clone(),
                 session_id,
@@ -703,43 +460,12 @@ impl AgentCommand {
 #[derive(Clone, Debug, Eq, PartialEq)]
 struct ShellCommand(CommandLine);
 
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
-enum ConfigKey {
-    AgentCommand,
-    ShellCommand,
-}
-
-impl ConfigKey {
-    fn parse(value: &str) -> io::Result<Self> {
-        match value {
-            "agent.command" => Ok(Self::AgentCommand),
-            "shell.command" => Ok(Self::ShellCommand),
-            _ => Err(io::Error::new(
-                io::ErrorKind::InvalidInput,
-                format!("unknown configuration key {value:?}"),
-            )),
-        }
+/// Where a setting lives in `daemon_metadata`.
+fn config_metadata_key(key: ConfigKey) -> &'static str {
+    match key {
+        ConfigKey::AgentCommand => "agent_command",
+        ConfigKey::ShellCommand => "shell_command",
     }
-
-    fn as_str(self) -> &'static str {
-        match self {
-            Self::AgentCommand => "agent.command",
-            Self::ShellCommand => "shell.command",
-        }
-    }
-
-    fn metadata_key(self) -> &'static str {
-        match self {
-            Self::AgentCommand => "agent_command",
-            Self::ShellCommand => "shell_command",
-        }
-    }
-}
-
-#[derive(Clone, Debug, Eq, PartialEq)]
-struct ConfigValue {
-    key: ConfigKey,
-    value: String,
 }
 
 enum ParsedConfigValue {
@@ -747,26 +473,10 @@ enum ParsedConfigValue {
     ShellCommand(ShellCommand),
 }
 
-impl ConfigValue {
-    fn to_json(&self) -> Value {
-        json!({ "key": self.key.as_str(), "value": self.value })
-    }
-}
-
 impl ShellCommand {
     fn parse(source: &str) -> io::Result<Self> {
         CommandLine::parse(source).map(Self)
     }
-}
-
-#[derive(Clone, Copy, Debug, Serialize)]
-#[serde(rename_all = "camelCase")]
-enum SessionStatus {
-    Starting,
-    Ready,
-    Working,
-    NeedsAttention,
-    Unavailable,
 }
 
 #[derive(Clone, Copy, Debug, Default)]
@@ -808,6 +518,12 @@ pub struct SessionManager {
 /// Exposes the session manager to the cloud relay.
 pub(crate) struct RelayHostAdapter(pub(crate) Arc<SessionManager>);
 
+impl RelayHostAdapter {
+    fn remote(&self, session: &SessionRecord, updated_at: &str) -> RemoteSessionSnapshot {
+        RemoteSessionSnapshot::from_record(session, &self.0.host_id, updated_at)
+    }
+}
+
 impl axo_relay::RelayHost for RelayHostAdapter {
     fn host_id(&self) -> &str {
         &self.0.host_id
@@ -817,7 +533,13 @@ impl axo_relay::RelayHost for RelayHostAdapter {
         &self.0.host_generation
     }
 
-    fn remote_session_snapshots(&self, updated_at: &str) -> io::Result<Vec<Value>> {
+    fn publish_relay_status(&self, status: &RelayStatus) {
+        self.0.publish_event(Event::RelayStatus {
+            status: status.clone(),
+        });
+    }
+
+    fn remote_session_snapshots(&self, updated_at: &str) -> io::Result<Vec<RemoteSessionSnapshot>> {
         let sessions = self.0.list_sessions()?;
         if sessions.len() > 256 || sessions.iter().any(|session| session.shells.len() > 256) {
             return Err(io::Error::new(
@@ -827,7 +549,7 @@ impl axo_relay::RelayHost for RelayHostAdapter {
         }
         Ok(sessions
             .iter()
-            .map(|session| session.to_remote_json(&self.0.host_id, updated_at))
+            .map(|session| self.remote(session, updated_at))
             .collect())
     }
 
@@ -839,17 +561,19 @@ impl axo_relay::RelayHost for RelayHostAdapter {
         &self,
         subscription_id: &str,
         timeout: Duration,
-    ) -> io::Result<Option<Value>> {
-        self.0.next_event(subscription_id, timeout)
+    ) -> io::Result<Option<Event>> {
+        Ok(self
+            .0
+            .next_event(subscription_id, timeout)?
+            .map(Arc::unwrap_or_clone))
     }
 
-    /// Current snapshots, as local events, for resynchronizing a lagged remote stream.
-    fn remote_resync_events(&self) -> io::Result<Vec<Value>> {
+    fn remote_resync_events(&self) -> io::Result<Vec<Event>> {
         Ok(self
             .0
             .list_sessions()?
-            .iter()
-            .map(|session| json!({ "type": "session.snapshot", "session": session.to_json() }))
+            .into_iter()
+            .map(Event::snapshot)
             .collect())
     }
 
@@ -857,98 +581,63 @@ impl axo_relay::RelayHost for RelayHostAdapter {
         self.0.unsubscribe(subscription_id)
     }
 
-    fn remote_create_session(&self, updated_at: &str) -> io::Result<Value> {
-        let session = self.0.create_session()?;
-        self.0
-            .publish_event(json!({ "type": "session.snapshot", "session": session.to_json() }));
-        Ok(session.to_remote_json(&self.0.host_id, updated_at))
+    fn remote_create_session(&self, updated_at: &str) -> io::Result<RemoteSessionSnapshot> {
+        let session = self.0.create_session_and_publish()?;
+        Ok(self.remote(&session, updated_at))
     }
 
     fn remote_create_workspace_session(
         &self,
         workspace_id: &str,
         updated_at: &str,
-    ) -> io::Result<Value> {
+    ) -> io::Result<RemoteSessionSnapshot> {
         let session = self.0.create_session_in_workspace(workspace_id)?;
-        Ok(session.to_remote_json(&self.0.host_id, updated_at))
+        Ok(self.remote(&session, updated_at))
     }
 
-    fn remote_close_session(&self, session_id: i64, updated_at: &str) -> io::Result<Option<Value>> {
-        if session_id <= 0 {
-            return Err(io::Error::new(
-                io::ErrorKind::InvalidInput,
-                "session ID must be positive",
-            ));
-        }
-        let session_id = SessionId(session_id);
-        let replacement = self.0.close_session(session_id)?;
-        self.0.publish_session_removed(session_id);
-        if let Some(session) = &replacement {
-            self.0
-                .publish_event(json!({ "type": "session.snapshot", "session": session.to_json() }));
-        }
-        Ok(replacement.map(|session| session.to_remote_json(&self.0.host_id, updated_at)))
+    fn remote_close_session(
+        &self,
+        session_id: SessionId,
+        updated_at: &str,
+    ) -> io::Result<Option<RemoteSessionSnapshot>> {
+        let replacement = self.0.close_session_and_publish(session_id)?;
+        Ok(replacement.map(|session| self.remote(&session, updated_at)))
     }
 
-    fn remote_create_shell(&self, session_id: i64) -> io::Result<i64> {
-        let session_id = SessionId(session_id);
-        let shell = self.0.create_shell(session_id)?;
-        self.0.publish_session_snapshot(session_id)?;
+    fn remote_create_shell(&self, session_id: SessionId) -> io::Result<ShellId> {
+        Ok(self.0.create_shell_and_publish(session_id)?.id)
+    }
+
+    fn remote_close_shell(&self, session_id: SessionId, shell_id: ShellId) -> io::Result<()> {
         self.0
-            .publish_shell_activity(session_id, shell.id, "started");
-        Ok(shell.id.0)
+            .close_shell_and_publish(session_id, shell_id)
+            .map(drop)
     }
 
-    fn remote_close_shell(&self, session_id: i64, shell_id: i64) -> io::Result<()> {
-        let (session_id, shell_id) = parse_session_shell_ids(session_id, shell_id)
-            .map_err(|_| io::Error::new(io::ErrorKind::InvalidInput, "invalid shell identity"))?;
-        let closed = self.0.close_shell(session_id, shell_id)?;
-        if closed.archived_session_id.is_some() {
-            self.0.publish_session_removed(session_id);
-            if let Some(replacement) = &closed.replacement {
-                self.0.publish_event(
-                    json!({ "type": "session.snapshot", "session": replacement.to_json() }),
-                );
-            }
-        } else {
-            self.0.publish_session_snapshot(session_id)?;
-        }
-        self.0
-            .publish_shell_activity(session_id, shell_id, "exited");
-        Ok(())
-    }
-
-    fn remote_set_layout(&self, session_id: i64, layout: Value) -> io::Result<()> {
-        let session_id = SessionId(session_id);
-        let layout: SessionLayout = serde_json::from_value(layout)
-            .map_err(|_| io::Error::new(io::ErrorKind::InvalidInput, "invalid session layout"))?;
-        layout.shell_ids()?;
-        self.0.set_layout(session_id, layout)?;
-        self.0.publish_session_snapshot(session_id)
+    fn remote_set_layout(&self, session_id: SessionId, layout: LayoutNode) -> io::Result<()> {
+        let layout = Layout::try_from(layout)
+            .map_err(|error| io::Error::new(io::ErrorKind::InvalidInput, error))?;
+        self.0.set_layout_and_publish(session_id, layout)
     }
 
     fn remote_terminal_input(
         &self,
-        session_id: i64,
-        shell_id: i64,
+        session_id: SessionId,
+        shell_id: ShellId,
         sequence: u64,
         data: &str,
     ) -> io::Result<()> {
-        let (session_id, shell_id) = parse_session_shell_ids(session_id, shell_id)
-            .map_err(|_| io::Error::new(io::ErrorKind::InvalidInput, "invalid shell identity"))?;
         self.0
             .write_terminal_input(session_id, shell_id, sequence, data)
     }
 
     fn remote_terminal_resize(
         &self,
-        session_id: i64,
-        shell_id: i64,
+        session_id: SessionId,
+        shell_id: ShellId,
         rows: u32,
         columns: u32,
     ) -> io::Result<()> {
-        let (session_id, shell_id) = parse_session_shell_ids(session_id, shell_id)
-            .map_err(|_| io::Error::new(io::ErrorKind::InvalidInput, "invalid shell identity"))?;
         let size = WindowSize::new(rows, columns).ok_or_else(|| {
             io::Error::new(
                 io::ErrorKind::InvalidInput,
@@ -956,11 +645,6 @@ impl axo_relay::RelayHost for RelayHostAdapter {
             )
         })?;
         self.0.resize_terminal(session_id, shell_id, size)
-    }
-
-    fn publish_relay_status(&self, status: &axo_relay::RelayStatus) {
-        self.0
-            .publish_event(json!({ "type": "relay.status", "status": status }));
     }
 }
 
@@ -974,22 +658,18 @@ impl EventBus {
     }
 
     /// Returns how many subscribers accepted the event.
-    fn publish(&self, event: Value) -> usize {
-        let event_type = event["type"].as_str().unwrap_or_default();
-        let session_id = event.get("sessionId").and_then(Value::as_i64).or_else(|| {
-            event
-                .get("session")
-                .and_then(|session| session["id"].as_i64())
-        });
+    fn publish(&self, event: Event) -> usize {
+        let (scope, session_id) = (event.scope(), event.session_id());
+        let event = Arc::new(event);
         let Ok(mut subscribers) = self.lock() else {
             return 0;
         };
         let mut delivered = 0;
         subscribers.retain(|subscriber| {
-            if !subscriber.wants(event_type, session_id) {
+            if !subscriber.wants(scope, session_id) {
                 return true;
             }
-            match subscriber.queue.push(event.clone()) {
+            match subscriber.queue.push(Arc::clone(&event)) {
                 PushOutcome::Queued => {
                     delivered += 1;
                     true
@@ -1016,18 +696,17 @@ impl TerminalOutputSink for ShellOutputSink {
         let wanted = self.events.lock().is_ok_and(|subscribers| {
             subscribers
                 .iter()
-                .any(|subscriber| subscriber.wants("terminal.output", Some(session_id.0)))
+                .any(|subscriber| subscriber.wants(EventScope::Streams, Some(session_id)))
         });
         if !wanted {
             return;
         }
-        self.events.publish(json!({
-            "type": "terminal.output",
-            "sessionId": session_id.0,
-            "shellId": shell_id.0,
-            "sequence": sequence,
-            "data": encode_base64(output),
-        }));
+        self.events.publish(Event::TerminalOutput {
+            session_id,
+            shell_id,
+            sequence,
+            data: encode_base64(output),
+        });
     }
 }
 
@@ -1035,40 +714,14 @@ struct LocalSubscriber {
     id: String,
     session_id: Option<SessionId>,
     scope: EventScope,
-    queue: Arc<EventQueue<Value>>,
+    queue: Arc<EventQueue<Arc<Event>>>,
 }
 
 impl LocalSubscriber {
-    fn wants(&self, event_type: &str, session_id: Option<i64>) -> bool {
+    fn wants(&self, scope: EventScope, session_id: Option<SessionId>) -> bool {
         self.session_id
-            .is_none_or(|expected| session_id == Some(expected.0))
-            && self.scope.accepts(event_type)
-    }
-}
-
-/// Which events a subscription carries. High-volume stream events (`terminal.output`, `pi.event`)
-/// go only to `Streams` subscribers, so catalog consumers never pay for, or lag on, Pi token
-/// streams or terminal bytes.
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
-enum EventScope {
-    Catalog,
-    Streams,
-}
-
-impl EventScope {
-    fn from_include_streams(include_streams: bool) -> Self {
-        if include_streams {
-            Self::Streams
-        } else {
-            Self::Catalog
-        }
-    }
-
-    fn accepts(self, event_type: &str) -> bool {
-        match self {
-            Self::Streams => true,
-            Self::Catalog => !matches!(event_type, "terminal.output" | "pi.event"),
-        }
+            .is_none_or(|expected| session_id == Some(expected))
+            && self.scope.accepts(scope)
     }
 }
 
@@ -1080,7 +733,7 @@ impl EventScope {
 /// subscription's own queue, so one long-poll never blocks other subscribers, the relay,
 /// `subscribe` or `unsubscribe`.
 struct LocalSubscription {
-    queue: Arc<EventQueue<Value>>,
+    queue: Arc<EventQueue<Arc<Event>>>,
     last_polled: Mutex<Instant>,
 }
 
@@ -1098,125 +751,6 @@ impl LocalSubscription {
             Ok(mut instant) => *instant = now,
             Err(poisoned) => *poisoned.into_inner() = now,
         }
-    }
-}
-
-#[derive(Clone, Copy, Debug, Deserialize, Eq, PartialEq, Serialize)]
-#[serde(rename_all = "camelCase")]
-enum PaneRole {
-    Pi,
-    Terminal,
-}
-
-#[derive(Debug)]
-struct ShellMetadata {
-    id: ShellId,
-    pane_id: Option<String>,
-    role: PaneRole,
-    process_id: u32,
-    initial_pwd: PathBuf,
-    slave_device: String,
-    attach_socket_path: PathBuf,
-    available: bool,
-    availability_reason: Option<&'static str>,
-}
-
-impl ShellMetadata {
-    fn to_json(&self) -> Value {
-        json!({
-            "id": self.id.0,
-            "paneId": self.pane_id,
-            "role": self.role,
-            "processId": self.process_id,
-            "initialPwd": self.initial_pwd,
-            "ptyDevice": self.slave_device,
-            "attachSocketPath": self.attach_socket_path,
-            "available": self.available,
-            "availabilityReason": self.availability_reason,
-        })
-    }
-}
-
-#[derive(Debug)]
-struct SessionMetadata {
-    id: SessionId,
-    session_uuid: String,
-    pi_session_file: Option<PathBuf>,
-    pi_session_id: Option<String>,
-    workspace_id: Option<String>,
-    workspace_name: Option<String>,
-    name: String,
-    manual_name: Option<String>,
-    emoji: Option<String>,
-    status: SessionStatus,
-    initial_pwd: PathBuf,
-    shells: Vec<ShellMetadata>,
-    layout: Option<SessionLayout>,
-}
-
-impl SessionMetadata {
-    fn to_json(&self) -> Value {
-        json!({
-            "id": self.id.0,
-            "sessionUuid": self.session_uuid,
-            "piSessionFile": self.pi_session_file,
-            "piSessionId": self.pi_session_id,
-            "workspaceId": self.workspace_id,
-            "workspaceName": self.workspace_name,
-            "name": self.name,
-            "manualName": self.manual_name,
-            "emoji": self.emoji,
-            "status": self.status,
-            "initialPwd": self.initial_pwd,
-            "shells": self.shells.iter().map(ShellMetadata::to_json).collect::<Vec<_>>(),
-            "layout": self.layout,
-        })
-    }
-
-    fn to_remote_json(&self, host_id: &str, updated_at: &str) -> Value {
-        let terminal_shell_ids: HashSet<_> = self
-            .shells
-            .iter()
-            .filter(|shell| shell.role == PaneRole::Terminal)
-            .map(|shell| ShellId(shell.id.0))
-            .collect();
-        let terminal_layout = self
-            .layout
-            .as_ref()
-            .and_then(|layout| layout.pruned_to(&terminal_shell_ids));
-        json!({
-            "hostId": host_id,
-            "sessionId": self.id.0,
-            "sessionUuid": self.session_uuid,
-            "workspaceId": self.workspace_id,
-            "workspaceName": self.workspace_name,
-            "name": self.name,
-            "emoji": self.emoji,
-            "status": self.status,
-            "hasAgent": self.shells.iter().any(|shell| shell.role == PaneRole::Pi),
-            "shells": self.shells.iter()
-                .filter(|shell| shell.role == PaneRole::Terminal)
-                .map(|shell| json!({ "shellId": shell.id.0 })).collect::<Vec<_>>(),
-            "layout": terminal_layout,
-            "updatedAt": updated_at,
-        })
-    }
-}
-
-#[derive(Debug)]
-struct ClosedShellMetadata {
-    archived_shell_id: ShellId,
-    archived_session_id: Option<SessionId>,
-    replacement: Option<SessionMetadata>,
-}
-
-impl ClosedShellMetadata {
-    fn to_json(&self) -> Value {
-        json!({
-            "archivedShellId": self.archived_shell_id.0,
-            "archivedSessionId": self.archived_session_id.map(|id| id.0),
-            "replacement": self.replacement.as_ref().map(SessionMetadata::to_json),
-        })
     }
 }
 
@@ -1275,7 +809,10 @@ impl SessionManager {
         manager.restore_open_sessions()?;
         manager.ensure_open_workspace_sessions()?;
         if let Some(session) = manager.ensure_home_session()? {
-            log::info!("event=session.default_created session_id={}", session.id.0);
+            log::info!(
+                "event=session.default_created session_id={}",
+                session.id.get()
+            );
         }
         manager.start_attachment_listener()?;
         manager.start_reaper();
@@ -1284,386 +821,397 @@ impl SessionManager {
 
     pub fn register_rpc_methods(self: &Arc<Self>, handler: &mut IoHandler) {
         let manager = Arc::clone(self);
-        handler.add_blocking_method("axo.session.list", move |_| {
-            manager
-                .list_sessions()
-                .and_then(|sessions| {
-                    let resume_session_id = manager.take_pending_resume_focus()?;
-                    Ok(json!({
-                        "sessions": sessions.iter().map(SessionMetadata::to_json).collect::<Vec<_>>(),
-                        "resumeSessionId": resume_session_id.map(|id| id.0),
-                    }))
-                })
-                .map_err(internal_rpc_error)
-        });
-
-        let manager = Arc::clone(self);
-        handler.add_blocking_method("axo.config.get", move |params: Params| {
-            let request: ConfigGetRequest = params
-                .parse()
-                .map_err(|_| invalid_params("expected {key}"))?;
-            manager
-                .config_value(&request.key)
-                .map(|value| value.to_json())
-                .map_err(|error| {
-                    if error.kind() == io::ErrorKind::InvalidInput {
-                        invalid_params(&error.to_string())
-                    } else {
-                        internal_rpc_error(error)
-                    }
-                })
-        });
-
-        let manager = Arc::clone(self);
-        handler.add_blocking_method("axo.config.set", move |params: Params| {
-            let request: ConfigSetRequest = params
-                .parse()
-                .map_err(|_| invalid_params("expected {key, value}"))?;
-            manager
-                .set_config_value(&request.key, &request.value)
-                .map(|value| value.to_json())
-                .map_err(|error| {
-                    if error.kind() == io::ErrorKind::InvalidInput {
-                        invalid_params(&error.to_string())
-                    } else {
-                        internal_rpc_error(error)
-                    }
-                })
-        });
-
-        let manager = Arc::clone(self);
-        handler.add_blocking_method("axo.session.layout.set", move |params: Params| {
-            let request: SetSessionLayoutRequest = params
-                .parse()
-                .map_err(|_| invalid_params("expected {sessionId, layout}"))?;
-            if request.session_id <= 0 {
-                return Err(invalid_params("sessionId must be a positive integer"));
-            }
-            request
-                .layout
-                .shell_ids()
-                .map_err(|_| invalid_params("layout is malformed or exceeds its limits"))?;
-            manager
-                .set_layout(SessionId(request.session_id), request.layout)
-                .and_then(|()| manager.publish_session_snapshot(SessionId(request.session_id)))
-                .map(|()| json!({ "saved": true }))
-                .map_err(|error| {
-                    if error.kind() == io::ErrorKind::InvalidInput {
-                        invalid_params("layout must contain each open session shell exactly once")
-                    } else {
-                        internal_rpc_error(error)
-                    }
-                })
-        });
-
-        let manager = Arc::clone(self);
-        handler.add_blocking_method("axo.session.subscribe", move |params: Params| {
-            let request: SessionSubscribeRequest = params
-                .parse()
-                .map_err(|_| invalid_params("expected {sessionId?, includeTerminalOutput?}"))?;
-            let session_id = request
-                .session_id
-                .map(|id| {
-                    if id <= 0 {
-                        Err(invalid_params("sessionId must be a positive integer"))
-                    } else {
-                        Ok(SessionId(id))
-                    }
-                })
-                .transpose()?;
-            manager
-                .subscribe(session_id, request.include_terminal_output)
-                .map(|subscription_id| json!({ "subscriptionId": subscription_id }))
-                .map_err(internal_rpc_error)
-        });
-
-        let manager = Arc::clone(self);
-        // Long-polls wait as futures, never on a thread (see `ipc`).
-        handler.add_method("axo.session.events.next", move |params: Params| {
-            let manager = Arc::clone(&manager);
-            async move {
-                let request: SessionEventsNextRequest = params.parse().map_err(|_| {
-                    invalid_params("expected {subscriptionId, timeoutMs, maxEvents?}")
-                })?;
-                if request.timeout_ms == 0 || request.timeout_ms > 20_000 {
-                    return Err(invalid_params("timeoutMs must be between 1 and 20000"));
-                }
-                let timeout = Duration::from_millis(request.timeout_ms);
-                let max_events = match request.max_events {
-                    None => 1,
-                    Some(max_events) if (1..=MAX_EVENTS_PER_POLL).contains(&max_events) => {
-                        max_events
-                    }
-                    Some(_) => return Err(invalid_params("maxEvents must be between 1 and 256")),
-                };
-                let events = manager
-                    .next_events_async(&request.subscription_id, timeout, max_events)
-                    .await
+        handler.add_typed(
+            method::SESSION_LIST,
+            "expected no parameters",
+            move |_: rpc::NoParams| {
+                let sessions = manager.list_sessions().map_err(internal_rpc_error)?;
+                let resume_session_id = manager
+                    .take_pending_resume_focus()
                     .map_err(internal_rpc_error)?;
-                Ok(match request.max_events {
-                    None => json!({ "event": events.into_iter().next() }),
-                    Some(_) => json!({ "events": events }),
+                Ok(rpc::SessionList {
+                    sessions,
+                    resume_session_id,
                 })
-            }
-        });
+            },
+        );
 
         let manager = Arc::clone(self);
-        handler.add_blocking_method("axo.session.unsubscribe", move |params: Params| {
-            let request: SessionUnsubscribeRequest = params
-                .parse()
-                .map_err(|_| invalid_params("expected {subscriptionId}"))?;
-            manager
-                .unsubscribe(&request.subscription_id)
-                .map(|()| json!({ "unsubscribed": true }))
-                .map_err(internal_rpc_error)
-        });
+        handler.add_typed(
+            method::CONFIG_GET,
+            "expected {key}",
+            move |request: rpc::GetConfig| Ok(manager.config_value(request.key)),
+        );
 
         let manager = Arc::clone(self);
-        handler.add_blocking_method("axo.terminal.input", move |params: Params| {
-            let request: TerminalInputRequest = params
-                .parse()
-                .map_err(|_| invalid_params("expected {sessionId, shellId, sequence, data}"))?;
-            let (session_id, shell_id) =
-                parse_session_shell_ids(request.session_id, request.shell_id)?;
-            manager
-                .write_terminal_input(session_id, shell_id, request.sequence, &request.data)
-                .map(|()| json!({ "accepted": true, "sequence": request.sequence }))
-                .map_err(|error| {
-                    if error.kind() == io::ErrorKind::InvalidInput {
-                        invalid_params("terminal input is invalid or out of sequence")
-                    } else {
-                        internal_rpc_error(error)
-                    }
-                })
-        });
+        handler.add_typed(
+            method::CONFIG_SET,
+            "expected {key, value}",
+            move |request: rpc::SetConfig| {
+                manager
+                    .set_config_value(request.key, &request.value)
+                    .map_err(|error| invalid_input_or_internal(error, None))
+            },
+        );
 
         let manager = Arc::clone(self);
-        handler.add_blocking_method("axo.terminal.resize", move |params: Params| {
-            let request: TerminalResizeRequest = params
-                .parse()
-                .map_err(|_| invalid_params("expected {sessionId, shellId, rows, columns}"))?;
-            let (session_id, shell_id) = parse_session_shell_ids(request.session_id, request.shell_id)?;
-            let size = WindowSize::new(request.rows, request.columns)
-                .ok_or_else(|| invalid_params("terminal dimensions are invalid"))?;
-            manager
-                .resize_terminal(session_id, shell_id, size)
-                .map(|()| json!({ "accepted": true, "rows": request.rows, "columns": request.columns }))
-                .map_err(|error| {
-                    if error.kind() == io::ErrorKind::InvalidInput {
-                        invalid_params("terminal dimensions are invalid")
-                    } else {
-                        internal_rpc_error(error)
-                    }
-                })
-        });
-
-        let manager = Arc::clone(self);
-        handler.add_blocking_method("axo.shell.busy", move |params: Params| {
-            let request: ShellBusyRequest = params
-                .parse()
-                .map_err(|_| invalid_params("expected {sessionId, shellId}"))?;
-            let (session_id, shell_id) =
-                parse_session_shell_ids(request.session_id, request.shell_id)?;
-            manager
-                .shell_busy(session_id, shell_id)
-                .map(|busy| {
-                    json!({ "busy": busy.busy, "foregroundProcess": busy.foreground_process })
-                })
-                .map_err(internal_rpc_error)
-        });
-
-        let manager = Arc::clone(self);
-        handler.add_blocking_method("axo.workspace.list", move |_| {
-            manager
-                .list_workspaces()
-                .map(|workspaces| json!({ "workspaces": workspaces }))
-                .map_err(internal_rpc_error)
-        });
-
-        let manager = Arc::clone(self);
-        handler.add_blocking_method("axo.workspace.rename", move |params: Params| {
-            let request: WorkspaceRenameRequest = params
-                .parse()
-                .map_err(|_| invalid_params("expected {workspaceId, name}"))?;
-            manager
-                .rename_workspace(&request.workspace_id, &request.name)
-                .map_err(|error| {
-                    if error.kind() == io::ErrorKind::InvalidInput {
-                        invalid_params("Workspace ID or name is invalid")
-                    } else {
-                        internal_rpc_error(error)
-                    }
-                })
-        });
-
-        let manager = Arc::clone(self);
-        handler.add_blocking_method("axo.workspace.archive", move |params: Params| {
-            let request: WorkspaceArchiveRequest = params
-                .parse()
-                .map_err(|_| invalid_params("expected {workspaceId}"))?;
-            let workspace_id = request.workspace_id;
-            manager
-                .archive_workspace(&workspace_id)
-                .map(|session_ids| {
-                    json!({
-                        "archivedWorkspaceId": workspace_id,
-                        "archivedSessionIds": session_ids.iter().map(|id| id.0).collect::<Vec<_>>(),
+        handler.add_typed(
+            method::SESSION_LAYOUT_SET,
+            "expected {sessionId, layout}",
+            move |request: rpc::SetLayout| {
+                let layout = Layout::try_from(request.layout)
+                    .map_err(|_| invalid_params("layout is malformed or exceeds its limits"))?;
+                manager
+                    .set_layout_and_publish(request.session_id, layout)
+                    .map(|()| rpc::Saved { saved: true })
+                    .map_err(|error| {
+                        invalid_input_or_internal(
+                            error,
+                            Some("layout must contain each open session shell exactly once"),
+                        )
                     })
-                })
-                .map_err(|error| {
-                    if error.kind() == io::ErrorKind::InvalidInput {
-                        invalid_params("Workspace ID is invalid")
-                    } else {
-                        internal_rpc_error(error)
-                    }
-                })
-        });
+            },
+        );
 
         let manager = Arc::clone(self);
-        handler.add_blocking_method("axo.workspace.create", move |params: Params| {
-            let request: WorkspaceCreateRequest = params
-                .parse()
-                .map_err(|_| {
-                    invalid_params("expected {name, directoryPath, optional directoryBookmark}")
-                })?;
-            manager
-                .create_workspace(request)
-                .map_err(|error| match error.kind() {
+        handler.add_typed(
+            method::SESSION_SUBSCRIBE,
+            "expected {sessionId?, includeTerminalOutput?}",
+            move |request: rpc::Subscribe| {
+                manager
+                    .subscribe(request.session_id, request.include_terminal_output)
+                    .map(|subscription_id| rpc::Subscribed { subscription_id })
+                    .map_err(internal_rpc_error)
+            },
+        );
+
+        let manager = Arc::clone(self);
+        // Long-polls wait as futures, never on a thread (see `axo_ipc`).
+        handler.add_typed_async(
+            method::SESSION_EVENTS_NEXT,
+            "expected {subscriptionId, timeoutMs, maxEvents?}",
+            move |request: rpc::NextEvents| {
+                let manager = Arc::clone(&manager);
+                async move { manager.next_events_for_rpc(request).await }
+            },
+        );
+
+        let manager = Arc::clone(self);
+        handler.add_typed(
+            method::SESSION_UNSUBSCRIBE,
+            "expected {subscriptionId}",
+            move |request: rpc::Unsubscribe| {
+                manager
+                    .unsubscribe(&request.subscription_id)
+                    .map(|()| rpc::Unsubscribed { unsubscribed: true })
+                    .map_err(internal_rpc_error)
+            },
+        );
+
+        let manager = Arc::clone(self);
+        handler.add_typed(
+            method::TERMINAL_INPUT,
+            "expected {sessionId, shellId, sequence, data}",
+            move |request: rpc::TerminalInput| {
+                manager
+                    .write_terminal_input(
+                        request.session_id,
+                        request.shell_id,
+                        request.sequence,
+                        &request.data,
+                    )
+                    .map(|()| rpc::InputAccepted {
+                        accepted: true,
+                        sequence: request.sequence,
+                    })
+                    .map_err(|error| {
+                        invalid_input_or_internal(
+                            error,
+                            Some("terminal input is invalid or out of sequence"),
+                        )
+                    })
+            },
+        );
+
+        let manager = Arc::clone(self);
+        handler.add_typed(
+            method::TERMINAL_RESIZE,
+            "expected {sessionId, shellId, rows, columns}",
+            move |request: rpc::TerminalResize| {
+                let size = WindowSize::new(request.rows, request.columns)
+                    .ok_or_else(|| invalid_params("terminal dimensions are invalid"))?;
+                manager
+                    .resize_terminal(request.session_id, request.shell_id, size)
+                    .map(|()| rpc::ResizeAccepted {
+                        accepted: true,
+                        rows: request.rows,
+                        columns: request.columns,
+                    })
+                    .map_err(internal_rpc_error)
+            },
+        );
+
+        let manager = Arc::clone(self);
+        handler.add_typed(
+            method::SHELL_BUSY,
+            "expected {sessionId, shellId}",
+            move |request: rpc::ShellRef| {
+                manager
+                    .shell_busy(request.session_id, request.shell_id)
+                    .map_err(internal_rpc_error)
+            },
+        );
+
+        let manager = Arc::clone(self);
+        handler.add_typed(
+            method::WORKSPACE_LIST,
+            "expected no parameters",
+            move |_: rpc::NoParams| {
+                manager
+                    .list_workspaces()
+                    .map(|workspaces| rpc::WorkspaceList { workspaces })
+                    .map_err(internal_rpc_error)
+            },
+        );
+
+        let manager = Arc::clone(self);
+        handler.add_typed(
+            method::WORKSPACE_RENAME,
+            "expected {workspaceId, name}",
+            move |request: rpc::RenameWorkspace| {
+                manager
+                    .rename_workspace(&request.workspace_id, &request.name)
+                    .map_err(|error| {
+                        invalid_input_or_internal(error, Some("Workspace ID or name is invalid"))
+                    })
+            },
+        );
+
+        let manager = Arc::clone(self);
+        handler.add_typed(
+            method::WORKSPACE_ARCHIVE,
+            "expected {workspaceId}",
+            move |request: rpc::WorkspaceRef| {
+                manager
+                    .archive_workspace(&request.workspace_id)
+                    .map(|archived_session_ids| rpc::WorkspaceArchived {
+                        archived_workspace_id: request.workspace_id,
+                        archived_session_ids,
+                    })
+                    .map_err(|error| {
+                        invalid_input_or_internal(error, Some("Workspace ID is invalid"))
+                    })
+            },
+        );
+
+        let manager = Arc::clone(self);
+        handler.add_typed(
+            method::WORKSPACE_CREATE,
+            "expected {name, directoryPath, optional directoryBookmark}",
+            move |request: rpc::CreateWorkspace| {
+                manager.create_workspace(request).map_err(|error| match error.kind() {
                     io::ErrorKind::InvalidInput => invalid_params(&error.to_string()),
-                    io::ErrorKind::NotFound => {
-                        invalid_params("Workspace directory no longer exists or is unavailable")
-                    }
+                    io::ErrorKind::NotFound => invalid_params("Workspace directory no longer exists or is unavailable"),
                     io::ErrorKind::PermissionDenied => invalid_params(
                         "Axo cannot access the selected folder; choose it again in the folder picker",
                     ),
                     _ => internal_rpc_error(error),
                 })
-        });
+            },
+        );
 
         let manager = Arc::clone(self);
-        handler.add_blocking_method("axo.workspace.session.create", move |params: Params| {
-            let request: WorkspaceSessionCreateRequest = params
-                .parse()
-                .map_err(|_| invalid_params("expected {workspaceId}"))?;
-            manager
-                .create_session_in_workspace(&request.workspace_id)
-                .map(|session| session.to_json())
-                .map_err(|error| {
-                    if error.kind() == io::ErrorKind::InvalidInput {
-                        invalid_params("Workspace ID is invalid")
-                    } else {
-                        internal_rpc_error(error)
-                    }
-                })
-        });
+        handler.add_typed(
+            method::WORKSPACE_SESSION_CREATE,
+            "expected {workspaceId}",
+            move |request: rpc::WorkspaceRef| {
+                manager
+                    .create_session_in_workspace(&request.workspace_id)
+                    .map_err(|error| {
+                        invalid_input_or_internal(error, Some("Workspace ID is invalid"))
+                    })
+            },
+        );
 
         let manager = Arc::clone(self);
-        handler.add_blocking_method("axo.session.create", move |_| {
-            let session = manager.create_session().map_err(internal_rpc_error)?;
-            manager
-                .publish_event(json!({ "type": "session.snapshot", "session": session.to_json() }));
-            Ok(session.to_json())
-        });
+        handler.add_typed(
+            method::SESSION_CREATE,
+            "expected no parameters",
+            move |_: rpc::NoParams| {
+                manager
+                    .create_session_and_publish()
+                    .map_err(internal_rpc_error)
+            },
+        );
 
         let manager = Arc::clone(self);
-        handler.add_blocking_method("axo.session.close", move |params| {
-            let id = parse_session_id(params)?;
-            let replacement = manager.close_session(id).map_err(internal_rpc_error)?;
-            manager.publish_session_removed(id);
-            if let Some(session) = &replacement {
-                manager.publish_event(
-                    json!({ "type": "session.snapshot", "session": session.to_json() }),
-                );
-            }
-            Ok(json!({
-                "archivedSessionId": id.0,
-                "replacement": replacement.map(|session| session.to_json()),
-            }))
-        });
+        handler.add_typed(
+            method::SESSION_CLOSE,
+            "expected {sessionId}",
+            move |request: rpc::SessionRef| {
+                manager
+                    .close_session_and_publish(request.session_id)
+                    .map(|replacement| rpc::SessionClosed {
+                        archived_session_id: request.session_id,
+                        replacement,
+                    })
+                    .map_err(internal_rpc_error)
+            },
+        );
 
         let manager = Arc::clone(self);
-        handler.add_blocking_method("axo.session.rename", move |params: Params| {
-            let request: SessionRenameRequest = params
-                .parse()
-                .map_err(|_| invalid_params("expected {sessionId, name}"))?;
-            if request.session_id <= 0 {
-                return Err(invalid_params("sessionId must be a positive integer"));
-            }
-            manager
-                .rename_session(SessionId(request.session_id), &request.name)
-                .map(|session| session.to_json())
-                .map_err(|error| {
-                    if error.kind() == io::ErrorKind::InvalidInput {
-                        invalid_params("Session name is invalid")
-                    } else {
-                        internal_rpc_error(error)
-                    }
-                })
-        });
+        handler.add_typed(
+            method::SESSION_RENAME,
+            "expected {sessionId, name}",
+            move |request: rpc::RenameSession| {
+                manager
+                    .rename_session(request.session_id, &request.name)
+                    .map_err(|error| {
+                        invalid_input_or_internal(error, Some("Session name is invalid"))
+                    })
+            },
+        );
 
         let manager = Arc::clone(self);
-        handler.add_blocking_method("axo.session.pi.restart.auto.v1", move |params: Params| {
-            let request: RestartPiSessionRequest = params
-                .parse()
-                .map_err(|_| invalid_params("expected {sessionId, shellId}"))?;
-            let (session_id, shell_id) =
-                parse_session_shell_ids(request.session_id, request.shell_id)?;
-            manager
-                .restart_unavailable_pi(
+        handler.add_typed(
+            method::SESSION_PI_RESTART_AUTO,
+            "expected {sessionId, shellId}",
+            move |request: rpc::ShellRef| {
+                let rpc::ShellRef {
                     session_id,
                     shell_id,
-                    PiTakeoverPolicy::PreserveExistingProcess,
-                )
-                .map(|session| session.to_json())
-                .map_err(|error| automatic_pi_restart_rpc_error(session_id, shell_id, error))
-        });
-
-        let manager = Arc::clone(self);
-        handler.add_blocking_method("axo.session.pi.restart.force.v2", move |params: Params| {
-            let request: RestartPiSessionRequest = params
-                .parse()
-                .map_err(|_| invalid_params("expected {sessionId, shellId}"))?;
-            let (session_id, shell_id) =
-                parse_session_shell_ids(request.session_id, request.shell_id)?;
-            manager
-                .restart_unavailable_pi(session_id, shell_id, PiTakeoverPolicy::ExplicitUserRestart)
-                .map(|session| session.to_json())
-                .map_err(|error| pi_restart_rpc_error(session_id, shell_id, error))
-        });
-
-        let manager = Arc::clone(self);
-        handler.add_blocking_method("axo.shell.create", move |params| {
-            let id = parse_session_id(params)?;
-            let shell = manager.create_shell(id).map_err(internal_rpc_error)?;
-            manager
-                .publish_session_snapshot(id)
-                .map_err(internal_rpc_error)?;
-            manager.publish_shell_activity(id, shell.id, "started");
-            Ok(shell.to_json())
-        });
-
-        let manager = Arc::clone(self);
-        handler.add_blocking_method("axo.shell.close", move |params| {
-            let (session_id, shell_id) = parse_shell_ids(params)?;
-            let closed = manager
-                .close_shell(session_id, shell_id)
-                .map_err(internal_rpc_error)?;
-            if closed.archived_session_id.is_some() {
-                manager.publish_session_removed(session_id);
-                if let Some(replacement) = &closed.replacement {
-                    manager.publish_event(json!({
-                        "type": "session.snapshot",
-                        "session": replacement.to_json(),
-                    }));
-                }
-            } else {
+                } = request;
                 manager
-                    .publish_session_snapshot(session_id)
-                    .map_err(internal_rpc_error)?;
+                    .restart_unavailable_pi(
+                        session_id,
+                        shell_id,
+                        PiTakeoverPolicy::PreserveExistingProcess,
+                    )
+                    .map_err(|error| automatic_pi_restart_rpc_error(session_id, shell_id, error))
+            },
+        );
+
+        let manager = Arc::clone(self);
+        handler.add_typed(
+            method::SESSION_PI_RESTART_FORCE,
+            "expected {sessionId, shellId}",
+            move |request: rpc::ShellRef| {
+                let rpc::ShellRef {
+                    session_id,
+                    shell_id,
+                } = request;
+                manager
+                    .restart_unavailable_pi(
+                        session_id,
+                        shell_id,
+                        PiTakeoverPolicy::ExplicitUserRestart,
+                    )
+                    .map_err(|error| pi_restart_rpc_error(session_id, shell_id, error))
+            },
+        );
+
+        let manager = Arc::clone(self);
+        handler.add_typed(
+            method::SHELL_CREATE,
+            "expected {sessionId}",
+            move |request: rpc::SessionRef| {
+                manager
+                    .create_shell_and_publish(request.session_id)
+                    .map_err(internal_rpc_error)
+            },
+        );
+
+        let manager = Arc::clone(self);
+        handler.add_typed(
+            method::SHELL_CLOSE,
+            "expected {sessionId, shellId}",
+            move |request: rpc::ShellRef| {
+                manager
+                    .close_shell_and_publish(request.session_id, request.shell_id)
+                    .map_err(internal_rpc_error)
+            },
+        );
+    }
+
+    // Catalog commands shared by local RPC and the relay: each performs the change and publishes
+    // the events that describe it, so every client sees the same sequence.
+
+    fn create_session_and_publish(&self) -> io::Result<SessionRecord> {
+        let session = self.create_session()?;
+        self.publish_event(Event::snapshot(session.clone()));
+        Ok(session)
+    }
+
+    /// Returns the replacement session created when the last one closes.
+    fn close_session_and_publish(
+        self: &Arc<Self>,
+        session_id: SessionId,
+    ) -> io::Result<Option<SessionRecord>> {
+        let replacement = self.close_session(session_id)?;
+        self.publish_session_removed(session_id);
+        if let Some(session) = &replacement {
+            self.publish_event(Event::snapshot(session.clone()));
+        }
+        Ok(replacement)
+    }
+
+    fn create_shell_and_publish(&self, session_id: SessionId) -> io::Result<ShellRecord> {
+        let shell = self.create_shell(session_id)?;
+        self.publish_session_snapshot(session_id)?;
+        self.publish_shell_activity(session_id, shell.id, ShellActivity::Started);
+        Ok(shell)
+    }
+
+    fn close_shell_and_publish(
+        self: &Arc<Self>,
+        session_id: SessionId,
+        shell_id: ShellId,
+    ) -> io::Result<rpc::ShellClosed> {
+        let closed = self.close_shell(session_id, shell_id)?;
+        if closed.archived_session_id.is_some() {
+            self.publish_session_removed(session_id);
+            if let Some(replacement) = &closed.replacement {
+                self.publish_event(Event::snapshot(replacement.clone()));
             }
-            manager.publish_shell_activity(session_id, shell_id, "exited");
-            Ok(closed.to_json())
-        });
+        } else {
+            self.publish_session_snapshot(session_id)?;
+        }
+        self.publish_shell_activity(session_id, shell_id, ShellActivity::Exited);
+        Ok(closed)
+    }
+
+    fn set_layout_and_publish(&self, session_id: SessionId, layout: Layout) -> io::Result<()> {
+        self.set_layout(session_id, layout)?;
+        self.publish_session_snapshot(session_id)
+    }
+
+    async fn next_events_for_rpc(
+        &self,
+        request: rpc::NextEvents,
+    ) -> Result<rpc::EventsNext<SharedEvent>, RpcError> {
+        if !(1..=rpc::MAX_EVENTS_TIMEOUT_MS).contains(&request.timeout_ms) {
+            return Err(invalid_params("timeoutMs must be between 1 and 20000"));
+        }
+        let max_events = match request.max_events {
+            None => 1,
+            Some(max_events) if (1..=rpc::MAX_EVENTS_PER_POLL).contains(&max_events) => max_events,
+            Some(_) => return Err(invalid_params("maxEvents must be between 1 and 256")),
+        };
+        let timeout = Duration::from_millis(request.timeout_ms);
+        let events = self
+            .next_events_async(&request.subscription_id, timeout, max_events)
+            .await
+            .map_err(internal_rpc_error)?
+            .into_iter()
+            .map(SharedEvent);
+        Ok(match request.max_events {
+            None => rpc::EventsNext::Single {
+                event: events.into_iter().next(),
+            },
+            Some(_) => rpc::EventsNext::Batch {
+                events: events.collect(),
+            },
+        })
     }
 
     fn restore_open_sessions(self: &Arc<Self>) -> io::Result<()> {
@@ -1727,8 +1275,8 @@ impl SessionManager {
             ) {
                 log::warn!(
                     "event=session.pi_restore_unavailable session_id={} shell_id={} error_kind={:?}",
-                    session_id.0,
-                    shell_id.0,
+                    session_id.get(),
+                    shell_id.get(),
                     error.kind()
                 );
             }
@@ -1823,7 +1371,7 @@ impl SessionManager {
         }
     }
 
-    fn list_sessions(&self) -> io::Result<Vec<SessionMetadata>> {
+    fn list_sessions(&self) -> io::Result<Vec<SessionRecord>> {
         let state = self.lock_state()?;
         let ids: HashSet<_> = state
             .running
@@ -1840,16 +1388,16 @@ impl SessionManager {
             .into_iter()
             .map(|id| session_metadata(&state, id, &self.attach_socket_path))
             .collect::<io::Result<Vec<_>>>()?;
-        sessions.sort_by_key(|session| session.id.0);
+        sessions.sort_by_key(|session| session.id.get());
         Ok(sessions)
     }
 
-    fn create_session(&self) -> io::Result<SessionMetadata> {
+    fn create_session(&self) -> io::Result<SessionRecord> {
         let mut state = self.lock_state()?;
         create_session(&mut state, &self.attach_socket_path)
     }
 
-    fn ensure_home_session(&self) -> io::Result<Option<SessionMetadata>> {
+    fn ensure_home_session(&self) -> io::Result<Option<SessionRecord>> {
         let mut state = self.lock_state()?;
         if open_standalone_session_count(&state.database)? == 0 {
             create_session(&mut state, &self.attach_socket_path).map(Some)
@@ -1858,8 +1406,8 @@ impl SessionManager {
         }
     }
 
-    fn set_layout(&self, session_id: SessionId, layout: SessionLayout) -> io::Result<()> {
-        let shell_ids = layout.shell_ids()?;
+    fn set_layout(&self, session_id: SessionId, layout: Layout) -> io::Result<()> {
+        let shell_ids = layout.shell_ids().clone();
         let state = self.lock_state()?;
         let open_shell_ids = open_shell_ids(&state, session_id);
         if open_shell_ids.is_empty() {
@@ -1880,7 +1428,7 @@ impl SessionManager {
             .database
             .execute(
                 "UPDATE sessions SET layout_json = ?1 WHERE id = ?2 AND state = 'open'",
-                params![layout_json, session_id.0],
+                params![layout_json, session_id.get()],
             )
             .map_err(io::Error::other)?;
         if changed != 1 {
@@ -1906,10 +1454,9 @@ impl SessionManager {
             "00000000-0000-4000-8000-{:012x}",
             ((std::process::id() as u64) << 32 | id) & 0x0000_ffff_ffff_ffff
         );
-        let queue = Arc::new(EventQueue::new(
-            MAX_QUEUED_EVENTS_PER_SUBSCRIPTION,
-            || json!({ "type": "subscription.lagged" }),
-        ));
+        let queue = Arc::new(EventQueue::new(MAX_QUEUED_EVENTS_PER_SUBSCRIPTION, || {
+            Arc::new(Event::SubscriptionLagged)
+        }));
         let mut subscriptions = self
             .subscriptions
             .lock()
@@ -1954,7 +1501,11 @@ impl SessionManager {
         subscribers.push(LocalSubscriber {
             id: subscription_id.clone(),
             session_id,
-            scope: EventScope::from_include_streams(include_streams),
+            scope: if include_streams {
+                EventScope::Streams
+            } else {
+                EventScope::Catalog
+            },
             queue: Arc::clone(&queue),
         });
         drop(subscribers);
@@ -1969,7 +1520,7 @@ impl SessionManager {
         // Initial snapshots go to this subscriber only; other subscribers already have them.
         for session in sessions {
             if session_id.is_none_or(|expected| expected == session.id) {
-                let snapshot = json!({ "type": "session.snapshot", "session": session.to_json() });
+                let snapshot = Arc::new(Event::snapshot(session.clone()));
                 if queue.push(snapshot) != PushOutcome::Queued {
                     break;
                 }
@@ -1978,7 +1529,7 @@ impl SessionManager {
         Ok(subscription_id)
     }
 
-    fn next_event(&self, id: &str, timeout: Duration) -> io::Result<Option<Value>> {
+    fn next_event(&self, id: &str, timeout: Duration) -> io::Result<Option<Arc<Event>>> {
         Ok(self.next_events(id, timeout, 1)?.into_iter().next())
     }
 
@@ -2001,7 +1552,7 @@ impl SessionManager {
         id: &str,
         timeout: Duration,
         max_events: usize,
-    ) -> io::Result<Vec<Value>> {
+    ) -> io::Result<Vec<Arc<Event>>> {
         let subscription = self.subscription(id)?;
         let events = subscription.queue.wait_blocking(timeout, max_events);
         subscription.mark_polled();
@@ -2014,7 +1565,7 @@ impl SessionManager {
         id: &str,
         timeout: Duration,
         max_events: usize,
-    ) -> io::Result<Vec<Value>> {
+    ) -> io::Result<Vec<Arc<Event>>> {
         let subscription = self.subscription(id)?;
         let events = subscription.queue.wait(timeout, max_events).await;
         subscription.mark_polled();
@@ -2042,13 +1593,15 @@ impl SessionManager {
     }
 
     /// Returns how many subscribers accepted the event.
-    fn publish_event(&self, event: Value) -> usize {
+    fn publish_event(&self, event: Event) -> usize {
         self.subscribers.publish(event)
     }
 
     /// Remote-access state changed; a catalog event so Settings never polls for it.
     fn publish_workspace_changed(&self, workspace_id: &str) {
-        self.publish_event(json!({ "type": "workspace.changed", "workspaceId": workspace_id }));
+        self.publish_event(Event::WorkspaceChanged {
+            workspace_id: workspace_id.to_owned(),
+        });
     }
 
     fn publish_session_snapshot(&self, session_id: SessionId) -> io::Result<()> {
@@ -2056,21 +1609,25 @@ impl SessionManager {
             let state = self.lock_state()?;
             session_metadata(&state, session_id, &self.attach_socket_path)?
         };
-        self.publish_event(json!({ "type": "session.snapshot", "session": session.to_json() }));
+        self.publish_event(Event::snapshot(session.clone()));
         Ok(())
     }
 
     fn publish_session_removed(&self, session_id: SessionId) {
-        self.publish_event(json!({ "type": "session.removed", "sessionId": session_id.0 }));
+        self.publish_event(Event::SessionRemoved { session_id });
     }
 
-    fn publish_shell_activity(&self, session_id: SessionId, shell_id: ShellId, activity: &str) {
-        self.publish_event(json!({
-            "type": "shell.activity",
-            "sessionId": session_id.0,
-            "shellId": shell_id.0,
-            "activity": activity,
-        }));
+    fn publish_shell_activity(
+        &self,
+        session_id: SessionId,
+        shell_id: ShellId,
+        activity: ShellActivity,
+    ) {
+        self.publish_event(Event::ShellActivity {
+            session_id,
+            shell_id,
+            activity,
+        });
     }
 
     fn write_terminal_input(
@@ -2135,7 +1692,7 @@ impl SessionManager {
         process::resize(&running.master, &running.child, size)
     }
 
-    fn shell_busy(&self, session_id: SessionId, shell_id: ShellId) -> io::Result<ShellBusy> {
+    fn shell_busy(&self, session_id: SessionId, shell_id: ShellId) -> io::Result<rpc::ShellBusy> {
         let state = self.lock_state()?;
         let running = state
             .running
@@ -2147,7 +1704,7 @@ impl SessionManager {
                 .pi_activity
                 .get(&session_id)
                 .is_some_and(|activity| activity.working);
-            return Ok(ShellBusy {
+            return Ok(rpc::ShellBusy {
                 busy: working,
                 foreground_process: None,
             });
@@ -2159,18 +1716,18 @@ impl SessionManager {
         }
         let shell_process = running.child.id() as libc::pid_t;
         if foreground == shell_process {
-            return Ok(ShellBusy {
+            return Ok(rpc::ShellBusy {
                 busy: false,
                 foreground_process: None,
             });
         }
-        Ok(ShellBusy {
+        Ok(rpc::ShellBusy {
             busy: true,
             foreground_process: process_name(foreground),
         })
     }
 
-    fn create_shell(&self, session_id: SessionId) -> io::Result<ShellMetadata> {
+    fn create_shell(&self, session_id: SessionId) -> io::Result<ShellRecord> {
         let mut state = self.lock_state()?;
         create_shell(&mut state, session_id, &self.attach_socket_path)
     }
@@ -2196,7 +1753,7 @@ impl SessionManager {
                 .database
                 .query_row(
                     "SELECT session_uuid FROM sessions WHERE id = ? AND state = 'open'",
-                    params![running.session_id.0],
+                    params![running.session_id.get()],
                     |row| row.get(0),
                 )
                 .map_err(io::Error::other)?;
@@ -2204,7 +1761,7 @@ impl SessionManager {
                 .database
                 .query_row(
                     "SELECT pi_session_file FROM sessions WHERE id = ?",
-                    params![running.session_id.0],
+                    params![running.session_id.get()],
                     |row| row.get::<_, Option<String>>(0),
                 )
                 .map_err(io::Error::other)?
@@ -2236,7 +1793,7 @@ impl SessionManager {
         let manager = Arc::downgrade(self);
         let stop = Arc::clone(&self.stop_workers);
         let worker = thread::Builder::new()
-            .name(format!("axo-pi-bridge-{}", shell_id.0))
+            .name(format!("axo-pi-bridge-{}", shell_id.get()))
             .spawn(move || {
                 run_pi_bridge_worker(
                     manager,
@@ -2264,25 +1821,26 @@ impl SessionManager {
         Ok(())
     }
 
-    fn list_workspaces(&self) -> io::Result<Vec<Value>> {
+    fn list_workspaces(&self) -> io::Result<Vec<WorkspaceRecord>> {
         let state = self.lock_state()?;
         let mut statement = state.database.prepare(
             "SELECT workspace_id, name, directory_path FROM workspaces WHERE state = 'open' ORDER BY name, workspace_id",
         ).map_err(io::Error::other)?;
         let rows = statement
             .query_map([], |row| {
-                Ok(json!({
-                    "workspaceId": row.get::<_, String>(0)?,
-                    "name": row.get::<_, String>(1)?,
-                    "directoryPath": row.get::<_, String>(2)?,
-                }))
+                Ok(WorkspaceRecord {
+                    workspace_id: row.get(0)?,
+                    name: row.get(1)?,
+                    directory_path: row.get(2)?,
+                    state: None,
+                })
             })
             .map_err(io::Error::other)?;
         rows.collect::<Result<Vec<_>, _>>()
             .map_err(io::Error::other)
     }
 
-    fn rename_session(&self, session_id: SessionId, name: &str) -> io::Result<SessionMetadata> {
+    fn rename_session(&self, session_id: SessionId, name: &str) -> io::Result<SessionRecord> {
         if !valid_session_title(name) {
             return Err(io::Error::new(
                 io::ErrorKind::InvalidInput,
@@ -2295,7 +1853,7 @@ impl SessionManager {
                 .database
                 .execute(
                     "UPDATE sessions SET manual_name = ?1 WHERE id = ?2 AND state = 'open'",
-                    params![name, session_id.0],
+                    params![name, session_id.get()],
                 )
                 .map_err(io::Error::other)?;
             if changed != 1 {
@@ -2306,12 +1864,12 @@ impl SessionManager {
             }
             session_metadata(&state, session_id, &self.attach_socket_path)?
         };
-        self.publish_event(json!({ "type": "session.snapshot", "session": session.to_json() }));
+        self.publish_event(Event::snapshot(session.clone()));
         Ok(session)
     }
 
-    fn rename_workspace(&self, workspace_id: &str, name: &str) -> io::Result<Value> {
-        if !is_uuid_string(workspace_id) {
+    fn rename_workspace(&self, workspace_id: &str, name: &str) -> io::Result<WorkspaceRecord> {
+        if !is_uuid(workspace_id) {
             return Err(io::Error::new(
                 io::ErrorKind::InvalidInput,
                 "Workspace ID is invalid",
@@ -2349,16 +1907,17 @@ impl SessionManager {
                 statement
                     .query_map(params![workspace_id], |row| row.get::<_, i64>(0))
                     .map_err(io::Error::other)?
-                    .map(|id| id.map(SessionId))
+                    .map(|id| id.and_then(stored_session_id))
                     .collect::<Result<Vec<_>, _>>()
                     .map_err(io::Error::other)?
             };
             (
-                json!({
-                    "workspaceId": workspace_id,
-                    "name": name,
-                    "directoryPath": directory_path,
-                }),
+                WorkspaceRecord {
+                    workspace_id: workspace_id.to_owned(),
+                    name: name.to_owned(),
+                    directory_path,
+                    state: None,
+                },
                 session_ids,
             )
         };
@@ -2370,7 +1929,7 @@ impl SessionManager {
     }
 
     fn archive_workspace(self: &Arc<Self>, workspace_id: &str) -> io::Result<Vec<SessionId>> {
-        if !is_uuid_string(workspace_id) {
+        if !is_uuid(workspace_id) {
             return Err(io::Error::new(
                 io::ErrorKind::InvalidInput,
                 "Workspace ID is invalid",
@@ -2435,12 +1994,15 @@ impl SessionManager {
 
         for session in sessions {
             self.start_pi_bridge_for_session(&session)?;
-            self.publish_event(json!({ "type": "session.snapshot", "session": session.to_json() }));
+            self.publish_event(Event::snapshot(session.clone()));
         }
         Ok(())
     }
 
-    fn create_workspace(self: &Arc<Self>, request: WorkspaceCreateRequest) -> io::Result<Value> {
+    fn create_workspace(
+        self: &Arc<Self>,
+        request: rpc::CreateWorkspace,
+    ) -> io::Result<rpc::WorkspaceCreated> {
         validate_workspace_name(&request.name)?;
         if !request.directory_path.is_absolute() {
             return Err(io::Error::new(
@@ -2498,22 +2060,22 @@ impl SessionManager {
             .insert(workspace_id.clone(), directory_access);
         self.start_pi_bridge_worker(pi_shell_id)
             .map_err(io::Error::other)?;
-        let workspace = json!({
-            "workspaceId": workspace_id,
-            "name": request.name,
-            "directoryPath": directory,
-            "state": "open",
-        });
-        self.publish_event(json!({ "type": "session.snapshot", "session": session.to_json() }));
+        let workspace = WorkspaceRecord {
+            workspace_id: workspace_id.clone(),
+            name: request.name,
+            directory_path: directory.to_string_lossy().into_owned(),
+            state: Some(WorkspaceState::Open),
+        };
+        self.publish_event(Event::snapshot(session.clone()));
         self.publish_workspace_changed(&workspace_id);
-        Ok(json!({ "workspace": workspace, "session": session.to_json() }))
+        Ok(rpc::WorkspaceCreated { workspace, session })
     }
 
     fn create_session_in_workspace(
         self: &Arc<Self>,
         workspace_id: &str,
-    ) -> io::Result<SessionMetadata> {
-        if !is_uuid_string(workspace_id) {
+    ) -> io::Result<SessionRecord> {
+        if !is_uuid(workspace_id) {
             return Err(io::Error::new(
                 io::ErrorKind::InvalidInput,
                 "Workspace ID is invalid",
@@ -2539,7 +2101,7 @@ impl SessionManager {
             .id;
         drop(state);
         self.start_pi_bridge_worker(pi_shell_id)?;
-        self.publish_event(json!({ "type": "session.snapshot", "session": session.to_json() }));
+        self.publish_event(Event::snapshot(session.clone()));
         Ok(session)
     }
 
@@ -2548,7 +2110,7 @@ impl SessionManager {
         session_id: SessionId,
         shell_id: ShellId,
         takeover_policy: PiTakeoverPolicy,
-    ) -> io::Result<SessionMetadata> {
+    ) -> io::Result<SessionRecord> {
         let (request, recovery) = {
             let mut state = self.lock_state()?;
             if state.shutting_down {
@@ -2582,7 +2144,7 @@ impl SessionManager {
                 .query_row(
                     "SELECT session_uuid, pi_session_file, pi_bridge_socket_path FROM sessions
                      WHERE id = ?1 AND state = 'open'",
-                    params![session_id.0],
+                    params![session_id.get()],
                     |row| {
                         Ok((
                             row.get::<_, String>(0)?,
@@ -2677,7 +2239,7 @@ impl SessionManager {
         &self,
         recovery: &PiRecoveryLease<'_>,
         running: RunningShell,
-    ) -> io::Result<SessionMetadata> {
+    ) -> io::Result<SessionRecord> {
         let PiRecoveryLease {
             session_id,
             shell_id,
@@ -2707,7 +2269,7 @@ impl SessionManager {
         result
     }
 
-    fn close_session(self: &Arc<Self>, id: SessionId) -> io::Result<Option<SessionMetadata>> {
+    fn close_session(self: &Arc<Self>, id: SessionId) -> io::Result<Option<SessionRecord>> {
         let (replacement, shells_to_terminate) = {
             let mut state = self.lock_state()?;
             close_session(
@@ -2728,7 +2290,7 @@ impl SessionManager {
         self: &Arc<Self>,
         session_id: SessionId,
         shell_id: ShellId,
-    ) -> io::Result<ClosedShellMetadata> {
+    ) -> io::Result<rpc::ShellClosed> {
         let (closed, shells_to_terminate) = {
             let mut state = self.lock_state()?;
             close_shell(
@@ -2746,7 +2308,7 @@ impl SessionManager {
         Ok(closed)
     }
 
-    fn start_pi_bridge_for_session(self: &Arc<Self>, session: &SessionMetadata) -> io::Result<()> {
+    fn start_pi_bridge_for_session(self: &Arc<Self>, session: &SessionRecord) -> io::Result<()> {
         if let Some(pi_shell) = session
             .shells
             .iter()
@@ -2800,14 +2362,14 @@ impl SessionManager {
             .filter_map(|(shell_id, running)| match running.child.try_wait() {
                 Ok(Some(status)) => {
                     log::info!("event=session.child_exited session_id={} shell_id={} runtime_id={} pid={} status={status}",
-                        running.session_id.0, shell_id.0, running.runtime_id.0, running.child.id());
+                        running.session_id.get(), shell_id.get(), running.runtime_id.0, running.child.id());
                     Some((*shell_id, running.session_id))
                 }
                 Ok(None) => None,
                 Err(error) => {
                     if !running.wait_error_reported {
                         log::error!("event=session.child_wait_failed session_id={} shell_id={} runtime_id={} pid={} error_kind={:?}",
-                            running.session_id.0, shell_id.0, running.runtime_id.0, running.child.id(), error.kind());
+                            running.session_id.get(), shell_id.get(), running.runtime_id.0, running.child.id(), error.kind());
                         running.wait_error_reported = true;
                     }
                     // Do not guess that the child exited or signal a potentially
@@ -2882,7 +2444,7 @@ impl SessionManager {
         drop(state);
 
         for (shell_id, session_id) in exited {
-            self.publish_shell_activity(session_id, shell_id, "exited");
+            self.publish_shell_activity(session_id, shell_id, ShellActivity::Exited);
         }
         for session_id in removed_sessions {
             self.publish_session_removed(session_id);
@@ -2892,7 +2454,7 @@ impl SessionManager {
         }
         self.ensure_open_workspace_sessions()?;
         if let Some(session) = self.ensure_home_session()? {
-            self.publish_event(json!({ "type": "session.snapshot", "session": session.to_json() }));
+            self.publish_event(Event::snapshot(session.clone()));
         }
         Ok(())
     }
@@ -2938,7 +2500,7 @@ impl SessionManager {
             }
             running.session_id
         };
-        self.publish_shell_activity(session_id, id, "detached");
+        self.publish_shell_activity(session_id, id, ShellActivity::Detached);
     }
 
     pub fn shutdown(&self) {
@@ -3033,7 +2595,7 @@ impl SessionManager {
             let records = statement
                 .query_map(params![requested_session_file], |row| {
                     Ok((
-                        SessionId(row.get(0)?),
+                        stored_session_id(row.get(0)?)?,
                         row.get::<_, String>(1)?,
                         PathBuf::from(row.get::<_, String>(2)?),
                         row.get::<_, Option<String>>(3)?,
@@ -3098,7 +2660,7 @@ impl SessionManager {
                 .database
                 .query_row(
                     "SELECT COUNT(*) FROM shells WHERE session_id = ?1 AND role = 'pi' AND state = 'archived'",
-                    params![session_id.0],
+                    params![session_id.get()],
                     |row| row.get(0),
                 )
                 .map_err(io::Error::other)?
@@ -3159,7 +2721,7 @@ impl SessionManager {
                 .execute(
                     "UPDATE sessions SET state = 'open', archived_at = NULL, termination_reason = NULL
                      WHERE id = ?1 AND state = 'archived'",
-                    params![session_id.0],
+                    params![session_id.get()],
                 )
                 .map_err(io::Error::other)?;
             if changed != 1 {
@@ -3172,7 +2734,7 @@ impl SessionManager {
                 .execute(
                     "UPDATE shells SET state = 'open', archived_at = NULL, termination_reason = NULL
                      WHERE session_id = ?1 AND state = 'archived'",
-                    params![session_id.0],
+                    params![session_id.get()],
                 )
                 .map_err(io::Error::other)?;
             transaction.commit().map_err(io::Error::other)?;
@@ -3205,8 +2767,8 @@ impl SessionManager {
                             Err(error) => {
                                 log::warn!(
                                     "event=session.terminal_restore_unavailable session_id={} shell_id={} error_kind={:?}",
-                                    session_id.0,
-                                    shell_id.0,
+                                    session_id.get(),
+                                    shell_id.get(),
                                     error.kind()
                                 );
                                 remaining_shell_ids.remove(&shell_id);
@@ -3261,7 +2823,7 @@ impl SessionManager {
             if !target
                 .shells
                 .iter()
-                .any(|shell| shell.role == PaneRole::Pi && shell.available)
+                .any(|shell| shell.role == PaneRole::Pi && shell.is_available())
             {
                 return Err(io::Error::new(
                     io::ErrorKind::WouldBlock,
@@ -3287,10 +2849,7 @@ impl SessionManager {
             }
             self.publish_session_removed(requester_session_id);
             if let Some(replacement) = replacement {
-                self.publish_event(json!({
-                    "type": "session.snapshot",
-                    "session": replacement.to_json(),
-                }));
+                self.publish_event(Event::snapshot(replacement.clone()));
             }
         }
 
@@ -3298,7 +2857,7 @@ impl SessionManager {
         self.publish_session_snapshot(target_session_id)?;
         log::info!(
             "event=session.pi_resume_completed session_id={}",
-            target_session_id.0
+            target_session_id.get()
         );
         Ok(target_session_id)
     }
@@ -3352,7 +2911,7 @@ impl SessionManager {
                         .database
                         .execute(
                             "UPDATE sessions SET name = ?1 WHERE id = ?2 AND state = 'open'",
-                            params![title, session_id.0],
+                            params![title, session_id.get()],
                         )
                         .map_err(io::Error::other)?
                         > 0
@@ -3370,7 +2929,7 @@ impl SessionManager {
                     state.database.execute(
                         "UPDATE sessions SET name = COALESCE(?1, name), emoji = COALESCE(?2, emoji) \
                          WHERE id = ?3 AND state = 'open'",
-                        params![title, emoji, session_id.0],
+                        params![title, emoji, session_id.get()],
                     ).map_err(io::Error::other)? > 0
                 }
                 _ => false,
@@ -3398,7 +2957,7 @@ impl SessionManager {
         let session_id = binding.session_id;
         let changed = state.database.execute(
             "UPDATE sessions SET pi_session_id = ? WHERE id = ? AND session_uuid = ? AND state = 'open'",
-            params![pi_session_id, session_id.0, session_uuid],
+            params![pi_session_id, session_id.get(), session_uuid],
         ).map_err(io::Error::other)?;
         if changed != 1 {
             return Err(io::Error::new(
@@ -3409,18 +2968,19 @@ impl SessionManager {
         Ok(())
     }
 
-    fn config_value(&self, key: &str) -> io::Result<ConfigValue> {
-        let key = ConfigKey::parse(key)?;
-        let state = self.lock_state()?;
+    fn config_value(&self, key: ConfigKey) -> rpc::ConfigValue {
+        let state = self
+            .state
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
         let value = match key {
             ConfigKey::AgentCommand => state.agent_command.0.source.clone(),
             ConfigKey::ShellCommand => state.shell_command.0.source.clone(),
         };
-        Ok(ConfigValue { key, value })
+        rpc::ConfigValue { key, value }
     }
 
-    fn set_config_value(&self, key: &str, value: &str) -> io::Result<ConfigValue> {
-        let key = ConfigKey::parse(key)?;
+    fn set_config_value(&self, key: ConfigKey, value: &str) -> io::Result<rpc::ConfigValue> {
         let parsed = match key {
             ConfigKey::AgentCommand => {
                 let command = AgentCommand::parse(value)?;
@@ -3442,20 +3002,20 @@ impl SessionManager {
             .execute(
                 "INSERT INTO daemon_metadata (key, value) VALUES (?1, ?2) \
                  ON CONFLICT(key) DO UPDATE SET value = excluded.value",
-                params![key.metadata_key(), value],
+                params![config_metadata_key(key), value],
             )
             .map_err(io::Error::other)?;
         match parsed {
             ParsedConfigValue::AgentCommand(command) => state.agent_command = command,
             ParsedConfigValue::ShellCommand(command) => state.shell_command = command,
         }
-        Ok(ConfigValue { key, value })
+        Ok(rpc::ConfigValue { key, value })
     }
 
     fn request_session_focus(&self, session_id: SessionId) -> io::Result<()> {
         // Live catalog subscribers focus immediately. Listing clients get the same request for a
         // short window only, so a much later resync cannot replay a stale focus change.
-        self.publish_event(json!({ "type": "session.focus", "sessionId": session_id.0 }));
+        self.publish_event(Event::SessionFocus { session_id });
         *self
             .pending_resume_focus
             .lock()
@@ -3584,7 +3144,7 @@ fn load_or_create_host_id(database: &Connection) -> io::Result<String> {
         .optional()
         .map_err(io::Error::other)?;
     if let Some(host_id) = existing {
-        if !is_uuid_string(&host_id) {
+        if !is_uuid(&host_id) {
             return Err(io::Error::new(
                 io::ErrorKind::InvalidData,
                 "stored host identity is malformed",
@@ -3756,7 +3316,7 @@ fn create_workspace_session(
     attach_socket_path: &Path,
     pi_session_directory: &Path,
     workspace_id: &str,
-) -> io::Result<SessionMetadata> {
+) -> io::Result<SessionRecord> {
     let initial_pwd = state
         .database
         .query_row(
@@ -3798,29 +3358,29 @@ fn create_workspace_session(
             bridge_socket.database_value(),
         ],
     ).map_err(io::Error::other)?;
-    let session_id = SessionId(state.database.last_insert_rowid());
+    let session_id = inserted_session_id(&state.database)?;
     state
         .database
         .execute(
             "INSERT INTO shells (session_id, initial_pwd, state, created_at, role, pane_id)
          VALUES (?, ?, 'open', ?, 'pi', ?)",
             params![
-                session_id.0,
+                session_id.get(),
                 initial_pwd.to_string_lossy(),
                 unix_timestamp(),
                 pane_id
             ],
         )
         .map_err(io::Error::other)?;
-    let pane = ShellId(state.database.last_insert_rowid());
-    let layout = SessionLayout::Pane { shell_id: pane.0 };
+    let pane = inserted_shell_id(&state.database)?;
+    let layout = Layout::single(pane);
     state
         .database
         .execute(
             "UPDATE sessions SET layout_json = ? WHERE id = ?",
             params![
                 serde_json::to_string(&layout).map_err(io::Error::other)?,
-                session_id.0
+                session_id.get()
             ],
         )
         .map_err(io::Error::other)?;
@@ -3848,7 +3408,7 @@ fn create_workspace_session(
 fn create_session(
     state: &mut SessionState,
     attach_socket_path: &Path,
-) -> io::Result<SessionMetadata> {
+) -> io::Result<SessionRecord> {
     let initial_pwd = state.initial_pwd.clone();
     let session_uuid = create_uuid_v4()?;
     let ordinal: i64 = state
@@ -3867,7 +3427,7 @@ fn create_session(
             params![initial_pwd.to_string_lossy(), unix_timestamp(), session_uuid, session_name],
         )
         .map_err(io::Error::other)?;
-    let id = SessionId(state.database.last_insert_rowid());
+    let id = inserted_session_id(&state.database)?;
 
     if let Err(error) = create_shell(state, id, attach_socket_path) {
         archive_session(&mut state.database, id, "spawn_failed")?;
@@ -3880,7 +3440,7 @@ fn create_shell(
     state: &mut SessionState,
     session_id: SessionId,
     attach_socket_path: &Path,
-) -> io::Result<ShellMetadata> {
+) -> io::Result<ShellRecord> {
     let initial_pwd = session_initial_pwd(&state.database, session_id)?;
     state
         .database
@@ -3888,13 +3448,13 @@ fn create_shell(
             "INSERT INTO shells (session_id, initial_pwd, state, created_at)
              VALUES (?1, ?2, 'open', ?3)",
             params![
-                session_id.0,
+                session_id.get(),
                 initial_pwd.to_string_lossy(),
                 unix_timestamp()
             ],
         )
         .map_err(io::Error::other)?;
-    let shell_id = ShellId(state.database.last_insert_rowid());
+    let shell_id = inserted_shell_id(&state.database)?;
 
     let running = match spawn_shell(&state.shell_command, session_id, &initial_pwd) {
         Ok(running) => running,
@@ -3903,7 +3463,7 @@ fn create_shell(
             return Err(error);
         }
     };
-    let metadata = shell_metadata(shell_id, &running, attach_socket_path);
+    let metadata = running_shell_record(shell_id, &running, attach_socket_path);
     state.install_running(shell_id, running);
     Ok(metadata)
 }
@@ -3923,7 +3483,7 @@ fn close_session(
     id: SessionId,
     attach_socket_path: &Path,
     pi_session_directory: &Path,
-) -> io::Result<(Option<SessionMetadata>, Vec<RunningShell>)> {
+) -> io::Result<(Option<SessionRecord>, Vec<RunningShell>)> {
     if open_shell_ids(state, id).is_empty() {
         return Err(io::Error::new(
             io::ErrorKind::NotFound,
@@ -3935,7 +3495,7 @@ fn close_session(
         .database
         .query_row(
             "SELECT workspace_id FROM sessions WHERE id = ? AND state = 'open'",
-            params![id.0],
+            params![id.get()],
             |row| row.get(0),
         )
         .map_err(io::Error::other)?;
@@ -3977,7 +3537,7 @@ fn close_shell(
     shell_id: ShellId,
     attach_socket_path: &Path,
     pi_session_directory: &Path,
-) -> io::Result<(ClosedShellMetadata, Vec<RunningShell>)> {
+) -> io::Result<(rpc::ShellClosed, Vec<RunningShell>)> {
     let role = if let Some(shell) = state.running.get(&shell_id) {
         if shell.session_id != session_id {
             return Err(io::Error::new(
@@ -4003,7 +3563,7 @@ fn close_shell(
         let (replacement, shells) =
             close_session(state, session_id, attach_socket_path, pi_session_directory)?;
         return Ok((
-            ClosedShellMetadata {
+            rpc::ShellClosed {
                 archived_shell_id: shell_id,
                 archived_session_id: Some(session_id),
                 replacement,
@@ -4026,7 +3586,7 @@ fn close_shell(
     let shell = state.running.remove(&shell_id).into_iter().collect();
     state.unavailable_pi_shells.remove(&shell_id);
     Ok((
-        ClosedShellMetadata {
+        rpc::ShellClosed {
             archived_shell_id: shell_id,
             archived_session_id: None,
             replacement: None,
@@ -4070,7 +3630,7 @@ fn session_metadata(
     state: &SessionState,
     id: SessionId,
     attach_socket_path: &Path,
-) -> io::Result<SessionMetadata> {
+) -> io::Result<SessionRecord> {
     let (
         initial_pwd,
         session_uuid,
@@ -4082,7 +3642,7 @@ fn session_metadata(
     ) = state.database.query_row(
         "SELECT initial_pwd, session_uuid, workspace_id, name, manual_name, pi_session_file, pi_session_id
          FROM sessions WHERE id = ?1 AND state = 'open'",
-        params![id.0],
+        params![id.get()],
         |row| {
             Ok((
                 PathBuf::from(row.get::<_, String>(0)?),
@@ -4100,7 +3660,7 @@ fn session_metadata(
         .database
         .query_row(
             "SELECT emoji FROM sessions WHERE id = ?1 AND state = 'open'",
-            params![id.0],
+            params![id.get()],
             |row| row.get::<_, Option<String>>(0),
         )
         .map_err(io::Error::other)?;
@@ -4119,7 +3679,7 @@ fn session_metadata(
         .running
         .iter()
         .filter(|&(_, running)| running.session_id == id)
-        .map(|(shell_id, running)| shell_metadata(*shell_id, running, attach_socket_path))
+        .map(|(shell_id, running)| running_shell_record(*shell_id, running, attach_socket_path))
         .collect();
     shells.extend(
         state
@@ -4127,11 +3687,11 @@ fn session_metadata(
             .iter()
             .filter(|&(_, shell)| shell.session_id == id)
             .map(|(shell_id, shell)| {
-                unavailable_pi_shell_metadata(*shell_id, shell, attach_socket_path)
+                unavailable_pi_shell_record(*shell_id, shell, attach_socket_path)
             }),
     );
-    shells.sort_by_key(|shell| shell.id.0);
-    let status = if shells.iter().any(|shell| !shell.available) {
+    shells.sort_by_key(|shell| shell.id.get());
+    let status = if shells.iter().any(|shell| !shell.is_available()) {
         SessionStatus::Unavailable
     } else if shells.iter().any(|shell| shell.role == PaneRole::Pi) {
         state
@@ -4141,7 +3701,7 @@ fn session_metadata(
     } else {
         SessionStatus::Ready
     };
-    Ok(SessionMetadata {
+    Ok(SessionRecord {
         id,
         session_uuid,
         pi_session_file,
@@ -4158,48 +3718,54 @@ fn session_metadata(
     })
 }
 
-fn shell_metadata(id: ShellId, running: &RunningShell, attach_socket_path: &Path) -> ShellMetadata {
-    ShellMetadata {
+fn running_shell_record(
+    id: ShellId,
+    running: &RunningShell,
+    attach_socket_path: &Path,
+) -> ShellRecord {
+    ShellRecord {
         id,
         pane_id: running.pane_id.clone(),
         role: running.role,
         process_id: running.child.id(),
         initial_pwd: running.initial_pwd.clone(),
-        slave_device: running.slave_device.clone(),
+        pty_device: running.slave_device.clone(),
         attach_socket_path: attach_socket_path.to_path_buf(),
-        available: true,
-        availability_reason: None,
+        availability: Availability::Available,
     }
 }
 
-fn unavailable_pi_shell_metadata(
+/// Shown on a Pi pane whose process could not be recovered.
+const UNRECOVERABLE_PI_REASON: &str =
+    "Axo could not recover this Pi session. Its conversation history is preserved.";
+
+fn unavailable_pi_shell_record(
     id: ShellId,
     shell: &UnavailablePiShell,
     attach_socket_path: &Path,
-) -> ShellMetadata {
-    ShellMetadata {
+) -> ShellRecord {
+    ShellRecord {
         id,
         pane_id: shell.pane_id.clone(),
         role: PaneRole::Pi,
         process_id: 0,
         initial_pwd: shell.initial_pwd.clone(),
-        slave_device: String::new(),
+        pty_device: String::new(),
         attach_socket_path: attach_socket_path.to_path_buf(),
-        available: false,
-        availability_reason: Some(
-            "Axo could not recover this Pi session. Its conversation history is preserved.",
-        ),
+        availability: Availability::Unavailable {
+            reason: UNRECOVERABLE_PI_REASON.to_owned(),
+        },
     }
 }
 
-fn read_open_sessions(database: &Connection) -> io::Result<Vec<SessionRecord>> {
+fn read_open_sessions(database: &Connection) -> io::Result<Vec<StoredSession>> {
     let mut statement = database
         .prepare("SELECT id, initial_pwd FROM sessions WHERE state = 'open' ORDER BY id")
         .map_err(io::Error::other)?;
     let rows = statement
         .query_map([], |row| {
             Ok((
-                SessionId(row.get(0)?),
+                stored_session_id(row.get(0)?)?,
                 PathBuf::from(row.get::<_, String>(1)?),
             ))
         })
@@ -4211,19 +3777,19 @@ fn read_open_sessions(database: &Connection) -> io::Result<Vec<SessionRecord>> {
             "SELECT id, role, pane_id FROM shells WHERE session_id = ?1 AND state = 'open' ORDER BY id",
         ).map_err(io::Error::other)?;
         let shell_ids = shell_statement
-            .query_map(params![id.0], |row| {
+            .query_map(params![id.get()], |row| {
                 let role: String = row.get(1)?;
                 let role = match role.as_str() {
                     "pi" => PaneRole::Pi,
                     "terminal" => PaneRole::Terminal,
                     _ => return Err(rusqlite::Error::InvalidQuery),
                 };
-                Ok((ShellId(row.get(0)?), role, row.get(2)?))
+                Ok((stored_shell_id(row.get(0)?)?, role, row.get(2)?))
             })
             .map_err(io::Error::other)?
             .collect::<Result<Vec<_>, _>>()
             .map_err(io::Error::other)?;
-        records.push(SessionRecord {
+        records.push(StoredSession {
             id,
             initial_pwd,
             shell_ids,
@@ -4232,11 +3798,11 @@ fn read_open_sessions(database: &Connection) -> io::Result<Vec<SessionRecord>> {
     Ok(records)
 }
 
-fn read_session_layout(database: &Connection, id: SessionId) -> io::Result<Option<SessionLayout>> {
+fn read_session_layout(database: &Connection, id: SessionId) -> io::Result<Option<Layout>> {
     let stored_layout = database
         .query_row(
             "SELECT layout_json FROM sessions WHERE id = ?1 AND state = 'open'",
-            params![id.0],
+            params![id.get()],
             |row| row.get::<_, Option<String>>(0),
         )
         .optional()
@@ -4246,23 +3812,17 @@ fn read_session_layout(database: &Connection, id: SessionId) -> io::Result<Optio
         return Ok(None);
     };
 
-    let layout: SessionLayout = match serde_json::from_str(&stored_layout) {
+    // Parsing validates the layout's structure; a stored layout that fails is ignored.
+    let layout: Layout = match serde_json::from_str(&stored_layout) {
         Ok(layout) => layout,
         Err(error) => {
             log::warn!(
                 "event=session.layout_invalid session_id={} reason={error}",
-                id.0
+                id.get()
             );
             return Ok(None);
         }
     };
-    if let Err(error) = layout.shell_ids() {
-        log::warn!(
-            "event=session.layout_invalid session_id={} reason={error}",
-            id.0
-        );
-        return Ok(None);
-    }
     Ok(Some(layout))
 }
 
@@ -4430,7 +3990,7 @@ fn session_initial_pwd(database: &Connection, id: SessionId) -> io::Result<PathB
     database
         .query_row(
             "SELECT initial_pwd FROM sessions WHERE id = ?1 AND state = 'open'",
-            params![id.0],
+            params![id.get()],
             |row| row.get::<_, String>(0),
         )
         .optional()
@@ -4444,7 +4004,7 @@ fn archive_shell(database: &Connection, id: ShellId, reason: &str) -> io::Result
         .execute(
             "UPDATE shells SET state = 'archived', archived_at = ?1, termination_reason = ?2
              WHERE id = ?3 AND state = 'open'",
-            params![unix_timestamp(), reason, id.0],
+            params![unix_timestamp(), reason, id.get()],
         )
         .map_err(io::Error::other)?;
     if changed != 1 {
@@ -4468,7 +4028,7 @@ fn archive_shell_and_prune_layout(
         .execute(
             "UPDATE shells SET state = 'archived', archived_at = ?1, termination_reason = ?2
              WHERE id = ?3 AND state = 'open'",
-            params![unix_timestamp(), reason, shell_id.0],
+            params![unix_timestamp(), reason, shell_id.get()],
         )
         .map_err(io::Error::other)?;
     if changed != 1 {
@@ -4488,7 +4048,7 @@ fn archive_shell_and_prune_layout(
         transaction
             .execute(
                 "UPDATE sessions SET layout_json = ?1 WHERE id = ?2 AND state = 'open'",
-                params![layout_json, session_id.0],
+                params![layout_json, session_id.get()],
             )
             .map_err(io::Error::other)?;
     }
@@ -4508,7 +4068,7 @@ fn archive_workspace_records(
         statement
             .query_map(params![workspace_id], |row| row.get::<_, i64>(0))
             .map_err(io::Error::other)?
-            .map(|id| id.map(SessionId))
+            .map(|id| id.and_then(stored_session_id))
             .collect::<Result<Vec<_>, _>>()
             .map_err(io::Error::other)?
     };
@@ -4553,14 +4113,14 @@ fn archive_session(database: &mut Connection, id: SessionId, reason: &str) -> io
         .execute(
             "UPDATE shells SET state = 'archived', archived_at = ?1, termination_reason = ?2
              WHERE session_id = ?3 AND state = 'open'",
-            params![archived_at, reason, id.0],
+            params![archived_at, reason, id.get()],
         )
         .map_err(io::Error::other)?;
     let changed = transaction
         .execute(
             "UPDATE sessions SET state = 'archived', archived_at = ?1, termination_reason = ?2
              WHERE id = ?3 AND state = 'open'",
-            params![archived_at, reason, id.0],
+            params![archived_at, reason, id.get()],
         )
         .map_err(io::Error::other)?;
     if changed != 1 {
@@ -5067,12 +4627,12 @@ fn pi_shutdown_attempt_from_lock(
     let process_id = pi_writer_process_id_from_lock(session_file, check_current).inspect_err(|error| {
         log::info!(
             "event=session.pi_lock_inspection_rejected session_id={} elapsed_ms={} error_kind={:?}",
-            session_id.0, started.elapsed().as_millis(), error.kind()
+            session_id.get(), started.elapsed().as_millis(), error.kind()
         );
     })?;
     log::warn!(
         "event=session.pi_process_verified_by_lock session_id={} pid={} elapsed_ms={}",
-        session_id.0,
+        session_id.get(),
         process_id.0,
         started.elapsed().as_millis()
     );
@@ -5307,7 +4867,7 @@ fn load_pi_bridge_token(database: &Connection, session_uuid: &str) -> io::Result
         )
         .optional()
         .map_err(io::Error::other)?;
-    if token.as_ref().is_some_and(|token| !is_uuid_string(token)) {
+    if token.as_ref().is_some_and(|token| !is_uuid(token)) {
         return Err(io::Error::new(
             io::ErrorKind::InvalidData,
             "Pi bridge credential is invalid",
@@ -5337,14 +4897,14 @@ fn remove_abandoned_pi_bridge_socket(session_id: SessionId, path: &Path) -> io::
             fs::remove_file(path)?;
             log::info!(
                 "event=pi.bridge_socket_removed session_id={} reason=abandoned",
-                session_id.0
+                session_id.get()
             );
             Ok(())
         }
         Ok(_) => {
             log::warn!(
                 "event=pi.bridge_socket_blocked session_id={} reason=not_a_socket",
-                session_id.0
+                session_id.get()
             );
             Ok(())
         }
@@ -5367,7 +4927,7 @@ fn remove_abandoned_pi_bridge_sockets(database: &Connection) -> io::Result<()> {
         statement
             .query_map([], |row| {
                 Ok((
-                    SessionId(row.get(0)?),
+                    stored_session_id(row.get(0)?)?,
                     PathBuf::from(row.get::<_, String>(1)?),
                     PathBuf::from(row.get::<_, String>(2)?),
                 ))
@@ -5387,7 +4947,7 @@ fn remove_abandoned_pi_bridge_sockets(database: &Connection) -> io::Result<()> {
         if let Err(error) = result {
             log::warn!(
                 "event=pi.bridge_socket_reconcile_failed session_id={} error_kind={:?}",
-                session_id.0,
+                session_id.get(),
                 error.kind()
             );
         }
@@ -5495,7 +5055,7 @@ impl PiLaunchRequest {
             Err(error) if error.kind() == io::ErrorKind::WouldBlock => {
                 log::info!(
                     "event=session.pi_takeover_requested session_id={}",
-                    session_id.0
+                    session_id.get()
                 );
                 let shutdown_attempt = match previous_token.as_deref() {
                     Some(token) => match request_pi_shutdown(
@@ -5553,7 +5113,7 @@ impl PiLaunchRequest {
                         if let Err(error) = &shutdown_attempt.graceful_shutdown {
                             log::warn!(
                                 "event=session.pi_shutdown_unconfirmed session_id={} error_kind={:?}",
-                                session_id.0,
+                                session_id.get(),
                                 error.kind()
                             );
                         }
@@ -5566,7 +5126,7 @@ impl PiLaunchRequest {
                 };
                 log::info!(
                     "event=session.pi_takeover_completed session_id={}",
-                    session_id.0
+                    session_id.get()
                 );
                 Ok(lock)
             }
@@ -5796,8 +5356,8 @@ fn run_pi_bridge_worker(
                 if !has_connected {
                     log::info!(
                         "event=pi.bridge_connected session_id={} shell_id={}",
-                        session_id.0,
-                        shell_id.0
+                        session_id.get(),
+                        shell_id.get()
                     );
                     has_connected = true;
                 }
@@ -5860,8 +5420,8 @@ fn run_pi_bridge_worker(
                                 phase = 1;
                                 log::info!(
                                     "event=pi.bridge_authenticated session_id={} shell_id={}",
-                                    session_id.0,
-                                    shell_id.0
+                                    session_id.get(),
+                                    shell_id.get()
                                 );
                             }
                             1 if record["type"] == "hello" && record["protocolVersion"] == 1 => {
@@ -5887,8 +5447,8 @@ fn run_pi_bridge_worker(
                                 else {
                                     log::warn!(
                                         "event=pi.binding_rejected session_id={} shell_id={} reason=invalid_pi_session_id",
-                                        session_id.0,
-                                        shell_id.0
+                                        session_id.get(),
+                                        shell_id.get()
                                     );
                                     connection_valid = false;
                                     break;
@@ -5896,8 +5456,8 @@ fn run_pi_bridge_worker(
                                 if !exact {
                                     log::warn!(
                                         "event=pi.binding_rejected session_id={} shell_id={} session_match={} pane_match={} file_match={} process_match={} cwd_match={}",
-                                        session_id.0,
-                                        shell_id.0,
+                                        session_id.get(),
+                                        shell_id.get(),
                                         session_matches,
                                         pane_matches,
                                         file_matches,
@@ -5923,8 +5483,8 @@ fn run_pi_bridge_worker(
                                 phase = 2;
                                 log::info!(
                                     "event=pi.session_binding_verified session_id={} shell_id={}",
-                                    session_id.0,
-                                    shell_id.0
+                                    session_id.get(),
+                                    shell_id.get()
                                 );
                             }
                             2 if record["type"] == "event" => {
@@ -5932,7 +5492,7 @@ fn run_pi_bridge_worker(
                                     return;
                                 };
                                 let Some(stream_id) =
-                                    record["streamId"].as_str().filter(|id| is_uuid_string(id))
+                                    record["streamId"].as_str().filter(|id| is_uuid(id))
                                 else {
                                     connection_valid = false;
                                     break;
@@ -5980,8 +5540,8 @@ fn run_pi_bridge_worker(
                                     let Some(target_session_file) = target_session_file else {
                                         log::warn!(
                                             "event=session.pi_resume_rejected session_id={} shell_id={} reason=invalid_request",
-                                            session_id.0,
-                                            shell_id.0
+                                            session_id.get(),
+                                            shell_id.get()
                                         );
                                         continue;
                                     };
@@ -5990,8 +5550,8 @@ fn run_pi_bridge_worker(
                                     {
                                         log::warn!(
                                             "event=session.pi_resume_rejected session_id={} shell_id={} error_kind={:?}",
-                                            session_id.0,
-                                            shell_id.0,
+                                            session_id.get(),
+                                            shell_id.get(),
                                             error.kind()
                                         );
                                     }
@@ -6002,21 +5562,20 @@ fn run_pi_bridge_worker(
                                     connection_valid = false;
                                     break;
                                 }
-                                owner.publish_event(json!({
-                                    "type": "pi.event",
-                                    "sessionId": session_id.0,
-                                    "piSessionId": pi_session_id.as_deref().unwrap_or(""),
-                                    "streamId": stream_id,
-                                    "sequence": sequence,
-                                    "name": name,
-                                    "data": data,
-                                }));
+                                owner.publish_event(Event::PiEvent {
+                                    session_id,
+                                    pi_session_id: pi_session_id.clone().unwrap_or_default(),
+                                    stream_id: stream_id.to_owned(),
+                                    sequence,
+                                    name: name.to_owned(),
+                                    data: data.clone(),
+                                });
                             }
                             _ => {
                                 log::warn!(
                                     "event=pi.bridge_protocol_rejected session_id={} shell_id={} phase={}",
-                                    session_id.0,
-                                    shell_id.0,
+                                    session_id.get(),
+                                    shell_id.get(),
                                     phase
                                 );
                                 connection_valid = false;
@@ -6166,8 +5725,12 @@ fn handle_attachment(
         return;
     }
     attach::set_send_buffer(&stream, ATTACH_SEND_BUFFER_BYTES);
-    let id = match attach::read_request(&mut stream) {
-        Ok(id) => ShellId(id),
+    let request = attach::read_request(&mut stream).and_then(|id| {
+        ShellId::new(id)
+            .ok_or_else(|| io::Error::new(io::ErrorKind::InvalidInput, "shell ID must be positive"))
+    });
+    let id = match request {
+        Ok(id) => id,
         Err(error) => {
             log::debug!(
                 "event=session.attach_rejected reason=invalid_request error_kind={:?}",
@@ -6185,14 +5748,14 @@ fn handle_attachment(
         Err(error) => {
             log::warn!(
                 "event=session.attach_rejected shell_id={} error_kind={:?}",
-                id.0,
+                id.get(),
                 error.kind()
             );
             if let Err(write_error) = attach::write_rejection(&mut stream, attach_rejection(&error))
             {
                 log::debug!(
                     "event=session.attach_rejection_write_failed shell_id={} error_kind={:?}",
-                    id.0,
+                    id.get(),
                     write_error.kind()
                 );
             }
@@ -6217,7 +5780,7 @@ fn handle_attachment(
     let subscription = OutputSubscription(subscriber);
     drop(output);
     if first {
-        manager.publish_shell_activity(session_id, id, "attached");
+        manager.publish_shell_activity(session_id, id, ShellActivity::Attached);
     }
 
     let response = attach::write_acceptance(&mut stream, replay.len(), &master)
@@ -6232,8 +5795,8 @@ fn handle_attachment(
     if let Err((phase, error)) = response {
         log::warn!(
             "event=session.attach_failed session_id={} shell_id={} phase={} replay_bytes={} elapsed_ms={} error_kind={:?}",
-            session_id.0,
-            id.0,
+            session_id.get(),
+            id.get(),
             phase,
             replay.len(),
             started_at.elapsed().as_millis(),
@@ -6243,8 +5806,8 @@ fn handle_attachment(
     }
     log::info!(
         "event=session.attach_ready session_id={} shell_id={} replay_bytes={} elapsed_ms={}",
-        session_id.0,
-        id.0,
+        session_id.get(),
+        id.get(),
         replay.len(),
         started_at.elapsed().as_millis()
     );
@@ -6283,54 +5846,31 @@ fn handle_attachment(
     log::log!(
         level,
         "event=session.attach_ended session_id={} shell_id={} reason={} bytes={} elapsed_ms={}",
-        session_id.0,
-        id.0,
+        session_id.get(),
+        id.get(),
         reason,
         delivered,
         started_at.elapsed().as_millis()
     );
 }
 
-fn parse_session_id(params: Params) -> Result<SessionId, RpcError> {
-    let value: Value = params
-        .parse()
-        .map_err(|_| invalid_params("expected {sessionId}"))?;
-    let id = value
-        .get("sessionId")
-        .and_then(Value::as_i64)
-        .filter(|id| *id > 0)
-        .ok_or_else(|| invalid_params("sessionId must be a positive integer"))?;
-    Ok(SessionId(id))
+/// A queued event shared by every subscriber that received it; serializes as the event.
+struct SharedEvent(Arc<Event>);
+
+impl Serialize for SharedEvent {
+    fn serialize<S: serde::Serializer>(&self, serializer: S) -> Result<S::Ok, S::Error> {
+        self.0.serialize(serializer)
+    }
 }
 
-fn parse_shell_ids(params: Params) -> Result<(SessionId, ShellId), RpcError> {
-    let value: Value = params
-        .parse()
-        .map_err(|_| invalid_params("expected {sessionId, shellId}"))?;
-    let session_id = value
-        .get("sessionId")
-        .and_then(Value::as_i64)
-        .filter(|id| *id > 0)
-        .ok_or_else(|| invalid_params("sessionId must be a positive integer"))?;
-    let shell_id = value
-        .get("shellId")
-        .and_then(Value::as_i64)
-        .filter(|id| *id > 0)
-        .ok_or_else(|| invalid_params("shellId must be a positive integer"))?;
-    parse_session_shell_ids(session_id, shell_id)
-}
-
-fn parse_session_shell_ids(
-    session_id: i64,
-    shell_id: i64,
-) -> Result<(SessionId, ShellId), RpcError> {
-    if session_id <= 0 {
-        return Err(invalid_params("sessionId must be a positive integer"));
+/// `InvalidInput` errors are the caller's fault: answered as invalid params with `message`, or
+/// with the error's own text. Anything else is internal.
+fn invalid_input_or_internal(error: io::Error, message: Option<&str>) -> RpcError {
+    if error.kind() == io::ErrorKind::InvalidInput {
+        invalid_params(message.unwrap_or(&error.to_string()))
+    } else {
+        internal_rpc_error(error)
     }
-    if shell_id <= 0 {
-        return Err(invalid_params("shellId must be a positive integer"));
-    }
-    Ok((SessionId(session_id), ShellId(shell_id)))
 }
 
 fn invalid_params(message: &str) -> RpcError {
@@ -6356,8 +5896,8 @@ fn automatic_pi_restart_rpc_error(
 ) -> RpcError {
     log::debug!(
         "event=session.pi_auto_restart_deferred session_id={} shell_id={} error_kind={:?}",
-        session_id.0,
-        shell_id.0,
+        session_id.get(),
+        shell_id.get(),
         error.kind()
     );
     RpcError {
@@ -6371,8 +5911,8 @@ fn automatic_pi_restart_rpc_error(
 fn pi_restart_rpc_error(session_id: SessionId, shell_id: ShellId, error: io::Error) -> RpcError {
     log::error!(
         "event=session.pi_restart_failed session_id={} shell_id={} error_kind={:?}",
-        session_id.0,
-        shell_id.0,
+        session_id.get(),
+        shell_id.get(),
         error.kind()
     );
     let message = match error.kind() {
@@ -6489,6 +6029,24 @@ fn encode_base64(input: &[u8]) -> String {
     encoded
 }
 
+/// Catalog IDs come from `AUTOINCREMENT` columns, so a stored ID is positive unless the database
+/// is corrupt; reading one that is not fails instead of producing an invalid ID.
+fn stored_session_id(value: i64) -> rusqlite::Result<SessionId> {
+    SessionId::new(value).ok_or(rusqlite::Error::IntegralValueOutOfRange(0, value))
+}
+
+fn stored_shell_id(value: i64) -> rusqlite::Result<ShellId> {
+    ShellId::new(value).ok_or(rusqlite::Error::IntegralValueOutOfRange(0, value))
+}
+
+fn inserted_session_id(database: &Connection) -> io::Result<SessionId> {
+    stored_session_id(database.last_insert_rowid()).map_err(io::Error::other)
+}
+
+fn inserted_shell_id(database: &Connection) -> io::Result<ShellId> {
+    stored_shell_id(database.last_insert_rowid()).map_err(io::Error::other)
+}
+
 fn unix_timestamp() -> i64 {
     std::time::SystemTime::now()
         .duration_since(std::time::UNIX_EPOCH)
@@ -6499,6 +6057,21 @@ fn unix_timestamp() -> i64 {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use axo_protocol::LayoutDirection;
+    use serde_json::{Value, json};
+
+    fn sid(value: i64) -> SessionId {
+        SessionId::new(value).unwrap()
+    }
+
+    fn shid(value: i64) -> ShellId {
+        ShellId::new(value).unwrap()
+    }
+
+    /// An event as it goes over the wire.
+    fn wire(event: impl std::ops::Deref<Target = Event>) -> Value {
+        serde_json::to_value(&*event).unwrap()
+    }
 
     /// A socket file whose listener is gone, as a killed Pi leaves it.
     fn abandoned_socket(path: &Path) {
@@ -6519,14 +6092,14 @@ mod tests {
         let directory = bridge_socket_directory();
         let socket = directory.join("abandoned.sock");
         abandoned_socket(&socket);
-        remove_abandoned_pi_bridge_socket(SessionId(1), &socket).unwrap();
+        remove_abandoned_pi_bridge_socket(sid(1), &socket).unwrap();
         assert!(!socket.exists());
 
-        remove_abandoned_pi_bridge_socket(SessionId(1), &socket).unwrap();
+        remove_abandoned_pi_bridge_socket(sid(1), &socket).unwrap();
 
         let regular = directory.join("regular.sock");
         fs::write(&regular, b"not a socket").unwrap();
-        remove_abandoned_pi_bridge_socket(SessionId(1), &regular).unwrap();
+        remove_abandoned_pi_bridge_socket(sid(1), &regular).unwrap();
         assert!(regular.exists());
         fs::remove_dir_all(directory).unwrap();
     }
@@ -6682,22 +6255,19 @@ mod tests {
                      VALUES (?1, 'open', ?2, ?3, ?4, ?5)",
                     params![lifecycle.directory.to_string_lossy(), unix_timestamp(), session_uuid, file.to_string_lossy(), socket.database_value()],
                 ).unwrap();
-                let session_id = SessionId(state.database.last_insert_rowid());
+                let session_id = inserted_session_id(&state.database).unwrap();
                 state.database.execute(
                     "INSERT INTO shells (session_id, initial_pwd, state, created_at, role, pane_id) VALUES (?1, ?2, 'open', ?3, 'pi', ?4)",
-                    params![session_id.0, lifecycle.directory.to_string_lossy(), unix_timestamp(), pane_id],
+                    params![session_id.get(), lifecycle.directory.to_string_lossy(), unix_timestamp(), pane_id],
                 ).unwrap();
-                let shell_id = ShellId(state.database.last_insert_rowid());
+                let shell_id = inserted_shell_id(&state.database).unwrap();
                 state
                     .database
                     .execute(
                         "UPDATE sessions SET layout_json = ?1 WHERE id = ?2",
                         params![
-                            serde_json::to_string(&SessionLayout::Pane {
-                                shell_id: shell_id.0
-                            })
-                            .unwrap(),
-                            session_id.0
+                            serde_json::to_string(&Layout::single(shell_id)).unwrap(),
+                            session_id.get()
                         ],
                     )
                     .unwrap();
@@ -6889,7 +6459,7 @@ mod tests {
                 .database
                 .query_row(
                     "SELECT state FROM sessions WHERE id = ?1",
-                    params![fixture.session_id.0],
+                    params![fixture.session_id.get()],
                     |row| row.get(0),
                 )
                 .unwrap();
@@ -6982,7 +6552,7 @@ mod tests {
             recovered
                 .shells
                 .iter()
-                .any(|shell| shell.id == fixture.shell_id && shell.available)
+                .any(|shell| shell.id == fixture.shell_id && shell.is_available())
         );
         assert_eq!(
             acquire_pi_writer_lock(&fixture.file).unwrap_err().kind(),
@@ -7157,7 +6727,7 @@ mod tests {
             .database
             .execute(
                 "UPDATE sessions SET pi_session_file = ?1 WHERE id = ?2",
-                params![outside.to_string_lossy(), fixture.session_id.0],
+                params![outside.to_string_lossy(), fixture.session_id.get()],
             )
             .unwrap();
         assert_eq!(
@@ -7198,7 +6768,7 @@ mod tests {
             .into_iter()
             .find(|session| session.id != fixture.session_id)
             .unwrap();
-        assert!(home.shells.iter().any(|shell| shell.available));
+        assert!(home.shells.iter().any(|shell| shell.is_available()));
         write_json_line(bridge.get_mut(), &json!({ "type": "protocolError" })).unwrap();
         worker.join().unwrap().unwrap();
         let sessions = manager.list_sessions().unwrap();
@@ -7206,7 +6776,7 @@ mod tests {
             .iter()
             .find(|session| session.id == fixture.session_id)
             .unwrap();
-        assert!(!target.shells[0].available);
+        assert!(!target.shells[0].is_available());
         assert!(sessions.iter().any(|session| session.id == home.id));
         drop(lock);
         fixture.assert_preserved();
@@ -7534,7 +7104,7 @@ mod tests {
             .database
             .query_row(
                 "SELECT state FROM sessions WHERE id = ?",
-                params![uncertain.id.0],
+                params![uncertain.id.get()],
                 |row| row.get(0),
             )
             .unwrap();
@@ -7543,7 +7113,7 @@ mod tests {
             .database
             .query_row(
                 "SELECT state FROM sessions WHERE id = ?",
-                params![exited.id.0],
+                params![exited.id.get()],
                 |row| row.get(0),
             )
             .unwrap();
@@ -7607,7 +7177,7 @@ mod tests {
         client
             .set_read_timeout(Some(Duration::from_secs(3)))
             .unwrap();
-        writeln!(client, "{}", shell_id.0).unwrap();
+        writeln!(client, "{}", shell_id.get()).unwrap();
         let permit = AttachmentPermit::try_acquire(Arc::new(AtomicUsize::new(0))).unwrap();
         let weak = Arc::downgrade(manager);
         let (done, completed) = mpsc::channel();
@@ -7634,7 +7204,7 @@ mod tests {
         let shell_id = session.shells[0].id;
         let output = Arc::clone(&manager.lock_state().unwrap().running[&shell_id].output);
         let (mut client, server) = UnixStream::pair().unwrap();
-        writeln!(client, "{}", shell_id.0).unwrap();
+        writeln!(client, "{}", shell_id.get()).unwrap();
         let permit = AttachmentPermit::try_acquire(Arc::new(AtomicUsize::new(0))).unwrap();
         let weak = Arc::downgrade(manager);
         let (done, completed) = mpsc::channel();
@@ -7685,7 +7255,7 @@ mod tests {
                 &state.database,
                 &PiLaunchRequest {
                     agent_command: agent.clone(),
-                    session_id: SessionId(900),
+                    session_id: sid(900),
                     initial_pwd: fixture.directory.clone(),
                     session_file: file.clone(),
                     bridge_socket: socket.clone(),
@@ -7755,7 +7325,7 @@ mod tests {
 
         assert_eq!(first_host_id, second_host_id);
         assert_ne!(first_generation, second_generation);
-        assert!(is_uuid_string(&first_host_id));
+        assert!(is_uuid(&first_host_id));
         assert_eq!(first_host_id.as_bytes()[14], b'4');
         assert!(matches!(
             first_host_id.as_bytes()[19],
@@ -7781,8 +7351,13 @@ mod tests {
         drain(&catalog);
         drain(&output);
 
-        let terminal_output = json!({ "type": "terminal.output", "sessionId": 1, "shellId": 1 });
-        manager.publish_event(terminal_output);
+        let terminal_output = Event::TerminalOutput {
+            session_id: sid(1),
+            shell_id: shid(1),
+            sequence: 1,
+            data: String::new(),
+        };
+        manager.publish_event(terminal_output.clone());
         assert_eq!(
             manager
                 .next_event(&catalog, Duration::from_millis(1))
@@ -7794,12 +7369,19 @@ mod tests {
             manager
                 .next_event(&output, Duration::from_millis(1))
                 .unwrap()
-                .unwrap()["type"],
-            "terminal.output"
+                .as_deref(),
+            Some(&terminal_output)
         );
 
-        manager
-            .publish_event(json!({ "type": "pi.event", "sessionId": 1, "name": "message_update" }));
+        let pi_event = Event::PiEvent {
+            session_id: sid(1),
+            pi_session_id: "pi-session".to_owned(),
+            stream_id: "stream".to_owned(),
+            sequence: 1,
+            name: "message_update".to_owned(),
+            data: Value::Null,
+        };
+        manager.publish_event(pi_event.clone());
         assert_eq!(
             manager
                 .next_event(&catalog, Duration::from_millis(1))
@@ -7811,8 +7393,8 @@ mod tests {
             manager
                 .next_event(&output, Duration::from_millis(1))
                 .unwrap()
-                .unwrap()["type"],
-            "pi.event"
+                .as_deref(),
+            Some(&pi_event)
         );
 
         // A new subscription's initial snapshots must not be rebroadcast to existing subscribers.
@@ -7843,7 +7425,7 @@ mod tests {
             );
             manager.publish_workspace_changed("wake");
             let woken = waiter.join().unwrap().unwrap().unwrap();
-            assert_eq!(woken["type"], "workspace.changed");
+            assert!(matches!(*woken, Event::WorkspaceChanged { .. }));
         });
         drain(&catalog);
         manager.unsubscribe(&late).unwrap();
@@ -7855,8 +7437,8 @@ mod tests {
             .next_events(&catalog, Duration::from_millis(1), 2)
             .unwrap();
         assert_eq!(batch.len(), 2, "batches are bounded by maxEvents");
-        assert_eq!(batch[0]["workspaceId"], "a");
-        assert_eq!(batch[1]["workspaceId"], "b");
+        assert_eq!(wire(&*batch[0])["workspaceId"], "a");
+        assert_eq!(wire(&*batch[1])["workspaceId"], "b");
         drain(&catalog);
         drain(&output);
 
@@ -7865,8 +7447,7 @@ mod tests {
             .next_event(&catalog, Duration::from_millis(1))
             .unwrap()
             .unwrap();
-        assert_eq!(changed["type"], "workspace.changed");
-        assert_eq!(changed["workspaceId"], "workspace");
+        assert_eq!(wire(changed)["workspaceId"], "workspace");
         drain(&output);
 
         for _ in 0..=MAX_QUEUED_EVENTS_PER_SUBSCRIPTION {
@@ -7876,8 +7457,8 @@ mod tests {
             manager
                 .next_event(&catalog, Duration::from_millis(1))
                 .unwrap()
-                .unwrap()["type"],
-            "subscription.lagged",
+                .as_deref(),
+            Some(&Event::SubscriptionLagged),
             "a full queue must be reported, never silently gapped"
         );
         assert_eq!(
@@ -7888,19 +7469,17 @@ mod tests {
         );
         drain(&output);
 
-        manager.request_session_focus(SessionId(5)).unwrap();
+        manager.request_session_focus(sid(5)).unwrap();
         let focus = manager
             .next_event(&catalog, Duration::from_millis(1))
             .unwrap()
             .unwrap();
+        let focus = wire(focus);
         assert_eq!(focus["type"], "session.focus");
         assert_eq!(focus["sessionId"], 5);
-        assert_eq!(
-            manager.take_pending_resume_focus().unwrap(),
-            Some(SessionId(5))
-        );
+        assert_eq!(manager.take_pending_resume_focus().unwrap(), Some(sid(5)));
         *manager.pending_resume_focus.lock().unwrap() = Some((
-            SessionId(6),
+            sid(6),
             Instant::now().checked_sub(PENDING_FOCUS_LIFETIME).unwrap(),
         ));
         assert_eq!(
@@ -7949,7 +7528,7 @@ mod tests {
         let manager = SessionManager::open(&directory).unwrap();
         let workspace_id = create_uuid_v4().unwrap();
         let session_uuid = create_uuid_v4().unwrap();
-        let session_id = SessionId(702);
+        let session_id = sid(702);
         let history = directory.join("pi-session.jsonl");
         fs::write(&history, b"canonical Pi history").unwrap();
         {
@@ -7970,7 +7549,7 @@ mod tests {
                      (id, initial_pwd, state, created_at, workspace_id, session_uuid, name, pi_session_file)
                      VALUES (?1, '/tmp', 'open', ?2, ?3, ?4, 'Pi conversation title', ?5)",
                     params![
-                        session_id.0,
+                        session_id.get(),
                         unix_timestamp(),
                         workspace_id,
                         session_uuid,
@@ -7986,12 +7565,15 @@ mod tests {
             renamed_session.manual_name.as_deref(),
             Some("Sidebar label")
         );
-        assert_eq!(renamed_session.to_json()["manualName"], "Sidebar label");
+        assert_eq!(
+            serde_json::to_value(&renamed_session).unwrap()["manualName"],
+            "Sidebar label"
+        );
 
         let renamed_workspace = manager
             .rename_workspace(&workspace_id, "Renamed Workspace")
             .unwrap();
-        assert_eq!(renamed_workspace["name"], "Renamed Workspace");
+        assert_eq!(renamed_workspace.name, "Renamed Workspace");
         let session_after_workspace_rename =
             manager.rename_session(session_id, "Sidebar label").unwrap();
         assert_eq!(
@@ -8007,7 +7589,7 @@ mod tests {
             .database
             .query_row(
                 "SELECT state, termination_reason FROM sessions WHERE id = ?1",
-                params![session_id.0],
+                params![session_id.get()],
                 |row| Ok((row.get(0)?, row.get(1)?)),
             )
             .unwrap();
@@ -8021,55 +7603,6 @@ mod tests {
         manager.shutdown();
         drop(manager);
         fs::remove_dir_all(directory).unwrap();
-    }
-
-    #[test]
-    fn remote_session_snapshots_exclude_local_process_and_filesystem_details() {
-        let session = SessionMetadata {
-            id: SessionId(9),
-            session_uuid: "a0b7d77a-5551-4cbc-8dfc-75b2d466dece".to_owned(),
-            pi_session_file: Some(PathBuf::from("/private/path/transcript.jsonl")),
-            pi_session_id: Some("pi-session-example".to_owned()),
-            workspace_id: Some("a0b7d77a-5551-4cbc-8dfc-75b2d466dece".to_owned()),
-            workspace_name: Some("private".to_owned()),
-            name: "Session 1".to_owned(),
-            manual_name: Some("Manual label".to_owned()),
-            emoji: Some("🦀".to_owned()),
-            status: SessionStatus::Ready,
-            initial_pwd: PathBuf::from("/private/path"),
-            shells: vec![ShellMetadata {
-                id: ShellId(12),
-                pane_id: None,
-                role: PaneRole::Terminal,
-                process_id: 1234,
-                initial_pwd: PathBuf::from("/private/path"),
-                slave_device: "/dev/ttys001".to_owned(),
-                attach_socket_path: PathBuf::from("/private/path/attach.sock"),
-                available: true,
-                availability_reason: None,
-            }],
-            layout: Some(SessionLayout::Pane { shell_id: 12 }),
-        };
-        let remote = session.to_remote_json(
-            "18355f00-95fd-4c93-8586-a71a8a52bf73",
-            "2026-10-16T00:00:00Z",
-        );
-        let object = remote.as_object().unwrap();
-        assert_eq!(object.len(), 12);
-        assert_eq!(object["sessionId"], 9);
-        assert_eq!(
-            object["sessionUuid"],
-            "a0b7d77a-5551-4cbc-8dfc-75b2d466dece"
-        );
-        assert_eq!(object["workspaceName"], "private");
-        assert_eq!(object["emoji"], "🦀");
-        assert_eq!(object["status"], "ready");
-        assert_eq!(object["hasAgent"], false);
-        assert_eq!(object["shells"], json!([{ "shellId": 12 }]));
-        let serialized = remote.to_string();
-        assert!(!serialized.contains("/private/path"));
-        assert!(!serialized.contains("/dev/ttys001"));
-        assert!(!serialized.contains("1234"));
     }
 
     #[test]
@@ -8334,8 +7867,8 @@ mod tests {
         let pi_session_directory = server_directory.join("pi-sessions");
         fs::create_dir_all(&pi_session_directory).unwrap();
 
-        let session_id = SessionId(701);
-        let shell_id = ShellId(801);
+        let session_id = sid(701);
+        let shell_id = shid(801);
         let session_uuid = create_uuid_v4().unwrap();
         let pane_id = create_uuid_v4().unwrap();
         let session_file = pi_session_directory.join(format!("{session_uuid}.jsonl"));
@@ -8381,9 +7914,9 @@ mod tests {
                     (id, initial_pwd, state, created_at, layout_json, session_uuid, name, pi_session_file)
                  VALUES (?1, '/tmp', 'open', ?2, ?3, ?4, 'Recovery fixture', ?5)",
                 params![
-                    session_id.0,
+                    session_id.get(),
                     unix_timestamp(),
-                    serde_json::to_string(&SessionLayout::Pane { shell_id: shell_id.0 }).unwrap(),
+                    serde_json::to_string(&Layout::single(shell_id)).unwrap(),
                     session_uuid,
                     session_file.to_string_lossy(),
                 ],
@@ -8393,7 +7926,7 @@ mod tests {
             .execute(
                 "INSERT INTO shells (id, session_id, initial_pwd, state, created_at, role, pane_id)
                  VALUES (?1, ?2, '/tmp', 'open', ?3, 'pi', ?4)",
-                params![shell_id.0, session_id.0, unix_timestamp(), pane_id],
+                params![shell_id.get(), session_id.get(), unix_timestamp(), pane_id],
             )
             .unwrap();
         let bridge_token = create_uuid_v4().unwrap();
@@ -8411,7 +7944,7 @@ mod tests {
             .database
             .query_row(
                 "SELECT pi_bridge_socket_path FROM sessions WHERE id = ?1",
-                params![session_id.0],
+                params![session_id.get()],
                 |row| row.get(0),
             )
             .unwrap();
@@ -8420,25 +7953,17 @@ mod tests {
         assert_eq!(sessions.len(), 1);
         assert_eq!(sessions[0].id, session_id);
         assert!(matches!(sessions[0].status, SessionStatus::Unavailable));
-        assert_eq!(
-            sessions[0].layout,
-            Some(SessionLayout::Pane {
-                shell_id: shell_id.0
-            })
-        );
+        assert_eq!(sessions[0].layout, Some(Layout::single(shell_id)));
         assert_eq!(sessions[0].shells.len(), 1);
         assert_eq!(sessions[0].shells[0].id, shell_id);
-        assert!(!sessions[0].shells[0].available);
+        assert!(!sessions[0].shells[0].is_available());
         assert_eq!(sessions[0].shells[0].process_id, 0);
-        assert!(sessions[0].shells[0].availability_reason.is_some());
-        assert_eq!(sessions[0].to_json()["shells"][0]["available"], false);
+        assert!(matches!(
+            sessions[0].shells[0].availability,
+            Availability::Unavailable { .. }
+        ));
         manager
-            .set_layout(
-                session_id,
-                SessionLayout::Pane {
-                    shell_id: shell_id.0,
-                },
-            )
+            .set_layout(session_id, Layout::single(shell_id))
             .unwrap();
         assert!(
             manager
@@ -8456,11 +7981,11 @@ mod tests {
             .unwrap_err();
         assert_eq!(restart_error.kind(), io::ErrorKind::PermissionDenied);
         assert!(old_pi.0.try_wait().unwrap().is_none());
-        assert!(!manager.list_sessions().unwrap()[0].shells[0].available);
+        assert!(!manager.list_sessions().unwrap()[0].shells[0].is_available());
 
         manager.restore_open_sessions().unwrap();
         assert_eq!(manager.list_sessions().unwrap().len(), 1);
-        assert!(!manager.list_sessions().unwrap()[0].shells[0].available);
+        assert!(!manager.list_sessions().unwrap()[0].shells[0].is_available());
 
         fs::remove_file(bridge_socket.as_path()).unwrap();
         let listener = UnixListener::bind(bridge_socket.as_path()).unwrap();
@@ -8525,7 +8050,7 @@ mod tests {
             .unwrap_err();
         assert_eq!(automatic_error.kind(), io::ErrorKind::WouldBlock);
         assert!(old_pi.0.try_wait().unwrap().is_none());
-        assert!(!manager.list_sessions().unwrap()[0].shells[0].available);
+        assert!(!manager.list_sessions().unwrap()[0].shells[0].is_available());
 
         let restarted = manager
             .restart_unavailable_pi(session_id, shell_id, PiTakeoverPolicy::ExplicitUserRestart)
@@ -8534,25 +8059,24 @@ mod tests {
         assert_eq!(restarted.id, session_id);
         assert_eq!(restarted.shells.len(), 1);
         assert_eq!(restarted.shells[0].id, shell_id);
-        assert!(restarted.shells[0].available);
+        assert!(restarted.shells[0].is_available());
         assert!(restarted.shells[0].process_id > 0);
-        assert!(manager.list_sessions().unwrap()[0].shells[0].available);
+        assert!(manager.list_sessions().unwrap()[0].shells[0].is_available());
         assert!(old_pi.0.try_wait().unwrap().is_some());
         let terminal_shell = manager.create_shell(session_id).unwrap();
         manager
             .set_layout(
                 session_id,
-                SessionLayout::Split {
+                Layout::try_from(LayoutNode::Split {
                     id: create_uuid_v4().unwrap(),
                     direction: LayoutDirection::Right,
                     ratio: 0.5,
-                    first: Box::new(SessionLayout::Pane {
-                        shell_id: shell_id.0,
+                    first: Box::new(LayoutNode::Pane { shell_id }),
+                    second: Box::new(LayoutNode::Pane {
+                        shell_id: terminal_shell.id,
                     }),
-                    second: Box::new(SessionLayout::Pane {
-                        shell_id: terminal_shell.id.0,
-                    }),
-                },
+                })
+                .unwrap(),
             )
             .unwrap();
         assert_eq!(
@@ -8578,7 +8102,7 @@ mod tests {
                 && sessions[0]
                     .shells
                     .iter()
-                    .any(|shell| shell.id == shell_id && !shell.available)
+                    .any(|shell| shell.id == shell_id && !shell.is_available())
             {
                 break;
             }
@@ -8599,7 +8123,7 @@ mod tests {
                 .iter()
                 .find(|shell| shell.id == shell_id)
                 .unwrap()
-                .available
+                .is_available()
         );
         assert!(
             sessions[0]
@@ -8607,7 +8131,7 @@ mod tests {
                 .iter()
                 .find(|shell| shell.id == terminal_shell.id)
                 .unwrap()
-                .available
+                .is_available()
         );
         assert_eq!(
             fs::read(&session_file).unwrap(),
@@ -8619,7 +8143,7 @@ mod tests {
                 .database
                 .query_row(
                     "SELECT state, termination_reason FROM sessions WHERE id = ?1",
-                    params![session_id.0],
+                    params![session_id.get()],
                     |row| Ok((row.get(0)?, row.get(1)?)),
                 )
                 .unwrap();
@@ -8637,8 +8161,8 @@ mod tests {
         let pi_session_directory = server_directory.join("pi-sessions");
         fs::create_dir_all(&pi_session_directory).unwrap();
         let database_path = server_directory.join(DATABASE_FILE);
-        let session_id = SessionId(901);
-        let shell_id = ShellId(902);
+        let session_id = sid(901);
+        let shell_id = shid(902);
         let session_uuid = create_uuid_v4().unwrap();
         let pane_id = create_uuid_v4().unwrap();
         let workspace_id = create_uuid_v4().unwrap();
@@ -8669,11 +8193,11 @@ mod tests {
                      layout_json, workspace_id, session_uuid, pi_session_file, pi_session_id)
                  VALUES (?1, ?2, 'archived', ?3, ?4, 'pi_exited', ?5, ?6, ?7, ?8, 'pi-session-archived')",
                 params![
-                    session_id.0,
+                    session_id.get(),
                     workspace_root_string,
                     unix_timestamp(),
                     unix_timestamp(),
-                    serde_json::to_string(&SessionLayout::Pane { shell_id: shell_id.0 }).unwrap(),
+                    serde_json::to_string(&Layout::single(shell_id)).unwrap(),
                     workspace_id,
                     session_uuid,
                     session_file.to_string_lossy(),
@@ -8686,8 +8210,8 @@ mod tests {
                     (id, session_id, initial_pwd, state, created_at, archived_at, termination_reason, role, pane_id)
                  VALUES (?1, ?2, ?3, 'archived', ?4, ?5, 'pi_exited', 'pi', ?6)",
                 params![
-                    shell_id.0,
-                    session_id.0,
+                    shell_id.get(),
+                    session_id.get(),
                     workspace_root_string,
                     unix_timestamp(),
                     unix_timestamp(),
@@ -8704,18 +8228,14 @@ mod tests {
         manager.lock_state().unwrap().agent_command =
             AgentCommand::parse(fake_pi.to_str().unwrap()).unwrap();
         let active_workspace = manager
-            .create_workspace(WorkspaceCreateRequest {
+            .create_workspace(rpc::CreateWorkspace {
                 name: "Active Workspace".to_owned(),
                 directory_path: PathBuf::from("/tmp").canonicalize().unwrap(),
                 directory_bookmark: None,
             })
             .unwrap();
-        let requester_session_id = SessionId(active_workspace["session"]["id"].as_i64().unwrap());
-        let requester_shell_id = ShellId(
-            active_workspace["session"]["shells"][0]["id"]
-                .as_i64()
-                .unwrap(),
-        );
+        let requester_session_id = active_workspace.session.id;
+        let requester_shell_id = active_workspace.session.shells[0].id;
         let requester = PiRuntimeBinding {
             session_id: requester_session_id,
             shell_id: requester_shell_id,
@@ -8752,7 +8272,7 @@ mod tests {
         assert_eq!(resumed.workspace_id.as_deref(), Some(workspace_id.as_str()));
         assert_eq!(resumed.shells.len(), 1);
         assert_eq!(resumed.shells[0].id, shell_id);
-        assert!(resumed.shells[0].available);
+        assert!(resumed.shells[0].is_available());
         assert_eq!(fs::read(&session_file).unwrap(), history);
         assert!(
             manager
@@ -8767,7 +8287,7 @@ mod tests {
             .database
             .query_row(
                 "SELECT state, termination_reason FROM sessions WHERE id = ?1",
-                params![requester_session_id.0],
+                params![requester_session_id.get()],
                 |row| Ok((row.get(0)?, row.get(1)?)),
             )
             .unwrap();
@@ -8899,7 +8419,7 @@ mod tests {
     fn creates_a_shell_attached_to_a_real_pty() {
         let home = super::super::current_user_home_directory().unwrap();
         let shell = ShellCommand::parse("/bin/zsh").unwrap();
-        let mut session = spawn_shell(&shell, SessionId(1), &home).unwrap();
+        let mut session = spawn_shell(&shell, sid(1), &home).unwrap();
         assert!(session.slave_device.starts_with("/dev/"));
         // The child should receive only the slave as stdio, never the PTY master.
         // SAFETY: the test owns this open PTY master descriptor.

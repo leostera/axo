@@ -11,7 +11,11 @@ use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::time::Duration;
 
+use std::future::Future;
+
 use jsonrpc_core::{Error as RpcError, ErrorCode, IoHandler, Params, Value};
+use serde::Serialize;
+use serde::de::DeserializeOwned;
 use tokio::io::{AsyncBufReadExt, AsyncReadExt, AsyncWriteExt, BufReader};
 use tokio::net::UnixStream;
 use tokio::sync::{Semaphore, mpsc};
@@ -28,8 +32,83 @@ const SHUTDOWN_GRACE: Duration = Duration::from_secs(2);
 /// (`axo.session.events.next`) wait by design and are excluded.
 const SLOW_REQUEST: Duration = Duration::from_millis(100);
 
+/// Registers handlers that take typed parameters and return typed results. Parameters are parsed
+/// before the handler runs (absent parameters count as `{}`); a parse failure is answered with
+/// `InvalidParams` and `expected`, describing the accepted shape.
+pub trait TypedMethods {
+    /// A synchronous handler, run on the blocking pool.
+    fn add_typed<P, R, F>(&mut self, name: &str, expected: &'static str, method: F)
+    where
+        P: DeserializeOwned + 'static,
+        R: Serialize + 'static,
+        F: Fn(P) -> Result<R, RpcError> + Send + Sync + 'static;
+
+    /// An asynchronous handler for requests that wait (long-polls), run on the executor.
+    fn add_typed_async<P, R, F, Fut>(&mut self, name: &str, expected: &'static str, method: F)
+    where
+        P: DeserializeOwned + 'static,
+        R: Serialize + 'static,
+        F: Fn(P) -> Fut + Send + Sync + 'static,
+        Fut: Future<Output = Result<R, RpcError>> + Send + 'static;
+}
+
+impl TypedMethods for IoHandler {
+    fn add_typed<P, R, F>(&mut self, name: &str, expected: &'static str, method: F)
+    where
+        P: DeserializeOwned + 'static,
+        R: Serialize + 'static,
+        F: Fn(P) -> Result<R, RpcError> + Send + Sync + 'static,
+    {
+        self.add_blocking_method(name, move |params: Params| {
+            let params = parse_params::<P>(params, expected)?;
+            method(params).and_then(encode_result)
+        });
+    }
+
+    fn add_typed_async<P, R, F, Fut>(&mut self, name: &str, expected: &'static str, method: F)
+    where
+        P: DeserializeOwned + 'static,
+        R: Serialize + 'static,
+        F: Fn(P) -> Fut + Send + Sync + 'static,
+        Fut: Future<Output = Result<R, RpcError>> + Send + 'static,
+    {
+        let method = Arc::new(method);
+        self.add_method(name, move |params: Params| {
+            let method = Arc::clone(&method);
+            async move {
+                let params = parse_params::<P>(params, expected)?;
+                method(params).await.and_then(encode_result)
+            }
+        });
+    }
+}
+
+fn parse_params<P: DeserializeOwned>(
+    params: Params,
+    expected: &'static str,
+) -> Result<P, RpcError> {
+    let parsed = match params {
+        Params::None => serde_json::from_value(Value::Object(Default::default())),
+        Params::Map(map) => serde_json::from_value(Value::Object(map)),
+        Params::Array(array) => serde_json::from_value(Value::Array(array)),
+    };
+    parsed.map_err(|_| RpcError {
+        code: ErrorCode::InvalidParams,
+        message: expected.to_owned(),
+        data: None,
+    })
+}
+
+fn encode_result<R: Serialize>(result: R) -> Result<Value, RpcError> {
+    serde_json::to_value(result).map_err(|_| RpcError {
+        code: ErrorCode::InternalError,
+        message: "could not encode the result".to_owned(),
+        data: None,
+    })
+}
+
 /// Registers synchronous handlers so they run off the executor.
-pub trait BlockingMethods {
+trait BlockingMethods {
     fn add_blocking_method<F>(&mut self, name: &str, method: F)
     where
         F: Fn(Params) -> jsonrpc_core::Result<Value> + Send + Sync + 'static;

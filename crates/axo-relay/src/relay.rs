@@ -1,7 +1,11 @@
 use crate::credential::HostCredentialStore;
 use crate::host::RelayHost;
+use axo_protocol::{
+    Event, HostKind, LayoutNode, RelayState, RelayStatus, RemoteSessionSnapshot, SessionId,
+    ShellActivity, ShellId,
+};
 use serde::{Deserialize, Serialize};
-use serde_json::{Value, json};
+use serde_json::Value;
 use std::fs::{self, OpenOptions};
 use std::io::{self, Read, Write};
 use std::net::{TcpStream, ToSocketAddrs};
@@ -93,16 +97,6 @@ impl std::fmt::Debug for LoopbackAccess {
     }
 }
 
-#[derive(Clone, Debug, Eq, PartialEq, Serialize)]
-#[serde(rename_all = "camelCase")]
-pub struct RelayStatus {
-    state: String,
-    connected_since_unix_millis: Option<u64>,
-    host_name: String,
-    host_kind: String,
-    last_error: Option<String>,
-}
-
 type RelayStatusObserver = Box<dyn Fn(&RelayStatus) + Send + Sync>;
 
 pub struct RelayControl {
@@ -113,10 +107,10 @@ pub struct RelayControl {
 }
 
 impl RelayControl {
-    fn new(host_name: String, host_kind: String) -> Self {
+    fn new(host_name: String, host_kind: HostKind) -> Self {
         Self {
             status: Mutex::new(RelayStatus {
-                state: "disconnected".to_owned(),
+                state: RelayState::Disconnected,
                 connected_since_unix_millis: None,
                 host_name,
                 host_kind,
@@ -162,7 +156,7 @@ impl RelayControl {
     }
 
     fn connecting(status: &mut RelayStatus) {
-        status.state = "connecting".to_owned();
+        status.state = RelayState::Connecting;
         status.connected_since_unix_millis = None;
         status.last_error = None;
     }
@@ -173,8 +167,8 @@ impl RelayControl {
 
     fn mark_connected(&self) {
         let _ = self.update(|status| {
-            if status.state != "connected" {
-                status.state = "connected".to_owned();
+            if status.state != RelayState::Connected {
+                status.state = RelayState::Connected;
                 status.connected_since_unix_millis = Some(unix_timestamp_millis());
             }
             status.last_error = None;
@@ -183,7 +177,7 @@ impl RelayControl {
 
     fn mark_disconnected(&self, error: impl std::fmt::Display) {
         let _ = self.update(|status| {
-            status.state = "disconnected".to_owned();
+            status.state = RelayState::Disconnected;
             status.connected_since_unix_millis = None;
             status.last_error = Some(error.to_string().chars().take(512).collect());
         });
@@ -206,7 +200,7 @@ impl RelayWorker {
         let stop = Arc::new(AtomicBool::new(false));
         let observed_sessions = Arc::downgrade(&sessions);
         let control = Arc::new(
-            RelayControl::new(local_host_name(), "macos".to_owned()).with_observer(Box::new(
+            RelayControl::new(local_host_name(), HostKind::MacOS).with_observer(Box::new(
                 move |status| {
                     if let Some(sessions) = observed_sessions.upgrade() {
                         sessions.publish_relay_status(status);
@@ -335,10 +329,10 @@ fn local_host_name() -> String {
 
 pub fn unavailable_status() -> RelayStatus {
     RelayStatus {
-        state: "disconnected".to_owned(),
+        state: RelayState::Disconnected,
         connected_since_unix_millis: None,
         host_name: local_host_name(),
-        host_kind: "macos".to_owned(),
+        host_kind: HostKind::MacOS,
         last_error: Some("axod has no remote relay endpoint configured.".to_owned()),
     }
 }
@@ -800,7 +794,9 @@ fn run_connection(
         &mut socket,
         &mut request_number,
         "axo.protocol.negotiate",
-        json!({ "protocolVersion": 1 }),
+        NegotiateParams {
+            protocol_version: 1,
+        },
         sessions,
         &host_id,
         &host_generation,
@@ -813,19 +809,15 @@ fn run_connection(
             return Err(error);
         }
     };
-    let registration = json!({
-        "protocolVersion": 1,
-        "hostId": host_id,
-        "hostGeneration": host_generation,
-        "label": config.host_label,
-        "hostKind": config.host_kind,
-        "capabilities": [
-            { "id": "agent.pi", "version": 1 },
-            { "id": "terminal.pty", "version": 1 },
-            { "id": "workspace.filesystem", "version": 1 },
-        ],
-        "sessions": snapshots,
-    });
+    let registration = HostRegistration {
+        protocol_version: 1,
+        host_id: &host_id,
+        host_generation: &host_generation,
+        label: &config.host_label,
+        host_kind: &config.host_kind,
+        capabilities: HOST_CAPABILITIES,
+        sessions: snapshots,
+    };
     if let Err(error) = rpc_call(
         &mut socket,
         &mut request_number,
@@ -1166,28 +1158,33 @@ fn rpc_call(
     socket: &mut RelaySocket,
     request_number: &mut u64,
     method: &str,
-    params: Value,
+    params: impl Serialize,
     sessions: &Arc<dyn RelayHost>,
     host_id: &str,
     host_generation: &str,
-) -> io::Result<Value> {
+) -> io::Result<()> {
     *request_number = request_number.saturating_add(1);
     let id = format!("axod-{}", *request_number);
     send_json(
         socket,
-        &json!({ "jsonrpc": "2.0", "id": id, "method": method, "params": params }),
+        &OutgoingRequest {
+            jsonrpc: JSONRPC,
+            id: &id,
+            method,
+            params,
+        },
     )?;
     loop {
         let Some(raw) = read_text(socket)? else {
             continue;
         };
-        let response: Value = serde_json::from_str(&raw)
+        let response: IncomingMessage = serde_json::from_str(&raw)
             .map_err(|_| io::Error::new(io::ErrorKind::InvalidData, "invalid relay JSON"))?;
-        if response.get("id") == Some(&Value::String(id.clone())) {
-            if let Some(result) = response.get("result") {
-                return Ok(result.clone());
-            }
-            return Err(io::Error::other("relay RPC request was rejected"));
+        if response.method.is_none() && response.id == Some(RequestId::Text(id.clone())) {
+            return response
+                .result
+                .map(drop)
+                .ok_or_else(|| io::Error::other("relay RPC request was rejected"));
         }
         if let Some(reply) = remote_request_reply(&response, sessions, host_id, host_generation) {
             send_json(socket, &reply)?;
@@ -1217,12 +1214,15 @@ fn relay_session(
             *request_number = request_number.saturating_add(1);
             send_json(
                 socket,
-                &json!({
-                    "jsonrpc": "2.0",
-                    "id": format!("axod-{}", *request_number),
-                    "method": "axo.host.heartbeat",
-                    "params": { "hostId": context.host_id, "hostGeneration": context.host_generation }
-                }),
+                &OutgoingRequest {
+                    jsonrpc: JSONRPC,
+                    id: &format!("axod-{}", *request_number),
+                    method: "axo.host.heartbeat",
+                    params: HostIdentity {
+                        host_id: context.host_id,
+                        host_generation: context.host_generation,
+                    },
+                },
             )?;
             next_heartbeat = Instant::now() + HEARTBEAT_INTERVAL;
         }
@@ -1232,7 +1232,7 @@ fn relay_session(
             .next_remote_event(context.subscription_id, Duration::ZERO)?
         {
             // The local queue overflowed; replace the gap with current snapshots.
-            Some(event) if event["type"] == "subscription.lagged" => {
+            Some(Event::SubscriptionLagged) => {
                 log::warn!("event=relay.events_lagged action=resync");
                 context.sessions.remote_resync_events()?
             }
@@ -1250,7 +1250,7 @@ fn relay_session(
         let Some(raw) = read_text(socket)? else {
             continue;
         };
-        let message: Value = serde_json::from_str(&raw)
+        let message: IncomingMessage = serde_json::from_str(&raw)
             .map_err(|_| io::Error::new(io::ErrorKind::InvalidData, "invalid relay JSON"))?;
         if let Some(reply) = remote_request_reply(
             &message,
@@ -1270,7 +1270,11 @@ fn read_text(socket: &mut RelaySocket) -> io::Result<Option<String>> {
         Ok(Message::Text(text)) => {
             send_json(
                 socket,
-                &json!({ "jsonrpc": "2.0", "method": "axo.transport.ack", "params": { "frames": 1 } }),
+                &OutgoingNotification {
+                    jsonrpc: JSONRPC,
+                    method: "axo.transport.ack",
+                    params: TransportAck { frames: 1 },
+                },
             )?;
             Ok(Some(text.to_string()))
         }
@@ -1299,7 +1303,7 @@ fn read_text(socket: &mut RelaySocket) -> io::Result<Option<String>> {
     }
 }
 
-fn send_json(socket: &mut RelaySocket, value: &Value) -> io::Result<()> {
+fn send_json(socket: &mut RelaySocket, value: &impl Serialize) -> io::Result<()> {
     let text = serde_json::to_string(value).map_err(io::Error::other)?;
     if text.len() > MAX_FRAME_BYTES {
         return Err(io::Error::new(
@@ -1326,125 +1330,276 @@ fn set_read_timeout(
     }
 }
 
-fn prune_remote_layout(layout: &Value, shell_ids: &std::collections::HashSet<i64>) -> Value {
-    let Some(kind) = layout.get("kind").and_then(Value::as_str) else {
-        return Value::Null;
+/// The largest integer JavaScript clients can represent exactly.
+const MAX_SAFE_INTEGER: u64 = 9_007_199_254_740_991;
+
+/// Projects a local event for the cloud: remote snapshots carry terminal panes only and no local
+/// paths. Events the relay does not forward (focus, workspace and relay status, lag markers)
+/// and sequences beyond `MAX_SAFE_INTEGER` yield `None`.
+fn host_notification<'a>(
+    local_event: Event,
+    host_id: &'a str,
+    host_generation: &'a str,
+) -> Option<OutgoingNotification<'static, HostEventParams<'a>>> {
+    let event = match local_event {
+        Event::SessionSnapshot { session } => HostEvent::SessionSnapshot {
+            snapshot: RemoteSessionSnapshot::from_record(&session, host_id, &current_timestamp()),
+        },
+        Event::SessionRemoved { session_id } => HostEvent::SessionRemoved { session_id },
+        Event::ShellActivity {
+            session_id,
+            shell_id,
+            activity,
+        } => HostEvent::ShellActivity {
+            session_id,
+            shell_id,
+            activity,
+        },
+        Event::TerminalOutput {
+            session_id,
+            shell_id,
+            sequence,
+            data,
+        } => {
+            if sequence > MAX_SAFE_INTEGER {
+                return None;
+            }
+            HostEvent::TerminalOutput {
+                session_id,
+                shell_id,
+                sequence,
+                data,
+            }
+        }
+        Event::PiEvent {
+            session_id,
+            pi_session_id,
+            stream_id,
+            sequence,
+            name,
+            data,
+        } => {
+            if sequence == 0 || sequence > MAX_SAFE_INTEGER {
+                return None;
+            }
+            HostEvent::PiEvent {
+                session_id,
+                pi_session_id,
+                stream_id,
+                sequence,
+                name,
+                data,
+            }
+        }
+        Event::SessionFocus { .. }
+        | Event::WorkspaceChanged { .. }
+        | Event::RelayStatus { .. }
+        | Event::SubscriptionLagged => return None,
     };
-    if kind == "pane" {
-        return layout
-            .get("shellId")
-            .and_then(Value::as_i64)
-            .filter(|id| shell_ids.contains(id))
-            .map(|_| layout.clone())
-            .unwrap_or(Value::Null);
-    }
-    if kind != "split" {
-        return Value::Null;
-    }
-    let first = prune_remote_layout(&layout["first"], shell_ids);
-    let second = prune_remote_layout(&layout["second"], shell_ids);
-    match (first.is_null(), second.is_null()) {
-        (true, true) => Value::Null,
-        (false, true) => first,
-        (true, false) => second,
-        (false, false) => json!({
-            "kind": "split",
-            "id": layout["id"],
-            "direction": layout["direction"],
-            "ratio": layout["ratio"],
-            "first": first,
-            "second": second,
-        }),
-    }
+    Some(OutgoingNotification {
+        jsonrpc: JSONRPC,
+        method: "axo.host.event",
+        params: HostEventParams {
+            kind: "host.data",
+            host_id,
+            host_generation,
+            event,
+        },
+    })
 }
 
-fn host_notification(local_event: Value, host_id: &str, host_generation: &str) -> Option<Value> {
-    let event_type = local_event.get("type")?.as_str()?;
-    let event = match event_type {
-        "session.snapshot" => {
-            let session = local_event.get("session")?.as_object()?;
-            let session_id = session.get("id")?.as_i64()?;
-            let shells = session.get("shells")?.as_array()?;
-            let terminal_shell_ids = shells
-                .iter()
-                .filter(|shell| shell.get("role").and_then(Value::as_str) != Some("pi"))
-                .map(|shell| shell.get("id").and_then(Value::as_i64))
-                .collect::<Option<Vec<_>>>()?;
-            let terminal_shell_id_set = terminal_shell_ids.iter().copied().collect();
-            let shell_ids = terminal_shell_ids
-                .iter()
-                .map(|shell_id| json!({ "shellId": shell_id }))
-                .collect::<Vec<_>>();
-            let layout = session.get("layout")?;
-            let terminal_layout = prune_remote_layout(layout, &terminal_shell_id_set);
-            json!({
-                "type": "session.snapshot",
-                "snapshot": {
-                    "hostId": host_id,
-                    "sessionId": session_id,
-                    "sessionUuid": session.get("sessionUuid")?,
-                    "workspaceId": session.get("workspaceId")?,
-                    "workspaceName": session.get("workspaceName")?,
-                    "name": session.get("name")?,
-                    "emoji": session.get("emoji")?,
-                    "status": session.get("status")?,
-                    "hasAgent": shells.iter().any(|shell| shell.get("role").and_then(Value::as_str) == Some("pi")),
-                    "shells": shell_ids,
-                    "layout": terminal_layout,
-                    "updatedAt": current_timestamp(),
-                }
-            })
-        }
-        "session.removed" => json!({
-            "type": "session.removed",
-            "sessionId": local_event.get("sessionId")?.as_i64()?,
-        }),
-        "shell.activity" => json!({
-            "type": "shell.activity",
-            "sessionId": local_event.get("sessionId")?.as_i64()?,
-            "shellId": local_event.get("shellId")?.as_i64()?,
-            "activity": local_event.get("activity")?.as_str()?,
-        }),
-        "terminal.output" => {
-            let sequence = local_event.get("sequence")?.as_u64()?;
-            if sequence > 9_007_199_254_740_991 {
-                return None;
-            }
-            json!({
-                "type": "terminal.output",
-                "sessionId": local_event.get("sessionId")?.as_i64()?,
-                "shellId": local_event.get("shellId")?.as_i64()?,
-                "sequence": sequence,
-                "data": local_event.get("data")?.as_str()?,
-            })
-        }
-        "pi.event" => {
-            let sequence = local_event.get("sequence")?.as_u64()?;
-            if sequence == 0 || sequence > 9_007_199_254_740_991 {
-                return None;
-            }
-            json!({
-                "type": "pi.event",
-                "sessionId": local_event.get("sessionId")?.as_i64()?,
-                "piSessionId": local_event.get("piSessionId")?.as_str()?,
-                "streamId": local_event.get("streamId")?.as_str()?,
-                "sequence": sequence,
-                "name": local_event.get("name")?.as_str()?,
-                "data": local_event.get("data")?,
-            })
-        }
-        _ => return None,
-    };
-    Some(json!({
-        "jsonrpc": "2.0",
-        "method": "axo.host.event",
-        "params": {
-            "type": "host.data",
-            "hostId": host_id,
-            "hostGeneration": host_generation,
-            "event": event,
-        }
-    }))
+const JSONRPC: &str = "2.0";
+
+#[derive(Serialize)]
+struct OutgoingRequest<'a, P> {
+    jsonrpc: &'static str,
+    id: &'a str,
+    method: &'a str,
+    params: P,
+}
+
+#[derive(Serialize)]
+struct OutgoingNotification<'a, P> {
+    jsonrpc: &'static str,
+    method: &'a str,
+    params: P,
+}
+
+/// A JSON-RPC request ID chosen by the relay.
+#[derive(Clone, Debug, Deserialize, PartialEq, Serialize)]
+#[serde(untagged)]
+enum RequestId {
+    Number(i64),
+    Text(String),
+}
+
+#[derive(Serialize)]
+struct OutgoingResult {
+    jsonrpc: &'static str,
+    id: RequestId,
+    result: RemoteResult,
+}
+
+#[derive(Serialize)]
+struct OutgoingError {
+    jsonrpc: &'static str,
+    id: RequestId,
+    error: ErrorBody,
+}
+
+#[derive(Serialize)]
+struct ErrorBody {
+    code: i64,
+    message: &'static str,
+}
+
+#[derive(Serialize)]
+#[serde(untagged)]
+enum OutgoingResponse {
+    Result(Box<OutgoingResult>),
+    Error(OutgoingError),
+}
+
+/// One message from the relay: a request for this host, or a response to one of ours.
+/// `params` stays raw until the method is known (each method has its own parameter type).
+#[derive(Deserialize)]
+struct IncomingMessage {
+    id: Option<RequestId>,
+    method: Option<String>,
+    #[serde(default)]
+    params: Value,
+    result: Option<Value>,
+}
+
+#[derive(Serialize)]
+#[serde(rename_all = "camelCase")]
+struct NegotiateParams {
+    protocol_version: u32,
+}
+
+#[derive(Serialize)]
+#[serde(rename_all = "camelCase")]
+struct HostIdentity<'a> {
+    host_id: &'a str,
+    host_generation: &'a str,
+}
+
+#[derive(Serialize)]
+struct TransportAck {
+    frames: u32,
+}
+
+#[derive(Serialize)]
+struct Capability {
+    id: &'static str,
+    version: u32,
+}
+
+const HOST_CAPABILITIES: &[Capability] = &[
+    Capability {
+        id: "agent.pi",
+        version: 1,
+    },
+    Capability {
+        id: "terminal.pty",
+        version: 1,
+    },
+    Capability {
+        id: "workspace.filesystem",
+        version: 1,
+    },
+];
+
+#[derive(Serialize)]
+#[serde(rename_all = "camelCase")]
+struct HostRegistration<'a> {
+    protocol_version: u32,
+    host_id: &'a str,
+    host_generation: &'a str,
+    label: &'a str,
+    host_kind: &'a str,
+    capabilities: &'static [Capability],
+    sessions: Vec<RemoteSessionSnapshot>,
+}
+
+#[derive(Serialize)]
+#[serde(rename_all = "camelCase")]
+struct HostEventParams<'a> {
+    #[serde(rename = "type")]
+    kind: &'static str,
+    host_id: &'a str,
+    host_generation: &'a str,
+    event: HostEvent,
+}
+
+/// Events as the cloud relay sees them.
+#[derive(Serialize)]
+#[serde(tag = "type", rename_all_fields = "camelCase")]
+enum HostEvent {
+    #[serde(rename = "session.snapshot")]
+    SessionSnapshot { snapshot: RemoteSessionSnapshot },
+    #[serde(rename = "session.removed")]
+    SessionRemoved { session_id: SessionId },
+    #[serde(rename = "shell.activity")]
+    ShellActivity {
+        session_id: SessionId,
+        shell_id: ShellId,
+        activity: ShellActivity,
+    },
+    #[serde(rename = "terminal.output")]
+    TerminalOutput {
+        session_id: SessionId,
+        shell_id: ShellId,
+        sequence: u64,
+        data: String,
+    },
+    #[serde(rename = "pi.event")]
+    PiEvent {
+        session_id: SessionId,
+        pi_session_id: String,
+        stream_id: String,
+        sequence: u64,
+        name: String,
+        /// Pi's own payload, forwarded unchanged.
+        data: Value,
+    },
+}
+
+/// Results of `axo.remote.*` calls.
+#[derive(Serialize)]
+#[serde(untagged, rename_all_fields = "camelCase")]
+enum RemoteResult {
+    Session {
+        session: RemoteSessionSnapshot,
+    },
+    SessionClosed {
+        closed: bool,
+        session_id: SessionId,
+        replacement: Option<RemoteSessionSnapshot>,
+    },
+    ShellCreated {
+        host_id: String,
+        session_id: SessionId,
+        shell_id: ShellId,
+    },
+    ShellClosed {
+        closed: bool,
+        host_id: String,
+        session_id: SessionId,
+        shell_id: ShellId,
+    },
+    Saved {
+        saved: bool,
+    },
+    InputAccepted {
+        accepted: bool,
+        sequence: u64,
+    },
+    ResizeAccepted {
+        accepted: bool,
+        rows: u32,
+        columns: u32,
+    },
 }
 
 #[derive(Debug, Deserialize)]
@@ -1464,7 +1619,7 @@ struct TargetParams {
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 struct SessionTargetParams {
     target: HostRef,
-    session_id: i64,
+    session_id: SessionId,
 }
 
 #[derive(Debug, Deserialize)]
@@ -1478,24 +1633,24 @@ struct WorkspaceSessionTargetParams {
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 struct ShellTargetParams {
     target: HostRef,
-    session_id: i64,
-    shell_id: i64,
+    session_id: SessionId,
+    shell_id: ShellId,
 }
 
 #[derive(Debug, Deserialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 struct LayoutSetParams {
     target: HostRef,
-    session_id: i64,
-    layout: Value,
+    session_id: SessionId,
+    layout: LayoutNode,
 }
 
 #[derive(Debug, Deserialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 struct TerminalInputParams {
     target: HostRef,
-    session_id: i64,
-    shell_id: i64,
+    session_id: SessionId,
+    shell_id: ShellId,
     sequence: u64,
     data: String,
 }
@@ -1504,27 +1659,33 @@ struct TerminalInputParams {
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 struct TerminalResizeParams {
     target: HostRef,
-    session_id: i64,
-    shell_id: i64,
+    session_id: SessionId,
+    shell_id: ShellId,
     rows: u32,
     columns: u32,
 }
 
+/// Answers a request from the relay; `None` for anything that is not a request.
 fn remote_request_reply(
-    message: &Value,
+    message: &IncomingMessage,
     sessions: &Arc<dyn RelayHost>,
     host_id: &str,
     host_generation: &str,
-) -> Option<Value> {
-    let id = message.get("id")?.clone();
-    let method = message.get("method")?.as_str()?;
-    let params = message.get("params").unwrap_or(&Value::Null);
-    let result = dispatch_remote_call(method, params, sessions, host_id, host_generation);
+) -> Option<OutgoingResponse> {
+    let id = message.id.clone()?;
+    let method = message.method.as_deref()?;
+    let result = dispatch_remote_call(method, &message.params, sessions, host_id, host_generation);
     Some(match result {
-        Ok(result) => json!({ "jsonrpc": "2.0", "id": id, "result": result }),
-        Err((code, message)) => {
-            json!({ "jsonrpc": "2.0", "id": id, "error": { "code": code, "message": message } })
-        }
+        Ok(result) => OutgoingResponse::Result(Box::new(OutgoingResult {
+            jsonrpc: JSONRPC,
+            id,
+            result,
+        })),
+        Err((code, message)) => OutgoingResponse::Error(OutgoingError {
+            jsonrpc: JSONRPC,
+            id,
+            error: ErrorBody { code, message },
+        }),
     })
 }
 
@@ -1534,7 +1695,7 @@ fn dispatch_remote_call(
     sessions: &Arc<dyn RelayHost>,
     host_id: &str,
     host_generation: &str,
-) -> Result<Value, (i64, &'static str)> {
+) -> Result<RemoteResult, (i64, &'static str)> {
     macro_rules! parsed {
         ($type:ty) => {
             serde_json::from_value::<$type>(params.clone())
@@ -1556,7 +1717,7 @@ fn dispatch_remote_call(
             let session = sessions
                 .remote_create_session(&current_timestamp())
                 .map_err(map_operation_error)?;
-            Ok(json!({ "session": session }))
+            Ok(RemoteResult::Session { session })
         }
         "axo.remote.workspace.session.create" => {
             let request = parsed!(WorkspaceSessionTargetParams);
@@ -1564,7 +1725,7 @@ fn dispatch_remote_call(
             let session = sessions
                 .remote_create_workspace_session(&request.workspace_id, &current_timestamp())
                 .map_err(map_operation_error)?;
-            Ok(json!({ "session": session }))
+            Ok(RemoteResult::Session { session })
         }
         "axo.remote.session.close" => {
             let request = parsed!(SessionTargetParams);
@@ -1572,9 +1733,11 @@ fn dispatch_remote_call(
             let replacement = sessions
                 .remote_close_session(request.session_id, &current_timestamp())
                 .map_err(map_operation_error)?;
-            Ok(
-                json!({ "closed": true, "sessionId": request.session_id, "replacement": replacement }),
-            )
+            Ok(RemoteResult::SessionClosed {
+                closed: true,
+                session_id: request.session_id,
+                replacement,
+            })
         }
         "axo.remote.shell.create" => {
             let request = parsed!(SessionTargetParams);
@@ -1582,7 +1745,11 @@ fn dispatch_remote_call(
             let shell_id = sessions
                 .remote_create_shell(request.session_id)
                 .map_err(map_operation_error)?;
-            Ok(json!({ "hostId": host_id, "sessionId": request.session_id, "shellId": shell_id }))
+            Ok(RemoteResult::ShellCreated {
+                host_id: host_id.to_owned(),
+                session_id: request.session_id,
+                shell_id,
+            })
         }
         "axo.remote.shell.close" => {
             let request = parsed!(ShellTargetParams);
@@ -1590,9 +1757,12 @@ fn dispatch_remote_call(
             sessions
                 .remote_close_shell(request.session_id, request.shell_id)
                 .map_err(map_operation_error)?;
-            Ok(
-                json!({ "closed": true, "hostId": host_id, "sessionId": request.session_id, "shellId": request.shell_id }),
-            )
+            Ok(RemoteResult::ShellClosed {
+                closed: true,
+                host_id: host_id.to_owned(),
+                session_id: request.session_id,
+                shell_id: request.shell_id,
+            })
         }
         "axo.remote.session.layout.set" => {
             let request = parsed!(LayoutSetParams);
@@ -1600,7 +1770,7 @@ fn dispatch_remote_call(
             sessions
                 .remote_set_layout(request.session_id, request.layout)
                 .map_err(map_operation_error)?;
-            Ok(json!({ "saved": true }))
+            Ok(RemoteResult::Saved { saved: true })
         }
         "axo.remote.terminal.input" => {
             let request = parsed!(TerminalInputParams);
@@ -1613,7 +1783,10 @@ fn dispatch_remote_call(
                     &request.data,
                 )
                 .map_err(map_operation_error)?;
-            Ok(json!({ "accepted": true, "sequence": request.sequence }))
+            Ok(RemoteResult::InputAccepted {
+                accepted: true,
+                sequence: request.sequence,
+            })
         }
         "axo.remote.terminal.resize" => {
             let request = parsed!(TerminalResizeParams);
@@ -1626,7 +1799,11 @@ fn dispatch_remote_call(
                     request.columns,
                 )
                 .map_err(map_operation_error)?;
-            Ok(json!({ "accepted": true, "rows": request.rows, "columns": request.columns }))
+            Ok(RemoteResult::ResizeAccepted {
+                accepted: true,
+                rows: request.rows,
+                columns: request.columns,
+            })
         }
         _ => Err((-32601, "Method not found")),
     }
@@ -1676,6 +1853,7 @@ fn current_timestamp() -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use serde_json::json;
     use std::fs;
     use std::net::TcpListener;
     use std::os::unix::fs::PermissionsExt;
@@ -1941,18 +2119,18 @@ mod tests {
 
     #[test]
     fn relay_status_tracks_connection_and_manual_retry_states() {
-        let control = RelayControl::new("Test Mac".to_owned(), "macos".to_owned());
-        assert_eq!(control.snapshot().unwrap().state, "disconnected");
+        let control = RelayControl::new("Test Mac".to_owned(), HostKind::MacOS);
+        assert_eq!(control.snapshot().unwrap().state, RelayState::Disconnected);
 
         control.mark_connected();
         let connected = control.snapshot().unwrap();
-        assert_eq!(connected.state, "connected");
+        assert_eq!(connected.state, RelayState::Connected);
         assert!(connected.connected_since_unix_millis.is_some());
         assert_eq!(connected.host_name, "Test Mac");
 
         control.mark_disconnected("HTTP error: 302 Found");
         let disconnected = control.snapshot().unwrap();
-        assert_eq!(disconnected.state, "disconnected");
+        assert_eq!(disconnected.state, RelayState::Disconnected);
         assert_eq!(
             disconnected.last_error.as_deref(),
             Some("HTTP error: 302 Found")
@@ -1960,7 +2138,7 @@ mod tests {
 
         control.request_connect().unwrap();
         let retrying = control.snapshot().unwrap();
-        assert_eq!(retrying.state, "connecting");
+        assert_eq!(retrying.state, RelayState::Connecting);
         assert_eq!(retrying.connected_since_unix_millis, None);
         assert_eq!(retrying.last_error, None);
         assert!(control.reconnect_requested.swap(false, Ordering::Relaxed));
@@ -1970,8 +2148,8 @@ mod tests {
     fn relay_status_observer_sees_only_real_changes() {
         let seen = Arc::new(Mutex::new(Vec::new()));
         let recorder = Arc::clone(&seen);
-        let control = RelayControl::new("Test Mac".to_owned(), "macos".to_owned()).with_observer(
-            Box::new(move |status| recorder.lock().unwrap().push(status.state.clone())),
+        let control = RelayControl::new("Test Mac".to_owned(), HostKind::MacOS).with_observer(
+            Box::new(move |status| recorder.lock().unwrap().push(status.state)),
         );
         control.mark_connecting();
         control.mark_connecting();
@@ -1986,7 +2164,11 @@ mod tests {
         control.mark_disconnected("gone");
         assert_eq!(
             *seen.lock().unwrap(),
-            ["connecting", "connected", "disconnected"]
+            [
+                RelayState::Connecting,
+                RelayState::Connected,
+                RelayState::Disconnected
+            ]
         );
     }
 
@@ -2068,22 +2250,43 @@ mod tests {
         );
     }
 
+    /// Projects a wire event the way the relay forwards it, as wire JSON.
+    fn project(local_event: Value, host_id: &str, host_generation: &str) -> Option<Value> {
+        let event: Event = serde_json::from_value(local_event).unwrap();
+        host_notification(event, host_id, host_generation)
+            .map(|notification| serde_json::to_value(notification).unwrap())
+    }
+
     #[test]
     fn host_notifications_project_agent_metadata_and_relay_structured_pi_events() {
-        let snapshot = host_notification(
+        let snapshot = project(
             json!({
                 "type": "session.snapshot",
                 "session": {
                     "id": 17,
                     "sessionUuid": "70fa4f38-71d9-42f8-9013-43b4fd688693",
+                    "piSessionFile": "/Users/me/.axo/server/pi-sessions/session.jsonl",
+                    "piSessionId": "pi-session-1",
                     "workspaceId": "7f1918d3-8b6d-4af4-a57e-7e6ae28e89e2",
                     "workspaceName": "Axo",
                     "name": "Session 1",
+                    "manualName": null,
                     "emoji": "🦀",
                     "status": "working",
+                    "initialPwd": "/Users/me/axo",
                     "shells": [
-                        { "id": 20, "role": "pi" },
-                        { "id": 21, "role": "terminal" }
+                        {
+                            "id": 20, "paneId": "2896bac4-a44b-44b2-9869-f4facf3adf33", "role": "pi",
+                            "processId": 100, "initialPwd": "/Users/me/axo", "ptyDevice": "/dev/ttys001",
+                            "attachSocketPath": "/Users/me/.axo/server/attach.sock",
+                            "available": true, "availabilityReason": null
+                        },
+                        {
+                            "id": 21, "paneId": null, "role": "terminal",
+                            "processId": 101, "initialPwd": "/Users/me/axo", "ptyDevice": "/dev/ttys002",
+                            "attachSocketPath": "/Users/me/.axo/server/attach.sock",
+                            "available": true, "availabilityReason": null
+                        }
                     ],
                     "layout": {
                         "kind": "split",
@@ -2107,7 +2310,7 @@ mod tests {
         assert_eq!(snapshot["shells"], json!([{ "shellId": 21 }]));
         assert_eq!(snapshot["layout"], json!({ "kind": "pane", "shellId": 21 }));
 
-        let pi_event = host_notification(
+        let pi_event = project(
             json!({
                 "type": "pi.event",
                 "sessionId": 17,

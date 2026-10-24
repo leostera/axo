@@ -5,4 +5,5 @@ pub mod event_queue;
 mod server;
 
 pub use event_queue::{EventQueue, PushOutcome};
-pub use server::{BlockingMethods, serve};
+pub use jsonrpc_core::{Error as RpcError, ErrorCode, IoHandler};
+pub use server::{TypedMethods, serve};

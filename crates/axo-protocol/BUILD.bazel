@@ -1,0 +1,19 @@
+load("@crates//:defs.bzl", "all_crate_deps", "crate_edition")
+load("@rules_rust//rust:defs.bzl", "rust_library", "rust_test")
+
+package(default_visibility = ["//visibility:public"])
+
+rust_library(
+    name = "axo_protocol",
+    srcs = glob(["src/*.rs"]),
+    edition = crate_edition(),
+    proc_macro_deps = all_crate_deps(proc_macro = True),
+    deps = all_crate_deps(normal = True),
+)
+
+rust_test(
+    name = "axo_protocol_tests",
+    compile_data = ["//schemas/axo.leostera.dev/v1"],
+    crate = ":axo_protocol",
+    edition = crate_edition(),
+)
