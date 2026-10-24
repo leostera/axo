@@ -11,20 +11,23 @@ final class AxoWorkbench {
   let ghostty: GhosttyRuntime
   private let catalogSync: TerminalCatalogSync?
   private var observations: [ObservationLoop] = []
-  private var focusTask: Task<Void, Never>?
   private var isConnected = false
 
-  /// - Parameter daemonIsRunning: whether Axod is reachable, read under observation tracking.
-  ///   UI fixtures pass `{ true }`.
+  /// - Parameters:
+  ///   - daemonIsRunning: whether Axod is reachable, read under observation tracking. UI
+  ///     fixtures pass `{ true }`.
+  ///   - daemonUnreachable: called when the catalog stream keeps failing, so the daemon owner
+  ///     can re-verify health.
   init(
     sessions: TerminalSessionsModel,
     ghostty: GhosttyRuntime,
-    daemonIsRunning: @escaping @MainActor () -> Bool
+    daemonIsRunning: @escaping @MainActor () -> Bool,
+    daemonUnreachable: @escaping @MainActor () -> Void = {}
   ) {
     self.sessions = sessions
     self.ghostty = ghostty
     catalogSync = sessions.catalogClient.map {
-      TerminalCatalogSync(sessions: sessions, client: $0)
+      TerminalCatalogSync(sessions: sessions, client: $0, onUnreachable: daemonUnreachable)
     }
 
     observations = [
@@ -49,18 +52,12 @@ final class AxoWorkbench {
     }
   }
 
-  /// Moves keyboard focus to the model's focused pane. The surface may not be in a key window
-  /// yet (creation, window ordering), so retry briefly; a newer focus request cancels this one.
+  /// Moves keyboard focus to the model's focused pane. The surface defers the responder change
+  /// until it is in a window, so there is nothing to retry here; surfaces created later request
+  /// focus from their representable.
   private func focus(_ shellID: ShellID?) {
-    focusTask?.cancel()
     ghostty.setFocusedShellID(shellID)
     guard let shellID else { return }
-    focusTask = Task { [weak self] in
-      for _ in 0..<40 {
-        guard let self, !Task.isCancelled else { return }
-        if self.ghostty.focusSurface(for: shellID) { return }
-        try? await Task.sleep(for: .milliseconds(25))
-      }
-    }
+    ghostty.requestFocus(for: shellID)
   }
 }

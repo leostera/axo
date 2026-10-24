@@ -66,8 +66,7 @@ extension GhosttySurfaceNSView {
     guard !hasFileURLs || fileURLs != nil,
       let text = TerminalDropInput.text(plainText: plainText, fileURLs: fileURLs)
     else { return false }
-    runtime?.pasteText(text, into: shellID)
-    return true
+    return runtime?.pasteText(text, into: shellID) ?? false
   }
 
   override func mouseMoved(with event: NSEvent) {

@@ -135,8 +135,7 @@ extension GhosttySurfaceNSView {
     guard let text = TerminalServicesPolicy.textTypes.lazy.compactMap({
       pasteboard.string(forType: $0)
     }).first else { return false }
-    runtime?.pasteText(text, into: shellID)
-    return true
+    return runtime?.pasteText(text, into: shellID) ?? false
   }
 
   func accessibilityVisibleText() -> String {

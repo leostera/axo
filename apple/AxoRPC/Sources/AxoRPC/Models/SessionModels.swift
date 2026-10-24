@@ -130,6 +130,18 @@ public struct ClosedTerminalSession: Decodable, Equatable, Sendable {
   public let replacement: TerminalSession?
 }
 
+/// Whether closing a shell would interrupt work (`axo.shell.busy`).
+public struct TerminalShellBusy: Decodable, Equatable, Sendable {
+  public let busy: Bool
+  /// The foreground process name, a presentation hint only.
+  public let foregroundProcess: String?
+
+  public init(busy: Bool, foregroundProcess: String?) {
+    self.busy = busy
+    self.foregroundProcess = foregroundProcess
+  }
+}
+
 public struct ClosedTerminalShell: Decodable, Equatable, Sendable {
   public let archivedShellId: ShellID
   public let archivedSessionId: SessionID?

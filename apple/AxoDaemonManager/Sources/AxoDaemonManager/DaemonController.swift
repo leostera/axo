@@ -49,6 +49,7 @@ public final class DaemonController {
   private static let servicePlistName = "dev.leostera.axo.axod.plist"
   // Launchd can take longer than a health-check window to restore active PTYs and Pi bridges.
   private static let daemonStartupTimeout: Duration = .seconds(30)
+  private static let healthPollInterval: Duration = .milliseconds(50)
 
   private let service = SMAppService.agent(plistName: servicePlistName)
   private let logger = Logger(subsystem: "dev.leostera.axo", category: "daemon")
@@ -90,6 +91,41 @@ public final class DaemonController {
     startTask = Task {
       defer { startTask = nil }
       await registerFromExplicitUserAction()
+    }
+  }
+
+  /// Re-verifies a daemon the app believed was running, e.g. after the catalog stream failed.
+  /// A healthy probe changes nothing; otherwise the normal start path runs, which never restarts
+  /// a slow daemon on its own.
+  public func checkHealth() {
+    guard startTask == nil, status.isRunning else { return }
+    startTask = Task {
+      defer { startTask = nil }
+      if let socketPath = try? makeSocketPath(),
+        (try? await UnixSocketRPC.health(at: socketPath)) != nil
+      {
+        return
+      }
+      logger.warning("event=daemon.health_recheck_failed")
+      await start()
+    }
+  }
+
+  /// Explicit user action only: restarts the LaunchAgent, which terminates the daemon's shells.
+  public func restartDaemon() {
+    guard startTask == nil else { return }
+    startTask = Task {
+      defer { startTask = nil }
+      setStatus(.updating)
+      do {
+        let appBuildNumber = try makeAppBuildNumber()
+        guard
+          let daemon = try await restartDaemon(at: try makeSocketPath(), expectedBuild: appBuildNumber)
+        else { return }
+        setStatus(.running(version: daemon.version ?? "Unknown", buildNumber: appBuildNumber))
+      } catch {
+        setStatus(.failed(error.localizedDescription))
+      }
     }
   }
 
@@ -207,19 +243,9 @@ public final class DaemonController {
     let appBuildNumber = try makeAppBuildNumber()
     logger.info("event=daemon.health_check_started")
 
-    let daemon: DaemonHealth
-    do {
-      daemon = try await waitForDaemon(at: socketPath, expectedBuild: nil)
-    } catch DaemonControllerError.startupTimedOut {
-      logger.warning("event=daemon.health_check_timed_out action=restart")
-      setStatus(.updating)
-      guard
-        let restartedDaemon =
-          try await restartDaemon(at: socketPath, expectedBuild: appBuildNumber)
-      else { return }
-      setStatus(.running(version: restartedDaemon.version ?? "Unknown", buildNumber: appBuildNumber))
-      return
-    }
+    // A slow daemon may be recovering many Sessions; restarting it would kill their shells.
+    // Timeouts surface as `.failed` and only an explicit user action restarts the LaunchAgent.
+    let daemon = try await waitForDaemon(at: socketPath, expectedBuild: nil)
 
     logger.info("event=daemon.health_check_succeeded build=\(daemon.buildNumber, privacy: .public)")
     guard daemon.buildNumber != appBuildNumber.value else {
@@ -280,7 +306,7 @@ public final class DaemonController {
       do {
         let health = try await UnixSocketRPC.health(at: socketPath)
         if let expectedBuild, health.buildNumber != expectedBuild.value {
-          try await Task.sleep(nanoseconds: 50_000_000)
+          try await Task.sleep(for: Self.healthPollInterval)
           continue
         }
         return health
@@ -292,7 +318,7 @@ public final class DaemonController {
           throw error
         }
       }
-      try await Task.sleep(nanoseconds: 50_000_000)
+      try await Task.sleep(for: Self.healthPollInterval)
     }
 
     if let expectedBuild {
@@ -331,7 +357,7 @@ private enum DaemonControllerError: Error, LocalizedError {
     case .restartTimedOut(let buildNumber):
       "axod did not restart with build \(buildNumber)"
     case .startupTimedOut:
-      "axod did not become ready"
+      "axod did not become ready; it may still be recovering Sessions"
     case .unknownServiceStatus:
       "macOS returned an unknown axod service status"
     }

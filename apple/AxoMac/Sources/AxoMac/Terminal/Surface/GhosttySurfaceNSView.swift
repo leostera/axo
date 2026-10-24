@@ -16,9 +16,9 @@ final class GhosttySurfaceNSView: NSView, @MainActor NSTextInputClient,
 {
   private(set) var surface: ghostty_surface_t?
   let shellID: ShellID
-  var status = "Starting Ghostty surface…" {
+  var connection = TerminalSurfaceConnection.starting {
     didSet {
-      guard status != oldValue else { return }
+      guard connection != oldValue else { return }
       reportStatus()
     }
   }
@@ -27,12 +27,12 @@ final class GhosttySurfaceNSView: NSView, @MainActor NSTextInputClient,
   func reportStatus() {
     Task { @MainActor [weak self] in
       guard let self else { return }
-      self.onStatusChange?(self.status)
+      self.onStatusChange?(self.connection)
     }
   }
 
   var onFocus: (() -> Void)?
-  var onStatusChange: ((String) -> Void)?
+  var onStatusChange: ((TerminalSurfaceConnection) -> Void)?
   var onSplit: ((TerminalSplitDirection) -> Void)?
   var onClose: (() -> Void)?
   var onScrollbarChange: (() -> Void)?

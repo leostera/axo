@@ -83,12 +83,12 @@ final class AxodInteropTests: XCTestCase {
     XCTAssertEqual(
       Set(sessionsAfterCreate.map(\.id)), Set([baselineSession.id, createdSession.id]))
     let subscription = try await UnixSocketRPC.subscribe(to: createdSession.id, at: socketPath)
-    let initialEvent = try await UnixSocketRPC.nextEvent(
+    let initialEvents = try await UnixSocketRPC.nextEvents(
       for: subscription,
       timeout: .seconds(1),
       at: socketPath
     )
-    guard case .sessionSnapshot(let snapshot) = initialEvent else {
+    guard case .sessionSnapshot(let snapshot) = initialEvents.first else {
       return XCTFail("subscription should begin with a current session snapshot")
     }
     XCTAssertEqual(snapshot.id, createdSession.id)

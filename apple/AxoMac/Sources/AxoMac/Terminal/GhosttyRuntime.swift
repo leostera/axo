@@ -66,7 +66,7 @@ final class GhosttyRuntime {
     helperURL: URL,
     initialSize: CGSize,
     onFocus: @escaping () -> Void,
-    onStatusChange: @escaping (String) -> Void,
+    onStatusChange: @escaping (TerminalSurfaceConnection) -> Void,
     onSplit: @escaping (TerminalSplitDirection) -> Void,
     onClose: @escaping () -> Void
   ) -> (host: GhosttySurfaceHostNSView, view: GhosttySurfaceNSView) {
@@ -166,11 +166,11 @@ final class GhosttyRuntime {
     helperURL: URL
   ) {
     guard let app else {
-      view.status = errorMessage ?? "libghostty is unavailable."
+      view.connection = .failed(errorMessage ?? "libghostty is unavailable.")
       return
     }
     guard FileManager.default.isExecutableFile(atPath: helperURL.path) else {
-      view.status = "The bundled axod terminal-attach helper is missing."
+      view.connection = .failed("The bundled axod terminal-attach helper is missing.")
       return
     }
 
@@ -201,12 +201,12 @@ final class GhosttyRuntime {
     }
 
     guard let createdSurface else {
-      view.status = "Ghostty could not create a terminal surface."
+      view.connection = .failed("Ghostty could not create a terminal surface.")
       return
     }
 
     view.attach(createdSurface)
-    view.status = "Connected to shell \(shell.id)"
+    view.connection = .connected
     updateSurfaceSize(in: view, contentSize: view.bounds.size)
   }
 
@@ -238,13 +238,9 @@ final class GhosttyRuntime {
     terminalSurfaces[shellID]?.view.surface != nil
   }
 
-  func focusSurface(for shellID: ShellID) -> Bool {
-    guard let view = terminalSurfaces[shellID]?.view,
-      let window = view.window,
-      window.isKeyWindow
-    else { return false }
-    if window.firstResponder === view { return true }
-    return window.makeFirstResponder(view) && window.firstResponder === view
+  /// Asks the shell's surface, if it exists, to become first responder once it is in a window.
+  func requestFocus(for shellID: ShellID) {
+    terminalSurfaces[shellID]?.view.requestFocus()
   }
 
   @discardableResult
@@ -300,18 +296,12 @@ final class GhosttyRuntime {
     pasteText(text, into: shellID)
   }
 
-  func pasteText(_ text: String, into shellID: ShellID) {
-    guard !text.isEmpty else { return }
-    Task { @MainActor [weak self] in
-      for _ in 0..<40 {
-        guard let self else { return }
-        if let surface = self.terminalSurfaces[shellID]?.view.surface {
-          text.withCString { ghostty_surface_paste_text(surface, $0, UInt(text.utf8.count)) }
-          return
-        }
-        try? await Task.sleep(for: .milliseconds(25))
-      }
-    }
+  /// Pastes into an existing surface; callers act on a live surface, so there is no retry.
+  @discardableResult
+  func pasteText(_ text: String, into shellID: ShellID) -> Bool {
+    guard !text.isEmpty, let surface = terminalSurfaces[shellID]?.view.surface else { return false }
+    text.withCString { ghostty_surface_paste_text(surface, $0, UInt(text.utf8.count)) }
+    return true
   }
 
   func updateSurfaceSize(in view: GhosttySurfaceNSView, contentSize: CGSize) {

@@ -252,7 +252,7 @@ final class TerminalWorkbenchE2ETests: XCTestCase {
       )
       XCTAssertEqual(model.focusedShellID, thirdShell.id)
 
-      await model.closeFocusedShell()
+      await model.closeShell(try XCTUnwrap(model.focusedShellID))
 
       XCTAssertEqual(model.layout?.shellIDs, [firstShell.id, secondShell.id])
       XCTAssertEqual(model.focusedShellID, secondShell.id)

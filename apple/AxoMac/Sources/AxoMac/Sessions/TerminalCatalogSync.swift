@@ -9,28 +9,37 @@ import Foundation
 /// polling: an idle catalog costs one long-poll request per `UnixSocketAxodClient.eventPollTimeout`.
 @MainActor
 final class TerminalCatalogSync {
+  /// Consecutive failures after which the daemon itself is re-verified.
+  static let unreachableThreshold = 3
+
   private let sessions: TerminalSessionsModel
   private let client: AxodClient
   private let minimumBackoff: Duration
   private let maximumBackoff: Duration
+  private let onUnreachable: @MainActor () -> Void
   private var task: Task<Void, Never>?
 
+  /// - Parameter onUnreachable: called once per outage, after `unreachableThreshold` consecutive
+  ///   failures, so the daemon lifecycle owner can re-check health.
   init(
     sessions: TerminalSessionsModel,
     client: AxodClient,
     minimumBackoff: Duration = .milliseconds(250),
-    maximumBackoff: Duration = .seconds(5)
+    maximumBackoff: Duration = .seconds(5),
+    onUnreachable: @escaping @MainActor () -> Void = {}
   ) {
     self.sessions = sessions
     self.client = client
     self.minimumBackoff = minimumBackoff
     self.maximumBackoff = maximumBackoff
+    self.onUnreachable = onUnreachable
   }
 
   var isRunning: Bool { task != nil }
 
   func start() {
     guard task == nil else { return }
+    sessions.setCatalogConnection(.connecting)
     task = Task { [weak self] in await self?.run() }
   }
 
@@ -41,19 +50,27 @@ final class TerminalCatalogSync {
 
   private func run() async {
     var backoff = minimumBackoff
+    var consecutiveFailures = 0
     while !Task.isCancelled {
       var subscription: TerminalSubscriptionID?
       do {
         let opened = try await client.subscribeToCatalog()
         subscription = opened
-        await sessions.resynchronize()
+        try await sessions.resynchronize()
+        sessions.setCatalogConnection(.live)
         backoff = minimumBackoff
-        while !Task.isCancelled {
-          guard let event = try await client.nextEvent(for: opened) else { continue }
-          if await !sessions.apply(event) { break }  // Lagged: resubscribe and relist.
+        consecutiveFailures = 0
+        streaming: while !Task.isCancelled {
+          for event in try await client.nextEvents(for: opened) {
+            // Lagged: resubscribe and relist.
+            if await !sessions.apply(event) { break streaming }
+          }
         }
       } catch {
         guard !Task.isCancelled else { break }
+        consecutiveFailures += 1
+        sessions.setCatalogConnection(.reconnecting(reason: error.localizedDescription))
+        if consecutiveFailures == Self.unreachableThreshold { onUnreachable() }
         try? await Task.sleep(for: backoff)
         backoff = min(backoff * 2, maximumBackoff)
       }

@@ -23,11 +23,11 @@ final class TerminalRenderFeedbackTests: XCTestCase {
       initialFrameSize: CGSize(width: 800, height: 600), onFocus: {})
     var staleDeliveries = 0
     view.onStatusChange = { _ in staleDeliveries += 1 }
-    view.status = "Unavailable"
+    view.connection = .failed("Unavailable")
     XCTAssertEqual(staleDeliveries, 0, "A representable update cannot publish state synchronously")
     let delivered = expectation(description: "latest status callback")
     view.onStatusChange = { status in
-      XCTAssertEqual(status, "Unavailable")
+      XCTAssertEqual(status, .failed("Unavailable"))
       delivered.fulfill()
     }
     await fulfillment(of: [delivered], timeout: 2)

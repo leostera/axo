@@ -11,6 +11,30 @@ struct SessionCommandError: LocalizedError, Equatable {
   var errorDescription: String? { message }
 }
 
+/// Health of the catalog event stream, shown so a lost daemon never looks like a live one.
+enum CatalogConnection: Equatable {
+  case connecting
+  case live
+  /// The stream failed and is retrying; `reason` is the latest failure, worded for the user.
+  case reconnecting(reason: String)
+}
+
+/// A pane close the user must confirm because it would interrupt running work.
+struct ShellCloseConfirmation: Equatable, Identifiable {
+  enum Reason: Equatable {
+    /// A foreground job other than the shell, named when Axod could tell.
+    case runningProcess(String?)
+    case piWorking
+    /// Axod could not say whether the shell is idle.
+    case unknown
+  }
+
+  let shellID: ShellID
+  let reason: Reason
+
+  var id: ShellID { shellID }
+}
+
 struct WorkspaceArchiveConfirmation: Equatable, Identifiable {
   let workspaceID: String
   let workspaceName: String
@@ -20,8 +44,9 @@ struct WorkspaceArchiveConfirmation: Equatable, Identifiable {
 }
 
 /// The app's view of Axod's Session catalog plus local presentation state (selection, focus,
-/// pane layouts). Axod remains authoritative for Sessions and shells: commands are sent to Axod
-/// and their results reconciled; `TerminalCatalogSync` streams everything else in via `apply(_:)`.
+/// pane layouts). Axod remains authoritative for Sessions and shells: commands apply the record
+/// Axod returns (relisting only when the outcome is ambiguous), and `TerminalCatalogSync` streams
+/// every other change in via `apply(_:)`.
 ///
 /// Observed properties are assigned only when their value changes: Observation notifies on every
 /// write, even an equal one.
@@ -43,8 +68,10 @@ final class TerminalSessionsModel {
   private(set) var focusedShellID: ShellID?
   private(set) var layout: TerminalLayout?
   private(set) var errorMessage: String?
+  private(set) var catalogConnection = CatalogConnection.connecting
   private(set) var workspaceCreationError: String?
   private(set) var pendingWorkspaceArchiveConfirmation: WorkspaceArchiveConfirmation?
+  private(set) var pendingShellCloseConfirmation: ShellCloseConfirmation?
   private(set) var pendingTerminalSplit: PendingTerminalSplit?
   private(set) var automaticallyRestartUnavailablePi: Bool
 
@@ -174,24 +201,32 @@ final class TerminalSessionsModel {
   /// connection-level resync is `resynchronize()`.
   func refresh() async {
     do {
-      let client = try requireClient()
-      try await negotiateIfNeeded(using: client)
-      async let snapshotTask = client.listSessionSnapshot()
-      async let workspacesTask = client.listWorkspaces()
-      let snapshot = try await snapshotTask
-      assign(\.workspaces, try await workspacesTask)
-      applyCatalog(snapshot.sessions, focusing: snapshot.resumeSessionId)
-      assign(\.errorMessage, nil)
+      try await reloadCatalog()
     } catch {
       report(error)
     }
   }
 
   /// Renegotiates (Axod may have been upgraded or restarted) and re-reads the catalog. Called by
-  /// `TerminalCatalogSync` whenever it (re)subscribes.
-  func resynchronize() async {
+  /// `TerminalCatalogSync` whenever it (re)subscribes; failures go back to it for retry.
+  func resynchronize() async throws {
     daemonMethods = nil
-    await refresh()
+    try await reloadCatalog()
+  }
+
+  func setCatalogConnection(_ connection: CatalogConnection) {
+    assign(\.catalogConnection, connection)
+  }
+
+  private func reloadCatalog() async throws {
+    let client = try requireClient()
+    try await negotiateIfNeeded(using: client)
+    async let snapshotTask = client.listSessionSnapshot()
+    async let workspacesTask = client.listWorkspaces()
+    let snapshot = try await snapshotTask
+    assign(\.workspaces, try await workspacesTask)
+    applyCatalog(snapshot.sessions, focusing: snapshot.resumeSessionId)
+    assign(\.errorMessage, nil)
   }
 
   /// Applies one catalog event. Returns `false` when the stream lagged and the caller must
@@ -200,14 +235,7 @@ final class TerminalSessionsModel {
   func apply(_ event: TerminalSessionEvent) async -> Bool {
     switch event {
     case .sessionSnapshot(let session):
-      var updated = sessions
-      if let index = updated.firstIndex(where: { $0.id == session.id }) {
-        updated[index] = session
-      } else {
-        updated.append(session)
-        updated.sort { $0.id < $1.id }
-      }
-      applyCatalog(updated, focusing: nil)
+      upsert(session)
     case .sessionRemoved(let sessionID):
       guard session(for: sessionID) != nil else { return true }
       applyCatalog(sessions.filter { $0.id != sessionID }, focusing: nil)
@@ -227,6 +255,18 @@ final class TerminalSessionsModel {
       break
     }
     return true
+  }
+
+  /// Inserts or replaces one Session from an authoritative Axod record.
+  private func upsert(_ session: TerminalSession) {
+    var updated = sessions
+    if let index = updated.firstIndex(where: { $0.id == session.id }) {
+      updated[index] = session
+    } else {
+      updated.append(session)
+      updated.sort { $0.id < $1.id }
+    }
+    applyCatalog(updated, focusing: nil)
   }
 
   /// Replaces the catalog with Axod's `daemonSessions`, normalizing layouts (keeping local edits,
@@ -410,7 +450,6 @@ final class TerminalSessionsModel {
     let closingSession = session(for: sessionID)
     let closed = try await requireClient().closeSession(sessionID)
     removeSessions([sessionID], closing: closingSession, replacement: closed.replacement)
-    await refresh()
   }
 
   func renameSession(_ sessionID: SessionID, to name: String) async throws {
@@ -420,7 +459,7 @@ final class TerminalSessionsModel {
     guard renamed.id == sessionID, renamed.manualName == name else {
       throw SessionCommandError("axod did not apply the Session name.")
     }
-    await refresh()
+    upsert(renamed)
   }
 
   func renameWorkspace(_ workspaceID: String, to name: String) async throws {
@@ -430,7 +469,9 @@ final class TerminalSessionsModel {
     guard renamed.workspaceId == workspaceID, renamed.name == name else {
       throw SessionCommandError("axod did not apply the Workspace name.")
     }
-    await refresh()
+    if let index = workspaces.firstIndex(where: { $0.workspaceId == workspaceID }) {
+      workspaces[index] = renamed
+    }
   }
 
   func archiveWorkspace(_ workspaceID: String) async throws {
@@ -445,7 +486,6 @@ final class TerminalSessionsModel {
     removeSessions(
       Set(archived.archivedSessionIds), closing: nil, replacement: nil,
       fallback: { $0.first(where: { $0.workspaceId == nil })?.id ?? $0.first?.id })
-    await refresh()
   }
 
   // MARK: - Panes
@@ -538,9 +578,51 @@ final class TerminalSessionsModel {
     assign(\.layout, updated)
   }
 
-  func closeFocusedShell() async {
-    guard let focusedShellID else { return }
-    await closeShell(focusedShellID)
+  /// User-initiated close (⌘W): closes an idle shell at once, but asks first when it is running
+  /// a foreground job or a Pi turn. When Axod cannot tell, it asks rather than guess.
+  func requestCloseShell(_ shellID: ShellID) async {
+    guard let client,
+      let session = sessions.first(where: { $0.shells.contains(where: { $0.id == shellID }) }),
+      let shell = session.shells.first(where: { $0.id == shellID })
+    else {
+      errorMessage = clientError ?? "The focused shell is no longer open."
+      return
+    }
+    // An unavailable Pi pane has no live process to interrupt.
+    if shell.role == "pi", !shell.isAvailable {
+      await closeShell(shellID)
+      return
+    }
+    let busy: TerminalShellBusy?
+    do {
+      busy = try await supports("axo.shell.busy", using: client)
+        ? try await client.shellBusy(shellID, inSession: session.id)
+        : nil
+    } catch {
+      busy = nil
+    }
+    let reason: ShellCloseConfirmation.Reason? =
+      switch (busy, shell.role) {
+      case (nil, _): .unknown
+      case (let busy?, _) where !busy.busy: nil
+      case (_, "pi"): .piWorking
+      case (let busy?, _): .runningProcess(busy.foregroundProcess)
+      }
+    guard let reason else {
+      await closeShell(shellID)
+      return
+    }
+    pendingShellCloseConfirmation = ShellCloseConfirmation(shellID: shellID, reason: reason)
+  }
+
+  func cancelShellCloseConfirmation() {
+    pendingShellCloseConfirmation = nil
+  }
+
+  func confirmShellClose(_ confirmation: ShellCloseConfirmation) async {
+    guard pendingShellCloseConfirmation == confirmation else { return }
+    pendingShellCloseConfirmation = nil
+    await closeShell(confirmation.shellID)
   }
 
   /// Closes one pane. Closing a Session's last pane archives the Session (Axod may return a
@@ -629,7 +711,7 @@ final class TerminalSessionsModel {
     else {
       throw SessionCommandError("axod did not restore the requested Pi pane.")
     }
-    await refresh()
+    upsert(restarted)
   }
 
   // MARK: - Navigation

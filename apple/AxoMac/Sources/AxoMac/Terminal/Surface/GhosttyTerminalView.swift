@@ -8,7 +8,7 @@ struct GhosttyTerminalView: NSViewRepresentable {
   let size: CGSize
   let isFocused: Bool
   let onFocus: () -> Void
-  let onStatusChange: (String) -> Void
+  let onStatusChange: (TerminalSurfaceConnection) -> Void
   let onSplit: (TerminalSplitDirection) -> Void
   let onClose: () -> Void
 

@@ -344,6 +344,7 @@ private struct GeneralSettingsView: View {
   var daemon: DaemonController
   var ghostty: GhosttyRuntime
   var sleepPrevention: SleepPreventionController
+  @State private var isConfirmingRestart = false
 
   private var scrollSensitivityPosition: Binding<Double> {
     Binding(
@@ -415,6 +416,16 @@ private struct GeneralSettingsView: View {
         case .failed:
           Button("Retry daemon") {
             daemon.startIfNeeded()
+          }
+          Button("Restart axod…", role: .destructive) {
+            isConfirmingRestart = true
+          }
+          .confirmationDialog(
+            "Restart axod?", isPresented: $isConfirmingRestart, titleVisibility: .visible
+          ) {
+            Button("Restart axod", role: .destructive) { daemon.restartDaemon() }
+          } message: {
+            Text("Restarting stops every running shell and Pi process. Pi conversation histories are preserved.")
           }
           Button("Enable axod") {
             daemon.enableDaemon()

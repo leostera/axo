@@ -10,7 +10,7 @@ final class FakeAxodClient: AxodClient {
   var workspaces: [WorkspaceRecord] = []
   var resumeSessionID: SessionID?
   var methods: [String] = Array(TerminalSessionsModel.requiredMethods) + [
-    "axo.session.rename", "axo.workspace.rename", "axo.workspace.archive",
+    "axo.session.rename", "axo.workspace.rename", "axo.workspace.archive", "axo.shell.busy",
   ]
   private(set) var listCount = 0
   private(set) var workspaceListCount = 0
@@ -18,13 +18,15 @@ final class FakeAxodClient: AxodClient {
   private(set) var unsubscribed: [TerminalSubscriptionID] = []
   private(set) var layoutWrites: [(SessionID, SessionLayout)] = []
   private var queuedEvents: [TerminalSessionEvent] = []
-  private var waiters: [CheckedContinuation<TerminalSessionEvent?, Error>] = []
+  private var waiters: [CheckedContinuation<[TerminalSessionEvent], Error>] = []
+  /// When set, subscribing fails with this error.
+  var subscribeError: Error?
 
   func push(_ event: TerminalSessionEvent) {
     if waiters.isEmpty {
       queuedEvents.append(event)
     } else {
-      waiters.removeFirst().resume(returning: event)
+      waiters.removeFirst().resume(returning: [event])
     }
   }
 
@@ -44,11 +46,15 @@ final class FakeAxodClient: AxodClient {
 
   func subscribeToCatalog() async throws -> TerminalSubscriptionID {
     subscribeCount += 1
+    if let subscribeError { throw subscribeError }
     return TerminalSubscriptionID(subscriptionId: "sub-\(subscribeCount)")
   }
 
-  func nextEvent(for subscription: TerminalSubscriptionID) async throws -> TerminalSessionEvent? {
-    if !queuedEvents.isEmpty { return queuedEvents.removeFirst() }
+  func nextEvents(for subscription: TerminalSubscriptionID) async throws -> [TerminalSessionEvent] {
+    if !queuedEvents.isEmpty {
+      defer { queuedEvents.removeAll() }
+      return queuedEvents
+    }
     return try await withCheckedThrowingContinuation { waiters.append($0) }
   }
 
@@ -76,7 +82,14 @@ final class FakeAxodClient: AxodClient {
     throw Unsupported()
   }
   func createShell(inSession sessionID: SessionID) async throws -> TerminalShell { throw Unsupported() }
+  var shellBusyResult: Result<TerminalShellBusy, Error> = .success(
+    TerminalShellBusy(busy: false, foregroundProcess: nil))
+  private(set) var closedShells: [ShellID] = []
+  func shellBusy(_ shellID: ShellID, inSession sessionID: SessionID) async throws -> TerminalShellBusy {
+    try shellBusyResult.get()
+  }
   func closeShell(_ shellID: ShellID, inSession sessionID: SessionID) async throws -> ClosedTerminalShell {
+    closedShells.append(shellID)
     throw Unsupported()
   }
   func setLayout(_ layout: SessionLayout, forSession sessionID: SessionID) async throws {
@@ -200,6 +213,79 @@ final class TerminalCatalogTests: XCTestCase {
     XCTAssertEqual(client.subscribeCount, 2)
     XCTAssertEqual(client.listCount, 2)
     XCTAssertEqual(client.unsubscribed.map(\.subscriptionId), ["sub-1"])
+  }
+
+  func testSyncReportsConnectionLossAndAsksForHealthCheckOnce() async throws {
+    let client = FakeAxodClient()
+    client.subscribeError = SessionCommandError("axod is gone")
+    let model = makeModel(client)
+    var unreachableCalls = 0
+    let sync = TerminalCatalogSync(
+      sessions: model, client: client, minimumBackoff: .milliseconds(1),
+      maximumBackoff: .milliseconds(2), onUnreachable: { unreachableCalls += 1 })
+    sync.start()
+    defer { sync.stop() }
+
+    try await waitUntil { client.subscribeCount > TerminalCatalogSync.unreachableThreshold + 2 }
+    XCTAssertEqual(model.catalogConnection, .reconnecting(reason: "axod is gone"))
+    XCTAssertEqual(unreachableCalls, 1, "one health check per outage")
+
+    client.subscribeError = nil
+    try await waitUntil { model.catalogConnection == .live }
+  }
+
+  func testBatchedEventsApplyInOrder() async throws {
+    let client = FakeAxodClient()
+    let model = makeModel(client)
+    let sync = TerminalCatalogSync(sessions: model, client: client)
+    client.push(.sessionSnapshot(session(1, shells: [10], name: "old")))
+    client.push(.sessionSnapshot(session(1, shells: [10], name: "new")))
+    client.push(.sessionSnapshot(session(2, shells: [20])))
+    sync.start()
+    defer { sync.stop() }
+    try await waitUntil { model.sessions.count == 2 }
+    XCTAssertEqual(model.session(for: 1)?.name, "new")
+  }
+
+  func testIdleShellClosesWithoutConfirmation() async {
+    let client = FakeAxodClient()
+    client.sessions = [session(1, shells: [10, 11])]
+    let model = makeModel(client)
+    await model.refresh()
+    await model.requestCloseShell(11)
+    XCTAssertNil(model.pendingShellCloseConfirmation)
+    XCTAssertEqual(client.closedShells, [11])
+  }
+
+  func testBusyShellAsksBeforeClosing() async {
+    let client = FakeAxodClient()
+    client.sessions = [session(1, shells: [10, 11])]
+    client.shellBusyResult = .success(TerminalShellBusy(busy: true, foregroundProcess: "sleep"))
+    let model = makeModel(client)
+    await model.refresh()
+    await model.requestCloseShell(11)
+    let confirmation = ShellCloseConfirmation(shellID: 11, reason: .runningProcess("sleep"))
+    XCTAssertEqual(model.pendingShellCloseConfirmation, confirmation)
+    XCTAssertEqual(client.closedShells, [])
+
+    model.cancelShellCloseConfirmation()
+    await model.confirmShellClose(confirmation)
+    XCTAssertEqual(client.closedShells, [], "a cancelled confirmation cannot close later")
+
+    await model.requestCloseShell(11)
+    await model.confirmShellClose(confirmation)
+    XCTAssertEqual(client.closedShells, [11])
+  }
+
+  func testUnknownBusyStateAsksInsteadOfGuessing() async {
+    let client = FakeAxodClient()
+    client.sessions = [session(1, shells: [10, 11])]
+    client.shellBusyResult = .failure(SessionCommandError("socket closed"))
+    let model = makeModel(client)
+    await model.refresh()
+    await model.requestCloseShell(11)
+    XCTAssertEqual(model.pendingShellCloseConfirmation?.reason, .unknown)
+    XCTAssertEqual(client.closedShells, [])
   }
 
   private func waitUntil(

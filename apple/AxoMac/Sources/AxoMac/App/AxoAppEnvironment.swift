@@ -8,6 +8,8 @@ struct AxoAppEnvironment {
   var sessions: TerminalSessionsModel
   /// Whether Axod is reachable; read under observation tracking, so it must read observable state.
   var daemonIsRunning: @MainActor () -> Bool
+  /// Re-verifies the daemon when the catalog stream keeps failing.
+  var daemonUnreachable: @MainActor () -> Void = {}
   /// Whether to register/connect the installed LaunchAgent helper.
   var startsDaemon = true
   /// Whether launching opens the terminal window automatically.
@@ -20,7 +22,8 @@ struct AxoAppEnvironment {
   static func production(daemon: DaemonController) -> AxoAppEnvironment {
     AxoAppEnvironment(
       sessions: TerminalSessionsModel(),
-      daemonIsRunning: { daemon.status.isRunning })
+      daemonIsRunning: { daemon.status.isRunning },
+      daemonUnreachable: { daemon.checkHealth() })
   }
 
   static func current(daemon: DaemonController) -> AxoAppEnvironment {

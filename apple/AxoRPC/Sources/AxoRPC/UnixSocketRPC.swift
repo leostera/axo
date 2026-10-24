@@ -73,6 +73,7 @@ private struct SessionLayoutAcknowledgement: Decodable {
   let saved: Bool
 }
 
+/// Identifies one shell; used by `axo.shell.close` and `axo.shell.busy`.
 private struct CloseTerminalShellRequest: Encodable {
   let sessionId: SessionID
   let shellId: ShellID
@@ -94,10 +95,11 @@ private struct SessionSubscribeRequest: Encodable {
 private struct SessionEventsNextRequest: Encodable {
   let subscriptionId: String
   let timeoutMs: UInt64
+  let maxEvents: Int
 }
 
 private struct SessionEventsNextResponse: Decodable {
-  let event: TerminalSessionEvent?
+  let events: [TerminalSessionEvent]
 }
 
 private struct SessionUnsubscribeRequest: Encodable {
@@ -289,7 +291,8 @@ public enum UnixSocketRPC {
     }
   }
 
-  /// Opens an event subscription. Catalog consumers pass `includeTerminalOutput: false`.
+  /// Opens an event subscription. Catalog consumers pass `includeTerminalOutput: false` to
+  /// receive only catalog events (no terminal output or Pi stream events).
   public static func subscribe(
     to sessionID: SessionID? = nil,
     includeTerminalOutput: Bool = true,
@@ -303,11 +306,17 @@ public enum UnixSocketRPC {
     }
   }
 
-  public static func nextEvent(
+  /// The daemon's per-poll batch limit.
+  public static let maxEventsPerPoll = 256
+
+  /// Waits up to `timeout` for the next event and returns it with any already queued after it,
+  /// in order. An empty result means the wait timed out.
+  public static func nextEvents(
     for subscription: TerminalSubscriptionID,
     timeout: Duration = .seconds(15),
+    maxEvents: Int = maxEventsPerPoll,
     at socketPath: UnixSocketPath
-  ) async throws -> TerminalSessionEvent? {
+  ) async throws -> [TerminalSessionEvent] {
     let timeoutMilliseconds = min(20_000, max(1, timeout.milliseconds))
     let response: SessionEventsNextResponse = try await withResponse(
       at: socketPath,
@@ -317,9 +326,10 @@ public enum UnixSocketRPC {
         to: "axo.session.events.next",
         params: SessionEventsNextRequest(
           subscriptionId: subscription.subscriptionId,
-          timeoutMs: UInt64(timeoutMilliseconds)))
+          timeoutMs: UInt64(timeoutMilliseconds),
+          maxEvents: min(maxEventsPerPoll, max(1, maxEvents))))
     }
-    return response.event
+    return response.events
   }
 
   public static func unsubscribe(
@@ -421,6 +431,19 @@ public enum UnixSocketRPC {
     try await withResponse(at: socketPath) { session in
       try await session.response(
         to: "axo.shell.close",
+        params: CloseTerminalShellRequest(sessionId: sessionID, shellId: shellID)
+      )
+    }
+  }
+
+  public static func shellBusy(
+    _ shellID: ShellID,
+    in sessionID: SessionID,
+    at socketPath: UnixSocketPath
+  ) async throws -> TerminalShellBusy {
+    try await withResponse(at: socketPath) { session in
+      try await session.response(
+        to: "axo.shell.busy",
         params: CloseTerminalShellRequest(sessionId: sessionID, shellId: shellID)
       )
     }

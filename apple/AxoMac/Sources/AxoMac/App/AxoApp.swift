@@ -31,7 +31,8 @@ struct AxoApp: App {
     workbench = AxoWorkbench(
       sessions: environment.sessions,
       ghostty: ghostty,
-      daemonIsRunning: environment.daemonIsRunning)
+      daemonIsRunning: environment.daemonIsRunning,
+      daemonUnreachable: environment.daemonUnreachable)
     if environment.startsDaemon {
       daemon.startIfNeeded()
     }
@@ -144,7 +145,7 @@ struct AxoApp: App {
         Button("Toggle Sidebar") {
           isSidebarCollapsed.toggle()
         }
-        .keyboardShortcut("s", modifiers: .command)
+        .keyboardShortcut("s", modifiers: [.control, .command])
       }
 
       CommandMenu("Terminal") {
@@ -200,7 +201,7 @@ struct AxoApp: App {
           guard let shellID = sessions.focusedShellID ?? ghostty.keyWindowFocusedShellID else {
             return
           }
-          Task { await sessions.closeShell(shellID) }
+          Task { await sessions.requestCloseShell(shellID) }
         }
         .keyboardShortcut("w", modifiers: .command)
         .disabled(sessions.focusedShellID == nil)

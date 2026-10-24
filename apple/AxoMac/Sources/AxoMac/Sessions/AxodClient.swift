@@ -11,7 +11,8 @@ protocol AxodClient: AnyObject {
   func listWorkspaces() async throws -> [WorkspaceRecord]
 
   func subscribeToCatalog() async throws -> TerminalSubscriptionID
-  func nextEvent(for subscription: TerminalSubscriptionID) async throws -> TerminalSessionEvent?
+  /// The next batch of events, in order; empty when the long-poll timed out.
+  func nextEvents(for subscription: TerminalSubscriptionID) async throws -> [TerminalSessionEvent]
   func unsubscribe(_ subscription: TerminalSubscriptionID) async throws
 
   func createSession() async throws -> TerminalSession
@@ -26,6 +27,7 @@ protocol AxodClient: AnyObject {
 
   func createShell(inSession sessionID: SessionID) async throws -> TerminalShell
   func closeShell(_ shellID: ShellID, inSession sessionID: SessionID) async throws -> ClosedTerminalShell
+  func shellBusy(_ shellID: ShellID, inSession sessionID: SessionID) async throws -> TerminalShellBusy
   func setLayout(_ layout: SessionLayout, forSession sessionID: SessionID) async throws
 
   func restartPi(shellID: ShellID, inSession sessionID: SessionID, automatically: Bool) async throws
@@ -60,8 +62,8 @@ final class UnixSocketAxodClient: AxodClient {
     try await UnixSocketRPC.subscribe(includeTerminalOutput: false, at: socketPath)
   }
 
-  func nextEvent(for subscription: TerminalSubscriptionID) async throws -> TerminalSessionEvent? {
-    try await UnixSocketRPC.nextEvent(
+  func nextEvents(for subscription: TerminalSubscriptionID) async throws -> [TerminalSessionEvent] {
+    try await UnixSocketRPC.nextEvents(
       for: subscription, timeout: Self.eventPollTimeout, at: socketPath)
   }
 
@@ -107,6 +109,10 @@ final class UnixSocketAxodClient: AxodClient {
 
   func closeShell(_ shellID: ShellID, inSession sessionID: SessionID) async throws -> ClosedTerminalShell {
     try await UnixSocketRPC.closeShell(shellID, in: sessionID, at: socketPath)
+  }
+
+  func shellBusy(_ shellID: ShellID, inSession sessionID: SessionID) async throws -> TerminalShellBusy {
+    try await UnixSocketRPC.shellBusy(shellID, in: sessionID, at: socketPath)
   }
 
   func setLayout(_ layout: SessionLayout, forSession sessionID: SessionID) async throws {
