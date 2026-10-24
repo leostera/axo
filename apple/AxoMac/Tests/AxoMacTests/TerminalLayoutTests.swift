@@ -29,7 +29,6 @@ final class TerminalLayoutTests: XCTestCase {
     let pending = PendingTerminalSplit(
       id: UUID(),
       sessionID: 9,
-      sessionUuid: "session-uuid",
       anchorShellID: 23,
       direction: .down,
       ratio: 0.4,

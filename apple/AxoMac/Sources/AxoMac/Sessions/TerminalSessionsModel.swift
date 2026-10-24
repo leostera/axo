@@ -458,7 +458,7 @@ final class TerminalSessionsModel: ObservableObject {
     let client: AxodClient
     do { client = try requireClient() } catch { return report(error) }
     guard let sessionID = selectedSessionID,
-      let session = session(for: sessionID),
+      session(for: sessionID) != nil,
       let anchorShellID = focusedShellID ?? layoutsBySession[sessionID]?.firstShellID
     else {
       errorMessage = "Select a session before splitting the terminal."
@@ -468,7 +468,6 @@ final class TerminalSessionsModel: ObservableObject {
     let pending = PendingTerminalSplit(
       id: UUID(),
       sessionID: sessionID,
-      sessionUuid: session.sessionUuid,
       anchorShellID: anchorShellID,
       direction: direction,
       ratio: 0.5,
@@ -480,8 +479,7 @@ final class TerminalSessionsModel: ObservableObject {
     do {
       let shell = try await client.createShell(inSession: sessionID)
       guard pendingTerminalSplit?.id == pending.id,
-        let currentSession = self.session(for: sessionID),
-        currentSession.sessionUuid == pending.sessionUuid
+        let currentSession = self.session(for: sessionID)
       else {
         pendingTerminalSplit = nil
         await refresh()

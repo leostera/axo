@@ -10,7 +10,6 @@ enum PendingTerminalSplitStatus: Equatable {
 struct PendingTerminalSplit: Equatable, Identifiable {
   let id: UUID
   let sessionID: SessionID
-  let sessionUuid: String?
   let anchorShellID: ShellID
   let direction: TerminalSplitDirection
   var ratio: Double
