@@ -91,6 +91,54 @@ final class TerminalWorkbenchE2ETests: XCTestCase {
     }
   }
 
+  /// A fullscreen animation changes the terminal area every frame. Hidden surfaces must not
+  /// follow each frame (a reflow and SIGWINCH per hidden program per frame); they follow once the
+  /// geometry settles.
+  func testHiddenSurfacesFollowTheWindowOnlyAfterItsGeometrySettles() async throws {
+    try await withWorkbench { model, _ in
+      let sessionID = try XCTUnwrap(model.selectedSessionID)
+      let shell = try XCTUnwrap(model.session(for: sessionID)?.shells.first)
+      let runtime = GhosttyRuntime()
+      try XCTSkipIf(runtime.errorMessage != nil, "libghostty unavailable: \(runtime.errorMessage ?? "")")
+      let (_, view) = runtime.surfacePresentation(
+        for: shell, initialSize: .zero, onFocus: {}, onStatusChange: { _ in }, onSplit: { _ in },
+        onClose: {})
+      let deadline = ContinuousClock.now + .seconds(5)
+      while view.connection != .connected {
+        XCTAssertNil(view.connection.failureMessage)
+        guard ContinuousClock.now < deadline else { return XCTFail("the surface never attached") }
+        try await Task.sleep(for: .milliseconds(20))
+      }
+      let surface = try XCTUnwrap(view.surface)
+      func surfaceGrid() -> [UInt16] {
+        let size = ghostty_surface_size(surface)
+        return [size.rows, size.columns]
+      }
+
+      // The first geometry applies at once: there is nothing to animate from.
+      runtime.scheduleOffscreenSizing(
+        layouts: [.pane(shell.id)], terminalAreaSize: CGSize(width: 600, height: 400), backingScale: 2)
+      let initialGrid = surfaceGrid()
+
+      // An animation: many frames in quick succession leave the hidden grid alone...
+      for step in 1...10 {
+        runtime.scheduleOffscreenSizing(
+          layouts: [.pane(shell.id)],
+          terminalAreaSize: CGSize(width: 600 + 30 * step, height: 400 + 30 * step), backingScale: 2)
+        try await Task.sleep(for: .milliseconds(10))
+      }
+      XCTAssertEqual(surfaceGrid(), initialGrid)
+
+      // ...and once it settles the hidden surface takes the final size, matching a direct sizing.
+      try await Task.sleep(for: GhosttyRuntime.offscreenSizingSettleDelay + .milliseconds(150))
+      let settledGrid = surfaceGrid()
+      XCTAssertNotEqual(settledGrid, initialGrid)
+      runtime.sizeOffscreenSurfaces(
+        layouts: [.pane(shell.id)], terminalAreaSize: CGSize(width: 900, height: 700), backingScale: 2)
+      XCTAssertEqual(surfaceGrid(), settledGrid)
+    }
+  }
+
   func testRefreshFocusesTheNewestCreatedPane() async throws {
     try await withWorkbench { model, daemon in
       let sessionID = try XCTUnwrap(model.selectedSessionID)

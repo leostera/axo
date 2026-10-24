@@ -37,6 +37,10 @@ final class GhosttyRuntime {
   /// Where every open pane would be if its Session were shown; see `sizeOffscreenSurfaces`.
   @ObservationIgnored private var offscreenPaneSizes: [ShellID: CGSize] = [:]
   @ObservationIgnored private var offscreenBackingScale: CGFloat = NSScreen.main?.backingScaleFactor ?? 2
+  /// The deferred resize of hidden surfaces; see `scheduleOffscreenSizing`.
+  @ObservationIgnored private var pendingOffscreenSizing: Task<Void, Never>?
+  /// How long the window geometry must hold still before hidden surfaces follow it.
+  static let offscreenSizingSettleDelay: Duration = .milliseconds(150)
 
   init(initializeGhostty: Bool = true) {
     let storedSensitivity =
@@ -374,11 +378,53 @@ final class GhosttyRuntime {
   /// surface (not just the PTY) keeps its grid and the PTY in step; a hidden grid left at the old
   /// size would wrap output written for the new one.
   func sizeOffscreenSurfaces(layouts: [TerminalLayout], terminalAreaSize: CGSize, backingScale: CGFloat) {
-    guard terminalAreaSize.width > 0, terminalAreaSize.height > 0, backingScale > 0 else { return }
+    pendingOffscreenSizing?.cancel()
+    pendingOffscreenSizing = nil
+    guard recordOffscreenGeometry(layouts: layouts, terminalAreaSize: terminalAreaSize, backingScale: backingScale)
+    else { return }
+    resizeOffscreenSurfaces()
+  }
+
+  /// Like `sizeOffscreenSurfaces`, but resizes hidden surfaces only once the geometry has held
+  /// still for `offscreenSizingSettleDelay`. A fullscreen or window-drag animation changes the
+  /// terminal area every frame; resizing every hidden surface on each one reflows their grids
+  /// and sends a SIGWINCH storm to every hidden program while the visible one is animating.
+  /// Pane sizes are recorded at once, so a surface reattached meanwhile still gets the new size.
+  func scheduleOffscreenSizing(layouts: [TerminalLayout], terminalAreaSize: CGSize, backingScale: CGFloat) {
+    let isFirstGeometry = offscreenPaneSizes.isEmpty
+    guard recordOffscreenGeometry(layouts: layouts, terminalAreaSize: terminalAreaSize, backingScale: backingScale)
+    else { return }
+    pendingOffscreenSizing?.cancel()
+    pendingOffscreenSizing = nil
+    if isFirstGeometry {
+      resizeOffscreenSurfaces()
+      return
+    }
+    pendingOffscreenSizing = Task { @MainActor [weak self] in
+      do {
+        try await Task.sleep(for: Self.offscreenSizingSettleDelay)
+      } catch {
+        return
+      }
+      guard let self else { return }
+      self.pendingOffscreenSizing = nil
+      self.resizeOffscreenSurfaces()
+    }
+  }
+
+  /// Records where every pane would be; `false` when the geometry is not drawable yet.
+  private func recordOffscreenGeometry(
+    layouts: [TerminalLayout], terminalAreaSize: CGSize, backingScale: CGFloat
+  ) -> Bool {
+    guard terminalAreaSize.width > 0, terminalAreaSize.height > 0, backingScale > 0 else { return false }
     offscreenBackingScale = backingScale
     offscreenPaneSizes = layouts.reduce(into: [:]) { sizes, layout in
       sizes.merge(TerminalPaneGeometry.paneSizes(for: layout, in: terminalAreaSize)) { _, new in new }
     }
+    return true
+  }
+
+  private func resizeOffscreenSurfaces() {
     for entry in terminalSurfaces.values where entry.view.window == nil {
       sizeOffscreenSurface(entry.view)
     }
