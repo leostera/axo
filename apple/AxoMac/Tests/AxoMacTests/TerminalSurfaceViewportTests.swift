@@ -24,7 +24,7 @@ final class TerminalSurfaceViewportTests: XCTestCase {
     let runtime = GhosttyRuntime(initializeGhostty: false)
     let view = GhosttySurfaceNSView(
       runtime: runtime, shellID: 1, initialFrameSize: CGSize(width: 400, height: 300), onFocus: {})
-    view.updateContentSize(CGSize(width: 400, height: 300))
+    view.syncSurfaceSize()
     view.setFrameSize(CGSize(width: 1000, height: 600))
     XCTAssertEqual(view.contentSize, view.bounds.size)
     XCTAssertEqual(view.contentSize, CGSize(width: 1000, height: 600))
@@ -60,7 +60,7 @@ final class TerminalSurfaceViewportTests: XCTestCase {
     let initial = CGSize(width: 400, height: 300)
     let view = GhosttySurfaceNSView(
       runtime: runtime, shellID: 1, initialFrameSize: initial, onFocus: {})
-    view.updateContentSize(initial)
+    view.syncSurfaceSize()
     view.setFrameSize(.zero)
     view.layout()
     XCTAssertEqual(view.contentSize, initial)

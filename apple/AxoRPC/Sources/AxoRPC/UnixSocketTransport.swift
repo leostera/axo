@@ -20,6 +20,11 @@ extension Duration {
   }
 }
 
+/// Newline-delimited JSON-RPC over a Unix socket.
+///
+/// `@unchecked Sendable` invariants: `pendingData` is touched only from NWConnection callbacks on
+/// the serial `queue`; `readiness` only under `stateLock`; `NWConnection` and the stream
+/// continuation are themselves thread-safe.
 final class UnixSocketTransport: @unchecked Sendable {
   private static let maximumMessageBytes = 64 * 1024
   private static let connectionTimeout: DispatchTimeInterval = .seconds(1)

@@ -11,8 +11,8 @@ private struct MainActorNSEvent: @unchecked Sendable {
 /// One libghostty surface. Input concerns live in the `GhosttySurfaceNSView+*.swift` extensions;
 /// stored state stays here so its lifetime and ownership are visible in one place.
 @MainActor
-final class GhosttySurfaceNSView: NSView, @preconcurrency NSTextInputClient,
-  @preconcurrency NSServicesMenuRequestor
+final class GhosttySurfaceNSView: NSView, @MainActor NSTextInputClient,
+  @MainActor NSServicesMenuRequestor
 {
   private(set) var surface: ghostty_surface_t?
   let shellID: ShellID
@@ -126,7 +126,7 @@ final class GhosttySurfaceNSView: NSView, @preconcurrency NSTextInputClient,
   override func viewDidMoveToWindow() {
     super.viewDidMoveToWindow()
     updateTrackingAreas()
-    updateSurfaceScaleAndSize()
+    syncSurfaceSize()
     updateSurfaceFocus()
     updateSurfaceOcclusion()
     windowStateObserver.observe(
@@ -140,22 +140,22 @@ final class GhosttySurfaceNSView: NSView, @preconcurrency NSTextInputClient,
 
   override func viewDidChangeBackingProperties() {
     super.viewDidChangeBackingProperties()
-    updateSurfaceScaleAndSize()
+    syncSurfaceSize()
   }
 
   override func setFrameSize(_ newSize: NSSize) {
     super.setFrameSize(newSize)
-    updateContentSize(bounds.size)
+    syncSurfaceSize()
   }
 
   override func setBoundsSize(_ newSize: NSSize) {
     super.setBoundsSize(newSize)
-    updateContentSize(bounds.size)
+    syncSurfaceSize()
   }
 
   override func layout() {
     super.layout()
-    updateContentSize(bounds.size)
+    syncSurfaceSize()
   }
 
   override func becomeFirstResponder() -> Bool {
@@ -211,7 +211,7 @@ final class GhosttySurfaceNSView: NSView, @preconcurrency NSTextInputClient,
 
   func attach(_ surface: ghostty_surface_t) {
     self.surface = surface
-    updateSurfaceScaleAndSize()
+    syncSurfaceSize()
   }
 
   func detach() -> ghostty_surface_t? {
@@ -220,14 +220,17 @@ final class GhosttySurfaceNSView: NSView, @preconcurrency NSTextInputClient,
     return surface
   }
 
-  func updateContentSize(_ size: CGSize) {
+  /// The single path from AppKit geometry to libghostty. Runs on attach, window and backing
+  /// changes and every frame/bounds/layout pass, and always reads this view's own final bounds
+  /// (never a SwiftUI proposal or a former host's size).
+  func syncSurfaceSize() {
+    let size = bounds.size
     // Ignore transient zero-sized detach/reparent passes; never shrink the PTY
     // to an invalid viewport while waiting for the new host's final layout.
     guard size.width.isFinite, size.height.isFinite, size.width > 0, size.height > 0 else { return }
     contentSize = size
     runtime?.updateSurfaceSize(in: self, contentSize: size)
   }
-
 
   /// Ghostty's cell height in points, used to map scrollback rows onto the overlay scroller.
   var cellHeight: CGFloat {
@@ -291,10 +294,6 @@ final class GhosttySurfaceNSView: NSView, @preconcurrency NSTextInputClient,
   var isFocusedKeyResponder: Bool {
     guard let window else { return false }
     return NSApp.isActive && window.isKeyWindow && window.firstResponder === self
-  }
-
-  private func updateSurfaceScaleAndSize() {
-    runtime?.updateSurfaceSize(in: self, contentSize: contentSize ?? bounds.size)
   }
 
   private func updateSurfaceFocus(_ focused: Bool? = nil) {

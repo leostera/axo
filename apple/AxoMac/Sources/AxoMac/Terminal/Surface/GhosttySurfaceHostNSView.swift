@@ -115,7 +115,7 @@ final class GhosttySurfaceHostNSView: NSView {
     super.layout()
     guard let terminalView, terminalView.superview === self else { return }
     terminalView.frame = bounds
-    (terminalView as? GhosttySurfaceNSView)?.updateContentSize(terminalView.bounds.size)
+    (terminalView as? GhosttySurfaceNSView)?.syncSurfaceSize()
     scrollbarOverlay?.frame = bounds
   }
 }
