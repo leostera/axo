@@ -1,6 +1,6 @@
 # Axo.app architecture and technical-debt audit
 
-Status: audit, 2026-10-23. Scope: `apple/AxoMac`, `apple/AxoRPC`, `apple/AxoDaemonManager`, their Bazel targets, packaging and project skills. Rust `axod` internals are out of scope except where the app contract depends on them.
+Status: audit 2026-10-23; all findings resolved 2026-10-24 (see Resolution). Scope: `apple/AxoMac`, `apple/AxoRPC`, `apple/AxoDaemonManager`, their Bazel targets, packaging and project skills. Rust `axod` internals are out of scope except where the app contract depends on them.
 
 ## Current shape
 
@@ -56,3 +56,26 @@ Each step is independently buildable, tested (`//apple/AxoMac:AxoMacTests`, RPC 
 6. Split Ghostty runtime and view files along the boundaries above; single size path.
 7. Move UI-test automation and self-test into a test-host target; production app has no test entrypoints.
 8. Replace `runModal` with window-attached presentation; decide on `@Observable` migration with the deployment-target decision.
+
+## Resolution
+
+All findings were addressed in independently tested commits (`b54423d`..HEAD):
+
+| Finding | Resolution |
+| --- | --- |
+| 1 Polling | `TerminalCatalogSync`: one catalog subscription (`includeTerminalOutput: false`), event application in `TerminalSessionsModel.apply`, resubscribe + `resynchronize()` on lag/reconnect. Axod gained lag signalling, idle subscription expiry, `workspace.changed` and `session.focus`. |
+| 2 View-owned loops | `AxoWorkbench`, created once in `AxoApp.init`, owns sync, surface reconciliation and focus via `ObservationLoop`. |
+| 3 Test modes in release | `TestHost/` compiles only into `AxoMacTestHost` (`AXO_TEST_HOST`) for `AxoUITestApp`; the shipped binary contains no self-test or automation strings. |
+| 4 God object | `AxodClient`, `TerminalLayoutWriter`, `AutomaticPiRestarter`, `SessionNavigation`/`RecentSessions` and `TerminalLayout.defaultLayout` extracted; duplicated command paths collapsed; negotiation cached per connection; `SessionCommandError` for app-level failures. |
+| 5 Identity | Typed `SessionID`/`ShellID` (wire-compatible integers). Axod's AUTOINCREMENT IDs are never reused, so they are the single identity; `sessionUuid` is no longer compared. |
+| 6–7 Ghostty files | View split into `Terminal/Surface/*`; runtime into `+Config`, `+Callbacks`, `+Actions`, `+Clipboard`. One guarded `syncSurfaceSize()` path. |
+| 8 RPC | Models split by domain; `UnixSocketTransport` separated; unused `listSessions`, terminal input/resize and relay configure/settings/disable client calls removed. |
+| 9 ObservableObject | macOS 14 baseline; all app models are `@Observable` with change-only writes; Combine removed. |
+| 10 Defaults | `AxoPreferenceKey`; sidebar key mismatch fixed. |
+| 11 `runModal` | Clipboard consent is an asynchronous window sheet (matching pinned Ghostty). `UntrustedURLAlert` is a verbatim Ghostty port that already prefers a sheet and is kept as-is. |
+| 12 Concurrency | Notification calls use async APIs; `@preconcurrency` replaced by isolated `@MainActor` conformances; `@unchecked Sendable` invariants documented. No compiler warnings remain in Axo code. |
+| 13 Skills | Axo skills rewritten for the current tree; vendored skills' compatibility notes updated. |
+| 14–17 Hygiene | Stale build dirs and unused `Package.swift` removed (`apple/AxoRPC/Package.swift` stays: `MODULE.bazel` resolves Swift deps through it); single macOS 14.0 baseline incl. Rust linker; test glob; update placeholder removed. |
+| 18 Visual tests | Split per feature with a shared `UITestFixture`; runner filters unchanged. |
+
+Not covered by this audit: real AppKit/IME/VoiceOver acceptance (tracked in `docs/terminal-input-acceptance.md`) and moving Axod's new-Session process creation out of the catalog lock (`docs/axod-recovery-hardening.md`).

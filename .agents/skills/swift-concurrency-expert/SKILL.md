@@ -7,9 +7,9 @@ description: Swift Concurrency review and remediation for Swift 6.2+. Use when a
 
 ## Axo project constraints
 
-- Follow `.agents/skills/axo-development/SKILL.md`. For UI-facing SwiftUI changes, also follow the relevant Axo native-app skill.
-- Check `apple/project.yml` and the actual compiler diagnostics first: Axo currently sets Swift language mode 5.0. Do not assume Swift 6.2+ features or raise language/concurrency settings as part of a narrow fix without explicit approval.
-- Preserve Axo's actor ownership and async destination/generation checks. Avoid `@unchecked Sendable` or concurrency migrations unless correctness is demonstrable and the requested scope permits them.
+- Follow `.agents/skills/axo-macos-native-apps/SKILL.md` for Axo's app structure, ownership boundaries and validation, and `.agents/skills/axo-macos-packaging/SKILL.md` before delivering. Apply this skill to `apple/AxoMac` (the only Apple app) and its `apple/AxoRPC` / `apple/AxoDaemonManager` libraries.
+- Axo builds in Swift language mode 5 on a Swift 6.x toolchain (`apple/AxoMac/BUILD.bazel`); start from the actual compiler diagnostics. Isolated conformances (`@MainActor Protocol`) are available and preferred over `@preconcurrency`.
+- Preserve Axo's main-actor ownership and post-await revalidation (look IDs up again; `SessionID`/`ShellID` are never reused). Use `@unchecked Sendable` only with documented invariants.
 
 ## Overview
 

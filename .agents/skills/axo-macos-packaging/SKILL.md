@@ -5,54 +5,36 @@ description: Build, validate, and deliver Axo's Finder-launchable Mac app. Use a
 
 # Axo macOS packaging
 
-Resolve the Axo root from `../../..` relative to this skill. **Always repackage `dist/Axo.app` after validated Mac changes.** A DerivedData build is not delivery. Follow the sibling [native Mac](../axo-macos-native-apps/SKILL.md) skill.
+Resolve paths from the Axo root (`../../..`). **Repackage `dist/Axo.app` after every validated Mac app, helper or Pi-extension change.** A Bazel build output is not delivery. Follow the [native app](../axo-macos-native-apps/SKILL.md) skill for structure and tests.
 
-## Current package
+## The package
 
-- The development artifact is one self-contained `dist/Axo.app`, signed with an existing Apple Development or Developer ID Application identity. It is not a notarized distribution. Ad-hoc signing is not supported for installed-service packages: deep/strict verification alone does not prove launchd will accept a helper.
-- `scripts/mac-signing.py` selects a single valid identity, or requires its explicit fingerprint in `AXO_MAC_SIGNING_IDENTITY` when ambiguous. It never installs certificates or falls back to ad hoc. The helper and outer app must have the same actual CodeDirectory team; a development certificate’s display-name suffix is not necessarily its team.
-- The app embeds `Contents/Helpers/axod`, its installed Pi extension/resources and per-user LaunchAgent plist. Ambient vanilla Pi remains an external runtime dependency.
-- First visible onboarding uses `SMAppService` to request bundled per-user LaunchAgent registration once, with durable original-request/receipt and owner-absence fences. Already registered/revoked approval is observed, not re-registered; previous completion/removal requires a new explicit enable action. macOS owns consent; Axo offers the native Login Items settings action. No mandatory Applications-folder gate or custom confirmation precedes fresh registration. Launchd alone starts the production helper; reconnect never registers, repairs or directly starts it. Frontend login startup is independently opt-in.
-- State is `~/Library/Application Support/Axo/Axod`. Multiple processes of the same bundle share daemon, preferences and state (`LSMultipleInstancesProhibited=false`). Do not create named/versioned app variants or concurrently test different daemon versions against that shared state.
-- Phone builds/routing/deployments are independent. Local packaging does not authorize changing or installing them.
+- One signed `dist/Axo.app` built from `//apple/AxoMac:AxoApp` (production module only, no `TestHost/` code). It embeds `Contents/Helpers/axod`, the Pi extension at `Contents/Resources/AxoPi/`, Ghostty resources/terminfo and the per-user LaunchAgent plist `dev.leostera.axo.axod.plist`. Vanilla Pi is an external runtime dependency.
+- Signed with an Apple Development or Developer ID identity; not notarized. Ad-hoc signing is unsupported because launchd must accept the helper. App and helper must share a team.
+- Minimum macOS is 14.0 for both executables (`build-mac.sh` checks `vtool` minos against `LSMinimumSystemVersion`).
+- `DaemonController` registers the LaunchAgent through `SMAppService` and restarts axod when its build number differs from the app's.
 
 ## Build and verify
 
 ```bash
 cd <axo-root>
-export DEVELOPER_DIR=/Applications/Xcode.app/Contents/Developer
-swift test --package-path protocol
-swift test --package-path apple/AxoCore
-cargo test --manifest-path axod/Cargo.toml --locked --offline
-bash scripts/build-mac.sh
+bazel test //apple/AxoMac:AxoMacTests //apple/AxoMac:TerminalWorkbenchE2ETests \
+  //apple/AxoMac:AxoAppSelfTestTests //apple/AxoRPC:AxoRPCTests \
+  //apple/AxoRPC:AxoDaemonInteropTests //apple/AxoDaemonManager:AxoDaemonManagerTests \
+  //crates/axod:rpc_tests
+./scripts/build-mac.sh
 codesign --verify --deep --strict dist/Axo.app
+plutil -p dist/Axo.app/Contents/Info.plist | grep -E 'CFBundleVersion|AXOGitCommit'
 ```
 
-Run affected TypeScript/layout/native/Xcode UI tests. Shared AxoCore changes require an AxoPhone build. Builds and native fixture compilation must be sequential against shared DerivedData.
+- `scripts/build-mac.sh` selects the single valid signing identity (or `AXO_MAC_SIGNING_IDENTITY`), reserves the next build number under `~/Library/Application Support/Axo/build-number`, builds the Pi extension and a stamped `-c opt` app, embeds the extension, stamps `AXOGitCommit` (`-dirty` when the tree has changes or untracked files), checks build numbers and minimum OS, signs helper then app, and verifies team identity.
+- `scripts/replace-app.swift` swaps the staged bundle into `dist/Axo.app` atomically and keeps the previous bundle in the staging directory for rollback. Never delete `dist/Axo.app` first.
+- Run affected Rust (`cargo test -p axo-server --lib`, `bazel test //crates/...`) and TypeScript (`npm --prefix packages/pi-axo test`, `npm --prefix packages/axo-api run schema:check`) checks for daemon or extension changes.
+- For a delivered build, report the build number, `AXOGitCommit`, signature status and which test lanes ran.
 
-`build-mac.sh` requires XcodeGen, Rust/Cargo and the daemon dependencies. It builds, validates, signs and atomically replaces exactly `dist/Axo.app`; `AXO_INSTANCE_ID` and `AXO_OUTPUT_APP` are rejected. Validate the exact committed source, `AxoBuildCommit`, bundle version, executable/helper identity and strict signatures. Signing changes Mach-O bytes; compare build UUIDs/code sections when needed, not raw signed/unsigned `cmp`.
+## Runtime safety
 
-If a package fails validation, fix and repackage before reporting it ready. After committing source, rebuild for the exact commit and rerun the applicable packaged acceptance lanes.
-
-## Atomic replacement
-
-- Stage on the same filesystem under `dist/`; validate the staged bundle and embedded executable/signatures before replacement.
-- Reject symlinked destinations. Use `renamex_np(RENAME_SWAP)` for an existing app; retain the swapped-out bundle at the staging path for rollback. Never delete `dist/Axo.app` first.
-- Do not modify Application Support, histories, drafts, attachments, credentials or running processes while packaging.
-- Stamp only the staged outer `.app` directory dates with packaging time (`xcrun SetFile`) after signing, then verify the final dates. `ditto` otherwise preserves DerivedData directory timestamps. Do not recursively touch signed contents or the rollback package.
-- An already-running app retains mapped code while later launches use the replacement bundle. Both still share daemon/state. Bundle replacement does not upgrade the running app/helper.
-
-## Runtime and consent
-
-- In this non-production Axo development environment, the user authorizes rebuilding/redeploying the Mac app and restarting/relaunching Axo and axod after validated changes without asking each time. The local Axod SQLite database may be reset when needed for development, but preserve it by default; never delete Cloudflare or production storage without explicit target-specific authorization. Pi/session lifecycle actions still require exact durable lifecycle authority. Physical-device installation remains separately authorized.
-- Never adopt or signal PIDs discovered in files or process lists. Preserve accepted work and uncertain outcomes. Normal frontend exit does not stop daemon-owned work.
-- Service status and successful `launchctl` commands are not proof of the running binary or operational readiness. Verify actual host version and exact runtime capabilities through addressed diagnostics.
-- Ownership repair uses validated exclusive `owner.lock`, not refused sockets, empty cached catalogs or apparent process absence. Unregister/register only under the supported ownership procedure; release the lease before starting the captured service. `scripts/check-mac-owner-lease.sh` tests private fixture contention/metadata, not normal service handoff.
-- Incompatible active helpers visibly block unsupported operations. Do not replace one until the Manager supplies required durable idle/completion authority or the operator supplies scoped consent/reconciliation.
-- Never bypass denied Accessibility or other permissions. Xcode UI testing must refuse if an Axo frontend is open because launch automation can terminate same-bundle applications.
-
-## Acceptance and report
-
-Use `scripts/check-mac-app-startup.sh` and its unavailable-Pi negative control for packaged startup; use `scripts/check-mac-ui.sh` for actual XCTest UI. Their Rust-prepared roots/helper/model are private and disposable. Match claims to evidence: isolated UI/component success does not prove normal ServiceManagement, argument-free Finder, physical IME, independent windows or notification delivery.
-
-Commit coherent validated Conventional Commits and push proactively. Report the actual `dist/Axo.app` path, exact source/build/signature/test status and whether normal live processes were left untouched. Keep current workflow in project skills; retain test evidence and decisions in project documentation, not a skill timeline.
+- Packaging is disk delivery, not deployment: running Axo and axod keep their mapped code. Never close, restart or signal discovered Axo/Axod processes; a restart needs the user's direction.
+- Do not run axod as root, and never touch the user's Axod state (`axo_server::default_server_directory()`), Pi transcripts, clipboard or Application Support state while packaging or testing. Tests use isolated fixtures.
+- Do not run visual UI tests while the user's Axo is open; the runner refuses, and its safeguard must not be bypassed.
+- Isolated component or fixture success does not prove ServiceManagement handoff, Finder launch, physical IME or notification delivery.

@@ -3,72 +3,58 @@ name: axo-macos-native-apps
 description: Design, implement, or review Axo's native macOS scenes, windows, sidebar/detail UI, commands, settings, AppKit boundaries, and build/validation workflows.
 ---
 
-# Axo native macOS apps
+# Axo native macOS app
 
-Resolve paths from the Axo root (`../../..`). Follow [development](../axo-development/SKILL.md) and [packaging](../axo-macos-packaging/SKILL.md). The production app is `apple/AxoMacAxod/`; its window/delegate composition is AppKit, with hosted SwiftUI content and native Ghostty views. `AxodWorkbenchCoordinator` owns observable workbench state and addressed RPC, not processes.
+Resolve paths from the Axo root (`../../..`). Deliver with [packaging](../axo-macos-packaging/SKILL.md). Architecture rationale and the latest audit are in `docs/axo-app-architecture-audit.md`.
 
-## Window and sidebar
+## Ownership
 
-- Preserve the AppKit application delegate, primary `NSWindow`, native split/outline and hosted detail. Do not replace a working source list with SwiftUI solely to change frameworks.
-- Window/viewport/layout ownership is presentation state. Workspace/session catalog, runtime ownership and canonical Pi state are separate. Creating/closing/restoring/reflowing a view never admits, clones, stops or retargets a runtime.
-- Settings and About are dedicated utility windows with hosted content. Respect content/toolbar safe areas; settings is not a sidebar destination or session detail.
-- Expanded sidebar is minimal: bold nonselectable Workspaces heading, folders with nested session rows, one divider, then bold Sessions heading and standalone rows. Folder/hammer glyphs identify records; the hammer does not claim busy-state telemetry. No Axo/plus header, Settings row or extra section separators. The only footer control collapses navigation. Use system materials, semantic colors and standard controls; headings do not add hierarchy levels.
-- Multi-selection uses native `NSOutlineView` Shift/Command behavior and identity sets separate from the one displayed session. Adding selected rows/ranges must not unnecessarily replace detail or steal terminal focus. Metadata refresh preserves visible row order, expansion, selected IDs and range anchor.
-- Context actions target the clicked row outside selection or the selected set inside it. Rename is single-target only; it captures original target/revision/endpoint. Missing manual-name capability disables unsupported editing. Delete confirms a frozen set of up to 32 session identities, durably reserves the daemon intent, stops exact owned runtimes and tombstones the entire batch only after completion proof. Preserve histories/drafts and original receipts. Unknown/prepared results permit exact read-only reconciliation, never another stop; uncertain runtime ownership is refused. Release only confirmed-deleted presentation surfaces. Move remains unavailable until its daemon lifecycle exists.
-- Main-sidebar collapse is a usable 56-point icon rail with accessible destinations, selection cues and a bottom expand control; no inline Create/Settings. Preserve expanded width separately. View → Toggle Sidebar (Control-Command-S) shares the same scoped preference; the main window has no toolbar/sidebar titlebar item. Creation/Settings stay in menus/shortcuts. Diagnostic preference stores must be injected, never mutate normal sidebar preferences. Settings has its own independent rail/width state.
+- **Axod owns processes; Pi owns transcripts.** Axod (`crates/axod`, `crates/axo-server`) owns PTYs, Sessions, Workspaces, layouts and Pi lifecycle. The app presents and commands that state over Axod's local JSON-RPC socket; it never spawns, adopts or signals Session processes. Ghostty surfaces run the bundled `axod terminal-attach` helper, which attaches to a daemon-owned PTY.
+- `SessionID`/`ShellID` (`apple/AxoRPC/Sources/AxoRPC/Models/Identifiers.swift`) are the only identities. Axod allocates them with SQLite `AUTOINCREMENT`, so they are never reused: after an `await`, revalidate by looking the ID up again.
+- Explicit **Restart Pi** may affect only the verified pane; automatic Pi recovery is Axod's idle-only, non-forcing `auto` restart. Closing windows or the app never stops daemon work.
 
-## Creation and session detail
+## Source layout (`apple/AxoMac/Sources/AxoMac`)
 
-- New Session is direct, one click, no name/progress modal. Command-T uses the active workspace; standalone uses captured HOME. Workspace creation uses the native folder picker and commits its first session atomically.
-- Select committed work immediately. Admit the shell before awaiting Pi readiness so shell input remains usable during delayed/unavailable Pi. Keep failures, recovery and unknown outcomes scoped and actionable inline.
-- Automatic empty launch requires complete authoritative empty catalogs plus pending/draft/admission fences and the atomic `createIfEmpty` command. Restoration/reconnect does not create work.
-- Healthy detail is only the split tree: Pi left, independent shell right, no session/admission/PID/backlog header or pane title strips. Identity belongs in sidebar/window title. No healthy connection status bar, Conversation toggle or Start Pi button; the normal view is terminal-only. Genuine failure/recovery and unknown-command notices remain actionable inline.
-- Native manual names and canonical Pi titles are separate. Metadata-only updates with unchanged bindings preserve readers, terminals, chat and field editors.
+| Folder | Contents |
+| --- | --- |
+| `App/` | `AxoApp` (scenes, menus), `AxoAppEnvironment` (launch configuration), `AxoWorkbench` (app-lifetime coordination), `ObservationLoop`, `AxoPreferenceKey`, pairing/URL routing, sleep prevention. |
+| `Sessions/` | `TerminalSessionsModel` (catalog + selection/focus + commands), `AxodClient` protocol and socket implementation, `TerminalCatalogSync` (event subscription), `TerminalLayout` (pure layout tree), `SessionNavigation`, `TerminalLayoutWriter`, `AutomaticPiRestarter`. |
+| `Terminal/` | `GhosttyRuntime` (+`Config`, `Callbacks`, `Actions`, `Clipboard`), clipboard/URL/attention/accessibility policies. `Terminal/Surface/` holds the Ghostty surface view split by concern (keyboard, text input, mouse, menu) and `TerminalKeyEquivalentPolicy`. |
+| `Workbench/` | Sidebar, split tree and pane views. |
+| `Settings/` | Settings and remote-access views. |
+| `TestHost/` | Self-test and UI-automation launch modes. Compiled only into `AxoMacTestHost` (`AXO_TEST_HOST`); the shipped app must never contain them. |
 
-## Terminal and AppKit boundary
+`apple/AxoRPC` holds the wire models and the per-call Unix-socket client; `apple/AxoDaemonManager` holds `DaemonController` (LaunchAgent registration and health).
 
-- The renderer launches the captured bundled `axod terminal-attach` presentation child. Pi/shell execution stays in axod. Ghostty's shell-command wrapper supplies `exec -l`; do not prefix a second `exec`.
-- Cache by exact machine/host/session/pane/runtime identity with the existing 32-surface bound, no eviction and one interactive viewport owner. Moving an attached retained view within its viewport is not process recreation; another window is a competing viewport.
-- Keep Ghostty glyph DPI, framebuffer dimensions and IOSurface layer `contentsScale` synchronized to the owning window. Seed screen scale, retain it during detach/reflow, and update Core Animation under disabled-actions transactions. A content-scale setter alone does not synchronize the compositor.
-- Resizing the outer PTY is asynchronous; a surface-size setter is not an input barrier. Preserve the bounded delivery/chunk/credit/control pacing and exact-attachment output coalescing.
-- `TerminalView` implements `NSTextInputClient`. Do not use character accessors on modifier-only `flagsChanged` events. Preserve text composition/preedit and captured input authority.
-- Accessibility exposes only the actual Ghostty viewport, bounded to 64 KiB, never a transcript/backlog replica. Enabled state follows the input gate; focused state follows the real window responder. Authorized UI automation and VoiceOver use native accessibility, not hidden test execution controls.
-- Pane focus is presentation-only. Capture source/destination keys, actual responder, window/viewport owner, layout and logical/physical responder generations. Editor/window transitions invalidate a captured action even after an equal-looking return. Focus only existing attached cached surfaces; never create a surface/process or transfer another viewport.
-- Splits use the pinned tree, captured focused anchor, source/session and right/down placement before await. Decoded layout leaves are identities, not launch constructors. Preserve original commands/placement hints and opaque layout data; divider callbacks are generation-fenced. Explicit shell removal requires exact runtime/completion authority. Pi close policy is not inferred.
+## State and data flow
 
-## Chat, history and drafts
+- Models are `@Observable` and `@MainActor`. Assign observed properties only when the value changes (`TerminalSessionsModel.assign`): Observation notifies on every write, and the workbench re-renders for each. Mark internal bookkeeping `@ObservationIgnored`.
+- `TerminalCatalogSync` keeps the catalog current through one `axo.session.subscribe` subscription with `includeTerminalOutput: false`. It subscribes before listing, applies events through `TerminalSessionsModel.apply(_:)`, and on lag, reconnect or failure resubscribes and calls `resynchronize()`. Never add periodic polling.
+- `AxoWorkbench` is created once in `AxoApp.init` and owns catalog sync, surface reconciliation and keyboard focus via `ObservationLoop`. Views render state and forward intent; do not start lifecycle loops in view `.task`s.
+- User commands go through `TerminalSessionsModel` and then reconcile with Axod. Shell creation is not idempotent: an unconfirmed split is reconciled from the catalog, never retried.
+- Selection order and successor rules live in `SessionNavigation`/`RecentSessions`; layout algebra lives in `TerminalLayout`. Keep both pure and unit-tested.
+- Preference keys live only in `AxoPreferenceKey`.
 
-These coordinator/reader/storage capabilities remain exercised by owned native component fixtures; the normal window does not expose a Conversation switch.
+## Ghostty and AppKit boundary
 
-- Bind editor callbacks to the rendered machine/workspace/session/pane/chat, with runtime/host dispatch authority captured separately. Revalidate operation/source/endpoint after awaits; do not select a destination globally.
-- Preserve bounded single-page history/tool readers, immutable source/read-mode and presentation generations. Do not accumulate pages or infer canonical history from terminal output. A source/head/branch change invalidates captured reads, including equal-looking ABA changes.
-- Drafts and local send/steer captures are in-memory only. Limits are 32 conversations, 64 KiB each, 1 MiB aggregate text and 32 pending captures; reject capacity without eviction/truncation or stale submission. Neither app nor daemon persists/restores unsent drafts. Existing retired archives remain untouched and unread.
-- Parse the closed operation and complete wire frame before marking dispatch uncertain. Capture exact input authority before preference hint/RPC. Prepared/null/unknown results allow original read-only reconciliation only; the editing buffer is not an outbox or daemon original receipt.
-- Acknowledgement clears only the exact unchanged editing revision. Validate original receipts before clearing matching text/hints; a dispatched receipt is not execution proof.
-- Quit commits the field editor and discards unsent buffers without a save barrier or daemon stop. Hide/reflow retains the live buffers. Pending commands still fence automatic empty launch; draft storage readiness is no longer a prerequisite.
+- Keep Ghostty pinned to revision `81598385d608dda4946093d6d6a234d204a2f225` unless a change is approved; compare behavior against the pinned upstream under `bazel-axo/external/+ghostty_repository+ghostty/source/macos`.
+- libghostty callbacks run through `GhosttyRuntime+Callbacks` and hop to the main actor; reject off-main calls. Present UI from callbacks on the next main-loop turn (the renderer mutex may be held).
+- One size path: `GhosttySurfaceNSView.syncSurfaceSize()` feeds libghostty from the view's own final bounds and ignores zero/non-finite passes. Never push a SwiftUI proposed size.
+- Representables must not publish state synchronously during updates; status callbacks are deferred.
+- Clipboard consent is a window sheet that completes Ghostty's request asynchronously with owned copies of the reviewed payload; without a window, deny. Do not use `runModal`.
+- Surface conformances to AppKit protocols use isolated conformances (`@MainActor NSTextInputClient`), not `@preconcurrency`.
 
-## Validation lanes
+## Validation
 
-Build and compile fixtures sequentially against shared DerivedData. Use Xcode for the Mac target and actual UI testing; focused AppKit/pure checks are regressions, not substitutes for UI acceptance.
+| Target | Scope |
+| --- | --- |
+| `bazel test //apple/AxoMac:AxoMacTests` | Unit tests: models with `FakeAxodClient`, layout, navigation, input policies, surface viewport. |
+| `bazel test //apple/AxoMac:TerminalWorkbenchE2ETests` | `TerminalSessionsModel` against an isolated real `axod` with inert Pi fixtures and a private `HOME`. |
+| `bazel test //apple/AxoMac:AxoAppSelfTestTests` | The packaged test-host app's `--self-test` attaching to a daemon-owned PTY. |
+| `bazel test //apple/AxoRPC:AxoRPCTests //apple/AxoRPC:AxoDaemonInteropTests //apple/AxoDaemonManager:AxoDaemonManagerTests` | Wire models, transport, live-daemon decoding, registration decisions. |
+| `bazel test //apple/AxoMac:AxoVisualUITestsBazel` | Real XCUITest UI against an isolated daemon. `AXO_UI_TEST_ONLY=<test>` runs one case. |
 
-| Lane | Command | Scope |
-| --- | --- | --- |
-| Xcode UI | `bash scripts/check-mac-ui.sh` | Packaged app; OS-routed Command-T, native range/multi-selection, refresh retention, clicked-row rename, workspace membership, UI-typed Pi response, Cancel/exact-row/cross-workspace batch Delete and unchanged retained canonical history |
-| Packaged startup | `bash scripts/check-mac-app-startup.sh` | LaunchServices/delegate/window/bootstrap, exact bundled helper, one empty-launch session, shell/Pi input/output, account login shell, owning-window scale and header-free geometry |
-| Unavailable Pi | `AXO_APP_SELF_TEST_CASE=unavailable bash scripts/check-mac-app-startup.sh` | Real app must retain shell usability and refuse success with missing Pi |
-| Native workbench | `bash scripts/check-mac-workbench.sh` | Production coordinator/views/PTYs in private owned native fixtures: creation, delayed/failing Pi, restore, chat/drafts and process recovery |
-| Focused checks | `scripts/check-mac-{sidebar,terminal,pane-layout,shell-creation,chat-history,tool-output,chat-drafts,owner-lease,voice-keybinding}.sh` | Local state/storage/rendering/control regressions for the affected component |
-
-- `AXO_LOCAL_DAEMON_BINARY` selects the packaged helper for native fixtures. Workbench modes are `AXO_NATIVE_WORKBENCH_MODE=all|chat|drafts`; bounded fresh-root repetitions use `AXO_NATIVE_WORKBENCH_REPETITIONS=1..20`, not same-command retries.
-- Rust owns private roots, daemon/process/model setup, public-RPC fixture metadata and filesystem assertions. XCTest uses UI actions/observations only; do not bypass sandbox or Accessibility denials.
-- Xcode UI testing refuses while any Axo frontend is open: `XCUIApplication.launch()` can terminate same-bundle applications. Recheck before running and never implicitly close discovered frontends. Test windows are marked temporary and placed on the primary display. Reopen native menus when polling enabled state; an open menu does not revalidate asynchronous admission changes.
-- Packaged self-test flags require fresh Rust-prepared private roots and exact capability versions; release apps reject diagnostic flags. The diagnostic app stops only its owned fixture helper on exit. Normal app quit remains non-destructive.
-- Native process-crash checks may signal only the fixture's still-unreaped child handle after its durable checkpoint. Preserve exact daemon PTYs and original unknown tickets; do not replay hints/messages.
-- Match claims to the lane: folder-picker UI, normal ServiceManagement/helper handoff, argument-free Finder launch, physical keyboard/IME, independent windows, notifications, power loss and move are separate acceptance boundaries. A busy snapshot or rendered text cannot become execution/completion authority.
-
-## Delivery and diagnostics
-
-- Always package `dist/Axo.app` after validated Mac changes; DerivedData is not delivery. Packaging never authorizes live restart or device installation.
-- Use bounded allowlisted lifecycle/action facts with the bundle subsystem when logging. Never include terminal/transcript bodies, prompts, private config, paths to sensitive user material, audio, tokens or clipboard data.
-- Preserve macOS 26, iOS 18 and Swift language mode 5 unless explicitly changing the project baseline. Do not silently update dependencies or Ghostty pins.
-- Report exact source/build/package and running-app status. Keep test evidence and architectural discussion in project documents; skills describe present implementation and repeatable workflow.
+- The visual runner refuses to start while any `Axo` frontend is running (XCUIApplication can terminate same-bundle apps). Never close or restart discovered Axo/Axod processes to make room; ask the user.
+- Test fixtures must not depend on ambient Pi configuration or the user's database: use `//crates/axo-server:pi_extension_fixture` and `//crates/axod:testdata/pi-fixture.sh`.
+- Component tests do not prove real AppKit, IME, VoiceOver or physical-device behavior. Match claims to the lane that ran.
+- Keep Axo's own code free of compiler warnings (`bazel build //apple/...`); remaining warnings come from external dependencies.

@@ -14,7 +14,7 @@ The following upstream Agent Skills were added from the sources linked by OpenAI
 
 ## Axo compatibility notes
 
-- These are project-local skills under `.agents/skills/`, intended for relevant iOS/Swift work. For macOS-native UI, the repository's `axo-macos-native-apps` skill remains authoritative for Axo's scene, window, AppKit, and packaging boundaries.
-- `apple/project.yml` currently sets iOS 18.0 and Swift language mode 5.0. Upstream recommendations for newer deployment targets, APIs, or Swift concurrency modes are not Axo requirements; preserve the project baseline unless an explicit change is approved.
-- The Liquid Glass skill is opt-in guidance for an explicitly requested visual treatment and must include availability/fallback handling for Axo's current iOS baseline.
+- These are project-local skills under `.agents/skills/` for Swift and SwiftUI work in `apple/AxoMac` and its libraries. The repository's `axo-macos-native-apps` skill remains authoritative for Axo's app structure, AppKit/Ghostty boundaries and validation.
+- Axo's baseline is macOS 14.0 with Swift language mode 5 on a Swift 6.x toolchain (`apple/AxoMac/BUILD.bazel`, `.bazelrc`). Upstream recommendations for newer deployment targets, APIs, or language modes are not Axo requirements; preserve the baseline unless an explicit change is approved.
+- The Liquid Glass skill is opt-in guidance for an explicitly requested visual treatment and needs availability/fallback handling for the macOS 14 baseline.
 - Review upstream sources and update the recorded snapshot/licenses deliberately; do not silently replace local compatibility guidance.
