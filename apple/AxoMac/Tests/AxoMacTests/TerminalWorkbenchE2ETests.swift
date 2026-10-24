@@ -1,5 +1,6 @@
 import AxoRPC
 import Darwin
+import GhosttyKit
 import Foundation
 import XCTest
 
@@ -30,6 +31,63 @@ final class TerminalWorkbenchE2ETests: XCTestCase {
       XCTAssertEqual(model.layout?.shellIDs, [firstShell.id, thirdShell.id])
       try daemon.assertCanRunCommand(in: firstShell)
       try daemon.assertCanRunCommand(in: thirdShell)
+    }
+  }
+
+  /// Relaunching Axo reattaches to programs that keep running. A new surface's grid is
+  /// libghostty's default window size until it is laid out; that must never reach the PTY.
+  func testAttachingAnUnlaidOutSurfaceLeavesTheRunningProgramsSizeAlone() async throws {
+    try await withWorkbench { model, _ in
+      let sessionID = try XCTUnwrap(model.selectedSessionID)
+      let shell = try XCTUnwrap(model.session(for: sessionID)?.shells.first)
+      let probe = try TerminalAttachment.open(
+        socketPath: try UnixSocketPath(shell.attachSocketPath), shellID: shell.id)
+      defer { probe.close() }
+      var size = winsize(ws_row: 37, ws_col: 101, ws_xpixel: 0, ws_ypixel: 0)
+      XCTAssertEqual(ioctl(probe.ptyDescriptor, TIOCSWINSZ, &size), 0)
+
+      let runtime = GhosttyRuntime()
+      try XCTSkipIf(runtime.errorMessage != nil, "libghostty unavailable: \(runtime.errorMessage ?? "")")
+      let (_, view) = runtime.surfacePresentation(
+        for: shell, initialSize: .zero, onFocus: {}, onStatusChange: { _ in }, onSplit: { _ in },
+        onClose: {})
+      let deadline = ContinuousClock.now + .seconds(5)
+      while view.connection != .connected {
+        XCTAssertNil(view.connection.failureMessage)
+        guard ContinuousClock.now < deadline else { return XCTFail("the surface never attached") }
+        try await Task.sleep(for: .milliseconds(20))
+      }
+      // libghostty adopts the PTY on its I/O thread; give it time to act.
+      try await Task.sleep(for: .milliseconds(500))
+
+      func ptySize() -> [UInt16] {
+        var observed = winsize()
+        XCTAssertEqual(ioctl(probe.ptyDescriptor, TIOCGWINSZ, &observed), 0)
+        return [observed.ws_row, observed.ws_col]
+      }
+      let surface = try XCTUnwrap(view.surface)
+      func surfaceGrid() -> [UInt16] {
+        let size = ghostty_surface_size(surface)
+        return [size.rows, size.columns]
+      }
+      XCTAssertEqual(ptySize(), [37, 101])
+
+      // Laying the surface out gives the PTY its real grid at once...
+      runtime.sizeOffscreenSurfaces(
+        layouts: [.pane(shell.id)], terminalAreaSize: CGSize(width: 600, height: 400),
+        backingScale: 2)
+      XCTAssertNotEqual(surfaceGrid(), [37, 101])
+      XCTAssertEqual(ptySize(), surfaceGrid())
+
+      // ...and later resizes still flow through libghostty.
+      runtime.sizeOffscreenSurfaces(
+        layouts: [.pane(shell.id)], terminalAreaSize: CGSize(width: 900, height: 700),
+        backingScale: 2)
+      let resizeDeadline = ContinuousClock.now + .seconds(3)
+      while ptySize() != surfaceGrid(), ContinuousClock.now < resizeDeadline {
+        try await Task.sleep(for: .milliseconds(20))
+      }
+      XCTAssertEqual(ptySize(), surfaceGrid())
     }
   }
 

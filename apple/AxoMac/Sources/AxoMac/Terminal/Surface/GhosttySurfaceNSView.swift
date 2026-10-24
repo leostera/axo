@@ -218,8 +218,13 @@ final class GhosttySurfaceNSView: NSView, @MainActor NSTextInputClient,
   }
 
   /// `ptyDescriptor` is the attachment's PTY master; the view keeps its own duplicate.
+  /// Whether Axo has given this surface a real size. Until then its grid is libghostty's
+  /// default window size, which must never reach a running program's PTY.
+  private var hasAppliedSize = false
+
   func attach(_ surface: ghostty_surface_t, ptyDescriptor: Int32) {
     self.surface = surface
+    hasAppliedSize = false
     ptySizeReporter = TerminalPTYSizeReporter(ptyDescriptor: ptyDescriptor, shellID: shellID.rawValue)
     syncSurfaceSize()
     reportPTYSize()
@@ -229,12 +234,21 @@ final class GhosttySurfaceNSView: NSView, @MainActor NSTextInputClient,
     let surface = self.surface
     self.surface = nil
     ptySizeReporter = nil
+    hasAppliedSize = false
     return surface
+  }
+
+  /// Called after every `ghostty_surface_set_size`; the first one makes the grid real, so it is
+  /// asserted on the PTY then.
+  func didApplySurfaceSize() {
+    guard !hasAppliedSize else { return }
+    hasAppliedSize = true
+    reportPTYSize()
   }
 
   /// Re-asserts this surface's grid on its PTY; see `TerminalPTYSizeReporter`.
   func reportPTYSize() {
-    guard let surface, let ptySizeReporter else { return }
+    guard hasAppliedSize, let surface, let ptySizeReporter else { return }
     let size = ghostty_surface_size(surface)
     guard
       let grid = TerminalGridSize(

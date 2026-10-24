@@ -102,7 +102,7 @@ index 3b1a04d..ce69761 100644
      window = 0,
      tab = 1,
 diff --git a/source/src/termio/Exec.zig b/source/src/termio/Exec.zig
-index 2dfb1e5..4652938 100644
+index 2dfb1e5..c6115b1 100644
 --- a/source/src/termio/Exec.zig
 +++ b/source/src/termio/Exec.zig
 @@ -114,7 +114,10 @@ pub fn threadEnter(
@@ -138,7 +138,7 @@ index 2dfb1e5..4652938 100644
  const Subprocess = struct {
      const c = @import("posix_c");
  
-@@ -592,6 +605,10 @@ const Subprocess = struct {
+@@ -592,6 +605,16 @@ const Subprocess = struct {
      pty: ?Pty = null,
      process: ?Process = null,
  
@@ -146,10 +146,16 @@ index 2dfb1e5..4652938 100644
 +    /// moves into `pty` on start, after which `pty` closes it.
 +    external_io: ?apprt.surface.ExternalIo = null,
 +
++    /// Axo patch: an adopted PTY's program is already running at the size its
++    /// owner gave it. The first resize this thread processes is the surface's
++    /// provisional size from Surface.init (the default window size), so it
++    /// must not reach the PTY; the host asserts the first real grid itself.
++    skip_provisional_resize: bool = false,
++
      rt_pre_exec_info: Command.RtPreExecInfo,
      rt_post_fork_info: Command.RtPostForkInfo,
  
-@@ -624,6 +641,18 @@ const Subprocess = struct {
+@@ -624,6 +647,18 @@ const Subprocess = struct {
          errdefer arena.deinit();
          const alloc = arena.allocator();
  
@@ -168,7 +174,7 @@ index 2dfb1e5..4652938 100644
          // Get our env. If a default env isn't provided by the caller
          // then we get it ourselves.
          var env = cfg.env;
-@@ -871,6 +900,7 @@ const Subprocess = struct {
+@@ -871,6 +906,7 @@ const Subprocess = struct {
  
              .rt_pre_exec_info = cfg.rt_pre_exec_info,
              .rt_post_fork_info = cfg.rt_post_fork_info,
@@ -176,7 +182,7 @@ index 2dfb1e5..4652938 100644
  
              // Should be initialized with initTerminal call.
              .grid_size = .{},
-@@ -881,19 +911,41 @@ const Subprocess = struct {
+@@ -881,19 +917,40 @@ const Subprocess = struct {
      /// Clean up the subprocess. This will stop the subprocess if it is started.
      pub fn deinit(self: *Subprocess) void {
          self.stop();
@@ -194,10 +200,9 @@ index 2dfb1e5..4652938 100644
 +    fn startExternal(self: *Subprocess, external: apprt.surface.ExternalIo) StartFds {
 +        assert(self.pty == null);
 +        self.pty = .{ .master = external.pty_fd, .slave = -1 };
-+        // Give the shell our size now, as Pty.open would for a new process.
-+        self.resize(self.grid_size, self.screen_size) catch |err| {
-+            log.warn("error sizing external pty err={}", .{err});
-+        };
++        // Unlike Pty.open for a new process, leave the size alone; see
++        // skip_provisional_resize.
++        self.skip_provisional_resize = true;
 +        log.info("adopted external terminal io output_fd={} pty_fd={}", .{
 +            external.output_fd,
 +            external.pty_fd,
@@ -220,7 +225,19 @@ index 2dfb1e5..4652938 100644
  
          // This function is funny because on POSIX systems it can
          // fail in the forked process. This is flipped to true if
-@@ -1400,6 +1452,14 @@ pub const ReadThread = struct {
+@@ -1136,6 +1193,11 @@ const Subprocess = struct {
+         self.grid_size = grid_size;
+         self.screen_size = screen_size;
+ 
++        if (self.skip_provisional_resize) {
++            self.skip_provisional_resize = false;
++            return;
++        }
++
+         if (self.pty) |*pty| {
+             // It is theoretically possible for the grid or screen size to
+             // exceed u16, although the terminal in that case isn't very
+@@ -1400,6 +1462,14 @@ pub const ReadThread = struct {
          /// remaining batches and then exits.
          done: bool = false,
  
@@ -235,7 +252,7 @@ index 2dfb1e5..4652938 100644
          /// The buffer storage itself.
          bufs: [buffer_count][buffer_capacity]u8 = undefined,
      };
-@@ -1434,7 +1494,23 @@ pub const ReadThread = struct {
+@@ -1434,7 +1504,23 @@ pub const ReadThread = struct {
          }
  
          // Shared pipeline
@@ -260,7 +277,7 @@ index 2dfb1e5..4652938 100644
  
          // The idle self-pipe (see the Pipeline field docs). If we
          // can't create it we still run correctly, bridge polls are
-@@ -1667,6 +1743,7 @@ pub const ReadThread = struct {
+@@ -1667,6 +1753,7 @@ pub const ReadThread = struct {
                      error.InputOutput,
                      => {
                          log.info("io gather exiting", .{});
@@ -268,7 +285,7 @@ index 2dfb1e5..4652938 100644
                          fatal = true;
                          break :gather;
                      },
-@@ -1680,7 +1757,13 @@ pub const ReadThread = struct {
+@@ -1680,7 +1767,13 @@ pub const ReadThread = struct {
                  // This happens on macOS instead of WouldBlock when the
                  // child process dies. Deliver what we have and let the
                  // outer poll detect HUP.
@@ -283,7 +300,7 @@ index 2dfb1e5..4652938 100644
  
                  total += n;
  
-@@ -1722,6 +1805,7 @@ pub const ReadThread = struct {
+@@ -1722,6 +1815,7 @@ pub const ReadThread = struct {
              // read thread.
              if (pollfds[0].revents & posix.POLL.HUP != 0) {
                  log.info("pty fd closed, read thread exiting", .{});
@@ -291,7 +308,7 @@ index 2dfb1e5..4652938 100644
                  return;
              }
          }
-@@ -1749,6 +1833,8 @@ pub const ReadThread = struct {
+@@ -1749,6 +1843,8 @@ pub const ReadThread = struct {
      }
  
      /// Sets the fd to non-blocking mode. Returns false on failure.

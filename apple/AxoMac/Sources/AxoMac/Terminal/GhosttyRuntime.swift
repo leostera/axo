@@ -393,6 +393,7 @@ final class GhosttyRuntime {
     ghostty_surface_set_content_scale(surface, scale, scale)
     ghostty_surface_set_size(surface, width, height)
     recordCellSize(of: surface)
+    view.didApplySurfaceSize()
   }
 
   private func recordCellSize(of surface: ghostty_surface_t) {
@@ -443,6 +444,7 @@ final class GhosttyRuntime {
     guard width > 0, height > 0 else { return }
     ghostty_surface_set_size(surface, width, height)
     recordCellSize(of: surface)
+    view.didApplySurfaceSize()
   }
 
 
