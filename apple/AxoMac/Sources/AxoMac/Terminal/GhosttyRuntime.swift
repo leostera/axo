@@ -32,6 +32,9 @@ final class GhosttyRuntime {
   @ObservationIgnored private var terminalSurfaces: [ShellID: SurfaceEntry] = [:]
   @ObservationIgnored private var notificationTokens: [NSObjectProtocol] = []
   @ObservationIgnored private var lastReattach: [ShellID: ContinuousClock.Instant] = [:]
+  /// Where every open pane would be if its Session were shown; see `sizeOffscreenSurfaces`.
+  @ObservationIgnored private var offscreenPaneSizes: [ShellID: CGSize] = [:]
+  @ObservationIgnored private var offscreenBackingScale: CGFloat = NSScreen.main?.backingScaleFactor ?? 2
 
   init(initializeGhostty: Bool = true) {
     let storedSensitivity =
@@ -364,7 +367,38 @@ final class GhosttyRuntime {
     return true
   }
 
+  /// Keeps surfaces of Sessions that are not shown sized as if they were, so their programs lay
+  /// out for the current window and switching to them needs no resize. Sizing the libghostty
+  /// surface (not just the PTY) keeps its grid and the PTY in step; a hidden grid left at the old
+  /// size would wrap output written for the new one.
+  func sizeOffscreenSurfaces(layouts: [TerminalLayout], terminalAreaSize: CGSize, backingScale: CGFloat) {
+    guard terminalAreaSize.width > 0, terminalAreaSize.height > 0, backingScale > 0 else { return }
+    offscreenBackingScale = backingScale
+    offscreenPaneSizes = layouts.reduce(into: [:]) { sizes, layout in
+      sizes.merge(TerminalPaneGeometry.paneSizes(for: layout, in: terminalAreaSize)) { _, new in new }
+    }
+    for entry in terminalSurfaces.values where entry.view.window == nil {
+      sizeOffscreenSurface(entry.view)
+    }
+  }
+
+  private func sizeOffscreenSurface(_ view: GhosttySurfaceNSView) {
+    guard let surface = view.surface, let size = offscreenPaneSizes[view.shellID] else { return }
+    let scale = offscreenBackingScale
+    let width = UInt32(max(0, size.width * scale))
+    let height = UInt32(max(0, size.height * scale))
+    guard width > 0, height > 0 else { return }
+    ghostty_surface_set_content_scale(surface, scale, scale)
+    ghostty_surface_set_size(surface, width, height)
+  }
+
   func updateSurfaceSize(in view: GhosttySurfaceNSView, contentSize: CGSize) {
+    // Without a window AppKit has no backing scale to convert with; an offscreen surface (a
+    // hidden Session's pane, or one reattached while hidden) takes its size from the layout.
+    guard view.window != nil else {
+      sizeOffscreenSurface(view)
+      return
+    }
     // Match Ghostty's AppKit surface bridge: libghostty renders at framebuffer resolution,
     // so Core Animation must not rescale its layer when the window moves between displays.
     if let window = view.window {

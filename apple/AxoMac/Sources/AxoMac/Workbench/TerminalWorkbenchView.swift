@@ -9,6 +9,8 @@ struct TerminalWorkbenchView: View {
   @Binding var isPresentingWorkspaceCreation: Bool
   var daemonIsRunningOverride: Bool? = nil
   @Environment(GhosttyRuntime.self) private var ghostty
+  @Environment(\.displayScale) private var displayScale
+  @State private var terminalAreaSize: CGSize = .zero
   @AppStorage(AxoPreferenceKey.sidebarIsCollapsed) private var isSidebarCollapsed = false
   @State private var collapsedWorkspaceIDs = Set<String>()
   @State private var renameTarget: SidebarRenameTarget?
@@ -33,11 +35,19 @@ struct TerminalWorkbenchView: View {
 
       terminalContent
         .frame(maxWidth: .infinity, maxHeight: .infinity)
+        .onGeometryChange(for: CGSize.self, of: \.size) { terminalAreaSize = $0 }
         .safeAreaInset(edge: .top, spacing: 0) {
           if daemonIsRunning, case .reconnecting(let reason) = sessions.catalogConnection {
             CatalogReconnectingBanner(reason: reason)
           }
         }
+    }
+    .onChange(of: OffscreenSizing(area: terminalAreaSize, scale: displayScale, layouts: openLayouts), initial: true) {
+      _, sizing in
+      ghostty.sizeOffscreenSurfaces(
+        layouts: sizing.layouts.map(TerminalLayout.init),
+        terminalAreaSize: sizing.area,
+        backingScale: sizing.scale)
     }
     // Full-height content: the terminal reaches the window's top edge; the sidebar's
     // WindowDragStrip stands in for the hidden title bar.
@@ -391,6 +401,15 @@ struct TerminalWorkbenchView: View {
     .buttonStyle(.plain)
     .help(isCollapsed ? "Expand sidebar" : "Collapse sidebar")
     .accessibilityLabel(isCollapsed ? "Expand sidebar" : "Collapse sidebar")
+  }
+
+  private var openLayouts: [SessionLayout] { sessions.sessions.compactMap(\.layout) }
+
+  /// What offscreen panes are sized from: the terminal area, its scale, and every Session's layout.
+  private struct OffscreenSizing: Equatable {
+    var area: CGSize
+    var scale: CGFloat
+    var layouts: [SessionLayout]
   }
 
   private var presentedTerminalLayout: TerminalLayoutPresentation? {

@@ -8,7 +8,7 @@ struct TerminalSplitView<First: View, Second: View>: View {
   let first: First
   let second: Second
 
-  private let dividerThickness: CGFloat = 1
+  private let dividerThickness = TerminalPaneGeometry.dividerThickness
   private let dividerHitArea: CGFloat = 6
   private let minimumPaneSize: CGFloat = 10
   private let coordinateSpaceName: String
@@ -32,9 +32,8 @@ struct TerminalSplitView<First: View, Second: View>: View {
   var body: some View {
     GeometryReader { geometry in
       let size = geometry.size
-      let availableLength = max(0, axisLength(in: size) - dividerThickness)
-      let firstLength = availableLength * CGFloat(min(max(ratio, 0.01), 0.99))
-      let secondLength = availableLength - firstLength
+      let (firstLength, secondLength) = TerminalPaneGeometry.splitLengths(
+        axisLength: axisLength(in: size), ratio: ratio)
       let dividerPosition = firstLength + dividerThickness / 2
 
       ZStack(alignment: .topLeading) {
