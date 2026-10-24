@@ -48,7 +48,6 @@ swift_test(
         ["Tests/AxoMacTests/*.swift"],
         # These need a live daemon, packaged app or UI runner; see their own targets.
         exclude = [
-            "Tests/AxoMacTests/AxoVisualUITests.swift",
             "Tests/AxoMacTests/TerminalAppE2ETests.swift",
             "Tests/AxoMacTests/TerminalWorkbenchE2ETests.swift",
         ],
@@ -79,7 +78,7 @@ swift_test(
 swift_library(
     name = "AxoVisualUITestsLib",
     testonly = True,
-    srcs = ["Tests/AxoMacTests/AxoVisualUITests.swift"],
+    srcs = glob(["Tests/AxoVisualUITests/*.swift"]),
     copts = ["-swift-version", "5"],
     deps = [":AxoMac"],
 )
