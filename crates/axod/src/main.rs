@@ -112,12 +112,14 @@ fn attach_terminal(socket_path: &Path, shell_id: i64) -> io::Result<()> {
         ));
     }
 
-    let (mut control, replay, master) = connect_terminal_attachment(socket_path, shell_id)?;
+    // Attach protocol v2: output (replay, then live) arrives on the control socket from Axod's
+    // PTY pump. The PTY descriptor is only for input and resizing; reading it would steal output.
+    let (mut control, master) = connect_terminal_attachment(socket_path, shell_id)?;
+    control.set_read_timeout(None)?;
     let mut writer = File::from(duplicate_descriptor(master.as_raw_fd())?);
-    let mut reader = File::from(master);
     let _input_mode = TerminalInputModeGuard::raw(libc::STDIN_FILENO)
         .map_err(|error| io::Error::new(error.kind(), format!("set input mode: {error}")))?;
-    let _resize_forwarder = TerminalResizeForwarder::start(libc::STDIN_FILENO, reader.as_raw_fd())
+    let _resize_forwarder = TerminalResizeForwarder::start(libc::STDIN_FILENO, master.as_raw_fd())
         .map_err(|error| io::Error::new(error.kind(), format!("forward terminal size: {error}")))?;
 
     thread::Builder::new()
@@ -128,23 +130,14 @@ fn attach_terminal(socket_path: &Path, shell_id: i64) -> io::Result<()> {
         })?;
 
     let mut stdout = File::from(duplicate_descriptor(libc::STDOUT_FILENO)?);
-    stdout.write_all(&replay).map_err(|error| {
-        io::Error::new(error.kind(), format!("replay terminal history: {error}"))
-    })?;
-
-    let mut output = [0_u8; 8192];
+    let mut output = [0_u8; 64 * 1024];
     loop {
-        match reader.read(&mut output) {
+        match control.read(&mut output) {
             Ok(0) => return Ok(()),
-            Ok(count) => {
-                control.write_all(&output[..count]).map_err(|error| {
-                    io::Error::new(error.kind(), format!("record terminal output: {error}"))
-                })?;
-                stdout.write_all(&output[..count]).map_err(|error| {
-                    io::Error::new(error.kind(), format!("forward terminal output: {error}"))
-                })?;
-            }
-            Err(error) if error.raw_os_error() == Some(libc::EIO) => return Ok(()),
+            Ok(count) => stdout.write_all(&output[..count]).map_err(|error| {
+                io::Error::new(error.kind(), format!("forward terminal output: {error}"))
+            })?,
+            Err(error) if error.kind() == io::ErrorKind::Interrupted => continue,
             Err(error) => return Err(error),
         }
     }
@@ -286,7 +279,7 @@ fn duplicate_descriptor(descriptor: libc::c_int) -> io::Result<OwnedFd> {
 fn connect_terminal_attachment(
     socket_path: &Path,
     shell_id: i64,
-) -> io::Result<(UnixStream, Vec<u8>, OwnedFd)> {
+) -> io::Result<(UnixStream, OwnedFd)> {
     let deadline = Instant::now() + ATTACH_RETRY_WINDOW;
     loop {
         match open_terminal_attachment(socket_path, shell_id) {
@@ -294,9 +287,7 @@ fn connect_terminal_attachment(
             Err(error)
                 if matches!(
                     error.kind(),
-                    io::ErrorKind::AddrInUse
-                        | io::ErrorKind::WouldBlock
-                        | io::ErrorKind::UnexpectedEof
+                    io::ErrorKind::WouldBlock | io::ErrorKind::UnexpectedEof
                 ) && Instant::now() < deadline =>
             {
                 thread::sleep(ATTACH_RETRY_DELAY);
@@ -309,18 +300,20 @@ fn connect_terminal_attachment(
 fn open_terminal_attachment(
     socket_path: &Path,
     shell_id: i64,
-) -> io::Result<(UnixStream, Vec<u8>, OwnedFd)> {
+) -> io::Result<(UnixStream, OwnedFd)> {
     let mut control = UnixStream::connect(socket_path)?;
     control.set_read_timeout(Some(Duration::from_secs(5)))?;
     writeln!(control, "{shell_id}")?;
-    let replay = receive_terminal_output_history(&mut control)
-        .map_err(|error| io::Error::new(error.kind(), format!("read terminal history: {error}")))?;
+    receive_attachment_header(&mut control).map_err(|error| {
+        io::Error::new(error.kind(), format!("read attachment header: {error}"))
+    })?;
     let master = receive_pty_master(&control)
         .map_err(|error| io::Error::new(error.kind(), format!("receive PTY: {error}")))?;
-    Ok((control, replay, master))
+    Ok((control, master))
 }
 
-fn receive_terminal_output_history(control: &mut UnixStream) -> io::Result<Vec<u8>> {
+/// Returns the replay length; the replay itself follows the PTY descriptor on the stream.
+fn receive_attachment_header(control: &mut UnixStream) -> io::Result<u64> {
     let mut length_bytes = [0_u8; size_of::<u64>()];
     read_exact_with_progress(control, &mut length_bytes, "history length")?;
     let length = u64::from_be_bytes(length_bytes);
@@ -328,10 +321,6 @@ fn receive_terminal_output_history(control: &mut UnixStream) -> io::Result<Vec<u
         let mut code = [0_u8; 1];
         control.read_exact(&mut code)?;
         let (kind, message) = match code[0] {
-            1 => (
-                io::ErrorKind::AddrInUse,
-                "shell already has a terminal attachment",
-            ),
             2 => (io::ErrorKind::NotFound, "shell is no longer open"),
             4 => (
                 io::ErrorKind::WouldBlock,
@@ -347,13 +336,10 @@ fn receive_terminal_output_history(control: &mut UnixStream) -> io::Result<Vec<u
     if length > MAX_TERMINAL_OUTPUT_HISTORY_BYTES {
         return Err(io::Error::new(
             io::ErrorKind::InvalidData,
-            "daemon supplied an oversized terminal history",
+            "daemon announced an oversized terminal history",
         ));
     }
-
-    let mut replay = vec![0_u8; length as usize];
-    read_exact_with_progress(control, &mut replay, "history payload")?;
-    Ok(replay)
+    Ok(length)
 }
 
 fn read_exact_with_progress(
@@ -502,28 +488,12 @@ mod tests {
     use std::time::{SystemTime, UNIX_EPOCH};
 
     #[test]
-    fn terminal_attach_reports_an_existing_attachment() {
-        let (mut server, mut client) = UnixStream::pair().unwrap();
-        let response = thread::spawn(move || {
-            server
-                .write_all(&ATTACH_REJECTION_MARKER.to_be_bytes())
-                .unwrap();
-            server.write_all(&[1]).unwrap();
-        });
-
-        let error = receive_terminal_output_history(&mut client).unwrap_err();
-        assert_eq!(error.kind(), io::ErrorKind::AddrInUse);
-        assert_eq!(error.to_string(), "shell already has a terminal attachment");
-        response.join().unwrap();
-    }
-
-    #[test]
     fn terminal_attach_reports_truncated_history_progress() {
         let (mut client, mut server) = UnixStream::pair().unwrap();
         server.write_all(&[0, 0, 0]).unwrap();
         drop(server);
 
-        let error = receive_terminal_output_history(&mut client).unwrap_err();
+        let error = receive_attachment_header(&mut client).unwrap_err();
         assert_eq!(error.kind(), io::ErrorKind::UnexpectedEof);
         assert!(
             error
@@ -542,7 +512,7 @@ mod tests {
             server.write_all(&[4]).unwrap();
         });
 
-        let error = receive_terminal_output_history(&mut client).unwrap_err();
+        let error = receive_attachment_header(&mut client).unwrap_err();
         assert_eq!(error.kind(), io::ErrorKind::WouldBlock);
         assert_eq!(error.to_string(), "daemon is busy attaching terminals");
         response.join().unwrap();
@@ -573,8 +543,7 @@ mod tests {
             send_test_file_descriptor(second.as_raw_fd(), descriptor.as_raw_fd());
         });
 
-        let (control, replay, master) = connect_terminal_attachment(&socket_path, 1).unwrap();
-        assert!(replay.is_empty());
+        let (control, master) = connect_terminal_attachment(&socket_path, 1).unwrap();
         drop(master);
         drop(control);
         server.join().unwrap();
@@ -603,8 +572,7 @@ mod tests {
             send_test_file_descriptor(second.as_raw_fd(), descriptor.as_raw_fd());
         });
 
-        let (control, replay, master) = connect_terminal_attachment(&socket_path, 1).unwrap();
-        assert!(replay.is_empty());
+        let (control, master) = connect_terminal_attachment(&socket_path, 1).unwrap();
         drop(master);
         drop(control);
         server.join().unwrap();

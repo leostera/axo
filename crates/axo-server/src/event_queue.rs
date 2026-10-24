@@ -133,7 +133,11 @@ impl EventQueue {
     }
 
     /// Waits up to `timeout` without blocking a thread. An empty result means it timed out.
-    pub(crate) async fn wait(&self, timeout: Duration, max_events: usize) -> io::Result<Vec<Value>> {
+    pub(crate) async fn wait(
+        &self,
+        timeout: Duration,
+        max_events: usize,
+    ) -> io::Result<Vec<Value>> {
         let waiting = async {
             loop {
                 // Register before checking so a push between the check and the await still wakes us.
@@ -166,7 +170,10 @@ mod tests {
         assert_eq!(lagged, vec![json!({ "type": "subscription.lagged" })]);
         assert!(queue.wait_blocking(Duration::ZERO, 10).unwrap().is_empty());
         assert_eq!(queue.push(json!(4)), PushOutcome::Queued);
-        assert_eq!(queue.wait_blocking(Duration::ZERO, 10).unwrap(), vec![json!(4)]);
+        assert_eq!(
+            queue.wait_blocking(Duration::ZERO, 10).unwrap(),
+            vec![json!(4)]
+        );
     }
 
     #[test]

@@ -10,8 +10,8 @@ use std::sync::atomic::{AtomicBool, Ordering};
 use std::thread;
 use std::time::Duration;
 
-use jsonrpc_core::{IoHandler, Params};
 use ipc::BlockingMethods;
+use jsonrpc_core::{IoHandler, Params};
 use serde_json::json;
 
 mod credential;
@@ -21,6 +21,7 @@ mod pairing;
 mod process_inspection;
 mod relay;
 mod session;
+mod terminal_output;
 mod workspace_access;
 
 const MAX_SOCKET_PATH_BYTES: usize = 103;

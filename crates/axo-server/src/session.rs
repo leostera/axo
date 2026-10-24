@@ -17,6 +17,7 @@ use std::time::{Duration, Instant};
 use crate::event_queue::{EventQueue, PushOutcome};
 use crate::ipc::BlockingMethods;
 use crate::process_inspection;
+use crate::terminal_output::{NextOutput, OutputSubscriber, TerminalOutput, TerminalOutputSink};
 use crate::workspace_access::WorkspaceDirectoryAccess;
 use jsonrpc_core::{Error as RpcError, ErrorCode, IoHandler, Params};
 use rusqlite::{Connection, OptionalExtension, params};
@@ -28,7 +29,6 @@ const ATTACH_SOCKET_FILE: &str = "attach.sock";
 const PTY_ROWS: libc::c_ushort = 24;
 const PTY_COLUMNS: libc::c_ushort = 80;
 const REAPER_INTERVAL: Duration = Duration::from_millis(100);
-const MAX_TERMINAL_OUTPUT_HISTORY_BYTES: usize = 8 * 1024 * 1024;
 const ATTACH_REJECTION_MARKER: u64 = u64::MAX;
 const MAX_LAYOUT_DEPTH: usize = 64;
 const MAX_LAYOUT_NODES: usize = 255;
@@ -40,6 +40,12 @@ const ATTACH_STOP_POLL_INTERVAL: Duration = Duration::from_millis(100);
 const PENDING_FOCUS_LIFETIME: Duration = Duration::from_secs(10);
 const MAX_CONCURRENT_TERMINAL_ATTACHMENTS: usize = 256;
 const ATTACH_REQUEST_TIMEOUT: Duration = Duration::from_secs(3);
+/// A client that cannot take its replay this fast is stalled; it can reattach.
+const ATTACH_REPLAY_WRITE_TIMEOUT: Duration = Duration::from_secs(2);
+/// Live writes tolerate a briefly busy UI; the backlog cap handles slower clients.
+const ATTACH_LIVE_WRITE_TIMEOUT: Duration = Duration::from_secs(10);
+const ATTACH_SEND_BUFFER_BYTES: libc::c_int = 256 * 1024;
+const TERMINAL_INPUT_WRITE_TIMEOUT: Duration = Duration::from_secs(5);
 const MAX_ATTACH_SHELL_ID_DIGITS: usize = 19;
 const DEFAULT_AGENT_COMMAND: &str = "pi";
 const MAX_COMMAND_LINE_BYTES: usize = 4096;
@@ -56,10 +62,10 @@ const MAX_PI_BRIDGE_RECORD_BYTES: usize = 8 * 1024 * 1024;
 const MAX_PI_BRIDGE_SOCKET_PATH_BYTES: usize = 100;
 
 #[derive(Clone, Copy, Debug, Eq, Hash, PartialEq)]
-struct SessionId(i64);
+pub(crate) struct SessionId(pub(crate) i64);
 
 #[derive(Clone, Copy, Debug, Eq, Hash, PartialEq)]
-struct ShellId(i64);
+pub(crate) struct ShellId(pub(crate) i64);
 
 // A pane survives restarts; its runtime identity does not. Async callbacks must
 // carry this identity rather than applying to whichever process now owns a pane.
@@ -442,13 +448,21 @@ struct RunningShell {
     wait_error_reported: bool,
     master: OwnedFd,
     slave_device: String,
-    attached: bool,
-    output_history: TerminalOutputHistory,
-    output_sequence: u64,
+    /// Live terminal attachments. Only Axod's output pump reads `master`.
+    attachments: usize,
+    output: Arc<TerminalOutput>,
     last_input_sequence: Option<u64>,
     _writer_lock: Option<OwnedFd>,
     pi_bridge_socket: Option<PiBridgeSocketPath>,
     pi_bridge_token: Option<String>,
+}
+
+impl Drop for RunningShell {
+    fn drop(&mut self) {
+        // Removing a shell from the catalog ends its output stream even if a stray process
+        // still holds the PTY slave open.
+        self.output.stop();
+    }
 }
 
 struct AttachmentPermit(Arc<AtomicUsize>);
@@ -479,39 +493,6 @@ impl Drop for AttachmentPermit {
     }
 }
 
-#[derive(Debug)]
-struct TerminalOutputHistory {
-    bytes: Vec<u8>,
-    complete: bool,
-}
-
-impl TerminalOutputHistory {
-    fn new() -> Self {
-        Self {
-            bytes: Vec::new(),
-            complete: true,
-        }
-    }
-
-    fn record(&mut self, output: &[u8]) {
-        if !self.complete {
-            return;
-        }
-
-        if self.bytes.len().saturating_add(output.len()) > MAX_TERMINAL_OUTPUT_HISTORY_BYTES {
-            self.bytes.clear();
-            self.complete = false;
-            return;
-        }
-
-        self.bytes.extend_from_slice(output);
-    }
-
-    fn replay(&self) -> &[u8] {
-        if self.complete { &self.bytes } else { &[] }
-    }
-}
-
 struct SessionState {
     database: Connection,
     agent_command: AgentCommand,
@@ -521,6 +502,22 @@ struct SessionState {
     shutting_down: bool,
     pi_activity: HashMap<SessionId, PiRuntimeActivity>,
     initial_pwd: PathBuf,
+    output_sink: Arc<dyn TerminalOutputSink>,
+}
+
+impl SessionState {
+    /// The only way a process enters the catalog: binds its output stream to its pane identity
+    /// so `terminal.output` events start flowing.
+    fn install_running(
+        &mut self,
+        shell_id: ShellId,
+        running: RunningShell,
+    ) -> Option<RunningShell> {
+        running
+            .output
+            .bind(running.session_id, shell_id, Arc::clone(&self.output_sink));
+        self.running.insert(shell_id, running)
+    }
 }
 
 #[derive(Debug)]
@@ -799,10 +796,75 @@ pub struct SessionManager {
     stop_workers: Arc<AtomicBool>,
     workers: Mutex<Vec<JoinHandle<()>>>,
     subscriptions: Mutex<HashMap<String, Arc<LocalSubscription>>>,
-    subscribers: Mutex<Vec<LocalSubscriber>>,
+    subscribers: EventBus,
     next_subscription_id: AtomicU64,
     pending_resume_focus: Mutex<Option<(SessionId, Instant)>>,
     workspace_access: Mutex<HashMap<String, WorkspaceDirectoryAccess>>,
+}
+
+/// Local event subscribers, shared with every shell's output pump.
+#[derive(Clone, Default)]
+struct EventBus(Arc<Mutex<Vec<LocalSubscriber>>>);
+
+impl EventBus {
+    fn lock(&self) -> std::sync::LockResult<std::sync::MutexGuard<'_, Vec<LocalSubscriber>>> {
+        self.0.lock()
+    }
+
+    /// Returns how many subscribers accepted the event.
+    fn publish(&self, event: Value) -> usize {
+        let event_type = event["type"].as_str().unwrap_or_default();
+        let session_id = event.get("sessionId").and_then(Value::as_i64).or_else(|| {
+            event
+                .get("session")
+                .and_then(|session| session["id"].as_i64())
+        });
+        let Ok(mut subscribers) = self.lock() else {
+            return 0;
+        };
+        let mut delivered = 0;
+        subscribers.retain(|subscriber| {
+            if !subscriber.wants(event_type, session_id) {
+                return true;
+            }
+            match subscriber.queue.push(event.clone()) {
+                PushOutcome::Queued => {
+                    delivered += 1;
+                    true
+                }
+                PushOutcome::Lagged => true,
+                PushOutcome::Closed => false,
+            }
+        });
+        delivered
+    }
+}
+
+impl TerminalOutputSink for EventBus {
+    fn publish_terminal_output(
+        &self,
+        session_id: SessionId,
+        shell_id: ShellId,
+        sequence: u64,
+        output: &[u8],
+    ) {
+        // Most of the time nobody streams terminal bytes; skip the base64 work then.
+        let wanted = self.lock().is_ok_and(|subscribers| {
+            subscribers
+                .iter()
+                .any(|subscriber| subscriber.wants("terminal.output", Some(session_id.0)))
+        });
+        if !wanted {
+            return;
+        }
+        self.publish(json!({
+            "type": "terminal.output",
+            "sessionId": session_id.0,
+            "shellId": shell_id.0,
+            "sequence": sequence,
+            "data": encode_base64(output),
+        }));
+    }
 }
 
 struct LocalSubscriber {
@@ -810,6 +872,14 @@ struct LocalSubscriber {
     session_id: Option<SessionId>,
     scope: EventScope,
     queue: Arc<EventQueue>,
+}
+
+impl LocalSubscriber {
+    fn wants(&self, event_type: &str, session_id: Option<i64>) -> bool {
+        self.session_id
+            .is_none_or(|expected| session_id == Some(expected.0))
+            && self.scope.accepts(event_type)
+    }
 }
 
 /// Which events a subscription carries. High-volume stream events (`terminal.output`, `pi.event`)
@@ -1011,6 +1081,7 @@ impl SessionManager {
         ensure_pi_bridge_socket_paths(&database, &pi_session_directory)?;
 
         let workspace_access = restore_workspace_accesses(&database)?;
+        let subscribers = EventBus::default();
         let manager = Arc::new(Self {
             state: Mutex::new(SessionState {
                 database,
@@ -1021,6 +1092,7 @@ impl SessionManager {
                 shutting_down: false,
                 pi_activity: HashMap::new(),
                 initial_pwd,
+                output_sink: Arc::new(subscribers.clone()),
             }),
             attach_socket_path,
             pi_session_directory,
@@ -1029,7 +1101,7 @@ impl SessionManager {
             stop_workers: Arc::new(AtomicBool::new(false)),
             workers: Mutex::new(Vec::new()),
             subscriptions: Mutex::new(HashMap::new()),
-            subscribers: Mutex::new(Vec::new()),
+            subscribers,
             next_subscription_id: AtomicU64::new(1),
             pending_resume_focus: Mutex::new(None),
             workspace_access: Mutex::new(workspace_access),
@@ -1615,7 +1687,7 @@ impl SessionManager {
                     }
                 };
                 if let Some(running) = running {
-                    state.running.insert(shell_id, running);
+                    state.install_running(shell_id, running);
                 }
             }
         }
@@ -1907,7 +1979,12 @@ impl SessionManager {
 
     /// Blocks up to `timeout` for the first event, then drains up to `max_events` already queued.
     /// For the relay thread and tests; RPC uses `next_events_async`.
-    fn next_events(&self, id: &str, timeout: Duration, max_events: usize) -> io::Result<Vec<Value>> {
+    fn next_events(
+        &self,
+        id: &str,
+        timeout: Duration,
+        max_events: usize,
+    ) -> io::Result<Vec<Value>> {
         let subscription = self.subscription(id)?;
         let events = subscription.queue.wait_blocking(timeout, max_events);
         subscription.mark_polled();
@@ -1949,34 +2026,7 @@ impl SessionManager {
 
     /// Returns how many subscribers accepted the event.
     fn publish_event(&self, event: Value) -> usize {
-        let event_type = event["type"].as_str().unwrap_or_default();
-        let session_id = event.get("sessionId").and_then(Value::as_i64).or_else(|| {
-            event
-                .get("session")
-                .and_then(|session| session["id"].as_i64())
-        });
-        let Ok(mut subscribers) = self.subscribers.lock() else {
-            return 0;
-        };
-        let mut delivered = 0;
-        subscribers.retain(|subscriber| {
-            if subscriber
-                .session_id
-                .is_some_and(|expected| session_id != Some(expected.0))
-                || !subscriber.scope.accepts(event_type)
-            {
-                return true;
-            }
-            match subscriber.queue.push(event.clone()) {
-                PushOutcome::Queued => {
-                    delivered += 1;
-                    true
-                }
-                PushOutcome::Lagged => true,
-                PushOutcome::Closed => false,
-            }
-        });
-        delivered
+        self.subscribers.publish(event)
     }
 
     /// Remote-access state changed; a catalog event so Settings never polls for it.
@@ -2654,9 +2704,7 @@ impl SessionManager {
             // Build metadata after installing the process; only this reservation
             // may replace the unavailable entry, never a concurrent newer launch.
             state.unavailable_pi_shells.remove(&shell_id);
-            state
-                .running
-                .insert(shell_id, pending.take().expect("pending Pi launch"));
+            state.install_running(shell_id, pending.take().expect("pending Pi launch"));
             state.pi_activity.remove(&session_id);
             session_metadata(&state, session_id, &self.attach_socket_path)
         })();
@@ -2858,60 +2906,28 @@ impl SessionManager {
         Ok(())
     }
 
-    fn duplicate_master(
-        &self,
-        id: ShellId,
-    ) -> io::Result<(OwnedFd, Vec<u8>, SessionId, RuntimeId)> {
+    /// Registers one more attachment and hands out a PTY descriptor for input, resizing, and
+    /// termios/foreground queries. Output comes from `TerminalOutput`, never from this descriptor.
+    fn attach_shell(&self, id: ShellId) -> io::Result<ShellAttachment> {
         let mut state = self.lock_state()?;
         let running = state
             .running
             .get_mut(&id)
             .ok_or_else(|| io::Error::new(io::ErrorKind::NotFound, "shell is not open"))?;
-        if running.attached {
-            return Err(io::Error::new(
-                io::ErrorKind::AddrInUse,
-                "shell already has a PTY attachment",
-            ));
-        }
+        // SAFETY: fcntl duplicates the live PTY master; the result is owned below.
         let fd = unsafe { libc::fcntl(running.master.as_raw_fd(), libc::F_DUPFD_CLOEXEC, 0) };
         if fd == -1 {
             return Err(io::Error::last_os_error());
         }
-        running.attached = true;
-        let replay = running.output_history.replay().to_vec();
-        let session_id = running.session_id;
-        // SAFETY: fcntl returned a new, owned descriptor.
-        Ok((
-            unsafe { OwnedFd::from_raw_fd(fd) },
-            replay,
-            session_id,
-            running.runtime_id,
-        ))
-    }
-
-    fn record_terminal_output(&self, id: ShellId, runtime_id: RuntimeId, output: &[u8]) {
-        let event = {
-            let Ok(mut state) = self.state.lock() else {
-                return;
-            };
-            let Some(running) = state.running.get_mut(&id) else {
-                return;
-            };
-            if running.runtime_id != runtime_id {
-                return;
-            }
-            running.output_history.record(output);
-            let sequence = running.output_sequence;
-            running.output_sequence = running.output_sequence.saturating_add(1);
-            json!({
-                "type": "terminal.output",
-                "sessionId": running.session_id.0,
-                "shellId": id.0,
-                "sequence": sequence,
-                "data": encode_base64(output),
-            })
-        };
-        self.publish_event(event);
+        running.attachments += 1;
+        Ok(ShellAttachment {
+            // SAFETY: fcntl returned a new, owned descriptor.
+            master: unsafe { OwnedFd::from_raw_fd(fd) },
+            output: Arc::clone(&running.output),
+            session_id: running.session_id,
+            runtime_id: running.runtime_id,
+            first: running.attachments == 1,
+        })
     }
 
     fn mark_detached(&self, id: ShellId, runtime_id: RuntimeId) {
@@ -2925,7 +2941,10 @@ impl SessionManager {
             if running.runtime_id != runtime_id {
                 return;
             }
-            running.attached = false;
+            running.attachments = running.attachments.saturating_sub(1);
+            if running.attachments > 0 {
+                return;
+            }
             running.session_id
         };
         self.publish_shell_activity(session_id, id, "detached");
@@ -3189,7 +3208,7 @@ impl SessionManager {
                     PaneRole::Terminal => {
                         match spawn_shell(&state.shell_command, session_id, &record.initial_pwd) {
                             Ok(shell) => {
-                                state.running.insert(shell_id, shell);
+                                state.install_running(shell_id, shell);
                             }
                             Err(error) => {
                                 log::warn!(
@@ -3830,7 +3849,7 @@ fn create_workspace_session(
             return Err(error);
         }
     };
-    state.running.insert(pane, running);
+    state.install_running(pane, running);
     session_metadata(state, session_id, attach_socket_path)
 }
 
@@ -3893,7 +3912,7 @@ fn create_shell(
         }
     };
     let metadata = shell_metadata(shell_id, &running, attach_socket_path);
-    state.running.insert(shell_id, running);
+    state.install_running(shell_id, running);
     Ok(metadata)
 }
 
@@ -4662,8 +4681,15 @@ fn spawn_shell(
         });
     }
 
-    let child = command.spawn()?;
+    let mut child = command.spawn()?;
     drop(slave);
+    let output = match TerminalOutput::start(&master) {
+        Ok(output) => output,
+        Err(error) => {
+            terminate_shell(&mut child);
+            return Err(error);
+        }
+    };
     Ok(RunningShell {
         runtime_id: RuntimeId::new(),
         session_id,
@@ -4674,9 +4700,8 @@ fn spawn_shell(
         wait_error_reported: false,
         master,
         slave_device,
-        attached: false,
-        output_history: TerminalOutputHistory::new(),
-        output_sequence: 0,
+        attachments: 0,
+        output,
         last_input_sequence: None,
         _writer_lock: None,
         pi_bridge_socket: None,
@@ -5632,8 +5657,15 @@ fn spawn_pi(
             Ok(())
         });
     }
-    let child = command.spawn()?;
+    let mut child = command.spawn()?;
     drop(slave);
+    let output = match TerminalOutput::start(&master) {
+        Ok(output) => output,
+        Err(error) => {
+            terminate_shell(&mut child);
+            return Err(error);
+        }
+    };
     Ok(RunningShell {
         runtime_id: RuntimeId::new(),
         session_id: *session_id,
@@ -5644,9 +5676,8 @@ fn spawn_pi(
         wait_error_reported: false,
         master,
         slave_device,
-        attached: false,
-        output_history: TerminalOutputHistory::new(),
-        output_sequence: 0,
+        attachments: 0,
+        output,
         last_input_sequence: None,
         _writer_lock: Some(lock),
         pi_bridge_socket: Some(bridge_socket.clone()),
@@ -6154,13 +6185,8 @@ fn signal_shell(process_group: libc::pid_t, process_id: libc::pid_t, signal: lib
 fn process_name(process_id: libc::pid_t) -> Option<String> {
     let mut buffer = [0u8; 256];
     // SAFETY: the buffer is writable for its full length; proc_name NUL-terminates within it.
-    let length = unsafe {
-        libc::proc_name(
-            process_id,
-            buffer.as_mut_ptr().cast(),
-            buffer.len() as u32,
-        )
-    };
+    let length =
+        unsafe { libc::proc_name(process_id, buffer.as_mut_ptr().cast(), buffer.len() as u32) };
     if length <= 0 {
         return None;
     }
@@ -6196,6 +6222,23 @@ fn wait_for_shell_exit(child: &mut Child, timeout: Duration) -> io::Result<bool>
         }
     }
     Ok(child.try_wait()?.is_some())
+}
+
+struct ShellAttachment {
+    master: OwnedFd,
+    output: Arc<TerminalOutput>,
+    session_id: SessionId,
+    runtime_id: RuntimeId,
+    first: bool,
+}
+
+/// Detaches the subscriber when the attachment worker exits for any reason.
+struct OutputSubscription(Arc<OutputSubscriber>);
+
+impl Drop for OutputSubscription {
+    fn drop(&mut self) {
+        self.0.detach();
+    }
 }
 
 struct TerminalAttachmentLease<'a> {
@@ -6293,23 +6336,34 @@ fn wait_for_attachment_request_data(file_descriptor: RawFd, deadline: Instant) -
     }
 }
 
+/// Attach protocol (v2). The client writes its shell ID and a newline. Axod answers with either
+/// `u64::MAX` and a one-byte rejection code, or:
+///
+/// 1. the replay length as a big-endian `u64`,
+/// 2. a one-byte message carrying the PTY master descriptor (`SCM_RIGHTS`), then
+/// 3. the replay followed by live output, as raw bytes, until the shell's PTY reaches end of file.
+///
+/// The descriptor is for input, resizing, and termios/foreground queries only; reading it would
+/// steal output from Axod's pump. Closing the socket detaches. End of file means the shell exited
+/// or the attachment fell too far behind; clients check the catalog to tell which.
 fn handle_attachment(
     mut stream: UnixStream,
     manager: Weak<SessionManager>,
     _permit: AttachmentPermit,
 ) {
     let started_at = Instant::now();
-    // Accepted sockets can inherit nonblocking mode on macOS. Use bounded
-    // blocking I/O so write_all cannot abandon a partially sent replay on EAGAIN.
+    // Accepted sockets can inherit nonblocking mode on macOS. Use bounded blocking I/O; any
+    // failed write ends the attachment, so a partial write can never corrupt a live stream.
     if stream
         .set_nonblocking(false)
         .and_then(|()| stream.set_read_timeout(Some(Duration::from_millis(200))))
-        .and_then(|()| stream.set_write_timeout(Some(Duration::from_secs(2))))
+        .and_then(|()| stream.set_write_timeout(Some(ATTACH_REPLAY_WRITE_TIMEOUT)))
         .is_err()
     {
         log::warn!("event=session.attach_rejected reason=socket_setup");
         return;
     }
+    set_send_buffer(&stream, ATTACH_SEND_BUFFER_BYTES);
     let id = match read_attachment_request(&mut stream) {
         Ok(id) => id,
         Err(error) => {
@@ -6324,7 +6378,7 @@ fn handle_attachment(
     let Some(manager) = manager.upgrade() else {
         return;
     };
-    let (master, replay, session_id, runtime_id) = match manager.duplicate_master(id) {
+    let attachment = match manager.attach_shell(id) {
         Ok(attachment) => attachment,
         Err(error) => {
             log::warn!(
@@ -6342,25 +6396,40 @@ fn handle_attachment(
             return;
         }
     };
+    let ShellAttachment {
+        master,
+        output,
+        session_id,
+        runtime_id,
+        first,
+    } = attachment;
     let _attachment_lease = TerminalAttachmentLease {
         manager: &manager,
         shell_id: id,
         runtime_id,
     };
+    // Subscribe before replying: the replay plus queued chunks are then exactly the PTY stream.
+    let overflow_shutdown = stream.try_clone().ok().map(OwnedFd::from);
+    let (replay, subscriber) = output.subscribe(overflow_shutdown);
+    let subscription = OutputSubscription(subscriber);
+    drop(output);
+    if first {
+        manager.publish_shell_activity(session_id, id, "attached");
+    }
 
-    manager.publish_shell_activity(session_id, id, "attached");
-    let replay_length = (replay.len() as u64).to_be_bytes();
-    let mut phase = "history_header";
+    let mut phase = "replay_header";
     let response = stream
-        .write_all(&replay_length)
-        .and_then(|()| {
-            phase = "history";
-            stream.write_all(&replay)
-        })
+        .write_all(&(replay.len() as u64).to_be_bytes())
         .and_then(|()| {
             phase = "pty_descriptor";
             send_file_descriptor(stream.as_raw_fd(), master.as_raw_fd())
-        });
+        })
+        .and_then(|()| {
+            phase = "replay";
+            stream.write_all(&replay)
+        })
+        .and_then(|()| stream.set_write_timeout(Some(ATTACH_LIVE_WRITE_TIMEOUT)));
+    drop(master);
     if let Err(error) = response {
         log::warn!(
             "event=session.attach_failed session_id={} shell_id={} phase={} replay_bytes={} elapsed_ms={} error_kind={:?}",
@@ -6380,47 +6449,82 @@ fn handle_attachment(
         replay.len(),
         started_at.elapsed().as_millis()
     );
+    drop(replay);
 
-    // The attachment helper tees PTY output back over this control connection
-    // so the next Ghostty surface can replay the terminal's complete VT stream.
-    let mut output = [0_u8; 8192];
-    while !manager.stop_workers.load(Ordering::Relaxed) {
-        let current = manager
-            .state
-            .lock()
-            .map(|state| {
-                state
-                    .running
-                    .get(&id)
-                    .is_some_and(|shell| shell.runtime_id == runtime_id)
-            })
-            .unwrap_or(false);
-        if !current {
-            break;
+    let mut delivered = 0_u64;
+    let reason = 'stream: loop {
+        if manager.stop_workers.load(Ordering::Relaxed) {
+            break "shutdown";
         }
-        match stream.read(&mut output) {
-            Ok(0) => break,
-            Ok(count) => manager.record_terminal_output(id, runtime_id, &output[..count]),
-            Err(error) if error.kind() == io::ErrorKind::Interrupted => continue,
-            Err(error)
-                if matches!(
-                    error.kind(),
-                    io::ErrorKind::WouldBlock | io::ErrorKind::TimedOut
-                ) =>
-            {
-                thread::sleep(Duration::from_millis(20));
+        match subscription.0.next(ATTACH_STOP_POLL_INTERVAL) {
+            NextOutput::Chunks(chunks) => {
+                for chunk in chunks {
+                    if stream.write_all(&chunk).is_err() {
+                        break 'stream "client_write_failed";
+                    }
+                    delivered = delivered.saturating_add(chunk.len() as u64);
+                }
             }
-            Err(error) => {
-                log::debug!(
-                    "event=session.attach_stream_ended session_id={} shell_id={} elapsed_ms={} error_kind={:?}",
-                    session_id.0,
-                    id.0,
-                    started_at.elapsed().as_millis(),
-                    error.kind()
-                );
-                break;
+            NextOutput::Idle => {
+                if attachment_peer_closed(&mut stream) {
+                    break "client_closed";
+                }
             }
+            NextOutput::Ended => break "shell_output_ended",
+            NextOutput::Overflowed => break "client_overflowed",
+            NextOutput::Detached => break "detached",
         }
+    };
+    let _ = stream.shutdown(std::net::Shutdown::Both);
+    let level = if reason == "client_overflowed" {
+        log::Level::Warn
+    } else {
+        log::Level::Info
+    };
+    log::log!(
+        level,
+        "event=session.attach_ended session_id={} shell_id={} reason={} bytes={} elapsed_ms={}",
+        session_id.0,
+        id.0,
+        reason,
+        delivered,
+        started_at.elapsed().as_millis()
+    );
+}
+
+/// Clients never write after their request; readable means closed (or a protocol violation,
+/// which is discarded).
+fn attachment_peer_closed(stream: &mut UnixStream) -> bool {
+    let mut descriptor = libc::pollfd {
+        fd: stream.as_raw_fd(),
+        events: libc::POLLIN,
+        revents: 0,
+    };
+    // SAFETY: descriptor points to one initialized pollfd for this live socket.
+    if unsafe { libc::poll(&mut descriptor, 1, 0) } <= 0 {
+        return false;
+    }
+    let mut scratch = [0_u8; 4096];
+    match stream.read(&mut scratch) {
+        Ok(0) => true,
+        Ok(_) => false,
+        Err(error) => !matches!(
+            error.kind(),
+            io::ErrorKind::Interrupted | io::ErrorKind::WouldBlock | io::ErrorKind::TimedOut
+        ),
+    }
+}
+
+fn set_send_buffer(stream: &UnixStream, bytes: libc::c_int) {
+    // SAFETY: setsockopt borrows this live socket and an initialized integer.
+    unsafe {
+        libc::setsockopt(
+            stream.as_raw_fd(),
+            libc::SOL_SOCKET,
+            libc::SO_SNDBUF,
+            (&bytes as *const libc::c_int).cast(),
+            std::mem::size_of_val(&bytes) as _,
+        );
     }
 }
 
@@ -6687,10 +6791,15 @@ fn write_fd_all(fd: RawFd, mut bytes: &[u8]) -> io::Result<()> {
         let written = unsafe { libc::write(fd, bytes.as_ptr().cast(), bytes.len()) };
         if written == -1 {
             let error = io::Error::last_os_error();
-            if error.kind() == io::ErrorKind::Interrupted {
-                continue;
+            match error.kind() {
+                io::ErrorKind::Interrupted => continue,
+                // An attached client may have set O_NONBLOCK on the shared PTY file description.
+                io::ErrorKind::WouldBlock => {
+                    wait_writable(fd, TERMINAL_INPUT_WRITE_TIMEOUT)?;
+                    continue;
+                }
+                _ => return Err(error),
             }
-            return Err(error);
         }
         if written == 0 {
             return Err(io::Error::new(
@@ -6701,6 +6810,24 @@ fn write_fd_all(fd: RawFd, mut bytes: &[u8]) -> io::Result<()> {
         bytes = &bytes[written as usize..];
     }
     Ok(())
+}
+
+fn wait_writable(fd: RawFd, timeout: Duration) -> io::Result<()> {
+    let mut descriptor = libc::pollfd {
+        fd,
+        events: libc::POLLOUT,
+        revents: 0,
+    };
+    let timeout_millis = timeout.as_millis().clamp(1, libc::c_int::MAX as u128) as libc::c_int;
+    // SAFETY: descriptor points to one initialized pollfd for a live descriptor.
+    match unsafe { libc::poll(&mut descriptor, 1, timeout_millis) } {
+        -1 => Err(io::Error::last_os_error()),
+        0 => Err(io::Error::new(
+            io::ErrorKind::TimedOut,
+            "terminal is not accepting input",
+        )),
+        _ => Ok(()),
+    }
 }
 
 fn unix_timestamp() -> i64 {
@@ -6723,6 +6850,14 @@ mod tests {
                 let _ = self.0.kill();
                 let _ = self.0.wait();
             }
+        }
+    }
+
+    struct RunningShellGuard(RunningShell);
+
+    impl Drop for RunningShellGuard {
+        fn drop(&mut self) {
+            terminate_shell(&mut self.0.child);
         }
     }
 
@@ -6938,8 +7073,8 @@ mod tests {
             .find(|session| session.id != fixture.session_id)
             .unwrap();
         manager.rename_session(home.id, "Still responsive").unwrap();
-        let (_, _, _, runtime) = manager.duplicate_master(home.shells[0].id).unwrap();
-        manager.mark_detached(home.shells[0].id, runtime);
+        let attachment = manager.attach_shell(home.shells[0].id).unwrap();
+        manager.mark_detached(home.shells[0].id, attachment.runtime_id);
         let error = manager
             .restart_unavailable_pi(
                 fixture.session_id,
@@ -7561,7 +7696,7 @@ mod tests {
         )
         .unwrap();
         replacement.role = PaneRole::Pi;
-        replacement.attached = true;
+        replacement.attachments = 1;
         let binding = PiRuntimeBinding {
             runtime_id: replacement.runtime_id,
             ..old_binding
@@ -7569,8 +7704,7 @@ mod tests {
         let mut old = manager
             .lock_state()
             .unwrap()
-            .running
-            .insert(shell_id, replacement)
+            .install_running(shell_id, replacement)
             .unwrap();
         terminate_shell(&mut old.child);
 
@@ -7583,10 +7717,8 @@ mod tests {
         manager
             .persist_pi_session_id(binding, &session.session_uuid, "replacement")
             .unwrap();
-        manager.record_terminal_output(shell_id, binding.runtime_id, b"new screen");
-
+        // A stale attachment's release must not detach the replacement's clients.
         drop(old_attachment);
-        manager.record_terminal_output(shell_id, old_runtime, b"stale screen");
         manager.set_pi_connection(old_binding, false).unwrap();
         assert!(
             !manager
@@ -7622,12 +7754,7 @@ mod tests {
         );
 
         let state = manager.lock_state().unwrap();
-        assert!(state.running[&shell_id].attached);
-        assert_eq!(
-            state.running[&shell_id].output_history.replay(),
-            b"new screen"
-        );
-        assert_eq!(state.running[&shell_id].output_sequence, 1);
+        assert_eq!(state.running[&shell_id].attachments, 1);
         assert!(state.pi_activity[&session.id].connected);
         assert!(state.pi_activity[&session.id].working);
         let updated = session_metadata(&state, session.id, &manager.attach_socket_path).unwrap();
@@ -7691,10 +7818,15 @@ mod tests {
         let shell_id = session.shells[0].id;
         {
             let state = manager.lock_state().unwrap();
-            let master = state.running[&shell_id].master.as_raw_fd();
-            write_fd_all(master, b"trap '' TERM; printf '%s%s\\n' AXO_STOP_ READY\n").unwrap();
+            let running = &state.running[&shell_id];
+            let (_, output) = running.output.subscribe(None);
+            write_fd_all(
+                running.master.as_raw_fd(),
+                b"trap '' TERM; printf '%s%s\\n' AXO_STOP_ READY\n",
+            )
+            .unwrap();
             assert!(read_until(
-                master,
+                &output,
                 b"AXO_STOP_READY",
                 Duration::from_secs(3)
             ));
@@ -7744,7 +7876,7 @@ mod tests {
         });
         let mut header = [0; 8];
         client.read_exact(&mut header).unwrap();
-        assert_eq!(u64::from_be_bytes(header), 0);
+        assert_ne!(u64::from_be_bytes(header), u64::MAX);
         manager.shutdown();
         completed.recv_timeout(Duration::from_secs(3)).unwrap();
         worker.join().unwrap();
@@ -7753,35 +7885,14 @@ mod tests {
     }
 
     #[test]
-    fn stalled_replay_releases_the_attachment_lease() {
+    fn a_stalled_client_is_released_without_blocking_the_shell() {
         let fixture = LifecycleFixture::new();
         let manager = &fixture.manager;
         manager.stop_workers.store(false, Ordering::Relaxed);
         let session = manager.list_sessions().unwrap().remove(0);
         let shell_id = session.shells[0].id;
-        manager
-            .lock_state()
-            .unwrap()
-            .running
-            .get_mut(&shell_id)
-            .unwrap()
-            .output_history
-            .record(&vec![b'x'; MAX_TERMINAL_OUTPUT_HISTORY_BYTES]);
+        let output = Arc::clone(&manager.lock_state().unwrap().running[&shell_id].output);
         let (mut client, server) = UnixStream::pair().unwrap();
-        let buffer_size: libc::c_int = 4096;
-        // SAFETY: setsockopt borrows the fixture socket and initialized size.
-        assert_eq!(
-            unsafe {
-                libc::setsockopt(
-                    server.as_raw_fd(),
-                    libc::SOL_SOCKET,
-                    libc::SO_SNDBUF,
-                    (&buffer_size as *const libc::c_int).cast(),
-                    std::mem::size_of_val(&buffer_size) as _,
-                )
-            },
-            0
-        );
         writeln!(client, "{}", shell_id.0).unwrap();
         let permit = AttachmentPermit::try_acquire(Arc::new(AtomicUsize::new(0))).unwrap();
         let weak = Arc::downgrade(manager);
@@ -7790,14 +7901,24 @@ mod tests {
             handle_attachment(server, weak, permit);
             done.send(()).unwrap();
         });
-        // Intentionally never consume the replay, keeping the socket saturated.
-        completed.recv_timeout(Duration::from_secs(5)).unwrap();
+        // Intentionally never read. Output keeps flowing (recording never blocks) until the
+        // client's backlog overflows and Axod disconnects it.
+        let chunk = vec![b'x'; 64 * 1024];
+        let deadline = Instant::now() + Duration::from_secs(10);
+        while completed.try_recv().is_err() {
+            assert!(
+                Instant::now() < deadline,
+                "stalled client was never released"
+            );
+            output.record(&chunk);
+        }
         worker.join().unwrap();
-        assert!(!manager.lock_state().unwrap().running[&shell_id].attached);
-        let (master, replay, _, runtime_id) = manager.duplicate_master(shell_id).unwrap();
-        assert_eq!(replay.len(), MAX_TERMINAL_OUTPUT_HISTORY_BYTES);
-        drop(master);
-        manager.mark_detached(shell_id, runtime_id);
+        assert_eq!(output.subscriber_count(), 0);
+        assert_eq!(
+            manager.lock_state().unwrap().running[&shell_id].attachments,
+            0
+        );
+        drop(client);
     }
 
     #[test]
@@ -7835,8 +7956,8 @@ mod tests {
             .unwrap()
         };
         // Guard the owned fixture child even if an assertion below fails.
-        let mut child = ChildProcessGuard(pi.child);
         let lock = pi._writer_lock.take().unwrap();
+        let mut child = RunningShellGuard(pi);
         // SAFETY: lock is a live descriptor owned by this fixture.
         assert_ne!(
             unsafe { libc::fcntl(lock.as_raw_fd(), libc::F_GETFD) } & libc::FD_CLOEXEC,
@@ -7849,7 +7970,7 @@ mod tests {
             acquire_pi_writer_lock(&file).unwrap_err().kind(),
             io::ErrorKind::WouldBlock
         );
-        terminate_shell(&mut child.0);
+        terminate_shell(&mut child.0.child);
         let recovered = acquire_pi_writer_lock(&file).unwrap();
         assert!(unrelated.0.try_wait().unwrap().is_none());
         assert_eq!(fs::read(&file).unwrap(), b"preserved history");
@@ -7936,7 +8057,8 @@ mod tests {
             "terminal.output"
         );
 
-        manager.publish_event(json!({ "type": "pi.event", "sessionId": 1, "name": "message_update" }));
+        manager
+            .publish_event(json!({ "type": "pi.event", "sessionId": 1, "name": "message_update" }));
         assert_eq!(
             manager
                 .next_event(&catalog, Duration::from_millis(1))
@@ -8249,19 +8371,6 @@ mod tests {
         drop(permits);
         assert_eq!(active.load(Ordering::Relaxed), 0);
         assert!(AttachmentPermit::try_acquire(active).is_some());
-    }
-
-    #[test]
-    fn terminal_output_history_replays_only_complete_streams() {
-        let mut history = TerminalOutputHistory::new();
-        history.record(b"initial screen");
-        assert_eq!(history.replay(), b"initial screen");
-
-        history.record(&vec![b'x'; MAX_TERMINAL_OUTPUT_HISTORY_BYTES]);
-        assert!(history.replay().is_empty());
-
-        history.record(b"later output");
-        assert!(history.replay().is_empty());
     }
 
     #[test]
@@ -9079,39 +9188,37 @@ mod tests {
         assert_ne!(master_flags & libc::FD_CLOEXEC, 0);
 
         let master = session.master.as_raw_fd();
+        let (_, output) = session.output.subscribe(None);
         let command = b"printf 'AXO_PTY_READY\\n'\n";
         // SAFETY: command points to initialized bytes and master is an open PTY.
         let written = unsafe { libc::write(master, command.as_ptr().cast(), command.len()) };
         assert_eq!(written as usize, command.len());
-        assert!(read_until(master, b"AXO_PTY_READY", Duration::from_secs(3)));
+        assert!(read_until(
+            &output,
+            b"AXO_PTY_READY",
+            Duration::from_secs(3)
+        ));
         terminate_shell(&mut session.child);
     }
 
-    fn read_until(master: RawFd, needle: &[u8], timeout: Duration) -> bool {
+    fn read_until(output: &OutputSubscriber, needle: &[u8], timeout: Duration) -> bool {
         let deadline = std::time::Instant::now() + timeout;
         let mut received = Vec::new();
         while std::time::Instant::now() < deadline {
-            let mut descriptor = libc::pollfd {
-                fd: master,
-                events: libc::POLLIN,
-                revents: 0,
-            };
-            // SAFETY: descriptor is a valid one-element poll array.
-            let ready = unsafe { libc::poll(&mut descriptor, 1, 100) };
-            if ready <= 0 {
-                continue;
-            }
-            let mut bytes = [0_u8; 1024];
-            // SAFETY: bytes is writable and master is open.
-            let count = unsafe { libc::read(master, bytes.as_mut_ptr().cast(), bytes.len()) };
-            if count > 0 {
-                received.extend_from_slice(&bytes[..count as usize]);
-                if received
-                    .windows(needle.len())
-                    .any(|window| window == needle)
-                {
-                    return true;
+            match output.next(Duration::from_millis(100)) {
+                NextOutput::Chunks(chunks) => {
+                    for chunk in chunks {
+                        received.extend_from_slice(&chunk);
+                    }
+                    if received
+                        .windows(needle.len())
+                        .any(|window| window == needle)
+                    {
+                        return true;
+                    }
                 }
+                NextOutput::Idle => {}
+                _ => return false,
             }
         }
         false

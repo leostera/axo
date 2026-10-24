@@ -214,11 +214,14 @@ fn open_shell(shell: &Value) -> (UnixStream, OwnedFd) {
         .set_write_timeout(Some(Duration::from_secs(3)))
         .unwrap();
     writeln!(control, "{}", shell["id"].as_i64().unwrap()).unwrap();
+    // Attach protocol v2: header, PTY descriptor, then replay and live output on the socket.
     let mut replay_length = [0_u8; std::mem::size_of::<u64>()];
     control.read_exact(&mut replay_length).unwrap();
-    let replay_length = u64::from_be_bytes(replay_length) as usize;
-    let mut replay = vec![0_u8; replay_length];
-    control.read_exact(&mut replay).unwrap();
+    assert_ne!(
+        u64::from_be_bytes(replay_length),
+        u64::MAX,
+        "attach was rejected"
+    );
 
     let mut byte = 0_u8;
     let mut vector = libc::iovec {
@@ -293,7 +296,9 @@ fn write_pty(master: RawFd, input: &[u8]) {
     }
 }
 
-fn pty_contains(master: RawFd, needle: &[u8], timeout: Duration) -> bool {
+/// Reads an attachment's output stream (never the PTY master, which Axod's pump owns).
+fn stream_contains(stream: &UnixStream, needle: &[u8], timeout: Duration) -> bool {
+    let master = stream.as_raw_fd();
     let deadline = Instant::now() + timeout;
     let mut received = Vec::new();
     while Instant::now() < deadline {
@@ -433,7 +438,7 @@ fn terminal_attach_subcommand_bridges_input_and_output() {
 }
 
 #[test]
-fn terminal_attach_replays_output_after_reconnect() {
+fn terminal_attachments_share_output_and_shells_never_stall_unattached() {
     let unique = SystemTime::now()
         .duration_since(UNIX_EPOCH)
         .unwrap()
@@ -445,59 +450,107 @@ fn terminal_attach_replays_output_after_reconnect() {
     let mut daemon = start_axod(&server_directory, &socket);
     wait_for_socket(&socket, &mut daemon);
     let session = create_session(&socket);
+    let session_id = session["id"].as_i64().unwrap();
     let shell = &session["shells"][0];
     let shell_id = shell["id"].as_i64().unwrap();
     let attach_socket = shell["attachSocketPath"].as_str().unwrap();
 
-    let mut first = start_terminal_attach(attach_socket, shell_id);
-    let first_output = output_channel(first.stdout.take().unwrap());
+    // Two concurrent attachments both receive the replay and every live byte.
+    let mut first = ChildGuard(start_terminal_attach(attach_socket, shell_id));
+    let first_output = output_channel(first.0.stdout.take().unwrap());
     writeln!(
-        first.stdin.as_mut().unwrap(),
-        "printf '\\033[2J\\033[H%s%s\\n' AXO_REPLAY_ SCREEN_9971; sleep 3"
+        first.0.stdin.as_mut().unwrap(),
+        "printf '%s%s\\n' AXO_REPLAY_ SCREEN_9971"
     )
     .unwrap();
-    let first_output_seen = output_contains(
+    assert!(output_contains(
         &first_output,
         b"AXO_REPLAY_SCREEN_9971",
         Duration::from_secs(5),
+    ));
+    let mut second = ChildGuard(start_terminal_attach(attach_socket, shell_id));
+    let second_output = output_channel(second.0.stdout.take().unwrap());
+    assert!(
+        output_contains(
+            &second_output,
+            b"AXO_REPLAY_SCREEN_9971",
+            Duration::from_secs(5),
+        ),
+        "a concurrent attachment should replay earlier output"
     );
-    if !first_output_seen {
-        eprintln!(
-            "first attach logs: {}",
-            std::fs::read_to_string(server_directory.join("stderr.log")).unwrap_or_default()
-        );
+    writeln!(
+        first.0.stdin.as_mut().unwrap(),
+        "printf '%s%s\\n' AXO_SHARED_ LIVE_4412"
+    )
+    .unwrap();
+    for output in [&first_output, &second_output] {
+        assert!(output_contains(
+            output,
+            b"AXO_SHARED_LIVE_4412",
+            Duration::from_secs(5),
+        ));
     }
-    assert!(first_output_seen);
+    first.0.kill().unwrap();
+    let _ = wait_for_exit(&mut first.0, Duration::from_secs(3));
+    second.0.kill().unwrap();
+    let _ = wait_for_exit(&mut second.0, Duration::from_secs(3));
 
-    let mut second = start_terminal_attach(attach_socket, shell_id);
-    let rejection_deadline = Instant::now() + Duration::from_secs(2);
+    // With nothing attached, far more output than a PTY buffer holds must not block the shell.
+    let command = b"seq 1 100000 >/dev/tty; printf '%s%s\\n' AXO_UNATTACHED_ DONE_5521\n";
+    let input = rpc_with_params(
+        &socket,
+        "axo.terminal.input",
+        json!({
+            "sessionId": session_id,
+            "shellId": shell_id,
+            "sequence": 0,
+            "data": encode_base64(command),
+        }),
+    );
+    assert_eq!(input["result"]["accepted"], true, "{input}");
+    let deadline = Instant::now() + Duration::from_secs(10);
     loop {
-        let log = std::fs::read_to_string(server_directory.join("stderr.log")).unwrap_or_default();
-        if log.contains(&format!(
-            "event=session.attach_rejected shell_id={shell_id}"
-        )) {
+        let mut third = ChildGuard(start_terminal_attach(attach_socket, shell_id));
+        let third_output = output_channel(third.0.stdout.take().unwrap());
+        let finished = output_contains(
+            &third_output,
+            b"AXO_UNATTACHED_DONE_5521",
+            Duration::from_millis(500),
+        );
+        third.0.kill().unwrap();
+        let _ = wait_for_exit(&mut third.0, Duration::from_secs(3));
+        if finished {
             break;
         }
         assert!(
-            Instant::now() < rejection_deadline,
-            "daemon did not reject the overlapping attachment"
+            Instant::now() < deadline,
+            "an unattached shell stalled on PTY output"
         );
-        thread::sleep(Duration::from_millis(20));
     }
-    first.kill().unwrap();
-    let _ = wait_for_exit(&mut first, Duration::from_secs(3));
-
-    let second_output = output_channel(second.stdout.take().unwrap());
-    assert!(output_contains(
-        &second_output,
-        b"AXO_REPLAY_SCREEN_9971",
-        Duration::from_secs(5),
-    ));
-    second.kill().unwrap();
-    let _ = wait_for_exit(&mut second, Duration::from_secs(3));
 
     daemon.stop();
     let _ = std::fs::remove_dir_all(root);
+}
+
+fn encode_base64(bytes: &[u8]) -> String {
+    const ALPHABET: &[u8; 64] = b"ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/";
+    let mut encoded = String::new();
+    for chunk in bytes.chunks(3) {
+        let value = chunk
+            .iter()
+            .enumerate()
+            .fold(0_u32, |value, (index, byte)| {
+                value | (u32::from(*byte) << (16 - 8 * index))
+            });
+        for index in 0..4 {
+            if index <= chunk.len() {
+                encoded.push(ALPHABET[(value >> (18 - 6 * index) & 0x3f) as usize] as char);
+            } else {
+                encoded.push('=');
+            }
+        }
+    }
+    encoded
 }
 
 #[test]
@@ -727,7 +780,10 @@ fn long_polls_never_delay_unrelated_requests() {
             rpc_with_params(&socket, method, json!({}))
         };
         let elapsed = started.elapsed();
-        assert!(response.get("result").is_some(), "{method} failed: {response}");
+        assert!(
+            response.get("result").is_some(),
+            "{method} failed: {response}"
+        );
         assert!(
             elapsed < Duration::from_millis(250),
             "{method} waited {elapsed:?} behind long-polls"
@@ -1033,11 +1089,7 @@ fn daemon_starts_with_and_restores_a_default_pty_session_after_restart() {
     let (_attachment, master) = open_shell(shell);
     write_pty(master.as_raw_fd(), b"printf 'AXOD_PTY_E2E_OK\\n'\n");
     assert!(
-        pty_contains(
-            master.as_raw_fd(),
-            b"AXOD_PTY_E2E_OK",
-            Duration::from_secs(3)
-        ),
+        stream_contains(&_attachment, b"AXOD_PTY_E2E_OK", Duration::from_secs(3)),
         "the attached PTY should execute commands and return their output"
     );
 
@@ -1130,8 +1182,8 @@ fn daemon_starts_with_and_restores_a_default_pty_session_after_restart() {
         restored_master.as_raw_fd(),
         b"printf 'AXOD_RESTORED_OK\\n'\n",
     );
-    assert!(pty_contains(
-        restored_master.as_raw_fd(),
+    assert!(stream_contains(
+        &_attachment,
         b"AXOD_RESTORED_OK",
         Duration::from_secs(3)
     ));
