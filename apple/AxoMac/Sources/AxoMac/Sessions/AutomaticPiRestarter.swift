@@ -19,11 +19,11 @@ final class AutomaticPiRestarter {
   }
 
   /// Attempts one automatic restart of `shellID`.
-  var restart: (Int64) async throws -> Void = { _ in }
+  var restart: (ShellID) async throws -> Void = { _ in }
   /// Whether `shellID` is still an unavailable Pi pane.
-  var needsRestart: (Int64) -> Bool = { _ in false }
+  var needsRestart: (ShellID) -> Bool = { _ in false }
 
-  private var loops: [Int64: (id: UUID, task: Task<Void, Never>)] = [:]
+  private var loops: [ShellID: (id: UUID, task: Task<Void, Never>)] = [:]
   private let maximumBackoff: Duration
   private let unsupportedRetryDelay: Duration
 
@@ -47,7 +47,7 @@ final class AutomaticPiRestarter {
     }
   }
 
-  func cancel(shellID: Int64) {
+  func cancel(shellID: ShellID) {
     loops.removeValue(forKey: shellID)?.task.cancel()
   }
 
@@ -56,7 +56,7 @@ final class AutomaticPiRestarter {
     loops.removeAll()
   }
 
-  private func retry(shellID: Int64, loopID: UUID) async {
+  private func retry(shellID: ShellID, loopID: UUID) async {
     defer {
       if loops[shellID]?.id == loopID { loops.removeValue(forKey: shellID) }
     }

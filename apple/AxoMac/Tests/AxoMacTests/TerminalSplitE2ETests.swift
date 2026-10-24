@@ -1,4 +1,5 @@
 import AppKit
+import AxoRPC
 import SwiftUI
 import XCTest
 
@@ -405,7 +406,7 @@ extension TerminalLayout {
     return id
   }
 
-  fileprivate func splitID(containing shellID: Int64) -> UUID? {
+  fileprivate func splitID(containing shellID: ShellID) -> UUID? {
     guard case .split(let id, _, _, let first, let second) = self else { return nil }
     if first.contains(shellID: shellID) { return first.splitID(containing: shellID) ?? id }
     if second.contains(shellID: shellID) { return second.splitID(containing: shellID) ?? id }

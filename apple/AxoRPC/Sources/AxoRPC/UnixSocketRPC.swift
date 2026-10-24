@@ -26,7 +26,7 @@ private struct WorkspaceSessionCreateRequest: Encodable {
 }
 
 private struct SessionRenameRequest: Encodable {
-  let sessionId: Int64
+  let sessionId: SessionID
   let name: String
 }
 
@@ -56,20 +56,20 @@ private struct HostPairingRequest: Encodable {
 }
 
 private struct CloseTerminalSessionRequest: Encodable {
-  let sessionId: Int64
+  let sessionId: SessionID
 }
 
 private struct RestartPiSessionRequest: Encodable {
-  let sessionId: Int64
-  let shellId: Int64
+  let sessionId: SessionID
+  let shellId: ShellID
 }
 
 private struct CreateTerminalShellRequest: Encodable {
-  let sessionId: Int64
+  let sessionId: SessionID
 }
 
 private struct SetSessionLayoutRequest: Encodable {
-  let sessionId: Int64
+  let sessionId: SessionID
   let layout: SessionLayout
 }
 
@@ -78,12 +78,12 @@ private struct SessionLayoutAcknowledgement: Decodable {
 }
 
 private struct CloseTerminalShellRequest: Encodable {
-  let sessionId: Int64
-  let shellId: Int64
+  let sessionId: SessionID
+  let shellId: ShellID
 }
 
 private struct SessionSubscribeRequest: Encodable {
-  let sessionId: Int64?
+  let sessionId: SessionID?
   let includeTerminalOutput: Bool
 
   func encode(to encoder: Encoder) throws {
@@ -279,7 +279,7 @@ public enum UnixSocketRPC {
   }
 
   public static func renameSession(
-    _ sessionID: Int64,
+    _ sessionID: SessionID,
     to name: String,
     at socketPath: UnixSocketPath
   ) async throws -> TerminalSession {
@@ -329,7 +329,7 @@ public enum UnixSocketRPC {
 
   /// Opens an event subscription. Catalog consumers pass `includeTerminalOutput: false`.
   public static func subscribe(
-    to sessionID: Int64? = nil,
+    to sessionID: SessionID? = nil,
     includeTerminalOutput: Bool = true,
     at socketPath: UnixSocketPath
   ) async throws -> TerminalSubscriptionID {
@@ -384,7 +384,7 @@ public enum UnixSocketRPC {
   }
 
   public static func closeSession(
-    _ sessionID: Int64,
+    _ sessionID: SessionID,
     at socketPath: UnixSocketPath
   ) async throws -> ClosedTerminalSession {
     try await withResponse(at: socketPath) { session in
@@ -396,8 +396,8 @@ public enum UnixSocketRPC {
   }
 
   public static func restartPiSession(
-    shellID: Int64,
-    in sessionID: Int64,
+    shellID: ShellID,
+    in sessionID: SessionID,
     at socketPath: UnixSocketPath
   ) async throws -> TerminalSession {
     try await withResponse(at: socketPath, timeout: .seconds(20)) { session in
@@ -409,8 +409,8 @@ public enum UnixSocketRPC {
   }
 
   public static func automaticallyRestartPiSession(
-    shellID: Int64,
-    in sessionID: Int64,
+    shellID: ShellID,
+    in sessionID: SessionID,
     at socketPath: UnixSocketPath
   ) async throws -> TerminalSession {
     try await withResponse(at: socketPath, timeout: .seconds(20)) { session in
@@ -422,7 +422,7 @@ public enum UnixSocketRPC {
   }
 
   public static func createShell(
-    in sessionID: Int64,
+    in sessionID: SessionID,
     at socketPath: UnixSocketPath
   ) async throws -> TerminalShell {
     try await withResponse(at: socketPath) { session in
@@ -435,7 +435,7 @@ public enum UnixSocketRPC {
 
   public static func setLayout(
     _ layout: SessionLayout,
-    for sessionID: Int64,
+    for sessionID: SessionID,
     at socketPath: UnixSocketPath
   ) async throws {
     let acknowledgement: SessionLayoutAcknowledgement = try await withResponse(
@@ -452,8 +452,8 @@ public enum UnixSocketRPC {
   }
 
   public static func closeShell(
-    _ shellID: Int64,
-    in sessionID: Int64,
+    _ shellID: ShellID,
+    in sessionID: SessionID,
     at socketPath: UnixSocketPath
   ) async throws -> ClosedTerminalShell {
     try await withResponse(at: socketPath) { session in

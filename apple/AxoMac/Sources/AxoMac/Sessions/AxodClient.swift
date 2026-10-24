@@ -19,16 +19,16 @@ protocol AxodClient: AnyObject {
   func createWorkspace(
     name: String, directoryPath: String, directoryBookmark: String?
   ) async throws -> CreatedWorkspace
-  func closeSession(_ sessionID: Int64) async throws -> ClosedTerminalSession
-  func renameSession(_ sessionID: Int64, to name: String) async throws -> TerminalSession
+  func closeSession(_ sessionID: SessionID) async throws -> ClosedTerminalSession
+  func renameSession(_ sessionID: SessionID, to name: String) async throws -> TerminalSession
   func renameWorkspace(_ workspaceID: String, to name: String) async throws -> WorkspaceRecord
   func archiveWorkspace(_ workspaceID: String) async throws -> ArchivedWorkspace
 
-  func createShell(inSession sessionID: Int64) async throws -> TerminalShell
-  func closeShell(_ shellID: Int64, inSession sessionID: Int64) async throws -> ClosedTerminalShell
-  func setLayout(_ layout: SessionLayout, forSession sessionID: Int64) async throws
+  func createShell(inSession sessionID: SessionID) async throws -> TerminalShell
+  func closeShell(_ shellID: ShellID, inSession sessionID: SessionID) async throws -> ClosedTerminalShell
+  func setLayout(_ layout: SessionLayout, forSession sessionID: SessionID) async throws
 
-  func restartPi(shellID: Int64, inSession sessionID: Int64, automatically: Bool) async throws
+  func restartPi(shellID: ShellID, inSession sessionID: SessionID, automatically: Bool) async throws
     -> TerminalSession
 }
 
@@ -85,11 +85,11 @@ final class UnixSocketAxodClient: AxodClient {
       at: socketPath)
   }
 
-  func closeSession(_ sessionID: Int64) async throws -> ClosedTerminalSession {
+  func closeSession(_ sessionID: SessionID) async throws -> ClosedTerminalSession {
     try await UnixSocketRPC.closeSession(sessionID, at: socketPath)
   }
 
-  func renameSession(_ sessionID: Int64, to name: String) async throws -> TerminalSession {
+  func renameSession(_ sessionID: SessionID, to name: String) async throws -> TerminalSession {
     try await UnixSocketRPC.renameSession(sessionID, to: name, at: socketPath)
   }
 
@@ -101,19 +101,19 @@ final class UnixSocketAxodClient: AxodClient {
     try await UnixSocketRPC.archiveWorkspace(workspaceID, at: socketPath)
   }
 
-  func createShell(inSession sessionID: Int64) async throws -> TerminalShell {
+  func createShell(inSession sessionID: SessionID) async throws -> TerminalShell {
     try await UnixSocketRPC.createShell(in: sessionID, at: socketPath)
   }
 
-  func closeShell(_ shellID: Int64, inSession sessionID: Int64) async throws -> ClosedTerminalShell {
+  func closeShell(_ shellID: ShellID, inSession sessionID: SessionID) async throws -> ClosedTerminalShell {
     try await UnixSocketRPC.closeShell(shellID, in: sessionID, at: socketPath)
   }
 
-  func setLayout(_ layout: SessionLayout, forSession sessionID: Int64) async throws {
+  func setLayout(_ layout: SessionLayout, forSession sessionID: SessionID) async throws {
     try await UnixSocketRPC.setLayout(layout, for: sessionID, at: socketPath)
   }
 
-  func restartPi(shellID: Int64, inSession sessionID: Int64, automatically: Bool) async throws
+  func restartPi(shellID: ShellID, inSession sessionID: SessionID, automatically: Bool) async throws
     -> TerminalSession
   {
     if automatically {

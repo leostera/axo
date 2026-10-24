@@ -9,9 +9,9 @@ enum PendingTerminalSplitStatus: Equatable {
 
 struct PendingTerminalSplit: Equatable, Identifiable {
   let id: UUID
-  let sessionID: Int64
+  let sessionID: SessionID
   let sessionUuid: String?
-  let anchorShellID: Int64
+  let anchorShellID: ShellID
   let direction: TerminalSplitDirection
   var ratio: Double
   var status: PendingTerminalSplitStatus
@@ -26,7 +26,7 @@ enum TerminalNavigationDirection: Int, Equatable {
 }
 
 indirect enum TerminalLayout: Equatable, Identifiable {
-  case pane(Int64)
+  case pane(ShellID)
   case split(
     id: UUID,
     direction: TerminalSplitDirection,
@@ -42,14 +42,14 @@ indirect enum TerminalLayout: Equatable, Identifiable {
     }
   }
 
-  var shellIDs: Set<Int64> {
+  var shellIDs: Set<ShellID> {
     switch self {
     case .pane(let shellID): [shellID]
     case .split(_, _, _, let first, let second): first.shellIDs.union(second.shellIDs)
     }
   }
 
-  var orderedShellIDs: [Int64] {
+  var orderedShellIDs: [ShellID] {
     switch self {
     case .pane(let shellID): [shellID]
     case .split(_, _, _, let first, let second):
@@ -57,7 +57,7 @@ indirect enum TerminalLayout: Equatable, Identifiable {
     }
   }
 
-  func adding(_ shellIDs: Set<Int64>) -> TerminalLayout {
+  func adding(_ shellIDs: Set<ShellID>) -> TerminalLayout {
     shellIDs.sorted().reduce(self) { layout, shellID in
       guard !layout.contains(shellID: shellID) else { return layout }
       return .split(
@@ -70,14 +70,14 @@ indirect enum TerminalLayout: Equatable, Identifiable {
     }
   }
 
-  var firstShellID: Int64? {
+  var firstShellID: ShellID? {
     switch self {
     case .pane(let shellID): shellID
     case .split(_, _, _, let first, _): first.firstShellID
     }
   }
 
-  func contains(shellID: Int64) -> Bool {
+  func contains(shellID: ShellID) -> Bool {
     switch self {
     case .pane(let currentID): currentID == shellID
     case .split(_, _, _, let first, let second):
@@ -86,9 +86,9 @@ indirect enum TerminalLayout: Equatable, Identifiable {
   }
 
   func inserting(
-    shellID newShellID: Int64,
+    shellID newShellID: ShellID,
     direction: TerminalSplitDirection,
-    beside targetShellID: Int64,
+    beside targetShellID: ShellID,
     ratio: Double = 0.5
   ) -> TerminalLayout? {
     switch self {
@@ -136,9 +136,9 @@ indirect enum TerminalLayout: Equatable, Identifiable {
   }
 
   func placing(
-    shellID: Int64,
+    shellID: ShellID,
     direction: TerminalSplitDirection,
-    beside anchorShellID: Int64,
+    beside anchorShellID: ShellID,
     ratio: Double
   ) -> TerminalLayout {
     let base = contains(shellID: shellID) ? removing(shellID: shellID) : self
@@ -152,13 +152,13 @@ indirect enum TerminalLayout: Equatable, Identifiable {
   }
 
   func focusTargetAfterClosing(
-    _ shellID: Int64,
-    remainingShellIDs: Set<Int64>
-  ) -> Int64? {
+    _ shellID: ShellID,
+    remainingShellIDs: Set<ShellID>
+  ) -> ShellID? {
     let orderedIDs = orderedShellIDs
     guard let index = orderedIDs.firstIndex(of: shellID) else { return nil }
 
-    let candidates: [Int64]
+    let candidates: [ShellID]
     if index == 0 {
       candidates = Array(orderedIDs.dropFirst())
     } else {
@@ -168,7 +168,7 @@ indirect enum TerminalLayout: Equatable, Identifiable {
     return candidates.first(where: remainingShellIDs.contains)
   }
 
-  func removing(shellID: Int64) -> TerminalLayout? {
+  func removing(shellID: ShellID) -> TerminalLayout? {
     switch self {
     case .pane(let currentID):
       return currentID == shellID ? nil : self
@@ -194,7 +194,7 @@ indirect enum TerminalLayout: Equatable, Identifiable {
     }
   }
 
-  func pruned(to openShellIDs: Set<Int64>) -> TerminalLayout? {
+  func pruned(to openShellIDs: Set<ShellID>) -> TerminalLayout? {
     switch self {
     case .pane(let shellID):
       return openShellIDs.contains(shellID) ? self : nil
@@ -262,14 +262,14 @@ indirect enum TerminalLayout: Equatable, Identifiable {
     }
 
     private indirect enum Representation: Hashable {
-      case pane(Int64)
+      case pane(ShellID)
       case split(TerminalSplitDirection, StructuralIdentity, StructuralIdentity)
     }
   }
 }
 
 indirect enum TerminalLayoutPresentation: Equatable {
-  case pane(Int64)
+  case pane(ShellID)
   case pending(PendingTerminalSplit)
   case split(
     id: UUID,
@@ -353,7 +353,7 @@ indirect enum TerminalLayoutPresentation: Equatable {
     }
 
     private indirect enum Representation: Hashable {
-      case pane(Int64)
+      case pane(ShellID)
       case pending(UUID)
       case split(TerminalSplitDirection, StructuralIdentity, StructuralIdentity)
     }

@@ -67,7 +67,7 @@ final class AxoWorkbench {
 
   /// Moves keyboard focus to the model's focused pane. The surface may not be in a key window
   /// yet (creation, window ordering), so retry briefly; a newer focus request cancels this one.
-  private func focus(_ shellID: Int64?) {
+  private func focus(_ shellID: ShellID?) {
     focusTask?.cancel()
     ghostty.setFocusedShellID(shellID)
     guard let shellID else { return }

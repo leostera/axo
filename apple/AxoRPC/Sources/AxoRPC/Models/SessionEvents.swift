@@ -9,13 +9,13 @@ public enum TerminalShellActivity: String, Decodable, Equatable, Sendable {
 
 public enum TerminalSessionEvent: Decodable, Equatable, Sendable {
   case sessionSnapshot(TerminalSession)
-  case sessionRemoved(sessionID: Int64)
-  case shellActivity(sessionID: Int64, shellID: Int64, activity: TerminalShellActivity)
-  case terminalOutput(sessionID: Int64, shellID: Int64, sequence: UInt64, data: Data)
+  case sessionRemoved(sessionID: SessionID)
+  case shellActivity(sessionID: SessionID, shellID: ShellID, activity: TerminalShellActivity)
+  case terminalOutput(sessionID: SessionID, shellID: ShellID, sequence: UInt64, data: Data)
   /// A workspace was created, renamed or archived; reload the workspace list.
   case workspaceChanged(workspaceID: String)
   /// Axod asks clients to show this session, for example after `/resume`.
-  case sessionFocus(sessionID: Int64)
+  case sessionFocus(sessionID: SessionID)
   /// Earlier events were discarded; the consumer must resynchronize from a fresh listing.
   case subscriptionLagged
   /// An event type this client does not understand. Ignored for forward compatibility.
@@ -31,11 +31,11 @@ public enum TerminalSessionEvent: Decodable, Equatable, Sendable {
     case "session.snapshot":
       self = .sessionSnapshot(try container.decode(TerminalSession.self, forKey: .session))
     case "session.removed":
-      self = .sessionRemoved(sessionID: try container.decode(Int64.self, forKey: .sessionId))
+      self = .sessionRemoved(sessionID: try container.decode(SessionID.self, forKey: .sessionId))
     case "shell.activity":
       self = .shellActivity(
-        sessionID: try container.decode(Int64.self, forKey: .sessionId),
-        shellID: try container.decode(Int64.self, forKey: .shellId),
+        sessionID: try container.decode(SessionID.self, forKey: .sessionId),
+        shellID: try container.decode(ShellID.self, forKey: .shellId),
         activity: try container.decode(TerminalShellActivity.self, forKey: .activity))
     case "terminal.output":
       let encoded = try container.decode(String.self, forKey: .data)
@@ -43,14 +43,14 @@ public enum TerminalSessionEvent: Decodable, Equatable, Sendable {
         throw UnixSocketRPCError.invalidResponse("terminal output was not base64")
       }
       self = .terminalOutput(
-        sessionID: try container.decode(Int64.self, forKey: .sessionId),
-        shellID: try container.decode(Int64.self, forKey: .shellId),
+        sessionID: try container.decode(SessionID.self, forKey: .sessionId),
+        shellID: try container.decode(ShellID.self, forKey: .shellId),
         sequence: try container.decode(UInt64.self, forKey: .sequence),
         data: data)
     case "workspace.changed":
       self = .workspaceChanged(workspaceID: try container.decode(String.self, forKey: .workspaceId))
     case "session.focus":
-      self = .sessionFocus(sessionID: try container.decode(Int64.self, forKey: .sessionId))
+      self = .sessionFocus(sessionID: try container.decode(SessionID.self, forKey: .sessionId))
     case "subscription.lagged":
       self = .subscriptionLagged
     case let type:

@@ -950,7 +950,7 @@ final class AxoVisualUITests: XCTestCase {
     throw UITestError.timedOut("Pi did not persist the interactive Session transcript")
   }
 
-  private func waitForPiBinding(sessionID: Int64, model: TerminalSessionsModel) async throws {
+  private func waitForPiBinding(sessionID: SessionID, model: TerminalSessionsModel) async throws {
     let deadline = Date().addingTimeInterval(90)
     while Date() < deadline {
       await model.refresh()
@@ -983,7 +983,7 @@ final class AxoVisualUITests: XCTestCase {
 
   private func waitForShellCount(
     _ count: Int,
-    sessionID: Int64,
+    sessionID: SessionID,
     model: TerminalSessionsModel
   ) async throws {
     let deadline = Date().addingTimeInterval(8)
@@ -1112,7 +1112,7 @@ private final class UITestFixture {
     try await perform(ControlRequest(operation: "wait-ready"))
   }
 
-  func selectSession(_ sessionId: Int64) async throws {
+  func selectSession(_ sessionId: SessionID) async throws {
     var request = ControlRequest(operation: "select-session")
     request.sessionId = sessionId
     try await perform(request)
@@ -1336,7 +1336,7 @@ private struct ControlRequest: Encodable {
   let operation: String
   var text: String? = nil
   var minimumSurfaceCount: Int? = nil
-  var sessionId: Int64? = nil
+  var sessionId: SessionID? = nil
 }
 
 private struct ControlResponse: Decodable {
@@ -1356,7 +1356,7 @@ private enum UITestError: Error, LocalizedError {
   case appActionFailed(String)
   case windowTimedOut
   case sessionCountTimedOut(Int, Int)
-  case shellCountTimedOut(Int, Int, Int64)
+  case shellCountTimedOut(Int, Int, SessionID)
   case timedOut(String)
 
   var errorDescription: String? {

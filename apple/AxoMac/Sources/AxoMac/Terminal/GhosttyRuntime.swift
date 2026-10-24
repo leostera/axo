@@ -12,7 +12,7 @@ final class GhosttyRuntime: ObservableObject {
   @Published private(set) var scrollSensitivity: Double
   private(set) var showsScrollbar = true
   /// Shells whose bell or finished command has not yet been seen by focusing the pane.
-  @Published private(set) var attentionShellIDs: Set<Int64> = []
+  @Published private(set) var attentionShellIDs: Set<ShellID> = []
   private(set) var attentionConfig = TerminalAttentionConfig()
   private var secureInputEnabled = false
   private(set) var hasDarkBackground = true
@@ -25,10 +25,10 @@ final class GhosttyRuntime: ObservableObject {
 
   private var config: ghostty_config_t?
   private var app: ghostty_app_t?
-  private(set) var focusedShellID: Int64?
+  private(set) var focusedShellID: ShellID?
   // Retain each view until its surface is freed: Ghostty passes this unretained per-surface
   // userdata pointer back to the clipboard callbacks, even after SwiftUI pane identities change.
-  private var terminalSurfaces: [Int64: SurfaceEntry] = [:]
+  private var terminalSurfaces: [ShellID: SurfaceEntry] = [:]
   private var notificationTokens: [NSObjectProtocol] = []
 
   init(initializeGhostty: Bool = true) {
@@ -103,7 +103,7 @@ final class GhosttyRuntime: ObservableObject {
     return proposedSize
   }
 
-  func setFocusedShellID(_ shellID: Int64?) {
+  func setFocusedShellID(_ shellID: ShellID?) {
     focusedShellID = shellID
     // @Published emits even when Set.remove finds nothing. Focus reconciliation
     // must not invalidate every terminal representable on every render pass.
@@ -151,7 +151,7 @@ final class GhosttyRuntime: ObservableObject {
     }
   }
 
-  private func destroySurface(shellID: Int64) {
+  private func destroySurface(shellID: ShellID) {
     guard let entry = terminalSurfaces.removeValue(forKey: shellID) else { return }
     entry.view.removeFromSuperview()
     if let surface = entry.view.detach() {
@@ -226,18 +226,18 @@ final class GhosttyRuntime: ObservableObject {
 
   var surfaceCount: Int { terminalSurfaces.count }
 
-  var keyWindowFocusedShellID: Int64? {
+  var keyWindowFocusedShellID: ShellID? {
     guard let focusedView = NSApp.keyWindow?.firstResponder as? GhosttySurfaceNSView else {
       return nil
     }
     return terminalSurfaces.first { $0.value.view === focusedView }?.key
   }
 
-  func hasSurface(for shellID: Int64) -> Bool {
+  func hasSurface(for shellID: ShellID) -> Bool {
     terminalSurfaces[shellID]?.view.surface != nil
   }
 
-  func focusSurface(for shellID: Int64) -> Bool {
+  func focusSurface(for shellID: ShellID) -> Bool {
     guard let view = terminalSurfaces[shellID]?.view,
       let window = view.window,
       window.isKeyWindow
@@ -247,14 +247,14 @@ final class GhosttyRuntime: ObservableObject {
   }
 
   @discardableResult
-  func insertText(_ text: String, into shellID: Int64) -> Bool {
+  func insertText(_ text: String, into shellID: ShellID) -> Bool {
     guard let view = terminalSurfaces[shellID]?.view, view.surface != nil else { return false }
     view.insertText(text, replacementRange: NSRange(location: NSNotFound, length: 0))
     return true
   }
 
   @discardableResult
-  func perform(_ action: GhosttySurfaceAction, on shellID: Int64? = nil) -> Bool {
+  func perform(_ action: GhosttySurfaceAction, on shellID: ShellID? = nil) -> Bool {
     guard let shellID = shellID ?? focusedShellID,
       let surface = terminalSurfaces[shellID]?.view.surface
     else { return false }
@@ -278,7 +278,7 @@ final class GhosttyRuntime: ObservableObject {
     return true
   }
 
-  func copySelection(from shellID: Int64? = nil) {
+  func copySelection(from shellID: ShellID? = nil) {
     guard let shellID = shellID ?? focusedShellID,
       let surface = terminalSurfaces[shellID]?.view.surface
     else { return }
@@ -292,14 +292,14 @@ final class GhosttyRuntime: ObservableObject {
     NSPasteboard.general.setString(value, forType: .string)
   }
 
-  func pasteClipboard(into shellID: Int64? = nil) {
+  func pasteClipboard(into shellID: ShellID? = nil) {
     guard let shellID = shellID ?? focusedShellID,
       let text = NSPasteboard.general.string(forType: .string)
     else { return }
     pasteText(text, into: shellID)
   }
 
-  func pasteText(_ text: String, into shellID: Int64) {
+  func pasteText(_ text: String, into shellID: ShellID) {
     guard !text.isEmpty else { return }
     Task { @MainActor [weak self] in
       for _ in 0..<40 {
@@ -460,7 +460,7 @@ final class GhosttyRuntime: ObservableObject {
   private static func terminalAttachCommand(
     helperPath: String,
     socketPath: String,
-    shellID: Int64
+    shellID: ShellID
   ) -> String {
     [
       helperPath,
@@ -468,7 +468,7 @@ final class GhosttyRuntime: ObservableObject {
       "--attach-socket",
       socketPath,
       "--shell-id",
-      String(shellID),
+      shellID.description,
     ]
     .map(shellQuoted)
     .joined(separator: " ")

@@ -10,16 +10,16 @@ public enum TerminalSessionStatus: String, Decodable, Equatable, Sendable {
 
 public struct TerminalSessionListSnapshot: Decodable, Sendable {
   public let sessions: [TerminalSession]
-  public let resumeSessionId: Int64?
+  public let resumeSessionId: SessionID?
 
-  public init(sessions: [TerminalSession], resumeSessionId: Int64? = nil) {
+  public init(sessions: [TerminalSession], resumeSessionId: SessionID? = nil) {
     self.sessions = sessions
     self.resumeSessionId = resumeSessionId
   }
 }
 
 public struct TerminalSession: Decodable, Equatable, Identifiable, Sendable {
-  public let id: Int64
+  public let id: SessionID
   public let sessionUuid: String?
   public let piSessionFile: String?
   public let piSessionId: String?
@@ -36,7 +36,7 @@ public struct TerminalSession: Decodable, Equatable, Identifiable, Sendable {
   public var displayName: String { manualName ?? name ?? "Session \(id)" }
 
   public init(
-    id: Int64,
+    id: SessionID,
     initialPwd: String,
     shells: [TerminalShell],
     layout: SessionLayout? = nil,
@@ -67,7 +67,7 @@ public struct TerminalSession: Decodable, Equatable, Identifiable, Sendable {
 }
 
 public struct TerminalShell: Decodable, Equatable, Identifiable, Sendable {
-  public let id: Int64
+  public let id: ShellID
   public let paneId: String?
   public let role: String?
   public let processId: UInt32
@@ -80,7 +80,7 @@ public struct TerminalShell: Decodable, Equatable, Identifiable, Sendable {
   public var isAvailable: Bool { available != false }
 
   public init(
-    id: Int64,
+    id: ShellID,
     processId: UInt32,
     initialPwd: String,
     ptyDevice: String,
@@ -117,7 +117,7 @@ public struct WorkspaceRecord: Decodable, Equatable, Identifiable, Sendable {
 
 public struct ArchivedWorkspace: Decodable, Equatable, Sendable {
   public let archivedWorkspaceId: String
-  public let archivedSessionIds: [Int64]
+  public let archivedSessionIds: [SessionID]
 }
 
 public struct CreatedWorkspace: Decodable, Equatable, Sendable {
@@ -126,12 +126,12 @@ public struct CreatedWorkspace: Decodable, Equatable, Sendable {
 }
 
 public struct ClosedTerminalSession: Decodable, Equatable, Sendable {
-  public let archivedSessionId: Int64
+  public let archivedSessionId: SessionID
   public let replacement: TerminalSession?
 }
 
 public struct ClosedTerminalShell: Decodable, Equatable, Sendable {
-  public let archivedShellId: Int64
-  public let archivedSessionId: Int64?
+  public let archivedShellId: ShellID
+  public let archivedSessionId: SessionID?
   public let replacement: TerminalSession?
 }

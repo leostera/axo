@@ -15,7 +15,7 @@ final class GhosttySurfaceNSView: NSView, @preconcurrency NSTextInputClient,
   @preconcurrency NSServicesMenuRequestor
 {
   private(set) var surface: ghostty_surface_t?
-  let shellID: Int64
+  let shellID: ShellID
   var status = "Starting Ghostty surface…" {
     didSet {
       guard status != oldValue else { return }
@@ -76,7 +76,7 @@ final class GhosttySurfaceNSView: NSView, @preconcurrency NSTextInputClient,
 
   init(
     runtime: GhosttyRuntime,
-    shellID: Int64,
+    shellID: ShellID,
     initialFrameSize: CGSize,
     onFocus: @escaping () -> Void
   ) {

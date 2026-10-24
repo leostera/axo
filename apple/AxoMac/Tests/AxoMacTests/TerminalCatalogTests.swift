@@ -8,7 +8,7 @@ import XCTest
 final class FakeAxodClient: AxodClient {
   var sessions: [TerminalSession] = []
   var workspaces: [WorkspaceRecord] = []
-  var resumeSessionID: Int64?
+  var resumeSessionID: SessionID?
   var methods: [String] = Array(TerminalSessionsModel.requiredMethods) + [
     "axo.session.rename", "axo.workspace.rename", "axo.workspace.archive",
   ]
@@ -16,7 +16,7 @@ final class FakeAxodClient: AxodClient {
   private(set) var workspaceListCount = 0
   private(set) var subscribeCount = 0
   private(set) var unsubscribed: [TerminalSubscriptionID] = []
-  private(set) var layoutWrites: [(Int64, SessionLayout)] = []
+  private(set) var layoutWrites: [(SessionID, SessionLayout)] = []
   private var queuedEvents: [TerminalSessionEvent] = []
   private var waiters: [CheckedContinuation<TerminalSessionEvent?, Error>] = []
 
@@ -63,10 +63,10 @@ final class FakeAxodClient: AxodClient {
   func createWorkspace(
     name: String, directoryPath: String, directoryBookmark: String?
   ) async throws -> CreatedWorkspace { throw Unsupported() }
-  func closeSession(_ sessionID: Int64) async throws -> ClosedTerminalSession {
+  func closeSession(_ sessionID: SessionID) async throws -> ClosedTerminalSession {
     throw Unsupported()
   }
-  func renameSession(_ sessionID: Int64, to name: String) async throws -> TerminalSession {
+  func renameSession(_ sessionID: SessionID, to name: String) async throws -> TerminalSession {
     throw Unsupported()
   }
   func renameWorkspace(_ workspaceID: String, to name: String) async throws -> WorkspaceRecord {
@@ -75,14 +75,14 @@ final class FakeAxodClient: AxodClient {
   func archiveWorkspace(_ workspaceID: String) async throws -> ArchivedWorkspace {
     throw Unsupported()
   }
-  func createShell(inSession sessionID: Int64) async throws -> TerminalShell { throw Unsupported() }
-  func closeShell(_ shellID: Int64, inSession sessionID: Int64) async throws -> ClosedTerminalShell {
+  func createShell(inSession sessionID: SessionID) async throws -> TerminalShell { throw Unsupported() }
+  func closeShell(_ shellID: ShellID, inSession sessionID: SessionID) async throws -> ClosedTerminalShell {
     throw Unsupported()
   }
-  func setLayout(_ layout: SessionLayout, forSession sessionID: Int64) async throws {
+  func setLayout(_ layout: SessionLayout, forSession sessionID: SessionID) async throws {
     layoutWrites.append((sessionID, layout))
   }
-  func restartPi(shellID: Int64, inSession sessionID: Int64, automatically: Bool) async throws
+  func restartPi(shellID: ShellID, inSession sessionID: SessionID, automatically: Bool) async throws
     -> TerminalSession
   { throw Unsupported() }
 
@@ -91,13 +91,13 @@ final class FakeAxodClient: AxodClient {
 
 @MainActor
 final class TerminalCatalogTests: XCTestCase {
-  private func shell(_ id: Int64) -> TerminalShell {
+  private func shell(_ id: ShellID) -> TerminalShell {
     TerminalShell(
       id: id, processId: 1, initialPwd: "/tmp", ptyDevice: "/dev/null",
       attachSocketPath: "/tmp/\(id).sock")
   }
 
-  private func session(_ id: Int64, shells: [Int64], name: String? = nil) -> TerminalSession {
+  private func session(_ id: SessionID, shells: [ShellID], name: String? = nil) -> TerminalSession {
     TerminalSession(id: id, initialPwd: "/tmp", shells: shells.map(shell), name: name)
   }
 

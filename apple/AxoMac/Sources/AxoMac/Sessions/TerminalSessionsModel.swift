@@ -7,7 +7,7 @@ import Foundation
 struct WorkspaceArchiveConfirmation: Equatable, Identifiable {
   let workspaceID: String
   let workspaceName: String
-  let sessionID: Int64
+  let sessionID: SessionID
 
   var id: String { workspaceID }
 }
@@ -16,17 +16,17 @@ struct WorkspaceArchiveConfirmation: Equatable, Identifiable {
 final class TerminalSessionsModel: ObservableObject {
   @Published private(set) var sessions: [TerminalSession] = []
   @Published private(set) var workspaces: [WorkspaceRecord] = []
-  @Published var selectedSessionID: Int64? {
+  @Published var selectedSessionID: SessionID? {
     didSet {
       guard oldValue != selectedSessionID, let selectedSessionDefaults else { return }
       if let selectedSessionID, selectedSessionID > 0 {
-        selectedSessionDefaults.set(selectedSessionID, forKey: Self.selectedSessionPreferenceKey)
+        selectedSessionDefaults.set(selectedSessionID.rawValue, forKey: Self.selectedSessionPreferenceKey)
       } else {
         selectedSessionDefaults.removeObject(forKey: Self.selectedSessionPreferenceKey)
       }
     }
   }
-  @Published private(set) var focusedShellID: Int64?
+  @Published private(set) var focusedShellID: ShellID?
   @Published private(set) var layout: TerminalLayout?
   @Published private(set) var errorMessage: String?
   @Published private(set) var workspaceCreationError: String?
@@ -47,8 +47,8 @@ final class TerminalSessionsModel: ObservableObject {
   private let selectedSessionDefaults: UserDefaults?
   private let preferenceDefaults: UserDefaults
   private var hasNegotiatedProtocol = false
-  private var layoutsBySession: [Int64: TerminalLayout] = [:]
-  private var recentSessionIDs: [Int64] = []
+  private var layoutsBySession: [SessionID: TerminalLayout] = [:]
+  private var recentSessionIDs: [SessionID] = []
   private let layoutWriter: TerminalLayoutWriter
   private let piRestarter: AutomaticPiRestarter
 
@@ -141,13 +141,13 @@ final class TerminalSessionsModel: ObservableObject {
     }
   }
 
-  private static func storedSelectedSessionID(from defaults: UserDefaults?) -> Int64? {
-    guard let sessionID = defaults?.object(forKey: selectedSessionPreferenceKey) as? Int64,
-      sessionID > 0
+  private static func storedSelectedSessionID(from defaults: UserDefaults?) -> SessionID? {
+    guard let rawValue = defaults?.object(forKey: selectedSessionPreferenceKey) as? Int64,
+      rawValue > 0
     else {
       return nil
     }
-    return sessionID
+    return SessionID(rawValue: rawValue)
   }
 
   /// Full resynchronization: negotiate once, then replace the catalog with a fresh listing.
@@ -225,7 +225,7 @@ final class TerminalSessionsModel: ObservableObject {
 
   /// Replaces the catalog with daemon `daemonSessions`, normalizing layouts and repairing
   /// selection/focus. Pure with respect to I/O apart from scheduling layout persistence.
-  private func applyCatalog(_ daemonSessions: [TerminalSession], focusing resumeSessionID: Int64?) {
+  private func applyCatalog(_ daemonSessions: [TerminalSession], focusing resumeSessionID: SessionID?) {
     let updatedSessions = daemonSessions
     let previouslySelectedSession = selectedSessionID.flatMap { session(for: $0) }
     let openSessionIDs = Set(updatedSessions.map(\.id))
@@ -238,7 +238,7 @@ final class TerminalSessionsModel: ObservableObject {
       let serverLayout = session.layout.map(TerminalLayout.init)
       let sourceLayout = layoutsBySession[session.id] ?? serverLayout
       let normalizedLayout: TerminalLayout?
-      let newlyCreatedShellIDs: Set<Int64>
+      let newlyCreatedShellIDs: Set<ShellID>
       if let sourceLayout, let pruned = sourceLayout.pruned(to: shellIDs) {
         newlyCreatedShellIDs = shellIDs.subtracting(pruned.shellIDs)
         normalizedLayout = pruned.adding(newlyCreatedShellIDs)
@@ -476,7 +476,7 @@ final class TerminalSessionsModel: ObservableObject {
     pendingTerminalSplit = nil
   }
 
-  func closeSession(_ sessionID: Int64) async {
+  func closeSession(_ sessionID: SessionID) async {
     do {
       try await archiveSession(sessionID)
     } catch {
@@ -484,7 +484,7 @@ final class TerminalSessionsModel: ObservableObject {
     }
   }
 
-  func requestCloseSession(_ sessionID: Int64) async {
+  func requestCloseSession(_ sessionID: SessionID) async {
     guard let closingSession = session(for: sessionID) else { return }
     errorMessage = nil
 
@@ -535,7 +535,7 @@ final class TerminalSessionsModel: ObservableObject {
     }
   }
 
-  func archiveSession(_ sessionID: Int64) async throws {
+  func archiveSession(_ sessionID: SessionID) async throws {
     guard let client else {
       throw UnixSocketRPCError.invalidResponse(
         clientError ?? "Axo can’t locate axod’s socket.")
@@ -563,7 +563,7 @@ final class TerminalSessionsModel: ObservableObject {
     await refresh()
   }
 
-  func renameSession(_ sessionID: Int64, to name: String) async throws {
+  func renameSession(_ sessionID: SessionID, to name: String) async throws {
     guard let client else {
       throw UnixSocketRPCError.invalidResponse(
         clientError ?? "Axo can’t locate axod’s socket.")
@@ -629,12 +629,12 @@ final class TerminalSessionsModel: ObservableObject {
     }
   }
 
-  func restartPiSession(_ shellID: Int64) async throws {
+  func restartPiSession(_ shellID: ShellID) async throws {
     piRestarter.cancel(shellID: shellID)
     try await restartPiSession(shellID, automatically: false)
   }
 
-  private func restartPiSession(_ shellID: Int64, automatically: Bool) async throws {
+  private func restartPiSession(_ shellID: ShellID, automatically: Bool) async throws {
     guard let client else {
       throw UnixSocketRPCError.invalidResponse(
         clientError ?? "Axo can’t locate axod’s socket.")
@@ -678,7 +678,7 @@ final class TerminalSessionsModel: ObservableObject {
     await closeShell(focusedShellID)
   }
 
-  func closeShell(_ shellID: Int64) async {
+  func closeShell(_ shellID: ShellID) async {
     guard let client,
       let session = sessions.first(where: { $0.shells.contains(where: { $0.id == shellID }) })
     else {
@@ -690,7 +690,7 @@ final class TerminalSessionsModel: ObservableObject {
       layoutsBySession[sessionID] ?? session.layout.map(TerminalLayout.init)
       ?? Self.defaultLayout(for: session.shells)
     let remainingShellIDs = Set(session.shells.lazy.map(\.id).filter { $0 != shellID })
-    let focusAfterClose: Int64? = {
+    let focusAfterClose: ShellID? = {
       guard selectedSessionID == sessionID else { return nil }
       guard let focusedShellID else { return layoutBeforeClose?.firstShellID }
       if focusedShellID == shellID {
@@ -749,7 +749,7 @@ final class TerminalSessionsModel: ObservableObject {
     }
   }
 
-  func showSession(_ sessionID: Int64) {
+  func showSession(_ sessionID: SessionID) {
     guard sessions.contains(where: { $0.id == sessionID }) else { return }
     selectedSessionID = sessionID
     activate(sessionID)
@@ -787,7 +787,7 @@ final class TerminalSessionsModel: ObservableObject {
     layout = updated
   }
 
-  func focus(_ shellID: Int64) {
+  func focus(_ shellID: ShellID) {
     guard let session = sessions.first(where: {
       $0.shells.contains(where: { $0.id == shellID && $0.isAvailable })
     }) else {
@@ -799,11 +799,11 @@ final class TerminalSessionsModel: ObservableObject {
     rememberSessionFocus(session.id)
   }
 
-  func session(for sessionID: Int64) -> TerminalSession? {
+  func session(for sessionID: SessionID) -> TerminalSession? {
     sessions.first(where: { $0.id == sessionID })
   }
 
-  func shell(for shellID: Int64) -> TerminalShell? {
+  func shell(for shellID: ShellID) -> TerminalShell? {
     guard let selectedSessionID else { return nil }
     return session(for: selectedSessionID)?.shells.first(where: { $0.id == shellID })
   }
@@ -856,7 +856,7 @@ final class TerminalSessionsModel: ObservableObject {
   private func sessionToSelect(
     afterClosing closedSession: TerminalSession,
     replacement: TerminalSession? = nil
-  ) -> Int64? {
+  ) -> SessionID? {
     for recentID in recentSessionIDs where recentID != closedSession.id {
       guard let candidate = session(for: recentID),
         candidate.workspaceId == closedSession.workspaceId
@@ -876,7 +876,7 @@ final class TerminalSessionsModel: ObservableObject {
       ?? sessions.first?.id
   }
 
-  private func rememberSessionFocus(_ sessionID: Int64) {
+  private func rememberSessionFocus(_ sessionID: SessionID) {
     recentSessionIDs.removeAll { $0 == sessionID }
     recentSessionIDs.insert(sessionID, at: 0)
     if recentSessionIDs.count > 128 {
@@ -884,7 +884,7 @@ final class TerminalSessionsModel: ObservableObject {
     }
   }
 
-  private func activate(_ sessionID: Int64) {
+  private func activate(_ sessionID: SessionID) {
     guard let session = session(for: sessionID) else {
       layout = nil
       focusedShellID = nil
@@ -926,7 +926,7 @@ final class TerminalSessionsModel: ObservableObject {
     sessions[index] = updated
   }
 
-  private func setLayout(_ layout: TerminalLayout?, for sessionID: Int64, persist: Bool) {
+  private func setLayout(_ layout: TerminalLayout?, for sessionID: SessionID, persist: Bool) {
     layoutsBySession[sessionID] = layout
     if let index = sessions.firstIndex(where: { $0.id == sessionID }) {
       let session = sessions[index]
@@ -939,7 +939,7 @@ final class TerminalSessionsModel: ObservableObject {
     }
   }
 
-  private func scheduleLayoutPersistence(for sessionID: Int64) {
+  private func scheduleLayoutPersistence(for sessionID: SessionID) {
     guard let layout = layoutsBySession[sessionID] else { return }
     layoutWriter.schedule(layout.sessionLayout, for: sessionID)
   }

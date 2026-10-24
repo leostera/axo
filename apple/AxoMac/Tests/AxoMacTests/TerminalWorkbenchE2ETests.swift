@@ -370,7 +370,7 @@ final class TerminalWorkbenchE2ETests: XCTestCase {
 
   private func waitUntilLayout(
     _ expected: TerminalLayout,
-    for sessionID: Int64,
+    for sessionID: SessionID,
     at socketPath: UnixSocketPath
   ) async throws {
     let deadline = Date().addingTimeInterval(5)
@@ -402,7 +402,7 @@ final class TerminalWorkbenchE2ETests: XCTestCase {
   }
 
   private func waitUntilShellIsGone(
-    _ shellID: Int64,
+    _ shellID: ShellID,
     from model: TerminalSessionsModel
   ) async throws {
     let deadline = Date().addingTimeInterval(6)
@@ -417,7 +417,7 @@ final class TerminalWorkbenchE2ETests: XCTestCase {
   }
 
   private func waitUntilSessionIsGone(
-    _ sessionID: Int64,
+    _ sessionID: SessionID,
     from model: TerminalSessionsModel
   ) async throws {
     let deadline = Date().addingTimeInterval(6)
@@ -521,7 +521,7 @@ private final class DaemonFixture {
     process.arguments = [
       "terminal-attach",
       "--attach-socket", shell.attachSocketPath,
-      "--shell-id", String(shell.id),
+      "--shell-id", shell.id.description,
     ]
     process.standardInput = input
     process.standardOutput = output

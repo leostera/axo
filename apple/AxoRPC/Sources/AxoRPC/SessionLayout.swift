@@ -6,7 +6,7 @@ public enum SessionSplitDirection: String, Codable, Sendable {
 }
 
 public indirect enum SessionLayout: Codable, Equatable, Sendable {
-  case pane(shellID: Int64)
+  case pane(shellID: ShellID)
   case split(
     id: UUID,
     direction: SessionSplitDirection,
@@ -29,7 +29,7 @@ public indirect enum SessionLayout: Codable, Equatable, Sendable {
     let container = try decoder.container(keyedBy: CodingKeys.self)
     switch try container.decode(String.self, forKey: .kind) {
     case "pane":
-      self = .pane(shellID: try container.decode(Int64.self, forKey: .shellID))
+      self = .pane(shellID: try container.decode(ShellID.self, forKey: .shellID))
     case "split":
       self = .split(
         id: try container.decode(UUID.self, forKey: .id),

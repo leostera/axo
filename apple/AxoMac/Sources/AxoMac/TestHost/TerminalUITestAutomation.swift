@@ -1,4 +1,5 @@
 import AppKit
+import AxoRPC
 import Foundation
 
 @MainActor
@@ -11,7 +12,7 @@ final class TerminalUITestAutomation {
     let character: String?
     let text: String?
     let minimumSurfaceCount: Int?
-    let sessionId: Int64?
+    let sessionId: SessionID?
   }
 
   private struct Response: Encodable {
@@ -106,7 +107,7 @@ final class TerminalUITestAutomation {
     throw AutomationError.surfaceCountTimedOut(count, ghostty.surfaceCount)
   }
 
-  private func type(_ text: String, into shellID: Int64) throws {
+  private func type(_ text: String, into shellID: ShellID) throws {
     let lines = text.components(separatedBy: "\n")
     for (index, line) in lines.enumerated() {
       if !line.isEmpty, !ghostty.insertText(line, into: shellID) {

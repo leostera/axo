@@ -635,7 +635,7 @@ private struct SessionSidebarRow: View {
 }
 
 private func sidebarStatus(
-  for session: TerminalSession, attention: Set<Int64>
+  for session: TerminalSession, attention: Set<ShellID>
 ) -> TerminalSessionStatus {
   // A local terminal bell or finished command marks the session until one of its panes is focused.
   if session.shells.contains(where: { attention.contains($0.id) }) { return .needsAttention }

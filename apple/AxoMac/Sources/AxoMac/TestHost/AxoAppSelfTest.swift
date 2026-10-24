@@ -150,7 +150,7 @@ enum AxoAppSelfTest {
     helper.arguments = [
       "terminal-attach",
       "--attach-socket", shell.attachSocketPath,
-      "--shell-id", String(shell.id),
+      "--shell-id", shell.id.description,
     ]
     helper.standardInput = input
     helper.standardOutput = output
@@ -235,7 +235,7 @@ private enum SelfTestError: Error, LocalizedError {
   case helperMissing(String)
   case helperClosedBeforeMarker
   case outputReadFailed(String)
-  case outputTimedOut(Int64)
+  case outputTimedOut(ShellID)
 
   var errorDescription: String? {
     switch self {
