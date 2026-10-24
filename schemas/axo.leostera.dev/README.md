@@ -24,7 +24,8 @@ This directory is the versioned wire-contract source for Axo clients and relays.
 | `axo.session.layout.set` | AxoMac → axod | session ID and validated layout tree | `LayoutSetResult` |
 | `axo.shell.create` | AxoMac → axod | session ID | `ShellCreateResult` |
 | `axo.shell.close` | AxoMac → axod | session and shell IDs | `ShellCloseResult` |
-| `axo.session.subscribe` / `axo.session.events.next` / `axo.session.unsubscribe` | AxoMac → axod | optional session filter / bounded poll / subscription ID | subscription ID / event or timeout / acknowledgement |
+| `axo.shell.busy` | AxoMac → axod | session and shell IDs | `ShellBusyResult`: whether closing would interrupt a foreground job or Pi turn |
+| `axo.session.subscribe` / `axo.session.events.next` / `axo.session.unsubscribe` | AxoMac → axod | optional session filter / bounded poll / subscription ID | subscription ID / event (or an `events` batch with `maxEvents`) or timeout / acknowledgement |
 | `axo.terminal.input` / `axo.terminal.resize` | AxoMac → axod | session/shell, sequence and base64 bytes / rows and columns | accepted sequence / accepted size |
 | `axo.host.register` / `axo.host.heartbeat` | axod → API | stable host ID, boot generation, platform label/kind, current metadata | accepted host / heartbeat acknowledgement |
 | `axo.host.sessions.publish` | axod → API | host reference and full current session snapshot | persistence acknowledgement |

@@ -460,6 +460,7 @@ fn add_protocol_negotiate_method(handler: &mut IoHandler) {
                 "axo.session.unsubscribe",
                 "axo.shell.create",
                 "axo.shell.close",
+                "axo.shell.busy",
                 "axo.terminal.input",
                 "axo.terminal.resize",
                 "axo.relay.settings",

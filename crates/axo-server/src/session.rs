@@ -34,6 +34,7 @@ const MAX_LAYOUT_NODES: usize = 255;
 const MAX_SUBSCRIPTIONS: usize = 64;
 const MAX_QUEUED_EVENTS_PER_SUBSCRIPTION: usize = 128;
 const SUBSCRIPTION_IDLE_EXPIRY: Duration = Duration::from_secs(60);
+const MAX_EVENTS_PER_POLL: usize = 256;
 const PENDING_FOCUS_LIFETIME: Duration = Duration::from_secs(10);
 const MAX_CONCURRENT_TERMINAL_ATTACHMENTS: usize = 256;
 const ATTACH_REQUEST_TIMEOUT: Duration = Duration::from_secs(3);
@@ -378,6 +379,7 @@ fn default_true() -> bool {
 struct SessionEventsNextRequest {
     subscription_id: String,
     timeout_ms: u64,
+    max_events: Option<usize>,
 }
 
 #[derive(Debug, Deserialize)]
@@ -402,6 +404,22 @@ struct TerminalResizeRequest {
     shell_id: i64,
     rows: u32,
     columns: u32,
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+struct ShellBusyRequest {
+    session_id: i64,
+    shell_id: i64,
+}
+
+/// Whether closing a shell would interrupt work: a foreground job other than the shell itself
+/// (terminal panes) or a Pi turn in progress (Pi panes).
+#[derive(Debug, Eq, PartialEq)]
+struct ShellBusy {
+    busy: bool,
+    /// Name of the foreground process when it is not the shell; never authoritative.
+    foreground_process: Option<String>,
 }
 
 #[derive(Debug)]
@@ -778,7 +796,7 @@ pub struct SessionManager {
     host_generation: String,
     stop_workers: Arc<AtomicBool>,
     workers: Mutex<Vec<JoinHandle<()>>>,
-    subscriptions: Mutex<HashMap<String, LocalSubscription>>,
+    subscriptions: Mutex<HashMap<String, Arc<LocalSubscription>>>,
     subscribers: Mutex<Vec<LocalSubscriber>>,
     next_subscription_id: AtomicU64,
     pending_resume_focus: Mutex<Option<(SessionId, Instant)>>,
@@ -788,19 +806,66 @@ pub struct SessionManager {
 struct LocalSubscriber {
     id: String,
     session_id: Option<SessionId>,
-    include_terminal_output: bool,
+    scope: EventScope,
     lagged: Arc<AtomicBool>,
     sender: SyncSender<Value>,
+}
+
+/// Which events a subscription carries. High-volume stream events (`terminal.output`, `pi.event`)
+/// go only to `Streams` subscribers, so catalog consumers never pay for, or lag on, Pi token
+/// streams or terminal bytes.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+enum EventScope {
+    Catalog,
+    Streams,
+}
+
+impl EventScope {
+    fn from_include_streams(include_streams: bool) -> Self {
+        if include_streams {
+            Self::Streams
+        } else {
+            Self::Catalog
+        }
+    }
+
+    fn accepts(self, event_type: &str) -> bool {
+        match self {
+            Self::Streams => true,
+            Self::Catalog => !matches!(event_type, "terminal.output" | "pi.event"),
+        }
+    }
 }
 
 /// Consumer side of a local event subscription. A full queue never blocks publishers; it marks
 /// the subscription lagged so the next poll reports `subscription.lagged` instead of silently
 /// presenting a gapped stream. Subscriptions nobody polls for `SUBSCRIPTION_IDLE_EXPIRY` are
 /// reclaimed so crashed clients cannot exhaust capacity.
+///
+/// The registry mutex only guards membership. A poll clones the `Arc` out and waits on the
+/// subscription's own receiver lock, so one long-poll never blocks other subscribers, the relay,
+/// `subscribe` or `unsubscribe`.
 struct LocalSubscription {
-    receiver: Receiver<Value>,
+    receiver: Mutex<Receiver<Value>>,
     lagged: Arc<AtomicBool>,
-    last_polled: Instant,
+    last_polled: Mutex<Instant>,
+}
+
+impl LocalSubscription {
+    fn last_polled(&self) -> Instant {
+        self.last_polled
+            .lock()
+            .map(|instant| *instant)
+            .unwrap_or_else(|poisoned| *poisoned.into_inner())
+    }
+
+    fn mark_polled(&self) {
+        let now = Instant::now();
+        match self.last_polled.lock() {
+            Ok(mut instant) => *instant = now,
+            Err(poisoned) => *poisoned.into_inner() = now,
+        }
+    }
 }
 
 #[derive(Clone, Copy, Debug, Deserialize, Eq, PartialEq, Serialize)]
@@ -1225,17 +1290,22 @@ impl SessionManager {
         handler.add_sync_method("axo.session.events.next", move |params: Params| {
             let request: SessionEventsNextRequest = params
                 .parse()
-                .map_err(|_| invalid_params("expected {subscriptionId, timeoutMs}"))?;
+                .map_err(|_| invalid_params("expected {subscriptionId, timeoutMs, maxEvents?}"))?;
             if request.timeout_ms == 0 || request.timeout_ms > 20_000 {
                 return Err(invalid_params("timeoutMs must be between 1 and 20000"));
             }
-            manager
-                .next_event(
-                    &request.subscription_id,
-                    Duration::from_millis(request.timeout_ms),
-                )
-                .map(|event| json!({ "event": event }))
-                .map_err(internal_rpc_error)
+            let timeout = Duration::from_millis(request.timeout_ms);
+            match request.max_events {
+                None => manager
+                    .next_event(&request.subscription_id, timeout)
+                    .map(|event| json!({ "event": event }))
+                    .map_err(internal_rpc_error),
+                Some(max_events) if (1..=MAX_EVENTS_PER_POLL).contains(&max_events) => manager
+                    .next_events(&request.subscription_id, timeout, max_events)
+                    .map(|events| json!({ "events": events }))
+                    .map_err(internal_rpc_error),
+                Some(_) => Err(invalid_params("maxEvents must be between 1 and 256")),
+            }
         });
 
         let manager = Arc::clone(self);
@@ -1284,6 +1354,21 @@ impl SessionManager {
                         internal_rpc_error(error)
                     }
                 })
+        });
+
+        let manager = Arc::clone(self);
+        handler.add_sync_method("axo.shell.busy", move |params: Params| {
+            let request: ShellBusyRequest = params
+                .parse()
+                .map_err(|_| invalid_params("expected {sessionId, shellId}"))?;
+            let (session_id, shell_id) =
+                parse_session_shell_ids(request.session_id, request.shell_id)?;
+            manager
+                .shell_busy(session_id, shell_id)
+                .map(|busy| {
+                    json!({ "busy": busy.busy, "foregroundProcess": busy.foreground_process })
+                })
+                .map_err(internal_rpc_error)
         });
 
         let manager = Arc::clone(self);
@@ -1715,7 +1800,7 @@ impl SessionManager {
     fn subscribe(
         &self,
         session_id: Option<SessionId>,
-        include_terminal_output: bool,
+        include_streams: bool,
     ) -> io::Result<String> {
         if let Some(session_id) = session_id {
             let state = self.lock_state()?;
@@ -1735,7 +1820,7 @@ impl SessionManager {
         let expired: Vec<String> = subscriptions
             .iter()
             .filter(|(_, subscription)| {
-                now.duration_since(subscription.last_polled) >= SUBSCRIPTION_IDLE_EXPIRY
+                now.duration_since(subscription.last_polled()) >= SUBSCRIPTION_IDLE_EXPIRY
             })
             .map(|(id, _)| id.clone())
             .collect();
@@ -1762,17 +1847,18 @@ impl SessionManager {
         let lagged = Arc::new(AtomicBool::new(false));
         subscriptions.insert(
             subscription_id.clone(),
-            LocalSubscription {
-                receiver,
+            Arc::new(LocalSubscription {
+                receiver: Mutex::new(receiver),
                 lagged: Arc::clone(&lagged),
-                last_polled: now,
-            },
+                last_polled: Mutex::new(now),
+            }),
         );
+        let initial_sender = sender.clone();
         subscribers.push(LocalSubscriber {
             id: subscription_id.clone(),
             session_id,
-            include_terminal_output,
-            lagged,
+            scope: EventScope::from_include_streams(include_streams),
+            lagged: Arc::clone(&lagged),
             sender,
         });
         drop(subscribers);
@@ -1784,39 +1870,62 @@ impl SessionManager {
                 return Err(error);
             }
         };
+        // Initial snapshots go to this subscriber only; other subscribers already have them.
         for session in sessions {
             if session_id.is_none_or(|expected| expected == session.id) {
-                self.publish_event(
-                    json!({ "type": "session.snapshot", "session": session.to_json() }),
-                );
+                let snapshot = json!({ "type": "session.snapshot", "session": session.to_json() });
+                if initial_sender.try_send(snapshot).is_err() {
+                    lagged.store(true, Ordering::Release);
+                    break;
+                }
             }
         }
         Ok(subscription_id)
     }
 
     fn next_event(&self, id: &str, timeout: Duration) -> io::Result<Option<Value>> {
-        let mut subscriptions = self
+        Ok(self.next_events(id, timeout, 1)?.into_iter().next())
+    }
+
+    /// Waits up to `timeout` for the first event, then drains up to `max_events` already queued.
+    fn next_events(&self, id: &str, timeout: Duration, max_events: usize) -> io::Result<Vec<Value>> {
+        let subscription = self
             .subscriptions
             .lock()
-            .map_err(|_| io::Error::other("session subscription lock was poisoned"))?;
-        let subscription = subscriptions
-            .get_mut(id)
+            .map_err(|_| io::Error::other("session subscription lock was poisoned"))?
+            .get(id)
+            .cloned()
             .ok_or_else(|| io::Error::new(io::ErrorKind::NotFound, "subscription is not open"))?;
-        subscription.last_polled = Instant::now();
+        subscription.mark_polled();
+        let receiver = subscription
+            .receiver
+            .lock()
+            .map_err(|_| io::Error::other("session subscription receiver lock was poisoned"))?;
         if subscription.lagged.swap(false, Ordering::AcqRel) {
             // Discard the gapped backlog; the client must resynchronize from a fresh listing.
-            while subscription.receiver.try_recv().is_ok() {}
-            return Ok(Some(json!({ "type": "subscription.lagged" })));
+            while receiver.try_recv().is_ok() {}
+            return Ok(vec![json!({ "type": "subscription.lagged" })]);
         }
-        let receiver = &subscription.receiver;
-        match receiver.recv_timeout(timeout) {
-            Ok(event) => Ok(Some(event)),
-            Err(RecvTimeoutError::Timeout) => Ok(None),
-            Err(RecvTimeoutError::Disconnected) => Err(io::Error::new(
-                io::ErrorKind::NotFound,
-                "subscription is closed",
-            )),
+        let first = receiver.recv_timeout(timeout);
+        subscription.mark_polled();
+        let first = match first {
+            Ok(event) => event,
+            Err(RecvTimeoutError::Timeout) => return Ok(Vec::new()),
+            Err(RecvTimeoutError::Disconnected) => {
+                return Err(io::Error::new(
+                    io::ErrorKind::NotFound,
+                    "subscription is closed",
+                ));
+            }
+        };
+        let mut events = vec![first];
+        while events.len() < max_events.max(1) {
+            match receiver.try_recv() {
+                Ok(event) => events.push(event),
+                Err(_) => break,
+            }
         }
+        Ok(events)
     }
 
     fn unsubscribe(&self, id: &str) -> io::Result<()> {
@@ -1840,7 +1949,7 @@ impl SessionManager {
 
     /// Returns how many subscribers accepted the event.
     fn publish_event(&self, event: Value) -> usize {
-        let is_terminal_output = event["type"] == "terminal.output";
+        let event_type = event["type"].as_str().unwrap_or_default();
         let session_id = event.get("sessionId").and_then(Value::as_i64).or_else(|| {
             event
                 .get("session")
@@ -1854,7 +1963,7 @@ impl SessionManager {
             if subscriber
                 .session_id
                 .is_some_and(|expected| session_id != Some(expected.0))
-                || (is_terminal_output && !subscriber.include_terminal_output)
+                || !subscriber.scope.accepts(event_type)
             {
                 return true;
             }
@@ -1981,6 +2090,41 @@ impl SessionManager {
         let process_id = running.child.id() as libc::pid_t;
         signal_shell(-process_id, process_id, libc::SIGWINCH);
         Ok(())
+    }
+
+    fn shell_busy(&self, session_id: SessionId, shell_id: ShellId) -> io::Result<ShellBusy> {
+        let state = self.lock_state()?;
+        let running = state
+            .running
+            .get(&shell_id)
+            .filter(|running| running.session_id == session_id)
+            .ok_or_else(|| io::Error::new(io::ErrorKind::NotFound, "shell is not open"))?;
+        if running.role == PaneRole::Pi {
+            let working = state
+                .pi_activity
+                .get(&session_id)
+                .is_some_and(|activity| activity.working);
+            return Ok(ShellBusy {
+                busy: working,
+                foreground_process: None,
+            });
+        }
+        // SAFETY: the PTY master descriptor stays open while the shell is running.
+        let foreground = unsafe { libc::tcgetpgrp(running.master.as_raw_fd()) };
+        if foreground == -1 {
+            return Err(io::Error::last_os_error());
+        }
+        let shell_process = running.child.id() as libc::pid_t;
+        if foreground == shell_process {
+            return Ok(ShellBusy {
+                busy: false,
+                foreground_process: None,
+            });
+        }
+        Ok(ShellBusy {
+            busy: true,
+            foreground_process: process_name(foreground),
+        })
     }
 
     fn create_shell(&self, session_id: SessionId) -> io::Result<ShellMetadata> {
@@ -6002,6 +6146,29 @@ fn signal_shell(process_group: libc::pid_t, process_id: libc::pid_t, signal: lib
     }
 }
 
+#[cfg(target_vendor = "apple")]
+fn process_name(process_id: libc::pid_t) -> Option<String> {
+    let mut buffer = [0u8; 256];
+    // SAFETY: the buffer is writable for its full length; proc_name NUL-terminates within it.
+    let length = unsafe {
+        libc::proc_name(
+            process_id,
+            buffer.as_mut_ptr().cast(),
+            buffer.len() as u32,
+        )
+    };
+    if length <= 0 {
+        return None;
+    }
+    let name = String::from_utf8_lossy(&buffer[..length as usize]).into_owned();
+    (!name.is_empty()).then_some(name)
+}
+
+#[cfg(not(target_vendor = "apple"))]
+fn process_name(_process_id: libc::pid_t) -> Option<String> {
+    None
+}
+
 fn wait_for_shell_exit(child: &mut Child, timeout: Duration) -> io::Result<bool> {
     let deadline = Instant::now() + timeout;
     while Instant::now() < deadline {
@@ -7744,6 +7911,67 @@ mod tests {
             "terminal.output"
         );
 
+        manager.publish_event(json!({ "type": "pi.event", "sessionId": 1, "name": "message_update" }));
+        assert_eq!(
+            manager
+                .next_event(&catalog, Duration::from_millis(1))
+                .unwrap(),
+            None,
+            "catalog subscriptions must not carry Pi stream events"
+        );
+        assert_eq!(
+            manager
+                .next_event(&output, Duration::from_millis(1))
+                .unwrap()
+                .unwrap()["type"],
+            "pi.event"
+        );
+
+        // A new subscription's initial snapshots must not be rebroadcast to existing subscribers.
+        let late = manager.subscribe(None, false).unwrap();
+        assert_eq!(
+            manager
+                .next_event(&catalog, Duration::from_millis(1))
+                .unwrap(),
+            None,
+            "initial snapshots belong to the new subscriber only"
+        );
+        drain(&late);
+
+        // One subscriber's long-poll must not block another's poll or publishers.
+        std::thread::scope(|scope| {
+            let waiter = scope.spawn(|| manager.next_event(&late, Duration::from_secs(5)));
+            std::thread::sleep(Duration::from_millis(50));
+            let started = Instant::now();
+            assert_eq!(
+                manager
+                    .next_event(&catalog, Duration::from_millis(1))
+                    .unwrap(),
+                None
+            );
+            assert!(
+                started.elapsed() < Duration::from_secs(1),
+                "a concurrent long-poll blocked another subscriber"
+            );
+            manager.publish_workspace_changed("wake");
+            let woken = waiter.join().unwrap().unwrap().unwrap();
+            assert_eq!(woken["type"], "workspace.changed");
+        });
+        drain(&catalog);
+        manager.unsubscribe(&late).unwrap();
+
+        for name in ["a", "b", "c"] {
+            manager.publish_workspace_changed(name);
+        }
+        let batch = manager
+            .next_events(&catalog, Duration::from_millis(1), 2)
+            .unwrap();
+        assert_eq!(batch.len(), 2, "batches are bounded by maxEvents");
+        assert_eq!(batch[0]["workspaceId"], "a");
+        assert_eq!(batch[1]["workspaceId"], "b");
+        drain(&catalog);
+        drain(&output);
+
         manager.publish_workspace_changed("workspace");
         let changed = manager
             .next_event(&catalog, Duration::from_millis(1))
@@ -7793,13 +8021,15 @@ mod tests {
             "a stale focus request must not be replayed by a later listing"
         );
 
-        manager
+        *manager
             .subscriptions
             .lock()
             .unwrap()
-            .get_mut(&catalog)
+            .get(&catalog)
             .unwrap()
-            .last_polled = Instant::now()
+            .last_polled
+            .lock()
+            .unwrap() = Instant::now()
             .checked_sub(SUBSCRIPTION_IDLE_EXPIRY)
             .unwrap();
         let replacement = manager.subscribe(None, false).unwrap();

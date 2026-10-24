@@ -623,6 +623,41 @@ fn local_protocol_streams_events_and_controls_the_pty() {
         "terminal output must be streamed through the event API"
     );
 
+    let shell_busy = |expected: bool| {
+        let deadline = Instant::now() + Duration::from_secs(4);
+        loop {
+            let result = rpc_with_params(
+                &socket,
+                "axo.shell.busy",
+                json!({ "sessionId": session_id, "shellId": shell_id }),
+            )["result"]
+                .clone();
+            if result["busy"] == expected {
+                return result;
+            }
+            assert!(
+                Instant::now() < deadline,
+                "shell busy state never became {expected}: {result}"
+            );
+            std::thread::sleep(Duration::from_millis(50));
+        }
+    };
+    let idle = shell_busy(false);
+    assert!(idle["foregroundProcess"].is_null());
+    for (sequence, data) in [(1, "c2xlZXAgMzAK"), (2, "Aw==")] {
+        if sequence == 2 {
+            let busy = shell_busy(true);
+            assert_eq!(busy["foregroundProcess"], "sleep");
+        }
+        let accepted = rpc_with_params(
+            &socket,
+            "axo.terminal.input",
+            json!({ "sessionId": session_id, "shellId": shell_id, "sequence": sequence, "data": data }),
+        );
+        assert_eq!(accepted["result"]["accepted"], true);
+    }
+    shell_busy(false);
+
     attach.stop();
     let unsubscribed = rpc_with_params(
         &socket,
@@ -885,6 +920,7 @@ fn daemon_starts_with_and_restores_a_default_pty_session_after_restart() {
         "axo.workspace.archive",
         "axo.workspace.session.create",
         "axo.session.rename",
+        "axo.shell.busy",
         "axo.terminal.input",
         "axo.terminal.resize",
     ] {

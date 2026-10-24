@@ -82,6 +82,9 @@
         },
         {
           "$ref": "#/$defs/TerminalResizeCall"
+        },
+        {
+          "$ref": "#/$defs/ShellBusyCall"
         }
       ]
     },
@@ -612,7 +615,7 @@
                 "includeTerminalOutput": {
                   "type": "boolean",
                   "default": true,
-                  "description": "Catalog subscribers pass false to receive only session, workspace and focus events."
+                  "description": "Catalog subscribers pass false to receive only catalog events (session, workspace, focus and shell activity); terminal output and Pi stream events are excluded."
                 }
               }
             }
@@ -1131,6 +1134,62 @@
         }
       }
     },
+    "ShellBusyCall": {
+      "allOf": [
+        {
+          "$ref": "#/$defs/BaseCall"
+        },
+        {
+          "properties": {
+            "method": {
+              "const": "axo.shell.busy"
+            },
+            "params": {
+              "type": "object",
+              "additionalProperties": false,
+              "required": [
+                "sessionId",
+                "shellId"
+              ],
+              "properties": {
+                "sessionId": {
+                  "$ref": "common.schema.json#/$defs/SessionId"
+                },
+                "shellId": {
+                  "$ref": "common.schema.json#/$defs/ShellId"
+                }
+              }
+            }
+          }
+        }
+      ],
+      "unevaluatedProperties": false,
+      "required": [
+        "params"
+      ]
+    },
+    "ShellBusyResult": {
+      "type": "object",
+      "additionalProperties": false,
+      "description": "Whether closing the shell would interrupt work: a foreground job other than the shell (terminal panes) or a Pi turn in progress (Pi panes).",
+      "required": [
+        "busy",
+        "foregroundProcess"
+      ],
+      "properties": {
+        "busy": {
+          "type": "boolean"
+        },
+        "foregroundProcess": {
+          "type": [
+            "string",
+            "null"
+          ],
+          "maxLength": 255,
+          "description": "Foreground process name, a presentation hint only."
+        }
+      }
+    },
     "TerminalResizeResult": {
       "type": "object",
       "additionalProperties": false,
@@ -1181,6 +1240,12 @@
                   "type": "integer",
                   "minimum": 1,
                   "maximum": 20000
+                },
+                "maxEvents": {
+                  "type": "integer",
+                  "minimum": 1,
+                  "maximum": 256,
+                  "description": "When present, the result carries an `events` batch: the first event waits up to timeoutMs, the rest are already queued."
                 }
               }
             }
@@ -1193,23 +1258,43 @@
       ]
     },
     "EventsNextResult": {
-      "type": "object",
-      "additionalProperties": false,
-      "required": [
-        "event"
-      ],
-      "properties": {
-        "event": {
-          "anyOf": [
-            {
-              "$ref": "events.schema.json#/$defs/LocalEvent"
-            },
-            {
-              "type": "null"
+      "oneOf": [
+        {
+          "type": "object",
+          "additionalProperties": false,
+          "required": [
+            "event"
+          ],
+          "properties": {
+            "event": {
+              "anyOf": [
+                {
+                  "$ref": "events.schema.json#/$defs/LocalEvent"
+                },
+                {
+                  "type": "null"
+                }
+              ]
             }
-          ]
+          }
+        },
+        {
+          "type": "object",
+          "additionalProperties": false,
+          "required": [
+            "events"
+          ],
+          "properties": {
+            "events": {
+              "type": "array",
+              "maxItems": 256,
+              "items": {
+                "$ref": "events.schema.json#/$defs/LocalEvent"
+              }
+            }
+          }
         }
-      }
+      ]
     }
   }
 }

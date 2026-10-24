@@ -199,6 +199,26 @@ validateWith(
   { event: null },
 );
 validateWith(
+  "https://schemas.axo.leostera.dev/v1/local-rpc.schema.json#/$defs/EventsNextResult",
+  { events: [{ type: "subscription.lagged" }] },
+);
+validateWith(localCallSchema, {
+  jsonrpc: "2.0",
+  id: 1,
+  method: "axo.shell.busy",
+  params: { sessionId: 1, shellId: 2 },
+});
+validateWith(
+  "https://schemas.axo.leostera.dev/v1/local-rpc.schema.json#/$defs/ShellBusyResult",
+  { busy: true, foregroundProcess: "sleep" },
+);
+validateWith(localCallSchema, {
+  jsonrpc: "2.0",
+  id: 1,
+  method: "axo.session.events.next",
+  params: { subscriptionId: "00000000-0000-4000-8000-000000000001", timeoutMs: 15000, maxEvents: 64 },
+});
+validateWith(
   "https://schemas.axo.leostera.dev/v1/local-rpc.schema.json#/$defs/SessionListResult",
   await fixture("session-list.result.json"),
 );
