@@ -685,7 +685,14 @@ fn local_protocol_streams_events_and_controls_the_pty() {
                 json!({ "sessionId": session_id, "shellId": shell_id }),
             )["result"]
                 .clone();
-            if result["busy"] == expected {
+            // A login shell can briefly run its own startup commands (e.g. `mv` for history), so
+            // "busy" means our `sleep` is in the foreground.
+            let settled = if expected {
+                result["foregroundProcess"] == "sleep"
+            } else {
+                result["busy"] == false
+            };
+            if settled {
                 return result;
             }
             assert!(

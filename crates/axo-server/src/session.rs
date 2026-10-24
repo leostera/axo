@@ -1,23 +1,25 @@
 use std::collections::{HashMap, HashSet};
-use std::ffi::{CStr, OsStr};
+use std::ffi::OsStr;
 use std::fs;
 use std::fs::OpenOptions;
 use std::io::{self, BufRead, BufReader, Read, Write};
 use std::os::fd::{AsRawFd, FromRawFd, OwnedFd, RawFd};
 use std::os::unix::fs::{MetadataExt, OpenOptionsExt, PermissionsExt};
 use std::os::unix::net::{UnixListener, UnixStream};
-use std::os::unix::process::CommandExt;
 use std::path::{Path, PathBuf};
-use std::process::{Child, Command, Stdio};
+use std::process::{Child, Command};
 use std::sync::atomic::{AtomicBool, AtomicU64, AtomicUsize, Ordering};
 use std::sync::{Arc, Mutex, Weak};
 use std::thread::{self, JoinHandle};
 use std::time::{Duration, Instant};
 
 use crate::process_inspection;
-use crate::terminal_output::{NextOutput, OutputSubscriber, TerminalOutput, TerminalOutputSink};
 use crate::workspace_access::WorkspaceDirectoryAccess;
 use axo_ipc::{BlockingMethods, EventQueue, PushOutcome};
+use axo_pty::process::{self, PtyProcess};
+use axo_pty::{
+    NextOutput, OutputSubscriber, TerminalOutput, TerminalOutputSink, WindowSize, attach,
+};
 use jsonrpc_core::{Error as RpcError, ErrorCode, IoHandler, Params};
 use rusqlite::{Connection, OptionalExtension, params};
 use serde::{Deserialize, Serialize};
@@ -25,10 +27,7 @@ use serde_json::{Value, json};
 
 const DATABASE_FILE: &str = "axo.db";
 const ATTACH_SOCKET_FILE: &str = "attach.sock";
-const PTY_ROWS: libc::c_ushort = 24;
-const PTY_COLUMNS: libc::c_ushort = 80;
 const REAPER_INTERVAL: Duration = Duration::from_millis(100);
-const ATTACH_REJECTION_MARKER: u64 = u64::MAX;
 const MAX_LAYOUT_DEPTH: usize = 64;
 const MAX_LAYOUT_NODES: usize = 255;
 const MAX_SUBSCRIPTIONS: usize = 64;
@@ -38,14 +37,12 @@ const MAX_EVENTS_PER_POLL: usize = 256;
 const ATTACH_STOP_POLL_INTERVAL: Duration = Duration::from_millis(100);
 const PENDING_FOCUS_LIFETIME: Duration = Duration::from_secs(10);
 const MAX_CONCURRENT_TERMINAL_ATTACHMENTS: usize = 256;
-const ATTACH_REQUEST_TIMEOUT: Duration = Duration::from_secs(3);
 /// A client that cannot take its replay this fast is stalled; it can reattach.
 const ATTACH_REPLAY_WRITE_TIMEOUT: Duration = Duration::from_secs(2);
 /// Live writes tolerate a briefly busy UI; the backlog cap handles slower clients.
 const ATTACH_LIVE_WRITE_TIMEOUT: Duration = Duration::from_secs(10);
 const ATTACH_SEND_BUFFER_BYTES: libc::c_int = 256 * 1024;
 const TERMINAL_INPUT_WRITE_TIMEOUT: Duration = Duration::from_secs(5);
-const MAX_ATTACH_SHELL_ID_DIGITS: usize = 19;
 const DEFAULT_AGENT_COMMAND: &str = "pi";
 const MAX_COMMAND_LINE_BYTES: usize = 4096;
 const MAX_COMMAND_ARGUMENTS: usize = 128;
@@ -501,7 +498,8 @@ struct SessionState {
     shutting_down: bool,
     pi_activity: HashMap<SessionId, PiRuntimeActivity>,
     initial_pwd: PathBuf,
-    output_sink: Arc<dyn TerminalOutputSink>,
+    /// Every shell's output is published here once it enters the catalog.
+    events: EventBus,
 }
 
 impl SessionState {
@@ -512,9 +510,15 @@ impl SessionState {
         shell_id: ShellId,
         running: RunningShell,
     ) -> Option<RunningShell> {
-        running
-            .output
-            .bind(running.session_id, shell_id, Arc::clone(&self.output_sink));
+        let session_id = running.session_id;
+        running.output.bind(
+            format!("session_id={} shell_id={}", session_id.0, shell_id.0),
+            Arc::new(ShellOutputSink {
+                events: self.events.clone(),
+                session_id,
+                shell_id,
+            }),
+        );
         self.running.insert(shell_id, running)
     }
 }
@@ -839,16 +843,18 @@ impl EventBus {
     }
 }
 
-impl TerminalOutputSink for EventBus {
-    fn publish_terminal_output(
-        &self,
-        session_id: SessionId,
-        shell_id: ShellId,
-        sequence: u64,
-        output: &[u8],
-    ) {
+/// Publishes one shell's PTY output as `terminal.output` events.
+struct ShellOutputSink {
+    events: EventBus,
+    session_id: SessionId,
+    shell_id: ShellId,
+}
+
+impl TerminalOutputSink for ShellOutputSink {
+    fn publish_terminal_output(&self, sequence: u64, output: &[u8]) {
+        let (session_id, shell_id) = (self.session_id, self.shell_id);
         // Most of the time nobody streams terminal bytes; skip the base64 work then.
-        let wanted = self.lock().is_ok_and(|subscribers| {
+        let wanted = self.events.lock().is_ok_and(|subscribers| {
             subscribers
                 .iter()
                 .any(|subscriber| subscriber.wants("terminal.output", Some(session_id.0)))
@@ -856,7 +862,7 @@ impl TerminalOutputSink for EventBus {
         if !wanted {
             return;
         }
-        self.publish(json!({
+        self.events.publish(json!({
             "type": "terminal.output",
             "sessionId": session_id.0,
             "shellId": shell_id.0,
@@ -1091,7 +1097,7 @@ impl SessionManager {
                 shutting_down: false,
                 pi_activity: HashMap::new(),
                 initial_pwd,
-                output_sink: Arc::new(subscribers.clone()),
+                events: subscribers.clone(),
             }),
             attach_socket_path,
             pi_session_directory,
@@ -1258,7 +1264,13 @@ impl SessionManager {
     ) -> io::Result<()> {
         let (session_id, shell_id) = parse_session_shell_ids(session_id, shell_id)
             .map_err(|_| io::Error::new(io::ErrorKind::InvalidInput, "invalid shell identity"))?;
-        self.resize_terminal(session_id, shell_id, rows, columns)
+        let size = WindowSize::new(rows, columns).ok_or_else(|| {
+            io::Error::new(
+                io::ErrorKind::InvalidInput,
+                "terminal dimensions are outside the supported range",
+            )
+        })?;
+        self.resize_terminal(session_id, shell_id, size)
     }
 
     pub fn register_rpc_methods(self: &Arc<Self>, handler: &mut IoHandler) {
@@ -1422,8 +1434,10 @@ impl SessionManager {
                 .parse()
                 .map_err(|_| invalid_params("expected {sessionId, shellId, rows, columns}"))?;
             let (session_id, shell_id) = parse_session_shell_ids(request.session_id, request.shell_id)?;
+            let size = WindowSize::new(request.rows, request.columns)
+                .ok_or_else(|| invalid_params("terminal dimensions are invalid"))?;
             manager
-                .resize_terminal(session_id, shell_id, request.rows, request.columns)
+                .resize_terminal(session_id, shell_id, size)
                 .map(|()| json!({ "accepted": true, "rows": request.rows, "columns": request.columns }))
                 .map_err(|error| {
                     if error.kind() == io::ErrorKind::InvalidInput {
@@ -1739,11 +1753,7 @@ impl SessionManager {
                                 AttachmentPermit::try_acquire(Arc::clone(&active_attachments))
                             else {
                                 log::warn!("event=session.attach_rejected reason=capacity");
-                                let error = io::Error::new(
-                                    io::ErrorKind::WouldBlock,
-                                    "daemon is at its terminal attachment limit",
-                                );
-                                let _ = write_attachment_rejection(&mut stream, &error);
+                                let _ = attach::write_rejection(&mut stream, attach::Rejection::DaemonBusy);
                                 continue;
                             };
                             let mut rejection_stream = match stream.try_clone() {
@@ -1753,7 +1763,7 @@ impl SessionManager {
                                         "event=session.attach_worker_start_failed phase=clone_socket error_kind={:?}",
                                         error.kind()
                                     );
-                                    let _ = write_attachment_rejection(&mut stream, &error);
+                                    let _ = attach::write_rejection(&mut stream, attach::Rejection::Other);
                                     continue;
                                 }
                             };
@@ -1766,11 +1776,7 @@ impl SessionManager {
                                     "event=session.attach_worker_start_failed phase=spawn error_kind={:?}",
                                     error.kind()
                                 );
-                                let rejection = io::Error::new(
-                                    io::ErrorKind::WouldBlock,
-                                    "daemon could not start a terminal attachment worker",
-                                );
-                                let _ = write_attachment_rejection(&mut rejection_stream, &rejection);
+                                let _ = attach::write_rejection(&mut rejection_stream, attach::Rejection::DaemonBusy);
                             }
                         }
                         Err(error) if error.kind() == io::ErrorKind::WouldBlock => {}
@@ -2100,7 +2106,11 @@ impl SessionManager {
                 "terminal input sequence is out of order",
             ));
         }
-        write_fd_all(running.master.as_raw_fd(), &input)?;
+        process::write_all(
+            running.master.as_raw_fd(),
+            &input,
+            TERMINAL_INPUT_WRITE_TIMEOUT,
+        )?;
         running.last_input_sequence = Some(sequence);
         Ok(())
     }
@@ -2109,40 +2119,15 @@ impl SessionManager {
         &self,
         session_id: SessionId,
         shell_id: ShellId,
-        rows: u32,
-        columns: u32,
+        size: WindowSize,
     ) -> io::Result<()> {
-        if rows == 0 || columns == 0 || rows > u16::MAX as u32 || columns > u16::MAX as u32 {
-            return Err(io::Error::new(
-                io::ErrorKind::InvalidInput,
-                "terminal dimensions are outside the supported range",
-            ));
-        }
         let state = self.lock_state()?;
         let running = state
             .running
             .get(&shell_id)
             .filter(|running| running.session_id == session_id)
             .ok_or_else(|| io::Error::new(io::ErrorKind::NotFound, "shell is not open"))?;
-        let size = libc::winsize {
-            ws_row: rows as libc::c_ushort,
-            ws_col: columns as libc::c_ushort,
-            ws_xpixel: 0,
-            ws_ypixel: 0,
-        };
-        // SAFETY: size is fully initialized and the PTY master descriptor remains open.
-        let result = unsafe {
-            libc::ioctl(
-                running.master.as_raw_fd(),
-                libc::TIOCSWINSZ,
-                &size as *const libc::winsize,
-            )
-        };
-        if result == -1 {
-            return Err(io::Error::last_os_error());
-        }
-        signal_shell(&running.child, libc::SIGWINCH);
-        Ok(())
+        process::resize(&running.master, &running.child, size)
     }
 
     fn shell_busy(&self, session_id: SessionId, shell_id: ShellId) -> io::Result<ShellBusy> {
@@ -2712,7 +2697,7 @@ impl SessionManager {
         if let Some(mut cancelled) = pending {
             // A close/shutdown may win during exec. Keep cleanup outside the
             // catalog lock and retain the writer lock until the child exits.
-            terminate_shell(&mut cancelled.child);
+            process::stop(&mut cancelled.child);
         }
         result
     }
@@ -2974,7 +2959,7 @@ impl SessionManager {
         let mut shells: Vec<RunningShell> = running.into_values().collect();
         let mut children: Vec<&mut Child> =
             shells.iter_mut().map(|shell| &mut shell.child).collect();
-        terminate_shells(&mut children);
+        process::stop_all(&mut children);
     }
 
     fn pi_runtime_is_current(&self, binding: PiRuntimeBinding) -> bool {
@@ -4603,44 +4588,23 @@ fn bundled_terminfo_directory() -> Option<PathBuf> {
         .then_some(terminfo_directory)
 }
 
+/// Points terminal programs at the app's bundled Ghostty shell integration and terminfo.
+fn set_terminal_resources(command: &mut Command) {
+    if let Some(resources_directory) = bundled_ghostty_resources_directory() {
+        command.env("GHOSTTY_RESOURCES_DIR", resources_directory);
+    }
+    if let Some(terminfo_directory) = bundled_terminfo_directory() {
+        command.env("TERMINFO", terminfo_directory);
+    }
+}
+
 fn spawn_shell(
     shell_command: &ShellCommand,
     session_id: SessionId,
     initial_pwd: &Path,
 ) -> io::Result<RunningShell> {
-    let mut master_fd: RawFd = -1;
-    let mut slave_fd: RawFd = -1;
-    let mut size = libc::winsize {
-        ws_row: PTY_ROWS,
-        ws_col: PTY_COLUMNS,
-        ws_xpixel: 0,
-        ws_ypixel: 0,
-    };
-    // SAFETY: openpty initializes both descriptors and receives a valid winsize pointer.
-    if unsafe {
-        libc::openpty(
-            &mut master_fd,
-            &mut slave_fd,
-            std::ptr::null_mut(),
-            std::ptr::null_mut(),
-            &mut size,
-        )
-    } == -1
-    {
-        return Err(io::Error::last_os_error());
-    }
-
-    // SAFETY: openpty returned two new owned descriptors.
-    let master = unsafe { OwnedFd::from_raw_fd(master_fd) };
-    // SAFETY: openpty returned two new owned descriptors.
-    let slave = unsafe { OwnedFd::from_raw_fd(slave_fd) };
-    set_descriptor_cloexec(master.as_raw_fd())?;
-    set_descriptor_cloexec(slave.as_raw_fd())?;
-    let slave_device = tty_device_path(slave.as_raw_fd())?;
-
     let shell = resolve_shell_executable(&shell_command.0.executable)?;
     let home = super::current_user_home_directory()?;
-    let slave_raw_fd = slave.as_raw_fd();
     let mut command = Command::new(&shell);
     command
         .args(&shell_command.0.arguments)
@@ -4649,49 +4613,14 @@ fn spawn_shell(
         .env("HOME", &home)
         .env("SHELL", &shell)
         .env("PWD", initial_pwd)
-        .env("TERM", "xterm-ghostty")
-        .stdin(Stdio::null())
-        .stdout(Stdio::null())
-        .stderr(Stdio::null());
-    if let Some(resources_directory) = bundled_ghostty_resources_directory() {
-        command.env("GHOSTTY_RESOURCES_DIR", resources_directory);
-    }
-    if let Some(terminfo_directory) = bundled_terminfo_directory() {
-        command.env("TERMINFO", terminfo_directory);
-    }
-
-    // SAFETY: this child-only setup creates a session, assigns the PTY as its
-    // controlling terminal, and connects all standard streams before exec.
-    unsafe {
-        command.pre_exec(move || {
-            if libc::setsid() == -1 {
-                return Err(io::Error::last_os_error());
-            }
-            if libc::ioctl(slave_raw_fd, libc::TIOCSCTTY as libc::c_ulong, 0) == -1 {
-                return Err(io::Error::last_os_error());
-            }
-            if libc::tcsetpgrp(slave_raw_fd, libc::getpgrp()) == -1 {
-                return Err(io::Error::last_os_error());
-            }
-            for target in [libc::STDIN_FILENO, libc::STDOUT_FILENO, libc::STDERR_FILENO] {
-                if libc::dup2(slave_raw_fd, target) == -1 {
-                    return Err(io::Error::last_os_error());
-                }
-            }
-            libc::close(slave_raw_fd);
-            Ok(())
-        });
-    }
-
-    let mut child = command.spawn()?;
-    drop(slave);
-    let output = match TerminalOutput::start(&master) {
-        Ok(output) => output,
-        Err(error) => {
-            terminate_shell(&mut child);
-            return Err(error);
-        }
-    };
+        .env("TERM", "xterm-ghostty");
+    set_terminal_resources(&mut command);
+    let PtyProcess {
+        child,
+        master,
+        device: slave_device,
+        output,
+    } = process::spawn(command, WindowSize::DEFAULT, &[])?;
     Ok(RunningShell {
         runtime_id: RuntimeId::new(),
         session_id,
@@ -4821,7 +4750,7 @@ fn connect_pi_socket_until(
     }
     // SAFETY: raw is the newly created descriptor.
     let socket = unsafe { OwnedFd::from_raw_fd(raw) };
-    set_descriptor_cloexec(raw)?;
+    process::set_cloexec(raw)?;
     // SAFETY: these fcntl calls only inspect/update this owned descriptor.
     let flags = unsafe { libc::fcntl(raw, libc::F_GETFL) };
     if flags == -1 || unsafe { libc::fcntl(raw, libc::F_SETFL, flags | libc::O_NONBLOCK) } == -1 {
@@ -5576,36 +5505,6 @@ fn spawn_pi(
     let extension = resolve_pi_extension_path()?;
     let executable = resolve_pi_executable(&agent_command.0.executable)?;
     let home = super::current_user_home_directory()?;
-    let mut master_fd: RawFd = -1;
-    let mut slave_fd: RawFd = -1;
-    let mut size = libc::winsize {
-        ws_row: PTY_ROWS,
-        ws_col: PTY_COLUMNS,
-        ws_xpixel: 0,
-        ws_ypixel: 0,
-    };
-    // SAFETY: openpty initializes both descriptors and receives a valid winsize pointer.
-    if unsafe {
-        libc::openpty(
-            &mut master_fd,
-            &mut slave_fd,
-            std::ptr::null_mut(),
-            std::ptr::null_mut(),
-            &mut size,
-        )
-    } == -1
-    {
-        return Err(io::Error::last_os_error());
-    }
-    // SAFETY: openpty returned two new owned descriptors.
-    let master = unsafe { OwnedFd::from_raw_fd(master_fd) };
-    // SAFETY: openpty returned two new owned descriptors.
-    let slave = unsafe { OwnedFd::from_raw_fd(slave_fd) };
-    set_descriptor_cloexec(master.as_raw_fd())?;
-    set_descriptor_cloexec(slave.as_raw_fd())?;
-    let slave_device = tty_device_path(slave.as_raw_fd())?;
-    let slave_raw_fd = slave.as_raw_fd();
-    let lock_raw_fd = lock.as_raw_fd();
     let mut command = Command::new(executable);
     command
         .args(&agent_command.0.arguments)
@@ -5621,53 +5520,16 @@ fn spawn_pi(
         .env("AXO_PANE_ID", pane_id)
         .env("AXO_PI_SESSION_FILE", session_file)
         .env("AXO_PI_BRIDGE_SOCKET", bridge_socket.as_path())
-        .env("AXO_PI_BRIDGE_TOKEN", &bridge_token)
-        .stdin(Stdio::null())
-        .stdout(Stdio::null())
-        .stderr(Stdio::null());
-    if let Some(resources_directory) = bundled_ghostty_resources_directory() {
-        command.env("GHOSTTY_RESOURCES_DIR", resources_directory);
-    }
-    if let Some(terminfo_directory) = bundled_terminfo_directory() {
-        command.env("TERMINFO", terminfo_directory);
-    }
-    // SAFETY: this child-only setup creates a session, assigns the PTY as its
-    // controlling terminal, and connects all standard streams before exec.
-    unsafe {
-        command.pre_exec(move || {
-            if libc::setsid() == -1 {
-                return Err(io::Error::last_os_error());
-            }
-            if libc::ioctl(slave_raw_fd, libc::TIOCSCTTY as libc::c_ulong, 0) == -1 {
-                return Err(io::Error::last_os_error());
-            }
-            if libc::tcsetpgrp(slave_raw_fd, libc::getpgrp()) == -1 {
-                return Err(io::Error::last_os_error());
-            }
-            for target in [libc::STDIN_FILENO, libc::STDOUT_FILENO, libc::STDERR_FILENO] {
-                if libc::dup2(slave_raw_fd, target) == -1 {
-                    return Err(io::Error::last_os_error());
-                }
-            }
-            libc::close(slave_raw_fd);
-            // Inherit only this Pi's writer lock. Clearing CLOEXEC in the
-            // parent would leak it into unrelated concurrent child launches.
-            // Pi retains the lock even if Axod crashes; the parent stays CLOEXEC.
-            if libc::fcntl(lock_raw_fd, libc::F_SETFD, 0) == -1 {
-                return Err(io::Error::last_os_error());
-            }
-            Ok(())
-        });
-    }
-    let mut child = command.spawn()?;
-    drop(slave);
-    let output = match TerminalOutput::start(&master) {
-        Ok(output) => output,
-        Err(error) => {
-            terminate_shell(&mut child);
-            return Err(error);
-        }
-    };
+        .env("AXO_PI_BRIDGE_TOKEN", &bridge_token);
+    set_terminal_resources(&mut command);
+    // Pi inherits only its own writer lock and keeps it even if Axod crashes. The parent copy
+    // stays close-on-exec so concurrent launches never leak it.
+    let PtyProcess {
+        child,
+        master,
+        device: slave_device,
+        output,
+    } = process::spawn(command, WindowSize::DEFAULT, &[lock.as_raw_fd()])?;
     Ok(RunningShell {
         runtime_id: RuntimeId::new(),
         session_id: *session_id,
@@ -6093,121 +5955,11 @@ fn write_json_line(stream: &mut UnixStream, value: &Value) -> io::Result<()> {
     stream.write_all(&encoded)
 }
 
-fn set_descriptor_cloexec(descriptor: RawFd) -> io::Result<()> {
-    // SAFETY: fcntl reads descriptor flags from an open descriptor.
-    let flags = unsafe { libc::fcntl(descriptor, libc::F_GETFD) };
-    if flags == -1 {
-        return Err(io::Error::last_os_error());
-    }
-    // SAFETY: fcntl updates only the close-on-exec flag on this open descriptor.
-    if unsafe { libc::fcntl(descriptor, libc::F_SETFD, flags | libc::FD_CLOEXEC) } == -1 {
-        return Err(io::Error::last_os_error());
-    }
-    Ok(())
-}
-
-fn tty_device_path(slave_fd: RawFd) -> io::Result<String> {
-    let mut bytes = vec![0_i8; libc::PATH_MAX as usize];
-    // SAFETY: bytes is writable storage and slave_fd is an open PTY slave.
-    let error = unsafe { libc::ttyname_r(slave_fd, bytes.as_mut_ptr(), bytes.len()) };
-    if error != 0 {
-        return Err(io::Error::from_raw_os_error(error));
-    }
-    // SAFETY: ttyname_r wrote a NUL-terminated device path into bytes.
-    let device = unsafe { CStr::from_ptr(bytes.as_ptr()) };
-    device
-        .to_str()
-        .map(str::to_owned)
-        .map_err(|_| io::Error::new(io::ErrorKind::InvalidData, "PTY path is not UTF-8"))
-}
-
 struct ShellCleanup(RunningShell);
 
 impl Drop for ShellCleanup {
     fn drop(&mut self) {
-        terminate_shell(&mut self.0.child);
-    }
-}
-
-fn terminate_shell(child: &mut Child) {
-    terminate_shells(&mut [child]);
-}
-
-/// How long stopped shells get to exit after SIGHUP/SIGTERM before SIGKILL.
-const SHELL_STOP_GRACE: Duration = Duration::from_millis(500);
-/// How long to wait for the kernel to reap after SIGKILL before reporting a stuck process.
-const SHELL_KILL_WAIT: Duration = Duration::from_secs(2);
-
-/// Stops every child with one shared timeout policy: all are signalled together and waited on
-/// together, so stopping N shells takes one grace period, not N.
-///
-/// SIGHUP is what a closing terminal sends: interactive shells ignore SIGTERM but exit on SIGHUP
-/// and forward it to their jobs. SIGTERM covers non-shell agents. Survivors get SIGKILL.
-fn terminate_shells(children: &mut [&mut Child]) {
-    let mut running: Vec<&mut Child> = Vec::with_capacity(children.len());
-    for child in children.iter_mut() {
-        match child.try_wait() {
-            Ok(Some(_)) => {}
-            Ok(None) => running.push(child),
-            Err(error) => log::error!(
-                "event=session.shell_stop_unconfirmed pid={} phase=before_signal error_kind={:?}",
-                child.id(),
-                error.kind()
-            ),
-        }
-    }
-    for child in &running {
-        log::info!("event=session.shell_stop_started pid={}", child.id());
-        signal_shell(child, libc::SIGHUP);
-        signal_shell(child, libc::SIGTERM);
-    }
-    let survivors = wait_for_exits(running, SHELL_STOP_GRACE, "term_wait");
-    for child in &survivors {
-        signal_shell(child, libc::SIGKILL);
-    }
-    for child in wait_for_exits(survivors, SHELL_KILL_WAIT, "kill_wait") {
-        log::error!("event=session.shell_stop_timed_out pid={}", child.id());
-    }
-}
-
-/// Waits until `timeout` for the children to exit; returns the ones still running.
-fn wait_for_exits<'a>(
-    mut running: Vec<&'a mut Child>,
-    timeout: Duration,
-    phase: &str,
-) -> Vec<&'a mut Child> {
-    let deadline = Instant::now() + timeout;
-    loop {
-        running.retain_mut(|child| match child.try_wait() {
-            Ok(Some(_)) => {
-                log::info!("event=session.shell_stopped pid={}", child.id());
-                false
-            }
-            Ok(None) => true,
-            Err(error) => {
-                log::error!(
-                    "event=session.shell_stop_unconfirmed pid={} phase={phase} error_kind={:?}",
-                    child.id(),
-                    error.kind()
-                );
-                false
-            }
-        });
-        if running.is_empty() || Instant::now() >= deadline {
-            return running;
-        }
-        thread::sleep(Duration::from_millis(10));
-    }
-}
-
-/// Signals the child's process group (its foreground jobs) and the child itself (a shell that
-/// moved to another group for job control).
-fn signal_shell(child: &Child, signal: libc::c_int) {
-    let process_id = child.id() as libc::pid_t;
-    // SAFETY: the pid comes from a child this manager spawned and has not yet reaped.
-    unsafe {
-        libc::kill(-process_id, signal);
-        libc::kill(process_id, signal);
+        process::stop(&mut self.0.child);
     }
 }
 
@@ -6284,99 +6036,17 @@ impl Drop for TerminalAttachmentLease<'_> {
     }
 }
 
-fn read_attachment_request(stream: &mut UnixStream) -> io::Result<ShellId> {
-    let deadline = Instant::now() + ATTACH_REQUEST_TIMEOUT;
-    let mut request = Vec::with_capacity(MAX_ATTACH_SHELL_ID_DIGITS);
-    let mut byte = [0_u8; 1];
-    loop {
-        wait_for_attachment_request_data(stream.as_raw_fd(), deadline)?;
-        match stream.read(&mut byte) {
-            Ok(0) => {
-                return Err(io::Error::new(
-                    io::ErrorKind::UnexpectedEof,
-                    "attachment request ended before its newline",
-                ));
-            }
-            Ok(_) if byte[0] == b'\n' && !request.is_empty() => break,
-            Ok(_) if byte[0].is_ascii_digit() && request.len() < MAX_ATTACH_SHELL_ID_DIGITS => {
-                request.push(byte[0]);
-            }
-            Ok(_) => {
-                return Err(io::Error::new(
-                    io::ErrorKind::InvalidInput,
-                    "attachment request must contain one positive shell ID",
-                ));
-            }
-            Err(error)
-                if matches!(
-                    error.kind(),
-                    io::ErrorKind::Interrupted | io::ErrorKind::WouldBlock
-                ) =>
-            {
-                continue;
-            }
-            Err(error) => return Err(error),
-        }
-    }
-
-    let text = std::str::from_utf8(&request)
-        .map_err(|_| io::Error::new(io::ErrorKind::InvalidInput, "shell ID is not UTF-8"))?;
-    let shell_id = text
-        .parse::<i64>()
-        .map_err(|_| io::Error::new(io::ErrorKind::InvalidInput, "shell ID is invalid"))?;
-    if shell_id <= 0 {
-        return Err(io::Error::new(
-            io::ErrorKind::InvalidInput,
-            "shell ID must be positive",
-        ));
-    }
-    Ok(ShellId(shell_id))
-}
-
-fn wait_for_attachment_request_data(file_descriptor: RawFd, deadline: Instant) -> io::Result<()> {
-    loop {
-        let remaining = deadline.saturating_duration_since(Instant::now());
-        if remaining.is_zero() {
-            return Err(io::Error::new(
-                io::ErrorKind::TimedOut,
-                "attachment request timed out",
-            ));
-        }
-        let timeout_millis =
-            remaining.as_millis().clamp(1, libc::c_int::MAX as u128) as libc::c_int;
-        let mut descriptor = libc::pollfd {
-            fd: file_descriptor,
-            events: libc::POLLIN,
-            revents: 0,
-        };
-        // SAFETY: descriptor points to one initialized pollfd for an open socket.
-        let ready = unsafe { libc::poll(&mut descriptor, 1, timeout_millis) };
-        if ready > 0 {
-            return Ok(());
-        }
-        if ready == 0 {
-            return Err(io::Error::new(
-                io::ErrorKind::TimedOut,
-                "attachment request timed out",
-            ));
-        }
-        let error = io::Error::last_os_error();
-        if error.kind() != io::ErrorKind::Interrupted {
-            return Err(error);
-        }
+/// Maps why `attach_shell` failed to the attach protocol's rejection codes.
+fn attach_rejection(error: &io::Error) -> attach::Rejection {
+    match error.kind() {
+        io::ErrorKind::NotFound => attach::Rejection::ShellNotOpen,
+        io::ErrorKind::WouldBlock => attach::Rejection::DaemonBusy,
+        _ => attach::Rejection::Other,
     }
 }
 
-/// Attach protocol (v2). The client writes its shell ID and a newline. Axod answers with either
-/// `u64::MAX` and a one-byte rejection code, or:
-///
-/// 1. the replay length as a big-endian `u64`,
-/// 2. a one-byte message carrying the PTY master descriptor (`SCM_RIGHTS`), then
-/// 3. the replay followed by live output, as raw bytes, until the shell's PTY reaches end of file.
-///
-/// The descriptor is for input, resizing, and termios/foreground queries only; reading it would
-/// steal output from Axod's pump. Closing the socket detaches. End of file means the shell exited
-/// or the attachment fell too far behind; clients check the catalog to tell which.
+/// Serves one attachment (see `axo_pty::attach` for the protocol): registers it with the shell,
+/// subscribes to the shell's output, then streams replay and live output until either side ends.
 fn handle_attachment(
     mut stream: UnixStream,
     manager: Weak<SessionManager>,
@@ -6394,15 +6064,15 @@ fn handle_attachment(
         log::warn!("event=session.attach_rejected reason=socket_setup");
         return;
     }
-    set_send_buffer(&stream, ATTACH_SEND_BUFFER_BYTES);
-    let id = match read_attachment_request(&mut stream) {
-        Ok(id) => id,
+    attach::set_send_buffer(&stream, ATTACH_SEND_BUFFER_BYTES);
+    let id = match attach::read_request(&mut stream) {
+        Ok(id) => ShellId(id),
         Err(error) => {
             log::debug!(
                 "event=session.attach_rejected reason=invalid_request error_kind={:?}",
                 error.kind()
             );
-            let _ = write_attachment_rejection(&mut stream, &error);
+            let _ = attach::write_rejection(&mut stream, attach_rejection(&error));
             return;
         }
     };
@@ -6417,7 +6087,8 @@ fn handle_attachment(
                 id.0,
                 error.kind()
             );
-            if let Err(write_error) = write_attachment_rejection(&mut stream, &error) {
+            if let Err(write_error) = attach::write_rejection(&mut stream, attach_rejection(&error))
+            {
                 log::debug!(
                     "event=session.attach_rejection_write_failed shell_id={} error_kind={:?}",
                     id.0,
@@ -6448,20 +6119,16 @@ fn handle_attachment(
         manager.publish_shell_activity(session_id, id, "attached");
     }
 
-    let mut phase = "replay_header";
-    let response = stream
-        .write_all(&(replay.len() as u64).to_be_bytes())
+    let response = attach::write_acceptance(&mut stream, replay.len(), &master)
+        .map_err(|(phase, error)| (phase.as_str(), error))
+        .and_then(|()| stream.write_all(&replay).map_err(|error| ("replay", error)))
         .and_then(|()| {
-            phase = "pty_descriptor";
-            send_file_descriptor(stream.as_raw_fd(), master.as_raw_fd())
-        })
-        .and_then(|()| {
-            phase = "replay";
-            stream.write_all(&replay)
-        })
-        .and_then(|()| stream.set_write_timeout(Some(ATTACH_LIVE_WRITE_TIMEOUT)));
+            stream
+                .set_write_timeout(Some(ATTACH_LIVE_WRITE_TIMEOUT))
+                .map_err(|error| ("live_timeout", error))
+        });
     drop(master);
-    if let Err(error) = response {
+    if let Err((phase, error)) = response {
         log::warn!(
             "event=session.attach_failed session_id={} shell_id={} phase={} replay_bytes={} elapsed_ms={} error_kind={:?}",
             session_id.0,
@@ -6497,7 +6164,7 @@ fn handle_attachment(
                 }
             }
             NextOutput::Idle => {
-                if attachment_peer_closed(&mut stream) {
+                if attach::peer_closed(&mut stream) {
                     break "client_closed";
                 }
             }
@@ -6521,101 +6188,6 @@ fn handle_attachment(
         delivered,
         started_at.elapsed().as_millis()
     );
-}
-
-/// Clients never write after their request; readable means closed (or a protocol violation,
-/// which is discarded).
-fn attachment_peer_closed(stream: &mut UnixStream) -> bool {
-    let mut descriptor = libc::pollfd {
-        fd: stream.as_raw_fd(),
-        events: libc::POLLIN,
-        revents: 0,
-    };
-    // SAFETY: descriptor points to one initialized pollfd for this live socket.
-    if unsafe { libc::poll(&mut descriptor, 1, 0) } <= 0 {
-        return false;
-    }
-    let mut scratch = [0_u8; 4096];
-    match stream.read(&mut scratch) {
-        Ok(0) => true,
-        Ok(_) => false,
-        Err(error) => !matches!(
-            error.kind(),
-            io::ErrorKind::Interrupted | io::ErrorKind::WouldBlock | io::ErrorKind::TimedOut
-        ),
-    }
-}
-
-fn set_send_buffer(stream: &UnixStream, bytes: libc::c_int) {
-    // SAFETY: setsockopt borrows this live socket and an initialized integer.
-    unsafe {
-        libc::setsockopt(
-            stream.as_raw_fd(),
-            libc::SOL_SOCKET,
-            libc::SO_SNDBUF,
-            (&bytes as *const libc::c_int).cast(),
-            std::mem::size_of_val(&bytes) as _,
-        );
-    }
-}
-
-fn write_attachment_rejection(stream: &mut UnixStream, error: &io::Error) -> io::Result<()> {
-    let code = match error.kind() {
-        io::ErrorKind::AddrInUse => 1,
-        io::ErrorKind::NotFound => 2,
-        io::ErrorKind::WouldBlock => 4,
-        _ => 3,
-    };
-    stream.write_all(&ATTACH_REJECTION_MARKER.to_be_bytes())?;
-    stream.write_all(&[code])
-}
-
-fn send_file_descriptor(socket_fd: RawFd, descriptor: RawFd) -> io::Result<()> {
-    let mut byte = b'1';
-    let mut vector = libc::iovec {
-        iov_base: (&mut byte as *mut u8).cast(),
-        iov_len: 1,
-    };
-    let control_size = unsafe { libc::CMSG_SPACE(std::mem::size_of::<RawFd>() as u32) } as usize;
-    let mut control = vec![0_usize; control_size.div_ceil(std::mem::size_of::<usize>())];
-    // SAFETY: zeroed msghdr is a valid starting point before its fields are initialized.
-    let mut message: libc::msghdr = unsafe { std::mem::zeroed() };
-    message.msg_iov = &mut vector;
-    message.msg_iovlen = 1;
-    message.msg_control = control.as_mut_ptr().cast();
-    message.msg_controllen = control_size as _;
-
-    // SAFETY: message points to valid iovec and control storage sized for one descriptor.
-    let header = unsafe { libc::CMSG_FIRSTHDR(&message) };
-    if header.is_null() {
-        return Err(io::Error::other(
-            "could not allocate PTY descriptor message",
-        ));
-    }
-    // SAFETY: header points into message's control buffer with enough SCM_RIGHTS capacity.
-    unsafe {
-        (*header).cmsg_level = libc::SOL_SOCKET;
-        (*header).cmsg_type = libc::SCM_RIGHTS;
-        (*header).cmsg_len = libc::CMSG_LEN(std::mem::size_of::<RawFd>() as u32) as _;
-        std::ptr::copy_nonoverlapping(
-            &descriptor as *const RawFd as *const u8,
-            libc::CMSG_DATA(header).cast(),
-            std::mem::size_of::<RawFd>(),
-        );
-    }
-
-    // SAFETY: sendmsg reads the initialized message and descriptor; both remain alive here.
-    let sent = unsafe { libc::sendmsg(socket_fd, &message, 0) };
-    if sent == -1 {
-        return Err(io::Error::last_os_error());
-    }
-    if sent != 1 {
-        return Err(io::Error::new(
-            io::ErrorKind::WriteZero,
-            "short PTY descriptor message",
-        ));
-    }
-    Ok(())
 }
 
 fn parse_session_id(params: Params) -> Result<SessionId, RpcError> {
@@ -6816,51 +6388,6 @@ fn encode_base64(input: &[u8]) -> String {
     encoded
 }
 
-fn write_fd_all(fd: RawFd, mut bytes: &[u8]) -> io::Result<()> {
-    while !bytes.is_empty() {
-        // SAFETY: bytes points to initialized memory and fd remains open for this call.
-        let written = unsafe { libc::write(fd, bytes.as_ptr().cast(), bytes.len()) };
-        if written == -1 {
-            let error = io::Error::last_os_error();
-            match error.kind() {
-                io::ErrorKind::Interrupted => continue,
-                // An attached client may have set O_NONBLOCK on the shared PTY file description.
-                io::ErrorKind::WouldBlock => {
-                    wait_writable(fd, TERMINAL_INPUT_WRITE_TIMEOUT)?;
-                    continue;
-                }
-                _ => return Err(error),
-            }
-        }
-        if written == 0 {
-            return Err(io::Error::new(
-                io::ErrorKind::WriteZero,
-                "terminal input write returned zero",
-            ));
-        }
-        bytes = &bytes[written as usize..];
-    }
-    Ok(())
-}
-
-fn wait_writable(fd: RawFd, timeout: Duration) -> io::Result<()> {
-    let mut descriptor = libc::pollfd {
-        fd,
-        events: libc::POLLOUT,
-        revents: 0,
-    };
-    let timeout_millis = timeout.as_millis().clamp(1, libc::c_int::MAX as u128) as libc::c_int;
-    // SAFETY: descriptor points to one initialized pollfd for a live descriptor.
-    match unsafe { libc::poll(&mut descriptor, 1, timeout_millis) } {
-        -1 => Err(io::Error::last_os_error()),
-        0 => Err(io::Error::new(
-            io::ErrorKind::TimedOut,
-            "terminal is not accepting input",
-        )),
-        _ => Ok(()),
-    }
-}
-
 fn unix_timestamp() -> i64 {
     std::time::SystemTime::now()
         .duration_since(std::time::UNIX_EPOCH)
@@ -6871,6 +6398,7 @@ fn unix_timestamp() -> i64 {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::os::unix::process::CommandExt;
     use std::sync::mpsc;
 
     struct ChildProcessGuard(Child);
@@ -6888,7 +6416,7 @@ mod tests {
 
     impl Drop for RunningShellGuard {
         fn drop(&mut self) {
-            terminate_shell(&mut self.0.child);
+            process::stop(&mut self.0.child);
         }
     }
 
@@ -7737,7 +7265,7 @@ mod tests {
             .unwrap()
             .install_running(shell_id, replacement)
             .unwrap();
-        terminate_shell(&mut old.child);
+        process::stop(&mut old.child);
 
         manager.set_pi_connection(binding, true).unwrap();
         assert!(
@@ -7841,49 +7369,6 @@ mod tests {
         assert_eq!(exited_state, "archived");
     }
 
-    /// A child in its own process group (like a PTY shell) running `script` under `sh`.
-    fn spawn_group_leader(script: &str) -> Child {
-        let mut command = Command::new("/bin/sh");
-        command.args(["-c", script]).process_group(0);
-        let child = command.spawn().unwrap();
-        // Give sh time to install its traps before it is signalled.
-        thread::sleep(Duration::from_millis(100));
-        child
-    }
-
-    #[test]
-    fn shells_that_ignore_sigterm_stop_on_sighup_without_waiting_for_sigkill() {
-        // Interactive shells ignore SIGTERM; a terminal closing sends SIGHUP.
-        let mut child = spawn_group_leader("trap '' TERM; while :; do sleep 1; done");
-        let started = Instant::now();
-        terminate_shell(&mut child);
-        assert!(child.try_wait().unwrap().is_some());
-        assert!(
-            started.elapsed() < SHELL_STOP_GRACE,
-            "took {:?}",
-            started.elapsed()
-        );
-    }
-
-    #[test]
-    fn stopping_many_stubborn_shells_costs_one_grace_period() {
-        let mut children: Vec<Child> = (0..6)
-            .map(|_| spawn_group_leader("trap '' HUP TERM; while :; do sleep 1; done"))
-            .collect();
-        let started = Instant::now();
-        let mut refs: Vec<&mut Child> = children.iter_mut().collect();
-        terminate_shells(&mut refs);
-        let elapsed = started.elapsed();
-        for child in &mut children {
-            assert!(child.try_wait().unwrap().is_some());
-        }
-        // Sequential stops would take 6 × 500 ms.
-        assert!(
-            elapsed >= SHELL_STOP_GRACE && elapsed < SHELL_STOP_GRACE * 2,
-            "took {elapsed:?}"
-        );
-    }
-
     #[test]
     fn shutdown_does_not_hold_the_catalog_lock_during_child_cleanup() {
         let fixture = LifecycleFixture::new();
@@ -7894,9 +7379,10 @@ mod tests {
             let state = manager.lock_state().unwrap();
             let running = &state.running[&shell_id];
             let (_, output) = running.output.subscribe(None);
-            write_fd_all(
+            process::write_all(
                 running.master.as_raw_fd(),
                 b"trap '' TERM; printf '%s%s\\n' AXO_STOP_ READY\n",
+                TERMINAL_INPUT_WRITE_TIMEOUT,
             )
             .unwrap();
             assert!(read_until(
@@ -8044,7 +7530,7 @@ mod tests {
             acquire_pi_writer_lock(&file).unwrap_err().kind(),
             io::ErrorKind::WouldBlock
         );
-        terminate_shell(&mut child.0.child);
+        process::stop(&mut child.0.child);
         let recovered = acquire_pi_writer_lock(&file).unwrap();
         assert!(unrelated.0.try_wait().unwrap().is_none());
         assert_eq!(fs::read(&file).unwrap(), b"preserved history");
@@ -8403,27 +7889,6 @@ mod tests {
         assert!(!serialized.contains("/private/path"));
         assert!(!serialized.contains("/dev/ttys001"));
         assert!(!serialized.contains("1234"));
-    }
-
-    #[test]
-    fn terminal_attachment_requests_are_bounded_and_positive() {
-        let (mut client, mut server) = UnixStream::pair().unwrap();
-        server.write_all(b"42\n").unwrap();
-        assert_eq!(read_attachment_request(&mut client).unwrap(), ShellId(42));
-
-        let (mut client, mut server) = UnixStream::pair().unwrap();
-        server.write_all(b"0\n").unwrap();
-        assert_eq!(
-            read_attachment_request(&mut client).unwrap_err().kind(),
-            io::ErrorKind::InvalidInput
-        );
-
-        let (mut client, mut server) = UnixStream::pair().unwrap();
-        server.write_all(b"12345678901234567890\n").unwrap();
-        assert_eq!(
-            read_attachment_request(&mut client).unwrap_err().kind(),
-            io::ErrorKind::InvalidInput
-        );
     }
 
     #[test]
@@ -9272,7 +8737,7 @@ mod tests {
             b"AXO_PTY_READY",
             Duration::from_secs(3)
         ));
-        terminate_shell(&mut session.child);
+        process::stop(&mut session.child);
     }
 
     fn read_until(output: &OutputSubscriber, needle: &[u8], timeout: Duration) -> bool {

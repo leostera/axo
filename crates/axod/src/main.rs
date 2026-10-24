@@ -1,22 +1,16 @@
 use std::fs::{self, File, OpenOptions};
 use std::io::{self, Read, Write};
-use std::mem::size_of;
 use std::os::fd::{AsRawFd, FromRawFd, OwnedFd, RawFd};
 use std::os::unix::fs::{OpenOptionsExt, PermissionsExt};
-use std::os::unix::net::UnixStream;
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::thread::{self, JoinHandle};
-use std::time::{Duration, Instant};
+use std::time::Duration;
 
 use clap::{CommandFactory, FromArgMatches, Parser, Subcommand};
 
 const MAX_LOG_BYTES: u64 = 10 * 1024 * 1024;
-const MAX_TERMINAL_OUTPUT_HISTORY_BYTES: u64 = 8 * 1024 * 1024;
-const ATTACH_REJECTION_MARKER: u64 = u64::MAX;
-const ATTACH_RETRY_WINDOW: Duration = Duration::from_secs(10);
-const ATTACH_RETRY_DELAY: Duration = Duration::from_millis(50);
 
 static TERMINAL_RESIZE_REQUESTED: AtomicBool = AtomicBool::new(false);
 
@@ -149,7 +143,11 @@ fn attach_terminal(socket_path: &Path, shell_id: i64) -> io::Result<()> {
 
     // Attach protocol v2: output (replay, then live) arrives on the control socket from Axod's
     // PTY pump. The PTY descriptor is only for input and resizing; reading it would steal output.
-    let (mut control, master) = connect_terminal_attachment(socket_path, shell_id)?;
+    let axo_pty::attach::Attachment {
+        mut control,
+        pty: master,
+        ..
+    } = axo_pty::attach::connect(socket_path, shell_id)?;
     control.set_read_timeout(None)?;
     let mut writer = File::from(duplicate_descriptor(master.as_raw_fd())?);
     let _input_mode = TerminalInputModeGuard::raw(libc::STDIN_FILENO)
@@ -311,164 +309,6 @@ fn duplicate_descriptor(descriptor: libc::c_int) -> io::Result<OwnedFd> {
     Ok(unsafe { OwnedFd::from_raw_fd(duplicate) })
 }
 
-fn connect_terminal_attachment(
-    socket_path: &Path,
-    shell_id: i64,
-) -> io::Result<(UnixStream, OwnedFd)> {
-    let deadline = Instant::now() + ATTACH_RETRY_WINDOW;
-    loop {
-        match open_terminal_attachment(socket_path, shell_id) {
-            Ok(attachment) => return Ok(attachment),
-            Err(error)
-                if matches!(
-                    error.kind(),
-                    io::ErrorKind::WouldBlock | io::ErrorKind::UnexpectedEof
-                ) && Instant::now() < deadline =>
-            {
-                thread::sleep(ATTACH_RETRY_DELAY);
-            }
-            Err(error) => return Err(error),
-        }
-    }
-}
-
-fn open_terminal_attachment(
-    socket_path: &Path,
-    shell_id: i64,
-) -> io::Result<(UnixStream, OwnedFd)> {
-    let mut control = UnixStream::connect(socket_path)?;
-    control.set_read_timeout(Some(Duration::from_secs(5)))?;
-    writeln!(control, "{shell_id}")?;
-    receive_attachment_header(&mut control).map_err(|error| {
-        io::Error::new(error.kind(), format!("read attachment header: {error}"))
-    })?;
-    let master = receive_pty_master(&control)
-        .map_err(|error| io::Error::new(error.kind(), format!("receive PTY: {error}")))?;
-    Ok((control, master))
-}
-
-/// Returns the replay length; the replay itself follows the PTY descriptor on the stream.
-fn receive_attachment_header(control: &mut UnixStream) -> io::Result<u64> {
-    let mut length_bytes = [0_u8; size_of::<u64>()];
-    read_exact_with_progress(control, &mut length_bytes, "history length")?;
-    let length = u64::from_be_bytes(length_bytes);
-    if length == ATTACH_REJECTION_MARKER {
-        let mut code = [0_u8; 1];
-        control.read_exact(&mut code)?;
-        let (kind, message) = match code[0] {
-            2 => (io::ErrorKind::NotFound, "shell is no longer open"),
-            4 => (
-                io::ErrorKind::WouldBlock,
-                "daemon is busy attaching terminals",
-            ),
-            _ => (
-                io::ErrorKind::Other,
-                "daemon rejected the terminal attachment",
-            ),
-        };
-        return Err(io::Error::new(kind, message));
-    }
-    if length > MAX_TERMINAL_OUTPUT_HISTORY_BYTES {
-        return Err(io::Error::new(
-            io::ErrorKind::InvalidData,
-            "daemon announced an oversized terminal history",
-        ));
-    }
-    Ok(length)
-}
-
-fn read_exact_with_progress(
-    reader: &mut impl Read,
-    buffer: &mut [u8],
-    phase: &str,
-) -> io::Result<()> {
-    let mut received = 0;
-    while received < buffer.len() {
-        match reader.read(&mut buffer[received..]) {
-            Ok(0) => {
-                return Err(io::Error::new(
-                    io::ErrorKind::UnexpectedEof,
-                    format!(
-                        "{phase}: received {received} of {} bytes before the connection closed",
-                        buffer.len()
-                    ),
-                ));
-            }
-            Ok(count) => received += count,
-            Err(error) if error.kind() == io::ErrorKind::Interrupted => continue,
-            Err(error) => {
-                return Err(io::Error::new(
-                    error.kind(),
-                    format!(
-                        "{phase}: received {received} of {} bytes: {error}",
-                        buffer.len()
-                    ),
-                ));
-            }
-        }
-    }
-    Ok(())
-}
-
-fn receive_pty_master(control: &UnixStream) -> io::Result<OwnedFd> {
-    let mut payload = [0_u8; 1];
-    let mut vector = libc::iovec {
-        iov_base: payload.as_mut_ptr().cast(),
-        iov_len: payload.len(),
-    };
-    let control_size = unsafe { libc::CMSG_SPACE(size_of::<libc::c_int>() as u32) } as usize;
-    let mut ancillary = vec![0_usize; control_size.div_ceil(size_of::<usize>())];
-    // SAFETY: zeroed msghdr is a valid starting point before its fields are initialized.
-    let mut message: libc::msghdr = unsafe { std::mem::zeroed() };
-    message.msg_iov = &mut vector;
-    message.msg_iovlen = 1;
-    message.msg_control = ancillary.as_mut_ptr().cast();
-    message.msg_controllen = control_size as _;
-
-    // SAFETY: message points to initialized payload and ancillary storage.
-    let received = unsafe { libc::recvmsg(control.as_raw_fd(), &mut message, 0) };
-    if received == -1 {
-        return Err(io::Error::last_os_error());
-    }
-    if received != 1 || payload[0] != b'1' || message.msg_flags & libc::MSG_CTRUNC != 0 {
-        return Err(io::Error::new(
-            io::ErrorKind::InvalidData,
-            "daemon did not provide a PTY descriptor",
-        ));
-    }
-
-    // SAFETY: message's control storage was sized for one descriptor.
-    let header = unsafe { libc::CMSG_FIRSTHDR(&message) };
-    if header.is_null() {
-        return Err(io::Error::new(
-            io::ErrorKind::InvalidData,
-            "daemon response did not contain a control message",
-        ));
-    }
-    let minimum_length = unsafe { libc::CMSG_LEN(size_of::<libc::c_int>() as u32) } as usize;
-    // SAFETY: header points to the control data supplied by recvmsg.
-    if unsafe { (*header).cmsg_level != libc::SOL_SOCKET }
-        || unsafe { (*header).cmsg_type != libc::SCM_RIGHTS }
-        || unsafe { (*header).cmsg_len as usize } < minimum_length
-    {
-        return Err(io::Error::new(
-            io::ErrorKind::InvalidData,
-            "daemon response contained an unexpected control message",
-        ));
-    }
-
-    // SAFETY: the header is SCM_RIGHTS and contains at least one descriptor.
-    let descriptor = unsafe { std::ptr::read_unaligned(libc::CMSG_DATA(header).cast()) };
-    if descriptor < 0 {
-        return Err(io::Error::new(
-            io::ErrorKind::InvalidData,
-            "daemon supplied an invalid PTY descriptor",
-        ));
-    }
-    // SAFETY: recvmsg installed this descriptor in the current process.
-    Ok(unsafe { OwnedFd::from_raw_fd(descriptor) })
-}
-
 fn configure_process_logs(server_directory: &Path) -> io::Result<()> {
     axo_server::prepare_server_directory(server_directory)?;
     let stdout_path = server_directory.join("stdout.log");
@@ -519,141 +359,6 @@ fn redirect_standard_stream(file_descriptor: libc::c_int, path: &Path) -> io::Re
 #[cfg(test)]
 mod tests {
     use super::*;
-    use std::os::unix::net::UnixListener;
-    use std::time::{SystemTime, UNIX_EPOCH};
-
-    #[test]
-    fn terminal_attach_reports_truncated_history_progress() {
-        let (mut client, mut server) = UnixStream::pair().unwrap();
-        server.write_all(&[0, 0, 0]).unwrap();
-        drop(server);
-
-        let error = receive_attachment_header(&mut client).unwrap_err();
-        assert_eq!(error.kind(), io::ErrorKind::UnexpectedEof);
-        assert!(
-            error
-                .to_string()
-                .contains("history length: received 3 of 8 bytes")
-        );
-    }
-
-    #[test]
-    fn terminal_attach_reports_when_daemon_is_busy() {
-        let (mut server, mut client) = UnixStream::pair().unwrap();
-        let response = thread::spawn(move || {
-            server
-                .write_all(&ATTACH_REJECTION_MARKER.to_be_bytes())
-                .unwrap();
-            server.write_all(&[4]).unwrap();
-        });
-
-        let error = receive_attachment_header(&mut client).unwrap_err();
-        assert_eq!(error.kind(), io::ErrorKind::WouldBlock);
-        assert_eq!(error.to_string(), "daemon is busy attaching terminals");
-        response.join().unwrap();
-    }
-
-    #[test]
-    fn terminal_attach_retries_when_daemon_reports_capacity() {
-        let unique = SystemTime::now()
-            .duration_since(UNIX_EPOCH)
-            .unwrap()
-            .as_nanos();
-        let socket_path = std::env::temp_dir().join(format!(
-            "axo-attach-capacity-{}-{unique}.sock",
-            std::process::id()
-        ));
-        let listener = UnixListener::bind(&socket_path).unwrap();
-        let descriptor = File::open("/dev/null").unwrap();
-        let server = thread::spawn(move || {
-            let mut first = accept_test_attachment(&listener);
-            first
-                .write_all(&ATTACH_REJECTION_MARKER.to_be_bytes())
-                .unwrap();
-            first.write_all(&[4]).unwrap();
-            drop(first);
-
-            let mut second = accept_test_attachment(&listener);
-            second.write_all(&0_u64.to_be_bytes()).unwrap();
-            send_test_file_descriptor(second.as_raw_fd(), descriptor.as_raw_fd());
-        });
-
-        let (control, master) = connect_terminal_attachment(&socket_path, 1).unwrap();
-        drop(master);
-        drop(control);
-        server.join().unwrap();
-        std::fs::remove_file(socket_path).unwrap();
-    }
-
-    #[test]
-    fn terminal_attach_retries_a_truncated_history_response() {
-        let unique = SystemTime::now()
-            .duration_since(UNIX_EPOCH)
-            .unwrap()
-            .as_nanos();
-        let socket_path = std::env::temp_dir().join(format!(
-            "axo-attach-retry-{}-{unique}.sock",
-            std::process::id()
-        ));
-        let listener = UnixListener::bind(&socket_path).unwrap();
-        let descriptor = File::open("/dev/null").unwrap();
-        let server = thread::spawn(move || {
-            let mut first = accept_test_attachment(&listener);
-            first.write_all(&[0, 0, 0]).unwrap();
-            drop(first);
-
-            let mut second = accept_test_attachment(&listener);
-            second.write_all(&0_u64.to_be_bytes()).unwrap();
-            send_test_file_descriptor(second.as_raw_fd(), descriptor.as_raw_fd());
-        });
-
-        let (control, master) = connect_terminal_attachment(&socket_path, 1).unwrap();
-        drop(master);
-        drop(control);
-        server.join().unwrap();
-        std::fs::remove_file(socket_path).unwrap();
-    }
-
-    fn accept_test_attachment(listener: &UnixListener) -> UnixStream {
-        let (mut stream, _) = listener.accept().unwrap();
-        stream
-            .set_read_timeout(Some(Duration::from_secs(2)))
-            .unwrap();
-        let mut request = [0; 2];
-        stream.read_exact(&mut request).unwrap();
-        assert_eq!(&request, b"1\n");
-        // Consume the request before closing: unread socket data can otherwise
-        // reset the peer and race its request write instead of testing retries.
-        stream
-    }
-
-    fn send_test_file_descriptor(socket_fd: RawFd, descriptor: RawFd) {
-        let mut payload = b'1';
-        let mut vector = libc::iovec {
-            iov_base: (&mut payload as *mut u8).cast(),
-            iov_len: 1,
-        };
-        let control_size = unsafe { libc::CMSG_SPACE(size_of::<libc::c_int>() as u32) } as usize;
-        let mut ancillary = vec![0_usize; control_size.div_ceil(size_of::<usize>())];
-        // SAFETY: zeroed msghdr is initialized before it is passed to sendmsg.
-        let mut message: libc::msghdr = unsafe { std::mem::zeroed() };
-        message.msg_iov = &mut vector;
-        message.msg_iovlen = 1;
-        message.msg_control = ancillary.as_mut_ptr().cast();
-        message.msg_controllen = control_size as _;
-        // SAFETY: the ancillary buffer is large enough for one descriptor.
-        let header = unsafe { libc::CMSG_FIRSTHDR(&message) };
-        assert!(!header.is_null());
-        // SAFETY: header points into the initialized ancillary buffer.
-        unsafe {
-            (*header).cmsg_level = libc::SOL_SOCKET;
-            (*header).cmsg_type = libc::SCM_RIGHTS;
-            (*header).cmsg_len = libc::CMSG_LEN(size_of::<libc::c_int>() as u32) as _;
-            std::ptr::write(libc::CMSG_DATA(header).cast::<libc::c_int>(), descriptor);
-        }
-        // SAFETY: message references valid payload and ancillary storage.
-        assert_eq!(unsafe { libc::sendmsg(socket_fd, &message, 0) }, 1);
-    }
 
     #[test]
     fn raw_input_mode_is_restored_when_the_guard_drops() {

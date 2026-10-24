@@ -8,6 +8,7 @@ name = "axod"
 path = "src/main.rs"
 
 [dependencies]
+axo-pty = { path = "../axo-pty" }
 axo-server = { path = "../axo-server" }
 clap = { version = "4.5", features = ["derive", "string"] }
 env_logger = "0.11"

@@ -16,7 +16,7 @@ rust_binary(
     srcs = ["src/main.rs"],
     edition = crate_edition(),
     rustc_env_files = [":cargo_env"],
-    deps = ["//crates/axo-server:axo_server"] + all_crate_deps(normal = True),
+    deps = ["//crates/axo-pty:axo_pty", "//crates/axo-server:axo_server"] + all_crate_deps(normal = True),
 )
 
 rust_test(

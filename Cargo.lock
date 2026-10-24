@@ -73,10 +73,19 @@ dependencies = [
 ]
 
 [[package]]
+name = "axo-pty"
+version = "0.1.0"
+dependencies = [
+ "libc",
+ "log",
+]
+
+[[package]]
 name = "axo-server"
 version = "0.1.0"
 dependencies = [
  "axo-ipc",
+ "axo-pty",
  "core-foundation",
  "httparse",
  "jsonrpc-core",
@@ -96,6 +105,7 @@ dependencies = [
 name = "axod"
 version = "0.1.0"
 dependencies = [
+ "axo-pty",
  "axo-server",
  "clap",
  "env_logger",

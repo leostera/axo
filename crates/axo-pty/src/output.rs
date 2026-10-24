@@ -23,10 +23,8 @@ use std::sync::{Arc, Condvar, Mutex, MutexGuard, OnceLock};
 use std::thread;
 use std::time::Duration;
 
-use crate::session::{SessionId, ShellId};
-
-pub(crate) const MAX_TERMINAL_OUTPUT_HISTORY_BYTES: usize = 8 * 1024 * 1024;
-pub(crate) const MAX_SUBSCRIBER_BACKLOG_BYTES: usize = 8 * 1024 * 1024;
+pub const MAX_TERMINAL_OUTPUT_HISTORY_BYTES: usize = 8 * 1024 * 1024;
+pub const MAX_SUBSCRIBER_BACKLOG_BYTES: usize = 8 * 1024 * 1024;
 const READ_BUFFER_BYTES: usize = 64 * 1024;
 /// How often an idle pump rechecks whether its shell was removed from the catalog. Shell exit is
 /// observed immediately as end of file; this only bounds descriptor retention after a close.
@@ -35,20 +33,26 @@ const STOP_POLL_INTERVAL_MILLIS: libc::c_int = 250;
 /// The complete VT stream since the shell started, or nothing once it outgrew the cap. A
 /// truncated stream could start mid-sequence or miss mode changes, so it is never replayed.
 #[derive(Debug)]
-pub(crate) struct TerminalOutputHistory {
+pub struct TerminalOutputHistory {
     bytes: Vec<u8>,
     complete: bool,
 }
 
+impl Default for TerminalOutputHistory {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
 impl TerminalOutputHistory {
-    pub(crate) fn new() -> Self {
+    pub fn new() -> Self {
         Self {
             bytes: Vec::new(),
             complete: true,
         }
     }
 
-    pub(crate) fn record(&mut self, output: &[u8]) {
+    pub fn record(&mut self, output: &[u8]) {
         if !self.complete {
             return;
         }
@@ -60,30 +64,25 @@ impl TerminalOutputHistory {
         self.bytes.extend_from_slice(output);
     }
 
-    pub(crate) fn replay(&self) -> &[u8] {
+    pub fn replay(&self) -> &[u8] {
         if self.complete { &self.bytes } else { &[] }
     }
 }
 
-/// Where a shell's output is published once the catalog knows its identity.
-pub(crate) trait TerminalOutputSink: Send + Sync {
-    fn publish_terminal_output(
-        &self,
-        session_id: SessionId,
-        shell_id: ShellId,
-        sequence: u64,
-        output: &[u8],
-    );
+/// Where a shell's output is published once its owner knows its identity.
+pub trait TerminalOutputSink: Send + Sync {
+    /// `sequence` counts published chunks from zero.
+    fn publish_terminal_output(&self, sequence: u64, output: &[u8]);
 }
 
 struct OutputBinding {
-    session_id: SessionId,
-    shell_id: ShellId,
+    /// Identifies the PTY in logs, e.g. `session_id=1 shell_id=2`.
+    label: String,
     sink: Arc<dyn TerminalOutputSink>,
 }
 
 /// Shared between a shell's pump, its `RunningShell`, and its attachments.
-pub(crate) struct TerminalOutput {
+pub struct TerminalOutput {
     state: Mutex<OutputState>,
     binding: OnceLock<OutputBinding>,
     stopped: AtomicBool,
@@ -122,7 +121,7 @@ impl TerminalOutput {
 
     /// Starts draining `master` immediately. Output before `bind` is recorded for replay but not
     /// published, because the shell's catalog identity does not exist yet.
-    pub(crate) fn start(master: &OwnedFd) -> io::Result<Arc<Self>> {
+    pub fn start(master: &OwnedFd) -> io::Result<Arc<Self>> {
         // SAFETY: fcntl duplicates a live descriptor; the result is owned below.
         let duplicate = unsafe { libc::fcntl(master.as_raw_fd(), libc::F_DUPFD_CLOEXEC, 0) };
         if duplicate == -1 {
@@ -138,35 +137,27 @@ impl TerminalOutput {
         Ok(output)
     }
 
-    #[cfg(test)]
-    pub(crate) fn detached_for_tests() -> Arc<Self> {
+    /// An output with no pump, fed by `record`; for tests in dependent crates.
+    #[doc(hidden)]
+    pub fn detached_for_tests() -> Arc<Self> {
         Arc::new(Self::new())
     }
 
-    /// Attaches catalog identity; later output is published as `terminal.output`. Idempotent.
-    pub(crate) fn bind(
-        &self,
-        session_id: SessionId,
-        shell_id: ShellId,
-        sink: Arc<dyn TerminalOutputSink>,
-    ) {
-        let _ = self.binding.set(OutputBinding {
-            session_id,
-            shell_id,
-            sink,
-        });
+    /// Attaches the owner's identity; later output is published to `sink`. Idempotent.
+    pub fn bind(&self, label: String, sink: Arc<dyn TerminalOutputSink>) {
+        let _ = self.binding.set(OutputBinding { label, sink });
     }
 
     /// Stops the pump within `STOP_POLL_INTERVAL_MILLIS` and releases its descriptor. Attached
     /// clients drain what was already queued and then see end of file.
-    pub(crate) fn stop(&self) {
+    pub fn stop(&self) {
         self.stopped.store(true, Ordering::Relaxed);
     }
 
     /// Registers a subscriber and returns the replay it must write first. `overflow_shutdown`,
     /// when given, is shut down if the subscriber overflows, so a writer blocked on a stalled
     /// client wakes up.
-    pub(crate) fn subscribe(
+    pub fn subscribe(
         &self,
         overflow_shutdown: Option<OwnedFd>,
     ) -> (Vec<u8>, Arc<OutputSubscriber>) {
@@ -178,13 +169,13 @@ impl TerminalOutput {
         (state.history.replay().to_vec(), subscriber)
     }
 
-    #[cfg(test)]
-    pub(crate) fn subscriber_count(&self) -> usize {
+    /// How many clients are attached; for diagnostics and tests.
+    pub fn subscriber_count(&self) -> usize {
         self.lock().subscribers.len()
     }
 
     /// Records one chunk and fans it out. Exposed for tests; the pump is the only production caller.
-    pub(crate) fn record(&self, output: &[u8]) {
+    pub fn record(&self, output: &[u8]) {
         let chunk: Arc<[u8]> = Arc::from(output);
         let mut state = self.lock();
         state.history.record(output);
@@ -229,12 +220,7 @@ impl TerminalOutput {
                 total = total.saturating_add(output.len() as u64);
                 self.record(output);
                 if let Some(binding) = self.binding.get() {
-                    binding.sink.publish_terminal_output(
-                        binding.session_id,
-                        binding.shell_id,
-                        sequence,
-                        output,
-                    );
+                    binding.sink.publish_terminal_output(sequence, output);
                     sequence = sequence.saturating_add(1);
                 }
                 continue;
@@ -255,9 +241,8 @@ impl TerminalOutput {
         drop(reader);
         if let Some(binding) = self.binding.get() {
             log::debug!(
-                "event=terminal.output_ended session_id={} shell_id={} reason={} bytes={}",
-                binding.session_id.0,
-                binding.shell_id.0,
+                "event=terminal.output_ended {} reason={} bytes={}",
+                binding.label,
                 reason,
                 total
             );
@@ -282,7 +267,7 @@ fn wait_readable(fd: RawFd, timeout_millis: libc::c_int) -> io::Result<bool> {
 }
 
 /// One attachment's view of a shell's output.
-pub(crate) struct OutputSubscriber {
+pub struct OutputSubscriber {
     queue: Mutex<SubscriberQueue>,
     ready: Condvar,
     overflow_shutdown: Option<OwnedFd>,
@@ -303,7 +288,7 @@ enum SubscriberStatus {
 }
 
 #[derive(Debug)]
-pub(crate) enum NextOutput {
+pub enum NextOutput {
     Chunks(Vec<Arc<[u8]>>),
     /// Nothing arrived within the timeout; the caller should check its peer and wait again.
     Idle,
@@ -372,7 +357,7 @@ impl OutputSubscriber {
     }
 
     /// Stops delivery; the hub drops this subscriber on its next chunk.
-    pub(crate) fn detach(&self) {
+    pub fn detach(&self) {
         let mut queue = self.lock();
         queue.status = SubscriberStatus::Detached;
         queue.chunks.clear();
@@ -382,7 +367,7 @@ impl OutputSubscriber {
     }
 
     /// Takes every queued chunk, waiting up to `timeout` for the first one.
-    pub(crate) fn next(&self, timeout: Duration) -> NextOutput {
+    pub fn next(&self, timeout: Duration) -> NextOutput {
         let mut queue = self.lock();
         if queue.chunks.is_empty() && queue.status == SubscriberStatus::Live {
             queue = self
@@ -495,7 +480,7 @@ mod tests {
     struct CountingSink(AtomicU64);
 
     impl TerminalOutputSink for CountingSink {
-        fn publish_terminal_output(&self, _: SessionId, _: ShellId, _: u64, output: &[u8]) {
+        fn publish_terminal_output(&self, _: u64, output: &[u8]) {
             self.0.fetch_add(output.len() as u64, Ordering::Relaxed);
         }
     }
@@ -521,7 +506,7 @@ mod tests {
         let slave = unsafe { OwnedFd::from_raw_fd(slave) };
         let output = TerminalOutput::start(&master).unwrap();
         let sink = Arc::new(CountingSink(AtomicU64::new(0)));
-        output.bind(SessionId(1), ShellId(2), sink.clone());
+        output.bind("test".to_owned(), sink.clone());
         let (_, subscriber) = output.subscribe(None);
 
         // Far more than a PTY buffer holds: this blocks forever unless something drains it.

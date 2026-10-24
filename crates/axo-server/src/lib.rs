@@ -19,7 +19,6 @@ mod pairing;
 mod process_inspection;
 mod relay;
 mod session;
-mod terminal_output;
 mod workspace_access;
 
 const MAX_SOCKET_PATH_BYTES: usize = 103;
