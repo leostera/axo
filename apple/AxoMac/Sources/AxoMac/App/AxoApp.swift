@@ -198,8 +198,10 @@ struct AxoApp<Launch: AxoLaunchMode>: App {
 
         Button("Close Focused Shell", role: .destructive) {
           guard let shellID = sessions.focusedShellID ?? ghostty.keyWindowFocusedShellID else {
+            AxoTrace.commands.notice("event=shell.close_key_ignored reason=no_focused_shell")
             return
           }
+          AxoTrace.commands.notice("event=shell.close_key shell_id=\(shellID.rawValue)")
           Task { await sessions.requestCloseShell(shellID) }
         }
         .keyboardShortcut("w", modifiers: .command)

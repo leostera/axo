@@ -158,6 +158,9 @@ struct TerminalPaneView: View {
       }
       .frame(maxWidth: .infinity, maxHeight: .infinity)
       .background(Color(nsColor: .textBackgroundColor))
+      .contentShape(.rect)
+      // No terminal surface takes first responder here, so a click selects the pane for ⌘W.
+      .onTapGesture { sessions.focus(shell.id) }
     } else {
       GeometryReader { geometry in
         GhosttyTerminalView(

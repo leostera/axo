@@ -157,7 +157,10 @@ final class GhosttyRuntime {
     guard let entry = terminalSurfaces.removeValue(forKey: shellID) else { return }
     entry.view.removeFromSuperview()
     if let surface = entry.view.detach() {
+      let start = ContinuousClock.now
       ghostty_surface_free(surface)
+      AxoTrace.surfaces.notice(
+        "event=surface.freed shell_id=\(shellID.rawValue) elapsed_ms=\(AxoTrace.elapsed(since: start), privacy: .public)")
     }
   }
 
@@ -179,9 +182,14 @@ final class GhosttyRuntime {
     view.attachGeneration += 1
     let generation = view.attachGeneration
     let shellID = shell.id
+    let start = ContinuousClock.now
     Task.detached(priority: .userInitiated) { [weak self, weak view] in
       let result = Result { try TerminalAttachment.open(socketPath: socketPath, shellID: shellID) }
+      AxoTrace.surfaces.notice(
+        "event=surface.attach_opened shell_id=\(shellID.rawValue) ok=\((try? result.get()) != nil) elapsed_ms=\(AxoTrace.elapsed(since: start), privacy: .public)")
       await MainActor.run {
+        AxoTrace.surfaces.notice(
+          "event=surface.attach_on_main shell_id=\(shellID.rawValue) elapsed_ms=\(AxoTrace.elapsed(since: start), privacy: .public)")
         guard let self, let view else {
           if case .success(let attachment) = result { attachment.close() }
           return
@@ -231,10 +239,13 @@ final class GhosttyRuntime {
     surfaceConfig.external_output_fd = attachment.outputDescriptor
     surfaceConfig.external_pty_fd = attachment.ptyDescriptor
 
+    let surfaceStart = ContinuousClock.now
     let createdSurface = shell.initialPwd.withCString { workingDirectory in
       surfaceConfig.working_directory = workingDirectory
       return ghostty_surface_new(app, &surfaceConfig)
     }
+    AxoTrace.surfaces.notice(
+      "event=surface.created shell_id=\(shell.id.rawValue) replay_bytes=\(attachment.replayByteCount) surface_new_ms=\(AxoTrace.elapsed(since: surfaceStart), privacy: .public)")
     guard let createdSurface else {
       view.connection = .failed("Ghostty could not create a terminal surface.")
       return

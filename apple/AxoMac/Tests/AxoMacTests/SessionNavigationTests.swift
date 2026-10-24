@@ -87,6 +87,21 @@ final class TerminalSessionsModelPublishingTests: XCTestCase {
     XCTAssertFalse(changed, "re-applying identical state must not re-render the workbench")
   }
 
+  func testUnavailablePiPaneIsFocusedSoCloseCanTargetIt() async {
+    let client = FakeAxodClient()
+    let shell = TerminalShell(
+      id: 10, processId: 1, initialPwd: "/", ptyDevice: "/dev/null", attachSocketPath: "/tmp/s",
+      role: "pi", available: false)
+    client.sessions = [TerminalSession(id: 1, initialPwd: "/", shells: [shell])]
+    let model = TerminalSessionsModel(client: client)
+    await model.refresh()
+
+    XCTAssertEqual(model.selectedSessionID, 1)
+    XCTAssertEqual(model.focusedShellID, 10, "⌘W is disabled without a focused pane")
+    model.focus(10)
+    XCTAssertEqual(model.focusedShellID, 10)
+  }
+
   func testUnsupportedCommandReportsUserFacingError() async {
     let client = FakeAxodClient()
     client.methods = Array(TerminalSessionsModel.requiredMethods)

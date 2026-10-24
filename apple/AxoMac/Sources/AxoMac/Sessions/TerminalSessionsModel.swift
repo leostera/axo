@@ -294,8 +294,7 @@ final class TerminalSessionsModel {
       }
 
       guard selectedSessionID == session.id else { continue }
-      if let newestShellID = session.shells.filter(\.isAvailable).map(\.id)
-        .filter(newShellIDs.contains).max()
+      if let newestShellID = session.shells.map(\.id).filter(newShellIDs.contains).max()
       {
         assign(\.focusedShellID, newestShellID)
       } else if let previousFocus = focusedShellID,
@@ -371,8 +370,12 @@ final class TerminalSessionsModel {
   }
 
   func createSession() async {
+    let start = ContinuousClock.now
     do {
-      adopt(try await requireClient().createSession())
+      let session = try await requireClient().createSession()
+      AxoTrace.commands.notice(
+        "event=session.create_returned session_id=\(session.id.rawValue) elapsed_ms=\(AxoTrace.elapsed(since: start), privacy: .public)")
+      adopt(session)
     } catch {
       report(error)
     }
@@ -575,6 +578,8 @@ final class TerminalSessionsModel {
   /// User-initiated close (⌘W): closes an idle shell at once, but asks first when it is running
   /// a foreground job or a Pi turn. When Axod cannot tell, it asks rather than guess.
   func requestCloseShell(_ shellID: ShellID) async {
+    let start = ContinuousClock.now
+    AxoTrace.commands.notice("event=shell.close_requested shell_id=\(shellID.rawValue)")
     guard let client,
       let session = sessions.first(where: { $0.shells.contains(where: { $0.id == shellID }) }),
       let shell = session.shells.first(where: { $0.id == shellID })
@@ -585,6 +590,8 @@ final class TerminalSessionsModel {
     // An unavailable Pi pane has no live process to interrupt.
     if shell.role == "pi", !shell.isAvailable {
       await closeShell(shellID)
+      AxoTrace.commands.notice(
+        "event=shell.close_done shell_id=\(shellID.rawValue) path=unavailable elapsed_ms=\(AxoTrace.elapsed(since: start), privacy: .public)")
       return
     }
     let busy: TerminalShellBusy?
@@ -595,6 +602,8 @@ final class TerminalSessionsModel {
     } catch {
       busy = nil
     }
+    AxoTrace.commands.notice(
+      "event=shell.close_busy_checked shell_id=\(shellID.rawValue) busy=\(busy?.busy.description ?? "unknown", privacy: .public) elapsed_ms=\(AxoTrace.elapsed(since: start), privacy: .public)")
     let reason: ShellCloseConfirmation.Reason? =
       switch (busy, shell.role) {
       case (nil, _): .unknown
@@ -604,6 +613,8 @@ final class TerminalSessionsModel {
       }
     guard let reason else {
       await closeShell(shellID)
+      AxoTrace.commands.notice(
+        "event=shell.close_done shell_id=\(shellID.rawValue) elapsed_ms=\(AxoTrace.elapsed(since: start), privacy: .public)")
       return
     }
     pendingShellCloseConfirmation = ShellCloseConfirmation(shellID: shellID, reason: reason)
@@ -642,7 +653,10 @@ final class TerminalSessionsModel {
     }()
 
     do {
+      let rpcStart = ContinuousClock.now
       let closed = try await client.closeShell(shellID, inSession: sessionID)
+      AxoTrace.commands.notice(
+        "event=shell.close_rpc_returned shell_id=\(shellID.rawValue) elapsed_ms=\(AxoTrace.elapsed(since: rpcStart), privacy: .public)")
       if closed.archivedSessionId != nil {
         removeSessions([sessionID], closing: session, replacement: closed.replacement)
       } else if let currentSession = self.session(for: sessionID) {
@@ -723,8 +737,9 @@ final class TerminalSessionsModel {
 
   /// Focuses an available pane in any Session, selecting that Session.
   func focus(_ shellID: ShellID) {
+    // Unavailable Pi panes are focusable too: ⌘W, pane navigation and Restart act on them.
     guard let session = sessions.first(where: {
-      $0.shells.contains(where: { $0.id == shellID && $0.isAvailable })
+      $0.shells.contains(where: { $0.id == shellID })
     }) else { return }
     selectedSessionID = session.id
     assign(\.layout, layoutsBySession[session.id])
@@ -744,7 +759,7 @@ final class TerminalSessionsModel {
 
   private func focusAdjacentPane(_ direction: TerminalNavigationDirection) {
     guard let layout else { return }
-    let paneIDs = layout.orderedShellIDs.filter { shell(for: $0)?.isAvailable == true }
+    let paneIDs = layout.orderedShellIDs.filter { shell(for: $0) != nil }
     let currentIndex = focusedShellID.flatMap { paneIDs.firstIndex(of: $0) }
     guard
       let target = SessionNavigation.adjacentIndex(
@@ -845,7 +860,7 @@ final class TerminalSessionsModel {
   }
 
   /// Presents `sessionID`'s layout, keeping focus if it is still a valid pane, else focusing the
-  /// newest available pane.
+  /// newest pane.
   private func activate(_ sessionID: SessionID) {
     guard let session = session(for: sessionID) else {
       assign(\.layout, nil)
@@ -864,11 +879,11 @@ final class TerminalSessionsModel {
     }
     if let focusedShellID,
       currentLayout.contains(shellID: focusedShellID),
-      session.shells.contains(where: { $0.id == focusedShellID && $0.isAvailable })
+      session.shells.contains(where: { $0.id == focusedShellID })
     {
       return
     }
-    assign(\.focusedShellID, session.shells.filter(\.isAvailable).map(\.id).max())
+    assign(\.focusedShellID, session.shells.map(\.id).max())
   }
 
   /// The local layout, else Axod's stored one, else the default for its shells.
