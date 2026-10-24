@@ -21,9 +21,6 @@ struct TerminalWorkbenchView: View {
     return false
   }
 
-  /// Breathing room above and below the terminal surface.
-  private static let terminalVerticalMargin: CGFloat = 10
-
   var body: some View {
     HStack(spacing: 0) {
       if isSidebarCollapsed {
@@ -35,7 +32,6 @@ struct TerminalWorkbenchView: View {
       Divider()
 
       terminalContent
-        .padding(.vertical, Self.terminalVerticalMargin)
         .frame(maxWidth: .infinity, maxHeight: .infinity)
         .safeAreaInset(edge: .top, spacing: 0) {
           if daemonIsRunning, case .reconnecting(let reason) = sessions.catalogConnection {

@@ -52,15 +52,22 @@ extension GhosttyRuntime {
     setenv("GHOSTTY_RESOURCES_DIR", resourceDirectory.path, 1)
   }
 
-  /// Axo's defaults, loaded before user config so explicit Ghostty settings win.
+  /// Axo's Ghostty settings, loaded before user config so explicit Ghostty settings win.
+  /// `window-padding-y` gives the surface breathing room above and below; libghostty paints it
+  /// in the terminal background, as Ghostty.app does.
+  static let axoConfigDefaults = """
+    copy-on-select = clipboard
+    window-padding-y = 10
+    """
+
   /// Returns a user-facing error when the defaults could not be applied.
   static func loadAxoConfigDefaults(into config: ghostty_config_t) -> String? {
     let configURL = FileManager.default.temporaryDirectory
       .appendingPathComponent("axo-ghostty-default-\(UUID().uuidString).ghostty")
     do {
-      try "copy-on-select = clipboard\n".write(to: configURL, atomically: true, encoding: .utf8)
+      try (axoConfigDefaults + "\n").write(to: configURL, atomically: true, encoding: .utf8)
     } catch {
-      return "Axo could not enable copy-on-select: \(error.localizedDescription)"
+      return "Axo could not apply its terminal defaults: \(error.localizedDescription)"
     }
     defer { try? FileManager.default.removeItem(at: configURL) }
     configURL.path.withCString { ghostty_config_load_file(config, $0) }
