@@ -20,29 +20,6 @@ enum CatalogConnection: Equatable {
 }
 
 /// A pane close the user must confirm because it would interrupt running work.
-struct ShellCloseConfirmation: Equatable, Identifiable {
-  enum Reason: Equatable {
-    /// A foreground job other than the shell, named when Axod could tell.
-    case runningProcess(String?)
-    case piWorking
-    /// Axod could not say whether the shell is idle.
-    case unknown
-  }
-
-  let shellID: ShellID
-  let reason: Reason
-
-  var id: ShellID { shellID }
-}
-
-struct WorkspaceArchiveConfirmation: Equatable, Identifiable {
-  let workspaceID: String
-  let workspaceName: String
-  let sessionID: SessionID
-
-  var id: String { workspaceID }
-}
-
 /// The app's view of Axod's Session catalog plus local presentation state (selection, focus,
 /// pane layouts). Axod remains authoritative for Sessions and shells: commands apply the record
 /// Axod returns (relisting only when the outcome is ambiguous), and `TerminalCatalogSync` streams
@@ -90,12 +67,6 @@ final class TerminalSessionsModel {
   private(set) var pendingTerminalSplit: PendingTerminalSplit?
   private(set) var automaticallyRestartUnavailablePi: Bool
 
-  /// Methods every supported Axod must offer; checked once per connection.
-  static let requiredMethods: Set<AxodMethodName> = [
-    .sessionList, .workspaceList, .workspaceCreate, .workspaceSessionCreate, .sessionSubscribe,
-    .sessionEventsNext, .sessionUnsubscribe,
-  ]
-
   /// The daemon client, for collaborators such as `TerminalCatalogSync`.
   var catalogClient: AxodClient? { client }
   /// The same daemon connection, for Settings (nil for in-memory test clients).
@@ -108,8 +79,8 @@ final class TerminalSessionsModel {
   private let layoutWriter: TerminalLayoutWriter
   private let piRestarter: AutomaticPiRestarter
   private let viewportReporter: ViewportReporter
-  /// Methods offered by the connected Axod; `nil` until negotiated on this connection.
-  @ObservationIgnored private var daemonMethods: Set<String>?
+  /// What the connected Axod offers; `nil` without a client.
+  private let capabilities: AxodCapabilities?
   /// The open Sessions: the single source of truth for `sessions` and its projections.
   @ObservationIgnored private var catalog = SessionCatalog() {
     didSet { projectCatalog() }
@@ -172,6 +143,7 @@ final class TerminalSessionsModel {
   ) {
     self.client = client
     self.clientError = clientError
+    capabilities = client.map(AxodCapabilities.init(client:))
     self.selectedSessionDefaults = selectedSessionDefaults
     let preferenceDefaults = selectedSessionDefaults ?? .standard
     self.preferenceDefaults = preferenceDefaults
@@ -191,8 +163,8 @@ final class TerminalSessionsModel {
       return shell.isPi && !shell.isAvailable
     }
     viewportReporter.isSupported = { [weak self] in
-      guard let self, let client = self.client else { return false }
-      return try await self.supports(.clientViewportSet, using: client)
+      guard let capabilities = self?.capabilities else { return false }
+      return try await capabilities.supports(.clientViewportSet)
     }
     piRestarter.restart = { [weak self] shellID in
       try await self?.restartPiSession(shellID, automatically: true)
@@ -275,7 +247,7 @@ final class TerminalSessionsModel {
   /// Renegotiates (Axod may have been upgraded or restarted) and re-reads the catalog. Called by
   /// `TerminalCatalogSync` whenever it (re)subscribes; failures go back to it for retry.
   func resynchronize() async throws {
-    daemonMethods = nil
+    capabilities?.forget()
     try await reloadCatalog()
     viewportReporter.reconnected()
   }
@@ -291,7 +263,7 @@ final class TerminalSessionsModel {
 
   private func reloadCatalog() async throws {
     let client = try requireClient()
-    try await negotiateIfNeeded(using: client)
+    try await requireCapabilities().negotiate()
     async let snapshotTask = client.listSessionSnapshot()
     async let workspacesTask = client.listWorkspaces()
     let snapshot = try await snapshotTask
@@ -426,20 +398,14 @@ final class TerminalSessionsModel {
   func requestCloseSession(_ sessionID: SessionID) async {
     guard let closingSession = session(for: sessionID) else { return }
     errorMessage = nil
-
-    if let workspaceID = closingSession.workspaceId,
-      sessions.filter({ $0.workspaceId == workspaceID }).count == 1
-    {
-      guard let workspace = workspaces.first(where: { $0.workspaceId == workspaceID }) else {
-        errorMessage = "The Workspace is unavailable, so the last Session was not closed."
-        return
-      }
-      pendingWorkspaceArchiveConfirmation = WorkspaceArchiveConfirmation(
-        workspaceID: workspaceID, workspaceName: workspace.name, sessionID: sessionID)
-      return
+    switch SessionClosePlan(closing: closingSession, sessions: sessions, workspaces: workspaces) {
+    case .close:
+      await closeSession(sessionID)
+    case .confirmArchive(let confirmation):
+      pendingWorkspaceArchiveConfirmation = confirmation
+    case .workspaceUnavailable:
+      errorMessage = "The Workspace is unavailable, so the last Session was not closed."
     }
-
-    await closeSession(sessionID)
   }
 
   func cancelWorkspaceArchiveConfirmation() {
@@ -450,12 +416,7 @@ final class TerminalSessionsModel {
     if pendingWorkspaceArchiveConfirmation == confirmation {
       pendingWorkspaceArchiveConfirmation = nil
     }
-    let workspaceSessionIDs = sessions
-      .filter { $0.workspaceId == confirmation.workspaceID }
-      .map(\.id)
-    guard workspaceSessionIDs == [confirmation.sessionID],
-      workspaces.contains(where: { $0.workspaceId == confirmation.workspaceID })
-    else {
+    guard confirmation.stillApplies(sessions: sessions, workspaces: workspaces) else {
       errorMessage = "The Workspace changed before it could be archived. Please review it again."
       return
     }
@@ -477,7 +438,7 @@ final class TerminalSessionsModel {
 
   func renameSession(_ sessionID: SessionID, to name: String) async throws {
     let client = try requireClient()
-    try await requireMethod(.sessionRename, using: client)
+    try await requireCapabilities().require(.sessionRename)
     let renamed = try await client.renameSession(sessionID, to: name)
     guard renamed.id == sessionID, renamed.manualName == name else {
       throw SessionCommandError("axod did not apply the Session name.")
@@ -487,7 +448,7 @@ final class TerminalSessionsModel {
 
   func renameWorkspace(_ workspaceID: String, to name: String) async throws {
     let client = try requireClient()
-    try await requireMethod(.workspaceRename, using: client)
+    try await requireCapabilities().require(.workspaceRename)
     let renamed = try await client.renameWorkspace(workspaceID, to: name)
     guard renamed.workspaceId == workspaceID, renamed.name == name else {
       throw SessionCommandError("axod did not apply the Workspace name.")
@@ -499,7 +460,7 @@ final class TerminalSessionsModel {
 
   func archiveWorkspace(_ workspaceID: String) async throws {
     let client = try requireClient()
-    try await requireMethod(.workspaceArchive, using: client)
+    try await requireCapabilities().require(.workspaceArchive)
     let archived = try await client.archiveWorkspace(workspaceID)
     guard archived.archivedWorkspaceId == workspaceID else {
       throw SessionCommandError("axod archived a different Workspace.")
@@ -576,11 +537,9 @@ final class TerminalSessionsModel {
   }
 
   func resizePendingTerminalSplit(_ id: UUID, to ratio: Double) {
-    guard var pending = pendingTerminalSplit, pending.id == id,
-      case .creating = pending.status
-    else { return }
-    pending.ratio = min(max(ratio, 0.01), 0.99)
-    pendingTerminalSplit = pending
+    guard var pending = pendingTerminalSplit, pending.id == id else { return }
+    pending.resize(to: ratio)
+    if pending != pendingTerminalSplit { pendingTerminalSplit = pending }
   }
 
   func dismissPendingTerminalSplit(_ id: UUID) {
@@ -599,7 +558,7 @@ final class TerminalSessionsModel {
     defer { AxoTrace.endInterval(interval) }
     let start = ContinuousClock.now
     AxoTrace.commands.notice("event=shell.close_requested shell_id=\(shellID.rawValue)")
-    guard let client,
+    guard let client, let capabilities,
       let session = session(containing: shellID),
       let shell = shellsByID[shellID]
     else {
@@ -615,7 +574,7 @@ final class TerminalSessionsModel {
     }
     let busy: TerminalShellBusy?
     do {
-      busy = try await supports(.shellBusy, using: client)
+      busy = try await capabilities.supports(.shellBusy)
         ? try await client.shellBusy(shellID, inSession: session.id)
         : nil
     } catch {
@@ -623,14 +582,7 @@ final class TerminalSessionsModel {
     }
     AxoTrace.commands.notice(
       "event=shell.close_busy_checked shell_id=\(shellID.rawValue) busy=\(busy?.busy.description ?? "unknown", privacy: .public) elapsed_ms=\(AxoTrace.elapsed(since: start), privacy: .public)")
-    let reason: ShellCloseConfirmation.Reason? =
-      switch (busy, shell.role) {
-      case (nil, _): .unknown
-      case (let busy?, _) where !busy.busy: nil
-      case (_, .pi): .piWorking
-      case (let busy?, _): .runningProcess(busy.foregroundProcess)
-      }
-    guard let reason else {
+    guard let reason = ShellCloseConfirmation.Reason(closing: shell.role, busy: busy) else {
       await closeShell(shellID)
       AxoTrace.commands.notice(
         "event=shell.close_done shell_id=\(shellID.rawValue) elapsed_ms=\(AxoTrace.elapsed(since: start), privacy: .public)")
@@ -702,7 +654,7 @@ final class TerminalSessionsModel {
     }
 
     let restartMethod: AxodMethodName = automatically ? .piRestartAuto : .piRestartForce
-    guard try await supports(restartMethod, using: client) else {
+    guard try await requireCapabilities().supports(restartMethod) else {
       if automatically { throw AutomaticPiRestarter.Failure.unsupportedAxod }
       throw SessionCommandError(
         "Pi recovery is not yet supported by the running Axod. Your session history is preserved.")
@@ -756,10 +708,17 @@ final class TerminalSessionsModel {
   // MARK: - State helpers
 
   private func requireClient() throws -> AxodClient {
-    guard let client else {
-      throw SessionCommandError(clientError ?? "Axo can’t locate axod’s socket.")
-    }
+    guard let client else { throw missingClient }
     return client
+  }
+
+  private func requireCapabilities() throws -> AxodCapabilities {
+    guard let capabilities else { throw missingClient }
+    return capabilities
+  }
+
+  private var missingClient: SessionCommandError {
+    SessionCommandError(clientError ?? "Axo can’t locate axod’s socket.")
   }
 
   private func report(_ error: Error) {
@@ -771,31 +730,6 @@ final class TerminalSessionsModel {
     _ keyPath: ReferenceWritableKeyPath<TerminalSessionsModel, Value>, _ value: Value
   ) {
     if self[keyPath: keyPath] != value { self[keyPath: keyPath] = value }
-  }
-
-  private func negotiateIfNeeded(using client: AxodClient) async throws {
-    guard daemonMethods == nil else { return }
-    let negotiation = try await client.negotiate()
-    let methods = Set(negotiation.methods)
-    guard negotiation.protocolVersion == UnixSocketRPC.protocolVersion,
-      Self.requiredMethods.allSatisfy({ methods.contains($0.rawValue) })
-    else {
-      throw SessionCommandError(
-        "The running axod is incompatible with this version of Axo. Restart axod from the menu bar.")
-    }
-    daemonMethods = methods
-  }
-
-  private func supports(_ method: AxodMethodName, using client: AxodClient) async throws -> Bool {
-    try await negotiateIfNeeded(using: client)
-    return daemonMethods?.contains(method.rawValue) == true
-  }
-
-  private func requireMethod(_ method: AxodMethodName, using client: AxodClient) async throws {
-    guard try await supports(method, using: client) else {
-      throw SessionCommandError(
-        "This action requires a newer Axod. Your Sessions and Workspace are unchanged.")
-    }
   }
 
   /// Inserts a Session Axod just created and shows it.

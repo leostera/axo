@@ -152,6 +152,12 @@ booleans; parse wire data into domain types at the boundary.
 - `SessionCommands`: create/close/split/rename/archive/restart, applying Axod's returned records.
 - Confirmations become their own small types instead of optional properties plus cancel methods.
   (They are: `ShellCloseConfirmation`, `WorkspaceArchiveConfirmation`.)
+- **Done:** commands stay on the model, because each one applies Axod's answer to the
+  catalog, selection and errors, and a separate commands object would need all of them. Their
+  decisions moved out and are tested without a daemon: `AxodCapabilities` (negotiation, typed
+  `Set<AxodMethodName>`), `ShellCloseConfirmation.Reason(closing:busy:)`, `SessionClosePlan`,
+  `WorkspaceArchiveConfirmation.stillApplies` and `PendingTerminalSplit.resize(to:)`
+  (model 846 → 780 lines).
 - **Done (`4b82070`):** `SessionCatalog`, a pure value whose `sessions` are sorted and unique by
   ID by construction.
 - **Done (`9fa74d4`):** one layout store; `SidebarSections` replaces `sidebarOrder` (Sessions of

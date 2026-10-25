@@ -10,7 +10,7 @@ final class FakeAxodClient: AxodClient {
   var sessions: [TerminalSession] = []
   var workspaces: [WorkspaceRecord] = []
   var resumeSessionID: SessionID?
-  var methods: [String] = (TerminalSessionsModel.requiredMethods.union([
+  var methods: [String] = (AxodCapabilities.requiredMethods.union([
     .sessionRename, .workspaceRename, .workspaceArchive, .shellBusy,
   ])).map(\.rawValue)
   private(set) var listCount = 0
@@ -31,8 +31,12 @@ final class FakeAxodClient: AxodClient {
     }
   }
 
+  var protocolVersion = UnixSocketRPC.protocolVersion
+  private(set) var negotiateCount = 0
+
   func negotiate() async throws -> ProtocolNegotiation {
-    ProtocolNegotiation(protocolVersion: UnixSocketRPC.protocolVersion, methods: methods)
+    negotiateCount += 1
+    return ProtocolNegotiation(protocolVersion: protocolVersion, methods: methods)
   }
 
   func listSessionSnapshot() async throws -> TerminalSessionListSnapshot {

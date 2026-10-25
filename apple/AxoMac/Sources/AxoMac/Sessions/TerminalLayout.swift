@@ -14,6 +14,13 @@ struct PendingTerminalSplit: Equatable, Identifiable {
   let direction: TerminalSplitDirection
   var ratio: Double
   var status: PendingTerminalSplitStatus
+
+  /// Moves the divider while the pane is being created; once Axod has answered, the
+  /// placeholder is only shown, not edited. The ratio stays within (0, 1).
+  mutating func resize(to ratio: Double) {
+    guard case .creating = status else { return }
+    self.ratio = min(max(ratio, 0.01), 0.99)
+  }
 }
 
 /// The persisted wire direction is the only split direction; no parallel app enum.
