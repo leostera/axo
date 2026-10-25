@@ -1,8 +1,8 @@
 diff --git a/source/include/ghostty.h b/source/include/ghostty.h
-index 9a12b9c..6075408 100644
+index 9a12b9c..bd55a2f 100644
 --- a/source/include/ghostty.h
 +++ b/source/include/ghostty.h
-@@ -518,6 +518,14 @@ typedef struct {
+@@ -518,6 +518,19 @@ typedef struct {
    const char* initial_input;
    bool wait_after_command;
    ghostty_surface_context_e context;
@@ -14,10 +14,15 @@ index 9a12b9c..6075408 100644
 +  bool external_io;
 +  int external_output_fd;
 +  int external_pty_fd;
++  // Axo patch: the surface's initial size in pixels, when nonzero. The output stream is parsed
++  // as soon as the surface exists, so a replay must meet the grid it was written for, not the
++  // 800x600 placeholder used until the first ghostty_surface_set_size.
++  uint32_t initial_width;
++  uint32_t initial_height;
  } ghostty_surface_config_s;
  
  typedef struct {
-@@ -544,6 +552,12 @@ typedef struct {
+@@ -544,6 +557,12 @@ typedef struct {
    uint8_t b;
  } ghostty_config_color_s;
  
@@ -46,7 +51,7 @@ index 568b74d..fd9b9f9 100644
              .rt_post_fork_info = .init(config),
          });
 diff --git a/source/src/apprt/embedded.zig b/source/src/apprt/embedded.zig
-index 3c6b2c1..709eb09 100644
+index 3c6b2c1..10ab0b1 100644
 --- a/source/src/apprt/embedded.zig
 +++ b/source/src/apprt/embedded.zig
 @@ -454,6 +454,9 @@ pub const Surface = struct {
@@ -59,7 +64,7 @@ index 3c6b2c1..709eb09 100644
      /// The current title of the surface. The embedded apprt saves this so
      /// that getTitle works without the implementer needing to save it.
      title: ?[:0]const u8 = null,
-@@ -499,6 +502,11 @@ pub const Surface = struct {
+@@ -499,6 +502,15 @@ pub const Surface = struct {
  
          /// Context for the new surface
          context: apprt.surface.NewSurfaceContext = .window,
@@ -68,12 +73,22 @@ index 3c6b2c1..709eb09 100644
 +        external_io: bool = false,
 +        external_output_fd: c_int = -1,
 +        external_pty_fd: c_int = -1,
++
++        /// Axo patch: the initial size in pixels when both are nonzero. See ghostty.h.
++        initial_width: u32 = 0,
++        initial_height: u32 = 0,
      };
  
      pub fn init(self: *Surface, app: *App, opts: Options) !void {
-@@ -513,6 +521,10 @@ pub const Surface = struct {
+@@ -511,8 +523,15 @@ pub const Surface = struct {
+                 .x = @floatCast(opts.scale_factor),
+                 .y = @floatCast(opts.scale_factor),
              },
-             .size = .{ .width = 800, .height = 600 },
+-            .size = .{ .width = 800, .height = 600 },
++            .size = if (opts.initial_width > 0 and opts.initial_height > 0)
++                .{ .width = opts.initial_width, .height = opts.initial_height }
++            else
++                .{ .width = 800, .height = 600 },
              .cursor_pos = .{ .x = -1, .y = -1 },
 +            .external_io = if (opts.external_io) .{
 +                .output_fd = opts.external_output_fd,
@@ -82,7 +97,7 @@ index 3c6b2c1..709eb09 100644
          };
  
          // Add ourselves to the list of surfaces on the app.
-@@ -631,6 +643,11 @@ pub const Surface = struct {
+@@ -631,6 +650,11 @@ pub const Surface = struct {
          }
      }
  

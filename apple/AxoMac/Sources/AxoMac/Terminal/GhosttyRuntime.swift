@@ -93,7 +93,8 @@ final class GhosttyRuntime {
     let view = GhosttySurfaceNSView(
       runtime: self,
       shellID: shell.id,
-      initialFrameSize: Self.seededSurfaceSize(for: initialSize),
+      initialFrameSize: Self.seededSurfaceSize(
+        paneSize: offscreenPaneSizes[shell.id], proposedSize: initialSize),
       onFocus: onFocus
     )
     let host = GhosttySurfaceHostNSView()
@@ -106,13 +107,17 @@ final class GhosttyRuntime {
     return (host, view)
   }
 
-  static func seededSurfaceSize(for proposedSize: CGSize) -> CGSize {
-    guard proposedSize.width.isFinite, proposedSize.height.isFinite,
-      proposedSize.width > 0, proposedSize.height > 0
-    else {
-      return CGSize(width: 800, height: 600)
+  /// The frame a new surface starts with. libghostty sizes its grid from it and parses Axod's
+  /// replay at once, before AppKit lays the surface out; a replay parsed at the wrong width
+  /// soft-wraps and stays mangled after the reflow (zsh's PROMPT_SP mark, for one). So the
+  /// pane's place in the layout comes first, then SwiftUI's proposal, then a nonzero seed.
+  static func seededSurfaceSize(paneSize: CGSize?, proposedSize: CGSize) -> CGSize {
+    func isDrawable(_ size: CGSize) -> Bool {
+      size.width.isFinite && size.height.isFinite && size.width > 0 && size.height > 0
     }
-    return proposedSize
+    if let paneSize, isDrawable(paneSize) { return paneSize }
+    if isDrawable(proposedSize) { return proposedSize }
+    return CGSize(width: 800, height: 600)
   }
 
   func setFocusedShellID(_ shellID: ShellID?) {
@@ -241,9 +246,14 @@ final class GhosttyRuntime {
     surfaceConfig.platform = ghostty_platform_u(
       macos: ghostty_platform_macos_s(nsview: Unmanaged.passUnretained(view).toOpaque())
     )
-    surfaceConfig.scale_factor = Double(
-      view.window?.backingScaleFactor ?? NSScreen.main?.backingScaleFactor ?? 1
-    )
+    let scale = view.window?.backingScaleFactor ?? offscreenBackingScale
+    surfaceConfig.scale_factor = Double(scale)
+    // libghostty parses the replay as soon as the surface exists; give it the pane's real grid,
+    // not the 800x600 placeholder.
+    if let points = initialSurfaceSize(of: view) {
+      surfaceConfig.initial_width = UInt32(points.width * scale)
+      surfaceConfig.initial_height = UInt32(points.height * scale)
+    }
     surfaceConfig.font_size = 0
     surfaceConfig.context = GHOSTTY_SURFACE_CONTEXT_WINDOW
     surfaceConfig.external_io = true
@@ -268,6 +278,16 @@ final class GhosttyRuntime {
     view.connection = .connected
     updateSurfaceSize(in: view, contentSize: view.bounds.size)
     view.reportPTYSize()
+  }
+
+  /// Where a surface being created will be drawn: its laid-out bounds once it is in a window,
+  /// else its pane's place in the layout. Not the view's frame alone: a new host (zero-sized
+  /// until laid out) resizes it on attach.
+  private func initialSurfaceSize(of view: GhosttySurfaceNSView) -> CGSize? {
+    func isDrawable(_ size: CGSize) -> Bool { size.width >= 1 && size.height >= 1 }
+    if view.window != nil, isDrawable(view.bounds.size) { return view.bounds.size }
+    if let paneSize = offscreenPaneSizes[view.shellID], isDrawable(paneSize) { return paneSize }
+    return isDrawable(view.bounds.size) ? view.bounds.size : nil
   }
 
   /// Axod ended a surface's output stream. If the shell still runs (the client fell behind, or

@@ -16,6 +16,10 @@ reader, so a surface must not spawn a process or read the PTY itself:
   PTY master Axod passed over `SCM_RIGHTS`. Its file status flags are never
   changed, because the open file description is shared with Axod.
 - The surface duplicates both descriptors; the caller keeps the originals.
+- `initial_width`/`initial_height` (pixels) replace the 800x600 placeholder a
+  surface starts with. The output stream is parsed as soon as the surface
+  exists, so a replay must meet the grid it was written for; parsed narrower,
+  it soft-wraps and stays mangled after the reflow.
 - An adopted PTY keeps its size until the surface is really laid out. Its
   program is already running, and the first resize the I/O thread sees is the
   provisional default window size from `Surface.init`; that one is skipped and

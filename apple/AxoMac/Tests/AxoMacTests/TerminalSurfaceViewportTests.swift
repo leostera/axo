@@ -9,15 +9,15 @@ final class TerminalSurfaceViewportTests: XCTestCase {
     XCTAssertTrue(GhosttySurfaceHostNSView().wantsDefaultClipping)
   }
 
-  func testInitialSurfaceSizeUsesMeasuredBoundsOrNonzeroRendererSeed() {
+  func testInitialSurfaceSizePrefersThePanesLayoutSizeThenTheProposalThenANonzeroSeed() {
+    let pane = CGSize(width: 640, height: 900)
+    let proposal = CGSize(width: 420, height: 280)
+    XCTAssertEqual(GhosttyRuntime.seededSurfaceSize(paneSize: pane, proposedSize: proposal), pane)
+    XCTAssertEqual(GhosttyRuntime.seededSurfaceSize(paneSize: pane, proposedSize: .zero), pane)
+    XCTAssertEqual(GhosttyRuntime.seededSurfaceSize(paneSize: nil, proposedSize: proposal), proposal)
     XCTAssertEqual(
-      GhosttyRuntime.seededSurfaceSize(for: CGSize(width: 420, height: 280)),
-      CGSize(width: 420, height: 280)
-    )
-    XCTAssertEqual(
-      GhosttyRuntime.seededSurfaceSize(for: .zero),
-      CGSize(width: 800, height: 600)
-    )
+      GhosttyRuntime.seededSurfaceSize(paneSize: .zero, proposedSize: .zero),
+      CGSize(width: 800, height: 600))
   }
 
   func testNativeFrameResizeReplacesTheCachedSplitSize() {

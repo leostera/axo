@@ -94,6 +94,77 @@ final class TerminalWorkbenchE2ETests: XCTestCase {
     }
   }
 
+  /// A surface parses Axod's replay as soon as it exists, before AppKit lays it out. Created at
+  /// libghostty's default size, a replay written for the pane's real width soft-wraps and stays
+  /// mangled after the reflow: zsh's PROMPT_SP mark (`%`, width-1 spaces, `\r \r`) survived on
+  /// every restored shell. Seeded with the pane's layout size, the replay lands as written.
+  func testReplayIsParsedAtThePanesWidthNotTheDefaultSurfaceSize() async throws {
+    try await withWorkbench { model, _ in
+      let sessionID = try XCTUnwrap(model.selectedSessionID)
+      let shell = try XCTUnwrap(model.session(for: sessionID)?.shells.first)
+      let runtime = GhosttyRuntime()
+      try XCTSkipIf(runtime.errorMessage != nil, "libghostty unavailable: \(runtime.errorMessage ?? "")")
+      // A wide pane: the default 800x600 surface is far narrower.
+      runtime.sizeOffscreenSurfaces(
+        layouts: [.pane(shell.id)], terminalAreaSize: CGSize(width: 1500, height: 700), backingScale: 2)
+
+      @MainActor func present() async throws -> GhosttySurfaceNSView {
+        let (_, view) = runtime.surfacePresentation(
+          for: shell, initialSize: .zero, onFocus: {}, onStatusChange: { _ in }, onSplit: { _ in },
+          onClose: {})
+        let deadline = ContinuousClock.now + .seconds(5)
+        while view.connection != .connected || view.surface == nil {
+          let failure = view.connection.failureMessage
+          XCTAssertNil(failure)
+          guard ContinuousClock.now < deadline else { throw XCTSkip("the surface never attached") }
+          try await Task.sleep(for: .milliseconds(20))
+        }
+        return view
+      }
+
+      // The pane's grid, which the program must have been laid out for.
+      let measuring = try await present()
+      let columns = ghostty_surface_size(try XCTUnwrap(measuring.surface)).columns
+      XCTAssertGreaterThan(columns, 120)
+      runtime.reconcileSurfaces(with: [])
+
+      // The program writes zsh's PROMPT_SP sequence for that width while nothing is attached.
+      let probe = try TerminalAttachment.open(
+        socketPath: try UnixSocketPath(shell.attachSocketPath), shellID: shell.id)
+      defer { probe.close() }
+      var size = winsize(ws_row: 30, ws_col: columns, ws_xpixel: 0, ws_ypixel: 0)
+      XCTAssertEqual(ioctl(probe.ptyDescriptor, TIOCSWINSZ, &size), 0)
+      let command =
+        "printf '\\033[H\\033[2J\\033[7m%%\\033[0m%\(Int(columns) - 1)s\\r \\r\\033[J; %s' '' READY; cat\n"
+      XCTAssertEqual(command.withCString { write(probe.ptyDescriptor, $0, strlen($0)) }, command.utf8.count)
+      // Wait until the program has run it (a login shell may still be starting).
+      var output = Data()
+      let ready = Data("; READY".utf8)
+      let outputDeadline = ContinuousClock.now + .seconds(10)
+      var buffer = [UInt8](repeating: 0, count: 4096)
+      while output.range(of: ready) == nil {
+        guard ContinuousClock.now < outputDeadline else { return XCTFail("the command never ran") }
+        var poller = pollfd(fd: probe.outputDescriptor, events: Int16(POLLIN), revents: 0)
+        guard poll(&poller, 1, 100) > 0 else { continue }
+        let count = read(probe.outputDescriptor, &buffer, buffer.count)
+        guard count > 0 else { return XCTFail("the attach stream ended") }
+        output.append(contentsOf: buffer[..<count])
+      }
+
+      // A new surface replays it.
+      let view = try await present()
+      var screen = view.accessibilityVisibleText()
+      let parseDeadline = ContinuousClock.now + .seconds(3)
+      while !screen.contains("; READY"), ContinuousClock.now < parseDeadline {
+        try await Task.sleep(for: .milliseconds(50))
+        screen = view.accessibilityVisibleText()
+      }
+      let firstLine = screen.split(separator: "\n", omittingEmptySubsequences: false).first ?? ""
+      XCTAssertEqual(firstLine.trimmingCharacters(in: .whitespaces), "; READY", "screen: \(screen)")
+      XCTAssertFalse(screen.contains("%"), "screen: \(screen)")
+    }
+  }
+
   /// A fullscreen animation changes the terminal area every frame. Hidden surfaces must not
   /// follow each frame (a reflow and SIGWINCH per hidden program per frame); they follow once the
   /// geometry settles.
