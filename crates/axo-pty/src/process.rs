@@ -438,7 +438,9 @@ mod tests {
     #[test]
     fn each_child_is_killed_when_its_own_grace_runs_out() {
         let short = Duration::from_millis(200);
-        let long = Duration::from_millis(1_000);
+        // Well above the slow child's 0.5 s cleanup, so a loaded machine (parallel test
+        // shards) cannot push it past the bound below.
+        let long = Duration::from_millis(2_000);
         let mut stubborn = spawn_group_leader("trap '' HUP TERM; while :; do sleep 1; done");
         // Exits on SIGTERM only after cleaning up for a while, like Pi saving its state. It
         // reports when its trap is installed, so the signal cannot beat it under load.
