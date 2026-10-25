@@ -15,11 +15,16 @@ use crate::panes::{Pane, PaneProcess, Panes, RecoveryRefused, RuntimeId, Unavail
 use crate::store::{
     DATABASE_FILE, StoredLifecycle, archive_session, archive_shell, archive_shell_and_prune_layout,
     archive_workspace_records, ensure_pi_bridge_socket_paths, initialize_database,
-    inserted_session_id, inserted_shell_id, load_or_create_agent_command, load_or_create_host_id,
-    load_or_create_shell_command, load_pi_bridge_token, load_viewport,
-    open_standalone_session_count, parse_stored_layout, read_open_sessions, read_session_layout,
-    restore_workspace_accesses, session_initial_pwd, store_pi_bridge_token, store_viewport,
-    stored_session_id, unix_timestamp,
+    load_or_create_agent_command, load_or_create_host_id, load_or_create_shell_command,
+    load_pi_bridge_token, load_viewport, open_standalone_session_count, read_open_sessions,
+    read_session_layout, restore_workspace_accesses, session_initial_pwd, store_pi_bridge_token,
+    store_viewport,
+};
+use crate::store::{
+    NewWorkspaceSession, StoredPiSession, StoredSessionRow, abandon_workspace,
+    insert_standalone_session, insert_terminal_shell, insert_workspace, insert_workspace_session,
+    next_session_ordinal, open_pi_session, open_session_row, open_session_workspace_id,
+    open_workspace_directory, pi_bridge_sockets, workspaces_without_open_sessions,
 };
 use crate::store::{
     PiHistoryOwner, archived_pi_pane_count, pi_history_owners, reopen_archived_session,
@@ -48,7 +53,7 @@ use axo_pty::{
     attach,
 };
 use jsonrpc_core::{Error as RpcError, ErrorCode, IoHandler};
-use rusqlite::{Connection, OptionalExtension, params};
+use rusqlite::Connection;
 use serde::Serialize;
 use serde_json::Value;
 
@@ -1650,26 +1655,14 @@ impl SessionManager {
                 .panes
                 .running(shell_id)
                 .ok_or_else(|| io::Error::new(io::ErrorKind::NotFound, "Pi pane is not running"))?;
-            let session_uuid: String = state
-                .database
-                .query_row(
-                    "SELECT session_uuid FROM sessions WHERE id = ? AND state = 'open'",
-                    params![running.session_id.get()],
-                    |row| row.get(0),
-                )
-                .map_err(io::Error::other)?;
-            let session_file = state
-                .database
-                .query_row(
-                    "SELECT pi_session_file FROM sessions WHERE id = ?",
-                    params![running.session_id.get()],
-                    |row| row.get::<_, Option<String>>(0),
-                )
-                .map_err(io::Error::other)?
-                .map(PathBuf::from)
-                .ok_or_else(|| {
-                    io::Error::new(io::ErrorKind::InvalidData, "Pi history path is missing")
-                })?;
+            let StoredPiSession {
+                session_uuid,
+                session_file,
+                ..
+            } = open_pi_session(&state.database, running.session_id)?;
+            let session_file = session_file.ok_or_else(|| {
+                io::Error::new(io::ErrorKind::InvalidData, "Pi history path is missing")
+            })?;
             (
                 running.session_id,
                 session_uuid,
@@ -1806,21 +1799,7 @@ impl SessionManager {
     fn ensure_open_workspace_sessions(self: &Arc<Self>) -> io::Result<()> {
         let sessions = {
             let mut state = self.lock_state()?;
-            let workspace_ids = {
-                let mut statement = state
-                    .database
-                    .prepare(
-                        "SELECT w.workspace_id FROM workspaces w WHERE w.state = 'open' \
-                         AND NOT EXISTS (SELECT 1 FROM sessions s WHERE s.workspace_id = w.workspace_id \
-                         AND s.state = 'open') ORDER BY w.workspace_id",
-                    )
-                    .map_err(io::Error::other)?;
-                statement
-                    .query_map([], |row| row.get::<_, String>(0))
-                    .map_err(io::Error::other)?
-                    .collect::<Result<Vec<_>, _>>()
-                    .map_err(io::Error::other)?
-            };
+            let workspace_ids = workspaces_without_open_sessions(&state.database)?;
             workspace_ids
                 .iter()
                 .map(|workspace_id| {
@@ -1859,16 +1838,13 @@ impl SessionManager {
         let directory = directory_access.path().to_path_buf();
         let workspace_id = new_uuid_v4()?;
         let mut state = self.lock_state()?;
-        state.database.execute(
-            "INSERT INTO workspaces (workspace_id, name, directory_path, directory_bookmark, state, created_at) VALUES (?, ?, ?, ?, 'open', ?)",
-            params![
-                workspace_id,
-                request.name,
-                directory.to_string_lossy(),
-                request.directory_bookmark,
-                unix_timestamp()
-            ],
-        ).map_err(io::Error::other)?;
+        insert_workspace(
+            &state.database,
+            &workspace_id,
+            &request.name,
+            &directory,
+            request.directory_bookmark.as_deref(),
+        )?;
         let session = match create_workspace_session(
             &mut state,
             &self.attach_socket_path,
@@ -1877,10 +1853,7 @@ impl SessionManager {
         ) {
             Ok(session) => session,
             Err(error) => {
-                let _ = state.database.execute(
-                    "UPDATE workspaces SET state = 'archived', archived_at = ? WHERE workspace_id = ?",
-                    params![unix_timestamp(), workspace_id],
-                );
+                let _ = abandon_workspace(&state.database, &workspace_id);
                 return Err(io::Error::other(error));
             }
         };
@@ -1973,21 +1946,11 @@ impl SessionManager {
                 io::Error::new(io::ErrorKind::InvalidData, "Pi pane ID is missing")
             })?;
             let initial_pwd = unavailable.initial_pwd.clone();
-            let (session_uuid, session_file, bridge_socket_path) = state
-                .database
-                .query_row(
-                    "SELECT session_uuid, pi_session_file, pi_bridge_socket_path FROM sessions
-                     WHERE id = ?1 AND state = 'open'",
-                    params![session_id.get()],
-                    |row| {
-                        Ok((
-                            row.get::<_, String>(0)?,
-                            row.get::<_, Option<String>>(1)?.map(PathBuf::from),
-                            row.get::<_, Option<String>>(2)?,
-                        ))
-                    },
-                )
-                .map_err(io::Error::other)?;
+            let StoredPiSession {
+                session_uuid,
+                session_file,
+                bridge_socket_path,
+            } = open_pi_session(&state.database, session_id)?;
             let session_file = session_file.ok_or_else(|| {
                 io::Error::new(
                     io::ErrorKind::InvalidData,
@@ -2001,15 +1964,7 @@ impl SessionManager {
                         "Pi Session is missing its persisted bridge socket path",
                     )
                 })?))?;
-            let owner_count: i64 = state
-                .database
-                .query_row(
-                    "SELECT COUNT(*) FROM sessions WHERE pi_session_file = ?1",
-                    params![session_file.to_string_lossy()],
-                    |row| row.get(0),
-                )
-                .map_err(io::Error::other)?;
-            if owner_count != 1 {
+            if pi_history_owners(&state.database, &session_file.to_string_lossy())?.len() != 1 {
                 return Err(io::Error::new(
                     io::ErrorKind::InvalidData,
                     "Pi history has ambiguous Session ownership",
@@ -2876,25 +2831,8 @@ fn create_workspace_session(
     pi_session_directory: &Path,
     workspace_id: &str,
 ) -> io::Result<SessionRecord> {
-    let initial_pwd = state
-        .database
-        .query_row(
-            "SELECT directory_path FROM workspaces WHERE workspace_id = ? AND state = 'open'",
-            params![workspace_id],
-            |row| row.get::<_, String>(0),
-        )
-        .optional()
-        .map_err(io::Error::other)?
-        .map(PathBuf::from)
-        .ok_or_else(|| io::Error::new(io::ErrorKind::NotFound, "Workspace is not open"))?;
-    let ordinal: i64 = state
-        .database
-        .query_row(
-            "SELECT COUNT(*) + 1 FROM sessions WHERE workspace_id = ? AND state = 'open'",
-            params![workspace_id],
-            |row| row.get(0),
-        )
-        .map_err(io::Error::other)?;
+    let initial_pwd = open_workspace_directory(&state.database, workspace_id)?;
+    let ordinal = next_session_ordinal(&state.database, Some(workspace_id))?;
     let session_uuid = new_uuid_v4()?;
     let pane_id = new_uuid_v4()?;
     let pi_directory = pi_session_directory.join(workspace_id);
@@ -2903,46 +2841,18 @@ fn create_workspace_session(
     let pi_session_file = pi_directory.join(format!("{session_uuid}.jsonl"));
     let bridge_socket = BridgeSocketPath::for_session(pi_session_directory, &session_uuid)?;
     let session_name = format!("Session {ordinal}");
-    state.database.execute(
-        "INSERT INTO sessions
-            (initial_pwd, state, created_at, workspace_id, session_uuid, name, pi_session_file, pi_bridge_socket_path)
-         VALUES (?, 'open', ?, ?, ?, ?, ?, ?)",
-        params![
-            initial_pwd.to_string_lossy(),
-            unix_timestamp(),
+    let (session_id, pane) = insert_workspace_session(
+        &mut state.database,
+        &NewWorkspaceSession {
             workspace_id,
-            session_uuid,
-            session_name,
-            pi_session_file.to_string_lossy(),
-            bridge_socket.as_str(),
-        ],
-    ).map_err(io::Error::other)?;
-    let session_id = inserted_session_id(&state.database)?;
-    state
-        .database
-        .execute(
-            "INSERT INTO shells (session_id, initial_pwd, state, created_at, role, pane_id)
-         VALUES (?, ?, 'open', ?, 'pi', ?)",
-            params![
-                session_id.get(),
-                initial_pwd.to_string_lossy(),
-                unix_timestamp(),
-                pane_id
-            ],
-        )
-        .map_err(io::Error::other)?;
-    let pane = inserted_shell_id(&state.database)?;
-    let layout = Layout::single(pane);
-    state
-        .database
-        .execute(
-            "UPDATE sessions SET layout_json = ? WHERE id = ?",
-            params![
-                serde_json::to_string(&layout).map_err(io::Error::other)?,
-                session_id.get()
-            ],
-        )
-        .map_err(io::Error::other)?;
+            initial_pwd: &initial_pwd,
+            session_uuid: &session_uuid,
+            name: &session_name,
+            pi_session_file: &pi_session_file,
+            bridge_socket: &bridge_socket,
+            pane_id: &pane_id,
+        },
+    )?;
     let request = PiLaunchRequest {
         agent_command: state.agent_command.clone(),
         session_id,
@@ -2971,23 +2881,10 @@ fn create_session(
 ) -> io::Result<SessionRecord> {
     let initial_pwd = state.initial_pwd.clone();
     let session_uuid = new_uuid_v4()?;
-    let ordinal: i64 = state
-        .database
-        .query_row(
-            "SELECT COUNT(*) + 1 FROM sessions WHERE workspace_id IS NULL AND state = 'open'",
-            [],
-            |row| row.get(0),
-        )
-        .map_err(io::Error::other)?;
+    let ordinal = next_session_ordinal(&state.database, None)?;
     let session_name = format!("Session {ordinal}");
-    state
-        .database
-        .execute(
-            "INSERT INTO sessions (initial_pwd, state, created_at, session_uuid, name) VALUES (?1, 'open', ?2, ?3, ?4)",
-            params![initial_pwd.to_string_lossy(), unix_timestamp(), session_uuid, session_name],
-        )
-        .map_err(io::Error::other)?;
-    let id = inserted_session_id(&state.database)?;
+    let id =
+        insert_standalone_session(&state.database, &initial_pwd, &session_uuid, &session_name)?;
 
     if let Err(error) = create_shell(state, id, attach_socket_path) {
         archive_session(&mut state.database, id, "spawn_failed")?;
@@ -3002,19 +2899,7 @@ fn create_shell(
     attach_socket_path: &Path,
 ) -> io::Result<ShellRecord> {
     let initial_pwd = session_initial_pwd(&state.database, session_id)?;
-    state
-        .database
-        .execute(
-            "INSERT INTO shells (session_id, initial_pwd, state, created_at)
-             VALUES (?1, ?2, 'open', ?3)",
-            params![
-                session_id.get(),
-                initial_pwd.to_string_lossy(),
-                unix_timestamp()
-            ],
-        )
-        .map_err(io::Error::other)?;
-    let shell_id = inserted_shell_id(&state.database)?;
+    let shell_id = insert_terminal_shell(&state.database, session_id, &initial_pwd)?;
 
     let size = state.pane_size(session_id, shell_id);
     let running = match spawn_shell(&state.shell_command, session_id, &initial_pwd, size) {
@@ -3042,23 +2927,10 @@ fn close_session(
         ));
     }
 
-    let workspace_id: Option<String> = state
-        .database
-        .query_row(
-            "SELECT workspace_id FROM sessions WHERE id = ? AND state = 'open'",
-            params![id.get()],
-            |row| row.get(0),
-        )
-        .map_err(io::Error::other)?;
+    let workspace_id = open_session_workspace_id(&state.database, id)?;
     let replacement = if let Some(workspace_id) = workspace_id {
-        let workspace_session_count: i64 = state
-            .database
-            .query_row(
-                "SELECT COUNT(*) FROM sessions WHERE workspace_id = ? AND state = 'open'",
-                params![workspace_id],
-                |row| row.get(0),
-            )
-            .map_err(io::Error::other)?;
+        let workspace_session_count =
+            open_session_ids_in_workspace(&state.database, &workspace_id)?.len();
         (workspace_session_count == 1)
             .then(|| {
                 create_workspace_session(
@@ -3152,8 +3024,7 @@ fn session_metadata(
     id: SessionId,
     attach_socket_path: &Path,
 ) -> io::Result<SessionRecord> {
-    // One row per Session: this runs for every listing and snapshot, under the catalog lock.
-    let (
+    let StoredSessionRow {
         initial_pwd,
         session_uuid,
         workspace_id,
@@ -3163,36 +3034,8 @@ fn session_metadata(
         emoji,
         pi_session_file,
         pi_session_id,
-        stored_layout,
-    ) = state
-        .database
-        .prepare_cached(
-            "SELECT s.initial_pwd, s.session_uuid, s.workspace_id, w.name, s.name, s.manual_name,
-                    s.emoji, s.pi_session_file, s.pi_session_id, s.layout_json
-             FROM sessions s
-             LEFT JOIN workspaces w ON w.workspace_id = s.workspace_id AND w.state = 'open'
-             WHERE s.id = ?1 AND s.state = 'open'",
-        )
-        .and_then(|mut statement| {
-            statement.query_row(params![id.get()], |row| {
-                Ok((
-                    PathBuf::from(row.get::<_, String>(0)?),
-                    row.get::<_, String>(1)?,
-                    row.get::<_, Option<String>>(2)?,
-                    row.get::<_, Option<String>>(3)?,
-                    row.get::<_, String>(4)?,
-                    row.get::<_, Option<String>>(5)?,
-                    row.get::<_, Option<String>>(6)?,
-                    row.get::<_, Option<String>>(7)?.map(PathBuf::from),
-                    row.get::<_, Option<String>>(8)?,
-                    row.get::<_, Option<String>>(9)?,
-                ))
-            })
-        })
-        .map_err(io::Error::other)?;
-    if workspace_id.is_some() && workspace_name.is_none() {
-        return Err(io::Error::other("Session's Workspace is not open"));
-    }
+        layout,
+    } = open_session_row(&state.database, id)?;
     let mut shells: Vec<_> = state
         .panes
         .in_session(id)
@@ -3227,7 +3070,7 @@ fn session_metadata(
         status,
         initial_pwd,
         shells,
-        layout: stored_layout.and_then(|json| parse_stored_layout(id, &json)),
+        layout,
     })
 }
 
@@ -3424,26 +3267,7 @@ fn log_socket_cleanup(session_id: SessionId, cleanup: SocketCleanup) {
 /// holds. Sessions whose Pi is still alive (an orphan of a crashed Axod) keep theirs. Failures
 /// are logged and skipped; they must not keep Axod from starting.
 fn remove_abandoned_pi_bridge_sockets(database: &Connection) -> io::Result<()> {
-    let records = {
-        let mut statement = database
-            .prepare(
-                "SELECT id, pi_session_file, pi_bridge_socket_path FROM sessions
-                 WHERE pi_session_file IS NOT NULL AND pi_bridge_socket_path IS NOT NULL",
-            )
-            .map_err(io::Error::other)?;
-        statement
-            .query_map([], |row| {
-                Ok((
-                    stored_session_id(row.get(0)?)?,
-                    PathBuf::from(row.get::<_, String>(1)?),
-                    PathBuf::from(row.get::<_, String>(2)?),
-                ))
-            })
-            .map_err(io::Error::other)?
-            .collect::<Result<Vec<_>, _>>()
-            .map_err(io::Error::other)?
-    };
-    for (session_id, session_file, socket_path) in records {
+    for (session_id, session_file, socket_path) in pi_bridge_sockets(database)? {
         match BridgeSocketPath::parse(socket_path)
             .and_then(|socket| socket.reconcile(&session_file))
         {
@@ -4062,7 +3886,9 @@ fn recovery_refused(refused: RecoveryRefused) -> io::Error {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::store::{inserted_session_id, inserted_shell_id, unix_timestamp};
     use axo_pi::bridge;
+    use rusqlite::params;
     use serde_json::{Value, json};
     use std::fs::OpenOptions;
     use std::io::BufReader;

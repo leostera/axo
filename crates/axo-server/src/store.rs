@@ -1008,6 +1008,293 @@ pub(crate) fn reopen_archived_session(
     transaction.commit().map_err(io::Error::other)
 }
 
+/// The working directory of an open Workspace.
+pub(crate) fn open_workspace_directory(
+    database: &Connection,
+    workspace_id: &str,
+) -> io::Result<PathBuf> {
+    database
+        .query_row(
+            "SELECT directory_path FROM workspaces WHERE workspace_id = ? AND state = 'open'",
+            params![workspace_id],
+            |row| row.get::<_, String>(0),
+        )
+        .optional()
+        .map_err(io::Error::other)?
+        .map(PathBuf::from)
+        .ok_or_else(|| not_found("Workspace is not open"))
+}
+
+/// The number in a new Session's default name ("Session N"): one more than the open Sessions
+/// in its Workspace, or the standalone ones.
+pub(crate) fn next_session_ordinal(
+    database: &Connection,
+    workspace_id: Option<&str>,
+) -> io::Result<i64> {
+    match workspace_id {
+        Some(workspace_id) => database.query_row(
+            "SELECT COUNT(*) + 1 FROM sessions WHERE workspace_id = ? AND state = 'open'",
+            params![workspace_id],
+            |row| row.get(0),
+        ),
+        None => database.query_row(
+            "SELECT COUNT(*) + 1 FROM sessions WHERE workspace_id IS NULL AND state = 'open'",
+            [],
+            |row| row.get(0),
+        ),
+    }
+    .map_err(io::Error::other)
+}
+
+pub(crate) fn insert_standalone_session(
+    database: &Connection,
+    initial_pwd: &Path,
+    session_uuid: &str,
+    name: &str,
+) -> io::Result<SessionId> {
+    database
+        .execute(
+            "INSERT INTO sessions (initial_pwd, state, created_at, session_uuid, name) \
+             VALUES (?1, 'open', ?2, ?3, ?4)",
+            params![
+                initial_pwd.to_string_lossy(),
+                unix_timestamp(),
+                session_uuid,
+                name
+            ],
+        )
+        .map_err(io::Error::other)?;
+    inserted_session_id(database)
+}
+
+/// A Workspace Session about to be created, with its one Pi pane.
+pub(crate) struct NewWorkspaceSession<'a> {
+    pub(crate) workspace_id: &'a str,
+    pub(crate) initial_pwd: &'a Path,
+    pub(crate) session_uuid: &'a str,
+    pub(crate) name: &'a str,
+    pub(crate) pi_session_file: &'a Path,
+    pub(crate) bridge_socket: &'a BridgeSocketPath,
+    pub(crate) pane_id: &'a str,
+}
+
+/// Inserts a Workspace Session, its Pi pane and the single-pane layout in one transaction, so
+/// a failure never leaves an open Session without its pane. Returns both IDs.
+pub(crate) fn insert_workspace_session(
+    database: &mut Connection,
+    new: &NewWorkspaceSession<'_>,
+) -> io::Result<(SessionId, ShellId)> {
+    let transaction = database.transaction().map_err(io::Error::other)?;
+    transaction
+        .execute(
+            "INSERT INTO sessions
+                (initial_pwd, state, created_at, workspace_id, session_uuid, name, pi_session_file, pi_bridge_socket_path)
+             VALUES (?, 'open', ?, ?, ?, ?, ?, ?)",
+            params![
+                new.initial_pwd.to_string_lossy(),
+                unix_timestamp(),
+                new.workspace_id,
+                new.session_uuid,
+                new.name,
+                new.pi_session_file.to_string_lossy(),
+                new.bridge_socket.as_str(),
+            ],
+        )
+        .map_err(io::Error::other)?;
+    let session_id = inserted_session_id(&transaction)?;
+    transaction
+        .execute(
+            "INSERT INTO shells (session_id, initial_pwd, state, created_at, role, pane_id)
+             VALUES (?, ?, 'open', ?, 'pi', ?)",
+            params![
+                session_id.get(),
+                new.initial_pwd.to_string_lossy(),
+                unix_timestamp(),
+                new.pane_id
+            ],
+        )
+        .map_err(io::Error::other)?;
+    let pane = inserted_shell_id(&transaction)?;
+    write_session_layout(&transaction, session_id, &Layout::single(pane))?;
+    transaction.commit().map_err(io::Error::other)?;
+    Ok((session_id, pane))
+}
+
+pub(crate) fn insert_terminal_shell(
+    database: &Connection,
+    session_id: SessionId,
+    initial_pwd: &Path,
+) -> io::Result<ShellId> {
+    database
+        .execute(
+            "INSERT INTO shells (session_id, initial_pwd, state, created_at) VALUES (?1, ?2, 'open', ?3)",
+            params![session_id.get(), initial_pwd.to_string_lossy(), unix_timestamp()],
+        )
+        .map_err(io::Error::other)?;
+    inserted_shell_id(database)
+}
+
+/// What an open Session stores about its Pi.
+pub(crate) struct StoredPiSession {
+    pub(crate) session_uuid: String,
+    pub(crate) session_file: Option<PathBuf>,
+    pub(crate) bridge_socket_path: Option<String>,
+}
+
+pub(crate) fn open_pi_session(database: &Connection, id: SessionId) -> io::Result<StoredPiSession> {
+    database
+        .query_row(
+            "SELECT session_uuid, pi_session_file, pi_bridge_socket_path FROM sessions
+             WHERE id = ?1 AND state = 'open'",
+            params![id.get()],
+            |row| {
+                Ok(StoredPiSession {
+                    session_uuid: row.get(0)?,
+                    session_file: row.get::<_, Option<String>>(1)?.map(PathBuf::from),
+                    bridge_socket_path: row.get(2)?,
+                })
+            },
+        )
+        .map_err(io::Error::other)
+}
+
+pub(crate) fn insert_workspace(
+    database: &Connection,
+    workspace_id: &str,
+    name: &str,
+    directory: &Path,
+    bookmark: Option<&str>,
+) -> io::Result<()> {
+    database
+        .execute(
+            "INSERT INTO workspaces (workspace_id, name, directory_path, directory_bookmark, state, created_at) \
+             VALUES (?, ?, ?, ?, 'open', ?)",
+            params![workspace_id, name, directory.to_string_lossy(), bookmark, unix_timestamp()],
+        )
+        .map_err(io::Error::other)?;
+    Ok(())
+}
+
+/// Archives a Workspace whose first Session could not be created.
+pub(crate) fn abandon_workspace(database: &Connection, workspace_id: &str) -> io::Result<()> {
+    database
+        .execute(
+            "UPDATE workspaces SET state = 'archived', archived_at = ? WHERE workspace_id = ?",
+            params![unix_timestamp(), workspace_id],
+        )
+        .map_err(io::Error::other)?;
+    Ok(())
+}
+
+/// Open Workspaces with no open Session, which startup gives one.
+pub(crate) fn workspaces_without_open_sessions(database: &Connection) -> io::Result<Vec<String>> {
+    let mut statement = database
+        .prepare(
+            "SELECT w.workspace_id FROM workspaces w WHERE w.state = 'open' \
+             AND NOT EXISTS (SELECT 1 FROM sessions s WHERE s.workspace_id = w.workspace_id \
+             AND s.state = 'open') ORDER BY w.workspace_id",
+        )
+        .map_err(io::Error::other)?;
+    statement
+        .query_map([], |row| row.get::<_, String>(0))
+        .map_err(io::Error::other)?
+        .collect::<Result<Vec<_>, _>>()
+        .map_err(io::Error::other)
+}
+
+pub(crate) fn open_session_workspace_id(
+    database: &Connection,
+    id: SessionId,
+) -> io::Result<Option<String>> {
+    database
+        .query_row(
+            "SELECT workspace_id FROM sessions WHERE id = ? AND state = 'open'",
+            params![id.get()],
+            |row| row.get(0),
+        )
+        .map_err(io::Error::other)
+}
+
+/// An open Session's stored fields, with its Workspace's name.
+pub(crate) struct StoredSessionRow {
+    pub(crate) initial_pwd: PathBuf,
+    pub(crate) session_uuid: String,
+    pub(crate) workspace_id: Option<String>,
+    pub(crate) workspace_name: Option<String>,
+    pub(crate) name: String,
+    pub(crate) manual_name: Option<String>,
+    pub(crate) emoji: Option<String>,
+    pub(crate) pi_session_file: Option<PathBuf>,
+    pub(crate) pi_session_id: Option<String>,
+    pub(crate) layout: Option<Layout>,
+}
+
+/// One cached query per Session: this runs for every listing and snapshot, under the catalog
+/// lock. A Session pointing at a Workspace that is not open is an error, not Workspace-less.
+pub(crate) fn open_session_row(
+    database: &Connection,
+    id: SessionId,
+) -> io::Result<StoredSessionRow> {
+    let (row, stored_layout) = database
+        .prepare_cached(
+            "SELECT s.initial_pwd, s.session_uuid, s.workspace_id, w.name, s.name, s.manual_name,
+                    s.emoji, s.pi_session_file, s.pi_session_id, s.layout_json
+             FROM sessions s
+             LEFT JOIN workspaces w ON w.workspace_id = s.workspace_id AND w.state = 'open'
+             WHERE s.id = ?1 AND s.state = 'open'",
+        )
+        .and_then(|mut statement| {
+            statement.query_row(params![id.get()], |row| {
+                Ok((
+                    StoredSessionRow {
+                        initial_pwd: PathBuf::from(row.get::<_, String>(0)?),
+                        session_uuid: row.get(1)?,
+                        workspace_id: row.get(2)?,
+                        workspace_name: row.get(3)?,
+                        name: row.get(4)?,
+                        manual_name: row.get(5)?,
+                        emoji: row.get(6)?,
+                        pi_session_file: row.get::<_, Option<String>>(7)?.map(PathBuf::from),
+                        pi_session_id: row.get(8)?,
+                        layout: None,
+                    },
+                    row.get::<_, Option<String>>(9)?,
+                ))
+            })
+        })
+        .map_err(io::Error::other)?;
+    if row.workspace_id.is_some() && row.workspace_name.is_none() {
+        return Err(io::Error::other("Session's Workspace is not open"));
+    }
+    Ok(StoredSessionRow {
+        layout: stored_layout.and_then(|json| parse_stored_layout(id, &json)),
+        ..row
+    })
+}
+
+/// Every Session that records a Pi bridge socket: its ID, history file and socket path.
+pub(crate) fn pi_bridge_sockets(
+    database: &Connection,
+) -> io::Result<Vec<(SessionId, PathBuf, PathBuf)>> {
+    let mut statement = database
+        .prepare(
+            "SELECT id, pi_session_file, pi_bridge_socket_path FROM sessions
+             WHERE pi_session_file IS NOT NULL AND pi_bridge_socket_path IS NOT NULL",
+        )
+        .map_err(io::Error::other)?;
+    statement
+        .query_map([], |row| {
+            Ok((
+                stored_session_id(row.get(0)?)?,
+                PathBuf::from(row.get::<_, String>(1)?),
+                PathBuf::from(row.get::<_, String>(2)?),
+            ))
+        })
+        .map_err(io::Error::other)?
+        .collect::<Result<Vec<_>, _>>()
+        .map_err(io::Error::other)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -1215,6 +1502,78 @@ mod tests {
             pi_history_owners(&database, "/other.jsonl")
                 .unwrap()
                 .is_empty()
+        );
+    }
+
+    #[test]
+    fn new_sessions_are_numbered_within_their_workspace_or_among_standalone_ones() {
+        let database = &mut database();
+        let workspace = new_uuid_v4().unwrap();
+        super::insert_workspace(database, &workspace, "w", Path::new("/w"), None).unwrap();
+        assert_eq!(next_session_ordinal(database, None).unwrap(), 1);
+        assert_eq!(next_session_ordinal(database, Some(&workspace)).unwrap(), 1);
+
+        insert_standalone_session(database, Path::new("/"), "standalone", "Session 1").unwrap();
+        let socket = BridgeSocketPath::parse(PathBuf::from("/tmp/axo-store-test.sock")).unwrap();
+        let (session, pane) = insert_workspace_session(
+            database,
+            &NewWorkspaceSession {
+                workspace_id: &workspace,
+                initial_pwd: Path::new("/w"),
+                session_uuid: "in-workspace",
+                name: "Session 1",
+                pi_session_file: Path::new("/h.jsonl"),
+                bridge_socket: &socket,
+                pane_id: "pane",
+            },
+        )
+        .unwrap();
+        assert_eq!(next_session_ordinal(database, None).unwrap(), 2);
+        assert_eq!(next_session_ordinal(database, Some(&workspace)).unwrap(), 2);
+
+        // The Workspace Session arrives whole: its Pi pane and single-pane layout.
+        let row = open_session_row(database, session).unwrap();
+        assert_eq!(row.layout, Some(Layout::single(pane)));
+        assert_eq!(row.workspace_name.as_deref(), Some("w"));
+        let pi = open_pi_session(database, session).unwrap();
+        assert_eq!(pi.session_file.as_deref(), Some(Path::new("/h.jsonl")));
+        assert_eq!(pi.bridge_socket_path.as_deref(), Some(socket.as_str()));
+        assert_eq!(
+            open_session_workspace_id(database, session).unwrap(),
+            Some(workspace.clone())
+        );
+        assert_eq!(
+            open_workspace_directory(database, &workspace).unwrap(),
+            Path::new("/w")
+        );
+    }
+
+    #[test]
+    fn startup_finds_open_workspaces_without_an_open_session() {
+        let database = database();
+        let (empty, busy, archived) = (
+            new_uuid_v4().unwrap(),
+            new_uuid_v4().unwrap(),
+            new_uuid_v4().unwrap(),
+        );
+        super::insert_workspace(&database, &empty, "empty", Path::new("/e"), None).unwrap();
+        super::insert_workspace(&database, &busy, "busy", Path::new("/b"), None).unwrap();
+        super::insert_workspace(&database, &archived, "archived", Path::new("/a"), None).unwrap();
+        abandon_workspace(&database, &archived).unwrap();
+        let session = insert_session(&database, "in-busy", "open");
+        database
+            .execute(
+                "UPDATE sessions SET workspace_id = ?1 WHERE id = ?2",
+                params![busy, session.get()],
+            )
+            .unwrap();
+        assert_eq!(
+            workspaces_without_open_sessions(&database).unwrap(),
+            [empty]
+        );
+        assert_eq!(
+            kind(open_workspace_directory(&database, &archived)),
+            io::ErrorKind::NotFound
         );
     }
 
