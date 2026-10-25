@@ -94,7 +94,15 @@ final class UnixSocketTransport: @unchecked Sendable {
     case .cancelled:
       finishReadiness(.failure(UnixSocketRPCError.connectionFailed("connection was cancelled")))
       dataContinuation.finish()
-    case .setup, .preparing, .waiting:
+    case .waiting(let error):
+      // A missing or refusing Unix socket is reported as waiting for a better network path,
+      // which never comes; fail now instead of at the connection timeout (axod probes during
+      // a restart would each stall for a second).
+      guard finishReadiness(.failure(UnixSocketRPCError.connectionFailed(error.localizedDescription)))
+      else { return }
+      connection.cancel()
+      dataContinuation.finish()
+    case .setup, .preparing:
       break
     @unknown default:
       finishReadiness(.failure(UnixSocketRPCError.connectionFailed("unknown connection state")))
