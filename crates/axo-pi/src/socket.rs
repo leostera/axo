@@ -11,22 +11,25 @@ use crate::WriterLock;
 
 pub const MAX_SOCKET_PATH_BYTES: usize = 100;
 
-/// An absolute UTF-8 path short enough for `sockaddr_un` on every client.
+/// An absolute UTF-8 path short enough for `sockaddr_un` on every client. Kept as a `String`:
+/// it is UTF-8 by construction, and it goes on the wire as text.
 #[derive(Clone, Debug, Eq, PartialEq)]
-pub struct BridgeSocketPath(PathBuf);
+pub struct BridgeSocketPath(String);
 
 impl BridgeSocketPath {
     pub fn parse(path: PathBuf) -> io::Result<Self> {
-        let bytes = path.as_os_str().as_encoded_bytes();
-        if !path.is_absolute()
-            || bytes.len() > MAX_SOCKET_PATH_BYTES
-            || bytes.contains(&0)
-            || path.to_str().is_none()
-        {
-            return Err(io::Error::new(
+        let invalid = || {
+            io::Error::new(
                 io::ErrorKind::InvalidInput,
                 "Pi bridge socket path must be absolute UTF-8 within the supported byte limit",
-            ));
+            )
+        };
+        if !path.is_absolute() {
+            return Err(invalid());
+        }
+        let path = path.into_os_string().into_string().map_err(|_| invalid())?;
+        if path.len() > MAX_SOCKET_PATH_BYTES || path.contains('\0') {
+            return Err(invalid());
         }
         Ok(Self(path))
     }
@@ -46,13 +49,11 @@ impl BridgeSocketPath {
     }
 
     pub fn as_path(&self) -> &Path {
-        &self.0
+        Path::new(&self.0)
     }
 
     pub fn as_str(&self) -> &str {
-        self.0
-            .to_str()
-            .expect("validated Pi bridge socket paths are UTF-8")
+        &self.0
     }
 }
 
@@ -173,10 +174,7 @@ mod tests {
         let exact_limit_directory = PathBuf::from(format!("/{}", "d".repeat(57)));
         let exact_limit =
             BridgeSocketPath::for_session(&exact_limit_directory, session_uuid).unwrap();
-        assert_eq!(
-            exact_limit.0.as_os_str().as_encoded_bytes().len(),
-            MAX_SOCKET_PATH_BYTES
-        );
+        assert_eq!(exact_limit.0.len(), MAX_SOCKET_PATH_BYTES);
 
         let too_long_directory = PathBuf::from(format!("/{}", "d".repeat(58)));
         let fallback = BridgeSocketPath::for_session(&too_long_directory, session_uuid).unwrap();
@@ -188,6 +186,10 @@ mod tests {
 
         assert!(BridgeSocketPath::parse(PathBuf::from(format!("/{}", "x".repeat(100)))).is_err());
         assert!(BridgeSocketPath::parse(PathBuf::from("relative.sock")).is_err());
+        let not_utf8 =
+            <std::ffi::OsStr as std::os::unix::ffi::OsStrExt>::from_bytes(b"/tmp/axo-\xff.sock");
+        assert!(BridgeSocketPath::parse(PathBuf::from(not_utf8)).is_err());
+        assert!(BridgeSocketPath::parse(PathBuf::from("/tmp/axo-\0.sock")).is_err());
         assert!(BridgeSocketPath::for_session(&too_long_directory, "not-a-uuid").is_err());
     }
 }

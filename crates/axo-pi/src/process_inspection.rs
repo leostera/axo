@@ -136,7 +136,7 @@ pub(crate) fn run(
         .child
         .stdout
         .take()
-        .expect("piped inspection stdout");
+        .ok_or_else(|| io::Error::other("process inspection's stdout is not piped"))?;
     let fd = stdout.as_raw_fd();
     // SAFETY: only the owned pipe's status flags are read/updated here.
     let flags = unsafe { libc::fcntl(fd, libc::F_GETFL) };
