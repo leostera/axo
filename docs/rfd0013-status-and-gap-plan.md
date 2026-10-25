@@ -43,10 +43,10 @@ RFD promises. The one end-to-end test with a real axod predates the account mode
 | RFD0013 requirement | Status | Where |
 | --- | --- | --- |
 | Landing `/`, app `/app`, API `/api/*` on one origin; logic in `packages/*`, `sites/*` thin | Built | `packages/axo-api-worker`, `packages/axo-web-app`, `sites/axo.leostera.dev` |
-| OAuth Authorization Code + PKCE (S256) at the Worker; exact callback; state checked in constant time | Built | `src/auth/cloudflare.ts`, `src/auth/provider.ts` |
+| OAuth Authorization Code + PKCE (S256) at the Worker; exact callback; state checked in constant time | Replaced by Access (G1) | `src/auth/cloudflare.ts`, `src/auth/provider.ts` |
 | Identity = issuer + `sub` (not email) → random account ID; per-account DO | Built | `src/auth/account.ts`, `src/auth/account-manager.ts` |
-| Opaque web session; `Secure; HttpOnly; SameSite=Lax`; digest stored; expiry and revocation; logout revokes | Built | `cloudflare.ts`, `account-manager.ts` |
-| Mutations check exact Origin and an anti-CSRF token | Built | `requireAxoSession(..., requireCsrf)` |
+| Opaque web session; `Secure; HttpOnly; SameSite=Lax`; digest stored; expiry and revocation; logout revokes | Replaced by Access sessions (G1) | `cloudflare.ts`, `account-manager.ts` |
+| Mutations check exact Origin and an anti-CSRF token | Origin rule kept, CSRF token removed (G1) | `requireAxoSession(..., requireCsrf)` |
 | Pairing code: Crockford Base32, `XXXX-YYYY`, 10-minute expiry, single use | Built | `src/auth/pairing.ts` |
 | Pairing verifier is an HMAC; collision check; issuance, global and per-source lookup throttles; 24 h routing index for retries | Built | `pairing.ts`, `pairing-directory.ts` (`AxoPairingIndex`, `AxoPairingRateLimit`) |
 | Atomic consume + host registration in the account DO; identical retry is idempotent | Built | `account-manager.ts` |
@@ -56,7 +56,7 @@ RFD promises. The one end-to-end test with a real axod predates the account mode
 | Re-linking a host in the same account keeps its identity | Built | `account-manager.ts` (upsert on `host_id`) |
 | Mac: Settings → Remote Access code entry; `axo://pair/<code>` routes there; local `axo.relay.link` | Built | `RemoteAccessSettingsView`, `PairingLinkRouter`, `AxodConnection.linkHost` |
 | Account routes list only owned hosts and snapshots | Built | `src/http/account-hosts.ts` |
-| **Native client authentication** (iOS, Mac to other hosts) | **Missing**; decided: Access token (G1) | `/client` requires cookie + web Origin |
+| **Native client authentication** (iOS, Mac to other hosts) | Worker side built (G1): Access assertion; app side is G3 | `/client` requires cookie + web Origin |
 | **"Full currently supported protocol" through the relay** | **Partial**: 8 `axo.remote.*` methods + `axo.host.subscribe` | `AxoHostRelay.hostRemoteMethods` (inherited by `AxoAccountManager`) |
 | **End-to-end: pair → relay → client control with a real axod** | Built (G0) | `tests/axod-relay.test.ts` |
 | Separate keys / rotation for session, pairing-code, pairing-source and credential HMACs | Missing (one `SESSION_SECRET` with domain-separated inputs) | `pairing.ts`, `cloudflare.ts` |
@@ -96,23 +96,30 @@ It found and fixed:
 Still open: before linking, an axod with `relay.json` connects to the legacy unauthenticated
 `/v1` route (G6).
 
-### G1. Identity from Access, in the Worker
+### G1. Identity from Access, in the Worker — done
 
-- Replace the Worker's own OAuth (`src/auth/cloudflare.ts`, `provider.ts`) with verification
-  of the Access JWT on every `/api` request; map issuer + subject to the account as today.
-  Keep the Axo web session only if a revocation handle beyond Access's is wanted; otherwise
-  remove it and the CSRF token (Access's cookie is `SameSite`, but keep exact-Origin checks on
-  cookie-authenticated mutations).
-- Native apps: sign in to Access in `ASWebAuthenticationSession`, then send the Access token
-  as `cf-access-token` on HTTP and on the `/client` WebSocket upgrade. The Worker accepts it
-  through the same JWT verification, with no Origin requirement for header tokens.
-- Clients (browser, iOS, Mac reaching other hosts) are **never paired**: an Access login is
-  all a client needs, and revoking access is an Access action. Only hosts pair.
-- Daemon routes keep the host credential and never accept an Access identity; client routes
-  never accept a host credential.
-- Tests (Miniflare, with a local signing key standing in for the team's keys): missing, forged,
-  expired and wrong-audience tokens; cross-account host IDs; header vs cookie paths; host
-  credential on client routes rejected.
+- `src/auth/access-identity.ts` verifies `Cf-Access-Jwt-Assertion` on every account request
+  (RS256 against `<team>/cdn-cgi/access/certs`, issuer, audience, expiry; person tokens only,
+  service tokens refused). `src/auth/account-access.ts` maps issuer + subject to the account,
+  records the profile, and enforces the origin rule: state changes and relay upgrades need the
+  app's `Origin`, or no `Origin` and no cookies (native clients). Missing configuration fails
+  closed with 503.
+- Removed: the Worker-run OAuth (`cloudflare.ts`, `provider.ts`), Axo web sessions, the CSRF
+  token, `/api/auth/cloudflare/*` and `/api/auth/logout`. `/api/auth/me` now returns the
+  account ID and profile. The web app signs in by loading `/app` (Access-guarded) and signs out
+  through `/cdn-cgi/access/logout`.
+- Tests: forged, expired, wrong-audience, wrong-issuer, service-token, non-app and oversized
+  assertions; configuration parsing; the origin rule; stable account per subject; Worker
+  responses for each; relay upgrade origin rule. The harness serves a JWKS through Miniflare's
+  outbound service and signs assertions, so every Worker test runs the real verification.
+  Seven mutants (audience, issuer, subject, type, origin check, cookie rule, team domain) are
+  caught.
+- **Deployment consequences (operator):** create the Access application for `/app` and
+  `/api/*`, with a Bypass policy for `/api/v1/host-pairings/redeem` and
+  `/api/v1/accounts/*/hosts/*/daemon` (hosts authenticate with their credential); set
+  `ACCESS_TEAM_DOMAIN` and `ACCESS_AUD`; and **pair hosts again**: the old accounts were keyed
+  by the OAuth subject, Access subjects differ, so the first Access sign-in creates a new
+  account. Native clients must not send cookies (G3: `httpShouldHandleCookies = false`).
 
 ### G2. Relay protocol parity
 

@@ -1,6 +1,6 @@
 import { build } from "esbuild";
-import { Miniflare, convertV4MiniflareOptions } from "miniflare";
-import { generateKeyPair, SignJWT } from "jose";
+import { Miniflare, Response as MiniflareResponse, convertV4MiniflareOptions } from "miniflare";
+import { exportJWK, generateKeyPair, SignJWT } from "jose";
 import { mkdtemp, readFile, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
@@ -11,43 +11,33 @@ export const root = fileURLToPath(new URL("../../../", import.meta.url));
 export const issuer = "https://private-test.cloudflareaccess.com";
 export const testSessionSecret = "isolated-axo-test-session-secret-at-least-32-bytes";
 
+export const APP_ORIGIN = "https://axo.leostera.dev";
+
 export type AccountSession = {
   accountId: string;
-  /** Headers for reads and the client WebSocket. */
+  /** What a browser on the app sends after passing Access: the Access assertion and the app's Origin. */
   headers: Record<string, string>;
-  /** Headers for cookie-authenticated mutations (adds the CSRF token). */
-  mutationHeaders: Record<string, string>;
 };
 
 /**
- * Signs a person in to a fresh account without the Cloudflare OAuth round trip: seals a web
- * session cookie and seeds its digest in the account Durable Object. The harness must be
- * started with `SESSION_SECRET: testSessionSecret`. When the Worker moves to Access-verified
- * identity (RFD0013 gap plan, G1), only this function changes.
+ * Signs a person in through (simulated) Cloudflare Access: mints an Access assertion for a new
+ * subject with the harness's signing key, which the Worker verifies against the harness's
+ * JWKS, then asks the Worker which account that person has.
  */
 export async function signIn(
-  h: { url: string; mf: Miniflare },
-  accountId: string = crypto.randomUUID(),
+  h: { url: string; token: Harness["token"] },
+  subject: string = crypto.randomUUID(),
 ): Promise<AccountSession> {
-  const { hmac, randomToken, sealCookie } = await import("../src/auth/crypto");
-  const sessionId = randomToken();
-  const csrf = randomToken();
-  const expiresAt = Date.now() + 60 * 60 * 1000;
-  const cookie = `__Host-axo_session=${await sealCookie(testSessionSecret, "web-session", { accountId, sessionId, csrf, expiresAt })}`;
-  // The first request constructs the account Durable Object and its schema before seeding.
-  const initialized = await fetch(new URL("api/v1/account/hosts", h.url), { headers: { Cookie: cookie } });
-  if (initialized.status !== 401) throw new Error(`expected an unseeded session to be refused, got ${initialized.status}`);
-  const storage = await h.mf.unsafeGetDurableObjectStorage("api-test", "AxoAccountDirectory", { name: accountId });
-  await storage.exec("INSERT INTO profile (singleton, email, name) VALUES (1, ?, ?)", "test@example.test", "Test account");
-  await storage.exec(
-    "INSERT INTO web_sessions (session_digest, created_at, expires_at, revoked_at) VALUES (?, ?, ?, NULL)",
-    await hmac(testSessionSecret, `session\0${sessionId}`),
-    Date.now(),
-    expiresAt,
-  );
-  const headers = { Cookie: cookie, Origin: "https://axo.leostera.dev" };
-  return { accountId, headers, mutationHeaders: { ...headers, "X-Axo-CSRF": csrf } };
+  const assertion = await h.token("client", { sub: subject, email: `${subject}@example.test` });
+  const headers = { "Cf-Access-Jwt-Assertion": assertion, Origin: APP_ORIGIN };
+  const response = await fetch(new URL("api/auth/me", h.url), { headers });
+  if (response.status !== 200) throw new Error(`sign-in failed with HTTP ${response.status}`);
+  const { accountId } = (await response.json()) as { accountId: string };
+  return { accountId, headers };
 }
+
+export type Harness = Awaited<ReturnType<typeof harness>>;
+
 export async function harness(configuration: { audience?: string; bindings?: Record<string, string> } = {}) {
   const audience = configuration.audience ?? "private-test";
   const directory = await mkdtemp(join(tmpdir(), "axo-api-"));
@@ -61,10 +51,22 @@ export async function harness(configuration: { audience?: string; bindings?: Rec
     mainFields: ["module", "main"],
     external: ["cloudflare:workers"],
   });
-  const keys = await generateKeyPair("RS256");
+  const keys = await generateKeyPair("RS256", { extractable: true });
+  const keyId = "harness-key";
+  const jwks = JSON.stringify({ keys: [{ ...(await exportJWK(keys.publicKey)), kid: keyId, alg: "RS256", use: "sig" }] });
   const options = convertV4MiniflareOptions({
     name: "api-test",
-    bindings: configuration.bindings ?? {},
+    bindings: {
+      ACCESS_TEAM_DOMAIN: issuer,
+      ACCESS_AUD: audience,
+      SESSION_SECRET: testSessionSecret,
+      ...configuration.bindings,
+    },
+    // The Worker's only outbound request is for Access's signing keys.
+    outboundService: (request: { url: string }) =>
+      request.url === `${issuer}/cdn-cgi/access/certs`
+        ? new MiniflareResponse(jwks, { headers: { "Content-Type": "application/json" } })
+        : new MiniflareResponse("unexpected outbound request", { status: 502 }),
     modules: true,
     script: await readFile(bundle, "utf8"),
     compatibilityDate: "2026-10-09",
@@ -111,7 +113,7 @@ export async function harness(configuration: { audience?: string; bindings?: Rec
         : { common_name: "daemon.access", sub: "" }),
       ...overrides,
     })
-      .setProtectedHeader({ alg: "RS256" })
+      .setProtectedHeader({ alg: "RS256", kid: keyId })
       .setIssuer(issuer)
       .setAudience(audience)
       .setExpirationTime(expiration)

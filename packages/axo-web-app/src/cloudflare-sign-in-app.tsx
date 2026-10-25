@@ -6,16 +6,13 @@ const RemoteTerminalApp = lazy(async () => {
   return { default: module.RemoteTerminalApp };
 });
 
-type SessionResponse =
-  | { authenticated: false }
-  | {
-      authenticated: true;
-      profile: { email: string | null; name: string | null };
-      csrfToken: string;
-      expiresAt: string;
-    };
-
-type AuthenticatedSession = Extract<SessionResponse, { authenticated: true }>;
+/** `GET /api/auth/me` for a person Cloudflare Access let through; anyone else gets 401. */
+type AuthenticatedSession = {
+  authenticated: true;
+  accountId: string;
+  profile: { email: string | null; name: string | null };
+  expiresAt: string;
+};
 
 const authBaseUrl = import.meta.env.VITE_AXO_AUTH_API_BASE_URL || window.location.origin;
 
@@ -26,9 +23,10 @@ export function CloudflareSignInApp() {
   const [pairingCode, setPairingCode] = useState<string | null>(null);
   const [pairingExpiresAt, setPairingExpiresAt] = useState<string | null>(null);
   const [creatingPairing, setCreatingPairing] = useState(false);
-  const startUrl = useMemo(() => new URL("/api/auth/cloudflare/start", authBaseUrl).href, []);
+  // Cloudflare Access guards `/app`: loading it again sends a signed-out person to Access's login.
+  const signInUrl = useMemo(() => new URL("/app", window.location.origin).href, []);
   const meUrl = useMemo(() => new URL("/api/auth/me", authBaseUrl).href, []);
-  const logoutUrl = useMemo(() => new URL("/api/auth/logout", authBaseUrl).href, []);
+  const logoutUrl = useMemo(() => new URL("/cdn-cgi/access/logout", authBaseUrl).href, []);
   const pairingUrl = useMemo(() => new URL("/api/v1/account/host-pairings", authBaseUrl).href, []);
 
   const refreshSession = useCallback(async (signal?: AbortSignal) => {
@@ -40,9 +38,15 @@ export function CloudflareSignInApp() {
         headers: { Accept: "application/json" },
         signal,
       });
-      if (!response.ok) throw new Error(`Sign-in status unavailable (${response.status})`);
-      const body = await response.json() as SessionResponse;
-      setSession(body.authenticated ? body : null);
+      if (!response.ok) {
+        // Release the unread error body so the request completes.
+        await response.body?.cancel();
+        if (response.status !== 401) throw new Error(`Sign-in status unavailable (${response.status})`);
+        setSession(null);
+        setError(null);
+        return;
+      }
+      setSession(await response.json() as AuthenticatedSession);
       setError(null);
     } catch (cause) {
       if (signal?.aborted) return;
@@ -70,7 +74,6 @@ export function CloudflareSignInApp() {
         method: "POST",
         credentials: "include",
         cache: "no-store",
-        headers: { "X-Axo-CSRF": session.csrfToken },
       });
       const result = hostPairingCreateResultSchema.safeParse(await response.json());
       if (!response.ok || !result.success)
@@ -99,24 +102,10 @@ export function CloudflareSignInApp() {
     }
   }, [pairingCode]);
 
-  const signOut = useCallback(async () => {
-    if (!session) return;
-    setPairingCode(null);
-    setPairingExpiresAt(null);
-    setError(null);
-    try {
-      const response = await fetch(logoutUrl, {
-        method: "POST",
-        credentials: "include",
-        cache: "no-store",
-        headers: { "X-Axo-CSRF": session.csrfToken },
-      });
-      if (!response.ok) throw new Error(`Sign out failed (${response.status})`);
-      setSession(null);
-    } catch (cause) {
-      setError(cause instanceof Error ? cause.message : "Could not sign out");
-    }
-  }, [logoutUrl, session]);
+  // Access owns the sign-in, so it owns the sign-out: its logout endpoint ends the Access session.
+  const signOut = useCallback(() => {
+    window.location.assign(logoutUrl);
+  }, [logoutUrl]);
 
   if (!loading && session) {
     return (
@@ -130,7 +119,7 @@ export function CloudflareSignInApp() {
           onCreatePairing={() => void createPairing()}
           onCopyPairingCode={() => void copyPairingCode()}
           onDismissPairing={dismissPairing}
-          onSignOut={() => void signOut()}
+          onSignOut={signOut}
         />
       </Suspense>
     );
@@ -143,14 +132,14 @@ export function CloudflareSignInApp() {
         <p className="auth-eyebrow">AXO REMOTE ACCESS</p>
         <h1 id="auth-title">Sign in to Axo</h1>
         <p className="auth-description">
-          Use your Cloudflare identity to create and access your private Axo account.
+          Sign in through Cloudflare Access to reach your private Axo account.
         </p>
         {loading ? <p className="auth-status" role="status">Checking sign-in status…</p> : null}
         {error ? <p className="auth-error" role="alert">{error}</p> : null}
         {!loading && !session ? (
-          <a className="auth-primary-button" href={startUrl}>Continue with Cloudflare</a>
+          <a className="auth-primary-button" href={signInUrl}>Continue with Cloudflare</a>
         ) : null}
-        <p className="auth-footnote">Axo receives your Cloudflare identity only. It does not request access to manage your Cloudflare resources.</p>
+        <p className="auth-footnote">Axo receives your Cloudflare Access identity only. It never has access to manage your Cloudflare resources.</p>
       </section>
     </main>
   );

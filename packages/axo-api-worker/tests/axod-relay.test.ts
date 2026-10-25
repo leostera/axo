@@ -8,7 +8,7 @@ import { test } from "node:test";
 import { RemoteAxoApi, type HostEvent, type WebSocketLike } from "@axo/app";
 import WebSocket from "ws";
 import { createConnection } from "node:net";
-import { harness, signIn, testSessionSecret, type AccountSession } from "./harness";
+import { harness, signIn, type AccountSession } from "./harness";
 
 const sleep = (milliseconds: number) =>
   new Promise((resolveSleep) => setTimeout(resolveSleep, milliseconds));
@@ -132,7 +132,7 @@ test("an isolated axod pairs with an account, then the account drives it through
   const axodBinary = resolve(process.cwd(), binary);
   assert.ok(existsSync(axodBinary), `axod binary must exist at ${axodBinary}`);
 
-  const api = await harness({ bindings: { SESSION_SECRET: testSessionSecret } });
+  const api = await harness();
   const root = await mkdtemp(join(tmpdir(), "axo-axod-relay-"));
   const serverDirectory = join(root, "server");
   const socketPath = join(root, "axod.sock");
@@ -175,7 +175,7 @@ test("an isolated axod pairs with an account, then the account drives it through
     assert.deepEqual(await remoteApi.listHosts(), [], "an unpaired host is not visible to anyone");
     const pairing = await fetch(new URL("api/v1/account/host-pairings", api.url), {
       method: "POST",
-      headers: account.mutationHeaders,
+      headers: account.headers,
     });
     assert.equal(pairing.status, 200);
     const { code } = (await pairing.json()) as { code: string };
@@ -293,7 +293,7 @@ test("an isolated axod pairs with an account, then the account drives it through
     // Revoking the host closes its relay and keeps its metadata as offline.
     const revoked = await fetch(new URL(`api/v1/account/hosts/${hostId}/revoke`, api.url), {
       method: "POST",
-      headers: account.mutationHeaders,
+      headers: account.headers,
     });
     assert.equal(revoked.status, 204);
     const offlineHost = await waitFor("the revoked host to be offline", 10_000, async () => {

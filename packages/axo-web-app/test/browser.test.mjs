@@ -47,8 +47,8 @@ function host(sessions) {
   };
 }
 
-function json(response, value, origin) {
-  response.statusCode = 200;
+function json(response, value, origin, status = 200) {
+  response.statusCode = status;
   response.setHeader("Content-Type", "application/json");
   response.setHeader("Cache-Control", "private, no-store");
   response.setHeader("Access-Control-Allow-Origin", origin ?? "http://127.0.0.1:5173");
@@ -131,6 +131,7 @@ test("browser discovers hosts, renders live PTY output, sends input, and uses Cm
   let sessionCreateCount = 0;
   let standaloneCreateCount = 0;
   let authenticated = false;
+  let appOrigin = "";
   let pairingRequestCount = 0;
   const apiHttp = createHttpServer((request, response) => {
     apiRequests.push(`${request.method} ${request.url} origin=${request.headers.origin ?? "none"}`);
@@ -146,14 +147,16 @@ test("browser discovers hosts, renders live PTY output, sends input, and uses Cm
     }
     const url = new URL(request.url, "http://127.0.0.1");
     if (request.method === "GET" && url.pathname === "/api/auth/me") {
-      json(response, authenticated
-        ? {
-            authenticated: true,
-            profile: { email: "fixture@example.test", name: "Pairing fixture" },
-            csrfToken: "csrf-fixture",
-            expiresAt: now,
-          }
-        : { authenticated: false }, origin);
+      if (!authenticated) {
+        json(response, { error: "Sign in required" }, origin, 401);
+        return;
+      }
+      json(response, {
+        authenticated: true,
+        accountId: "6b0f0e0e-2c43-4b8e-9d0a-0d8f7b2b9c11",
+        profile: { email: "fixture@example.test", name: null },
+        expiresAt: now,
+      }, origin);
       return;
     }
     if (request.method === "POST" && url.pathname === "/api/v1/account/host-pairings") {
@@ -164,9 +167,11 @@ test("browser discovers hosts, renders live PTY output, sends input, and uses Cm
       }, origin);
       return;
     }
-    if (request.method === "POST" && url.pathname === "/api/auth/logout") {
+    if (request.method === "GET" && url.pathname === "/cdn-cgi/access/logout") {
+      // Stands in for Cloudflare Access ending its session and returning to the app.
       authenticated = false;
-      response.statusCode = 204;
+      response.statusCode = 302;
+      response.setHeader("Location", `${appOrigin}/app`);
       response.end();
       return;
     }
@@ -315,6 +320,7 @@ test("browser discovers hosts, renders live PTY output, sends input, and uses Cm
     const apiPort = apiHttp.address().port;
     const appPort = await freePort();
     const appUrl = `http://127.0.0.1:${appPort}`;
+    appOrigin = appUrl;
     const apiBaseUrl = appUrl;
     vite = await createViteServer({
       configFile: false,
@@ -329,6 +335,8 @@ test("browser discovers hosts, renders live PTY output, sends input, and uses Cm
         proxy: {
           "/v1": { target: `http://127.0.0.1:${apiPort}`, changeOrigin: true, ws: true },
           "/api": { target: `http://127.0.0.1:${apiPort}`, changeOrigin: true, ws: true },
+          // Cloudflare Access serves this on the app's own origin in production.
+          "/cdn-cgi/access": { target: `http://127.0.0.1:${apiPort}`, changeOrigin: true },
         },
       },
       logLevel: "error",
@@ -416,7 +424,7 @@ test("browser discovers hosts, renders live PTY output, sends input, and uses Cm
     await page.getByRole("link", { name: "Continue with Cloudflare" }).waitFor({ timeout: 10_000 });
     assert.equal(await page.getByRole("heading", { name: "Sign in to Axo" }).count(), 1);
     assert.ok((await page.getByRole("link", { name: "Continue with Cloudflare" }).getAttribute("href"))
-      .endsWith("/api/auth/cloudflare/start"));
+      .endsWith("/app"), "signing in reloads /app, which Cloudflare Access guards");
 
     authenticated = true;
     await page.reload({ waitUntil: "networkidle" });

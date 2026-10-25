@@ -25,8 +25,9 @@ async function waitForWorker(url, child, output) {
   while (Date.now() < deadline) {
     if (child.exitCode !== null) throw new Error(`cf dev exited early (${child.exitCode})\n${output()}`);
     try {
+      // Any Worker answer means it is up; unconfigured sign-in answers 503 with JSON.
       const response = await fetch(`${url}/api/auth/me`);
-      if (response.status === 200) return;
+      if (response.headers.get("Content-Type")?.startsWith("application/json")) return;
     } catch {
       // The Worker runtime is still starting.
     }
@@ -71,15 +72,15 @@ test("single site serves landing/app assets and keeps account APIs fail-closed",
     assert.match(await response.text(), /Axo — Your terminal, wherever you are/);
   }
 
+  // Without ACCESS_TEAM_DOMAIN and ACCESS_AUD, sign-in fails closed.
   const session = await fetch(`${url}/api/auth/me`);
-  assert.deepEqual(await session.json(), { authenticated: false });
-  const start = await fetch(`${url}/api/auth/cloudflare/start`, { redirect: "manual" });
-  assert.equal(start.status, 503);
-  assert.equal(start.headers.get("Cache-Control"), "private, no-store");
+  assert.equal(session.status, 503);
+  assert.equal(session.headers.get("Cache-Control"), "private, no-store");
+  assert.deepEqual(await session.json(), { error: "Sign-in is unavailable" });
 
   const accountHosts = await fetch(`${url}/api/v1/account/hosts`);
-  assert.equal(accountHosts.status, 401);
-  assert.deepEqual(await accountHosts.json(), { error: "Sign in required" });
+  assert.equal(accountHosts.status, 503);
+  assert.deepEqual(await accountHosts.json(), { error: "Sign-in is unavailable" });
   const legacyProductApi = await fetch(`${url}/api/v1/hosts`);
   assert.equal(legacyProductApi.status, 503);
   assert.match(await legacyProductApi.text(), /not enabled yet/);

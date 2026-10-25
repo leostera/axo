@@ -4,7 +4,8 @@ import {
   hostPairingRedeemResultSchema,
 } from "@axo/protocol/v1";
 import { hmac } from "./crypto";
-import { requireAxoAccount, type AuthExports } from "./cloudflare";
+import { requireAccount, type AuthExports } from "./account-access";
+import type { AccessEnvironment } from "./access-identity";
 
 const PAIRING_LIFETIME_MS = 10 * 60 * 1000;
 const RATE_WINDOW_MS = 60 * 1000;
@@ -15,7 +16,7 @@ const MAX_REDEMPTION_BODY_BYTES = 4_096;
 const CODE_ALPHABET = "0123456789ABCDEFGHJKMNPQRSTVWXYZ";
 const PAIRING_CHARSET_SIZE = 32;
 
-type PairingEnvironment = Env & { SESSION_SECRET?: string };
+type PairingEnvironment = AccessEnvironment & { SESSION_SECRET?: string };
 
 export async function createHostPairing(
   request: Request,
@@ -23,8 +24,9 @@ export async function createHostPairing(
   exports: AuthExports,
 ): Promise<Response> {
   if (request.method !== "POST") return methodNotAllowed("POST");
-  const accountId = await requireAxoAccount(request, env, exports, true);
-  if (accountId instanceof Response) return accountId;
+  const caller = await requireAccount(request, env, exports, "change");
+  if (caller instanceof Response) return caller;
+  const accountId = caller.accountId;
   if (!env.SESSION_SECRET || !exports.AxoAccountManager ||
       !exports.AxoPairingIndex || !exports.AxoPairingRateLimit) return unavailable();
 

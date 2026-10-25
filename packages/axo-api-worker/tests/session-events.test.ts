@@ -1,41 +1,23 @@
 import assert from "node:assert/strict";
 import { test } from "node:test";
-import { randomToken, hmac, sealCookie } from "../src/auth/crypto";
+import { randomToken } from "../src/auth/crypto";
 import { Peer } from "../testing/client";
 import { hostDataEventSchema, hostPairingCreateResultSchema, hostPairingRedeemResultSchema } from "@axo/protocol/v1";
-import { harness } from "./harness";
+import { harness, signIn } from "./harness";
 
-const secret = "isolated-session-events-secret-at-least-32-bytes";
-const accountId = "01a414a4-cc2b-4f3c-a7c4-15fd6f13b885";
 const hostId = "d9b73fd0-c826-43fd-8d95-459fb9a7267f";
 const hostGeneration = "104f1de4-6b07-4278-a23b-1e1ee1fe9fd5";
 const sessionId = 23;
 
-async function createAccountSession(h: Awaited<ReturnType<typeof harness>>, ownerId: string) {
-  const sessionId = randomToken();
-  const csrf = randomToken();
-  const expiresAt = Date.now() + 60 * 60 * 1000;
-  const cookie = `__Host-axo_session=${await sealCookie(secret, "web-session", { accountId: ownerId, sessionId, csrf, expiresAt })}`;
-  const initialized = await fetch(new URL("api/v1/account/hosts", h.url), { headers: { Cookie: cookie } });
-  assert.equal(initialized.status, 401);
-  const storage = await h.mf.unsafeGetDurableObjectStorage("api-test", "AxoAccountDirectory", { name: ownerId });
-  await storage.exec("INSERT INTO profile (singleton, email, name) VALUES (1, ?, ?)", "test@example.test", "Test account");
-  await storage.exec(
-    "INSERT INTO web_sessions (session_digest, created_at, expires_at, revoked_at) VALUES (?, ?, ?, NULL)",
-    await hmac(secret, `session\0${sessionId}`), Date.now(), expiresAt,
-  );
-  return { cookie, csrf };
-}
-
 test("Pi host events reach account-private durable history and the authenticated owner route", async (t) => {
-  const h = await harness({ bindings: { SESSION_SECRET: secret } });
+  const h = await harness();
   t.after(() => h.close());
-  const owner = await createAccountSession(h, accountId);
-  const headers = { Cookie: owner.cookie, Origin: "https://axo.leostera.dev" };
+  const owner = await signIn(h);
+  const { accountId, headers } = owner;
 
   const pairingResponse = await fetch(new URL("api/v1/account/host-pairings", h.url), {
     method: "POST",
-    headers: { ...headers, "X-Axo-CSRF": owner.csrf },
+    headers,
   });
   assert.equal(pairingResponse.status, 200);
   const pairingCode = hostPairingCreateResultSchema.parse(await pairingResponse.json()).code;
@@ -118,8 +100,7 @@ test("Pi host events reach account-private durable history and the authenticated
   const invalidPage = await fetch(new URL(`${eventsUrl}?after=01`, h.url), { headers });
   assert.equal(invalidPage.status, 400);
 
-  const otherAccountId = "51f820e6-4dd9-46d4-84bc-9cd7414fdceb";
-  const other = await createAccountSession(h, otherAccountId);
-  const crossAccount = await fetch(eventsUrl, { headers: { Cookie: other.cookie } });
+  const other = await signIn(h);
+  const crossAccount = await fetch(eventsUrl, { headers: other.headers });
   assert.equal(crossAccount.status, 404);
 });

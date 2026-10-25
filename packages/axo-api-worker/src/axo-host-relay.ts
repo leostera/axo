@@ -242,9 +242,6 @@ export class AxoHostRelay extends DurableObject<Env> {
       window: now,
       calls: 0,
       outgoing: [],
-      ...(request.headers.has("X-Axo-Session-Digest")
-        ? { sessionDigest: request.headers.get("X-Axo-Session-Digest")! }
-        : {}),
     });
     if (!parsed.success || parsed.data.expiresAt <= now)
       return new Response("Invalid internal identity", { status: 403 });
@@ -997,11 +994,6 @@ export class AxoHostRelay extends DurableObject<Env> {
     }
     const route = this.route(machineId);
     if (route) this.fence(route.connection_id);
-  }
-  protected closeClientSession(sessionDigest: string): void {
-    for (const socket of this.sockets("client")) {
-      if (this.peer(socket).sessionDigest === sessionDigest) this.drop(socket, 4001, "Session revoked");
-    }
   }
   protected fence(connectionId: string) {
     const sql = this.ctx.storage.sql;

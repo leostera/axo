@@ -17,8 +17,7 @@ import { constantTimeEqual, hmac } from "./crypto";
 import type { Peer } from "../relay/peer";
 import { sessionDOName, sessionEventBindingSchema, sessionEventPageRequestSchema, sessionEventPageResultSchema } from "../session-history";
 
-type AccountProfile = { email: string | null; name: string | null };
-type SessionRow = { session_digest: string; expires_at: number; revoked_at: number | null };
+import type { AccountProfile } from "./account-access";
 type PairingRow = {
   pairing_id: string;
   code_verifier: string;
@@ -68,9 +67,8 @@ export class AxoAccountManager extends AxoHostRelay {
     ctx.storage.sql.exec(`CREATE TABLE IF NOT EXISTS profile (
       singleton INTEGER PRIMARY KEY CHECK (singleton = 1), email TEXT, name TEXT
     )`);
-    ctx.storage.sql.exec(`CREATE TABLE IF NOT EXISTS web_sessions (
-      session_digest TEXT PRIMARY KEY, created_at INTEGER NOT NULL, expires_at INTEGER NOT NULL, revoked_at INTEGER
-    )`);
+    // Axo's own web sessions were replaced by Cloudflare Access identity.
+    ctx.storage.sql.exec("DROP TABLE IF EXISTS web_sessions");
     ctx.storage.sql.exec(`CREATE TABLE IF NOT EXISTS pairing_issuance (created_at INTEGER NOT NULL)`);
     ctx.storage.sql.exec(`CREATE TABLE IF NOT EXISTS pairings (
       pairing_id TEXT PRIMARY KEY, code_verifier TEXT NOT NULL UNIQUE, created_at INTEGER NOT NULL,
@@ -94,30 +92,14 @@ export class AxoAccountManager extends AxoHostRelay {
     ctx.storage.sql.exec("CREATE INDEX IF NOT EXISTS host_sessions_v1_by_host ON host_sessions_v1(host_id, session_id)");
   }
 
-  establishSession(accountId: string, sessionDigest: string, expiresAt: number, profile: AccountProfile): void {
-    const now = Date.now();
+  /** Called for every request Access verified: binds this object's account ID and keeps the profile current. */
+  recordSignIn(accountId: string, profile: AccountProfile): void {
     this.ctx.storage.transactionSync(() => {
       this.bindAccount(accountId);
-      const sql = this.ctx.storage.sql;
-      sql.exec(`INSERT INTO profile (singleton, email, name) VALUES (1, ?, ?)
-        ON CONFLICT(singleton) DO UPDATE SET email = excluded.email, name = excluded.name`, profile.email, profile.name);
-      sql.exec("DELETE FROM web_sessions WHERE expires_at <= ? OR revoked_at IS NOT NULL", now);
-      sql.exec("INSERT INTO web_sessions (session_digest, created_at, expires_at, revoked_at) VALUES (?, ?, ?, NULL)", sessionDigest, now, expiresAt);
+      this.ctx.storage.sql.exec(`INSERT INTO profile (singleton, email, name) VALUES (1, ?, ?)
+        ON CONFLICT(singleton) DO UPDATE SET email = excluded.email, name = excluded.name
+        WHERE email IS NOT excluded.email OR name IS NOT excluded.name`, profile.email, profile.name);
     });
-  }
-
-  async sessionProfile(accountId: string, sessionDigest: string, now: number): Promise<AccountProfile | null> {
-    const sql = this.ctx.storage.sql;
-    const session = sql.exec<SessionRow>("SELECT * FROM web_sessions WHERE session_digest = ?", sessionDigest).toArray()[0];
-    if (!session || session.revoked_at !== null || session.expires_at <= now) return null;
-    this.bindAccount(accountId);
-    const profile = sql.exec<AccountProfile>("SELECT email, name FROM profile WHERE singleton = 1").toArray()[0];
-    return profile ? { email: profile.email, name: profile.name } : null;
-  }
-
-  revokeSession(sessionDigest: string, now: number): void {
-    this.ctx.storage.sql.exec("UPDATE web_sessions SET revoked_at = ? WHERE session_digest = ? AND revoked_at IS NULL", now, sessionDigest);
-    this.closeClientSession(sessionDigest);
   }
 
   createPairing(codeVerifier: string, pairingId: string, now: number, expiresAt: number): PairingCreationStatus {
@@ -275,14 +257,8 @@ export class AxoAccountManager extends AxoHostRelay {
     if (!accountId || peer.identity !== accountId) return false;
     const host = this.ctx.storage.sql.exec<AccountHostRow>("SELECT * FROM account_hosts WHERE host_id = ? AND revoked_at IS NULL", peer.machineId).toArray()[0];
     if (!host) return false;
-    if (peer.role === "client") {
-      if (!peer.sessionDigest) return false;
-      const session = this.ctx.storage.sql.exec<SessionRow>(
-        "SELECT * FROM web_sessions WHERE session_digest = ?",
-        peer.sessionDigest,
-      ).toArray()[0];
-      return Boolean(session && session.revoked_at === null && session.expires_at > Date.now());
-    }
+    // A client was verified by Access for this account in the Worker; it may reach any host the account still owns.
+    if (peer.role === "client") return true;
 
     const credentialId = request.headers.get("X-Axo-Credential-Id") ?? "";
     const credential = request.headers.get("X-Axo-Credential") ?? "";

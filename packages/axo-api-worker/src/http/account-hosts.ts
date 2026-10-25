@@ -7,16 +7,17 @@ import {
   hostSessionsListResultSchema,
 } from "@axo/protocol/v1";
 import { sessionEventPageResultSchema } from "../session-history";
-import { authExports, requireAxoAccount, requireAxoSession, type AuthExports } from "../auth/cloudflare";
+import { isCrossSiteRequest, requireAccount, type AuthExports } from "../auth/account-access";
+import type { AccessEnvironment } from "../auth/access-identity";
 
 const privateHeaders = { "Cache-Control": "private, no-store", Pragma: "no-cache" };
-const APP_ORIGIN = "https://axo.leostera.dev";
-type PairingEnvironment = Env & { SESSION_SECRET?: string };
+type PairingEnvironment = AccessEnvironment & { SESSION_SECRET?: string };
 
 export async function serveAccountHosts(request: Request, env: PairingEnvironment, exports: AuthExports): Promise<Response> {
   if (request.method !== "GET") return methodNotAllowed("GET");
-  const accountId = await requireAxoAccount(request, env, exports, false);
-  if (accountId instanceof Response) return accountId;
+  const caller = await requireAccount(request, env, exports, "read");
+  if (caller instanceof Response) return caller;
+  const { accountId } = caller;
   try {
     const manager = exports.AxoAccountManager?.getByName(accountId);
     if (!manager?.listHosts) return unavailable();
@@ -33,8 +34,9 @@ export async function serveAccountHostSessions(
   rawHostId: string,
 ): Promise<Response> {
   if (request.method !== "GET") return methodNotAllowed("GET");
-  const accountId = await requireAxoAccount(request, env, exports, false);
-  if (accountId instanceof Response) return accountId;
+  const caller = await requireAccount(request, env, exports, "read");
+  if (caller instanceof Response) return caller;
+  const { accountId } = caller;
   const hostId = hostIdSchema.safeParse(rawHostId);
   const hostGeneration = new URL(request.url).searchParams.get("hostGeneration");
   const reference = hostRefSchema.safeParse({ hostId: rawHostId, hostGeneration });
@@ -61,8 +63,9 @@ export async function serveAccountHostEvents(
   rawSessionId: string,
 ): Promise<Response> {
   if (request.method !== "GET") return methodNotAllowed("GET");
-  const accountId = await requireAxoAccount(request, env, exports, false);
-  if (accountId instanceof Response) return accountId;
+  const caller = await requireAccount(request, env, exports, "read");
+  if (caller instanceof Response) return caller;
+  const { accountId } = caller;
   const hostId = uuid.safeParse(rawHostId);
   const sessionId = sessionIdSchema.safeParse(Number(rawSessionId));
   if (!hostId.success || !sessionId.success || String(sessionId.data) !== rawSessionId)
@@ -104,8 +107,9 @@ export async function revokeAccountHost(
   rawHostId: string,
 ): Promise<Response> {
   if (request.method !== "POST") return methodNotAllowed("POST");
-  const accountId = await requireAxoAccount(request, env, exports, true);
-  if (accountId instanceof Response) return accountId;
+  const caller = await requireAccount(request, env, exports, "change");
+  if (caller instanceof Response) return caller;
+  const { accountId } = caller;
   const hostId = hostIdSchema.safeParse(rawHostId);
   if (!hostId.success) return json({ error: "Invalid host" }, 400);
   try {
@@ -133,16 +137,14 @@ export async function upgradeAccountHostRelay(
 
   let accountId: string;
   let expiresAt: number;
-  let sessionDigest: string | undefined;
   let credential: string | undefined;
   let credentialId: string | undefined;
   if (role === "client") {
-    if (request.headers.get("Origin") !== APP_ORIGIN) return json({ error: "Origin not allowed" }, 403);
-    const session = await requireAxoSession(request, env, exports, false);
-    if (session instanceof Response) return session;
-    accountId = session.accountId;
-    expiresAt = session.expiresAt;
-    sessionDigest = session.sessionDigest;
+    // Opening a relay acts on the account's hosts, so it is held to the same rule as a change.
+    const caller = await requireAccount(request, env, exports, "change");
+    if (caller instanceof Response) return caller;
+    accountId = caller.accountId;
+    expiresAt = caller.expiresAt;
   } else {
     if (request.headers.has("Origin")) return json({ error: "Origin not allowed" }, 403);
     const parsedAccountId = uuid.safeParse(rawAccountId);
@@ -166,7 +168,6 @@ export async function upgradeAccountHostRelay(
     "X-Axo-Expiry": String(expiresAt),
     "X-Axo-Machine": hostId.data,
   });
-  if (sessionDigest) headers.set("X-Axo-Session-Digest", sessionDigest);
   if (credential) headers.set("X-Axo-Credential", credential);
   if (credentialId) headers.set("X-Axo-Credential-Id", credentialId);
   return manager.fetch(new Request("https://account.internal/relay", { headers }));

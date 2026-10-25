@@ -8,15 +8,14 @@ import { harness, signIn, testSessionSecret } from "./harness";
 const secret = testSessionSecret;
 
 test("one AccountManager owns pairing, host metadata, and live relays for multiple hosts", async (t) => {
-  const h = await harness({ bindings: { SESSION_SECRET: secret } });
+  const h = await harness();
   t.after(() => h.close());
-  const accountId = crypto.randomUUID();
-  const session = await signIn(h, accountId);
-  const headers = session.headers;
+  const session = await signIn(h);
+  const { accountId, headers } = session;
   const createPairing = async () => {
     const response = await fetch(new URL("api/v1/account/host-pairings", h.url), {
       method: "POST",
-      headers: session.mutationHeaders,
+      headers: session.headers,
     });
     assert.equal(response.status, 200);
     return hostPairingCreateResultSchema.parse(await response.json()).code;
@@ -46,7 +45,7 @@ test("one AccountManager owns pairing, host metadata, and live relays for multip
   const second = await redeem(await createPairing(), "Account host two");
   const managerStorage = await h.mf.unsafeGetDurableObjectStorage("api-test", "AxoAccountDirectory", { name: accountId });
   const accountRow = await managerStorage.exec<{ account_id: string }>("SELECT account_id FROM account WHERE singleton = 1");
-  assert.equal(accountRow[0]?.account_id, accountId, "existing valid sessions bind the stable account ID on first use");
+  assert.equal(accountRow[0]?.account_id, accountId, "a verified sign-in binds the stable account ID");
   const storedHosts = await managerStorage.exec<{ host_id: string }>("SELECT host_id FROM account_hosts ORDER BY host_id");
   assert.deepEqual(new Set(storedHosts.map((row) => row.host_id)), new Set([first.hostId, second.hostId]));
 
@@ -209,8 +208,7 @@ test("one AccountManager owns pairing, host metadata, and live relays for multip
   );
   assert.equal(raceRows.length, 1, "a pairing code can atomically link only one host");
 
-  const otherAccountId = crypto.randomUUID();
-  const otherSession = await signIn(h, otherAccountId);
+  const otherSession = await signIn(h);
   const otherHostList = await fetch(new URL("api/v1/account/hosts", h.url), {
     headers: otherSession.headers,
   });
@@ -218,7 +216,7 @@ test("one AccountManager owns pairing, host metadata, and live relays for multip
 
   const revoked = await fetch(new URL(`api/v1/account/hosts/${first.hostId}/revoke`, h.url), {
     method: "POST",
-    headers: session.mutationHeaders,
+    headers: session.headers,
   });
   assert.equal(revoked.status, 204);
   const afterRevocation = hostListResultSchema.parse(await (await fetch(
