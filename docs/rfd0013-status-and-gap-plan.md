@@ -21,22 +21,22 @@ the exact web Origin, so neither the iOS app nor the Mac app (for other hosts) c
 authenticate; and the relay forwards only 8 `axo.remote.*` methods, not the full protocol the
 RFD promises. The one end-to-end test with a real axod predates the account model and fails.
 
-## Decision needed first: how native apps authenticate
+## Decision (2026-10-25): Access for people, pairing for hosts, no end-to-end encryption
 
-RFD0013 makes Axo's own sign-in (Cloudflare OAuth at the Worker, then an Axo session) the
-product identity and removes Cloudflare Access from the product routes. The architecture
-section of `docs/axo-refactor-plan.md` and the iOS brief say apps reach hosts "through the
-Cloudflare API behind Access". These disagree.
-
-| Option | What the app holds | Fits RFD0013 | Notes |
-| --- | --- | --- | --- |
-| **A. Axo app session (recommended)** | An Axo session token from a native sign-in (`ASWebAuthenticationSession` → the Worker's existing Cloudflare OAuth → app callback), in Keychain | Yes: same accounts, same revocation, same Worker checks | One identity system. The Worker already does OAuth, PKCE, sessions and revocation; native adds a bearer form of the session. |
-| B. Cloudflare Access | An Access token (Access login in a web view; Managed OAuth for non-browser clients) | No: RFD0013 rejects Access as product identity | Two identity systems if account ownership stays in Axo; Access does not know which hosts an account owns. |
-| A + Access in front | Both | Partly | Only if Access is kept as an outer perimeter; RFD0013's rollout removes it from `/api/*`. |
-
-Recommendation: **A**. Access can remain an optional outer gate later, but it cannot replace
-account and host ownership, which only the Worker knows. If you choose B, G1 changes and the
-RFD needs amending.
+- **People are authenticated by Cloudflare Access**, for the browser and native apps alike.
+  The Worker verifies the `Cf-Access-Jwt-Assertion` on every request (signature against the
+  team's keys, audience, expiry) and derives the account from the token's issuer and subject.
+  It never trusts the route path or the mere presence of a header, so a route not behind
+  Access (for example `workers.dev`) cannot bypass it. Who may use Axo is the Access policy.
+- **Hosts are bound to accounts by pairing**, as built. axod keeps its per-host credential;
+  Access service tokens are not used for hosts (a shared secret has no per-host revocation).
+- **No end-to-end encryption.** Every hop is TLS and authenticated, and the relay sees
+  terminal traffic in plaintext. This is deliberate: the API Worker is meant to store logs
+  and history permanently, which needs plaintext at the Worker. The trust boundary is
+  therefore "the account's Cloudflare deployment", and must be documented as such.
+- RFD0013 needs amending: its Worker-run Cloudflare OAuth and "Access removed from `/api/*`"
+  are replaced by Access-verified identity. The account model, sessions-as-revocation (now
+  per device, see G1) and pairing stay.
 
 ## Status
 
@@ -56,15 +56,14 @@ RFD needs amending.
 | Re-linking a host in the same account keeps its identity | Built | `account-manager.ts` (upsert on `host_id`) |
 | Mac: Settings → Remote Access code entry; `axo://pair/<code>` routes there; local `axo.relay.link` | Built | `RemoteAccessSettingsView`, `PairingLinkRouter`, `AxodConnection.linkHost` |
 | Account routes list only owned hosts and snapshots | Built | `src/http/account-hosts.ts` |
-| **Native client authentication** (iOS, Mac to other hosts) | **Missing**, not designed | `/client` requires cookie + web Origin |
+| **Native client authentication** (iOS, Mac to other hosts) | **Missing**; decided: Access token (G1) | `/client` requires cookie + web Origin |
 | **"Full currently supported protocol" through the relay** | **Partial**: 8 `axo.remote.*` methods + `axo.host.subscribe` | `AxoHostRelay.hostRemoteMethods` (inherited by `AxoAccountManager`) |
 | **End-to-end: pair → relay → client control with a real axod** | **Broken test** (401: lists hosts without a session, expects pairing-free registration) | `tests/axod-relay.test.ts` |
 | Separate keys / rotation for session, pairing-code, pairing-source and credential HMACs | Missing (one `SESSION_SECRET` with domain-separated inputs) | `pairing.ts`, `cloudflare.ts` |
 | Host credential store off macOS (axod on Linux) | Missing (stub refuses) | `credential.rs` |
 | Keychain access policy for the daemon's item | Unresolved (RFD open question) | `credential.rs` |
-| OAuth token revoked after userinfo | Unresolved (RFD open question) | `provider.ts` |
 | Legacy `/v1/*` routes with synthetic principals and `private-fleet` | Still served; adoption plan unresolved (RFD open question) | `src/http/router.ts`, `src/access.ts` |
-| Production: public OAuth client, Access removed from `/api/*`, deploy | Not verified here (operator task) | — |
+| Production: Access application and policy, deploy | Not verified here (operator task) | — |
 
 ## Plan
 
@@ -79,21 +78,23 @@ test Worker, create a pairing code, have the isolated axod redeem it through loc
 input, see output), revoke it and see the relay close. Without this, nothing below is
 provable. Add it to the default `npm test`.
 
-### G1. Native client sessions (option A)
+### G1. Identity from Access, in the Worker
 
-- **Flow**: the app opens `ASWebAuthenticationSession` at `/api/auth/native/start` with its
-  own PKCE challenge and an allowlisted callback (`axo://auth`). The Worker runs the existing
-  Cloudflare OAuth, then redirects to the callback with a one-time code; the app exchanges it
-  (with its verifier) at `/api/auth/native/token` for an Axo **app session**.
-- **App session**: opaque, high-entropy bearer; only its digest stored in the account DO, next
-  to web sessions; expiring with refresh by rotation; listed and revocable from the web app;
-  never a Cloudflare token.
-- **Use**: `Authorization: Bearer` on account HTTP routes and the `/client` WebSocket upgrade.
-  Bearer requests need no Origin and no CSRF token (not ambient credentials); cookie requests
-  keep both checks. A bearer is never accepted on daemon routes, a host credential never on
-  client routes.
-- **Tests**: Miniflare: code replay, wrong verifier, wrong callback, expired and revoked
-  sessions, cross-account host IDs, bearer on daemon routes rejected.
+- Replace the Worker's own OAuth (`src/auth/cloudflare.ts`, `provider.ts`) with verification
+  of the Access JWT on every `/api` request; map issuer + subject to the account as today.
+  Keep the Axo web session only if a revocation handle beyond Access's is wanted; otherwise
+  remove it and the CSRF token (Access's cookie is `SameSite`, but keep exact-Origin checks on
+  cookie-authenticated mutations).
+- Native apps: sign in to Access in `ASWebAuthenticationSession`, then send the Access token
+  as `cf-access-token` on HTTP and on the `/client` WebSocket upgrade. The Worker accepts it
+  through the same JWT verification, with no Origin requirement for header tokens.
+- Optional, decide during G4: **client-device pairing**, so a phone is approved once from a
+  signed-in session and can be revoked on its own while its Access login is still valid.
+- Daemon routes keep the host credential and never accept an Access identity; client routes
+  never accept a host credential.
+- Tests (Miniflare, with a local signing key standing in for the team's keys): missing, forged,
+  expired and wrong-audience tokens; cross-account host IDs; header vs cookie paths; host
+  credential on client routes rejected.
 
 ### G2. Relay protocol parity
 
@@ -105,7 +106,7 @@ already streams through `axo.host.subscribe` events; keep terminal bytes unpersi
 
 ### G3. AxoClient remote transport and account API (Swift)
 
-- `RelayWebSocketTransport: AxoTransport` (URLSession WebSocket with the bearer header; text
+- `RelayWebSocketTransport: AxoTransport` (URLSession WebSocket with the Access token header; text
   frames; no `fatalError` on unknown frames), so `JSONRPCConnection` is reused unchanged.
 - `AccountClient`: sign-in, session refresh, host list and snapshots (HTTP).
 - `HostConnection`: the relay's typed API on `JSONRPCConnection`, shaped like `AxodConnection`
@@ -115,7 +116,7 @@ already streams through `axo.host.subscribe` events; keep terminal bytes unpersi
 ### G4. iOS app on AxoClient
 
 Restore the useful views from `d885961^` (chat-first workbench, Sessions drawer, voice) onto
-G1–G3. The old `AxoCore` control-plane model is not reused. Sign-in is G1's native flow; hosts
+G1–G3. The old `AxoCore` control-plane model is not reused. Sign-in is Access (G1); hosts
 come only from the account; nothing reaches a host except through the relay.
 
 ### G5. Mac app: other hosts
@@ -130,12 +131,13 @@ Mac" (reached over the socket as today). Pairing this Mac stays as built.
 - Keychain access policy for axod's credential item.
 - Credential store for axod off macOS (file with `0600` under the server directory, or the
   platform secret service) before "axod on Linux".
-- Revoke the Cloudflare OAuth token right after userinfo (it is never needed again).
+- Document the trust boundary: Cloudflare and the Worker see terminal traffic and stored logs.
 - Legacy `/v1/*`: design adoption (or deletion) of `private-fleet` data, then remove the
   routes and `edgePrincipal`.
 
 ### G7. Rollout (operator, not automated)
 
-Register the public OAuth client, remove Access from `/`, `/app` and `/api/*` (or keep it per
-the decision above), deploy to an isolated environment first, run G0 against it, then
-production. Mark RFD0013 accepted and amend it with G1's native sessions.
+Configure the Access application and policy for `/app` and `/api/*` (the landing page `/`
+stays public; daemon routes are authenticated by host credential, so they need an Access
+bypass for that path only), deploy to an isolated environment first, run G0 against it, then
+production. Amend RFD0013 with the decision above and mark it accepted.
