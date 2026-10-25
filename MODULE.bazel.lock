@@ -2898,25 +2898,26 @@
     "@@rules_swift_package_manager+//:extensions.bzl%swift_deps": {
       "general": {
         "bzlTransitiveDigest": "WqjwddNEIa8R9dLFD9cWurdqtd+HXujkNm9hZvk+lhI=",
-        "usagesDigest": "KkTcDKSsdKRQqZlwIC4+Q+YWYo9Kogjx9buUZ+bNr5k=",
+        "usagesDigest": "5OUYkSJ9K52OkoKhTsKEsD5WI+HMRbwfgXoz31LgIkA=",
         "recordedInputs": [
           "REPO_MAPPING:rules_swift_package_manager+,bazel_skylib bazel_skylib+",
           "REPO_MAPPING:rules_swift_package_manager+,bazel_tools bazel_tools",
           "REPO_MAPPING:rules_swift_package_manager+,cgrindel_bazel_starlib cgrindel_bazel_starlib+",
-          "FILE:@@//apple/AxoRPC/Package.resolved c66d553672983a2d185a4a365d20a57dd6d84c46e0e1610152e6d6fb66e849ae"
+          "FILE:@@//apple/Package.resolved dc4ecde045a6672fd848dca1d6cd0684884e40938fb49ef43c7717a09d4162d3"
         ],
         "generatedRepoSpecs": {
           "swift_package": {
             "repoRuleId": "@@rules_swift_package_manager+//swiftpkg/internal:swift_package_tool_repo.bzl%swift_package_tool_repo",
             "attributes": {
               "env": {},
-              "package": "apple/AxoRPC/Package.swift"
+              "package": "apple/Package.swift"
             }
           },
           "swift_deps_package_repos": {
             "repoRuleId": "@@rules_swift_package_manager+//swiftpkg/bzlmod:swift_deps.bzl%_swift_deps_package_repos",
             "attributes": {
               "repo_names": [
+                "swiftpkg_fuzzymatch",
                 "swiftpkg_jsonrpc"
               ]
             }
@@ -2939,11 +2940,31 @@
               "bazel_target_mods": "",
               "package_repos": "@@rules_swift_package_manager++swift_deps+swift_deps_package_repos//:package_repos.json"
             }
+          },
+          "swiftpkg_fuzzymatch": {
+            "repoRuleId": "@@rules_swift_package_manager+//swiftpkg/internal:swift_package.bzl%swift_package",
+            "attributes": {
+              "bazel_package_name": "swiftpkg_fuzzymatch",
+              "commit": "ea09aa7faa3c1832716d1ccdb81dcb83bea89774",
+              "remote": "https://github.com/ordo-one/FuzzyMatch.git",
+              "version": "1.4.0",
+              "env": {},
+              "env_inherit": [],
+              "cached_json_directory": "",
+              "make_files_read_only": false,
+              "replace_scm_with_registry": false,
+              "target_deps": {},
+              "module_aliases": {},
+              "dep_module_aliases": "",
+              "bazel_target_mods": "",
+              "package_repos": "@@rules_swift_package_manager++swift_deps+swift_deps_package_repos//:package_repos.json"
+            }
           }
         },
         "moduleExtensionMetadata": {
           "explicitRootModuleDirectDeps": [
             "swiftpkg_jsonrpc",
+            "swiftpkg_fuzzymatch",
             "swift_package"
           ],
           "explicitRootModuleDirectDevDeps": [],

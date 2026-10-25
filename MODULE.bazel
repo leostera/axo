@@ -33,10 +33,10 @@ swift_deps = use_extension(
     "swift_deps",
 )
 swift_deps.from_package(
-    resolved = "//apple/AxoRPC:Package.resolved",
-    swift = "//apple/AxoRPC:Package.swift",
+    resolved = "//apple:Package.resolved",
+    swift = "//apple:Package.swift",
 )
-use_repo(swift_deps, "swift_package", "swiftpkg_jsonrpc")
+use_repo(swift_deps, "swift_package", "swiftpkg_fuzzymatch", "swiftpkg_jsonrpc")
 
 ghostty_repository = use_repo_rule("//:ghostty_repository.bzl", "ghostty_repository")
 ghostty_repository(name = "ghostty")

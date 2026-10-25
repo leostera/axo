@@ -1,0 +1,5 @@
+# apple/Package.swift lists every remote Swift package; MODULE.bazel resolves them from here.
+exports_files([
+    "Package.swift",
+    "Package.resolved",
+])

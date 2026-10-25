@@ -15,6 +15,27 @@ thinking-with-types, legacy (clean cutovers) and observability.
 - **Measure before and after** every performance claim (AxoTrace logs, the axod load test).
 - Packaging as usual; no live restarts of your Axo/axod.
 
+## Architecture: hosts and clients (decided 2026-10-25)
+
+- **Axod is a host controller, nothing else.** It runs Sessions on its machine (PTYs, Pi, the
+  catalog, layouts) and serves them on the local Unix socket and, once paired, through the
+  account's relay. It needs no app: installing Axod on another Mac (or, later, Linux) and
+  pairing it is enough to reach it. Its only cloud identity is its host credential; it never
+  holds a user's login and never pulls data from other hosts.
+- **Apps are clients of the account's hosts.** The Mac app, the iOS app and the web Workbench
+  each connect to every host they show: the Mac app reaches "This Mac" directly over the socket
+  and any other host through the Cloudflare API behind Access, as iOS reaches all of them. The
+  user's credentials (Cloudflare Access) live only in apps.
+- **The cloud is the directory and the relay**: accounts, paired hosts, authentication and
+  forwarding. Durable remote Sessions are another host in that directory.
+- **Search follows the data.** What a client already holds (Sessions, Workspaces, panes,
+  titles, its own commands) is searched in the client, with the matcher in a platform-neutral
+  Swift package (`AxoSearch`, on `ordo-one/FuzzyMatch`; see ai-research
+  `personal/axo/swift-fuzzy-search-and-command-palette`) so every Apple client ranks alike.
+  The Mac app's ⇧⌘P command palette is its first user. What only a host holds
+  (Workspace files, Pi transcripts, scrollback) is a host RPC (`axo.search`, possibly backed
+  by fff); clients fan a query out to their hosts and merge the results.
+
 ## Phase 0: baseline and safety net
 
 1. **axod load test** (agreed earlier): `//crates/axod:loadtest`, a smoke profile as a Bazel test
@@ -142,6 +163,7 @@ booleans; parse wire data into domain types at the boundary.
 | `AxoProtocol` | Wire models, IDs, events, layouts, method names, protocol version; `Codable`, no I/O. **Done** (request structs stay in `AxoRPC`, which encodes them) | all |
 | `AxoClient` | Persistent JSON-RPC connection, typed calls, event stream, `TerminalAttachment` | all with Unix sockets (macOS now; remote transport later) |
 | `AxoDaemonManager` | LaunchAgent registration and health | macOS |
+| `AxoSearch` | Client-side ranking over `SearchDocument`s (FuzzyMatch underneath). **Done** | all |
 | `AxoTerminal` | Ghostty runtime, surfaces, input policies | macOS |
 | `AxoMac` | App, scenes, workbench, settings | macOS |
 

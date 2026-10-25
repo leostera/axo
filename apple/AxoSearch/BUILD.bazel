@@ -1,0 +1,21 @@
+load("@rules_swift//swift:swift_library.bzl", "swift_library")
+load("@rules_swift//swift:swift_test.bzl", "swift_test")
+
+package(default_visibility = ["//visibility:public"])
+
+# Ranking (FuzzyMatch underneath) for what a client already holds (Sessions, Workspaces, panes, commands).
+# No UI or I/O, so every Apple client (macOS now, iOS next) ranks alike.
+swift_library(
+    name = "AxoSearch",
+    module_name = "AxoSearch",
+    srcs = glob(["Sources/AxoSearch/**/*.swift"]),
+    copts = ["-swift-version", "5"],
+    deps = ["@swiftpkg_fuzzymatch//:FuzzyMatch"],
+)
+
+swift_test(
+    name = "AxoSearchTests",
+    srcs = glob(["Tests/AxoSearchTests/**/*.swift"]),
+    copts = ["-swift-version", "5"],
+    deps = [":AxoSearch"],
+)
