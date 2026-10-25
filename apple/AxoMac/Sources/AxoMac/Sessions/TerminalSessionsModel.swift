@@ -53,11 +53,10 @@ struct WorkspaceArchiveConfirmation: Equatable, Identifiable {
 @MainActor
 @Observable
 final class TerminalSessionsModel {
-  /// Every open Session. Pi turns change Session status, names and emoji often; views that only
-  /// need panes read the narrower projections below, which change only when their part does.
-  private(set) var sessions: [TerminalSession] = [] {
-    didSet { projectCatalog() }
-  }
+  /// Every open Session, sorted by ID; projected from `catalog`. Pi turns change Session
+  /// status, names and emoji often; views that only need panes read the narrower projections
+  /// below, which change only when their part does.
+  private(set) var sessions: [TerminalSession] = []
   /// Every open shell by id, across Sessions. Unchanged by Session status or name updates.
   private(set) var shellsByID: [ShellID: TerminalShell] = [:]
   /// Every Session's current layout (including local edits not yet persisted), for sizing panes
@@ -111,6 +110,10 @@ final class TerminalSessionsModel {
   private let viewportReporter: ViewportReporter
   /// Methods offered by the connected Axod; `nil` until negotiated on this connection.
   @ObservationIgnored private var daemonMethods: Set<String>?
+  /// The open Sessions: the single source of truth for `sessions` and its projections.
+  @ObservationIgnored private var catalog = SessionCatalog() {
+    didSet { projectCatalog() }
+  }
   /// Selection, focus and layouts: the single source of truth, projected into the observed
   /// properties above whenever it changes. `sessions` keeps Axod's records as sent, so dividing
   /// a pane never touches what the sidebar reads.
@@ -212,7 +215,7 @@ final class TerminalSessionsModel {
   var sidebarOrderedSessions: [TerminalSession] { sidebarSections.ordered }
 
   func session(for sessionID: SessionID) -> TerminalSession? {
-    sessions.first(where: { $0.id == sessionID })
+    catalog.session(for: sessionID)
   }
 
   /// An open shell of any Session.
@@ -222,15 +225,15 @@ final class TerminalSessionsModel {
 
   /// The open Session a shell belongs to.
   func session(containing shellID: ShellID) -> TerminalSession? {
-    sessions.first { $0.shells.contains { $0.id == shellID } }
+    catalog.session(containing: shellID)
   }
 
-  /// Updates the projections of `sessions`, writing (and so invalidating observers) only those
+  /// Updates the projections of `catalog`, writing (and so invalidating observers) only those
   /// that changed.
   private func projectCatalog() {
-    let shells = sessions.lazy.flatMap(\.shells)
-    assign(\.shellsByID, Dictionary(shells.map { ($0.id, $0) }, uniquingKeysWith: { _, last in last }))
-    assign(\.hasSessions, !sessions.isEmpty)
+    assign(\.sessions, catalog.sessions)
+    assign(\.shellsByID, catalog.shellsByID)
+    assign(\.hasSessions, !catalog.isEmpty)
     projectCommandAvailability()
   }
 
@@ -293,7 +296,7 @@ final class TerminalSessionsModel {
     async let workspacesTask = client.listWorkspaces()
     let snapshot = try await snapshotTask
     assign(\.workspaces, try await workspacesTask)
-    applyCatalog(snapshot.sessions, focusing: snapshot.resumeSessionId)
+    applyCatalog(SessionCatalog(snapshot.sessions), focusing: snapshot.resumeSessionId)
     assign(\.errorMessage, nil)
   }
 
@@ -306,7 +309,7 @@ final class TerminalSessionsModel {
       upsert(session)
     case .sessionRemoved(let sessionID):
       guard session(for: sessionID) != nil else { return true }
-      applyCatalog(sessions.filter { $0.id != sessionID }, focusing: nil)
+      applyCatalog(catalog.removing([sessionID]), focusing: nil)
     case .workspaceChanged:
       guard let client else { return true }
       do {
@@ -327,23 +330,16 @@ final class TerminalSessionsModel {
 
   /// Inserts or replaces one Session from an authoritative Axod record.
   private func upsert(_ session: TerminalSession) {
-    var updated = sessions
-    if let index = updated.firstIndex(where: { $0.id == session.id }) {
-      updated[index] = session
-    } else {
-      updated.append(session)
-      updated.sort { $0.id < $1.id }
-    }
-    applyCatalog(updated, focusing: nil)
+    applyCatalog(catalog.upserting(session), focusing: nil)
   }
 
-  /// Replaces the catalog with Axod's `daemonSessions`; `WorkbenchSelection` normalizes layouts
-  /// and repairs selection and focus.
-  private func applyCatalog(_ daemonSessions: [TerminalSession], focusing resumeSessionID: SessionID?) {
-    layoutWriter.retain(sessionIDs: Set(daemonSessions.map(\.id)))
-    selection.applyCatalog(daemonSessions, previous: sessions, focusing: resumeSessionID)
-    assign(\.sessions, daemonSessions)
-    piRestarter.schedule(for: sessions)
+  /// Replaces the catalog with Axod's; `WorkbenchSelection` normalizes layouts and repairs
+  /// selection and focus.
+  private func applyCatalog(_ next: SessionCatalog, focusing resumeSessionID: SessionID?) {
+    layoutWriter.retain(sessionIDs: Set(next.sessions.map(\.id)))
+    selection.applyCatalog(next.sessions, previous: catalog.sessions, focusing: resumeSessionID)
+    catalog = next
+    piRestarter.schedule(for: catalog.sessions)
   }
 
   // MARK: - Preferences
@@ -803,7 +799,7 @@ final class TerminalSessionsModel {
     fallback: ([TerminalSession]) -> SessionID? = { $0.first?.id }
   ) {
     for sessionID in sessionIDs { layoutWriter.discard(sessionID: sessionID) }
-    sessions.removeAll { sessionIDs.contains($0.id) }
+    catalog.remove(sessionIDs)
     if let replacement { add(replacement) }
     selection.remove(
       sessionIDs, remaining: sessions, closing: closing, replacement: replacement,
@@ -816,16 +812,12 @@ final class TerminalSessionsModel {
   }
 
   private func add(_ session: TerminalSession) {
-    var updated = sessions.filter { $0.id != session.id }
-    updated.append(session)
-    updated.sort { $0.id < $1.id }
-    sessions = updated
+    catalog.upsert(session)
     selection.add(session)
   }
 
   private func replace(_ session: TerminalSession, withShells shells: [TerminalShell]) {
-    guard let index = sessions.firstIndex(where: { $0.id == session.id }) else { return }
-    sessions[index] = session.replacing(shells: shells)
+    catalog.replaceShells(of: session.id, with: shells)
   }
 }
 
