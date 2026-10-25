@@ -26,6 +26,7 @@ all_test_cases=(
   testClipboardWritesRequireApprovalAndRejectDenialOrCancellation
   testCreateWorkspaceShowsFirstSessionAndPiSurvivesAppCloseAndReopen
   testLaunchSplitCloseExitSessionSelectionAndSurvivingShell
+  testCommandPaletteRunsCommandsAndReturnsTypingToTheTerminal
 )
 test_cases=("${all_test_cases[@]}")
 if [[ -n "${AXO_UI_TEST_ONLY:-}" ]]; then
