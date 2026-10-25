@@ -7,7 +7,6 @@ use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 
 use super::SessionManager;
-use super::base64::encode_base64;
 use super::catalog::session_metadata;
 use axo_ipc::{EventQueue, PushOutcome};
 use axo_protocol::{Event, EventScope, SessionId, ShellActivity, ShellId};
@@ -80,7 +79,7 @@ impl TerminalOutputSink for ShellOutputSink {
             session_id,
             shell_id,
             sequence,
-            data: encode_base64(output),
+            data: axo_protocol::base64::encode(output),
         });
     }
 }

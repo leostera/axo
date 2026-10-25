@@ -6,7 +6,7 @@ use std::process::Command;
 
 use super::RunningShell;
 use super::settings::ShellCommand;
-use crate::panes::RuntimeId;
+use axo_panes::RuntimeId;
 use axo_protocol::{PaneRole, SessionId};
 use axo_pty::WindowSize;
 use axo_pty::process::{self, PtyProcess};
@@ -75,7 +75,7 @@ pub(super) fn spawn_shell(
         output,
     } = process::spawn(command, size, &[])?;
     Ok(RunningShell {
-        runtime_id: RuntimeId::new(),
+        runtime_id: RuntimeId::next(),
         session_id,
         role: PaneRole::Terminal,
         pane_id: None,

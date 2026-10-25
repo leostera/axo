@@ -1,7 +1,7 @@
 //! Fixtures shared by the `session` modules' tests.
 
 use super::*;
-use crate::panes::UnavailablePane;
+use axo_panes::UnavailablePane;
 use axo_pi::bridge;
 use axo_pi::takeover::TakeoverPolicy;
 use axo_pi::{AgentCommand, BridgeSocketPath};

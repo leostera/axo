@@ -10,7 +10,7 @@ use std::time::{Duration, Instant};
 use super::events::ShellOutputSink;
 use super::terminal::window_size;
 use super::{RunningShell, SessionManager, SessionState};
-use crate::panes::{Pane, RuntimeId, UnavailablePane};
+use axo_panes::{Pane, RuntimeId, UnavailablePane};
 use axo_protocol::{
     Availability, Layout, LayoutDirection, LayoutNode, PaneRole, SessionId, SessionRecord,
     SessionStatus, ShellId, ShellRecord, new_uuid_v4,

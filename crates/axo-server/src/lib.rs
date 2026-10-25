@@ -14,7 +14,6 @@ use axo_ipc::{ErrorCode, RpcError, TypedMethods};
 use axo_protocol::rpc::{self, method};
 use jsonrpc_core::IoHandler;
 
-mod panes;
 mod session;
 mod workspace_access;
 

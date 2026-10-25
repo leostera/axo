@@ -12,8 +12,8 @@ use super::lifecycle::close_session;
 use super::pi_bridge::{PiRuntimeBinding, log_socket_cleanup};
 use super::spawn::{spawn_shell, terminal_environment};
 use super::{RunningShell, SessionManager, SessionState, stop_panes};
-use crate::panes::{RecoveryRefused, RuntimeId, UnavailablePane};
 use crate::workspace_access::WorkspaceDirectoryAccess;
+use axo_panes::{RecoveryRefused, RuntimeId, UnavailablePane};
 use axo_pi::takeover::{self, TakeoverPolicy, TakeoverTarget, VerifiedProcessId};
 use axo_pi::{AgentCommand, BridgeSocketPath, PiLaunch, PiProcess, WriterLock};
 use axo_protocol::{Event, PaneRole, SessionId, SessionRecord, ShellId, new_uuid_v4};
@@ -137,7 +137,7 @@ fn spawn_pi(
     )?;
     log_socket_cleanup(request.session_id, socket_cleanup);
     Ok(RunningShell {
-        runtime_id: RuntimeId::new(),
+        runtime_id: RuntimeId::next(),
         session_id: request.session_id,
         role: PaneRole::Pi,
         pane_id: Some(request.pane_id.clone()),
@@ -601,8 +601,8 @@ impl SessionManager {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::panes::RuntimeId;
     use crate::session::{pi_bridge::*, test_support::*};
+    use axo_panes::RuntimeId;
     use axo_pi::bridge;
     use axo_pi::takeover::{TakeoverGrace, TakeoverPolicy};
     use axo_pi::{AgentCommand, BridgeSocketPath, WriterLock};
@@ -1046,7 +1046,7 @@ mod tests {
                 .is_err()
         );
         let stale = PiRuntimeBinding {
-            runtime_id: RuntimeId::new(),
+            runtime_id: RuntimeId::next(),
             ..requester
         };
         assert_eq!(
@@ -1072,7 +1072,7 @@ mod tests {
     fn stale_recovery_lease_cannot_release_a_newer_reservation() {
         let fixture = PiRecoveryFixture::new();
         let manager = &fixture.lifecycle.manager;
-        let old_id = RuntimeId::new();
+        let old_id = RuntimeId::next();
         let old = PiRecoveryLease {
             manager,
             session_id: fixture.session_id,

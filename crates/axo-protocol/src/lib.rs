@@ -5,6 +5,7 @@
 //! example, IDs are positive and layouts are structurally valid), so code holding a value never
 //! re-checks them. The JSON shapes are fixed by `schemas/axo.leostera.dev/v1`.
 
+pub mod base64;
 mod event;
 mod ids;
 mod layout;

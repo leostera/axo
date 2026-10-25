@@ -9,8 +9,8 @@ use std::sync::{Arc, Mutex};
 use std::thread::{self, JoinHandle};
 use std::time::{Duration, Instant};
 
-use crate::panes::{PaneProcess, Panes, RuntimeId};
 use crate::workspace_access::WorkspaceDirectoryAccess;
+use axo_panes::{PaneProcess, Panes, RuntimeId};
 use axo_pi::takeover::TakeoverGrace;
 use axo_pi::{AgentCommand, BridgeSocketPath, WriterLock};
 use axo_protocol::{PaneRole, SessionId, Viewport, new_uuid_v4};
@@ -21,7 +21,6 @@ use axo_store::{
     DATABASE_FILE, ensure_pi_bridge_socket_paths, load_or_create_host_id, load_viewport,
 };
 
-mod base64;
 mod catalog;
 mod events;
 mod handlers;
@@ -162,7 +161,7 @@ impl SessionManager {
                 database,
                 agent_command,
                 shell_command,
-                panes: Panes::new(),
+                panes: Panes::default(),
                 shutting_down: false,
                 pi_activity: HashMap::new(),
                 initial_pwd,

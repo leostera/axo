@@ -7,7 +7,7 @@ use std::time::{Duration, Instant};
 
 use super::lifecycle::{valid_session_emoji, valid_session_title};
 use super::{SessionManager, SessionState};
-use crate::panes::RuntimeId;
+use axo_panes::RuntimeId;
 use axo_pi::{BridgeSocketPath, SocketCleanup, worker};
 use axo_protocol::{Event, PaneRole, SessionId, SessionRecord, ShellId};
 use axo_store::Connection;

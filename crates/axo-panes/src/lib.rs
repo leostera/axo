@@ -21,10 +21,18 @@ use axo_protocol::{SessionId, ShellId};
 /// A pane survives restarts; its runtime identity does not. Async callbacks carry this identity
 /// rather than applying to whichever process now owns a pane. Recoveries use the same space.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
-pub(crate) struct RuntimeId(pub(crate) u64);
+pub struct RuntimeId(u64);
+
+/// For logs only: the number has no meaning beyond telling runtimes apart.
+impl std::fmt::Display for RuntimeId {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        self.0.fmt(formatter)
+    }
+}
 
 impl RuntimeId {
-    pub(crate) fn new() -> Self {
+    /// A runtime identity never handed out before in this process.
+    pub fn next() -> Self {
         static NEXT: AtomicU64 = AtomicU64::new(1);
         // 2^64 identities: at a million per second, half a million years.
         Self(NEXT.fetch_add(1, Ordering::Relaxed))
@@ -32,19 +40,19 @@ impl RuntimeId {
 }
 
 /// What the table needs to know about a running process.
-pub(crate) trait PaneProcess {
+pub trait PaneProcess {
     fn session_id(&self) -> SessionId;
 }
 
 /// One open pane.
 #[derive(Debug)]
-pub(crate) enum Pane<P> {
+pub enum Pane<P> {
     Running(P),
     Unavailable(UnavailablePane),
 }
 
 impl<P: PaneProcess> Pane<P> {
-    pub(crate) fn session_id(&self) -> SessionId {
+    pub fn session_id(&self) -> SessionId {
         match self {
             Pane::Running(process) => process.session_id(),
             Pane::Unavailable(pane) => pane.session_id,
@@ -54,19 +62,15 @@ impl<P: PaneProcess> Pane<P> {
 
 /// A Pi pane without a process.
 #[derive(Debug, Eq, PartialEq)]
-pub(crate) struct UnavailablePane {
-    pub(crate) session_id: SessionId,
-    pub(crate) pane_id: Option<String>,
-    pub(crate) initial_pwd: PathBuf,
+pub struct UnavailablePane {
+    pub session_id: SessionId,
+    pub pane_id: Option<String>,
+    pub initial_pwd: PathBuf,
     recovery: Recovery,
 }
 
 impl UnavailablePane {
-    pub(crate) fn new(
-        session_id: SessionId,
-        pane_id: Option<String>,
-        initial_pwd: PathBuf,
-    ) -> Self {
+    pub fn new(session_id: SessionId, pane_id: Option<String>, initial_pwd: PathBuf) -> Self {
         UnavailablePane {
             session_id,
             pane_id,
@@ -75,7 +79,7 @@ impl UnavailablePane {
         }
     }
 
-    pub(crate) fn is_recovering(&self) -> bool {
+    pub fn is_recovering(&self) -> bool {
         matches!(self.recovery, Recovery::InProgress(_))
     }
 }
@@ -88,42 +92,44 @@ enum Recovery {
 
 /// Why a recovery could not be reserved.
 #[derive(Debug, Eq, PartialEq)]
-pub(crate) enum RecoveryRefused {
+pub enum RecoveryRefused {
     /// The pane is not an unavailable pane of that Session.
     NotUnavailable,
     /// Another recovery holds the reservation.
     AlreadyRecovering,
 }
 
-pub(crate) struct Panes<P> {
+pub struct Panes<P> {
     panes: HashMap<ShellId, Pane<P>>,
 }
 
-impl<P: PaneProcess> Panes<P> {
-    pub(crate) fn new() -> Self {
+impl<P: PaneProcess> Default for Panes<P> {
+    fn default() -> Self {
         Panes {
             panes: HashMap::new(),
         }
     }
+}
 
+impl<P: PaneProcess> Panes<P> {
     // MARK: Queries
 
-    pub(crate) fn contains(&self, shell_id: ShellId) -> bool {
+    pub fn contains(&self, shell_id: ShellId) -> bool {
         self.panes.contains_key(&shell_id)
     }
 
-    pub(crate) fn get(&self, shell_id: ShellId) -> Option<&Pane<P>> {
+    pub fn get(&self, shell_id: ShellId) -> Option<&Pane<P>> {
         self.panes.get(&shell_id)
     }
 
-    pub(crate) fn running(&self, shell_id: ShellId) -> Option<&P> {
+    pub fn running(&self, shell_id: ShellId) -> Option<&P> {
         match self.panes.get(&shell_id) {
             Some(Pane::Running(process)) => Some(process),
             _ => None,
         }
     }
 
-    pub(crate) fn running_mut(&mut self, shell_id: ShellId) -> Option<&mut P> {
+    pub fn running_mut(&mut self, shell_id: ShellId) -> Option<&mut P> {
         match self.panes.get_mut(&shell_id) {
             Some(Pane::Running(process)) => Some(process),
             _ => None,
@@ -131,32 +137,28 @@ impl<P: PaneProcess> Panes<P> {
     }
 
     /// The pane's process, if it runs and belongs to `session_id`.
-    pub(crate) fn running_in(&self, session_id: SessionId, shell_id: ShellId) -> Option<&P> {
+    pub fn running_in(&self, session_id: SessionId, shell_id: ShellId) -> Option<&P> {
         self.running(shell_id)
             .filter(|process| process.session_id() == session_id)
     }
 
-    pub(crate) fn running_in_mut(
-        &mut self,
-        session_id: SessionId,
-        shell_id: ShellId,
-    ) -> Option<&mut P> {
+    pub fn running_in_mut(&mut self, session_id: SessionId, shell_id: ShellId) -> Option<&mut P> {
         self.running_mut(shell_id)
             .filter(|process| process.session_id() == session_id)
     }
 
-    pub(crate) fn unavailable(&self, shell_id: ShellId) -> Option<&UnavailablePane> {
+    pub fn unavailable(&self, shell_id: ShellId) -> Option<&UnavailablePane> {
         match self.panes.get(&shell_id) {
             Some(Pane::Unavailable(pane)) => Some(pane),
             _ => None,
         }
     }
 
-    pub(crate) fn iter(&self) -> impl Iterator<Item = (ShellId, &Pane<P>)> {
+    pub fn iter(&self) -> impl Iterator<Item = (ShellId, &Pane<P>)> {
         self.panes.iter().map(|(id, pane)| (*id, pane))
     }
 
-    pub(crate) fn running_iter_mut(&mut self) -> impl Iterator<Item = (ShellId, &mut P)> {
+    pub fn running_iter_mut(&mut self) -> impl Iterator<Item = (ShellId, &mut P)> {
         self.panes.iter_mut().filter_map(|(id, pane)| match pane {
             Pane::Running(process) => Some((*id, process)),
             Pane::Unavailable(_) => None,
@@ -164,29 +166,26 @@ impl<P: PaneProcess> Panes<P> {
     }
 
     /// The panes of one Session, running or not.
-    pub(crate) fn in_session(
-        &self,
-        session_id: SessionId,
-    ) -> impl Iterator<Item = (ShellId, &Pane<P>)> {
+    pub fn in_session(&self, session_id: SessionId) -> impl Iterator<Item = (ShellId, &Pane<P>)> {
         self.iter()
             .filter(move |(_, pane)| pane.session_id() == session_id)
     }
 
-    pub(crate) fn shell_ids_in(&self, session_id: SessionId) -> HashSet<ShellId> {
+    pub fn shell_ids_in(&self, session_id: SessionId) -> HashSet<ShellId> {
         self.in_session(session_id).map(|(id, _)| id).collect()
     }
 
-    pub(crate) fn has_session(&self, session_id: SessionId) -> bool {
+    pub fn has_session(&self, session_id: SessionId) -> bool {
         self.in_session(session_id).next().is_some()
     }
 
     /// Every Session with at least one open pane.
-    pub(crate) fn session_ids(&self) -> HashSet<SessionId> {
+    pub fn session_ids(&self) -> HashSet<SessionId> {
         self.panes.values().map(Pane::session_id).collect()
     }
 
-    #[cfg(test)]
-    pub(crate) fn running_is_empty(&self) -> bool {
+    /// Whether no pane is running a process (unavailable panes may remain).
+    pub fn running_is_empty(&self) -> bool {
         !self
             .panes
             .values()
@@ -196,12 +195,12 @@ impl<P: PaneProcess> Panes<P> {
     // MARK: Transitions
 
     /// A process enters the catalog, replacing whatever the pane held.
-    pub(crate) fn insert_running(&mut self, shell_id: ShellId, process: P) -> Option<Pane<P>> {
+    pub fn insert_running(&mut self, shell_id: ShellId, process: P) -> Option<Pane<P>> {
         self.panes.insert(shell_id, Pane::Running(process))
     }
 
     /// A Pi pane is restored without a process. Refused (returned) if the pane is already open.
-    pub(crate) fn insert_unavailable(
+    pub fn insert_unavailable(
         &mut self,
         shell_id: ShellId,
         pane: UnavailablePane,
@@ -215,7 +214,7 @@ impl<P: PaneProcess> Panes<P> {
 
     /// A running pane's process exited and the pane stays open without one. Returns the
     /// exited process; `None` (and no change) when the pane was not running.
-    pub(crate) fn process_exited(
+    pub fn process_exited(
         &mut self,
         shell_id: ShellId,
         unavailable: impl FnOnce(&P) -> UnavailablePane,
@@ -231,7 +230,7 @@ impl<P: PaneProcess> Panes<P> {
     }
 
     /// Reserves recovery of an unavailable pane of `session_id`.
-    pub(crate) fn begin_recovery(
+    pub fn begin_recovery(
         &mut self,
         session_id: SessionId,
         shell_id: ShellId,
@@ -245,13 +244,13 @@ impl<P: PaneProcess> Panes<P> {
         if pane.is_recovering() {
             return Err(RecoveryRefused::AlreadyRecovering);
         }
-        let recovery = RuntimeId::new();
+        let recovery = RuntimeId::next();
         pane.recovery = Recovery::InProgress(recovery);
         Ok(recovery)
     }
 
     /// Whether `recovery` still holds the reservation for this pane.
-    pub(crate) fn is_recovering(
+    pub fn is_recovering(
         &self,
         session_id: SessionId,
         shell_id: ShellId,
@@ -263,7 +262,7 @@ impl<P: PaneProcess> Panes<P> {
     }
 
     /// Gives up a reservation (the recovery failed). A no-op for a stale one.
-    pub(crate) fn release_recovery(&mut self, shell_id: ShellId, recovery: RuntimeId) {
+    pub fn release_recovery(&mut self, shell_id: ShellId, recovery: RuntimeId) {
         if let Some(Pane::Unavailable(pane)) = self.panes.get_mut(&shell_id)
             && pane.recovery == Recovery::InProgress(recovery)
         {
@@ -273,7 +272,7 @@ impl<P: PaneProcess> Panes<P> {
 
     /// The recovered process takes over the pane, if `recovery` still holds its reservation;
     /// otherwise the process is handed back for the caller to stop.
-    pub(crate) fn commit_recovery(
+    pub fn commit_recovery(
         &mut self,
         session_id: SessionId,
         shell_id: ShellId,
@@ -288,7 +287,7 @@ impl<P: PaneProcess> Panes<P> {
     }
 
     /// Closes one pane; returns its process, if it had one, for the caller to stop.
-    pub(crate) fn remove(&mut self, shell_id: ShellId) -> Option<P> {
+    pub fn remove(&mut self, shell_id: ShellId) -> Option<P> {
         match self.panes.remove(&shell_id) {
             Some(Pane::Running(process)) => Some(process),
             Some(Pane::Unavailable(_)) | None => None,
@@ -296,7 +295,7 @@ impl<P: PaneProcess> Panes<P> {
     }
 
     /// Closes every pane of a Session; returns their processes.
-    pub(crate) fn remove_session(&mut self, session_id: SessionId) -> Vec<P> {
+    pub fn remove_session(&mut self, session_id: SessionId) -> Vec<P> {
         let shell_ids: Vec<_> = self.shell_ids_in(session_id).into_iter().collect();
         shell_ids
             .into_iter()
@@ -305,7 +304,7 @@ impl<P: PaneProcess> Panes<P> {
     }
 
     /// Closes every pane (shutdown); returns all processes.
-    pub(crate) fn drain(&mut self) -> Vec<P> {
+    pub fn drain(&mut self) -> Vec<P> {
         self.panes
             .drain()
             .filter_map(|(_, pane)| match pane {
@@ -371,7 +370,7 @@ mod tests {
 
     /// A table with pane 1 of Session 1 in `state`; returns the recovery holding it, if any.
     fn table_in(state: State) -> (Panes<Process>, Option<RuntimeId>) {
-        let mut panes = Panes::new();
+        let mut panes = Panes::default();
         let mut recovery = None;
         match state {
             State::Absent => {}
@@ -470,7 +469,7 @@ mod tests {
     #[test]
     fn only_the_current_reservation_commits_or_releases() {
         // From every state, a reservation that is not the pane's current one changes nothing.
-        let stale = RuntimeId::new();
+        let stale = RuntimeId::next();
         for from in STATES {
             let (mut panes, _) = table_in(from);
             panes.release_recovery(shid(1), stale);
@@ -528,7 +527,7 @@ mod tests {
 
     #[test]
     fn session_queries_see_each_pane_once_whatever_its_state() {
-        let mut panes = Panes::new();
+        let mut panes = Panes::default();
         panes.insert_running(shid(1), process(1, "shell"));
         panes.insert_unavailable(shid(2), unavailable(1)).unwrap();
         panes.insert_running(shid(3), process(2, "other"));

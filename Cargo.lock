@@ -73,6 +73,13 @@ dependencies = [
 ]
 
 [[package]]
+name = "axo-panes"
+version = "0.1.0"
+dependencies = [
+ "axo-protocol",
+]
+
+[[package]]
 name = "axo-pi"
 version = "0.1.0"
 dependencies = [
@@ -122,6 +129,7 @@ name = "axo-server"
 version = "0.1.0"
 dependencies = [
  "axo-ipc",
+ "axo-panes",
  "axo-pi",
  "axo-protocol",
  "axo-pty",

@@ -11,8 +11,7 @@ use std::thread;
 use std::time::{Duration, Instant};
 
 use super::SessionManager;
-use super::base64::decode_base64;
-use crate::panes::RuntimeId;
+use axo_panes::RuntimeId;
 use axo_protocol::rpc;
 use axo_protocol::{GridSize, PaneRole, SessionId, ShellActivity, ShellId};
 use axo_pty::process;
@@ -358,7 +357,7 @@ impl SessionManager {
         sequence: u64,
         encoded_input: &str,
     ) -> io::Result<()> {
-        let input = decode_base64(encoded_input)?;
+        let input = axo_protocol::base64::decode_terminal_input(encoded_input)?;
         if input.is_empty() || input.len() > 49_152 {
             return Err(io::Error::new(
                 io::ErrorKind::InvalidInput,
