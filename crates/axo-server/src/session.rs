@@ -11,6 +11,7 @@ use std::sync::{Arc, Mutex, Weak};
 use std::thread::{self, JoinHandle};
 use std::time::{Duration, Instant};
 
+use crate::panes::{Pane, PaneProcess, Panes, RecoveryRefused, RuntimeId, UnavailablePane};
 use crate::workspace_access::WorkspaceDirectoryAccess;
 use axo_ipc::{EventQueue, PushOutcome, TypedMethods};
 use axo_pi::takeover::{self, TakeoverPolicy, TakeoverTarget, VerifiedProcessId};
@@ -53,21 +54,6 @@ const ATTACH_SEND_BUFFER_BYTES: libc::c_int = 256 * 1024;
 const TERMINAL_INPUT_WRITE_TIMEOUT: Duration = Duration::from_secs(5);
 const DEFAULT_AGENT_COMMAND: &str = "pi";
 
-// A pane survives restarts; its runtime identity does not. Async callbacks must
-// carry this identity rather than applying to whichever process now owns a pane.
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
-struct RuntimeId(u64);
-
-impl RuntimeId {
-    fn new() -> Self {
-        static NEXT: AtomicU64 = AtomicU64::new(1);
-        Self(
-            NEXT.try_update(Ordering::Relaxed, Ordering::Relaxed, |id| id.checked_add(1))
-                .expect("runtime identity space exhausted"),
-        )
-    }
-}
-
 #[derive(Clone, Copy, Debug)]
 struct PiRuntimeBinding {
     session_id: SessionId,
@@ -77,11 +63,10 @@ struct PiRuntimeBinding {
 
 impl PiRuntimeBinding {
     fn is_current(self, state: &SessionState) -> bool {
-        state.running.get(&self.shell_id).is_some_and(|shell| {
-            shell.session_id == self.session_id
-                && shell.role == PaneRole::Pi
-                && shell.runtime_id == self.runtime_id
-        })
+        state
+            .panes
+            .running_in(self.session_id, self.shell_id)
+            .is_some_and(|shell| shell.role == PaneRole::Pi && shell.runtime_id == self.runtime_id)
     }
 }
 
@@ -120,6 +105,12 @@ impl RunningShell {
             PaneRole::Terminal => process::SHELL_STOP_GRACE,
             PaneRole::Pi => axo_pi::STOP_GRACE,
         }
+    }
+}
+
+impl PaneProcess for RunningShell {
+    fn session_id(&self) -> SessionId {
+        self.session_id
     }
 }
 
@@ -163,8 +154,8 @@ struct SessionState {
     database: Connection,
     agent_command: AgentCommand,
     shell_command: ShellCommand,
-    running: HashMap<ShellId, RunningShell>,
-    unavailable_pi_shells: HashMap<ShellId, UnavailablePiShell>,
+    /// Every open pane, running or unavailable; see `panes`.
+    panes: Panes<RunningShell>,
     shutting_down: bool,
     pi_activity: HashMap<SessionId, axo_pi::Activity>,
     initial_pwd: PathBuf,
@@ -225,9 +216,9 @@ impl SessionState {
         };
         for (shell_id, grid) in viewport.grid_sizes(layout.root()) {
             let Some(running) = self
-                .running
-                .get(&shell_id)
-                .filter(|running| running.session_id == session_id && running.attachments == 0)
+                .panes
+                .running_in(session_id, shell_id)
+                .filter(|running| running.attachments == 0)
             else {
                 continue;
             };
@@ -251,13 +242,44 @@ impl SessionState {
         }
     }
 
-    /// The only way a process enters the catalog: binds its output stream to its pane identity
-    /// so `terminal.output` events start flowing.
+    /// A process enters the catalog, replacing whatever the pane held; returns a replaced
+    /// process for the caller to stop.
     fn install_running(
         &mut self,
         shell_id: ShellId,
         running: RunningShell,
     ) -> Option<RunningShell> {
+        self.bind_output(shell_id, &running);
+        match self.panes.insert_running(shell_id, running) {
+            Some(Pane::Running(replaced)) => Some(replaced),
+            Some(Pane::Unavailable(_)) | None => None,
+        }
+    }
+
+    /// A recovered Pi process takes over its unavailable pane, if `recovery` still holds the
+    /// pane's reservation; otherwise it is handed back for the caller to stop.
+    #[expect(
+        clippy::result_large_err,
+        reason = "the refused process is handed back by value so the caller stops it"
+    )]
+    fn commit_recovery(
+        &mut self,
+        session_id: SessionId,
+        shell_id: ShellId,
+        recovery: RuntimeId,
+        running: RunningShell,
+    ) -> Result<(), RunningShell> {
+        if self.shutting_down || !self.panes.is_recovering(session_id, shell_id, recovery) {
+            return Err(running);
+        }
+        self.bind_output(shell_id, &running);
+        self.panes
+            .commit_recovery(session_id, shell_id, recovery, running)
+    }
+
+    /// Every way a process enters the catalog goes through here: binding its output stream to
+    /// its pane identity starts `terminal.output` events.
+    fn bind_output(&self, shell_id: ShellId, running: &RunningShell) {
         let session_id = running.session_id;
         running.output.bind(
             format!(
@@ -271,16 +293,7 @@ impl SessionState {
                 shell_id,
             }),
         );
-        self.running.insert(shell_id, running)
     }
-}
-
-#[derive(Debug)]
-struct UnavailablePiShell {
-    session_id: SessionId,
-    pane_id: Option<String>,
-    initial_pwd: PathBuf,
-    recovery_id: Option<RuntimeId>,
 }
 
 // A reservation keeps the unavailable pane in the catalog while recovery waits
@@ -296,12 +309,8 @@ impl PiRecoveryLease<'_> {
     fn is_current(&self, state: &SessionState) -> bool {
         !state.shutting_down
             && state
-                .unavailable_pi_shells
-                .get(&self.shell_id)
-                .is_some_and(|shell| {
-                    shell.session_id == self.session_id
-                        && shell.recovery_id == Some(self.recovery_id)
-                })
+                .panes
+                .is_recovering(self.session_id, self.shell_id, self.recovery_id)
     }
 
     fn ensure_current(&self) -> io::Result<()> {
@@ -331,11 +340,10 @@ impl PiRecoveryLease<'_> {
 
 impl Drop for PiRecoveryLease<'_> {
     fn drop(&mut self) {
-        if let Ok(mut state) = self.manager.state.lock()
-            && let Some(shell) = state.unavailable_pi_shells.get_mut(&self.shell_id)
-            && shell.recovery_id == Some(self.recovery_id)
-        {
-            shell.recovery_id = None;
+        if let Ok(mut state) = self.manager.state.lock() {
+            state
+                .panes
+                .release_recovery(self.shell_id, self.recovery_id);
         }
     }
 }
@@ -663,8 +671,7 @@ impl SessionManager {
                 database,
                 agent_command,
                 shell_command,
-                running: HashMap::new(),
-                unavailable_pi_shells: HashMap::new(),
+                panes: Panes::new(),
                 shutting_down: false,
                 pi_activity: HashMap::new(),
                 initial_pwd,
@@ -1120,9 +1127,7 @@ impl SessionManager {
                 continue;
             }
             for (shell_id, role, pane_id) in record.shell_ids {
-                if state.running.contains_key(&shell_id)
-                    || state.unavailable_pi_shells.contains_key(&shell_id)
-                {
+                if state.panes.contains(shell_id) {
                     continue;
                 }
 
@@ -1134,14 +1139,10 @@ impl SessionManager {
                         state.pane_size(record.id, shell_id),
                     )?),
                     PaneRole::Pi => {
-                        state.unavailable_pi_shells.insert(
+                        // Not open (checked above), so this cannot be refused.
+                        let _ = state.panes.insert_unavailable(
                             shell_id,
-                            UnavailablePiShell {
-                                session_id: record.id,
-                                pane_id,
-                                initial_pwd: record.initial_pwd.clone(),
-                                recovery_id: None,
-                            },
+                            UnavailablePane::new(record.id, pane_id, record.initial_pwd.clone()),
                         );
                         pi_shells.push((record.id, shell_id));
                         None
@@ -1264,18 +1265,9 @@ impl SessionManager {
 
     fn list_sessions(&self) -> io::Result<Vec<SessionRecord>> {
         let state = self.lock_state()?;
-        let ids: HashSet<_> = state
-            .running
-            .values()
-            .map(|running| running.session_id)
-            .chain(
-                state
-                    .unavailable_pi_shells
-                    .values()
-                    .map(|shell| shell.session_id),
-            )
-            .collect();
-        let mut sessions = ids
+        let mut sessions = state
+            .panes
+            .session_ids()
             .into_iter()
             .map(|id| session_metadata(&state, id, &self.attach_socket_path))
             .collect::<io::Result<Vec<_>>>()?;
@@ -1557,9 +1549,8 @@ impl SessionManager {
         }
         let mut state = self.lock_state()?;
         let running = state
-            .running
-            .get_mut(&shell_id)
-            .filter(|running| running.session_id == session_id)
+            .panes
+            .running_in_mut(session_id, shell_id)
             .ok_or_else(|| io::Error::new(io::ErrorKind::NotFound, "shell is not open"))?;
         if running.last_input_sequence == Some(sequence) {
             return Ok(());
@@ -1596,9 +1587,8 @@ impl SessionManager {
     ) -> io::Result<()> {
         let state = self.lock_state()?;
         let running = state
-            .running
-            .get(&shell_id)
-            .filter(|running| running.session_id == session_id)
+            .panes
+            .running_in(session_id, shell_id)
             .ok_or_else(|| io::Error::new(io::ErrorKind::NotFound, "shell is not open"))?;
         process::resize(&running.master, &running.child, size)
     }
@@ -1606,9 +1596,8 @@ impl SessionManager {
     fn shell_busy(&self, session_id: SessionId, shell_id: ShellId) -> io::Result<rpc::ShellBusy> {
         let state = self.lock_state()?;
         let running = state
-            .running
-            .get(&shell_id)
-            .filter(|running| running.session_id == session_id)
+            .panes
+            .running_in(session_id, shell_id)
             .ok_or_else(|| io::Error::new(io::ErrorKind::NotFound, "shell is not open"))?;
         if running.role == PaneRole::Pi {
             let working = state
@@ -1657,8 +1646,8 @@ impl SessionManager {
         ) = {
             let state = self.lock_state()?;
             let running = state
-                .running
-                .get(&shell_id)
+                .panes
+                .running(shell_id)
                 .ok_or_else(|| io::Error::new(io::ErrorKind::NotFound, "Pi pane is not running"))?;
             let session_uuid: String = state
                 .database
@@ -2030,20 +2019,12 @@ impl SessionManager {
                 ));
             }
             let unavailable = state
-                .unavailable_pi_shells
-                .get(&shell_id)
+                .panes
+                .unavailable(shell_id)
                 .filter(|shell| shell.session_id == session_id)
-                .ok_or_else(|| {
-                    io::Error::new(
-                        io::ErrorKind::NotFound,
-                        "the requested Pi pane is not unavailable",
-                    )
-                })?;
-            if unavailable.recovery_id.is_some() {
-                return Err(io::Error::new(
-                    io::ErrorKind::WouldBlock,
-                    "Pi recovery is already in progress",
-                ));
+                .ok_or_else(|| recovery_refused(RecoveryRefused::NotUnavailable))?;
+            if unavailable.is_recovering() {
+                return Err(recovery_refused(RecoveryRefused::AlreadyRecovering));
             }
             let pane_id = unavailable.pane_id.clone().ok_or_else(|| {
                 io::Error::new(io::ErrorKind::InvalidData, "Pi pane ID is missing")
@@ -2102,12 +2083,11 @@ impl SessionManager {
                 pane_id,
                 size: state.pane_size(session_id, shell_id),
             };
-            let recovery_id = RuntimeId::new();
-            state
-                .unavailable_pi_shells
-                .get_mut(&shell_id)
-                .expect("checked pane")
-                .recovery_id = Some(recovery_id);
+            // Reserved last, so no failure above leaves a reservation behind.
+            let recovery_id = state
+                .panes
+                .begin_recovery(session_id, shell_id)
+                .map_err(recovery_refused)?;
             let recovery = PiRecoveryLease {
                 manager: self,
                 session_id,
@@ -2162,31 +2142,40 @@ impl SessionManager {
         let PiRecoveryLease {
             session_id,
             shell_id,
+            recovery_id,
             ..
         } = *recovery;
-        let mut pending = Some(running);
-        let result = (|| {
-            let mut state = self.lock_state()?;
-            if !recovery.is_current(&state) {
-                return Err(io::Error::new(
-                    io::ErrorKind::Interrupted,
-                    "Pi recovery was cancelled",
-                ));
+        let committed = match self.lock_state() {
+            Ok(mut state) => {
+                // Only this reservation may replace the unavailable pane, never a concurrent
+                // newer launch; metadata is built after installing the process.
+                match state.commit_recovery(session_id, shell_id, recovery_id, running) {
+                    Ok(()) => {
+                        state.pi_activity.remove(&session_id);
+                        Ok(session_metadata(
+                            &state,
+                            session_id,
+                            &self.attach_socket_path,
+                        ))
+                    }
+                    Err(cancelled) => Err((
+                        cancelled,
+                        io::Error::new(io::ErrorKind::Interrupted, "Pi recovery was cancelled"),
+                    )),
+                }
             }
-            // Build metadata after installing the process; only this reservation
-            // may replace the unavailable entry, never a concurrent newer launch.
-            state.unavailable_pi_shells.remove(&shell_id);
-            state.install_running(shell_id, pending.take().expect("pending Pi launch"));
-            state.pi_activity.remove(&session_id);
-            session_metadata(&state, session_id, &self.attach_socket_path)
-        })();
-        if let Some(mut cancelled) = pending {
-            // A close/shutdown may win during exec. Keep cleanup outside the
-            // catalog lock and retain the writer lock until the child exits.
-            let grace = cancelled.stop_grace();
-            process::stop(&mut cancelled.child, grace);
+            Err(error) => Err((running, error)),
+        };
+        match committed {
+            Ok(metadata) => metadata,
+            Err((mut cancelled, error)) => {
+                // A close/shutdown may win during exec. Clean up outside the catalog lock and
+                // keep the writer lock until the child exits.
+                let grace = cancelled.stop_grace();
+                process::stop(&mut cancelled.child, grace);
+                Err(error)
+            }
         }
-        result
     }
 
     fn close_session(self: &Arc<Self>, id: SessionId) -> io::Result<Option<SessionRecord>> {
@@ -2277,13 +2266,13 @@ impl SessionManager {
     fn reap_exited_sessions(self: &Arc<Self>) -> io::Result<()> {
         let mut state = self.lock_state()?;
         let exited = state
-            .running
-            .iter_mut()
+            .panes
+            .running_iter_mut()
             .filter_map(|(shell_id, running)| match running.child.try_wait() {
                 Ok(Some(status)) => {
                     log::info!("event=session.child_exited session_id={} shell_id={} runtime_id={} pid={} status={status}",
                         running.session_id.get(), shell_id.get(), running.runtime_id.0, running.child.id());
-                    Some((*shell_id, running.session_id))
+                    Some((shell_id, running.session_id))
                 }
                 Ok(None) => None,
                 Err(error) => {
@@ -2303,8 +2292,8 @@ impl SessionManager {
             .iter()
             .filter_map(|(shell_id, session_id)| {
                 state
-                    .running
-                    .get(shell_id)
+                    .panes
+                    .running(*shell_id)
                     .is_some_and(|shell| shell.role == PaneRole::Pi)
                     .then_some((*shell_id, *session_id))
             })
@@ -2322,16 +2311,14 @@ impl SessionManager {
         let mut changed_sessions = HashSet::new();
         let mut removed_sessions = HashSet::new();
         for (shell_id, session_id) in &exited_pi_shells {
-            if let Some(shell) = state.running.remove(shell_id) {
-                state.unavailable_pi_shells.insert(
-                    *shell_id,
-                    UnavailablePiShell {
-                        session_id: *session_id,
-                        pane_id: shell.pane_id.clone(),
-                        initial_pwd: shell.initial_pwd.clone(),
-                        recovery_id: None,
-                    },
-                );
+            let exited = state.panes.process_exited(*shell_id, |shell| {
+                UnavailablePane::new(
+                    shell.session_id,
+                    shell.pane_id.clone(),
+                    shell.initial_pwd.clone(),
+                )
+            });
+            if exited.is_some() {
                 state.pi_activity.remove(session_id);
                 changed_sessions.insert(*session_id);
             }
@@ -2351,7 +2338,7 @@ impl SessionManager {
                 "shell_exited",
                 &remaining_shell_ids,
             )?;
-            state.running.remove(shell_id);
+            state.panes.remove(*shell_id);
             if remaining_shell_ids.is_empty() {
                 if removed_sessions.insert(*session_id) {
                     archive_session(&mut state.database, *session_id, "shell_exited")?;
@@ -2384,8 +2371,8 @@ impl SessionManager {
     fn attach_shell(&self, id: ShellId) -> io::Result<ShellAttachment> {
         let mut state = self.lock_state()?;
         let running = state
-            .running
-            .get_mut(&id)
+            .panes
+            .running_mut(id)
             .ok_or_else(|| io::Error::new(io::ErrorKind::NotFound, "shell is not open"))?;
         // SAFETY: fcntl duplicates the live PTY master; the result is owned below.
         let fd = unsafe { libc::fcntl(running.master.as_raw_fd(), libc::F_DUPFD_CLOEXEC, 0) };
@@ -2408,7 +2395,7 @@ impl SessionManager {
             let Ok(mut state) = self.state.lock() else {
                 return;
             };
-            let Some(running) = state.running.get_mut(&id) else {
+            let Some(running) = state.panes.running_mut(id) else {
                 return;
             };
             if running.runtime_id != runtime_id {
@@ -2438,12 +2425,11 @@ impl SessionManager {
         join_session_workers(workers);
         // Slow child cleanup must not monopolize the catalog/PTY lock. Drain
         // runtime ownership once so repeated shutdown (including Drop) is safe.
-        let running = self
+        let mut shells = self
             .state
             .lock()
-            .map(|mut state| std::mem::take(&mut state.running))
+            .map(|mut state| state.panes.drain())
             .unwrap_or_default();
-        let mut shells: Vec<RunningShell> = running.into_values().collect();
         process::stop_all(
             shells
                 .iter_mut()
@@ -2600,15 +2586,7 @@ impl SessionManager {
                     "Pi resume request is no longer current",
                 ));
             }
-            if state
-                .running
-                .values()
-                .any(|shell| shell.session_id == session_id)
-                || state
-                    .unavailable_pi_shells
-                    .values()
-                    .any(|shell| shell.session_id == session_id)
-            {
+            if state.panes.has_session(session_id) {
                 return Err(io::Error::new(
                     io::ErrorKind::AlreadyExists,
                     "archived Session still has live Axo process state",
@@ -2709,14 +2687,10 @@ impl SessionManager {
                         }
                     }
                     PaneRole::Pi => {
-                        state.unavailable_pi_shells.insert(
+                        // The Session had no live panes (checked above).
+                        let _ = state.panes.insert_unavailable(
                             shell_id,
-                            UnavailablePiShell {
-                                session_id,
-                                pane_id,
-                                initial_pwd: record.initial_pwd.clone(),
-                                recovery_id: None,
-                            },
+                            UnavailablePane::new(session_id, pane_id, record.initial_pwd.clone()),
                         );
                         pi_shells.push((session_id, shell_id));
                     }
@@ -3479,24 +3453,18 @@ fn close_shell(
     attach_socket_path: &Path,
     pi_session_directory: &Path,
 ) -> io::Result<(rpc::ShellClosed, Vec<RunningShell>)> {
-    let role = if let Some(shell) = state.running.get(&shell_id) {
-        if shell.session_id != session_id {
-            return Err(io::Error::new(
-                io::ErrorKind::InvalidInput,
-                "shell does not belong to this session",
-            ));
-        }
-        shell.role
-    } else if let Some(shell) = state.unavailable_pi_shells.get(&shell_id) {
-        if shell.session_id != session_id {
-            return Err(io::Error::new(
-                io::ErrorKind::InvalidInput,
-                "shell does not belong to this session",
-            ));
-        }
-        PaneRole::Pi
-    } else {
+    let Some(pane) = state.panes.get(shell_id) else {
         return Err(io::Error::new(io::ErrorKind::NotFound, "shell is not open"));
+    };
+    if pane.session_id() != session_id {
+        return Err(io::Error::new(
+            io::ErrorKind::InvalidInput,
+            "shell does not belong to this session",
+        ));
+    }
+    let role = match pane {
+        Pane::Running(shell) => shell.role,
+        Pane::Unavailable(_) => PaneRole::Pi,
     };
 
     let sibling_count = open_shell_ids(state, session_id).len();
@@ -3524,8 +3492,7 @@ fn close_shell(
         "explicit_close",
         &remaining_shell_ids,
     )?;
-    let shell = state.running.remove(&shell_id).into_iter().collect();
-    state.unavailable_pi_shells.remove(&shell_id);
+    let shell = state.panes.remove(shell_id).into_iter().collect();
     Ok((
         rpc::ShellClosed {
             archived_shell_id: shell_id,
@@ -3537,34 +3504,11 @@ fn close_shell(
 }
 
 fn open_shell_ids(state: &SessionState, session_id: SessionId) -> HashSet<ShellId> {
-    state
-        .running
-        .iter()
-        .filter_map(|(shell_id, shell)| (shell.session_id == session_id).then_some(*shell_id))
-        .chain(
-            state
-                .unavailable_pi_shells
-                .iter()
-                .filter_map(|(shell_id, shell)| {
-                    (shell.session_id == session_id).then_some(*shell_id)
-                }),
-        )
-        .collect()
+    state.panes.shell_ids_in(session_id)
 }
 
 fn remove_session_shells(state: &mut SessionState, session_id: SessionId) -> Vec<RunningShell> {
-    let shell_ids: Vec<_> = state
-        .running
-        .iter()
-        .filter_map(|(shell_id, shell)| (shell.session_id == session_id).then_some(*shell_id))
-        .collect();
-    state
-        .unavailable_pi_shells
-        .retain(|_, shell| shell.session_id != session_id);
-    shell_ids
-        .into_iter()
-        .filter_map(|shell_id| state.running.remove(&shell_id))
-        .collect()
+    state.panes.remove_session(session_id)
 }
 
 fn session_metadata(
@@ -3617,20 +3561,15 @@ fn session_metadata(
         .transpose()
         .map_err(io::Error::other)?;
     let mut shells: Vec<_> = state
-        .running
-        .iter()
-        .filter(|&(_, running)| running.session_id == id)
-        .map(|(shell_id, running)| running_shell_record(*shell_id, running, attach_socket_path))
+        .panes
+        .in_session(id)
+        .map(|(shell_id, pane)| match pane {
+            Pane::Running(running) => running_shell_record(shell_id, running, attach_socket_path),
+            Pane::Unavailable(shell) => {
+                unavailable_pi_shell_record(shell_id, shell, attach_socket_path)
+            }
+        })
         .collect();
-    shells.extend(
-        state
-            .unavailable_pi_shells
-            .iter()
-            .filter(|&(_, shell)| shell.session_id == id)
-            .map(|(shell_id, shell)| {
-                unavailable_pi_shell_record(*shell_id, shell, attach_socket_path)
-            }),
-    );
     shells.sort_by_key(|shell| shell.id.get());
     let status = if shells.iter().any(|shell| !shell.is_available()) {
         SessionStatus::Unavailable
@@ -3682,7 +3621,7 @@ const UNRECOVERABLE_PI_REASON: &str =
 
 fn unavailable_pi_shell_record(
     id: ShellId,
-    shell: &UnavailablePiShell,
+    shell: &UnavailablePane,
     attach_socket_path: &Path,
 ) -> ShellRecord {
     ShellRecord {
@@ -4916,6 +4855,20 @@ impl<'a> PiCatalogEvent<'a> {
     }
 }
 
+/// The RPC error for a recovery that could not be reserved.
+fn recovery_refused(refused: RecoveryRefused) -> io::Error {
+    match refused {
+        RecoveryRefused::NotUnavailable => io::Error::new(
+            io::ErrorKind::NotFound,
+            "the requested Pi pane is not unavailable",
+        ),
+        RecoveryRefused::AlreadyRecovering => io::Error::new(
+            io::ErrorKind::WouldBlock,
+            "Pi recovery is already in progress",
+        ),
+    }
+}
+
 /// The `state` column of a Session, shell or Workspace row. Parsed when read, so a corrupt or
 /// unknown state fails the query instead of being compared as a string downstream.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -4990,11 +4943,17 @@ mod tests {
         assert_eq!(parse("session.info", json!({ "name": "" })), "Ignored");
         assert_eq!(parse("session.info", json!({ "name": 7 })), "Ignored");
         assert_eq!(
-            parse("axo.session.metadata", json!({ "title": "", "emoji": "🔧" })),
+            parse(
+                "axo.session.metadata",
+                json!({ "title": "", "emoji": "🔧" })
+            ),
             r#"Described { title: None, emoji: Some("🔧") }"#
         );
         assert_eq!(
-            parse("axo.session.metadata", json!({ "title": "", "emoji": "not an emoji" })),
+            parse(
+                "axo.session.metadata",
+                json!({ "title": "", "emoji": "not an emoji" })
+            ),
             "Ignored"
         );
         assert_eq!(parse("message.delta", json!({ "name": "x" })), "Ignored");
@@ -5184,15 +5143,17 @@ mod tests {
                     )
                     .unwrap();
                 store_pi_bridge_token(&state.database, &session_uuid, &token).unwrap();
-                state.unavailable_pi_shells.insert(
-                    shell_id,
-                    UnavailablePiShell {
-                        session_id,
-                        pane_id: Some(pane_id.clone()),
-                        initial_pwd: lifecycle.directory.clone(),
-                        recovery_id: None,
-                    },
-                );
+                state
+                    .panes
+                    .insert_unavailable(
+                        shell_id,
+                        UnavailablePane::new(
+                            session_id,
+                            Some(pane_id.clone()),
+                            lifecycle.directory.clone(),
+                        ),
+                    )
+                    .unwrap();
                 (session_id, shell_id)
             };
             Self {
@@ -5311,9 +5272,12 @@ mod tests {
             io::ErrorKind::TimedOut
         );
         let state = manager.lock_state().unwrap();
-        assert_eq!(
-            state.unavailable_pi_shells[&fixture.shell_id].recovery_id,
-            None
+        assert!(
+            !state
+                .panes
+                .unavailable(fixture.shell_id)
+                .unwrap()
+                .is_recovering()
         );
         assert_eq!(
             load_pi_bridge_token(&state.database, &fixture.session_uuid)
@@ -5365,8 +5329,8 @@ mod tests {
                 "cancelled recovery signalled the old process"
             );
             let state = fixture.lifecycle.manager.lock_state().unwrap();
-            assert!(!state.running.contains_key(&fixture.shell_id));
-            assert!(!state.unavailable_pi_shells.contains_key(&fixture.shell_id));
+            assert!(!state.panes.running(fixture.shell_id).is_some());
+            assert!(!state.panes.unavailable(fixture.shell_id).is_some());
             let lifecycle: String = state
                 .database
                 .query_row(
@@ -5400,8 +5364,8 @@ mod tests {
                 .manager
                 .lock_state()
                 .unwrap()
-                .running
-                .is_empty()
+                .panes
+                .running_is_empty()
         );
         assert_eq!(
             fixture
@@ -5445,9 +5409,14 @@ mod tests {
                 .kind(),
             io::ErrorKind::NotFound
         );
-        assert_eq!(
-            manager.lock_state().unwrap().unavailable_pi_shells[&fixture.shell_id].recovery_id,
-            None
+        assert!(
+            !manager
+                .lock_state()
+                .unwrap()
+                .panes
+                .unavailable(fixture.shell_id)
+                .unwrap()
+                .is_recovering()
         );
         // Concurrent forked fixture children may briefly hold CLOEXEC copies
         // until exec. Bound the wait rather than requiring instantaneous release.
@@ -5477,15 +5446,13 @@ mod tests {
     fn cancelled_pi_launch_is_cleaned_up_instead_of_resurrecting_the_pane() {
         let fixture = PiRecoveryFixture::new();
         let manager = &fixture.lifecycle.manager;
-        let recovery_id = RuntimeId::new();
-        let pending = {
+        let (recovery_id, pending) = {
             let mut state = manager.lock_state().unwrap();
-            state
-                .unavailable_pi_shells
-                .get_mut(&fixture.shell_id)
-                .unwrap()
-                .recovery_id = Some(recovery_id);
-            spawn_new_pi(
+            let recovery_id = state
+                .panes
+                .begin_recovery(fixture.session_id, fixture.shell_id)
+                .unwrap();
+            let pending = spawn_new_pi(
                 &state.database,
                 &PiLaunchRequest {
                     agent_command: state.agent_command.clone(),
@@ -5499,7 +5466,8 @@ mod tests {
                     size: WindowSize::DEFAULT,
                 },
             )
-            .unwrap()
+            .unwrap();
+            (recovery_id, pending)
         };
         let recovery = PiRecoveryLease {
             manager,
@@ -5519,8 +5487,9 @@ mod tests {
             !manager
                 .lock_state()
                 .unwrap()
-                .running
-                .contains_key(&fixture.shell_id)
+                .panes
+                .running(fixture.shell_id)
+                .is_some()
         );
         // Both parent and child lock copies must be released by cleanup. Other
         // concurrent fixture forks can retain CLOEXEC copies briefly until exec.
@@ -5585,10 +5554,13 @@ mod tests {
         assert_eq!(fs::read(&fixture.file).unwrap(), b"replacement history\n");
         assert_eq!(fs::read(&original).unwrap(), b"original history\n");
         let state = fixture.lifecycle.manager.lock_state().unwrap();
-        assert!(!state.running.contains_key(&fixture.shell_id));
-        assert_eq!(
-            state.unavailable_pi_shells[&fixture.shell_id].recovery_id,
-            None
+        assert!(!state.panes.running(fixture.shell_id).is_some());
+        assert!(
+            !state
+                .panes
+                .unavailable(fixture.shell_id)
+                .unwrap()
+                .is_recovering()
         );
         assert_eq!(
             load_pi_bridge_token(&state.database, &fixture.session_uuid)
@@ -5652,11 +5624,7 @@ mod tests {
         let fixture = PiRecoveryFixture::new();
         let manager = &fixture.lifecycle.manager;
         let lock = WriterLock::acquire(&fixture.file).unwrap();
-        manager
-            .lock_state()
-            .unwrap()
-            .unavailable_pi_shells
-            .remove(&fixture.shell_id);
+        manager.lock_state().unwrap().panes.remove(fixture.shell_id);
         let (worker, mut bridge) =
             fixture.observe_operation(|manager| manager.restore_open_sessions());
         assert!(
@@ -5688,10 +5656,24 @@ mod tests {
         let fixture = LifecycleFixture::new();
         let session = fixture.manager.list_sessions().unwrap().remove(0);
         let shell_id = session.shells[0].id;
-        let runtime = fixture.manager.lock_state().unwrap().running[&shell_id].runtime_id;
+        let runtime = fixture
+            .manager
+            .lock_state()
+            .unwrap()
+            .panes
+            .running(shell_id)
+            .unwrap()
+            .runtime_id;
         fixture.manager.restore_open_sessions().unwrap();
         assert_eq!(
-            fixture.manager.lock_state().unwrap().running[&shell_id].runtime_id,
+            fixture
+                .manager
+                .lock_state()
+                .unwrap()
+                .panes
+                .running(shell_id)
+                .unwrap()
+                .runtime_id,
             runtime
         );
     }
@@ -5708,7 +5690,7 @@ mod tests {
             .unwrap();
         let requester = {
             let mut state = manager.lock_state().unwrap();
-            let shell = state.running.get_mut(&home.shells[0].id).unwrap();
+            let shell = state.panes.running_mut(home.shells[0].id).unwrap();
             shell.role = PaneRole::Pi;
             PiRuntimeBinding {
                 session_id: home.id,
@@ -5757,29 +5739,28 @@ mod tests {
         let fixture = PiRecoveryFixture::new();
         let manager = &fixture.lifecycle.manager;
         let old_id = RuntimeId::new();
-        let new_id = RuntimeId::new();
         let old = PiRecoveryLease {
             manager,
             session_id: fixture.session_id,
             shell_id: fixture.shell_id,
             recovery_id: old_id,
         };
-        manager
+        let new_id = manager
             .lock_state()
             .unwrap()
-            .unavailable_pi_shells
-            .get_mut(&fixture.shell_id)
-            .unwrap()
-            .recovery_id = Some(new_id);
+            .panes
+            .begin_recovery(fixture.session_id, fixture.shell_id)
+            .unwrap();
         assert_eq!(
             old.ensure_current().unwrap_err().kind(),
             io::ErrorKind::Interrupted
         );
         drop(old);
-        assert_eq!(
-            manager.lock_state().unwrap().unavailable_pi_shells[&fixture.shell_id].recovery_id,
-            Some(new_id)
-        );
+        assert!(manager.lock_state().unwrap().panes.is_recovering(
+            fixture.session_id,
+            fixture.shell_id,
+            new_id
+        ));
     }
 
     #[test]
@@ -5788,7 +5769,13 @@ mod tests {
         let manager = &fixture.manager;
         let session = manager.list_sessions().unwrap().remove(0);
         let shell_id = session.shells[0].id;
-        let old_runtime = manager.lock_state().unwrap().running[&shell_id].runtime_id;
+        let old_runtime = manager
+            .lock_state()
+            .unwrap()
+            .panes
+            .running(shell_id)
+            .unwrap()
+            .runtime_id;
         let old_binding = PiRuntimeBinding {
             session_id: session.id,
             shell_id,
@@ -5865,7 +5852,7 @@ mod tests {
         );
 
         let state = manager.lock_state().unwrap();
-        assert_eq!(state.running[&shell_id].attachments, 1);
+        assert_eq!(state.panes.running(shell_id).unwrap().attachments, 1);
         assert!(state.pi_activity[&session.id].connected);
         assert!(state.pi_activity[&session.id].working);
         let updated = session_metadata(&state, session.id, &manager.attach_socket_path).unwrap();
@@ -5883,7 +5870,7 @@ mod tests {
         let exited_shell = exited.shells[0].id;
         {
             let mut state = manager.lock_state().unwrap();
-            let child = &mut state.running.get_mut(&uncertain_shell).unwrap().child;
+            let child = &mut state.panes.running_mut(uncertain_shell).unwrap().child;
             child.kill().unwrap();
             let mut status = 0;
             // SAFETY: this fixture owns the still-unreaped child. Reaping outside
@@ -5892,15 +5879,21 @@ mod tests {
                 unsafe { libc::waitpid(child.id() as libc::pid_t, &mut status, 0) },
                 child.id() as libc::pid_t
             );
-            let child = &mut state.running.get_mut(&exited_shell).unwrap().child;
+            let child = &mut state.panes.running_mut(exited_shell).unwrap().child;
             child.kill().unwrap();
             assert!(wait_for_shell_exit(child, Duration::from_secs(2)).unwrap());
         }
         manager.reap_exited_sessions().unwrap();
         manager.reap_exited_sessions().unwrap();
         let state = manager.lock_state().unwrap();
-        assert!(state.running[&uncertain_shell].wait_error_reported);
-        assert!(!state.running.contains_key(&exited_shell));
+        assert!(
+            state
+                .panes
+                .running(uncertain_shell)
+                .unwrap()
+                .wait_error_reported
+        );
+        assert!(!state.panes.running(exited_shell).is_some());
         let uncertain_state: String = state
             .database
             .query_row(
@@ -5929,7 +5922,7 @@ mod tests {
         let shell_id = session.shells[0].id;
         {
             let state = manager.lock_state().unwrap();
-            let running = &state.running[&shell_id];
+            let running = &state.panes.running(shell_id).unwrap();
             let (_, output) = running.output.subscribe(None);
             process::write_all(
                 running.master.as_raw_fd(),
@@ -5952,7 +5945,7 @@ mod tests {
         let deadline = Instant::now() + Duration::from_millis(400);
         loop {
             if let Ok(state) = manager.state.try_lock()
-                && state.running.is_empty()
+                && state.panes.running_is_empty()
             {
                 break;
             }
@@ -5992,7 +5985,7 @@ mod tests {
         manager.shutdown();
         completed.recv_timeout(Duration::from_secs(3)).unwrap();
         worker.join().unwrap();
-        assert!(manager.lock_state().unwrap().running.is_empty());
+        assert!(manager.lock_state().unwrap().panes.running_is_empty());
         assert_eq!(Arc::strong_count(manager), 1);
     }
 
@@ -6003,7 +5996,15 @@ mod tests {
         manager.stop_workers.store(false, Ordering::Relaxed);
         let session = manager.list_sessions().unwrap().remove(0);
         let shell_id = session.shells[0].id;
-        let output = Arc::clone(&manager.lock_state().unwrap().running[&shell_id].output);
+        let output = Arc::clone(
+            &manager
+                .lock_state()
+                .unwrap()
+                .panes
+                .running(shell_id)
+                .unwrap()
+                .output,
+        );
         let (mut client, server) = UnixStream::pair().unwrap();
         writeln!(client, "{}", shell_id.get()).unwrap();
         let permit = AttachmentPermit::try_acquire(Arc::new(AtomicUsize::new(0))).unwrap();
@@ -6027,7 +6028,13 @@ mod tests {
         worker.join().unwrap();
         assert_eq!(output.subscriber_count(), 0);
         assert_eq!(
-            manager.lock_state().unwrap().running[&shell_id].attachments,
+            manager
+                .lock_state()
+                .unwrap()
+                .panes
+                .running(shell_id)
+                .unwrap()
+                .attachments,
             0
         );
         drop(client);
@@ -6084,7 +6091,8 @@ mod tests {
             io::ErrorKind::WouldBlock
         );
         process::stop(&mut child.0.child, process::SHELL_STOP_GRACE);
-        let recovered = WriterLock::acquire(&file).unwrap();
+        // Concurrent forked fixture children may briefly hold CLOEXEC copies until exec.
+        let recovered = WriterLock::wait(&file, Duration::from_secs(1), &|| Ok(())).unwrap();
         assert!(unrelated.0.try_wait().unwrap().is_none());
         assert_eq!(fs::read(&file).unwrap(), b"preserved history");
         drop(recovered);
@@ -6680,8 +6688,8 @@ mod tests {
         {
             let mut state = manager.lock_state().unwrap();
             state
-                .running
-                .get_mut(&shell_id)
+                .panes
+                .running_mut(shell_id)
                 .unwrap()
                 .child
                 .kill()
@@ -6832,7 +6840,13 @@ mod tests {
         let requester = PiRuntimeBinding {
             session_id: requester_session_id,
             shell_id: requester_shell_id,
-            runtime_id: manager.lock_state().unwrap().running[&requester_shell_id].runtime_id,
+            runtime_id: manager
+                .lock_state()
+                .unwrap()
+                .panes
+                .running(requester_shell_id)
+                .unwrap()
+                .runtime_id,
         };
         let unrelated_history = directory.join("unowned.jsonl");
         fs::write(&unrelated_history, b"not an Axo transcript").unwrap();
@@ -7059,7 +7073,7 @@ mod tests {
 
     fn pty_size(manager: &SessionManager, shell_id: ShellId) -> (u16, u16) {
         let state = manager.lock_state().unwrap();
-        let size = process::window_size(&state.running[&shell_id].master).unwrap();
+        let size = process::window_size(&state.panes.running(shell_id).unwrap().master).unwrap();
         (size.rows(), size.columns())
     }
 
@@ -7105,8 +7119,8 @@ mod tests {
         manager
             .lock_state()
             .unwrap()
-            .running
-            .get_mut(&first)
+            .panes
+            .running_mut(first)
             .unwrap()
             .attachments = 1;
         manager.set_viewport(test_viewport(500.0)).unwrap();
