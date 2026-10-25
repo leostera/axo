@@ -7,7 +7,10 @@ use std::io;
 use std::path::{Path, PathBuf};
 
 use axo_pi::{AgentCommand, BridgeSocketPath};
-use axo_protocol::{Layout, PaneRole, SessionId, ShellId, Viewport, is_uuid, new_uuid_v4};
+use axo_protocol::{
+    ConfigKey, Layout, PaneRole, SessionId, ShellId, Viewport, WorkspaceRecord, is_uuid,
+    new_uuid_v4,
+};
 use rusqlite::{Connection, OptionalExtension, params};
 
 use crate::session::ShellCommand;
@@ -736,4 +739,312 @@ pub(crate) fn unix_timestamp() -> i64 {
         .duration_since(std::time::UNIX_EPOCH)
         .unwrap_or_default()
         .as_secs() as i64
+}
+
+fn not_found(message: &'static str) -> io::Error {
+    io::Error::new(io::ErrorKind::NotFound, message)
+}
+
+/// Fails with `NotFound(message)` unless exactly one row changed.
+fn expect_one_row(changed: usize, message: &'static str) -> io::Result<()> {
+    if changed == 1 {
+        Ok(())
+    } else {
+        Err(not_found(message))
+    }
+}
+
+pub(crate) fn write_session_layout(
+    database: &Connection,
+    id: SessionId,
+    layout: &Layout,
+) -> io::Result<()> {
+    let layout_json = serde_json::to_string(layout).map_err(io::Error::other)?;
+    let changed = database
+        .execute(
+            "UPDATE sessions SET layout_json = ?1 WHERE id = ?2 AND state = 'open'",
+            params![layout_json, id.get()],
+        )
+        .map_err(io::Error::other)?;
+    expect_one_row(changed, "session record is missing")
+}
+
+/// The user's name for a Session; Pi's title stays in `name`.
+pub(crate) fn set_manual_session_name(
+    database: &Connection,
+    id: SessionId,
+    name: &str,
+) -> io::Result<()> {
+    let changed = database
+        .execute(
+            "UPDATE sessions SET manual_name = ?1 WHERE id = ?2 AND state = 'open'",
+            params![name, id.get()],
+        )
+        .map_err(io::Error::other)?;
+    expect_one_row(changed, "Session is not open")
+}
+
+/// Pi's title and emoji for a Session; `None` keeps the stored value. Returns whether an open
+/// Session matched.
+pub(crate) fn describe_session(
+    database: &Connection,
+    id: SessionId,
+    title: Option<&str>,
+    emoji: Option<&str>,
+) -> io::Result<bool> {
+    let changed = database
+        .execute(
+            "UPDATE sessions SET name = COALESCE(?1, name), emoji = COALESCE(?2, emoji) \
+             WHERE id = ?3 AND state = 'open'",
+            params![title, emoji, id.get()],
+        )
+        .map_err(io::Error::other)?;
+    Ok(changed > 0)
+}
+
+/// Records which Pi session a Session's transcript belongs to, only while the row still has
+/// `session_uuid`, so a stale bridge cannot rebind it.
+pub(crate) fn bind_pi_session_id(
+    database: &Connection,
+    id: SessionId,
+    session_uuid: &str,
+    pi_session_id: &str,
+) -> io::Result<()> {
+    let changed = database
+        .execute(
+            "UPDATE sessions SET pi_session_id = ? WHERE id = ? AND session_uuid = ? AND state = 'open'",
+            params![pi_session_id, id.get(), session_uuid],
+        )
+        .map_err(io::Error::other)?;
+    expect_one_row(changed, "Pi Session binding changed")
+}
+
+pub(crate) fn list_open_workspaces(database: &Connection) -> io::Result<Vec<WorkspaceRecord>> {
+    let mut statement = database
+        .prepare(
+            "SELECT workspace_id, name, directory_path FROM workspaces WHERE state = 'open' \
+             ORDER BY name, workspace_id",
+        )
+        .map_err(io::Error::other)?;
+    statement
+        .query_map([], |row| {
+            Ok(WorkspaceRecord {
+                workspace_id: row.get(0)?,
+                name: row.get(1)?,
+                directory_path: row.get(2)?,
+                state: None,
+            })
+        })
+        .map_err(io::Error::other)?
+        .collect::<Result<Vec<_>, _>>()
+        .map_err(io::Error::other)
+}
+
+/// Renames an open Workspace and returns its directory.
+pub(crate) fn rename_open_workspace(
+    database: &Connection,
+    workspace_id: &str,
+    name: &str,
+) -> io::Result<String> {
+    let changed = database
+        .execute(
+            "UPDATE workspaces SET name = ?1 WHERE workspace_id = ?2 AND state = 'open'",
+            params![name, workspace_id],
+        )
+        .map_err(io::Error::other)?;
+    expect_one_row(changed, "Workspace is not open")?;
+    database
+        .query_row(
+            "SELECT directory_path FROM workspaces WHERE workspace_id = ?1",
+            params![workspace_id],
+            |row| row.get(0),
+        )
+        .map_err(io::Error::other)
+}
+
+pub(crate) fn open_session_ids_in_workspace(
+    database: &Connection,
+    workspace_id: &str,
+) -> io::Result<Vec<SessionId>> {
+    let mut statement = database
+        .prepare("SELECT id FROM sessions WHERE workspace_id = ?1 AND state = 'open'")
+        .map_err(io::Error::other)?;
+    statement
+        .query_map(params![workspace_id], |row| row.get::<_, i64>(0))
+        .map_err(io::Error::other)?
+        .map(|id| id.and_then(stored_session_id))
+        .collect::<Result<Vec<_>, _>>()
+        .map_err(io::Error::other)
+}
+
+/// Where a setting lives in `daemon_metadata`.
+fn config_metadata_key(key: ConfigKey) -> &'static str {
+    match key {
+        ConfigKey::AgentCommand => "agent_command",
+        ConfigKey::ShellCommand => "shell_command",
+    }
+}
+
+pub(crate) fn store_config_value(
+    database: &Connection,
+    key: ConfigKey,
+    value: &str,
+) -> io::Result<()> {
+    database
+        .execute(
+            "INSERT INTO daemon_metadata (key, value) VALUES (?1, ?2) \
+             ON CONFLICT(key) DO UPDATE SET value = excluded.value",
+            params![config_metadata_key(key), value],
+        )
+        .map_err(io::Error::other)?;
+    Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn database() -> Connection {
+        let mut database = Connection::open_in_memory().unwrap();
+        initialize_database(&mut database).unwrap();
+        database
+    }
+
+    fn insert_session(database: &Connection, uuid: &str, state: &str) -> SessionId {
+        database
+            .execute(
+                "INSERT INTO sessions (initial_pwd, state, created_at, session_uuid, name, emoji)
+                 VALUES ('/', ?1, 0, ?2, 'Pi title', '🦀')",
+                params![state, uuid],
+            )
+            .unwrap();
+        inserted_session_id(database).unwrap()
+    }
+
+    fn insert_workspace(database: &Connection, id: &str, name: &str, state: &str) {
+        database
+            .execute(
+                "INSERT INTO workspaces (workspace_id, name, directory_path, state, created_at)
+                 VALUES (?1, ?2, ?3, ?4, 0)",
+                params![id, name, format!("/work/{name}"), state],
+            )
+            .unwrap();
+    }
+
+    fn kind<T: std::fmt::Debug>(result: io::Result<T>) -> io::ErrorKind {
+        result.unwrap_err().kind()
+    }
+
+    #[test]
+    fn session_writes_apply_only_to_open_sessions() {
+        let database = database();
+        let open = insert_session(&database, "open-uuid", "open");
+        let archived = insert_session(&database, "archived-uuid", "archived");
+        let layout = Layout::single(ShellId::new(1).unwrap());
+
+        write_session_layout(&database, open, &layout).unwrap();
+        assert_eq!(
+            read_session_layout(&database, open).unwrap(),
+            Some(layout.clone())
+        );
+        assert_eq!(
+            kind(write_session_layout(&database, archived, &layout)),
+            io::ErrorKind::NotFound
+        );
+        set_manual_session_name(&database, open, "Mine").unwrap();
+        assert_eq!(
+            kind(set_manual_session_name(&database, archived, "Mine")),
+            io::ErrorKind::NotFound
+        );
+        assert!(!describe_session(&database, archived, Some("t"), None).unwrap());
+    }
+
+    #[test]
+    fn describing_a_session_keeps_the_fields_pi_leaves_out() {
+        let database = database();
+        let id = insert_session(&database, "uuid", "open");
+        let read = |database: &Connection| -> (String, Option<String>) {
+            database
+                .query_row(
+                    "SELECT name, emoji FROM sessions WHERE id = ?1",
+                    params![id.get()],
+                    |row| Ok((row.get(0)?, row.get(1)?)),
+                )
+                .unwrap()
+        };
+        assert!(describe_session(&database, id, Some("Renamed"), None).unwrap());
+        assert_eq!(read(&database), ("Renamed".into(), Some("🦀".into())));
+        assert!(describe_session(&database, id, None, Some("🐙")).unwrap());
+        assert_eq!(read(&database), ("Renamed".into(), Some("🐙".into())));
+    }
+
+    #[test]
+    fn a_pi_session_id_binds_only_to_the_session_uuid_it_was_launched_for() {
+        let database = database();
+        let id = insert_session(&database, "launched-uuid", "open");
+        assert_eq!(
+            kind(bind_pi_session_id(&database, id, "other-uuid", "pi-1")),
+            io::ErrorKind::NotFound
+        );
+        bind_pi_session_id(&database, id, "launched-uuid", "pi-1").unwrap();
+    }
+
+    #[test]
+    fn workspaces_list_open_ones_by_name_and_rename_only_open_ones() {
+        let database = database();
+        let (zed, alpha, gone) = (
+            new_uuid_v4().unwrap(),
+            new_uuid_v4().unwrap(),
+            new_uuid_v4().unwrap(),
+        );
+        insert_workspace(&database, &zed, "zed", "open");
+        insert_workspace(&database, &alpha, "alpha", "open");
+        insert_workspace(&database, &gone, "gone", "archived");
+        let names: Vec<_> = list_open_workspaces(&database)
+            .unwrap()
+            .into_iter()
+            .map(|workspace| workspace.name)
+            .collect();
+        assert_eq!(names, ["alpha", "zed"]);
+
+        assert_eq!(
+            rename_open_workspace(&database, &zed, "omega").unwrap(),
+            "/work/zed"
+        );
+        assert_eq!(
+            kind(rename_open_workspace(&database, &gone, "back")),
+            io::ErrorKind::NotFound
+        );
+        let session = insert_session(&database, "in-zed", "open");
+        database
+            .execute(
+                "UPDATE sessions SET workspace_id = ?1 WHERE id = ?2",
+                params![zed, session.get()],
+            )
+            .unwrap();
+        assert_eq!(
+            open_session_ids_in_workspace(&database, &zed).unwrap(),
+            [session]
+        );
+        assert!(
+            open_session_ids_in_workspace(&database, &alpha)
+                .unwrap()
+                .is_empty()
+        );
+    }
+
+    #[test]
+    fn a_stored_setting_replaces_the_previous_value() {
+        let database = database();
+        store_config_value(&database, ConfigKey::ShellCommand, "/bin/zsh").unwrap();
+        store_config_value(&database, ConfigKey::ShellCommand, "/bin/bash").unwrap();
+        let value: String = database
+            .query_row(
+                "SELECT value FROM daemon_metadata WHERE key = 'shell_command'",
+                [],
+                |row| row.get(0),
+            )
+            .unwrap();
+        assert_eq!(value, "/bin/bash");
+    }
 }

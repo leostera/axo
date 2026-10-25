@@ -21,6 +21,10 @@ use crate::store::{
     restore_workspace_accesses, session_initial_pwd, store_pi_bridge_token, store_viewport,
     stored_session_id, unix_timestamp,
 };
+use crate::store::{
+    bind_pi_session_id, describe_session, list_open_workspaces, open_session_ids_in_workspace,
+    rename_open_workspace, set_manual_session_name, store_config_value, write_session_layout,
+};
 use crate::workspace_access::WorkspaceDirectoryAccess;
 use axo_ipc::{EventQueue, PushOutcome, TypedMethods};
 use axo_pi::takeover::{self, TakeoverPolicy, TakeoverTarget, VerifiedProcessId};
@@ -378,14 +382,6 @@ struct PiLaunchRequest {
 
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub(crate) struct ShellCommand(CommandLine);
-
-/// Where a setting lives in `daemon_metadata`.
-fn config_metadata_key(key: ConfigKey) -> &'static str {
-    match key {
-        ConfigKey::AgentCommand => "agent_command",
-        ConfigKey::ShellCommand => "shell_command",
-    }
-}
 
 enum ParsedConfigValue {
     AgentCommand(AgentCommand),
@@ -1320,20 +1316,7 @@ impl SessionManager {
             ));
         }
 
-        let layout_json = serde_json::to_string(&layout).map_err(io::Error::other)?;
-        let changed = state
-            .database
-            .execute(
-                "UPDATE sessions SET layout_json = ?1 WHERE id = ?2 AND state = 'open'",
-                params![layout_json, session_id.get()],
-            )
-            .map_err(io::Error::other)?;
-        if changed != 1 {
-            return Err(io::Error::new(
-                io::ErrorKind::NotFound,
-                "session record is missing",
-            ));
-        }
+        write_session_layout(&state.database, session_id, &layout)?;
         state.fit_unattached_panes(session_id, &layout);
         Ok(())
     }
@@ -1735,22 +1718,7 @@ impl SessionManager {
     }
 
     fn list_workspaces(&self) -> io::Result<Vec<WorkspaceRecord>> {
-        let state = self.lock_state()?;
-        let mut statement = state.database.prepare(
-            "SELECT workspace_id, name, directory_path FROM workspaces WHERE state = 'open' ORDER BY name, workspace_id",
-        ).map_err(io::Error::other)?;
-        let rows = statement
-            .query_map([], |row| {
-                Ok(WorkspaceRecord {
-                    workspace_id: row.get(0)?,
-                    name: row.get(1)?,
-                    directory_path: row.get(2)?,
-                    state: None,
-                })
-            })
-            .map_err(io::Error::other)?;
-        rows.collect::<Result<Vec<_>, _>>()
-            .map_err(io::Error::other)
+        list_open_workspaces(&self.lock_state()?.database)
     }
 
     fn rename_session(&self, session_id: SessionId, name: &str) -> io::Result<SessionRecord> {
@@ -1762,19 +1730,7 @@ impl SessionManager {
         }
         let session = {
             let state = self.lock_state()?;
-            let changed = state
-                .database
-                .execute(
-                    "UPDATE sessions SET manual_name = ?1 WHERE id = ?2 AND state = 'open'",
-                    params![name, session_id.get()],
-                )
-                .map_err(io::Error::other)?;
-            if changed != 1 {
-                return Err(io::Error::new(
-                    io::ErrorKind::NotFound,
-                    "Session is not open",
-                ));
-            }
+            set_manual_session_name(&state.database, session_id, name)?;
             session_metadata(&state, session_id, &self.attach_socket_path)?
         };
         self.publish_event(Event::snapshot(session.clone()));
@@ -1791,39 +1747,8 @@ impl SessionManager {
         validate_workspace_name(name)?;
         let (workspace, session_ids) = {
             let state = self.lock_state()?;
-            let changed = state
-                .database
-                .execute(
-                    "UPDATE workspaces SET name = ?1 WHERE workspace_id = ?2 AND state = 'open'",
-                    params![name, workspace_id],
-                )
-                .map_err(io::Error::other)?;
-            if changed != 1 {
-                return Err(io::Error::new(
-                    io::ErrorKind::NotFound,
-                    "Workspace is not open",
-                ));
-            }
-            let directory_path: String = state
-                .database
-                .query_row(
-                    "SELECT directory_path FROM workspaces WHERE workspace_id = ?1",
-                    params![workspace_id],
-                    |row| row.get(0),
-                )
-                .map_err(io::Error::other)?;
-            let session_ids = {
-                let mut statement = state
-                    .database
-                    .prepare("SELECT id FROM sessions WHERE workspace_id = ?1 AND state = 'open'")
-                    .map_err(io::Error::other)?;
-                statement
-                    .query_map(params![workspace_id], |row| row.get::<_, i64>(0))
-                    .map_err(io::Error::other)?
-                    .map(|id| id.and_then(stored_session_id))
-                    .collect::<Result<Vec<_>, _>>()
-                    .map_err(io::Error::other)?
-            };
+            let directory_path = rename_open_workspace(&state.database, workspace_id, name)?;
+            let session_ids = open_session_ids_in_workspace(&state.database, workspace_id)?;
             (
                 WorkspaceRecord {
                     workspace_id: workspace_id.to_owned(),
@@ -2785,8 +2710,14 @@ impl SessionManager {
             }
 
             match PiCatalogEvent::parse(name, data) {
-                PiCatalogEvent::AgentStarted => !std::mem::replace(&mut state.pi_activity.entry(session_id).or_default().working, true),
-                PiCatalogEvent::AgentSettled => std::mem::replace(&mut state.pi_activity.entry(session_id).or_default().working, false),
+                PiCatalogEvent::AgentStarted => !std::mem::replace(
+                    &mut state.pi_activity.entry(session_id).or_default().working,
+                    true,
+                ),
+                PiCatalogEvent::AgentSettled => std::mem::replace(
+                    &mut state.pi_activity.entry(session_id).or_default().working,
+                    false,
+                ),
                 PiCatalogEvent::PromptStarted => {
                     let waits = &mut state.pi_activity.entry(session_id).or_default().ui_waits;
                     let previous = *waits;
@@ -2800,21 +2731,10 @@ impl SessionManager {
                     *waits != previous
                 }
                 PiCatalogEvent::Named { title } => {
-                    state
-                        .database
-                        .execute(
-                            "UPDATE sessions SET name = ?1 WHERE id = ?2 AND state = 'open'",
-                            params![title, session_id.get()],
-                        )
-                        .map_err(io::Error::other)?
-                        > 0
+                    describe_session(&state.database, session_id, Some(title), None)?
                 }
                 PiCatalogEvent::Described { title, emoji } => {
-                    state.database.execute(
-                        "UPDATE sessions SET name = COALESCE(?1, name), emoji = COALESCE(?2, emoji) \
-                         WHERE id = ?3 AND state = 'open'",
-                        params![title, emoji, session_id.get()],
-                    ).map_err(io::Error::other)? > 0
+                    describe_session(&state.database, session_id, title, emoji)?
                 }
                 PiCatalogEvent::Ignored => false,
             }
@@ -2838,18 +2758,12 @@ impl SessionManager {
                 "Pi runtime was replaced",
             ));
         }
-        let session_id = binding.session_id;
-        let changed = state.database.execute(
-            "UPDATE sessions SET pi_session_id = ? WHERE id = ? AND session_uuid = ? AND state = 'open'",
-            params![pi_session_id, session_id.get(), session_uuid],
-        ).map_err(io::Error::other)?;
-        if changed != 1 {
-            return Err(io::Error::new(
-                io::ErrorKind::NotFound,
-                "Pi Session binding changed",
-            ));
-        }
-        Ok(())
+        bind_pi_session_id(
+            &state.database,
+            binding.session_id,
+            session_uuid,
+            pi_session_id,
+        )
     }
 
     fn config_value(&self, key: ConfigKey) -> rpc::ConfigValue {
@@ -2881,14 +2795,7 @@ impl SessionManager {
         };
 
         let mut state = self.lock_state()?;
-        state
-            .database
-            .execute(
-                "INSERT INTO daemon_metadata (key, value) VALUES (?1, ?2) \
-                 ON CONFLICT(key) DO UPDATE SET value = excluded.value",
-                params![config_metadata_key(key), value],
-            )
-            .map_err(io::Error::other)?;
+        store_config_value(&state.database, key, &value)?;
         match parsed {
             ParsedConfigValue::AgentCommand(command) => state.agent_command = command,
             ParsedConfigValue::ShellCommand(command) => state.shell_command = command,
