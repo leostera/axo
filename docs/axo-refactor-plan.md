@@ -96,8 +96,11 @@ payload is a struct or enum deriving `Serialize`/`Deserialize`. `Value` survives
 - **Done (`48cc02f`):** one stop path, `stop_panes`, for close, archive, cancelled recovery and
   shutdown, with each pane's own grace; one cleanup worker per close instead of one per pane.
 - **Done (`2b242e2`):** `store.rs` holds the schema, migrations and database-only reads and
-  writes (a verbatim move; `session.rs` 7,250 → 6,554 lines). Next: the 38 inline SQL calls in
-  `SessionManager` methods, then the `axo-store` crate.
+  writes (a verbatim move; `session.rs` 7,250 → 6,554 lines).
+- **Done (`2d2f1d9`, `954180a`, `d76003e`):** the 38 inline SQL calls became named store functions
+  with their own in-memory tests; `session.rs` (6,216 lines) has no SQL outside its tests.
+  Creating a Workspace Session is now one transaction. Next: the `axo-store` crate, which needs
+  `ShellCommand` and `restore_workspace_accesses` (security-scoped bookmarks) to stay out of it.
 - **Test isolation (`aeaae49`, `48b12cd`, `97a971d`):** RPC tests no longer share a directory
   (microsecond timestamps collided), axo-server tests never start the user's login shell, and
   Swift daemon fixtures wait for `connect()`, not the socket file.
