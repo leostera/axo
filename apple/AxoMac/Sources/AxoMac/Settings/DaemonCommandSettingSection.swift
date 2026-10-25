@@ -1,5 +1,5 @@
 import AxoDaemonManager
-import AxoRPC
+import AxoProtocol
 import SwiftUI
 
 /// What one Axod command setting (agent or shell) shows; the editing logic is shared.

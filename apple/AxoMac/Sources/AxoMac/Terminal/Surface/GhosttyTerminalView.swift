@@ -1,4 +1,4 @@
-import AxoRPC
+import AxoProtocol
 import SwiftUI
 
 struct GhosttyTerminalView: NSViewRepresentable {

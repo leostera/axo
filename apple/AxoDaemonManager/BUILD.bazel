@@ -8,7 +8,10 @@ swift_library(
     module_name = "AxoDaemonManager",
     srcs = glob(["Sources/AxoDaemonManager/**/*.swift"]),
     copts = ["-swift-version", "5"],
-    deps = ["//apple/AxoRPC:AxoRPC"],
+    deps = [
+        "//apple/AxoProtocol",
+        "//apple/AxoRPC:AxoRPC",
+    ],
 )
 
 swift_test(

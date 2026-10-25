@@ -1,0 +1,20 @@
+load("@rules_swift//swift:swift_library.bzl", "swift_library")
+load("@rules_swift//swift:swift_test.bzl", "swift_test")
+
+package(default_visibility = ["//visibility:public"])
+
+# Axod's wire types: IDs, records, events, layouts and method names. Codable, no I/O, so any
+# client (macOS now, others later) can share them.
+swift_library(
+    name = "AxoProtocol",
+    module_name = "AxoProtocol",
+    srcs = glob(["Sources/AxoProtocol/**/*.swift"]),
+    copts = ["-swift-version", "5"],
+)
+
+swift_test(
+    name = "AxoProtocolTests",
+    srcs = glob(["Tests/AxoProtocolTests/**/*.swift"]),
+    copts = ["-swift-version", "5"],
+    deps = [":AxoProtocol"],
+)

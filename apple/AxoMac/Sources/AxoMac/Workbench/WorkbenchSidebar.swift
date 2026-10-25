@@ -1,5 +1,5 @@
 import AxoDaemonManager
-import AxoRPC
+import AxoProtocol
 import SwiftUI
 
 /// The Workspace and Session list, expanded or collapsed, with inline renaming.

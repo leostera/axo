@@ -1,4 +1,4 @@
-import AxoRPC
+import AxoProtocol
 
 /// What the connected Axod offers. Negotiated on first use, once per connection, and forgotten
 /// when the connection is renewed, because Axod may have been upgraded or restarted in between.
@@ -30,7 +30,7 @@ final class AxodCapabilities {
     guard methods == nil else { return }
     let negotiation = try await client.negotiate()
     let offered = Set(negotiation.methods.compactMap(AxodMethodName.init(rawValue:)))
-    guard negotiation.protocolVersion == UnixSocketRPC.protocolVersion,
+    guard negotiation.protocolVersion == ProtocolNegotiation.supportedVersion,
       Self.requiredMethods.isSubset(of: offered)
     else {
       throw SessionCommandError(

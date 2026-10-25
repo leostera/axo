@@ -1,4 +1,4 @@
-import AxoRPC
+import AxoProtocol
 import Foundation
 
 enum PendingTerminalSplitStatus: Equatable {

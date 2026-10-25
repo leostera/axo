@@ -1,4 +1,4 @@
-import AxoRPC
+import AxoProtocol
 import XCTest
 
 final class IdentifierCodingTests: XCTestCase {

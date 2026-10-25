@@ -1,5 +1,5 @@
 import AppKit
-import AxoRPC
+import AxoProtocol
 import GhosttyKit
 
 // AppKit invokes local key monitors synchronously on the main event thread. The wrapper lets

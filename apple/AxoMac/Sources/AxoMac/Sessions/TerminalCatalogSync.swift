@@ -1,4 +1,4 @@
-import AxoRPC
+import AxoProtocol
 import Foundation
 
 /// Keeps `TerminalSessionsModel` synchronized with Axod through one catalog subscription.

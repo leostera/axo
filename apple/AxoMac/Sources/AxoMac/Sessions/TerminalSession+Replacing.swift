@@ -1,4 +1,4 @@
-import AxoRPC
+import AxoProtocol
 
 extension TerminalSession {
   /// A copy with app-owned shell membership; all other fields are the daemon's.

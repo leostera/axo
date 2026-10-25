@@ -1,4 +1,4 @@
-import AxoRPC
+import AxoProtocol
 import CoreGraphics
 
 /// Where panes land inside the terminal area. `TerminalSplitView` lays panes out with this, and

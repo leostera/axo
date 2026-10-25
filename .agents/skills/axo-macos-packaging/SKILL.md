@@ -19,7 +19,7 @@ Resolve paths from the Axo root (`../../..`). **Repackage `dist/Axo.app` after e
 ```bash
 cd <axo-root>
 bazel test //apple/AxoMac:AxoMacTests //apple/AxoMac:TerminalWorkbenchE2ETests \
-  //apple/AxoMac:AxoAppSelfTestTests //apple/AxoRPC:AxoRPCTests \
+  //apple/AxoMac:AxoAppSelfTestTests //apple/AxoProtocol:AxoProtocolTests //apple/AxoRPC:AxoRPCTests \
   //apple/AxoRPC:AxoDaemonInteropTests //apple/AxoDaemonManager:AxoDaemonManagerTests \
   //crates/axod:rpc_tests
 ./scripts/build-mac.sh

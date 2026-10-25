@@ -1,4 +1,4 @@
-import AxoRPC
+import AxoProtocol
 import Foundation
 
 /// The workbench's presentation state: which Session is shown, which pane has focus, and the

@@ -13,7 +13,10 @@ swift_library(
     module_name = "AxoRPC",
     srcs = glob(["Sources/AxoRPC/**/*.swift"]),
     copts = ["-swift-version", "5"],
-    deps = ["@swiftpkg_jsonrpc//:JSONRPC"],
+    deps = [
+        "//apple/AxoProtocol",
+        "@swiftpkg_jsonrpc//:JSONRPC",
+    ],
 )
 
 swift_test(
@@ -24,12 +27,18 @@ swift_test(
     env = {"AXOD_BINARY": "$(rootpath //crates/axod:axod)"},
     tags = ["no-sandbox"],
     timeout = "short",
-    deps = [":AxoRPC"],
+    deps = [
+        ":AxoRPC",
+        "//apple/AxoProtocol",
+    ],
 )
 
 swift_test(
     name = "AxoRPCTests",
     srcs = glob(["Tests/AxoRPCTests/**/*.swift"]),
     copts = ["-swift-version", "5"],
-    deps = [":AxoRPC"],
+    deps = [
+        ":AxoRPC",
+        "//apple/AxoProtocol",
+    ],
 )

@@ -1,4 +1,4 @@
-import AxoRPC
+import AxoProtocol
 import Foundation
 
 /// A pane close (⌘W) waiting for the user: the pane is busy, or Axod couldn't say.

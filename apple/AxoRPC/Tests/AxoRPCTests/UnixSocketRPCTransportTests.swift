@@ -2,6 +2,7 @@ import Darwin
 import Foundation
 import XCTest
 
+import AxoProtocol
 @testable import AxoRPC
 
 final class UnixSocketRPCTransportTests: XCTestCase {

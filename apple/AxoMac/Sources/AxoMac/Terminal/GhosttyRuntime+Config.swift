@@ -1,5 +1,5 @@
 import AppKit
-import AxoRPC
+import AxoProtocol
 import GhosttyKit
 
 /// Pure configuration helpers: they return values and never mutate runtime state.

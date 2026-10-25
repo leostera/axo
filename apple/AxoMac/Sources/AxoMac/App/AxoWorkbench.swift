@@ -1,5 +1,5 @@
 import AxoDaemonManager
-import AxoRPC
+import AxoProtocol
 import Foundation
 
 /// App-lifetime coordination between the daemon connection, the session catalog and Ghostty

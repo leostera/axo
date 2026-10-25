@@ -10,7 +10,7 @@ Resolve paths from the Axo root (`../../..`). Deliver with [packaging](../axo-ma
 ## Ownership
 
 - **Axod owns processes; Pi owns transcripts.** Axod (`crates/axod`, `crates/axo-server`) owns PTYs, Sessions, Workspaces, layouts and Pi lifecycle. The app presents and commands that state over Axod's local JSON-RPC socket; it never spawns, adopts or signals Session processes. Each Ghostty surface attaches in-process to a daemon-owned PTY (`TerminalAttachment`, attach protocol v2): Axod is the PTY's only reader and streams replay plus live output; the surface gets the PTY descriptor for input, resizing and termios only (Ghostty external-I/O patch). `axod terminal-attach` is a CLI for tests and debugging, not part of the app.
-- `SessionID`/`ShellID` (`apple/AxoRPC/Sources/AxoRPC/Models/Identifiers.swift`) are the only identities. Axod allocates them with SQLite `AUTOINCREMENT`, so they are never reused: after an `await`, revalidate by looking the ID up again.
+- `SessionID`/`ShellID` (`apple/AxoProtocol/Sources/AxoProtocol/Identifiers.swift`) are the only identities. Axod allocates them with SQLite `AUTOINCREMENT`, so they are never reused: after an `await`, revalidate by looking the ID up again.
 - Explicit **Restart Pi** may affect only the verified pane; automatic Pi recovery is Axod's idle-only, non-forcing `auto` restart. Closing windows or the app never stops daemon work.
 
 ## Source layout (`apple/AxoMac/Sources/AxoMac`)
@@ -25,7 +25,7 @@ Resolve paths from the Axo root (`../../..`). Deliver with [packaging](../axo-ma
 
 The `AxoMac` library has no `@main`. Two thin entry targets link it: `Sources/AxoMacMain` (shipped app, `ProductionLaunch`) and `Sources/AxoMacTestHost` (self-test and UI-automation launch modes for `AxoUITestApp`, via `@testable import`, so non-optimized builds only). The shipped app must never link `AxoMacTestHost`.
 
-`apple/AxoRPC` holds the wire models (typed: `PaneRole`, `PaneAvailability`) and the per-call Unix-socket client, whose methods are one table (`AxodMethodName` is the only place a method name is spelled; `AxodMethods` pairs each with its params and result types); `apple/AxoDaemonManager` holds `DaemonController` (LaunchAgent registration and health).
+`apple/AxoProtocol` holds the wire models (typed: `PaneRole`, `PaneAvailability`), events, layouts, `AxodMethodName` (the only place a method name is spelled) and the protocol version, with no I/O; `apple/AxoRPC` holds the per-call Unix-socket client, whose methods are one table (`AxodMethods` pairs each name with its params and result types), and `TerminalAttachment`; `apple/AxoDaemonManager` holds `DaemonController` (LaunchAgent registration and health).
 
 ## State and data flow
 
@@ -55,7 +55,7 @@ The `AxoMac` library has no `@main`. Two thin entry targets link it: `Sources/Ax
 | `bazel test //apple/AxoMac:AxoMacTests` | Unit tests: models with `FakeAxodClient`, layout, navigation, input policies, surface viewport. |
 | `bazel test //apple/AxoMac:TerminalWorkbenchE2ETests` | `TerminalSessionsModel` against an isolated real `axod` with inert Pi fixtures and a private `HOME`. |
 | `bazel test //apple/AxoMac:AxoAppSelfTestTests` | The packaged test-host app's `--self-test` attaching to a daemon-owned PTY. |
-| `bazel test //apple/AxoRPC:AxoRPCTests //apple/AxoRPC:AxoDaemonInteropTests //apple/AxoDaemonManager:AxoDaemonManagerTests` | Wire models, transport, live-daemon decoding, registration decisions. |
+| `bazel test //apple/AxoProtocol:AxoProtocolTests //apple/AxoRPC:AxoRPCTests //apple/AxoRPC:AxoDaemonInteropTests //apple/AxoDaemonManager:AxoDaemonManagerTests` | Wire models and event decoding, transport, live-daemon decoding, registration decisions. |
 | `bazel test //apple/AxoMac:AxoVisualUITestsBazel` | Real XCUITest UI against an isolated daemon. `AXO_UI_TEST_ONLY=<test>` runs one case. |
 
 - The visual runner refuses to start while any `Axo` frontend is running (XCUIApplication can terminate same-bundle apps). Never close or restart discovered Axo/Axod processes to make room; ask the user.

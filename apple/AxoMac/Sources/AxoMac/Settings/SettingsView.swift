@@ -1,6 +1,6 @@
 import AppKit
 import AxoDaemonManager
-import AxoRPC
+import AxoProtocol
 import SwiftUI
 
 enum AppearanceTheme: String, CaseIterable, Identifiable {

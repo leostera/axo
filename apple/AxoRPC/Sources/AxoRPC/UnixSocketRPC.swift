@@ -1,3 +1,4 @@
+import AxoProtocol
 import Foundation
 import JSONRPC
 import Network
@@ -117,37 +118,6 @@ struct SessionUnsubscribeResponse: Decodable {
 /// Wire parameters for methods that take none.
 typealias NoParams = String?
 
-/// axod's JSON-RPC method names: the only place they are spelled. Capability checks against
-/// `axo.protocol.negotiate`'s method list use these too.
-public enum AxodMethodName: String, CaseIterable, Sendable {
-  case negotiate = "axo.protocol.negotiate"
-  case health = "axo.daemon.health"
-  case relayStatus = "axo.relay.status"
-  case relayConnect = "axo.relay.connect"
-  case relayLink = "axo.relay.link"
-  case configGet = "axo.config.get"
-  case configSet = "axo.config.set"
-  case sessionList = "axo.session.list"
-  case sessionCreate = "axo.session.create"
-  case sessionClose = "axo.session.close"
-  case sessionRename = "axo.session.rename"
-  case sessionLayoutSet = "axo.session.layout.set"
-  case sessionSubscribe = "axo.session.subscribe"
-  case sessionEventsNext = "axo.session.events.next"
-  case sessionUnsubscribe = "axo.session.unsubscribe"
-  case piRestartForce = "axo.session.pi.restart.force.v2"
-  case piRestartAuto = "axo.session.pi.restart.auto.v1"
-  case workspaceList = "axo.workspace.list"
-  case workspaceCreate = "axo.workspace.create"
-  case workspaceRename = "axo.workspace.rename"
-  case workspaceArchive = "axo.workspace.archive"
-  case workspaceSessionCreate = "axo.workspace.session.create"
-  case shellCreate = "axo.shell.create"
-  case shellClose = "axo.shell.close"
-  case shellBusy = "axo.shell.busy"
-  case clientViewportSet = "axo.client.viewport.set"
-}
-
 /// One axod JSON-RPC method: its name, parameter and result types, and how long a call may take.
 struct AxodMethod<Params: Encodable & Sendable, Result: Decodable & Sendable>: Sendable {
   let name: AxodMethodName
@@ -192,10 +162,8 @@ enum AxodMethods {
 }
 
 public enum UnixSocketRPC {
-  public static let protocolVersion: UInt32 = 1
-
   public static func negotiate(at socketPath: UnixSocketPath) async throws -> ProtocolNegotiation {
-    try await call(AxodMethods.negotiate, ProtocolNegotiationRequest(protocolVersion: protocolVersion), at: socketPath)
+    try await call(AxodMethods.negotiate, ProtocolNegotiationRequest(protocolVersion: ProtocolNegotiation.supportedVersion), at: socketPath)
   }
 
   public static func remoteAccessStatus(at socketPath: UnixSocketPath) async throws -> RemoteAccessStatus {

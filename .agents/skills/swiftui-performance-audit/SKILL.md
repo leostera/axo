@@ -7,7 +7,7 @@ description: Audit and improve SwiftUI runtime performance from code review and 
 
 ## Axo project constraints
 
-- Follow `.agents/skills/axo-macos-native-apps/SKILL.md` for Axo's app structure, ownership boundaries and validation, and `.agents/skills/axo-macos-packaging/SKILL.md` before delivering. Apply this skill to `apple/AxoMac` (the only Apple app) and its `apple/AxoRPC` / `apple/AxoDaemonManager` libraries.
+- Follow `.agents/skills/axo-macos-native-apps/SKILL.md` for Axo's app structure, ownership boundaries and validation, and `.agents/skills/axo-macos-packaging/SKILL.md` before delivering. Apply this skill to `apple/AxoMac` (the only Apple app) and its `apple/AxoProtocol` / `apple/AxoRPC` / `apple/AxoDaemonManager` libraries.
 - Inspect Axo's existing architecture and accepted RFD contracts. Treat code-review suspicions separately from measured runtime findings; do not claim performance gains without comparable profiling evidence.
 - Axo's baseline is in `apple/AxoMac/BUILD.bazel` and `.bazelrc`: macOS 14.0, Swift 6.x toolchain in Swift language mode 5, `@Observable` models. Do not raise the deployment target or language mode, or adopt newer APIs without availability handling, unless explicitly approved.
 

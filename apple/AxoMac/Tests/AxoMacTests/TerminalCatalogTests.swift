@@ -1,4 +1,4 @@
-import AxoRPC
+import AxoProtocol
 import Observation
 import XCTest
 
@@ -31,7 +31,7 @@ final class FakeAxodClient: AxodClient {
     }
   }
 
-  var protocolVersion = UnixSocketRPC.protocolVersion
+  var protocolVersion = ProtocolNegotiation.supportedVersion
   private(set) var negotiateCount = 0
 
   func negotiate() async throws -> ProtocolNegotiation {

@@ -1,6 +1,6 @@
 import AppKit
 import AxoDaemonManager
-import AxoRPC
+import AxoProtocol
 import SwiftUI
 
 struct AxoApp<Launch: AxoLaunchMode>: App {

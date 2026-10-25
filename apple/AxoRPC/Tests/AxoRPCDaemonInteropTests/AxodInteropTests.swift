@@ -2,6 +2,7 @@ import Darwin
 import Foundation
 import XCTest
 
+import AxoProtocol
 @testable import AxoRPC
 
 final class AxodInteropTests: XCTestCase {
@@ -28,7 +29,7 @@ final class AxodInteropTests: XCTestCase {
 
     try await waitForSocket(at: socketPath, from: daemon)
     let negotiation = try await UnixSocketRPC.negotiate(at: socketPath)
-    XCTAssertEqual(negotiation.protocolVersion, UnixSocketRPC.protocolVersion)
+    XCTAssertEqual(negotiation.protocolVersion, ProtocolNegotiation.supportedVersion)
     // Every method the app calls (negotiation itself just answered), plus the ones other
     // clients rely on.
     for method in AxodMethodName.allCases.filter({ $0 != .negotiate }).map(\.rawValue) + [

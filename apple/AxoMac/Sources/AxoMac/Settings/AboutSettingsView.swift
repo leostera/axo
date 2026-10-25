@@ -1,5 +1,5 @@
 import AxoDaemonManager
-import AxoRPC
+import AxoProtocol
 import SwiftUI
 
 struct AboutSettingsView: View {

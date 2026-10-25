@@ -1,6 +1,7 @@
 import AppKit
 import SwiftUI
 import AxoDaemonManager
+import AxoProtocol
 import AxoRPC
 import Darwin
 import GhosttyKit

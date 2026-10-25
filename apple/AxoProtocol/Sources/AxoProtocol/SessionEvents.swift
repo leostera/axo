@@ -42,7 +42,8 @@ public enum TerminalSessionEvent: Decodable, Equatable, Sendable {
     case "terminal.output":
       let encoded = try container.decode(String.self, forKey: .data)
       guard let data = Data(base64Encoded: encoded) else {
-        throw UnixSocketRPCError.invalidResponse("terminal output was not base64")
+        throw DecodingError.dataCorruptedError(
+          forKey: .data, in: container, debugDescription: "terminal output was not base64")
       }
       self = .terminalOutput(
         sessionID: try container.decode(SessionID.self, forKey: .sessionId),

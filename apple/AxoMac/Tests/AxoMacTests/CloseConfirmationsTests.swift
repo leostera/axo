@@ -1,4 +1,4 @@
-import AxoRPC
+import AxoProtocol
 import XCTest
 
 @testable import AxoMac
@@ -95,7 +95,7 @@ final class AxodCapabilitiesTests: XCTestCase {
 
   func testRefusesAnotherProtocolVersionOrAMissingRequiredMethod() async {
     let otherVersion = FakeAxodClient()
-    otherVersion.protocolVersion = UnixSocketRPC.protocolVersion + 1
+    otherVersion.protocolVersion = ProtocolNegotiation.supportedVersion + 1
     await assertIncompatible(otherVersion)
 
     let missingList = FakeAxodClient()

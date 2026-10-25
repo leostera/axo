@@ -1,3 +1,4 @@
+import AxoProtocol
 import Foundation
 import JSONRPC
 import Network

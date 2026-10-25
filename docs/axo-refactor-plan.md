@@ -130,7 +130,7 @@ booleans; parse wire data into domain types at the boundary.
 
 | Package | Contents | Platforms |
 | --- | --- | --- |
-| `AxoProtocol` | Wire models, IDs, events, params; `Codable`, no I/O | all |
+| `AxoProtocol` | Wire models, IDs, events, layouts, method names, protocol version; `Codable`, no I/O. **Done** (request structs stay in `AxoRPC`, which encodes them) | all |
 | `AxoClient` | Persistent JSON-RPC connection, typed calls, event stream, `TerminalAttachment` | all with Unix sockets (macOS now; remote transport later) |
 | `AxoDaemonManager` | LaunchAgent registration and health | macOS |
 | `AxoTerminal` | Ghostty runtime, surfaces, input policies | macOS |
@@ -141,8 +141,10 @@ booleans; parse wire data into domain types at the boundary.
 - **Done (`9fa74d4`):** `TerminalShell.role: String?` → `PaneRole` enum, and
   `available: Bool?` + `availabilityReason: String?` → `PaneAvailability { available,
   unavailable(reason) }`, decoded so the reason is present exactly when unavailable.
-- Event and method names stay inside `AxoProtocol`; nothing else matches on strings.
-- `TerminalAttachment` keeps descriptor ownership explicit (owned type, single close).
+- **Done:** event names are matched only in `TerminalSessionEvent`'s decoder and method names
+  are spelled only in `AxodMethodName`, both in `AxoProtocol`.
+- **Done:** `TerminalAttachment` owns both descriptors, with one idempotent `close()` and a
+  `deinit`.
 
 ### 2c. Split `TerminalSessionsModel` (924 lines)
 

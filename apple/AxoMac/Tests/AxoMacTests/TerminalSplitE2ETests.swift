@@ -1,5 +1,5 @@
 import AppKit
-import AxoRPC
+import AxoProtocol
 import SwiftUI
 import XCTest
 

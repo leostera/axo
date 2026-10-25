@@ -1,4 +1,4 @@
-import AxoRPC
+import AxoProtocol
 
 
 /// When to reattach a surface whose output stream Axod ended. Reattaching is rate-limited so a

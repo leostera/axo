@@ -7,7 +7,7 @@ description: Implement, review, or improve SwiftUI features using the iOS 26+ Li
 
 ## Axo project constraints
 
-- Follow `.agents/skills/axo-macos-native-apps/SKILL.md` for Axo's app structure, ownership boundaries and validation, and `.agents/skills/axo-macos-packaging/SKILL.md` before delivering. Apply this skill to `apple/AxoMac` (the only Apple app) and its `apple/AxoRPC` / `apple/AxoDaemonManager` libraries.
+- Follow `.agents/skills/axo-macos-native-apps/SKILL.md` for Axo's app structure, ownership boundaries and validation, and `.agents/skills/axo-macos-packaging/SKILL.md` before delivering. Apply this skill to `apple/AxoMac` (the only Apple app) and its `apple/AxoProtocol` / `apple/AxoRPC` / `apple/AxoDaemonManager` libraries.
 - Axo targets macOS 14.0 (`apple/AxoMac/BUILD.bazel`). Liquid Glass requires macOS 26: adopt it only when explicitly requested, with `#available` checks and a fallback for the baseline.
 - Preserve Axo's existing ownership boundaries and accepted protocol/RFD contracts. Do not introduce frameworks or broad rewrites without approval.
 

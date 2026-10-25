@@ -1,4 +1,4 @@
-import AxoRPC
+import AxoProtocol
 
 /// Most-recently-focused Sessions, newest first, bounded so long-running apps don't grow it.
 struct RecentSessions: Equatable {

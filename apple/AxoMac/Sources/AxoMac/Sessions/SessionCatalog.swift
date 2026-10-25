@@ -1,4 +1,4 @@
-import AxoRPC
+import AxoProtocol
 
 /// The open Sessions as Axod last described them, plus shell membership the app has already
 /// applied from command results. A pure value: `TerminalSessionsModel` holds one and projects it.

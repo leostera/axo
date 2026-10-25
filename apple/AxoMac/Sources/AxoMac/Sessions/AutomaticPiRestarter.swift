@@ -1,4 +1,4 @@
-import AxoRPC
+import AxoProtocol
 import Foundation
 
 /// Retries recovery of unavailable Pi panes while the user preference is enabled. Each pane has at

@@ -1,4 +1,5 @@
 import AppKit
+import AxoProtocol
 import AxoRPC
 import Foundation
 import GhosttyKit

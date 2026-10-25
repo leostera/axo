@@ -1,4 +1,4 @@
-import AxoRPC
+import AxoProtocol
 import Foundation
 
 /// Debounced, coalescing persistence of per-session layouts to Axod. At most one write per
