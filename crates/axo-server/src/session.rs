@@ -5039,6 +5039,25 @@ mod tests {
         }
     }
 
+    /// Opens a manager whose shells (the home Session's included) run a silent stand-in for the
+    /// login shell: no profile, no history, and no output to race a test's event assertions.
+    fn open_with_silent_shell(directory: &Path) -> Arc<SessionManager> {
+        let shell = directory.join("silent-shell");
+        fs::write(&shell, "#!/bin/sh\nexec /bin/sleep 3600\n").unwrap();
+        fs::set_permissions(&shell, fs::Permissions::from_mode(0o700)).unwrap();
+        let mut database = Connection::open(directory.join(DATABASE_FILE)).unwrap();
+        initialize_database(&mut database).unwrap();
+        database
+            .execute(
+                "INSERT INTO daemon_metadata (key, value) VALUES ('shell_command', ?1)
+                 ON CONFLICT(key) DO UPDATE SET value = excluded.value",
+                params![shell.to_string_lossy()],
+            )
+            .unwrap();
+        drop(database);
+        SessionManager::open(directory).unwrap()
+    }
+
     struct LifecycleFixture {
         directory: PathBuf,
         manager: Arc<SessionManager>,
@@ -6185,7 +6204,7 @@ mod tests {
     fn local_subscriptions_signal_lag_filter_output_and_expire() {
         let directory = PathBuf::from("/tmp").join(format!("axos-{}", new_uuid_v4().unwrap()));
         fs::create_dir_all(&directory).unwrap();
-        let manager = SessionManager::open(&directory).unwrap();
+        let manager = open_with_silent_shell(&directory);
         let drain = |id: &str| {
             while manager
                 .next_event(id, Duration::from_millis(1))
@@ -6372,7 +6391,7 @@ mod tests {
     fn manual_session_rename_is_separate_and_workspace_archive_preserves_history() {
         let directory = PathBuf::from("/tmp").join(format!("axor-{}", new_uuid_v4().unwrap()));
         fs::create_dir_all(&directory).unwrap();
-        let manager = SessionManager::open(&directory).unwrap();
+        let manager = open_with_silent_shell(&directory);
         let workspace_id = new_uuid_v4().unwrap();
         let session_uuid = new_uuid_v4().unwrap();
         let session_id = sid(702);
@@ -6574,7 +6593,7 @@ mod tests {
             BridgeSocketPath::for_session(&pi_session_directory, &session_uuid).unwrap();
         drop(UnixListener::bind(bridge_socket.as_path()).unwrap());
 
-        let manager = SessionManager::open(&server_directory).unwrap();
+        let manager = open_with_silent_shell(&server_directory);
         let stored_bridge_socket: String = manager
             .lock_state()
             .unwrap()
@@ -6859,7 +6878,7 @@ mod tests {
             .unwrap();
         drop(database);
 
-        let manager = SessionManager::open(&server_directory).unwrap();
+        let manager = open_with_silent_shell(&server_directory);
         let fake_pi = directory.join("fake-pi");
         fs::write(&fake_pi, "#!/bin/sh\nexec /bin/sleep 60\n").unwrap();
         fs::set_permissions(&fake_pi, fs::Permissions::from_mode(0o700)).unwrap();
