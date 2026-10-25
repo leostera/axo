@@ -16,7 +16,8 @@ The PID file is diagnostic metadata, not a process-control mechanism: launchd re
 | Crate | Owns |
 | --- | --- |
 | `axod` | This binary and the `terminal-attach` CLI. |
-| `axo-server` | `SessionManager` orchestration: the catalog lock (`lock_state`, which logs `catalog.lock_wait_long`/`lock_held_long` with the caller), pane lifecycle, Pi bridge and recovery, RPC handlers. `panes.rs` is the pane table and its state machine (`Pane::Running`/`Unavailable`, `Recovery::Idle`/`InProgress`); `store.rs` is the SQLite schema, migrations and database-only reads and writes. |
+| `axo-server` | `SessionManager` orchestration: the catalog lock (`lock_state`, which logs `catalog.lock_wait_long`/`lock_held_long` with the caller), pane lifecycle, Pi bridge and recovery, RPC handlers. `panes.rs` is the pane table and its state machine (`Pane::Running`/`Unavailable`, `Recovery::Idle`/`InProgress`). It parses settings and restores Workspace folder access; it has no SQL outside its tests. |
+| `axo-store` | The SQLite catalog: `open` (WAL, `synchronous=FULL`, owner-only file), schema and migrations, and every database-only read and write, each tested against an in-memory database. It knows no processes, files or settings syntax. |
 | `axo-protocol` | Wire types: IDs, `PaneRole`, layouts, records, typed RPC params/results and events. |
 | `axo-pty` | PTYs, launching children on them, the permanent output pump, attach protocol v2, and `process::stop_all`. |
 | `axo-pi` | Pi launch, bridge worker and protocol, writer lock, takeover, activity. |

@@ -15,7 +15,7 @@ rust_library(
     edition = crate_edition(),
     rustc_env_files = ["build_number.env"],
     stamp = 1,
-    deps = ["//crates/axo-ipc:axo_ipc", "//crates/axo-pi:axo_pi", "//crates/axo-protocol:axo_protocol", "//crates/axo-pty:axo_pty", "//crates/axo-relay:axo_relay"] + all_crate_deps(normal = True),
+    deps = ["//crates/axo-ipc:axo_ipc", "//crates/axo-pi:axo_pi", "//crates/axo-protocol:axo_protocol", "//crates/axo-pty:axo_pty", "//crates/axo-relay:axo_relay", "//crates/axo-store:axo_store"] + all_crate_deps(normal = True),
 )
 
 rust_test(
@@ -26,5 +26,5 @@ rust_test(
     edition = crate_edition(),
     rustc_env_files = ["build_number.env"],
     stamp = 1,
-    deps = ["//crates/axo-ipc:axo_ipc", "//crates/axo-pi:axo_pi", "//crates/axo-protocol:axo_protocol", "//crates/axo-pty:axo_pty", "//crates/axo-relay:axo_relay"] + all_crate_deps(normal = True),
+    deps = ["//crates/axo-ipc:axo_ipc", "//crates/axo-pi:axo_pi", "//crates/axo-protocol:axo_protocol", "//crates/axo-pty:axo_pty", "//crates/axo-relay:axo_relay", "//crates/axo-store:axo_store"] + all_crate_deps(normal = True, normal_dev = True),
 )

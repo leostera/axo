@@ -126,6 +126,7 @@ dependencies = [
  "axo-protocol",
  "axo-pty",
  "axo-relay",
+ "axo-store",
  "core-foundation",
  "jsonrpc-core",
  "libc",
@@ -134,6 +135,17 @@ dependencies = [
  "serde",
  "serde_json",
  "shlex",
+]
+
+[[package]]
+name = "axo-store"
+version = "0.1.0"
+dependencies = [
+ "axo-pi",
+ "axo-protocol",
+ "log",
+ "rusqlite",
+ "serde_json",
 ]
 
 [[package]]

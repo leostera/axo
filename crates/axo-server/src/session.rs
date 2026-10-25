@@ -12,28 +12,6 @@ use std::thread::{self, JoinHandle};
 use std::time::{Duration, Instant};
 
 use crate::panes::{Pane, PaneProcess, Panes, RecoveryRefused, RuntimeId, UnavailablePane};
-use crate::store::{
-    DATABASE_FILE, StoredLifecycle, archive_session, archive_shell, archive_shell_and_prune_layout,
-    archive_workspace_records, ensure_pi_bridge_socket_paths, initialize_database,
-    load_or_create_agent_command, load_or_create_host_id, load_or_create_shell_command,
-    load_pi_bridge_token, load_viewport, open_standalone_session_count, read_open_sessions,
-    read_session_layout, restore_workspace_accesses, session_initial_pwd, store_pi_bridge_token,
-    store_viewport,
-};
-use crate::store::{
-    NewWorkspaceSession, StoredPiSession, StoredSessionRow, abandon_workspace,
-    insert_standalone_session, insert_terminal_shell, insert_workspace, insert_workspace_session,
-    next_session_ordinal, open_pi_session, open_session_row, open_session_workspace_id,
-    open_workspace_directory, pi_bridge_sockets, workspaces_without_open_sessions,
-};
-use crate::store::{
-    PiHistoryOwner, archived_pi_pane_count, pi_history_owners, reopen_archived_session,
-    workspace_directory,
-};
-use crate::store::{
-    bind_pi_session_id, describe_session, list_open_workspaces, open_session_ids_in_workspace,
-    rename_open_workspace, set_manual_session_name, store_config_value, write_session_layout,
-};
 use crate::workspace_access::WorkspaceDirectoryAccess;
 use axo_ipc::{EventQueue, PushOutcome, TypedMethods};
 use axo_pi::takeover::{self, TakeoverPolicy, TakeoverTarget, VerifiedProcessId};
@@ -52,8 +30,29 @@ use axo_pty::{
     CommandLine, NextOutput, OutputSubscriber, TerminalOutput, TerminalOutputSink, WindowSize,
     attach,
 };
+use axo_store::Connection;
+use axo_store::{
+    DATABASE_FILE, StoredLifecycle, archive_session, archive_shell, archive_shell_and_prune_layout,
+    archive_workspace_records, ensure_pi_bridge_socket_paths, load_or_create_host_id,
+    load_pi_bridge_token, load_viewport, open_standalone_session_count, read_open_sessions,
+    read_session_layout, session_initial_pwd, store_pi_bridge_token, store_viewport,
+};
+use axo_store::{
+    NewWorkspaceSession, StoredPiSession, StoredSessionRow, abandon_workspace,
+    insert_standalone_session, insert_terminal_shell, insert_workspace, insert_workspace_session,
+    load_or_create_setting, next_session_ordinal, open_pi_session, open_session_row,
+    open_session_workspace_id, open_workspace_directories, open_workspace_directory,
+    pi_bridge_sockets, workspaces_without_open_sessions,
+};
+use axo_store::{
+    PiHistoryOwner, archived_pi_pane_count, pi_history_owners, reopen_archived_session,
+    workspace_directory,
+};
+use axo_store::{
+    bind_pi_session_id, describe_session, list_open_workspaces, open_session_ids_in_workspace,
+    rename_open_workspace, set_manual_session_name, store_config_value, write_session_layout,
+};
 use jsonrpc_core::{Error as RpcError, ErrorCode, IoHandler};
-use rusqlite::Connection;
 use serde::Serialize;
 use serde_json::Value;
 
@@ -665,18 +664,12 @@ impl SessionManager {
         let attach_socket_path = server_directory.join(ATTACH_SOCKET_FILE);
         let initial_pwd = super::current_user_home_directory()?;
 
-        let mut database = Connection::open(&database_path)?;
-        database.busy_timeout(Duration::from_secs(3))?;
-        database.pragma_update(None, "journal_mode", "WAL")?;
-        database.pragma_update(None, "synchronous", "FULL")?;
-        database.pragma_update(None, "foreign_keys", "ON")?;
-        initialize_database(&mut database)?;
+        let database = axo_store::open(&database_path)?;
         let host_id = load_or_create_host_id(&database)?;
         let agent_command = load_or_create_agent_command(&database)?;
         let shell_command = load_or_create_shell_command(&database)?;
         let viewport = load_viewport(&database)?;
         let host_generation = new_uuid_v4()?;
-        fs::set_permissions(&database_path, fs::Permissions::from_mode(0o600))?;
         let pi_session_directory = server_directory.join("pi-sessions");
         fs::create_dir_all(&pi_session_directory)?;
         fs::set_permissions(&pi_session_directory, fs::Permissions::from_mode(0o700))?;
@@ -3263,6 +3256,78 @@ fn log_socket_cleanup(session_id: SessionId, cleanup: SocketCleanup) {
     }
 }
 
+/// The agent a new database starts with.
+const DEFAULT_AGENT_COMMAND: &str = "pi";
+
+fn load_or_create_agent_command(database: &Connection) -> io::Result<AgentCommand> {
+    let source = load_or_create_setting(database, ConfigKey::AgentCommand, || {
+        Ok(DEFAULT_AGENT_COMMAND.to_owned())
+    })?;
+    AgentCommand::parse(&source).map_err(|error| {
+        io::Error::new(
+            io::ErrorKind::InvalidData,
+            format!("stored default agent command is invalid: {error}"),
+        )
+    })
+}
+
+fn load_or_create_shell_command(database: &Connection) -> io::Result<ShellCommand> {
+    let source = load_or_create_setting(database, ConfigKey::ShellCommand, default_shell_command)?;
+    ShellCommand::parse(&source).map_err(|error| {
+        io::Error::new(
+            io::ErrorKind::InvalidData,
+            format!("stored default shell command is invalid: {error}"),
+        )
+    })
+}
+
+fn default_shell_command() -> io::Result<String> {
+    let configured = std::env::var_os("SHELL").map(PathBuf::from);
+    let shell = configured
+        .filter(|path| {
+            path.is_absolute() && path.is_file() && axo_pty::command::is_executable(path)
+        })
+        .or_else(|| {
+            super::current_user_login_shell()
+                .ok()
+                .filter(|path| path.is_file() && axo_pty::command::is_executable(path))
+        })
+        .ok_or_else(|| {
+            io::Error::new(
+                io::ErrorKind::NotFound,
+                "could not determine an executable shell for the current user",
+            )
+        })?;
+    shell.to_str().map(str::to_owned).ok_or_else(|| {
+        io::Error::new(
+            io::ErrorKind::InvalidData,
+            "the current user's shell path is not valid UTF-8",
+        )
+    })
+}
+
+/// Reopens access to every open Workspace's directory. A Workspace whose directory is gone is
+/// logged and skipped; it must not keep Axod from starting.
+fn restore_workspace_accesses(
+    database: &Connection,
+) -> io::Result<HashMap<String, WorkspaceDirectoryAccess>> {
+    let mut accesses = HashMap::new();
+    for (workspace_id, path, bookmark) in open_workspace_directories(database)? {
+        match WorkspaceDirectoryAccess::open(Path::new(&path), bookmark.as_deref()) {
+            Ok(access) => {
+                accesses.insert(workspace_id, access);
+            }
+            Err(_) => {
+                log::warn!(
+                    "event=workspace.access_restore_failed workspace_id={} reason=directory_unavailable",
+                    workspace_id
+                );
+            }
+        }
+    }
+    Ok(accesses)
+}
+
 /// Startup reconciliation: removes the bridge socket of every Session whose writer lock no Pi
 /// holds. Sessions whose Pi is still alive (an orphan of a crashed Axod) keep theirs. Failures
 /// are logged and skipped; they must not keep Axod from starting.
@@ -3886,8 +3951,8 @@ fn recovery_refused(refused: RecoveryRefused) -> io::Error {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::store::{inserted_session_id, inserted_shell_id, unix_timestamp};
     use axo_pi::bridge;
+    use axo_store::{initialize_database, inserted_session_id, inserted_shell_id, unix_timestamp};
     use rusqlite::params;
     use serde_json::{Value, json};
     use std::fs::OpenOptions;

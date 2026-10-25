@@ -1,112 +1,78 @@
 //! Axod's SQLite catalog: the schema and its migrations, and every read and write that touches
-//! only the database. Process and filesystem work stays in `session`; callers hold the catalog
-//! lock around these, since the connection lives in `SessionState`.
+//! only the database. Processes, files and settings parsing stay in `axo-server`, which owns the
+//! connection and holds its catalog lock around these calls.
 
-use std::collections::{HashMap, HashSet};
+use std::collections::HashSet;
 use std::io;
+use std::os::unix::fs::PermissionsExt;
 use std::path::{Path, PathBuf};
 
-use axo_pi::{AgentCommand, BridgeSocketPath};
+use axo_pi::BridgeSocketPath;
 use axo_protocol::{
     ConfigKey, Layout, PaneRole, SessionId, ShellId, Viewport, WorkspaceRecord, is_uuid,
     new_uuid_v4,
 };
-use rusqlite::{Connection, OptionalExtension, params};
+pub use rusqlite::Connection;
+use rusqlite::{OptionalExtension, params};
 
-use crate::session::ShellCommand;
-use crate::workspace_access::WorkspaceDirectoryAccess;
-
-/// The agent a new database starts with.
-const DEFAULT_AGENT_COMMAND: &str = "pi";
-
-pub(crate) const DATABASE_FILE: &str = "axo.db";
+pub const DATABASE_FILE: &str = "axo.db";
 
 /// An open session as stored, before its processes are restored.
 #[derive(Debug)]
-pub(crate) struct StoredSession {
-    pub(crate) id: SessionId,
-    pub(crate) initial_pwd: PathBuf,
-    pub(crate) shell_ids: Vec<(ShellId, PaneRole, Option<String>)>,
+pub struct StoredSession {
+    pub id: SessionId,
+    pub initial_pwd: PathBuf,
+    pub shell_ids: Vec<(ShellId, PaneRole, Option<String>)>,
 }
 
-pub(crate) fn load_or_create_agent_command(database: &Connection) -> io::Result<AgentCommand> {
-    database
-        .execute(
-            "INSERT OR IGNORE INTO daemon_metadata (key, value) VALUES ('agent_command', ?1)",
-            params![DEFAULT_AGENT_COMMAND],
-        )
-        .map_err(io::Error::other)?;
-    let source = database
-        .query_row(
-            "SELECT value FROM daemon_metadata WHERE key = 'agent_command'",
-            [],
-            |row| row.get::<_, String>(0),
-        )
-        .map_err(io::Error::other)?;
-    AgentCommand::parse(&source).map_err(|error| {
-        io::Error::new(
-            io::ErrorKind::InvalidData,
-            format!("stored default agent command is invalid: {error}"),
-        )
-    })
-}
-
-pub(crate) fn load_or_create_shell_command(database: &Connection) -> io::Result<ShellCommand> {
+/// A setting's stored value; on first use, `default()` is stored and returned. Parsing it is the
+/// caller's job.
+pub fn load_or_create_setting(
+    database: &Connection,
+    key: ConfigKey,
+    default: impl FnOnce() -> io::Result<String>,
+) -> io::Result<String> {
+    let key = config_metadata_key(key);
     let existing = database
         .query_row(
-            "SELECT value FROM daemon_metadata WHERE key = 'shell_command'",
-            [],
+            "SELECT value FROM daemon_metadata WHERE key = ?1",
+            params![key],
             |row| row.get::<_, String>(0),
         )
         .optional()
         .map_err(io::Error::other)?;
-    let source = match existing {
-        Some(source) => source,
-        None => {
-            let source = default_shell_command()?;
-            database
-                .execute(
-                    "INSERT INTO daemon_metadata (key, value) VALUES ('shell_command', ?1)",
-                    params![source],
-                )
-                .map_err(io::Error::other)?;
-            source
-        }
-    };
-    ShellCommand::parse(&source).map_err(|error| {
-        io::Error::new(
-            io::ErrorKind::InvalidData,
-            format!("stored default shell command is invalid: {error}"),
+    if let Some(value) = existing {
+        return Ok(value);
+    }
+    let value = default()?;
+    database
+        .execute(
+            "INSERT INTO daemon_metadata (key, value) VALUES (?1, ?2)",
+            params![key, value],
         )
-    })
+        .map_err(io::Error::other)?;
+    Ok(value)
 }
 
-pub(crate) fn default_shell_command() -> io::Result<String> {
-    let configured = std::env::var_os("SHELL").map(PathBuf::from);
-    let shell = configured
-        .filter(|path| {
-            path.is_absolute() && path.is_file() && axo_pty::command::is_executable(path)
-        })
-        .or_else(|| {
-            super::current_user_login_shell()
-                .ok()
-                .filter(|path| path.is_file() && axo_pty::command::is_executable(path))
-        })
-        .ok_or_else(|| {
-            io::Error::new(
-                io::ErrorKind::NotFound,
-                "could not determine an executable shell for the current user",
-            )
-        })?;
-    shell.to_str().map(str::to_owned).ok_or_else(|| {
-        io::Error::new(
-            io::ErrorKind::InvalidData,
-            "the current user's shell path is not valid UTF-8",
+/// Every open Workspace's ID, directory and security-scoped bookmark, for restoring access at
+/// startup.
+pub fn open_workspace_directories(
+    database: &Connection,
+) -> io::Result<Vec<(String, String, Option<String>)>> {
+    let mut statement = database
+        .prepare(
+            "SELECT workspace_id, directory_path, directory_bookmark FROM workspaces \
+             WHERE state = 'open'",
         )
-    })
+        .map_err(io::Error::other)?;
+    statement
+        .query_map([], |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?)))
+        .map_err(io::Error::other)?
+        .collect::<Result<Vec<_>, _>>()
+        .map_err(io::Error::other)
 }
 
-pub(crate) fn load_or_create_host_id(database: &Connection) -> io::Result<String> {
+pub fn load_or_create_host_id(database: &Connection) -> io::Result<String> {
     let existing = database
         .query_row(
             "SELECT value FROM daemon_metadata WHERE key = 'host_id'",
@@ -135,7 +101,22 @@ pub(crate) fn load_or_create_host_id(database: &Connection) -> io::Result<String
     Ok(host_id)
 }
 
-pub(crate) fn initialize_database(database: &mut Connection) -> rusqlite::Result<()> {
+/// Opens (creating if needed) the catalog at `path`, migrated to the current schema and readable
+/// only by its owner. Writes are durable once they return: WAL with `synchronous=FULL`.
+pub fn open(path: &Path) -> io::Result<Connection> {
+    let mut database = Connection::open(path).map_err(io::Error::other)?;
+    database
+        .busy_timeout(std::time::Duration::from_secs(3))
+        .and_then(|()| database.pragma_update(None, "journal_mode", "WAL"))
+        .and_then(|()| database.pragma_update(None, "synchronous", "FULL"))
+        .and_then(|()| database.pragma_update(None, "foreign_keys", "ON"))
+        .and_then(|()| initialize_database(&mut database))
+        .map_err(io::Error::other)?;
+    std::fs::set_permissions(path, std::fs::Permissions::from_mode(0o600))?;
+    Ok(database)
+}
+
+pub fn initialize_database(database: &mut Connection) -> rusqlite::Result<()> {
     let old_version = database.query_row("PRAGMA user_version", [], |row| row.get::<_, i64>(0))?;
     let sessions_exist = database.query_row(
         "SELECT EXISTS(SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = 'sessions')",
@@ -181,7 +162,7 @@ pub(crate) fn initialize_database(database: &mut Connection) -> rusqlite::Result
     transaction.commit()
 }
 
-pub(crate) fn create_tables(transaction: &rusqlite::Transaction<'_>) -> rusqlite::Result<()> {
+pub fn create_tables(transaction: &rusqlite::Transaction<'_>) -> rusqlite::Result<()> {
     transaction.execute_batch(
         "CREATE TABLE IF NOT EXISTS workspaces (
             workspace_id TEXT PRIMARY KEY,
@@ -228,7 +209,7 @@ pub(crate) fn create_tables(transaction: &rusqlite::Transaction<'_>) -> rusqlite
     )
 }
 
-pub(crate) fn open_standalone_session_count(database: &Connection) -> io::Result<i64> {
+pub fn open_standalone_session_count(database: &Connection) -> io::Result<i64> {
     database
         .query_row(
             "SELECT COUNT(*) FROM sessions WHERE workspace_id IS NULL AND state = 'open'",
@@ -238,7 +219,7 @@ pub(crate) fn open_standalone_session_count(database: &Connection) -> io::Result
         .map_err(io::Error::other)
 }
 
-pub(crate) fn read_open_sessions(database: &Connection) -> io::Result<Vec<StoredSession>> {
+pub fn read_open_sessions(database: &Connection) -> io::Result<Vec<StoredSession>> {
     let mut statement = database
         .prepare("SELECT id, initial_pwd FROM sessions WHERE state = 'open' ORDER BY id")
         .map_err(io::Error::other)?;
@@ -278,10 +259,7 @@ pub(crate) fn read_open_sessions(database: &Connection) -> io::Result<Vec<Stored
     Ok(records)
 }
 
-pub(crate) fn read_session_layout(
-    database: &Connection,
-    id: SessionId,
-) -> io::Result<Option<Layout>> {
+pub fn read_session_layout(database: &Connection, id: SessionId) -> io::Result<Option<Layout>> {
     let stored_layout = database
         .query_row(
             "SELECT layout_json FROM sessions WHERE id = ?1 AND state = 'open'",
@@ -295,7 +273,7 @@ pub(crate) fn read_session_layout(
 }
 
 /// Parsing validates the layout's structure; a stored layout that fails is ignored.
-pub(crate) fn parse_stored_layout(id: SessionId, json: &str) -> Option<Layout> {
+pub fn parse_stored_layout(id: SessionId, json: &str) -> Option<Layout> {
     serde_json::from_str(json)
         .inspect_err(|error| {
             log::warn!(
@@ -306,49 +284,7 @@ pub(crate) fn parse_stored_layout(id: SessionId, json: &str) -> Option<Layout> {
         .ok()
 }
 
-pub(crate) fn restore_workspace_accesses(
-    database: &Connection,
-) -> io::Result<HashMap<String, WorkspaceDirectoryAccess>> {
-    let workspace_records = {
-        let mut statement = database
-            .prepare(
-                "SELECT workspace_id, directory_path, directory_bookmark FROM workspaces \
-                 WHERE state = 'open'",
-            )
-            .map_err(io::Error::other)?;
-        statement
-            .query_map([], |row| {
-                Ok((
-                    row.get::<_, String>(0)?,
-                    row.get::<_, String>(1)?,
-                    row.get::<_, Option<String>>(2)?,
-                ))
-            })
-            .map_err(io::Error::other)?
-            .collect::<Result<Vec<_>, _>>()
-            .map_err(io::Error::other)?
-    };
-
-    let mut accesses = HashMap::new();
-    for (workspace_id, path, bookmark) in workspace_records {
-        match WorkspaceDirectoryAccess::open(Path::new(&path), bookmark.as_deref()) {
-            Ok(access) => {
-                accesses.insert(workspace_id, access);
-            }
-            Err(_) => {
-                log::warn!(
-                    "event=workspace.access_restore_failed workspace_id={} reason=directory_unavailable",
-                    workspace_id
-                );
-            }
-        }
-    }
-    Ok(accesses)
-}
-
-pub(crate) fn ensure_workspace_columns(
-    transaction: &rusqlite::Transaction<'_>,
-) -> rusqlite::Result<()> {
+pub fn ensure_workspace_columns(transaction: &rusqlite::Transaction<'_>) -> rusqlite::Result<()> {
     transaction.execute_batch(
         "CREATE TABLE IF NOT EXISTS workspaces (
             workspace_id TEXT PRIMARY KEY,
@@ -398,7 +334,7 @@ pub(crate) fn ensure_workspace_columns(
     Ok(())
 }
 
-pub(crate) fn ensure_pi_bridge_socket_paths(
+pub fn ensure_pi_bridge_socket_paths(
     database: &Connection,
     pi_session_directory: &Path,
 ) -> io::Result<()> {
@@ -453,7 +389,7 @@ pub(crate) fn ensure_pi_bridge_socket_paths(
     Ok(())
 }
 
-pub(crate) fn ensure_session_layout_column(
+pub fn ensure_session_layout_column(
     transaction: &rusqlite::Transaction<'_>,
 ) -> rusqlite::Result<()> {
     let has_layout_column = {
@@ -470,7 +406,7 @@ pub(crate) fn ensure_session_layout_column(
     Ok(())
 }
 
-pub(crate) fn session_initial_pwd(database: &Connection, id: SessionId) -> io::Result<PathBuf> {
+pub fn session_initial_pwd(database: &Connection, id: SessionId) -> io::Result<PathBuf> {
     database
         .query_row(
             "SELECT initial_pwd FROM sessions WHERE id = ?1 AND state = 'open'",
@@ -483,7 +419,7 @@ pub(crate) fn session_initial_pwd(database: &Connection, id: SessionId) -> io::R
         .ok_or_else(|| io::Error::new(io::ErrorKind::NotFound, "session record is missing"))
 }
 
-pub(crate) fn archive_shell(database: &Connection, id: ShellId, reason: &str) -> io::Result<()> {
+pub fn archive_shell(database: &Connection, id: ShellId, reason: &str) -> io::Result<()> {
     let changed = database
         .execute(
             "UPDATE shells SET state = 'archived', archived_at = ?1, termination_reason = ?2
@@ -500,7 +436,7 @@ pub(crate) fn archive_shell(database: &Connection, id: ShellId, reason: &str) ->
     Ok(())
 }
 
-pub(crate) fn archive_shell_and_prune_layout(
+pub fn archive_shell_and_prune_layout(
     database: &mut Connection,
     shell_id: ShellId,
     session_id: SessionId,
@@ -540,7 +476,7 @@ pub(crate) fn archive_shell_and_prune_layout(
     transaction.commit().map_err(io::Error::other)
 }
 
-pub(crate) fn archive_workspace_records(
+pub fn archive_workspace_records(
     database: &mut Connection,
     workspace_id: &str,
 ) -> io::Result<Vec<SessionId>> {
@@ -590,11 +526,7 @@ pub(crate) fn archive_workspace_records(
     Ok(session_ids)
 }
 
-pub(crate) fn archive_session(
-    database: &mut Connection,
-    id: SessionId,
-    reason: &str,
-) -> io::Result<()> {
+pub fn archive_session(database: &mut Connection, id: SessionId, reason: &str) -> io::Result<()> {
     let transaction = database.transaction().map_err(io::Error::other)?;
     let archived_at = unix_timestamp();
     transaction
@@ -620,11 +552,11 @@ pub(crate) fn archive_session(
     transaction.commit().map_err(io::Error::other)
 }
 
-pub(crate) fn pi_bridge_token_key(session_uuid: &str) -> String {
+pub fn pi_bridge_token_key(session_uuid: &str) -> String {
     format!("pi_bridge_token:{session_uuid}")
 }
 
-pub(crate) fn load_pi_bridge_token(
+pub fn load_pi_bridge_token(
     database: &Connection,
     session_uuid: &str,
 ) -> io::Result<Option<String>> {
@@ -645,7 +577,7 @@ pub(crate) fn load_pi_bridge_token(
     Ok(token)
 }
 
-pub(crate) fn store_pi_bridge_token(
+pub fn store_pi_bridge_token(
     database: &Connection,
     session_uuid: &str,
     token: &str,
@@ -662,9 +594,9 @@ pub(crate) fn store_pi_bridge_token(
 
 /// Where the latest client's viewport is kept across restarts, so restored panes start at
 /// the size they will be shown at.
-pub(crate) const VIEWPORT_METADATA_KEY: &str = "client_viewport";
+pub const VIEWPORT_METADATA_KEY: &str = "client_viewport";
 
-pub(crate) fn load_viewport(database: &Connection) -> io::Result<Option<Viewport>> {
+pub fn load_viewport(database: &Connection) -> io::Result<Option<Viewport>> {
     let stored: Option<String> = database
         .query_row(
             "SELECT value FROM daemon_metadata WHERE key = ?1",
@@ -684,7 +616,7 @@ pub(crate) fn load_viewport(database: &Connection) -> io::Result<Option<Viewport
     )
 }
 
-pub(crate) fn store_viewport(database: &Connection, viewport: &Viewport) -> io::Result<()> {
+pub fn store_viewport(database: &Connection, viewport: &Viewport) -> io::Result<()> {
     let value = serde_json::to_string(viewport).map_err(io::Error::other)?;
     database
         .execute(
@@ -699,7 +631,7 @@ pub(crate) fn store_viewport(database: &Connection, viewport: &Viewport) -> io::
 /// The `state` column of a Session, shell or Workspace row. Parsed when read, so a corrupt or
 /// unknown state fails the query instead of being compared as a string downstream.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
-pub(crate) enum StoredLifecycle {
+pub enum StoredLifecycle {
     Open,
     Archived,
 }
@@ -718,23 +650,23 @@ impl rusqlite::types::FromSql for StoredLifecycle {
 
 /// Catalog IDs come from `AUTOINCREMENT` columns, so a stored ID is positive unless the database
 /// is corrupt; reading one that is not fails instead of producing an invalid ID.
-pub(crate) fn stored_session_id(value: i64) -> rusqlite::Result<SessionId> {
+pub fn stored_session_id(value: i64) -> rusqlite::Result<SessionId> {
     SessionId::new(value).ok_or(rusqlite::Error::IntegralValueOutOfRange(0, value))
 }
 
-pub(crate) fn stored_shell_id(value: i64) -> rusqlite::Result<ShellId> {
+pub fn stored_shell_id(value: i64) -> rusqlite::Result<ShellId> {
     ShellId::new(value).ok_or(rusqlite::Error::IntegralValueOutOfRange(0, value))
 }
 
-pub(crate) fn inserted_session_id(database: &Connection) -> io::Result<SessionId> {
+pub fn inserted_session_id(database: &Connection) -> io::Result<SessionId> {
     stored_session_id(database.last_insert_rowid()).map_err(io::Error::other)
 }
 
-pub(crate) fn inserted_shell_id(database: &Connection) -> io::Result<ShellId> {
+pub fn inserted_shell_id(database: &Connection) -> io::Result<ShellId> {
     stored_shell_id(database.last_insert_rowid()).map_err(io::Error::other)
 }
 
-pub(crate) fn unix_timestamp() -> i64 {
+pub fn unix_timestamp() -> i64 {
     std::time::SystemTime::now()
         .duration_since(std::time::UNIX_EPOCH)
         .unwrap_or_default()
@@ -754,7 +686,7 @@ fn expect_one_row(changed: usize, message: &'static str) -> io::Result<()> {
     }
 }
 
-pub(crate) fn write_session_layout(
+pub fn write_session_layout(
     database: &Connection,
     id: SessionId,
     layout: &Layout,
@@ -770,11 +702,7 @@ pub(crate) fn write_session_layout(
 }
 
 /// The user's name for a Session; Pi's title stays in `name`.
-pub(crate) fn set_manual_session_name(
-    database: &Connection,
-    id: SessionId,
-    name: &str,
-) -> io::Result<()> {
+pub fn set_manual_session_name(database: &Connection, id: SessionId, name: &str) -> io::Result<()> {
     let changed = database
         .execute(
             "UPDATE sessions SET manual_name = ?1 WHERE id = ?2 AND state = 'open'",
@@ -786,7 +714,7 @@ pub(crate) fn set_manual_session_name(
 
 /// Pi's title and emoji for a Session; `None` keeps the stored value. Returns whether an open
 /// Session matched.
-pub(crate) fn describe_session(
+pub fn describe_session(
     database: &Connection,
     id: SessionId,
     title: Option<&str>,
@@ -804,7 +732,7 @@ pub(crate) fn describe_session(
 
 /// Records which Pi session a Session's transcript belongs to, only while the row still has
 /// `session_uuid`, so a stale bridge cannot rebind it.
-pub(crate) fn bind_pi_session_id(
+pub fn bind_pi_session_id(
     database: &Connection,
     id: SessionId,
     session_uuid: &str,
@@ -819,7 +747,7 @@ pub(crate) fn bind_pi_session_id(
     expect_one_row(changed, "Pi Session binding changed")
 }
 
-pub(crate) fn list_open_workspaces(database: &Connection) -> io::Result<Vec<WorkspaceRecord>> {
+pub fn list_open_workspaces(database: &Connection) -> io::Result<Vec<WorkspaceRecord>> {
     let mut statement = database
         .prepare(
             "SELECT workspace_id, name, directory_path FROM workspaces WHERE state = 'open' \
@@ -841,7 +769,7 @@ pub(crate) fn list_open_workspaces(database: &Connection) -> io::Result<Vec<Work
 }
 
 /// Renames an open Workspace and returns its directory.
-pub(crate) fn rename_open_workspace(
+pub fn rename_open_workspace(
     database: &Connection,
     workspace_id: &str,
     name: &str,
@@ -862,7 +790,7 @@ pub(crate) fn rename_open_workspace(
         .map_err(io::Error::other)
 }
 
-pub(crate) fn open_session_ids_in_workspace(
+pub fn open_session_ids_in_workspace(
     database: &Connection,
     workspace_id: &str,
 ) -> io::Result<Vec<SessionId>> {
@@ -885,11 +813,7 @@ fn config_metadata_key(key: ConfigKey) -> &'static str {
     }
 }
 
-pub(crate) fn store_config_value(
-    database: &Connection,
-    key: ConfigKey,
-    value: &str,
-) -> io::Result<()> {
+pub fn store_config_value(database: &Connection, key: ConfigKey, value: &str) -> io::Result<()> {
     database
         .execute(
             "INSERT INTO daemon_metadata (key, value) VALUES (?1, ?2) \
@@ -902,16 +826,16 @@ pub(crate) fn store_config_value(
 
 /// A Session whose Pi transcript is a given history file.
 #[derive(Debug)]
-pub(crate) struct PiHistoryOwner {
-    pub(crate) session_id: SessionId,
-    pub(crate) lifecycle: StoredLifecycle,
-    pub(crate) initial_pwd: PathBuf,
-    pub(crate) workspace_id: Option<String>,
+pub struct PiHistoryOwner {
+    pub session_id: SessionId,
+    pub lifecycle: StoredLifecycle,
+    pub initial_pwd: PathBuf,
+    pub workspace_id: Option<String>,
 }
 
 /// Every Session, open or archived, whose Pi history is `session_file`. More than one means
 /// the catalog is inconsistent; callers require exactly one.
-pub(crate) fn pi_history_owners(
+pub fn pi_history_owners(
     database: &Connection,
     session_file: &str,
 ) -> io::Result<Vec<PiHistoryOwner>> {
@@ -935,7 +859,7 @@ pub(crate) fn pi_history_owners(
 }
 
 /// A Workspace's directory and security-scoped bookmark, whether or not it is open.
-pub(crate) fn workspace_directory(
+pub fn workspace_directory(
     database: &Connection,
     workspace_id: &str,
 ) -> io::Result<(String, Option<String>)> {
@@ -948,7 +872,7 @@ pub(crate) fn workspace_directory(
         .map_err(io::Error::other)
 }
 
-pub(crate) fn archived_pi_pane_count(database: &Connection, id: SessionId) -> io::Result<i64> {
+pub fn archived_pi_pane_count(database: &Connection, id: SessionId) -> io::Result<i64> {
     database
         .query_row(
             "SELECT COUNT(*) FROM shells WHERE session_id = ?1 AND role = 'pi' AND state = 'archived'",
@@ -961,7 +885,7 @@ pub(crate) fn archived_pi_pane_count(database: &Connection, id: SessionId) -> io
 /// Reopens an archived Session, its shells and (if it has one) its Workspace, all or nothing.
 /// Fails with `AlreadyExists` if the Session is no longer archived, `NotFound` if its Workspace
 /// row is gone.
-pub(crate) fn reopen_archived_session(
+pub fn reopen_archived_session(
     database: &mut Connection,
     id: SessionId,
     workspace_id: Option<&str>,
@@ -1009,10 +933,7 @@ pub(crate) fn reopen_archived_session(
 }
 
 /// The working directory of an open Workspace.
-pub(crate) fn open_workspace_directory(
-    database: &Connection,
-    workspace_id: &str,
-) -> io::Result<PathBuf> {
+pub fn open_workspace_directory(database: &Connection, workspace_id: &str) -> io::Result<PathBuf> {
     database
         .query_row(
             "SELECT directory_path FROM workspaces WHERE workspace_id = ? AND state = 'open'",
@@ -1027,10 +948,7 @@ pub(crate) fn open_workspace_directory(
 
 /// The number in a new Session's default name ("Session N"): one more than the open Sessions
 /// in its Workspace, or the standalone ones.
-pub(crate) fn next_session_ordinal(
-    database: &Connection,
-    workspace_id: Option<&str>,
-) -> io::Result<i64> {
+pub fn next_session_ordinal(database: &Connection, workspace_id: Option<&str>) -> io::Result<i64> {
     match workspace_id {
         Some(workspace_id) => database.query_row(
             "SELECT COUNT(*) + 1 FROM sessions WHERE workspace_id = ? AND state = 'open'",
@@ -1046,7 +964,7 @@ pub(crate) fn next_session_ordinal(
     .map_err(io::Error::other)
 }
 
-pub(crate) fn insert_standalone_session(
+pub fn insert_standalone_session(
     database: &Connection,
     initial_pwd: &Path,
     session_uuid: &str,
@@ -1068,19 +986,19 @@ pub(crate) fn insert_standalone_session(
 }
 
 /// A Workspace Session about to be created, with its one Pi pane.
-pub(crate) struct NewWorkspaceSession<'a> {
-    pub(crate) workspace_id: &'a str,
-    pub(crate) initial_pwd: &'a Path,
-    pub(crate) session_uuid: &'a str,
-    pub(crate) name: &'a str,
-    pub(crate) pi_session_file: &'a Path,
-    pub(crate) bridge_socket: &'a BridgeSocketPath,
-    pub(crate) pane_id: &'a str,
+pub struct NewWorkspaceSession<'a> {
+    pub workspace_id: &'a str,
+    pub initial_pwd: &'a Path,
+    pub session_uuid: &'a str,
+    pub name: &'a str,
+    pub pi_session_file: &'a Path,
+    pub bridge_socket: &'a BridgeSocketPath,
+    pub pane_id: &'a str,
 }
 
 /// Inserts a Workspace Session, its Pi pane and the single-pane layout in one transaction, so
 /// a failure never leaves an open Session without its pane. Returns both IDs.
-pub(crate) fn insert_workspace_session(
+pub fn insert_workspace_session(
     database: &mut Connection,
     new: &NewWorkspaceSession<'_>,
 ) -> io::Result<(SessionId, ShellId)> {
@@ -1120,7 +1038,7 @@ pub(crate) fn insert_workspace_session(
     Ok((session_id, pane))
 }
 
-pub(crate) fn insert_terminal_shell(
+pub fn insert_terminal_shell(
     database: &Connection,
     session_id: SessionId,
     initial_pwd: &Path,
@@ -1135,13 +1053,13 @@ pub(crate) fn insert_terminal_shell(
 }
 
 /// What an open Session stores about its Pi.
-pub(crate) struct StoredPiSession {
-    pub(crate) session_uuid: String,
-    pub(crate) session_file: Option<PathBuf>,
-    pub(crate) bridge_socket_path: Option<String>,
+pub struct StoredPiSession {
+    pub session_uuid: String,
+    pub session_file: Option<PathBuf>,
+    pub bridge_socket_path: Option<String>,
 }
 
-pub(crate) fn open_pi_session(database: &Connection, id: SessionId) -> io::Result<StoredPiSession> {
+pub fn open_pi_session(database: &Connection, id: SessionId) -> io::Result<StoredPiSession> {
     database
         .query_row(
             "SELECT session_uuid, pi_session_file, pi_bridge_socket_path FROM sessions
@@ -1158,7 +1076,7 @@ pub(crate) fn open_pi_session(database: &Connection, id: SessionId) -> io::Resul
         .map_err(io::Error::other)
 }
 
-pub(crate) fn insert_workspace(
+pub fn insert_workspace(
     database: &Connection,
     workspace_id: &str,
     name: &str,
@@ -1176,7 +1094,7 @@ pub(crate) fn insert_workspace(
 }
 
 /// Archives a Workspace whose first Session could not be created.
-pub(crate) fn abandon_workspace(database: &Connection, workspace_id: &str) -> io::Result<()> {
+pub fn abandon_workspace(database: &Connection, workspace_id: &str) -> io::Result<()> {
     database
         .execute(
             "UPDATE workspaces SET state = 'archived', archived_at = ? WHERE workspace_id = ?",
@@ -1187,7 +1105,7 @@ pub(crate) fn abandon_workspace(database: &Connection, workspace_id: &str) -> io
 }
 
 /// Open Workspaces with no open Session, which startup gives one.
-pub(crate) fn workspaces_without_open_sessions(database: &Connection) -> io::Result<Vec<String>> {
+pub fn workspaces_without_open_sessions(database: &Connection) -> io::Result<Vec<String>> {
     let mut statement = database
         .prepare(
             "SELECT w.workspace_id FROM workspaces w WHERE w.state = 'open' \
@@ -1202,7 +1120,7 @@ pub(crate) fn workspaces_without_open_sessions(database: &Connection) -> io::Res
         .map_err(io::Error::other)
 }
 
-pub(crate) fn open_session_workspace_id(
+pub fn open_session_workspace_id(
     database: &Connection,
     id: SessionId,
 ) -> io::Result<Option<String>> {
@@ -1216,25 +1134,22 @@ pub(crate) fn open_session_workspace_id(
 }
 
 /// An open Session's stored fields, with its Workspace's name.
-pub(crate) struct StoredSessionRow {
-    pub(crate) initial_pwd: PathBuf,
-    pub(crate) session_uuid: String,
-    pub(crate) workspace_id: Option<String>,
-    pub(crate) workspace_name: Option<String>,
-    pub(crate) name: String,
-    pub(crate) manual_name: Option<String>,
-    pub(crate) emoji: Option<String>,
-    pub(crate) pi_session_file: Option<PathBuf>,
-    pub(crate) pi_session_id: Option<String>,
-    pub(crate) layout: Option<Layout>,
+pub struct StoredSessionRow {
+    pub initial_pwd: PathBuf,
+    pub session_uuid: String,
+    pub workspace_id: Option<String>,
+    pub workspace_name: Option<String>,
+    pub name: String,
+    pub manual_name: Option<String>,
+    pub emoji: Option<String>,
+    pub pi_session_file: Option<PathBuf>,
+    pub pi_session_id: Option<String>,
+    pub layout: Option<Layout>,
 }
 
 /// One cached query per Session: this runs for every listing and snapshot, under the catalog
 /// lock. A Session pointing at a Workspace that is not open is an error, not Workspace-less.
-pub(crate) fn open_session_row(
-    database: &Connection,
-    id: SessionId,
-) -> io::Result<StoredSessionRow> {
+pub fn open_session_row(database: &Connection, id: SessionId) -> io::Result<StoredSessionRow> {
     let (row, stored_layout) = database
         .prepare_cached(
             "SELECT s.initial_pwd, s.session_uuid, s.workspace_id, w.name, s.name, s.manual_name,
@@ -1273,9 +1188,7 @@ pub(crate) fn open_session_row(
 }
 
 /// Every Session that records a Pi bridge socket: its ID, history file and socket path.
-pub(crate) fn pi_bridge_sockets(
-    database: &Connection,
-) -> io::Result<Vec<(SessionId, PathBuf, PathBuf)>> {
+pub fn pi_bridge_sockets(database: &Connection) -> io::Result<Vec<(SessionId, PathBuf, PathBuf)>> {
     let mut statement = database
         .prepare(
             "SELECT id, pi_session_file, pi_bridge_socket_path FROM sessions
@@ -1503,6 +1416,45 @@ mod tests {
                 .unwrap()
                 .is_empty()
         );
+    }
+
+    #[test]
+    fn open_creates_an_owner_only_durable_catalog_and_reopens_it() {
+        let directory = std::env::temp_dir().join(format!(
+            "axo-store-open-{}-{}",
+            std::process::id(),
+            new_uuid_v4().unwrap()
+        ));
+        std::fs::create_dir_all(&directory).unwrap();
+        let path = directory.join(DATABASE_FILE);
+
+        let database = open(&path).unwrap();
+        let pragma = |name: &str| -> String {
+            database
+                .query_row(&format!("PRAGMA {name}"), [], |row| {
+                    row.get::<_, rusqlite::types::Value>(0)
+                })
+                .map(|value| match value {
+                    rusqlite::types::Value::Integer(number) => number.to_string(),
+                    rusqlite::types::Value::Text(text) => text,
+                    other => format!("{other:?}"),
+                })
+                .unwrap()
+        };
+        assert_eq!(pragma("journal_mode"), "wal");
+        // FULL is also bundled SQLite's default, so this guards the build, not the pragma.
+        assert_eq!(pragma("synchronous"), "2", "FULL");
+        assert_eq!(pragma("foreign_keys"), "1");
+        let mode = std::fs::metadata(&path).unwrap().permissions().mode() & 0o777;
+        assert_eq!(mode, 0o600);
+        let host = load_or_create_host_id(&database).unwrap();
+        drop(database);
+
+        // Reopening migrates nothing away and keeps what was stored.
+        let database = open(&path).unwrap();
+        assert_eq!(load_or_create_host_id(&database).unwrap(), host);
+        drop(database);
+        std::fs::remove_dir_all(directory).unwrap();
     }
 
     #[test]

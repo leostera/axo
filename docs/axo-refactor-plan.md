@@ -99,8 +99,11 @@ payload is a struct or enum deriving `Serialize`/`Deserialize`. `Value` survives
   writes (a verbatim move; `session.rs` 7,250 → 6,554 lines).
 - **Done (`2d2f1d9`, `954180a`, `d76003e`):** the 38 inline SQL calls became named store functions
   with their own in-memory tests; `session.rs` (6,216 lines) has no SQL outside its tests.
-  Creating a Workspace Session is now one transaction. Next: the `axo-store` crate, which needs
-  `ShellCommand` and `restore_workspace_accesses` (security-scoped bookmarks) to stay out of it.
+  Creating a Workspace Session is now one transaction.
+- **Done:** `crates/axo-store` is its own crate. Settings parsing (`ShellCommand`,
+  `AgentCommand`) and Workspace bookmark restore stayed in `axo-server`; the store returns raw
+  values through `load_or_create_setting` and `open_workspace_directories`. `axo_store::open`
+  owns the connection setup; `axo-server` uses rusqlite only in tests.
 - **Test isolation (`aeaae49`, `48b12cd`, `97a971d`):** RPC tests no longer share a directory
   (microsecond timestamps collided), axo-server tests never start the user's login shell, and
   Swift daemon fixtures wait for `connect()`, not the socket file.

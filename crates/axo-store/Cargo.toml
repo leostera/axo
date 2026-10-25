@@ -1,0 +1,11 @@
+[package]
+name = "axo-store"
+version = "0.1.0"
+edition = "2024"
+
+[dependencies]
+axo-pi = { path = "../axo-pi" }
+axo-protocol = { path = "../axo-protocol" }
+log = "0.4"
+rusqlite = { version = "0.39.0", features = ["bundled"] }
+serde_json = "1"
