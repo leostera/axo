@@ -76,7 +76,7 @@ final class TerminalUITestAutomation {
       guard let sessionId = request.sessionId, sessions.session(for: sessionId) != nil else {
         throw AutomationError.noSession
       }
-      sessions.selectedSessionID = sessionId
+      sessions.showSession(sessionId)
       await sessions.refresh()
     default:
       throw AutomationError.unknownOperation(request.operation)

@@ -61,7 +61,7 @@ final class TerminalSessionsModel {
   /// Every open shell by id, across Sessions. Unchanged by Session status or name updates.
   private(set) var shellsByID: [ShellID: TerminalShell] = [:]
   /// Every Session's current layout (including local edits not yet persisted), for sizing panes
-  /// that are not shown. Projected from `layoutsBySession`.
+  /// that are not shown. Projected from `selection`.
   private(set) var sessionLayouts: [SessionLayout] = []
   private(set) var hasSessions = false
   /// Which menu commands apply. The menus read only this, so Session updates and switches that
@@ -70,9 +70,9 @@ final class TerminalSessionsModel {
   private(set) var workspaces: [WorkspaceRecord] = [] {
     didSet { projectCommandAvailability() }
   }
-  var selectedSessionID: SessionID? {
+  // Projected from `selection`; see `projectSelection()`.
+  private(set) var selectedSessionID: SessionID? {
     didSet {
-      projectCommandAvailability()
       guard oldValue != selectedSessionID, let selectedSessionDefaults else { return }
       if let selectedSessionID {
         selectedSessionDefaults.set(selectedSessionID.rawValue, forKey: AxoPreferenceKey.selectedSession)
@@ -81,12 +81,8 @@ final class TerminalSessionsModel {
       }
     }
   }
-  private(set) var focusedShellID: ShellID? {
-    didSet { projectCommandAvailability() }
-  }
-  private(set) var layout: TerminalLayout? {
-    didSet { projectCommandAvailability() }
-  }
+  private(set) var focusedShellID: ShellID?
+  private(set) var layout: TerminalLayout?
   private(set) var errorMessage: String?
   private(set) var catalogConnection = CatalogConnection.connecting
   private(set) var workspaceCreationError: String?
@@ -115,15 +111,16 @@ final class TerminalSessionsModel {
   private let viewportReporter: ViewportReporter
   /// Methods offered by the connected Axod; `nil` until negotiated on this connection.
   @ObservationIgnored private var daemonMethods: Set<String>?
-  /// The layout each open Session presents: Axod's stored layout, normalized to its shells, plus
-  /// local edits. The single source of truth for layouts; `sessions` keeps Axod's records as
-  /// sent, so dividing a pane never touches what the sidebar reads.
-  @ObservationIgnored private var layoutsBySession: [SessionID: TerminalLayout] = [:] {
+  /// Selection, focus and layouts: the single source of truth, projected into the observed
+  /// properties above whenever it changes. `sessions` keeps Axod's records as sent, so dividing
+  /// a pane never touches what the sidebar reads.
+  @ObservationIgnored private var selection: WorkbenchSelection {
     didSet {
-      assign(\.sessionLayouts, layoutsBySession.sorted { $0.key < $1.key }.map(\.value.sessionLayout))
+      // Taken here: a write to `selection` inside its own observer does not re-enter it.
+      let writes = selection.takePendingWrites()
+      projectSelection(persisting: writes)
     }
   }
-  @ObservationIgnored private var recentSessions = RecentSessions()
 
   // MARK: - Initialization
 
@@ -176,7 +173,9 @@ final class TerminalSessionsModel {
     let preferenceDefaults = selectedSessionDefaults ?? .standard
     self.preferenceDefaults = preferenceDefaults
     let restartsAutomatically = preferenceDefaults.bool(forKey: AxoPreferenceKey.automaticPiRestart)
-    selectedSessionID = Self.storedSelectedSessionID(from: selectedSessionDefaults)
+    let storedSelection = Self.storedSelectedSessionID(from: selectedSessionDefaults)
+    selection = WorkbenchSelection(selectedSessionID: storedSelection)
+    selectedSessionID = storedSelection
     automaticallyRestartUnavailablePi = restartsAutomatically
     layoutWriter = TerminalLayoutWriter(client: client)
     piRestarter = AutomaticPiRestarter(isEnabled: restartsAutomatically)
@@ -232,6 +231,18 @@ final class TerminalSessionsModel {
     let shells = sessions.lazy.flatMap(\.shells)
     assign(\.shellsByID, Dictionary(shells.map { ($0.id, $0) }, uniquingKeysWith: { _, last in last }))
     assign(\.hasSessions, !sessions.isEmpty)
+    projectCommandAvailability()
+  }
+
+  /// Writes the observed selection, focus and layouts (only those that changed) and hands new
+  /// layout writes to the writer.
+  private func projectSelection(persisting writes: [SessionID: SessionLayout]) {
+    for (sessionID, layout) in writes { layoutWriter.schedule(layout, for: sessionID) }
+    assign(\.selectedSessionID, selection.selectedSessionID)
+    assign(\.focusedShellID, selection.focusedShellID)
+    assign(\.layout, selection.layout)
+    assign(
+      \.sessionLayouts, selection.layouts.sorted { $0.key < $1.key }.map(\.value.sessionLayout))
     projectCommandAvailability()
   }
 
@@ -326,62 +337,12 @@ final class TerminalSessionsModel {
     applyCatalog(updated, focusing: nil)
   }
 
-  /// Replaces the catalog with Axod's `daemonSessions`, normalizing layouts (keeping local edits,
-  /// dropping closed panes, appending new ones) and repairing selection and focus.
+  /// Replaces the catalog with Axod's `daemonSessions`; `WorkbenchSelection` normalizes layouts
+  /// and repairs selection and focus.
   private func applyCatalog(_ daemonSessions: [TerminalSession], focusing resumeSessionID: SessionID?) {
-    let previouslySelectedSession = selectedSessionID.flatMap(session(for:))
-    let openSessionIDs = Set(daemonSessions.map(\.id))
-    layoutWriter.retain(sessionIDs: openSessionIDs)
-
-    var layouts: [SessionID: TerminalLayout] = [:]
-    for session in daemonSessions {
-      let shellIDs = Set(session.shells.map(\.id))
-      let serverLayout = session.layout.map(TerminalLayout.init)
-      let sourceLayout = layoutsBySession[session.id] ?? serverLayout
-      let normalizedLayout: TerminalLayout?
-      let newShellIDs: Set<ShellID>
-      if let sourceLayout, let pruned = sourceLayout.pruned(to: shellIDs) {
-        newShellIDs = shellIDs.subtracting(pruned.shellIDs)
-        normalizedLayout = pruned.adding(newShellIDs)
-      } else {
-        newShellIDs = []
-        normalizedLayout = TerminalLayout.defaultLayout(for: session.shells.map(\.id))
-      }
-
-      layouts[session.id] = normalizedLayout
-      if let normalizedLayout, serverLayout != normalizedLayout {
-        layoutWriter.schedule(normalizedLayout.sessionLayout, for: session.id)
-      }
-
-      guard selectedSessionID == session.id else { continue }
-      if let newestShellID = session.shells.map(\.id).filter(newShellIDs.contains).max()
-      {
-        assign(\.focusedShellID, newestShellID)
-      } else if let previousFocus = focusedShellID,
-        sourceLayout?.contains(shellID: previousFocus) == true,
-        !shellIDs.contains(previousFocus)
-      {
-        assign(
-          \.focusedShellID,
-          sourceLayout?.focusTargetAfterClosing(previousFocus, remainingShellIDs: shellIDs)
-            ?? normalizedLayout?.firstShellID)
-      }
-    }
-    layoutsBySession = layouts
+    layoutWriter.retain(sessionIDs: Set(daemonSessions.map(\.id)))
+    selection.applyCatalog(daemonSessions, previous: sessions, focusing: resumeSessionID)
     assign(\.sessions, daemonSessions)
-
-    if let resumeSessionID, openSessionIDs.contains(resumeSessionID) {
-      select(resumeSessionID)
-    } else if let selectedSessionID, openSessionIDs.contains(selectedSessionID) {
-      activate(selectedSessionID)
-    } else if let previouslySelectedSession {
-      recentSessions.forget(previouslySelectedSession.id)
-      select(
-        SessionNavigation.successor(
-          afterClosing: previouslySelectedSession, in: sessions, recent: recentSessions))
-    } else {
-      select(sessions.first?.id)
-    }
     piRestarter.schedule(for: sessions)
   }
 
@@ -557,7 +518,7 @@ final class TerminalSessionsModel {
     do { client = try requireClient() } catch { return report(error) }
     guard let sessionID = selectedSessionID,
       session(for: sessionID) != nil,
-      let anchorShellID = focusedShellID ?? layoutsBySession[sessionID]?.firstShellID
+      let anchorShellID = selection.splitAnchor(in: sessionID)
     else {
       errorMessage = "Select a session before splitting the terminal."
       return
@@ -584,19 +545,14 @@ final class TerminalSessionsModel {
         return
       }
 
-      let updatedLayout = currentLayout(of: currentSession)?.placing(
-        shellID: shell.id, direction: direction, beside: anchorShellID, ratio: pending.ratio
-      ) ?? .pane(shell.id)
       if !currentSession.shells.contains(where: { $0.id == shell.id }) {
         replace(currentSession, withShells: currentSession.shells + [shell])
       }
       // Clear the optimistic leaf in the same main-actor turn as installing the real one.
       pendingTerminalSplit = nil
-      setLayout(updatedLayout, for: sessionID, persist: true)
-      if selectedSessionID == sessionID {
-        assign(\.layout, updatedLayout)
-        assign(\.focusedShellID, shell.id)
-      }
+      selection.place(
+        shell.id, in: currentSession, direction: direction, beside: anchorShellID,
+        ratio: pending.ratio)
       errorMessage = nil
     } catch {
       guard pendingTerminalSplit?.id == pending.id else { return }
@@ -627,13 +583,7 @@ final class TerminalSessionsModel {
   }
 
   func resizeSplit(_ splitID: UUID, to ratio: Double) {
-    guard let selectedSessionID,
-      let currentLayout = layoutsBySession[selectedSessionID],
-      ratio.isFinite,
-      let updated = currentLayout.resizing(splitID: splitID, to: min(max(ratio, 0.01), 0.99))
-    else { return }
-    setLayout(updated, for: selectedSessionID, persist: true)
-    assign(\.layout, updated)
+    selection.resizeSplit(splitID, to: ratio)
   }
 
   /// User-initiated close (⌘W): closes an idle shell at once, but asks first when it is running
@@ -701,17 +651,8 @@ final class TerminalSessionsModel {
       return
     }
     let sessionID = session.id
-    let layoutBeforeClose = currentLayout(of: session)
-    let remainingShellIDs = Set(session.shells.lazy.map(\.id).filter { $0 != shellID })
-    let focusAfterClose: ShellID? = {
-      guard selectedSessionID == sessionID else { return nil }
-      guard let focusedShellID else { return layoutBeforeClose?.firstShellID }
-      if focusedShellID == shellID {
-        return layoutBeforeClose?.focusTargetAfterClosing(
-          shellID, remainingShellIDs: remainingShellIDs)
-      }
-      return remainingShellIDs.contains(focusedShellID) ? focusedShellID : nil
-    }()
+    let layoutBeforeClose = selection.currentLayout(of: session)
+    let focusAfterClose = selection.focusAfterClosing(shellID, in: session)
 
     do {
       let rpcStart = ContinuousClock.now
@@ -722,22 +663,10 @@ final class TerminalSessionsModel {
         removeSessions([sessionID], closing: session, replacement: closed.replacement)
       } else if let currentSession = self.session(for: sessionID) {
         let remainingShells = currentSession.shells.filter { $0.id != shellID }
-        let remainingShellIDs = Set(remainingShells.map(\.id))
         replace(currentSession, withShells: remainingShells)
-
-        let updatedLayout = (layoutsBySession[sessionID] ?? layoutBeforeClose)?
-          .removing(shellID: shellID)
-        if let updatedLayout {
-          setLayout(updatedLayout, for: sessionID, persist: true)
-        }
-        if selectedSessionID == sessionID {
-          assign(\.layout, updatedLayout)
-          let currentFocus = focusedShellID.flatMap { remainingShellIDs.contains($0) ? $0 : nil }
-          let preferredFocus = focusAfterClose.flatMap {
-            remainingShellIDs.contains($0) ? $0 : nil
-          }
-          assign(\.focusedShellID, currentFocus ?? preferredFocus ?? updatedLayout?.firstShellID)
-        }
+        selection.paneClosed(
+          shellID, in: sessionID, remaining: Set(remainingShells.map(\.id)),
+          layoutBeforeClose: layoutBeforeClose, preferredFocus: focusAfterClose)
       }
       errorMessage = nil
     } catch {
@@ -794,12 +723,7 @@ final class TerminalSessionsModel {
 
   /// Focuses an available pane in any Session, selecting that Session.
   func focus(_ shellID: ShellID) {
-    // Unavailable Pi panes are focusable too: ⌘W, pane navigation and Restart act on them.
-    guard let session = session(containing: shellID) else { return }
-    selectedSessionID = session.id
-    assign(\.layout, layoutsBySession[session.id])
-    assign(\.focusedShellID, shellID)
-    recentSessions.remember(session.id)
+    selection.focus(shellID, in: sessions)
   }
 
   private func showAdjacentSession(_ direction: TerminalNavigationDirection) {
@@ -813,14 +737,8 @@ final class TerminalSessionsModel {
   }
 
   private func focusAdjacentPane(_ direction: TerminalNavigationDirection) {
-    guard let layout else { return }
-    let paneIDs = layout.orderedShellIDs.filter { shell(for: $0) != nil }
-    let currentIndex = focusedShellID.flatMap { paneIDs.firstIndex(of: $0) }
-    guard
-      let target = SessionNavigation.adjacentIndex(
-        from: currentIndex, count: paneIDs.count, direction: direction)
-    else { return }
-    focus(paneIDs[target])
+    guard let target = selection.adjacentPane(direction, among: Set(shellsByID.keys)) else { return }
+    focus(target)
   }
 
   // MARK: - State helpers
@@ -884,90 +802,30 @@ final class TerminalSessionsModel {
     replacement: TerminalSession?,
     fallback: ([TerminalSession]) -> SessionID? = { $0.first?.id }
   ) {
-    for sessionID in sessionIDs {
-      layoutsBySession.removeValue(forKey: sessionID)
-      layoutWriter.discard(sessionID: sessionID)
-      recentSessions.forget(sessionID)
-    }
+    for sessionID in sessionIDs { layoutWriter.discard(sessionID: sessionID) }
     sessions.removeAll { sessionIDs.contains($0.id) }
     if let replacement { add(replacement) }
-
-    guard let selectedSessionID, sessionIDs.contains(selectedSessionID) else {
-      if let selectedSessionID { activate(selectedSessionID) }
-      return
-    }
-    let successor = closing.flatMap {
-      SessionNavigation.successor(
-        afterClosing: $0, in: sessions, recent: recentSessions, replacement: replacement)
-    }
-    select(successor ?? fallback(sessions))
+    selection.remove(
+      sessionIDs, remaining: sessions, closing: closing, replacement: replacement,
+      fallback: fallback)
   }
 
   /// Selects `sessionID` (or nothing) and shows its layout and focus.
   private func select(_ sessionID: SessionID?) {
-    selectedSessionID = sessionID
-    if let sessionID {
-      activate(sessionID)
-    } else {
-      assign(\.layout, nil)
-      assign(\.focusedShellID, nil)
-    }
-  }
-
-  /// Presents `sessionID`'s layout, keeping focus if it is still a valid pane, else focusing the
-  /// newest pane.
-  private func activate(_ sessionID: SessionID) {
-    guard let session = session(for: sessionID) else {
-      assign(\.layout, nil)
-      assign(\.focusedShellID, nil)
-      return
-    }
-    recentSessions.remember(sessionID)
-    let currentLayout = currentLayout(of: session)
-    if layoutsBySession[sessionID] == nil {
-      setLayout(currentLayout, for: sessionID, persist: true)
-    }
-    assign(\.layout, currentLayout)
-    guard let currentLayout else {
-      assign(\.focusedShellID, nil)
-      return
-    }
-    if let focusedShellID,
-      currentLayout.contains(shellID: focusedShellID),
-      session.shells.contains(where: { $0.id == focusedShellID })
-    {
-      return
-    }
-    assign(\.focusedShellID, session.shells.map(\.id).max())
-  }
-
-  /// The local layout, else Axod's stored one, else the default for its shells.
-  private func currentLayout(of session: TerminalSession) -> TerminalLayout? {
-    layoutsBySession[session.id]
-      ?? session.layout.map(TerminalLayout.init)
-      ?? TerminalLayout.defaultLayout(for: session.shells.map(\.id))
+    selection.select(sessionID, in: sessions)
   }
 
   private func add(_ session: TerminalSession) {
-    let layout = session.layout.map(TerminalLayout.init)
-      ?? TerminalLayout.defaultLayout(for: session.shells.map(\.id))
     var updated = sessions.filter { $0.id != session.id }
     updated.append(session)
     updated.sort { $0.id < $1.id }
     sessions = updated
-    setLayout(layout, for: session.id, persist: session.layout == nil)
+    selection.add(session)
   }
 
   private func replace(_ session: TerminalSession, withShells shells: [TerminalShell]) {
     guard let index = sessions.firstIndex(where: { $0.id == session.id }) else { return }
     sessions[index] = session.replacing(shells: shells)
-  }
-
-  private func setLayout(_ layout: TerminalLayout?, for sessionID: SessionID, persist: Bool) {
-    layoutsBySession[sessionID] = layout
-    if persist, let layout {
-      layoutWriter.schedule(layout.sessionLayout, for: sessionID)
-    }
   }
 }
 
