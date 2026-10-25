@@ -3516,50 +3516,47 @@ fn session_metadata(
     id: SessionId,
     attach_socket_path: &Path,
 ) -> io::Result<SessionRecord> {
+    // One row per Session: this runs for every listing and snapshot, under the catalog lock.
     let (
         initial_pwd,
         session_uuid,
         workspace_id,
+        workspace_name,
         name,
         manual_name,
+        emoji,
         pi_session_file,
         pi_session_id,
-    ) = state.database.query_row(
-        "SELECT initial_pwd, session_uuid, workspace_id, name, manual_name, pi_session_file, pi_session_id
-         FROM sessions WHERE id = ?1 AND state = 'open'",
-        params![id.get()],
-        |row| {
-            Ok((
-                PathBuf::from(row.get::<_, String>(0)?),
-                row.get::<_, String>(1)?,
-                row.get::<_, Option<String>>(2)?,
-                row.get::<_, String>(3)?,
-                row.get::<_, Option<String>>(4)?,
-                row.get::<_, Option<String>>(5)?.map(PathBuf::from),
-                row.get::<_, Option<String>>(6)?,
-            ))
-        },
-    )
-    .map_err(io::Error::other)?;
-    let emoji = state
+        stored_layout,
+    ) = state
         .database
-        .query_row(
-            "SELECT emoji FROM sessions WHERE id = ?1 AND state = 'open'",
-            params![id.get()],
-            |row| row.get::<_, Option<String>>(0),
+        .prepare_cached(
+            "SELECT s.initial_pwd, s.session_uuid, s.workspace_id, w.name, s.name, s.manual_name,
+                    s.emoji, s.pi_session_file, s.pi_session_id, s.layout_json
+             FROM sessions s
+             LEFT JOIN workspaces w ON w.workspace_id = s.workspace_id AND w.state = 'open'
+             WHERE s.id = ?1 AND s.state = 'open'",
         )
-        .map_err(io::Error::other)?;
-    let workspace_name = workspace_id
-        .as_ref()
-        .map(|workspace_id| {
-            state.database.query_row(
-                "SELECT name FROM workspaces WHERE workspace_id = ?1 AND state = 'open'",
-                params![workspace_id],
-                |row| row.get::<_, String>(0),
-            )
+        .and_then(|mut statement| {
+            statement.query_row(params![id.get()], |row| {
+                Ok((
+                    PathBuf::from(row.get::<_, String>(0)?),
+                    row.get::<_, String>(1)?,
+                    row.get::<_, Option<String>>(2)?,
+                    row.get::<_, Option<String>>(3)?,
+                    row.get::<_, String>(4)?,
+                    row.get::<_, Option<String>>(5)?,
+                    row.get::<_, Option<String>>(6)?,
+                    row.get::<_, Option<String>>(7)?.map(PathBuf::from),
+                    row.get::<_, Option<String>>(8)?,
+                    row.get::<_, Option<String>>(9)?,
+                ))
+            })
         })
-        .transpose()
         .map_err(io::Error::other)?;
+    if workspace_id.is_some() && workspace_name.is_none() {
+        return Err(io::Error::other("Session's Workspace is not open"));
+    }
     let mut shells: Vec<_> = state
         .panes
         .in_session(id)
@@ -3594,7 +3591,7 @@ fn session_metadata(
         status,
         initial_pwd,
         shells,
-        layout: read_session_layout(&state.database, id)?,
+        layout: stored_layout.and_then(|json| parse_stored_layout(id, &json)),
     })
 }
 
@@ -3688,22 +3685,19 @@ fn read_session_layout(database: &Connection, id: SessionId) -> io::Result<Optio
         .optional()
         .map_err(io::Error::other)?
         .ok_or_else(|| io::Error::new(io::ErrorKind::NotFound, "session record is missing"))?;
-    let Some(stored_layout) = stored_layout else {
-        return Ok(None);
-    };
+    Ok(stored_layout.and_then(|json| parse_stored_layout(id, &json)))
+}
 
-    // Parsing validates the layout's structure; a stored layout that fails is ignored.
-    let layout: Layout = match serde_json::from_str(&stored_layout) {
-        Ok(layout) => layout,
-        Err(error) => {
+/// Parsing validates the layout's structure; a stored layout that fails is ignored.
+fn parse_stored_layout(id: SessionId, json: &str) -> Option<Layout> {
+    serde_json::from_str(json)
+        .inspect_err(|error| {
             log::warn!(
                 "event=session.layout_invalid session_id={} reason={error}",
                 id.get()
             );
-            return Ok(None);
-        }
-    };
-    Ok(Some(layout))
+        })
+        .ok()
 }
 
 fn restore_workspace_accesses(
@@ -6096,6 +6090,49 @@ mod tests {
         assert!(unrelated.0.try_wait().unwrap().is_none());
         assert_eq!(fs::read(&file).unwrap(), b"preserved history");
         drop(recovered);
+    }
+
+    #[test]
+    fn session_metadata_reads_emoji_workspace_name_and_ignores_a_corrupt_layout() {
+        let fixture = LifecycleFixture::new();
+        let manager = &fixture.manager;
+        let session = manager.create_session().unwrap();
+        let workspace_id = new_uuid_v4().unwrap();
+        {
+            let state = manager.lock_state().unwrap();
+            state
+                .database
+                .execute(
+                    "INSERT INTO workspaces (workspace_id, name, directory_path, state, created_at)
+                     VALUES (?1, 'Axo', '/tmp', 'open', 0)",
+                    params![workspace_id],
+                )
+                .unwrap();
+            state
+                .database
+                .execute(
+                    "UPDATE sessions SET emoji = '🦀', workspace_id = ?1, layout_json = '{\"not\": 1}'
+                     WHERE id = ?2",
+                    params![workspace_id, session.id.get()],
+                )
+                .unwrap();
+            let record = session_metadata(&state, session.id, &manager.attach_socket_path).unwrap();
+            assert_eq!(record.emoji.as_deref(), Some("🦀"));
+            assert_eq!(record.workspace_id.as_deref(), Some(workspace_id.as_str()));
+            assert_eq!(record.workspace_name.as_deref(), Some("Axo"));
+            assert_eq!(record.layout, None, "a corrupt stored layout is ignored");
+            assert_eq!(record.shells.len(), 1);
+
+            // A Session whose Workspace is gone is inconsistent, not Workspace-less.
+            state
+                .database
+                .execute(
+                    "UPDATE workspaces SET state = 'archived' WHERE workspace_id = ?1",
+                    params![workspace_id],
+                )
+                .unwrap();
+            assert!(session_metadata(&state, session.id, &manager.attach_socket_path).is_err());
+        }
     }
 
     #[test]
