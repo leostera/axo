@@ -35,7 +35,9 @@ final class GhosttyRuntime {
   // userdata pointer back to the clipboard callbacks, even after SwiftUI pane identities change.
   @ObservationIgnored private var terminalSurfaces: [ShellID: SurfaceEntry] = [:]
   @ObservationIgnored private var notificationTokens: [NSObjectProtocol] = []
-  @ObservationIgnored private var lastReattach: [ShellID: ContinuousClock.Instant] = [:]
+  @ObservationIgnored private var reattachThrottle = ReattachThrottle()
+  /// Reattaches deferred by `reattachThrottle`, at most one per shell.
+  @ObservationIgnored private var pendingReattaches: [ShellID: Task<Void, Never>] = [:]
   /// Where every open pane would be if its Session were shown; see `sizeOffscreenSurfaces`.
   @ObservationIgnored private var offscreenPaneSizes: [ShellID: CGSize] = [:]
   @ObservationIgnored private var offscreenBackingScale: CGFloat = NSScreen.main?.backingScaleFactor ?? 2
@@ -166,10 +168,13 @@ final class GhosttyRuntime {
     for shellID in closedShellIDs {
       destroySurface(shellID: shellID)
     }
+    let staleAttention = attentionShellIDs.filter { openShells[$0] == nil }
+    if !staleAttention.isEmpty { attentionShellIDs.subtract(staleAttention) }
   }
 
   private func destroySurface(shellID: ShellID) {
-    lastReattach[shellID] = nil
+    reattachThrottle.forget(shellID)
+    pendingReattaches.removeValue(forKey: shellID)?.cancel()
     guard let entry = terminalSurfaces.removeValue(forKey: shellID) else { return }
     entry.view.removeFromSuperview()
     if let surface = entry.view.detach() {
@@ -292,12 +297,28 @@ final class GhosttyRuntime {
 
   /// Axod ended a surface's output stream. If the shell still runs (the client fell behind, or
   /// axod restarted the attachment) reattach; if it exited, the reattach is rejected and the
-  /// catalog closes the pane. Reattaching is rate-limited so a failing stream cannot spin.
+  /// catalog closes the pane. See `ReattachThrottle` for the rate limit.
   func surfaceOutputEnded(_ view: GhosttySurfaceNSView) {
+    guard isCurrentSurface(view), pendingReattaches[view.shellID] == nil else { return }
+    switch reattachThrottle.decide(for: view.shellID, at: .now) {
+    case .now:
+      reattach(view)
+    case .after(let delay):
+      let shellID = view.shellID
+      pendingReattaches[shellID] = Task { @MainActor [weak self, weak view] in
+        guard (try? await Task.sleep(for: delay)) != nil, let self else { return }
+        self.pendingReattaches[shellID] = nil
+        if let view { self.reattach(view) }
+      }
+    }
+  }
+
+  private func isCurrentSurface(_ view: GhosttySurfaceNSView) -> Bool {
+    terminalSurfaces[view.shellID]?.view === view
+  }
+
+  private func reattach(_ view: GhosttySurfaceNSView) {
     guard let entry = terminalSurfaces[view.shellID], entry.view === view else { return }
-    let now = ContinuousClock.now
-    if let last = lastReattach[view.shellID], now - last < .seconds(2) { return }
-    lastReattach[view.shellID] = now
     createSurface(in: view, shell: entry.shell)
   }
 

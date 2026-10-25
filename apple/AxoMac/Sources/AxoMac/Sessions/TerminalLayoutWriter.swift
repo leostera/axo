@@ -9,7 +9,10 @@ final class TerminalLayoutWriter {
   private let client: AxodClient?
   private let debounce: Duration
   private var pending: [SessionID: SessionLayout] = [:]
-  private var tasks: [SessionID: Task<Void, Never>] = [:]
+  /// The one writer per session, tagged so a cancelled writer that is still unwinding cannot
+  /// clear the entry of the writer that replaced it (which would allow two concurrent writers
+  /// and an older layout landing last).
+  private var tasks: [SessionID: (id: UUID, task: Task<Void, Never>)] = [:]
 
   /// Reports a failed write for a session that is still open.
   var onError: ((Error) -> Void)?
@@ -25,7 +28,8 @@ final class TerminalLayoutWriter {
     guard let client else { return }
     pending[sessionID] = layout
     guard tasks[sessionID] == nil else { return }
-    tasks[sessionID] = Task { @MainActor [weak self, debounce] in
+    let writerID = UUID()
+    let task = Task { @MainActor [weak self, debounce] in
       while !Task.isCancelled {
         do {
           try await Task.sleep(for: debounce)
@@ -43,20 +47,21 @@ final class TerminalLayoutWriter {
           break
         }
       }
-      self?.tasks[sessionID] = nil
+      if self?.tasks[sessionID]?.id == writerID { self?.tasks[sessionID] = nil }
     }
+    tasks[sessionID] = (writerID, task)
   }
 
   func discard(sessionID: SessionID) {
     pending.removeValue(forKey: sessionID)
-    tasks.removeValue(forKey: sessionID)?.cancel()
+    tasks.removeValue(forKey: sessionID)?.task.cancel()
   }
 
   /// Drops pending writes for sessions that are no longer open.
   func retain(sessionIDs openSessionIDs: Set<SessionID>) {
     pending = pending.filter { openSessionIDs.contains($0.key) }
     for sessionID in Array(tasks.keys) where !openSessionIDs.contains(sessionID) {
-      tasks.removeValue(forKey: sessionID)?.cancel()
+      tasks.removeValue(forKey: sessionID)?.task.cancel()
     }
   }
 }
