@@ -21,8 +21,10 @@
         <key>PATH</key>
         <string>/opt/homebrew/bin:/usr/local/bin:/usr/bin:/bin:/usr/sbin:/sbin</string>
     </dict>
+    <!-- axod's children are the user's shells, Pi and everything run in them. Background would
+         throttle them all to efficiency cores and background I/O (Pi booted 5-10x slower). -->
     <key>ProcessType</key>
-    <string>Background</string>
+    <string>Interactive</string>
     <key>ThrottleInterval</key>
     <integer>5</integer>
 </dict>

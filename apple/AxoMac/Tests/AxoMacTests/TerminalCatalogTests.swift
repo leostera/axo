@@ -203,7 +203,7 @@ final class TerminalCatalogTests: XCTestCase {
     XCTAssertEqual(Set(model.shellsByID.keys), [10, 11, 20])
     XCTAssertEqual(model.shell(for: 20)?.id, 20)
 
-    var invalidated = false
+    let invalidated = InvalidationFlag()
     withObservationTracking {
       _ = model.shellsByID
       _ = model.sessionLayouts
@@ -211,13 +211,13 @@ final class TerminalCatalogTests: XCTestCase {
       _ = model.layout
       _ = model.focusedShellID
     } onChange: {
-      invalidated = true
+      invalidated.isSet = true
     }
     await model.apply(.sessionSnapshot(session(1, shells: [10, 11], name: "Working on it")))
     await model.apply(.sessionSnapshot(session(2, shells: [20], name: "Done")))
 
     XCTAssertEqual(model.session(for: 1)?.name, "Working on it")
-    XCTAssertFalse(invalidated)
+    XCTAssertFalse(invalidated.isSet)
   }
 
   /// The App scene's menus read only `commandAvailability`; Session updates and switches that
@@ -233,20 +233,20 @@ final class TerminalCatalogTests: XCTestCase {
         canNavigatePanes: true, canNavigateSessions: true, hasFocusedShell: true,
         hasSelectedSession: true))
 
-    var invalidated = false
+    let invalidated = InvalidationFlag()
     withObservationTracking {
       _ = model.commandAvailability
     } onChange: {
-      invalidated = true
+      invalidated.isSet = true
     }
     await model.apply(.sessionSnapshot(session(1, shells: [10, 11], name: "Working")))
     model.showSession(2)
     model.focusNextPane()
     XCTAssertEqual(model.selectedSessionID, 2)
-    XCTAssertFalse(invalidated)
+    XCTAssertFalse(invalidated.isSet)
 
     await model.apply(.sessionSnapshot(session(2, shells: [20])))
-    XCTAssertTrue(invalidated)
+    XCTAssertTrue(invalidated.isSet)
     XCTAssertFalse(model.commandAvailability.canNavigatePanes)
   }
 
@@ -256,15 +256,15 @@ final class TerminalCatalogTests: XCTestCase {
     let model = makeModel(client)
     await model.refresh()
 
-    var invalidated = false
+    let invalidated = InvalidationFlag()
     withObservationTracking {
       _ = model.shellsByID
     } onChange: {
-      invalidated = true
+      invalidated.isSet = true
     }
     await model.apply(.sessionSnapshot(session(1, shells: [10, 12])))
 
-    XCTAssertTrue(invalidated)
+    XCTAssertTrue(invalidated.isSet)
     XCTAssertEqual(Set(model.shellsByID.keys), [10, 12])
     XCTAssertEqual(model.sessionLayouts.count, 1)
     XCTAssertTrue(model.hasSessions)
@@ -442,4 +442,9 @@ final class TerminalCatalogTests: XCTestCase {
       try await Task.sleep(for: .milliseconds(5))
     }
   }
+}
+
+/// Set from an observation `onChange`, which is not main-actor isolated.
+private final class InvalidationFlag: @unchecked Sendable {
+  var isSet = false
 }
