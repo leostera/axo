@@ -82,6 +82,9 @@ swift_test(
         ":AxoMac",
         "//apple/AxoDaemonManager",
     ],
+    # Each test starts its own axod fixture, so shards run in parallel; rules_swift's runner
+    # assigns tests to shards round-robin.
+    shard_count = 3,
     tags = ["no-sandbox"],
     timeout = "moderate",
 )

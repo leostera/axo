@@ -56,6 +56,7 @@ The `AxoMac` library has no `@main`. Two thin entry targets link it: `Sources/Ax
 | `bazel test //apple/AxoMac:TerminalWorkbenchE2ETests` | `TerminalSessionsModel` against an isolated real `axod` with inert Pi fixtures and a private `HOME`. |
 | `bazel test //apple/AxoMac:AxoAppSelfTestTests` | The packaged test-host app's `--self-test` attaching to a daemon-owned PTY. |
 | `bazel test //apple/AxoProtocol:AxoProtocolTests //apple/AxoRPC:AxoRPCTests //apple/AxoRPC:AxoDaemonInteropTests //apple/AxoDaemonManager:AxoDaemonManagerTests` | Wire models and event decoding, transport, live-daemon decoding, registration decisions. |
+| `bazel test //apple/AxoMac:TerminalWorkbenchE2ETests --test_env=AXO_RUN_BENCHMARKS=1 --test_filter=testBenchmarkSwitchingSessions --test_sharding_strategy=disabled --test_output=all` | The Session-switch benchmark (`BENCH session_switch_ms`); skipped otherwise. The E2E target runs in 3 shards, so any `--test_filter` run needs `--test_sharding_strategy=disabled`. |
 | `bazel test //apple/AxoMac:AxoVisualUITestsBazel` | Real XCUITest UI against an isolated daemon. `AXO_UI_TEST_ONLY=<test>` runs one case. |
 
 - The visual runner refuses to start while any `Axo` frontend is running (XCUIApplication can terminate same-bundle apps). Never close or restart discovered Axo/Axod processes to make room; ask the user.

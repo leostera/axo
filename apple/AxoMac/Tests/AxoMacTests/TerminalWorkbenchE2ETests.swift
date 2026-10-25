@@ -216,7 +216,14 @@ final class TerminalWorkbenchE2ETests: XCTestCase {
 
   /// Times switching Sessions in the real workbench view (SwiftUI + AppKit + libghostty) hosted
   /// in an offscreen window. A benchmark, not a pass/fail bound: read `BENCH` in the test log.
+  /// It takes ~5 s, so it runs only when asked:
+  /// `bazel test //apple/AxoMac:TerminalWorkbenchE2ETests --test_env=AXO_RUN_BENCHMARKS=1
+  /// --test_filter=testBenchmarkSwitchingSessions --test_sharding_strategy=disabled
+  /// --test_output=all` (a filtered sharded run fails its empty shards).
   func testBenchmarkSwitchingSessions() async throws {
+    try XCTSkipUnless(
+      ProcessInfo.processInfo.environment["AXO_RUN_BENCHMARKS"] == "1",
+      "Benchmarks run only with AXO_RUN_BENCHMARKS=1.")
     try await withWorkbench { model, _ in
       let runtime = GhosttyRuntime()
       try XCTSkipIf(runtime.errorMessage != nil, "libghostty unavailable: \(runtime.errorMessage ?? "")")
