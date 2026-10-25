@@ -88,8 +88,8 @@ provable. Add it to the default `npm test`.
 - Native apps: sign in to Access in `ASWebAuthenticationSession`, then send the Access token
   as `cf-access-token` on HTTP and on the `/client` WebSocket upgrade. The Worker accepts it
   through the same JWT verification, with no Origin requirement for header tokens.
-- Optional, decide during G4: **client-device pairing**, so a phone is approved once from a
-  signed-in session and can be revoked on its own while its Access login is still valid.
+- Clients (browser, iOS, Mac reaching other hosts) are **never paired**: an Access login is
+  all a client needs, and revoking access is an Access action. Only hosts pair.
 - Daemon routes keep the host credential and never accept an Access identity; client routes
   never accept a host credential.
 - Tests (Miniflare, with a local signing key standing in for the team's keys): missing, forged,
