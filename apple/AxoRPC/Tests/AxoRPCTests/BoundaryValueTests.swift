@@ -53,18 +53,35 @@ final class BoundaryValueTests: XCTestCase {
 
     let session = try JSONDecoder().decode(TerminalSession.self, from: sessionJSON)
     let shell = try XCTUnwrap(session.shells.first)
-    XCTAssertFalse(shell.isAvailable)
-    XCTAssertEqual(shell.availabilityReason, "Pi recovery failed.")
+    XCTAssertEqual(shell.availability, .unavailable(reason: "Pi recovery failed."))
+    XCTAssertEqual(shell.role, .pi)
     XCTAssertEqual(session.status, .unavailable)
+  }
 
-    let legacyShell = TerminalShell(
-      id: 20,
-      processId: 123,
-      initialPwd: "/tmp",
-      ptyDevice: "/dev/ttys001",
-      attachSocketPath: "/tmp/attach.sock"
-    )
-    XCTAssertTrue(legacyShell.isAvailable)
+  func testShellAvailabilityAndRoleMustBeConsistentOnTheWire() throws {
+    func shell(_ fields: String) -> Data {
+      """
+      { "id": 1, "processId": 1, "initialPwd": "/", "ptyDevice": "/dev/ttys001",
+        "attachSocketPath": "/tmp/a.sock", \(fields) }
+      """.data(using: .utf8)!
+    }
+    let decoder = JSONDecoder()
+    let available = try decoder.decode(
+      TerminalShell.self,
+      from: shell(#""role": "terminal", "available": true, "availabilityReason": null"#))
+    XCTAssertEqual(available.availability, .available)
+    XCTAssertEqual(available.role, .terminal)
+
+    for invalid in [
+      #""role": "terminal", "available": true, "availabilityReason": "why""#,
+      #""role": "terminal", "available": false, "availabilityReason": null"#,
+      #""role": "terminal", "available": false, "availabilityReason": """#,
+      #""role": "terminal", "availabilityReason": null"#,
+      #""role": "robot", "available": true, "availabilityReason": null"#,
+      #""available": true, "availabilityReason": null"#,
+    ] {
+      XCTAssertThrowsError(try decoder.decode(TerminalShell.self, from: shell(invalid)), invalid)
+    }
   }
 
   func testBuildNumbersMustBePositiveCanonicalIntegers() {

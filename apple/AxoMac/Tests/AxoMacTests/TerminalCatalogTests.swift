@@ -250,6 +250,53 @@ final class TerminalCatalogTests: XCTestCase {
     XCTAssertFalse(model.commandAvailability.canNavigatePanes)
   }
 
+  /// Dragging a divider rewrites the layout on every frame. The sidebar reads `sessions`, so
+  /// local layout edits must not touch it; hidden-pane sizing still sees the new layout.
+  func testResizingASplitLeavesTheSidebarAlone() async throws {
+    let client = FakeAxodClient()
+    client.sessions = [session(1, shells: [10, 11]), session(2, shells: [20])]
+    let model = makeModel(client)
+    await model.refresh()
+    guard case .split(let splitID, _, let ratio, _, _) = try XCTUnwrap(model.layout) else {
+      return XCTFail("expected a split layout")
+    }
+
+    let sidebarInvalidated = InvalidationFlag()
+    withObservationTracking {
+      _ = model.sessions
+      _ = model.sidebarOrderedSessions
+    } onChange: {
+      sidebarInvalidated.isSet = true
+    }
+    let layoutsInvalidated = InvalidationFlag()
+    withObservationTracking {
+      _ = model.sessionLayouts
+    } onChange: {
+      layoutsInvalidated.isSet = true
+    }
+    model.resizeSplit(splitID, to: ratio + 0.1)
+    model.resizeSplit(splitID, to: ratio + 0.2)
+
+    XCTAssertFalse(sidebarInvalidated.isSet)
+    XCTAssertTrue(layoutsInvalidated.isSet)
+    XCTAssertTrue(model.sessionLayouts.contains(try XCTUnwrap(model.layout).sessionLayout))
+  }
+
+  /// A Session can arrive before its Workspace does (the Workspace list is refetched after a
+  /// `workspace.changed` event). It must still be listed and navigable meanwhile.
+  func testASessionWhoseWorkspaceIsNotListedYetStaysInTheSidebar() async {
+    let client = FakeAxodClient()
+    client.sessions = [
+      TerminalSession(id: 1, initialPwd: "/tmp", shells: [shell(10)]),
+      TerminalSession(id: 2, initialPwd: "/tmp", shells: [shell(20)], workspaceId: "new"),
+    ]
+    let model = makeModel(client)
+    await model.refresh()
+
+    XCTAssertEqual(model.sidebarOrderedSessions.map(\.id), [1, 2])
+    XCTAssertTrue(model.commandAvailability.canNavigateSessions)
+  }
+
   func testShellChangesUpdatePaneProjections() async {
     let client = FakeAxodClient()
     client.sessions = [session(1, shells: [10])]

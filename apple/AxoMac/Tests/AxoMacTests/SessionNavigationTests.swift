@@ -27,8 +27,19 @@ final class SessionNavigationTests: XCTestCase {
       WorkspaceRecord(workspaceId: "a", name: "A", directoryPath: "/"),
     ]
     let sessions = [session(1), session(2, workspace: "a"), session(3, workspace: "b")]
-    XCTAssertEqual(
-      SessionNavigation.sidebarOrder(sessions, workspaces: workspaces).map(\.id), [3, 2, 1])
+    let sections = SidebarSections(sessions: sessions, workspaces: workspaces)
+    XCTAssertEqual(sections.ordered.map(\.id), [3, 2, 1])
+    XCTAssertEqual(sections.sessions(in: "a").map(\.id), [2])
+    XCTAssertEqual(sections.ungrouped.map(\.id), [1])
+  }
+
+  func testSidebarListsSessionsOfUnlistedWorkspacesWithTheStandaloneOnes() {
+    let workspaces = [WorkspaceRecord(workspaceId: "a", name: "A", directoryPath: "/")]
+    let sessions = [session(1, workspace: "gone"), session(2, workspace: "a"), session(3)]
+    let sections = SidebarSections(sessions: sessions, workspaces: workspaces)
+    XCTAssertEqual(sections.ordered.map(\.id), [2, 1, 3])
+    XCTAssertEqual(sections.ungrouped.map(\.id), [1, 3])
+    XCTAssertEqual(sections.sessions(in: "gone").map(\.id), [])
   }
 
   func testAdjacentIndexWrapsAndStartsAtEnds() {
@@ -91,7 +102,7 @@ final class TerminalSessionsModelPublishingTests: XCTestCase {
     let client = FakeAxodClient()
     let shell = TerminalShell(
       id: 10, processId: 1, initialPwd: "/", ptyDevice: "/dev/null", attachSocketPath: "/tmp/s",
-      role: "pi", available: false)
+      role: .pi, availability: .unavailable(reason: "Pi exited."))
     client.sessions = [TerminalSession(id: 1, initialPwd: "/", shells: [shell])]
     let model = TerminalSessionsModel(client: client)
     await model.refresh()

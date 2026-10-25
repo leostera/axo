@@ -16,19 +16,41 @@ struct RecentSessions: Equatable {
   }
 }
 
+/// How the sidebar groups Sessions. Every open Session appears exactly once: under its
+/// Workspace when that Workspace is listed, otherwise with the standalone Sessions. A Session
+/// can arrive before its Workspace does (the Workspace list is refetched after
+/// `workspace.changed`), and it must stay visible and navigable meanwhile.
+struct SidebarSections: Equatable {
+  /// Sessions of each listed Workspace, in catalog order.
+  let sessionsByWorkspace: [String: [TerminalSession]]
+  /// Standalone Sessions and those whose Workspace is not listed, in catalog order.
+  let ungrouped: [TerminalSession]
+  /// Workspace groups in Workspace order, then the ungrouped Sessions.
+  let ordered: [TerminalSession]
+
+  init(sessions: [TerminalSession], workspaces: [WorkspaceRecord]) {
+    let listed = Set(workspaces.map(\.workspaceId))
+    var byWorkspace: [String: [TerminalSession]] = [:]
+    var ungrouped: [TerminalSession] = []
+    for session in sessions {
+      if let workspaceID = session.workspaceId, listed.contains(workspaceID) {
+        byWorkspace[workspaceID, default: []].append(session)
+      } else {
+        ungrouped.append(session)
+      }
+    }
+    sessionsByWorkspace = byWorkspace
+    self.ungrouped = ungrouped
+    ordered = workspaces.flatMap { byWorkspace[$0.workspaceId] ?? [] } + ungrouped
+  }
+
+  func sessions(in workspaceID: String) -> [TerminalSession] {
+    sessionsByWorkspace[workspaceID] ?? []
+  }
+}
+
 /// Pure ordering and selection policy for the sidebar and keyboard navigation.
 enum SessionNavigation {
-  /// Workspace Sessions grouped in Workspace order, then standalone Sessions; each group keeps
-  /// catalog order.
-  static func sidebarOrder(
-    _ sessions: [TerminalSession], workspaces: [WorkspaceRecord]
-  ) -> [TerminalSession] {
-    let byWorkspace = Dictionary(grouping: sessions.filter { $0.workspaceId != nil }) {
-      $0.workspaceId!
-    }
-    return workspaces.flatMap { byWorkspace[$0.workspaceId] ?? [] }
-      + sessions.filter { $0.workspaceId == nil }
-  }
 
   /// The index one step from `currentIndex`, wrapping. With no current item, `next` lands on the
   /// first item and `previous` on the last.

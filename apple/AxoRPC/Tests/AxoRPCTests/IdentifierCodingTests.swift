@@ -11,7 +11,7 @@ final class IdentifierCodingTests: XCTestCase {
 
   func testSessionDecodesTypedIdentifiers() throws {
     let json = Data(
-      #"{"id":3,"initialPwd":"/","shells":[{"id":9,"processId":1,"initialPwd":"/","ptyDevice":"/dev/ttys001","attachSocketPath":"/tmp/a"}]}"#
+      #"{"id":3,"initialPwd":"/","shells":[{"id":9,"processId":1,"initialPwd":"/","ptyDevice":"/dev/ttys001","attachSocketPath":"/tmp/a","role":"terminal","available":true,"availabilityReason":null}]}"#
         .utf8)
     let session = try JSONDecoder().decode(TerminalSession.self, from: json)
     XCTAssertEqual(session.id, SessionID(rawValue: 3))

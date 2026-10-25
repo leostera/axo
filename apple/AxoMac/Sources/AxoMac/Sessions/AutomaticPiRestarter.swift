@@ -40,7 +40,7 @@ final class AutomaticPiRestarter {
   func schedule(for sessions: [TerminalSession]) {
     guard isEnabled else { return }
     for shell in sessions.flatMap(\.shells)
-    where shell.role == "pi" && !shell.isAvailable && loops[shell.id] == nil {
+    where shell.isPi && !shell.isAvailable && loops[shell.id] == nil {
       let id = UUID()
       let shellID = shell.id
       loops[shellID] = (id, Task { [weak self] in await self?.retry(shellID: shellID, loopID: id) })

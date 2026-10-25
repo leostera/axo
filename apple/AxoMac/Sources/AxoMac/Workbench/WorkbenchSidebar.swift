@@ -23,7 +23,7 @@ struct WorkbenchSidebar: View {
   }
 
   private var expandedSidebar: some View {
-    let orderedSessions = sessions.sidebarOrderedSessions
+    let sections = sessions.sidebarSections
 
     return VStack(spacing: 0) {
       WindowDragStrip()
@@ -43,7 +43,7 @@ struct WorkbenchSidebar: View {
           ForEach(sessions.workspaces) { workspace in
             VStack(alignment: .leading, spacing: 0) {
               Group {
-                if renameTarget?.id == "workspace-\(workspace.workspaceId)" {
+                if renameTarget?.id == .workspace(workspace.workspaceId) {
                   SidebarInlineRenameEditor(
                     text: $renameDraft,
                     identifier: "rename-workspace-\(workspace.workspaceId)",
@@ -95,9 +95,7 @@ struct WorkbenchSidebar: View {
               }
 
               if !collapsedWorkspaceIDs.contains(workspace.id) {
-                ForEach(
-                  orderedSessions.filter { $0.workspaceId == workspace.workspaceId }
-                ) { session in
+                ForEach(sections.sessions(in: workspace.workspaceId)) { session in
                   sessionButton(for: session)
                 }
               }
@@ -114,7 +112,7 @@ struct WorkbenchSidebar: View {
             Task { await sessions.createSession() }
           }
 
-          ForEach(orderedSessions.filter { $0.workspaceId == nil }) { session in
+          ForEach(sections.ungrouped) { session in
             sessionButton(for: session)
           }
         }
@@ -176,7 +174,7 @@ struct WorkbenchSidebar: View {
 
   private func sessionButton(for session: TerminalSession) -> some View {
     Group {
-      if renameTarget?.id == "session-\(session.id)" {
+      if renameTarget?.id == .session(session.id) {
         SidebarInlineRenameEditor(
           text: $renameDraft,
           identifier: "rename-session-\(session.id)",

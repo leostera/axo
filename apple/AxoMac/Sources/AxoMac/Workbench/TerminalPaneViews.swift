@@ -106,13 +106,11 @@ struct TerminalPaneView: View {
 
   @ViewBuilder
   var body: some View {
-    if !shell.isAvailable {
+    if case .unavailable(let reason) = shell.availability {
       VStack(spacing: 12) {
         ContentUnavailableView(
           "Pi Session Unavailable", systemImage: "exclamationmark.triangle",
-          description: Text(
-            shell.availabilityReason
-              ?? "Axo could not recover this Pi session. Its conversation history is preserved."))
+          description: Text(reason))
           .fixedSize(horizontal: false, vertical: true)
         Text("Restarting stops the Pi process attached to this pane and starts it again from its existing conversation history.")
           .font(.caption)

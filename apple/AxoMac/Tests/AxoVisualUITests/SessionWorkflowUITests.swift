@@ -175,7 +175,7 @@ extension AxoVisualUITests {
     let originalShell = try XCTUnwrap(original.shells.first)
     let transcriptPath = try XCTUnwrap(original.piSessionFile)
     let interactionMarker = "AXO_PI_SESSION_E2E_\(UUID().uuidString)"
-    XCTAssertEqual(originalShell.role, "pi")
+    XCTAssertEqual(originalShell.role, .pi)
     XCTAssertTrue(transcriptPath.hasPrefix("/"))
     XCTAssertTrue(transcriptPath.contains(workspaceID))
 

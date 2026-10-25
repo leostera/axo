@@ -1,9 +1,8 @@
 import AxoRPC
 
 extension TerminalSession {
-  /// A copy with app-owned shell membership and normalized layout; all other fields are the
-  /// daemon's.
-  func replacing(shells: [TerminalShell], layout: SessionLayout?) -> TerminalSession {
+  /// A copy with app-owned shell membership; all other fields are the daemon's.
+  func replacing(shells: [TerminalShell]) -> TerminalSession {
     TerminalSession(
       id: id,
       initialPwd: initialPwd,

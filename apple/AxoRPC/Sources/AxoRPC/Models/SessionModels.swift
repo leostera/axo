@@ -66,18 +66,34 @@ public struct TerminalSession: Decodable, Equatable, Identifiable, Sendable {
   }
 }
 
+/// What runs in a pane.
+public enum PaneRole: String, Decodable, Equatable, Sendable {
+  /// The session's Pi agent.
+  case pi
+  /// The user's shell.
+  case terminal
+}
+
+/// Whether a pane can be attached. On the wire this is `available` plus `availabilityReason`;
+/// the reason is present exactly when the pane is unavailable, so a pane that is "available
+/// with a reason" or "unavailable without one" cannot be represented.
+public enum PaneAvailability: Equatable, Sendable {
+  case available
+  case unavailable(reason: String)
+}
+
 public struct TerminalShell: Decodable, Equatable, Identifiable, Sendable {
   public let id: ShellID
   public let paneId: String?
-  public let role: String?
+  public let role: PaneRole
   public let processId: UInt32
   public let initialPwd: String
   public let ptyDevice: String
   public let attachSocketPath: String
-  public let available: Bool?
-  public let availabilityReason: String?
+  public let availability: PaneAvailability
 
-  public var isAvailable: Bool { available != false }
+  public var isAvailable: Bool { availability == .available }
+  public var isPi: Bool { role == .pi }
 
   public init(
     id: ShellID,
@@ -86,9 +102,8 @@ public struct TerminalShell: Decodable, Equatable, Identifiable, Sendable {
     ptyDevice: String,
     attachSocketPath: String,
     paneId: String? = nil,
-    role: String? = nil,
-    available: Bool? = nil,
-    availabilityReason: String? = nil
+    role: PaneRole = .terminal,
+    availability: PaneAvailability = .available
   ) {
     self.id = id
     self.paneId = paneId
@@ -97,8 +112,35 @@ public struct TerminalShell: Decodable, Equatable, Identifiable, Sendable {
     self.initialPwd = initialPwd
     self.ptyDevice = ptyDevice
     self.attachSocketPath = attachSocketPath
-    self.available = available
-    self.availabilityReason = availabilityReason
+    self.availability = availability
+  }
+
+  private enum CodingKeys: String, CodingKey {
+    case id, paneId, role, processId, initialPwd, ptyDevice, attachSocketPath, available,
+      availabilityReason
+  }
+
+  public init(from decoder: Decoder) throws {
+    let container = try decoder.container(keyedBy: CodingKeys.self)
+    id = try container.decode(ShellID.self, forKey: .id)
+    paneId = try container.decodeIfPresent(String.self, forKey: .paneId)
+    role = try container.decode(PaneRole.self, forKey: .role)
+    processId = try container.decode(UInt32.self, forKey: .processId)
+    initialPwd = try container.decode(String.self, forKey: .initialPwd)
+    ptyDevice = try container.decode(String.self, forKey: .ptyDevice)
+    attachSocketPath = try container.decode(String.self, forKey: .attachSocketPath)
+    let available = try container.decode(Bool.self, forKey: .available)
+    let reason = try container.decodeIfPresent(String.self, forKey: .availabilityReason)
+    switch (available, reason) {
+    case (true, nil):
+      availability = .available
+    case (false, let reason?) where !reason.isEmpty:
+      availability = .unavailable(reason: reason)
+    default:
+      throw DecodingError.dataCorruptedError(
+        forKey: .availabilityReason, in: container,
+        debugDescription: "availabilityReason must be present exactly when a pane is unavailable")
+    }
   }
 }
 

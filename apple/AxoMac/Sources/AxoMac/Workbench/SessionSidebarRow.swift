@@ -71,7 +71,7 @@ func sidebarStatus(
 ) -> TerminalSessionStatus {
   // A local terminal bell or finished command marks the session until one of its panes is focused.
   if session.shells.contains(where: { attention.contains($0.id) }) { return .needsAttention }
-  return session.status ?? (session.shells.contains(where: { $0.role == "pi" }) ? .starting : .ready)
+  return session.status ?? (session.shells.contains(where: { $0.isPi }) ? .starting : .ready)
 }
 
 @ViewBuilder
@@ -80,7 +80,7 @@ func sessionGlyph(for session: TerminalSession, size: CGFloat) -> some View {
     Text(emoji)
       .font(.system(size: size))
   } else {
-    Image(systemName: session.shells.contains(where: { $0.role == "pi" }) ? "sparkle" : "terminal")
+    Image(systemName: session.shells.contains(where: { $0.isPi }) ? "sparkle" : "terminal")
       .font(.system(size: size))
       .foregroundStyle(.secondary)
   }

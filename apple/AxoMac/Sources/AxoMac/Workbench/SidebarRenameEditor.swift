@@ -5,10 +5,15 @@ enum SidebarRenameTarget: Identifiable {
   case session(TerminalSession)
   case workspace(WorkspaceRecord)
 
-  var id: String {
+  enum ID: Hashable {
+    case session(SessionID)
+    case workspace(String)
+  }
+
+  var id: ID {
     switch self {
-    case .session(let session): "session-\(session.id)"
-    case .workspace(let workspace): "workspace-\(workspace.workspaceId)"
+    case .session(let session): .session(session.id)
+    case .workspace(let workspace): .workspace(workspace.workspaceId)
     }
   }
 
