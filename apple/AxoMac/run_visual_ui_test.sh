@@ -262,7 +262,7 @@ npm --prefix "$workspace_root/packages/pi-axo" run build
 pi_executable=$(command -v pi || true)
 [[ -n "$pi_executable" && -x "$pi_executable" ]] || fail "Pi CLI is required for the isolated Workspace E2E"
 
-[[ -f "$workspace_runfiles/apple/AxoMac/xcodeproj_execution_root_file" ]] ||
+[[ -f "$workspace_runfiles/apple/xcodeproj_execution_root_file" ]] ||
   fail "Xcode-project runner support files are missing from runfiles"
 [[ -f "$workspace_root/apple/AxoMac/BUILD.bazel" ]] ||
   fail "resolved workspace root is not the Axo source tree: $workspace_root"
@@ -284,7 +284,7 @@ cd "$workspace_runfiles"
 export BUILD_WORKSPACE_DIRECTORY="$workspace_root"
 "$xcodeproj_runner"
 
-project="$workspace_root/apple/AxoMac/AxoMac.xcodeproj"
+project="$workspace_root/apple/Axo.xcodeproj"
 [[ -d "$project" ]] || fail "the generated Xcode project is missing: $project"
 scheme_file="$project/xcshareddata/xcschemes/AxoVisualUITests.xcscheme"
 [[ -f "$scheme_file" ]] || fail "the generated Xcode UI-test scheme is missing: $scheme_file"

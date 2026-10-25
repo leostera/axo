@@ -3,7 +3,6 @@ load("@rules_apple//apple:versioning.bzl", "apple_bundle_version")
 load("@rules_shell//shell:sh_test.bzl", "sh_test")
 load("@rules_swift//swift:swift_library.bzl", "swift_library")
 load("@rules_swift//swift:swift_test.bzl", "swift_test")
-load("@rules_xcodeproj//xcodeproj:defs.bzl", "xcodeproj")
 
 package(default_visibility = ["//visibility:public"])
 
@@ -112,10 +111,10 @@ macos_ui_test(
 sh_test(
     name = "AxoVisualUITestsBazel",
     srcs = ["run_visual_ui_test.sh"],
-    data = [":xcodeproj", "//:MODULE.bazel", "//crates/axod:axod"],
+    data = ["//apple:xcodeproj", "//:MODULE.bazel", "//crates/axod:axod"],
     env = {
         "AXO_UI_AXOD_RUNFILE": "$(rlocationpath //crates/axod:axod)",
-        "AXO_XCODEPROJ_RUNNER": "$(rlocationpath :xcodeproj)",
+        "AXO_XCODEPROJ_RUNNER": "$(rlocationpath //apple:xcodeproj)",
         "AXO_WORKSPACE_MODULE": "$(rlocationpath //:MODULE.bazel)",
     },
     env_inherit = [
@@ -192,22 +191,4 @@ macos_application(
         "@ghostty//:terminfo": "Resources",
     },
     deps = [":AxoMacTestHost"],
-)
-
-xcodeproj(
-    name = "xcodeproj",
-    project_name = "AxoMac",
-    tags = ["manual"],
-    top_level_targets = [
-        ":AxoApp",
-        ":AxoUITestApp",
-        "//apple/AxoProtocol:AxoProtocolTests",
-        "//apple/AxoClient:AxoClientTests",
-        "//apple/AxoSearch:AxoSearchTests",
-        "//apple/AxoDaemonManager:AxoDaemonManagerTests",
-        "//apple/AxoMac:AxoMacTests",
-        "//apple/AxoMac:TerminalWorkbenchE2ETests",
-        "//apple/AxoMac:AxoVisualUITests",
-        "//apple/AxoMac:AxoAppSelfTestTests",
-    ],
 )

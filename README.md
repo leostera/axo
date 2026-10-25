@@ -4,7 +4,7 @@ Axo is an agentic harness for terminal romantics, with a native macOS frontend a
 
 ## First macOS slice
 
-- `apple/AxoMac/AxoMac.xcodeproj` is the native IDE project, generated from Bazel with `bazel run //apple/AxoMac:xcodeproj`.
+- `apple/Axo.xcodeproj` is the native IDE project for every Apple package and app, generated from Bazel with `bazel run //apple:xcodeproj` (not checked in; Bazel stays the build).
 - `apple/AxoProtocol/`, `apple/AxoClient/`, `apple/AxoSearch/` and `apple/AxoDaemonManager/` are local Swift packages used by the app. `AxoClient` is the client for hosts (pluggable transport, persistent JSON-RPC connection, axod's typed API); the manager package owns ServiceManagement policy.
 - The app is a SwiftUI macOS app with a menu-bar extra and a standard Axo application menu while its terminal window is active. The terminal window is the primary launch window, with Settings, Check for Updates, and Quit actions.
 - `crates/axod/` is the daemon CLI only. `clap` parses arguments and delegates to `crates/axo-server/`.
@@ -42,8 +42,8 @@ macOS may require system authorization to enable Xcode UI Automation; approve it
 ```sh
 bazel test //...
 bazel build //apple/AxoMac:AxoApp //crates/axod:axod
-bazel run //apple/AxoMac:xcodeproj
-xcodebuild -project apple/AxoMac/AxoMac.xcodeproj -scheme Axo -configuration Debug -destination 'platform=macOS' CODE_SIGNING_ALLOWED=NO build
+bazel run //apple:xcodeproj
+xcodebuild -project apple/Axo.xcodeproj -scheme AxoApp -configuration Debug -destination 'platform=macOS' CODE_SIGNING_ALLOWED=NO build
 ```
 
 Build, sign, verify, and atomically publish the development app bundle with:

@@ -1,5 +1,29 @@
+load("@rules_xcodeproj//xcodeproj:defs.bzl", "xcodeproj")
+
 # apple/Package.swift lists every remote Swift package; MODULE.bazel resolves them from here.
 exports_files([
     "Package.swift",
     "Package.resolved",
 ])
+
+# One Xcode project for every Apple package and app: `bazel run //apple:xcodeproj` writes
+# apple/Axo.xcodeproj (generated, not checked in). Bazel stays the build; Xcode drives it.
+xcodeproj(
+    name = "xcodeproj",
+    project_name = "Axo",
+    tags = ["manual"],
+    top_level_targets = [
+        "//apple/AxoMac:AxoApp",
+        "//apple/AxoMac:AxoUITestApp",
+        "//apple/AxoProtocol:AxoProtocolTests",
+        "//apple/AxoClient:AxoClientTests",
+        "//apple/AxoClient:AxoClientDaemonInteropTests",
+        "//apple/AxoSearch:AxoSearchTests",
+        "//apple/AxoDaemonManager:AxoDaemonManagerTests",
+        "//apple/AxoMac:AxoMacTests",
+        "//apple/AxoMac:TerminalWorkbenchE2ETests",
+        "//apple/AxoMac:AxoVisualUITests",
+        "//apple/AxoMac:AxoAppSelfTestTests",
+    ],
+    visibility = ["//apple:__subpackages__"],
+)
