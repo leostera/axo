@@ -10,9 +10,9 @@ final class FakeAxodClient: AxodClient {
   var sessions: [TerminalSession] = []
   var workspaces: [WorkspaceRecord] = []
   var resumeSessionID: SessionID?
-  var methods: [String] = Array(TerminalSessionsModel.requiredMethods) + [
-    "axo.session.rename", "axo.workspace.rename", "axo.workspace.archive", "axo.shell.busy",
-  ]
+  var methods: [String] = (TerminalSessionsModel.requiredMethods.union([
+    .sessionRename, .workspaceRename, .workspaceArchive, .shellBusy,
+  ])).map(\.rawValue)
   private(set) var listCount = 0
   private(set) var workspaceListCount = 0
   private(set) var subscribeCount = 0

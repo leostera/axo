@@ -158,11 +158,7 @@ final class UnixSocketAxodClient: AxodClient, AxodSettingsClient {
   func restartPi(shellID: ShellID, inSession sessionID: SessionID, automatically: Bool) async throws
     -> TerminalSession
   {
-    if automatically {
-      return try await UnixSocketRPC.automaticallyRestartPiSession(
-        shellID: shellID, in: sessionID, at: socketPath)
-    }
-    return try await UnixSocketRPC.restartPiSession(
-      shellID: shellID, in: sessionID, at: socketPath)
+    try await UnixSocketRPC.restartPiSession(
+      shellID: shellID, in: sessionID, automatically: automatically, at: socketPath)
   }
 }

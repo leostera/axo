@@ -96,10 +96,9 @@ final class TerminalSessionsModel {
   private(set) var automaticallyRestartUnavailablePi: Bool
 
   /// Methods every supported Axod must offer; checked once per connection.
-  static let requiredMethods: Set<String> = [
-    "axo.session.list", "axo.workspace.list", "axo.workspace.create",
-    "axo.workspace.session.create", "axo.session.subscribe", "axo.session.events.next",
-    "axo.session.unsubscribe",
+  static let requiredMethods: Set<AxodMethodName> = [
+    .sessionList, .workspaceList, .workspaceCreate, .workspaceSessionCreate, .sessionSubscribe,
+    .sessionEventsNext, .sessionUnsubscribe,
   ]
 
   /// The daemon client, for collaborators such as `TerminalCatalogSync`.
@@ -191,7 +190,7 @@ final class TerminalSessionsModel {
     }
     viewportReporter.isSupported = { [weak self] in
       guard let self, let client = self.client else { return false }
-      return try await self.supports(UnixSocketRPC.viewportMethod, using: client)
+      return try await self.supports(.clientViewportSet, using: client)
     }
     piRestarter.restart = { [weak self] shellID in
       try await self?.restartPiSession(shellID, automatically: true)
@@ -513,7 +512,7 @@ final class TerminalSessionsModel {
 
   func renameSession(_ sessionID: SessionID, to name: String) async throws {
     let client = try requireClient()
-    try await requireMethod("axo.session.rename", using: client)
+    try await requireMethod(.sessionRename, using: client)
     let renamed = try await client.renameSession(sessionID, to: name)
     guard renamed.id == sessionID, renamed.manualName == name else {
       throw SessionCommandError("axod did not apply the Session name.")
@@ -523,7 +522,7 @@ final class TerminalSessionsModel {
 
   func renameWorkspace(_ workspaceID: String, to name: String) async throws {
     let client = try requireClient()
-    try await requireMethod("axo.workspace.rename", using: client)
+    try await requireMethod(.workspaceRename, using: client)
     let renamed = try await client.renameWorkspace(workspaceID, to: name)
     guard renamed.workspaceId == workspaceID, renamed.name == name else {
       throw SessionCommandError("axod did not apply the Workspace name.")
@@ -535,7 +534,7 @@ final class TerminalSessionsModel {
 
   func archiveWorkspace(_ workspaceID: String) async throws {
     let client = try requireClient()
-    try await requireMethod("axo.workspace.archive", using: client)
+    try await requireMethod(.workspaceArchive, using: client)
     let archived = try await client.archiveWorkspace(workspaceID)
     guard archived.archivedWorkspaceId == workspaceID else {
       throw SessionCommandError("axod archived a different Workspace.")
@@ -658,7 +657,7 @@ final class TerminalSessionsModel {
     }
     let busy: TerminalShellBusy?
     do {
-      busy = try await supports("axo.shell.busy", using: client)
+      busy = try await supports(.shellBusy, using: client)
         ? try await client.shellBusy(shellID, inSession: session.id)
         : nil
     } catch {
@@ -763,9 +762,7 @@ final class TerminalSessionsModel {
       throw SessionCommandError("This Pi pane is no longer available to restart.")
     }
 
-    let restartMethod = automatically
-      ? "axo.session.pi.restart.auto.v1"
-      : "axo.session.pi.restart.force.v2"
+    let restartMethod: AxodMethodName = automatically ? .piRestartAuto : .piRestartForce
     guard try await supports(restartMethod, using: client) else {
       if automatically { throw AutomaticPiRestarter.Failure.unsupportedAxod }
       throw SessionCommandError(
@@ -851,7 +848,7 @@ final class TerminalSessionsModel {
     let negotiation = try await client.negotiate()
     let methods = Set(negotiation.methods)
     guard negotiation.protocolVersion == UnixSocketRPC.protocolVersion,
-      Self.requiredMethods.isSubset(of: methods)
+      Self.requiredMethods.allSatisfy({ methods.contains($0.rawValue) })
     else {
       throw SessionCommandError(
         "The running axod is incompatible with this version of Axo. Restart axod from the menu bar.")
@@ -859,12 +856,12 @@ final class TerminalSessionsModel {
     daemonMethods = methods
   }
 
-  private func supports(_ method: String, using client: AxodClient) async throws -> Bool {
+  private func supports(_ method: AxodMethodName, using client: AxodClient) async throws -> Bool {
     try await negotiateIfNeeded(using: client)
-    return daemonMethods?.contains(method) == true
+    return daemonMethods?.contains(method.rawValue) == true
   }
 
-  private func requireMethod(_ method: String, using client: AxodClient) async throws {
+  private func requireMethod(_ method: AxodMethodName, using client: AxodClient) async throws {
     guard try await supports(method, using: client) else {
       throw SessionCommandError(
         "This action requires a newer Axod. Your Sessions and Workspace are unchanged.")

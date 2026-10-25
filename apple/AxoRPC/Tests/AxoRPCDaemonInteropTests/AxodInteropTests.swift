@@ -29,14 +29,11 @@ final class AxodInteropTests: XCTestCase {
     try await waitForSocket(at: socketPath, from: daemon)
     let negotiation = try await UnixSocketRPC.negotiate(at: socketPath)
     XCTAssertEqual(negotiation.protocolVersion, UnixSocketRPC.protocolVersion)
-    for method in [
-      "axo.session.create", "axo.session.subscribe", "axo.session.events.next",
-      "axo.session.unsubscribe", "axo.session.pi.restart.force.v2",
-      "axo.session.pi.restart.auto.v1", "axo.session.rename",
-      "axo.workspace.rename", "axo.workspace.archive",
-      "axo.terminal.input", "axo.terminal.resize", UnixSocketRPC.viewportMethod,
-      "axo.relay.settings", "axo.relay.configure", "axo.relay.link", "axo.relay.disable",
-      "axo.relay.status", "axo.relay.connect",
+    // Every method the app calls (negotiation itself just answered), plus the ones other
+    // clients rely on.
+    for method in AxodMethodName.allCases.filter({ $0 != .negotiate }).map(\.rawValue) + [
+      "axo.terminal.input", "axo.terminal.resize",
+      "axo.relay.settings", "axo.relay.configure", "axo.relay.disable",
     ] {
       XCTAssertTrue(negotiation.methods.contains(method), "axod should advertise \(method)")
     }
@@ -64,6 +61,7 @@ final class AxodInteropTests: XCTestCase {
       _ = try await UnixSocketRPC.restartPiSession(
         shellID: baselineShell.id,
         in: baselineSession.id,
+        automatically: false,
         at: socketPath
       )
       XCTFail("restart must reject a terminal pane")

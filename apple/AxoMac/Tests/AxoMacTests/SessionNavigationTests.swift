@@ -115,7 +115,7 @@ final class TerminalSessionsModelPublishingTests: XCTestCase {
 
   func testUnsupportedCommandReportsUserFacingError() async {
     let client = FakeAxodClient()
-    client.methods = Array(TerminalSessionsModel.requiredMethods)
+    client.methods = TerminalSessionsModel.requiredMethods.map(\.rawValue)
     let model = TerminalSessionsModel(client: client)
     do {
       try await model.renameSession(1, to: "x")

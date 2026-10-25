@@ -2,88 +2,88 @@ import Foundation
 import JSONRPC
 import Network
 
-private struct WorkspaceList: Decodable {
+struct WorkspaceList: Decodable {
   let workspaces: [WorkspaceRecord]
 }
 
-private struct ConfigGetRequest: Encodable {
+struct ConfigGetRequest: Encodable {
   let key: AxoConfigKey
 }
 
-private struct ConfigSetRequest: Encodable {
+struct ConfigSetRequest: Encodable {
   let key: AxoConfigKey
   let value: String
 }
 
-private struct WorkspaceCreateRequest: Encodable {
+struct WorkspaceCreateRequest: Encodable {
   let name: String
   let directoryPath: String
   let directoryBookmark: String?
 }
 
-private struct WorkspaceSessionCreateRequest: Encodable {
+struct WorkspaceSessionCreateRequest: Encodable {
   let workspaceId: String
 }
 
-private struct SessionRenameRequest: Encodable {
+struct SessionRenameRequest: Encodable {
   let sessionId: SessionID
   let name: String
 }
 
-private struct WorkspaceRenameRequest: Encodable {
+struct WorkspaceRenameRequest: Encodable {
   let workspaceId: String
   let name: String
 }
 
-private struct WorkspaceArchiveRequest: Encodable {
+struct WorkspaceArchiveRequest: Encodable {
   let workspaceId: String
 }
 
-private struct ProtocolNegotiationRequest: Encodable {
+struct ProtocolNegotiationRequest: Encodable {
   let protocolVersion: UInt32
 }
 
-private struct RemoteAccessConnectResponse: Decodable {
+struct RemoteAccessConnectResponse: Decodable {
   let requested: Bool
 }
 
-private struct ViewportAcknowledgement: Decodable {
+struct ViewportAcknowledgement: Decodable {
   let accepted: Bool
 }
 
-private struct HostPairingRequest: Encodable {
+struct HostPairingRequest: Encodable {
   let code: String
 }
 
-private struct CloseTerminalSessionRequest: Encodable {
+struct CloseTerminalSessionRequest: Encodable {
   let sessionId: SessionID
 }
 
-private struct RestartPiSessionRequest: Encodable {
+struct RestartPiSessionRequest: Encodable {
   let sessionId: SessionID
   let shellId: ShellID
 }
 
-private struct CreateTerminalShellRequest: Encodable {
+struct CreateTerminalShellRequest: Encodable {
   let sessionId: SessionID
 }
 
-private struct SetSessionLayoutRequest: Encodable {
+struct SetSessionLayoutRequest: Encodable {
   let sessionId: SessionID
   let layout: SessionLayout
 }
 
-private struct SessionLayoutAcknowledgement: Decodable {
+struct SessionLayoutAcknowledgement: Decodable {
   let saved: Bool
 }
 
 /// Identifies one shell; used by `axo.shell.close` and `axo.shell.busy`.
-private struct CloseTerminalShellRequest: Encodable {
+struct ShellRequest: Encodable {
   let sessionId: SessionID
   let shellId: ShellID
 }
 
-private struct SessionSubscribeRequest: Encodable {
+struct SessionSubscribeRequest: Encodable {
   let sessionId: SessionID?
   let includeTerminalOutput: Bool
 
@@ -96,51 +96,114 @@ private struct SessionSubscribeRequest: Encodable {
   private enum CodingKeys: String, CodingKey { case sessionId, includeTerminalOutput }
 }
 
-private struct SessionEventsNextRequest: Encodable {
+struct SessionEventsNextRequest: Encodable {
   let subscriptionId: String
   let timeoutMs: UInt64
   let maxEvents: Int
 }
 
-private struct SessionEventsNextResponse: Decodable {
+struct SessionEventsNextResponse: Decodable {
   let events: [TerminalSessionEvent]
 }
 
-private struct SessionUnsubscribeRequest: Encodable {
+struct SessionUnsubscribeRequest: Encodable {
   let subscriptionId: String
 }
 
-private struct SessionUnsubscribeResponse: Decodable {
+struct SessionUnsubscribeResponse: Decodable {
   let unsubscribed: Bool
+}
+
+/// Wire parameters for methods that take none.
+typealias NoParams = String?
+
+/// axod's JSON-RPC method names: the only place they are spelled. Capability checks against
+/// `axo.protocol.negotiate`'s method list use these too.
+public enum AxodMethodName: String, CaseIterable, Sendable {
+  case negotiate = "axo.protocol.negotiate"
+  case health = "axo.daemon.health"
+  case relayStatus = "axo.relay.status"
+  case relayConnect = "axo.relay.connect"
+  case relayLink = "axo.relay.link"
+  case configGet = "axo.config.get"
+  case configSet = "axo.config.set"
+  case sessionList = "axo.session.list"
+  case sessionCreate = "axo.session.create"
+  case sessionClose = "axo.session.close"
+  case sessionRename = "axo.session.rename"
+  case sessionLayoutSet = "axo.session.layout.set"
+  case sessionSubscribe = "axo.session.subscribe"
+  case sessionEventsNext = "axo.session.events.next"
+  case sessionUnsubscribe = "axo.session.unsubscribe"
+  case piRestartForce = "axo.session.pi.restart.force.v2"
+  case piRestartAuto = "axo.session.pi.restart.auto.v1"
+  case workspaceList = "axo.workspace.list"
+  case workspaceCreate = "axo.workspace.create"
+  case workspaceRename = "axo.workspace.rename"
+  case workspaceArchive = "axo.workspace.archive"
+  case workspaceSessionCreate = "axo.workspace.session.create"
+  case shellCreate = "axo.shell.create"
+  case shellClose = "axo.shell.close"
+  case shellBusy = "axo.shell.busy"
+  case clientViewportSet = "axo.client.viewport.set"
+}
+
+/// One axod JSON-RPC method: its name, parameter and result types, and how long a call may take.
+struct AxodMethod<Params: Encodable & Sendable, Result: Decodable & Sendable>: Sendable {
+  let name: AxodMethodName
+  let timeout: Duration
+
+  init(_ name: AxodMethodName, timeout: Duration = .seconds(5)) {
+    self.name = name
+    self.timeout = timeout
+  }
+}
+
+/// axod's methods with their types. `UnixSocketRPC` wraps each with argument shaping and
+/// result checks.
+enum AxodMethods {
+  static let negotiate = AxodMethod<ProtocolNegotiationRequest, ProtocolNegotiation>(.negotiate)
+  static let health = AxodMethod<NoParams, DaemonHealth>(.health, timeout: .seconds(2))
+  static let relayStatus = AxodMethod<NoParams, RemoteAccessStatus>(.relayStatus)
+  static let relayConnect = AxodMethod<NoParams, RemoteAccessConnectResponse>(.relayConnect)
+  static let relayLink = AxodMethod<HostPairingRequest, HostPairingResult>(.relayLink)
+  static let configGet = AxodMethod<ConfigGetRequest, AxoConfigValue>(.configGet)
+  static let configSet = AxodMethod<ConfigSetRequest, AxoConfigValue>(.configSet)
+  static let sessionList = AxodMethod<NoParams, TerminalSessionListSnapshot>(.sessionList)
+  static let sessionCreate = AxodMethod<NoParams, TerminalSession>(.sessionCreate)
+  static let sessionClose = AxodMethod<CloseTerminalSessionRequest, ClosedTerminalSession>(.sessionClose)
+  static let sessionRename = AxodMethod<SessionRenameRequest, TerminalSession>(.sessionRename)
+  static let sessionLayoutSet = AxodMethod<SetSessionLayoutRequest, SessionLayoutAcknowledgement>(.sessionLayoutSet)
+  static let sessionSubscribe = AxodMethod<SessionSubscribeRequest, TerminalSubscriptionID>(.sessionSubscribe)
+  static let sessionEventsNext = AxodMethod<SessionEventsNextRequest, SessionEventsNextResponse>(.sessionEventsNext)
+  static let sessionUnsubscribe = AxodMethod<SessionUnsubscribeRequest, SessionUnsubscribeResponse>(.sessionUnsubscribe)
+  static let piRestartForce = AxodMethod<RestartPiSessionRequest, TerminalSession>(.piRestartForce, timeout: .seconds(20))
+  static let piRestartAuto = AxodMethod<RestartPiSessionRequest, TerminalSession>(.piRestartAuto, timeout: .seconds(20))
+  static let workspaceList = AxodMethod<NoParams, WorkspaceList>(.workspaceList)
+  static let workspaceCreate = AxodMethod<WorkspaceCreateRequest, CreatedWorkspace>(.workspaceCreate)
+  static let workspaceRename = AxodMethod<WorkspaceRenameRequest, WorkspaceRecord>(.workspaceRename)
+  static let workspaceArchive = AxodMethod<WorkspaceArchiveRequest, ArchivedWorkspace>(.workspaceArchive)
+  static let workspaceSessionCreate = AxodMethod<WorkspaceSessionCreateRequest, TerminalSession>(.workspaceSessionCreate)
+  static let shellCreate = AxodMethod<CreateTerminalShellRequest, TerminalShell>(.shellCreate)
+  static let shellClose = AxodMethod<ShellRequest, ClosedTerminalShell>(.shellClose)
+  static let shellBusy = AxodMethod<ShellRequest, TerminalShellBusy>(.shellBusy)
+  /// Older daemons do not offer this; check negotiation first.
+  static let clientViewportSet = AxodMethod<ClientViewport, ViewportAcknowledgement>(.clientViewportSet)
 }
 
 public enum UnixSocketRPC {
   public static let protocolVersion: UInt32 = 1
 
   public static func negotiate(at socketPath: UnixSocketPath) async throws -> ProtocolNegotiation {
-    try await withResponse(at: socketPath) { session in
-      try await session.response(
-        to: "axo.protocol.negotiate",
-        params: ProtocolNegotiationRequest(protocolVersion: Self.protocolVersion)
-      )
-    }
+    try await call(AxodMethods.negotiate, ProtocolNegotiationRequest(protocolVersion: protocolVersion), at: socketPath)
   }
 
-  public static func remoteAccessStatus(
-    at socketPath: UnixSocketPath
-  ) async throws -> RemoteAccessStatus {
-    try await withResponse(at: socketPath) { session in
-      try await session.response(to: "axo.relay.status")
-    }
+  public static func remoteAccessStatus(at socketPath: UnixSocketPath) async throws -> RemoteAccessStatus {
+    try await call(AxodMethods.relayStatus, at: socketPath)
   }
 
-  public static func requestRemoteAccessConnection(
-    at socketPath: UnixSocketPath
-  ) async throws {
-    let response: RemoteAccessConnectResponse = try await withResponse(at: socketPath) { session in
-      try await session.response(to: "axo.relay.connect")
-    }
-    guard response.requested else {
+  public static func requestRemoteAccessConnection(at socketPath: UnixSocketPath) async throws {
+    guard try await call(AxodMethods.relayConnect, at: socketPath).requested else {
       throw UnixSocketRPCError.invalidResponse("axod has no remote relay configured")
     }
   }
@@ -149,12 +212,7 @@ public enum UnixSocketRPC {
     using code: HostPairingCode,
     at socketPath: UnixSocketPath
   ) async throws -> HostPairingResult {
-    let result: HostPairingResult = try await withResponse(at: socketPath) { session in
-      try await session.response(
-        to: "axo.relay.link",
-        params: HostPairingRequest(code: code.value)
-      )
-    }
+    let result = try await call(AxodMethods.relayLink, HostPairingRequest(code: code.value), at: socketPath)
     guard result.linked, !result.hostLabel.isEmpty else {
       throw UnixSocketRPCError.invalidResponse("axod did not confirm host pairing")
     }
@@ -162,12 +220,7 @@ public enum UnixSocketRPC {
   }
 
   public static func health(at socketPath: UnixSocketPath) async throws -> DaemonHealth {
-    let health: DaemonHealth = try await withResponse(
-      at: socketPath,
-      timeout: .seconds(2)
-    ) { session in
-      try await session.response(to: "axo.daemon.health")
-    }
+    let health = try await call(AxodMethods.health, at: socketPath)
     if let version = health.version, version.isEmpty {
       throw UnixSocketRPCError.invalidResponse("daemon version must not be empty")
     }
@@ -184,12 +237,7 @@ public enum UnixSocketRPC {
     for key: AxoConfigKey,
     at socketPath: UnixSocketPath
   ) async throws -> AxoConfigValue {
-    let value: AxoConfigValue = try await withResponse(at: socketPath) { session in
-      try await session.response(
-        to: "axo.config.get",
-        params: ConfigGetRequest(key: key)
-      )
-    }
+    let value = try await call(AxodMethods.configGet, ConfigGetRequest(key: key), at: socketPath)
     guard value.key == key else {
       throw UnixSocketRPCError.invalidResponse("daemon returned configuration for a different key")
     }
@@ -201,12 +249,8 @@ public enum UnixSocketRPC {
     for key: AxoConfigKey,
     at socketPath: UnixSocketPath
   ) async throws -> AxoConfigValue {
-    let saved: AxoConfigValue = try await withResponse(at: socketPath) { session in
-      try await session.response(
-        to: "axo.config.set",
-        params: ConfigSetRequest(key: key, value: value)
-      )
-    }
+    let saved = try await call(
+      AxodMethods.configSet, ConfigSetRequest(key: key, value: value), at: socketPath)
     guard saved.key == key else {
       throw UnixSocketRPCError.invalidResponse("daemon saved configuration under a different key")
     }
@@ -216,16 +260,11 @@ public enum UnixSocketRPC {
   public static func listSessionSnapshot(
     at socketPath: UnixSocketPath
   ) async throws -> TerminalSessionListSnapshot {
-    try await withResponse(at: socketPath) { session in
-      try await session.response(to: "axo.session.list")
-    }
+    try await call(AxodMethods.sessionList, at: socketPath)
   }
 
   public static func listWorkspaces(at socketPath: UnixSocketPath) async throws -> [WorkspaceRecord] {
-    let response: WorkspaceList = try await withResponse(at: socketPath) { session in
-      try await session.response(to: "axo.workspace.list")
-    }
-    return response.workspaces
+    try await call(AxodMethods.workspaceList, at: socketPath).workspaces
   }
 
   public static func createWorkspace(
@@ -234,16 +273,11 @@ public enum UnixSocketRPC {
     directoryBookmark: String?,
     at socketPath: UnixSocketPath
   ) async throws -> CreatedWorkspace {
-    try await withResponse(at: socketPath) { session in
-      try await session.response(
-        to: "axo.workspace.create",
-        params: WorkspaceCreateRequest(
-          name: name,
-          directoryPath: directoryPath,
-          directoryBookmark: directoryBookmark
-        )
-      )
-    }
+    try await call(
+      AxodMethods.workspaceCreate,
+      WorkspaceCreateRequest(
+        name: name, directoryPath: directoryPath, directoryBookmark: directoryBookmark),
+      at: socketPath)
   }
 
   public static func renameSession(
@@ -251,12 +285,8 @@ public enum UnixSocketRPC {
     to name: String,
     at socketPath: UnixSocketPath
   ) async throws -> TerminalSession {
-    try await withResponse(at: socketPath) { session in
-      try await session.response(
-        to: "axo.session.rename",
-        params: SessionRenameRequest(sessionId: sessionID, name: name)
-      )
-    }
+    try await call(
+      AxodMethods.sessionRename, SessionRenameRequest(sessionId: sessionID, name: name), at: socketPath)
   }
 
   public static func renameWorkspace(
@@ -264,35 +294,26 @@ public enum UnixSocketRPC {
     to name: String,
     at socketPath: UnixSocketPath
   ) async throws -> WorkspaceRecord {
-    try await withResponse(at: socketPath) { session in
-      try await session.response(
-        to: "axo.workspace.rename",
-        params: WorkspaceRenameRequest(workspaceId: workspaceID, name: name)
-      )
-    }
+    try await call(
+      AxodMethods.workspaceRename, WorkspaceRenameRequest(workspaceId: workspaceID, name: name),
+      at: socketPath)
   }
 
   public static func archiveWorkspace(
     _ workspaceID: String,
     at socketPath: UnixSocketPath
   ) async throws -> ArchivedWorkspace {
-    try await withResponse(at: socketPath) { session in
-      try await session.response(
-        to: "axo.workspace.archive",
-        params: WorkspaceArchiveRequest(workspaceId: workspaceID)
-      )
-    }
+    try await call(
+      AxodMethods.workspaceArchive, WorkspaceArchiveRequest(workspaceId: workspaceID), at: socketPath)
   }
 
   public static func createSession(
     in workspaceID: String,
     at socketPath: UnixSocketPath
   ) async throws -> TerminalSession {
-    try await withResponse(at: socketPath) { session in
-      try await session.response(
-        to: "axo.workspace.session.create",
-        params: WorkspaceSessionCreateRequest(workspaceId: workspaceID))
-    }
+    try await call(
+      AxodMethods.workspaceSessionCreate, WorkspaceSessionCreateRequest(workspaceId: workspaceID),
+      at: socketPath)
   }
 
   /// Opens an event subscription. Catalog consumers pass `includeTerminalOutput: false` to
@@ -302,12 +323,10 @@ public enum UnixSocketRPC {
     includeTerminalOutput: Bool = true,
     at socketPath: UnixSocketPath
   ) async throws -> TerminalSubscriptionID {
-    try await withResponse(at: socketPath) { session in
-      try await session.response(
-        to: "axo.session.subscribe",
-        params: SessionSubscribeRequest(
-          sessionId: sessionID, includeTerminalOutput: includeTerminalOutput))
-    }
+    try await call(
+      AxodMethods.sessionSubscribe,
+      SessionSubscribeRequest(sessionId: sessionID, includeTerminalOutput: includeTerminalOutput),
+      at: socketPath)
   }
 
   /// The daemon's per-poll batch limit.
@@ -322,91 +341,61 @@ public enum UnixSocketRPC {
     at socketPath: UnixSocketPath
   ) async throws -> [TerminalSessionEvent] {
     let timeoutMilliseconds = min(20_000, max(1, timeout.milliseconds))
-    let response: SessionEventsNextResponse = try await withResponse(
-      at: socketPath,
+    let request = SessionEventsNextRequest(
+      subscriptionId: subscription.subscriptionId,
+      timeoutMs: UInt64(timeoutMilliseconds),
+      maxEvents: min(maxEventsPerPoll, max(1, maxEvents)))
+    // The call outlives the server-side wait by a second.
+    return try await call(
+      AxodMethods.sessionEventsNext, request, at: socketPath,
       timeout: .milliseconds(timeoutMilliseconds + 1_000)
-    ) { session in
-      try await session.response(
-        to: "axo.session.events.next",
-        params: SessionEventsNextRequest(
-          subscriptionId: subscription.subscriptionId,
-          timeoutMs: UInt64(timeoutMilliseconds),
-          maxEvents: min(maxEventsPerPoll, max(1, maxEvents))))
-    }
-    return response.events
+    ).events
   }
 
   public static func unsubscribe(
     _ subscription: TerminalSubscriptionID,
     at socketPath: UnixSocketPath
   ) async throws {
-    let response: SessionUnsubscribeResponse = try await withResponse(at: socketPath) { session in
-      try await session.response(
-        to: "axo.session.unsubscribe",
-        params: SessionUnsubscribeRequest(subscriptionId: subscription.subscriptionId))
-    }
+    let response = try await call(
+      AxodMethods.sessionUnsubscribe,
+      SessionUnsubscribeRequest(subscriptionId: subscription.subscriptionId), at: socketPath)
     guard response.unsubscribed else {
       throw UnixSocketRPCError.invalidResponse(
         "daemon did not unsubscribe the session event stream")
     }
   }
 
-
-
   public static func createSession(at socketPath: UnixSocketPath) async throws -> TerminalSession {
-    try await withResponse(at: socketPath) { session in
-      try await session.response(to: "axo.session.create")
-    }
+    try await call(AxodMethods.sessionCreate, at: socketPath)
   }
 
   public static func closeSession(
     _ sessionID: SessionID,
     at socketPath: UnixSocketPath
   ) async throws -> ClosedTerminalSession {
-    try await withResponse(at: socketPath) { session in
-      try await session.response(
-        to: "axo.session.close",
-        params: CloseTerminalSessionRequest(sessionId: sessionID)
-      )
-    }
+    try await call(
+      AxodMethods.sessionClose, CloseTerminalSessionRequest(sessionId: sessionID), at: socketPath)
   }
 
+  /// Explicit Restart Pi (`automatically: false`) or the idle-only, non-forcing automatic
+  /// recovery (`true`).
   public static func restartPiSession(
     shellID: ShellID,
     in sessionID: SessionID,
+    automatically: Bool,
     at socketPath: UnixSocketPath
   ) async throws -> TerminalSession {
-    try await withResponse(at: socketPath, timeout: .seconds(20)) { session in
-      try await session.response(
-        to: "axo.session.pi.restart.force.v2",
-        params: RestartPiSessionRequest(sessionId: sessionID, shellId: shellID)
-      )
-    }
-  }
-
-  public static func automaticallyRestartPiSession(
-    shellID: ShellID,
-    in sessionID: SessionID,
-    at socketPath: UnixSocketPath
-  ) async throws -> TerminalSession {
-    try await withResponse(at: socketPath, timeout: .seconds(20)) { session in
-      try await session.response(
-        to: "axo.session.pi.restart.auto.v1",
-        params: RestartPiSessionRequest(sessionId: sessionID, shellId: shellID)
-      )
-    }
+    try await call(
+      automatically ? AxodMethods.piRestartAuto : AxodMethods.piRestartForce,
+      RestartPiSessionRequest(sessionId: sessionID, shellId: shellID), at: socketPath)
   }
 
   public static func createShell(
     in sessionID: SessionID,
     at socketPath: UnixSocketPath
   ) async throws -> TerminalShell {
-    try await withResponse(at: socketPath) { session in
-      try await session.response(
-        to: "axo.shell.create",
-        params: CreateTerminalShellRequest(sessionId: sessionID)
-      )
-    }
+    try await call(
+      AxodMethods.shellCreate, CreateTerminalShellRequest(sessionId: sessionID), at: socketPath)
   }
 
   public static func setLayout(
@@ -414,14 +403,9 @@ public enum UnixSocketRPC {
     for sessionID: SessionID,
     at socketPath: UnixSocketPath
   ) async throws {
-    let acknowledgement: SessionLayoutAcknowledgement = try await withResponse(
-      at: socketPath
-    ) { session in
-      try await session.response(
-        to: "axo.session.layout.set",
-        params: SetSessionLayoutRequest(sessionId: sessionID, layout: layout)
-      )
-    }
+    let acknowledgement = try await call(
+      AxodMethods.sessionLayoutSet, SetSessionLayoutRequest(sessionId: sessionID, layout: layout),
+      at: socketPath)
     guard acknowledgement.saved else {
       throw UnixSocketRPCError.invalidResponse("daemon did not save the session layout")
     }
@@ -432,40 +416,45 @@ public enum UnixSocketRPC {
     in sessionID: SessionID,
     at socketPath: UnixSocketPath
   ) async throws -> ClosedTerminalShell {
-    try await withResponse(at: socketPath) { session in
-      try await session.response(
-        to: "axo.shell.close",
-        params: CloseTerminalShellRequest(sessionId: sessionID, shellId: shellID)
-      )
-    }
+    try await call(
+      AxodMethods.shellClose, ShellRequest(sessionId: sessionID, shellId: shellID), at: socketPath)
   }
 
   public static func setViewport(
     _ viewport: ClientViewport,
     at socketPath: UnixSocketPath
   ) async throws {
-    let acknowledgement: ViewportAcknowledgement = try await withResponse(at: socketPath) { session in
-      try await session.response(to: viewportMethod, params: viewport)
-    }
-    guard acknowledgement.accepted else {
+    guard try await call(AxodMethods.clientViewportSet, viewport, at: socketPath).accepted else {
       throw UnixSocketRPCError.invalidResponse("daemon did not accept the viewport")
     }
   }
-
-  /// Older daemons do not offer this; check negotiation first.
-  public static let viewportMethod = "axo.client.viewport.set"
 
   public static func shellBusy(
     _ shellID: ShellID,
     in sessionID: SessionID,
     at socketPath: UnixSocketPath
   ) async throws -> TerminalShellBusy {
-    try await withResponse(at: socketPath) { session in
-      try await session.response(
-        to: "axo.shell.busy",
-        params: CloseTerminalShellRequest(sessionId: sessionID, shellId: shellID)
-      )
+    try await call(
+      AxodMethods.shellBusy, ShellRequest(sessionId: sessionID, shellId: shellID), at: socketPath)
+  }
+
+  /// Calls `method` on a fresh connection, within its timeout unless `timeout` overrides it.
+  private static func call<Params, Result>(
+    _ method: AxodMethod<Params, Result>,
+    _ params: Params,
+    at socketPath: UnixSocketPath,
+    timeout: Duration? = nil
+  ) async throws -> Result {
+    try await withResponse(at: socketPath, timeout: timeout ?? method.timeout) { session in
+      try await session.response(to: method.name.rawValue, params: params)
     }
+  }
+
+  private static func call<Result>(
+    _ method: AxodMethod<NoParams, Result>,
+    at socketPath: UnixSocketPath
+  ) async throws -> Result {
+    try await call(method, nil, at: socketPath)
   }
 
   private static func withResponse<Response: Decodable>(
