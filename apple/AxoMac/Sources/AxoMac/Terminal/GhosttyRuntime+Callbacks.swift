@@ -52,7 +52,7 @@ extension GhosttyRuntime {
         // inside its own callback; handle it on the next main-queue turn.
         guard let view = GhosttyRuntime.clipboardView(userdata) else { return }
         DispatchQueue.main.async {
-          MainActor.assumeIsolated { view.runtime?.surfaceOutputEnded(view) }
+          MainActor.assumeIsolated { view.runtime?.surfaces.outputEnded(view) }
         }
       }
     )

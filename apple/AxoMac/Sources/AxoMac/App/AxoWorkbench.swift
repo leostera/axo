@@ -66,6 +66,6 @@ final class AxoWorkbench {
   private func focus(_ shellID: ShellID?) {
     ghostty.setFocusedShellID(shellID)
     guard let shellID else { return }
-    ghostty.requestFocus(for: shellID)
+    ghostty.surfaces.requestFocus(for: shellID)
   }
 }

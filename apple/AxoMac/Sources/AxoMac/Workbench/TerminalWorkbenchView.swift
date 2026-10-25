@@ -41,7 +41,7 @@ struct TerminalWorkbenchView: View {
     }
     .onChange(of: OffscreenSizing(area: terminalAreaSize, scale: displayScale, layouts: sessions.sessionLayouts), initial: true) {
       _, sizing in
-      ghostty.scheduleOffscreenSizing(
+      ghostty.surfaces.scheduleOffscreenSizing(
         layouts: sizing.layouts.map(TerminalLayout.init),
         terminalAreaSize: sizing.area,
         backingScale: sizing.scale)

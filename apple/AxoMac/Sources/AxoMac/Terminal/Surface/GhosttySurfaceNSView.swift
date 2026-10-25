@@ -78,7 +78,7 @@ final class GhosttySurfaceNSView: NSView, @MainActor NSTextInputClient,
   private var ptySizeReporter: TerminalPTYSizeReporter?
 
   init(
-    runtime: GhosttyRuntime,
+    runtime: GhosttyRuntime?,
     shellID: ShellID,
     initialFrameSize: CGSize,
     onFocus: @escaping () -> Void
@@ -267,7 +267,7 @@ final class GhosttySurfaceNSView: NSView, @MainActor NSTextInputClient,
     // to an invalid viewport while waiting for the new host's final layout.
     guard size.width.isFinite, size.height.isFinite, size.width > 0, size.height > 0 else { return }
     contentSize = size
-    runtime?.updateSurfaceSize(in: self, contentSize: size)
+    runtime?.surfaces.updateSize(of: self, contentSize: size)
   }
 
   /// Ghostty's cell height in points, used to map scrollback rows onto the overlay scroller.

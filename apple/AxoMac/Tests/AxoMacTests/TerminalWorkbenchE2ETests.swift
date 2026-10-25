@@ -51,7 +51,7 @@ final class TerminalWorkbenchE2ETests: XCTestCase {
 
       let runtime = GhosttyRuntime()
       try XCTSkipIf(runtime.errorMessage != nil, "libghostty unavailable: \(runtime.errorMessage ?? "")")
-      let (_, view) = runtime.surfacePresentation(
+      let (_, view) = runtime.surfaces.presentation(
         for: shell, initialSize: .zero, onFocus: {}, onStatusChange: { _ in }, onSplit: { _ in },
         onClose: {})
       let deadline = ContinuousClock.now + .seconds(5)
@@ -76,14 +76,14 @@ final class TerminalWorkbenchE2ETests: XCTestCase {
       XCTAssertEqual(ptySize(), [37, 101])
 
       // Laying the surface out gives the PTY its real grid at once...
-      runtime.sizeOffscreenSurfaces(
+      runtime.surfaces.sizeOffscreenSurfaces(
         layouts: [.pane(shell.id)], terminalAreaSize: CGSize(width: 600, height: 400),
         backingScale: 2)
       XCTAssertNotEqual(surfaceGrid(), [37, 101])
       XCTAssertEqual(ptySize(), surfaceGrid())
 
       // ...and later resizes still flow through libghostty.
-      runtime.sizeOffscreenSurfaces(
+      runtime.surfaces.sizeOffscreenSurfaces(
         layouts: [.pane(shell.id)], terminalAreaSize: CGSize(width: 900, height: 700),
         backingScale: 2)
       let resizeDeadline = ContinuousClock.now + .seconds(3)
@@ -105,11 +105,11 @@ final class TerminalWorkbenchE2ETests: XCTestCase {
       let runtime = GhosttyRuntime()
       try XCTSkipIf(runtime.errorMessage != nil, "libghostty unavailable: \(runtime.errorMessage ?? "")")
       // A wide pane: the default 800x600 surface is far narrower.
-      runtime.sizeOffscreenSurfaces(
+      runtime.surfaces.sizeOffscreenSurfaces(
         layouts: [.pane(shell.id)], terminalAreaSize: CGSize(width: 1500, height: 700), backingScale: 2)
 
       @MainActor func present() async throws -> GhosttySurfaceNSView {
-        let (_, view) = runtime.surfacePresentation(
+        let (_, view) = runtime.surfaces.presentation(
           for: shell, initialSize: .zero, onFocus: {}, onStatusChange: { _ in }, onSplit: { _ in },
           onClose: {})
         let deadline = ContinuousClock.now + .seconds(5)
@@ -174,7 +174,7 @@ final class TerminalWorkbenchE2ETests: XCTestCase {
       let shell = try XCTUnwrap(model.session(for: sessionID)?.shells.first)
       let runtime = GhosttyRuntime()
       try XCTSkipIf(runtime.errorMessage != nil, "libghostty unavailable: \(runtime.errorMessage ?? "")")
-      let (_, view) = runtime.surfacePresentation(
+      let (_, view) = runtime.surfaces.presentation(
         for: shell, initialSize: .zero, onFocus: {}, onStatusChange: { _ in }, onSplit: { _ in },
         onClose: {})
       let deadline = ContinuousClock.now + .seconds(5)
@@ -190,13 +190,13 @@ final class TerminalWorkbenchE2ETests: XCTestCase {
       }
 
       // The first geometry applies at once: there is nothing to animate from.
-      runtime.scheduleOffscreenSizing(
+      runtime.surfaces.scheduleOffscreenSizing(
         layouts: [.pane(shell.id)], terminalAreaSize: CGSize(width: 600, height: 400), backingScale: 2)
       let initialGrid = surfaceGrid()
 
       // An animation: many frames in quick succession leave the hidden grid alone...
       for step in 1...10 {
-        runtime.scheduleOffscreenSizing(
+        runtime.surfaces.scheduleOffscreenSizing(
           layouts: [.pane(shell.id)],
           terminalAreaSize: CGSize(width: 600 + 30 * step, height: 400 + 30 * step), backingScale: 2)
         try await Task.sleep(for: .milliseconds(10))
@@ -204,10 +204,10 @@ final class TerminalWorkbenchE2ETests: XCTestCase {
       XCTAssertEqual(surfaceGrid(), initialGrid)
 
       // ...and once it settles the hidden surface takes the final size, matching a direct sizing.
-      try await Task.sleep(for: GhosttyRuntime.offscreenSizingSettleDelay + .milliseconds(150))
+      try await Task.sleep(for: TerminalSurfaceRegistry.offscreenSizingSettleDelay + .milliseconds(150))
       let settledGrid = surfaceGrid()
       XCTAssertNotEqual(settledGrid, initialGrid)
-      runtime.sizeOffscreenSurfaces(
+      runtime.surfaces.sizeOffscreenSurfaces(
         layouts: [.pane(shell.id)], terminalAreaSize: CGSize(width: 900, height: 700), backingScale: 2)
       XCTAssertEqual(surfaceGrid(), settledGrid)
     }
@@ -849,3 +849,4 @@ private enum E2EError: Error, LocalizedError {
     }
   }
 }
+

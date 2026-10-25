@@ -33,7 +33,7 @@ struct GhosttyTerminalView: NSViewRepresentable {
     host: GhosttySurfaceHostNSView,
     view: GhosttySurfaceNSView
   ) {
-    runtime.surfacePresentation(
+    runtime.surfaces.presentation(
       for: shell,
       initialSize: size,
       onFocus: {

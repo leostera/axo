@@ -12,11 +12,11 @@ final class TerminalSurfaceViewportTests: XCTestCase {
   func testInitialSurfaceSizePrefersThePanesLayoutSizeThenTheProposalThenANonzeroSeed() {
     let pane = CGSize(width: 640, height: 900)
     let proposal = CGSize(width: 420, height: 280)
-    XCTAssertEqual(GhosttyRuntime.seededSurfaceSize(paneSize: pane, proposedSize: proposal), pane)
-    XCTAssertEqual(GhosttyRuntime.seededSurfaceSize(paneSize: pane, proposedSize: .zero), pane)
-    XCTAssertEqual(GhosttyRuntime.seededSurfaceSize(paneSize: nil, proposedSize: proposal), proposal)
+    XCTAssertEqual(TerminalSurfaceRegistry.seededSurfaceSize(paneSize: pane, proposedSize: proposal), pane)
+    XCTAssertEqual(TerminalSurfaceRegistry.seededSurfaceSize(paneSize: pane, proposedSize: .zero), pane)
+    XCTAssertEqual(TerminalSurfaceRegistry.seededSurfaceSize(paneSize: nil, proposedSize: proposal), proposal)
     XCTAssertEqual(
-      GhosttyRuntime.seededSurfaceSize(paneSize: .zero, proposedSize: .zero),
+      TerminalSurfaceRegistry.seededSurfaceSize(paneSize: .zero, proposedSize: .zero),
       CGSize(width: 800, height: 600))
   }
 

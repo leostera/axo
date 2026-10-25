@@ -89,7 +89,7 @@ final class TerminalUITestAutomation {
       await sessions.refresh()
       if let shellID = sessions.focusedShellID,
         sessions.layout != nil,
-        ghostty.hasSurface(for: shellID)
+        ghostty.surfaces.hasSurface(for: shellID)
       {
         return
       }
@@ -103,10 +103,10 @@ final class TerminalUITestAutomation {
     while Date() < deadline {
       await sessions.refresh()
       ghostty.reconcileSurfaces(with: sessions.sessions.flatMap(\.shells))
-      if ghostty.surfaceCount == count { return }
+      if ghostty.surfaces.surfaceCount == count { return }
       try await Task.sleep(for: .milliseconds(100))
     }
-    throw AutomationError.surfaceCountTimedOut(count, ghostty.surfaceCount)
+    throw AutomationError.surfaceCountTimedOut(count, ghostty.surfaces.surfaceCount)
   }
 
   private func type(_ text: String, into shellID: ShellID) throws {
