@@ -21,11 +21,14 @@ Resolve paths from the Axo root (`../../..`). Deliver with [packaging](../axo-ma
 | `Sessions/` | `TerminalSessionsModel` (commands, and the observed projections of the two values below), `SessionCatalog` (open Sessions, sorted and unique by ID), `WorkbenchSelection` (selected Session, focus, every layout, recent Sessions), `AxodClient` protocol and socket implementation, `TerminalCatalogSync` (event subscription), `TerminalLayout` (pure layout tree), `SessionNavigation`/`SidebarSections`, `TerminalLayoutWriter`, `ViewportReporter`, `AutomaticPiRestarter`. |
 | `Terminal/` | `GhosttyRuntime` (+`Config`, `Callbacks`, `Actions`, `Clipboard`: the libghostty app, preferences, focus, attention, secure input, command routing), `TerminalSurfaceRegistry` (every surface: create at its pane's size, attach, reattach via `ReattachThrottle`, offscreen sizing, free), clipboard/URL/attention/accessibility policies. `Terminal/Surface/` holds the Ghostty surface view split by concern (keyboard, text input, mouse, menu) and `TerminalKeyEquivalentPolicy`. |
 | `Workbench/` | `TerminalWorkbenchView`, `WorkbenchSidebar` and its rows and rename editor, workspace sheet, split tree, pane views and `TerminalPaneGeometry`. |
+| `Palette/` | The ⇧⌘P command palette (View menu): `CommandPaletteCatalog` (entries from a `CommandPaletteContext` snapshot), `CommandPaletteModel` (query, results, selection), `CommandPalettePerformer` (revalidates every target when chosen), `CommandPaletteView` (overlay; interaction adapted from Ghostty's palette). |
 | `Settings/` | Settings views, `RemoteAccessModel` (fed by `relay.status` events) and `DaemonCommandSettingSection`. Settings talk to Axod only through `AxodSettingsClient`. |
 
 The `AxoMac` library has no `@main`. Two thin entry targets link it: `Sources/AxoMacMain` (shipped app, `ProductionLaunch`) and `Sources/AxoMacTestHost` (self-test and UI-automation launch modes for `AxoUITestApp`, via `@testable import`, so non-optimized builds only). The shipped app must never link `AxoMacTestHost`.
 
-`apple/AxoProtocol` holds the wire models (typed: `PaneRole`, `PaneAvailability`), events, layouts, `AxodMethodName` (the only place a method name is spelled) and the protocol version, with no I/O; `apple/AxoRPC` holds the per-call Unix-socket client, whose methods are one table (`AxodMethods` pairs each name with its params and result types), and `TerminalAttachment`; `apple/AxoDaemonManager` holds `DaemonController` (LaunchAgent registration and health).
+`apple/AxoProtocol` holds the wire models (typed: `PaneRole`, `PaneAvailability`), events, layouts, `AxodMethodName` (the only place a method name is spelled) and the protocol version, with no I/O; `apple/AxoRPC` holds the per-call Unix-socket client, whose methods are one table (`AxodMethods` pairs each name with its params and result types), and `TerminalAttachment`; `apple/AxoDaemonManager` holds `DaemonController` (LaunchAgent registration and health); `apple/AxoSearch` holds client-side ranking (`SearchIndex` over `SearchDocument`s, on FuzzyMatch's Smith-Waterman mode), shared with iOS.
+
+Remote Swift packages are listed once in `apple/Package.swift` and pinned in `apple/Package.resolved` (the only manifest `swift_deps` reads); add a dependency there and in the using package's own `Package.swift`, then `swift package resolve` in `apple/`.
 
 ## State and data flow
 
@@ -36,6 +39,7 @@ The `AxoMac` library has no `@main`. Two thin entry targets link it: `Sources/Ax
 - ⌘W uses `requestCloseShell`: `axo.shell.busy` decides whether to confirm (foreground job or Pi turn); if busy state is unknown, ask rather than guess.
 - `DaemonController` never restarts axod on a slow health check (it may be recovering Sessions); only a build mismatch or the explicit, confirmed **Restart axod** action restarts the LaunchAgent.
 - Selection order and successor rules live in `SessionNavigation`/`RecentSessions`; layout algebra lives in `TerminalLayout`; what is shown and focused lives in `WorkbenchSelection`; the catalog's ordering in `SessionCatalog`. Keep all four pure and unit-tested; the model only projects them (with `assign`) and performs I/O.
+- The command palette searches a snapshot taken when it opens. Its actions carry the IDs the user saw (destructive ones name the exact Session or shell), and `CommandPalettePerformer` skips any whose target closed or changed. Add a command to `CommandPaletteCommand` and the menu together, gated by the same `TerminalCommandAvailability`.
 - Preference keys live only in `AxoPreferenceKey` (app) and `DaemonPreferenceKey` (daemon registration); `PreferenceKeyTests` keeps them disjoint.
 
 ## Ghostty and AppKit boundary
@@ -44,7 +48,7 @@ The `AxoMac` library has no `@main`. Two thin entry targets link it: `Sources/Ax
 - libghostty callbacks run through `GhosttyRuntime+Callbacks` and hop to the main actor; reject off-main calls. Present UI from callbacks on the next main-loop turn (the renderer mutex may be held).
 - One size path: `GhosttySurfaceNSView.syncSurfaceSize()` feeds libghostty from the view's own final bounds and ignores zero/non-finite passes. Never push a SwiftUI proposed size.
 - Representables must not publish state synchronously during updates; status callbacks are deferred and typed (`TerminalSurfaceConnection`).
-- Keyboard focus has one path: the surface's deferred `requestFocus()` (from the representable or `TerminalSurfaceRegistry.requestFocus(for:)`). Do not add retry loops.
+- Keyboard focus has one path: the surface's deferred `requestFocus()` (from the representable or `TerminalSurfaceRegistry.requestFocus(for:)`). Do not add retry loops. Overlays that take the keyboard (the command palette) focus their field on the next main-loop turn and, when dismissed, return focus with `requestFocus(for: focusedShellID)`.
 - Clipboard consent is a window sheet that completes Ghostty's request asynchronously with owned copies of the reviewed payload; without a window, deny. Do not use `runModal`.
 - Surface conformances to AppKit protocols use isolated conformances (`@MainActor NSTextInputClient`), not `@preconcurrency`.
 

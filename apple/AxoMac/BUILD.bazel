@@ -17,6 +17,7 @@ AXO_MAC_DEPS = [
     "//apple/AxoDaemonManager:AxoDaemonManager",
     "//apple/AxoProtocol",
     "//apple/AxoRPC:AxoRPC",
+    "//apple/AxoSearch:AxoSearch",
     "@ghostty//:GhosttyKit",
 ]
 
@@ -202,6 +203,7 @@ xcodeproj(
         ":AxoUITestApp",
         "//apple/AxoProtocol:AxoProtocolTests",
         "//apple/AxoRPC:AxoRPCTests",
+        "//apple/AxoSearch:AxoSearchTests",
         "//apple/AxoDaemonManager:AxoDaemonManagerTests",
         "//apple/AxoMac:AxoMacTests",
         "//apple/AxoMac:TerminalWorkbenchE2ETests",

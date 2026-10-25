@@ -187,6 +187,9 @@ final class TerminalSessionsModel {
 
   var sidebarOrderedSessions: [TerminalSession] { sidebarSections.ordered }
 
+  /// Sessions most recently shown first. Not observed: read when needed, as by the palette.
+  var recentSessionIDs: [SessionID] { selection.recent.ids }
+
   func session(for sessionID: SessionID) -> TerminalSession? {
     catalog.session(for: sessionID)
   }

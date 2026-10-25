@@ -12,6 +12,7 @@ struct AxoApp<Launch: AxoLaunchMode>: App {
   @State private var pairingLink = PairingLinkRouter.shared
   @State private var settingsSection = SettingsSection.general
   @State private var isPresentingWorkspaceCreation = false
+  @State private var palette = CommandPaletteModel()
   @AppStorage(AxoPreferenceKey.appearanceTheme) private var appearanceTheme: AppearanceTheme = .system
   @AppStorage(AxoPreferenceKey.sidebarIsCollapsed) private var isSidebarCollapsed = false
   private let environment: AxoAppEnvironment
@@ -69,6 +70,7 @@ struct AxoApp<Launch: AxoLaunchMode>: App {
         settingsSection: $settingsSection,
         pairingLink: pairingLink,
         isPresentingWorkspaceCreation: $isPresentingWorkspaceCreation,
+        palette: palette,
         isDaemonRunningOverride: environment.startsDaemon ? nil : true
       )
       .preferredColorScheme(appearanceTheme.colorScheme)
@@ -140,12 +142,8 @@ struct AxoApp<Launch: AxoLaunchMode>: App {
         .keyboardShortcut("v", modifiers: [.command, .option, .shift])
       }
 
-      CommandGroup(replacing: .sidebar) {
-        Button("Toggle Sidebar") {
-          isSidebarCollapsed.toggle()
-        }
-        .keyboardShortcut("s", modifiers: [.control, .command])
-      }
+      WorkbenchViewCommands(
+        palette: palette, sessions: sessions, isSidebarCollapsed: $isSidebarCollapsed)
 
       CommandMenu("Terminal") {
         Button("New Workspace…") {
@@ -242,7 +240,9 @@ private struct TerminalAppWindow: View {
   @Binding var settingsSection: SettingsSection
   var pairingLink: PairingLinkRouter
   @Binding var isPresentingWorkspaceCreation: Bool
+  var palette: CommandPaletteModel
   var isDaemonRunningOverride: Bool?
+  @AppStorage(AxoPreferenceKey.sidebarIsCollapsed) private var isSidebarCollapsed = false
 
   var body: some View {
     TerminalWorkbenchView(
@@ -251,7 +251,53 @@ private struct TerminalAppWindow: View {
       isPresentingWorkspaceCreation: $isPresentingWorkspaceCreation,
       daemonIsRunningOverride: isDaemonRunningOverride
     )
+    .overlay { CommandPaletteOverlay(palette: palette, onChoose: perform) }
+    .onChange(of: palette.isPresented) { _, isPresented in
+      // Back to the pane typing went to; a chosen Session or pane takes focus itself.
+      if !isPresented, let shellID = sessions.focusedShellID {
+        ghostty.surfaces.requestFocus(for: shellID)
+      }
+    }
     .environment(ghostty)
+  }
+
+  private func perform(_ action: CommandPaletteAction) {
+    CommandPalettePerformer(
+      sessions: sessions,
+      toggleSidebar: { isSidebarCollapsed.toggle() },
+      newWorkspace: { isPresentingWorkspaceCreation = true },
+      openSettings: {
+        settingsSection = .general
+        openWindow(id: "settings")
+      }
+    ).perform(action)
+  }
+}
+
+/// The View menu: the sidebar and the command palette.
+private struct WorkbenchViewCommands: Commands {
+  var palette: CommandPaletteModel
+  var sessions: TerminalSessionsModel
+  @Binding var isSidebarCollapsed: Bool
+  @Environment(\.openWindow) private var openWindow
+
+  var body: some Commands {
+    CommandGroup(replacing: .sidebar) {
+      Button("Command Palette…") {
+        if palette.isPresented {
+          palette.dismiss()
+        } else {
+          openWindow(id: "terminal")
+          palette.present(CommandPaletteCatalog.items(sessions.commandPaletteContext()))
+        }
+      }
+      .keyboardShortcut("p", modifiers: [.command, .shift])
+
+      Button("Toggle Sidebar") {
+        isSidebarCollapsed.toggle()
+      }
+      .keyboardShortcut("s", modifiers: [.control, .command])
+    }
   }
 }
 
