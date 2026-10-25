@@ -2504,7 +2504,7 @@ impl SessionManager {
             ));
         }
 
-        let (session_id, state_name, initial_pwd, workspace_id) = {
+        let (session_id, lifecycle, initial_pwd, workspace_id) = {
             let state = self.lock_state()?;
             if !requester.is_current(&state) {
                 return Err(io::Error::new(
@@ -2522,7 +2522,7 @@ impl SessionManager {
                 .query_map(params![requested_session_file], |row| {
                     Ok((
                         stored_session_id(row.get(0)?)?,
-                        row.get::<_, String>(1)?,
+                        row.get::<_, StoredLifecycle>(1)?,
                         PathBuf::from(row.get::<_, String>(2)?),
                         row.get::<_, Option<String>>(3)?,
                     ))
@@ -2531,23 +2531,17 @@ impl SessionManager {
                 .collect::<Result<Vec<_>, _>>()
                 .map_err(io::Error::other)?;
             drop(statement);
-            if records.len() != 1 {
+            let Ok([record]) = <[_; 1]>::try_from(records) else {
                 return Err(io::Error::new(
                     io::ErrorKind::NotFound,
                     "no unique Axo Session owns this Pi history",
                 ));
-            }
-            records.into_iter().next().expect("one matching Session")
+            };
+            record
         };
 
-        if state_name == "open" {
+        if lifecycle == StoredLifecycle::Open {
             return self.complete_pi_resume(requester, session_id);
-        }
-        if state_name != "archived" {
-            return Err(io::Error::new(
-                io::ErrorKind::InvalidData,
-                "Pi Session has an unsupported lifecycle state",
-            ));
         }
         let workspace_access = if let Some(workspace_id) = &workspace_id {
             let (directory_path, bookmark) = {
@@ -2807,38 +2801,22 @@ impl SessionManager {
                 return Ok(false);
             }
 
-            match name {
-                "agent.start" => {
-                    let activity = state.pi_activity.entry(session_id).or_default();
-                    let changed = !activity.working;
-                    activity.working = true;
-                    changed
+            match PiCatalogEvent::parse(name, data) {
+                PiCatalogEvent::AgentStarted => !std::mem::replace(&mut state.pi_activity.entry(session_id).or_default().working, true),
+                PiCatalogEvent::AgentSettled => std::mem::replace(&mut state.pi_activity.entry(session_id).or_default().working, false),
+                PiCatalogEvent::PromptStarted => {
+                    let waits = &mut state.pi_activity.entry(session_id).or_default().ui_waits;
+                    let previous = *waits;
+                    *waits = waits.saturating_add(1);
+                    *waits != previous
                 }
-                "agent.settled" => {
-                    let activity = state.pi_activity.entry(session_id).or_default();
-                    let changed = activity.working;
-                    activity.working = false;
-                    changed
+                PiCatalogEvent::PromptEnded => {
+                    let waits = &mut state.pi_activity.entry(session_id).or_default().ui_waits;
+                    let previous = *waits;
+                    *waits = waits.saturating_sub(1);
+                    *waits != previous
                 }
-                "ui.prompt.start" => {
-                    let activity = state.pi_activity.entry(session_id).or_default();
-                    let previous_waits = activity.ui_waits;
-                    activity.ui_waits = activity.ui_waits.saturating_add(1);
-                    activity.ui_waits != previous_waits
-                }
-                "ui.prompt.end" => {
-                    let activity = state.pi_activity.entry(session_id).or_default();
-                    let previous_waits = activity.ui_waits;
-                    activity.ui_waits = activity.ui_waits.saturating_sub(1);
-                    activity.ui_waits != previous_waits
-                }
-                "session.info" => {
-                    let Some(title) = data["name"]
-                        .as_str()
-                        .filter(|title| valid_session_title(title))
-                    else {
-                        return Ok(true);
-                    };
+                PiCatalogEvent::Named { title } => {
                     state
                         .database
                         .execute(
@@ -2848,23 +2826,14 @@ impl SessionManager {
                         .map_err(io::Error::other)?
                         > 0
                 }
-                "axo.session.metadata" => {
-                    let title = data["title"]
-                        .as_str()
-                        .filter(|title| valid_session_title(title));
-                    let emoji = data["emoji"]
-                        .as_str()
-                        .filter(|emoji| valid_session_emoji(emoji));
-                    if title.is_none() && emoji.is_none() {
-                        return Ok(true);
-                    }
+                PiCatalogEvent::Described { title, emoji } => {
                     state.database.execute(
                         "UPDATE sessions SET name = COALESCE(?1, name), emoji = COALESCE(?2, emoji) \
                          WHERE id = ?3 AND state = 'open'",
                         params![title, emoji, session_id.get()],
                     ).map_err(io::Error::other)? > 0
                 }
-                _ => false,
+                PiCatalogEvent::Ignored => false,
             }
         };
         if changed {
@@ -2966,10 +2935,72 @@ impl SessionManager {
             .map(|(session_id, _)| session_id))
     }
 
-    fn lock_state(&self) -> io::Result<std::sync::MutexGuard<'_, SessionState>> {
-        self.state
+    /// Every RPC, attach and event path goes through this one lock, so holding it across slow
+    /// work (spawning, SQLite, signalling) stalls every client. Long waits and long holds are
+    /// logged with the caller's source location; see `CatalogGuard`.
+    #[track_caller]
+    fn lock_state(&self) -> io::Result<CatalogGuard<'_>> {
+        let caller = std::panic::Location::caller();
+        let requested = Instant::now();
+        let guard = self
+            .state
             .lock()
-            .map_err(|_| io::Error::other("session state lock was poisoned"))
+            .map_err(|_| io::Error::other("session state lock was poisoned"))?;
+        let acquired = Instant::now();
+        let waited = acquired - requested;
+        if waited >= CATALOG_LOCK_REPORT_THRESHOLD {
+            log::warn!(
+                "event=catalog.lock_wait_long caller={}:{} waited_ms={}",
+                caller.file(),
+                caller.line(),
+                waited.as_millis()
+            );
+        }
+        Ok(CatalogGuard {
+            guard,
+            caller,
+            acquired,
+        })
+    }
+}
+
+/// How long the catalog lock may be waited for or held before it is reported.
+const CATALOG_LOCK_REPORT_THRESHOLD: Duration = Duration::from_millis(50);
+
+/// The catalog lock, held. Reports holds longer than `CATALOG_LOCK_REPORT_THRESHOLD` with the
+/// source location that took the lock, so a slow request in `ipc.slow_request` can be traced to
+/// whoever made it wait. Source locations are bounded; nothing user-controlled is logged.
+struct CatalogGuard<'a> {
+    guard: std::sync::MutexGuard<'a, SessionState>,
+    caller: &'static std::panic::Location<'static>,
+    acquired: Instant,
+}
+
+impl std::ops::Deref for CatalogGuard<'_> {
+    type Target = SessionState;
+
+    fn deref(&self) -> &SessionState {
+        &self.guard
+    }
+}
+
+impl std::ops::DerefMut for CatalogGuard<'_> {
+    fn deref_mut(&mut self) -> &mut SessionState {
+        &mut self.guard
+    }
+}
+
+impl Drop for CatalogGuard<'_> {
+    fn drop(&mut self) {
+        let held = self.acquired.elapsed();
+        if held >= CATALOG_LOCK_REPORT_THRESHOLD {
+            log::warn!(
+                "event=catalog.lock_held_long caller={}:{} held_ms={}",
+                self.caller.file(),
+                self.caller.line(),
+                held.as_millis()
+            );
+        }
     }
 }
 
@@ -4836,6 +4867,75 @@ fn encode_base64(input: &[u8]) -> String {
     encoded
 }
 
+/// What a Pi event changes in the catalog, parsed from its name and payload once. Invalid
+/// titles and emoji are dropped here, so the catalog only ever stores valid ones. Every Pi event
+/// is still forwarded to clients as is; this is only the part axod acts on.
+#[derive(Debug, Eq, PartialEq)]
+enum PiCatalogEvent<'a> {
+    AgentStarted,
+    AgentSettled,
+    PromptStarted,
+    PromptEnded,
+    /// Pi named its session (`session.info`).
+    Named {
+        title: &'a str,
+    },
+    /// The Axo extension described the session; at least one field is set.
+    Described {
+        title: Option<&'a str>,
+        emoji: Option<&'a str>,
+    },
+    /// Not a catalog change, or a payload with nothing valid in it.
+    Ignored,
+}
+
+impl<'a> PiCatalogEvent<'a> {
+    fn parse(name: &str, data: &'a Value) -> Self {
+        let field =
+            |key: &str, valid: fn(&str) -> bool| data[key].as_str().filter(|value| valid(value));
+        match name {
+            "agent.start" => PiCatalogEvent::AgentStarted,
+            "agent.settled" => PiCatalogEvent::AgentSettled,
+            "ui.prompt.start" => PiCatalogEvent::PromptStarted,
+            "ui.prompt.end" => PiCatalogEvent::PromptEnded,
+            "session.info" => match field("name", valid_session_title) {
+                Some(title) => PiCatalogEvent::Named { title },
+                None => PiCatalogEvent::Ignored,
+            },
+            "axo.session.metadata" => {
+                match (
+                    field("title", valid_session_title),
+                    field("emoji", valid_session_emoji),
+                ) {
+                    (None, None) => PiCatalogEvent::Ignored,
+                    (title, emoji) => PiCatalogEvent::Described { title, emoji },
+                }
+            }
+            _ => PiCatalogEvent::Ignored,
+        }
+    }
+}
+
+/// The `state` column of a Session, shell or Workspace row. Parsed when read, so a corrupt or
+/// unknown state fails the query instead of being compared as a string downstream.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+enum StoredLifecycle {
+    Open,
+    Archived,
+}
+
+impl rusqlite::types::FromSql for StoredLifecycle {
+    fn column_result(value: rusqlite::types::ValueRef<'_>) -> rusqlite::types::FromSqlResult<Self> {
+        match value.as_str()? {
+            "open" => Ok(StoredLifecycle::Open),
+            "archived" => Ok(StoredLifecycle::Archived),
+            other => Err(rusqlite::types::FromSqlError::Other(
+                format!("unknown lifecycle state {other:?}").into(),
+            )),
+        }
+    }
+}
+
 /// Catalog IDs come from `AUTOINCREMENT` columns, so a stored ID is positive unless the database
 /// is corrupt; reading one that is not fails instead of producing an invalid ID.
 fn stored_session_id(value: i64) -> rusqlite::Result<SessionId> {
@@ -4876,6 +4976,42 @@ mod tests {
 
     fn shid(value: i64) -> ShellId {
         ShellId::new(value).unwrap()
+    }
+
+    #[test]
+    fn pi_catalog_events_keep_only_valid_titles_and_emoji() {
+        let parse = |name: &str, data: Value| format!("{:?}", PiCatalogEvent::parse(name, &data));
+        assert_eq!(parse("agent.start", json!({})), "AgentStarted");
+        assert_eq!(parse("ui.prompt.end", json!(null)), "PromptEnded");
+        assert_eq!(
+            parse("session.info", json!({ "name": "Fix the build" })),
+            r#"Named { title: "Fix the build" }"#
+        );
+        assert_eq!(parse("session.info", json!({ "name": "" })), "Ignored");
+        assert_eq!(parse("session.info", json!({ "name": 7 })), "Ignored");
+        assert_eq!(
+            parse("axo.session.metadata", json!({ "title": "", "emoji": "🔧" })),
+            r#"Described { title: None, emoji: Some("🔧") }"#
+        );
+        assert_eq!(
+            parse("axo.session.metadata", json!({ "title": "", "emoji": "not an emoji" })),
+            "Ignored"
+        );
+        assert_eq!(parse("message.delta", json!({ "name": "x" })), "Ignored");
+    }
+
+    #[test]
+    fn stored_lifecycle_parses_known_states_and_rejects_others() {
+        let database = Connection::open_in_memory().unwrap();
+        let read = |state: &str| {
+            database.query_row("SELECT ?1", params![state], |row| {
+                row.get::<_, StoredLifecycle>(0)
+            })
+        };
+        assert_eq!(read("open").unwrap(), StoredLifecycle::Open);
+        assert_eq!(read("archived").unwrap(), StoredLifecycle::Archived);
+        assert!(read("closed").is_err());
+        assert!(read("").is_err());
     }
 
     /// An event as it goes over the wire.
