@@ -9,7 +9,7 @@ Resolve paths from the Axo root (`../../..`). Deliver with [packaging](../axo-ma
 
 ## Ownership
 
-- **Axod owns processes; Pi owns transcripts.** Axod (`crates/axod`, `crates/axo-server`) owns PTYs, Sessions, Workspaces, layouts and Pi lifecycle. The app presents and commands that state over Axod's local JSON-RPC socket; it never spawns, adopts or signals Session processes. Ghostty surfaces run the bundled `axod terminal-attach` helper, which attaches to a daemon-owned PTY.
+- **Axod owns processes; Pi owns transcripts.** Axod (`crates/axod`, `crates/axo-server`) owns PTYs, Sessions, Workspaces, layouts and Pi lifecycle. The app presents and commands that state over Axod's local JSON-RPC socket; it never spawns, adopts or signals Session processes. Each Ghostty surface attaches in-process to a daemon-owned PTY (`TerminalAttachment`, attach protocol v2): Axod is the PTY's only reader and streams replay plus live output; the surface gets the PTY descriptor for input, resizing and termios only (Ghostty external-I/O patch). `axod terminal-attach` is a CLI for tests and debugging, not part of the app.
 - `SessionID`/`ShellID` (`apple/AxoRPC/Sources/AxoRPC/Models/Identifiers.swift`) are the only identities. Axod allocates them with SQLite `AUTOINCREMENT`, so they are never reused: after an `await`, revalidate by looking the ID up again.
 - Explicit **Restart Pi** may affect only the verified pane; automatic Pi recovery is Axod's idle-only, non-forcing `auto` restart. Closing windows or the app never stops daemon work.
 
@@ -18,14 +18,14 @@ Resolve paths from the Axo root (`../../..`). Deliver with [packaging](../axo-ma
 | Folder | Contents |
 | --- | --- |
 | `App/` | `AxoApp<Launch>` (scenes, menus), `AxoAppEnvironment` + `AxoLaunchMode` (launch configuration), `AxoWorkbench` (app-lifetime coordination), `ObservationLoop`, `AxoPreferenceKey`, pairing/URL routing, sleep prevention. |
-| `Sessions/` | `TerminalSessionsModel` (catalog + selection/focus + commands), `AxodClient` protocol and socket implementation, `TerminalCatalogSync` (event subscription), `TerminalLayout` (pure layout tree), `SessionNavigation`, `TerminalLayoutWriter`, `AutomaticPiRestarter`. |
-| `Terminal/` | `GhosttyRuntime` (+`Config`, `Callbacks`, `Actions`, `Clipboard`), clipboard/URL/attention/accessibility policies. `Terminal/Surface/` holds the Ghostty surface view split by concern (keyboard, text input, mouse, menu) and `TerminalKeyEquivalentPolicy`. |
-| `Workbench/` | `TerminalWorkbenchView`, sidebar rows and rename editor, workspace sheet, split tree and pane views. |
+| `Sessions/` | `TerminalSessionsModel` (commands, and the observed projections of the two values below), `SessionCatalog` (open Sessions, sorted and unique by ID), `WorkbenchSelection` (selected Session, focus, every layout, recent Sessions), `AxodClient` protocol and socket implementation, `TerminalCatalogSync` (event subscription), `TerminalLayout` (pure layout tree), `SessionNavigation`/`SidebarSections`, `TerminalLayoutWriter`, `ViewportReporter`, `AutomaticPiRestarter`. |
+| `Terminal/` | `GhosttyRuntime` (+`Config`, `Callbacks`, `Actions`, `Clipboard`: the libghostty app, preferences, focus, attention, secure input, command routing), `TerminalSurfaceRegistry` (every surface: create at its pane's size, attach, reattach via `ReattachThrottle`, offscreen sizing, free), clipboard/URL/attention/accessibility policies. `Terminal/Surface/` holds the Ghostty surface view split by concern (keyboard, text input, mouse, menu) and `TerminalKeyEquivalentPolicy`. |
+| `Workbench/` | `TerminalWorkbenchView`, `WorkbenchSidebar` and its rows and rename editor, workspace sheet, split tree, pane views and `TerminalPaneGeometry`. |
 | `Settings/` | Settings views, `RemoteAccessModel` (fed by `relay.status` events) and `DaemonCommandSettingSection`. Settings talk to Axod only through `AxodSettingsClient`. |
 
 The `AxoMac` library has no `@main`. Two thin entry targets link it: `Sources/AxoMacMain` (shipped app, `ProductionLaunch`) and `Sources/AxoMacTestHost` (self-test and UI-automation launch modes for `AxoUITestApp`, via `@testable import`, so non-optimized builds only). The shipped app must never link `AxoMacTestHost`.
 
-`apple/AxoRPC` holds the wire models and the per-call Unix-socket client; `apple/AxoDaemonManager` holds `DaemonController` (LaunchAgent registration and health).
+`apple/AxoRPC` holds the wire models (typed: `PaneRole`, `PaneAvailability`) and the per-call Unix-socket client, whose methods are one table (`AxodMethodName` is the only place a method name is spelled; `AxodMethods` pairs each with its params and result types); `apple/AxoDaemonManager` holds `DaemonController` (LaunchAgent registration and health).
 
 ## State and data flow
 
@@ -35,7 +35,7 @@ The `AxoMac` library has no `@main`. Two thin entry targets link it: `Sources/Ax
 - User commands go through `TerminalSessionsModel` and apply the record Axod returns; relist only when the outcome is ambiguous. Shell creation is not idempotent: an unconfirmed split is reconciled from the catalog, never retried.
 - ⌘W uses `requestCloseShell`: `axo.shell.busy` decides whether to confirm (foreground job or Pi turn); if busy state is unknown, ask rather than guess.
 - `DaemonController` never restarts axod on a slow health check (it may be recovering Sessions); only a build mismatch or the explicit, confirmed **Restart axod** action restarts the LaunchAgent.
-- Selection order and successor rules live in `SessionNavigation`/`RecentSessions`; layout algebra lives in `TerminalLayout`. Keep both pure and unit-tested.
+- Selection order and successor rules live in `SessionNavigation`/`RecentSessions`; layout algebra lives in `TerminalLayout`; what is shown and focused lives in `WorkbenchSelection`; the catalog's ordering in `SessionCatalog`. Keep all four pure and unit-tested; the model only projects them (with `assign`) and performs I/O.
 - Preference keys live only in `AxoPreferenceKey` (app) and `DaemonPreferenceKey` (daemon registration); `PreferenceKeyTests` keeps them disjoint.
 
 ## Ghostty and AppKit boundary
@@ -44,7 +44,7 @@ The `AxoMac` library has no `@main`. Two thin entry targets link it: `Sources/Ax
 - libghostty callbacks run through `GhosttyRuntime+Callbacks` and hop to the main actor; reject off-main calls. Present UI from callbacks on the next main-loop turn (the renderer mutex may be held).
 - One size path: `GhosttySurfaceNSView.syncSurfaceSize()` feeds libghostty from the view's own final bounds and ignores zero/non-finite passes. Never push a SwiftUI proposed size.
 - Representables must not publish state synchronously during updates; status callbacks are deferred and typed (`TerminalSurfaceConnection`).
-- Keyboard focus has one path: the surface's deferred `requestFocus()` (from the representable or `GhosttyRuntime.requestFocus(for:)`). Do not add retry loops.
+- Keyboard focus has one path: the surface's deferred `requestFocus()` (from the representable or `TerminalSurfaceRegistry.requestFocus(for:)`). Do not add retry loops.
 - Clipboard consent is a window sheet that completes Ghostty's request asynchronously with owned copies of the reviewed payload; without a window, deny. Do not use `runModal`.
 - Surface conformances to AppKit protocols use isolated conformances (`@MainActor NSTextInputClient`), not `@preconcurrency`.
 
@@ -59,6 +59,7 @@ The `AxoMac` library has no `@main`. Two thin entry targets link it: `Sources/Ax
 | `bazel test //apple/AxoMac:AxoVisualUITestsBazel` | Real XCUITest UI against an isolated daemon. `AXO_UI_TEST_ONLY=<test>` runs one case. |
 
 - The visual runner refuses to start while any `Axo` frontend is running (XCUIApplication can terminate same-bundle apps). Never close or restart discovered Axo/Axod processes to make room; ask the user.
-- Test fixtures must not depend on ambient Pi configuration or the user's database: use `//crates/axo-server:pi_extension_fixture` and `//crates/axod:testdata/pi-fixture.sh`.
+- Test fixtures must not depend on ambient Pi configuration, the user's login shell or the user's database: use `//crates/axo-server:pi_extension_fixture` and `//crates/axod:testdata/pi-fixture.sh`, and a private `HOME`.
+- A daemon fixture is ready when its socket accepts a `connect()`, not when the socket file exists (the file appears at `bind()`, before `listen()`). Give every fixture its own directory; never derive one from a timestamp alone.
 - Component tests do not prove real AppKit, IME, VoiceOver or physical-device behavior. Match claims to the lane that ran.
 - Keep Axo's own code free of compiler warnings (`bazel build //apple/...`); remaining warnings come from external dependencies.

@@ -11,6 +11,19 @@ Without `--socket`, the server uses `~/Library/Application Support/Axo/run/axod.
 
 The PID file is diagnostic metadata, not a process-control mechanism: launchd remains the source of truth for service lifetime, and a forced kill may leave a stale PID file until the next successful start replaces it. On macOS, `SMAppService` registers the bundled executable as a per-user LaunchAgent; launchd owns its process lifetime.
 
+## Crates
+
+| Crate | Owns |
+| --- | --- |
+| `axod` | This binary and the `terminal-attach` CLI. |
+| `axo-server` | `SessionManager` orchestration: the catalog lock (`lock_state`, which logs `catalog.lock_wait_long`/`lock_held_long` with the caller), pane lifecycle, Pi bridge and recovery, RPC handlers. `panes.rs` is the pane table and its state machine (`Pane::Running`/`Unavailable`, `Recovery::Idle`/`InProgress`); `store.rs` is the SQLite schema, migrations and database-only reads and writes. |
+| `axo-protocol` | Wire types: IDs, `PaneRole`, layouts, records, typed RPC params/results and events. |
+| `axo-pty` | PTYs, launching children on them, the permanent output pump, attach protocol v2, and `process::stop_all`. |
+| `axo-pi` | Pi launch, bridge worker and protocol, writer lock, takeover, activity. |
+| `axo-ipc` | Newline-delimited JSON-RPC over the Unix socket and `EventQueue`. |
+| `axo-relay` | The Cloudflare host relay. |
+| `axod-loadtest` | `axod-loadtest --profile heavy`: load against an isolated axod; pass bar control-plane p99 < 10 ms. |
+
 ## Runtime and attachment invariants
 
 - A durable pane ID is not a process identity. Each launch gets a daemon-local runtime ID; attachment output/detachment, Pi bridge metadata/activity, and resume requests are checked against that runtime. Late callbacks from a replaced process cannot modify its replacement.
@@ -18,6 +31,7 @@ The PID file is diagnostic metadata, not a process-control mechanism: launchd re
 - Attach protocol v2: the client writes `<shellId>\n`; Axod replies with `u64::MAX` plus a rejection code, or with the replay length (big-endian `u64`), one `SCM_RIGHTS` message carrying the PTY master, then the replay and live output as raw bytes. The descriptor is for input, resizing and termios/foreground queries only. Closing the socket detaches; end of file means the shell exited or the client fell more than 8 MiB behind (clients consult the catalog to tell which).
 - Accepted terminal sockets explicitly use bounded blocking I/O, including on macOS where accepted sockets can inherit the listener's nonblocking mode. A failed or timed-out write ends the attachment, so a partial write never corrupts a live stream. Stalled clients release their attachment lease; idle attachments observe shutdown, client close and runtime replacement.
 - Child wait failures are reported once per runtime and isolated from other children. An uncertain child remains represented; Axod does not infer completion or signal a possibly reused PID after losing wait ownership.
+- Every pane process stops through `stop_panes`: SIGHUP and SIGTERM to all at once, SIGKILL to each whose own grace runs out (terminals 500 ms, Pi `axo_pi::STOP_GRACE`). It owns the processes, so a Pi's writer lock and PTY are released only after it exits. Closing a Session stops its panes on one background worker; shutdown stops them inline.
 - Shutdown drains runtime ownership before slow child cleanup, without holding the catalog mutex while waiting for processes. Cleanup is idempotent, avoids joining its own worker, and retains cleanup responsibility if a background cleanup thread cannot start.
 - Only the intended Pi child inherits its transcript writer lock across exec. The parent keeps close-on-exec set throughout launch so unrelated child processes cannot accidentally retain that lock. No transcript content is rewritten by these lifecycle operations.
 - Pi recovery reserves only the unavailable pane, snapshots its launch inputs, then releases the catalog mutex before connecting, waiting for writer ownership, or executing the replacement. Duplicate recovery returns a retryable error. Startup restore and archived-session resume use this same path; restoring an already represented pane never replaces its runtime.

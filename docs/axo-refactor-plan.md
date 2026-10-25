@@ -90,8 +90,17 @@ payload is a struct or enum deriving `Serialize`/`Deserialize`. `Value` survives
   `catalog.lock_held_long` with the caller at ≥ 50 ms.
 - **Done (`05db4b3`):** a Session's record is one cached query instead of four (listing 8
   Sessions: p50 99 → 21 µs).
-- Remove the remaining non-test `unwrap`/`expect`s, or document why each cannot fail.
-- One stop path for shells (close, archive, shutdown, recovery) with a single timeout policy.
+- **Done (`b741c68`):** no panics left on daemon paths. `BridgeSocketPath` holds a `String`, so
+  UTF-8 is a property of the type. The remaining non-test `expect`s are the build number from
+  build metadata, clap's validated arguments, and the load-test tool.
+- **Done (`48cc02f`):** one stop path, `stop_panes`, for close, archive, cancelled recovery and
+  shutdown, with each pane's own grace; one cleanup worker per close instead of one per pane.
+- **Done (`2b242e2`):** `store.rs` holds the schema, migrations and database-only reads and
+  writes (a verbatim move; `session.rs` 7,250 → 6,554 lines). Next: the 38 inline SQL calls in
+  `SessionManager` methods, then the `axo-store` crate.
+- **Test isolation (`aeaae49`, `48b12cd`, `97a971d`):** RPC tests no longer share a directory
+  (microsecond timestamps collided), axo-server tests never start the user's login shell, and
+  Swift daemon fixtures wait for `connect()`, not the socket file.
 
 ## Phase 2: Swift app (`apple/`)
 
@@ -123,6 +132,9 @@ booleans; parse wire data into domain types at the boundary.
   focusable.
 - `SessionCommands`: create/close/split/rename/archive/restart, applying Axod's returned records.
 - Confirmations become their own small types instead of optional properties plus cancel methods.
+  (They are: `ShellCloseConfirmation`, `WorkspaceArchiveConfirmation`.)
+- **Done (`4b82070`):** `SessionCatalog`, a pure value whose `sessions` are sorted and unique by
+  ID by construction.
 - **Done (`9fa74d4`):** one layout store; `SidebarSections` replaces `sidebarOrder` (Sessions of
   an unlisted Workspace no longer vanish).
 - **Done (`434b3a5`):** `WorkbenchSelection` is a pure value owning selection, focus, every
@@ -133,8 +145,9 @@ booleans; parse wire data into domain types at the boundary.
 
 - `TerminalWorkbenchView` (460 lines): extract `ExpandedSidebar`, `CollapsedSidebar` and
   `WorkbenchDialogs`. No business logic in view closures.
-- `GhosttyRuntime` (468 lines): move surface lifecycle (attach, adopt, reattach, free) into
-  `TerminalSurfaceRegistry`; the runtime keeps libghostty app/config/callbacks.
+- **Done (`418f612`):** `TerminalSurfaceRegistry` owns surface lifecycle (presentation, attach,
+  adopt, reattach, offscreen sizing, free); `GhosttyRuntime` keeps the libghostty app, config,
+  callbacks and command routing (632 → 285 lines).
 - **Done (`66d8d86`):** `UnixSocketRPC` is table-driven: `AxodMethodName` is the only place
   method names are spelled, `AxodMethod<Params, Result>` descriptors and one generic `call()`.
 - **Done (`d477f1f`):** `ReattachThrottle` replaces `lastReattach`, so a stream ending twice in
@@ -166,6 +179,10 @@ p99 274 µs) is not where the felt lag is.
   in Instruments too. Bounded fields only: no paths, names or terminal content.
 
 ## Phase 3: contributor docs and skills
+
+**Done (this round):** `axo-macos-native-apps` (in-process attach, new types, fixture rules),
+`axo-pi-title-and-attention` (status lives in `axo-pi`), and a crate map plus the stop path in
+`crates/axod/README.md`.
 
 The skills in `.agents/skills` are for building and contributing to Axo, not for using it. Update
 `axo-macos-native-apps` (it still says surfaces use the `terminal-attach` helper) and

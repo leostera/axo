@@ -16,8 +16,8 @@ Resolve paths from the Axo root (`../../..`). Follow the [native app](../axo-mac
 
 ## Status and attention
 
-- Axod derives Session status from bridge activity (`crates/axo-server/src/session.rs`, `PiRuntimeActivity::status`): disconnected → `unavailable`, pending UI prompts → `needsAttention`, an active agent → `working`, otherwise `ready`; before the bridge connects, `starting`.
-- The app receives status in `session.snapshot` events through `TerminalCatalogSync` and renders it in the sidebar (`Workbench/TerminalWorkbenchView.swift`). Unseen terminal bells mark a Session `needsAttention` locally (`GhosttyRuntime.attentionShellIDs`, cleared when the pane is focused).
+- Axod derives Session status from bridge activity (`crates/axo-pi/src/activity.rs`, `Activity::status`): disconnected → `unavailable`, pending UI prompts → `needsAttention`, an active agent → `working`, otherwise `ready`; before the bridge connects, `starting`.
+- The app receives status in `session.snapshot` events through `TerminalCatalogSync` and renders it in the sidebar (`Workbench/SessionSidebarRow.swift`, `sidebarStatus`). Unseen terminal bells mark a Session `needsAttention` locally (`GhosttyRuntime.attentionShellIDs`, cleared when the pane is focused).
 - Desktop notifications today come only from Ghostty terminal events (OSC desktop notifications and command-finished policy in `Terminal/TerminalAttention.swift`), gated by Ghostty config. There is no Pi agent-attention notification delivery or notification-click routing yet; do not describe status fields as notifications.
 - Missing, malformed or disconnected bridge state is unavailable/uncertain, never confirmed idle.
 
