@@ -22,6 +22,10 @@ use crate::store::{
     stored_session_id, unix_timestamp,
 };
 use crate::store::{
+    PiHistoryOwner, archived_pi_pane_count, pi_history_owners, reopen_archived_session,
+    workspace_directory,
+};
+use crate::store::{
     bind_pi_session_id, describe_session, list_open_workspaces, open_session_ids_in_workspace,
     rename_open_workspace, set_manual_session_name, store_config_value, write_session_layout,
 };
@@ -2424,7 +2428,12 @@ impl SessionManager {
             ));
         }
 
-        let (session_id, lifecycle, initial_pwd, workspace_id) = {
+        let PiHistoryOwner {
+            session_id,
+            lifecycle,
+            initial_pwd,
+            workspace_id,
+        } = {
             let state = self.lock_state()?;
             if !requester.is_current(&state) {
                 return Err(io::Error::new(
@@ -2432,26 +2441,8 @@ impl SessionManager {
                     "Pi resume request came from a stale pane",
                 ));
             }
-            let mut statement = state
-                .database
-                .prepare(
-                    "SELECT id, state, initial_pwd, workspace_id FROM sessions WHERE pi_session_file = ?1",
-                )
-                .map_err(io::Error::other)?;
-            let records = statement
-                .query_map(params![requested_session_file], |row| {
-                    Ok((
-                        stored_session_id(row.get(0)?)?,
-                        row.get::<_, StoredLifecycle>(1)?,
-                        PathBuf::from(row.get::<_, String>(2)?),
-                        row.get::<_, Option<String>>(3)?,
-                    ))
-                })
-                .map_err(io::Error::other)?
-                .collect::<Result<Vec<_>, _>>()
-                .map_err(io::Error::other)?;
-            drop(statement);
-            let Ok([record]) = <[_; 1]>::try_from(records) else {
+            let owners = pi_history_owners(&state.database, requested_session_file)?;
+            let Ok([record]) = <[_; 1]>::try_from(owners) else {
                 return Err(io::Error::new(
                     io::ErrorKind::NotFound,
                     "no unique Axo Session owns this Pi history",
@@ -2464,17 +2455,8 @@ impl SessionManager {
             return self.complete_pi_resume(requester, session_id);
         }
         let workspace_access = if let Some(workspace_id) = &workspace_id {
-            let (directory_path, bookmark) = {
-                let state = self.lock_state()?;
-                state
-                    .database
-                    .query_row(
-                        "SELECT directory_path, directory_bookmark FROM workspaces WHERE workspace_id = ?1",
-                        params![workspace_id],
-                        |row| Ok((row.get::<_, String>(0)?, row.get::<_, Option<String>>(1)?)),
-                    )
-                    .map_err(io::Error::other)?
-            };
+            let (directory_path, bookmark) =
+                workspace_directory(&self.lock_state()?.database, workspace_id)?;
             let access =
                 WorkspaceDirectoryAccess::open(Path::new(&directory_path), bookmark.as_deref())?;
             if !initial_pwd.starts_with(access.path()) {
@@ -2494,18 +2476,7 @@ impl SessionManager {
             None
         };
 
-        let pi_shell_count: i64 = {
-            let state = self.lock_state()?;
-            state
-                .database
-                .query_row(
-                    "SELECT COUNT(*) FROM shells WHERE session_id = ?1 AND role = 'pi' AND state = 'archived'",
-                    params![session_id.get()],
-                    |row| row.get(0),
-                )
-                .map_err(io::Error::other)?
-        };
-        if pi_shell_count != 1 {
+        if archived_pi_pane_count(&self.lock_state()?.database, session_id)? != 1 {
             return Err(io::Error::new(
                 io::ErrorKind::InvalidData,
                 "archived Session does not have exactly one Pi pane",
@@ -2527,49 +2498,7 @@ impl SessionManager {
                 ));
             }
 
-            let transaction = state.database.transaction().map_err(io::Error::other)?;
-            if let Some(workspace_id) = &workspace_id {
-                let workspace_exists: bool = transaction
-                    .query_row(
-                        "SELECT EXISTS(SELECT 1 FROM workspaces WHERE workspace_id = ?1)",
-                        params![workspace_id],
-                        |row| row.get(0),
-                    )
-                    .map_err(io::Error::other)?;
-                if !workspace_exists {
-                    return Err(io::Error::new(
-                        io::ErrorKind::NotFound,
-                        "archived Session's Workspace is missing",
-                    ));
-                }
-                transaction
-                    .execute(
-                        "UPDATE workspaces SET state = 'open', archived_at = NULL WHERE workspace_id = ?1",
-                        params![workspace_id],
-                    )
-                    .map_err(io::Error::other)?;
-            }
-            let changed = transaction
-                .execute(
-                    "UPDATE sessions SET state = 'open', archived_at = NULL, termination_reason = NULL
-                     WHERE id = ?1 AND state = 'archived'",
-                    params![session_id.get()],
-                )
-                .map_err(io::Error::other)?;
-            if changed != 1 {
-                return Err(io::Error::new(
-                    io::ErrorKind::AlreadyExists,
-                    "Session changed while it was being resumed",
-                ));
-            }
-            transaction
-                .execute(
-                    "UPDATE shells SET state = 'open', archived_at = NULL, termination_reason = NULL
-                     WHERE session_id = ?1 AND state = 'archived'",
-                    params![session_id.get()],
-                )
-                .map_err(io::Error::other)?;
-            transaction.commit().map_err(io::Error::other)?;
+            reopen_archived_session(&mut state.database, session_id, workspace_id.as_deref())?;
             if let Some((workspace_id, access)) = workspace_access {
                 self.workspace_access
                     .lock()

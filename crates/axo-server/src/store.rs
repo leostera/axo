@@ -900,6 +900,114 @@ pub(crate) fn store_config_value(
     Ok(())
 }
 
+/// A Session whose Pi transcript is a given history file.
+#[derive(Debug)]
+pub(crate) struct PiHistoryOwner {
+    pub(crate) session_id: SessionId,
+    pub(crate) lifecycle: StoredLifecycle,
+    pub(crate) initial_pwd: PathBuf,
+    pub(crate) workspace_id: Option<String>,
+}
+
+/// Every Session, open or archived, whose Pi history is `session_file`. More than one means
+/// the catalog is inconsistent; callers require exactly one.
+pub(crate) fn pi_history_owners(
+    database: &Connection,
+    session_file: &str,
+) -> io::Result<Vec<PiHistoryOwner>> {
+    let mut statement = database
+        .prepare(
+            "SELECT id, state, initial_pwd, workspace_id FROM sessions WHERE pi_session_file = ?1",
+        )
+        .map_err(io::Error::other)?;
+    statement
+        .query_map(params![session_file], |row| {
+            Ok(PiHistoryOwner {
+                session_id: stored_session_id(row.get(0)?)?,
+                lifecycle: row.get(1)?,
+                initial_pwd: PathBuf::from(row.get::<_, String>(2)?),
+                workspace_id: row.get(3)?,
+            })
+        })
+        .map_err(io::Error::other)?
+        .collect::<Result<Vec<_>, _>>()
+        .map_err(io::Error::other)
+}
+
+/// A Workspace's directory and security-scoped bookmark, whether or not it is open.
+pub(crate) fn workspace_directory(
+    database: &Connection,
+    workspace_id: &str,
+) -> io::Result<(String, Option<String>)> {
+    database
+        .query_row(
+            "SELECT directory_path, directory_bookmark FROM workspaces WHERE workspace_id = ?1",
+            params![workspace_id],
+            |row| Ok((row.get(0)?, row.get(1)?)),
+        )
+        .map_err(io::Error::other)
+}
+
+pub(crate) fn archived_pi_pane_count(database: &Connection, id: SessionId) -> io::Result<i64> {
+    database
+        .query_row(
+            "SELECT COUNT(*) FROM shells WHERE session_id = ?1 AND role = 'pi' AND state = 'archived'",
+            params![id.get()],
+            |row| row.get(0),
+        )
+        .map_err(io::Error::other)
+}
+
+/// Reopens an archived Session, its shells and (if it has one) its Workspace, all or nothing.
+/// Fails with `AlreadyExists` if the Session is no longer archived, `NotFound` if its Workspace
+/// row is gone.
+pub(crate) fn reopen_archived_session(
+    database: &mut Connection,
+    id: SessionId,
+    workspace_id: Option<&str>,
+) -> io::Result<()> {
+    let transaction = database.transaction().map_err(io::Error::other)?;
+    if let Some(workspace_id) = workspace_id {
+        let workspace_exists: bool = transaction
+            .query_row(
+                "SELECT EXISTS(SELECT 1 FROM workspaces WHERE workspace_id = ?1)",
+                params![workspace_id],
+                |row| row.get(0),
+            )
+            .map_err(io::Error::other)?;
+        if !workspace_exists {
+            return Err(not_found("archived Session's Workspace is missing"));
+        }
+        transaction
+            .execute(
+                "UPDATE workspaces SET state = 'open', archived_at = NULL WHERE workspace_id = ?1",
+                params![workspace_id],
+            )
+            .map_err(io::Error::other)?;
+    }
+    let changed = transaction
+        .execute(
+            "UPDATE sessions SET state = 'open', archived_at = NULL, termination_reason = NULL
+             WHERE id = ?1 AND state = 'archived'",
+            params![id.get()],
+        )
+        .map_err(io::Error::other)?;
+    if changed != 1 {
+        return Err(io::Error::new(
+            io::ErrorKind::AlreadyExists,
+            "Session changed while it was being resumed",
+        ));
+    }
+    transaction
+        .execute(
+            "UPDATE shells SET state = 'open', archived_at = NULL, termination_reason = NULL
+             WHERE session_id = ?1 AND state = 'archived'",
+            params![id.get()],
+        )
+        .map_err(io::Error::other)?;
+    transaction.commit().map_err(io::Error::other)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -1028,6 +1136,83 @@ mod tests {
         );
         assert!(
             open_session_ids_in_workspace(&database, &alpha)
+                .unwrap()
+                .is_empty()
+        );
+    }
+
+    fn lifecycle(database: &Connection, table: &str, column: &str, id: &str) -> String {
+        database
+            .query_row(
+                &format!("SELECT state FROM {table} WHERE {column} = ?1"),
+                params![id],
+                |row| row.get(0),
+            )
+            .unwrap()
+    }
+
+    #[test]
+    fn reopening_an_archived_session_reopens_its_shells_and_workspace_or_nothing() {
+        let database = &mut database();
+        let workspace = new_uuid_v4().unwrap();
+        insert_workspace(database, &workspace, "w", "archived");
+        let session = insert_session(database, "uuid", "archived");
+        database
+            .execute(
+                "INSERT INTO shells (session_id, initial_pwd, state, created_at, role)
+                 VALUES (?1, '/', 'archived', 0, 'pi')",
+                params![session.get()],
+            )
+            .unwrap();
+        let shell = inserted_shell_id(database).unwrap().get().to_string();
+        let id = session.get().to_string();
+
+        // A missing Workspace leaves everything archived.
+        assert_eq!(
+            kind(reopen_archived_session(
+                database,
+                session,
+                Some("missing-workspace")
+            )),
+            io::ErrorKind::NotFound
+        );
+        assert_eq!(lifecycle(database, "sessions", "id", &id), "archived");
+        assert_eq!(lifecycle(database, "shells", "id", &shell), "archived");
+
+        reopen_archived_session(database, session, Some(&workspace)).unwrap();
+        assert_eq!(lifecycle(database, "sessions", "id", &id), "open");
+        assert_eq!(lifecycle(database, "shells", "id", &shell), "open");
+        assert_eq!(
+            lifecycle(database, "workspaces", "workspace_id", &workspace),
+            "open"
+        );
+        assert_eq!(archived_pi_pane_count(database, session).unwrap(), 0);
+
+        // A Session that is already open was changed by someone else.
+        assert_eq!(
+            kind(reopen_archived_session(database, session, None)),
+            io::ErrorKind::AlreadyExists
+        );
+    }
+
+    #[test]
+    fn every_session_owning_a_pi_history_is_reported() {
+        let database = database();
+        let first = insert_session(&database, "a", "open");
+        let second = insert_session(&database, "b", "archived");
+        for id in [first, second] {
+            database
+                .execute(
+                    "UPDATE sessions SET pi_session_file = '/h.jsonl' WHERE id = ?1",
+                    params![id.get()],
+                )
+                .unwrap();
+        }
+        let owners = pi_history_owners(&database, "/h.jsonl").unwrap();
+        assert_eq!(owners.len(), 2, "callers must see the inconsistency");
+        assert_eq!(owners[1].lifecycle, StoredLifecycle::Archived);
+        assert!(
+            pi_history_owners(&database, "/other.jsonl")
                 .unwrap()
                 .is_empty()
         );
