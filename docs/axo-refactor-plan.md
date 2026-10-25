@@ -69,12 +69,27 @@ payload is a struct or enum deriving `Serialize`/`Deserialize`. `Value` survives
   "running and unavailable at once" can't be represented. Pure transition function, tested
   exhaustively (every state × event, including illegal transitions and stale runtime IDs);
   effects (spawn, kill, publish) run outside it.
+  - **Done (`8630607`):** `panes.rs` keeps every pane in one `Panes<P>` table:
+    `Pane::Running(P) | Pane::Unavailable(UnavailablePane)`, recovery
+    `Recovery::Idle | InProgress(RuntimeId)`. Transitions (`insert_running`, `process_exited`,
+    `begin_recovery`, `release_recovery`, `commit_recovery`, `remove`, `drain`, …) are the only
+    way to change a pane, each tested from every state. `Launching` and `Stopping` are not
+    states yet: spawns run under the lock (see 1c) and stops run after removal.
+- **Done (`9fa74d4`, `d503b85`):** `PiCatalogEvent::parse` replaces string matching on Pi events;
+  `StoredLifecycle` parses session state in `/resume`.
 
 ### 1c. Correctness
 
-- **New-session creation outside the catalog lock** (open item in
-  `docs/axod-recovery-hardening.md`): reserve under the lock, spawn outside it, commit or roll
-  back under it, like Pi recovery already does.
+- **New-session creation outside the catalog lock: measured, deferred.** Creating a pane holds
+  the lock ~2.8 ms on a quiet machine (fork + exec of the PTY child; 7–14 ms under the heavy load
+  test), ~30× any other holder; build 160 logged no hold ≥ 50 ms in real use. Moving the spawn
+  out saves at most that per pane, and a pane being spawned would not yet exist in `Panes`, so a
+  concurrent close of the Session's last other pane would archive the Session under the split.
+  Revisit with a `Launching` pane state if lock waits show up in `catalog.lock_wait_long`.
+- **Done (`d503b85`):** `lock_state` is `#[track_caller]` and logs `catalog.lock_wait_long` /
+  `catalog.lock_held_long` with the caller at ≥ 50 ms.
+- **Done (`05db4b3`):** a Session's record is one cached query instead of four (listing 8
+  Sessions: p50 99 → 21 µs).
 - Remove the remaining non-test `unwrap`/`expect`s, or document why each cannot fail.
 - One stop path for shells (close, archive, shutdown, recovery) with a single timeout policy.
 
@@ -95,10 +110,9 @@ booleans; parse wire data into domain types at the boundary.
 
 ### 2b. Types
 
-- `TerminalShell.role: String?` → `PaneRole` enum (`role == "pi"` is compared in 6 places).
-- `available: Bool?` + `availabilityReason: String?` → `PaneAvailability { available,
-  unavailable(reason) }`. The focus bug just fixed came from availability checks scattered across
-  the model.
+- **Done (`9fa74d4`):** `TerminalShell.role: String?` → `PaneRole` enum, and
+  `available: Bool?` + `availabilityReason: String?` → `PaneAvailability { available,
+  unavailable(reason) }`, decoded so the reason is present exactly when unavailable.
 - Event and method names stay inside `AxoProtocol`; nothing else matches on strings.
 - `TerminalAttachment` keeps descriptor ownership explicit (owned type, single close).
 
@@ -109,6 +123,11 @@ booleans; parse wire data into domain types at the boundary.
   focusable.
 - `SessionCommands`: create/close/split/rename/archive/restart, applying Axod's returned records.
 - Confirmations become their own small types instead of optional properties plus cancel methods.
+- **Done (`9fa74d4`):** one layout store; `SidebarSections` replaces `sidebarOrder` (Sessions of
+  an unlisted Workspace no longer vanish).
+- **Done (`434b3a5`):** `WorkbenchSelection` is a pure value owning selection, focus, every
+  layout and recent Sessions; the shown layout is derived, layout writes are collected and handed
+  to `TerminalLayoutWriter`. Tested in `WorkbenchSelectionTests` without a model or daemon.
 
 ### 2d. Views and runtime
 
@@ -116,7 +135,10 @@ booleans; parse wire data into domain types at the boundary.
   `WorkbenchDialogs`. No business logic in view closures.
 - `GhosttyRuntime` (468 lines): move surface lifecycle (attach, adopt, reattach, free) into
   `TerminalSurfaceRegistry`; the runtime keeps libghostty app/config/callbacks.
-- `UnixSocketRPC` (482 lines of near-identical methods): table-driven method descriptors.
+- **Done (`66d8d86`):** `UnixSocketRPC` is table-driven: `AxodMethodName` is the only place
+  method names are spelled, `AxodMethod<Params, Result>` descriptors and one generic `call()`.
+- **Done (`d477f1f`):** `ReattachThrottle` replaces `lastReattach`, so a stream ending twice in
+  2 s reattaches later instead of freezing the pane.
 
 ### 2e. Performance
 
