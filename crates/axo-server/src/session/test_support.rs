@@ -290,16 +290,38 @@ impl PiRecoveryFixture {
     }
 }
 
+/// Whether the catalog lock can be taken within a second. Code that wrongly holds it across a
+/// blocked operation holds it the whole time; a single `try_lock` would also fail whenever
+/// another thread holds it for a moment.
+pub(super) fn catalog_lock_is_free(manager: &SessionManager) -> bool {
+    let deadline = std::time::Instant::now() + Duration::from_secs(1);
+    loop {
+        if manager.state.try_lock().is_ok() {
+            return true;
+        }
+        if std::time::Instant::now() >= deadline {
+            return false;
+        }
+        std::thread::sleep(Duration::from_millis(1));
+    }
+}
+
+/// How long to wait for a test shell's output. Only a failing test waits this long, and a shell
+/// started while many test processes launch has taken over 3 s to answer.
+pub(super) const SHELL_OUTPUT_WAIT: Duration = Duration::from_secs(15);
+
 pub(super) fn read_until(output: &OutputSubscriber, needle: &[u8], timeout: Duration) -> bool {
     let deadline = std::time::Instant::now() + timeout;
     let mut received = Vec::new();
     while std::time::Instant::now() < deadline {
         match output.next(Duration::from_millis(100)) {
             NextOutput::Chunks(chunks) => {
+                // Scan only the new bytes (and a needle's worth before), not all output again.
+                let start = received.len().saturating_sub(needle.len() - 1);
                 for chunk in chunks {
                     received.extend_from_slice(&chunk);
                 }
-                if received
+                if received[start..]
                     .windows(needle.len())
                     .any(|window| window == needle)
                 {

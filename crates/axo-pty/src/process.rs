@@ -73,8 +73,11 @@ pub struct PtyProcess {
 /// Starts `command` on a new PTY of `size`. `inherit` lists descriptors the child keeps across
 /// exec (they stay close-on-exec in this process, so concurrent launches never leak them).
 pub fn spawn(mut command: Command, size: WindowSize, inherit: &[RawFd]) -> io::Result<PtyProcess> {
-    let (master, slave) = open_pty(size)?;
-    let device = device_path(slave.as_raw_fd())?;
+    let OpenedPty {
+        master,
+        slave,
+        device,
+    } = open_pty(size)?;
     let slave_fd = slave.as_raw_fd();
     let inherit = inherit.to_vec();
     command
@@ -123,33 +126,139 @@ pub fn spawn(mut command: Command, size: WindowSize, inherit: &[RawFd]) -> io::R
     }
 }
 
-fn open_pty(size: WindowSize) -> io::Result<(OwnedFd, OwnedFd)> {
-    let mut master_fd: RawFd = -1;
-    let mut slave_fd: RawFd = -1;
-    let mut size = size.to_winsize();
-    // SAFETY: openpty initializes both descriptors and reads a valid winsize.
-    let opened = unsafe {
-        libc::openpty(
-            &mut master_fd,
-            &mut slave_fd,
-            std::ptr::null_mut(),
-            std::ptr::null_mut(),
-            &mut size,
-        )
-    };
-    if opened == -1 {
-        return Err(io::Error::last_os_error());
-    }
-    // SAFETY: openpty returned two new descriptors owned from here on.
-    let (master, slave) = unsafe {
-        (
-            OwnedFd::from_raw_fd(master_fd),
-            OwnedFd::from_raw_fd(slave_fd),
-        )
-    };
+/// A freshly opened PTY pair and the slave's device path.
+struct OpenedPty {
+    master: OwnedFd,
+    slave: OwnedFd,
+    device: String,
+}
+
+/// Opens a PTY pair of `size`, both ends close-on-exec.
+///
+/// Step by step rather than through libc's `openpty` and `ttyname_r`: those look the slave up by
+/// device number, and under many concurrent PTY launches the lookup intermittently failed
+/// (`ERANGE` from `ttyname_r`, a negative errno from `openpty`), failing the shell or Pi launch.
+/// The master reports its slave's name directly (`TIOCPTYGNAME`), so nothing is looked up.
+fn open_pty(size: WindowSize) -> io::Result<OpenedPty> {
+    let master = open_master()?;
     set_cloexec(master.as_raw_fd())?;
-    set_cloexec(slave.as_raw_fd())?;
-    Ok((master, slave))
+    for (request, step) in [
+        (libc::TIOCPTYGRANT, "TIOCPTYGRANT"),
+        (libc::TIOCPTYUNLK, "TIOCPTYUNLK"),
+    ] {
+        // SAFETY: both requests take no argument and act on the open master.
+        if unsafe { libc::ioctl(master.as_raw_fd(), request as libc::c_ulong) } == -1 {
+            return Err(step_error(step));
+        }
+    }
+    // TIOCPTYGNAME writes a NUL-terminated path of at most 128 bytes.
+    let mut name = [0 as libc::c_char; 128];
+    // SAFETY: name is writable storage of the size TIOCPTYGNAME requires.
+    if unsafe {
+        libc::ioctl(
+            master.as_raw_fd(),
+            libc::TIOCPTYGNAME as libc::c_ulong,
+            name.as_mut_ptr(),
+        )
+    } == -1
+    {
+        return Err(step_error("TIOCPTYGNAME"));
+    }
+    let device_name = CStr::from_bytes_until_nul(name_bytes(&name))
+        .map_err(|_| io::Error::new(io::ErrorKind::InvalidData, "PTY name is not terminated"))?;
+    let device = device_name
+        .to_str()
+        .map(str::to_owned)
+        .map_err(|_| io::Error::new(io::ErrorKind::InvalidData, "PTY path is not UTF-8"))?;
+    // SAFETY: device_name is a NUL-terminated path; open returns a new descriptor or -1.
+    let slave_fd = unsafe {
+        libc::open(
+            device_name.as_ptr(),
+            libc::O_RDWR | libc::O_NOCTTY | libc::O_CLOEXEC,
+        )
+    };
+    if slave_fd == -1 {
+        return Err(step_error("open slave"));
+    }
+    // SAFETY: open returned a new descriptor owned from here on.
+    let slave = unsafe { OwnedFd::from_raw_fd(slave_fd) };
+    let size = size.to_winsize();
+    // SAFETY: size is initialized and the master descriptor is open.
+    if unsafe {
+        libc::ioctl(
+            master.as_raw_fd(),
+            libc::TIOCSWINSZ,
+            &size as *const libc::winsize,
+        )
+    } == -1
+    {
+        return Err(step_error("TIOCSWINSZ"));
+    }
+    Ok(OpenedPty {
+        master,
+        slave,
+        device,
+    })
+}
+
+/// XNU's "redrive open" (`sys/errno.h`): the kernel lost a race allocating the PTY and gave up
+/// after its own retries (`vn_open_auth`). Seen under many concurrent PTY launches.
+const EREDRIVEOPEN: i32 = -6;
+
+/// How often to retry a lost allocation race, backing off 1 ms more each time (at most ~0.2 s).
+const MASTER_OPEN_ATTEMPTS: u64 = 20;
+
+/// Opens a new PTY master, retrying only the kernel's allocation race.
+fn open_master() -> io::Result<OwnedFd> {
+    retrying_lost_allocation_races(
+        || {
+            // SAFETY: posix_openpt opens a new master and returns its descriptor or -1.
+            let master_fd = unsafe { libc::posix_openpt(libc::O_RDWR | libc::O_NOCTTY) };
+            if master_fd == -1 {
+                return Err(io::Error::last_os_error());
+            }
+            // SAFETY: posix_openpt returned a new descriptor owned from here on.
+            Ok(unsafe { OwnedFd::from_raw_fd(master_fd) })
+        },
+        thread::sleep,
+    )
+}
+
+/// Calls `open` until it succeeds, fails with anything but `EREDRIVEOPEN`, or has been tried
+/// `MASTER_OPEN_ATTEMPTS` times, pausing 1 ms longer before each retry.
+fn retrying_lost_allocation_races<T>(
+    mut open: impl FnMut() -> io::Result<T>,
+    mut pause: impl FnMut(Duration),
+) -> io::Result<T> {
+    let mut attempt = 1;
+    loop {
+        let error = match open() {
+            Ok(opened) => return Ok(opened),
+            Err(error) => error,
+        };
+        if error.raw_os_error() != Some(EREDRIVEOPEN) || attempt == MASTER_OPEN_ATTEMPTS {
+            return Err(with_step("posix_openpt", error));
+        }
+        log::warn!("event=pty.open_retry reason=eredriveopen attempt={attempt}");
+        pause(Duration::from_millis(attempt));
+        attempt += 1;
+    }
+}
+
+/// The C name buffer as bytes.
+fn name_bytes(name: &[libc::c_char; 128]) -> &[u8] {
+    // SAFETY: c_char and u8 have the same size and alignment; the slice covers the same memory.
+    unsafe { std::slice::from_raw_parts(name.as_ptr().cast::<u8>(), name.len()) }
+}
+
+/// The last OS error, naming the PTY step that failed.
+fn step_error(step: &str) -> io::Error {
+    with_step(step, io::Error::last_os_error())
+}
+
+/// `error` with the PTY step that failed, keeping its kind.
+fn with_step(step: &str, error: io::Error) -> io::Error {
+    io::Error::new(error.kind(), format!("{step}: {error}"))
 }
 
 /// Applies `size` to the PTY and tells the child. The kernel signals the foreground group; the
@@ -210,21 +319,6 @@ pub fn set_cloexec(descriptor: RawFd) -> io::Result<()> {
         return Err(io::Error::last_os_error());
     }
     Ok(())
-}
-
-fn device_path(slave_fd: RawFd) -> io::Result<String> {
-    let mut bytes = vec![0_i8; libc::PATH_MAX as usize];
-    // SAFETY: bytes is writable storage and slave_fd is an open PTY slave.
-    let error = unsafe { libc::ttyname_r(slave_fd, bytes.as_mut_ptr(), bytes.len()) };
-    if error != 0 {
-        return Err(io::Error::from_raw_os_error(error));
-    }
-    // SAFETY: ttyname_r wrote a NUL-terminated device path into bytes.
-    let device = unsafe { CStr::from_ptr(bytes.as_ptr()) };
-    device
-        .to_str()
-        .map(str::to_owned)
-        .map_err(|_| io::Error::new(io::ErrorKind::InvalidData, "PTY path is not UTF-8"))
 }
 
 pub fn stop(child: &mut Child, grace: Duration) {
@@ -384,6 +478,90 @@ fn wait_writable(fd: RawFd, timeout: Duration) -> io::Result<()> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn a_lost_pty_allocation_race_is_retried_with_growing_pauses() {
+        let mut results = vec![
+            Err(io::Error::from_raw_os_error(EREDRIVEOPEN)),
+            Err(io::Error::from_raw_os_error(EREDRIVEOPEN)),
+            Ok("master"),
+        ]
+        .into_iter();
+        let mut pauses = Vec::new();
+        let opened =
+            retrying_lost_allocation_races(|| results.next().unwrap(), |pause| pauses.push(pause));
+        assert_eq!(opened.unwrap(), "master");
+        assert_eq!(pauses, [Duration::from_millis(1), Duration::from_millis(2)]);
+    }
+
+    #[test]
+    fn other_pty_open_errors_and_a_persistent_race_are_reported() {
+        let mut attempts = 0;
+        let error = retrying_lost_allocation_races::<()>(
+            || {
+                attempts += 1;
+                Err(io::Error::from_raw_os_error(libc::EACCES))
+            },
+            |_| panic!("only the allocation race is retried"),
+        )
+        .unwrap_err();
+        assert_eq!(
+            (attempts, error.kind()),
+            (1, io::ErrorKind::PermissionDenied)
+        );
+        assert!(error.to_string().starts_with("posix_openpt: "), "{error}");
+
+        let mut attempts = 0;
+        let mut paused = Duration::ZERO;
+        let error = retrying_lost_allocation_races::<()>(
+            || {
+                attempts += 1;
+                assert!(attempts <= MASTER_OPEN_ATTEMPTS, "retried without bound");
+                Err(io::Error::from_raw_os_error(EREDRIVEOPEN))
+            },
+            |pause| paused += pause,
+        )
+        .unwrap_err();
+        assert_eq!(attempts, MASTER_OPEN_ATTEMPTS);
+        // 1 + 2 + ... + 19 ms: a stuck allocator fails the launch within a fifth of a second.
+        assert_eq!(paused, Duration::from_millis(190));
+        assert!(error.to_string().starts_with("posix_openpt: "), "{error}");
+    }
+
+    #[test]
+    fn concurrent_ptys_always_learn_their_device_path() {
+        // Under many concurrent launches libc's openpty failed with EREDRIVEOPEN and ttyname_r
+        // with ERANGE, so a shell or Pi failed to start. Reproducing that takes ~64 threads
+        // across processes, which can exhaust the system's PTYs (kern.tty.ptmx_max) for every
+        // terminal on the machine, so this only exercises the real path concurrently; the
+        // retry is pinned by the tests above.
+        let workers: Vec<_> = (0..8)
+            .map(|_| {
+                std::thread::spawn(|| {
+                    for _ in 0..10 {
+                        let mut process = spawn(
+                            Command::new("/usr/bin/true"),
+                            WindowSize {
+                                rows: 24,
+                                columns: 80,
+                            },
+                            &[],
+                        )
+                        .unwrap();
+                        assert!(
+                            process.device.starts_with("/dev/ttys"),
+                            "{}",
+                            process.device
+                        );
+                        process.child.wait().unwrap();
+                    }
+                })
+            })
+            .collect();
+        for worker in workers {
+            worker.join().unwrap();
+        }
+    }
 
     /// A child in its own process group (like a PTY shell) running `script` under `sh`.
     fn spawn_group_leader(script: &str) -> Child {

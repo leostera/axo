@@ -1,7 +1,7 @@
 //! The bridge's wire transport: newline-delimited JSON records over the Pi's Unix socket.
 
 use std::io::{self, BufRead, BufReader, Read, Write};
-use std::os::fd::{FromRawFd, OwnedFd};
+use std::os::fd::{AsRawFd, FromRawFd, OwnedFd};
 use std::os::unix::net::UnixStream;
 use std::path::Path;
 use std::time::{Duration, Instant};
@@ -52,9 +52,13 @@ pub fn read_record_until<T: DeserializeOwned>(
                     "Pi bridge recovery request timed out",
                 )
             })?;
-        reader
-            .get_ref()
-            .set_read_timeout(Some(remaining.min(POLL_INTERVAL)))?;
+        // Wait with poll rather than SO_RCVTIMEO: macOS rejects that option (EINVAL) once the
+        // peer has closed, even with its reply still unread. A closed peer polls readable.
+        if reader.buffer().is_empty()
+            && !wait_readable(reader.get_ref(), remaining.min(POLL_INTERVAL))?
+        {
+            continue;
+        }
         let buffer = match reader.fill_buf() {
             Ok([]) => {
                 return Err(io::Error::new(
@@ -88,6 +92,29 @@ pub fn read_record_until<T: DeserializeOwned>(
         if newline.is_some() {
             return serde_json::from_slice(&line[..line.len() - 1]).map_err(io::Error::other);
         }
+    }
+}
+
+/// Whether `stream` has data (or end of file) to read within `timeout`.
+fn wait_readable(stream: &UnixStream, timeout: Duration) -> io::Result<bool> {
+    let mut poll = libc::pollfd {
+        fd: stream.as_raw_fd(),
+        events: libc::POLLIN,
+        revents: 0,
+    };
+    let timeout = timeout.as_millis().clamp(1, libc::c_int::MAX as u128) as libc::c_int;
+    // SAFETY: poll receives one initialized descriptor record for an open socket.
+    match unsafe { libc::poll(&mut poll, 1, timeout) } {
+        -1 => {
+            let error = io::Error::last_os_error();
+            if error.kind() == io::ErrorKind::Interrupted {
+                Ok(false)
+            } else {
+                Err(error)
+            }
+        }
+        0 => Ok(false),
+        _ => Ok(true),
     }
 }
 
@@ -207,9 +234,85 @@ pub fn write_record(stream: &mut UnixStream, value: &impl Serialize) -> io::Resu
 mod tests {
     use super::*;
     use serde_json::json;
-    use std::os::fd::AsRawFd;
     use std::os::unix::net::UnixListener;
     use std::thread;
+
+    #[test]
+    fn a_silent_peer_ends_the_read_at_its_deadline_or_on_cancellation() {
+        let (peer, ours) = UnixStream::pair().unwrap();
+        let (done, finished) = std::sync::mpsc::channel();
+        thread::spawn(move || {
+            let mut reader = BufReader::new(ours);
+            let started = Instant::now();
+            let timed_out = read_record_until::<serde_json::Value>(
+                &mut reader,
+                started + Duration::from_millis(200),
+                &|| Ok(()),
+            )
+            .unwrap_err();
+            let waited = started.elapsed();
+            let cancel_at = Instant::now() + Duration::from_millis(100);
+            let cancelled = read_record_until::<serde_json::Value>(
+                &mut reader,
+                Instant::now() + Duration::from_secs(60),
+                &|| {
+                    if Instant::now() >= cancel_at {
+                        Err(io::Error::new(io::ErrorKind::Interrupted, "cancelled"))
+                    } else {
+                        Ok(())
+                    }
+                },
+            )
+            .unwrap_err();
+            done.send((timed_out.kind(), waited, cancelled.kind()))
+                .unwrap();
+        });
+        // A read that blocks past its deadline would never report back.
+        let (timed_out, waited, cancelled) = finished.recv_timeout(Duration::from_secs(5)).unwrap();
+        assert_eq!(timed_out, io::ErrorKind::TimedOut);
+        assert!(waited >= Duration::from_millis(200), "{waited:?}");
+        assert_eq!(cancelled, io::ErrorKind::Interrupted);
+        drop(peer);
+    }
+
+    #[test]
+    fn records_already_buffered_are_read_without_waiting_on_the_socket() {
+        let (mut peer, ours) = UnixStream::pair().unwrap();
+        peer.write_all(b"{\"n\":1}\n{\"n\":2}\n").unwrap();
+        let mut reader = BufReader::new(ours);
+        let deadline = Instant::now() + Duration::from_millis(500);
+        let first: serde_json::Value =
+            read_record_until(&mut reader, deadline, &|| Ok(())).unwrap();
+        // The peer stays connected and silent: the second record is only in our buffer.
+        let second: serde_json::Value =
+            read_record_until(&mut reader, deadline, &|| Ok(())).unwrap();
+        assert_eq!(
+            (first["n"].as_i64(), second["n"].as_i64()),
+            (Some(1), Some(2))
+        );
+        drop(peer);
+    }
+
+    #[test]
+    fn a_reply_from_a_peer_that_already_closed_is_still_read() {
+        // Regression: a Pi that answers a shutdown request and exits at once closed its end
+        // before Axod read the reply, and macOS rejects SO_RCVTIMEO on such a socket (EINVAL),
+        // so Axod lost a reply it had already received.
+        let (mut peer, ours) = UnixStream::pair().unwrap();
+        write_record(&mut peer, &serde_json::json!({ "type": "commandResult" })).unwrap();
+        drop(peer);
+        let mut reader = BufReader::new(ours);
+        let deadline = Instant::now() + Duration::from_secs(1);
+        let reply: serde_json::Value =
+            read_record_until(&mut reader, deadline, &|| Ok(())).unwrap();
+        assert_eq!(reply["type"], "commandResult");
+        assert_eq!(
+            read_record_until::<serde_json::Value>(&mut reader, deadline, &|| Ok(()))
+                .unwrap_err()
+                .kind(),
+            io::ErrorKind::UnexpectedEof
+        );
+    }
 
     #[test]
     fn recovery_connect_is_bounded_when_the_accept_queue_is_full() {

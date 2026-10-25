@@ -15,6 +15,11 @@ use std::time::{Duration, Instant};
 #[derive(Debug)]
 pub struct WriterLock(OwnedFd);
 
+/// How long a just-released lock may still be held by a child forked before the release, until
+/// that child execs. Generous: exec waits on the loader, which is slow on a loaded machine.
+const FORK_EXEC_WINDOW: Duration = Duration::from_millis(250);
+const FORK_EXEC_POLL: Duration = Duration::from_millis(5);
+
 fn lock_path(session_file: &Path) -> PathBuf {
     session_file.with_extension("jsonl.lock")
 }
@@ -53,10 +58,48 @@ impl WriterLock {
         Ok(Self(OwnedFd::from(lock)))
     }
 
+    /// Like `acquire`, but rides out a holder that is only a process forked mid-launch.
+    ///
+    /// A child forked by any thread holds a copy of every descriptor until it execs, and `flock`
+    /// belongs to the shared open file description. So for a moment after Axod releases a lock
+    /// (a probe, a failed launch), it still looks held. Taking that for a live Pi would send a
+    /// shutdown request to a Pi that does not exist. `WouldBlock` after `FORK_EXEC_WINDOW`.
+    pub fn acquire_settled(
+        session_file: &Path,
+        check_current: &impl Fn() -> io::Result<()>,
+    ) -> io::Result<Self> {
+        match Self::poll(
+            session_file,
+            FORK_EXEC_WINDOW,
+            FORK_EXEC_POLL,
+            check_current,
+        ) {
+            Err(error) if error.kind() == io::ErrorKind::TimedOut => Err(io::Error::new(
+                io::ErrorKind::WouldBlock,
+                "Pi transcript is already owned by a writer",
+            )),
+            settled => settled,
+        }
+    }
+
     /// Retries `acquire` until `timeout`, then fails with `TimedOut`.
     pub fn wait(
         session_file: &Path,
         timeout: Duration,
+        check_current: &impl Fn() -> io::Result<()>,
+    ) -> io::Result<Self> {
+        Self::poll(
+            session_file,
+            timeout,
+            Duration::from_millis(100),
+            check_current,
+        )
+    }
+
+    fn poll(
+        session_file: &Path,
+        timeout: Duration,
+        interval: Duration,
         check_current: &impl Fn() -> io::Result<()>,
     ) -> io::Result<Self> {
         let deadline = Instant::now() + timeout;
@@ -71,7 +114,7 @@ impl WriterLock {
                             "Pi did not release its transcript lock",
                         ));
                     }
-                    thread::sleep(Duration::from_millis(100));
+                    thread::sleep(interval);
                 }
                 Err(error) => return Err(error),
             }
@@ -158,6 +201,43 @@ mod tests {
             );
             thread::sleep(Duration::from_millis(10));
         }
+        fs::remove_dir_all(directory).unwrap();
+    }
+
+    #[test]
+    fn a_lock_copied_into_a_child_that_has_not_exec_ed_yet_is_ridden_out() {
+        let directory = crate::test_directory();
+        let session_file = directory.join("session.jsonl");
+        let lock = WriterLock::acquire(&session_file).unwrap();
+        let child = crate::PausedBeforeExec::fork();
+        drop(lock);
+        assert_eq!(
+            WriterLock::acquire(&session_file).unwrap_err().kind(),
+            io::ErrorKind::WouldBlock,
+            "the forked child holds the lock until it execs"
+        );
+        let spawning = thread::spawn(move || {
+            thread::sleep(Duration::from_millis(20));
+            child.exec()
+        });
+        WriterLock::acquire_settled(&session_file, &|| Ok(())).unwrap();
+        assert!(spawning.join().unwrap().success());
+        fs::remove_dir_all(directory).unwrap();
+    }
+
+    #[test]
+    fn a_lock_held_past_the_fork_window_is_owned_by_a_writer() {
+        let directory = crate::test_directory();
+        let session_file = directory.join("session.jsonl");
+        let _writer = WriterLock::acquire(&session_file).unwrap();
+        let started = Instant::now();
+        assert_eq!(
+            WriterLock::acquire_settled(&session_file, &|| Ok(()))
+                .unwrap_err()
+                .kind(),
+            io::ErrorKind::WouldBlock
+        );
+        assert!(started.elapsed() >= FORK_EXEC_WINDOW);
         fs::remove_dir_all(directory).unwrap();
     }
 

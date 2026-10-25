@@ -639,7 +639,7 @@ mod tests {
         let (worker, _bridge) = fixture.begin_recovery(TakeoverPolicy::PreserveExistingProcess);
         let start = Instant::now();
         assert!(
-            manager.state.try_lock().is_ok(),
+            catalog_lock_is_free(manager),
             "recovery held the shared catalog lock during authentication"
         );
         let home = manager
@@ -1279,7 +1279,11 @@ mod tests {
         let restart_error = manager
             .restart_unavailable_pi(session_id, shell_id, TakeoverPolicy::ExplicitUserRestart)
             .unwrap_err();
-        assert_eq!(restart_error.kind(), io::ErrorKind::PermissionDenied);
+        assert_eq!(
+            restart_error.kind(),
+            io::ErrorKind::PermissionDenied,
+            "{restart_error}"
+        );
         assert!(old_pi.0.try_wait().unwrap().is_none());
         assert!(!manager.list_sessions().unwrap()[0].shells[0].is_available());
 
@@ -1349,7 +1353,11 @@ mod tests {
                 TakeoverPolicy::PreserveExistingProcess,
             )
             .unwrap_err();
-        assert_eq!(automatic_error.kind(), io::ErrorKind::WouldBlock);
+        assert_eq!(
+            automatic_error.kind(),
+            io::ErrorKind::WouldBlock,
+            "{automatic_error}"
+        );
         assert!(old_pi.0.try_wait().unwrap().is_none());
         assert!(!manager.list_sessions().unwrap()[0].shells[0].is_available());
 

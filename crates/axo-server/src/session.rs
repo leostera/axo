@@ -279,11 +279,7 @@ mod tests {
                 TERMINAL_INPUT_WRITE_TIMEOUT,
             )
             .unwrap();
-            assert!(read_until(
-                &output,
-                b"AXO_STOP_READY",
-                Duration::from_secs(3)
-            ));
+            assert!(read_until(&output, b"AXO_STOP_READY", SHELL_OUTPUT_WAIT));
         }
         let (done, completed) = mpsc::channel();
         let owner = Arc::clone(manager);

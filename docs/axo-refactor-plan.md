@@ -106,11 +106,20 @@ payload is a struct or enum deriving `Serialize`/`Deserialize`. `Value` survives
   owns the connection setup; `axo-server` uses rusqlite only in tests.
 - **Done:** `session.rs` is split into modules under `session/` (`catalog`, `handlers`,
   `events`, `terminal`, `lifecycle`, `spawn`, `workspaces`, `pi_bridge`, `pi_recovery`,
-  `settings`, `base64`), each with its own `impl SessionManager`. The parent keeps
+  `settings`), each with its own `impl SessionManager`. The parent keeps
   `SessionManager`, `open`/`shutdown` and the shared types (383 lines with their tests).
   Each module's tests sit next to it; shared fixtures are in `session/test_support.rs`. The
   three tests that exercised only the store (lifecycle parsing, two migrations) moved to
   `axo-store`.
+- **Done:** the pane table is its own crate, `axo-panes` (`RuntimeId`'s number is private;
+  only logs print it), and base64 moved to `axo-protocol::base64` with RFC 4648 and boundary
+  tests.
+- **Test hardening:** stressing the Rust suite (30–80 runs per target, 16 at once) found real
+  bugs, now fixed with regression tests: PTY launches failing under concurrency (`openpty`
+  leaking XNU's `EREDRIVEOPEN`, `ttyname_r` failing with `ERANGE`); a Pi recovery mistaking a
+  child forked mid-launch for a live Pi; and bridge reads losing a reply from a peer that had
+  already closed (macOS rejects `SO_RCVTIMEO` then). Readiness waits in tests are generous
+  constants, quadratic output scans are linear, and one-shot `try_lock` checks poll briefly.
 - **1b is done:** the only `serde_json::Value`s left outside tests are the `data` arguments at
   the RPC boundary, parsed on the first line.
 - **Later: Bazel test caching.** Bazel caches a test target as a whole, keyed on its binary, so

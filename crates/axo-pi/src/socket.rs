@@ -151,7 +151,9 @@ mod tests {
             abandoned_socket(socket.as_path());
         }
         let live_writer = WriterLock::acquire(&live_file).unwrap();
-        drop(WriterLock::acquire(&dead_file).unwrap());
+        // A dead Pi's lock file, never locked by this process: locking and unlocking it here
+        // would let a child forked meanwhile (by another test) keep a copy of the lock.
+        fs::write(dead_file.with_extension("jsonl.lock"), b"").unwrap();
 
         assert_eq!(live.reconcile(&live_file).unwrap(), SocketCleanup::InUse);
         assert_eq!(dead.reconcile(&dead_file).unwrap(), SocketCleanup::Removed);

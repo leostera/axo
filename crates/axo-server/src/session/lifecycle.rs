@@ -616,7 +616,7 @@ mod tests {
         let (worker, mut bridge) =
             fixture.observe_operation(|manager| manager.restore_open_sessions());
         assert!(
-            manager.state.try_lock().is_ok(),
+            catalog_lock_is_free(manager),
             "startup restoration held the shared catalog lock during takeover"
         );
         let home = manager
@@ -785,11 +785,7 @@ mod tests {
         // SAFETY: command points to initialized bytes and master is an open PTY.
         let written = unsafe { libc::write(master, command.as_ptr().cast(), command.len()) };
         assert_eq!(written as usize, command.len());
-        assert!(read_until(
-            &output,
-            b"AXO_PTY_READY",
-            Duration::from_secs(3)
-        ));
+        assert!(read_until(&output, b"AXO_PTY_READY", SHELL_OUTPUT_WAIT));
         process::stop(&mut session.child, process::SHELL_STOP_GRACE);
     }
 

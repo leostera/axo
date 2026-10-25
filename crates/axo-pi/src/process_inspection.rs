@@ -265,7 +265,9 @@ mod tests {
             )
             .unwrap_err();
             assert_eq!(error.kind(), io::ErrorKind::TimedOut);
-            assert!(start.elapsed() < Duration::from_secs(1));
+            // Ignoring the deadline would wait out the 60 s sleep; the slack is for cleanup on
+            // a loaded machine.
+            assert!(start.elapsed() < Duration::from_secs(5));
         }
     }
 
@@ -338,8 +340,8 @@ mod tests {
 
     #[test]
     fn sequential_tools_share_the_original_deadline() {
-        let start = Instant::now();
-        let deadline = start + Duration::from_secs(1);
+        // Long enough for the first tool to start and finish on a loaded machine.
+        let deadline = Instant::now() + Duration::from_secs(2);
         run(
             &mut shell("/bin/sleep 0.1; printf 'first'"),
             deadline,
@@ -352,7 +354,12 @@ mod tests {
                 .kind(),
             io::ErrorKind::TimedOut
         );
-        assert!(start.elapsed() < Duration::from_secs(2));
+        // The second tool stops at the shared deadline, not a fresh 2 s after the first ended.
+        let overrun = Instant::now().saturating_duration_since(deadline);
+        assert!(
+            overrun < Duration::from_secs(1),
+            "{overrun:?} past the deadline"
+        );
     }
 
     #[test]

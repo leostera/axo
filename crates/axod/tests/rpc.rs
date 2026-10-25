@@ -8,6 +8,10 @@ use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
 use serde_json::{Value, json};
 
+/// How long to wait for something a test needs before going on: a socket, a shell's output, a
+/// process to start. Only a failing test waits this long; a loaded machine has needed over 4 s.
+const READY_WAIT: Duration = Duration::from_secs(15);
+
 struct ChildGuard(Child);
 
 #[derive(Default)]
@@ -204,7 +208,7 @@ fn wait_for_exit(child: &mut Child, timeout: Duration) -> std::process::ExitStat
 }
 
 fn wait_for_socket(socket: &std::path::Path, child: &mut ChildGuard) {
-    let deadline = Instant::now() + Duration::from_secs(5);
+    let deadline = Instant::now() + READY_WAIT;
     loop {
         if UnixStream::connect(socket).is_ok() {
             return;
@@ -333,8 +337,10 @@ fn stream_contains(stream: &UnixStream, needle: &[u8], timeout: Duration) -> boo
         // SAFETY: bytes is writable and master is open.
         let count = unsafe { libc::read(master, bytes.as_mut_ptr().cast(), bytes.len()) };
         if count > 0 {
+            // Scan only the new bytes (and a needle's worth before), not all output again.
+            let start = received.len().saturating_sub(needle.len() - 1);
             received.extend_from_slice(&bytes[..count as usize]);
-            if received
+            if received[start..]
                 .windows(needle.len())
                 .any(|window| window == needle)
             {
@@ -383,8 +389,15 @@ fn output_contains(receiver: &Receiver<Vec<u8>>, needle: &[u8], timeout: Duratio
     while Instant::now() < deadline {
         match receiver.recv_timeout(deadline.saturating_duration_since(Instant::now())) {
             Ok(chunk) => {
+                // Scan only what could newly contain the needle: a replay of a large shell
+                // history arrives in hundreds of chunks, and rescanning everything each time
+                // was quadratic enough to outlast the timeout on a loaded machine.
+                let start = output.len().saturating_sub(needle.len() - 1);
                 output.extend_from_slice(&chunk);
-                if output.windows(needle.len()).any(|window| window == needle) {
+                if output[start..]
+                    .windows(needle.len())
+                    .any(|window| window == needle)
+                {
                     return true;
                 }
             }
@@ -435,7 +448,7 @@ fn terminal_attach_subcommand_bridges_input_and_output() {
 
     writeln!(stdin, "printf 'AXO_TERMINAL_ATTACH_OK\\n'; exit").unwrap();
     drop(stdin);
-    let status = wait_for_exit(&mut process, Duration::from_secs(5));
+    let status = wait_for_exit(&mut process, READY_WAIT);
     assert!(status.success(), "terminal-attach exited with {status}");
     let output = output_reader
         .join()
@@ -473,16 +486,12 @@ fn terminal_attachments_share_output_and_shells_never_stall_unattached() {
     assert!(output_contains(
         &first_output,
         b"AXO_REPLAY_SCREEN_9971",
-        Duration::from_secs(5),
+        READY_WAIT,
     ));
     let mut second = ChildGuard(start_terminal_attach(attach_socket, shell_id));
     let second_output = output_channel(second.0.stdout.take().unwrap());
     assert!(
-        output_contains(
-            &second_output,
-            b"AXO_REPLAY_SCREEN_9971",
-            Duration::from_secs(5),
-        ),
+        output_contains(&second_output, b"AXO_REPLAY_SCREEN_9971", READY_WAIT,),
         "a concurrent attachment should replay earlier output"
     );
     writeln!(
@@ -491,11 +500,7 @@ fn terminal_attachments_share_output_and_shells_never_stall_unattached() {
     )
     .unwrap();
     for output in [&first_output, &second_output] {
-        assert!(output_contains(
-            output,
-            b"AXO_SHARED_LIVE_4412",
-            Duration::from_secs(5),
-        ));
+        assert!(output_contains(output, b"AXO_SHARED_LIVE_4412", READY_WAIT,));
     }
     first.0.kill().unwrap();
     let _ = wait_for_exit(&mut first.0, Duration::from_secs(3));
@@ -593,7 +598,7 @@ fn local_protocol_streams_events_and_controls_the_pty() {
         shell_id,
     ));
     let output = output_channel(attach.0.stdout.take().unwrap());
-    let attach_deadline = Instant::now() + Duration::from_secs(3);
+    let attach_deadline = Instant::now() + READY_WAIT;
     loop {
         let event = rpc_with_params(
             &socket,
@@ -649,13 +654,9 @@ fn local_protocol_streams_events_and_controls_the_pty() {
         }),
     );
     assert_eq!(out_of_order["error"]["code"], -32602);
-    assert!(output_contains(
-        &output,
-        b"AXO_REMOTE_INPUT_OK",
-        Duration::from_secs(4)
-    ));
+    assert!(output_contains(&output, b"AXO_REMOTE_INPUT_OK", READY_WAIT));
 
-    let event_deadline = Instant::now() + Duration::from_secs(3);
+    let event_deadline = Instant::now() + READY_WAIT;
     let mut output_event_seen = false;
     while Instant::now() < event_deadline {
         let event = rpc_with_params(
@@ -679,7 +680,7 @@ fn local_protocol_streams_events_and_controls_the_pty() {
     );
 
     let shell_busy = |expected: bool| {
-        let deadline = Instant::now() + Duration::from_secs(4);
+        let deadline = Instant::now() + READY_WAIT;
         loop {
             let result = rpc_with_params(
                 &socket,
@@ -761,8 +762,10 @@ fn long_polls_never_delay_unrelated_requests() {
             subscription
         })
         .collect();
-    // Each poll outlasts the checks below (200 ms + two requests under 250 ms each), so all 64
-    // are still waiting while they run.
+    // Served one at a time, a request waits behind at least one whole 2.5 s poll; served
+    // concurrently it takes well under the 1 s allowed even on a loaded machine (up to ~0.5 s
+    // seen). Each poll outlasts the checks (200 ms + two requests under 1 s), so all 64 are
+    // still waiting while they run.
     let pollers: Vec<_> = (0..64)
         .map(|index| {
             let socket = socket.clone();
@@ -771,7 +774,7 @@ fn long_polls_never_delay_unrelated_requests() {
                 rpc_with_params(
                     &socket,
                     "axo.session.events.next",
-                    json!({ "subscriptionId": subscription, "timeoutMs": 1500, "maxEvents": 256 }),
+                    json!({ "subscriptionId": subscription, "timeoutMs": 2500, "maxEvents": 256 }),
                 )
             })
         })
@@ -791,7 +794,7 @@ fn long_polls_never_delay_unrelated_requests() {
             "{method} failed: {response}"
         );
         assert!(
-            elapsed < Duration::from_millis(250),
+            elapsed < Duration::from_secs(1),
             "{method} waited {elapsed:?} behind long-polls"
         );
     }
@@ -1072,7 +1075,7 @@ fn daemon_starts_with_and_restores_a_default_pty_session_after_restart() {
     let (_attachment, master) = open_shell(shell);
     write_pty(master.as_raw_fd(), b"printf 'AXOD_PTY_E2E_OK\\n'\n");
     assert!(
-        stream_contains(&_attachment, b"AXOD_PTY_E2E_OK", Duration::from_secs(3)),
+        stream_contains(&_attachment, b"AXOD_PTY_E2E_OK", READY_WAIT),
         "the attached PTY should execute commands and return their output"
     );
 
@@ -1168,7 +1171,7 @@ fn daemon_starts_with_and_restores_a_default_pty_session_after_restart() {
     assert!(stream_contains(
         &_attachment,
         b"AXOD_RESTORED_OK",
-        Duration::from_secs(3)
+        READY_WAIT
     ));
 
     assert_ne!(split_shell["id"], shell_id);

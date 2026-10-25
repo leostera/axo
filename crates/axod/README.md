@@ -16,11 +16,12 @@ The PID file is diagnostic metadata, not a process-control mechanism: launchd re
 | Crate | Owns |
 | --- | --- |
 | `axod` | This binary and the `terminal-attach` CLI. |
-| `axo-server` | `SessionManager` orchestration; no SQL outside its tests. `panes.rs` is the pane table and its state machine (`Pane::Running`/`Unavailable`, `Recovery::Idle`/`InProgress`). `session.rs` holds `SessionManager`, `open`/`shutdown` and the shared `RunningShell`/`SessionState`; its modules each add their part of `impl SessionManager`: `catalog` (the catalog lock, `lock_state`, which logs `catalog.lock_wait_long`/`lock_held_long` with the caller, and Session records), `handlers` (JSON-RPC methods, the relay adapter, RPC errors), `events` (subscriptions and publishing), `terminal` (attach socket, input, resize, busy), `lifecycle` (create, close, restore, reap), `spawn` (plain shells), `workspaces`, `pi_bridge` (Pi's worker and events), `pi_recovery` (restart, startup recovery, `/resume`), `settings` (agent and shell commands) and `base64`. |
+| `axo-server` | `SessionManager` orchestration; no SQL outside its tests. `session.rs` holds `SessionManager`, `open`/`shutdown` and the shared `RunningShell`/`SessionState`; its modules each add their part of `impl SessionManager`: `catalog` (the catalog lock, `lock_state`, which logs `catalog.lock_wait_long`/`lock_held_long` with the caller, and Session records), `handlers` (JSON-RPC methods, the relay adapter, RPC errors), `events` (subscriptions and publishing), `terminal` (attach socket, input, resize, busy), `lifecycle` (create, close, restore, reap), `spawn` (plain shells), `workspaces`, `pi_bridge` (Pi's worker and events), `pi_recovery` (restart, startup recovery, `/resume`), and `settings` (agent and shell commands). |
+| `axo-panes` | The pane table and its state machine (`Pane::Running`/`Unavailable`, `Recovery::Idle`/`InProgress`), generic over the process so its transitions are tested alone. |
 | `axo-store` | The SQLite catalog: `open` (WAL, `synchronous=FULL`, owner-only file), schema and migrations, and every database-only read and write, each tested against an in-memory database. It knows no processes, files or settings syntax. |
-| `axo-protocol` | Wire types: IDs, `PaneRole`, layouts, records, typed RPC params/results and events. |
-| `axo-pty` | PTYs, launching children on them, the permanent output pump, attach protocol v2, and `process::stop_all`. |
-| `axo-pi` | Pi launch, bridge worker and protocol, writer lock, takeover, activity. |
+| `axo-protocol` | Wire types: IDs, `PaneRole`, layouts, records, typed RPC params/results and events, and `base64` for terminal bytes (bounded, canonical input decoding). |
+| `axo-pty` | PTYs (opened step by step, retrying the kernel's `EREDRIVEOPEN` allocation race), launching children on them, the permanent output pump, attach protocol v2, and `process::stop_all`. |
+| `axo-pi` | Pi launch, bridge worker and protocol, writer lock (`acquire_settled` rides out a child forked mid-launch that still holds a copy), takeover, activity. |
 | `axo-ipc` | Newline-delimited JSON-RPC over the Unix socket and `EventQueue`. |
 | `axo-relay` | The Cloudflare host relay. |
 | `axod-loadtest` | `axod-loadtest --profile heavy`: load against an isolated axod; pass bar control-plane p99 < 10 ms. |

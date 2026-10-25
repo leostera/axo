@@ -16,7 +16,10 @@ use crate::{BridgeSocketPath, WriterLock, bridge, process_inspection};
 
 const TAKEOVER_TIMEOUT: Duration = Duration::from_secs(10);
 pub const BRIDGE_REQUEST_TIMEOUT: Duration = Duration::from_secs(2);
-const OWNER_INSPECTION_TIMEOUT: Duration = Duration::from_secs(2);
+/// One budget for `lsof` and every following `ps`. They take ~0.16 s each on an idle Mac but
+/// up to 1.6 s each while many processes are starting, and an explicit restart the user asked
+/// for should not fail because the machine is busy. Cancellation still ends it early.
+const OWNER_INSPECTION_TIMEOUT: Duration = Duration::from_secs(5);
 const MAX_LOCK_OWNERS: usize = 32;
 /// How long an explicit restart waits for Pi to release its transcript before escalating: after
 /// asking it to exit, then after SIGTERM, before SIGKILL.
@@ -121,7 +124,7 @@ pub fn take_over(
         previous_token,
     } = target;
     check_current()?;
-    match WriterLock::acquire(session_file) {
+    match WriterLock::acquire_settled(session_file, check_current) {
         Ok(lock) => Ok(lock),
         Err(error) if error.kind() == io::ErrorKind::WouldBlock => {
             log::info!(
@@ -641,6 +644,43 @@ mod tests {
                 before_kill: Duration::from_secs(2),
             }
         );
+    }
+
+    #[test]
+    fn a_lock_still_copied_into_a_forking_child_is_not_mistaken_for_a_live_pi() {
+        // Regression: a recovery that ran while another thread was launching a process saw the
+        // transcript lock as held, asked a nonexistent Pi to shut down over its bridge socket,
+        // and failed with NotFound.
+        let directory = crate::test_directory();
+        let session_file = directory.join("session.jsonl");
+        let session_uuid = axo_protocol::new_uuid_v4().unwrap();
+        let bridge_socket = BridgeSocketPath::for_session(&directory, &session_uuid).unwrap();
+        let lock = WriterLock::acquire(&session_file).unwrap();
+        let child = crate::PausedBeforeExec::fork();
+        drop(lock);
+        let spawning = std::thread::spawn(move || {
+            std::thread::sleep(Duration::from_millis(20));
+            child.exec()
+        });
+        let target = TakeoverTarget {
+            session_id: SessionId::new(1).unwrap(),
+            initial_pwd: &directory,
+            session_file: &session_file,
+            bridge_socket: &bridge_socket,
+            session_uuid: &session_uuid,
+            pane_id: "pane",
+            previous_token: Some("token"),
+        };
+        take_over(
+            target,
+            TakeoverPolicy::PreserveExistingProcess,
+            TakeoverGrace::default(),
+            &|| Ok(()),
+            &|_, _| panic!("no Pi to signal"),
+        )
+        .unwrap();
+        assert!(spawning.join().unwrap().success());
+        std::fs::remove_dir_all(directory).unwrap();
     }
 
     #[test]
