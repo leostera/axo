@@ -12,6 +12,21 @@ enum AxoTrace {
   /// `latency`); near free unless Instruments is recording.
   static let signposter = OSSignposter(logger: latency)
 
+  /// An Instruments interval for one user command, from request to the model applying Axod's
+  /// answer. Begin at the top of the command and end it with `defer`.
+  struct Interval {
+    fileprivate let name: StaticString
+    fileprivate let state: OSSignpostIntervalState
+  }
+
+  static func beginInterval(_ name: StaticString) -> Interval {
+    Interval(name: name, state: signposter.beginInterval(name))
+  }
+
+  static func endInterval(_ interval: Interval) {
+    signposter.endInterval(interval.name, interval.state)
+  }
+
   /// Milliseconds since `start`, for log fields.
   static func elapsed(since start: ContinuousClock.Instant) -> String {
     milliseconds(ContinuousClock.now - start)

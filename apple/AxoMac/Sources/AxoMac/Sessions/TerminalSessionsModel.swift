@@ -355,6 +355,8 @@ final class TerminalSessionsModel {
   // MARK: - Sessions and Workspaces
 
   func createWorkspace(name: String, directoryPath: String, directoryBookmark: String?) async {
+    let interval = AxoTrace.beginInterval("command.workspace.create")
+    defer { AxoTrace.endInterval(interval) }
     workspaceCreationError = nil
     do {
       let created = try await requireClient().createWorkspace(
@@ -380,6 +382,8 @@ final class TerminalSessionsModel {
   }
 
   func createSession(in workspaceID: String) async {
+    let interval = AxoTrace.beginInterval("command.session.create")
+    defer { AxoTrace.endInterval(interval) }
     do {
       adopt(try await requireClient().createSession(inWorkspace: workspaceID))
     } catch {
@@ -388,6 +392,8 @@ final class TerminalSessionsModel {
   }
 
   func createSession() async {
+    let interval = AxoTrace.beginInterval("command.session.create")
+    defer { AxoTrace.endInterval(interval) }
     let start = ContinuousClock.now
     do {
       let session = try await requireClient().createSession()
@@ -462,6 +468,8 @@ final class TerminalSessionsModel {
   }
 
   func archiveSession(_ sessionID: SessionID) async throws {
+    let interval = AxoTrace.beginInterval("command.session.close")
+    defer { AxoTrace.endInterval(interval) }
     let closingSession = session(for: sessionID)
     let closed = try await requireClient().closeSession(sessionID)
     removeSessions([sessionID], closing: closingSession, replacement: closed.replacement)
@@ -509,6 +517,8 @@ final class TerminalSessionsModel {
   /// (`pendingTerminalSplit`) until Axod confirms it; an unconfirmed outcome is reconciled from
   /// the catalog and never retried, because shell creation is not idempotent.
   func split(_ direction: TerminalSplitDirection) async {
+    let interval = AxoTrace.beginInterval("command.pane.split")
+    defer { AxoTrace.endInterval(interval) }
     guard pendingTerminalSplit == nil else { return }
     let client: AxodClient
     do { client = try requireClient() } catch { return report(error) }
@@ -585,6 +595,8 @@ final class TerminalSessionsModel {
   /// User-initiated close (⌘W): closes an idle shell at once, but asks first when it is running
   /// a foreground job or a Pi turn. When Axod cannot tell, it asks rather than guess.
   func requestCloseShell(_ shellID: ShellID) async {
+    let interval = AxoTrace.beginInterval("command.pane.close")
+    defer { AxoTrace.endInterval(interval) }
     let start = ContinuousClock.now
     AxoTrace.commands.notice("event=shell.close_requested shell_id=\(shellID.rawValue)")
     guard let client,
@@ -677,6 +689,8 @@ final class TerminalSessionsModel {
   }
 
   private func restartPiSession(_ shellID: ShellID, automatically: Bool) async throws {
+    let interval = AxoTrace.beginInterval("command.pi.restart")
+    defer { AxoTrace.endInterval(interval) }
     let client = try requireClient()
     guard let targetSession = session(containing: shellID),
       let shell = shellsByID[shellID],
@@ -707,6 +721,8 @@ final class TerminalSessionsModel {
   // MARK: - Navigation
 
   func showSession(_ sessionID: SessionID) {
+    let interval = AxoTrace.beginInterval("command.session.show")
+    defer { AxoTrace.endInterval(interval) }
     guard session(for: sessionID) != nil else { return }
     select(sessionID)
     assign(\.errorMessage, nil)

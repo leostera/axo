@@ -143,8 +143,8 @@ booleans; parse wire data into domain types at the boundary.
 
 ### 2d. Views and runtime
 
-- `TerminalWorkbenchView` (460 lines): extract `ExpandedSidebar`, `CollapsedSidebar` and
-  `WorkbenchDialogs`. No business logic in view closures.
+- **Done:** `TerminalWorkbenchView` is 191 lines; the sidebar is `WorkbenchSidebar` and
+  `SessionSidebarRow`.
 - **Done (`418f612`):** `TerminalSurfaceRegistry` owns surface lifecycle (presentation, attach,
   adopt, reattach, offscreen sizing, free); `GhosttyRuntime` keeps the libghostty app, config,
   callbacks and command routing (632 → 285 lines).
@@ -175,8 +175,11 @@ p99 274 µs) is not where the felt lag is.
   libghostty ticks (`event=ghostty.tick_delayed`) and late key delivery
   (`event=key.delivery_delayed`), category `latency`, plus `key.down`/`ghostty.tick`/`main.busy`
   signposts.
-- Turn AxoTrace into `OSSignposter` intervals for commands (key → RPC → UI applied), so they show
-  in Instruments too. Bounded fields only: no paths, names or terminal content.
+- **Done:** `AxoTrace.beginInterval`/`endInterval` wrap each user command
+  (`command.session.create|show|close`, `command.pane.split|close`, `command.pi.restart`,
+  `command.workspace.create`) from request to the model applying Axod's answer; static names
+  only. Read with Instruments, or `log show --signpost --predicate 'subsystem ==
+  "dev.leostera.axo" AND eventType == "signpostEvent"'`.
 
 ## Phase 3: contributor docs and skills
 
