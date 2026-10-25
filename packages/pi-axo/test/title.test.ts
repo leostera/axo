@@ -63,8 +63,10 @@ test("axo_set_title can update an existing session title repeatedly", async () =
   assert.equal(sessionName, "Ship Axo");
   assert.deepEqual(branch.map(entry => entry.data), [{ emoji: "🌱" }, { emoji: "🚀" }]);
   assert.deepEqual(published, [
-    { name: "axo.session.metadata", data: { title: "Explore Axo", emoji: "🌱" } },
-    { name: "axo.session.metadata", data: { title: "Ship Axo", emoji: "🚀" } },
+    { name: "session.info", data: { name: "Explore Axo" } },
+    { name: "axo.session.metadata", data: { title: null, emoji: "🌱" } },
+    { name: "session.info", data: { name: "Ship Axo" } },
+    { name: "axo.session.metadata", data: { title: null, emoji: "🚀" } },
   ]);
   assert.equal(firstResult.content[0]?.text, "Session named 🌱 Explore Axo.");
   assert.equal(secondResult.content[0]?.text, "Session title updated to 🚀 Ship Axo.");

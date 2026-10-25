@@ -85,7 +85,10 @@ export function installAxoSessionNaming(
 
       pi.setSessionName(title);
       pi.appendEntry(AXO_APPEARANCE_ENTRY, { emoji });
-      await bridge.publish("axo.session.metadata", { title, emoji });
+      // setSessionName also emits session_info_changed, but forwarding that callback is
+      // asynchronous. Publish the canonical title event directly so the sidebar updates now.
+      await bridge.publish("session.info", { name: title });
+      await bridge.publish("axo.session.metadata", { title: null, emoji });
       return {
         content: [{ type: "text", text: `${hadTitle ? "Session title updated to" : "Session named"} ${emoji} ${title}.` }],
         details: { title, emoji },
