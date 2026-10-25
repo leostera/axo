@@ -16,6 +16,7 @@ use jsonrpc_core::IoHandler;
 
 mod panes;
 mod session;
+mod store;
 mod workspace_access;
 
 const MAX_SOCKET_PATH_BYTES: usize = 103;
