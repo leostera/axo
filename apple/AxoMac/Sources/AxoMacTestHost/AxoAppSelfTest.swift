@@ -1,5 +1,5 @@
 import AxoProtocol
-import AxoRPC
+import AxoClient
 import Darwin
 import Foundation
 
@@ -16,58 +16,51 @@ enum AxoAppSelfTest {
       throw SelfTestError.missingTestSocket
     }
     let socketPath = try UnixSocketPath(socketValue)
+    let axod = AxodConnection(socketPath: socketPath)
     let helperURL =
       environment["AXO_SELF_TEST_AXOD"].map {
         URL(fileURLWithPath: $0)
       } ?? Bundle.main.bundleURL.appendingPathComponent("Contents/Helpers/axod")
 
-    let health = try await UnixSocketRPC.health(at: socketPath)
+    let health = try await axod.health()
     guard health.status == "running" else {
       throw SelfTestError.daemonUnavailable
     }
 
-    let baselineSessions = try await UnixSocketRPC.listSessionSnapshot(at: socketPath).sessions
+    let baselineSessions = try await axod.listSessionSnapshot().sessions
     guard baselineSessions.count == 1 else {
       throw SelfTestError.unexpectedInitialSession
     }
-    let session = try await UnixSocketRPC.createSession(at: socketPath)
+    let session = try await axod.createSession()
     do {
       guard let firstShell = session.shells.first else {
         throw SelfTestError.createdShellMissing
       }
       try await verifyShells(
-        [firstShell], in: session, at: socketPath, helperURL: helperURL)
-      try await verifyUnchangedSessions(baselineSessions, at: socketPath)
+        [firstShell], in: session, on: axod, helperURL: helperURL)
+      try await verifyUnchangedSessions(baselineSessions, on: axod)
 
-      let secondShell = try await UnixSocketRPC.createShell(in: session.id, at: socketPath)
-      let thirdShell = try await UnixSocketRPC.createShell(in: session.id, at: socketPath)
+      let secondShell = try await axod.createShell(inSession: session.id)
+      let thirdShell = try await axod.createShell(inSession: session.id)
       try await verifyShells(
         [firstShell, secondShell, thirdShell],
         in: session,
-        at: socketPath,
+        on: axod,
         helperURL: helperURL
       )
-      try await verifyUnchangedSessions(baselineSessions, at: socketPath)
+      try await verifyUnchangedSessions(baselineSessions, on: axod)
 
-      let closedMiddleShell = try await UnixSocketRPC.closeShell(
-        secondShell.id,
-        in: session.id,
-        at: socketPath
-      )
+      let closedMiddleShell = try await axod.closeShell(secondShell.id, inSession: session.id)
       guard closedMiddleShell.archivedShellId == secondShell.id,
         closedMiddleShell.archivedSessionId == nil
       else {
         throw SelfTestError.splitShellCloseArchivedSession
       }
       try await verifyShells(
-        [firstShell, thirdShell], in: session, at: socketPath, helperURL: helperURL)
-      try await verifyUnchangedSessions(baselineSessions, at: socketPath)
+        [firstShell, thirdShell], in: session, on: axod, helperURL: helperURL)
+      try await verifyUnchangedSessions(baselineSessions, on: axod)
 
-      let closedFirstShell = try await UnixSocketRPC.closeShell(
-        firstShell.id,
-        in: session.id,
-        at: socketPath
-      )
+      let closedFirstShell = try await axod.closeShell(firstShell.id, inSession: session.id)
       guard closedFirstShell.archivedShellId == firstShell.id,
         closedFirstShell.archivedSessionId == nil
       else {
@@ -75,10 +68,7 @@ enum AxoAppSelfTest {
       }
 
       for baselineSession in baselineSessions {
-        let closedBaseline = try await UnixSocketRPC.closeSession(
-          baselineSession.id,
-          at: socketPath
-        )
+        let closedBaseline = try await axod.closeSession(baselineSession.id)
         guard closedBaseline.archivedSessionId == baselineSession.id,
           closedBaseline.replacement == nil
         else {
@@ -86,11 +76,7 @@ enum AxoAppSelfTest {
         }
       }
 
-      let closedLastShell = try await UnixSocketRPC.closeShell(
-        thirdShell.id,
-        in: session.id,
-        at: socketPath
-      )
+      let closedLastShell = try await axod.closeShell(thirdShell.id, inSession: session.id)
       guard closedLastShell.archivedShellId == thirdShell.id,
         closedLastShell.archivedSessionId == session.id,
         let replacement = closedLastShell.replacement,
@@ -98,14 +84,14 @@ enum AxoAppSelfTest {
       else {
         throw SelfTestError.lastShellDidNotReplaceSession
       }
-      let remainingSessions = try await UnixSocketRPC.listSessionSnapshot(at: socketPath).sessions
+      let remainingSessions = try await axod.listSessionSnapshot().sessions
       guard remainingSessions.contains(where: { $0.id == replacement.id }),
         !remainingSessions.contains(where: { $0.id == session.id })
       else {
         throw SelfTestError.replacementSessionMissing
       }
     } catch {
-      _ = try? await UnixSocketRPC.closeSession(session.id, at: socketPath)
+      _ = try? await axod.closeSession(session.id)
       throw error
     }
   }
@@ -113,10 +99,10 @@ enum AxoAppSelfTest {
   private static func verifyShells(
     _ shells: [TerminalShell],
     in session: TerminalSession,
-    at socketPath: UnixSocketPath,
+    on axod: AxodConnection,
     helperURL: URL
   ) async throws {
-    let sessions = try await UnixSocketRPC.listSessionSnapshot(at: socketPath).sessions
+    let sessions = try await axod.listSessionSnapshot().sessions
     guard let listedSession = sessions.first(where: { $0.id == session.id }) else {
       throw SelfTestError.createdSessionMissing
     }
@@ -130,9 +116,9 @@ enum AxoAppSelfTest {
 
   private static func verifyUnchangedSessions(
     _ expectedSessions: [TerminalSession],
-    at socketPath: UnixSocketPath
+    on axod: AxodConnection
   ) async throws {
-    let activeSessions = try await UnixSocketRPC.listSessionSnapshot(at: socketPath).sessions
+    let activeSessions = try await axod.listSessionSnapshot().sessions
     guard expectedSessions.allSatisfy({ activeSessions.contains($0) }) else {
       throw SelfTestError.independentSessionChanged
     }

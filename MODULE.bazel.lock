@@ -2903,7 +2903,7 @@
           "REPO_MAPPING:rules_swift_package_manager+,bazel_skylib bazel_skylib+",
           "REPO_MAPPING:rules_swift_package_manager+,bazel_tools bazel_tools",
           "REPO_MAPPING:rules_swift_package_manager+,cgrindel_bazel_starlib cgrindel_bazel_starlib+",
-          "FILE:@@//apple/Package.resolved dc4ecde045a6672fd848dca1d6cd0684884e40938fb49ef43c7717a09d4162d3"
+          "FILE:@@//apple/Package.resolved 984393cf59808128a05be74c9727c9eccf5bd9dbd7d192ab1f8ed86cc90ff0de"
         ],
         "generatedRepoSpecs": {
           "swift_package": {
@@ -2917,28 +2917,8 @@
             "repoRuleId": "@@rules_swift_package_manager+//swiftpkg/bzlmod:swift_deps.bzl%_swift_deps_package_repos",
             "attributes": {
               "repo_names": [
-                "swiftpkg_fuzzymatch",
-                "swiftpkg_jsonrpc"
+                "swiftpkg_fuzzymatch"
               ]
-            }
-          },
-          "swiftpkg_jsonrpc": {
-            "repoRuleId": "@@rules_swift_package_manager+//swiftpkg/internal:swift_package.bzl%swift_package",
-            "attributes": {
-              "bazel_package_name": "swiftpkg_jsonrpc",
-              "commit": "29987f721374f30e686af40ccffd0b13b14dde1f",
-              "remote": "https://github.com/ChimeHQ/JSONRPC.git",
-              "version": "0.9.2",
-              "env": {},
-              "env_inherit": [],
-              "cached_json_directory": "",
-              "make_files_read_only": false,
-              "replace_scm_with_registry": false,
-              "target_deps": {},
-              "module_aliases": {},
-              "dep_module_aliases": "",
-              "bazel_target_mods": "",
-              "package_repos": "@@rules_swift_package_manager++swift_deps+swift_deps_package_repos//:package_repos.json"
             }
           },
           "swiftpkg_fuzzymatch": {
@@ -2963,7 +2943,6 @@
         },
         "moduleExtensionMetadata": {
           "explicitRootModuleDirectDeps": [
-            "swiftpkg_jsonrpc",
             "swiftpkg_fuzzymatch",
             "swift_package"
           ],

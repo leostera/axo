@@ -2,7 +2,7 @@ import AppKit
 import SwiftUI
 import AxoDaemonManager
 import AxoProtocol
-import AxoRPC
+import AxoClient
 import Darwin
 import GhosttyKit
 import Foundation
@@ -287,7 +287,9 @@ final class TerminalWorkbenchE2ETests: XCTestCase {
       let firstShell = try XCTUnwrap(model.session(for: sessionID)?.shells.first)
       let socketPath = try UnixSocketPath(daemon.socketPath.path)
 
-      let newestShell = try await UnixSocketRPC.createShell(in: sessionID, at: socketPath)
+      let newestShell = try await AxodConnection.withFreshConnection(to: socketPath) {
+        try await $0.createShell(inSession: sessionID)
+      }
       await model.refresh()
 
       XCTAssertEqual(model.focusedShellID, newestShell.id)
@@ -621,7 +623,9 @@ final class TerminalWorkbenchE2ETests: XCTestCase {
   ) async throws {
     let deadline = Date().addingTimeInterval(5)
     while Date() < deadline {
-      let sessions = try await UnixSocketRPC.listSessionSnapshot(at: socketPath).sessions
+      let sessions = try await AxodConnection.withFreshConnection(to: socketPath) {
+        try await $0.listSessionSnapshot().sessions
+      }
       if let storedLayout = sessions.first(where: { $0.id == sessionID })?.layout,
         TerminalLayout(storedLayout) == expected
       {

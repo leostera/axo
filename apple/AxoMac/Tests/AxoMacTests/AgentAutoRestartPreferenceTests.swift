@@ -1,5 +1,5 @@
 import AxoProtocol
-import AxoRPC
+import AxoClient
 import Foundation
 import XCTest
 

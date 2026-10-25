@@ -1,6 +1,6 @@
 import AppKit
 import AxoProtocol
-import AxoRPC
+import AxoClient
 import CoreGraphics
 import Foundation
 import Vision

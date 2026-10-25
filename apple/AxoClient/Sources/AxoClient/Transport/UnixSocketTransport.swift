@@ -1,6 +1,4 @@
-import AxoProtocol
 import Foundation
-import JSONRPC
 import Network
 
 extension Duration {
@@ -21,12 +19,27 @@ extension Duration {
   }
 }
 
-/// Newline-delimited JSON-RPC over a Unix socket.
+/// Connections to a local axod: newline-delimited JSON over a Unix socket.
+public struct UnixSocketTransport: AxoTransport {
+  public let socketPath: UnixSocketPath
+
+  public init(socketPath: UnixSocketPath) {
+    self.socketPath = socketPath
+  }
+
+  public func connect() async throws -> any AxoMessageChannel {
+    let channel = UnixSocketChannel(socketPath: socketPath)
+    try await channel.connect()
+    return channel
+  }
+}
+
+/// One Unix-socket connection, framing messages by newline.
 ///
 /// `@unchecked Sendable` invariants: `pendingData` is touched only from NWConnection callbacks on
 /// the serial `queue`; `readiness` only under `stateLock`; `NWConnection` and the stream
 /// continuation are themselves thread-safe.
-final class UnixSocketTransport: @unchecked Sendable {
+final class UnixSocketChannel: AxoMessageChannel, @unchecked Sendable {
   private static let maximumMessageBytes = 64 * 1024
   private static let connectionTimeout: DispatchTimeInterval = .seconds(1)
 
@@ -37,22 +50,15 @@ final class UnixSocketTransport: @unchecked Sendable {
   private var readiness: CheckedContinuation<Void, Error>?
   private var pendingData = Data()
 
-  private let dataSequence: AsyncStream<Data>
+  let messages: AsyncStream<Data>
 
   init(socketPath: UnixSocketPath) {
-    let (dataSequence, dataContinuation) = AsyncStream<Data>.makeStream()
-    self.dataSequence = dataSequence
+    let (messages, dataContinuation) = AsyncStream<Data>.makeStream()
+    self.messages = messages
     self.dataContinuation = dataContinuation
     self.connection = NWConnection(
       to: .unix(path: socketPath.value),
       using: .tcp
-    )
-  }
-
-  var dataChannel: JSONRPC.DataChannel {
-    JSONRPC.DataChannel(
-      writeHandler: { [self] data in try await send(data) },
-      dataSequence: dataSequence
     )
   }
 
@@ -69,7 +75,7 @@ final class UnixSocketTransport: @unchecked Sendable {
       queue.asyncAfter(deadline: .now() + Self.connectionTimeout) { [weak self] in
         guard let self,
           self.finishReadiness(
-            .failure(UnixSocketRPCError.connectionFailed("connection timed out")))
+            .failure(AxoClientError.connectionFailed("connection timed out")))
         else {
           return
         }
@@ -90,23 +96,23 @@ final class UnixSocketTransport: @unchecked Sendable {
       guard finishReadiness(.success(())) else { return }
       receiveNext()
     case .failed(let error):
-      finishReadiness(.failure(UnixSocketRPCError.connectionFailed(error.localizedDescription)))
+      finishReadiness(.failure(AxoClientError.connectionFailed(error.localizedDescription)))
       dataContinuation.finish()
     case .cancelled:
-      finishReadiness(.failure(UnixSocketRPCError.connectionFailed("connection was cancelled")))
+      finishReadiness(.failure(AxoClientError.connectionFailed("connection was cancelled")))
       dataContinuation.finish()
     case .waiting(let error):
       // A missing or refusing Unix socket is reported as waiting for a better network path,
       // which never comes; fail now instead of at the connection timeout (axod probes during
       // a restart would each stall for a second).
-      guard finishReadiness(.failure(UnixSocketRPCError.connectionFailed(error.localizedDescription)))
+      guard finishReadiness(.failure(AxoClientError.connectionFailed(error.localizedDescription)))
       else { return }
       connection.cancel()
       dataContinuation.finish()
     case .setup, .preparing:
       break
     @unknown default:
-      finishReadiness(.failure(UnixSocketRPCError.connectionFailed("unknown connection state")))
+      finishReadiness(.failure(AxoClientError.connectionFailed("unknown connection state")))
       dataContinuation.finish()
     }
   }
@@ -164,7 +170,7 @@ final class UnixSocketTransport: @unchecked Sendable {
     }
   }
 
-  private func send(_ message: Data) async throws {
+  func send(_ message: Data) async throws {
     var framedMessage = message
     framedMessage.append(0x0A)
 
@@ -172,10 +178,8 @@ final class UnixSocketTransport: @unchecked Sendable {
       connection.send(
         content: framedMessage,
         completion: .contentProcessed { error in
-          if let error {
-            continuation.resume(
-              throwing: UnixSocketRPCError.connectionFailed(error.localizedDescription)
-            )
+          if error != nil {
+            continuation.resume(throwing: AxoClientError.connectionClosed)
           } else {
             continuation.resume()
           }

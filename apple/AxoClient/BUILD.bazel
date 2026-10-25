@@ -1,0 +1,39 @@
+load("@rules_swift//swift:swift_library.bzl", "swift_library")
+load("@rules_swift//swift:swift_test.bzl", "swift_test")
+
+package(default_visibility = ["//visibility:public"])
+
+# Swift client for Axo hosts: a pluggable transport (Unix socket to the local axod now; the
+# account relay next), JSON-RPC over one persistent connection, axod's typed API, and pane
+# attachment. No UI, so every Apple client shares it.
+swift_library(
+    name = "AxoClient",
+    module_name = "AxoClient",
+    srcs = glob(["Sources/AxoClient/**/*.swift"]),
+    copts = ["-swift-version", "5"],
+    deps = ["//apple/AxoProtocol"],
+)
+
+swift_test(
+    name = "AxoClientDaemonInteropTests",
+    srcs = glob(["Tests/AxoClientDaemonInteropTests/**/*.swift"]),
+    copts = ["-swift-version", "5"],
+    data = ["//crates/axod:axod"],
+    env = {"AXOD_BINARY": "$(rootpath //crates/axod:axod)"},
+    tags = ["no-sandbox"],
+    timeout = "short",
+    deps = [
+        ":AxoClient",
+        "//apple/AxoProtocol",
+    ],
+)
+
+swift_test(
+    name = "AxoClientTests",
+    srcs = glob(["Tests/AxoClientTests/**/*.swift"]),
+    copts = ["-swift-version", "5"],
+    deps = [
+        ":AxoClient",
+        "//apple/AxoProtocol",
+    ],
+)

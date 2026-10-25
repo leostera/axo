@@ -1,5 +1,5 @@
 import AxoProtocol
-import AxoRPC
+import AxoClient
 import Foundation
 import Observation
 import OSLog
@@ -107,7 +107,7 @@ public final class DaemonController {
     startTask = Task {
       defer { startTask = nil }
       if let socketPath = try? makeSocketPath(),
-        (try? await UnixSocketRPC.health(at: socketPath)) != nil
+        (try? await AxodConnection.withFreshConnection(to: socketPath) { try await $0.health() }) != nil
       {
         return
       }
@@ -372,15 +372,17 @@ public final class DaemonController {
     let deadline = clock.now.advanced(by: Self.daemonStartupTimeout)
     while clock.now < deadline {
       do {
-        let health = try await UnixSocketRPC.health(at: socketPath)
+        let health = try await AxodConnection.withFreshConnection(to: socketPath) {
+          try await $0.health()
+        }
         if let expectedBuild, health.buildNumber != expectedBuild.value {
           try await Task.sleep(for: Self.healthPollInterval)
           continue
         }
         return health
-      } catch let error as UnixSocketRPCError {
+      } catch let error as AxoClientError {
         switch error {
-        case .connectionFailed, .requestTimedOut:
+        case .connectionFailed, .connectionClosed, .requestTimedOut:
           break
         case .invalidSocketPath, .invalidResponse, .serverRejected:
           throw error

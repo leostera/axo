@@ -6,7 +6,7 @@ import Foundation
 /// Subscribes before listing so no change between the listing and the first poll is lost, then
 /// applies events as they arrive. A lagged stream, a daemon restart or any transport failure
 /// leads to a fresh subscription and a full listing, with bounded backoff. There is no periodic
-/// polling: an idle catalog costs one long-poll request per `UnixSocketAxodClient.eventPollTimeout`.
+/// polling: an idle catalog costs one long-poll request per `AxodConnection.eventPollTimeout`.
 @MainActor
 final class TerminalCatalogSync {
   /// Consecutive failures after which the daemon itself is re-verified.

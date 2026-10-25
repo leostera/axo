@@ -3,15 +3,15 @@ import Foundation
 import XCTest
 
 import AxoProtocol
-@testable import AxoRPC
+@testable import AxoClient
 
-final class UnixSocketRPCTransportTests: XCTestCase {
+final class AxodConnectionTests: XCTestCase {
   func testHealthFailsWhenTheSocketDoesNotExist() async throws {
     let path = "/tmp/axo-rpc-missing-\(UUID().uuidString).sock"
     do {
-      _ = try await UnixSocketRPC.health(at: UnixSocketPath(path))
+      _ = try await AxodConnection(socketPath: UnixSocketPath(path)).health()
       XCTFail("Expected a missing socket to fail")
-    } catch let error as UnixSocketRPCError {
+    } catch let error as AxoClientError {
       guard case .connectionFailed = error else {
         return XCTFail("Unexpected RPC error: \(error)")
       }
@@ -40,9 +40,9 @@ final class UnixSocketRPCTransportTests: XCTestCase {
     for path in [missing, stale] {
       let start = ContinuousClock.now
       do {
-        _ = try await UnixSocketRPC.health(at: UnixSocketPath(path))
+        _ = try await AxodConnection(socketPath: UnixSocketPath(path)).health()
         XCTFail("Expected \(path) to fail")
-      } catch let error as UnixSocketRPCError {
+      } catch let error as AxoClientError {
         guard case .connectionFailed = error else { return XCTFail("Unexpected RPC error: \(error)") }
       }
       let elapsed = ContinuousClock.now - start
@@ -59,9 +59,9 @@ final class UnixSocketRPCTransportTests: XCTestCase {
     }
 
     do {
-      _ = try await UnixSocketRPC.health(at: UnixSocketPath(fixture.path))
+      _ = try await AxodConnection(socketPath: UnixSocketPath(fixture.path)).health()
       XCTFail("Expected the daemon's error response")
-    } catch let error as UnixSocketRPCError {
+    } catch let error as AxoClientError {
       guard case .serverRejected(let code, let message) = error else {
         return XCTFail("Unexpected RPC error: \(error)")
       }
@@ -83,7 +83,7 @@ final class UnixSocketRPCTransportTests: XCTestCase {
       try fixture.receiveOneRequestAndReply()
     }
 
-    let health = try await UnixSocketRPC.health(at: UnixSocketPath(fixture.path))
+    let health = try await AxodConnection(socketPath: UnixSocketPath(fixture.path)).health()
     _ = try await responder.value
 
     XCTAssertNil(health.version)
@@ -100,7 +100,7 @@ final class UnixSocketRPCTransportTests: XCTestCase {
       try fixture.receiveOneRequestAndReply()
     }
 
-    let status = try await UnixSocketRPC.remoteAccessStatus(at: UnixSocketPath(fixture.path))
+    let status = try await AxodConnection(socketPath: UnixSocketPath(fixture.path)).remoteAccessStatus()
     let requestData = try await responder.value
     let request = try XCTUnwrap(
       JSONSerialization.jsonObject(with: requestData) as? [String: Any]
@@ -123,10 +123,8 @@ final class UnixSocketRPCTransportTests: XCTestCase {
       try fixture.receiveOneRequestAndReply()
     }
 
-    let result = try await UnixSocketRPC.linkHost(
-      using: try XCTUnwrap(HostPairingCode(parsing: "B26A-NRKT")),
-      at: UnixSocketPath(fixture.path)
-    )
+    let result = try await AxodConnection(socketPath: UnixSocketPath(fixture.path)).linkHost(
+      using: try XCTUnwrap(HostPairingCode(parsing: "B26A-NRKT")))
     let requestData = try await responder.value
     let request = try XCTUnwrap(
       JSONSerialization.jsonObject(with: requestData) as? [String: Any]
@@ -147,7 +145,7 @@ final class UnixSocketRPCTransportTests: XCTestCase {
       try fixture.receiveOneRequestAndReply()
     }
 
-    try await UnixSocketRPC.requestRemoteAccessConnection(at: UnixSocketPath(fixture.path))
+    try await AxodConnection(socketPath: UnixSocketPath(fixture.path)).requestRemoteAccessConnection()
     let requestData = try await responder.value
     let request = try XCTUnwrap(
       JSONSerialization.jsonObject(with: requestData) as? [String: Any]
@@ -166,7 +164,7 @@ final class UnixSocketRPCTransportTests: XCTestCase {
       try fixture.receiveOneRequestAndReply()
     }
 
-    let health = try await UnixSocketRPC.health(at: UnixSocketPath(fixture.path))
+    let health = try await AxodConnection(socketPath: UnixSocketPath(fixture.path)).health()
     let requestData = try await responder.value
     let request = try XCTUnwrap(
       JSONSerialization.jsonObject(with: requestData) as? [String: Any]
@@ -210,7 +208,7 @@ private final class OneResponseUnixSocket: @unchecked Sendable {
       }
     }
     guard copiedLength < pathCapacity else {
-      throw UnixSocketRPCError.invalidSocketPath
+      throw AxoClientError.invalidSocketPath
     }
     address.sun_len = UInt8(MemoryLayout<sockaddr_un>.size)
 

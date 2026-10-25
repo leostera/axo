@@ -1,6 +1,6 @@
 import AxoDaemonManager
 import AxoProtocol
-import AxoRPC
+import AxoClient
 import Foundation
 import Observation
 
@@ -104,7 +104,7 @@ final class TerminalSessionsModel {
     let client: AxodClient?
     let clientError: String?
     do {
-      client = UnixSocketAxodClient(socketPath: try DaemonController.socketPath())
+      client = AxodConnection(socketPath: try DaemonController.socketPath())
       clientError = nil
     } catch {
       client = nil
@@ -121,7 +121,7 @@ final class TerminalSessionsModel {
     selectedSessionDefaults: UserDefaults? = nil
   ) {
     self.init(
-      client: UnixSocketAxodClient(socketPath: socketPath),
+      client: AxodConnection(socketPath: socketPath),
       selectedSessionDefaults: selectedSessionDefaults)
   }
 
@@ -527,7 +527,7 @@ final class TerminalSessionsModel {
       errorMessage = nil
     } catch {
       guard pendingTerminalSplit?.id == pending.id else { return }
-      if let rpcError = error as? UnixSocketRPCError, case .serverRejected = rpcError {
+      if let rpcError = error as? AxoClientError, case .serverRejected = rpcError {
         pendingTerminalSplit?.status = .rejected(error.localizedDescription)
         errorMessage = error.localizedDescription
         return

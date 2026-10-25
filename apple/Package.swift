@@ -8,7 +8,6 @@ import PackageDescription
 let package = Package(
   name: "AxoDependencies",
   dependencies: [
-    .package(url: "https://github.com/ChimeHQ/JSONRPC.git", from: "0.9.2"),
     .package(url: "https://github.com/ordo-one/FuzzyMatch.git", from: "1.4.0"),
   ]
 )

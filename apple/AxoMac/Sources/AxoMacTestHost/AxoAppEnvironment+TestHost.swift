@@ -1,7 +1,7 @@
 import AppKit
 import AxoDaemonManager
 import AxoProtocol
-import AxoRPC
+import AxoClient
 import Darwin
 import Foundation
 

@@ -1,5 +1,5 @@
 {
-  "originHash" : "e4f995a1bf9db124d22273373596b1082c25f36f6f64c894d35ed7ba18a1359d",
+  "originHash" : "1a43666b64d79ae72bc7a331485aaa7a0f839d7515ebca71a25909fabf86fff4",
   "pins" : [
     {
       "identity" : "fuzzymatch",
@@ -8,15 +8,6 @@
       "state" : {
         "revision" : "ea09aa7faa3c1832716d1ccdb81dcb83bea89774",
         "version" : "1.4.0"
-      }
-    },
-    {
-      "identity" : "jsonrpc",
-      "kind" : "remoteSourceControl",
-      "location" : "https://github.com/ChimeHQ/JSONRPC.git",
-      "state" : {
-        "revision" : "29987f721374f30e686af40ccffd0b13b14dde1f",
-        "version" : "0.9.2"
       }
     }
   ],

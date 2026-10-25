@@ -10,7 +10,7 @@ swift_library(
     copts = ["-swift-version", "5"],
     deps = [
         "//apple/AxoProtocol",
-        "//apple/AxoRPC:AxoRPC",
+        "//apple/AxoClient:AxoClient",
     ],
 )
 

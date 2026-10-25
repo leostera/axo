@@ -1,7 +1,7 @@
 import XCTest
 
 import AxoProtocol
-@testable import AxoRPC
+@testable import AxoClient
 
 final class UnixSocketPathTests: XCTestCase {
   func testUnixSocketPathMustBeAbsoluteAndFitThePlatformAddress() throws {

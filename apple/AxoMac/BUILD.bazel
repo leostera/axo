@@ -16,7 +16,7 @@ exports_files([
 AXO_MAC_DEPS = [
     "//apple/AxoDaemonManager:AxoDaemonManager",
     "//apple/AxoProtocol",
-    "//apple/AxoRPC:AxoRPC",
+    "//apple/AxoClient:AxoClient",
     "//apple/AxoSearch:AxoSearch",
     "@ghostty//:GhosttyKit",
 ]
@@ -202,7 +202,7 @@ xcodeproj(
         ":AxoApp",
         ":AxoUITestApp",
         "//apple/AxoProtocol:AxoProtocolTests",
-        "//apple/AxoRPC:AxoRPCTests",
+        "//apple/AxoClient:AxoClientTests",
         "//apple/AxoSearch:AxoSearchTests",
         "//apple/AxoDaemonManager:AxoDaemonManagerTests",
         "//apple/AxoMac:AxoMacTests",

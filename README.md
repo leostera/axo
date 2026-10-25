@@ -5,11 +5,11 @@ Axo is an agentic harness for terminal romantics, with a native macOS frontend a
 ## First macOS slice
 
 - `apple/AxoMac/AxoMac.xcodeproj` is the native IDE project, generated from Bazel with `bazel run //apple/AxoMac:xcodeproj`.
-- `apple/AxoRPC/` and `apple/AxoDaemonManager/` are small local Swift packages used by the app. The RPC package owns the JSON-RPC client/transport; the manager package owns ServiceManagement policy.
+- `apple/AxoProtocol/`, `apple/AxoClient/`, `apple/AxoSearch/` and `apple/AxoDaemonManager/` are local Swift packages used by the app. `AxoClient` is the client for hosts (pluggable transport, persistent JSON-RPC connection, axod's typed API); the manager package owns ServiceManagement policy.
 - The app is a SwiftUI macOS app with a menu-bar extra and a standard Axo application menu while its terminal window is active. The terminal window is the primary launch window, with Settings, Check for Updates, and Quit actions.
 - `crates/axod/` is the daemon CLI only. `clap` parses arguments and delegates to `crates/axo-server/`.
 - `crates/axo-server/` owns the Rust JSON-RPC server, Unix-domain transport boundary, and session lifecycle in `session.rs`; `crates/axod/` remains a CLI and PTY-attachment helper.
-- The macOS app uses ChimeHQ's Swift JSONRPC package over Apple's Network framework and a Unix-domain socket. The transport is newline-framed JSON-RPC 2.0.
+- The macOS app talks to axod with `AxoClient` over Apple's Network framework and a Unix-domain socket: newline-framed JSON-RPC 2.0 on one persistent connection.
 - `SMAppService` registers the bundled daemon as a per-user LaunchAgent, and launchd owns its process lifetime. The app compares daemon and app build numbers; on mismatch it asks ServiceManagement to restart the registered service from the current app bundle.
 - The daemon continues running when the menu-bar app quits. Check for Updates is intentionally a placeholder until Axo has a release channel.
 - A session is a tab containing one or more shells. Splits create additional shells in the selected tab; each shell has its own daemon-owned PTY and pinned libghostty surface. Pane and window title bars are omitted; terminal actions are in the Terminal menu, and View → Toggle Sidebar uses Command-S. Settings has a fixed General/About sidebar; General includes a scroll-sensitivity slider from 0.1× to 3.0×, with the neutral 1.0× setting centered, while About reports the Axo/axod versions, builds, source commit, and daemon status.

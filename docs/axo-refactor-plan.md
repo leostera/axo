@@ -160,8 +160,8 @@ booleans; parse wire data into domain types at the boundary.
 
 | Package | Contents | Platforms |
 | --- | --- | --- |
-| `AxoProtocol` | Wire models, IDs, events, layouts, method names, protocol version; `Codable`, no I/O. **Done** (request structs stay in `AxoRPC`, which encodes them) | all |
-| `AxoClient` | Persistent JSON-RPC connection, typed calls, event stream, `TerminalAttachment` | all with Unix sockets (macOS now; remote transport later) |
+| `AxoProtocol` | Wire models, IDs, events, layouts, method names, protocol version; `Codable`, no I/O. **Done** (request structs stay in `AxoClient`, which encodes them) | all |
+| `AxoClient` | Pluggable transport (`AxoTransport`: Unix socket now, relay WebSocket next), one persistent JSON-RPC connection with many calls in flight, axod's typed API (`AxodConnection`), `TerminalAttachment`. **Done**: replaces `AxoRPC` and ChimeHQ JSONRPC (no cancellation, no headers on its WebSocket); 1.9x faster per call (p50 171 µs vs 322 µs) | macOS, iOS |
 | `AxoDaemonManager` | LaunchAgent registration and health | macOS |
 | `AxoSearch` | Client-side ranking over `SearchDocument`s (FuzzyMatch underneath). **Done** | all |
 | `AxoTerminal` | Ghostty runtime, surfaces, input policies | macOS |
