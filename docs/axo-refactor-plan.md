@@ -104,6 +104,17 @@ payload is a struct or enum deriving `Serialize`/`Deserialize`. `Value` survives
   `AgentCommand`) and Workspace bookmark restore stayed in `axo-server`; the store returns raw
   values through `load_or_create_setting` and `open_workspace_directories`. `axo_store::open`
   owns the connection setup; `axo-server` uses rusqlite only in tests.
+- **Done:** `session.rs` is split into modules under `session/` (`catalog`, `handlers`,
+  `events`, `terminal`, `lifecycle`, `spawn`, `workspaces`, `pi_bridge`, `pi_recovery`,
+  `settings`, `base64`), each with its own `impl SessionManager`. The parent keeps
+  `SessionManager`, `open`/`shutdown`, the shared types and, for now, the tests.
+  Next: move the tests next to their modules.
+- **1b is done:** the only `serde_json::Value`s left outside tests are the `data` arguments at
+  the RPC boundary, parsed on the first line.
+- **Later: Bazel test caching.** Bazel caches a test target as a whole, keyed on its binary, so
+  per-test targets in one crate gain nothing. The payoff is smaller crates and test binaries
+  with narrower dependencies (`axo-store`'s tests no longer rerun when `session.rs` changes),
+  and splitting `TerminalWorkbenchE2ETests` (the 10 s critical path) for parallelism.
 - **Test isolation (`aeaae49`, `48b12cd`, `97a971d`):** RPC tests no longer share a directory
   (microsecond timestamps collided), axo-server tests never start the user's login shell, and
   Swift daemon fixtures wait for `connect()`, not the socket file.

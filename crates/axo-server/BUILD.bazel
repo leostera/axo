@@ -11,7 +11,7 @@ filegroup(
 
 rust_library(
     name = "axo_server",
-    srcs = glob(["src/*.rs"]),
+    srcs = glob(["src/**/*.rs"]),
     edition = crate_edition(),
     rustc_env_files = ["build_number.env"],
     stamp = 1,
@@ -20,7 +20,7 @@ rust_library(
 
 rust_test(
     name = "axo_server_tests",
-    srcs = glob(["src/*.rs"]),
+    srcs = glob(["src/**/*.rs"]),
     data = [":pi_extension_fixture"],
     env = {"AXO_PI_EXTENSION_PATH": "$(rootpath :pi_extension_fixture)"},
     edition = crate_edition(),
