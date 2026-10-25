@@ -1419,6 +1419,123 @@ mod tests {
     }
 
     #[test]
+    fn stored_lifecycle_parses_known_states_and_rejects_others() {
+        let database = Connection::open_in_memory().unwrap();
+        let read = |state: &str| {
+            database.query_row("SELECT ?1", params![state], |row| {
+                row.get::<_, StoredLifecycle>(0)
+            })
+        };
+        assert_eq!(read("open").unwrap(), StoredLifecycle::Open);
+        assert_eq!(read("archived").unwrap(), StoredLifecycle::Archived);
+        assert!(read("closed").is_err());
+        assert!(read("").is_err());
+    }
+
+    #[test]
+    fn archives_legacy_shell_sessions_during_workspace_cutover() {
+        let mut database = Connection::open_in_memory().unwrap();
+        database
+            .execute_batch(
+                "CREATE TABLE sessions (
+                    id INTEGER PRIMARY KEY AUTOINCREMENT,
+                    initial_pwd TEXT NOT NULL,
+                    state TEXT NOT NULL CHECK (state IN ('open', 'archived')),
+                    created_at INTEGER NOT NULL,
+                    archived_at INTEGER,
+                    termination_reason TEXT
+                );
+                INSERT INTO sessions (id, initial_pwd, state, created_at)
+                VALUES (7, '/tmp', 'open', 123);",
+            )
+            .unwrap();
+
+        initialize_database(&mut database).unwrap();
+
+        let session: (i64, String, String) = database
+            .query_row(
+                "SELECT id, initial_pwd, state FROM sessions WHERE id = 7",
+                [],
+                |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?)),
+            )
+            .unwrap();
+        let shell: (i64, i64, String, String) = database
+            .query_row(
+                "SELECT id, session_id, initial_pwd, state FROM shells WHERE id = 7",
+                [],
+                |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?, row.get(3)?)),
+            )
+            .unwrap();
+        assert_eq!(session, (7, "/tmp".to_owned(), "archived".to_owned()));
+        assert_eq!(shell, (7, 7, "/tmp".to_owned(), "archived".to_owned()));
+    }
+
+    #[test]
+    fn adds_layout_storage_to_existing_tab_databases() {
+        let mut database = Connection::open_in_memory().unwrap();
+        database
+            .execute_batch(
+                "CREATE TABLE sessions (
+                    id INTEGER PRIMARY KEY AUTOINCREMENT,
+                    initial_pwd TEXT NOT NULL,
+                    state TEXT NOT NULL CHECK (state IN ('open', 'archived')),
+                    created_at INTEGER NOT NULL,
+                    archived_at INTEGER,
+                    termination_reason TEXT
+                );
+                CREATE TABLE shells (
+                    id INTEGER PRIMARY KEY AUTOINCREMENT,
+                    session_id INTEGER NOT NULL,
+                    initial_pwd TEXT NOT NULL,
+                    state TEXT NOT NULL CHECK (state IN ('open', 'archived')),
+                    created_at INTEGER NOT NULL,
+                    archived_at INTEGER,
+                    termination_reason TEXT
+                );
+                INSERT INTO sessions (initial_pwd, state, created_at)
+                VALUES ('/tmp', 'open', 123);
+                INSERT INTO shells (session_id, initial_pwd, state, created_at)
+                VALUES (1, '/tmp', 'open', 123);",
+            )
+            .unwrap();
+
+        initialize_database(&mut database).unwrap();
+
+        let layout: Option<String> = database
+            .query_row("SELECT layout_json FROM sessions WHERE id = 1", [], |row| {
+                row.get(0)
+            })
+            .unwrap();
+        let schema_version: i64 = database
+            .query_row("PRAGMA user_version", [], |row| row.get(0))
+            .unwrap();
+        assert_eq!(layout, None);
+        assert_eq!(schema_version, 7);
+        let manual_name_column: i64 = database
+            .query_row(
+                "SELECT COUNT(*) FROM pragma_table_info('sessions') WHERE name = 'manual_name'",
+                [],
+                |row| row.get(0),
+            )
+            .unwrap();
+        assert_eq!(manual_name_column, 1);
+        let bridge_socket_column: i64 = database
+            .query_row(
+                "SELECT COUNT(*) FROM pragma_table_info('sessions') WHERE name = 'pi_bridge_socket_path'",
+                [],
+                |row| row.get(0),
+            )
+            .unwrap();
+        assert_eq!(bridge_socket_column, 1);
+        let session_state: String = database
+            .query_row("SELECT state FROM sessions WHERE id = 1", [], |row| {
+                row.get(0)
+            })
+            .unwrap();
+        assert_eq!(session_state, "archived");
+    }
+
+    #[test]
     fn open_creates_an_owner_only_durable_catalog_and_reopens_it() {
         let directory = std::env::temp_dir().join(format!(
             "axo-store-open-{}-{}",

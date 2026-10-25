@@ -338,3 +338,57 @@ impl SessionManager {
         })
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    use crate::session::test_support::*;
+
+    use axo_protocol::new_uuid_v4;
+
+    use rusqlite::params;
+
+    #[test]
+    fn session_metadata_reads_emoji_workspace_name_and_ignores_a_corrupt_layout() {
+        let fixture = LifecycleFixture::new();
+        let manager = &fixture.manager;
+        let session = manager.create_session().unwrap();
+        let workspace_id = new_uuid_v4().unwrap();
+        {
+            let state = manager.lock_state().unwrap();
+            state
+                .database
+                .execute(
+                    "INSERT INTO workspaces (workspace_id, name, directory_path, state, created_at)
+                     VALUES (?1, 'Axo', '/tmp', 'open', 0)",
+                    params![workspace_id],
+                )
+                .unwrap();
+            state
+                .database
+                .execute(
+                    "UPDATE sessions SET emoji = '🦀', workspace_id = ?1, layout_json = '{\"not\": 1}'
+                     WHERE id = ?2",
+                    params![workspace_id, session.id.get()],
+                )
+                .unwrap();
+            let record = session_metadata(&state, session.id, &manager.attach_socket_path).unwrap();
+            assert_eq!(record.emoji.as_deref(), Some("🦀"));
+            assert_eq!(record.workspace_id.as_deref(), Some(workspace_id.as_str()));
+            assert_eq!(record.workspace_name.as_deref(), Some("Axo"));
+            assert_eq!(record.layout, None, "a corrupt stored layout is ignored");
+            assert_eq!(record.shells.len(), 1);
+
+            // A Session whose Workspace is gone is inconsistent, not Workspace-less.
+            state
+                .database
+                .execute(
+                    "UPDATE workspaces SET state = 'archived' WHERE workspace_id = ?1",
+                    params![workspace_id],
+                )
+                .unwrap();
+            assert!(session_metadata(&state, session.id, &manager.attach_socket_path).is_err());
+        }
+    }
+}

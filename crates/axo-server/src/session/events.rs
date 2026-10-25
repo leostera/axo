@@ -329,3 +329,208 @@ impl SessionManager {
         });
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    use crate::session::{pi_bridge::*, test_support::*};
+
+    use axo_protocol::{Event, new_uuid_v4};
+
+    use serde_json::Value;
+    use std::fs;
+
+    use std::io::{self};
+
+    use std::path::PathBuf;
+
+    use std::time::{Duration, Instant};
+
+    #[test]
+    fn local_subscriptions_signal_lag_filter_output_and_expire() {
+        let directory = PathBuf::from("/tmp").join(format!("axos-{}", new_uuid_v4().unwrap()));
+        fs::create_dir_all(&directory).unwrap();
+        let manager = open_with_silent_shell(&directory);
+        let drain = |id: &str| {
+            while manager
+                .next_event(id, Duration::from_millis(1))
+                .unwrap()
+                .is_some()
+            {}
+        };
+        let catalog = manager.subscribe(None, false).unwrap();
+        let output = manager.subscribe(None, true).unwrap();
+        drain(&catalog);
+        drain(&output);
+
+        let terminal_output = Event::TerminalOutput {
+            session_id: sid(1),
+            shell_id: shid(1),
+            sequence: 1,
+            data: String::new(),
+        };
+        manager.publish_event(terminal_output.clone());
+        assert_eq!(
+            manager
+                .next_event(&catalog, Duration::from_millis(1))
+                .unwrap(),
+            None,
+            "catalog subscriptions must not carry terminal bytes"
+        );
+        assert_eq!(
+            manager
+                .next_event(&output, Duration::from_millis(1))
+                .unwrap()
+                .as_deref(),
+            Some(&terminal_output)
+        );
+
+        let pi_event = Event::PiEvent {
+            session_id: sid(1),
+            pi_session_id: "pi-session".to_owned(),
+            stream_id: "stream".to_owned(),
+            sequence: 1,
+            name: "message_update".to_owned(),
+            data: Value::Null,
+        };
+        manager.publish_event(pi_event.clone());
+        assert_eq!(
+            manager
+                .next_event(&catalog, Duration::from_millis(1))
+                .unwrap(),
+            None,
+            "catalog subscriptions must not carry Pi stream events"
+        );
+        assert_eq!(
+            manager
+                .next_event(&output, Duration::from_millis(1))
+                .unwrap()
+                .as_deref(),
+            Some(&pi_event)
+        );
+
+        // A new subscription's initial snapshots must not be rebroadcast to existing subscribers.
+        let late = manager.subscribe(None, false).unwrap();
+        assert_eq!(
+            manager
+                .next_event(&catalog, Duration::from_millis(1))
+                .unwrap(),
+            None,
+            "initial snapshots belong to the new subscriber only"
+        );
+        drain(&late);
+
+        // One subscriber's long-poll must not block another's poll or publishers.
+        std::thread::scope(|scope| {
+            let waiter = scope.spawn(|| manager.next_event(&late, Duration::from_secs(5)));
+            std::thread::sleep(Duration::from_millis(50));
+            let started = Instant::now();
+            assert_eq!(
+                manager
+                    .next_event(&catalog, Duration::from_millis(1))
+                    .unwrap(),
+                None
+            );
+            assert!(
+                started.elapsed() < Duration::from_secs(1),
+                "a concurrent long-poll blocked another subscriber"
+            );
+            manager.publish_workspace_changed("wake");
+            let woken = waiter.join().unwrap().unwrap().unwrap();
+            assert!(matches!(*woken, Event::WorkspaceChanged { .. }));
+        });
+        drain(&catalog);
+        manager.unsubscribe(&late).unwrap();
+
+        for name in ["a", "b", "c"] {
+            manager.publish_workspace_changed(name);
+        }
+        let batch = manager
+            .next_events(&catalog, Duration::from_millis(1), 2)
+            .unwrap();
+        assert_eq!(batch.len(), 2, "batches are bounded by maxEvents");
+        assert_eq!(wire(&*batch[0])["workspaceId"], "a");
+        assert_eq!(wire(&*batch[1])["workspaceId"], "b");
+        drain(&catalog);
+        drain(&output);
+
+        manager.publish_workspace_changed("workspace");
+        let changed = manager
+            .next_event(&catalog, Duration::from_millis(1))
+            .unwrap()
+            .unwrap();
+        assert_eq!(wire(changed)["workspaceId"], "workspace");
+        drain(&output);
+
+        for _ in 0..=MAX_QUEUED_EVENTS_PER_SUBSCRIPTION {
+            manager.publish_workspace_changed("flood");
+        }
+        assert_eq!(
+            manager
+                .next_event(&catalog, Duration::from_millis(1))
+                .unwrap()
+                .as_deref(),
+            Some(&Event::SubscriptionLagged),
+            "a full queue must be reported, never silently gapped"
+        );
+        assert_eq!(
+            manager
+                .next_event(&catalog, Duration::from_millis(1))
+                .unwrap(),
+            None
+        );
+        drain(&output);
+
+        manager.request_session_focus(sid(5)).unwrap();
+        let focus = manager
+            .next_event(&catalog, Duration::from_millis(1))
+            .unwrap()
+            .unwrap();
+        let focus = wire(focus);
+        assert_eq!(focus["type"], "session.focus");
+        assert_eq!(focus["sessionId"], 5);
+        assert_eq!(manager.take_pending_resume_focus().unwrap(), Some(sid(5)));
+        *manager.pending_resume_focus.lock().unwrap() = Some((
+            sid(6),
+            Instant::now().checked_sub(PENDING_FOCUS_LIFETIME).unwrap(),
+        ));
+        assert_eq!(
+            manager.take_pending_resume_focus().unwrap(),
+            None,
+            "a stale focus request must not be replayed by a later listing"
+        );
+
+        *manager
+            .subscriptions
+            .lock()
+            .unwrap()
+            .get(&catalog)
+            .unwrap()
+            .last_polled
+            .lock()
+            .unwrap() = Instant::now()
+            .checked_sub(SUBSCRIPTION_IDLE_EXPIRY)
+            .unwrap();
+        let replacement = manager.subscribe(None, false).unwrap();
+        assert_eq!(
+            manager
+                .next_event(&catalog, Duration::from_millis(1))
+                .unwrap_err()
+                .kind(),
+            io::ErrorKind::NotFound,
+            "unpolled subscriptions are reclaimed"
+        );
+        assert!(
+            manager
+                .subscribers
+                .lock()
+                .unwrap()
+                .iter()
+                .all(|s| s.id != catalog)
+        );
+        manager.unsubscribe(&replacement).unwrap();
+        manager.unsubscribe(&output).unwrap();
+        let _ = fs::remove_dir_all(directory);
+    }
+}

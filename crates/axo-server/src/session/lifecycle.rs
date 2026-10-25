@@ -584,3 +584,258 @@ impl SessionManager {
         Ok(())
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::panes::Pane;
+    use crate::session::{settings::*, test_support::*};
+    use axo_pi::bridge;
+
+    use axo_pi::WriterLock;
+
+    use axo_protocol::{Layout, LayoutDirection, LayoutNode, new_uuid_v4};
+    use axo_pty::WindowSize;
+    use axo_pty::process;
+
+    use axo_store::load_viewport;
+
+    use rusqlite::params;
+    use serde_json::json;
+
+    use std::os::fd::AsRawFd;
+
+    use std::time::{Duration, Instant};
+
+    #[test]
+    fn session_restore_waits_outside_the_catalog_lock_and_isolates_pi_failure() {
+        let fixture = PiRecoveryFixture::new();
+        let manager = &fixture.lifecycle.manager;
+        let lock = WriterLock::acquire(&fixture.file).unwrap();
+        manager.lock_state().unwrap().panes.remove(fixture.shell_id);
+        let (worker, mut bridge) =
+            fixture.observe_operation(|manager| manager.restore_open_sessions());
+        assert!(
+            manager.state.try_lock().is_ok(),
+            "startup restoration held the shared catalog lock during takeover"
+        );
+        let home = manager
+            .list_sessions()
+            .unwrap()
+            .into_iter()
+            .find(|session| session.id != fixture.session_id)
+            .unwrap();
+        assert!(home.shells.iter().any(|shell| shell.is_available()));
+        bridge::write_record(bridge.get_mut(), &json!({ "type": "protocolError" })).unwrap();
+        worker.join().unwrap().unwrap();
+        let sessions = manager.list_sessions().unwrap();
+        let target = sessions
+            .iter()
+            .find(|session| session.id == fixture.session_id)
+            .unwrap();
+        assert!(!target.shells[0].is_available());
+        assert!(sessions.iter().any(|session| session.id == home.id));
+        drop(lock);
+        fixture.assert_preserved();
+    }
+
+    #[test]
+    fn restoring_sessions_does_not_replace_an_existing_runtime() {
+        let fixture = LifecycleFixture::new();
+        let session = fixture.manager.list_sessions().unwrap().remove(0);
+        let shell_id = session.shells[0].id;
+        let runtime = fixture
+            .manager
+            .lock_state()
+            .unwrap()
+            .panes
+            .running(shell_id)
+            .unwrap()
+            .runtime_id;
+        fixture.manager.restore_open_sessions().unwrap();
+        assert_eq!(
+            fixture
+                .manager
+                .lock_state()
+                .unwrap()
+                .panes
+                .running(shell_id)
+                .unwrap()
+                .runtime_id,
+            runtime
+        );
+    }
+
+    #[test]
+    fn reaper_isolates_wait_errors_without_guessing_process_exit() {
+        let fixture = LifecycleFixture::new();
+        let manager = &fixture.manager;
+        let uncertain = manager.create_session().unwrap();
+        let exited = manager.create_session().unwrap();
+        let uncertain_shell = uncertain.shells[0].id;
+        let exited_shell = exited.shells[0].id;
+        {
+            let mut state = manager.lock_state().unwrap();
+            let child = &mut state.panes.running_mut(uncertain_shell).unwrap().child;
+            child.kill().unwrap();
+            let mut status = 0;
+            // SAFETY: this fixture owns the still-unreaped child. Reaping outside
+            // Child deliberately simulates lost wait ownership (ECHILD).
+            assert_eq!(
+                unsafe { libc::waitpid(child.id() as libc::pid_t, &mut status, 0) },
+                child.id() as libc::pid_t
+            );
+            let child = &mut state.panes.running_mut(exited_shell).unwrap().child;
+            child.kill().unwrap();
+            assert!(wait_for_shell_exit(child, Duration::from_secs(2)).unwrap());
+        }
+        manager.reap_exited_sessions().unwrap();
+        manager.reap_exited_sessions().unwrap();
+        let state = manager.lock_state().unwrap();
+        assert!(
+            state
+                .panes
+                .running(uncertain_shell)
+                .unwrap()
+                .wait_error_reported
+        );
+        assert!(!state.panes.running(exited_shell).is_some());
+        let uncertain_state: String = state
+            .database
+            .query_row(
+                "SELECT state FROM sessions WHERE id = ?",
+                params![uncertain.id.get()],
+                |row| row.get(0),
+            )
+            .unwrap();
+        assert_eq!(uncertain_state, "open");
+        let exited_state: String = state
+            .database
+            .query_row(
+                "SELECT state FROM sessions WHERE id = ?",
+                params![exited.id.get()],
+                |row| row.get(0),
+            )
+            .unwrap();
+        assert_eq!(exited_state, "archived");
+    }
+
+    #[test]
+    fn closing_a_session_stops_every_pane_together_on_one_worker() {
+        let fixture = LifecycleFixture::new();
+        let manager = &fixture.manager;
+        let session = manager.create_session().unwrap();
+        manager.create_shell(session.id).unwrap();
+        manager.create_shell(session.id).unwrap();
+        let process_ids: Vec<libc::pid_t> = {
+            let state = manager.lock_state().unwrap();
+            state
+                .panes
+                .in_session(session.id)
+                .filter_map(|(_, pane)| match pane {
+                    Pane::Running(running) => Some(running.child.id() as libc::pid_t),
+                    Pane::Unavailable(_) => None,
+                })
+                .collect()
+        };
+        assert_eq!(process_ids.len(), 3);
+
+        let started = Instant::now();
+        manager.close_session(session.id).unwrap();
+        assert!(
+            started.elapsed() < process::SHELL_STOP_GRACE,
+            "closing must not wait for its panes to stop"
+        );
+        assert_eq!(
+            manager.workers.lock().unwrap().len(),
+            1,
+            "one cleanup worker per close, not one per pane"
+        );
+        let worker = manager.workers.lock().unwrap().pop().unwrap();
+        worker.join().unwrap();
+        assert!(
+            started.elapsed() < process::SHELL_STOP_GRACE + process::KILL_WAIT,
+            "panes are stopped together, not one grace after another"
+        );
+        for process_id in process_ids {
+            // SAFETY: signal 0 only checks whether the process still exists.
+            let alive = unsafe { libc::kill(process_id, 0) } == 0;
+            assert!(
+                !alive,
+                "pane process {process_id} survived its Session's close"
+            );
+        }
+    }
+
+    #[test]
+    fn creates_a_shell_attached_to_a_real_pty() {
+        let home = crate::current_user_home_directory().unwrap();
+        let shell = ShellCommand::parse("/bin/zsh").unwrap();
+        let mut session = spawn_shell(&shell, sid(1), &home, WindowSize::DEFAULT).unwrap();
+        assert!(session.slave_device.starts_with("/dev/"));
+        // The child should receive only the slave as stdio, never the PTY master.
+        // SAFETY: the test owns this open PTY master descriptor.
+        let master_flags = unsafe { libc::fcntl(session.master.as_raw_fd(), libc::F_GETFD) };
+        assert_ne!(master_flags, -1);
+        assert_ne!(master_flags & libc::FD_CLOEXEC, 0);
+
+        let master = session.master.as_raw_fd();
+        let (_, output) = session.output.subscribe(None);
+        let command = b"printf 'AXO_PTY_READY\\n'\n";
+        // SAFETY: command points to initialized bytes and master is an open PTY.
+        let written = unsafe { libc::write(master, command.as_ptr().cast(), command.len()) };
+        assert_eq!(written as usize, command.len());
+        assert!(read_until(
+            &output,
+            b"AXO_PTY_READY",
+            Duration::from_secs(3)
+        ));
+        process::stop(&mut session.child, process::SHELL_STOP_GRACE);
+    }
+
+    #[test]
+    fn the_latest_viewport_sizes_unattached_panes_and_new_ones() {
+        let fixture = LifecycleFixture::new();
+        let manager = &fixture.manager;
+        let session = manager.list_sessions().unwrap().remove(0);
+        let first = session.shells[0].id;
+        assert_eq!(pty_size(manager, first), (24, 80));
+
+        manager.set_viewport(test_viewport(1000.0)).unwrap();
+        assert_eq!(pty_size(manager, first), (34, 124));
+
+        // A new pane starts at the whole area until the client's layout places it.
+        let second = manager.create_shell(session.id).unwrap().id;
+        assert_eq!(pty_size(manager, second), (34, 124));
+        let split = LayoutNode::Split {
+            id: new_uuid_v4().unwrap(),
+            direction: LayoutDirection::Right,
+            ratio: 0.5,
+            first: Box::new(LayoutNode::Pane { shell_id: first }),
+            second: Box::new(LayoutNode::Pane { shell_id: second }),
+        };
+        manager
+            .set_layout(session.id, Layout::try_from(split).unwrap())
+            .unwrap();
+        assert_eq!(pty_size(manager, first), (34, 61));
+        assert_eq!(pty_size(manager, second), (34, 61));
+
+        // An attached pane belongs to its client; the latest viewport resizes the rest.
+        manager
+            .lock_state()
+            .unwrap()
+            .panes
+            .running_mut(first)
+            .unwrap()
+            .attachments = 1;
+        manager.set_viewport(test_viewport(500.0)).unwrap();
+        assert_eq!(pty_size(manager, first), (34, 61));
+        assert_eq!(pty_size(manager, second), (34, 30));
+
+        let state = manager.lock_state().unwrap();
+        assert_eq!(
+            load_viewport(&state.database).unwrap(),
+            Some(test_viewport(500.0))
+        );
+    }
+}

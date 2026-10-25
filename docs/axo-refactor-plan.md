@@ -107,8 +107,10 @@ payload is a struct or enum deriving `Serialize`/`Deserialize`. `Value` survives
 - **Done:** `session.rs` is split into modules under `session/` (`catalog`, `handlers`,
   `events`, `terminal`, `lifecycle`, `spawn`, `workspaces`, `pi_bridge`, `pi_recovery`,
   `settings`, `base64`), each with its own `impl SessionManager`. The parent keeps
-  `SessionManager`, `open`/`shutdown`, the shared types and, for now, the tests.
-  Next: move the tests next to their modules.
+  `SessionManager`, `open`/`shutdown` and the shared types (383 lines with their tests).
+  Each module's tests sit next to it; shared fixtures are in `session/test_support.rs`. The
+  three tests that exercised only the store (lifecycle parsing, two migrations) moved to
+  `axo-store`.
 - **1b is done:** the only `serde_json::Value`s left outside tests are the `data` arguments at
   the RPC boundary, parsed on the first line.
 - **Later: Bazel test caching.** Bazel caches a test target as a whole, keyed on its binary, so

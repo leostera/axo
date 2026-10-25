@@ -493,3 +493,92 @@ impl SessionManager {
         self.publish_shell_activity(session_id, id, ShellActivity::Detached);
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    use crate::session::test_support::*;
+
+    use std::io::Write;
+
+    use std::os::unix::net::UnixStream;
+
+    use std::sync::Arc;
+    use std::sync::atomic::{AtomicUsize, Ordering};
+    use std::sync::mpsc;
+    use std::thread::{self};
+    use std::time::{Duration, Instant};
+
+    #[test]
+    fn a_stalled_client_is_released_without_blocking_the_shell() {
+        let fixture = LifecycleFixture::new();
+        let manager = &fixture.manager;
+        manager.stop_workers.store(false, Ordering::Relaxed);
+        let session = manager.list_sessions().unwrap().remove(0);
+        let shell_id = session.shells[0].id;
+        let output = Arc::clone(
+            &manager
+                .lock_state()
+                .unwrap()
+                .panes
+                .running(shell_id)
+                .unwrap()
+                .output,
+        );
+        let (mut client, server) = UnixStream::pair().unwrap();
+        writeln!(client, "{}", shell_id.get()).unwrap();
+        let permit = AttachmentPermit::try_acquire(Arc::new(AtomicUsize::new(0))).unwrap();
+        let weak = Arc::downgrade(manager);
+        let (done, completed) = mpsc::channel();
+        let worker = thread::spawn(move || {
+            handle_attachment(server, weak, permit);
+            done.send(()).unwrap();
+        });
+        // Intentionally never read. Output keeps flowing (recording never blocks) until the
+        // client's backlog overflows and Axod disconnects it.
+        let chunk = vec![b'x'; 64 * 1024];
+        let deadline = Instant::now() + Duration::from_secs(10);
+        while completed.try_recv().is_err() {
+            assert!(
+                Instant::now() < deadline,
+                "stalled client was never released"
+            );
+            output.record(&chunk);
+        }
+        worker.join().unwrap();
+        assert_eq!(output.subscriber_count(), 0);
+        assert_eq!(
+            manager
+                .lock_state()
+                .unwrap()
+                .panes
+                .running(shell_id)
+                .unwrap()
+                .attachments,
+            0
+        );
+        drop(client);
+    }
+
+    #[test]
+    fn terminal_attachment_permits_are_bounded_and_released() {
+        let active = Arc::new(AtomicUsize::new(0));
+        let mut permits = Vec::new();
+        for _ in 0..MAX_CONCURRENT_TERMINAL_ATTACHMENTS {
+            match AttachmentPermit::try_acquire(Arc::clone(&active)) {
+                Some(permit) => permits.push(permit),
+                None => panic!("attachment capacity should be available"),
+            }
+        }
+        assert!(AttachmentPermit::try_acquire(Arc::clone(&active)).is_none());
+        assert_eq!(
+            active.load(Ordering::Relaxed),
+            MAX_CONCURRENT_TERMINAL_ATTACHMENTS
+        );
+
+        drop(permits);
+        assert_eq!(active.load(Ordering::Relaxed), 0);
+        assert!(AttachmentPermit::try_acquire(active).is_some());
+    }
+}

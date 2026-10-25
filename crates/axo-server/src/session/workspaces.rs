@@ -310,3 +310,102 @@ impl SessionManager {
         Ok(session)
     }
 }
+
+#[cfg(test)]
+mod tests {
+
+    use crate::session::test_support::*;
+
+    use axo_protocol::new_uuid_v4;
+
+    use axo_store::unix_timestamp;
+    use rusqlite::params;
+
+    use std::fs;
+
+    use std::path::PathBuf;
+
+    #[test]
+    fn manual_session_rename_is_separate_and_workspace_archive_preserves_history() {
+        let directory = PathBuf::from("/tmp").join(format!("axor-{}", new_uuid_v4().unwrap()));
+        fs::create_dir_all(&directory).unwrap();
+        let manager = open_with_silent_shell(&directory);
+        let workspace_id = new_uuid_v4().unwrap();
+        let session_uuid = new_uuid_v4().unwrap();
+        let session_id = sid(702);
+        let history = directory.join("pi-session.jsonl");
+        fs::write(&history, b"canonical Pi history").unwrap();
+        {
+            let state = manager.lock_state().unwrap();
+            state
+                .database
+                .execute(
+                    "INSERT INTO workspaces
+                     (workspace_id, name, directory_path, state, created_at)
+                     VALUES (?1, 'Original Workspace', '/tmp', 'open', ?2)",
+                    params![workspace_id, unix_timestamp()],
+                )
+                .unwrap();
+            state
+                .database
+                .execute(
+                    "INSERT INTO sessions
+                     (id, initial_pwd, state, created_at, workspace_id, session_uuid, name, pi_session_file)
+                     VALUES (?1, '/tmp', 'open', ?2, ?3, ?4, 'Pi conversation title', ?5)",
+                    params![
+                        session_id.get(),
+                        unix_timestamp(),
+                        workspace_id,
+                        session_uuid,
+                        history.to_string_lossy(),
+                    ],
+                )
+                .unwrap();
+        }
+
+        let renamed_session = manager.rename_session(session_id, "Sidebar label").unwrap();
+        assert_eq!(renamed_session.name, "Pi conversation title");
+        assert_eq!(
+            renamed_session.manual_name.as_deref(),
+            Some("Sidebar label")
+        );
+        assert_eq!(
+            serde_json::to_value(&renamed_session).unwrap()["manualName"],
+            "Sidebar label"
+        );
+
+        let renamed_workspace = manager
+            .rename_workspace(&workspace_id, "Renamed Workspace")
+            .unwrap();
+        assert_eq!(renamed_workspace.name, "Renamed Workspace");
+        let session_after_workspace_rename =
+            manager.rename_session(session_id, "Sidebar label").unwrap();
+        assert_eq!(
+            session_after_workspace_rename.workspace_name.as_deref(),
+            Some("Renamed Workspace")
+        );
+
+        let archived_sessions = manager.archive_workspace(&workspace_id).unwrap();
+        assert_eq!(archived_sessions, vec![session_id]);
+        assert!(manager.list_workspaces().unwrap().is_empty());
+        let state = manager.lock_state().unwrap();
+        let archived_state: (String, String) = state
+            .database
+            .query_row(
+                "SELECT state, termination_reason FROM sessions WHERE id = ?1",
+                params![session_id.get()],
+                |row| Ok((row.get(0)?, row.get(1)?)),
+            )
+            .unwrap();
+        assert_eq!(
+            archived_state,
+            ("archived".to_owned(), "workspace_archived".to_owned())
+        );
+        drop(state);
+        assert_eq!(fs::read(&history).unwrap(), b"canonical Pi history");
+
+        manager.shutdown();
+        drop(manager);
+        fs::remove_dir_all(directory).unwrap();
+    }
+}

@@ -407,3 +407,205 @@ impl SessionManager {
             .map(|(session_id, _)| session_id))
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    use crate::session::{catalog::*, settings::*, spawn::*, terminal::*, test_support::*};
+
+    use axo_pi::WriterLock;
+
+    use axo_protocol::{PaneRole, new_uuid_v4};
+    use axo_pty::WindowSize;
+    use axo_pty::process;
+    use axo_store::Connection;
+    use axo_store::initialize_database;
+    use axo_store::{load_pi_bridge_token, store_pi_bridge_token};
+    use rusqlite::params;
+    use serde_json::{Value, json};
+    use std::fs;
+
+    use std::io::{self};
+
+    #[test]
+    fn pi_catalog_events_keep_only_valid_titles_and_emoji() {
+        let parse = |name: &str, data: Value| format!("{:?}", PiCatalogEvent::parse(name, &data));
+        assert_eq!(parse("agent.start", json!({})), "AgentStarted");
+        assert_eq!(parse("ui.prompt.end", json!(null)), "PromptEnded");
+        assert_eq!(
+            parse("session.info", json!({ "name": "Fix the build" })),
+            r#"Named { title: "Fix the build" }"#
+        );
+        assert_eq!(parse("session.info", json!({ "name": "" })), "Ignored");
+        assert_eq!(parse("session.info", json!({ "name": 7 })), "Ignored");
+        assert_eq!(
+            parse(
+                "axo.session.metadata",
+                json!({ "title": "", "emoji": "🔧" })
+            ),
+            r#"Described { title: None, emoji: Some("🔧") }"#
+        );
+        assert_eq!(
+            parse(
+                "axo.session.metadata",
+                json!({ "title": "", "emoji": "not an emoji" })
+            ),
+            "Ignored"
+        );
+        assert_eq!(parse("message.delta", json!({ "name": "x" })), "Ignored");
+    }
+
+    #[test]
+    fn startup_reconciliation_keeps_sockets_of_live_pis_only() {
+        let directory = bridge_socket_directory();
+        let database = Connection::open_in_memory().unwrap();
+        database
+            .execute_batch(
+                "CREATE TABLE sessions (id INTEGER PRIMARY KEY, pi_session_file TEXT, pi_bridge_socket_path TEXT);",
+            )
+            .unwrap();
+        let live_file = directory.join("live.jsonl");
+        let live_socket = directory.join("live.sock");
+        let dead_file = directory.join("dead.jsonl");
+        let dead_socket = directory.join("dead.sock");
+        for (id, file, socket) in [(1, &live_file, &live_socket), (2, &dead_file, &dead_socket)] {
+            abandoned_socket(socket);
+            database
+                .execute(
+                    "INSERT INTO sessions VALUES (?1, ?2, ?3)",
+                    params![id, file.to_string_lossy(), socket.to_string_lossy()],
+                )
+                .unwrap();
+        }
+        let live_writer = WriterLock::acquire(&live_file).unwrap();
+
+        remove_abandoned_pi_bridge_sockets(&database).unwrap();
+
+        assert!(live_socket.exists(), "a live Pi keeps its socket");
+        assert!(!dead_socket.exists());
+        drop(live_writer);
+        fs::remove_dir_all(directory).unwrap();
+    }
+
+    #[test]
+    fn stale_runtime_callbacks_cannot_mutate_a_replacement_pi() {
+        let fixture = LifecycleFixture::new();
+        let manager = &fixture.manager;
+        let session = manager.list_sessions().unwrap().remove(0);
+        let shell_id = session.shells[0].id;
+        let old_runtime = manager
+            .lock_state()
+            .unwrap()
+            .panes
+            .running(shell_id)
+            .unwrap()
+            .runtime_id;
+        let old_binding = PiRuntimeBinding {
+            session_id: session.id,
+            shell_id,
+            runtime_id: old_runtime,
+        };
+        let old_attachment = TerminalAttachmentLease {
+            manager,
+            shell_id,
+            runtime_id: old_runtime,
+        };
+        let mut replacement = spawn_shell(
+            &ShellCommand::parse("/bin/sh").unwrap(),
+            session.id,
+            &fixture.directory,
+            WindowSize::DEFAULT,
+        )
+        .unwrap();
+        replacement.role = PaneRole::Pi;
+        replacement.attachments = 1;
+        let binding = PiRuntimeBinding {
+            runtime_id: replacement.runtime_id,
+            ..old_binding
+        };
+        let mut old = manager
+            .lock_state()
+            .unwrap()
+            .install_running(shell_id, replacement)
+            .unwrap();
+        process::stop(&mut old.child, process::SHELL_STOP_GRACE);
+
+        manager.set_pi_connection(binding, true).unwrap();
+        assert!(
+            manager
+                .observe_pi_event(binding, "agent.start", &json!({}))
+                .unwrap()
+        );
+        manager
+            .persist_pi_session_id(binding, &session.session_uuid, "replacement")
+            .unwrap();
+        // A stale attachment's release must not detach the replacement's clients.
+        drop(old_attachment);
+        manager.set_pi_connection(old_binding, false).unwrap();
+        assert!(
+            !manager
+                .observe_pi_event(old_binding, "agent.settled", &json!({}))
+                .unwrap()
+        );
+        assert!(
+            !manager
+                .observe_pi_event(
+                    old_binding,
+                    "session.info",
+                    &json!({ "name": "stale title" }),
+                )
+                .unwrap()
+        );
+        assert_eq!(
+            manager
+                .persist_pi_session_id(old_binding, &session.session_uuid, "old")
+                .unwrap_err()
+                .kind(),
+            io::ErrorKind::NotFound
+        );
+        assert!(!manager.pi_runtime_is_current(old_binding));
+        assert!(manager.pi_runtime_is_current(binding));
+        let history = manager.pi_session_directory.join("resume.jsonl");
+        fs::write(&history, b"unchanged transcript").unwrap();
+        assert_eq!(
+            manager
+                .resume_archived_pi_session(old_binding, history.to_str().unwrap())
+                .unwrap_err()
+                .kind(),
+            io::ErrorKind::PermissionDenied
+        );
+
+        let state = manager.lock_state().unwrap();
+        assert_eq!(state.panes.running(shell_id).unwrap().attachments, 1);
+        assert!(state.pi_activity[&session.id].connected);
+        assert!(state.pi_activity[&session.id].working);
+        let updated = session_metadata(&state, session.id, &manager.attach_socket_path).unwrap();
+        assert_eq!(updated.pi_session_id.as_deref(), Some("replacement"));
+        assert_eq!(updated.name, session.name);
+    }
+
+    #[test]
+    fn pi_bridge_credential_is_persisted_per_session() {
+        let mut database = Connection::open_in_memory().unwrap();
+        initialize_database(&mut database).unwrap();
+        let session_uuid = new_uuid_v4().unwrap();
+        let first_token = new_uuid_v4().unwrap();
+        let second_token = new_uuid_v4().unwrap();
+
+        assert_eq!(
+            load_pi_bridge_token(&database, &session_uuid).unwrap(),
+            None
+        );
+        store_pi_bridge_token(&database, &session_uuid, &first_token).unwrap();
+        assert_eq!(
+            load_pi_bridge_token(&database, &session_uuid).unwrap(),
+            Some(first_token)
+        );
+        store_pi_bridge_token(&database, &session_uuid, &second_token).unwrap();
+        assert_eq!(
+            load_pi_bridge_token(&database, &session_uuid).unwrap(),
+            Some(second_token)
+        );
+    }
+}
