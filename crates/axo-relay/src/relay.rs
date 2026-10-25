@@ -531,9 +531,9 @@ pub fn link_host(
             ));
         }
         raw.relay_url = relay_url;
+        raw.allow_insecure_loopback = false;
     }
     raw.access = None;
-    raw.allow_insecure_loopback = false;
     let config = parse_config(raw.clone())?;
     let (credential_id, pending_host_generation) = match (
         raw.pending_credential_id.clone(),
@@ -692,7 +692,7 @@ fn is_uuid(value: &str) -> bool {
         })
 }
 
-fn is_loopback(url: &Url) -> bool {
+pub(crate) fn is_loopback(url: &Url) -> bool {
     match url.host() {
         Some(Host::Domain(domain)) => domain.eq_ignore_ascii_case("localhost"),
         Some(Host::Ipv4(address)) => address.is_loopback(),
@@ -1145,7 +1145,8 @@ fn account_host_websocket_url(base: &Url, account_id: &str, host_id: &str) -> io
     url.set_path(&format!(
         "/api/v1/accounts/{account_id}/hosts/{host_id}/daemon"
     ));
-    if url.scheme() != "wss" {
+    // `parse_config` admits `ws` only for a loopback relay in an isolated test that opted in.
+    if url.scheme() != "wss" && !(url.scheme() == "ws" && is_loopback(&url)) {
         return Err(io::Error::new(
             io::ErrorKind::InvalidInput,
             "paired relay URL must use secure WebSockets",

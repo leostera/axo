@@ -9,6 +9,45 @@ export { Peer } from "../testing/client";
 
 export const root = fileURLToPath(new URL("../../../", import.meta.url));
 export const issuer = "https://private-test.cloudflareaccess.com";
+export const testSessionSecret = "isolated-axo-test-session-secret-at-least-32-bytes";
+
+export type AccountSession = {
+  accountId: string;
+  /** Headers for reads and the client WebSocket. */
+  headers: Record<string, string>;
+  /** Headers for cookie-authenticated mutations (adds the CSRF token). */
+  mutationHeaders: Record<string, string>;
+};
+
+/**
+ * Signs a person in to a fresh account without the Cloudflare OAuth round trip: seals a web
+ * session cookie and seeds its digest in the account Durable Object. The harness must be
+ * started with `SESSION_SECRET: testSessionSecret`. When the Worker moves to Access-verified
+ * identity (RFD0013 gap plan, G1), only this function changes.
+ */
+export async function signIn(
+  h: { url: string; mf: Miniflare },
+  accountId: string = crypto.randomUUID(),
+): Promise<AccountSession> {
+  const { hmac, randomToken, sealCookie } = await import("../src/auth/crypto");
+  const sessionId = randomToken();
+  const csrf = randomToken();
+  const expiresAt = Date.now() + 60 * 60 * 1000;
+  const cookie = `__Host-axo_session=${await sealCookie(testSessionSecret, "web-session", { accountId, sessionId, csrf, expiresAt })}`;
+  // The first request constructs the account Durable Object and its schema before seeding.
+  const initialized = await fetch(new URL("api/v1/account/hosts", h.url), { headers: { Cookie: cookie } });
+  if (initialized.status !== 401) throw new Error(`expected an unseeded session to be refused, got ${initialized.status}`);
+  const storage = await h.mf.unsafeGetDurableObjectStorage("api-test", "AxoAccountDirectory", { name: accountId });
+  await storage.exec("INSERT INTO profile (singleton, email, name) VALUES (1, ?, ?)", "test@example.test", "Test account");
+  await storage.exec(
+    "INSERT INTO web_sessions (session_digest, created_at, expires_at, revoked_at) VALUES (?, ?, ?, NULL)",
+    await hmac(testSessionSecret, `session\0${sessionId}`),
+    Date.now(),
+    expiresAt,
+  );
+  const headers = { Cookie: cookie, Origin: "https://axo.leostera.dev" };
+  return { accountId, headers, mutationHeaders: { ...headers, "X-Axo-CSRF": csrf } };
+}
 export async function harness(configuration: { audience?: string; bindings?: Record<string, string> } = {}) {
   const audience = configuration.audience ?? "private-test";
   const directory = await mkdtemp(join(tmpdir(), "axo-api-"));

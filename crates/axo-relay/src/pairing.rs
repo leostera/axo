@@ -195,16 +195,23 @@ pub fn redeem(
     })()
 }
 
+/// The redemption endpoint on the relay's origin. Pairing sends the host credential, so it
+/// requires TLS; plain HTTP is allowed only to a loopback relay, which `parse_config` permits
+/// only for isolated tests that opt in.
 fn redemption_url(relay_url: &Url) -> io::Result<Url> {
-    if relay_url.scheme() != "wss" {
-        return Err(io::Error::new(
-            io::ErrorKind::PermissionDenied,
-            "host pairing requires a secure relay endpoint",
-        ));
-    }
+    let scheme = match relay_url.scheme() {
+        "wss" => "https",
+        "ws" if crate::relay::is_loopback(relay_url) => "http",
+        _ => {
+            return Err(io::Error::new(
+                io::ErrorKind::PermissionDenied,
+                "host pairing requires a secure relay endpoint",
+            ));
+        }
+    };
     let mut endpoint = relay_url.clone();
     endpoint
-        .set_scheme("https")
+        .set_scheme(scheme)
         .map_err(|_| io::Error::new(io::ErrorKind::InvalidInput, "pairing endpoint is invalid"))?;
     endpoint.set_path("/api/v1/host-pairings/redeem");
     endpoint.set_query(None);
@@ -226,13 +233,25 @@ fn post_json(endpoint: &Url, body: &[u8]) -> io::Result<HttpResponse> {
     let stream = TcpStream::connect_timeout(&address, HTTP_TIMEOUT)?;
     stream.set_read_timeout(Some(HTTP_TIMEOUT))?;
     stream.set_write_timeout(Some(HTTP_TIMEOUT))?;
-    let mut stream = TlsConnector::new()
+    if endpoint.scheme() == "http" {
+        return exchange_json(stream, endpoint, host, port, body);
+    }
+    let stream = TlsConnector::new()
         .map_err(|_| io::Error::other("could not initialize TLS for host pairing"))?
         .connect(host, stream)
         .map_err(|_| {
             io::Error::other("could not establish a secure connection for host pairing")
         })?;
+    exchange_json(stream, endpoint, host, port, body)
+}
 
+fn exchange_json(
+    mut stream: impl Read + Write,
+    endpoint: &Url,
+    host: &str,
+    port: u16,
+    body: &[u8],
+) -> io::Result<HttpResponse> {
     let mut request_target = endpoint.path().to_owned();
     if request_target.is_empty() {
         request_target.push('/');
@@ -254,17 +273,43 @@ fn post_json(endpoint: &Url, body: &[u8]) -> io::Result<HttpResponse> {
     stream.write_all(body)?;
     stream.flush()?;
 
+    // Stop as soon as a framed response is complete: a server that keeps the connection open
+    // despite `Connection: close` must not turn every redemption into a read timeout.
     let mut raw_response = Vec::new();
-    stream
-        .take((MAX_RESPONSE_BYTES + 1) as u64)
-        .read_to_end(&mut raw_response)?;
-    if raw_response.len() > MAX_RESPONSE_BYTES {
-        return Err(io::Error::new(
-            io::ErrorKind::InvalidData,
-            "pairing response exceeded its size limit",
-        ));
+    let mut buffer = [0_u8; 4096];
+    loop {
+        let read = stream.read(&mut buffer)?;
+        if read == 0 {
+            break;
+        }
+        raw_response.extend_from_slice(&buffer[..read]);
+        if raw_response.len() > MAX_RESPONSE_BYTES {
+            return Err(io::Error::new(
+                io::ErrorKind::InvalidData,
+                "pairing response exceeded its size limit",
+            ));
+        }
+        if framed_response_is_complete(&raw_response) {
+            break;
+        }
     }
     parse_http_response(&raw_response)
+}
+
+/// True once a response with `Content-Length` or chunked framing has fully arrived. Unframed
+/// responses end only at EOF.
+fn framed_response_is_complete(raw: &[u8]) -> bool {
+    let mut headers = [EMPTY_HEADER; MAX_RESPONSE_HEADERS];
+    let mut response = Response::new(&mut headers);
+    if !matches!(response.parse(raw), Ok(httparse::Status::Complete(_))) {
+        return false;
+    }
+    let framed = response.headers.iter().any(|header| {
+        header.name.eq_ignore_ascii_case("content-length")
+            || (header.name.eq_ignore_ascii_case("transfer-encoding")
+                && header.value.eq_ignore_ascii_case(b"chunked"))
+    });
+    framed && parse_http_response(raw).is_ok()
 }
 
 fn parse_http_response(raw: &[u8]) -> io::Result<HttpResponse> {
@@ -419,7 +464,7 @@ fn valid_host_kind(value: &str) -> bool {
             .all(|byte| byte.is_ascii_lowercase() || byte.is_ascii_digit() || byte == b'-')
 }
 
-fn is_uuid(value: &str) -> bool {
+pub(crate) fn is_uuid(value: &str) -> bool {
     value.len() == 36
         && value.bytes().enumerate().all(|(index, byte)| {
             if matches!(index, 8 | 13 | 18 | 23) {
@@ -448,9 +493,52 @@ fn is_rfc3339_timestamp(value: &str) -> bool {
 #[cfg(test)]
 mod tests {
     use super::{
-        CREDENTIAL_BYTES, PairingCode, decode_chunked_body, encode_base64url, parse_http_response,
-        prepare_credential,
+        CREDENTIAL_BYTES, PairingCode, decode_chunked_body, encode_base64url,
+        framed_response_is_complete, parse_http_response, prepare_credential, redemption_url,
     };
+
+    #[test]
+    fn framed_responses_complete_without_waiting_for_eof() {
+        let full = b"HTTP/1.1 200 OK\r\nContent-Length: 8\r\n\r\n{\"ok\":1}";
+        assert!(framed_response_is_complete(full));
+        assert!(!framed_response_is_complete(&full[..full.len() - 1]));
+        assert!(!framed_response_is_complete(
+            b"HTTP/1.1 200 OK\r\nContent-Len"
+        ));
+        let chunked =
+            b"HTTP/1.1 200 OK\r\nTransfer-Encoding: chunked\r\n\r\n8\r\n{\"ok\":1}\r\n0\r\n\r\n";
+        assert!(framed_response_is_complete(chunked));
+        assert!(!framed_response_is_complete(&chunked[..chunked.len() - 6]));
+        assert!(!framed_response_is_complete(
+            b"HTTP/1.1 200 OK\r\n\r\n{\"ok\":1}"
+        ));
+    }
+
+    #[test]
+    fn redemption_requires_tls_except_to_a_loopback_relay() {
+        let endpoint = |relay: &str| {
+            redemption_url(&url::Url::parse(relay).unwrap()).map(|url| url.to_string())
+        };
+        assert_eq!(
+            endpoint("wss://axo.example.test").unwrap(),
+            "https://axo.example.test/api/v1/host-pairings/redeem"
+        );
+        assert_eq!(
+            endpoint("ws://127.0.0.1:8787").unwrap(),
+            "http://127.0.0.1:8787/api/v1/host-pairings/redeem"
+        );
+        for insecure in [
+            "ws://axo.example.test",
+            "ws://10.0.0.1:80",
+            "http://127.0.0.1",
+        ] {
+            assert_eq!(
+                endpoint(insecure).unwrap_err().kind(),
+                std::io::ErrorKind::PermissionDenied,
+                "{insecure}"
+            );
+        }
+    }
 
     #[test]
     fn prepared_credentials_are_persisted_before_redemption() {

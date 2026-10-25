@@ -62,6 +62,16 @@ const hostRemoteMethods = {
 } as const;
 type HostRemoteMethod = keyof typeof hostRemoteMethods;
 
+/**
+ * Inbound frame budget per socket per second. A host streams terminal output as one frame
+ * per PTY read, so an interactive shell alone exceeds a client-sized budget; the budget still
+ * bounds a host to about 38 MiB/s of 64 KiB frames.
+ */
+export const INBOUND_FRAMES_PER_SECOND = { client: 30, daemon: 600 } as const;
+function framesPerSecond(role: "client" | "daemon"): number {
+  return INBOUND_FRAMES_PER_SECOND[role];
+}
+
 export class AxoHostRelay extends DurableObject<Env> {
   private readonly rpc: JSONRPCServer<CallerContext>;
   constructor(ctx: DurableObjectState, env: Env) {
@@ -309,7 +319,7 @@ export class AxoHostRelay extends DurableObject<Env> {
     }
     peer.calls += decoded.entries.length;
     socket.serializeAttachment(peer);
-    if (peer.calls > 30) {
+    if (peer.calls > framesPerSecond(peer.role)) {
       this.drop(socket, 1008, "Rate limit");
       return;
     }

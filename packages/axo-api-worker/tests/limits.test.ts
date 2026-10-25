@@ -190,3 +190,23 @@ test("oversized aggregate replies preserve every ID as bounded outcomes without 
     true,
   );
 });
+
+test("hosts may stream far more frames per second than clients may send", async (t) => {
+  const fixture = await connected();
+  t.after(() => fixture.close());
+  const heartbeat = { machineId: fixture.target.machineId, hostGeneration: fixture.target.hostGeneration };
+  // A burst well above the client budget, as a shell printing output would produce.
+  const started = Date.now();
+  for (let round = 0; round < 8; round += 1) {
+    await Promise.all(Array.from({ length: 25 }, () => fixture.daemon.call("axo.machine.heartbeat", heartbeat)));
+  }
+  assert.ok(Date.now() - started < 1_000, "the burst must land inside one budget window to mean anything");
+  assert.equal(fixture.daemon.socket.readyState, fixture.daemon.socket.OPEN, "a busy host keeps its relay");
+
+  const closed = new Promise<string>((resolveClose) =>
+    fixture.peer.socket.once("close", (closeCode, reason) => resolveClose(`${closeCode} ${reason.toString()}`)));
+  for (let index = 0; index < 40; index += 1) {
+    fixture.peer.send({ jsonrpc: "2.0", id: `burst-${index}`, method: "axo.machine.list", params: {} });
+  }
+  assert.equal(await closed, "1008 Rate limit", "a client over its budget is dropped");
+});

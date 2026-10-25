@@ -58,9 +58,9 @@ RFD promises. The one end-to-end test with a real axod predates the account mode
 | Account routes list only owned hosts and snapshots | Built | `src/http/account-hosts.ts` |
 | **Native client authentication** (iOS, Mac to other hosts) | **Missing**; decided: Access token (G1) | `/client` requires cookie + web Origin |
 | **"Full currently supported protocol" through the relay** | **Partial**: 8 `axo.remote.*` methods + `axo.host.subscribe` | `AxoHostRelay.hostRemoteMethods` (inherited by `AxoAccountManager`) |
-| **End-to-end: pair → relay → client control with a real axod** | **Broken test** (401: lists hosts without a session, expects pairing-free registration) | `tests/axod-relay.test.ts` |
+| **End-to-end: pair → relay → client control with a real axod** | Built (G0) | `tests/axod-relay.test.ts` |
 | Separate keys / rotation for session, pairing-code, pairing-source and credential HMACs | Missing (one `SESSION_SECRET` with domain-separated inputs) | `pairing.ts`, `cloudflare.ts` |
-| Host credential store off macOS (axod on Linux) | Missing (stub refuses) | `credential.rs` |
+| Host credential store off macOS (axod on Linux) | Built (G0): `--host-credentials files`, default off macOS | `credential.rs` (`FileCredentialStore`) |
 | Keychain access policy for the daemon's item | Unresolved (RFD open question) | `credential.rs` |
 | Legacy `/v1/*` routes with synthetic principals and `private-fleet` | Still served; adoption plan unresolved (RFD open question) | `src/http/router.ts`, `src/access.ts` |
 | Production: Access application and policy, deploy | Not verified here (operator task) | — |
@@ -70,13 +70,31 @@ RFD promises. The one end-to-end test with a real axod predates the account mode
 Ordered so each step is shippable and green; schema first for every wire change
 (`packages/axo-api` v1 schemas and fixtures, then Worker, axod, clients).
 
-### G0. Restore the end-to-end safety net
+### G0. Restore the end-to-end safety net — done
 
-Rewrite `tests/axod-relay.test.ts` for the account model: create an account session in the
-test Worker, create a pairing code, have the isolated axod redeem it through local
-`axo.relay.link`, then drive the host through the `/client` socket (create a Session, send
-input, see output), revoke it and see the relay close. Without this, nothing below is
-provable. Add it to the default `npm test`.
+`tests/axod-relay.test.ts` (part of `npm test`) now runs the account model against a real,
+isolated axod: sign in, create a pairing code, redeem it through local `axo.relay.link`, check
+the credential is a `0600` file and never in `relay.json`, see the host register, check that
+another account sees nothing and cannot connect, stream output for remote input, create a
+Session, check terminal bytes are stored on neither side, then revoke: clients are dropped,
+metadata stays as offline, and axod's retry with the revoked credential gets 403. Mutants
+that skip closing the relay on revoke, or accept revoked hosts, are caught.
+
+It found and fixed:
+
+- **Relay drops busy hosts.** Every socket had the same 30 frames/s budget, and a host sends
+  one frame per PTY read, so a shell printing output was disconnected (`1008 Rate limit`).
+  Hosts now get 600 frames/s, clients keep 30 (`INBOUND_FRAMES_PER_SECOND`; tested).
+- **Redemption waited for EOF.** axod read the pairing response until the server closed the
+  connection, so a keep-alive server turned every redemption into a 5 s timeout and retry.
+  It now stops when a `Content-Length` or chunked response is complete (tested).
+- **Isolated tests could not pair without TLS or the login Keychain.** Pairing and the paired
+  relay now accept `ws`/`http` only to a loopback relay that opted in with
+  `allowInsecureLoopback` (as the unpaired relay already did), and axod takes
+  `--host-credentials files`.
+
+Still open: before linking, an axod with `relay.json` connects to the legacy unauthenticated
+`/v1` route (G6).
 
 ### G1. Identity from Access, in the Worker
 

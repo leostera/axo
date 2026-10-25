@@ -23,8 +23,27 @@ struct Cli {
     /// Override the directory for the daemon PID and stdout/stderr logs.
     #[arg(long, value_name = "PATH")]
     server_dir: Option<PathBuf>,
+    /// Where to keep per-host relay credentials. Defaults to the Keychain on macOS and to
+    /// private files in the server directory elsewhere.
+    #[arg(long, value_enum)]
+    host_credentials: Option<HostCredentialsArg>,
     #[command(subcommand)]
     command: Option<AxodCommand>,
+}
+
+#[derive(Clone, Copy, clap::ValueEnum)]
+enum HostCredentialsArg {
+    Keychain,
+    Files,
+}
+
+impl From<HostCredentialsArg> for axo_server::HostCredentialStorage {
+    fn from(value: HostCredentialsArg) -> Self {
+        match value {
+            HostCredentialsArg::Keychain => Self::Keychain,
+            HostCredentialsArg::Files => Self::Files,
+        }
+    }
 }
 
 #[derive(Subcommand)]
@@ -92,6 +111,10 @@ fn main() {
         cli.socket.as_deref(),
         &server_directory,
         env!("CARGO_PKG_VERSION"),
+        cli.host_credentials.map_or_else(
+            axo_server::HostCredentialStorage::platform_default,
+            Into::into,
+        ),
     ) {
         log::error!("event=daemon.failed reason={error:?}");
         std::process::exit(1);

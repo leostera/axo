@@ -1,22 +1,22 @@
 import assert from "node:assert/strict";
 import { test } from "node:test";
-import { randomToken, hmac, sealCookie } from "../src/auth/crypto";
+import { randomToken, hmac } from "../src/auth/crypto";
 import { Peer } from "../testing/client";
 import { hostDataEventSchema, hostListResultSchema, hostNotificationSchema, hostPairingCreateResultSchema, hostPairingRedeemResultSchema, remoteTerminalInputResultSchema } from "@axo/protocol/v1";
-import { harness } from "./harness";
+import { harness, signIn, testSessionSecret } from "./harness";
 
-const secret = "isolated-account-manager-secret-at-least-32-bytes";
+const secret = testSessionSecret;
 
 test("one AccountManager owns pairing, host metadata, and live relays for multiple hosts", async (t) => {
   const h = await harness({ bindings: { SESSION_SECRET: secret } });
   t.after(() => h.close());
   const accountId = crypto.randomUUID();
-  const session = await createAccountSession(h, accountId);
-  const headers = { Cookie: session.cookie, Origin: "https://axo.leostera.dev" };
+  const session = await signIn(h, accountId);
+  const headers = session.headers;
   const createPairing = async () => {
     const response = await fetch(new URL("api/v1/account/host-pairings", h.url), {
       method: "POST",
-      headers: { ...headers, "X-Axo-CSRF": session.csrf },
+      headers: session.mutationHeaders,
     });
     assert.equal(response.status, 200);
     return hostPairingCreateResultSchema.parse(await response.json()).code;
@@ -101,7 +101,7 @@ test("one AccountManager owns pairing, host metadata, and live relays for multip
     accountId,
     host.hostId,
     "client",
-    { Cookie: session.cookie, Origin: "https://axo.leostera.dev" },
+    session.headers,
   )));
   t.after(() => clients.forEach((client) => client.close()));
   for (const [index, client] of clients.entries()) {
@@ -210,15 +210,15 @@ test("one AccountManager owns pairing, host metadata, and live relays for multip
   assert.equal(raceRows.length, 1, "a pairing code can atomically link only one host");
 
   const otherAccountId = crypto.randomUUID();
-  const otherSession = await createAccountSession(h, otherAccountId);
+  const otherSession = await signIn(h, otherAccountId);
   const otherHostList = await fetch(new URL("api/v1/account/hosts", h.url), {
-    headers: { Cookie: otherSession.cookie },
+    headers: otherSession.headers,
   });
   assert.deepEqual(hostListResultSchema.parse(await otherHostList.json()).hosts, []);
 
   const revoked = await fetch(new URL(`api/v1/account/hosts/${first.hostId}/revoke`, h.url), {
     method: "POST",
-    headers: { ...headers, "X-Axo-CSRF": session.csrf },
+    headers: session.mutationHeaders,
   });
   assert.equal(revoked.status, 204);
   const afterRevocation = hostListResultSchema.parse(await (await fetch(
@@ -234,22 +234,3 @@ test("one AccountManager owns pairing, host metadata, and live relays for multip
     { Authorization: `Bearer ${first.credential}`, "X-Axo-Credential-Id": first.credentialId },
   ));
 });
-
-async function createAccountSession(h: Awaited<ReturnType<typeof harness>>, accountId: string) {
-  const sessionId = randomToken();
-  const csrf = randomToken();
-  const expiresAt = Date.now() + 60 * 60 * 1000;
-  const cookie = `__Host-axo_session=${await sealCookie(secret, "web-session", { accountId, sessionId, csrf, expiresAt })}`;
-  // The initial request constructs the account Durable Object and its schema before isolated seeding.
-  const initialized = await fetch(new URL("api/v1/account/hosts", h.url), { headers: { Cookie: cookie } });
-  assert.equal(initialized.status, 401);
-  const storage = await h.mf.unsafeGetDurableObjectStorage("api-test", "AxoAccountDirectory", { name: accountId });
-  await storage.exec("INSERT INTO profile (singleton, email, name) VALUES (1, ?, ?)", "test@example.test", "Test account");
-  await storage.exec(
-    "INSERT INTO web_sessions (session_digest, created_at, expires_at, revoked_at) VALUES (?, ?, ?, NULL)",
-    await hmac(secret, `session\0${sessionId}`),
-    Date.now(),
-    expiresAt,
-  );
-  return { cookie, csrf, accountId };
-}

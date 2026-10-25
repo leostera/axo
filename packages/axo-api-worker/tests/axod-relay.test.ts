@@ -1,13 +1,14 @@
 import assert from "node:assert/strict";
 import { spawn, type ChildProcess } from "node:child_process";
 import { existsSync } from "node:fs";
-import { mkdir, readFile, rm, writeFile } from "node:fs/promises";
+import { mkdir, mkdtemp, readFile, rm, stat, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
 import { test } from "node:test";
 import { RemoteAxoApi, type HostEvent, type WebSocketLike } from "@axo/app";
 import WebSocket from "ws";
-import { harness } from "./harness";
+import { createConnection } from "node:net";
+import { harness, signIn, testSessionSecret, type AccountSession } from "./harness";
 
 const sleep = (milliseconds: number) =>
   new Promise((resolveSleep) => setTimeout(resolveSleep, milliseconds));
@@ -47,10 +48,44 @@ async function terminate(child: ChildProcess, processGroup = false): Promise<voi
   }
 }
 
-function browserWebSocketFactory() {
+/** One JSON-RPC call over axod's local socket (newline-delimited JSON). */
+async function localCall(socketPath: string, method: string, params?: unknown): Promise<unknown> {
+  return new Promise((resolveCall, rejectCall) => {
+    const socket = createConnection(socketPath);
+    let buffered = "";
+    socket.setTimeout(30_000, () => socket.destroy(new Error(`${method} timed out`)));
+    socket.on("error", rejectCall);
+    socket.on("data", (chunk) => {
+      buffered += chunk.toString("utf8");
+      const newline = buffered.indexOf("\n");
+      if (newline < 0) return;
+      socket.end();
+      const reply = JSON.parse(buffered.slice(0, newline)) as { result?: unknown; error?: { message: string } };
+      if (reply.error) rejectCall(new Error(`${method}: ${reply.error.message}`));
+      else resolveCall(reply.result);
+    });
+    socket.on("connect", () => {
+      socket.write(`${JSON.stringify({ jsonrpc: "2.0", id: 1, method, params: params ?? null })}\n`);
+    });
+  });
+}
+
+function accountApi(url: string, account: AccountSession): RemoteAxoApi {
+  return new RemoteAxoApi(
+    url,
+    async (input, init) => {
+      const headers = new Headers(init?.headers);
+      for (const [name, value] of Object.entries(account.headers)) headers.set(name, value);
+      return fetch(input, { ...init, headers });
+    },
+    browserWebSocketFactory(account.headers),
+  );
+}
+
+function browserWebSocketFactory(headers: Record<string, string>) {
   return (url: string): WebSocketLike => {
     const socket = new WebSocket(url, {
-      headers: { Origin: "https://axo.leostera.dev" },
+      headers,
       followRedirects: false,
       maxPayload: 65_536,
     });
@@ -91,14 +126,14 @@ async function waitForHostEvent(
   }, child);
 }
 
-test("an isolated axod registers, publishes, streams PTY output, accepts remote input, and creates sessions", async (t) => {
+test("an isolated axod pairs with an account, then the account drives it through the relay until revoked", async (t) => {
   const binary = process.env.AXOD_BINARY;
   assert.ok(binary, "set AXOD_BINARY to the Bazel-built axod binary");
   const axodBinary = resolve(process.cwd(), binary);
   assert.ok(existsSync(axodBinary), `axod binary must exist at ${axodBinary}`);
 
-  const api = await harness();
-  const root = await import("node:fs/promises").then(({ mkdtemp }) => mkdtemp(join(tmpdir(), "axo-axod-relay-")));
+  const api = await harness({ bindings: { SESSION_SECRET: testSessionSecret } });
+  const root = await mkdtemp(join(tmpdir(), "axo-axod-relay-"));
   const serverDirectory = join(root, "server");
   const socketPath = join(root, "axod.sock");
   await mkdir(serverDirectory, { recursive: true, mode: 0o700 });
@@ -118,9 +153,13 @@ test("an isolated axod registers, publishes, streams PTY output, accepts remote 
   let client: Awaited<ReturnType<RemoteAxoApi["connectHost"]>> | undefined;
   const liveEvents: HostEvent[] = [];
   const outputChunks: string[] = [];
-  let remoteApi: RemoteAxoApi | undefined;
   try {
-    daemon = spawn(axodBinary, ["--server-dir", serverDirectory, "--socket", socketPath], {
+    daemon = spawn(axodBinary, [
+      "--server-dir", serverDirectory,
+      "--socket", socketPath,
+      // Never touch the login Keychain from a test.
+      "--host-credentials", "files",
+    ], {
       stdio: "ignore",
       env: { ...process.env, HOME: root },
     });
@@ -128,20 +167,35 @@ test("an isolated axod registers, publishes, streams PTY output, accepts remote 
       daemon!.once("spawn", () => resolveSpawn());
       daemon!.once("error", rejectSpawn);
     });
+    await waitFor("the axod socket", 15_000, async () => (existsSync(socketPath) ? true : undefined), daemon);
 
-    remoteApi = new RemoteAxoApi(
-      api.url,
-      async (input, init) => {
-        const headers = new Headers(init?.headers);
-        headers.set("Origin", "https://axo.leostera.dev");
-        return fetch(input, { ...init, headers });
-      },
-      browserWebSocketFactory(),
-    );
+    // A signed-in person creates a pairing code; this Mac redeems it locally.
+    const account = await signIn(api);
+    const remoteApi = accountApi(api.url, account);
+    assert.deepEqual(await remoteApi.listHosts(), [], "an unpaired host is not visible to anyone");
+    const pairing = await fetch(new URL("api/v1/account/host-pairings", api.url), {
+      method: "POST",
+      headers: account.mutationHeaders,
+    });
+    assert.equal(pairing.status, 200);
+    const { code } = (await pairing.json()) as { code: string };
+    const linked = (await localCall(socketPath, "axo.relay.link", { code })) as { linked: boolean };
+    assert.equal(linked.linked, true);
+
+    const relayConfig = await readFile(join(serverDirectory, "relay.json"), "utf8");
+    const { credentialId, accountId } = JSON.parse(relayConfig) as { credentialId: string; accountId: string };
+    assert.equal(accountId, account.accountId);
+    const credentialFile = join(serverDirectory, "host-credentials", credentialId);
+    assert.equal((await stat(credentialFile)).mode & 0o777, 0o600);
+    assert.equal(relayConfig.includes((await readFile(credentialFile)).toString("utf8")), false,
+      "the credential is never written to relay.json");
+
+    const replay = await fetch(new URL("api/v1/account/host-pairings", api.url), { method: "GET", headers: account.headers });
+    assert.notEqual(replay.status, 200, "pairing codes are created only by POST");
+
     const registered = await waitFor("axod host registration", 20_000, async () =>
-      (await remoteApi!.listHosts()).find((host) => host.label === "Isolated axod test host"),
+      (await remoteApi.listHosts()).find((host) => host.label === "Isolated axod test host" && host.status === "online"),
     daemon);
-    assert.equal(registered.status, "online");
     assert.equal(registered.stale, false);
     const { hostId, hostGeneration } = registered;
     assert.ok(registered.sessions.length > 0, "axod must register its initial local session");
@@ -149,19 +203,27 @@ test("an isolated axod registers, publishes, streams PTY output, accepts remote 
     assert.ok(firstSession.shells.length > 0, "registered session has a shell");
     assert.equal(JSON.stringify(firstSession).match(/attachSocketPath|ptyDevice|terminalOutput/gi), null);
 
+    // Another account sees nothing and cannot open the host.
+    const stranger = await signIn(api);
+    assert.deepEqual(await accountApi(api.url, stranger).listHosts(), []);
+    await assert.rejects(
+      accountApi(api.url, stranger).connectHost({ hostId, hostGeneration }, () => {}),
+      "a client of another account cannot reach this host",
+    );
+
+    let clientClosedBecause: string | undefined;
     client = await remoteApi.connectHost({ hostId, hostGeneration }, (event) => {
       liveEvents.push(event);
       if (event.type === "host.data" && event.event.type === "terminal.output") {
         outputChunks.push(Buffer.from(event.event.data, "base64").toString("utf8"));
       }
-    });
-    const initialPresence = await waitForHostEvent(
+    }, (error) => { clientClosedBecause = error.message; });
+    await waitForHostEvent(
       liveEvents,
       (event) => event.type === "host.presence" && event.status === "online",
       "the app relay subscription",
       daemon,
     );
-    assert.equal(initialPresence.type, "host.presence");
 
     const sessionList = await remoteApi.listHostSessions({ hostId, hostGeneration });
     assert.equal(sessionList.some((session) => session.sessionId === firstSession.sessionId), true);
@@ -184,13 +246,12 @@ test("an isolated axod registers, publishes, streams PTY output, accepts remote 
       attachment!.once("spawn", () => resolveSpawn());
       attachment!.once("error", rejectSpawn);
     });
-    const attachedEvent = await waitForHostEvent(
+    await waitForHostEvent(
       liveEvents,
       (event) => event.type === "host.data" && event.event.type === "shell.activity" && event.event.activity === "attached",
       "the isolated local PTY attachment",
       attachment,
     );
-    assert.equal(attachedEvent.type, "host.data");
 
     const terminalText = `AXO_REMOTE_RELAY_${crypto.randomUUID().replaceAll("-", "")}`;
     const input = Buffer.from(`printf '${terminalText}\\n'\n`).toString("base64");
@@ -202,44 +263,52 @@ test("an isolated axod registers, publishes, streams PTY output, accepts remote 
       data: input,
     });
     assert.equal(inputReply.accepted, true);
-
     await waitFor("the streamed remote terminal output", 18_000, async () =>
       outputChunks.join("").includes(terminalText) ? true : undefined,
     );
-    assert.match(outputChunks.join(""), new RegExp(terminalText));
 
     const createReply = await client.call("axo.remote.session.create", {
       target: { hostId, hostGeneration },
     });
     const created = createReply.session;
     assert.equal(created.hostId, hostId);
-    const sessionsAfterCreate = await waitFor("the new session snapshot", 5_000, async () => {
-      const current = await remoteApi!.listHostSessions({ hostId, hostGeneration });
-      return current.some((session) => session.sessionId === created.sessionId)
-        ? current
-        : undefined;
+    await waitFor("the new session snapshot", 5_000, async () => {
+      const current = await remoteApi.listHostSessions({ hostId, hostGeneration });
+      return current.some((session) => session.sessionId === created.sessionId) ? true : undefined;
     }, daemon);
-    assert.ok(sessionsAfterCreate.some((session) => session.sessionId === created.sessionId));
 
-    const directoryStorage = await api.mf.unsafeGetDurableObjectStorage("api-test", "AxoHostDirectory", {
-      name: "private-fleet",
+    // Terminal bytes are relayed, never stored, on either side.
+    const accountStorage = await api.mf.unsafeGetDurableObjectStorage("api-test", "AxoAccountDirectory", {
+      name: account.accountId,
     });
-    const storedSessions = await directoryStorage.exec<{ snapshot_json: string }>(
+    const storedSessions = await accountStorage.exec<{ snapshot_json: string }>(
       "SELECT snapshot_json FROM host_sessions_v1 WHERE host_id = ?",
       hostId,
     );
+    assert.ok(storedSessions.length > 0, "session metadata is retained for the account");
     assert.equal(JSON.stringify(storedSessions).includes(terminalText), false);
     const databaseBytes = await readFile(join(serverDirectory, "axo.db")).catch(() => Buffer.alloc(0));
     assert.equal(databaseBytes.includes(Buffer.from(terminalText)), false);
 
-    const hostOffline = terminate(daemon);
-    await hostOffline;
-    const offlineHost = await waitFor("the persisted offline host metadata", 5_000, async () => {
-      const host = (await remoteApi!.listHosts()).find((item) => item.hostId === hostId);
-      return host?.status === "offline" ? host : undefined;
+    // Revoking the host closes its relay and keeps its metadata as offline.
+    const revoked = await fetch(new URL(`api/v1/account/hosts/${hostId}/revoke`, api.url), {
+      method: "POST",
+      headers: account.mutationHeaders,
     });
-    assert.equal(offlineHost.stale, true);
+    assert.equal(revoked.status, 204);
+    const offlineHost = await waitFor("the revoked host to be offline", 10_000, async () => {
+      const host = (await remoteApi.listHosts()).find((item) => item.hostId === hostId);
+      return host && host.status !== "online" ? host : undefined;
+    });
     assert.ok(offlineHost.sessions.some((session) => session.sessionId === created.sessionId));
+    await waitFor("the revoked host's clients to be disconnected", 5_000, async () => clientClosedBecause);
+    // axod retries with its revoked credential and is refused.
+    await waitFor("axod's reconnect with the revoked credential to be refused", 15_000, async () => {
+      const log = await readFile(join(serverDirectory, "stderr.log"), "utf8");
+      return /event=relay\.connection_retry reason=HTTP error: 403/.test(log) ? true : undefined;
+    }, daemon);
+    const afterRetry = (await remoteApi.listHosts()).find((item) => item.hostId === hostId);
+    assert.notEqual(afterRetry?.status, "online", "a revoked host credential cannot reconnect");
   } finally {
     if (client) client.close();
     if (attachment) await terminate(attachment, true);

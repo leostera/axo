@@ -147,11 +147,41 @@ pub fn prepare_server_directory(path: &Path) -> io::Result<()> {
     fs::set_permissions(path, fs::Permissions::from_mode(0o700))
 }
 
+/// Where axod keeps per-host relay credentials.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum HostCredentialStorage {
+    /// The user's login Keychain (macOS).
+    Keychain,
+    /// `0600` files under `<server-dir>/host-credentials`, for platforms without a secret store
+    /// and for isolated tests.
+    Files,
+}
+
+impl HostCredentialStorage {
+    pub const fn platform_default() -> Self {
+        if cfg!(target_os = "macos") {
+            Self::Keychain
+        } else {
+            Self::Files
+        }
+    }
+
+    fn open(self, server_directory: &Path) -> Arc<dyn axo_relay::credential::HostCredentialStore> {
+        match self {
+            Self::Keychain => Arc::new(axo_relay::credential::MacOSKeychain),
+            Self::Files => Arc::new(axo_relay::credential::FileCredentialStore::new(
+                server_directory.join("host-credentials"),
+            )),
+        }
+    }
+}
+
 /// Starts Axo's local JSON-RPC server and blocks for the daemon's lifetime.
 pub fn serve_ipc(
     socket_override: Option<&Path>,
     server_directory: &Path,
     daemon_version: &'static str,
+    credential_storage: HostCredentialStorage,
 ) -> Result<(), Box<dyn std::error::Error>> {
     prepare_server_directory(server_directory)?;
     let socket_path = match socket_override {
@@ -162,8 +192,7 @@ pub fn serve_ipc(
     remove_stale_socket(&socket_path.0)?;
 
     let sessions = session::SessionManager::open(server_directory)?;
-    let credential_store: Arc<dyn axo_relay::credential::HostCredentialStore> =
-        Arc::new(axo_relay::credential::MacOSKeychain);
+    let credential_store = credential_storage.open(server_directory);
     let mut remote_relay = match axo_relay::RelayWorker::start(
         Arc::new(session::RelayHostAdapter(Arc::clone(&sessions))),
         server_directory,
