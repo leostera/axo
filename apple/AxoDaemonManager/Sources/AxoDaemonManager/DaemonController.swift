@@ -45,6 +45,8 @@ public final class DaemonController {
   public private(set) var status: Status = .starting
 
   private static let servicePlistName = "dev.leostera.axo.axod.plist"
+  /// The plist's `Label`.
+  private static let serviceLabel = "dev.leostera.axo.axod"
   // Launchd can take longer than a health-check window to restore active PTYs and Pi bridges.
   private static let daemonStartupTimeout: Duration = .seconds(30)
   private static let healthPollInterval: Duration = .milliseconds(50)
@@ -223,6 +225,7 @@ public final class DaemonController {
     switch service.status {
     case .enabled:
       defaults.set(true, forKey: DaemonPreferenceKey.registrationSucceeded)
+      recordRegisteredDefinition()
       return true
     case .requiresApproval:
       setStatus(.requiresApproval)
@@ -267,7 +270,22 @@ public final class DaemonController {
     at socketPath: UnixSocketPath,
     expectedBuild: BuildNumber
   ) async throws -> DaemonHealth? {
-    logger.info("event=daemon.restart_started")
+    let method = RestartMethod.decide(
+      registered: registeredDefinition(), current: currentDefinition())
+    logger.info("event=daemon.restart_started method=\(String(describing: method), privacy: .public)")
+    if method == .kickstart {
+      do {
+        try await kickstart()
+        logger.info("event=daemon.restart_kickstarted")
+        let daemon = try await waitForDaemon(at: socketPath, expectedBuild: expectedBuild)
+        logger.info("event=daemon.restart_succeeded")
+        return daemon
+      } catch let error as DaemonControllerError {
+        guard case .kickstartFailed = error else { throw error }
+        logger.warning(
+          "event=daemon.kickstart_failed reason=\(error.localizedDescription, privacy: .public)")
+      }
+    }
     try await service.unregister()
     do {
       try service.register()
@@ -285,6 +303,53 @@ public final class DaemonController {
     let daemon = try await waitForDaemon(at: socketPath, expectedBuild: expectedBuild)
     logger.info("event=daemon.restart_succeeded")
     return daemon
+  }
+
+  // MARK: - Restarting in place
+
+  private func currentDefinition() -> LaunchAgentDefinition? {
+    LaunchAgentDefinition.current(bundle: .main, plistName: Self.servicePlistName)
+  }
+
+  private func registeredDefinition() -> LaunchAgentDefinition? {
+    defaults.data(forKey: DaemonPreferenceKey.registeredDefinition)
+      .flatMap { try? JSONDecoder().decode(LaunchAgentDefinition.self, from: $0) }
+  }
+
+  private func recordRegisteredDefinition() {
+    guard let definition = currentDefinition(),
+      let data = try? JSONEncoder().encode(definition)
+    else {
+      defaults.removeObject(forKey: DaemonPreferenceKey.registeredDefinition)
+      return
+    }
+    defaults.set(data, forKey: DaemonPreferenceKey.registeredDefinition)
+  }
+
+  /// `launchctl kickstart -k`: launchd stops the job and starts it again at once, from the
+  /// registered definition. Unlike unregister/register it does not unload and reload the job.
+  private func kickstart() async throws {
+    let target = "gui/\(getuid())/\(Self.serviceLabel)"
+    let result: Result<Int32, Error> = await Task.detached(priority: .userInitiated) {
+      let process = Process()
+      process.executableURL = URL(fileURLWithPath: "/bin/launchctl")
+      process.arguments = ["kickstart", "-k", target]
+      process.standardOutput = FileHandle.nullDevice
+      process.standardError = FileHandle.nullDevice
+      return Result {
+        try process.run()
+        process.waitUntilExit()
+        return process.terminationStatus
+      }
+    }.value
+    switch result {
+    case .success(0):
+      return
+    case .success(let status):
+      throw DaemonControllerError.kickstartFailed("launchctl exited with status \(status)")
+    case .failure(let error):
+      throw DaemonControllerError.kickstartFailed(error.localizedDescription)
+    }
   }
 
   private func makeAppBuildNumber() throws -> BuildNumber {
@@ -347,6 +412,7 @@ private enum DaemonControllerError: Error, LocalizedError {
   case restartTimedOut(BuildNumber)
   case startupTimedOut
   case unknownServiceStatus
+  case kickstartFailed(String)
 
   var errorDescription: String? {
     switch self {
@@ -362,6 +428,8 @@ private enum DaemonControllerError: Error, LocalizedError {
       "axod did not become ready; it may still be recovering Sessions"
     case .unknownServiceStatus:
       "macOS returned an unknown axod service status"
+    case .kickstartFailed(let reason):
+      "launchd could not restart axod in place: \(reason)"
     }
   }
 }

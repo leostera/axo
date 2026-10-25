@@ -8,5 +8,8 @@ public enum DaemonPreferenceKey {
   /// Registration was observed to succeed at least once.
   public static let registrationSucceeded = "dev.leostera.axo.axod.registrationSucceeded"
 
-  public static let all = [registrationRequested, registrationSucceeded]
+  /// The `LaunchAgentDefinition` (JSON) launchd was last given; see `RestartMethod`.
+  public static let registeredDefinition = "dev.leostera.axo.axod.registeredDefinition"
+
+  public static let all = [registrationRequested, registrationSucceeded, registeredDefinition]
 }
