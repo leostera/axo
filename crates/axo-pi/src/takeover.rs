@@ -18,8 +18,22 @@ const TAKEOVER_TIMEOUT: Duration = Duration::from_secs(10);
 pub const BRIDGE_REQUEST_TIMEOUT: Duration = Duration::from_secs(2);
 const OWNER_INSPECTION_TIMEOUT: Duration = Duration::from_secs(2);
 const MAX_LOCK_OWNERS: usize = 32;
-const RESTART_GRACE_PERIOD: Duration = Duration::from_secs(2);
-const TERMINATE_GRACE_PERIOD: Duration = Duration::from_secs(2);
+/// How long an explicit restart waits for Pi to release its transcript before escalating: after
+/// asking it to exit, then after SIGTERM, before SIGKILL.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct TakeoverGrace {
+    pub before_terminate: Duration,
+    pub before_kill: Duration,
+}
+
+impl Default for TakeoverGrace {
+    fn default() -> Self {
+        Self {
+            before_terminate: Duration::from_secs(2),
+            before_kill: Duration::from_secs(2),
+        }
+    }
+}
 const KILL_WAIT: Duration = Duration::from_secs(5);
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -93,6 +107,7 @@ pub struct TakeoverTarget<'a> {
 pub fn take_over(
     target: TakeoverTarget<'_>,
     takeover_policy: TakeoverPolicy,
+    grace: TakeoverGrace,
     check_current: &impl Fn() -> io::Result<()>,
     signal: &impl Fn(VerifiedProcessId, libc::c_int) -> io::Result<()>,
 ) -> io::Result<WriterLock> {
@@ -171,6 +186,7 @@ pub fn take_over(
                     wait_then_terminate(
                         session_file,
                         shutdown_attempt.process_id,
+                        grace,
                         check_current,
                         signal,
                     )?
@@ -189,10 +205,11 @@ pub fn take_over(
 fn wait_then_terminate(
     session_file: &Path,
     process_id: VerifiedProcessId,
+    grace: TakeoverGrace,
     check_current: &impl Fn() -> io::Result<()>,
     signal: &impl Fn(VerifiedProcessId, libc::c_int) -> io::Result<()>,
 ) -> io::Result<WriterLock> {
-    match WriterLock::wait(session_file, RESTART_GRACE_PERIOD, check_current) {
+    match WriterLock::wait(session_file, grace.before_terminate, check_current) {
         Ok(lock) => return Ok(lock),
         Err(error) if error.kind() == io::ErrorKind::TimedOut => {}
         Err(error) => return Err(error),
@@ -208,7 +225,7 @@ fn wait_then_terminate(
         process_id.0
     );
     signal(process_id, libc::SIGTERM)?;
-    match WriterLock::wait(session_file, TERMINATE_GRACE_PERIOD, check_current) {
+    match WriterLock::wait(session_file, grace.before_kill, check_current) {
         Ok(lock) => {
             log::info!("event=session.pi_force_termination_completed signal=term");
             return Ok(lock);
@@ -614,6 +631,17 @@ fn verified_lock_owner(
 mod tests {
     use super::*;
     use std::sync::atomic::{AtomicUsize, Ordering};
+
+    #[test]
+    fn an_explicit_restart_gives_pi_two_seconds_before_each_escalation() {
+        assert_eq!(
+            TakeoverGrace::default(),
+            TakeoverGrace {
+                before_terminate: Duration::from_secs(2),
+                before_kill: Duration::from_secs(2),
+            }
+        );
+    }
 
     #[test]
     fn authenticated_pi_process_ids_reject_invalid_or_self_targets() {

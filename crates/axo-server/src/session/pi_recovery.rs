@@ -224,7 +224,7 @@ impl SessionManager {
         shell_id: ShellId,
         takeover_policy: TakeoverPolicy,
     ) -> io::Result<SessionRecord> {
-        let (request, recovery) = {
+        let (request, recovery, grace) = {
             let mut state = self.lock_state()?;
             if state.shutting_down {
                 return Err(io::Error::new(
@@ -290,7 +290,7 @@ impl SessionManager {
                 shell_id,
                 recovery_id,
             };
-            (request, recovery)
+            (request, recovery, state.takeover_grace)
         };
 
         let check_current = || recovery.ensure_current();
@@ -299,6 +299,7 @@ impl SessionManager {
         let lock = takeover::take_over(
             request.takeover_target(),
             takeover_policy,
+            grace,
             &|| recovery.ensure_current(),
             &|process_id, signal| recovery.signal_current(process_id, signal),
         )?;
@@ -603,7 +604,7 @@ mod tests {
     use crate::panes::RuntimeId;
     use crate::session::{pi_bridge::*, test_support::*};
     use axo_pi::bridge;
-    use axo_pi::takeover::TakeoverPolicy;
+    use axo_pi::takeover::{TakeoverGrace, TakeoverPolicy};
     use axo_pi::{AgentCommand, BridgeSocketPath, WriterLock};
     use axo_protocol::rpc;
     use axo_protocol::{
@@ -1232,6 +1233,11 @@ mod tests {
         drop(UnixListener::bind(bridge_socket.as_path()).unwrap());
 
         let manager = open_with_silent_shell(&server_directory);
+        // The old Pi ignores SIGTERM; escalation is what is tested, not the production waits.
+        manager.lock_state().unwrap().takeover_grace = TakeoverGrace {
+            before_terminate: Duration::from_millis(100),
+            before_kill: Duration::from_millis(100),
+        };
         let stored_bridge_socket: String = manager
             .lock_state()
             .unwrap()

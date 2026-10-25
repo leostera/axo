@@ -11,6 +11,7 @@ use std::time::{Duration, Instant};
 
 use crate::panes::{PaneProcess, Panes, RuntimeId};
 use crate::workspace_access::WorkspaceDirectoryAccess;
+use axo_pi::takeover::TakeoverGrace;
 use axo_pi::{AgentCommand, BridgeSocketPath, WriterLock};
 use axo_protocol::{PaneRole, SessionId, Viewport, new_uuid_v4};
 use axo_pty::TerminalOutput;
@@ -115,6 +116,8 @@ struct SessionState {
     events: EventBus,
     /// The latest client's terminal area; panes no client is attached to are sized from it.
     viewport: Option<Viewport>,
+    /// How long an explicit Pi restart waits before escalating; shortened by tests.
+    takeover_grace: TakeoverGrace,
 }
 
 pub struct SessionManager {
@@ -165,6 +168,7 @@ impl SessionManager {
                 initial_pwd,
                 events: subscribers.clone(),
                 viewport,
+                takeover_grace: TakeoverGrace::default(),
             }),
             attach_socket_path,
             pi_session_directory,

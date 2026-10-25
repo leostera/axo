@@ -761,6 +761,8 @@ fn long_polls_never_delay_unrelated_requests() {
             subscription
         })
         .collect();
+    // Each poll outlasts the checks below (200 ms + two requests under 250 ms each), so all 64
+    // are still waiting while they run.
     let pollers: Vec<_> = (0..64)
         .map(|index| {
             let socket = socket.clone();
@@ -769,7 +771,7 @@ fn long_polls_never_delay_unrelated_requests() {
                 rpc_with_params(
                     &socket,
                     "axo.session.events.next",
-                    json!({ "subscriptionId": subscription, "timeoutMs": 3000, "maxEvents": 256 }),
+                    json!({ "subscriptionId": subscription, "timeoutMs": 1500, "maxEvents": 256 }),
                 )
             })
         })
