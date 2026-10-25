@@ -771,7 +771,7 @@ private final class DaemonFixture {
   private func waitForSocket() throws {
     let deadline = Date().addingTimeInterval(5)
     while Date() < deadline {
-      if FileManager.default.fileExists(atPath: socketPath.path) { return }
+      if socketAcceptsConnections(atPath: socketPath.path) { return }
       guard daemon.isRunning else {
         let logPath = root.appendingPathComponent("server/stderr.log").path
         let log = (try? String(contentsOfFile: logPath, encoding: .utf8)) ?? "<no server log>"
@@ -850,3 +850,23 @@ private enum E2EError: Error, LocalizedError {
   }
 }
 
+/// Whether a Unix-domain socket at `path` accepts connections. Its file exists from `bind()`,
+/// before axod's `listen()`; a connect between the two is refused, so existence is not readiness.
+private func socketAcceptsConnections(atPath path: String) -> Bool {
+  let descriptor = Darwin.socket(AF_UNIX, SOCK_STREAM, 0)
+  guard descriptor >= 0 else { return false }
+  defer { Darwin.close(descriptor) }
+  var address = sockaddr_un()
+  address.sun_family = sa_family_t(AF_UNIX)
+  let bytes = Array(path.utf8)
+  guard bytes.count < MemoryLayout.size(ofValue: address.sun_path) else { return false }
+  withUnsafeMutableBytes(of: &address.sun_path) { buffer in
+    buffer.copyBytes(from: bytes)
+  }
+  address.sun_len = UInt8(MemoryLayout<sockaddr_un>.size)
+  return withUnsafePointer(to: &address) {
+    $0.withMemoryRebound(to: sockaddr.self, capacity: 1) {
+      Darwin.connect(descriptor, $0, socklen_t(MemoryLayout<sockaddr_un>.size)) == 0
+    }
+  }
+}

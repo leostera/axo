@@ -214,13 +214,34 @@ private func stop(_ process: Process) {
 
 private func waitForSocket(at socketPath: UnixSocketPath, from daemon: Process) async throws {
   for _ in 0..<250 {
-    if FileManager.default.fileExists(atPath: socketPath.value) {
+    if socketAcceptsConnections(atPath: socketPath.value) {
       return
     }
     guard daemon.isRunning else { throw AxodInteropError.daemonExitedEarly }
     try await Task.sleep(nanoseconds: 20_000_000)
   }
   throw UnixSocketRPCError.requestTimedOut
+}
+
+/// Whether a Unix-domain socket at `path` accepts connections. Its file exists from `bind()`,
+/// before axod's `listen()`; a connect between the two is refused, so existence is not readiness.
+private func socketAcceptsConnections(atPath path: String) -> Bool {
+  let descriptor = Darwin.socket(AF_UNIX, SOCK_STREAM, 0)
+  guard descriptor >= 0 else { return false }
+  defer { Darwin.close(descriptor) }
+  var address = sockaddr_un()
+  address.sun_family = sa_family_t(AF_UNIX)
+  let bytes = Array(path.utf8)
+  guard bytes.count < MemoryLayout.size(ofValue: address.sun_path) else { return false }
+  withUnsafeMutableBytes(of: &address.sun_path) { buffer in
+    buffer.copyBytes(from: bytes)
+  }
+  address.sun_len = UInt8(MemoryLayout<sockaddr_un>.size)
+  return withUnsafePointer(to: &address) {
+    $0.withMemoryRebound(to: sockaddr.self, capacity: 1) {
+      Darwin.connect(descriptor, $0, socklen_t(MemoryLayout<sockaddr_un>.size)) == 0
+    }
+  }
 }
 
 private enum AxodInteropError: LocalizedError {
