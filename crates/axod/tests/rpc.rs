@@ -122,6 +122,19 @@ fn axod_binary() -> std::path::PathBuf {
     }
 }
 
+/// A fresh directory path under `/tmp` (Unix socket paths are limited to 104 bytes). Tests in one
+/// binary run concurrently and `SystemTime` has only microsecond resolution on macOS, so the
+/// counter is what keeps two tests from sharing a directory, and with it axod's socket.
+fn unique_test_directory(tag: &str) -> std::path::PathBuf {
+    static NEXT: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+    let index = NEXT.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+    let nanos = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .unwrap()
+        .as_nanos();
+    std::path::PathBuf::from("/tmp").join(format!("{tag}-{}-{index}-{nanos}", std::process::id()))
+}
+
 fn start_axod(directory: &std::path::Path, socket: &std::path::Path) -> ChildGuard {
     std::fs::create_dir_all(directory).unwrap();
     let fixture_pi = std::env::var_os("AXO_TEST_PI_EXECUTABLE")
@@ -150,7 +163,11 @@ fn rpc(socket: &std::path::Path, method: &str) -> Value {
 }
 
 fn rpc_with_params(socket: &std::path::Path, method: &str, params: Value) -> Value {
-    let mut stream = UnixStream::connect(socket).expect("daemon socket should accept connections");
+    let mut stream = UnixStream::connect(socket).unwrap_or_else(|error| {
+        let log_path = socket.parent().unwrap().join("server/stderr.log");
+        let log = std::fs::read_to_string(log_path).unwrap_or_default();
+        panic!("daemon socket should accept connections: {error}\naxod log:\n{log}")
+    });
     stream
         .set_read_timeout(Some(Duration::from_secs(10)))
         .unwrap();
@@ -390,12 +407,7 @@ fn create_session(socket: &std::path::Path) -> Value {
 
 #[test]
 fn terminal_attach_subcommand_bridges_input_and_output() {
-    let unique = SystemTime::now()
-        .duration_since(UNIX_EPOCH)
-        .unwrap()
-        .as_nanos();
-    let root =
-        std::path::PathBuf::from("/tmp").join(format!("axoa-{}-{unique}", std::process::id()));
+    let root = unique_test_directory("axoa");
     let server_directory = root.join("server");
     let socket = root.join("axod.sock");
     let mut daemon = start_axod(&server_directory, &socket);
@@ -439,12 +451,7 @@ fn terminal_attach_subcommand_bridges_input_and_output() {
 
 #[test]
 fn terminal_attachments_share_output_and_shells_never_stall_unattached() {
-    let unique = SystemTime::now()
-        .duration_since(UNIX_EPOCH)
-        .unwrap()
-        .as_nanos();
-    let root =
-        std::path::PathBuf::from("/tmp").join(format!("axoa-{}-{unique}", std::process::id()));
+    let root = unique_test_directory("axoa");
     let server_directory = root.join("server");
     let socket = root.join("axod.sock");
     let mut daemon = start_axod(&server_directory, &socket);
@@ -555,12 +562,7 @@ fn encode_base64(bytes: &[u8]) -> String {
 
 #[test]
 fn local_protocol_streams_events_and_controls_the_pty() {
-    let unique = SystemTime::now()
-        .duration_since(UNIX_EPOCH)
-        .unwrap()
-        .as_nanos();
-    let root =
-        std::path::PathBuf::from("/tmp").join(format!("axo-p-{}-{unique}", std::process::id()));
+    let root = unique_test_directory("axo-p");
     let server_directory = root.join("server");
     let socket = root.join("axod.sock");
     let mut daemon = start_axod(&server_directory, &socket);
@@ -731,12 +733,7 @@ fn local_protocol_streams_events_and_controls_the_pty() {
 
 #[test]
 fn long_polls_never_delay_unrelated_requests() {
-    let unique = SystemTime::now()
-        .duration_since(UNIX_EPOCH)
-        .unwrap()
-        .as_nanos();
-    let root =
-        std::path::PathBuf::from("/tmp").join(format!("axo-lp-{}-{unique}", std::process::id()));
+    let root = unique_test_directory("axo-lp");
     let server_directory = root.join("server");
     let socket = root.join("axod.sock");
     let mut daemon = start_axod(&server_directory, &socket);
@@ -806,14 +803,7 @@ fn long_polls_never_delay_unrelated_requests() {
 
 #[test]
 fn workspace_creation_validates_name_and_existing_directory_without_a_bookmark() {
-    let unique = SystemTime::now()
-        .duration_since(UNIX_EPOCH)
-        .unwrap()
-        .as_nanos();
-    let directory = std::path::Path::new("/tmp").join(format!(
-        "axo-workspace-error-{}-{unique}",
-        std::process::id()
-    ));
+    let directory = unique_test_directory("axo-workspace-error");
     let server_directory = directory.join("server");
     let socket = directory.join("axod.sock");
     std::fs::create_dir_all(&directory).unwrap();
@@ -852,12 +842,7 @@ fn workspace_creation_validates_name_and_existing_directory_without_a_bookmark()
 
 #[test]
 fn stores_validated_allowlisted_configuration_for_future_processes() {
-    let unique = SystemTime::now()
-        .duration_since(UNIX_EPOCH)
-        .unwrap()
-        .as_nanos();
-    let directory =
-        std::path::Path::new("/tmp").join(format!("axo-config-{}-{unique}", std::process::id()));
+    let directory = unique_test_directory("axo-config");
     let server_directory = directory.join("server");
     let socket = directory.join("axod.sock");
     std::fs::create_dir_all(&directory).unwrap();
@@ -940,14 +925,7 @@ fn stores_validated_allowlisted_configuration_for_future_processes() {
 
 #[test]
 fn keeps_one_standalone_session_open_while_workspaces_exist() {
-    let unique = SystemTime::now()
-        .duration_since(UNIX_EPOCH)
-        .unwrap()
-        .as_nanos();
-    let directory = std::path::Path::new("/tmp").join(format!(
-        "axo-standalone-invariant-{}-{unique}",
-        std::process::id()
-    ));
+    let directory = unique_test_directory("axo-standalone-invariant");
     let server_directory = directory.join("server");
     let socket = directory.join("axod.sock");
     let workspace_directory = directory.join("workspace");
@@ -1024,13 +1002,8 @@ fn keeps_one_standalone_session_open_while_workspaces_exist() {
 
 #[test]
 fn daemon_starts_with_and_restores_a_default_pty_session_after_restart() {
-    let unique = SystemTime::now()
-        .duration_since(UNIX_EPOCH)
-        .unwrap()
-        .as_nanos();
     let mut cleanup = SessionProcessCleanup::default();
-    let directory =
-        std::path::Path::new("/tmp").join(format!("axo-e2e-{}-{unique}", std::process::id()));
+    let directory = unique_test_directory("axo-e2e");
     let server_directory = directory.join("server");
     let socket = directory.join("axod.sock");
 
@@ -1276,13 +1249,8 @@ fn pty_size(master: &OwnedFd) -> (u16, u16) {
 
 #[test]
 fn new_panes_start_at_the_latest_clients_viewport_across_restarts() {
-    let unique = SystemTime::now()
-        .duration_since(UNIX_EPOCH)
-        .unwrap()
-        .as_nanos();
     let mut cleanup = SessionProcessCleanup::default();
-    let directory =
-        std::path::Path::new("/tmp").join(format!("axo-vp-{}-{unique}", std::process::id()));
+    let directory = unique_test_directory("axo-vp");
     let server_directory = directory.join("server");
     let socket = directory.join("axod.sock");
     let viewport = json!({
