@@ -108,6 +108,22 @@ impl RunningShell {
     }
 }
 
+/// The one way a pane's process is stopped (close, archive, cancelled recovery, shutdown):
+/// SIGHUP/SIGTERM to all at once, SIGKILL to each whose own grace runs out. Takes ownership so
+/// a Pi's writer lock and PTY are released only after its process has exited. Blocks for up to
+/// the longest grace; never call it under the catalog lock.
+fn stop_panes(mut panes: Vec<RunningShell>) {
+    process::stop_all(
+        panes
+            .iter_mut()
+            .map(|pane| process::Stopping {
+                grace: pane.stop_grace(),
+                child: &mut pane.child,
+            })
+            .collect(),
+    );
+}
+
 impl PaneProcess for RunningShell {
     fn session_id(&self) -> SessionId {
         self.session_id
@@ -2168,11 +2184,10 @@ impl SessionManager {
         };
         match committed {
             Ok(metadata) => metadata,
-            Err((mut cancelled, error)) => {
+            Err((cancelled, error)) => {
                 // A close/shutdown may win during exec. Clean up outside the catalog lock and
                 // keep the writer lock until the child exits.
-                let grace = cancelled.stop_grace();
-                process::stop(&mut cancelled.child, grace);
+                stop_panes(vec![cancelled]);
                 Err(error)
             }
         }
@@ -2228,37 +2243,41 @@ impl SessionManager {
         Ok(())
     }
 
+    /// Stops `shells` on one background worker, so closing never waits for a grace period.
     fn terminate_shells_in_background(&self, shells: Vec<RunningShell>) {
-        for shell in shells {
-            let process_id = shell.child.id() as libc::pid_t;
-            let cleanup = ShellCleanup(shell);
-            let worker_name = format!("axo-shell-cleanup-{process_id}");
-            // The guard also cleans up if spawning fails and drops the closure.
-            match thread::Builder::new()
-                .name(worker_name)
-                .spawn(move || drop(cleanup))
-            {
-                Ok(worker) => match self.workers.lock() {
-                    Ok(mut workers) => {
-                        let previous_workers = std::mem::take(&mut *workers);
-                        for previous in previous_workers {
-                            if previous.is_finished() {
-                                let _ = previous.join();
-                            } else {
-                                workers.push(previous);
-                            }
-                        }
-                        workers.push(worker);
+        if shells.is_empty() {
+            return;
+        }
+        let process_ids = shells
+            .iter()
+            .map(|shell| shell.child.id().to_string())
+            .collect::<Vec<_>>()
+            .join(",");
+        // The guard stops them even if spawning fails and drops the closure.
+        let cleanup = StopOnDrop(shells);
+        match thread::Builder::new()
+            .name("axo-shell-cleanup".into())
+            .spawn(move || drop(cleanup))
+        {
+            Ok(worker) => match self.workers.lock() {
+                Ok(mut workers) => {
+                    let (finished, running): (Vec<_>, Vec<_>) = std::mem::take(&mut *workers)
+                        .into_iter()
+                        .partition(JoinHandle::is_finished);
+                    for finished in finished {
+                        let _ = finished.join();
                     }
-                    Err(_) => {
-                        let _ = worker.join();
-                    }
-                },
-                Err(error) => {
-                    log::error!(
-                        "event=session.shell_cleanup_start_failed pid={process_id} reason={error}"
-                    );
+                    *workers = running;
+                    workers.push(worker);
                 }
+                Err(_) => {
+                    let _ = worker.join();
+                }
+            },
+            Err(error) => {
+                log::error!(
+                    "event=session.shell_cleanup_start_failed pids={process_ids} reason={error}"
+                );
             }
         }
     }
@@ -2425,20 +2444,12 @@ impl SessionManager {
         join_session_workers(workers);
         // Slow child cleanup must not monopolize the catalog/PTY lock. Drain
         // runtime ownership once so repeated shutdown (including Drop) is safe.
-        let mut shells = self
+        let shells = self
             .state
             .lock()
             .map(|mut state| state.panes.drain())
             .unwrap_or_default();
-        process::stop_all(
-            shells
-                .iter_mut()
-                .map(|shell| process::Stopping {
-                    grace: shell.stop_grace(),
-                    child: &mut shell.child,
-                })
-                .collect(),
-        );
+        stop_panes(shells);
     }
 
     fn pi_runtime_is_current(&self, binding: PiRuntimeBinding) -> bool {
@@ -4385,12 +4396,12 @@ impl worker::BridgeHost for PiBridgeHost {
     }
 }
 
-struct ShellCleanup(RunningShell);
+/// Stops its panes when dropped; see `stop_panes`.
+struct StopOnDrop(Vec<RunningShell>);
 
-impl Drop for ShellCleanup {
+impl Drop for StopOnDrop {
     fn drop(&mut self) {
-        let grace = self.0.stop_grace();
-        process::stop(&mut self.0.child, grace);
+        stop_panes(std::mem::take(&mut self.0));
     }
 }
 
@@ -6151,6 +6162,53 @@ mod tests {
                 )
                 .unwrap();
             assert!(session_metadata(&state, session.id, &manager.attach_socket_path).is_err());
+        }
+    }
+
+    #[test]
+    fn closing_a_session_stops_every_pane_together_on_one_worker() {
+        let fixture = LifecycleFixture::new();
+        let manager = &fixture.manager;
+        let session = manager.create_session().unwrap();
+        manager.create_shell(session.id).unwrap();
+        manager.create_shell(session.id).unwrap();
+        let process_ids: Vec<libc::pid_t> = {
+            let state = manager.lock_state().unwrap();
+            state
+                .panes
+                .in_session(session.id)
+                .filter_map(|(_, pane)| match pane {
+                    Pane::Running(running) => Some(running.child.id() as libc::pid_t),
+                    Pane::Unavailable(_) => None,
+                })
+                .collect()
+        };
+        assert_eq!(process_ids.len(), 3);
+
+        let started = Instant::now();
+        manager.close_session(session.id).unwrap();
+        assert!(
+            started.elapsed() < process::SHELL_STOP_GRACE,
+            "closing must not wait for its panes to stop"
+        );
+        assert_eq!(
+            manager.workers.lock().unwrap().len(),
+            1,
+            "one cleanup worker per close, not one per pane"
+        );
+        let worker = manager.workers.lock().unwrap().pop().unwrap();
+        worker.join().unwrap();
+        assert!(
+            started.elapsed() < process::SHELL_STOP_GRACE + process::KILL_WAIT,
+            "panes are stopped together, not one grace after another"
+        );
+        for process_id in process_ids {
+            // SAFETY: signal 0 only checks whether the process still exists.
+            let alive = unsafe { libc::kill(process_id, 0) } == 0;
+            assert!(
+                !alive,
+                "pane process {process_id} survived its Session's close"
+            );
         }
     }
 
