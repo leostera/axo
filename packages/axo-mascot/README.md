@@ -18,9 +18,17 @@ npm test          # types, committed file up to date, encoding, and a headless C
 | `Face` | The axolotl alone, in colour, for in-app and web use. |
 | `Mark` | Black outlines only, drawn as a template image in the menu bar. |
 
-Each artboard runs the `Mascot` state machine: random waits of 2, 4 or 7 seconds, then a blink
-(or, one time in five, a double blink). The `blink` trigger blinks on demand; the Rive web runtime
-exposes it, while the Apple runtime's newer API expects data binding instead (not written yet).
+Each artboard runs the `Mascot` state machine, in layers (a later layer wins a property both key):
+
+| Layer | Behaviour | Inputs |
+| --- | --- | --- |
+| Look, Look Y | Looks around on its own; follows a point while `tracking`. | `tracking`, `lookX`, `lookY` (-100 to 100) |
+| Eyes | Random waits of 2, 4 or 7 s, then a blink or (1 in 5) a double blink. | `blink` |
+| Hands (`Face` only) | Hands come up over the eyes. | `covering` |
+| Reactions | `poke`: "oh!", then a giggle. `annoyed`: a shake and a frown. | `poke`, `annoyed` |
+
+These are state machine inputs, which the web runtime and the Apple runtime's `RiveViewModel` take;
+Rive's newer Apple API expects data binding instead, which the generator does not write yet.
 
 On the Mac, `AxoMascot` (apple/AxoMac) plays `Mark` and `Icon` offscreen through
 `AxoMascotRive` and publishes the frames as images. Earlier objects in an artboard draw on top.

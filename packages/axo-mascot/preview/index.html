@@ -14,7 +14,13 @@
 </head>
 <body>
   <h1>Axo mascot</h1>
-  <p>Each artboard runs the <code>Mascot</code> state machine. <button id="blink">Blink</button></p>
+  <p>Each artboard runs the <code>Mascot</code> state machine. Hold the mouse down anywhere and Axo follows it.</p>
+  <p>
+    <button id="blink">Blink</button>
+    <button id="poke">Poke</button>
+    <button id="annoyed">Annoyed</button>
+    <label><input type="checkbox" id="covering"> Cover eyes</label>
+  </p>
   <div class="row">
     <figure><canvas data-artboard="Icon" width="512" height="512" style="width:256px;height:256px"></canvas><figcaption>Icon</figcaption></figure>
     <figure><canvas data-artboard="Face" width="532" height="282" style="width:266px;height:141px"></canvas><figcaption>Face</figcaption></figure>
@@ -40,11 +46,27 @@
       });
       window.mascots.push(mascot);
     }
-    document.getElementById("blink").addEventListener("click", () => {
+    const input = (mascot, name) => mascot.stateMachineInputs("Mascot")?.find((i) => i.name === name);
+    const all = (name, apply) => { for (const mascot of window.mascots) { const i = input(mascot, name); if (i) apply(i); } };
+    for (const trigger of ["blink", "poke", "annoyed"]) {
+      document.getElementById(trigger).addEventListener("click", () => all(trigger, (i) => i.fire()));
+    }
+    document.getElementById("covering").addEventListener("change", (event) => all("covering", (i) => (i.value = event.target.checked)));
+    // Each mascot looks from its own centre towards the pointer.
+    const follow = (event) => {
       for (const mascot of window.mascots) {
-        mascot.stateMachineInputs("Mascot").find((input) => input.name === "blink")?.fire();
+        const box = mascot.canvas.getBoundingClientRect();
+        const clamp = (v) => Math.max(-100, Math.min(100, v));
+        const x = clamp(((event.clientX - (box.left + box.width / 2)) / (window.innerWidth / 2)) * 100);
+        const y = clamp(((event.clientY - (box.top + box.height / 2)) / (window.innerHeight / 2)) * 100);
+        const lx = input(mascot, "lookX"), ly = input(mascot, "lookY");
+        if (lx) lx.value = x;
+        if (ly) ly.value = y;
       }
-    });
+    };
+    window.addEventListener("pointerdown", (event) => { if (event.target.closest("button, label")) return; follow(event); all("tracking", (i) => (i.value = true)); });
+    window.addEventListener("pointermove", (event) => { if (event.buttons) follow(event); });
+    window.addEventListener("pointerup", () => all("tracking", (i) => (i.value = false)));
   </script>
 </body>
 </html>

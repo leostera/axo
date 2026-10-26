@@ -29,7 +29,11 @@ test("every artboard loads with the Mascot state machine and blinks on the trigg
     assert.equal(loaded.mascots.length, Object.keys(MascotContract.artboards).length);
     for (const mascot of loaded.mascots) {
       assert.deepEqual(mascot.stateMachines, [MascotContract.stateMachine]);
-      assert.deepEqual(mascot.inputs, [MascotContract.triggers.blink]);
+      assert.deepEqual(mascot.inputs, [
+        ...Object.values(MascotContract.triggers),
+        ...Object.values(MascotContract.bools),
+        ...Object.values(MascotContract.numbers),
+      ]);
     }
 
     const face = page.locator('canvas[data-artboard="Face"]');
@@ -39,6 +43,29 @@ test("every artboard loads with the Mascot state machine and blinks on the trigg
     await page.waitForTimeout(90);
     const closed = await face.screenshot();
     assert.notDeepEqual(closed, open, "the blink trigger closes the eyes");
+
+    // Each behaviour changes the picture.
+    const settle = async () => {
+      await page.waitForTimeout(400);
+      return face.screenshot();
+    };
+    const calm = await settle();
+    await page.check("#covering");
+    const covered = await settle();
+    assert.notDeepEqual(covered, calm, "the hands come up");
+    await page.uncheck("#covering");
+    await page.mouse.move(5, 5);
+    await page.mouse.down();
+    const looking = await settle();
+    await page.mouse.up();
+    assert.notDeepEqual(looking, calm, "the eyes follow the pointer");
+    await page.click("#poke");
+    await page.waitForTimeout(80);
+    assert.notDeepEqual(await face.screenshot(), calm, "a poke surprises it");
+    await page.waitForTimeout(1200);
+    await page.click("#annoyed");
+    await page.waitForTimeout(300);
+    assert.notDeepEqual(await face.screenshot(), calm, "annoyed frowns");
   } finally {
     await browser.close();
     server.close();

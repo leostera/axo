@@ -42,31 +42,47 @@ export interface AnimationSpec {
 
 export type AnimationId = number & { readonly __animation: unique symbol };
 
+export type InputSpec =
+  | { readonly kind: "trigger"; readonly name: string }
+  | { readonly kind: "bool"; readonly name: string; readonly initial?: boolean }
+  | { readonly kind: "number"; readonly name: string; readonly initial?: number };
+
+/** A transition's condition: a trigger fired, or a bool input set to `is`. */
+export type ConditionSpec = { readonly trigger: string } | { readonly bool: string; readonly is: boolean };
+
 export interface TransitionSpec {
   readonly to: string;
   /** Percent of the source animation after which the transition may run. */
   readonly exitAtPercent?: number;
   readonly weight?: number;
-  readonly trigger?: string;
+  /** How long the two states mix, in milliseconds. */
+  readonly mixMs?: number;
+  readonly when?: ConditionSpec;
 }
 
-export interface StateSpec {
+export type StateSpec = {
   readonly name: string;
-  readonly animation: AnimationId;
   /** Pick one allowed transition at random, by weight, instead of the first allowed. */
   readonly random?: boolean;
   readonly transitions: readonly TransitionSpec[];
+} & (
+  | { readonly animation: AnimationId }
+  /** Mixes animations by where a number input sits between their values. */
+  | { readonly blend: { readonly input: string; readonly animations: readonly { animation: AnimationId; value: number }[] } }
+);
+
+export interface LayerSpec {
+  readonly name: string;
+  readonly entry: string;
+  readonly any: readonly TransitionSpec[];
+  readonly states: readonly StateSpec[];
 }
 
+/** Layers apply in order, so a later layer wins a property both key. */
 export interface StateMachineSpec {
   readonly name: string;
-  readonly triggers: readonly string[];
-  readonly layer: {
-    readonly name: string;
-    readonly entry: string;
-    readonly any: readonly TransitionSpec[];
-    readonly states: readonly StateSpec[];
-  };
+  readonly inputs: readonly InputSpec[];
+  readonly layers: readonly LayerSpec[];
 }
 
 export class ArtboardBuilder {
@@ -209,54 +225,90 @@ function encodeAnimation(spec: AnimationSpec): RivObject[] {
 }
 
 function encodeStateMachine(spec: StateMachineSpec, animationCount: number): RivObject[] {
-  const { layer } = spec;
-  // Layer state order: entry, any, exit, then the animation states.
-  const stateNames = ["<entry>", "<any>", "<exit>", ...layer.states.map((state) => state.name)];
-  const stateIndex = (name: string): number => {
-    const index = stateNames.indexOf(name);
-    if (index < 0) throw new Error(`${spec.name}: unknown state ${name}`);
+  const inputIndex = (name: string, kind: InputSpec["kind"]): number => {
+    const index = spec.inputs.findIndex((input) => input.name === name);
+    if (index < 0 || spec.inputs[index]!.kind !== kind) throw new Error(`${spec.name}: no ${kind} input ${name}`);
     return index;
   };
-  const inputIndex = (name: string): number => {
-    const index = spec.triggers.indexOf(name);
-    if (index < 0) throw new Error(`${spec.name}: unknown input ${name}`);
-    return index;
-  };
-  const transition = (t: TransitionSpec): RivObject[] => {
-    const exit = t.exitAtPercent !== undefined;
-    const objects: RivObject[] = [
-      {
-        type: TypeKey.StateTransition,
-        props: {
-          stateToId: stateIndex(t.to),
-          transitionFlags: exit ? TransitionFlag.enableExitTime | TransitionFlag.exitTimeIsPercentage : 0,
-          exitTime: t.exitAtPercent ?? 0,
-          transitionDuration: 0,
-          randomWeight: t.weight ?? 1,
-        },
-      },
-    ];
-    if (t.trigger !== undefined) {
-      objects.push({ type: TypeKey.TransitionTriggerCondition, props: { inputId: inputIndex(t.trigger) } });
-    }
-    return objects;
+  const animation = (id: AnimationId): number => {
+    if (id >= animationCount) throw new Error(`${spec.name}: unknown animation ${id}`);
+    return id;
   };
 
   const objects: RivObject[] = [{ type: TypeKey.StateMachine, props: { animationName: spec.name } }];
-  for (const trigger of spec.triggers) {
-    objects.push({ type: TypeKey.StateMachineTrigger, props: { stateMachineComponentName: trigger } });
+  for (const input of spec.inputs) {
+    const props = { stateMachineComponentName: input.name };
+    switch (input.kind) {
+      case "trigger":
+        objects.push({ type: TypeKey.StateMachineTrigger, props });
+        break;
+      case "bool":
+        objects.push({ type: TypeKey.StateMachineBool, props: { ...props, boolInputValue: input.initial ?? false } });
+        break;
+      case "number":
+        objects.push({ type: TypeKey.StateMachineNumber, props: { ...props, numberInputValue: input.initial ?? 0 } });
+        break;
+    }
   }
-  objects.push({ type: TypeKey.StateMachineLayer, props: { stateMachineComponentName: layer.name } });
-  objects.push({ type: TypeKey.EntryState, props: {} }, ...transition({ to: layer.entry }));
-  objects.push({ type: TypeKey.AnyState, props: {} }, ...layer.any.flatMap(transition));
-  objects.push({ type: TypeKey.ExitState, props: {} });
-  for (const state of layer.states) {
-    if (state.animation >= animationCount) throw new Error(`${state.name}: unknown animation`);
-    objects.push({
-      type: TypeKey.AnimationState,
-      props: { animationId: state.animation, layerStateFlags: state.random ? LayerStateFlag.random : 0 },
-    });
-    objects.push(...state.transitions.flatMap(transition));
+
+  for (const layer of spec.layers) {
+    // Layer state order: entry, any, exit, then the layer's own states.
+    const stateNames = ["<entry>", "<any>", "<exit>", ...layer.states.map((state) => state.name)];
+    const stateIndex = (name: string): number => {
+      const index = stateNames.indexOf(name);
+      if (index < 0) throw new Error(`${spec.name}/${layer.name}: unknown state ${name}`);
+      return index;
+    };
+    const transition = (t: TransitionSpec): RivObject[] => {
+      const exit = t.exitAtPercent !== undefined;
+      const objects: RivObject[] = [
+        {
+          type: TypeKey.StateTransition,
+          props: {
+            stateToId: stateIndex(t.to),
+            transitionFlags: exit ? TransitionFlag.enableExitTime | TransitionFlag.exitTimeIsPercentage : 0,
+            exitTime: t.exitAtPercent ?? 0,
+            transitionDuration: t.mixMs ?? 0,
+            randomWeight: t.weight ?? 1,
+          },
+        },
+      ];
+      if (t.when !== undefined) {
+        if ("trigger" in t.when) {
+          objects.push({ type: TypeKey.TransitionTriggerCondition, props: { inputId: inputIndex(t.when.trigger, "trigger") } });
+        } else {
+          objects.push({
+            type: TypeKey.TransitionBoolCondition,
+            // TransitionConditionOp: equal (0) passes when the bool is true, notEqual (1) when false.
+            props: { inputId: inputIndex(t.when.bool, "bool"), conditionOp: t.when.is ? 0 : 1 },
+          });
+        }
+      }
+      return objects;
+    };
+
+    objects.push({ type: TypeKey.StateMachineLayer, props: { stateMachineComponentName: layer.name } });
+    objects.push({ type: TypeKey.EntryState, props: {} }, ...transition({ to: layer.entry }));
+    objects.push({ type: TypeKey.AnyState, props: {} }, ...layer.any.flatMap(transition));
+    objects.push({ type: TypeKey.ExitState, props: {} });
+    for (const state of layer.states) {
+      const layerStateFlags = state.random ? LayerStateFlag.random : 0;
+      if ("animation" in state) {
+        objects.push({ type: TypeKey.AnimationState, props: { animationId: animation(state.animation), layerStateFlags } });
+      } else {
+        objects.push({
+          type: TypeKey.BlendState1DInput,
+          props: { blendInputId: inputIndex(state.blend.input, "number"), layerStateFlags },
+        });
+        for (const entry of state.blend.animations) {
+          objects.push({
+            type: TypeKey.BlendAnimation1D,
+            props: { blendAnimationId: animation(entry.animation), blendAnimationValue: entry.value },
+          });
+        }
+      }
+      objects.push(...state.transitions.flatMap(transition));
+    }
   }
   return objects;
 }
