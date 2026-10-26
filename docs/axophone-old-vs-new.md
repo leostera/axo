@@ -134,16 +134,16 @@ B had a full **session files** feature: `SessionFilesClient` and `SessionFilesVi
 2. **Cancel a run** and **answer the agent's questions**.
 3. **Voice prompts** (Stop → draft, Send → send).
 4. **Attachments:** camera, photos, files, clipboard paste; and **session files**.
-5. **Pending-message bubbles with delivery state.**
-6. **Per-chat drafts** that survive switching chats.
-7. **Rich markdown:** tables, quotes, numbered lists.
+5. ~~**Pending-message bubbles with delivery state.**~~ Done in `b44f62c` (Sending, Sent, Queued).
+6. ~~**Per-chat drafts** that survive switching chats.~~ Done in `b44f62c`.
+7. ~~**Rich markdown:** tables, quotes, numbered lists.~~ Done in `b44f62c` (plus nested lists and rules).
 8. **Paged full tool output** ("Load more output").
-9. **"Jump to new message"** and the tested scroll-follow logic.
+9. ~~**"Jump to new message"**~~ Done in `b44f62c`. The scroll-follow logic still has no tests.
 10. **Background/foreground handling** of the connection.
 11. **Creating workspaces and named sessions** from the phone.
 12. **XCUITests.**
-13. **iPhone-only device family.** It may matter for the top/bottom margins still being investigated.
+13. ~~**iPhone-only device family.**~~ Done in `95c1ee0`.
 
 ## A bug found while comparing (C)
 
-The menu and search list chats from `PhoneWorkbench.hosts.hosts`, the host **listing**, which loads once and on pull-to-refresh. They don't use the open Mac's live `HostWorkbenchModel.sessions`. So **a chat created from the phone doesn't appear in the menu until the list is refreshed**, and the same goes for renames or chats created on the Mac. B read its list from the live catalog. Fix: build the open Mac's section from `current.sessions`, and keep the listing for the other Macs.
+The menu and search list chats from `PhoneWorkbench.hosts.hosts`, the host **listing**, which loads once and on pull-to-refresh. They don't use the open Mac's live `HostWorkbenchModel.sessions`. So **a chat created from the phone doesn't appear in the menu until the list is refreshed**, and the same goes for renames or chats created on the Mac. B read its list from the live catalog. Fix: build the open Mac's section from `current.sessions`, and keep the listing for the other Macs. **Fixed in `b44f62c`** (`PhoneWorkbench.sessions(of:)`).
