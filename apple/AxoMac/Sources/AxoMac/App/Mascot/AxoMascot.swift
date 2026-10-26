@@ -16,11 +16,11 @@ public protocol MascotFrameSource: AnyObject {
 public protocol MascotAnimation {
   func makeFrameSource(artboard: String, pixelSize: CGSize) async throws -> any MascotFrameSource
   /// A live Axo for a window, or nil if the animation cannot load.
-  func makePuppet() -> (any MascotPuppet)?
+  func makePuppet(artboard: String) -> (any MascotPuppet)?
 }
 
-/// A live Axo in a window (the `Face` artboard): it looks around and blinks on its own, and this
-/// tells it where to look and how to react.
+/// A live Axo in a window: it looks around and blinks on its own, and this tells it where to
+/// look, how to react and whether it is waiting on something.
 @MainActor
 public protocol MascotPuppet: AnyObject {
   var view: AnyView { get }
@@ -28,6 +28,8 @@ public protocol MascotPuppet: AnyObject {
   func look(x: Double, y: Double)
   func stopLooking()
   func react(_ reaction: MascotReaction)
+  /// Gills flutter and Axo bobs; on the `Loader` artboard it also spins.
+  func setLoading(_ loading: Bool)
 }
 
 /// The animated Axo axolotl in the menu bar and the Dock.
@@ -43,6 +45,8 @@ final class AxoMascot {
   enum Contract {
     static let markArtboard = "Mark"
     static let iconArtboard = "Icon"
+    static let faceArtboard = "Face"
+    static let loaderArtboard = "Loader"
   }
 
   /// Installed by the app's entry point before the app starts; nil leaves the static symbol.

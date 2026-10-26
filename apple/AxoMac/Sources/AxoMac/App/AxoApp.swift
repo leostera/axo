@@ -63,9 +63,19 @@ struct AxoApp<Launch: AxoLaunchMode>: App {
         mascot: mascot,
         pairingLink: pairingLink,
         settingsSection: $settingsSection,
-        opensTerminalWindow: environment.opensTerminalWindow)
+        opensTerminalWindow: environment.opensTerminalWindow,
+        showsLaunchSplash: environment.showsLaunchSplash)
     }
     .menuBarExtraStyle(.menu)
+
+    Window("Axo", id: LaunchSplashView.windowID) {
+      LaunchSplashView(
+        daemon: daemon, sessions: sessions, daemonIsRunning: environment.daemonIsRunning,
+        enabled: environment.opensTerminalWindow && environment.showsLaunchSplash)
+    }
+    .windowStyle(.hiddenTitleBar)
+    .windowResizability(.contentSize)
+    .defaultPosition(.center)
 
     Window("Axo Terminal", id: "terminal") {
       TerminalAppWindow(
@@ -369,6 +379,7 @@ private struct AxoMenuBarLabel: View {
   var pairingLink: PairingLinkRouter
   @Binding var settingsSection: SettingsSection
   let opensTerminalWindow: Bool
+  let showsLaunchSplash: Bool
   @State private var didOpenTerminal = false
 
   var body: some View {
@@ -384,7 +395,9 @@ private struct AxoMenuBarLabel: View {
       .task {
         if !didOpenTerminal {
           didOpenTerminal = true
-          if opensTerminalWindow { openWindow(id: "terminal") }
+          if opensTerminalWindow {
+            openWindow(id: showsLaunchSplash ? LaunchSplashView.windowID : "terminal")
+          }
         }
         if pairingLink.pendingCode != nil {
           openPairingSettings()

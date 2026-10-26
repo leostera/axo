@@ -34,9 +34,9 @@ public final class RiveMascotAnimation: MascotAnimation {
       device: device)
   }
 
-  public func makePuppet() -> (any MascotPuppet)? {
+  public func makePuppet(artboard: String) -> (any MascotPuppet)? {
     guard let data = try? source(), let file = try? RiveFile(data: data, loadCdn: false) else { return nil }
-    return RiveMascotPuppet(file: file)
+    return RiveMascotPuppet(file: file, artboard: artboard)
   }
 
   /// One worker and file for every artboard.

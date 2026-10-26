@@ -14,6 +14,8 @@ struct AxoAppEnvironment {
   var startsDaemon = true
   /// Whether launching opens the terminal window automatically.
   var opensTerminalWindow = true
+  /// Whether that opening goes through the launch splash, which waits for Axod and the catalog.
+  var showsLaunchSplash = true
   /// Extra setup once the terminal window exists (fixtures only).
   var prepareTerminalWindow: @MainActor (TerminalSessionsModel, GhosttyRuntime) async -> Void = {
     _, _ in

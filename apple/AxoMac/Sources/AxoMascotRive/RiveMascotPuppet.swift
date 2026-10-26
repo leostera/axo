@@ -3,7 +3,7 @@ import AxoMascot
 import RiveRuntime
 import SwiftUI
 
-/// The `Face` artboard through `RiveViewModel`, which takes state machine inputs (the newer Rive
+/// An artboard through `RiveViewModel`, which takes state machine inputs (the newer Rive
 /// API takes data binding instead, which the generated file does not have).
 @MainActor
 final class RiveMascotPuppet: MascotPuppet {
@@ -14,14 +14,15 @@ final class RiveMascotPuppet: MascotPuppet {
     static let tracking = "tracking"
     static let lookX = "lookX"
     static let lookY = "lookY"
+    static let loading = "loading"
   }
 
   private let rive: RiveViewModel
 
-  init(file: RiveFile) {
+  init(file: RiveFile, artboard: String) {
     rive = RiveViewModel(
       RiveModel(riveFile: file), stateMachineName: RiveMascotAnimation.stateMachine, fit: .contain,
-      autoPlay: true, artboardName: "Face")
+      autoPlay: true, artboardName: artboard)
   }
 
   var view: AnyView { rive.view() }
@@ -41,5 +42,9 @@ final class RiveMascotPuppet: MascotPuppet {
     case .giggle: rive.triggerInput(Input.poke)
     case .annoyed: rive.triggerInput(Input.annoyed)
     }
+  }
+
+  func setLoading(_ loading: Bool) {
+    rive.setInput(Input.loading, value: loading)
   }
 }

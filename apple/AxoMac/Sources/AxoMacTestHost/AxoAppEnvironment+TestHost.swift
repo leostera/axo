@@ -56,6 +56,7 @@ extension AxoAppEnvironment {
         socketPath: socketPath),
       daemonIsRunning: { true },
       startsDaemon: false,
+      showsLaunchSplash: false,
       prepareTerminalWindow: { sessions, ghostty in
         NSApp.activate(ignoringOtherApps: true)
         await positionTerminalWindow()

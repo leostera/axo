@@ -14,7 +14,7 @@ struct AboutMascotView: View {
   /// The pane's size: half of it away is far enough to look all the way.
   var paneSize: CGSize
 
-  @State private var puppet = AxoMascot.installedAnimation?.makePuppet()
+  @State private var puppet = AxoMascot.installedAnimation?.makePuppet(artboard: AxoMascot.Contract.faceArtboard)
   @State private var pokes = MascotPokes()
   @State private var frame: CGRect = .zero
   @Environment(\.accessibilityReduceMotion) private var reduceMotion
