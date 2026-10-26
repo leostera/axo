@@ -40,6 +40,7 @@ swift_library(
         ":AxoPhoneModel",
         "//apple/AxoClient",
         "//apple/AxoProtocol",
+        "@swiftpkg_rive_ios//:RiveRuntime",
     ],
 )
 
@@ -62,6 +63,7 @@ ios_application(
     ],
     infoplists = ["Info.plist"],
     minimum_os_version = "18.0",
+    resources = ["//assets:mascot"],
     deps = [":AxoPhoneMain"],
 )
 
@@ -87,6 +89,7 @@ ios_application(
     ],
     infoplists = ["Info.plist"],
     minimum_os_version = "18.0",
+    resources = ["//assets:mascot"],
     provisioning_profile = ":AxoPhoneProfile",
     tags = ["manual"],
     deps = [":AxoPhoneMain"],

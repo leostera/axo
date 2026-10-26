@@ -15,9 +15,8 @@ struct SignInView: View {
   var body: some View {
     VStack(spacing: 20) {
       Spacer()
-      Image(systemName: "terminal")
-        .font(.system(size: 56))
-        .foregroundStyle(.tint)
+      AxoMascotView()
+        .frame(height: 96)
       Text("Axo").font(.largeTitle.bold())
       Text("Reach your Macs from anywhere.")
         .foregroundStyle(.secondary)

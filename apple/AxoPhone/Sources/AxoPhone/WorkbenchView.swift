@@ -138,7 +138,10 @@ struct WorkbenchView: View {
 
   private var sidebar: some View {
     VStack(spacing: 0) {
-      HStack {
+      HStack(spacing: 10) {
+        AxoMascotView()
+          .frame(height: 26)
+          .accessibilityHidden(true)
         Text("Axo").font(.title2.weight(.semibold))
         Spacer(minLength: 8)
         if workbench.hosts.phase == .loading { ProgressView() }
