@@ -97,6 +97,26 @@ export async function installAxoPiExtension(pi: ExtensionAPI, config: AxoPiExten
 
   const publish = (name: string, data: unknown) => bridge.publish(name, data);
 
+  pi.registerCommand("axo-import", {
+    description: "Import a Pi JSONL transcript as a new Axo Session in this Workspace",
+    handler: async (args, commandContext) => {
+      const argument = args.trim();
+      const quotedPath = argument.match(/^(?:\"([^\"]+)\"|'([^']+)')$/);
+      const rawPath = quotedPath ? quotedPath[1] ?? quotedPath[2] ?? "" : argument;
+      if (rawPath.length === 0 || rawPath.length > 4096 || rawPath.includes("\0")) {
+        commandContext.ui.notify("Usage: /axo-import <path-to-session.jsonl>", "warning");
+        return;
+      }
+      const sourcePath = resolve(commandContext.cwd, rawPath);
+      if (!(await commandContext.ui.confirm(
+        "Import Pi Session into Axo",
+        `Create a new Session in this Workspace from ${sourcePath}? The current Session and source file will be left unchanged.`,
+      ))) return;
+      await publish("session.import.requested", { sourcePath });
+      commandContext.ui.notify("Axo is importing the transcript as a new Session.", "info");
+    },
+  });
+
   pi.on("session_start", async (event, sessionContext) => {
     traceBridge("session_start received");
     await bridgeStarted;

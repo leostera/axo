@@ -133,6 +133,26 @@ impl worker::BridgeHost for PiBridgeHost {
         let Some(owner) = self.manager.upgrade() else {
             return false;
         };
+        if name == "session.import.requested" {
+            let Some(source_path) = data["sourcePath"]
+                .as_str()
+                .filter(|path| !path.is_empty() && path.len() <= 4096 && !path.contains('\0'))
+            else {
+                log::warn!(
+                    "event=session.pi_import_rejected {} reason=invalid_path",
+                    self.log_context()
+                );
+                return true;
+            };
+            if let Err(error) = owner.import_pi_session(self.binding, source_path) {
+                log::warn!(
+                    "event=session.pi_import_rejected {} error_kind={:?}",
+                    self.log_context(),
+                    error.kind()
+                );
+            }
+            return true;
+        }
         if !matches!(owner.observe_pi_event(self.binding, name, &data), Ok(true)) {
             return false;
         }

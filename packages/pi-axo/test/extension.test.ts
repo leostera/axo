@@ -41,6 +41,7 @@ test("bridges Pi events and remote commands without owning the Pi process", asyn
   const directory = await mkdtemp(join(tmpdir(), "axo-pi-extension-"));
   const socketPath = join(directory, "bridge.sock");
   const registered = new Map<string, (event: never, context: never) => unknown>();
+  const commands = new Map<string, (args: string, context: ExtensionContext) => Promise<void>>();
   const sentMessages: Array<{ text: string; options?: unknown }> = [];
   let aborted = 0;
   let shutdowns = 0;
@@ -58,6 +59,9 @@ test("bridges Pi events and remote commands without owning the Pi process", asyn
       return () => registered.delete(name);
     },
     registerTool() {},
+    registerCommand(name: string, command: { handler: (args: string, context: ExtensionContext) => Promise<void> }) {
+      commands.set(name, command.handler);
+    },
     sendUserMessage(text: string, options?: unknown) {
       sentMessages.push({ text, options });
     },
@@ -100,6 +104,21 @@ test("bridges Pi events and remote commands without owning the Pi process", asyn
     assert.equal(hello.identity.axoPaneId, axoPaneId);
     assert.equal(hello.identity.piSessionId, "pi-session-1");
     assert.equal(hello.identity.sessionFile, "/private/axo/pi-session-1.jsonl");
+
+    const importSession = commands.get("axo-import");
+    assert.ok(importSession);
+    await importSession('"/tmp/imported session.jsonl"', {
+      ...context,
+      ui: {
+        confirm: async () => true,
+        notify: () => {},
+      },
+    } as unknown as ExtensionContext);
+    const importRequest = await next();
+    assert.equal(importRequest.type, "event");
+    if (importRequest.type !== "event") throw new Error("expected import request event");
+    assert.equal(importRequest.name, "session.import.requested");
+    assert.deepEqual(importRequest.data, { sourcePath: "/tmp/imported session.jsonl" });
 
     const messageEnd = registered.get("message_end");
     assert.ok(messageEnd);
