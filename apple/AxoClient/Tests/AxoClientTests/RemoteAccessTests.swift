@@ -324,6 +324,28 @@ final class HostConnectionTests: XCTestCase {
     XCTAssertEqual(session.sessionId, 7)
   }
 
+  func testIdentitiesAreSentLowercaseBecauseTheRelayComparesThemAsText() async throws {
+    let transport = FakeTransport()
+    let upper = RemoteHostRef(
+      hostId: UUID(uuidString: "ABCDEF00-95FD-4C93-8586-A71A8A52BF73")!,
+      hostGeneration: UUID(uuidString: "C3B6DA28-55C0-4BB0-AC04-DD458FD41A2B")!)
+    let connection = HostConnection(transport: transport, host: upper)
+    async let subscribed: Void = connection.subscribe()
+    let channel = try await transport.channel(0)
+    let raw = String(decoding: try await channel.rawRequests(count: 1)[0], as: UTF8.self)
+    XCTAssertTrue(raw.contains("abcdef00-95fd-4c93-8586-a71a8a52bf73"), raw)
+    XCTAssertTrue(raw.contains("c3b6da28-55c0-4bb0-ac04-dd458fd41a2b"), raw)
+    XCTAssertFalse(raw.contains("ABCDEF00") || raw.contains("C3B6DA28"), "no uppercase identity may leave the app")
+    channel.reply(to: try await channel.firstRequestID(), result: #"{"subscriptionId":"\#(UUID().uuidString)"}"#)
+    try await subscribed
+
+    async let created = connection.createSession(inWorkspace: UUID(uuidString: "7F1918D3-8B6D-4AF4-A57E-7E6AE28E89E2")!)
+    let second = String(decoding: try await channel.rawRequests(count: 2)[1], as: UTF8.self)
+    XCTAssertTrue(second.contains("7f1918d3-8b6d-4af4-a57e-7e6ae28e89e2"), second)
+    channel.send(raw: #"{"jsonrpc":"2.0","id":2,"error":{"code":-32602,"message":"stop here"}}"#)
+    _ = try? await created
+  }
+
   func testASessionCreatedOnAnotherHostIsRefused() async throws {
     let transport = FakeTransport()
     let connection = HostConnection(transport: transport, host: host)

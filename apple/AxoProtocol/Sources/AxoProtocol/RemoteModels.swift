@@ -10,6 +10,16 @@ public struct RemoteHostRef: Codable, Hashable, Sendable {
     self.hostId = hostId
     self.hostGeneration = hostGeneration
   }
+
+  private enum CodingKeys: String, CodingKey { case hostId, hostGeneration }
+
+  /// The relay compares identities as text, and its identities are lowercase; `UUID` encodes
+  /// uppercase by default, which the relay reads as a different host ("Wrong host").
+  public func encode(to encoder: Encoder) throws {
+    var container = encoder.container(keyedBy: CodingKeys.self)
+    try container.encode(hostId.uuidString.lowercased(), forKey: .hostId)
+    try container.encode(hostGeneration.uuidString.lowercased(), forKey: .hostGeneration)
+  }
 }
 
 public enum RemoteHostStatus: String, Decodable, Equatable, Sendable {

@@ -167,6 +167,14 @@ private struct Target: Encodable, Sendable { let target: RemoteHostRef }
 private struct WorkspaceTarget: Encodable, Sendable {
   let target: RemoteHostRef
   let workspaceId: UUID
+
+  private enum CodingKeys: String, CodingKey { case target, workspaceId }
+
+  func encode(to encoder: Encoder) throws {
+    var container = encoder.container(keyedBy: CodingKeys.self)
+    try container.encode(target, forKey: .target)
+    try container.encode(workspaceId.uuidString.lowercased(), forKey: .workspaceId)
+  }
 }
 private struct SessionTarget: Encodable, Sendable {
   let target: RemoteHostRef
