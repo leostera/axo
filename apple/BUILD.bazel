@@ -15,6 +15,7 @@ xcodeproj(
     top_level_targets = [
         "//apple/AxoMac:AxoApp",
         "//apple/AxoPhone:AxoPhoneApp",
+        "//apple/AxoPhone:AxoPhoneDevice",
         "//apple/AxoPhone:AxoPhoneModelTests",
         "//apple/AxoMac:AxoUITestApp",
         "//apple/AxoProtocol:AxoProtocolTests",
