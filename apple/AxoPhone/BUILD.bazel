@@ -58,10 +58,8 @@ ios_application(
     app_icons = ["//assets:ios_app_icon"],
     bundle_id = "dev.leostera.axo.phone",
     entitlements = "AxoPhone.entitlements",
-    families = [
-        "iphone",
-        "ipad",
-    ],
+    # iPhone only, as the original app was.
+    families = ["iphone"],
     infoplists = ["Info.plist"],
     minimum_os_version = "18.0",
     resources = ["//assets:mascot"],
@@ -84,10 +82,8 @@ ios_application(
     app_icons = ["//assets:ios_app_icon"],
     bundle_id = "dev.leostera.axo.phone",
     entitlements = "AxoPhone-device.entitlements",
-    families = [
-        "iphone",
-        "ipad",
-    ],
+    # iPhone only, as the original app was.
+    families = ["iphone"],
     infoplists = ["Info.plist"],
     minimum_os_version = "18.0",
     resources = ["//assets:mascot"],
