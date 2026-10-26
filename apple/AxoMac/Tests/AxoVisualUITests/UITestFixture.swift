@@ -80,11 +80,6 @@ final class UITestFixture {
     XCTAssertTrue(createButton.waitForExistence(timeout: 5), app.debugDescription)
     createButton.click()
 
-    let nameField = app.textFields["workspace-name-field"]
-    XCTAssertTrue(nameField.waitForExistence(timeout: 5), app.debugDescription)
-    nameField.click()
-    nameField.typeText("Workspace E2E")
-
     let browseButton = app.buttons["workspace-choose-directory-button"]
     XCTAssertTrue(browseButton.waitForExistence(timeout: 3), app.debugDescription)
     browseButton.click()
@@ -107,6 +102,12 @@ final class UITestFixture {
     XCTAssertTrue(folder.waitForExistence(timeout: 3), app.debugDescription)
     folder.click()
     chooseDirectory.click()
+
+    let nameField = app.textFields["workspace-name-field"]
+    XCTAssertTrue(nameField.waitForExistence(timeout: 5), app.debugDescription)
+    nameField.click()
+    nameField.typeKey("a", modifierFlags: [.command])
+    nameField.typeText("Workspace E2E")
 
     let commitButton = app.buttons["Create Workspace"]
     XCTAssertTrue(commitButton.waitForExistence(timeout: 3), app.debugDescription)

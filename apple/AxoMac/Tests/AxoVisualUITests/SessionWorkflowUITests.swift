@@ -130,6 +130,12 @@ extension AxoVisualUITests {
     XCTAssertTrue(createWorkspaceButton.waitForExistence(timeout: 5), app.debugDescription)
     createWorkspaceButton.click()
 
+    let directorySearch = app.textFields["workspace-directory-search"]
+    XCTAssertTrue(directorySearch.waitForExistence(timeout: 5), app.debugDescription)
+    directorySearch.typeText("home")
+    XCTAssertTrue(app.buttons["workspace-directory-home"].waitForExistence(timeout: 8))
+    directorySearch.typeKey(XCUIKeyboardKey.return, modifierFlags: [])
+
     let nameField = app.textFields["workspace-name-field"]
     XCTAssertTrue(nameField.waitForExistence(timeout: 5), app.debugDescription)
     nameField.click()
