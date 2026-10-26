@@ -77,6 +77,13 @@ public struct AccountClient: Sendable {
     return answer.sessions
   }
 
+  /// One page of a Session's Pi events, oldest first, starting after `cursor` (0 for the start).
+  public func piEvents(of host: RemoteHostRef, session: SessionID, after cursor: Int64 = 0, limit: Int = 50)
+    async throws -> PiEventPage
+  {
+    try await get(endpoint.piEventsURL(of: host, session: session, after: cursor, limit: min(max(limit, 1), 50)))
+  }
+
   private func get<Value: Decodable>(_ url: URL, as: Value.Type = Value.self) async throws -> Value {
     var request = URLRequest(url: url)
     request.httpMethod = "GET"

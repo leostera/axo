@@ -59,6 +59,18 @@ public struct RelayEndpoint: Equatable, Sendable {
     return components.url!
   }
 
+  /// A page of one Session's stored Pi events, from the event after `cursor`.
+  public func piEventsURL(of host: RemoteHostRef, session: SessionID, after cursor: Int64, limit: Int) -> URL {
+    var components = URLComponents(
+      url: url("/api/v1/account/hosts/\(host.hostId.uuidString.lowercased())/sessions/\(session)/events"),
+      resolvingAgainstBaseURL: false)!
+    components.queryItems = [
+      URLQueryItem(name: "after", value: String(cursor)),
+      URLQueryItem(name: "limit", value: String(limit)),
+    ]
+    return components.url!
+  }
+
   /// The WebSocket a person's client opens to reach one host.
   public func clientSocketURL(hostID: UUID) -> URL {
     var components = URLComponents(

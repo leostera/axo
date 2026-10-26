@@ -3,6 +3,13 @@ import AxoProtocol
 import Foundation
 import Observation
 
+/// Where a Session's stored conversation comes from: the relay, over HTTPS.
+public protocol PiHistoryLoading: Sendable {
+  func piEvents(of host: RemoteHostRef, session: SessionID, after cursor: Int64, limit: Int) async throws -> PiEventPage
+}
+
+extension AccountClient: PiHistoryLoading {}
+
 /// One host opened on the phone: its Sessions, whether it is online, and the live text of its
 /// terminals. Everything comes from the relay's snapshots and events; nothing is stored here.
 @MainActor
@@ -13,17 +20,32 @@ public final class HostWorkbenchModel {
   public private(set) var status: RemoteHostStatus
   public private(set) var sessions: [RemoteSession]
   public private(set) var transcripts: [ShellID: PlainTerminalText] = [:]
+  /// What each Session's agent has said, from stored history plus what has happened since.
+  public private(set) var chats: [SessionID: ChatTranscript] = [:]
+  public private(set) var historyStates: [SessionID: HistoryState] = [:]
+  public enum HistoryState: Equatable, Sendable {
+    case loading
+    case loaded
+    /// The stored history is longer than what was read; the newest part is missing.
+    case truncated
+    case failed(String)
+  }
+
+  /// Most pages read for one Session (50 events each); a conversation longer than that shows its start.
+  static let maximumHistoryPages = 20
+
   public var selectedSessionID: SessionID?
   /// The last problem, for the screen to show; cleared by the next successful action.
   public private(set) var failure: String?
 
   private let connection: HostConnection
+  private let history: any PiHistoryLoading
   private let account: AccountSession
   private var eventTask: Task<Void, Never>?
   private var nextInput: [ShellID: UInt64] = [:]
   private var lastOutput: [ShellID: UInt64] = [:]
 
-  public init(host: RemoteHost, connection: HostConnection, account: AccountSession) {
+  public init(host: RemoteHost, connection: HostConnection, history: any PiHistoryLoading, account: AccountSession) {
     hostLabel = host.label
     reference = host.reference
     status = host.status
@@ -31,12 +53,16 @@ public final class HostWorkbenchModel {
     sessions = ordered
     selectedSessionID = ordered.first?.sessionId
     self.connection = connection
+    self.history = history
     self.account = account
   }
 
   public var selectedSession: RemoteSession? {
     sessions.first { $0.sessionId == selectedSessionID }
   }
+
+  /// Whether the model is connected and following the host's events.
+  public var isFollowing: Bool { eventTask != nil }
 
   /// The terminal that gets typing: the Session's first.
   public var focusedShell: ShellID? { selectedSession?.shells.first?.shellId }
@@ -86,6 +112,8 @@ public final class HostWorkbenchModel {
       let removedShells = sessions.first { $0.sessionId == id }?.shells.map(\.shellId) ?? []
       sessions.removeAll { $0.sessionId == id }
       for shell in removedShells { forget(shell) }
+      chats[id] = nil
+      historyStates[id] = nil
       if selectedSessionID == id { selectedSessionID = sessions.first?.sessionId }
     case .shellActivity:
       break
@@ -94,9 +122,34 @@ public final class HostWorkbenchModel {
       if let last = lastOutput[shell], sequence <= last { return }
       lastOutput[shell] = sequence
       transcripts[shell, default: PlainTerminalText()].append(data)
-    case .piEvent:
-      break
+    case .piEvent(_, let id, let record):
+      chats[id, default: ChatTranscript()].apply(record)
     }
+  }
+
+  /// Reads a Session's stored conversation and puts it in front of what arrived live.
+  public func loadHistory(of id: SessionID) async {
+    guard historyStates[id] != .loading else { return }
+    historyStates[id] = .loading
+    var records: [PiEventRecord] = []
+    var cursor: Int64 = 0
+    var more = true
+    do {
+      for _ in 0..<Self.maximumHistoryPages where more {
+        let page = try await history.piEvents(of: reference, session: id, after: cursor, limit: 50)
+        records.append(contentsOf: page.events.map(\.record))
+        if let next = page.next { cursor = next } else { more = false }
+      }
+    } catch is CancellationError {
+      historyStates[id] = nil
+      return
+    } catch {
+      account.noteFailure(error)
+      historyStates[id] = .failed(error.localizedDescription)
+      return
+    }
+    chats[id, default: ChatTranscript()].merge(history: records)
+    historyStates[id] = more ? .truncated : .loaded
   }
 
   private func forget(_ shell: ShellID) {

@@ -83,8 +83,8 @@ public enum RemoteHostEvent: Equatable, Sendable {
     host: RemoteHostRef, sessionID: SessionID, shellID: ShellID, activity: TerminalShellActivity)
   case terminalOutput(
     host: RemoteHostRef, sessionID: SessionID, shellID: ShellID, sequence: UInt64, data: Data)
-  /// A Pi event; the relay stores these for history. Clients may ignore them.
-  case piEvent(host: RemoteHostRef, sessionID: SessionID, name: String)
+  /// A Pi event: what the agent said, did or finished. The relay also stores them as history.
+  case piEvent(host: RemoteHostRef, sessionID: SessionID, event: PiEventRecord)
 
   public var host: RemoteHostRef {
     switch self {
@@ -113,7 +113,7 @@ public struct RemoteHostNotification: Decodable, Equatable, Sendable {
 extension RemoteHostEvent: Decodable {
   private enum CodingKeys: String, CodingKey {
     case type, hostId, hostGeneration, status, event, snapshot, sessionId, shellId, activity
-    case sequence, data, name
+    case sequence, data, name, streamId
   }
 
   public init(from decoder: Decoder) throws {
@@ -157,7 +157,11 @@ extension RemoteHostEvent: Decodable {
         self = .piEvent(
           host: host,
           sessionID: try inner.decode(SessionID.self, forKey: .sessionId),
-          name: try inner.decode(String.self, forKey: .name))
+          event: PiEventRecord(
+            streamId: try inner.decode(UUID.self, forKey: .streamId),
+            sequence: try inner.decode(UInt64.self, forKey: .sequence),
+            name: try inner.decode(String.self, forKey: .name),
+            data: try inner.decodeIfPresent(JSONValue.self, forKey: .data) ?? .null))
       case let type:
         throw DecodingError.dataCorruptedError(
           forKey: .type, in: inner, debugDescription: "unknown host data event \(type)")
@@ -166,5 +170,45 @@ extension RemoteHostEvent: Decodable {
       throw DecodingError.dataCorruptedError(
         forKey: .type, in: outer, debugDescription: "unknown host event \(type)")
     }
+  }
+}
+
+/// One thing Pi did, in the order Pi did it: `sequence` rises within its `streamId`.
+public struct PiEventRecord: Equatable, Sendable {
+  public let streamId: UUID
+  public let sequence: UInt64
+  public let name: String
+  public let data: JSONValue
+
+  public init(streamId: UUID, sequence: UInt64, name: String, data: JSONValue) {
+    self.streamId = streamId
+    self.sequence = sequence
+    self.name = name
+    self.data = data
+  }
+}
+
+/// A Pi event as the relay stored it, for reading a conversation from the start.
+public struct StoredPiEvent: Decodable, Equatable, Sendable {
+  public let id: Int64
+  public let streamId: UUID
+  public let sequence: UInt64
+  public let name: String
+  public let data: JSONValue
+  public let receivedAt: Int64
+
+  public var record: PiEventRecord {
+    PiEventRecord(streamId: streamId, sequence: sequence, name: name, data: data)
+  }
+}
+
+/// A page of stored events; `next` is where the following page starts, or nil at the end.
+public struct PiEventPage: Decodable, Equatable, Sendable {
+  public let events: [StoredPiEvent]
+  public let next: Int64?
+
+  public init(events: [StoredPiEvent], next: Int64?) {
+    self.events = events
+    self.next = next
   }
 }

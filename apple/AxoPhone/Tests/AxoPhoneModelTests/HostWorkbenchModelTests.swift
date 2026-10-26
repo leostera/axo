@@ -6,7 +6,7 @@ import XCTest
 
 @MainActor
 final class HostWorkbenchModelTests: XCTestCase {
-  private func make(sessions: [(Int, String, [Int])] = [(1, "One", [10])]) throws
+  private func make(sessions: [(Int, String, [Int])] = [(1, "One", [10])], history: any PiHistoryLoading = NoHistory()) throws
     -> (HostWorkbenchModel, ScriptedTransport, RemoteHost, AccountSession)
   {
     let id = UUID()
@@ -23,7 +23,7 @@ final class HostWorkbenchModelTests: XCTestCase {
     let account = AccountSession(store: MemoryTokenStore(SessionToken.fixture()))
     let model = HostWorkbenchModel(
       host: remote, connection: HostConnection(transport: transport, host: remote.reference),
-      account: account)
+      history: history, account: account)
     return (model, transport, remote, account)
   }
 
@@ -33,6 +33,57 @@ final class HostWorkbenchModelTests: XCTestCase {
     .terminalOutput(
       host: host.reference, sessionID: SessionID(rawValue: Int64(session)),
       shellID: ShellID(rawValue: Int64(shell)), sequence: sequence, data: Data(text.utf8))
+  }
+
+  private func stored(_ id: Int64, _ sequence: UInt64, role: String, _ text: String, stream: UUID) -> StoredPiEvent {
+    try! JSONDecoder().decode(StoredPiEvent.self, from: Data("""
+      {"id":\(id),"streamId":"\(stream.uuidString)","sequence":\(sequence),"name":"message.end",
+      "data":{"message":{"role":"\(role)","content":"\(text)"}},"receivedAt":1}
+      """.utf8))
+  }
+
+  func testHistoryIsReadInPagesAndPutsLiveMessagesAfterIt() async throws {
+    let stream = UUID()
+    let pages = Pages([
+      PiEventPage(events: [stored(1, 1, role: "user", "q", stream: stream), stored(2, 2, role: "assistant", "a", stream: stream)], next: 2),
+      PiEventPage(events: [stored(3, 3, role: "user", "q2", stream: stream)], next: nil),
+    ])
+    let (model, _, host, _) = try make(history: pages)
+    model.apply(.piEvent(host: host.reference, sessionID: 1, event: PiEventRecord(
+      streamId: stream, sequence: 4, name: "message.end",
+      data: try JSONDecoder().decode(JSONValue.self, from: Data(#"{"message":{"role":"assistant","content":"live"}}"#.utf8)))))
+    await model.loadHistory(of: 1)
+    XCTAssertEqual(model.chats[1]?.messages.map(\.text), ["q", "a", "q2", "live"])
+    XCTAssertEqual(model.historyStates[1], .loaded)
+    XCTAssertEqual(pages.cursors, [0, 2], "each page starts where the last one ended")
+  }
+
+  func testAVeryLongConversationIsReadUpToALimitAndSaysSo() async throws {
+    let stream = UUID()
+    let endless = Pages(Array(repeating: PiEventPage(events: [stored(1, 1, role: "user", "q", stream: stream)], next: 9), count: 40))
+    let (model, _, _, _) = try make(history: endless)
+    await model.loadHistory(of: 1)
+    XCTAssertEqual(endless.cursors.count, HostWorkbenchModel.maximumHistoryPages)
+    XCTAssertEqual(model.historyStates[1], .truncated)
+  }
+
+  func testAFailedHistoryReadIsReportedAndSignsOutOnlyForARefusedSession() async throws {
+    let (model, _, _, account) = try make(history: FailingHistory(error: RelayError.httpStatus(503)))
+    await model.loadHistory(of: 1)
+    XCTAssertEqual(model.historyStates[1], .failed("The Axo relay answered HTTP 503."))
+    XCTAssertEqual(account.state, .signedIn)
+    let (refused, _, _, refusedAccount) = try make(history: FailingHistory(error: RelayError.signInRequired))
+    await refused.loadHistory(of: 1)
+    XCTAssertEqual(refusedAccount.state, .signedOut)
+  }
+
+  func testLivePiEventsReachTheConversationAndARemovedSessionForgetsIt() throws {
+    let (model, _, host, _) = try make()
+    let record = PiEventRecord(streamId: UUID(), sequence: 1, name: "agent.start", data: .null)
+    model.apply(.piEvent(host: host.reference, sessionID: 1, event: record))
+    XCTAssertEqual(model.chats[1]?.activity, .working)
+    model.apply(.sessionRemoved(host: host.reference, sessionID: 1))
+    XCTAssertNil(model.chats[1])
   }
 
   func testStartsWithTheHostsSessionsAndSelectsTheFirst() throws {
@@ -137,7 +188,7 @@ final class HostWorkbenchModelTests: XCTestCase {
     let model = HostWorkbenchModel(
       host: remote,
       connection: HostConnection(transport: RefusingTransport(), host: remote.reference),
-      account: account)
+      history: NoHistory(), account: account)
     await model.send("x")
     XCTAssertEqual(account.state, .signedOut)
     XCTAssertEqual(model.failure, "Sign in to continue.")
@@ -239,4 +290,30 @@ final class ScriptedChannel: AxoMessageChannel, @unchecked Sendable {
 
 private struct RefusingTransport: AxoTransport {
   func connect() async throws -> any AxoMessageChannel { throw RelayError.signInRequired }
+}
+
+struct NoHistory: PiHistoryLoading {
+  func piEvents(of host: RemoteHostRef, session: SessionID, after cursor: Int64, limit: Int) async throws -> PiEventPage {
+    PiEventPage(events: [], next: nil)
+  }
+}
+
+struct FailingHistory: PiHistoryLoading {
+  let error: Error
+  func piEvents(of host: RemoteHostRef, session: SessionID, after cursor: Int64, limit: Int) async throws -> PiEventPage {
+    throw error
+  }
+}
+
+final class Pages: PiHistoryLoading, @unchecked Sendable {
+  private let lock = NSLock()
+  private var pages: [PiEventPage]
+  private(set) var cursors: [Int64] = []
+  init(_ pages: [PiEventPage]) { self.pages = pages }
+  func piEvents(of host: RemoteHostRef, session: SessionID, after cursor: Int64, limit: Int) async throws -> PiEventPage {
+    lock.withLock {
+      cursors.append(cursor)
+      return pages.isEmpty ? PiEventPage(events: [], next: nil) : pages.removeFirst()
+    }
+  }
 }

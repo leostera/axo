@@ -48,6 +48,30 @@ final class RemoteModelsTests: XCTestCase {
     XCTAssertEqual(String(decoding: data, as: UTF8.self), "hi\n")
   }
 
+  func testPiEventsCarryTheirPayloadAndStoredPagesDecode() throws {
+    let stream = UUID().uuidString
+    let live = """
+      {"subscriptionId":"\(UUID().uuidString)","event":{"type":"host.data","hostId":"\(host)",
+      "hostGeneration":"\(generation)","event":{"type":"pi.event","sessionId":2,"piSessionId":"pi-1",
+      "streamId":"\(stream)","sequence":5,"name":"message.end",
+      "data":{"message":{"role":"user","content":[{"type":"text","text":"hi"}]}}}}}
+      """
+    let event = try JSONDecoder().decode(RemoteHostNotification.self, from: Data(live.utf8)).event
+    guard case .piEvent(_, 2, let record) = event else { return XCTFail("\(event)") }
+    XCTAssertEqual(record.name, "message.end")
+    XCTAssertEqual(record.sequence, 5)
+    XCTAssertEqual(record.data["message"]?["role"]?.stringValue, "user")
+    XCTAssertEqual(record.data["message"]?["content"]?.arrayValue?.first?["text"]?.stringValue, "hi")
+
+    let page = """
+      {"events":[{"id":7,"hostGeneration":"\(generation)","piSessionId":"pi-1","streamId":"\(stream)",
+      "sequence":5,"name":"agent.start","data":null,"receivedAt":1700000000000}],"next":8}
+      """
+    let decoded = try JSONDecoder().decode(PiEventPage.self, from: Data(page.utf8))
+    XCTAssertEqual(decoded.next, 8)
+    XCTAssertEqual(decoded.events.first?.record.data, .null)
+  }
+
   func testASnapshotForAnotherHostIsRejected() {
     let json = """
       {"subscriptionId":"\(UUID().uuidString)","event":{"type":"host.data","hostId":"\(host)",

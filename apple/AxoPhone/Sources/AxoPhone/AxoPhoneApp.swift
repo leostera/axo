@@ -17,7 +17,13 @@ final class AppEnvironment: ObservableObject {
     } else {
       endpoint = .production
     }
-    account = AccountSession(store: KeychainTokenStore())
+    #if DEBUG && targetEnvironment(simulator)
+      account = PreviewFixture.requested
+        ? AccountSession(store: PreviewTokenStore())
+        : AccountSession(store: KeychainTokenStore())
+    #else
+      account = AccountSession(store: KeychainTokenStore())
+    #endif
   }
 }
 
@@ -32,8 +38,19 @@ public struct AxoPhoneRoot: View {
       case .signedOut:
         SignInView(endpoint: environment.endpoint, account: environment.account)
       case .signedIn:
-        HostsView(environment: environment)
+        WorkbenchView(environment: environment)
       }
     }
   }
 }
+
+#if DEBUG && targetEnvironment(simulator)
+  /// A signed-in phone with a made-up token, for the preview.
+  private struct PreviewTokenStore: SessionTokenStoring {
+    func load() -> SessionToken? {
+      SessionToken("axo1.6b0f0e0e-2c43-4b8e-9d0a-0d8f7b2b9c11.AAECAwQFBgcICQoLDA0ODxAREhMUFRYXGBkaGxwdHh8")
+    }
+    func save(_ token: SessionToken) throws {}
+    func delete() {}
+  }
+#endif
