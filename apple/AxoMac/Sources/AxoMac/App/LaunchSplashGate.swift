@@ -11,6 +11,15 @@ enum LaunchSplashGate {
   /// After this the terminal opens anyway and shows whatever state Axod is in.
   static let patience: Duration = .seconds(12)
 
+  /// How far along launch is, for the progress bar: Axod starting, Axod up, the catalog live.
+  static func progress(daemonRunning: Bool, catalogLive: Bool) -> Double {
+    switch (daemonRunning, catalogLive) {
+    case (_, true) where daemonRunning: 1
+    case (true, _): 0.65
+    default: 0.25
+    }
+  }
+
   static func shouldReveal(ready: Bool, needsAttention: Bool, elapsed: Duration) -> Bool {
     if elapsed >= patience || needsAttention { return true }
     return ready && elapsed >= minimumShown

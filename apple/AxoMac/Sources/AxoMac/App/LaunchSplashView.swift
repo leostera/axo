@@ -2,11 +2,11 @@ import AppKit
 import AxoDaemonManager
 import SwiftUI
 
-/// The small window Axo spins in while Axod starts and the Session catalog loads. When
-/// `LaunchSplashGate` says so, it opens the terminal window and fades itself away.
+/// Axo spinning over a progress bar, on a transparent window, while Axod starts and the Session
+/// catalog loads. When `LaunchSplashGate` says so, it opens the terminal window and fades away.
 struct LaunchSplashView: View {
   static let windowID = "splash"
-  static let size = CGSize(width: 220, height: 220)
+  static let size = CGSize(width: 200, height: 230)
   private static let fadeOut: TimeInterval = 0.35
 
   var daemon: DaemonController
@@ -27,6 +27,10 @@ struct LaunchSplashView: View {
     daemonIsRunning() && sessions.catalogConnection == .live
   }
 
+  private var progress: Double {
+    LaunchSplashGate.progress(daemonRunning: daemonIsRunning(), catalogLive: sessions.catalogConnection == .live)
+  }
+
   private var needsAttention: Bool {
     switch daemon.status {
     case .requiresApproval, .disabled, .failed: true
@@ -39,19 +43,24 @@ struct LaunchSplashView: View {
   }
 
   var body: some View {
-    ZStack {
-      if let puppet {
-        puppet.view
-          .padding(18)
-          .onAppear { puppet.setLoading(true) }
-      } else {
-        Image(nsImage: NSApplication.shared.applicationIconImage)
-          .resizable()
-          .scaledToFit()
-          .padding(40)
+    VStack(spacing: 14) {
+      Group {
+        if let puppet {
+          puppet.view
+            .onAppear { puppet.setLoading(true) }
+        } else {
+          Image(nsImage: NSApplication.shared.applicationIconImage)
+            .resizable()
+            .scaledToFit()
+            .padding(20)
+        }
       }
+      .frame(width: 180, height: 180)
+      SplashProgressBar(progress: progress)
+        .frame(width: 120)
     }
     .frame(width: Self.size.width, height: Self.size.height)
+    .modifier(ClearWindowBackground())
     .accessibilityElement()
     .accessibilityLabel("Axo is starting")
     .background(WindowReader { window = $0 })
@@ -88,8 +97,39 @@ struct LaunchSplashView: View {
   }
 }
 
-/// Hands over the hosting `NSWindow` once the view is in one, and makes it a plain floating tile:
-/// no title bar buttons, not resizable, movable by its background, centred.
+/// On macOS 15 SwiftUI paints the window's background itself; clear it there too.
+private struct ClearWindowBackground: ViewModifier {
+  func body(content: Content) -> some View {
+    if #available(macOS 15.0, *) {
+      content.containerBackground(.clear, for: .window)
+    } else {
+      content
+    }
+  }
+}
+
+/// A thin rounded bar that eases forward as launch moves along.
+private struct SplashProgressBar: View {
+  var progress: Double
+
+  var body: some View {
+    GeometryReader { geometry in
+      ZStack(alignment: .leading) {
+        Capsule().fill(.primary.opacity(0.15))
+        Capsule().fill(.primary.opacity(0.75))
+          .frame(width: max(geometry.size.height, geometry.size.width * progress))
+      }
+    }
+    .frame(height: 5)
+    .animation(.easeOut(duration: 0.6), value: progress)
+    .accessibilityElement()
+    .accessibilityLabel("Starting Axo")
+    .accessibilityValue(Text(progress, format: .percent.precision(.fractionLength(0))))
+  }
+}
+
+/// Hands over the hosting `NSWindow` once the view is in one, and makes it see-through: no
+/// background, shadow or title bar, not resizable, movable by Axo, centred.
 private struct WindowReader: NSViewRepresentable {
   var onWindow: (NSWindow) -> Void
 
@@ -107,10 +147,16 @@ private struct WindowReader: NSViewRepresentable {
     override func viewDidMoveToWindow() {
       super.viewDidMoveToWindow()
       guard let window else { return }
-      window.styleMask.remove([.resizable, .miniaturizable])
+      // Borderless: a hidden title bar still paints a strip; this keeps only the content.
+      let content = window.contentLayoutRect.size
+      window.styleMask = [.borderless, .fullSizeContentView]
+      window.setContentSize(content)
       for button in [NSWindow.ButtonType.closeButton, .miniaturizeButton, .zoomButton] {
         window.standardWindowButton(button)?.isHidden = true
       }
+      window.isOpaque = false
+      window.backgroundColor = .clear
+      window.hasShadow = false
       window.isMovableByWindowBackground = true
       window.center()
       let onWindow = onWindow

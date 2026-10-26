@@ -19,4 +19,12 @@ final class LaunchSplashGateTests: XCTestCase {
   func testGivesWayAfterItsPatienceRunsOut() {
     XCTAssertTrue(LaunchSplashGate.shouldReveal(ready: false, needsAttention: false, elapsed: .seconds(12)))
   }
+
+  func testProgressFollowsTheLaunchSteps() {
+    XCTAssertEqual(LaunchSplashGate.progress(daemonRunning: false, catalogLive: false), 0.25)
+    XCTAssertEqual(LaunchSplashGate.progress(daemonRunning: true, catalogLive: false), 0.65)
+    XCTAssertEqual(LaunchSplashGate.progress(daemonRunning: true, catalogLive: true), 1)
+    // A live catalog without a running daemon is stale, not done.
+    XCTAssertEqual(LaunchSplashGate.progress(daemonRunning: false, catalogLive: true), 0.25)
+  }
 }
