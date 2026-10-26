@@ -46,45 +46,74 @@ final class PhoneWorkbenchTests: XCTestCase {
     XCTAssertEqual(made.models.count, 1)
   }
 
-  private func makeCreating(_ hosts: [RemoteHost], creates: Bool) -> PhoneWorkbench {
+  private let creations = Creations()
+
+  private func makeCreating(_ hosts: [RemoteHost], workspaces: [(UUID, String)], refuseCreation: Bool = false) -> PhoneWorkbench {
     let account = AccountSession(store: MemoryTokenStore(SessionToken.fixture()))
+    let creations = creations
     return PhoneWorkbench(hosts: HostsModel(listing: Listing(hosts: hosts), account: account)) { remote in
       let transport = RespondingTransport()
-      if creates { transport.createsSession = (remote.hostId, 99) }
+      transport.workspaces = workspaces.map { (id: $0.0, name: $0.1) }
+      transport.creations = creations
+      if !refuseCreation { transport.createsSessionNumber = 99 }
       return HostWorkbenchModel(
         host: remote, connection: HostConnection(transport: transport, host: remote.reference),
         history: NoHistory(), account: account)
     }
   }
 
-  func testStartingAChatOpensANewSessionOnTheFirstOnlineMacWhenNoneIsOpen() async throws {
+  private func workspaces(_ names: [String]) -> [(UUID, String)] { names.map { (UUID(), $0) } }
+
+  func testAChatStartsAtOnceWhenTheMacHasOneWorkspaceAndIsAskedForInThatWorkspace() async throws {
     let offline = try hostWithSessions("Old", .offline, ids: [1])
     let online = try hostWithSessions("New", .online, ids: [])
-    let workbench = makeCreating([offline, online], creates: true)
+    let project = workspaces(["Project"])
+    let workbench = makeCreating([offline, online], workspaces: project)
     await workbench.hosts.refresh()
     XCTAssertEqual(workbench.newChatHost?.label, "New")
     let started = await workbench.startChat()
-    XCTAssertTrue(started)
+    XCTAssertEqual(started, .started)
     XCTAssertEqual(workbench.selection, PhoneWorkbench.Selection(host: online.hostId, session: 99))
     XCTAssertEqual(workbench.current?.selectedSession?.displayName, "New chat")
+    XCTAssertEqual(creations.workspaces, [project[0].0], "a chat is made in a Workspace, never as a bare Session")
   }
 
-  func testAChatTheMacRefusesIsNotStartedAndSaysWhy() async throws {
+  func testSeveralWorkspacesAskWhichAndThenStartThere() async throws {
     let online = try hostWithSessions("New", .online, ids: [1])
-    let workbench = makeCreating([online], creates: false)
+    let spaces = workspaces(["One", "Two"])
+    let workbench = makeCreating([online], workspaces: spaces)
+    await workbench.start()
+    guard case .chooseWorkspace(let choices) = await workbench.startChat() else { return XCTFail("should ask") }
+    XCTAssertEqual(choices.map(\.name), ["One", "Two"])
+    XCTAssertTrue(creations.workspaces.isEmpty, "nothing is made until the person picks")
+    let started = await workbench.startChat(in: choices[1].workspaceId)
+    XCTAssertEqual(started, .started)
+    XCTAssertEqual(creations.workspaces, [spaces[1].0])
+  }
+
+  func testAMacWithoutWorkspacesSaysSoInsteadOfDoingNothing() async throws {
+    let workbench = makeCreating([try hostWithSessions("New", .online, ids: [1])], workspaces: [])
     await workbench.start()
     let started = await workbench.startChat()
-    XCTAssertFalse(started)
+    XCTAssertEqual(started, .failed)
+    XCTAssertEqual(workbench.current?.failure, "This Mac has no workspaces yet. Create one in Axo on the Mac.")
+  }
+
+  func testAChatTheMacRefusesIsNotStartedAndTheOpenChatStaysOpen() async throws {
+    let workbench = makeCreating([try hostWithSessions("New", .online, ids: [1])], workspaces: workspaces(["Project"]), refuseCreation: true)
+    await workbench.start()
+    let started = await workbench.startChat()
+    XCTAssertEqual(started, .failed)
     XCTAssertNotNil(workbench.current?.failure)
-    XCTAssertEqual(workbench.selection?.session, 1, "the open chat stays open")
+    XCTAssertEqual(workbench.selection?.session, 1)
   }
 
   func testNoChatCanStartWhenEveryMacIsOffline() async throws {
-    let workbench = makeCreating([try hostWithSessions("Old", .offline, ids: [1])], creates: true)
+    let workbench = makeCreating([try hostWithSessions("Old", .offline, ids: [1])], workspaces: workspaces(["Project"]))
     await workbench.hosts.refresh()
     XCTAssertNil(workbench.newChatHost)
     let started = await workbench.startChat()
-    XCTAssertFalse(started)
+    XCTAssertEqual(started, .failed)
   }
 
   func testWithoutAnySessionsNothingOpens() async throws {
@@ -166,9 +195,19 @@ final class SwitchableListing: HostListing, @unchecked Sendable {
 }
 
 /// A relay that answers the two calls opening a Mac needs.
+/// What the transport was asked to create, shared with the test.
+final class Creations: @unchecked Sendable {
+  private let lock = NSLock()
+  private var made: [UUID] = []
+  var workspaces: [UUID] { lock.withLock { made } }
+  func record(_ workspace: UUID) { lock.withLock { made.append(workspace) } }
+}
+
 final class RespondingTransport: AxoTransport, @unchecked Sendable {
-  /// When set, `axo.remote.session.create` answers with a new Session of this number on this host.
-  var createsSession: (host: UUID, id: Int)?
+  var workspaces: [(id: UUID, name: String)] = []
+  var creations = Creations()
+  /// The number of the Session `axo.remote.workspace.session.create` answers with; nil refuses.
+  var createsSessionNumber: Int?
 
   func connect() async throws -> any AxoMessageChannel {
     let channel = ScriptedChannel()
@@ -177,12 +216,16 @@ final class RespondingTransport: AxoTransport, @unchecked Sendable {
         switch request.method {
         case "axo.protocol.negotiate": channel.reply(to: request.id, result: #"{"protocolVersion":1,"methods":[]}"#)
         case "axo.host.subscribe": channel.reply(to: request.id, result: #"{"subscriptionId":"\#(UUID().uuidString)"}"#)
-        case "axo.remote.session.create":
-          if let created = self.createsSession {
-            channel.reply(to: request.id, result: #"{"session":\#(sessionJSON(host: created.host, id: created.id, name: "New chat", shells: [created.id * 10]))}"#)
-          } else {
-            channel.reply(to: request.id, error: -32003, message: "Operation failed")
+        case "axo.remote.workspace.list":
+          let list = self.workspaces.map { #"{"workspaceId":"\#($0.id.uuidString.lowercased())","name":"\#($0.name)"}"# }
+          channel.reply(to: request.id, result: #"{"workspaces":[\#(list.joined(separator: ","))]}"#)
+        case "axo.remote.workspace.session.create":
+          let target = request.params["target"] as? [String: Any]
+          guard let number = self.createsSessionNumber, let host = (target?["hostId"] as? String).flatMap(UUID.init) else {
+            channel.reply(to: request.id, error: -32003, message: "Operation failed"); continue
           }
+          if let workspace = (request.params["workspaceId"] as? String).flatMap(UUID.init) { self.creations.record(workspace) }
+          channel.reply(to: request.id, result: #"{"session":\#(sessionJSON(host: host, id: number, name: "New chat", shells: [number * 10]))}"#)
         default: channel.reply(to: request.id, error: -32601, message: "no such method")
         }
       }

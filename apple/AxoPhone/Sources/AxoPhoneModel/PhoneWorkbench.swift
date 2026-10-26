@@ -79,17 +79,46 @@ public final class PhoneWorkbench {
     return hosts.hosts.first { $0.status == .online }
   }
 
-  /// Starts a chat (a new Session with its own Pi) on `newChatHost` and opens it. Returns whether
-  /// it did; a refusal is in `current?.failure`.
-  @discardableResult
-  public func startChat() async -> Bool {
-    guard let host = newChatHost else { return false }
-    if current?.reference.hostId != host.hostId { select(host: host.hostId, session: nil) }
-    guard let workbench = current else { return false }
-    await workbench.createSession()
-    guard workbench.failure == nil, let id = workbench.selectedSessionID else { return false }
+  /// How asking for a new chat went.
+  public enum ChatStart: Equatable, Sendable {
+    /// The chat is open.
+    case started
+    /// The Mac has several Workspaces; the person picks one, then `startChat(in:)`.
+    case chooseWorkspace([RemoteWorkspace])
+    /// Nothing started; the reason is in `current?.failure`.
+    case failed
+  }
+
+  /// Asks for a new chat on `newChatHost`: opens it at once when the Mac has one Workspace, and
+  /// asks which when it has several.
+  public func startChat() async -> ChatStart {
+    guard let workbench = await openNewChatHost(), let workspaces = await workbench.workspaces() else {
+      return .failed
+    }
+    switch workspaces.count {
+    case 0:
+      workbench.report("This Mac has no workspaces yet. Create one in Axo on the Mac.")
+      return .failed
+    case 1:
+      return await startChat(in: workspaces[0].workspaceId)
+    default:
+      return .chooseWorkspace(workspaces)
+    }
+  }
+
+  /// Starts a chat in a Workspace of `newChatHost` and opens it.
+  public func startChat(in workspace: UUID) async -> ChatStart {
+    guard let workbench = await openNewChatHost() else { return .failed }
+    await workbench.createChat(in: workspace)
+    guard workbench.failure == nil, let id = workbench.selectedSessionID else { return .failed }
     select(session: id)
-    return true
+    return .started
+  }
+
+  private func openNewChatHost() async -> HostWorkbenchModel? {
+    guard let host = newChatHost else { return nil }
+    if current?.reference.hostId != host.hostId { select(host: host.hostId, session: nil) }
+    return current
   }
 
   /// Opens one of the open Mac's Sessions.

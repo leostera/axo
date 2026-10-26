@@ -170,9 +170,18 @@ public final class HostWorkbenchModel {
 
   // MARK: - Actions
 
-  public func createSession() async {
+  /// The Workspaces a chat can start in. A chat is a Session in a Workspace, which runs Pi in the
+  /// Workspace's directory; a Session made outside one is a bare terminal with no Pi.
+  public func workspaces() async -> [RemoteWorkspace]? {
+    var found: [RemoteWorkspace]?
+    await attempt { found = try await connection.workspaces() }
+    return found
+  }
+
+  /// Starts a chat in `workspace` and opens it.
+  public func createChat(in workspace: UUID) async {
     await attempt {
-      let session = try await connection.createSession()
+      let session = try await connection.createSession(inWorkspace: workspace)
       apply(.sessionSnapshot(host: reference, session: session))
       selectedSessionID = session.sessionId
     }
@@ -202,6 +211,9 @@ public final class HostWorkbenchModel {
     }
     return accepted
   }
+
+  /// Shows `message` where failures are shown.
+  func report(_ message: String) { failure = message }
 
   private func attempt(_ work: () async throws -> Void) async {
     do {

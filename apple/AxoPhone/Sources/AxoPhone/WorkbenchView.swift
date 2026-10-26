@@ -26,6 +26,8 @@ struct WorkbenchView: View {
   @State private var menuDragOffset: CGFloat = 0
   @State private var showingSettings = PreviewFixture.settingsOpen
   @State private var showingSearch = false
+  /// Set when the Mac has several Workspaces and the person has to pick where the chat goes.
+  @State private var workspaceChoices: [RemoteWorkspace]?
   @Environment(\.accessibilityReduceMotion) private var reduceMotion
   @AppStorage("appearance") private var appearance: AppAppearance = .system
   @AppStorage("accentColor") private var accentColor: AppAccentColor = .white
@@ -116,6 +118,16 @@ struct WorkbenchView: View {
     }
     .preferredColorScheme(appearance.colorScheme)
     .tint(accentColor.color)
+    .confirmationDialog(
+      "Start the chat in", isPresented: Binding(get: { workspaceChoices != nil }, set: { if !$0 { workspaceChoices = nil } }),
+      titleVisibility: .visible
+    ) {
+      ForEach(workspaceChoices ?? [], id: \.workspaceId) { workspace in
+        Button(workspace.name) {
+          Task { if await workbench.startChat(in: workspace.workspaceId) == .started { closeMenu() } }
+        }
+      }
+    }
     .sheet(isPresented: $showingSearch) {
       SessionSearchView(hosts: workbench.hosts.hosts) { host, session in
         workbench.select(host: host.hostId, session: session.sessionId)
@@ -225,7 +237,11 @@ struct WorkbenchView: View {
       Button {
         Task {
           // Stay in the menu when the Mac refuses, where the reason is shown.
-          if await workbench.startChat() { closeMenu() }
+          switch await workbench.startChat() {
+          case .started: closeMenu()
+          case .chooseWorkspace(let choices): workspaceChoices = choices
+          case .failed: break
+          }
         }
       } label: {
         Label("Chat", systemImage: "square.and.pencil")
