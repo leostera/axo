@@ -3,13 +3,13 @@ import AxoPhoneModel
 import Foundation
 import Security
 
-/// The Access token in the Keychain, readable only while the phone is unlocked and never
+/// The session token in the Keychain, readable only while the phone is unlocked and never
 /// copied to another device or a backup.
-struct KeychainTokenStore: AccessTokenStoring {
+struct KeychainTokenStore: SessionTokenStoring {
   private let service = "dev.leostera.axo.phone.access"
-  private let account = "cf-access-token"
+  private let account = "session-token"
 
-  func load() -> AccessToken? {
+  func load() -> SessionToken? {
     var query = baseQuery
     query[kSecReturnData as String] = true
     query[kSecMatchLimit as String] = kSecMatchLimitOne
@@ -17,10 +17,10 @@ struct KeychainTokenStore: AccessTokenStoring {
     guard SecItemCopyMatching(query as CFDictionary, &item) == errSecSuccess,
       let data = item as? Data, let text = String(data: data, encoding: .utf8)
     else { return nil }
-    return AccessToken(text)
+    return SessionToken(text)
   }
 
-  func save(_ token: AccessToken) throws {
+  func save(_ token: SessionToken) throws {
     delete()
     var item = baseQuery
     item[kSecValueData as String] = Data(token.value.utf8)

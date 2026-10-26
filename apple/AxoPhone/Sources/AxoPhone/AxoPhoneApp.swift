@@ -30,12 +30,7 @@ public struct AxoPhoneRoot: View {
     Group {
       switch environment.account.state {
       case .signedOut:
-        VStack(spacing: 0) {
-          if let failure = environment.account.signInFailure {
-            Text(failure).font(.footnote).foregroundStyle(.red).padding(8)
-          }
-          SignInView(endpoint: environment.endpoint) { environment.account.signIn(with: $0) }
-        }
+        SignInView(endpoint: environment.endpoint, account: environment.account)
       case .signedIn:
         HostsView(environment: environment)
       }

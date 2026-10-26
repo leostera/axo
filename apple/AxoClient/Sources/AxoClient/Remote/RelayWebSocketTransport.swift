@@ -9,7 +9,7 @@ protocol WebSocketTasking: Sendable {
 }
 
 /// Connections to one host through the account's relay: JSON-RPC text frames over a WebSocket,
-/// authenticated with the Access token and no cookies. It plugs into `JSONRPCConnection`
+/// authenticated with the session token and no cookies. It plugs into `JSONRPCConnection`
 /// exactly where the Unix socket does.
 public struct RelayWebSocketTransport: AxoTransport {
   /// Larger than the relay's biggest frame (a terminal output batch is up to 128 KiB).
@@ -18,12 +18,12 @@ public struct RelayWebSocketTransport: AxoTransport {
 
   private let endpoint: RelayEndpoint
   private let host: RemoteHostRef
-  private let tokens: any AccessTokenProvider
+  private let tokens: any SessionTokenProvider
   private let session: URLSession
 
   public init(
     endpoint: RelayEndpoint = .production, host: RemoteHostRef,
-    tokens: any AccessTokenProvider, session: URLSession = RelayCredentials.makeURLSession()
+    tokens: any SessionTokenProvider, session: URLSession = RelayCredentials.makeURLSession()
   ) {
     self.endpoint = endpoint
     self.host = host

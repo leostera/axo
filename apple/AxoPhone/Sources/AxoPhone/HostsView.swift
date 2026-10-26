@@ -38,7 +38,11 @@ struct HostsView: View {
       }
       .toolbar {
         Button("Sign out", systemImage: "rectangle.portrait.and.arrow.right") {
-          environment.account.signOut()
+          Task {
+            // End it at the relay too, so a copied token stops working; then forget it here.
+            try? await AccountClient(endpoint: environment.endpoint, tokens: environment.account.tokens).signOut()
+            environment.account.signOut()
+          }
         }
       }
       .refreshable { await model.refresh() }

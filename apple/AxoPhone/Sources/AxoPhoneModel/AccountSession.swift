@@ -2,17 +2,17 @@ import AxoClient
 import Foundation
 import Observation
 
-/// Where the Access token is kept between launches: the Keychain on a phone.
-public protocol AccessTokenStoring: Sendable {
-  func load() -> AccessToken?
+/// Where the session token is kept between launches: the Keychain on a phone.
+public protocol SessionTokenStoring: Sendable {
+  func load() -> SessionToken?
   /// Fails if the token could not be kept; the caller must not treat the phone as signed in.
-  func save(_ token: AccessToken) throws
+  func save(_ token: SessionToken) throws
   func delete()
 }
 
-/// Whether this phone is signed in to Cloudflare Access, and the token its requests carry.
+/// Whether this phone is signed in, and the token its requests carry.
 ///
-/// Access is the only way in: there is no other account state. A request the relay refuses as
+/// Signing in is the only way in: there is no other account state. A request the relay refuses as
 /// unauthenticated signs the phone out, so the next screen is the sign-in, not a loop of errors.
 @MainActor
 @Observable
@@ -25,20 +25,20 @@ public final class AccountSession {
   public private(set) var state: State
   /// Why the last sign-in did not take, for the sign-in screen to show.
   public private(set) var signInFailure: String?
-  private let store: any AccessTokenStoring
+  private let store: any SessionTokenStoring
 
   /// For clients: always reads the current token, so a fresh sign-in is used at once.
-  public nonisolated let tokens: any AccessTokenProvider
+  public nonisolated let tokens: any SessionTokenProvider
 
-  public init(store: any AccessTokenStoring) {
+  public init(store: any SessionTokenStoring) {
     self.store = store
-    tokens = StoredAccessToken(store: store)
+    tokens = StoredSessionToken(store: store)
     state = store.load() == nil ? .signedOut : .signedIn
   }
 
   /// Keeps `token` and signs in. If it cannot be kept the phone stays signed out: a token that
   /// is not stored would be gone by the next request and sign the phone straight back out.
-  public func signIn(with token: AccessToken) {
+  public func signIn(with token: SessionToken) {
     do {
       try store.save(token)
     } catch {
@@ -63,10 +63,10 @@ public final class AccountSession {
   }
 }
 
-private struct StoredAccessToken: AccessTokenProvider {
-  let store: any AccessTokenStoring
+private struct StoredSessionToken: SessionTokenProvider {
+  let store: any SessionTokenStoring
 
-  func accessToken() async throws -> AccessToken {
+  func sessionToken() async throws -> SessionToken {
     guard let token = store.load() else { throw RelayError.signInRequired }
     return token
   }

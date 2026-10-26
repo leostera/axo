@@ -7,7 +7,7 @@ import XCTest
 
 /// The real URLSession WebSocket against a loopback server: what actually goes on the wire.
 final class RelayWebSocketLoopbackTests: XCTestCase {
-  func testTheUpgradeCarriesTheAccessTokenAndNoCookiesAndFramesAreAcknowledged() async throws {
+  func testTheUpgradeCarriesTheSessionTokenAndNoCookiesAndFramesAreAcknowledged() async throws {
     let server = try LoopbackRelay()
     defer { server.stop() }
     let port = try await server.start()
@@ -23,14 +23,14 @@ final class RelayWebSocketLoopbackTests: XCTestCase {
     let host = RemoteHostRef(hostId: UUID(), hostGeneration: UUID())
     let transport = RelayWebSocketTransport(
       endpoint: try XCTUnwrap(RelayEndpoint(origin: origin, allowInsecureLoopback: true)),
-      host: host, tokens: StaticAccessToken(try XCTUnwrap(AccessToken("real.access.token"))))
+      host: host, tokens: StaticSessionToken(try XCTUnwrap(SessionToken.fixture(3))))
     let rpc = JSONRPCConnection(transport: transport)
     let reply: Echo = try await rpc.call("echo", params: Echo(value: "ping"), timeout: .seconds(15))
     XCTAssertEqual(reply.value, "pong")
 
     let seen = try await server.upgradeHeaders()
-    XCTAssertEqual(seen["cf-access-token"], "real.access.token")
-    XCTAssertNil(seen["cookie"], "no cookie may accompany the Access token")
+    XCTAssertEqual(seen["authorization"], "Bearer \(SessionToken.fixture(3).value)")
+    XCTAssertNil(seen["cookie"], "no cookie may accompany the session token")
     try await server.waitForAcknowledgement()
     await rpc.disconnect()
   }
@@ -43,7 +43,7 @@ final class RelayWebSocketLoopbackTests: XCTestCase {
       endpoint: try XCTUnwrap(
         RelayEndpoint(origin: URL(string: "http://127.0.0.1:\(port)")!, allowInsecureLoopback: true)),
       host: RemoteHostRef(hostId: UUID(), hostGeneration: UUID()),
-      tokens: StaticAccessToken(try XCTUnwrap(AccessToken("expired.token"))))
+      tokens: StaticSessionToken(try XCTUnwrap(SessionToken.fixture(4))))
     do {
       _ = try await transport.connect()
       XCTFail("a refused upgrade must not connect")
@@ -161,7 +161,7 @@ private final class LoopbackRelay: @unchecked Sendable {
   }
 }
 
-/// Answers every connection with a bare HTTP status, as Access does for a caller it refuses.
+/// Answers every connection with a bare HTTP status, as the relay does for a caller it refuses.
 private final class RefusingServer: @unchecked Sendable {
   private let listener: NWListener
   private let queue = DispatchQueue(label: "refusing-server")

@@ -38,20 +38,29 @@ final class RelayEndpointTests: XCTestCase {
   }
 }
 
-final class AccessTokenTests: XCTestCase {
-  func testATokenIsHeaderSafe() {
-    XCTAssertNotNil(AccessToken("eyJhbGciOiJSUzI1NiJ9.eyJzdWIiOiJ4In0.c2ln"))
-    for bad in ["", "a b", "a\nb", "a\r\nX-Evil: 1", "tökén", String(repeating: "a", count: 16_385)] {
-      XCTAssertNil(AccessToken(bad), bad)
+final class SessionTokenTests: XCTestCase {
+  func testOnlyCanonicalTokensParse() throws {
+    let token = SessionToken.fixture()
+    XCTAssertEqual(token.accountID, UUID(uuidString: "6b0f0e0e-2c43-4b8e-9d0a-0d8f7b2b9c11"))
+    let secret = String(token.value.split(separator: ".")[2])
+    let account = "6b0f0e0e-2c43-4b8e-9d0a-0d8f7b2b9c11"
+    for bad in [
+      "", "axo1", "axo2.\(account).\(secret)", "axo1.not-a-uuid.\(secret)",
+      "axo1.\(account.uppercased()).\(secret)", "axo1.\(account).\(secret.dropLast())",
+      "axo1.\(account).\(secret).extra", "axo1.\(account).\(secret.dropLast())B\n",
+      "axo1.\(account).\(String(secret.dropLast()))B", "axo1.\(account).\(String(repeating: "A", count: 44))",
+      "axo1.\(account).\(secret) ", "axo1.\(account).tökén\(secret.dropFirst(5))",
+    ] {
+      XCTAssertNil(SessionToken(bad), bad)
     }
   }
 
-  func testAuthorizedRequestsCarryTheTokenAndNoCookies() async throws {
-    let token = try XCTUnwrap(AccessToken("abc.def.ghi"))
+  func testAuthorizedRequestsCarryABearerTokenAndNoCookies() async throws {
+    let token = SessionToken.fixture()
     let request = try await RelayCredentials.authorize(
       URLRequest(url: URL(string: "https://axo.leostera.dev/api/auth/me")!),
-      with: StaticAccessToken(token))
-    XCTAssertEqual(request.value(forHTTPHeaderField: "cf-access-token"), "abc.def.ghi")
+      with: StaticSessionToken(token))
+    XCTAssertEqual(request.value(forHTTPHeaderField: "Authorization"), "Bearer \(token.value)")
     XCTAssertFalse(request.httpShouldHandleCookies)
     XCTAssertNil(request.value(forHTTPHeaderField: "Cookie"))
   }
@@ -69,14 +78,14 @@ final class AccountClientTests: XCTestCase {
   private let hostID = UUID()
   private let generation = UUID()
 
-  func testHostsAreRequestedWithTheAccessTokenAndDecoded() async throws {
+  func testHostsAreRequestedWithTheSessionTokenAndDecoded() async throws {
     let loader = StubLoader(status: 200, body: hostList)
     let client = makeClient(loader)
     let hosts = try await client.hosts()
     XCTAssertEqual(hosts.map(\.label), ["Studio"])
     let request = try XCTUnwrap(loader.requests.first)
     XCTAssertEqual(request.url?.path, "/api/v1/account/hosts")
-    XCTAssertEqual(request.value(forHTTPHeaderField: "cf-access-token"), "tok.en")
+    XCTAssertEqual(request.value(forHTTPHeaderField: "Authorization"), "Bearer \(SessionToken.fixture().value)")
     XCTAssertFalse(request.httpShouldHandleCookies)
   }
 
@@ -125,7 +134,7 @@ final class AccountClientTests: XCTestCase {
 
   private func makeClient(_ loader: StubLoader) -> AccountClient {
     AccountClient(
-      tokens: StaticAccessToken(AccessToken("tok.en")!), loader: loader)
+      tokens: StaticSessionToken(SessionToken.fixture()), loader: loader)
   }
 
   private var hostList: String {
@@ -385,5 +394,15 @@ extension FakeChannel {
     let raw = try await rawRequests(count: 1)[0]
     let object = try XCTUnwrap(JSONSerialization.jsonObject(with: raw) as? [String: Any])
     return try XCTUnwrap(object["id"] as? Int)
+  }
+}
+
+extension SessionToken {
+  /// A well-formed token for tests; `seed` makes different ones.
+  static func fixture(_ seed: UInt8 = 0) -> SessionToken {
+    let secret = Data((0..<32).map { UInt8(($0 &+ Int(seed)) & 0xFF) }).base64EncodedString()
+      .replacingOccurrences(of: "+", with: "-").replacingOccurrences(of: "/", with: "_")
+      .replacingOccurrences(of: "=", with: "")
+    return SessionToken("axo1.6b0f0e0e-2c43-4b8e-9d0a-0d8f7b2b9c11.\(secret)")!
   }
 }

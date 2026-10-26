@@ -33,7 +33,7 @@ public final class HostConnection: Sendable {
   }
 
   public convenience init(
-    endpoint: RelayEndpoint = .production, host: RemoteHostRef, tokens: any AccessTokenProvider
+    endpoint: RelayEndpoint = .production, host: RemoteHostRef, tokens: any SessionTokenProvider
   ) {
     self.init(
       transport: RelayWebSocketTransport(endpoint: endpoint, host: host, tokens: tokens), host: host)

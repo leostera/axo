@@ -20,7 +20,7 @@ final class HostWorkbenchModelTests: XCTestCase {
         "sessions":[\(json.joined(separator: ","))]}
         """.utf8))
     let transport = ScriptedTransport()
-    let account = AccountSession(store: MemoryTokenStore(AccessToken("a.b.c")))
+    let account = AccountSession(store: MemoryTokenStore(SessionToken.fixture()))
     let model = HostWorkbenchModel(
       host: remote, connection: HostConnection(transport: transport, host: remote.reference),
       account: account)
@@ -127,20 +127,20 @@ final class HostWorkbenchModelTests: XCTestCase {
     channel.reply(to: sent.id, error: -32002, message: "Stale host")
     await typing.value
     XCTAssertEqual(model.failure, "axod rejected the request (-32002): Stale host")
-    XCTAssertEqual(account.state, .signedIn, "a stale host is not an Access problem")
+    XCTAssertEqual(account.state, .signedIn, "a stale host is not a sign-in problem")
   }
 
   func testARefusedConnectionSignsThePhoneOut() async throws {
     let id = UUID()
     let remote = try host("Studio", .online, sessions: [sessionJSON(host: id, id: 1, name: "One", shells: [10])])
-    let account = AccountSession(store: MemoryTokenStore(AccessToken("a.b.c")))
+    let account = AccountSession(store: MemoryTokenStore(SessionToken.fixture()))
     let model = HostWorkbenchModel(
       host: remote,
       connection: HostConnection(transport: RefusingTransport(), host: remote.reference),
       account: account)
     await model.send("x")
     XCTAssertEqual(account.state, .signedOut)
-    XCTAssertEqual(model.failure, "Sign in with Cloudflare Access to continue.")
+    XCTAssertEqual(model.failure, "Sign in to continue.")
   }
 
   func testNothingIsSentWithoutATerminalOrText() async throws {

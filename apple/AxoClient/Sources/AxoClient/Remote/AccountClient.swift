@@ -16,23 +16,23 @@ extension URLSession: HTTPDataLoading {
   }
 }
 
-/// Who Access says the caller is.
+/// Who the relay says the caller is.
 public struct SignedInAccount: Decodable, Equatable, Sendable {
   public let accountId: UUID
 }
 
-/// An account's view of its hosts, over HTTPS behind Cloudflare Access.
+/// An account's view of its hosts, over HTTPS.
 ///
 /// The relay owns this data and decides who may see it; the client only asks, and checks that
 /// what came back is what it asked about.
 public struct AccountClient: Sendable {
   private let endpoint: RelayEndpoint
-  private let tokens: any AccessTokenProvider
+  private let tokens: any SessionTokenProvider
   private let loader: any HTTPDataLoading
 
   public init(
     endpoint: RelayEndpoint = .production,
-    tokens: any AccessTokenProvider,
+    tokens: any SessionTokenProvider,
     loader: any HTTPDataLoading = RelayCredentials.makeURLSession()
   ) {
     self.endpoint = endpoint
@@ -42,6 +42,20 @@ public struct AccountClient: Sendable {
 
   public func account() async throws -> SignedInAccount {
     try await get(endpoint.meURL)
+  }
+
+  /// Ends this phone's sign-in at the relay. Other devices stay signed in.
+  public func signOut() async throws {
+    var request = URLRequest(url: endpoint.logoutURL)
+    request.httpMethod = "POST"
+    request = try await RelayCredentials.authorize(request, with: tokens)
+    let (_, response) = try await loader.load(request)
+    switch response.statusCode {
+    case 204: break
+    // Already ended, which is what was asked for.
+    case 401: break
+    case let status: throw RelayError.httpStatus(status)
+    }
   }
 
   public func hosts() async throws -> [RemoteHost] {

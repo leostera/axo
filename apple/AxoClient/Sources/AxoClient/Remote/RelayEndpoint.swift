@@ -5,7 +5,7 @@ import Foundation
 ///
 /// Parsed once: an endpoint is always `https`, or `http` to a loopback address when the caller
 /// opts in (tests against a local Worker), so nothing downstream re-checks the scheme before
-/// sending an Access token.
+/// sending a session token.
 public struct RelayEndpoint: Equatable, Sendable {
   public static let production = RelayEndpoint(origin: URL(string: "https://axo.leostera.dev")!)!
 
@@ -34,6 +34,19 @@ public struct RelayEndpoint: Equatable, Sendable {
   }
 
   public var meURL: URL { url("/api/auth/me") }
+  public var tokenURL: URL { url("/api/auth/token") }
+  public var logoutURL: URL { url("/api/auth/logout") }
+
+  /// Where the system browser starts sign-in. `challenge` is the PKCE challenge of a secret that
+  /// stays in the app, so only this app can finish the sign-in it started.
+  public func signInURL(challenge: String) -> URL {
+    var components = URLComponents(url: url("/api/auth/cloudflare/start"), resolvingAgainstBaseURL: false)!
+    components.queryItems = [
+      URLQueryItem(name: "client", value: "native"),
+      URLQueryItem(name: "challenge", value: challenge),
+    ]
+    return components.url!
+  }
   public var hostsURL: URL { url("/api/v1/account/hosts") }
 
   public func sessionsURL(of host: RemoteHostRef) -> URL {
