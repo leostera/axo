@@ -882,6 +882,17 @@ enum RemoteResult {
         rows: u32,
         columns: u32,
     },
+    PromptAccepted {
+        accepted: bool,
+    },
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+struct PromptParams {
+    target: HostRef,
+    session_id: SessionId,
+    text: String,
 }
 
 #[derive(Debug, Deserialize)]
@@ -1091,6 +1102,14 @@ fn dispatch_remote_call(
                 accepted: true,
                 sequence: request.sequence,
             })
+        }
+        "axo.remote.session.prompt" => {
+            let request = parsed!(PromptParams);
+            target_ok!(request.target);
+            sessions
+                .remote_prompt_pi(request.session_id, &request.text)
+                .map_err(map_operation_error)?;
+            Ok(RemoteResult::PromptAccepted { accepted: true })
         }
         "axo.remote.terminal.resize" => {
             let request = parsed!(TerminalResizeParams);

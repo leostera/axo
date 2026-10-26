@@ -155,6 +155,10 @@ impl axo_relay::RelayHost for RelayHostAdapter {
             .write_terminal_input(session_id, shell_id, sequence, data)
     }
 
+    fn remote_prompt_pi(&self, session_id: SessionId, text: &str) -> io::Result<()> {
+        self.0.prompt_pi(session_id, text)
+    }
+
     fn remote_terminal_resize(
         &self,
         session_id: SessionId,

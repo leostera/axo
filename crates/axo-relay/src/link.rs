@@ -297,6 +297,9 @@ pub(crate) mod testing {
         ) -> std::io::Result<()> {
             unreachable!()
         }
+        fn remote_prompt_pi(&self, _: axo_protocol::SessionId, _: &str) -> std::io::Result<()> {
+            unreachable!()
+        }
         fn remote_terminal_resize(
             &self,
             _: axo_protocol::SessionId,

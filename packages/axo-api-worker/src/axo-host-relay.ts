@@ -60,6 +60,7 @@ const hostRemoteMethods = {
   "axo.remote.session.rename": hostV1Methods["axo.remote.session.rename"],
   "axo.remote.session.layout.set": hostV1Methods["axo.remote.session.layout.set"],
   "axo.remote.terminal.input": hostV1Methods["axo.remote.terminal.input"],
+  "axo.remote.session.prompt": hostV1Methods["axo.remote.session.prompt"],
   "axo.remote.terminal.resize": hostV1Methods["axo.remote.terminal.resize"],
 } as const;
 type HostRemoteMethod = keyof typeof hostRemoteMethods;

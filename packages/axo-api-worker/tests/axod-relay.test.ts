@@ -256,6 +256,24 @@ test("an isolated axod pairs with an account, then the account drives it through
       data: input,
     });
     assert.equal(inputReply.accepted, true);
+
+    // The call is wired through the Worker to the host. This isolated Session runs a plain shell,
+    // not Pi, so the host refuses it as not found; an empty prompt never leaves the Worker.
+    await assert.rejects(
+      client.call("axo.remote.session.prompt", {
+        target: { hostId, hostGeneration },
+        sessionId: firstSession.sessionId,
+        text: "run the tests",
+      }),
+      { code: -32004 },
+    );
+    await assert.rejects(
+      client.call("axo.remote.session.prompt", {
+        target: { hostId, hostGeneration },
+        sessionId: firstSession.sessionId,
+        text: "",
+      }),
+    );
     await waitFor("the streamed remote terminal output", 18_000, async () =>
       outputChunks.join("").includes(terminalText) ? true : undefined,
     );

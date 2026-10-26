@@ -143,8 +143,14 @@ pub const PARITY: &[Parity] = &[
     ),
 ];
 
+/// Remote calls with no local counterpart: what only a person away from the Mac needs.
+pub const REMOTE_ONLY: &[&str] = &[
+    // Sends a prompt to the Session's Pi; on the Mac a person types into the pane instead.
+    "axo.remote.session.prompt",
+];
+
 /// The remote methods that must exist now: every [`Remote::Call`] and [`Remote::Events`] name,
-/// once each, in table order.
+/// once each, in table order, then the [`REMOTE_ONLY`] calls.
 pub fn required_remote_methods() -> Vec<&'static str> {
     let mut names = Vec::new();
     for parity in PARITY {
@@ -154,6 +160,7 @@ pub fn required_remote_methods() -> Vec<&'static str> {
             names.push(name);
         }
     }
+    names.extend(REMOTE_ONLY);
     names
 }
 
@@ -180,6 +187,9 @@ mod tests {
             if let Remote::Events(name) = parity.remote {
                 assert!(name.starts_with("axo.host."), "{name}");
             }
+        }
+        for name in REMOTE_ONLY {
+            assert!(name.starts_with("axo.remote."), "{name}");
         }
     }
 

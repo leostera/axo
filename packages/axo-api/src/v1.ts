@@ -184,6 +184,7 @@ export const hostV1Methods = {
     sequence: z.number().int().min(0).max(Number.MAX_SAFE_INTEGER),
     data: z.base64().min(4).max(65_536),
   }).strict(),
+  "axo.remote.session.prompt": sessionTargetSchema.extend({ text: z.string().min(1).max(16_000) }).strict(),
   "axo.remote.terminal.resize": shellTargetSchema.extend({
     rows: z.number().int().min(1).max(65_535),
     columns: z.number().int().min(1).max(65_535),
@@ -205,6 +206,7 @@ export const hostMutationMethods = [
   "axo.remote.shell.close",
   "axo.remote.session.layout.set",
   "axo.remote.terminal.input",
+  "axo.remote.session.prompt",
   "axo.remote.terminal.resize",
 ] as const;
 
@@ -248,6 +250,7 @@ export const remoteTerminalInputResultSchema = z.object({
   accepted: z.literal(true),
   sequence: z.number().int().min(0).max(Number.MAX_SAFE_INTEGER),
 }).strict();
+export const remotePromptResultSchema = z.object({ accepted: z.literal(true) }).strict();
 export const remoteTerminalResizeResultSchema = z.object({
   accepted: z.literal(true),
   rows: z.number().int().min(1).max(65_535),
@@ -271,6 +274,7 @@ export const hostV1Results = {
   "axo.remote.session.rename": remoteLayoutSetResultSchema,
   "axo.remote.session.layout.set": remoteLayoutSetResultSchema,
   "axo.remote.terminal.input": remoteTerminalInputResultSchema,
+  "axo.remote.session.prompt": remotePromptResultSchema,
   "axo.remote.terminal.resize": remoteTerminalResizeResultSchema,
 } as const;
 

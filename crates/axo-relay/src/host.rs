@@ -58,6 +58,9 @@ pub trait RelayHost: Send + Sync {
         sequence: u64,
         data: &str,
     ) -> io::Result<()>;
+    /// Sends `text` to the Session's Pi as a prompt, as if typed and submitted in its pane.
+    /// Fails with `InvalidInput` for empty or oversized text, and `NotFound` if Pi is not running.
+    fn remote_prompt_pi(&self, session_id: SessionId, text: &str) -> io::Result<()>;
     fn remote_terminal_resize(
         &self,
         session_id: SessionId,

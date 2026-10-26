@@ -17,6 +17,9 @@ use axo_protocol::{GridSize, PaneRole, SessionId, ShellActivity, ShellId};
 use axo_pty::process;
 use axo_pty::{NextOutput, OutputSubscriber, TerminalOutput, WindowSize, attach};
 
+/// Most prompt text one remote prompt carries.
+const MAX_PI_PROMPT_BYTES: usize = 16_000;
+
 const ATTACH_STOP_POLL_INTERVAL: Duration = Duration::from_millis(100);
 
 pub(super) const MAX_CONCURRENT_TERMINAL_ATTACHMENTS: usize = 256;
@@ -396,6 +399,40 @@ impl SessionManager {
         Ok(())
     }
 
+    /// Types a prompt into the Session's Pi pane and submits it. The text goes in as a bracketed
+    /// paste, so newlines and control characters in it stay text instead of acting as keys; only
+    /// the final carriage return submits. This does not use the pane's input sequence: that
+    /// belongs to the one client typing into the pane.
+    pub(super) fn prompt_pi(&self, session_id: SessionId, text: &str) -> io::Result<()> {
+        if text.trim().is_empty() || text.len() > MAX_PI_PROMPT_BYTES {
+            return Err(io::Error::new(
+                io::ErrorKind::InvalidInput,
+                "a prompt must contain 1 to 16000 bytes of text",
+            ));
+        }
+        // A pasted escape could close the paste early and run the rest as keystrokes.
+        let text: String = text.chars().filter(|&c| c != '\u{1b}').collect();
+        let mut state = self.lock_state()?;
+        let pi_shell = state
+            .panes
+            .in_session(session_id)
+            .find_map(|(id, pane)| match pane {
+                axo_panes::Pane::Running(shell) if shell.role == PaneRole::Pi => Some(id),
+                _ => None,
+            })
+            .ok_or_else(|| io::Error::new(io::ErrorKind::NotFound, "Pi is not running"))?;
+        let running = state
+            .panes
+            .running_in_mut(session_id, pi_shell)
+            .ok_or_else(|| io::Error::new(io::ErrorKind::NotFound, "Pi is not running"))?;
+        let input = format!("\u{1b}[200~{text}\u{1b}[201~\r");
+        process::write_all(
+            running.master.as_raw_fd(),
+            input.as_bytes(),
+            TERMINAL_INPUT_WRITE_TIMEOUT,
+        )
+    }
+
     pub(super) fn resize_terminal(
         &self,
         session_id: SessionId,
@@ -579,5 +616,56 @@ mod tests {
         drop(permits);
         assert_eq!(active.load(Ordering::Relaxed), 0);
         assert!(AttachmentPermit::try_acquire(active).is_some());
+    }
+
+    /// A manager whose shells are `cat` writing everything they are typed to a file.
+    fn manager_recording_input(directory: &std::path::Path) -> (Arc<SessionManager>, std::path::PathBuf) {
+        let log = directory.join("typed.log");
+        let shell = directory.join("recording-shell");
+        std::fs::write(&shell, format!("#!/bin/sh\nexec /bin/cat > {}\n", log.display())).unwrap();
+        std::fs::set_permissions(&shell, std::fs::Permissions::from_mode(0o700)).unwrap();
+        let mut database = axo_store::Connection::open(directory.join(axo_store::DATABASE_FILE)).unwrap();
+        axo_store::initialize_database(&mut database).unwrap();
+        database
+            .execute(
+                "INSERT INTO daemon_metadata (key, value) VALUES ('shell_command', ?1)",
+                rusqlite::params![shell.to_string_lossy()],
+            )
+            .unwrap();
+        drop(database);
+        (SessionManager::open(directory).unwrap(), log)
+    }
+
+    #[test]
+    fn a_prompt_reaches_pi_as_one_bracketed_paste_and_a_submit() {
+        let directory = std::path::PathBuf::from("/tmp").join(format!("axo-prompt-{}", axo_protocol::new_uuid_v4().unwrap()));
+        std::fs::create_dir_all(&directory).unwrap();
+        let (manager, log) = manager_recording_input(&directory);
+        let session = manager.list_sessions().unwrap().remove(0);
+        let shell_id = session.shells[0].id;
+
+        // No Pi in the Session yet: nothing to prompt, and nothing is typed anywhere.
+        let refused = manager.prompt_pi(session.id, "hello").unwrap_err();
+        assert_eq!(refused.kind(), io::ErrorKind::NotFound);
+
+        manager.lock_state().unwrap().panes.running_mut(shell_id).unwrap().role = PaneRole::Pi;
+        for bad in ["", "   \n", &"x".repeat(MAX_PI_PROMPT_BYTES + 1)] {
+            let error = manager.prompt_pi(session.id, bad).unwrap_err();
+            assert_eq!(error.kind(), io::ErrorKind::InvalidInput);
+        }
+        manager.prompt_pi(session.id, "fix the build\nthen run tests\u{1b}[201~evil").unwrap();
+
+        let deadline = Instant::now() + Duration::from_secs(15);
+        let typed = loop {
+            let typed = std::fs::read_to_string(&log).unwrap_or_default();
+            if typed.contains("evil") || Instant::now() > deadline {
+                break typed;
+            }
+            thread::sleep(Duration::from_millis(50));
+        };
+        // One paste around the whole text, a stray escape removed from inside it, then Enter
+        // (the terminal turns it into a newline for `cat`).
+        assert_eq!(typed, "\u{1b}[200~fix the build\nthen run tests[201~evil\u{1b}[201~\n");
+        let _ = std::fs::remove_dir_all(&directory);
     }
 }

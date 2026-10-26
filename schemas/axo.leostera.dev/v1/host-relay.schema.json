@@ -54,6 +54,9 @@
           "$ref": "#/$defs/RemoteTerminalInputCall"
         },
         {
+          "$ref": "#/$defs/RemotePromptCall"
+        },
+        {
           "$ref": "#/$defs/RemoteTerminalResizeCall"
         }
       ]
@@ -541,6 +544,46 @@
                   "contentEncoding": "base64",
                   "minLength": 4,
                   "maxLength": 65536
+                }
+              }
+            }
+          }
+        }
+      ],
+      "unevaluatedProperties": false,
+      "required": [
+        "params"
+      ]
+    },
+    "RemotePromptCall": {
+      "allOf": [
+        {
+          "$ref": "#/$defs/BaseCall"
+        },
+        {
+          "properties": {
+            "method": {
+              "const": "axo.remote.session.prompt"
+            },
+            "params": {
+              "type": "object",
+              "additionalProperties": false,
+              "required": [
+                "target",
+                "sessionId",
+                "text"
+              ],
+              "properties": {
+                "target": {
+                  "$ref": "common.schema.json#/$defs/HostRef"
+                },
+                "sessionId": {
+                  "$ref": "common.schema.json#/$defs/SessionId"
+                },
+                "text": {
+                  "type": "string",
+                  "minLength": 1,
+                  "maxLength": 16000
                 }
               }
             }
