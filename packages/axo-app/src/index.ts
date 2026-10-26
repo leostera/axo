@@ -17,6 +17,7 @@ import {
   remoteShellCreateResultSchema,
   remoteShellCloseResultSchema,
   remoteTerminalInputResultSchema,
+  remotePromptResultSchema,
   remoteTerminalResizeResultSchema,
   type HostEvent,
   type HostMethodParams,
@@ -79,6 +80,7 @@ const appRemoteResults = {
   "axo.remote.shell.create": remoteShellCreateResultSchema,
   "axo.remote.shell.close": remoteShellCloseResultSchema,
   "axo.remote.terminal.input": remoteTerminalInputResultSchema,
+  "axo.remote.session.prompt": remotePromptResultSchema,
   "axo.remote.terminal.resize": remoteTerminalResizeResultSchema,
 } as const;
 type AppRemoteMethod = keyof typeof appRemoteResults;
