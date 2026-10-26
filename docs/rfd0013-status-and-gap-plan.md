@@ -132,14 +132,21 @@ a promised call. Built since: `axo.remote.workspace.list` (names only) and
 restarts. Remote snapshots now show a manual name over Pi's title (they did not). Terminal bytes
 stay unpersisted.
 
-### G3. AxoClient remote transport and account API (Swift)
+### G3. AxoClient remote transport and account API (Swift) (done)
 
-- `RelayWebSocketTransport: AxoTransport` (URLSession WebSocket with the Access token header; text
-  frames; no `fatalError` on unknown frames), so `JSONRPCConnection` is reused unchanged.
-- `AccountClient`: sign-in, session refresh, host list and snapshots (HTTP).
-- `HostConnection`: the relay's typed API on `JSONRPCConnection`, shaped like `AxodConnection`
-  so clients treat "This Mac" and remote hosts alike.
-- Tests: in-memory transport for the connection; a Worker fixture for the account API.
+In `apple/AxoClient/Sources/AxoClient/Remote`:
+
+- `RelayWebSocketTransport: AxoTransport` (URLSession WebSocket, `cf-access-token`, no cookies,
+  every text frame acknowledged, a binary frame closes the connection), so `JSONRPCConnection` is
+  reused. The connection now also delivers notifications.
+- `AccountClient`: account, hosts and one run of a host's Sessions over HTTPS, refusing an answer
+  for a different run. Access refusals are `RelayError.signInRequired`.
+- `HostConnection`: the relay's typed API (subscribe and events, workspaces, Sessions, terminals),
+  shaped like `AxodConnection`, with every answer checked against the host it asked.
+- `AccessTokenProvider` is where the iOS sign-in plugs in. `RelayEndpoint` only accepts https
+  (loopback http for tests).
+- Tests: in-memory transport and socket, a stub for HTTP, and a loopback WebSocket server that
+  shows the upgrade carries the token and no cookie even with a browser cookie in the jar.
 
 ### G4. iOS app on AxoClient
 

@@ -20,9 +20,16 @@ public actor JSONRPCConnection {
   private var calls: [Int: Call] = [:]
   private let encoder = JSONEncoder()
   private let decoder = JSONDecoder()
+  private let notificationSink: AsyncStream<JSONRPCNotification>.Continuation
+
+  /// Messages the host sent without being asked (JSON-RPC notifications), in order, from every
+  /// connection this object opens. Never finishes on its own.
+  public nonisolated let notifications: AsyncStream<JSONRPCNotification>
 
   public init(transport: any AxoTransport) {
     self.transport = transport
+    (notifications, notificationSink) = AsyncStream.makeStream(
+      bufferingPolicy: .bufferingNewest(1024))
   }
 
   /// Calls `method` and decodes its result, or fails with an `AxoClientError` (or
@@ -114,12 +121,13 @@ public actor JSONRPCConnection {
   }
 
   private func receive(_ message: Data) {
-    // Replies carry our numeric id; anything else (notifications, late or foreign replies) has
-    // no call waiting for it.
-    guard let header = try? decoder.decode(JSONRPCMessageHeader.self, from: message),
-      let id = header.id
-    else { return }
-    end(id, with: .success(message))
+    guard let header = try? decoder.decode(JSONRPCMessageHeader.self, from: message) else { return }
+    // Replies carry our numeric id; late or foreign replies have no call waiting for them.
+    if let id = header.id {
+      end(id, with: .success(message))
+    } else if let method = header.method {
+      notificationSink.yield(JSONRPCNotification(method: method, message: message))
+    }
   }
 
   /// Ends a call if it has not ended yet. A timeout retires its connection.
@@ -177,15 +185,32 @@ private struct JSONRPCRequest<Params: Encodable>: Encodable {
   let params: Params
 }
 
+/// A message the host sent unprompted: its method and the whole message to decode `params` from.
+public struct JSONRPCNotification: Sendable {
+  public let method: String
+  public let message: Data
+
+  /// Decodes the notification's `params`.
+  public func params<Params: Decodable>(as type: Params.Type) throws -> Params {
+    try JSONDecoder().decode(NotificationEnvelope<Params>.self, from: message).params
+  }
+}
+
+private struct NotificationEnvelope<Params: Decodable>: Decodable {
+  let params: Params
+}
+
 /// Just enough of a message to route it.
 private struct JSONRPCMessageHeader: Decodable {
   let id: Int?
+  let method: String?
 
-  private enum CodingKeys: String, CodingKey { case id }
+  private enum CodingKeys: String, CodingKey { case id, method }
 
   init(from decoder: Decoder) throws {
     let container = try decoder.container(keyedBy: CodingKeys.self)
     id = try? container.decodeIfPresent(Int.self, forKey: .id)
+    method = try? container.decodeIfPresent(String.self, forKey: .method)
   }
 }
 

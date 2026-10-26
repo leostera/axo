@@ -200,6 +200,27 @@ final class JSONRPCConnectionTests: XCTestCase {
     XCTAssertTrue(channel.isClosed)
   }
 
+  func testNotificationsAreDeliveredInOrderAndNeverMistakenForReplies() async throws {
+    let transport = FakeTransport()
+    let rpc = JSONRPCConnection(transport: transport)
+    async let echo: Echo = rpc.call("echo", params: Echo(value: "a"), timeout: Self.wait)
+    let channel = try await transport.channel(0)
+    let request = try await channel.requests(count: 1)[0]
+    channel.send(raw: #"{"jsonrpc":"2.0","method":"tick","params":{"value":"one"}}"#)
+    channel.send(raw: #"{"jsonrpc":"2.0","method":"tick","params":{"value":"two"}}"#)
+    channel.reply(to: request.id, result: #"{"value":"a"}"#)
+    _ = try await echo
+
+    var iterator = rpc.notifications.makeAsyncIterator()
+    let firstOrNil = await iterator.next()
+    let secondOrNil = await iterator.next()
+    let first = try XCTUnwrap(firstOrNil)
+    let second = try XCTUnwrap(secondOrNil)
+    XCTAssertEqual(first.method, "tick")
+    XCTAssertEqual(try first.params(as: Echo.self).value, "one")
+    XCTAssertEqual(try second.params(as: Echo.self).value, "two")
+  }
+
   func testErrorsAndMalformedRepliesAreTyped() async throws {
     let transport = FakeTransport()
     let rpc = JSONRPCConnection(transport: transport)
@@ -239,11 +260,11 @@ final class JSONRPCConnectionTests: XCTestCase {
   }
 }
 
-private struct Echo: Codable, Sendable {
+struct Echo: Codable, Sendable {
   let value: String
 }
 
-private struct SentRequest: Decodable {
+struct SentRequest: Decodable {
   let id: Int
   let method: String
   let params: Echo?
@@ -252,7 +273,7 @@ private struct SentRequest: Decodable {
 }
 
 /// Hands out `FakeChannel`s; can delay or refuse connects.
-private final class FakeTransport: AxoTransport, @unchecked Sendable {
+final class FakeTransport: AxoTransport, @unchecked Sendable {
   private let lock = NSLock()
   private var channels: [FakeChannel] = []
   private var connects = 0
@@ -294,7 +315,7 @@ private final class FakeTransport: AxoTransport, @unchecked Sendable {
 }
 
 /// A connection whose peer the test plays.
-private final class FakeChannel: AxoMessageChannel, @unchecked Sendable {
+final class FakeChannel: AxoMessageChannel, @unchecked Sendable {
   let messages: AsyncStream<Data>
   private let continuation: AsyncStream<Data>.Continuation
   private let lock = NSLock()
