@@ -24,6 +24,8 @@ final class HostWorkbenchModelTests: XCTestCase {
     let model = HostWorkbenchModel(
       host: remote, connection: HostConnection(transport: transport, host: remote.reference),
       history: history, account: account)
+    // A chat is open, as the person's tap on one would have made it.
+    model.selectedSessionID = model.sessions.first?.sessionId
     return (model, transport, remote, account)
   }
 
@@ -97,10 +99,14 @@ final class HostWorkbenchModelTests: XCTestCase {
     XCTAssertNil(model.chats[1])
   }
 
-  func testStartsWithTheHostsSessionsAndSelectsTheFirst() throws {
-    let (model, _, _, _) = try make(sessions: [(2, "Two", [20]), (1, "One", [10])])
+  func testStartsWithTheHostsSessionsInOrderAndSelectsNoneOnItsOwn() throws {
+    let (model, _, host, _) = try make(sessions: [(2, "Two", [20]), (1, "One", [10])])
     XCTAssertEqual(model.sessions.map(\.sessionId), [1, 2])
-    XCTAssertEqual(model.selectedSessionID, 1)
+    model.selectedSessionID = nil
+    let added = try JSONDecoder().decode(
+      RemoteSession.self, from: Data(sessionJSON(host: host.hostId, id: 3, name: "Three", shells: [30]).utf8))
+    model.apply(.sessionSnapshot(host: host.reference, session: added))
+    XCTAssertNil(model.selectedSessionID, "a new snapshot must not pull the screen off a blank chat")
   }
 
   func testSnapshotsUpdateAddAndRemoveSessionsAndMoveTheSelection() throws {
@@ -117,7 +123,7 @@ final class HostWorkbenchModelTests: XCTestCase {
     model.apply(.sessionSnapshot(host: host.reference, session: added))
     model.apply(.sessionRemoved(host: host.reference, sessionID: 1))
     XCTAssertEqual(model.sessions.map(\.sessionId), [2])
-    XCTAssertEqual(model.selectedSessionID, 2, "the selection moves off a removed Session")
+    XCTAssertNil(model.selectedSessionID, "a removed Session is no longer open, and nothing else opens in its place")
   }
 
   func testPresenceUpdatesTheStatusAndAnotherHostsEventsAreIgnored() throws {
@@ -190,6 +196,7 @@ final class HostWorkbenchModelTests: XCTestCase {
       host: remote,
       connection: HostConnection(transport: RefusingTransport(), host: remote.reference),
       history: NoHistory(), account: account)
+    model.selectedSessionID = 1
     _ = await model.sendPrompt("x")
     XCTAssertEqual(account.state, .signedOut)
     XCTAssertEqual(model.failure, "Sign in to continue.")

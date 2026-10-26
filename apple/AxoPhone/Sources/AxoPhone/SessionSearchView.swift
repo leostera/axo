@@ -34,7 +34,7 @@ struct SessionSearchView: View {
         Section {
           HStack(spacing: 8) {
             Image(systemName: "magnifyingglass").foregroundStyle(.secondary)
-            TextField("Workspace or session name", text: $query)
+            TextField("Workspace or chat name", text: $query)
               .textInputAutocapitalization(.never)
               .autocorrectionDisabled()
               .focused($searchFocused)
@@ -48,8 +48,8 @@ struct SessionSearchView: View {
         }
         if trimmedQuery.isEmpty {
           ContentUnavailableView(
-            "Search sessions", systemImage: "magnifyingglass",
-            description: Text("Search by session or workspace name."))
+            "Search chats", systemImage: "magnifyingglass",
+            description: Text("Search by chat or workspace name."))
         } else if matches.isEmpty {
           ContentUnavailableView.search(text: query)
         } else {
@@ -67,7 +67,7 @@ struct SessionSearchView: View {
             .buttonStyle(.plain)
           }
         }
-        Text("Search uses session and workspace names only, not conversation text.")
+        Text("Search uses chat and workspace names only, not conversation text.")
           .font(.footnote).foregroundStyle(.secondary)
       }
       .navigationTitle("Search")

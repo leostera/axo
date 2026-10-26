@@ -2,12 +2,19 @@ import AxoPhoneModel
 import AxoProtocol
 import SwiftUI
 
-/// One Session's conversation: Pi's replies and what was asked, newest at the bottom.
+/// One chat: the replies and what was asked, newest at the bottom. With no `session` it is a new
+/// chat that does not exist yet; it comes to exist when its first message is sent.
 struct ConversationView: View {
   let workbench: HostWorkbenchModel?
   let session: RemoteSession?
+  /// Whether some Mac is online to start a chat on.
+  let canStartChat: Bool
   let showSidebar: () -> Void
+  let startChat: (String) async -> PhoneWorkbench.ChatStart
+  let startChatIn: (UUID, String) async -> PhoneWorkbench.ChatStart
   @State private var draft = ""
+  /// The Workspaces to choose from, with the first message waiting for the choice.
+  @State private var workspaceChoice: (choices: [RemoteWorkspace], text: String)?
   @State private var isNearBottom = true
   /// The message at the top of the screen; holding it keeps the view still when older pages arrive above.
   @State private var scrollAnchor: String?
@@ -21,6 +28,18 @@ struct ConversationView: View {
       .background(ChatColors.background)
       .safeAreaInset(edge: .top, spacing: 0) { header }
       .safeAreaInset(edge: .bottom, spacing: 0) { bottomBar }
+      .confirmationDialog(
+        "Start the chat in",
+        isPresented: Binding(get: { workspaceChoice != nil }, set: { if !$0 { workspaceChoice = nil } }),
+        titleVisibility: .visible
+      ) {
+        ForEach(workspaceChoice?.choices ?? [], id: \.workspaceId) { workspace in
+          Button(workspace.name) {
+            guard let text = workspaceChoice?.text else { return }
+            Task { await begin(text) { await startChatIn(workspace.workspaceId, text) } }
+          }
+        }
+      }
   }
 
   private var conversation: some View {
@@ -83,7 +102,7 @@ struct ConversationView: View {
     switch historyState {
     case nil, .loading:
       if session == nil {
-        ChatEmptyState(message: "Pick a session from the menu.")
+        ChatEmptyState(message: canStartChat ? "Send a message to start a chat." : "Your Mac is offline.")
       } else {
         LoadingMascotView(label: "Loading the conversation")
           .frame(height: 120).frame(maxWidth: .infinity).padding(.vertical, 70)
@@ -93,7 +112,7 @@ struct ConversationView: View {
     case .loaded(let events, _), .loadingOlder(let events):
       ChatEmptyState(
         message: events == 0
-          ? "Nothing is stored for this session yet. Pi's messages appear here as they happen."
+          ? "Nothing here yet."
           : "\(events) stored events, none of them messages yet.")
     }
   }
@@ -101,7 +120,7 @@ struct ConversationView: View {
   private var header: some View {
     ZStack {
       VStack(spacing: 2) {
-        Text(session?.displayName ?? "Axo").font(.headline).lineLimit(1)
+        Text(session?.displayName ?? "New chat").font(.headline).lineLimit(1)
         if let workbench {
           Text(workbench.status == .online ? workbench.hostLabel : "\(workbench.hostLabel) · offline")
             .font(.caption).foregroundStyle(workbench.status == .online ? Color.secondary : Color.orange)
@@ -117,7 +136,7 @@ struct ConversationView: View {
           .background(.ultraThinMaterial, in: Circle())
           .overlay(Circle().stroke(ChatColors.border, lineWidth: 0.5))
         }
-        .accessibilityLabel("Sessions menu")
+        .accessibilityLabel("Chats menu")
         Spacer(minLength: 0)
       }
     }
@@ -127,23 +146,42 @@ struct ConversationView: View {
     .background(ChatColors.background)
   }
 
-  /// Pi can be prompted when its Mac is online and the Session has one.
-  private var canPrompt: Bool {
-    workbench?.status == .online && session?.hasAgent != false && session != nil
+  /// A chat can be written to when its Mac is online; a new chat, when any Mac is.
+  private var canSend: Bool {
+    if session == nil { return canStartChat }
+    return workbench?.status == .online && session?.hasAgent != false
   }
 
   private var composerPlaceholder: String {
-    guard let workbench, session != nil else { return "Pick a chat" }
-    if workbench.status != .online { return "\(workbench.hostLabel) is offline" }
-    return session?.hasAgent == false ? "This session has no Pi" : "Message Pi"
+    if session == nil { return canStartChat ? "Message Axo" : "Your Mac is offline" }
+    if let workbench, workbench.status != .online { return "\(workbench.hostLabel) is offline" }
+    return "Message Axo"
   }
 
-  private func sendPrompt() {
-    guard canPrompt, let workbench else { return }
+  private func send() {
+    guard canSend, let workbench else { return }
     let text = draft
     Task {
-      // The words stay in the box until the Mac has them, so a refusal loses nothing.
-      if await workbench.sendPrompt(text), draft == text { draft = "" }
+      if session == nil {
+        await begin(text) { await startChat(text) }
+      } else if await workbench.sendPrompt(text), draft == text {
+        // The words stay in the box until the Mac has them, so a refusal loses nothing.
+        draft = ""
+      }
+    }
+  }
+
+  /// Creates the chat for `text`, its first message. The words leave the box only once the chat
+  /// exists and the Mac took them; if it has several Workspaces, they wait for the choice.
+  private func begin(_ text: String, _ start: () async -> PhoneWorkbench.ChatStart) async {
+    switch await start() {
+    case .started:
+      if draft == text { draft = "" }
+      workspaceChoice = nil
+    case .chooseWorkspace(let choices):
+      workspaceChoice = (choices, text)
+    case .failed:
+      break
     }
   }
 
@@ -166,7 +204,7 @@ struct ConversationView: View {
       }
       ChatComposer(
         draft: $draft, placeholder: composerPlaceholder,
-        canSend: canPrompt, send: sendPrompt)
+        canSend: canSend, send: send)
     }
     .padding(.bottom, 8)
     .background(ChatColors.background)

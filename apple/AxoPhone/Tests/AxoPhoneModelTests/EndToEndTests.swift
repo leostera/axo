@@ -81,20 +81,20 @@ final class EndToEndTests: XCTestCase {
         history: client, account: account)
     }
 
-    // The phone lists the account's Macs: the one linked here is online.
-    await workbench.hosts.refresh()
+    // Opening the app lands on a new chat on the Mac that is online. Nothing exists yet.
+    await workbench.start()
     XCTAssertEqual(workbench.hosts.hosts.map(\.hostId), [stack.hostID])
-    XCTAssertEqual(workbench.newChatHost?.hostId, stack.hostID, "the Mac is online")
+    XCTAssertTrue(workbench.isDrafting)
+    XCTAssertEqual(workbench.current?.sessions.isEmpty, false, "the Mac's terminal Session is there but is not a chat")
+    XCTAssertNil(workbench.current?.selectedSession, "no chat is open")
 
-    // Chat: the Mac has one Workspace, so the chat starts there at once and opens.
-    let started = await workbench.startChat()
+    // The first message brings the chat into being (the Mac has one Workspace, so it starts there
+    // at once), and the words reach its Pi as a paste and a submit.
+    let started = await workbench.startChat(sending: "please run the tests")
     XCTAssertEqual(started, .started, workbench.current?.failure ?? "")
+    XCTAssertFalse(workbench.isDrafting)
     let chat = try XCTUnwrap(workbench.current?.selectedSession)
     XCTAssertEqual(chat.hasAgent, true, "a chat is a Session with a Pi")
-
-    // The message box: the words reach Pi's input as a paste and a submit.
-    let sent = await workbench.current?.sendPrompt("please run the tests")
-    XCTAssertEqual(sent, true, workbench.current?.failure ?? "")
     let deadline = Date().addingTimeInterval(20)
     var typed = ""
     while Date() < deadline {

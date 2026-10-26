@@ -41,6 +41,7 @@ public final class HostWorkbenchModel {
   }
   private var storedHistory: [SessionID: StoredHistory] = [:]
 
+  /// The chat on screen. Nothing selects one on its own: the person (or a new chat) does.
   public var selectedSessionID: SessionID?
   /// The last problem, for the screen to show; cleared by the next successful action.
   public private(set) var failure: String?
@@ -56,7 +57,6 @@ public final class HostWorkbenchModel {
     status = host.status
     let ordered = host.sessions.sorted { $0.sessionId < $1.sessionId }
     sessions = ordered
-    selectedSessionID = ordered.first?.sessionId
     self.connection = connection
     self.history = history
     self.account = account
@@ -108,12 +108,11 @@ public final class HostWorkbenchModel {
         sessions.append(session)
         sessions.sort { $0.sessionId < $1.sessionId }
       }
-      if selectedSessionID == nil { selectedSessionID = session.sessionId }
     case .sessionRemoved(_, let id):
       sessions.removeAll { $0.sessionId == id }
       chats[id] = nil
       historyStates[id] = nil
-      if selectedSessionID == id { selectedSessionID = sessions.first?.sessionId }
+      if selectedSessionID == id { selectedSessionID = nil }
     case .shellActivity, .terminalOutput:
       // The phone follows Pi, not terminals.
       break

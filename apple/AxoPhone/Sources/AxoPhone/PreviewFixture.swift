@@ -44,7 +44,7 @@ enum PreviewFixture {
       guard session == 1 else { return [message(1, "user", "Hello"), message(2, "assistant", "Hi! What are we working on?")] }
       return [
         message(1, "user", "Can you make the phone app feel like the old one again?"),
-        message(2, "assistant", "Yes. Here is the plan:\n\n# Plan\n- Bring back the sliding **Sessions** menu\n- Chat-first layout with a rounded composer\n- Keep the terminal one tap away\n\nThe message box looks like this:\n\n```swift\nTextField(\"Message Axo\", text: $draft)\n    .padding(18)\n```\n\nI'll start with the menu."),
+        message(2, "assistant", "Yes. Here is the plan:\n\n# Plan\n- Bring back the sliding **chats** menu\n- Chat-first layout with a rounded composer\n- Nothing else on screen\n\nThe message box looks like this:\n\n```swift\nTextField(\"Message Axo\", text: $draft)\n    .padding(18)\n```\n\nI'll start with the menu."),
         message(3, "user", "Great, go ahead."),
         raw(7, #"{"role":"assistant","timestamp":1792810292069,"content":[{"type":"thinking","thinking":"I should check the repository first."},{"type":"text","text":"Let me look at the project."},{"type":"toolCall","id":"c1","name":"bash","arguments":{"command":"git status --short --branch"}},{"type":"toolCall","id":"c2","name":"read","arguments":{"path":"apple/AxoPhone/README.md"}},{"type":"toolCall","id":"c3","name":"bash","arguments":{"command":"false"}}]}"#),
         raw(8, #"{"role":"toolResult","toolCallId":"c1","content":[{"type":"text","text":"On branch main\n M apple/AxoPhone/Sources/AxoPhone/ChatMessageView.swift\n M apple/AxoPhone/Sources/AxoPhone/ConversationView.swift\n?? apple/AxoPhone/Sources/AxoPhone/ToolTranscriptView.swift\n M one\n M two\n M three"}],"isError":false}"#),

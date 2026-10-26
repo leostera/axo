@@ -34,16 +34,23 @@ public final class PhoneWorkbench {
     self.makeWorkbench = makeWorkbench
   }
 
-  /// Lists the Macs once, and opens the first online one with a Session if nothing is open yet.
+  /// Lists the Macs once and lands on a new chat, ready to be typed into, on the first Mac that is
+  /// online (or the first there is). A chat only comes to exist when its first message is sent.
   public func start() async {
     guard !started else { return }
     started = true
     await hosts.refresh()
     guard selection == nil else { return }
-    let candidates = hosts.hosts.filter { !$0.sessions.isEmpty }
-    if let first = candidates.first {
-      select(host: first.hostId, session: first.sessions.sorted { $0.sessionId < $1.sessionId }.first?.sessionId)
-    }
+    beginNewChat()
+  }
+
+  /// Whether the screen is on a new chat that does not exist yet.
+  public var isDrafting: Bool { selection != nil && selection?.session == nil }
+
+  /// Goes to a blank new chat on the open Mac (or the first online one). Nothing is created.
+  public func beginNewChat() {
+    guard let host = newChatHost ?? hosts.hosts.first else { return }
+    select(host: host.hostId, session: nil)
   }
 
   public func refresh() async {
@@ -63,10 +70,9 @@ public final class PhoneWorkbench {
       Task { await workbench.start() }
     }
     selection = Selection(host: hostID, session: session)
-    if let session, let workbench = current {
-      workbench.selectedSessionID = session
-      if workbench.historyStates[session] == nil { Task { await workbench.loadHistory(of: session) } }
-    }
+    guard let workbench = current else { return }
+    workbench.selectedSessionID = session
+    if let session, workbench.historyStates[session] == nil { Task { await workbench.loadHistory(of: session) } }
   }
 
   /// The Mac a new chat goes to: the open one if it is online, else the first Mac that is.
@@ -81,17 +87,19 @@ public final class PhoneWorkbench {
 
   /// How asking for a new chat went.
   public enum ChatStart: Equatable, Sendable {
-    /// The chat is open.
+    /// The chat exists and is open.
     case started
-    /// The Mac has several Workspaces; the person picks one, then `startChat(in:)`.
+    /// The Mac has several Workspaces; the person picks one, then `startChat(in:sending:)`.
     case chooseWorkspace([RemoteWorkspace])
     /// Nothing started; the reason is in `current?.failure`.
     case failed
   }
 
-  /// Asks for a new chat on `newChatHost`: opens it at once when the Mac has one Workspace, and
-  /// asks which when it has several.
-  public func startChat() async -> ChatStart {
+  /// Brings a new chat into being on `newChatHost` for its first message, `first`, and opens it.
+  /// With one Workspace on the Mac it starts there at once; with several it asks which; with none
+  /// it says so. If the chat starts but the Mac then refuses the message, the chat stays open and
+  /// the reason is in `current?.failure`, so the caller keeps the words.
+  public func startChat(sending first: String) async -> ChatStart {
     guard let workbench = await openNewChatHost(), let workspaces = await workbench.workspaces() else {
       return .failed
     }
@@ -100,18 +108,19 @@ public final class PhoneWorkbench {
       workbench.report("This Mac has no workspaces yet. Create one in Axo on the Mac.")
       return .failed
     case 1:
-      return await startChat(in: workspaces[0].workspaceId)
+      return await startChat(in: workspaces[0].workspaceId, sending: first)
     default:
       return .chooseWorkspace(workspaces)
     }
   }
 
-  /// Starts a chat in a Workspace of `newChatHost` and opens it.
-  public func startChat(in workspace: UUID) async -> ChatStart {
+  /// Starts the chat in a Workspace of `newChatHost`, opens it and sends `first`.
+  public func startChat(in workspace: UUID, sending first: String) async -> ChatStart {
     guard let workbench = await openNewChatHost() else { return .failed }
     await workbench.createChat(in: workspace)
     guard workbench.failure == nil, let id = workbench.selectedSessionID else { return .failed }
     select(session: id)
+    _ = await workbench.sendPrompt(first)
     return .started
   }
 

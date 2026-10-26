@@ -130,7 +130,7 @@ struct AgentActivityView: View {
   var body: some View {
     HStack(spacing: 8) {
       Image(systemName: "sparkles").foregroundStyle(.orange)
-      Text(callingTools ? "Pi is calling tools…" : "Pi is thinking…").font(.subheadline.weight(.medium))
+      Text(callingTools ? "Using tools…" : "Thinking…").font(.subheadline.weight(.medium))
       Spacer(minLength: 0)
       ProgressView().controlSize(.small).tint(.secondary)
     }

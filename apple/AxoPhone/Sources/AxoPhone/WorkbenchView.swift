@@ -22,12 +22,13 @@ private enum MenuLayout {
 struct WorkbenchView: View {
   let environment: AppEnvironment
   @State private var workbench: PhoneWorkbench
+  @State private var columnVisibility: NavigationSplitViewVisibility = .automatic
+  @State private var preferredCompactColumn: NavigationSplitViewColumn = .detail
   @State private var menuPresented = PreviewFixture.menuOpen
   @State private var menuDragOffset: CGFloat = 0
+  @Environment(\.horizontalSizeClass) private var horizontalSizeClass
   @State private var showingSettings = PreviewFixture.settingsOpen
   @State private var showingSearch = false
-  /// Set when the Mac has several Workspaces and the person has to pick where the chat goes.
-  @State private var workspaceChoices: [RemoteWorkspace]?
   @Environment(\.accessibilityReduceMotion) private var reduceMotion
   @AppStorage("appearance") private var appearance: AppAppearance = .system
   @AppStorage("accentColor") private var accentColor: AppAccentColor = .white
@@ -63,74 +64,80 @@ struct WorkbenchView: View {
     workbench.current?.selectedSession
   }
 
+  private var isCompact: Bool { horizontalSizeClass == .compact }
+
+  // The layout, the gesture and its areas of contact are the original app's, unchanged.
   var body: some View {
     GeometryReader { geometry in
-      let reveal = min(geometry.size.width * MenuLayout.widthFraction, MenuLayout.maximumWidth)
-      let offset = min(max((menuPresented ? reveal : 0) + menuDragOffset, 0), reveal)
-      let progress = min(max(offset / max(reveal, 1), 0), 1)
+      let revealDistance = min(geometry.size.width * MenuLayout.widthFraction, MenuLayout.maximumWidth)
+      let foregroundOffset = isCompact
+        ? min(max((menuPresented ? revealDistance : 0) + menuDragOffset, 0), revealDistance)
+        : 0
+      let revealProgress = min(max(foregroundOffset / max(revealDistance, 1), 0), 1)
 
       ZStack(alignment: .leading) {
-        sidebar
-          .frame(width: reveal)
-          .frame(maxHeight: .infinity)
-          .background(ChatColors.background.ignoresSafeArea())
-          .accessibilityHidden(!menuPresented)
-
-        ConversationView(workbench: workbench.current, session: currentSession, showSidebar: showMenu)
-          .background {
-            RoundedRectangle(cornerRadius: MenuLayout.cornerRadius * progress, style: .continuous)
-              .fill(ChatColors.background)
-              .overlay {
-                RoundedRectangle(cornerRadius: MenuLayout.cornerRadius * progress, style: .continuous)
-                  .fill(ChatColors.surface.opacity(progress))
-              }
-              .overlay {
-                RoundedRectangle(cornerRadius: MenuLayout.cornerRadius * progress, style: .continuous)
-                  .stroke(Color.primary.opacity(progress * 0.22), lineWidth: 0.5)
-              }
-              .shadow(color: .black.opacity(progress * 0.22), radius: 16, x: -6)
-              .ignoresSafeArea()
-          }
-          .clipShape(RoundedRectangle(cornerRadius: MenuLayout.cornerRadius * progress, style: .continuous))
-          .overlay {
-            Color(uiColor: .tertiarySystemBackground)
-              .opacity(progress * 0.64)
-              .allowsHitTesting(menuPresented)
-              .accessibilityHidden(true)
-              .onTapGesture { closeMenu() }
-          }
-          .accessibilityHidden(menuPresented)
-          .offset(x: offset)
-          .allowsHitTesting(!menuPresented)
-
-        if menuPresented {
-          Color.clear
-            .frame(width: max(geometry.size.width - reveal, 0))
+        if isCompact {
+          sidebar
+            .frame(width: revealDistance)
             .frame(maxHeight: .infinity)
-            .offset(x: reveal)
+            .background(ChatColors.background.ignoresSafeArea())
+            .accessibilityHidden(!menuPresented)
+        }
+
+        NavigationSplitView(columnVisibility: $columnVisibility, preferredCompactColumn: $preferredCompactColumn) {
+          sidebar
+            .navigationSplitViewColumnWidth(min: 260, ideal: 300)
+        } detail: {
+          conversation
+            .navigationBarBackButtonHidden(true)
+            .toolbar(.hidden, for: .navigationBar)
+            .accessibilityHidden(isCompact && menuPresented)
+        }
+        .navigationSplitViewStyle(.balanced)
+        .background {
+          RoundedRectangle(cornerRadius: MenuLayout.cornerRadius * revealProgress, style: .continuous)
+            .fill(ChatColors.background)
+            .overlay {
+              RoundedRectangle(cornerRadius: MenuLayout.cornerRadius * revealProgress, style: .continuous)
+                .fill(ChatColors.surface.opacity(revealProgress))
+            }
+            .overlay {
+              RoundedRectangle(cornerRadius: MenuLayout.cornerRadius * revealProgress, style: .continuous)
+                .stroke(Color.primary.opacity(revealProgress * 0.22), lineWidth: 0.5)
+            }
+            .shadow(color: .black.opacity(revealProgress * 0.22), radius: 16, x: -6)
+            .ignoresSafeArea()
+        }
+        .overlay {
+          Color(uiColor: .tertiarySystemBackground)
+            .opacity(revealProgress * 0.64)
+            .allowsHitTesting(isCompact && menuPresented)
+            .accessibilityHidden(true)
+        }
+        .accessibilityHidden(isCompact && menuPresented)
+        .offset(x: foregroundOffset)
+        .allowsHitTesting(!(isCompact && menuPresented))
+
+        if isCompact && menuPresented {
+          Color.clear
+            .frame(width: max(geometry.size.width - revealDistance, 0))
+            .frame(maxHeight: .infinity)
+            .offset(x: revealDistance)
             .contentShape(Rectangle())
-            .onTapGesture { closeMenu() }
+            .allowsHitTesting(true)
             .accessibilityHidden(true)
             .zIndex(2)
         }
       }
-      .simultaneousGesture(menuGesture(reveal: reveal))
+      .simultaneousGesture(menuGesture(revealDistance: revealDistance))
     }
+    .background(ChatColors.background.ignoresSafeArea())
     .preferredColorScheme(appearance.colorScheme)
     .tint(accentColor.color)
-    .confirmationDialog(
-      "Start the chat in", isPresented: Binding(get: { workspaceChoices != nil }, set: { if !$0 { workspaceChoices = nil } }),
-      titleVisibility: .visible
-    ) {
-      ForEach(workspaceChoices ?? [], id: \.workspaceId) { workspace in
-        Button(workspace.name) {
-          Task { if await workbench.startChat(in: workspace.workspaceId) == .started { closeMenu() } }
-        }
-      }
-    }
     .sheet(isPresented: $showingSearch) {
       SessionSearchView(hosts: workbench.hosts.hosts) { host, session in
         workbench.select(host: host.hostId, session: session.sessionId)
+        preferredCompactColumn = .detail
         closeMenu()
       }
     }
@@ -146,40 +153,62 @@ struct WorkbenchView: View {
     .task { await workbench.start() }
   }
 
+  private var conversation: some View {
+    ConversationView(
+      workbench: workbench.current,
+      session: currentSession,
+      canStartChat: workbench.newChatHost != nil,
+      showSidebar: showMenu,
+      startChat: { await workbench.startChat(sending: $0) },
+      startChatIn: { await workbench.startChat(in: $0, sending: $1) }
+    )
+    .id(currentSession?.sessionId)
+  }
+
   // MARK: - The menu
 
   private var sidebar: some View {
     VStack(spacing: 0) {
-      HStack(spacing: 10) {
-        OwnMascotView(loading: workbench.hosts.phase == .loading)
-          .frame(height: 34)
-        Spacer(minLength: 8)
-        Button { showingSearch = true } label: {
-          Image(systemName: "magnifyingglass")
-            .font(.system(size: 19, weight: .medium))
-            .frame(width: MenuLayout.controlSize, height: MenuLayout.controlSize)
-            .background(Color.primary.opacity(0.08), in: Circle())
-            .overlay { Circle().stroke(Color.primary.opacity(0.12), lineWidth: 0.5) }
-        }
-        .buttonStyle(.plain)
-        .accessibilityLabel("Search sessions")
-      }
-      .padding(.leading, MenuLayout.contentLeading)
-      .padding(.trailing, MenuLayout.contentTrailing)
-      .frame(minHeight: 56)
-      .background(ChatColors.background)
-
+      menuHeader
       List {
         if case .failed(let message) = workbench.hosts.phase {
           Text(message).font(.caption).foregroundStyle(.orange)
         }
-        ForEach(workbench.hosts.hosts, id: \.hostId) { host in
-          hostSection(host)
+        ForEach(sections) { section in
+          Section {
+            ForEach(section.sessions, id: \.session.sessionId) { entry in
+              Button {
+                workbench.select(host: entry.host.hostId, session: entry.session.sessionId)
+                preferredCompactColumn = .detail
+                closeMenu()
+              } label: {
+                SessionRow(name: entry.session.displayName, isSelected: isSelected(entry))
+                  .frame(maxWidth: .infinity, alignment: .leading)
+                  .contentShape(Rectangle())
+              }
+              .buttonStyle(.plain)
+              .listRowInsets(EdgeInsets(top: 0, leading: MenuLayout.rowInset, bottom: 0, trailing: MenuLayout.rowInset))
+              .listRowBackground(Color.clear)
+              .listRowSeparator(.hidden)
+            }
+          } header: {
+            Text(section.title)
+              .font(.subheadline.weight(.semibold))
+              .foregroundStyle(.primary)
+              .textCase(nil)
+              .padding(.leading, 16)
+          }
         }
-        if workbench.hosts.hosts.isEmpty, workbench.hosts.phase == .loaded {
-          ContentUnavailableView(
-            "No Macs yet", systemImage: "laptopcomputer",
-            description: Text("On a Mac, open Axo → Settings → Remote Access and link it with a pairing code."))
+        if sections.isEmpty {
+          if workbench.hosts.hosts.isEmpty, workbench.hosts.phase == .loaded {
+            ContentUnavailableView(
+              "No Macs yet", systemImage: "laptopcomputer",
+              description: Text("On a Mac, open Axo → Settings → Remote Access and link it with a pairing code."))
+          } else {
+            Text(workbench.hosts.phase == .loading ? "Loading chats…" : "Your chats will appear here.")
+              .font(.subheadline)
+              .foregroundStyle(.secondary)
+          }
         }
       }
       .listStyle(.plain)
@@ -187,62 +216,80 @@ struct WorkbenchView: View {
       .scrollContentBackground(.hidden)
       .background(ChatColors.background)
       .refreshable { await workbench.refresh() }
+      .accessibilityIdentifier("workbench-menu")
     }
     .background(ChatColors.background.ignoresSafeArea())
     .safeAreaInset(edge: .bottom, spacing: 0) { menuFooter }
+    .toolbar(.hidden, for: .navigationBar)
   }
 
-  private func hostSection(_ host: RemoteHost) -> some View {
-    Section {
-      if host.sessions.isEmpty {
-        Text("No sessions yet").font(.subheadline).foregroundStyle(.secondary)
+  private struct Entry {
+    let host: RemoteHost
+    let session: RemoteSession
+  }
+
+  private struct MenuSection: Identifiable {
+    let id: String
+    let title: String
+    let sessions: [Entry]
+  }
+
+  /// The chats, grouped as the original menu grouped them: by Workspace. Bare terminals have no
+  /// chat in them and are not listed. With several Macs, a Workspace's Mac is named in its title.
+  private var sections: [MenuSection] {
+    let hosts = workbench.hosts.hosts
+    var order: [String] = []
+    var grouped: [String: (title: String, sessions: [Entry])] = [:]
+    for host in hosts {
+      for session in host.sessions.sorted(by: { $0.sessionId < $1.sessionId }) where session.hasAgent != false {
+        let workspace = session.workspaceName ?? "Chats"
+        let key = "\(host.hostId.uuidString)/\(workspace)"
+        if grouped[key] == nil {
+          order.append(key)
+          grouped[key] = (hosts.count > 1 ? "\(workspace) · \(host.label)" : workspace, [])
+        }
+        grouped[key]!.sessions.append(Entry(host: host, session: session))
       }
-      ForEach(sortedSessions(of: host), id: \.sessionId) { session in
-        sessionButton(session, on: host)
-      }
-    } header: {
-      hostHeader(host)
     }
+    return order.map { MenuSection(id: $0, title: grouped[$0]!.title, sessions: grouped[$0]!.sessions) }
   }
 
-  private func sortedSessions(of host: RemoteHost) -> [RemoteSession] {
-    host.sessions.sorted { $0.sessionId < $1.sessionId }
+  private func isSelected(_ entry: Entry) -> Bool {
+    workbench.selection == PhoneWorkbench.Selection(host: entry.host.hostId, session: entry.session.sessionId)
   }
 
-  private func sessionButton(_ session: RemoteSession, on host: RemoteHost) -> some View {
-    let selected = workbench.selection == PhoneWorkbench.Selection(host: host.hostId, session: session.sessionId)
-    return Button {
-      workbench.select(host: host.hostId, session: session.sessionId)
-      closeMenu()
-    } label: {
-      SessionRow(session: session, isSelected: selected)
+  private var menuHeader: some View {
+    HStack(spacing: 12) {
+      OwnMascotView(loading: workbench.hosts.phase == .loading)
+        .frame(height: 34)
+      Spacer(minLength: 8)
+      Button {
+        showingSearch = true
+      } label: {
+        Image(systemName: "magnifyingglass")
+          .font(.system(size: 19, weight: .medium))
+          .frame(width: 44, height: 44)
+          .background(Color.primary.opacity(0.08), in: Circle())
+          .overlay {
+            Circle().stroke(Color.primary.opacity(0.12), lineWidth: 0.5)
+          }
+      }
+      .accessibilityLabel("Search chats")
     }
     .buttonStyle(.plain)
-    .listRowInsets(EdgeInsets(top: 0, leading: MenuLayout.rowInset, bottom: 0, trailing: MenuLayout.rowInset))
-    .listRowBackground(Color.clear)
-    .listRowSeparator(.hidden)
-  }
-
-  private func hostHeader(_ host: RemoteHost) -> some View {
-    let dot: Color = host.status == .online ? .green : Color.secondary.opacity(0.5)
-    return HStack(spacing: 8) {
-      Circle().fill(dot).frame(width: 8, height: 8)
-      Text(host.label).font(.subheadline.weight(.semibold)).foregroundStyle(.primary).textCase(nil)
-    }
-    .padding(.leading, 16)
+    .padding(.leading, MenuLayout.contentLeading)
+    .padding(.trailing, MenuLayout.contentTrailing)
+    .padding(.top, 0)
+    .padding(.bottom, 0)
+    .background(ChatColors.background)
   }
 
   private var menuFooter: some View {
     HStack(spacing: 16) {
       Button {
-        Task {
-          // Stay in the menu when the Mac refuses, where the reason is shown.
-          switch await workbench.startChat() {
-          case .started: closeMenu()
-          case .chooseWorkspace(let choices): workspaceChoices = choices
-          case .failed: break
-          }
-        }
+        workbench.beginNewChat()
+        preferredCompactColumn = .detail
+        closeMenu()
       } label: {
         Label("Chat", systemImage: "square.and.pencil")
           .font(.headline)
@@ -251,40 +298,45 @@ struct WorkbenchView: View {
           .background(Color.primary, in: Capsule())
           .foregroundStyle(ChatColors.background)
       }
-      .disabled(workbench.newChatHost == nil)
-      .opacity(workbench.newChatHost == nil ? 0.4 : 1)
+      .buttonStyle(.plain)
       .accessibilityLabel("New chat")
 
       Spacer(minLength: 0)
 
-      Button { showingSettings = true } label: {
+      Button {
+        showingSettings = true
+      } label: {
         Image(systemName: "gearshape")
           .font(.system(size: 19, weight: .medium))
           .frame(width: MenuLayout.controlSize, height: MenuLayout.controlSize)
-          .background { Circle().fill(Color.primary.opacity(0.08)).padding(1) }
-          .overlay { Circle().inset(by: 1).stroke(Color.primary.opacity(0.12), lineWidth: 0.5) }
+          .background {
+            Circle()
+              .fill(Color.primary.opacity(0.08))
+              .padding(1)
+          }
+          .overlay {
+            Circle()
+              .inset(by: 1)
+              .stroke(Color.primary.opacity(0.12), lineWidth: 0.5)
+          }
       }
+      .buttonStyle(.plain)
       .accessibilityLabel("Settings")
     }
     .buttonStyle(.plain)
     .padding(.leading, MenuLayout.contentLeading)
     .padding(.trailing, MenuLayout.contentTrailing)
     .padding(.top, 10)
+    .padding(.bottom, 0)
     .background(ChatColors.background)
-    .overlay(alignment: .top) { menuFailure }
-  }
-
-  /// Why a chat could not be started or a Mac could not be reached, where the menu's own buttons are.
-  @ViewBuilder private var menuFailure: some View {
-    if let failure = workbench.current?.failure {
-      Text(failure)
-        .font(.caption).foregroundStyle(.orange)
-        .padding(.horizontal, MenuLayout.contentLeading)
-        .offset(y: -22)
-    }
   }
 
   private func showMenu() {
+    guard isCompact else {
+      columnVisibility = .all
+      preferredCompactColumn = .sidebar
+      return
+    }
     withAnimation(menuAnimation) {
       menuPresented = true
       menuDragOffset = 0
@@ -292,9 +344,14 @@ struct WorkbenchView: View {
   }
 
   private func closeMenu() {
-    withAnimation(menuAnimation) {
-      menuPresented = false
-      menuDragOffset = 0
+    if isCompact {
+      withAnimation(menuAnimation) {
+        menuPresented = false
+        menuDragOffset = 0
+      }
+    } else {
+      columnVisibility = .detailOnly
+      preferredCompactColumn = .detail
     }
   }
 
@@ -302,21 +359,23 @@ struct WorkbenchView: View {
     reduceMotion ? nil : .spring(response: 0.36, dampingFraction: 0.88)
   }
 
-  private func menuGesture(reveal: CGFloat) -> some Gesture {
+  private func menuGesture(revealDistance: CGFloat) -> some Gesture {
     DragGesture(minimumDistance: 12)
       .onChanged { value in
-        guard abs(value.translation.width) > abs(value.translation.height) else { return }
+        guard isCompact, abs(value.translation.width) > abs(value.translation.height) else { return }
+
         if menuPresented {
-          menuDragOffset = min(0, max(-reveal, value.translation.width))
+          menuDragOffset = min(0, max(-revealDistance, value.translation.width))
         } else if value.startLocation.x <= 32, value.translation.width > 0 {
-          menuDragOffset = min(reveal, value.translation.width)
+          menuDragOffset = min(revealDistance, value.translation.width)
         }
       }
       .onEnded { value in
-        guard abs(value.translation.width) > abs(value.translation.height) else {
+        guard isCompact, abs(value.translation.width) > abs(value.translation.height) else {
           menuDragOffset = 0
           return
         }
+
         withAnimation(menuAnimation) {
           if menuPresented {
             if value.translation.width < -80 { menuPresented = false }
@@ -329,31 +388,27 @@ struct WorkbenchView: View {
   }
 }
 
+/// A chat in the menu: its name, with a filled row behind the open one.
 private struct SessionRow: View {
-  let session: RemoteSession
+  let name: String
   let isSelected: Bool
 
   var body: some View {
-    HStack(spacing: 8) {
-      Text(session.emoji ?? "").frame(width: session.emoji == nil ? 0 : 22)
-      Text(session.displayName).font(.body).lineLimit(1)
-      Spacer(minLength: 0)
-      if session.status == .working { ProgressView().controlSize(.small) }
-      if session.status == .needsAttention { Circle().fill(.orange).frame(width: 8, height: 8) }
-    }
-    .padding(.horizontal, MenuLayout.rowTextInset)
-    .frame(maxWidth: .infinity, alignment: .leading)
-    .frame(height: MenuLayout.rowHeight)
-    .contentShape(Rectangle())
-    .background {
-      if isSelected {
-        RoundedRectangle(cornerRadius: 15, style: .continuous)
-          .fill(Color(uiColor: .tertiarySystemBackground))
-          .padding(.vertical, MenuLayout.selectedRowVerticalInset)
+    Text(name)
+      .font(.body)
+      .lineLimit(1)
+      .padding(.horizontal, MenuLayout.rowTextInset)
+      .frame(maxWidth: .infinity, alignment: .leading)
+      .frame(height: MenuLayout.rowHeight)
+      .background {
+        if isSelected {
+          RoundedRectangle(cornerRadius: 15, style: .continuous)
+            .fill(Color(uiColor: .tertiarySystemBackground))
+            .padding(.vertical, MenuLayout.selectedRowVerticalInset)
+        }
       }
-    }
-    .accessibilityElement(children: .ignore)
-    .accessibilityLabel(session.displayName)
+      .accessibilityElement(children: .ignore)
+      .accessibilityLabel(name)
   }
 }
 
