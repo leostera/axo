@@ -181,6 +181,10 @@ pub(super) enum PiCatalogEvent<'a> {
     UserMessageStarted,
     /// A user or assistant message was completed.
     MessageEnded,
+    /// Pi reported its current activity when the bridge connected or reconnected.
+    ActivitySnapshot {
+        working: bool,
+    },
     /// Pi named its session (`session.info`).
     Named {
         title: &'a str,
@@ -211,6 +215,10 @@ impl<'a> PiCatalogEvent<'a> {
             {
                 PiCatalogEvent::MessageEnded
             }
+            "activity.snapshot" => data["working"]
+                .as_bool()
+                .map(|working| PiCatalogEvent::ActivitySnapshot { working })
+                .unwrap_or(PiCatalogEvent::Ignored),
             "session.info" => match field("name", valid_session_title) {
                 Some(title) => PiCatalogEvent::Named { title },
                 None => PiCatalogEvent::Ignored,
@@ -392,6 +400,12 @@ impl SessionManager {
                 PiCatalogEvent::MessageEnded => {
                     record_session_message(&state.database, session_id, unix_timestamp())?
                 }
+                PiCatalogEvent::ActivitySnapshot { working } => {
+                    let activity = state.pi_activity.entry(session_id).or_default();
+                    let changed = activity.working != working;
+                    activity.working = working;
+                    changed
+                }
                 PiCatalogEvent::Named { title } => {
                     describe_session(&state.database, session_id, Some(title), None)?
                 }
@@ -459,7 +473,7 @@ mod tests {
 
     use axo_pi::WriterLock;
 
-    use axo_protocol::{PaneRole, new_uuid_v4};
+    use axo_protocol::{PaneRole, SessionStatus, new_uuid_v4};
     use axo_pty::WindowSize;
     use axo_pty::process;
     use axo_store::Connection;
@@ -516,6 +530,15 @@ mod tests {
             ),
             "Ignored"
         );
+        assert_eq!(
+            parse("activity.snapshot", json!({ "working": true })),
+            "ActivitySnapshot { working: true }"
+        );
+        assert_eq!(
+            parse("activity.snapshot", json!({ "working": false })),
+            "ActivitySnapshot { working: false }"
+        );
+        assert_eq!(parse("activity.snapshot", json!({})), "Ignored");
         assert_eq!(parse("message.delta", json!({ "name": "x" })), "Ignored");
     }
 
@@ -660,6 +683,46 @@ mod tests {
         let updated = session_metadata(&state, session.id, &manager.attach_socket_path).unwrap();
         assert_eq!(updated.pi_session_id.as_deref(), Some("replacement"));
         assert_eq!(updated.name, session.name);
+    }
+
+    #[test]
+    fn activity_snapshot_restores_working_state_after_bridge_reconnect() {
+        let fixture = LifecycleFixture::new();
+        let manager = &fixture.manager;
+        let session = manager.list_sessions().unwrap().remove(0);
+        let shell_id = session.shells[0].id;
+        let runtime_id = {
+            let mut state = manager.lock_state().unwrap();
+            let shell = state.panes.running_mut(shell_id).unwrap();
+            shell.role = PaneRole::Pi;
+            shell.runtime_id
+        };
+        let binding = PiRuntimeBinding {
+            session_id: session.id,
+            shell_id,
+            runtime_id,
+        };
+
+        manager.set_pi_connection(binding, true).unwrap();
+        assert!(
+            manager
+                .observe_pi_event(binding, "activity.snapshot", &json!({ "working": true }))
+                .unwrap()
+        );
+        assert_eq!(
+            manager.list_sessions().unwrap()[0].status,
+            SessionStatus::Working
+        );
+
+        assert!(
+            manager
+                .observe_pi_event(binding, "activity.snapshot", &json!({ "working": false }))
+                .unwrap()
+        );
+        assert_eq!(
+            manager.list_sessions().unwrap()[0].status,
+            SessionStatus::Ready
+        );
     }
 
     #[test]

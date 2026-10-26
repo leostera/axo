@@ -22,6 +22,7 @@ export class AxoPiBridgeServer {
   private server: Server | undefined;
   private socket: Socket | undefined;
   private identity: PiSessionIdentity | undefined;
+  private activitySnapshot: (() => { working: boolean }) | undefined;
   private readonly streamId = randomUUID();
   private nextSequence = 0;
   private ownsSocketPath = false;
@@ -80,17 +81,17 @@ export class AxoPiBridgeServer {
     });
   }
 
-  bindIdentity(identity: PiSessionIdentity): void {
+  bindIdentity(identity: PiSessionIdentity, activitySnapshot: () => { working: boolean }): void {
     if (identity.axoSessionId !== this.axoSessionId) throw new Error("Pi bridge Session binding mismatch");
     this.identity = identity;
+    this.activitySnapshot = activitySnapshot;
     void this.sendHello().catch(() => {});
   }
 
   async publish(name: string, data: unknown): Promise<void> {
     if (this.identity === undefined) return;
-    this.nextSequence += 1;
     try {
-      await this.send({ type: "event", streamId: this.streamId, sequence: this.nextSequence, name, data });
+      await this.sendEvent(name, data);
     } catch {
       // The Pi session file is the durable source used to reconcile after disconnect.
     }
@@ -241,6 +242,15 @@ export class AxoPiBridgeServer {
     const identity = this.identity;
     if (identity === undefined || (socket as SocketWithInput | undefined)?.axoAuthenticated !== true) return;
     await this.send({ type: "hello", protocolVersion: 1, identity }, socket);
+    const activitySnapshot = this.activitySnapshot?.();
+    if (activitySnapshot !== undefined) {
+      await this.sendEvent("activity.snapshot", activitySnapshot, socket);
+    }
+  }
+
+  private async sendEvent(name: string, data: unknown, socket = this.socket): Promise<void> {
+    this.nextSequence += 1;
+    await this.send({ type: "event", streamId: this.streamId, sequence: this.nextSequence, name, data }, socket);
   }
 
   private async send(record: PiBridgeRecord, socket = this.socket): Promise<void> {

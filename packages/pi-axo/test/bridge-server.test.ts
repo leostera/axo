@@ -23,7 +23,15 @@ const identity: PiSessionIdentity = {
 function recordReader(socket: Socket): () => Promise<PiBridgeRecord> {
   let buffer = Buffer.alloc(0);
   const records: PiBridgeRecord[] = [];
-  const waiting: Array<(record: PiBridgeRecord) => void> = [];
+  const waiting: Array<{
+    resolve: (record: PiBridgeRecord) => void;
+    reject: (error: Error) => void;
+  }> = [];
+  const rejectWaiting = (error: Error) => {
+    for (const waiter of waiting.splice(0)) waiter.reject(error);
+  };
+  socket.on("error", error => rejectWaiting(error));
+  socket.on("close", () => rejectWaiting(new Error("bridge socket closed before a record arrived")));
   socket.on("data", data => {
     buffer = Buffer.concat([buffer, data]);
     let newline = buffer.indexOf(0x0a);
@@ -32,7 +40,7 @@ function recordReader(socket: Socket): () => Promise<PiBridgeRecord> {
       buffer = buffer.subarray(newline + 1);
       const record = JSON.parse(line.toString("utf8")) as PiBridgeRecord;
       const next = waiting.shift();
-      if (next) next(record);
+      if (next) next.resolve(record);
       else records.push(record);
       newline = buffer.indexOf(0x0a);
     }
@@ -40,7 +48,7 @@ function recordReader(socket: Socket): () => Promise<PiBridgeRecord> {
   return () => {
     const record = records.shift();
     if (record) return Promise.resolve(record);
-    return new Promise(resolve => waiting.push(resolve));
+    return new Promise((resolve, reject) => waiting.push({ resolve, reject }));
   };
 }
 
@@ -55,6 +63,7 @@ test("exchanges events and scoped commands, and deduplicates command IDs", async
   const directory = await mkdtemp(join(tmpdir(), "axo-pi-bridge-"));
   const socketPath = join(directory, "bridge.sock");
   const handled: string[] = [];
+  let currentWorking = true;
   const server = new AxoPiBridgeServer(socketPath, identity.axoSessionId, bridgeToken, async command => {
     handled.push(command.requestId);
     return { accepted: true };
@@ -62,11 +71,16 @@ test("exchanges events and scoped commands, and deduplicates command IDs", async
 
   try {
     await server.start();
-    server.bindIdentity(identity);
+    server.bindIdentity(identity, () => ({ working: currentWorking }));
     const { socket, next } = await connectTo(socketPath);
     socket.write(`${JSON.stringify({ type: "authenticate", protocolVersion: 1, token: bridgeToken })}\n`);
     assert.deepEqual(await next(), { type: "authenticated", protocolVersion: 1 });
     assert.deepEqual(await next(), { type: "hello", protocolVersion: 1, identity });
+    const activitySnapshot = await next();
+    assert.equal(activitySnapshot.type, "event");
+    if (activitySnapshot.type !== "event") throw new Error("expected activity snapshot");
+    assert.equal(activitySnapshot.name, "activity.snapshot");
+    assert.deepEqual(activitySnapshot.data, { working: true });
 
     server.publish("message.end", { role: "assistant", text: "Done" });
     const firstEvent = await next();
@@ -76,7 +90,7 @@ test("exchanges events and scoped commands, and deduplicates command IDs", async
     assert.deepEqual(firstEvent, {
       type: "event",
       streamId: firstEvent.streamId,
-      sequence: 1,
+      sequence: 2,
       name: "message.end",
       data: { role: "assistant", text: "Done" },
     });
@@ -100,7 +114,20 @@ test("exchanges events and scoped commands, and deduplicates command IDs", async
     assert.deepEqual(await next(), { type: "commandResult", requestId: "request-2", result: { accepted: false, reason: "stale" } });
     assert.deepEqual(handled, ["request-1"]);
 
+    currentWorking = false;
     socket.destroy();
+    await once(socket, "close");
+    await new Promise(resolve => setTimeout(resolve, 20));
+    const reconnected = await connectTo(socketPath);
+    reconnected.socket.write(`${JSON.stringify({ type: "authenticate", protocolVersion: 1, token: bridgeToken })}\n`);
+    assert.deepEqual(await reconnected.next(), { type: "authenticated", protocolVersion: 1 });
+    assert.deepEqual(await reconnected.next(), { type: "hello", protocolVersion: 1, identity });
+    const reconnectedSnapshot = await reconnected.next();
+    assert.equal(reconnectedSnapshot.type, "event");
+    if (reconnectedSnapshot.type !== "event") throw new Error("expected activity snapshot after reconnect");
+    assert.equal(reconnectedSnapshot.name, "activity.snapshot");
+    assert.deepEqual(reconnectedSnapshot.data, { working: false });
+    reconnected.socket.destroy();
   } finally {
     await server.close();
   }

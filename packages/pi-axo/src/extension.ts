@@ -135,7 +135,7 @@ export async function installAxoPiExtension(pi: ExtensionAPI, config: AxoPiExten
       return;
     }
 
-    bridge.bindIdentity(nextIdentity);
+    bridge.bindIdentity(nextIdentity, () => ({ working: !sessionContext.isIdle() }));
     traceBridge(`session bound (${event.reason})`);
     await publish("session.started", { reason: event.reason });
   });

@@ -104,6 +104,11 @@ test("bridges Pi events and remote commands without owning the Pi process", asyn
     assert.equal(hello.identity.axoPaneId, axoPaneId);
     assert.equal(hello.identity.piSessionId, "pi-session-1");
     assert.equal(hello.identity.sessionFile, "/private/axo/pi-session-1.jsonl");
+    const activitySnapshot = await next();
+    assert.equal(activitySnapshot.type, "event");
+    if (activitySnapshot.type !== "event") throw new Error("expected initial activity snapshot");
+    assert.equal(activitySnapshot.name, "activity.snapshot");
+    assert.deepEqual(activitySnapshot.data, { working: false });
 
     const importSession = commands.get("axo-import");
     assert.ok(importSession);
