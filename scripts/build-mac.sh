@@ -68,7 +68,13 @@ if [[ ! "$build_number" =~ ^[1-9][0-9]*$ ]]; then
   echo "AXO_BUILD_NUMBER must be a positive canonical decimal integer" >&2
   exit 1
 fi
-export AXO_BUILD_NUMBER="$build_number"
+
+daemon_build_number=${AXOD_BUILD_NUMBER:-$(tr -d '\r\n' < BUILD_NUMBER)}
+if [[ ! "$daemon_build_number" =~ ^[1-9][0-9]*$ ]]; then
+  echo "AXOD_BUILD_NUMBER must be a positive canonical decimal integer" >&2
+  exit 1
+fi
+export AXOD_BUILD_NUMBER="$daemon_build_number"
 
 # Compile the Pi extension without running tests; axod loads it from the app bundle.
 npm --prefix packages/pi-axo run build
@@ -104,6 +110,12 @@ if [[ "$reported_app_build" != "$build_number" ]]; then
   echo "Axo app reports build $reported_app_build, expected $build_number" >&2
   exit 1
 fi
+/usr/libexec/PlistBuddy -c "Set :AXODBuildNumber $daemon_build_number" "$app/Contents/Info.plist"
+reported_daemon_build=$(/usr/libexec/PlistBuddy -c 'Print :AXODBuildNumber' "$app/Contents/Info.plist")
+if [[ "$reported_daemon_build" != "$daemon_build_number" ]]; then
+  echo "Axo app expects axod build $reported_daemon_build, expected $daemon_build_number" >&2
+  exit 1
+fi
 plutil -lint "$app/Contents/Library/LaunchAgents/dev.leostera.axo.axod.plist"
 minimum_os=$(/usr/libexec/PlistBuddy -c 'Print :LSMinimumSystemVersion' "$app/Contents/Info.plist")
 for executable in "$app/Contents/MacOS/Axo" "$app/Contents/Helpers/axod"; do
@@ -114,7 +126,7 @@ for executable in "$app/Contents/MacOS/Axo" "$app/Contents/Helpers/axod"; do
   fi
 done
 reported_build=$("$app/Contents/Helpers/axod" --version)
-if [[ "$reported_build" != *"(build $build_number)" ]]; then
+if [[ "$reported_build" != *"(build $daemon_build_number)" ]]; then
   echo "axod reports the wrong build number: $reported_build" >&2
   exit 1
 fi
@@ -147,5 +159,5 @@ if [[ -d "$stage/Axo.app" ]]; then
   preserve_stage=1
 fi
 
-printf 'Built and signed: %s/dist/Axo.app\nBuild number: %s\nSigning team: %s\n' \
-  "$root" "$build_number" "$app_team"
+printf 'Built and signed: %s/dist/Axo.app\nApp build: %s\naxod build: %s\nSigning team: %s\n' \
+  "$root" "$build_number" "$daemon_build_number" "$app_team"

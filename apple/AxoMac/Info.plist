@@ -29,6 +29,8 @@
     <string>0.1.0</string>
     <key>CFBundleVersion</key>
     <string>1</string>
+    <key>AXODBuildNumber</key>
+    <string>4</string>
     <key>AXOGitCommit</key>
     <string>Unknown</string>
     <key>LSMinimumSystemVersion</key>

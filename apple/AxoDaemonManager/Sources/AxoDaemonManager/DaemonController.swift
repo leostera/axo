@@ -123,11 +123,11 @@ public final class DaemonController {
       defer { startTask = nil }
       setStatus(.updating)
       do {
-        let appBuildNumber = try makeAppBuildNumber()
+        let daemonBuildNumber = try makeDaemonBuildNumber()
         guard
-          let daemon = try await restartDaemon(at: try makeSocketPath(), expectedBuild: appBuildNumber)
+          let daemon = try await restartDaemon(at: try makeSocketPath(), expectedBuild: daemonBuildNumber)
         else { return }
-        setStatus(.running(version: daemon.version ?? "Unknown", buildNumber: appBuildNumber))
+        setStatus(.running(version: daemon.version ?? "Unknown", buildNumber: daemonBuildNumber))
       } catch {
         setStatus(.failed(error.localizedDescription))
       }
@@ -246,7 +246,7 @@ public final class DaemonController {
 
   private func checkBuildAndRestartIfNeeded() async throws {
     let socketPath = try makeSocketPath()
-    let appBuildNumber = try makeAppBuildNumber()
+    let daemonBuildNumber = try makeDaemonBuildNumber()
     logger.info("event=daemon.health_check_started")
 
     // A slow daemon may be recovering many Sessions; restarting it would kill their shells.
@@ -254,17 +254,17 @@ public final class DaemonController {
     let daemon = try await waitForDaemon(at: socketPath, expectedBuild: nil)
 
     logger.info("event=daemon.health_check_succeeded build=\(daemon.buildNumber, privacy: .public)")
-    guard daemon.buildNumber != appBuildNumber.value else {
-      setStatus(.running(version: daemon.version ?? "Unknown", buildNumber: appBuildNumber))
+    guard daemon.buildNumber != daemonBuildNumber.value else {
+      setStatus(.running(version: daemon.version ?? "Unknown", buildNumber: daemonBuildNumber))
       return
     }
 
     setStatus(.updating)
     guard
       let restartedDaemon =
-        try await restartDaemon(at: socketPath, expectedBuild: appBuildNumber)
+        try await restartDaemon(at: socketPath, expectedBuild: daemonBuildNumber)
     else { return }
-    setStatus(.running(version: restartedDaemon.version ?? "Unknown", buildNumber: appBuildNumber))
+    setStatus(.running(version: restartedDaemon.version ?? "Unknown", buildNumber: daemonBuildNumber))
   }
 
   private func restartDaemon(
@@ -353,13 +353,13 @@ public final class DaemonController {
     }
   }
 
-  private func makeAppBuildNumber() throws -> BuildNumber {
+  private func makeDaemonBuildNumber() throws -> BuildNumber {
     guard
       let buildNumber = BuildNumber(
-        bundleValue: Bundle.main.infoDictionary?["CFBundleVersion"]
+        bundleValue: Bundle.main.infoDictionary?["AXODBuildNumber"]
       )
     else {
-      throw DaemonControllerError.invalidAppBuild
+      throw DaemonControllerError.invalidDaemonBuild
     }
     return buildNumber
   }
@@ -409,7 +409,7 @@ public final class DaemonController {
 }
 
 private enum DaemonControllerError: Error, LocalizedError {
-  case invalidAppBuild
+  case invalidDaemonBuild
   case missingServiceDefinition
   case registrationDidNotComplete
   case restartTimedOut(BuildNumber)
@@ -419,8 +419,8 @@ private enum DaemonControllerError: Error, LocalizedError {
 
   var errorDescription: String? {
     switch self {
-    case .invalidAppBuild:
-      "the app bundle has no valid numeric build number"
+    case .invalidDaemonBuild:
+      "the app bundle has no valid numeric axod build number"
     case .missingServiceDefinition:
       "the bundled axod LaunchAgent definition is missing"
     case .registrationDidNotComplete:
