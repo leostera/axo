@@ -1,0 +1,64 @@
+load("@rules_apple//apple:ios.bzl", "ios_application")
+load("@rules_swift//swift:swift_library.bzl", "swift_library")
+load("@rules_swift//swift:swift_test.bzl", "swift_test")
+
+package(default_visibility = ["//visibility:public"])
+
+exports_files(["Info.plist", "AxoPhone.entitlements"])
+
+# The phone's state and rules: no UIKit, so the same code builds for iOS and is tested on macOS.
+swift_library(
+    name = "AxoPhoneModel",
+    module_name = "AxoPhoneModel",
+    srcs = glob(["Sources/AxoPhoneModel/**/*.swift"]),
+    copts = ["-swift-version", "5"],
+    deps = [
+        "//apple/AxoClient",
+        "//apple/AxoProtocol",
+    ],
+)
+
+swift_test(
+    name = "AxoPhoneModelTests",
+    srcs = glob(["Tests/AxoPhoneModelTests/**/*.swift"]),
+    copts = ["-swift-version", "5"],
+    deps = [
+        ":AxoPhoneModel",
+        "//apple/AxoClient",
+        "//apple/AxoProtocol",
+    ],
+)
+
+# The SwiftUI screens: sign in with Access, your Macs, one Mac's Sessions and terminal.
+swift_library(
+    name = "AxoPhone",
+    module_name = "AxoPhone",
+    srcs = glob(["Sources/AxoPhone/**/*.swift"]),
+    copts = ["-swift-version", "5"],
+    deps = [
+        ":AxoPhoneModel",
+        "//apple/AxoClient",
+        "//apple/AxoProtocol",
+    ],
+)
+
+swift_library(
+    name = "AxoPhoneMain",
+    module_name = "AxoPhoneMain",
+    srcs = glob(["Sources/AxoPhoneMain/*.swift"]),
+    copts = ["-swift-version", "5"],
+    deps = [":AxoPhone"],
+)
+
+ios_application(
+    name = "AxoPhoneApp",
+    bundle_id = "dev.leostera.axo.phone",
+    entitlements = "AxoPhone.entitlements",
+    families = [
+        "iphone",
+        "ipad",
+    ],
+    infoplists = ["Info.plist"],
+    minimum_os_version = "17.0",
+    deps = [":AxoPhoneMain"],
+)

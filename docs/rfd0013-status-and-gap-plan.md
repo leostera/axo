@@ -148,11 +148,23 @@ In `apple/AxoClient/Sources/AxoClient/Remote`:
 - Tests: in-memory transport and socket, a stub for HTTP, and a loopback WebSocket server that
   shows the upgrade carries the token and no cookie even with a browser cookie in the jar.
 
-### G4. iOS app on AxoClient
+### G4. iOS app on AxoClient (first slice done)
 
-Restore the useful views from `d885961^` (chat-first workbench, Sessions drawer, voice) onto
-G1–G3. The old `AxoCore` control-plane model is not reused. Sign-in is Access (G1); hosts
-come only from the account; nothing reaches a host except through the relay.
+`apple/AxoPhone`: `AxoPhoneModel` (account session, hosts, one host's workbench, a plain-text
+terminal; no UIKit, tested on macOS), the SwiftUI screens, and `//apple/AxoPhone:AxoPhoneApp`
+(`bazel build --ios_multi_cpus=sim_arm64`). Sign-in is Access's own page in a web view; the
+`CF_Authorization` cookie value becomes the token the app sends in `cf-access-token`, kept in the
+Keychain, and the app's own requests never use cookies. A token that cannot be kept does not
+sign the phone in (found when the simulator build lacked keychain entitlements and looped).
+
+Checked in the simulator against a stand-in relay: sign in, then the host list, with the token
+header present and no cookie. **Not checked:** the workbench against a real relay and axod (needs
+the Access application, G7, or a local Worker with a stand-in Access issuer), and anything on a
+device (needs a provisioning profile; the entitlements file uses the bundle id as its group).
+
+Next: the terminal is text only (full-screen programs will not draw); an xterm.js web view or a
+native emulator replaces it. Voice (`AxoVoice` in `d885961^`) and the chat-first view are not
+restored yet.
 
 ### G5. Mac app: other hosts
 

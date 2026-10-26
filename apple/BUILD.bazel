@@ -14,6 +14,8 @@ xcodeproj(
     tags = ["manual"],
     top_level_targets = [
         "//apple/AxoMac:AxoApp",
+        "//apple/AxoPhone:AxoPhoneApp",
+        "//apple/AxoPhone:AxoPhoneModelTests",
         "//apple/AxoMac:AxoUITestApp",
         "//apple/AxoProtocol:AxoProtocolTests",
         "//apple/AxoClient:AxoClientTests",
