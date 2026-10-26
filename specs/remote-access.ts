@@ -24,7 +24,7 @@ const keyOf = (account: string, host: string) => `${account}/${host}`;
 
 /** AxoHostRelay keeps one alarm, set for the earliest lease or command deadline. */
 function schedule(state: Manager, ctx: Clock) {
-  const times = [...Object.values(state.routes).map((r) => r.leaseUntil), ...Object.values(state.pending).map((p) => p.deadline)];
+  const times = [...Object.values(state.routes).map((r) => r.leaseUntil), ...Object.values(state.pending).map((p) => p.deadline)].filter(Number.isFinite);
   if (times.length === 0) ctx.cancel("alarm");
   else ctx.start("alarm", Math.max(1, Math.min(...times) - ctx.now));
 }
@@ -77,7 +77,6 @@ export default defineSpec(
       ConnectRefused: message<{ conn: string }>({ name: "403 host is not authorized", over: "websocket", tone: "refused" }),
       RegisterHost: message<{ account: string; host: string; conn: string }>({ name: "axo.host.register", over: "websocket" }),
       HostRegistered: message<{ conn: string }>({ name: "register result", over: "websocket", tone: "reply" }),
-      Heartbeat: message<{ account: string; host: string; conn: string }>({ name: "axo.host.heartbeat", over: "websocket" }),
       Disconnect: message<{ account: string; host: string; conn: string }>({ name: "socket closed by the Mac", over: "websocket" }),
       SocketClosed: message<{ conn: string }>({ name: "socket closed by the relay", over: "websocket", tone: "refused" }),
       Forward: message<{ request: string; account: string }>({ name: "axo.remote.terminal.input", over: "websocket", tone: "stream" }),
@@ -105,7 +104,7 @@ export default defineSpec(
       RevokeInAccount, CodeReserved, CodeUnknown, CodeFound, PairingIssued, PairingLimited, PairingRedeemed, PairingInvalid,
       Code, TooManyCodes, Revoked, RedeemCode, SignIn, SignedIn, NotSignedIn, ListHosts, OpenHost, LeaveHost,
       HostList, Opened, NoSuchHost, HostRevokedMsg, HostStatus, Detached, Connect, Linked, CodeRejected, Admitted, ConnectRefused, RegisterHost,
-      HostRegistered, Heartbeat, Disconnect, SocketClosed, Forward, CallDone, Output, NotYourMac, MacOffline, OutcomeUnknown,
+      HostRegistered, Disconnect, SocketClosed, Forward, CallDone, Output, NotYourMac, MacOffline, OutcomeUnknown,
       LinkHost, HostLinked, LinkFailed,
     } = spec.messages;
 
@@ -128,8 +127,7 @@ export default defineSpec(
     const PENDING_CODES = spec.defineLimit({ name: "Unused codes an account may hold", value: 3, unit: "codes", sources: ["packages/axo-api-worker/src/auth/account-manager.ts#AxoAccountManager.createPairing"] });
     const HTTP_TIMEOUT = spec.defineLimit({ name: "axod waits this long for the pairing service", value: 10 * SEC, sources: ["crates/axo-relay/src/pairing.rs#HTTP_TIMEOUT"] });
     const CONNECT_TIMEOUT = spec.defineLimit({ name: "axod waits this long to bring the relay connection up", value: 5 * SEC, sources: ["crates/axo-relay/src/relay.rs#CONNECT_TIMEOUT"] });
-    const HEARTBEAT = spec.defineLimit({ name: "Heartbeat interval", value: 10 * SEC, sources: ["crates/axo-relay/src/relay.rs#HEARTBEAT_INTERVAL"] });
-    const LEASE = spec.defineLimit({ name: "A heartbeat keeps the host's spot for", value: 30 * SEC, sources: ["packages/axo-api/src/contracts.ts#LIMITS"] });
+    const LEASE = spec.defineLimit({ name: "The host's spot is kept for", value: 30 * SEC, sources: ["packages/axo-api/src/contracts.ts#LIMITS"] });
     const DEADLINE = spec.defineLimit({ name: "The relay waits this long for a host to register or answer", value: 10 * SEC, sources: ["packages/axo-api/src/contracts.ts#LIMITS"] });
     const MAX_RETRY = spec.defineLimit({ name: "Longest wait between reconnect attempts", value: 30 * SEC, sources: ["crates/axo-relay/src/relay.rs#MAX_RECONNECT_DELAY"] });
     const APP_RPC_TIMEOUT = spec.defineLimit({ name: "Axo.app waits this long for axod to answer axo.relay.link", value: 5 * SEC, sources: ["apple/AxoClient/Sources/AxoClient/Axod/AxodMethods.swift#AxodMethod.init"] });
@@ -461,7 +459,7 @@ export default defineSpec(
           },
         },
         [RegisterHost]: {
-          description: "Marks the host online and gives it a 30 second spot.",
+          description: "Marks the host online. Its spot is held while its socket stays open (axod's routine heartbeats are left out of this model).",
           sources: ["packages/axo-api-worker/src/axo-host-relay.ts#AxoHostRelay.registerHost"],
           sends: [HostRegistered, HostStatus],
           starts: ["alarm"],
@@ -470,22 +468,10 @@ export default defineSpec(
             const route = state.routes[keyOf(m.account, m.host)];
             if (!route || route.conn !== m.conn) return; // "Stale lease"
             route.ready = true;
-            route.leaseUntil = ctx.now + LEASE.value;
+            route.leaseUntil = Infinity;
             schedule(state, ctx);
             announce(state, ctx, keyOf(m.account, m.host));
             ctx.reply(HostRegistered, { conn: m.conn });
-          },
-        },
-        [Heartbeat]: {
-          routine: true,
-          description: "Renews the host's spot for another 30 seconds.",
-          sources: ["packages/axo-api-worker/src/axo-host-relay.ts#AxoHostRelay.heartbeatHost", "packages/axo-api-worker/src/axo-host-relay.ts#AxoHostRelay.renewRoute"],
-          starts: ["alarm"],
-          run(state, m, ctx) {
-            const route = state.routes[keyOf(m.account, m.host)];
-            if (!route || route.conn !== m.conn || !route.ready) return;
-            route.leaseUntil = ctx.now + LEASE.value;
-            schedule(state, ctx);
           },
         },
         [Disconnect]: {
@@ -862,7 +848,6 @@ export default defineSpec(
             state.backingOff = false;
             state.delay = 1 * SEC;
             ctx.cancel("connectTimeout");
-            ctx.cancel("heartbeat");
             ctx.cancel("backoff");
             const app = ctx.all(App).find((a) => macName(a.label) === macName(ctx.label)) ?? ctx.all(App)[0];
             if (app) ctx.send(app, HostLinked, {});
@@ -936,28 +921,14 @@ export default defineSpec(
           },
         },
         [HostRegistered]: {
-          description: "The host is online; axod starts its heartbeat.",
+          description: "The host is online.",
           sources: ["crates/axo-relay/src/relay.rs#run_connection", "crates/axo-relay/src/relay.rs#relay_session"],
-          starts: ["heartbeat"],
-          say: () => "Online; heartbeat every 10 seconds",
+          say: () => "Online",
           run(state, m, ctx) {
             if (state.conn !== "registering" || state.connId !== m.conn) return;
             state.conn = "connected";
             state.delay = 1 * SEC;
             ctx.cancel("connectTimeout");
-            ctx.start("heartbeat", HEARTBEAT.value);
-          },
-        },
-        heartbeat: {
-          routine: true,
-          description: "Every ten seconds axod tells the relay it is still there.",
-          sources: ["crates/axo-relay/src/relay.rs#relay_session"],
-          sends: [Heartbeat],
-          starts: ["heartbeat"],
-          run(state, ctx) {
-            if (state.conn !== "connected" || !state.link.account || !state.connId) return;
-            ctx.send(ctx.the(Manager), Heartbeat, { account: state.link.account, host: ctx.id, conn: state.connId });
-            ctx.start("heartbeat", HEARTBEAT.value);
           },
         },
         connectTimeout: {
@@ -984,7 +955,6 @@ export default defineSpec(
             state.conn = "idle";
             state.connId = null;
             state.backingOff = true;
-            ctx.cancel("heartbeat");
             ctx.cancel("connectTimeout");
             ctx.start("backoff", state.delay);
             state.delay = Math.min(state.delay * 2, MAX_RETRY.value);
