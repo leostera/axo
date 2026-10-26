@@ -161,6 +161,7 @@ genrule(
 
 macos_application(
     name = "AxoApp",
+    app_icons = ["//assets:macos_app_icon"],
     bundle_id = "dev.leostera.axo",
     bundle_name = "Axo",
     executable_name = "Axo",

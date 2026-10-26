@@ -7,8 +7,8 @@ swift make-icons.swift   # from this directory
 iconutil -c icns ...     # macos/AppIcon.icns is built from the appiconset PNGs
 ```
 
-- `ios/AppIcon.appiconset`: one flat 1024 px square, no transparency; iOS rounds it.
-- `macos/AppIcon.appiconset` and `macos/AppIcon.icns`: a rounded square at 80% of the canvas on a transparent one, 16 to 1024 px, as macOS expects.
+- `ios/Assets.xcassets/AppIcon.appiconset`: one flat 1024 px square, no transparency; iOS rounds it.
+- `macos/Assets.xcassets/AppIcon.appiconset` and `macos/AppIcon.icns`: a rounded square at 80% of the canvas on a transparent one, 16 to 1024 px, as macOS expects.
 - `web/`: `favicon-32.png`, `favicon-192.png`, `apple-touch-icon.png` (180), `icon-512.png`.
 
 The original has its rounded shape baked in with black corners, so the script cuts the artwork out of

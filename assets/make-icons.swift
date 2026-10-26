@@ -63,7 +63,7 @@ func write(_ image: CGImage, to path: String) {
 }
 
 // iOS: one flat 1024 square; the system rounds it.
-write(render(size: 1024, opaque: true, artFraction: 1, rounded: false), to: "ios/AppIcon.appiconset/icon-1024.png")
+write(render(size: 1024, opaque: true, artFraction: 1, rounded: false), to: "ios/Assets.xcassets/AppIcon.appiconset/icon-1024.png")
 try! """
 {
   "images" : [
@@ -72,14 +72,14 @@ try! """
   "info" : { "author" : "xcode", "version" : 1 }
 }
 
-""".write(toFile: "ios/AppIcon.appiconset/Contents.json", atomically: true, encoding: .utf8)
+""".write(toFile: "ios/Assets.xcassets/AppIcon.appiconset/Contents.json", atomically: true, encoding: .utf8)
 
 // macOS: a rounded square 80% of the canvas on a transparent one, at every size the system asks for.
 var macImages: [String] = []
 for (points, scale) in [(16, 1), (16, 2), (32, 1), (32, 2), (128, 1), (128, 2), (256, 1), (256, 2), (512, 1), (512, 2)] {
   let pixels = points * scale
   let name = "icon_\(points)x\(points)\(scale == 2 ? "@2x" : "").png"
-  write(render(size: pixels, opaque: false, artFraction: 0.8, rounded: true), to: "macos/AppIcon.appiconset/\(name)")
+  write(render(size: pixels, opaque: false, artFraction: 0.8, rounded: true), to: "macos/Assets.xcassets/AppIcon.appiconset/\(name)")
   macImages.append(#"    { "filename" : "\#(name)", "idiom" : "mac", "scale" : "\#(scale)x", "size" : "\#(points)x\#(points)" }"#)
 }
 try! """
@@ -90,7 +90,7 @@ try! """
   "info" : { "author" : "xcode", "version" : 1 }
 }
 
-""".write(toFile: "macos/AppIcon.appiconset/Contents.json", atomically: true, encoding: .utf8)
+""".write(toFile: "macos/Assets.xcassets/AppIcon.appiconset/Contents.json", atomically: true, encoding: .utf8)
 
 // The web: favicons and the touch icon, flat squares the browser rounds itself.
 for (name, size) in [("favicon-32.png", 32), ("favicon-192.png", 192), ("apple-touch-icon.png", 180), ("icon-512.png", 512)] {

@@ -53,6 +53,7 @@ swift_library(
 
 ios_application(
     name = "AxoPhoneApp",
+    app_icons = ["//assets:ios_app_icon"],
     bundle_id = "dev.leostera.axo.phone",
     entitlements = "AxoPhone.entitlements",
     families = [
@@ -77,6 +78,7 @@ local_provisioning_profile(
 # or Run on a device from the Xcode project.
 ios_application(
     name = "AxoPhoneDevice",
+    app_icons = ["//assets:ios_app_icon"],
     bundle_id = "dev.leostera.axo.phone",
     entitlements = "AxoPhone-device.entitlements",
     families = [
