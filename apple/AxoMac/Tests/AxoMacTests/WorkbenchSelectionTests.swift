@@ -5,16 +5,20 @@ import XCTest
 
 /// `WorkbenchSelection` is pure, so its rules are tested without a model, daemon or views.
 final class WorkbenchSelectionTests: XCTestCase {
-  private func shell(_ id: ShellID) -> TerminalShell {
+  private func shell(_ id: ShellID, role: PaneRole = .terminal) -> TerminalShell {
     TerminalShell(
-      id: id, processId: 1, initialPwd: "/", ptyDevice: "/dev/null", attachSocketPath: "/tmp/s")
+      id: id, processId: 1, initialPwd: "/", ptyDevice: "/dev/null", attachSocketPath: "/tmp/s",
+      role: role)
   }
 
   private func session(
-    _ id: SessionID, _ shells: [ShellID], layout: SessionLayout? = nil, workspace: String? = nil
+    _ id: SessionID, _ shells: [ShellID], agentShell: ShellID? = nil,
+    layout: SessionLayout? = nil, workspace: String? = nil
   ) -> TerminalSession {
     TerminalSession(
-      id: id, initialPwd: "/", shells: shells.map(shell), layout: layout, workspaceId: workspace)
+      id: id, initialPwd: "/",
+      shells: shells.map { shell($0, role: $0 == agentShell ? .pi : .terminal) },
+      layout: layout, workspaceId: workspace)
   }
 
   private func selection(_ sessions: [TerminalSession]) -> WorkbenchSelection {
@@ -23,14 +27,30 @@ final class WorkbenchSelectionTests: XCTestCase {
     return selection
   }
 
-  func testTheFirstCatalogShowsTheFirstSessionFocusedOnItsNewestPane() {
+  func testTheFirstCatalogShowsTheFirstSessionFocusedOnItsFirstPane() {
     var selection = selection([session(1, [10, 11]), session(2, [20])])
     XCTAssertEqual(selection.selectedSessionID, 1)
-    XCTAssertEqual(selection.focusedShellID, 11)
+    XCTAssertEqual(selection.focusedShellID, 10)
     XCTAssertEqual(selection.layout?.orderedShellIDs, [10, 11])
     // Neither had a stored layout, so both normalized layouts are saved.
     XCTAssertEqual(Set(selection.takePendingWrites().keys), [1, 2])
     XCTAssertTrue(selection.pendingWrites.isEmpty)
+  }
+
+  func testSwitchingSessionsFocusesTheAgentPaneAndSameSessionSelectionPreservesPaneFocus() {
+    let sessions = [
+      session(1, [10, 11], agentShell: 10),
+      session(2, [20, 21], agentShell: 20),
+    ]
+    var selection = selection(sessions)
+    selection.focus(11, in: sessions)
+
+    selection.select(2, in: sessions)
+    XCTAssertEqual(selection.focusedShellID, 20)
+
+    selection.focus(21, in: sessions)
+    selection.select(2, in: sessions)
+    XCTAssertEqual(selection.focusedShellID, 21)
   }
 
   func testAStoredLayoutThatMatchesIsNotSavedAgain() {

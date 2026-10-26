@@ -141,18 +141,21 @@ struct WorkbenchSelection: Equatable {
 
   // MARK: - Selection and focus
 
-  /// Shows `sessionID` (or nothing), keeping focus if it is still one of its panes, else
-  /// focusing its newest pane.
+  /// Shows `sessionID` (or nothing). Switching Sessions focuses its Pi pane; activating the
+  /// already selected Session preserves the user's current pane focus.
   mutating func select(_ sessionID: SessionID?, in sessions: [TerminalSession]) {
+    let switchedSessions = selectedSessionID != sessionID
     selectedSessionID = sessionID
     if let sessionID {
-      activate(sessionID, in: sessions)
+      activate(sessionID, in: sessions, focusingAgentPane: switchedSessions)
     } else {
       focusedShellID = nil
     }
   }
 
-  private mutating func activate(_ sessionID: SessionID, in sessions: [TerminalSession]) {
+  private mutating func activate(
+    _ sessionID: SessionID, in sessions: [TerminalSession], focusingAgentPane: Bool = false
+  ) {
     guard let session = sessions.first(where: { $0.id == sessionID }) else {
       focusedShellID = nil
       return
@@ -164,6 +167,10 @@ struct WorkbenchSelection: Equatable {
     }
     guard let current else {
       focusedShellID = nil
+      return
+    }
+    if focusingAgentPane {
+      focusedShellID = session.shells.first(where: \.isPi)?.id ?? current.firstShellID
       return
     }
     if let focusedShellID,
