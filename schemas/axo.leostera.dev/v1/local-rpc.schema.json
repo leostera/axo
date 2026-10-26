@@ -12,19 +12,10 @@
           "$ref": "#/$defs/HealthCall"
         },
         {
-          "$ref": "#/$defs/RemoteAccessSettingsCall"
-        },
-        {
           "$ref": "#/$defs/RemoteAccessStatusCall"
         },
         {
           "$ref": "#/$defs/RemoteAccessConnectCall"
-        },
-        {
-          "$ref": "#/$defs/RemoteAccessConfigureCall"
-        },
-        {
-          "$ref": "#/$defs/RemoteAccessDisableCall"
         },
         {
           "$ref": "#/$defs/ConfigGetCall"
@@ -173,25 +164,6 @@
       ],
       "unevaluatedProperties": false
     },
-    "RemoteAccessSettingsCall": {
-      "allOf": [
-        {
-          "$ref": "#/$defs/BaseCall"
-        },
-        {
-          "properties": {
-            "method": {
-              "const": "axo.relay.settings"
-            },
-            "params": {
-              "type": "object",
-              "maxProperties": 0
-            }
-          }
-        }
-      ],
-      "unevaluatedProperties": false
-    },
     "RemoteAccessStatusCall": {
       "allOf": [
         {
@@ -220,68 +192,6 @@
           "properties": {
             "method": {
               "const": "axo.relay.connect"
-            },
-            "params": {
-              "type": "object",
-              "maxProperties": 0
-            }
-          }
-        }
-      ],
-      "unevaluatedProperties": false
-    },
-    "RemoteAccessConfigureCall": {
-      "allOf": [
-        {
-          "$ref": "#/$defs/BaseCall"
-        },
-        {
-          "properties": {
-            "method": {
-              "const": "axo.relay.configure"
-            },
-            "params": {
-              "type": "object",
-              "additionalProperties": false,
-              "required": [
-                "relayUrl",
-                "hostLabel",
-                "hostKind"
-              ],
-              "properties": {
-                "relayUrl": {
-                  "type": "string",
-                  "minLength": 1,
-                  "maxLength": 2048
-                },
-                "hostLabel": {
-                  "type": "string",
-                  "minLength": 1,
-                  "maxLength": 128
-                },
-                "hostKind": {
-                  "type": "string",
-                  "const": "macos"
-                }
-              }
-            }
-          }
-        }
-      ],
-      "unevaluatedProperties": false,
-      "required": [
-        "params"
-      ]
-    },
-    "RemoteAccessDisableCall": {
-      "allOf": [
-        {
-          "$ref": "#/$defs/BaseCall"
-        },
-        {
-          "properties": {
-            "method": {
-              "const": "axo.relay.disable"
             },
             "params": {
               "type": "object",
@@ -906,30 +816,6 @@
         }
       }
     },
-    "RemoteAccessSettingsResult": {
-      "type": "object",
-      "additionalProperties": false,
-      "required": [
-        "enabled",
-        "relayUrl",
-        "hostLabel",
-        "hostKind"
-      ],
-      "properties": {
-        "enabled": {
-          "type": "boolean"
-        },
-        "relayUrl": {
-          "type": ["string", "null"]
-        },
-        "hostLabel": {
-          "type": ["string", "null"]
-        },
-        "hostKind": {
-          "type": ["string", "null"]
-        }
-      }
-    },
     "RemoteAccessStatusResult": {
       "type": "object",
       "additionalProperties": false,
@@ -970,14 +856,6 @@
         "requested": {
           "type": "boolean"
         }
-      }
-    },
-    "RemoteAccessDisableResult": {
-      "type": "object",
-      "additionalProperties": false,
-      "required": ["disabled"],
-      "properties": {
-        "disabled": { "const": true }
       }
     },
     "ConfigValueResult": {

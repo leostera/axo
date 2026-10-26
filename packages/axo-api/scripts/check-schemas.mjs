@@ -163,11 +163,8 @@ validateWith(localCallSchema, await fixture("events-next.call.json"));
 validateWith(localCallSchema, await fixture("terminal-input.local.call.json"));
 validateWith(localCallSchema, await fixture("terminal-resize.local.call.json"));
 validateWith(localCallSchema, await fixture("client-viewport-set.local.call.json"));
-validateWith(localCallSchema, await fixture("remote-access-settings.call.json"));
 validateWith(localCallSchema, await fixture("remote-access-status.call.json"));
 validateWith(localCallSchema, await fixture("remote-access-connect.call.json"));
-validateWith(localCallSchema, await fixture("remote-access-configure.call.json"));
-validateWith(localCallSchema, await fixture("remote-access-disable.call.json"));
 validateWith(localCallSchema, await fixture("config.get.call.json"));
 validateWith(localCallSchema, await fixture("config.set.agent.call.json"));
 validateWith(localCallSchema, await fixture("config.set.shell.call.json"));
@@ -237,20 +234,12 @@ validateWith(
   await fixture("session-list.result.json"),
 );
 validateWith(
-  "https://schemas.axo.leostera.dev/v1/local-rpc.schema.json#/$defs/RemoteAccessSettingsResult",
-  await fixture("remote-access-settings.result.json"),
-);
-validateWith(
   "https://schemas.axo.leostera.dev/v1/local-rpc.schema.json#/$defs/RemoteAccessStatusResult",
   await fixture("remote-access-status.result.json"),
 );
 validateWith(
   "https://schemas.axo.leostera.dev/v1/local-rpc.schema.json#/$defs/RemoteAccessConnectResult",
   await fixture("remote-access-connect.result.json"),
-);
-validateWith(
-  "https://schemas.axo.leostera.dev/v1/local-rpc.schema.json#/$defs/RemoteAccessDisableResult",
-  await fixture("remote-access-disable.result.json"),
 );
 const hostList = await fixture("host-list.result.json");
 validateWith(
@@ -318,14 +307,6 @@ assert.equal(
   ajv.getSchema(localCallSchema)(unknownConfigKey),
   false,
   "configuration RPC only accepts known typed keys",
-);
-
-const invalidRelayConfiguration = await fixture("remote-access-configure.call.json");
-invalidRelayConfiguration.params.clientSecret = "unexpected";
-assert.equal(
-  ajv.getSchema(localCallSchema)(invalidRelayConfiguration),
-  false,
-  "relay configuration must not accept app-level Access credentials",
 );
 
 console.log(`Validated ${schemaNames.length} v1 schemas, pairing fixtures, and Workspace/Session invariants.`);

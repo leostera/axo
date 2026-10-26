@@ -27,6 +27,10 @@ struct Cli {
     /// private files in the server directory elsewhere.
     #[arg(long, value_enum)]
     host_credentials: Option<HostCredentialsArg>,
+    /// The Axo relay's origin. Defaults to `AXO_RELAY_URL`, then to the production relay.
+    /// Must be https, except for a loopback relay.
+    #[arg(long, value_name = "URL")]
+    relay_url: Option<String>,
     #[command(subcommand)]
     command: Option<AxodCommand>,
 }
@@ -101,6 +105,18 @@ fn main() {
         std::process::exit(1);
     }
 
+    let relay_url = cli
+        .relay_url
+        .or_else(|| std::env::var("AXO_RELAY_URL").ok())
+        .unwrap_or_else(|| axo_server::DEFAULT_RELAY_URL.to_owned());
+    let endpoint = match axo_server::RelayEndpoint::parse(&relay_url) {
+        Ok(endpoint) => endpoint,
+        Err(error) => {
+            eprintln!("axod: invalid relay URL: {error}");
+            std::process::exit(2);
+        }
+    };
+
     log::info!(
         "event=daemon.started pid={} build={}",
         std::process::id(),
@@ -111,10 +127,13 @@ fn main() {
         cli.socket.as_deref(),
         &server_directory,
         env!("CARGO_PKG_VERSION"),
-        cli.host_credentials.map_or_else(
-            axo_server::HostCredentialStorage::platform_default,
-            Into::into,
-        ),
+        axo_server::RemoteAccess {
+            endpoint,
+            credential_storage: cli.host_credentials.map_or_else(
+                axo_server::HostCredentialStorage::platform_default,
+                Into::into,
+            ),
+        },
     ) {
         log::error!("event=daemon.failed reason={error:?}");
         std::process::exit(1);

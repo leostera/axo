@@ -35,10 +35,7 @@ pub mod method {
     pub const TERMINAL_INPUT: &str = "axo.terminal.input";
     pub const TERMINAL_RESIZE: &str = "axo.terminal.resize";
     pub const CLIENT_VIEWPORT_SET: &str = "axo.client.viewport.set";
-    pub const RELAY_SETTINGS: &str = "axo.relay.settings";
-    pub const RELAY_CONFIGURE: &str = "axo.relay.configure";
     pub const RELAY_LINK: &str = "axo.relay.link";
-    pub const RELAY_DISABLE: &str = "axo.relay.disable";
     pub const RELAY_STATUS: &str = "axo.relay.status";
     pub const RELAY_CONNECT: &str = "axo.relay.connect";
 
@@ -68,10 +65,7 @@ pub mod method {
         TERMINAL_INPUT,
         TERMINAL_RESIZE,
         CLIENT_VIEWPORT_SET,
-        RELAY_SETTINGS,
-        RELAY_CONFIGURE,
         RELAY_LINK,
-        RELAY_DISABLE,
         RELAY_STATUS,
         RELAY_CONNECT,
     ];

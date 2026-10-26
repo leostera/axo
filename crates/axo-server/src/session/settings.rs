@@ -29,6 +29,40 @@ impl ShellCommand {
 /// The agent a new database starts with.
 const DEFAULT_AGENT_COMMAND: &str = "pi";
 
+impl SessionManager {
+    /// This host's link to an Axo account (see `axo_relay::HostLink`).
+    pub(crate) fn host_link(&self) -> io::Result<axo_relay::HostLink> {
+        let stored = axo_store::load_host_link(&self.lock_state()?.database)?;
+        let account = stored
+            .account
+            .map(|stored| axo_relay::AccountLink::parse(stored.account_id, stored.credential_id))
+            .transpose()?;
+        let pending = stored
+            .pending_redemption
+            .map(|stored| {
+                axo_relay::PendingRedemption::parse(stored.credential_id, stored.host_generation)
+            })
+            .transpose()?;
+        axo_relay::HostLink::new(account, pending)
+    }
+
+    pub(crate) fn store_host_link(&self, link: &axo_relay::HostLink) -> io::Result<()> {
+        let stored = axo_store::StoredHostLink {
+            account: link.account().map(|account| axo_store::StoredAccountLink {
+                account_id: account.account_id().to_owned(),
+                credential_id: account.credential_id().to_owned(),
+            }),
+            pending_redemption: link
+                .pending()
+                .map(|pending| axo_store::StoredPendingRedemption {
+                    credential_id: pending.credential_id().to_owned(),
+                    host_generation: pending.host_generation().to_owned(),
+                }),
+        };
+        axo_store::store_host_link(&self.lock_state()?.database, &stored)
+    }
+}
+
 pub(super) fn load_or_create_agent_command(database: &Connection) -> io::Result<AgentCommand> {
     let source = load_or_create_setting(database, ConfigKey::AgentCommand, || {
         Ok(DEFAULT_AGENT_COMMAND.to_owned())

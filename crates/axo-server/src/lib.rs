@@ -176,12 +176,29 @@ impl HostCredentialStorage {
     }
 }
 
+pub use axo_relay::{DEFAULT_RELAY_URL, RelayEndpoint};
+
+/// How this daemon reaches the Axo relay.
+pub struct RemoteAccess {
+    pub endpoint: RelayEndpoint,
+    pub credential_storage: HostCredentialStorage,
+}
+
+/// What the relay RPCs act on; absent if the relay worker could not start.
+#[derive(Clone)]
+struct RelayContext {
+    control: Arc<axo_relay::RelayControl>,
+    endpoint: axo_relay::RelayEndpoint,
+    host: Arc<session::RelayHostAdapter>,
+    credentials: Arc<dyn axo_relay::credential::HostCredentialStore>,
+}
+
 /// Starts Axo's local JSON-RPC server and blocks for the daemon's lifetime.
 pub fn serve_ipc(
     socket_override: Option<&Path>,
     server_directory: &Path,
     daemon_version: &'static str,
-    credential_storage: HostCredentialStorage,
+    remote_access: RemoteAccess,
 ) -> Result<(), Box<dyn std::error::Error>> {
     prepare_server_directory(server_directory)?;
     let socket_path = match socket_override {
@@ -192,31 +209,30 @@ pub fn serve_ipc(
     remove_stale_socket(&socket_path.0)?;
 
     let sessions = session::SessionManager::open(server_directory)?;
-    let credential_store = credential_storage.open(server_directory);
-    let mut remote_relay = match axo_relay::RelayWorker::start(
-        Arc::new(session::RelayHostAdapter(Arc::clone(&sessions))),
-        server_directory,
-        Arc::clone(&credential_store),
-    ) {
+    let host = Arc::new(session::RelayHostAdapter(Arc::clone(&sessions)));
+    let credentials = remote_access.credential_storage.open(server_directory);
+    let mut remote_relay = match axo_relay::RelayWorker::start(axo_relay::RelayDependencies {
+        host: host.clone(),
+        endpoint: remote_access.endpoint.clone(),
+        links: host.clone(),
+        credentials: Arc::clone(&credentials),
+    }) {
         Ok(worker) => Some(worker),
-        Err(_) => {
-            log::error!("event=relay.configuration_unavailable");
+        Err(error) => {
+            log::error!("event=relay.worker_unavailable reason={error}");
             None
         }
     };
     let relay_stop = remote_relay
         .as_ref()
         .map(axo_relay::RelayWorker::stop_handle);
-    let relay_control = remote_relay
-        .as_ref()
-        .map(axo_relay::RelayWorker::control_handle);
-    let handler = rpc_handler(
-        Arc::clone(&sessions),
-        daemon_version,
-        server_directory.to_path_buf(),
-        relay_control,
-        credential_store,
-    );
+    let relay = remote_relay.as_ref().map(|worker| RelayContext {
+        control: worker.control_handle(),
+        endpoint: remote_access.endpoint,
+        host,
+        credentials,
+    });
+    let handler = rpc_handler(Arc::clone(&sessions), daemon_version, relay);
     let listener = std::os::unix::net::UnixListener::bind(&socket_path.0)?;
     fs::set_permissions(&socket_path.0, fs::Permissions::from_mode(0o600))?;
     let _pid_file = PidFile::write(&server_directory.join("axo.pid"))?;
@@ -310,89 +326,38 @@ impl Drop for SignalHandlers {
 fn rpc_handler(
     sessions: Arc<session::SessionManager>,
     daemon_version: &'static str,
-    server_directory: PathBuf,
-    relay_control: Option<Arc<axo_relay::RelayControl>>,
-    credential_store: Arc<dyn axo_relay::credential::HostCredentialStore>,
+    relay: Option<RelayContext>,
 ) -> IoHandler {
     let mut handler = IoHandler::new();
     add_protocol_negotiate_method(&mut handler);
     add_health_method(&mut handler, daemon_version);
-    add_relay_methods(
-        &mut handler,
-        server_directory,
-        sessions.clone(),
-        relay_control,
-        credential_store,
-    );
+    add_relay_methods(&mut handler, relay);
     sessions.register_rpc_methods(&mut handler);
     handler
 }
 
-fn add_relay_methods(
-    handler: &mut IoHandler,
-    server_directory: PathBuf,
-    sessions: Arc<session::SessionManager>,
-    relay_control: Option<Arc<axo_relay::RelayControl>>,
-    credential_store: Arc<dyn axo_relay::credential::HostCredentialStore>,
-) {
-    let config_path = server_directory.join(axo_relay::CONFIG_FILE);
-
-    let path = config_path.clone();
-    handler.add_typed(
-        method::RELAY_SETTINGS,
-        "expected no parameters",
-        move |_: rpc::NoParams| {
-            axo_relay::settings(&path)
-                .map_err(|_| internal_error("could not read remote access settings"))
-        },
-    );
-
-    let path = config_path.clone();
-    let control = relay_control.clone();
-    let credentials = Arc::clone(&credential_store);
-    handler.add_typed(
-        method::RELAY_CONFIGURE,
-        "invalid remote access settings",
-        move |request: axo_relay::ConfigureRelayRequest| {
-            let settings = axo_relay::configure(&path, request, credentials.as_ref())
-                .map_err(|_| invalid_params("could not save remote access settings"))?;
-            if let Some(control) = &control {
-                let _ = control.request_connect();
-            }
-            Ok(settings)
-        },
-    );
-
-    let path = config_path.clone();
-    let control = relay_control.clone();
-    let credentials = Arc::clone(&credential_store);
-    handler.add_typed(
-        method::RELAY_DISABLE,
-        "expected no parameters",
-        move |_: rpc::NoParams| {
-            axo_relay::disable(&path, credentials.as_ref())
-                .map_err(|_| internal_error("could not disable remote access"))?;
-            if let Some(control) = &control {
-                let _ = control.request_connect();
-            }
-            Ok(rpc::RelayDisabled { disabled: true })
-        },
-    );
-
-    let path = config_path;
-    let host = session::RelayHostAdapter(Arc::clone(&sessions));
-    let control = relay_control.clone();
+fn add_relay_methods(handler: &mut IoHandler, relay: Option<RelayContext>) {
+    let context = relay.clone();
     handler.add_typed(
         method::RELAY_LINK,
         "expected {code}",
         move |request: rpc::LinkHost| {
-            let control = control
+            let context = context
                 .as_ref()
                 .ok_or_else(|| internal_error("host relay is unavailable"))?;
-            let host_label =
-                axo_relay::link_host(&path, &request.code, &host, credential_store.as_ref())
-                    .map_err(|_| internal_error("could not link this Mac"))?;
-            control
+            let host_label = axo_relay::link_host(
+                &context.endpoint,
+                &request.code,
+                context.host.as_ref(),
+                context.host.as_ref(),
+                context.credentials.as_ref(),
+            )
+            .map_err(|error| {
+                log::warn!("event=relay.link_failed reason={error}");
+                internal_error("could not link this Mac")
+            })?;
+            context
+                .control
                 .request_connect()
                 .map_err(|_| internal_error("could not start the host relay"))?;
             Ok(rpc::HostLinked {
@@ -402,12 +367,13 @@ fn add_relay_methods(
         },
     );
 
-    let control = relay_control.clone();
+    let context = relay.clone();
     handler.add_typed(
         method::RELAY_STATUS,
         "expected no parameters",
-        move |_: rpc::NoParams| match &control {
-            Some(control) => control
+        move |_: rpc::NoParams| match &context {
+            Some(context) => context
+                .control
                 .snapshot()
                 .map_err(|_| internal_error("could not read remote connection status")),
             None => Ok(axo_relay::unavailable_status()),
@@ -418,9 +384,10 @@ fn add_relay_methods(
         method::RELAY_CONNECT,
         "expected no parameters",
         move |_: rpc::NoParams| {
-            let requested = match &relay_control {
-                Some(control) => {
-                    control
+            let requested = match &relay {
+                Some(context) => {
+                    context
+                        .control
                         .request_connect()
                         .map_err(|_| internal_error("could not request remote connection"))?;
                     true

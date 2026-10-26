@@ -2,12 +2,13 @@
 //! WebSocket to the relay service so remote clients can list, create and drive sessions.
 
 pub mod credential;
+mod endpoint;
 mod host;
+mod link;
 mod pairing;
 mod relay;
 
+pub use endpoint::{DEFAULT_RELAY_URL, RelayEndpoint};
 pub use host::RelayHost;
-pub use relay::{
-    CONFIG_FILE, ConfigureRelayRequest, RelayControl, RelayWorker, configure, disable, link_host,
-    settings, unavailable_status,
-};
+pub use link::{AccountLink, HostLink, HostLinkStore, PendingRedemption, host_label, link_host};
+pub use relay::{RelayControl, RelayDependencies, RelayWorker, unavailable_status};

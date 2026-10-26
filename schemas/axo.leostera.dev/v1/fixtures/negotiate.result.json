@@ -2,9 +2,6 @@
   "protocolVersion": 1,
   "methods": [
     "axo.daemon.health",
-    "axo.relay.settings",
-    "axo.relay.configure",
-    "axo.relay.disable",
     "axo.relay.status",
     "axo.relay.connect",
     "axo.session.list",

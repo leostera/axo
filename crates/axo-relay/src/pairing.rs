@@ -7,25 +7,28 @@ use std::net::{TcpStream, ToSocketAddrs};
 use std::time::Duration;
 use url::Url;
 
+use crate::endpoint::RelayEndpoint;
+use axo_protocol::HostKind;
+
 const CODE_ALPHABET: &str = "0123456789ABCDEFGHJKMNPQRSTVWXYZ";
 const CREDENTIAL_BYTES: usize = 32;
 const MAX_RESPONSE_BYTES: usize = 65_536;
 const MAX_RESPONSE_HEADERS: usize = 64;
 const HTTP_TIMEOUT: Duration = Duration::from_secs(10);
 
+/// The account a redemption linked this host to (the relay confirmed the host and credential).
 pub struct PairingResult {
     pub account_id: String,
-    pub credential_id: String,
 }
 
 pub struct RedemptionRequest<'a> {
-    pub relay_url: &'a Url,
+    pub endpoint: &'a RelayEndpoint,
     pub code: &'a str,
     pub host_id: &'a str,
     pub host_generation: &'a str,
     pub credential_id: &'a str,
     pub label: &'a str,
-    pub host_kind: &'a str,
+    pub host_kind: HostKind,
 }
 
 #[derive(Serialize)]
@@ -37,7 +40,7 @@ struct RedeemRequest<'a> {
     credential_id: &'a str,
     credential: String,
     label: &'a str,
-    host_kind: &'a str,
+    host_kind: HostKind,
 }
 
 #[derive(Deserialize)]
@@ -120,12 +123,6 @@ pub fn redeem(
             "host label is invalid",
         ));
     }
-    if !valid_host_kind(request.host_kind) {
-        return Err(io::Error::new(
-            io::ErrorKind::InvalidInput,
-            "host kind is invalid",
-        ));
-    }
 
     if !is_uuid(request.credential_id) {
         return Err(io::Error::new(
@@ -156,7 +153,7 @@ pub fn redeem(
     (|| {
         let body = serde_json::to_vec(&payload)
             .map_err(|_| io::Error::other("could not encode pairing request"))?;
-        let endpoint = redemption_url(request.relay_url)?;
+        let endpoint = request.endpoint.redemption_url();
         let response = match post_json(&endpoint, &body) {
             Ok(response) => response,
             Err(first_error) => match post_json(&endpoint, &body) {
@@ -190,33 +187,8 @@ pub fn redeem(
         }
         Ok(PairingResult {
             account_id: response.account_id,
-            credential_id: request.credential_id.to_owned(),
         })
     })()
-}
-
-/// The redemption endpoint on the relay's origin. Pairing sends the host credential, so it
-/// requires TLS; plain HTTP is allowed only to a loopback relay, which `parse_config` permits
-/// only for isolated tests that opt in.
-fn redemption_url(relay_url: &Url) -> io::Result<Url> {
-    let scheme = match relay_url.scheme() {
-        "wss" => "https",
-        "ws" if crate::relay::is_loopback(relay_url) => "http",
-        _ => {
-            return Err(io::Error::new(
-                io::ErrorKind::PermissionDenied,
-                "host pairing requires a secure relay endpoint",
-            ));
-        }
-    };
-    let mut endpoint = relay_url.clone();
-    endpoint
-        .set_scheme(scheme)
-        .map_err(|_| io::Error::new(io::ErrorKind::InvalidInput, "pairing endpoint is invalid"))?;
-    endpoint.set_path("/api/v1/host-pairings/redeem");
-    endpoint.set_query(None);
-    endpoint.set_fragment(None);
-    Ok(endpoint)
 }
 
 fn post_json(endpoint: &Url, body: &[u8]) -> io::Result<HttpResponse> {
@@ -455,15 +427,6 @@ pub fn encode_base64url(bytes: &[u8]) -> String {
     encoded
 }
 
-fn valid_host_kind(value: &str) -> bool {
-    !value.is_empty()
-        && value.len() <= 64
-        && value.as_bytes()[0].is_ascii_lowercase()
-        && value
-            .bytes()
-            .all(|byte| byte.is_ascii_lowercase() || byte.is_ascii_digit() || byte == b'-')
-}
-
 pub(crate) fn is_uuid(value: &str) -> bool {
     value.len() == 36
         && value.bytes().enumerate().all(|(index, byte)| {
@@ -494,7 +457,7 @@ fn is_rfc3339_timestamp(value: &str) -> bool {
 mod tests {
     use super::{
         CREDENTIAL_BYTES, PairingCode, decode_chunked_body, encode_base64url,
-        framed_response_is_complete, parse_http_response, prepare_credential, redemption_url,
+        framed_response_is_complete, parse_http_response, prepare_credential,
     };
 
     #[test]
@@ -512,32 +475,6 @@ mod tests {
         assert!(!framed_response_is_complete(
             b"HTTP/1.1 200 OK\r\n\r\n{\"ok\":1}"
         ));
-    }
-
-    #[test]
-    fn redemption_requires_tls_except_to_a_loopback_relay() {
-        let endpoint = |relay: &str| {
-            redemption_url(&url::Url::parse(relay).unwrap()).map(|url| url.to_string())
-        };
-        assert_eq!(
-            endpoint("wss://axo.example.test").unwrap(),
-            "https://axo.example.test/api/v1/host-pairings/redeem"
-        );
-        assert_eq!(
-            endpoint("ws://127.0.0.1:8787").unwrap(),
-            "http://127.0.0.1:8787/api/v1/host-pairings/redeem"
-        );
-        for insecure in [
-            "ws://axo.example.test",
-            "ws://10.0.0.1:80",
-            "http://127.0.0.1",
-        ] {
-            assert_eq!(
-                endpoint(insecure).unwrap_err().kind(),
-                std::io::ErrorKind::PermissionDenied,
-                "{insecure}"
-            );
-        }
     }
 
     #[test]

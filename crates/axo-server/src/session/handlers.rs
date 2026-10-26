@@ -25,6 +25,16 @@ impl RelayHostAdapter {
     }
 }
 
+impl axo_relay::HostLinkStore for RelayHostAdapter {
+    fn load_link(&self) -> io::Result<axo_relay::HostLink> {
+        self.0.host_link()
+    }
+
+    fn save_link(&self, link: &axo_relay::HostLink) -> io::Result<()> {
+        self.0.store_host_link(link)
+    }
+}
+
 impl axo_relay::RelayHost for RelayHostAdapter {
     fn host_id(&self) -> &str {
         &self.0.host_id

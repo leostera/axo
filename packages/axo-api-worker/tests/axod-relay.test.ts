@@ -1,7 +1,7 @@
 import assert from "node:assert/strict";
 import { spawn, type ChildProcess } from "node:child_process";
 import { existsSync } from "node:fs";
-import { mkdir, mkdtemp, readFile, rm, stat, writeFile } from "node:fs/promises";
+import { mkdir, mkdtemp, readdir, readFile, rm, stat } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
 import { test } from "node:test";
@@ -137,16 +137,6 @@ test("an isolated axod pairs with an account, then the account drives it through
   const serverDirectory = join(root, "server");
   const socketPath = join(root, "axod.sock");
   await mkdir(serverDirectory, { recursive: true, mode: 0o700 });
-  await writeFile(
-    join(serverDirectory, "relay.json"),
-    JSON.stringify({
-      relayUrl: api.url,
-      hostLabel: "Isolated axod test host",
-      hostKind: "macos",
-      allowInsecureLoopback: true,
-    }),
-    { mode: 0o600 },
-  );
 
   let daemon: ChildProcess | undefined;
   let attachment: ChildProcess | undefined;
@@ -157,6 +147,8 @@ test("an isolated axod pairs with an account, then the account drives it through
     daemon = spawn(axodBinary, [
       "--server-dir", serverDirectory,
       "--socket", socketPath,
+      // A loopback relay may use plain HTTP; remote relays must use TLS.
+      "--relay-url", api.url,
       // Never touch the login Keychain from a test.
       "--host-credentials", "files",
     ], {
@@ -182,19 +174,20 @@ test("an isolated axod pairs with an account, then the account drives it through
     const linked = (await localCall(socketPath, "axo.relay.link", { code })) as { linked: boolean };
     assert.equal(linked.linked, true);
 
-    const relayConfig = await readFile(join(serverDirectory, "relay.json"), "utf8");
-    const { credentialId, accountId } = JSON.parse(relayConfig) as { credentialId: string; accountId: string };
-    assert.equal(accountId, account.accountId);
-    const credentialFile = join(serverDirectory, "host-credentials", credentialId);
+    // The link lives in axod's database; the secret is a private file, never in the database.
+    const credentialFiles = await readdir(join(serverDirectory, "host-credentials"));
+    assert.equal(credentialFiles.length, 1);
+    const credentialFile = join(serverDirectory, "host-credentials", credentialFiles[0]!);
     assert.equal((await stat(credentialFile)).mode & 0o777, 0o600);
-    assert.equal(relayConfig.includes((await readFile(credentialFile)).toString("utf8")), false,
-      "the credential is never written to relay.json");
+    const database = await readFile(join(serverDirectory, "axo.db"));
+    assert.equal(database.includes(await readFile(credentialFile)), false);
+    assert.equal(existsSync(join(serverDirectory, "relay.json")), false);
 
     const replay = await fetch(new URL("api/v1/account/host-pairings", api.url), { method: "GET", headers: account.headers });
     assert.notEqual(replay.status, 200, "pairing codes are created only by POST");
 
     const registered = await waitFor("axod host registration", 20_000, async () =>
-      (await remoteApi.listHosts()).find((host) => host.label === "Isolated axod test host" && host.status === "online"),
+      (await remoteApi.listHosts()).find((host) => host.status === "online"),
     daemon);
     assert.equal(registered.stale, false);
     const { hostId, hostGeneration } = registered;

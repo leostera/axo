@@ -35,7 +35,6 @@ final class AxodInteropTests: XCTestCase {
     // clients rely on.
     for method in AxodMethodName.allCases.filter({ $0 != .negotiate }).map(\.rawValue) + [
       "axo.terminal.input", "axo.terminal.resize",
-      "axo.relay.settings", "axo.relay.configure", "axo.relay.disable",
     ] {
       XCTAssertTrue(negotiation.methods.contains(method), "axod should advertise \(method)")
     }
