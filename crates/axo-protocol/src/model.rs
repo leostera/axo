@@ -164,7 +164,8 @@ impl RemoteSessionSnapshot {
             session_uuid: record.session_uuid.clone(),
             workspace_id: record.workspace_id.clone(),
             workspace_name: record.workspace_name.clone(),
-            name: record.name.clone(),
+            // What the Mac shows: a name someone typed wins over the one Pi chose.
+            name: record.manual_name.as_ref().unwrap_or(&record.name).clone(),
             emoji: record.emoji.clone(),
             status: record.status,
             has_agent: record.has_agent(),
@@ -197,6 +198,23 @@ pub struct WorkspaceRecord {
     /// Present only in `axo.workspace.create` results.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub state: Option<WorkspaceState>,
+}
+
+/// A Workspace as a remote person sees it: its name, never its directory on the Mac.
+#[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct RemoteWorkspace {
+    pub workspace_id: String,
+    pub name: String,
+}
+
+impl From<&WorkspaceRecord> for RemoteWorkspace {
+    fn from(record: &WorkspaceRecord) -> Self {
+        RemoteWorkspace {
+            workspace_id: record.workspace_id.clone(),
+            name: record.name.clone(),
+        }
+    }
 }
 
 /// A daemon setting clients may read and change.
@@ -288,6 +306,34 @@ mod tests {
         for secret in ["/private/path", "/dev/ttys001", "1234", "pi.jsonl"] {
             assert!(!text.contains(secret), "{secret} leaked");
         }
+    }
+
+    #[test]
+    fn a_manual_name_wins_in_remote_snapshots() {
+        let mut record = SessionRecord {
+            id: SessionId::new(5).unwrap(),
+            session_uuid: "uuid".to_owned(),
+            pi_session_file: None,
+            pi_session_id: None,
+            workspace_id: None,
+            workspace_name: None,
+            name: "Pi's title".to_owned(),
+            manual_name: None,
+            emoji: None,
+            status: SessionStatus::Ready,
+            initial_pwd: "/".into(),
+            shells: vec![shell(12, PaneRole::Terminal)],
+            layout: None,
+        };
+        assert_eq!(
+            RemoteSessionSnapshot::from_record(&record, "h", "t").name,
+            "Pi's title"
+        );
+        record.manual_name = Some("Mine".to_owned());
+        assert_eq!(
+            RemoteSessionSnapshot::from_record(&record, "h", "t").name,
+            "Mine"
+        );
     }
 
     #[test]

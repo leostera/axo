@@ -172,11 +172,13 @@ export const hostV1Methods = {
   "axo.host.sessions.list": hostRefSchema,
   "axo.host.subscribe": hostRefSchema,
   "axo.host.unsubscribe": subscriptionIdSchema,
+  "axo.remote.workspace.list": targetSchema,
   "axo.remote.session.create": targetSchema,
   "axo.remote.workspace.session.create": workspaceSessionTargetSchema,
   "axo.remote.session.close": sessionTargetSchema,
   "axo.remote.shell.create": sessionTargetSchema,
   "axo.remote.shell.close": shellTargetSchema,
+  "axo.remote.session.rename": sessionTargetSchema.extend({ name: z.string().min(1).max(80) }).strict(),
   "axo.remote.session.layout.set": sessionTargetSchema.extend({ layout: layoutSchema }).strict(),
   "axo.remote.terminal.input": shellTargetSchema.extend({
     sequence: z.number().int().min(0).max(Number.MAX_SAFE_INTEGER),
@@ -198,6 +200,7 @@ export const hostMutationMethods = [
   "axo.remote.session.create",
   "axo.remote.workspace.session.create",
   "axo.remote.session.close",
+  "axo.remote.session.rename",
   "axo.remote.shell.create",
   "axo.remote.shell.close",
   "axo.remote.session.layout.set",
@@ -220,6 +223,9 @@ export const hostSessionsListResultSchema = z.object({
 }).strict();
 export const hostSubscribeResultSchema = z.object({ subscriptionId: z.uuid() }).strict();
 export const hostUnsubscribeResultSchema = z.object({ unsubscribed: z.literal(true) }).strict();
+export const remoteWorkspaceListResultSchema = z.object({
+  workspaces: z.array(z.object({ workspaceId: z.uuid(), name: z.string().min(1).max(256) }).strict()).max(256),
+}).strict();
 export const remoteSessionCreateResultSchema = z.object({ session: sessionSnapshotSchema }).strict();
 export const remoteSessionCloseResultSchema = z.object({
   closed: z.literal(true),
@@ -256,11 +262,13 @@ export const hostV1Results = {
   "axo.host.sessions.list": hostSessionsListResultSchema,
   "axo.host.subscribe": hostSubscribeResultSchema,
   "axo.host.unsubscribe": hostUnsubscribeResultSchema,
+  "axo.remote.workspace.list": remoteWorkspaceListResultSchema,
   "axo.remote.session.create": remoteSessionCreateResultSchema,
   "axo.remote.workspace.session.create": remoteSessionCreateResultSchema,
   "axo.remote.session.close": remoteSessionCloseResultSchema,
   "axo.remote.shell.create": remoteShellCreateResultSchema,
   "axo.remote.shell.close": remoteShellCloseResultSchema,
+  "axo.remote.session.rename": remoteLayoutSetResultSchema,
   "axo.remote.session.layout.set": remoteLayoutSetResultSchema,
   "axo.remote.terminal.input": remoteTerminalInputResultSchema,
   "axo.remote.terminal.resize": remoteTerminalResizeResultSchema,

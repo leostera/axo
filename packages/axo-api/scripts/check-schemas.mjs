@@ -13,6 +13,8 @@ import {
   hostPairingCreateResultSchema,
   hostPairingRedeemRequestSchema,
   hostPairingRedeemResultSchema,
+  hostV1Methods,
+  hostV1Results,
 } from "../dist/v1.js";
 import { desiredSessionGraphSchema, stateSessionViewSchema, workspaceGraphSchema } from "../dist/index.js";
 
@@ -308,5 +310,14 @@ assert.equal(
   false,
   "configuration RPC only accepts known typed keys",
 );
+
+const parity = await fixture("remote-parity.json");
+for (const name of parity.required) {
+  assert.ok(name in hostV1Methods, `${name} is promised remotely but has no v1 parameters`);
+  assert.ok(name in hostV1Results, `${name} is promised remotely but has no v1 result`);
+}
+for (const name of parity.planned) {
+  assert.ok(!(name in hostV1Methods), `${name} exists: move it from planned to required in remote-parity.json and the Rust table`);
+}
 
 console.log(`Validated ${schemaNames.length} v1 schemas, pairing fixtures, and Workspace/Session invariants.`);

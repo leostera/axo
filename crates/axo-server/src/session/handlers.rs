@@ -115,6 +115,19 @@ impl axo_relay::RelayHost for RelayHostAdapter {
         Ok(replacement.map(|session| self.remote(&session, updated_at)))
     }
 
+    fn remote_workspaces(&self) -> io::Result<Vec<axo_protocol::RemoteWorkspace>> {
+        Ok(self
+            .0
+            .list_workspaces()?
+            .iter()
+            .map(axo_protocol::RemoteWorkspace::from)
+            .collect())
+    }
+
+    fn remote_rename_session(&self, session_id: SessionId, name: &str) -> io::Result<()> {
+        self.0.rename_session(session_id, name).map(drop)
+    }
+
     fn remote_create_shell(&self, session_id: SessionId) -> io::Result<ShellId> {
         Ok(self.0.create_shell_and_publish(session_id)?.id)
     }

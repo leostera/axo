@@ -1,0 +1,23 @@
+{
+  "required": [
+    "axo.host.sessions.list",
+    "axo.remote.session.create",
+    "axo.remote.workspace.list",
+    "axo.remote.workspace.session.create",
+    "axo.remote.session.close",
+    "axo.remote.session.rename",
+    "axo.remote.session.layout.set",
+    "axo.host.subscribe",
+    "axo.host.unsubscribe",
+    "axo.remote.shell.create",
+    "axo.remote.shell.close",
+    "axo.remote.terminal.input",
+    "axo.remote.terminal.resize"
+  ],
+  "planned": [
+    "axo.remote.workspace.rename",
+    "axo.remote.workspace.archive",
+    "axo.remote.session.pi.restart.force",
+    "axo.remote.session.pi.restart.auto"
+  ]
+}

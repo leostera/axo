@@ -129,13 +129,13 @@ mod file_store_tests {
     const ID: &str = "8a6e1308-a849-4902-a572-6b0b74ee69a8";
 
     fn store() -> (std::path::PathBuf, FileCredentialStore) {
+        // A counter, not the clock: the clock ticks in microseconds on macOS, so parallel tests
+        // can share a nanosecond reading.
+        static NEXT: std::sync::atomic::AtomicU32 = std::sync::atomic::AtomicU32::new(0);
         let root = std::env::temp_dir().join(format!(
             "axo-credential-test-{}-{}",
             std::process::id(),
-            std::time::SystemTime::now()
-                .duration_since(std::time::UNIX_EPOCH)
-                .unwrap()
-                .as_nanos()
+            NEXT.fetch_add(1, std::sync::atomic::Ordering::Relaxed)
         ));
         let directory = root.join("host-credentials");
         (root, FileCredentialStore::new(directory))

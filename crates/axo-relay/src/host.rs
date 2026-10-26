@@ -3,7 +3,9 @@
 use std::io;
 use std::time::Duration;
 
-use axo_protocol::{Event, LayoutNode, RelayStatus, RemoteSessionSnapshot, SessionId, ShellId};
+use axo_protocol::{
+    Event, LayoutNode, RelayStatus, RemoteSessionSnapshot, RemoteWorkspace, SessionId, ShellId,
+};
 
 /// The daemon's sessions, as seen by the cloud relay. Implemented by Axod's session manager.
 ///
@@ -29,6 +31,8 @@ pub trait RelayHost: Send + Sync {
     fn remote_resync_events(&self) -> io::Result<Vec<Event>>;
     fn unsubscribe_remote_events(&self, subscription_id: &str) -> io::Result<()>;
 
+    /// The Workspaces a Session can be created in.
+    fn remote_workspaces(&self) -> io::Result<Vec<RemoteWorkspace>>;
     fn remote_create_session(&self, updated_at: &str) -> io::Result<RemoteSessionSnapshot>;
     fn remote_create_workspace_session(
         &self,
@@ -41,6 +45,8 @@ pub trait RelayHost: Send + Sync {
         session_id: SessionId,
         updated_at: &str,
     ) -> io::Result<Option<RemoteSessionSnapshot>>;
+    /// Names the Session by hand (what `axo.session.rename` does locally).
+    fn remote_rename_session(&self, session_id: SessionId, name: &str) -> io::Result<()>;
     fn remote_create_shell(&self, session_id: SessionId) -> io::Result<ShellId>;
     fn remote_close_shell(&self, session_id: SessionId, shell_id: ShellId) -> io::Result<()>;
     /// Fails with `InvalidInput` if the layout is malformed or does not match the open panes.

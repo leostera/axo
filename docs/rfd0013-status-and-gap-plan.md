@@ -121,13 +121,16 @@ Still open: before linking, an axod with `relay.json` connects to the legacy una
   by the OAuth subject, Access subjects differ, so the first Access sign-in creates a new
   account. Native clients must not send cookies (G3: `httpShouldHandleCookies = false`).
 
-### G2. Relay protocol parity
+### G2. Relay protocol parity (done, with a planned list)
 
-Forward the axod local API through the relay as the RFD's v1 promises, from one typed table
-generated from (or checked against) `AxodMethodName` and the v1 schemas, so a method added to
-axod cannot silently be missing remotely. Decide explicitly which host-local methods stay
-local (`axo.relay.*` pairing and remote-access control, LaunchAgent concerns). Terminal output
-already streams through `axo.host.subscribe` events; keep terminal bytes unpersisted.
+`crates/axo-protocol/src/parity.rs` decides, for every method axod advertises, what it becomes
+through the relay: a remote call, a host event, local-only (with the reason), or planned. Tests
+fail when a method has no decision, when the Worker's v1 schemas lack a promised method or
+already have a planned one (`fixtures/remote-parity.json`), or when the relay does not dispatch
+a promised call. Built since: `axo.remote.workspace.list` (names only) and
+`axo.remote.session.rename`. Still planned: Workspace rename and archive, and the two Pi
+restarts. Remote snapshots now show a manual name over Pi's title (they did not). Terminal bytes
+stay unpersisted.
 
 ### G3. AxoClient remote transport and account API (Swift)
 

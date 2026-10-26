@@ -36,6 +36,12 @@
           "$ref": "#/$defs/RemoteSessionCloseCall"
         },
         {
+          "$ref": "#/$defs/RemoteSessionRenameCall"
+        },
+        {
+          "$ref": "#/$defs/RemoteWorkspaceListCall"
+        },
+        {
           "$ref": "#/$defs/RemoteShellCreateCall"
         },
         {
@@ -319,24 +325,37 @@
     },
     "RemoteWorkspaceSessionCreateCall": {
       "allOf": [
-        { "$ref": "#/$defs/BaseCall" },
+        {
+          "$ref": "#/$defs/BaseCall"
+        },
         {
           "properties": {
-            "method": { "const": "axo.remote.workspace.session.create" },
+            "method": {
+              "const": "axo.remote.workspace.session.create"
+            },
             "params": {
               "type": "object",
               "additionalProperties": false,
-              "required": ["target", "workspaceId"],
+              "required": [
+                "target",
+                "workspaceId"
+              ],
               "properties": {
-                "target": { "$ref": "common.schema.json#/$defs/HostRef" },
-                "workspaceId": { "$ref": "common.schema.json#/$defs/HostId" }
+                "target": {
+                  "$ref": "common.schema.json#/$defs/HostRef"
+                },
+                "workspaceId": {
+                  "$ref": "common.schema.json#/$defs/HostId"
+                }
               }
             }
           }
         }
       ],
       "unevaluatedProperties": false,
-      "required": ["params"]
+      "required": [
+        "params"
+      ]
     },
     "RemoteSessionCloseCall": {
       "allOf": [
@@ -759,6 +778,111 @@
     },
     "RemoteTerminalResizeResult": {
       "$ref": "local-rpc.schema.json#/$defs/TerminalResizeResult"
+    },
+    "RemoteSessionRenameCall": {
+      "allOf": [
+        {
+          "$ref": "#/$defs/BaseCall"
+        },
+        {
+          "properties": {
+            "method": {
+              "const": "axo.remote.session.rename"
+            },
+            "params": {
+              "type": "object",
+              "additionalProperties": false,
+              "required": [
+                "target",
+                "sessionId",
+                "name"
+              ],
+              "properties": {
+                "target": {
+                  "$ref": "common.schema.json#/$defs/HostRef"
+                },
+                "sessionId": {
+                  "$ref": "common.schema.json#/$defs/SessionId"
+                },
+                "name": {
+                  "type": "string",
+                  "minLength": 1,
+                  "maxLength": 80
+                }
+              }
+            }
+          }
+        }
+      ],
+      "unevaluatedProperties": false,
+      "required": [
+        "params"
+      ]
+    },
+    "RemoteSessionRenameResult": {
+      "$ref": "local-rpc.schema.json#/$defs/LayoutSetResult"
+    },
+    "RemoteWorkspaceListCall": {
+      "allOf": [
+        {
+          "$ref": "#/$defs/BaseCall"
+        },
+        {
+          "properties": {
+            "method": {
+              "const": "axo.remote.workspace.list"
+            },
+            "params": {
+              "type": "object",
+              "additionalProperties": false,
+              "required": [
+                "target"
+              ],
+              "properties": {
+                "target": {
+                  "$ref": "common.schema.json#/$defs/HostRef"
+                }
+              }
+            }
+          }
+        }
+      ],
+      "unevaluatedProperties": false,
+      "required": [
+        "params"
+      ]
+    },
+    "RemoteWorkspaceListResult": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "workspaces"
+      ],
+      "properties": {
+        "workspaces": {
+          "type": "array",
+          "maxItems": 256,
+          "items": {
+            "type": "object",
+            "additionalProperties": false,
+            "required": [
+              "workspaceId",
+              "name"
+            ],
+            "properties": {
+              "workspaceId": {
+                "type": "string",
+                "format": "uuid"
+              },
+              "name": {
+                "type": "string",
+                "minLength": 1,
+                "maxLength": 256
+              }
+            }
+          }
+        }
+      }
     }
   }
 }

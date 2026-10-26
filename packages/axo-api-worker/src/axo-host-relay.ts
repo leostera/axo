@@ -51,11 +51,13 @@ type HostRegistrationMethods = {
 };
 
 const hostRemoteMethods = {
+  "axo.remote.workspace.list": hostV1Methods["axo.remote.workspace.list"],
   "axo.remote.session.create": hostV1Methods["axo.remote.session.create"],
   "axo.remote.workspace.session.create": hostV1Methods["axo.remote.workspace.session.create"],
   "axo.remote.session.close": hostV1Methods["axo.remote.session.close"],
   "axo.remote.shell.create": hostV1Methods["axo.remote.shell.create"],
   "axo.remote.shell.close": hostV1Methods["axo.remote.shell.close"],
+  "axo.remote.session.rename": hostV1Methods["axo.remote.session.rename"],
   "axo.remote.session.layout.set": hostV1Methods["axo.remote.session.layout.set"],
   "axo.remote.terminal.input": hostV1Methods["axo.remote.terminal.input"],
   "axo.remote.terminal.resize": hostV1Methods["axo.remote.terminal.resize"],

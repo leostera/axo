@@ -270,6 +270,34 @@ test("an isolated axod pairs with an account, then the account drives it through
       return current.some((session) => session.sessionId === created.sessionId) ? true : undefined;
     }, daemon);
 
+    // A person lists the host's Workspaces: names only, never directories on the Mac.
+    const workspaceReply = await client.call("axo.remote.workspace.list", { target: { hostId, hostGeneration } });
+    assert.ok(Array.isArray(workspaceReply.workspaces));
+    assert.equal(JSON.stringify(workspaceReply).includes(serverDirectory), false);
+
+    // A person renames the Session from afar; the new name reaches the account's snapshots.
+    const renamed = await client.call("axo.remote.session.rename", {
+      target: { hostId, hostGeneration },
+      sessionId: created.sessionId,
+      name: "Named from the relay",
+    });
+    assert.equal(renamed.saved, true);
+    await waitFor("the renamed session snapshot", 5_000, async () => {
+      const current = await remoteApi.listHostSessions({ hostId, hostGeneration });
+      return current.find((session) => session.sessionId === created.sessionId)?.name === "Named from the relay"
+        ? true
+        : undefined;
+    }, daemon);
+    // A stale generation is refused before anything changes.
+    await assert.rejects(
+      client.call("axo.remote.session.rename", {
+        target: { hostId, hostGeneration: crypto.randomUUID() },
+        sessionId: created.sessionId,
+        name: "stale host",
+      }),
+      /Stale host|-32002/,
+    );
+
     // Terminal bytes are relayed, never stored, on either side.
     const accountStorage = await api.mf.unsafeGetDurableObjectStorage("api-test", "AxoAccountDirectory", {
       name: account.accountId,

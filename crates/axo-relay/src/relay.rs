@@ -870,6 +870,9 @@ enum RemoteResult {
     Saved {
         saved: bool,
     },
+    Workspaces {
+        workspaces: Vec<axo_protocol::RemoteWorkspace>,
+    },
     InputAccepted {
         accepted: bool,
         sequence: u64,
@@ -899,6 +902,14 @@ struct TargetParams {
 struct SessionTargetParams {
     target: HostRef,
     session_id: SessionId,
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+struct RenameSessionParams {
+    target: HostRef,
+    session_id: SessionId,
+    name: String,
 }
 
 #[derive(Debug, Deserialize)]
@@ -1017,6 +1028,20 @@ fn dispatch_remote_call(
                 session_id: request.session_id,
                 replacement,
             })
+        }
+        "axo.remote.workspace.list" => {
+            let request = parsed!(TargetParams);
+            target_ok!(request.target);
+            let workspaces = sessions.remote_workspaces().map_err(map_operation_error)?;
+            Ok(RemoteResult::Workspaces { workspaces })
+        }
+        "axo.remote.session.rename" => {
+            let request = parsed!(RenameSessionParams);
+            target_ok!(request.target);
+            sessions
+                .remote_rename_session(request.session_id, &request.name)
+                .map_err(map_operation_error)?;
+            Ok(RemoteResult::Saved { saved: true })
         }
         "axo.remote.shell.create" => {
             let request = parsed!(SessionTargetParams);
@@ -1170,6 +1195,40 @@ mod tests {
             );
         }
         String::from_utf8(request).unwrap()
+    }
+
+    #[test]
+    fn every_remote_call_the_parity_table_promises_is_dispatched() {
+        use axo_protocol::parity::{PARITY, Remote};
+        let host: Arc<dyn RelayHost> = Arc::new(crate::link::testing::IdentityOnlyHost);
+        for parity in PARITY {
+            let Remote::Call(name) = parity.remote else {
+                continue;
+            };
+            // Empty params fail parsing, so no host method runs; "method not found" is the
+            // only answer that means the call is not wired.
+            let answer = dispatch_remote_call(name, &json!({}), &host, "host", "generation");
+            assert!(
+                matches!(answer, Err((-32602, _))),
+                "{name} is promised but not dispatched: {:?}",
+                answer.map(|_| ())
+            );
+        }
+    }
+
+    #[test]
+    fn planned_remote_calls_are_not_dispatched_yet() {
+        use axo_protocol::parity::{PARITY, Remote};
+        let host: Arc<dyn RelayHost> = Arc::new(crate::link::testing::IdentityOnlyHost);
+        for parity in PARITY {
+            if let Remote::Planned(name) = parity.remote {
+                let answer = dispatch_remote_call(name, &json!({}), &host, "host", "generation");
+                assert!(
+                    matches!(answer, Err((-32601, _))),
+                    "{name} is dispatched: move it to Remote::Call"
+                );
+            }
+        }
     }
 
     #[test]

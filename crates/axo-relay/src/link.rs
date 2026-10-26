@@ -202,6 +202,111 @@ pub(crate) mod testing {
             Ok(())
         }
     }
+
+    pub const HOST_GENERATION: &str = "f9c5761c-3b2d-42a8-bb19-9a8c0b8cf230";
+
+    /// Just enough of a host for code that reads only its identity; any other call is a bug.
+    pub struct IdentityOnlyHost;
+
+    impl crate::RelayHost for IdentityOnlyHost {
+        fn host_id(&self) -> &str {
+            "36bc9f8c-8a79-4885-9ca8-a1a271ccdcfe"
+        }
+        fn host_generation(&self) -> &str {
+            HOST_GENERATION
+        }
+        fn publish_relay_status(&self, _: &axo_protocol::RelayStatus) {}
+        fn remote_session_snapshots(
+            &self,
+            _: &str,
+        ) -> std::io::Result<Vec<axo_protocol::RemoteSessionSnapshot>> {
+            unreachable!()
+        }
+        fn subscribe_remote_events(&self) -> std::io::Result<String> {
+            unreachable!()
+        }
+        fn next_remote_event(
+            &self,
+            _: &str,
+            _: std::time::Duration,
+        ) -> std::io::Result<Option<axo_protocol::Event>> {
+            unreachable!()
+        }
+        fn remote_resync_events(&self) -> std::io::Result<Vec<axo_protocol::Event>> {
+            unreachable!()
+        }
+        fn unsubscribe_remote_events(&self, _: &str) -> std::io::Result<()> {
+            unreachable!()
+        }
+        fn remote_create_session(
+            &self,
+            _: &str,
+        ) -> std::io::Result<axo_protocol::RemoteSessionSnapshot> {
+            unreachable!()
+        }
+        fn remote_create_workspace_session(
+            &self,
+            _: &str,
+            _: &str,
+        ) -> std::io::Result<axo_protocol::RemoteSessionSnapshot> {
+            unreachable!()
+        }
+        fn remote_close_session(
+            &self,
+            _: axo_protocol::SessionId,
+            _: &str,
+        ) -> std::io::Result<Option<axo_protocol::RemoteSessionSnapshot>> {
+            unreachable!()
+        }
+        fn remote_workspaces(&self) -> std::io::Result<Vec<axo_protocol::RemoteWorkspace>> {
+            unreachable!()
+        }
+        fn remote_rename_session(
+            &self,
+            _: axo_protocol::SessionId,
+            _: &str,
+        ) -> std::io::Result<()> {
+            unreachable!()
+        }
+        fn remote_create_shell(
+            &self,
+            _: axo_protocol::SessionId,
+        ) -> std::io::Result<axo_protocol::ShellId> {
+            unreachable!()
+        }
+        fn remote_close_shell(
+            &self,
+            _: axo_protocol::SessionId,
+            _: axo_protocol::ShellId,
+        ) -> std::io::Result<()> {
+            unreachable!()
+        }
+        fn remote_set_layout(
+            &self,
+            _: axo_protocol::SessionId,
+            _: axo_protocol::LayoutNode,
+        ) -> std::io::Result<()> {
+            unreachable!()
+        }
+        fn remote_terminal_input(
+            &self,
+            _: axo_protocol::SessionId,
+            _: axo_protocol::ShellId,
+            _: u64,
+            _: &str,
+        ) -> std::io::Result<()> {
+            unreachable!()
+        }
+        fn remote_terminal_resize(
+            &self,
+            _: axo_protocol::SessionId,
+            _: axo_protocol::ShellId,
+            _: u32,
+            _: u32,
+        ) -> std::io::Result<()> {
+            unreachable!()
+        }
+    }
 }
 
 #[cfg(test)]
@@ -254,99 +359,6 @@ mod tests {
         );
     }
 
-    /// Just enough of a host for pairing, which reads only its identity.
-    struct PairingHost;
-
-    impl crate::RelayHost for PairingHost {
-        fn host_id(&self) -> &str {
-            "36bc9f8c-8a79-4885-9ca8-a1a271ccdcfe"
-        }
-        fn host_generation(&self) -> &str {
-            GENERATION
-        }
-        fn publish_relay_status(&self, _: &axo_protocol::RelayStatus) {}
-        fn remote_session_snapshots(
-            &self,
-            _: &str,
-        ) -> std::io::Result<Vec<axo_protocol::RemoteSessionSnapshot>> {
-            unreachable!()
-        }
-        fn subscribe_remote_events(&self) -> std::io::Result<String> {
-            unreachable!()
-        }
-        fn next_remote_event(
-            &self,
-            _: &str,
-            _: std::time::Duration,
-        ) -> std::io::Result<Option<axo_protocol::Event>> {
-            unreachable!()
-        }
-        fn remote_resync_events(&self) -> std::io::Result<Vec<axo_protocol::Event>> {
-            unreachable!()
-        }
-        fn unsubscribe_remote_events(&self, _: &str) -> std::io::Result<()> {
-            unreachable!()
-        }
-        fn remote_create_session(
-            &self,
-            _: &str,
-        ) -> std::io::Result<axo_protocol::RemoteSessionSnapshot> {
-            unreachable!()
-        }
-        fn remote_create_workspace_session(
-            &self,
-            _: &str,
-            _: &str,
-        ) -> std::io::Result<axo_protocol::RemoteSessionSnapshot> {
-            unreachable!()
-        }
-        fn remote_close_session(
-            &self,
-            _: axo_protocol::SessionId,
-            _: &str,
-        ) -> std::io::Result<Option<axo_protocol::RemoteSessionSnapshot>> {
-            unreachable!()
-        }
-        fn remote_create_shell(
-            &self,
-            _: axo_protocol::SessionId,
-        ) -> std::io::Result<axo_protocol::ShellId> {
-            unreachable!()
-        }
-        fn remote_close_shell(
-            &self,
-            _: axo_protocol::SessionId,
-            _: axo_protocol::ShellId,
-        ) -> std::io::Result<()> {
-            unreachable!()
-        }
-        fn remote_set_layout(
-            &self,
-            _: axo_protocol::SessionId,
-            _: axo_protocol::LayoutNode,
-        ) -> std::io::Result<()> {
-            unreachable!()
-        }
-        fn remote_terminal_input(
-            &self,
-            _: axo_protocol::SessionId,
-            _: axo_protocol::ShellId,
-            _: u64,
-            _: &str,
-        ) -> std::io::Result<()> {
-            unreachable!()
-        }
-        fn remote_terminal_resize(
-            &self,
-            _: axo_protocol::SessionId,
-            _: axo_protocol::ShellId,
-            _: u32,
-            _: u32,
-        ) -> std::io::Result<()> {
-            unreachable!()
-        }
-    }
-
     #[test]
     fn a_failed_redemption_keeps_the_existing_link_and_retries_with_the_same_identity() {
         let unreachable_relay = {
@@ -360,7 +372,13 @@ mod tests {
         let links = MemoryLinkStore(std::sync::Mutex::new(linked(ACCOUNT, CREDENTIAL)));
 
         let link = |code: &str| {
-            super::link_host(&unreachable_relay, code, &PairingHost, &links, &credentials)
+            super::link_host(
+                &unreachable_relay,
+                code,
+                &super::testing::IdentityOnlyHost,
+                &links,
+                &credentials,
+            )
         };
         assert!(link("not-a-code").is_err());
         assert_eq!(
