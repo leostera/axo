@@ -1,0 +1,50 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <title>Axo mascot</title>
+  <style>
+    body { font: 14px -apple-system, system-ui, sans-serif; margin: 24px; background: #f4f4f4; color: #222; }
+    @media (prefers-color-scheme: dark) { body { background: #1e1e1e; color: #eee; } }
+    .row { display: flex; gap: 24px; align-items: end; flex-wrap: wrap; }
+    figure { margin: 0; text-align: center; }
+    canvas { display: block; }
+    .menubar { background: #e8e8e8; padding: 3px 8px; border-radius: 4px; }
+  </style>
+</head>
+<body>
+  <h1>Axo mascot</h1>
+  <p>Each artboard runs the <code>Mascot</code> state machine. <button id="blink">Blink</button></p>
+  <div class="row">
+    <figure><canvas data-artboard="Icon" width="512" height="512" style="width:256px;height:256px"></canvas><figcaption>Icon</figcaption></figure>
+    <figure><canvas data-artboard="Face" width="532" height="282" style="width:266px;height:141px"></canvas><figcaption>Face</figcaption></figure>
+    <figure><div class="menubar"><canvas data-artboard="Mark" width="60" height="32" style="width:30px;height:16px"></canvas></div><figcaption>Mark (menu bar size)</figcaption></figure>
+  </div>
+  <script src="/node_modules/@rive-app/canvas/rive.js"></script>
+  <script>
+    const { Rive, Layout, Fit, Alignment, RuntimeLoader } = window.rive;
+    RuntimeLoader.setWasmUrl("/node_modules/@rive-app/canvas/rive.wasm");
+    window.mascots = [];
+    window.mascotErrors = [];
+    for (const canvas of document.querySelectorAll("canvas[data-artboard]")) {
+      const artboard = canvas.dataset.artboard;
+      const mascot = new Rive({
+        src: "/axo.riv",
+        canvas,
+        artboard,
+        stateMachines: "Mascot",
+        autoplay: true,
+        layout: new Layout({ fit: Fit.Contain, alignment: Alignment.Center }),
+        onLoad: () => { mascot.resizeDrawingSurfaceToCanvas(); mascot.loaded = true; },
+        onLoadError: (error) => window.mascotErrors.push(`${artboard}: ${error?.data ?? error}`),
+      });
+      window.mascots.push(mascot);
+    }
+    document.getElementById("blink").addEventListener("click", () => {
+      for (const mascot of window.mascots) {
+        mascot.stateMachineInputs("Mascot").find((input) => input.name === "blink")?.fire();
+      }
+    });
+  </script>
+</body>
+</html>
