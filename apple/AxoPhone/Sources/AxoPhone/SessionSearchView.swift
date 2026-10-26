@@ -5,6 +5,8 @@ import SwiftUI
 /// Finds a Session by its name or its Workspace, across every Mac. Names only, not conversation text.
 struct SessionSearchView: View {
   let hosts: [RemoteHost]
+  /// A Mac's Sessions as they are now (the open Mac's are live).
+  let sessionsOf: (RemoteHost) -> [RemoteSession]
   let choose: (RemoteHost, RemoteSession) -> Void
   @Environment(\.dismiss) private var dismiss
   @FocusState private var searchFocused: Bool
@@ -21,9 +23,11 @@ struct SessionSearchView: View {
   private var matches: [Match] {
     guard !trimmedQuery.isEmpty else { return [] }
     return hosts.flatMap { host in
-      host.sessions.filter {
-        $0.displayName.localizedCaseInsensitiveContains(trimmedQuery)
-          || ($0.workspaceName ?? "").localizedCaseInsensitiveContains(trimmedQuery)
+      sessionsOf(host).filter {
+        // Chats only: a bare terminal has nothing to read here.
+        $0.hasAgent != false
+          && ($0.displayName.localizedCaseInsensitiveContains(trimmedQuery)
+          || ($0.workspaceName ?? "").localizedCaseInsensitiveContains(trimmedQuery))
       }.map { Match(host: host, session: $0) }
     }
   }

@@ -135,7 +135,7 @@ struct WorkbenchView: View {
     .preferredColorScheme(appearance.colorScheme)
     .tint(accentColor.color)
     .sheet(isPresented: $showingSearch) {
-      SessionSearchView(hosts: workbench.hosts.hosts) { host, session in
+      SessionSearchView(hosts: workbench.hosts.hosts, sessionsOf: workbench.sessions(of:)) { host, session in
         workbench.select(host: host.hostId, session: session.sessionId)
         preferredCompactColumn = .detail
         closeMenu()
@@ -150,19 +150,34 @@ struct WorkbenchView: View {
         }
       }
     }
-    .task { await workbench.start() }
+    .task {
+      await workbench.start()
+      let chats = sections.flatMap(\.sessions)
+      if let index = PreviewFixture.chatOpen, chats.indices.contains(index - 1) {
+        workbench.select(host: chats[index - 1].host.hostId, session: chats[index - 1].session.sessionId)
+      }
+    }
   }
 
   private var conversation: some View {
     ConversationView(
       workbench: workbench.current,
       session: currentSession,
-      canStartChat: workbench.newChatHost != nil,
+      draft: draftBinding,
+      isSending: workbench.isSending,
       showSidebar: showMenu,
-      startChat: { await workbench.startChat(sending: $0) },
-      startChatIn: { await workbench.startChat(in: $0, sending: $1) }
+      send: { await workbench.send() },
+      sendIn: { await workbench.send(in: $0) }
     )
     .id(currentSession?.sessionId)
+  }
+
+  /// The open chat's box, kept per chat by the workbench.
+  private var draftBinding: Binding<String> {
+    guard let selection = workbench.selection else { return .constant("") }
+    return Binding(
+      get: { workbench.draft(for: selection) },
+      set: { workbench.setDraft($0, for: selection) })
   }
 
   // MARK: - The menu
@@ -241,7 +256,8 @@ struct WorkbenchView: View {
     var order: [String] = []
     var grouped: [String: (title: String, sessions: [Entry])] = [:]
     for host in hosts {
-      for session in host.sessions.sorted(by: { $0.sessionId < $1.sessionId }) where session.hasAgent != false {
+      for session in workbench.sessions(of: host).sorted(by: { $0.sessionId < $1.sessionId })
+      where session.hasAgent != false {
         let workspace = session.workspaceName ?? "Chats"
         let key = "\(host.hostId.uuidString)/\(workspace)"
         if grouped[key] == nil {

@@ -41,6 +41,26 @@ public final class HostWorkbenchModel {
   }
   private var storedHistory: [SessionID: StoredHistory] = [:]
 
+  /// A message the phone sent that the agent has not recorded yet, shown at the end of its chat
+  /// until the agent's own record of it arrives.
+  public struct PendingPrompt: Identifiable, Equatable, Sendable {
+    public enum State: Equatable, Sendable {
+      /// On its way to the Mac.
+      case sending
+      /// The Mac took it; the agent will record it shortly.
+      case sent
+      /// The Mac took it while the agent was busy; it is answered after the current reply.
+      case queued
+    }
+
+    public let id: UUID
+    public let text: String
+    public fileprivate(set) var state: State
+  }
+
+  /// Per chat, oldest first.
+  public private(set) var pendingPrompts: [SessionID: [PendingPrompt]] = [:]
+
   /// The chat on screen. Nothing selects one on its own: the person (or a new chat) does.
   public var selectedSessionID: SessionID?
   /// The last problem, for the screen to show; cleared by the next successful action.
@@ -112,12 +132,13 @@ public final class HostWorkbenchModel {
       sessions.removeAll { $0.sessionId == id }
       chats[id] = nil
       historyStates[id] = nil
+      pendingPrompts[id] = nil
       if selectedSessionID == id { selectedSessionID = nil }
     case .shellActivity, .terminalOutput:
       // The phone follows Pi, not terminals.
       break
     case .piEvent(_, let id, let record):
-      chats[id, default: ChatTranscript()].apply(record)
+      changeChat(id) { $0.apply(record) }
     }
   }
 
@@ -162,7 +183,7 @@ public final class HostWorkbenchModel {
 
   private func showStoredHistory(of id: SessionID) {
     guard let stored = storedHistory[id] else { return }
-    chats[id, default: ChatTranscript()].merge(history: stored.records)
+    changeChat(id) { $0.merge(history: stored.records) }
     historyStates[id] = .loaded(events: stored.records.count, hasOlder: stored.olderCursor != nil)
   }
 
@@ -197,17 +218,46 @@ public final class HostWorkbenchModel {
     await attempt { try await connection.renameSession(id, to: name) }
   }
 
-  /// Sends a prompt to the selected Session's Pi. Pi's own `message.end` brings it back into the
-  /// conversation, so nothing is added here. Returns whether the host accepted it.
+  /// Sends a message to the selected chat. It shows as pending until the agent's own record of it
+  /// (`message.end`) arrives; a refused one disappears. Returns whether the Mac accepted it.
   public func sendPrompt(_ text: String) async -> Bool {
     let prompt = text.trimmingCharacters(in: .whitespacesAndNewlines)
     guard let session = selectedSession, !prompt.isEmpty else { return false }
+    let id = session.sessionId
+    let pending = PendingPrompt(id: UUID(), text: prompt, state: .sending)
+    pendingPrompts[id, default: []].append(pending)
     var accepted = false
     await attempt {
-      try await connection.promptPi(in: session.sessionId, text: prompt)
+      try await connection.promptPi(in: id, text: prompt)
       accepted = true
     }
+    guard let index = pendingPrompts[id]?.firstIndex(where: { $0.id == pending.id }) else { return accepted }
+    if accepted {
+      pendingPrompts[id]?[index].state = chats[id]?.activity == .working ? .queued : .sent
+    } else {
+      pendingPrompts[id]?.remove(at: index)
+      if pendingPrompts[id]?.isEmpty == true { pendingPrompts[id] = nil }
+    }
     return accepted
+  }
+
+  /// Changes a chat, then retires the pending messages its newest user messages account for: the one
+  /// with the same words, or else the oldest the Mac has taken (the agent records them in order).
+  private func changeChat(_ id: SessionID, _ change: (inout ChatTranscript) -> Void) {
+    let before = Set(chats[id]?.messages.map(\.id) ?? [])
+    change(&chats[id, default: ChatTranscript()])
+    guard var pending = pendingPrompts[id], !pending.isEmpty, let messages = chats[id]?.messages else { return }
+    // Only what came after everything already shown: an older page of history is not news.
+    let start = messages.lastIndex { before.contains($0.id) }.map { $0 + 1 } ?? 0
+    for message in messages[start...] where message.role == .user {
+      let words = message.text.trimmingCharacters(in: .whitespacesAndNewlines)
+      if let match = pending.firstIndex(where: { $0.text == words }) {
+        pending.remove(at: match)
+      } else if let oldest = pending.firstIndex(where: { $0.state != .sending }) {
+        pending.remove(at: oldest)
+      }
+    }
+    pendingPrompts[id] = pending.isEmpty ? nil : pending
   }
 
   /// Shows `message` where failures are shown.

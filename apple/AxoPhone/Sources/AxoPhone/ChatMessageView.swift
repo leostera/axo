@@ -52,6 +52,36 @@ struct ChatMessageView: View {
   }
 }
 
+/// A message the phone sent that the agent has not recorded yet: the user's bubble, dimmed, with
+/// where it is.
+struct PendingPromptView: View {
+  let prompt: HostWorkbenchModel.PendingPrompt
+
+  private var label: String {
+    switch prompt.state {
+    case .sending: "Sending…"
+    case .sent: "Sent"
+    case .queued: "Queued · answered after the current reply"
+    }
+  }
+
+  var body: some View {
+    VStack(alignment: .trailing, spacing: 12) {
+      Text(prompt.text)
+        .font(.body).textSelection(.enabled)
+        .padding(.horizontal, 17).padding(.vertical, 13)
+        .background(Color.blue.opacity(0.14), in: RoundedRectangle(cornerRadius: 23))
+        .overlay(RoundedRectangle(cornerRadius: 23).stroke(Color.blue.opacity(0.24), lineWidth: 0.5))
+        .padding(.leading, 48)
+        .opacity(prompt.state == .sending ? 0.6 : 0.85)
+      Text(label).font(.caption).foregroundStyle(.secondary)
+    }
+    .frame(maxWidth: .infinity, alignment: .trailing)
+    .accessibilityElement(children: .combine)
+    .accessibilityIdentifier("pendingPrompt")
+  }
+}
+
 /// A reply, drawn where its look changes: prose, headings, bullets and code. Inline formatting
 /// (bold, links, `code`) comes from the text view. Remote images are never fetched.
 struct ChatMarkdown: View {
@@ -67,11 +97,26 @@ struct ChatMarkdown: View {
           inline(text)
         case .heading(let level, let text):
           inline(text).font(.system(size: bodySize * (level == 1 ? 1.35 : level == 2 ? 1.15 : 1.05), weight: .semibold))
-        case .bullet(let text):
+        case .listItem(let marker, let depth, let text):
           HStack(alignment: .firstTextBaseline, spacing: 10) {
-            Text("•").foregroundStyle(.secondary)
+            switch marker {
+            case .bullet: Text(depth == 0 ? "•" : "◦").foregroundStyle(.secondary)
+            case .number(let number): Text("\(number).").monospacedDigit().foregroundStyle(.secondary)
+            }
             inline(text)
           }
+          .padding(.leading, CGFloat(depth) * bodySize * 1.2)
+        case .quote(let text):
+          inline(text)
+            .foregroundStyle(.secondary)
+            .padding(.leading, 17)
+            .overlay(alignment: .leading) {
+              RoundedRectangle(cornerRadius: 2).fill(Color.secondary).frame(width: 3)
+            }
+        case .table(let header, let rows):
+          MarkdownTable(header: header, rows: rows)
+        case .rule:
+          Divider().padding(.vertical, 4)
         case .code(let language, let code):
           VStack(alignment: .leading, spacing: 10) {
             if let language { Text(language).font(.caption).foregroundStyle(.secondary) }
@@ -95,15 +140,52 @@ struct ChatMarkdown: View {
     })
   }
 
-  private func inline(_ text: String) -> some View {
+  /// Bold, italics, links and `code` within a line, as Markdown writes them.
+  fileprivate static func inlineText(_ text: String) -> Text {
     let attributed = (try? AttributedString(
       markdown: text,
       options: .init(allowsExtendedAttributes: false, interpretedSyntax: .inlineOnlyPreservingWhitespace)))
       ?? AttributedString(text)
     return Text(attributed)
+  }
+
+  private func inline(_ text: String) -> some View {
+    Self.inlineText(text)
       .lineSpacing(bodySize * 0.2)
       .textSelection(.enabled)
       .frame(maxWidth: .infinity, alignment: .leading)
+  }
+}
+
+/// A table scrolls sideways rather than squeezing its columns; the header is bold, the rows are
+/// separated by hairlines.
+private struct MarkdownTable: View {
+  let header: [String]
+  let rows: [[String]]
+
+  private func inline(_ cell: String) -> Text { ChatMarkdown.inlineText(cell) }
+
+  var body: some View {
+    ScrollView(.horizontal) {
+      Grid(alignment: .leading, horizontalSpacing: 18, verticalSpacing: 8) {
+        GridRow {
+          ForEach(Array(header.enumerated()), id: \.offset) { _, cell in
+            inline(cell).fontWeight(.semibold).fixedSize()
+          }
+        }
+        ForEach(Array(rows.enumerated()), id: \.offset) { _, row in
+          Divider().gridCellUnsizedAxes(.horizontal)
+          GridRow {
+            ForEach(Array(row.enumerated()), id: \.offset) { _, cell in
+              inline(cell).fixedSize()
+            }
+          }
+        }
+      }
+      .padding(14)
+    }
+    .scrollIndicators(.hidden)
+    .background(ChatColors.surface, in: RoundedRectangle(cornerRadius: 16))
   }
 }
 

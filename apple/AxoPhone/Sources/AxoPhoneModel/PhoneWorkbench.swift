@@ -11,7 +11,7 @@ import Observation
 @MainActor
 @Observable
 public final class PhoneWorkbench {
-  public struct Selection: Equatable, Sendable {
+  public struct Selection: Hashable, Sendable {
     public let host: UUID
     public let session: SessionID?
 
@@ -25,6 +25,12 @@ public final class PhoneWorkbench {
   public private(set) var selection: Selection?
   /// The open Mac, if any.
   public private(set) var current: HostWorkbenchModel?
+
+  /// What is typed in each chat's box, kept while other chats are open. A new chat's is keyed by
+  /// its Mac with no Session.
+  private var drafts: [Selection: String] = [:]
+  /// A message is on its way; a second tap must not start a second chat.
+  public private(set) var isSending = false
 
   private let makeWorkbench: @MainActor (RemoteHost) -> HostWorkbenchModel
   private var started = false
@@ -85,22 +91,49 @@ public final class PhoneWorkbench {
     return hosts.hosts.first { $0.status == .online }
   }
 
-  /// How asking for a new chat went.
-  public enum ChatStart: Equatable, Sendable {
-    /// The chat exists and is open.
-    case started
-    /// The Mac has several Workspaces; the person picks one, then `startChat(in:sending:)`.
+  // MARK: - Drafts and sending
+
+  public func draft(for selection: Selection) -> String { drafts[selection] ?? "" }
+
+  public func setDraft(_ text: String, for selection: Selection) {
+    drafts[selection] = text.isEmpty ? nil : text
+  }
+
+  /// How sending went.
+  public enum SendOutcome: Equatable, Sendable {
+    /// The Mac took the message (for a new chat: the chat exists, is open, and took it).
+    case sent
+    /// A new chat, and the Mac has several Workspaces: the person picks one, then `send(in:)`.
     case chooseWorkspace([RemoteWorkspace])
-    /// Nothing started; the reason is in `current?.failure`.
+    /// Nothing was sent; the reason is in `current?.failure` and the words are back in the box.
     case failed
   }
 
-  /// Brings a new chat into being on `newChatHost` for its first message, `first`, and opens it.
-  /// With one Workspace on the Mac it starts there at once; with several it asks which; with none
-  /// it says so. If the chat starts but the Mac then refuses the message, the chat stays open and
-  /// the reason is in `current?.failure`, so the caller keeps the words.
-  public func startChat(sending first: String) async -> ChatStart {
-    guard let workbench = await openNewChatHost(), let workspaces = await workbench.workspaces() else {
+  /// Sends what is typed in the open chat. On a new chat, the first message brings the chat into
+  /// being: in the Mac's only Workspace at once, or in the one chosen; with none, it says so.
+  /// The words leave the box as they go and come back if the Mac refuses them.
+  public func send() async -> SendOutcome {
+    guard !isSending, let selection, !text(of: selection).isEmpty else { return .failed }
+    isSending = true
+    defer { isSending = false }
+    guard selection.session != nil else { return await startChat(from: selection) }
+    return await prompt(from: selection)
+  }
+
+  /// Starts the new chat in `workspace` with what is typed in it.
+  public func send(in workspace: UUID) async -> SendOutcome {
+    guard !isSending, let selection, selection.session == nil, !text(of: selection).isEmpty else { return .failed }
+    isSending = true
+    defer { isSending = false }
+    return await startChat(in: workspace, from: selection)
+  }
+
+  private func text(of selection: Selection) -> String {
+    draft(for: selection).trimmingCharacters(in: .whitespacesAndNewlines)
+  }
+
+  private func startChat(from draft: Selection) async -> SendOutcome {
+    guard let workbench = await openNewChatHost(for: draft), let workspaces = await workbench.workspaces() else {
       return .failed
     }
     switch workspaces.count {
@@ -108,25 +141,50 @@ public final class PhoneWorkbench {
       workbench.report("This Mac has no workspaces yet. Create one in Axo on the Mac.")
       return .failed
     case 1:
-      return await startChat(in: workspaces[0].workspaceId, sending: first)
+      return await startChat(in: workspaces[0].workspaceId, from: draft)
     default:
       return .chooseWorkspace(workspaces)
     }
   }
 
-  /// Starts the chat in a Workspace of `newChatHost`, opens it and sends `first`.
-  public func startChat(in workspace: UUID, sending first: String) async -> ChatStart {
-    guard let workbench = await openNewChatHost() else { return .failed }
+  private func startChat(in workspace: UUID, from draft: Selection) async -> SendOutcome {
+    guard let workbench = await openNewChatHost(for: draft) else { return .failed }
     await workbench.createChat(in: workspace)
     guard workbench.failure == nil, let id = workbench.selectedSessionID else { return .failed }
+    // The words move to the chat they started; a refusal leaves them in its box.
+    let chat = Selection(host: draft.host, session: id)
+    setDraft(self.draft(for: draft), for: chat)
+    setDraft("", for: draft)
     select(session: id)
-    _ = await workbench.sendPrompt(first)
-    return .started
+    return await prompt(from: chat)
   }
 
-  private func openNewChatHost() async -> HostWorkbenchModel? {
-    guard let host = newChatHost else { return nil }
-    if current?.reference.hostId != host.hostId { select(host: host.hostId, session: nil) }
+  private func prompt(from selection: Selection) async -> SendOutcome {
+    guard let workbench = current, workbench.reference.hostId == selection.host else { return .failed }
+    let text = text(of: selection)
+    setDraft("", for: selection)
+    if await workbench.sendPrompt(text) { return .sent }
+    if draft(for: selection).isEmpty { setDraft(text, for: selection) }
+    return .failed
+  }
+
+  // MARK: - What the menu lists
+
+  /// A Mac's Sessions as the menu should show them: live for the open Mac, as last listed for the
+  /// others. The listing is only read on refresh, so the open Mac's chats made or renamed since
+  /// would otherwise be missing.
+  public func sessions(of host: RemoteHost) -> [RemoteSession] {
+    if let current, current.reference.hostId == host.hostId { return current.sessions }
+    return host.sessions
+  }
+
+  /// The Mac a new chat drafted on `draft.host` starts on: that one, which must be online.
+  private func openNewChatHost(for draft: Selection) async -> HostWorkbenchModel? {
+    guard let current, current.reference.hostId == draft.host else { return nil }
+    guard current.status == .online else {
+      current.report("\(current.hostLabel) is offline.")
+      return nil
+    }
     return current
   }
 

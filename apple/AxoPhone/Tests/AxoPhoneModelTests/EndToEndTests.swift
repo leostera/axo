@@ -90,8 +90,9 @@ final class EndToEndTests: XCTestCase {
 
     // The first message brings the chat into being (the Mac has one Workspace, so it starts there
     // at once), and the words reach its Pi as a paste and a submit.
-    let started = await workbench.startChat(sending: "please run the tests")
-    XCTAssertEqual(started, .started, workbench.current?.failure ?? "")
+    workbench.setDraft("please run the tests", for: try XCTUnwrap(workbench.selection))
+    let sent = await workbench.send()
+    XCTAssertEqual(sent, .sent, workbench.current?.failure ?? "")
     XCTAssertFalse(workbench.isDrafting)
     let chat = try XCTUnwrap(workbench.current?.selectedSession)
     XCTAssertEqual(chat.hasAgent, true, "a chat is a Session with a Pi")

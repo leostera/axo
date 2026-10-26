@@ -7,20 +7,26 @@ import SwiftUI
 struct ConversationView: View {
   let workbench: HostWorkbenchModel?
   let session: RemoteSession?
-  /// Whether some Mac is online to start a chat on.
-  let canStartChat: Bool
+  /// What is typed in this chat's box; kept by the workbench, so it survives switching chats.
+  @Binding var draft: String
+  /// A message is on its way.
+  let isSending: Bool
   let showSidebar: () -> Void
-  let startChat: (String) async -> PhoneWorkbench.ChatStart
-  let startChatIn: (UUID, String) async -> PhoneWorkbench.ChatStart
-  @State private var draft = ""
-  /// The Workspaces to choose from, with the first message waiting for the choice.
-  @State private var workspaceChoice: (choices: [RemoteWorkspace], text: String)?
+  let send: () async -> PhoneWorkbench.SendOutcome
+  let sendIn: (UUID) async -> PhoneWorkbench.SendOutcome
+  /// The Workspaces to choose from for a new chat; its first message waits in the box.
+  @State private var workspaceChoices: [RemoteWorkspace]?
+  /// A message arrived while the conversation was scrolled up.
+  @State private var hasNewMessages = false
   @State private var isNearBottom = true
   /// The message at the top of the screen; holding it keeps the view still when older pages arrive above.
   @State private var scrollAnchor: String?
   @State private var scrollToLatestRequest = 0
 
   private var transcript: ChatTranscript { session.flatMap { workbench?.chats[$0.sessionId] } ?? ChatTranscript() }
+  private var pending: [HostWorkbenchModel.PendingPrompt] {
+    session.flatMap { workbench?.pendingPrompts[$0.sessionId] } ?? []
+  }
   private var historyState: HostWorkbenchModel.HistoryState? { session.flatMap { workbench?.historyStates[$0.sessionId] } }
 
   var body: some View {
@@ -30,13 +36,12 @@ struct ConversationView: View {
       .safeAreaInset(edge: .bottom, spacing: 0) { bottomBar }
       .confirmationDialog(
         "Start the chat in",
-        isPresented: Binding(get: { workspaceChoice != nil }, set: { if !$0 { workspaceChoice = nil } }),
+        isPresented: Binding(get: { workspaceChoices != nil }, set: { if !$0 { workspaceChoices = nil } }),
         titleVisibility: .visible
       ) {
-        ForEach(workspaceChoice?.choices ?? [], id: \.workspaceId) { workspace in
+        ForEach(workspaceChoices ?? [], id: \.workspaceId) { workspace in
           Button(workspace.name) {
-            guard let text = workspaceChoice?.text else { return }
-            Task { await begin(text) { await startChatIn(workspace.workspaceId, text) } }
+            Task { _ = await sendIn(workspace.workspaceId) }
           }
         }
       }
@@ -50,6 +55,9 @@ struct ConversationView: View {
           if transcript.messages.isEmpty { emptyState }
           ForEach(transcript.messages) { message in
             ChatMessageView(message: message, piIsWorking: transcript.activity == .working)
+          }
+          ForEach(pending) { prompt in
+            PendingPromptView(prompt: prompt)
           }
           if transcript.activity == .working {
             AgentActivityView(callingTools: transcript.messages.contains { $0.tool?.status == .running })
@@ -70,9 +78,27 @@ struct ConversationView: View {
         geometry.visibleRect.maxY >= geometry.contentSize.height - 60
       } action: { _, nearBottom in
         isNearBottom = nearBottom
+        if nearBottom { hasNewMessages = false }
       }
-      .onChange(of: transcript.messages.last?.id) {
-        if isNearBottom { withAnimation { proxy.scrollTo("latest", anchor: .bottom) } }
+      .onChange(of: transcript.messages.last?.id) { previous, _ in
+        if previous == nil {
+          // The first page: go to its end without animating, then again once the lazy stack has
+          // measured what it estimated, or the end can land short of the real bottom.
+          proxy.scrollTo("latest", anchor: .bottom)
+          Task { @MainActor in
+            await Task.yield()
+            proxy.scrollTo("latest", anchor: .bottom)
+          }
+        } else if isNearBottom {
+          withAnimation { proxy.scrollTo("latest", anchor: .bottom) }
+        } else {
+          // Not the first page arriving: something new was said below the reader.
+          hasNewMessages = true
+        }
+      }
+      .onChange(of: pending.count) { previous, count in
+        // Sending something takes the reader to it.
+        if count > previous { withAnimation { proxy.scrollTo("latest", anchor: .bottom) } }
       }
       .onChange(of: scrollToLatestRequest) { withAnimation { proxy.scrollTo("latest", anchor: .bottom) } }
       .refreshable { if let session { await workbench?.loadHistory(of: session.sessionId) } }
@@ -102,7 +128,7 @@ struct ConversationView: View {
     switch historyState {
     case nil, .loading:
       if session == nil {
-        ChatEmptyState(message: canStartChat ? "Send a message to start a chat." : "Your Mac is offline.")
+        ChatEmptyState(message: canSend ? "Send a message to start a chat." : "Your Mac is offline.")
       } else {
         LoadingMascotView(label: "Loading the conversation")
           .frame(height: 120).frame(maxWidth: .infinity).padding(.vertical, 70)
@@ -146,42 +172,19 @@ struct ConversationView: View {
     .background(ChatColors.background)
   }
 
-  /// A chat can be written to when its Mac is online; a new chat, when any Mac is.
+  /// A chat can be written to when its Mac is online and nothing is on its way.
   private var canSend: Bool {
-    if session == nil { return canStartChat }
-    return workbench?.status == .online && session?.hasAgent != false
+    workbench?.status == .online && session?.hasAgent != false
   }
 
   private var composerPlaceholder: String {
-    if session == nil { return canStartChat ? "Message Axo" : "Your Mac is offline" }
-    if let workbench, workbench.status != .online { return "\(workbench.hostLabel) is offline" }
-    return "Message Axo"
+    guard let workbench else { return "Your Mac is offline" }
+    return workbench.status == .online ? "Message Axo" : "\(workbench.hostLabel) is offline"
   }
 
-  private func send() {
-    guard canSend, let workbench else { return }
-    let text = draft
+  private func sendDraft() {
     Task {
-      if session == nil {
-        await begin(text) { await startChat(text) }
-      } else if await workbench.sendPrompt(text), draft == text {
-        // The words stay in the box until the Mac has them, so a refusal loses nothing.
-        draft = ""
-      }
-    }
-  }
-
-  /// Creates the chat for `text`, its first message. The words leave the box only once the chat
-  /// exists and the Mac took them; if it has several Workspaces, they wait for the choice.
-  private func begin(_ text: String, _ start: () async -> PhoneWorkbench.ChatStart) async {
-    switch await start() {
-    case .started:
-      if draft == text { draft = "" }
-      workspaceChoice = nil
-    case .chooseWorkspace(let choices):
-      workspaceChoice = (choices, text)
-    case .failed:
-      break
+      if case .chooseWorkspace(let choices) = await send() { workspaceChoices = choices }
     }
   }
 
@@ -192,19 +195,24 @@ struct ConversationView: View {
       }
       if !isNearBottom {
         Button { scrollToLatestRequest += 1 } label: {
-          Image(systemName: "arrow.down")
-            .font(.system(size: 20, weight: .semibold))
-            .frame(width: 44, height: 44)
-            .contentShape(Capsule())
+          HStack(spacing: 6) {
+            Image(systemName: "arrow.down")
+              .font(.system(size: 20, weight: .semibold))
+              .frame(width: 44, height: 44)
+            if hasNewMessages {
+              Text("Jump to new message").font(.callout.weight(.semibold)).padding(.trailing, 14)
+            }
+          }
+          .contentShape(Capsule())
         }
         .buttonStyle(.plain)
         .background(.regularMaterial, in: Capsule())
         .shadow(color: .black.opacity(0.08), radius: 8, y: 3)
-        .accessibilityLabel("Jump to latest")
+        .accessibilityLabel(hasNewMessages ? "Jump to new message" : "Jump to latest")
       }
       ChatComposer(
         draft: $draft, placeholder: composerPlaceholder,
-        canSend: canSend, send: send)
+        canSend: canSend && !isSending, send: sendDraft)
     }
     .padding(.bottom, 8)
     .background(ChatColors.background)

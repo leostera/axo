@@ -166,6 +166,68 @@ final class HostWorkbenchModelTests: XCTestCase {
     XCTAssertNil(model.chats[4], "Pi's own message brings the prompt back; nothing is invented here")
   }
 
+  private func said(_ text: String, sequence: UInt64, stream: UUID = UUID(), role: String = "user") -> PiEventRecord {
+    let json = #"{"message":{"role":"\#(role)","content":[{"type":"text","text":"\#(text)"}]}}"#
+    return PiEventRecord(
+      streamId: stream, sequence: sequence, name: "message.end",
+      data: try! JSONDecoder().decode(JSONValue.self, from: Data(json.utf8)))
+  }
+
+  /// Sends `text` and has the host accept it.
+  private func sendAccepted(_ text: String, model: HostWorkbenchModel, transport: ScriptedTransport) async throws {
+    let sending = Task { await model.sendPrompt(text) }
+    let channel = try await transport.channel()
+    let request = try await channel.nextRequest()
+    channel.reply(to: request.id, result: #"{"accepted":true}"#)
+    _ = await sending.value
+  }
+
+  func testASentMessageShowsAsPendingUntilTheAgentRecordsItThenOnlyTheRecordRemains() async throws {
+    let (model, transport, host, _) = try make()
+    let sending = Task { await model.sendPrompt("  run the tests ") }
+    let channel = try await transport.channel()
+    let request = try await channel.nextRequest()
+    XCTAssertEqual(model.pendingPrompts[1]?.map(\.state), [.sending], "shown at once, before the Mac answers")
+    channel.reply(to: request.id, result: #"{"accepted":true}"#)
+    _ = await sending.value
+    XCTAssertEqual(model.pendingPrompts[1]?.map(\.text), ["run the tests"])
+    XCTAssertEqual(model.pendingPrompts[1]?.map(\.state), [.sent])
+
+    model.apply(.piEvent(host: host.reference, sessionID: 1, event: said("someone else", sequence: 1, role: "assistant")))
+    XCTAssertEqual(model.pendingPrompts[1]?.count, 1, "a reply is not the message")
+    model.apply(.piEvent(host: host.reference, sessionID: 1, event: said("run the tests", sequence: 2)))
+    XCTAssertNil(model.pendingPrompts[1])
+    XCTAssertEqual(model.chats[1]?.messages.filter { $0.role == .user }.map(\.text), ["run the tests"], "shown once")
+  }
+
+  func testAMessageSentWhileTheAgentWorksIsQueuedAndRecordsRetireTheirOwnWordsFirst() async throws {
+    let (model, transport, host, _) = try make()
+    model.apply(.piEvent(host: host.reference, sessionID: 1, event: PiEventRecord(streamId: UUID(), sequence: 1, name: "agent.start", data: .null)))
+    try await sendAccepted("first", model: model, transport: transport)
+    try await sendAccepted("second", model: model, transport: transport)
+    XCTAssertEqual(model.pendingPrompts[1]?.map(\.state), [.queued, .queued])
+    model.apply(.piEvent(host: host.reference, sessionID: 1, event: said("second", sequence: 2)))
+    XCTAssertEqual(model.pendingPrompts[1]?.map(\.text), ["first"], "matched by its words, not by order")
+    // The agent wrote it down differently: the oldest one the Mac took is the one it means.
+    model.apply(.piEvent(host: host.reference, sessionID: 1, event: said("First!", sequence: 3)))
+    XCTAssertNil(model.pendingPrompts[1])
+  }
+
+  func testOlderHistoryArrivingDoesNotRetireAPendingMessage() async throws {
+    let stream = UUID()
+    let pages = Pages([
+      PiEventPage(events: [stored(2, 2, role: "user", "ask", stream: stream)], next: 2),
+      PiEventPage(events: [stored(1, 1, role: "user", "ask", stream: stream)], next: nil),
+    ])
+    let (model, transport, _, _) = try make(history: pages)
+    try await sendAccepted("ask", model: model, transport: transport)
+    await model.loadHistory(of: 1)
+    XCTAssertNil(model.pendingPrompts[1], "the newest page is news: it has the message")
+    try await sendAccepted("ask", model: model, transport: transport)
+    await model.loadOlderHistory(of: 1)
+    XCTAssertEqual(model.pendingPrompts[1]?.count, 1, "an older page saying the same words is not the new message")
+  }
+
   func testARefusedPromptIsNotAccepted() async throws {
     let (model, transport, _, _) = try make()
     let sending = Task { await model.sendPrompt("hello") }
