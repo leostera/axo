@@ -25,9 +25,10 @@ public final class HostWorkbenchModel {
   public private(set) var historyStates: [SessionID: HistoryState] = [:]
   public enum HistoryState: Equatable, Sendable {
     case loading
-    case loaded
+    /// Read this many stored events (messages are only some of them).
+    case loaded(events: Int)
     /// The stored history is longer than what was read; the newest part is missing.
-    case truncated
+    case truncated(events: Int)
     case failed(String)
   }
 
@@ -149,7 +150,7 @@ public final class HostWorkbenchModel {
       return
     }
     chats[id, default: ChatTranscript()].merge(history: records)
-    historyStates[id] = more ? .truncated : .loaded
+    historyStates[id] = more ? .truncated(events: records.count) : .loaded(events: records.count)
   }
 
   private func forget(_ shell: ShellID) {

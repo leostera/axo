@@ -31,16 +31,7 @@ struct ConversationView: View {
             Text("This conversation is long; the newest part is not shown here yet.")
               .font(.caption).foregroundStyle(.secondary)
           }
-          if transcript.messages.isEmpty {
-            switch historyState {
-            case .loading, nil where session != nil:
-              ProgressView("Loading the conversation…").frame(maxWidth: .infinity).padding(.vertical, 90)
-            case .failed(let message):
-              ChatEmptyState(message: message)
-            default:
-              ChatEmptyState(message: session == nil ? "Pick a session from the menu." : "Your conversation will appear here.")
-            }
-          }
+          if transcript.messages.isEmpty { emptyState }
           ForEach(transcript.messages) { message in
             ChatMessageView(message: message)
           }
@@ -56,6 +47,24 @@ struct ConversationView: View {
       .defaultScrollAnchor(.bottom)
       .onChange(of: transcript.messages.last?.id) { withAnimation { proxy.scrollTo("latest", anchor: .bottom) } }
       .refreshable { if let session { await workbench?.loadHistory(of: session.sessionId) } }
+    }
+  }
+
+  @ViewBuilder private var emptyState: some View {
+    switch historyState {
+    case nil, .loading:
+      if session == nil {
+        ChatEmptyState(message: "Pick a session from the menu.")
+      } else {
+        ProgressView("Loading the conversation…").frame(maxWidth: .infinity).padding(.vertical, 90)
+      }
+    case .failed(let message):
+      ChatEmptyState(message: message)
+    case .loaded(let events), .truncated(let events):
+      ChatEmptyState(
+        message: events == 0
+          ? "Nothing is stored for this session yet. Pi's messages appear here as they happen."
+          : "\(events) stored events, none of them messages yet.")
     }
   }
 

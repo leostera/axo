@@ -54,7 +54,7 @@ final class HostWorkbenchModelTests: XCTestCase {
       data: try JSONDecoder().decode(JSONValue.self, from: Data(#"{"message":{"role":"assistant","content":"live"}}"#.utf8)))))
     await model.loadHistory(of: 1)
     XCTAssertEqual(model.chats[1]?.messages.map(\.text), ["q", "a", "q2", "live"])
-    XCTAssertEqual(model.historyStates[1], .loaded)
+    XCTAssertEqual(model.historyStates[1], .loaded(events: 3))
     XCTAssertEqual(pages.cursors, [0, 2], "each page starts where the last one ended")
   }
 
@@ -64,7 +64,7 @@ final class HostWorkbenchModelTests: XCTestCase {
     let (model, _, _, _) = try make(history: endless)
     await model.loadHistory(of: 1)
     XCTAssertEqual(endless.cursors.count, HostWorkbenchModel.maximumHistoryPages)
-    XCTAssertEqual(model.historyStates[1], .truncated)
+    XCTAssertEqual(model.historyStates[1], .truncated(events: HostWorkbenchModel.maximumHistoryPages))
   }
 
   func testAFailedHistoryReadIsReportedAndSignsOutOnlyForARefusedSession() async throws {
