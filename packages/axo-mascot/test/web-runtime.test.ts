@@ -59,6 +59,12 @@ test("every artboard loads with the Mascot state machine and blinks on the trigg
     const looking = await settle();
     await page.mouse.up();
     assert.notDeepEqual(looking, calm, "the eyes follow the pointer");
+    const loader = page.locator('canvas[data-artboard="Loader"]');
+    const loaderStill = await loader.screenshot();
+    await page.check("#loading");
+    await page.waitForTimeout(1000);
+    assert.notDeepEqual(await loader.screenshot(), loaderStill, "loading moves it");
+    await page.uncheck("#loading");
     await page.click("#poke");
     await page.waitForTimeout(80);
     assert.notDeepEqual(await face.screenshot(), calm, "a poke surprises it");

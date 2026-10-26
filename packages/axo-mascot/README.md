@@ -17,6 +17,7 @@ npm test          # types, committed file up to date, encoding, and a headless C
 | `Icon` | The macOS app icon (rounded square at 80% of a 1024 canvas); replaces the Dock icon. |
 | `Face` | The axolotl alone, in colour, for in-app and web use. |
 | `Mark` | Black outlines only, drawn as a template image in the menu bar. |
+| `Loader` | A square with room to spin, for loading. |
 
 Each artboard runs the `Mascot` state machine, in layers (a later layer wins a property both key):
 
@@ -25,6 +26,7 @@ Each artboard runs the `Mascot` state machine, in layers (a later layer wins a p
 | Look, Look Y | Looks around on its own; follows a point while `tracking`. | `tracking`, `lookX`, `lookY` (-100 to 100) |
 | Eyes | Random waits of 2, 4 or 7 s, then a blink or (1 in 5) a double blink. | `blink` |
 | Hands (`Face` only) | Hands come up over the eyes. | `covering` |
+| Loading | Gills flutter and Axo bobs; on `Loader` it also hops and spins. | `loading` |
 | Reactions | `poke`: "oh!", then a giggle. `annoyed`: a shake and a frown. | `poke`, `annoyed` |
 
 These are state machine inputs, which the web runtime and the Apple runtime's `RiveViewModel` take;

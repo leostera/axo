@@ -17,7 +17,13 @@ import { encodeRiv, type RivObject, TypeKey } from "./riv.ts";
 
 /** Artboard, state machine and input names the apps rely on. */
 export const MascotContract = {
-  artboards: { icon: "Icon", face: "Face", mark: "Mark" },
+  artboards: {
+    icon: "Icon",
+    face: "Face",
+    mark: "Mark",
+    /** Square, with room to spin: for loading. */
+    loader: "Loader",
+  },
   stateMachine: "Mascot",
   /** Fire to play once. */
   triggers: {
@@ -32,6 +38,8 @@ export const MascotContract = {
     tracking: "tracking",
     /** Hands over the eyes (the `Face` artboard has hands). */
     covering: "covering",
+    /** Waiting on something: gills flutter and Axo bobs; on `Loader` it also spins. */
+    loading: "loading",
   },
   /** Where to look, from -100 (left, up) to 100 (right, down). */
   numbers: { lookX: "lookX", lookY: "lookY" },
@@ -119,6 +127,8 @@ interface Rig {
   readonly mouth: ComponentId;
   readonly mouthO: ComponentId;
   readonly hands: readonly ComponentId[];
+  /** Gill nodes pivoting where each gill meets the head; left ones first. */
+  readonly gills: { readonly left: readonly ComponentId[]; readonly right: readonly ComponentId[] };
 }
 
 /** Draws the axolotl under `parent`. Earlier objects draw on top. */
@@ -210,18 +220,23 @@ function drawAxolotl(board: ArtboardBuilder, parent: ComponentId, style: Style):
   board.stroke(headShape, style.ink, OUTLINE);
   if (style.face !== undefined) board.fill(headShape, style.face);
 
-  for (const [side, toSide] of [
-    ["Left", (v: ReturnType<typeof gillVertices>) => v],
-    ["Right", mirrorVertices],
+  const gills = { left: [] as ComponentId[], right: [] as ComponentId[] };
+  for (const [side, toSide, toPoint, nodes] of [
+    ["Left", (v: ReturnType<typeof gillVertices>) => v, (p: Point) => p, gills.left],
+    ["Right", mirrorVertices, mirror, gills.right],
   ] as const) {
     leftGills.forEach((gill, index) => {
-      const shape = board.shape(art, { name: `${side} Gill ${index + 1}`, x: 0, y: 0 });
+      // A node at the gill's root, so the gill swings from where it meets the head.
+      const root = toPoint(scale(add(gill.a, gill.b), 0.5));
+      const node = board.node(art, { name: `${side} Gill ${index + 1} Root`, x: root.x, y: root.y });
+      const shape = board.shape(node, { name: `${side} Gill ${index + 1}`, x: -root.x, y: -root.y });
       board.cubicPath(shape, `${side} Gill ${index + 1} Path`, toSide(gillVertices(gill)), false);
       board.stroke(shape, style.ink, OUTLINE);
       if (style.face !== undefined) board.fill(shape, style.face, FillRule.nonZero);
+      nodes.push(node);
     });
   }
-  return { body, features, eyes, brows, mouth, mouthO, hands };
+  return { body, features, eyes, brows, mouth, mouthO, hands, gills };
 }
 
 type Key = readonly [frame: number, value: number];
@@ -261,7 +276,7 @@ function saccades(features: ComponentId, stops: readonly { at: number; x: number
 }
 
 /** The state machine every artboard runs; see `MascotContract`. */
-function addMascotMachine(board: ArtboardBuilder, rig: Rig): void {
+function addMascotMachine(board: ArtboardBuilder, rig: Rig, options: { spins?: boolean } = {}): void {
   const { triggers, bools, numbers } = MascotContract;
   const rest = board.animation({ name: "rest", duration: 60, loop: Loop.loop, tracks: [] });
 
@@ -398,6 +413,51 @@ function addMascotMachine(board: ArtboardBuilder, rig: Rig): void {
       ],
     });
   }
+  // Waiting: gills flutter in a wave and Axo bobs; with room, it spins once each cycle.
+  // Each gill swings on a one-second sine, a little behind the one above it: a wave.
+  const flutter = (nodes: readonly ComponentId[], sign: number) =>
+    nodes.map((node, index) => {
+      const keys: Key[] = [];
+      for (let frame = 0; frame <= 120; frame += 10) {
+        keys.push([frame, sign * 0.2 * Math.sin((frame / 60) * 2 * Math.PI - index * 0.9)]);
+      }
+      return track(node, "rotation", keys);
+    });
+  const spin: Track[] = options.spins
+    ? each([rig.body], "rotation", [[0, 0], [30, 0], [44, 0.9], [58, 2 * Math.PI - 0.6], [72, 2 * Math.PI + 0.12], [80, 2 * Math.PI], [120, 2 * Math.PI]])
+    : [];
+  const loading = board.animation({
+    name: "loading",
+    duration: 120,
+    loop: Loop.loop,
+    tracks: [
+      ...flutter(rig.gills.left, 1),
+      ...flutter(rig.gills.right, -1),
+      ...each([rig.body], "y", offset(PIVOT.y, options.spins
+        ? [[0, 0], [30, 0], [40, -60], [58, -80], [72, 0], [78, 10], [86, 0], [120, 0]]
+        : [[0, 0], [30, -14], [60, 0], [90, -14], [120, 0]])),
+      ...spin,
+    ],
+  });
+  const still = board.animation({
+    name: "still",
+    duration: 60,
+    loop: Loop.loop,
+    tracks: [
+      ...hold([...rig.gills.left, ...rig.gills.right], "rotation", 0),
+      ...each([rig.body], "y", [[0, PIVOT.y]], Interpolation.hold),
+      ...hold([rig.body], "rotation", 0),
+    ],
+  });
+  layers.push({
+    name: "Loading",
+    entry: "still",
+    any: [],
+    states: [
+      { name: "still", animation: still, transitions: [{ to: "loading", when: { bool: bools.loading, is: true }, mixMs: 150 }] },
+      { name: "loading", animation: loading, transitions: [{ to: "still", when: { bool: bools.loading, is: false }, mixMs: 250 }] },
+    ],
+  });
   // Last, so a reaction's face wins over blinking.
   layers.push({
     name: "Reactions",
@@ -422,6 +482,7 @@ function addMascotMachine(board: ArtboardBuilder, rig: Rig): void {
       { kind: "trigger", name: triggers.annoyed },
       { kind: "bool", name: bools.tracking },
       { kind: "bool", name: bools.covering },
+      { kind: "bool", name: bools.loading },
       { kind: "number", name: numbers.lookX },
       { kind: "number", name: numbers.lookY },
     ],
@@ -459,11 +520,21 @@ function iconArtboard(): RivObject[] {
 }
 
 /** The axolotl alone, cropped tight: for in-app and web use (`face`) or a template image (`mark`). */
-function croppedArtboard(name: string, style: Style): RivObject[] {
-  const bounds = { x: 96, y: 366, width: 1064, height: 564 };
+/** Tight around the axolotl. */
+const FACE_BOUNDS = { x: 96, y: 366, width: 1064, height: 564 };
+/** A square around the face's centre, wide enough for the axolotl to spin in. */
+const LOADER_BOUNDS = { x: PIVOT.x - 540, y: PIVOT.y - 540, width: 1080, height: 1080 };
+
+/** The axolotl alone, cropped to `bounds`. */
+function croppedArtboard(
+  name: string,
+  style: Style,
+  bounds: { x: number; y: number; width: number; height: number } = FACE_BOUNDS,
+  spins = false,
+): RivObject[] {
   const board = new ArtboardBuilder(name, { width: bounds.width, height: bounds.height });
   const axolotl = board.node(board.root, { name: "Axolotl", x: -bounds.x, y: -bounds.y });
-  addMascotMachine(board, drawAxolotl(board, axolotl, style));
+  addMascotMachine(board, drawAxolotl(board, axolotl, style), { spins });
   return board.objects();
 }
 
@@ -473,5 +544,6 @@ export function buildMascot(): Uint8Array {
     ...iconArtboard(),
     ...croppedArtboard(MascotContract.artboards.face, { face: Color.face, ink: Color.ink, hands: true }),
     ...croppedArtboard(MascotContract.artboards.mark, { ink: Color.black }),
+    ...croppedArtboard(MascotContract.artboards.loader, { face: Color.face, ink: Color.ink }, LOADER_BOUNDS, true),
   ]);
 }

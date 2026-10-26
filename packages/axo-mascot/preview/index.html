@@ -20,10 +20,12 @@
     <button id="poke">Poke</button>
     <button id="annoyed">Annoyed</button>
     <label><input type="checkbox" id="covering"> Cover eyes</label>
+    <label><input type="checkbox" id="loading"> Loading</label>
   </p>
   <div class="row">
     <figure><canvas data-artboard="Icon" width="512" height="512" style="width:256px;height:256px"></canvas><figcaption>Icon</figcaption></figure>
     <figure><canvas data-artboard="Face" width="532" height="282" style="width:266px;height:141px"></canvas><figcaption>Face</figcaption></figure>
+    <figure><canvas data-artboard="Loader" width="300" height="300" style="width:150px;height:150px"></canvas><figcaption>Loader</figcaption></figure>
     <figure><div class="menubar"><canvas data-artboard="Mark" width="60" height="32" style="width:30px;height:16px"></canvas></div><figcaption>Mark (menu bar size)</figcaption></figure>
   </div>
   <script src="/node_modules/@rive-app/canvas/rive.js"></script>
@@ -51,7 +53,9 @@
     for (const trigger of ["blink", "poke", "annoyed"]) {
       document.getElementById(trigger).addEventListener("click", () => all(trigger, (i) => i.fire()));
     }
-    document.getElementById("covering").addEventListener("change", (event) => all("covering", (i) => (i.value = event.target.checked)));
+    for (const name of ["covering", "loading"]) {
+      document.getElementById(name).addEventListener("change", (event) => all(name, (i) => (i.value = event.target.checked)));
+    }
     // Each mascot looks from its own centre towards the pointer.
     const follow = (event) => {
       for (const mascot of window.mascots) {
