@@ -114,12 +114,27 @@ final class HostWorkbenchModelTests: XCTestCase {
 
   func testOutputAccumulatesPerTerminalAndARepeatedFrameIsAppendedOnce() throws {
     let (model, _, host, _) = try make()
+    model.watchTerminal(10)
+    model.watchTerminal(99)
     model.apply(output(host, sequence: 0, "hel"))
     model.apply(output(host, sequence: 1, "lo\r\n"))
     model.apply(output(host, sequence: 1, "lo\r\n"))
     model.apply(output(host, shell: 99, sequence: 0, "other"))
     XCTAssertEqual(model.transcripts[10]?.text, "hello\n")
     XCTAssertEqual(model.transcripts[99]?.text, "other")
+  }
+
+  func testOutputOfATerminalNobodyIsLookingAtIsNotReadAndIsForgottenWhenLookingStops() throws {
+    let (model, _, host, _) = try make()
+    model.apply(output(host, sequence: 0, "unseen"))
+    XCTAssertNil(model.transcripts[10], "nothing is kept for a terminal nobody watches")
+    model.watchTerminal(10)
+    model.apply(output(host, sequence: 1, "seen"))
+    XCTAssertEqual(model.transcripts[10]?.text, "seen")
+    model.stopWatchingTerminal(10)
+    XCTAssertNil(model.transcripts[10])
+    model.apply(output(host, sequence: 2, "again unseen"))
+    XCTAssertNil(model.transcripts[10])
   }
 
   func testSnapshotsUpdateAddAndRemoveSessionsAndMoveTheSelection() throws {
@@ -134,7 +149,9 @@ final class HostWorkbenchModelTests: XCTestCase {
       RemoteSession.self,
       from: Data(sessionJSON(host: host.hostId, id: 2, name: "Two", shells: [20]).utf8))
     model.apply(.sessionSnapshot(host: host.reference, session: added))
+    model.watchTerminal(10)
     model.apply(output(host, session: 1, shell: 10, sequence: 0, "x"))
+    XCTAssertNotNil(model.transcripts[10])
     model.apply(.sessionRemoved(host: host.reference, sessionID: 1))
     XCTAssertEqual(model.sessions.map(\.sessionId), [2])
     XCTAssertEqual(model.selectedSessionID, 2, "the selection moves off a removed Session")
@@ -143,6 +160,7 @@ final class HostWorkbenchModelTests: XCTestCase {
 
   func testPresenceUpdatesTheStatusAndAnotherHostsEventsAreIgnored() throws {
     let (model, _, host, _) = try make()
+    model.watchTerminal(10)
     model.apply(.presence(host: host.reference, status: .offline))
     XCTAssertEqual(model.status, .offline)
     let stranger = RemoteHostRef(hostId: UUID(), hostGeneration: UUID())
@@ -156,6 +174,7 @@ final class HostWorkbenchModelTests: XCTestCase {
 
   func testStartNegotiatesAndSubscribesThenAppliesPushedEvents() async throws {
     let (model, transport, host, _) = try make()
+    model.watchTerminal(10)
     let started = Task { await model.start() }
     let channel = try await transport.channel()
     try await channel.answerNext(result: #"{"protocolVersion":1,"methods":[]}"#)

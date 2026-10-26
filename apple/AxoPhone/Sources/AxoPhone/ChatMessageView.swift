@@ -23,7 +23,7 @@ struct ChatMessageView: View {
       .frame(maxWidth: .infinity, alignment: .trailing)
     case .assistant:
       VStack(alignment: .leading, spacing: 16) {
-        ChatMarkdown(text: message.text)
+        ChatMarkdown(blocks: message.blocks)
         HStack(spacing: 18) {
           copyButton
           ShareLink(item: message.text) { Image(systemName: "square.and.arrow.up") }
@@ -35,7 +35,7 @@ struct ChatMessageView: View {
       }
       .frame(maxWidth: .infinity, alignment: .leading)
     case .thinking:
-      ChatMarkdown(text: message.text, isThinking: true)
+      ChatMarkdown(blocks: message.blocks, isThinking: true)
         .frame(maxWidth: .infinity, alignment: .leading)
         .accessibilityIdentifier("thinkingBlock")
     case .tool:
@@ -55,13 +55,13 @@ struct ChatMessageView: View {
 /// A reply, drawn where its look changes: prose, headings, bullets and code. Inline formatting
 /// (bold, links, `code`) comes from the text view. Remote images are never fetched.
 struct ChatMarkdown: View {
-  let text: String
+  let blocks: [MarkdownBlock]
   var isThinking = false
   @ScaledMetric(relativeTo: .body) private var bodySize = 18.0
 
   var body: some View {
     VStack(alignment: .leading, spacing: 14) {
-      ForEach(Array(MarkdownBlocks.parse(text).enumerated()), id: \.offset) { _, block in
+      ForEach(Array(blocks.enumerated()), id: \.offset) { _, block in
         switch block {
         case .paragraph(let text):
           inline(text)

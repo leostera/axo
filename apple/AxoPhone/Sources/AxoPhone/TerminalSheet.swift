@@ -51,6 +51,8 @@ struct TerminalSheet: View {
         .padding(12)
       }
       .background(ChatColors.background)
+      .onAppear { if let shell = model.focusedShell { model.watchTerminal(shell) } }
+      .onDisappear { if let shell = model.focusedShell { model.stopWatchingTerminal(shell) } }
       .navigationTitle("Terminal")
       .navigationBarTitleDisplayMode(.inline)
       .toolbar {

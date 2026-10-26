@@ -53,6 +53,8 @@ public struct ChatMessage: Identifiable, Equatable, Sendable {
   public let id: String
   public let role: Role
   public let text: String
+  /// Prose roles, parsed once here and not each time the screen redraws.
+  public let blocks: [MarkdownBlock]
   /// When it happened, in milliseconds since 1970, as Pi recorded it.
   public let timestamp: Int64?
   public fileprivate(set) var tool: ToolActivity?
@@ -95,6 +97,7 @@ public struct ChatTranscript: Equatable, Sendable {
         messages.append(
           ChatMessage(
             id: index == 0 ? id : "\(id)#\(index)", role: piece.role, text: piece.text,
+            blocks: piece.role == .assistant || piece.role == .thinking ? MarkdownBlocks.parse(piece.text) : [],
             timestamp: timestamp, tool: tool))
       }
     default: break

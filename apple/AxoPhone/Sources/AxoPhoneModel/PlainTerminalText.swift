@@ -121,7 +121,14 @@ public struct PlainTerminalText: Equatable, Sendable {
   private mutating func newLine() {
     lines.append("")
     column = 0
+    lineLength = 0
+    total += 1
   }
+
+  /// Characters in the current line, so appending never has to count them.
+  private var lineLength = 0
+  /// Characters in all lines plus one newline each, kept as lines change.
+  private var total = 1
 
   /// Where the next character lands in the current line; a carriage return moves it to 0.
   private var column = 0
@@ -135,19 +142,22 @@ public struct PlainTerminalText: Equatable, Sendable {
   }
 
   private mutating func write(character: Character) {
-    var line = Array(lines[lines.count - 1])
-    if column < line.count {
-      line[column] = character
+    if column >= lineLength {
+      // The usual case: text goes on the end of the line.
+      lines[lines.count - 1].append(character)
+      lineLength += 1
+      total += 1
     } else {
-      line.append(character)
+      // A rewritten line (carriage return, backspace): replace in place.
+      var line = Array(lines[lines.count - 1])
+      line[column] = character
+      lines[lines.count - 1] = String(line)
     }
     column += 1
-    lines[lines.count - 1] = String(line)
   }
 
   /// Drops the oldest lines once the text is longer than allowed.
   private mutating func trim() {
-    var total = lines.reduce(0) { $0 + $1.count + 1 }
     while total > maximumCharacters, lines.count > 1 {
       total -= lines.removeFirst().count + 1
     }

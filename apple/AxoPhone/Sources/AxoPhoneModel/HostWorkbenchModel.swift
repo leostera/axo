@@ -52,6 +52,7 @@ public final class HostWorkbenchModel {
   private var eventTask: Task<Void, Never>?
   private var nextInput: [ShellID: UInt64] = [:]
   private var lastOutput: [ShellID: UInt64] = [:]
+  private var watchedShells: Set<ShellID> = []
 
   public init(host: RemoteHost, connection: HostConnection, history: any PiHistoryLoading, account: AccountSession) {
     hostLabel = host.label
@@ -119,13 +120,18 @@ public final class HostWorkbenchModel {
     case .sessionRemoved(_, let id):
       let removedShells = sessions.first { $0.sessionId == id }?.shells.map(\.shellId) ?? []
       sessions.removeAll { $0.sessionId == id }
-      for shell in removedShells { forget(shell) }
+      for shell in removedShells {
+        watchedShells.remove(shell)
+        forget(shell)
+      }
       chats[id] = nil
       historyStates[id] = nil
       if selectedSessionID == id { selectedSessionID = sessions.first?.sessionId }
     case .shellActivity:
       break
     case .terminalOutput(_, _, let shell, let sequence, let data):
+      // Output is read only for a terminal someone is looking at; the rest is not worth the work.
+      guard watchedShells.contains(shell) else { return }
       // The relay may repeat a frame after a resync; text is only ever appended once.
       if let last = lastOutput[shell], sequence <= last { return }
       lastOutput[shell] = sequence
@@ -178,6 +184,17 @@ public final class HostWorkbenchModel {
     guard let stored = storedHistory[id] else { return }
     chats[id, default: ChatTranscript()].merge(history: stored.records)
     historyStates[id] = .loaded(events: stored.records.count, hasOlder: stored.olderCursor != nil)
+  }
+
+  /// Starts reading a terminal's output, from now; it stays unread until someone looks at it.
+  public func watchTerminal(_ shell: ShellID) {
+    watchedShells.insert(shell)
+  }
+
+  /// Stops reading a terminal's output and forgets what was read.
+  public func stopWatchingTerminal(_ shell: ShellID) {
+    watchedShells.remove(shell)
+    forget(shell)
   }
 
   private func forget(_ shell: ShellID) {
