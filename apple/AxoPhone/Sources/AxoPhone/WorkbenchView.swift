@@ -12,8 +12,10 @@ private enum MenuLayout {
   static let contentTrailing: CGFloat = 24
   static let rowInset: CGFloat = 10
   static let rowTextInset: CGFloat = 22
-  static let rowHeight: CGFloat = 44
-  static let selectedRowVerticalInset: CGFloat = 3
+  /// Compact: a long list of chats should fit without scrolling much.
+  static let rowHeight: CGFloat = 34
+  static let selectedRowVerticalInset: CGFloat = 1
+  static let sectionTopSpacing: CGFloat = 14
   static let controlSize: CGFloat = 44
 }
 
@@ -185,50 +187,58 @@ struct WorkbenchView: View {
   private var sidebar: some View {
     VStack(spacing: 0) {
       menuHeader
-      List {
-        if case .failed(let message) = workbench.hosts.phase {
-          Text(message).font(.caption).foregroundStyle(.orange)
-        }
-        ForEach(sections) { section in
-          Section {
+      // A plain stack rather than a List: List's section headers and row minimums are far
+      // taller than a menu of chat names needs.
+      ScrollView {
+        LazyVStack(alignment: .leading, spacing: 0) {
+          if case .failed(let message) = workbench.hosts.phase {
+            Text(message).font(.caption).foregroundStyle(.orange)
+              .padding(.horizontal, MenuLayout.rowInset + MenuLayout.rowTextInset)
+          }
+          ForEach(sections) { section in
+            Text(section.title)
+              .font(.footnote.weight(.semibold))
+              .foregroundStyle(.secondary)
+              .lineLimit(1)
+              .padding(.leading, MenuLayout.rowInset + MenuLayout.rowTextInset)
+              .padding(.trailing, MenuLayout.rowInset)
+              .padding(.top, section.id == sections.first?.id ? 4 : MenuLayout.sectionTopSpacing)
+              .padding(.bottom, 2)
+              .accessibilityAddTraits(.isHeader)
             ForEach(section.sessions, id: \.session.sessionId) { entry in
               Button {
                 workbench.select(host: entry.host.hostId, session: entry.session.sessionId)
                 preferredCompactColumn = .detail
                 closeMenu()
               } label: {
-                SessionRow(name: entry.session.displayName, isSelected: isSelected(entry))
+                SessionRow(
+                  workbench: workbench,
+                  selection: PhoneWorkbench.Selection(host: entry.host.hostId, session: entry.session.sessionId),
+                  name: entry.session.displayName)
                   .frame(maxWidth: .infinity, alignment: .leading)
                   .contentShape(Rectangle())
               }
               .buttonStyle(.plain)
-              .listRowInsets(EdgeInsets(top: 0, leading: MenuLayout.rowInset, bottom: 0, trailing: MenuLayout.rowInset))
-              .listRowBackground(Color.clear)
-              .listRowSeparator(.hidden)
+              .padding(.horizontal, MenuLayout.rowInset)
             }
-          } header: {
-            Text(section.title)
-              .font(.subheadline.weight(.semibold))
-              .foregroundStyle(.primary)
-              .textCase(nil)
-              .padding(.leading, 16)
+          }
+          if sections.isEmpty {
+            if workbench.hosts.hosts.isEmpty, workbench.hosts.phase == .loaded {
+              ContentUnavailableView(
+                "No Macs yet", systemImage: "laptopcomputer",
+                description: Text("On a Mac, open Axo → Settings → Remote Access and link it with a pairing code."))
+            } else {
+              Text(workbench.hosts.phase == .loading ? "Loading chats…" : "Your chats will appear here.")
+                .font(.subheadline)
+                .foregroundStyle(.secondary)
+                .padding(.horizontal, MenuLayout.rowInset + MenuLayout.rowTextInset)
+            }
           }
         }
-        if sections.isEmpty {
-          if workbench.hosts.hosts.isEmpty, workbench.hosts.phase == .loaded {
-            ContentUnavailableView(
-              "No Macs yet", systemImage: "laptopcomputer",
-              description: Text("On a Mac, open Axo → Settings → Remote Access and link it with a pairing code."))
-          } else {
-            Text(workbench.hosts.phase == .loading ? "Loading chats…" : "Your chats will appear here.")
-              .font(.subheadline)
-              .foregroundStyle(.secondary)
-          }
-        }
+        .padding(.top, 8)
+        .padding(.bottom, 12)
       }
-      .listStyle(.plain)
-      .environment(\.defaultMinListRowHeight, 1)
-      .scrollContentBackground(.hidden)
+      .scrollIndicators(.hidden)
       .background(ChatColors.background)
       .refreshable { await workbench.refresh() }
       .accessibilityIdentifier("workbench-menu")
@@ -268,10 +278,6 @@ struct WorkbenchView: View {
       }
     }
     return order.map { MenuSection(id: $0, title: grouped[$0]!.title, sessions: grouped[$0]!.sessions) }
-  }
-
-  private func isSelected(_ entry: Entry) -> Bool {
-    workbench.selection == PhoneWorkbench.Selection(host: entry.host.hostId, session: entry.session.sessionId)
   }
 
   private var menuHeader: some View {
@@ -406,20 +412,26 @@ struct WorkbenchView: View {
 
 /// A chat in the menu: its name, with a filled row behind the open one.
 private struct SessionRow: View {
+  let workbench: PhoneWorkbench
+  let selection: PhoneWorkbench.Selection
   let name: String
-  let isSelected: Bool
+
+  // Read here, in the row's own body, so the row redraws when the open chat changes: a lazy
+  // stack does not re-run its rows for a change only the menu's body saw.
+  private var isSelected: Bool { workbench.selection == selection }
 
   var body: some View {
     Text(name)
-      .font(.body)
+      .font(.callout)
       .lineLimit(1)
       .padding(.horizontal, MenuLayout.rowTextInset)
       .frame(maxWidth: .infinity, alignment: .leading)
       .frame(height: MenuLayout.rowHeight)
       .background {
         if isSelected {
-          RoundedRectangle(cornerRadius: 15, style: .continuous)
-            .fill(Color(uiColor: .tertiarySystemBackground))
+          // A tint of the text colour, so it shows on the light menu as well as the dark one.
+          RoundedRectangle(cornerRadius: 10, style: .continuous)
+            .fill(Color.primary.opacity(0.08))
             .padding(.vertical, MenuLayout.selectedRowVerticalInset)
         }
       }
