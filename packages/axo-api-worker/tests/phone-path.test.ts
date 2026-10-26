@@ -1,9 +1,10 @@
 import assert from "node:assert/strict";
 import { spawn, type ChildProcess } from "node:child_process";
 import { existsSync } from "node:fs";
-import { chmod, mkdir, mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
+import { mkdir, mkdtemp, readFile, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
-import { join, resolve } from "node:path";
+import { dirname, join, resolve } from "node:path";
+import { fileURLToPath } from "node:url";
 import { test } from "node:test";
 import { type HostEvent } from "@axo/app";
 import { harness, signInNative } from "./harness";
@@ -30,10 +31,10 @@ test("a phone signed in with a token starts a chat on the Mac and prompts its Pi
   const serverDirectory = join(root, "server");
   const socketPath = join(root, "axod.sock");
   const typedIntoPi = join(root, "pi-typed.log");
-  const pi = join(root, "pi");
+  // Like Pi, it takes a prompt only once it has started and bound its bridge; what it is typed
+  // before then is logged as ignored.
+  const pi = join(dirname(fileURLToPath(import.meta.url)), "fake-pi.mjs");
   await mkdir(serverDirectory, { recursive: true, mode: 0o700 });
-  await writeFile(pi, `#!/bin/sh\nexec /bin/cat >> ${typedIntoPi}\n`);
-  await chmod(pi, 0o700);
 
   let daemon: ChildProcess | undefined;
   let client: Awaited<ReturnType<ReturnType<typeof accountApi>["connectHost"]>> | undefined;
@@ -43,7 +44,7 @@ test("a phone signed in with a token starts a chat on the Mac and prompts its Pi
       "--socket", socketPath,
       "--relay-url", api.url,
       "--host-credentials", "files",
-    ], { stdio: "ignore", env: { ...process.env, HOME: root, AXO_PI_EXECUTABLE: pi } });
+    ], { stdio: "ignore", env: { ...process.env, HOME: root, AXO_PI_EXECUTABLE: pi, AXO_FAKE_PI_LOG: typedIntoPi } });
     await waitFor("the axod socket", 15_000, async () => (existsSync(socketPath) ? true : undefined), daemon);
 
     // The phone's sign-in: PKCE through the system browser, then a bearer token.
@@ -86,7 +87,8 @@ test("a phone signed in with a token starts a chat on the Mac and prompts its Pi
       (await phoneApi.listHostSessions(target)).some((candidate) => candidate.sessionId === session.sessionId) ? true : undefined,
       daemon);
 
-    // Say something to its Pi. It arrives as one bracketed paste and a submit.
+    // Say something to its Pi at once, while it is still starting, as a chat's first message
+    // does. It waits for Pi and then arrives as one bracketed paste and a submit.
     const accepted = await client.call("axo.remote.session.prompt", {
       target, sessionId: session.sessionId, text: "please run the tests",
     });

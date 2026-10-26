@@ -344,6 +344,10 @@ impl SessionManager {
         if changed {
             self.publish_session_snapshot(session_id)?;
         }
+        if connected {
+            // Pi has finished starting: it can take what was sent to it meanwhile.
+            self.flush_queued_pi_prompts(session_id)?;
+        }
         Ok(())
     }
 

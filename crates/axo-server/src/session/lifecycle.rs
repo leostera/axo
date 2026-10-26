@@ -124,6 +124,7 @@ pub(super) fn close_session(
 
     archive_session(&mut state.database, id, "explicit_close")?;
     state.pi_activity.remove(&id);
+    state.queued_pi_prompts.remove(&id);
     let shells = remove_session_shells(state, id);
     Ok((replacement, shells))
 }
@@ -539,6 +540,8 @@ impl SessionManager {
             });
             if exited.is_some() {
                 state.pi_activity.remove(session_id);
+                // A prompt for the Pi that exited is not typed into whatever replaces it.
+                state.queued_pi_prompts.remove(session_id);
                 changed_sessions.insert(*session_id);
             }
         }
@@ -562,6 +565,7 @@ impl SessionManager {
                 if removed_sessions.insert(*session_id) {
                     archive_session(&mut state.database, *session_id, "shell_exited")?;
                     state.pi_activity.remove(session_id);
+                    state.queued_pi_prompts.remove(session_id);
                 }
             } else {
                 changed_sessions.insert(*session_id);

@@ -110,6 +110,8 @@ struct SessionState {
     panes: Panes<RunningShell>,
     shutting_down: bool,
     pi_activity: HashMap<SessionId, axo_pi::Activity>,
+    /// Prompts for a Pi that is still starting, typed once its bridge binds; see `prompt_pi`.
+    queued_pi_prompts: HashMap<SessionId, Vec<String>>,
     initial_pwd: PathBuf,
     /// Every shell's output is published here once it enters the catalog.
     events: EventBus,
@@ -164,6 +166,7 @@ impl SessionManager {
                 panes: Panes::default(),
                 shutting_down: false,
                 pi_activity: HashMap::new(),
+                queued_pi_prompts: HashMap::new(),
                 initial_pwd,
                 events: subscribers.clone(),
                 viewport,

@@ -10,7 +10,7 @@ use std::sync::{Arc, Weak};
 use std::thread;
 use std::time::{Duration, Instant};
 
-use super::SessionManager;
+use super::{SessionManager, SessionState};
 use axo_panes::RuntimeId;
 use axo_protocol::rpc;
 use axo_protocol::{GridSize, PaneRole, SessionId, ShellActivity, ShellId};
@@ -19,6 +19,8 @@ use axo_pty::{NextOutput, OutputSubscriber, TerminalOutput, WindowSize, attach};
 
 /// Most prompt text one remote prompt carries.
 const MAX_PI_PROMPT_BYTES: usize = 16_000;
+/// Prompts that may wait for one starting Pi; more is a client sending blind.
+const MAX_QUEUED_PI_PROMPTS: usize = 8;
 
 const ATTACH_STOP_POLL_INTERVAL: Duration = Duration::from_millis(100);
 
@@ -403,6 +405,12 @@ impl SessionManager {
     /// paste, so newlines and control characters in it stay text instead of acting as keys; only
     /// the final carriage return submits. This does not use the pane's input sequence: that
     /// belongs to the one client typing into the pane.
+    /// Types `text` into the Session's Pi as one bracketed paste and a submit.
+    ///
+    /// Pi ignores a submit until its startup has finished ("Startup is still in progress"): the
+    /// words stay in its editor and nothing is sent. Its bridge binds only after that point, so a
+    /// prompt for a Pi whose bridge has not bound yet waits here and is typed by
+    /// `flush_queued_pi_prompts` when it does. This is what a chat's first message meets.
     pub(super) fn prompt_pi(&self, session_id: SessionId, text: &str) -> io::Result<()> {
         if text.trim().is_empty() || text.len() > MAX_PI_PROMPT_BYTES {
             return Err(io::Error::new(
@@ -421,16 +429,47 @@ impl SessionManager {
                 _ => None,
             })
             .ok_or_else(|| io::Error::new(io::ErrorKind::NotFound, "Pi is not running"))?;
-        let running = state
-            .panes
-            .running_in_mut(session_id, pi_shell)
-            .ok_or_else(|| io::Error::new(io::ErrorKind::NotFound, "Pi is not running"))?;
-        let input = format!("\u{1b}[200~{text}\u{1b}[201~\r");
-        process::write_all(
-            running.master.as_raw_fd(),
-            input.as_bytes(),
-            TERMINAL_INPUT_WRITE_TIMEOUT,
-        )
+        let ready = state.pi_activity.get(&session_id).is_some_and(|activity| activity.connected);
+        if !ready {
+            let queue = state.queued_pi_prompts.entry(session_id).or_default();
+            if queue.len() >= MAX_QUEUED_PI_PROMPTS {
+                return Err(io::Error::new(
+                    io::ErrorKind::WouldBlock,
+                    "Pi is still starting and already has prompts waiting",
+                ));
+            }
+            log::info!(
+                "event=session.pi_prompt_queued session_id={} queued={}",
+                session_id.get(),
+                queue.len() + 1
+            );
+            queue.push(text);
+            return Ok(());
+        }
+        type_pi_prompt(&mut state, session_id, pi_shell, &text)
+    }
+
+    /// Types the prompts that waited for the Session's Pi to finish starting, oldest first.
+    pub(super) fn flush_queued_pi_prompts(&self, session_id: SessionId) -> io::Result<()> {
+        let mut state = self.lock_state()?;
+        let Some(queue) = state.queued_pi_prompts.remove(&session_id) else {
+            return Ok(());
+        };
+        let Some(pi_shell) = state.panes.in_session(session_id).find_map(|(id, pane)| match pane {
+            axo_panes::Pane::Running(shell) if shell.role == PaneRole::Pi => Some(id),
+            _ => None,
+        }) else {
+            return Ok(());
+        };
+        log::info!(
+            "event=session.pi_prompts_flushed session_id={} count={}",
+            session_id.get(),
+            queue.len()
+        );
+        for text in &queue {
+            type_pi_prompt(&mut state, session_id, pi_shell, text)?;
+        }
+        Ok(())
     }
 
     pub(super) fn resize_terminal(
@@ -528,6 +567,24 @@ impl SessionManager {
         };
         self.publish_shell_activity(session_id, id, ShellActivity::Detached);
     }
+}
+
+fn type_pi_prompt(
+    state: &mut SessionState,
+    session_id: SessionId,
+    pi_shell: ShellId,
+    text: &str,
+) -> io::Result<()> {
+    let running = state
+        .panes
+        .running_in_mut(session_id, pi_shell)
+        .ok_or_else(|| io::Error::new(io::ErrorKind::NotFound, "Pi is not running"))?;
+    let input = format!("\u{1b}[200~{text}\u{1b}[201~\r");
+    process::write_all(
+        running.master.as_raw_fd(),
+        input.as_bytes(),
+        TERMINAL_INPUT_WRITE_TIMEOUT,
+    )
 }
 
 #[cfg(test)]
@@ -654,6 +711,15 @@ mod tests {
             assert_eq!(error.kind(), io::ErrorKind::InvalidInput);
         }
         manager.prompt_pi(session.id, "fix the build\nthen run tests\u{1b}[201~evil").unwrap();
+        // Pi is still starting (its bridge has not bound): the prompt waits instead of being
+        // typed into an editor that ignores Enter.
+        thread::sleep(Duration::from_millis(300));
+        assert_eq!(std::fs::read_to_string(&log).unwrap_or_default(), "");
+        assert_eq!(manager.lock_state().unwrap().queued_pi_prompts[&session.id].len(), 1);
+
+        manager.lock_state().unwrap().pi_activity.entry(session.id).or_default().connected = true;
+        manager.flush_queued_pi_prompts(session.id).unwrap();
+        assert!(!manager.lock_state().unwrap().queued_pi_prompts.contains_key(&session.id));
 
         let deadline = Instant::now() + Duration::from_secs(15);
         let typed = loop {
@@ -666,6 +732,18 @@ mod tests {
         // One paste around the whole text, a stray escape removed from inside it, then Enter
         // (the terminal turns it into a newline for `cat`).
         assert_eq!(typed, "\u{1b}[200~fix the build\nthen run tests[201~evil\u{1b}[201~\n");
+
+        // Once Pi is up, a prompt is typed at once, after the ones that waited.
+        manager.prompt_pi(session.id, "and again").unwrap();
+        let deadline = Instant::now() + Duration::from_secs(15);
+        let typed = loop {
+            let typed = std::fs::read_to_string(&log).unwrap_or_default();
+            if typed.contains("again") || Instant::now() > deadline {
+                break typed;
+            }
+            thread::sleep(Duration::from_millis(50));
+        };
+        assert!(typed.ends_with("\u{1b}[200~and again\u{1b}[201~\n"), "{typed:?}");
         let _ = std::fs::remove_dir_all(&directory);
     }
 }

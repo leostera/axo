@@ -7,9 +7,10 @@
 import assert from "node:assert/strict";
 import { spawn } from "node:child_process";
 import { existsSync } from "node:fs";
-import { chmod, mkdir, mkdtemp, rm, writeFile } from "node:fs/promises";
+import { mkdir, mkdtemp, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
-import { join, resolve } from "node:path";
+import { dirname, join, resolve } from "node:path";
+import { fileURLToPath } from "node:url";
 import { harness, signInNative } from "../tests/harness";
 import { accountApi, localCall, terminate, waitFor } from "../tests/axod-support";
 
@@ -23,15 +24,14 @@ const root = await mkdtemp(join(tmpdir(), "axo-stack-"));
 const serverDirectory = join(root, "server");
 const socketPath = join(root, "axod.sock");
 const piLog = join(root, "pi-typed.log");
-const pi = join(root, "pi");
+// A Pi that, like Pi, only takes a prompt once it has started and bound its bridge.
+const pi = join(dirname(fileURLToPath(import.meta.url)), "../tests/fake-pi.mjs");
 await mkdir(serverDirectory, { recursive: true, mode: 0o700 });
-await writeFile(pi, `#!/bin/sh\nexec /bin/cat >> ${piLog}\n`);
-await chmod(pi, 0o700);
 
 const daemon = spawn(axodBinary, [
   "--server-dir", serverDirectory, "--socket", socketPath,
   "--relay-url", api.url, "--host-credentials", "files",
-], { stdio: "ignore", env: { ...process.env, HOME: root, AXO_PI_EXECUTABLE: pi } });
+], { stdio: "ignore", env: { ...process.env, HOME: root, AXO_PI_EXECUTABLE: pi, AXO_FAKE_PI_LOG: piLog } });
 
 async function shutdown() {
   await terminate(daemon);
