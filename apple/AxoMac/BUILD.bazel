@@ -16,6 +16,7 @@ AXO_MAC_DEPS = [
     "//apple/AxoDaemonManager:AxoDaemonManager",
     "//apple/AxoProtocol",
     "//apple/AxoClient:AxoClient",
+    "//apple/AxoMascot",
     "//apple/AxoSearch:AxoSearch",
     "@ghostty//:GhosttyKit",
 ]
@@ -36,7 +37,7 @@ swift_library(
     module_name = "AxoMascotRive",
     srcs = glob(["Sources/AxoMascotRive/*.swift"]),
     copts = ["-swift-version", "5"],
-    deps = [":AxoMac", "@swiftpkg_rive_ios//:RiveRuntime"],
+    deps = [":AxoMac", "//apple/AxoMascot", "@swiftpkg_rive_ios//:RiveRuntime"],
 )
 
 # The shipped app's @main entry: production launch only.

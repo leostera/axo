@@ -1,6 +1,6 @@
 import XCTest
 
-@testable import AxoPhoneModel
+@testable import AxoMascot
 
 final class MascotPokesTests: XCTestCase {
   private let start = Date(timeIntervalSinceReferenceDate: 0)

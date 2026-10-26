@@ -4,6 +4,8 @@ import SwiftUI
 
 struct AboutSettingsView: View {
   var daemon: DaemonController
+  @State private var pointer: CGPoint?
+  @State private var paneSize: CGSize = .zero
 
   private var appVersion: String {
     Bundle.main.infoDictionary?["CFBundleShortVersionString"] as? String ?? "Unknown"
@@ -38,11 +40,7 @@ struct AboutSettingsView: View {
     VStack(spacing: 14) {
       Spacer(minLength: 0)
 
-      Image(nsImage: NSApplication.shared.applicationIconImage)
-        .resizable()
-        .scaledToFit()
-        .frame(width: 96, height: 96)
-        .accessibilityHidden(true)
+      AboutMascotView(pointer: pointer, paneSize: paneSize)
 
       VStack(spacing: 6) {
         Text("Axo")
@@ -75,6 +73,11 @@ struct AboutSettingsView: View {
       Spacer(minLength: 0)
     }
     .frame(maxWidth: .infinity, maxHeight: .infinity)
+    .coordinateSpace(name: AboutMascotView.space)
+    .onContinuousHover(coordinateSpace: .named(AboutMascotView.space)) { phase in
+      if case .active(let location) = phase { pointer = location } else { pointer = nil }
+    }
+    .onGeometryChange(for: CGSize.self) { $0.size } action: { paneSize = $0 }
   }
 
   private func aboutRow(_ title: String, _ value: String) -> some View {

@@ -39,6 +39,7 @@ swift_library(
     deps = [
         ":AxoPhoneModel",
         "//apple/AxoClient",
+        "//apple/AxoMascot",
         "//apple/AxoProtocol",
         "@swiftpkg_rive_ios//:RiveRuntime",
     ],

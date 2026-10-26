@@ -1,4 +1,4 @@
-import AxoPhoneModel
+import AxoMascot
 import RiveRuntime
 import SwiftUI
 

@@ -1,5 +1,7 @@
 import AppKit
+import AxoMascot
 import Observation
+import SwiftUI
 
 /// Plays one artboard of the mascot and returns each frame as an image.
 @MainActor
@@ -13,6 +15,19 @@ public protocol MascotFrameSource: AnyObject {
 @MainActor
 public protocol MascotAnimation {
   func makeFrameSource(artboard: String, pixelSize: CGSize) async throws -> any MascotFrameSource
+  /// A live Axo for a window, or nil if the animation cannot load.
+  func makePuppet() -> (any MascotPuppet)?
+}
+
+/// A live Axo in a window (the `Face` artboard): it looks around and blinks on its own, and this
+/// tells it where to look and how to react.
+@MainActor
+public protocol MascotPuppet: AnyObject {
+  var view: AnyView { get }
+  /// From -100 (left, up) to 100 (right, down).
+  func look(x: Double, y: Double)
+  func stopLooking()
+  func react(_ reaction: MascotReaction)
 }
 
 /// The animated Axo axolotl in the menu bar and the Dock.

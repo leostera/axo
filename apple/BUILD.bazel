@@ -22,6 +22,7 @@ xcodeproj(
         "//apple/AxoClient:AxoClientTests",
         "//apple/AxoClient:AxoClientDaemonInteropTests",
         "//apple/AxoSearch:AxoSearchTests",
+        "//apple/AxoMascot:AxoMascotTests",
         "//apple/AxoDaemonManager:AxoDaemonManagerTests",
         "//apple/AxoMac:AxoMacTests",
         "//apple/AxoMac:TerminalWorkbenchE2ETests",
