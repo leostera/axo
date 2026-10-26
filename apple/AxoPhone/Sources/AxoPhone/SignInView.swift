@@ -11,11 +11,16 @@ struct SignInView: View {
   @Environment(\.webAuthenticationSession) private var webAuthenticationSession
   @State private var working = false
   @State private var message: String?
+  @State private var screen: CGSize = .zero
+  @StateObject private var mascot = Mascot()
+
+  /// Long enough for the hands to come down before the app takes over.
+  private static let uncoverPause: Duration = .milliseconds(650)
 
   var body: some View {
     VStack(spacing: 20) {
       Spacer()
-      AxoMascotView()
+      AxoMascotView(mascot: mascot)
         .frame(height: 96)
       Text("Axo").font(.largeTitle.bold())
       Text("Reach your Macs from anywhere.")
@@ -43,6 +48,14 @@ struct SignInView: View {
         .multilineTextAlignment(.center)
     }
     .padding(24)
+    .contentShape(Rectangle())
+    // A finger held anywhere on the screen: Axo watches it.
+    .simultaneousGesture(
+      DragGesture(minimumDistance: 0, coordinateSpace: .global)
+        .onChanged { mascot.look(at: $0.location, screen: screen) }
+        .onEnded { _ in mascot.stopLooking() }
+    )
+    .onGeometryChange(for: CGSize.self) { $0.size } action: { screen = $0 }
   }
 
   private func signIn() async {
@@ -51,10 +64,16 @@ struct SignInView: View {
     defer { working = false }
     let flow = NativeSignIn(endpoint: endpoint)
     let attempt = flow.begin()
+    // No peeking while you sign in.
+    mascot.stopLooking()
+    mascot.cover(true)
+    defer { mascot.cover(false) }
     do {
       let callback = try await webAuthenticationSession.authenticate(
         using: attempt.url, callbackURLScheme: NativeSignIn.callbackScheme)
       let session = try await flow.complete(attempt, callback: callback)
+      mascot.cover(false)
+      try? await Task.sleep(for: Self.uncoverPause)
       account.signIn(with: session.token)
     } catch ASWebAuthenticationSessionError.canceledLogin {
       // The person closed the sheet; nothing to report.

@@ -112,9 +112,8 @@ struct ChatEmptyState: View {
 
   var body: some View {
     VStack(spacing: 18) {
-      Image(systemName: "sparkle").font(.system(size: 32, weight: .light))
-        .frame(width: 68, height: 68).background(ChatColors.surface, in: Circle())
-        .accessibilityHidden(true)
+      OwnMascotView()
+        .frame(height: 72)
       Text("What are we working on?").font(.title2.weight(.semibold))
       Text(message).font(.body).foregroundStyle(.secondary)
     }
