@@ -8,7 +8,6 @@ struct ConversationView: View {
   let session: RemoteSession?
   let showSidebar: () -> Void
   @State private var draft = ""
-  @State private var showingTerminal = false
   @State private var isNearBottom = true
   /// The message at the top of the screen; holding it keeps the view still when older pages arrive above.
   @State private var scrollAnchor: String?
@@ -22,9 +21,6 @@ struct ConversationView: View {
       .background(ChatColors.background)
       .safeAreaInset(edge: .top, spacing: 0) { header }
       .safeAreaInset(edge: .bottom, spacing: 0) { bottomBar }
-      .sheet(isPresented: $showingTerminal) {
-        if let workbench { TerminalSheet(model: workbench) }
-      }
   }
 
   private var conversation: some View {
@@ -51,8 +47,8 @@ struct ConversationView: View {
       .scrollPosition(id: $scrollAnchor, anchor: .top)
       .defaultScrollAnchor(.bottom, for: .initialOffset)
       .onScrollGeometryChange(for: Bool.self) { geometry in
-        let bottom = max(0, geometry.contentSize.height + geometry.contentInsets.bottom - geometry.containerSize.height)
-        return geometry.contentOffset.y + geometry.contentInsets.top >= bottom - 60
+        // What is on screen reaches (nearly) the end of the content.
+        geometry.visibleRect.maxY >= geometry.contentSize.height - 60
       } action: { _, nearBottom in
         isNearBottom = nearBottom
       }
@@ -123,22 +119,32 @@ struct ConversationView: View {
         }
         .accessibilityLabel("Sessions menu")
         Spacer(minLength: 0)
-        if session?.shells.isEmpty == false {
-          Button { showingTerminal = true } label: {
-            Image(systemName: "terminal")
-              .font(.system(size: 17, weight: .medium))
-              .frame(width: 44, height: 44)
-              .background(.ultraThinMaterial, in: Circle())
-              .overlay(Circle().stroke(ChatColors.border, lineWidth: 0.5))
-          }
-          .accessibilityLabel("Terminal")
-        }
       }
     }
     .buttonStyle(.plain)
     .foregroundStyle(.primary)
     .padding(.horizontal, 14).padding(.bottom, 10)
     .background(ChatColors.background)
+  }
+
+  /// Pi can be prompted when its Mac is online and the Session has one.
+  private var canPrompt: Bool {
+    workbench?.status == .online && session?.hasAgent != false && session != nil
+  }
+
+  private var composerPlaceholder: String {
+    guard let workbench, session != nil else { return "Pick a chat" }
+    if workbench.status != .online { return "\(workbench.hostLabel) is offline" }
+    return session?.hasAgent == false ? "This session has no Pi" : "Message Pi"
+  }
+
+  private func sendPrompt() {
+    guard canPrompt, let workbench else { return }
+    let text = draft
+    Task {
+      // The words stay in the box until the Mac has them, so a refusal loses nothing.
+      if await workbench.sendPrompt(text), draft == text { draft = "" }
+    }
   }
 
   private var bottomBar: some View {
@@ -159,8 +165,8 @@ struct ConversationView: View {
         .accessibilityLabel("Jump to latest")
       }
       ChatComposer(
-        draft: $draft, placeholder: "Read-only for now",
-        canSend: false, send: {})
+        draft: $draft, placeholder: composerPlaceholder,
+        canSend: canPrompt, send: sendPrompt)
     }
     .padding(.bottom, 8)
     .background(ChatColors.background)

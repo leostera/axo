@@ -224,20 +224,20 @@ struct WorkbenchView: View {
     HStack(spacing: 16) {
       Button {
         Task {
-          await workbench.current?.createSession()
-          closeMenu()
+          // Stay in the menu when the Mac refuses, where the reason is shown.
+          if await workbench.startChat() { closeMenu() }
         }
       } label: {
-        Label("Session", systemImage: "square.and.pencil")
+        Label("Chat", systemImage: "square.and.pencil")
           .font(.headline)
           .frame(minHeight: MenuLayout.controlSize)
           .padding(.horizontal, 11)
           .background(Color.primary, in: Capsule())
           .foregroundStyle(ChatColors.background)
       }
-      .disabled(workbench.current?.status != .online)
-      .opacity(workbench.current?.status == .online ? 1 : 0.4)
-      .accessibilityLabel("New session")
+      .disabled(workbench.newChatHost == nil)
+      .opacity(workbench.newChatHost == nil ? 0.4 : 1)
+      .accessibilityLabel("New chat")
 
       Spacer(minLength: 0)
 
@@ -255,6 +255,17 @@ struct WorkbenchView: View {
     .padding(.trailing, MenuLayout.contentTrailing)
     .padding(.top, 10)
     .background(ChatColors.background)
+    .overlay(alignment: .top) { menuFailure }
+  }
+
+  /// Why a chat could not be started or a Mac could not be reached, where the menu's own buttons are.
+  @ViewBuilder private var menuFailure: some View {
+    if let failure = workbench.current?.failure {
+      Text(failure)
+        .font(.caption).foregroundStyle(.orange)
+        .padding(.horizontal, MenuLayout.contentLeading)
+        .offset(y: -22)
+    }
   }
 
   private func showMenu() {

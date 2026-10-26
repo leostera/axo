@@ -10,8 +10,8 @@ public protocol PiHistoryLoading: Sendable {
 
 extension AccountClient: PiHistoryLoading {}
 
-/// One host opened on the phone: its Sessions, whether it is online, and the live text of its
-/// terminals. Everything comes from the relay's snapshots and events; nothing is stored here.
+/// One host opened on the phone: its Sessions, whether it is online, and what Pi says in each.
+/// Everything comes from the relay's snapshots and events; nothing is stored here.
 @MainActor
 @Observable
 public final class HostWorkbenchModel {
@@ -19,7 +19,6 @@ public final class HostWorkbenchModel {
   public let reference: RemoteHostRef
   public private(set) var status: RemoteHostStatus
   public private(set) var sessions: [RemoteSession]
-  public private(set) var transcripts: [ShellID: PlainTerminalText] = [:]
   /// What each Session's agent has said, from stored history plus what has happened since.
   public private(set) var chats: [SessionID: ChatTranscript] = [:]
   public private(set) var historyStates: [SessionID: HistoryState] = [:]
@@ -50,9 +49,6 @@ public final class HostWorkbenchModel {
   private let history: any PiHistoryLoading
   private let account: AccountSession
   private var eventTask: Task<Void, Never>?
-  private var nextInput: [ShellID: UInt64] = [:]
-  private var lastOutput: [ShellID: UInt64] = [:]
-  private var watchedShells: Set<ShellID> = []
 
   public init(host: RemoteHost, connection: HostConnection, history: any PiHistoryLoading, account: AccountSession) {
     hostLabel = host.label
@@ -72,9 +68,6 @@ public final class HostWorkbenchModel {
 
   /// Whether the model is connected and following the host's events.
   public var isFollowing: Bool { eventTask != nil }
-
-  /// The terminal that gets typing: the Session's first.
-  public var focusedShell: ShellID? { selectedSession?.shells.first?.shellId }
 
   /// Connects, subscribes, and keeps applying the host's events until `stop()`.
   public func start() async {
@@ -118,24 +111,13 @@ public final class HostWorkbenchModel {
       }
       if selectedSessionID == nil { selectedSessionID = session.sessionId }
     case .sessionRemoved(_, let id):
-      let removedShells = sessions.first { $0.sessionId == id }?.shells.map(\.shellId) ?? []
       sessions.removeAll { $0.sessionId == id }
-      for shell in removedShells {
-        watchedShells.remove(shell)
-        forget(shell)
-      }
       chats[id] = nil
       historyStates[id] = nil
       if selectedSessionID == id { selectedSessionID = sessions.first?.sessionId }
-    case .shellActivity:
+    case .shellActivity, .terminalOutput:
+      // The phone follows Pi, not terminals.
       break
-    case .terminalOutput(_, _, let shell, let sequence, let data):
-      // Output is read only for a terminal someone is looking at; the rest is not worth the work.
-      guard watchedShells.contains(shell) else { return }
-      // The relay may repeat a frame after a resync; text is only ever appended once.
-      if let last = lastOutput[shell], sequence <= last { return }
-      lastOutput[shell] = sequence
-      transcripts[shell, default: PlainTerminalText()].append(data)
     case .piEvent(_, let id, let record):
       chats[id, default: ChatTranscript()].apply(record)
     }
@@ -186,23 +168,6 @@ public final class HostWorkbenchModel {
     historyStates[id] = .loaded(events: stored.records.count, hasOlder: stored.olderCursor != nil)
   }
 
-  /// Starts reading a terminal's output, from now; it stays unread until someone looks at it.
-  public func watchTerminal(_ shell: ShellID) {
-    watchedShells.insert(shell)
-  }
-
-  /// Stops reading a terminal's output and forgets what was read.
-  public func stopWatchingTerminal(_ shell: ShellID) {
-    watchedShells.remove(shell)
-    forget(shell)
-  }
-
-  private func forget(_ shell: ShellID) {
-    transcripts[shell] = nil
-    nextInput[shell] = nil
-    lastOutput[shell] = nil
-  }
-
   // MARK: - Actions
 
   public func createSession() async {
@@ -225,14 +190,17 @@ public final class HostWorkbenchModel {
     await attempt { try await connection.renameSession(id, to: name) }
   }
 
-  /// Types `text` into the focused terminal.
-  public func send(_ text: String) async {
-    guard let session = selectedSession, let shell = focusedShell, !text.isEmpty else { return }
-    let sequence = nextInput[shell, default: 0]
-    nextInput[shell] = sequence + 1
+  /// Sends a prompt to the selected Session's Pi. Pi's own `message.end` brings it back into the
+  /// conversation, so nothing is added here. Returns whether the host accepted it.
+  public func sendPrompt(_ text: String) async -> Bool {
+    let prompt = text.trimmingCharacters(in: .whitespacesAndNewlines)
+    guard let session = selectedSession, !prompt.isEmpty else { return false }
+    var accepted = false
     await attempt {
-      try await connection.sendInput(Data(text.utf8), to: shell, in: session.sessionId, sequence: sequence)
+      try await connection.promptPi(in: session.sessionId, text: prompt)
+      accepted = true
     }
+    return accepted
   }
 
   private func attempt(_ work: () async throws -> Void) async {

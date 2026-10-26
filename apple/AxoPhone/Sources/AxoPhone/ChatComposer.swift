@@ -1,7 +1,7 @@
 import SwiftUI
 
-/// The message box. Typing into Pi from the phone is not wired up yet, so it says so and stays
-/// closed rather than pretending.
+/// The message box for talking to Pi. It stays closed, saying why in its placeholder, when there is
+/// nobody to send to.
 struct ChatComposer: View {
   @Binding var draft: String
   let placeholder: String

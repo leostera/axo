@@ -27,14 +27,6 @@ final class HostWorkbenchModelTests: XCTestCase {
     return (model, transport, remote, account)
   }
 
-  private func output(_ host: RemoteHost, session: Int = 1, shell: Int = 10, sequence: UInt64, _ text: String)
-    -> RemoteHostEvent
-  {
-    .terminalOutput(
-      host: host.reference, sessionID: SessionID(rawValue: Int64(session)),
-      shellID: ShellID(rawValue: Int64(shell)), sequence: sequence, data: Data(text.utf8))
-  }
-
   private func stored(_ id: Int64, _ sequence: UInt64, role: String, _ text: String, stream: UUID) -> StoredPiEvent {
     try! JSONDecoder().decode(StoredPiEvent.self, from: Data("""
       {"id":\(id),"streamId":"\(stream.uuidString)","sequence":\(sequence),"name":"message.end",
@@ -109,32 +101,6 @@ final class HostWorkbenchModelTests: XCTestCase {
     let (model, _, _, _) = try make(sessions: [(2, "Two", [20]), (1, "One", [10])])
     XCTAssertEqual(model.sessions.map(\.sessionId), [1, 2])
     XCTAssertEqual(model.selectedSessionID, 1)
-    XCTAssertEqual(model.focusedShell, 10)
-  }
-
-  func testOutputAccumulatesPerTerminalAndARepeatedFrameIsAppendedOnce() throws {
-    let (model, _, host, _) = try make()
-    model.watchTerminal(10)
-    model.watchTerminal(99)
-    model.apply(output(host, sequence: 0, "hel"))
-    model.apply(output(host, sequence: 1, "lo\r\n"))
-    model.apply(output(host, sequence: 1, "lo\r\n"))
-    model.apply(output(host, shell: 99, sequence: 0, "other"))
-    XCTAssertEqual(model.transcripts[10]?.text, "hello\n")
-    XCTAssertEqual(model.transcripts[99]?.text, "other")
-  }
-
-  func testOutputOfATerminalNobodyIsLookingAtIsNotReadAndIsForgottenWhenLookingStops() throws {
-    let (model, _, host, _) = try make()
-    model.apply(output(host, sequence: 0, "unseen"))
-    XCTAssertNil(model.transcripts[10], "nothing is kept for a terminal nobody watches")
-    model.watchTerminal(10)
-    model.apply(output(host, sequence: 1, "seen"))
-    XCTAssertEqual(model.transcripts[10]?.text, "seen")
-    model.stopWatchingTerminal(10)
-    XCTAssertNil(model.transcripts[10])
-    model.apply(output(host, sequence: 2, "again unseen"))
-    XCTAssertNil(model.transcripts[10])
   }
 
   func testSnapshotsUpdateAddAndRemoveSessionsAndMoveTheSelection() throws {
@@ -149,32 +115,24 @@ final class HostWorkbenchModelTests: XCTestCase {
       RemoteSession.self,
       from: Data(sessionJSON(host: host.hostId, id: 2, name: "Two", shells: [20]).utf8))
     model.apply(.sessionSnapshot(host: host.reference, session: added))
-    model.watchTerminal(10)
-    model.apply(output(host, session: 1, shell: 10, sequence: 0, "x"))
-    XCTAssertNotNil(model.transcripts[10])
     model.apply(.sessionRemoved(host: host.reference, sessionID: 1))
     XCTAssertEqual(model.sessions.map(\.sessionId), [2])
     XCTAssertEqual(model.selectedSessionID, 2, "the selection moves off a removed Session")
-    XCTAssertNil(model.transcripts[10], "a removed Session's terminals are forgotten")
   }
 
   func testPresenceUpdatesTheStatusAndAnotherHostsEventsAreIgnored() throws {
     let (model, _, host, _) = try make()
-    model.watchTerminal(10)
     model.apply(.presence(host: host.reference, status: .offline))
     XCTAssertEqual(model.status, .offline)
     let stranger = RemoteHostRef(hostId: UUID(), hostGeneration: UUID())
     model.apply(.presence(host: stranger, status: .online))
-    model.apply(
-      .terminalOutput(
-        host: stranger, sessionID: 1, shellID: 10, sequence: 0, data: Data("evil".utf8)))
+    model.apply(.piEvent(host: stranger, sessionID: 1, event: PiEventRecord(streamId: UUID(), sequence: 1, name: "agent.start", data: .null)))
     XCTAssertEqual(model.status, .offline)
-    XCTAssertNil(model.transcripts[10])
+    XCTAssertNil(model.chats[1], "another host's events are not ours")
   }
 
   func testStartNegotiatesAndSubscribesThenAppliesPushedEvents() async throws {
     let (model, transport, host, _) = try make()
-    model.watchTerminal(10)
     let started = Task { await model.start() }
     let channel = try await transport.channel()
     try await channel.answerNext(result: #"{"protocolVersion":1,"methods":[]}"#)
@@ -182,39 +140,45 @@ final class HostWorkbenchModelTests: XCTestCase {
     await started.value
     XCTAssertNil(model.failure)
     channel.push(
-      #"{"jsonrpc":"2.0","method":"axo.host.event","params":{"subscriptionId":"\#(UUID().uuidString)","event":{"type":"host.data","hostId":"\#(host.hostId.uuidString)","hostGeneration":"\#(host.hostGeneration.uuidString)","event":{"type":"terminal.output","sessionId":1,"shellId":10,"sequence":0,"data":"aGkK"}}}}"#
+      #"{"jsonrpc":"2.0","method":"axo.host.event","params":{"subscriptionId":"\#(UUID().uuidString)","event":{"type":"host.data","hostId":"\#(host.hostId.uuidString)","hostGeneration":"\#(host.hostGeneration.uuidString)","event":{"type":"pi.event","sessionId":1,"piSessionId":"pi-1","streamId":"\#(UUID().uuidString)","sequence":1,"name":"agent.start","data":null}}}}"#
     )
-    try await eventually { model.transcripts[10]?.text == "hi\n" }
+    try await eventually { model.chats[1]?.activity == .working }
     model.stop()
   }
 
-  func testTypingGoesToTheFocusedTerminalWithRisingSequenceNumbers() async throws {
-    let (model, transport, _, _) = try make()
-    let first = Task { await model.send("ls\n") }
+  func testAPromptGoesToTheSelectedSessionsPiAndIsAcceptedOnlyWhenTheHostSaysSo() async throws {
+    let (model, transport, _, _) = try make(sessions: [(4, "Four", [40])])
+    let sending = Task { await model.sendPrompt("  run the tests \n") }
     let channel = try await transport.channel()
-    var sent = try await channel.nextRequest()
-    XCTAssertEqual(sent.method, "axo.remote.terminal.input")
-    XCTAssertEqual(sent.params["sequence"] as? Int, 0)
-    XCTAssertEqual(sent.params["shellId"] as? Int, 10)
-    XCTAssertEqual(sent.params["data"] as? String, "bHMK")
-    channel.reply(to: sent.id, result: #"{"accepted":true,"sequence":0}"#)
-    await first.value
-
-    let second = Task { await model.send("x") }
-    sent = try await channel.nextRequest()
-    XCTAssertEqual(sent.params["sequence"] as? Int, 1)
-    channel.reply(to: sent.id, result: #"{"accepted":true,"sequence":1}"#)
-    await second.value
+    let sent = try await channel.nextRequest()
+    XCTAssertEqual(sent.method, "axo.remote.session.prompt")
+    XCTAssertEqual(sent.params["sessionId"] as? Int, 4)
+    XCTAssertEqual(sent.params["text"] as? String, "run the tests", "trimmed, nothing else changed")
+    channel.reply(to: sent.id, result: #"{"accepted":true}"#)
+    let accepted = await sending.value
+    XCTAssertTrue(accepted)
     XCTAssertNil(model.failure)
+    XCTAssertNil(model.chats[4], "Pi's own message brings the prompt back; nothing is invented here")
+  }
+
+  func testARefusedPromptIsNotAccepted() async throws {
+    let (model, transport, _, _) = try make()
+    let sending = Task { await model.sendPrompt("hello") }
+    let channel = try await transport.channel()
+    let sent = try await channel.nextRequest()
+    channel.reply(to: sent.id, error: -32004, message: "Resource not found")
+    let accepted = await sending.value
+    XCTAssertFalse(accepted)
+    XCTAssertEqual(model.failure, "axod rejected the request (-32004): Resource not found")
   }
 
   func testAStaleHostIsReportedButIsNotAnAccessProblem() async throws {
     let (model, transport, _, account) = try make()
-    let typing = Task { await model.send("x") }
+    let typing = Task { await model.sendPrompt("x") }
     let channel = try await transport.channel()
     let sent = try await channel.nextRequest()
     channel.reply(to: sent.id, error: -32002, message: "Stale host")
-    await typing.value
+    _ = await typing.value
     XCTAssertEqual(model.failure, "axod rejected the request (-32002): Stale host")
     XCTAssertEqual(account.state, .signedIn, "a stale host is not a sign-in problem")
   }
@@ -227,14 +191,18 @@ final class HostWorkbenchModelTests: XCTestCase {
       host: remote,
       connection: HostConnection(transport: RefusingTransport(), host: remote.reference),
       history: NoHistory(), account: account)
-    await model.send("x")
+    _ = await model.sendPrompt("x")
     XCTAssertEqual(account.state, .signedOut)
     XCTAssertEqual(model.failure, "Sign in to continue.")
   }
 
-  func testNothingIsSentWithoutATerminalOrText() async throws {
-    let (model, transport, _, _) = try make(sessions: [(1, "Empty", [])])
-    await model.send("x")
+  func testNothingIsSentWithoutTextOrASession() async throws {
+    let (model, transport, _, _) = try make()
+    let blank = await model.sendPrompt("  \n ")
+    XCTAssertFalse(blank)
+    let (empty, _, _, _) = try make(sessions: [])
+    let nowhere = await empty.sendPrompt("hello")
+    XCTAssertFalse(nowhere)
     XCTAssertEqual(transport.connects, 0)
   }
 

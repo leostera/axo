@@ -69,6 +69,29 @@ public final class PhoneWorkbench {
     }
   }
 
+  /// The Mac a new chat goes to: the open one if it is online, else the first Mac that is.
+  public var newChatHost: RemoteHost? {
+    if let current, current.status == .online,
+      let open = hosts.hosts.first(where: { $0.hostId == current.reference.hostId })
+    {
+      return open
+    }
+    return hosts.hosts.first { $0.status == .online }
+  }
+
+  /// Starts a chat (a new Session with its own Pi) on `newChatHost` and opens it. Returns whether
+  /// it did; a refusal is in `current?.failure`.
+  @discardableResult
+  public func startChat() async -> Bool {
+    guard let host = newChatHost else { return false }
+    if current?.reference.hostId != host.hostId { select(host: host.hostId, session: nil) }
+    guard let workbench = current else { return false }
+    await workbench.createSession()
+    guard workbench.failure == nil, let id = workbench.selectedSessionID else { return false }
+    select(session: id)
+    return true
+  }
+
   /// Opens one of the open Mac's Sessions.
   public func select(session: SessionID) {
     guard let host = selection?.host else { return }
