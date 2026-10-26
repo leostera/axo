@@ -10,10 +10,13 @@ import Foundation
 ///   wedged connection is replaced, while calls already in flight on it still complete. A retired
 ///   connection closes once its last call has ended.
 /// - At most one connect is in progress; concurrent first calls share it.
+/// - A connection's handshake (if any) runs on each new connection before any other call can use
+///   it, and a connection whose handshake fails is closed, never used.
 /// - Ids are unique across connections, so a late reply can only match its own call, which
 ///   has already ended, and is dropped.
 public actor JSONRPCConnection {
   private let transport: any AxoTransport
+  private let handshake: Handshake?
   private var current: Link?
   private var connecting: Task<Link, Error>?
   private var nextID = 1
@@ -26,8 +29,25 @@ public actor JSONRPCConnection {
   /// connection this object opens. Never finishes on its own.
   public nonisolated let notifications: AsyncStream<JSONRPCNotification>
 
-  public init(transport: any AxoTransport) {
+  /// What a host needs said on every new connection before anything else, such as agreeing on a
+  /// protocol version. `LinkCaller` calls go on that connection only.
+  public typealias Handshake = @Sendable (LinkCaller) async throws -> Void
+
+  /// Calls on one particular connection, for a handshake.
+  public struct LinkCaller: Sendable {
+    fileprivate let connection: JSONRPCConnection
+    fileprivate let link: Link
+
+    public func call<Params: Encodable & Sendable, Result: Decodable & Sendable>(
+      _ method: String, params: Params, timeout: Duration
+    ) async throws -> Result {
+      try await connection.perform(method, params: params, timeout: timeout, on: link)
+    }
+  }
+
+  public init(transport: any AxoTransport, handshake: Handshake? = nil) {
     self.transport = transport
+    self.handshake = handshake
     (notifications, notificationSink) = AsyncStream.makeStream(
       bufferingPolicy: .bufferingNewest(1024))
   }
@@ -40,6 +60,12 @@ public actor JSONRPCConnection {
   ) async throws -> Result {
     try Task.checkCancellation()
     let link = try await openLink()
+    return try await perform(method, params: params, timeout: timeout, on: link)
+  }
+
+  private func perform<Params: Encodable & Sendable, Result: Decodable & Sendable>(
+    _ method: String, params: Params, timeout: Duration, on link: Link
+  ) async throws -> Result {
     let id = nextID
     nextID += 1
     let request = try encoder.encode(JSONRPCRequest(id: id, method: method, params: params))
@@ -69,7 +95,7 @@ public actor JSONRPCConnection {
 
   // MARK: - Connections
 
-  private final class Link {
+  fileprivate final class Link: @unchecked Sendable {
     let channel: any AxoMessageChannel
     var inFlight = 0
     var isRetired = false
@@ -90,7 +116,7 @@ public actor JSONRPCConnection {
     if let connecting { return try await connecting.value }
     let task = Task { [transport] in
       let channel = try await transport.connect()
-      return self.adopt(channel)
+      return try await self.start(channel)
     }
     connecting = task
     defer {
@@ -99,10 +125,23 @@ public actor JSONRPCConnection {
     return try await task.value
   }
 
+  /// Starts reading a new connection, runs the handshake on it, and only then makes it current.
+  private func start(_ channel: any AxoMessageChannel) async throws -> Link {
+    let link = adopt(channel)
+    if let handshake {
+      do {
+        try await handshake(LinkCaller(connection: self, link: link))
+      } catch {
+        linkEnded(link)
+        throw error
+      }
+    }
+    current = link
+    return link
+  }
+
   private func adopt(_ channel: any AxoMessageChannel) -> Link {
     let link = Link(channel: channel)
-    current = link
-    connecting = nil
     Task { [weak self] in
       for await message in channel.messages {
         await self?.receive(message)

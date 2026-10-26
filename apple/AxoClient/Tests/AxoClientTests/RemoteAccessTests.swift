@@ -306,7 +306,7 @@ final class HostConnectionTests: XCTestCase {
   private let host = RemoteHostRef(hostId: UUID(), hostGeneration: UUID())
 
   func testCallsNameTheHostAndTheRunOfIt() async throws {
-    let transport = FakeTransport()
+    let transport = FakeTransport(negotiates: true)
     let connection = HostConnection(transport: transport, host: host)
     async let created = connection.createSession()
     let channel = try await transport.channel(0)
@@ -325,7 +325,7 @@ final class HostConnectionTests: XCTestCase {
   }
 
   func testIdentitiesAreSentLowercaseBecauseTheRelayComparesThemAsText() async throws {
-    let transport = FakeTransport()
+    let transport = FakeTransport(negotiates: true)
     let upper = RemoteHostRef(
       hostId: UUID(uuidString: "ABCDEF00-95FD-4C93-8586-A71A8A52BF73")!,
       hostGeneration: UUID(uuidString: "C3B6DA28-55C0-4BB0-AC04-DD458FD41A2B")!)
@@ -342,12 +342,12 @@ final class HostConnectionTests: XCTestCase {
     async let created = connection.createSession(inWorkspace: UUID(uuidString: "7F1918D3-8B6D-4AF4-A57E-7E6AE28E89E2")!)
     let second = String(decoding: try await channel.rawRequests(count: 2)[1], as: UTF8.self)
     XCTAssertTrue(second.contains("7f1918d3-8b6d-4af4-a57e-7e6ae28e89e2"), second)
-    channel.send(raw: #"{"jsonrpc":"2.0","id":2,"error":{"code":-32602,"message":"stop here"}}"#)
+    channel.send(raw: #"{"jsonrpc":"2.0","id":3,"error":{"code":-32602,"message":"stop here"}}"#)
     _ = try? await created
   }
 
   func testASessionCreatedOnAnotherHostIsRefused() async throws {
-    let transport = FakeTransport()
+    let transport = FakeTransport(negotiates: true)
     let connection = HostConnection(transport: transport, host: host)
     async let created = connection.createSession()
     let channel = try await transport.channel(0)
@@ -364,8 +364,72 @@ final class HostConnectionTests: XCTestCase {
     }
   }
 
-  func testAPromptNamesTheSessionAndMustBeAccepted() async throws {
+  /// The method and id of each request sent so far, without caring what its params look like.
+  private func sentCalls(_ channel: FakeChannel, count: Int) async throws -> [(method: String, id: Int)] {
+    try await channel.rawRequests(count: count).map { raw in
+      let object = try XCTUnwrap(JSONSerialization.jsonObject(with: raw) as? [String: Any])
+      return (try XCTUnwrap(object["method"] as? String), try XCTUnwrap(object["id"] as? Int))
+    }
+  }
+
+  func testEveryNewConnectionAgreesOnTheProtocolBeforeTheFirstCall() async throws {
+    // The relay refuses calls on a connection that has not negotiated ("Negotiate first").
     let transport = FakeTransport()
+    let connection = HostConnection(transport: transport, host: host)
+    async let sent: Void = connection.promptPi(in: 3, text: "hello")
+    let channel = try await transport.channel(0)
+    let handshake = try await sentCalls(channel, count: 1)
+    XCTAssertEqual(handshake.map(\.method), ["axo.protocol.negotiate"], "nothing else goes first")
+    try await Task.sleep(for: .milliseconds(100))
+    XCTAssertEqual(channel.sentCount, 1, "the call waits for the handshake")
+    channel.reply(to: handshake[0].id, result: #"{"protocolVersion":1,"methods":[]}"#)
+    let calls = try await sentCalls(channel, count: 2)
+    XCTAssertEqual(calls.map(\.method), ["axo.protocol.negotiate", "axo.remote.session.prompt"])
+    channel.reply(to: calls[1].id, result: #"{"accepted":true}"#)
+    try await sent
+  }
+
+  func testAReplacementConnectionNegotiatesAndSubscribesAgainBeforeItsFirstCall() async throws {
+    let transport = FakeTransport(negotiates: true)
+    let connection = HostConnection(transport: transport, host: host)
+    async let subscribed: Void = connection.subscribe()
+    let first = try await transport.channel(0)
+    first.reply(to: try await first.firstRequestID(), result: #"{"subscriptionId":"\#(UUID().uuidString)"}"#)
+    try await subscribed
+
+    first.endFromPeer()  // the socket drops
+    try await Task.sleep(for: .milliseconds(50))
+    async let sent: Void = connection.promptPi(in: 3, text: "hello")
+    let second = try await transport.channel(1)
+    // The relay agreed (answered by the double), and the new connection asks for events again
+    // before the prompt may go.
+    let resubscribe = try await sentCalls(second, count: 1)
+    XCTAssertEqual(resubscribe.map(\.method), ["axo.host.subscribe"])
+    second.reply(to: resubscribe[0].id, result: #"{"subscriptionId":"\#(UUID().uuidString)"}"#)
+    let calls = try await sentCalls(second, count: 2)
+    XCTAssertEqual(calls.map(\.method), ["axo.host.subscribe", "axo.remote.session.prompt"])
+    second.reply(to: calls[1].id, result: #"{"accepted":true}"#)
+    try await sent
+  }
+
+  func testAConnectionWhoseHandshakeIsRefusedIsClosedAndTheCallFails() async throws {
+    let transport = FakeTransport()
+    let connection = HostConnection(transport: transport, host: host)
+    async let sent: Void = connection.promptPi(in: 3, text: "hello")
+    let channel = try await transport.channel(0)
+    channel.send(raw: #"{"jsonrpc":"2.0","id":\#(try await channel.firstRequestID()),"error":{"code":-32001,"message":"no thanks"}}"#)
+    do {
+      try await sent
+      XCTFail("a refused handshake must fail the call")
+    } catch {
+      guard case .serverRejected(let code, _) = error as? AxoClientError else { return XCTFail("\(error)") }
+      XCTAssertEqual(code, -32001)
+    }
+    XCTAssertTrue(channel.isClosed)
+  }
+
+  func testAPromptNamesTheSessionAndMustBeAccepted() async throws {
+    let transport = FakeTransport(negotiates: true)
     let connection = HostConnection(transport: transport, host: host)
     async let sent: Void = connection.promptPi(in: 3, text: "run the tests")
     let channel = try await transport.channel(0)
@@ -386,7 +450,7 @@ final class HostConnectionTests: XCTestCase {
   }
 
   func testInputIsBase64AndItsAcknowledgementMustMatch() async throws {
-    let transport = FakeTransport()
+    let transport = FakeTransport(negotiates: true)
     let connection = HostConnection(transport: transport, host: host)
     async let sent: Void = connection.sendInput(Data("ls\n".utf8), to: 4, in: 3, sequence: 9)
     let channel = try await transport.channel(0)
@@ -406,7 +470,7 @@ final class HostConnectionTests: XCTestCase {
   }
 
   func testEventsForThisHostArriveAndOthersAreDropped() async throws {
-    let transport = FakeTransport()
+    let transport = FakeTransport(negotiates: true)
     let connection = HostConnection(transport: transport, host: host)
     async let subscribed: Void = connection.subscribe()
     let channel = try await transport.channel(0)

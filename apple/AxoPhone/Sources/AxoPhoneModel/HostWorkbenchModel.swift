@@ -73,7 +73,6 @@ public final class HostWorkbenchModel {
   public func start() async {
     guard eventTask == nil else { return }
     do {
-      _ = try await connection.negotiate()
       try await connection.subscribe()
     } catch {
       fail(error)

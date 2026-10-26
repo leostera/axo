@@ -13,10 +13,33 @@ public final class HostConnection: Sendable {
 
   private let rpc: JSONRPCConnection
   private let relayTask: Task<Void, Never>
+  private let wantsEvents = EventsWanted()
+
+  /// Whether `subscribe()` has been asked for, so a replacement connection asks again.
+  private final class EventsWanted: @unchecked Sendable {
+    private let lock = NSLock()
+    private var wanted = false
+    var value: Bool {
+      get { lock.withLock { wanted } }
+      set { lock.withLock { wanted = newValue } }
+    }
+  }
 
   public init(transport: any AxoTransport, host: RemoteHostRef) {
     self.host = host
-    let rpc = JSONRPCConnection(transport: transport)
+    let wantsEvents = wantsEvents
+    // The relay keeps what was agreed per connection. A connection opened after the first (the
+    // last one dropped or wedged) must agree again and, if events were wanted, ask for them
+    // again; otherwise its first call is refused with "Negotiate first".
+    let rpc = JSONRPCConnection(transport: transport) { connection in
+      let _: ProtocolNegotiation = try await connection.call(
+        "axo.protocol.negotiate",
+        params: ProtocolNegotiationRequest(protocolVersion: ProtocolNegotiation.supportedVersion),
+        timeout: .seconds(10))
+      if wantsEvents.value {
+        let _: Subscription = try await connection.call("axo.host.subscribe", params: host, timeout: .seconds(10))
+      }
+    }
     self.rpc = rpc
     let (events, sink) = AsyncStream<RemoteHostEvent>.makeStream(bufferingPolicy: .bufferingNewest(4096))
     self.events = events
@@ -47,6 +70,8 @@ public final class HostConnection: Sendable {
 
   // MARK: - Session
 
+  /// Agrees on a protocol version, which the connection already did on opening. Reports what the
+  /// host answered.
   public func negotiate() async throws -> ProtocolNegotiation {
     try await call(
       "axo.protocol.negotiate",
@@ -56,6 +81,7 @@ public final class HostConnection: Sendable {
   /// Starts the host's events: Session snapshots and removals, terminal output, presence.
   public func subscribe() async throws {
     let _: Subscription = try await call("axo.host.subscribe", host)
+    wantsEvents.value = true
   }
 
   // MARK: - Workspaces and Sessions

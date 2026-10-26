@@ -135,7 +135,6 @@ final class HostWorkbenchModelTests: XCTestCase {
     let (model, transport, host, _) = try make()
     let started = Task { await model.start() }
     let channel = try await transport.channel()
-    try await channel.answerNext(result: #"{"protocolVersion":1,"methods":[]}"#)
     try await channel.answerNext(result: #"{"subscriptionId":"\#(UUID().uuidString)"}"#)
     await started.value
     XCTAssertNil(model.failure)
@@ -257,7 +256,19 @@ final class ScriptedChannel: AxoMessageChannel, @unchecked Sendable {
 
   init() { (messages, continuation) = AsyncStream<Data>.makeStream() }
 
-  func send(_ message: Data) async throws { lock.withLock { sent.append(message) } }
+  /// Like the relay, agrees to a protocol version on its own; the connection does so on every new socket.
+  func send(_ message: Data) async throws {
+    let negotiation = lock.withLock { () -> Int? in
+      if let object = try? JSONSerialization.jsonObject(with: message) as? [String: Any],
+        object["method"] as? String == "axo.protocol.negotiate"
+      {
+        return object["id"] as? Int
+      }
+      sent.append(message)
+      return nil
+    }
+    if let negotiation { reply(to: negotiation, result: #"{"protocolVersion":1,"methods":[]}"#) }
+  }
   func close() { continuation.finish() }
 
   func push(_ raw: String) { continuation.yield(Data(raw.utf8)) }

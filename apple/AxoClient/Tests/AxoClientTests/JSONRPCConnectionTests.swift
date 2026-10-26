@@ -280,9 +280,13 @@ final class FakeTransport: AxoTransport, @unchecked Sendable {
   private var failuresLeft: Int
   private let connectDelay: Duration
 
-  init(connectDelay: Duration = .zero, failingConnects: Int = 0) {
+  /// Whether channels agree to a protocol version themselves, as a relay does on every connection.
+  private let negotiates: Bool
+
+  init(connectDelay: Duration = .zero, failingConnects: Int = 0, negotiates: Bool = false) {
     self.connectDelay = connectDelay
     failuresLeft = failingConnects
+    self.negotiates = negotiates
   }
 
   var connectCount: Int { lock.withLock { connects } }
@@ -296,6 +300,7 @@ final class FakeTransport: AxoTransport, @unchecked Sendable {
         throw AxoClientError.connectionFailed("refused")
       }
       let channel = FakeChannel()
+      channel.answersNegotiation = negotiates
       channels.append(channel)
       return channel
     }
@@ -327,13 +332,25 @@ final class FakeChannel: AxoMessageChannel, @unchecked Sendable {
     (messages, continuation) = AsyncStream<Data>.makeStream()
   }
 
+  /// Answers `axo.protocol.negotiate` itself and does not count it among the requests sent.
+  var answersNegotiation = false
+
   var isClosed: Bool { lock.withLock { closed } }
+  var sentCount: Int { lock.withLock { sent.count } }
 
   func send(_ message: Data) async throws {
-    try lock.withLock {
+    let handshake = try lock.withLock { () -> Int? in
       guard !closed, !sendsFail else { throw AxoClientError.connectionClosed }
+      if answersNegotiation,
+        let object = try? JSONSerialization.jsonObject(with: message) as? [String: Any],
+        object["method"] as? String == "axo.protocol.negotiate"
+      {
+        return object["id"] as? Int
+      }
       sent.append(message)
+      return nil
     }
+    if let handshake { reply(to: handshake, result: #"{"protocolVersion":1,"methods":[]}"#) }
   }
 
   func close() {
