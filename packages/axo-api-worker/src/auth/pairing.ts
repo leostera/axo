@@ -4,11 +4,11 @@ import {
   hostPairingRedeemResultSchema,
 } from "@axo/protocol/v1";
 import { hmac } from "./crypto";
+import { attempt } from "./rate-limit";
 import { requireAccount, type AuthExports } from "./account-access";
-import type { AccessEnvironment } from "./access-identity";
+import type { AuthEnvironment } from "./config";
 
 const PAIRING_LIFETIME_MS = 10 * 60 * 1000;
-const RATE_WINDOW_MS = 60 * 1000;
 const MAX_ISSUANCE_PER_MINUTE = 20;
 const MAX_REDEMPTIONS_PER_MINUTE = 120;
 const MAX_REDEMPTIONS_PER_SOURCE_PER_MINUTE = 8;
@@ -16,7 +16,7 @@ const MAX_REDEMPTION_BODY_BYTES = 4_096;
 const CODE_ALPHABET = "0123456789ABCDEFGHJKMNPQRSTVWXYZ";
 const PAIRING_CHARSET_SIZE = 32;
 
-type PairingEnvironment = AccessEnvironment & { SESSION_SECRET?: string };
+type PairingEnvironment = AuthEnvironment;
 
 export async function createHostPairing(
   request: Request,
@@ -188,16 +188,8 @@ async function consumeLimit(
   now: number,
   maximum: number,
 ): Promise<boolean | "unavailable"> {
-  if (!exports.AxoPairingRateLimit) return "unavailable";
-  try {
-    return await exports.AxoPairingRateLimit.getByName(name).consume(
-      now,
-      RATE_WINDOW_MS,
-      maximum,
-    );
-  } catch {
-    return "unavailable";
-  }
+  const result = await attempt(exports, name, now, maximum);
+  return result === "unavailable" ? result : result === "allowed";
 }
 
 async function boundedRequestBody(request: Request): Promise<string | null> {

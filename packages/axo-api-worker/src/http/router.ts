@@ -2,7 +2,8 @@ import { Hono, type Context } from "hono";
 import { uuid } from "@axo/protocol";
 import { edgePrincipal, type Principal } from "../access";
 import { serveDiscovery } from "./rpc";
-import { authExports, currentAccount } from "../auth/account-access";
+import { authExports } from "../auth/account-access";
+import { completeLogin, currentAccount, exchangeLoginCode, logout, startLogin } from "../auth/login";
 import { serveMachines } from "./machines";
 import { authorizeHttpHostClient, serveHostSessions, serveHosts } from "./hosts";
 import { createHostPairing, redeemHostPairing } from "../auth/pairing";
@@ -61,8 +62,40 @@ async function authorizeCaller(_context: Context<Api>, role: "client" | "daemon"
   return edgePrincipal(role);
 }
 
+app.all("/api/auth/cloudflare/start", context =>
+  startLogin(
+    context.req.raw,
+    context.env,
+    authExports((context.executionCtx as ExecutionContext).exports),
+  ),
+);
+
+app.all("/api/auth/cloudflare/callback", context =>
+  completeLogin(
+    context.req.raw,
+    context.env,
+    authExports((context.executionCtx as ExecutionContext).exports),
+  ),
+);
+
+app.all("/api/auth/token", context =>
+  exchangeLoginCode(
+    context.req.raw,
+    context.env,
+    authExports((context.executionCtx as ExecutionContext).exports),
+  ),
+);
+
 app.all("/api/auth/me", context =>
   currentAccount(
+    context.req.raw,
+    context.env,
+    authExports((context.executionCtx as ExecutionContext).exports),
+  ),
+);
+
+app.all("/api/auth/logout", context =>
+  logout(
     context.req.raw,
     context.env,
     authExports((context.executionCtx as ExecutionContext).exports),

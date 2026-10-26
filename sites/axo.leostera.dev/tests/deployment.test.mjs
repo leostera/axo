@@ -58,7 +58,8 @@ test("single site serves landing/app assets and keeps account APIs fail-closed",
   const child = spawn(cf, ["dev"], {
     cwd: siteRoot,
     detached: true,
-    env: { ...process.env, PORT: String(port) },
+    // A developer's own .env must not decide what this test sees: sign-in starts unconfigured.
+    env: { ...process.env, PORT: String(port), OAUTH_CLIENT_ID: "", OAUTH_CLIENT_SECRET: "", SESSION_SECRET: "" },
     stdio: ["ignore", "pipe", "pipe"],
   });
   child.stdout.setEncoding("utf8").on("data", (chunk) => { logs += chunk; });
@@ -72,7 +73,7 @@ test("single site serves landing/app assets and keeps account APIs fail-closed",
     assert.match(await response.text(), /Axo — Your terminal, wherever you are/);
   }
 
-  // Without ACCESS_TEAM_DOMAIN and ACCESS_AUD, sign-in fails closed.
+  // Without an OAuth client and a session secret, sign-in fails closed.
   const session = await fetch(`${url}/api/auth/me`);
   assert.equal(session.status, 503);
   assert.equal(session.headers.get("Cache-Control"), "private, no-store");

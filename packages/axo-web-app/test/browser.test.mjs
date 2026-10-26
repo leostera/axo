@@ -167,11 +167,12 @@ test("browser discovers hosts, renders live PTY output, sends input, and uses Cm
       }, origin);
       return;
     }
-    if (request.method === "GET" && url.pathname === "/cdn-cgi/access/logout") {
-      // Stands in for Cloudflare Access ending its session and returning to the app.
+    if (request.method === "POST" && url.pathname === "/api/auth/logout") {
+      // The Worker forgetting this browser's sign-in.
       authenticated = false;
-      response.statusCode = 302;
-      response.setHeader("Location", `${appOrigin}/app`);
+      response.statusCode = 204;
+      response.setHeader("Access-Control-Allow-Origin", origin ?? "null");
+      response.setHeader("Access-Control-Allow-Credentials", "true");
       response.end();
       return;
     }
@@ -424,7 +425,7 @@ test("browser discovers hosts, renders live PTY output, sends input, and uses Cm
     await page.getByRole("link", { name: "Continue with Cloudflare" }).waitFor({ timeout: 10_000 });
     assert.equal(await page.getByRole("heading", { name: "Sign in to Axo" }).count(), 1);
     assert.ok((await page.getByRole("link", { name: "Continue with Cloudflare" }).getAttribute("href"))
-      .endsWith("/app"), "signing in reloads /app, which Cloudflare Access guards");
+      .endsWith("/api/auth/cloudflare/start"), "signing in starts the Worker's Cloudflare sign-in");
 
     authenticated = true;
     await page.reload({ waitUntil: "networkidle" });

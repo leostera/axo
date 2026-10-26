@@ -1,22 +1,29 @@
-import { parseAccessConfiguration, verifyAccessIdentity, type AccessEnvironment } from "./access-identity";
-import { sha256 } from "./crypto";
+import { APP_ORIGIN, parseAuthConfiguration, type AuthEnvironment } from "./config";
+import { cookieValue, parseSessionToken, sessionDigest, SESSION_COOKIE, type SessionKind } from "./session";
 
-/** The web app's origin. Browser requests that change state or open a relay must come from it. */
-export const APP_ORIGIN = "https://axo.leostera.dev";
+export { APP_ORIGIN };
 
 export type AccountProfile = { email: string | null; name: string | null };
 
-/** A request from a person Access verified, resolved to their Axo account. */
+/** A request from a signed-in person, resolved to their Axo account. */
 export type AccountCaller = {
   readonly accountId: string;
   readonly profile: AccountProfile;
-  /** When the Access assertion expires; relay connections end by then. */
+  /** When this sign-in ends; relay connections end by then. */
   readonly expiresAt: number;
+  /** Which credential carried the request: a browser's cookie or an app's bearer token. */
+  readonly via: "cookie" | "bearer";
+  /** The keyed hash identifying this sign-in, for revoking it. */
+  readonly sessionDigest: string;
 };
 
 type IdentityStub = { resolveAccount(): Promise<string> };
 type AccountStub = {
-  recordSignIn(accountId: string, profile: AccountProfile): Promise<void>;
+  establishSession(accountId: string, digest: string, kind: SessionKind, now: number, expiresAt: number, profile: AccountProfile): Promise<void>;
+  verifySession(digest: string, now: number): Promise<{ profile: AccountProfile; expiresAt: number } | null>;
+  revokeSession(digest: string): Promise<void>;
+  createLoginCode(accountId: string, digest: string, challenge: string, now: number, expiresAt: number, profile: AccountProfile): Promise<void>;
+  redeemLoginCode(digest: string, challenge: string, now: number): Promise<AccountProfile | null>;
   listHosts?(): Promise<unknown>;
   listHostSessions?(reference: unknown): Promise<unknown>;
   listPiEvents?(request: unknown): Promise<unknown>;
@@ -67,57 +74,45 @@ export function authExports(value: unknown): AuthExports {
   };
 }
 
-/**
- * Browsers attach cookies to cross-site requests, so a request that changes state or opens a
- * relay must prove it came from the app: browsers always send `Origin` on such requests, and
- * it must be the app's. Native clients send no `Origin`, and must then carry no cookies either,
- * so a cookie can never authorize a request whose origin is unknown.
- */
-export function isCrossSiteRequest(request: Request): boolean {
-  const origin = request.headers.get("Origin");
-  if (origin !== null) return origin !== APP_ORIGIN;
-  return request.headers.has("Cookie");
-}
-
 export type CallerRequirement = "read" | "change";
 
-/** The account behind a request, or the response that refuses it. */
+/**
+ * The account behind a request, or the response that refuses it.
+ *
+ * An app sends `Authorization: Bearer <token>`. A browser sends the session cookie, and browsers
+ * attach cookies to cross-site requests too, so a cookie-authenticated request that changes
+ * state or opens a relay must come from the app itself: browsers always send `Origin` on those,
+ * and it must be the app's. A bearer token is never sent by a browser on its own, so it needs
+ * no such check. If an `Authorization` header is present it alone decides: a bad one is refused,
+ * never quietly replaced by a cookie.
+ */
 export async function requireAccount(
   request: Request,
-  env: AccessEnvironment,
+  env: AuthEnvironment,
   exports: AuthExports,
   requirement: CallerRequirement,
 ): Promise<AccountCaller | Response> {
-  if (requirement === "change" && isCrossSiteRequest(request))
+  const configuration = parseAuthConfiguration(env);
+  if (!configuration || !exports.AxoAccountManager) return json({ error: "Sign-in is unavailable" }, 503);
+
+  const header = request.headers.get("Authorization");
+  const via = header !== null ? "bearer" : "cookie";
+  const text = header !== null
+    ? /^Bearer (\S+)$/.exec(header)?.[1] ?? null
+    : cookieValue(request.headers.get("Cookie"), SESSION_COOKIE);
+  const token = text === null ? null : parseSessionToken(text);
+  if (!token) return json({ error: "Sign in required" }, 401);
+  if (via === "cookie" && requirement === "change" && request.headers.get("Origin") !== APP_ORIGIN)
     return json({ error: "Origin not allowed" }, 403);
-  const configuration = parseAccessConfiguration(env);
-  if (!configuration || !exports.AxoIdentityIndex || !exports.AxoAccountManager)
-    return json({ error: "Sign-in is unavailable" }, 503);
-  const identity = await verifyAccessIdentity(request, configuration);
-  if (!identity) return json({ error: "Sign in required" }, 401);
+
   try {
-    // Accounts are keyed by the issuer-qualified subject, never by email.
-    const identityKey = await sha256(`${identity.issuer}\0${identity.subject}`);
-    const accountId = await exports.AxoIdentityIndex.getByName(identityKey).resolveAccount();
-    const profile = { email: identity.email, name: null };
-    await exports.AxoAccountManager.getByName(accountId).recordSignIn(accountId, profile);
-    return { accountId, profile, expiresAt: identity.expiresAt };
+    const digest = await sessionDigest(configuration.sessionSecret, token);
+    const session = await exports.AxoAccountManager.getByName(token.accountId).verifySession(digest, Date.now());
+    if (!session) return json({ error: "Sign in required" }, 401);
+    return { accountId: token.accountId, profile: session.profile, expiresAt: session.expiresAt, via, sessionDigest: digest };
   } catch {
     return json({ error: "Sign-in is unavailable" }, 503);
   }
-}
-
-/** `GET /api/auth/me`: who the app is signed in as. */
-export async function currentAccount(request: Request, env: AccessEnvironment, exports: AuthExports): Promise<Response> {
-  if (request.method !== "GET") return methodNotAllowed("GET");
-  const caller = await requireAccount(request, env, exports, "read");
-  if (caller instanceof Response) return caller;
-  return json({
-    authenticated: true,
-    accountId: caller.accountId,
-    profile: caller.profile,
-    expiresAt: new Date(caller.expiresAt).toISOString(),
-  });
 }
 
 function namespace<T>(
@@ -142,7 +137,8 @@ function isIdentityStub(value: unknown): value is IdentityStub {
 
 function isAccountStub(value: unknown): value is AccountStub {
   const record = asRecord(value);
-  return Boolean(record && typeof record.recordSignIn === "function");
+  return Boolean(record && typeof record.establishSession === "function" &&
+    typeof record.verifySession === "function" && typeof record.redeemLoginCode === "function");
 }
 
 function isPairingIndexStub(value: unknown): value is PairingIndexStub {
@@ -160,19 +156,14 @@ function asRecord(value: unknown): Record<string, unknown> | null {
     : null;
 }
 
-function json(body: unknown, status = 200): Response {
+export function json(body: unknown, status = 200, extraHeaders: Record<string, string> = {}): Response {
   return new Response(JSON.stringify(body), {
     status,
     headers: {
       "Cache-Control": "private, no-store",
       Pragma: "no-cache",
       "Content-Type": "application/json; charset=utf-8",
+      ...extraHeaders,
     },
   });
-}
-
-function methodNotAllowed(allow: string): Response {
-  const response = json({ error: "Method not allowed" }, 405);
-  response.headers.set("Allow", allow);
-  return response;
 }

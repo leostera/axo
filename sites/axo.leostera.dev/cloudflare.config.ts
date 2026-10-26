@@ -1,4 +1,4 @@
-import { defineConfig, exports } from "cf/config";
+import { bindings, defineConfig, exports } from "cf/config";
 import * as entrypoint from "./src/index.ts" with { type: "cf-worker" };
 
 export default defineConfig(({ isPreview }) => ({
@@ -20,6 +20,12 @@ export default defineConfig(({ isPreview }) => ({
       redactQueryString: true,
       logs: { enabled: true },
       traces: { enabled: true, headSamplingRate: 1 },
+    },
+    // Sign-in with Cloudflare OAuth. The values are set on the Worker, never in this file.
+    env: {
+      OAUTH_CLIENT_ID: bindings.secret(),
+      OAUTH_CLIENT_SECRET: bindings.secret(),
+      SESSION_SECRET: bindings.secret(),
     },
     exports: {
       AxoHostDirectory: exports.durableObject({ storage: "sqlite" }),

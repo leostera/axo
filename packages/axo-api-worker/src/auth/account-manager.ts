@@ -39,6 +39,8 @@ type AccountHostRow = {
   last_seen_at: number;
   revoked_at: number | null;
 };
+const MAX_SESSIONS = 20;
+const MAX_PENDING_LOGIN_CODES = 10;
 type StoredHostSessionRow = { host_id: string; session_id: number; snapshot_json: string };
 
 export type PairingCreationStatus = "created" | "collision" | "limited";
@@ -67,8 +69,13 @@ export class AxoAccountManager extends AxoHostRelay {
     ctx.storage.sql.exec(`CREATE TABLE IF NOT EXISTS profile (
       singleton INTEGER PRIMARY KEY CHECK (singleton = 1), email TEXT, name TEXT
     )`);
-    // Axo's own web sessions were replaced by Cloudflare Access identity.
-    ctx.storage.sql.exec("DROP TABLE IF EXISTS web_sessions");
+    ctx.storage.sql.exec(`CREATE TABLE IF NOT EXISTS sessions (
+      digest TEXT PRIMARY KEY, kind TEXT NOT NULL CHECK (kind IN ('web', 'native')),
+      created_at INTEGER NOT NULL, expires_at INTEGER NOT NULL
+    )`);
+    ctx.storage.sql.exec(`CREATE TABLE IF NOT EXISTS login_codes (
+      digest TEXT PRIMARY KEY, challenge TEXT NOT NULL, created_at INTEGER NOT NULL, expires_at INTEGER NOT NULL
+    )`);
     ctx.storage.sql.exec(`CREATE TABLE IF NOT EXISTS pairing_issuance (created_at INTEGER NOT NULL)`);
     ctx.storage.sql.exec(`CREATE TABLE IF NOT EXISTS pairings (
       pairing_id TEXT PRIMARY KEY, code_verifier TEXT NOT NULL UNIQUE, created_at INTEGER NOT NULL,
@@ -92,14 +99,69 @@ export class AxoAccountManager extends AxoHostRelay {
     ctx.storage.sql.exec("CREATE INDEX IF NOT EXISTS host_sessions_v1_by_host ON host_sessions_v1(host_id, session_id)");
   }
 
-  /** Called for every request Access verified: binds this object's account ID and keeps the profile current. */
-  recordSignIn(accountId: string, profile: AccountProfile): void {
+  /** Starts a sign-in: binds this object's account ID, keeps the profile current, and keeps at most 20. */
+  establishSession(accountId: string, digest: string, kind: "web" | "native", now: number, expiresAt: number, profile: AccountProfile): void {
     this.ctx.storage.transactionSync(() => {
       this.bindAccount(accountId);
-      this.ctx.storage.sql.exec(`INSERT INTO profile (singleton, email, name) VALUES (1, ?, ?)
-        ON CONFLICT(singleton) DO UPDATE SET email = excluded.email, name = excluded.name
-        WHERE email IS NOT excluded.email OR name IS NOT excluded.name`, profile.email, profile.name);
+      this.saveProfile(profile);
+      const sql = this.ctx.storage.sql;
+      sql.exec("DELETE FROM sessions WHERE expires_at <= ?", now);
+      sql.exec("INSERT INTO sessions (digest, kind, created_at, expires_at) VALUES (?, ?, ?, ?)", digest, kind, now, expiresAt);
+      // The oldest sign-ins go first, so a forgotten phone never blocks a new one.
+      sql.exec(`DELETE FROM sessions WHERE digest IN (
+        SELECT digest FROM sessions ORDER BY created_at DESC, digest LIMIT -1 OFFSET ?)`, MAX_SESSIONS);
     });
+  }
+
+  /** The profile and end of a sign-in that is still good, or null. */
+  verifySession(digest: string, now: number): { profile: AccountProfile; expiresAt: number } | null {
+    if (!this.accountId()) return null;
+    const row = this.ctx.storage.sql.exec<{ expires_at: number }>(
+      "SELECT expires_at FROM sessions WHERE digest = ? AND expires_at > ?", digest, now).toArray()[0];
+    if (!row) return null;
+    const profile = this.ctx.storage.sql.exec<{ email: string | null; name: string | null }>(
+      "SELECT email, name FROM profile WHERE singleton = 1").toArray()[0];
+    return { profile: { email: profile?.email ?? null, name: profile?.name ?? null }, expiresAt: row.expires_at };
+  }
+
+  revokeSession(digest: string): void {
+    this.ctx.storage.sql.exec("DELETE FROM sessions WHERE digest = ?", digest);
+  }
+
+  /** A one-time code the app trades, with its secret, for a session. At most 10 wait at once. */
+  createLoginCode(accountId: string, digest: string, challenge: string, now: number, expiresAt: number, profile: AccountProfile): void {
+    this.ctx.storage.transactionSync(() => {
+      this.bindAccount(accountId);
+      this.saveProfile(profile);
+      const sql = this.ctx.storage.sql;
+      sql.exec("DELETE FROM login_codes WHERE expires_at <= ?", now);
+      sql.exec("INSERT INTO login_codes (digest, challenge, created_at, expires_at) VALUES (?, ?, ?, ?)", digest, challenge, now, expiresAt);
+      sql.exec(`DELETE FROM login_codes WHERE digest IN (
+        SELECT digest FROM login_codes ORDER BY created_at DESC, digest LIMIT -1 OFFSET ?)`, MAX_PENDING_LOGIN_CODES);
+    });
+  }
+
+  /**
+   * Uses up a login code. It is gone whatever the answer, so a wrong secret is one guess, not a
+   * way to keep trying. The profile comes back only if the secret matches what the app started with.
+   */
+  redeemLoginCode(digest: string, challenge: string, now: number): AccountProfile | null {
+    return this.ctx.storage.transactionSync(() => {
+      const sql = this.ctx.storage.sql;
+      const row = sql.exec<{ challenge: string; expires_at: number }>(
+        "SELECT challenge, expires_at FROM login_codes WHERE digest = ?", digest).toArray()[0];
+      sql.exec("DELETE FROM login_codes WHERE digest = ?", digest);
+      if (!row || row.expires_at <= now || !constantTimeEqual(row.challenge, challenge)) return null;
+      const profile = sql.exec<{ email: string | null; name: string | null }>(
+        "SELECT email, name FROM profile WHERE singleton = 1").toArray()[0];
+      return { email: profile?.email ?? null, name: profile?.name ?? null };
+    });
+  }
+
+  private saveProfile(profile: AccountProfile): void {
+    this.ctx.storage.sql.exec(`INSERT INTO profile (singleton, email, name) VALUES (1, ?, ?)
+      ON CONFLICT(singleton) DO UPDATE SET email = excluded.email, name = excluded.name
+      WHERE email IS NOT excluded.email OR name IS NOT excluded.name`, profile.email, profile.name);
   }
 
   createPairing(codeVerifier: string, pairingId: string, now: number, expiresAt: number): PairingCreationStatus {

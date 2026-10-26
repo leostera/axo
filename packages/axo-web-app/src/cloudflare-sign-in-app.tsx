@@ -6,7 +6,7 @@ const RemoteTerminalApp = lazy(async () => {
   return { default: module.RemoteTerminalApp };
 });
 
-/** `GET /api/auth/me` for a person Cloudflare Access let through; anyone else gets 401. */
+/** `GET /api/auth/me` for a signed-in person; anyone else gets 401. */
 type AuthenticatedSession = {
   authenticated: true;
   accountId: string;
@@ -23,10 +23,10 @@ export function CloudflareSignInApp() {
   const [pairingCode, setPairingCode] = useState<string | null>(null);
   const [pairingExpiresAt, setPairingExpiresAt] = useState<string | null>(null);
   const [creatingPairing, setCreatingPairing] = useState(false);
-  // Cloudflare Access guards `/app`: loading it again sends a signed-out person to Access's login.
-  const signInUrl = useMemo(() => new URL("/app", window.location.origin).href, []);
+  // The Worker sends the person to Cloudflare, then back here with a session cookie.
+  const signInUrl = useMemo(() => new URL("/api/auth/cloudflare/start", authBaseUrl).href, []);
   const meUrl = useMemo(() => new URL("/api/auth/me", authBaseUrl).href, []);
-  const logoutUrl = useMemo(() => new URL("/cdn-cgi/access/logout", authBaseUrl).href, []);
+  const logoutUrl = useMemo(() => new URL("/api/auth/logout", authBaseUrl).href, []);
   const pairingUrl = useMemo(() => new URL("/api/v1/account/host-pairings", authBaseUrl).href, []);
 
   const refreshSession = useCallback(async (signal?: AbortSignal) => {
@@ -102,9 +102,15 @@ export function CloudflareSignInApp() {
     }
   }, [pairingCode]);
 
-  // Access owns the sign-in, so it owns the sign-out: its logout endpoint ends the Access session.
-  const signOut = useCallback(() => {
-    window.location.assign(logoutUrl);
+  // Ends this browser's sign-in only; the server forgets it, and the cookie is cleared.
+  const signOut = useCallback(async () => {
+    try {
+      await fetch(logoutUrl, { method: "POST", credentials: "include", cache: "no-store" });
+    } finally {
+      setSession(null);
+      setPairingCode(null);
+      setPairingExpiresAt(null);
+    }
   }, [logoutUrl]);
 
   if (!loading && session) {
@@ -119,7 +125,7 @@ export function CloudflareSignInApp() {
           onCreatePairing={() => void createPairing()}
           onCopyPairingCode={() => void copyPairingCode()}
           onDismissPairing={dismissPairing}
-          onSignOut={signOut}
+          onSignOut={() => void signOut()}
         />
       </Suspense>
     );
@@ -132,14 +138,14 @@ export function CloudflareSignInApp() {
         <p className="auth-eyebrow">AXO REMOTE ACCESS</p>
         <h1 id="auth-title">Sign in to Axo</h1>
         <p className="auth-description">
-          Sign in through Cloudflare Access to reach your private Axo account.
+          Sign in with your Cloudflare account to reach your Axo Macs from anywhere.
         </p>
         {loading ? <p className="auth-status" role="status">Checking sign-in status…</p> : null}
         {error ? <p className="auth-error" role="alert">{error}</p> : null}
         {!loading && !session ? (
           <a className="auth-primary-button" href={signInUrl}>Continue with Cloudflare</a>
         ) : null}
-        <p className="auth-footnote">Axo receives your Cloudflare Access identity only. It never has access to manage your Cloudflare resources.</p>
+        <p className="auth-footnote">Axo only learns who you are (your Cloudflare user ID and email). It never has access to manage your Cloudflare resources.</p>
       </section>
     </main>
   );

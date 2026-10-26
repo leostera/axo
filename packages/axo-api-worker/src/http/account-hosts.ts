@@ -7,11 +7,11 @@ import {
   hostSessionsListResultSchema,
 } from "@axo/protocol/v1";
 import { sessionEventPageResultSchema } from "../session-history";
-import { isCrossSiteRequest, requireAccount, type AuthExports } from "../auth/account-access";
-import type { AccessEnvironment } from "../auth/access-identity";
+import { requireAccount, type AuthExports } from "../auth/account-access";
+import type { AuthEnvironment } from "../auth/config";
 
 const privateHeaders = { "Cache-Control": "private, no-store", Pragma: "no-cache" };
-type PairingEnvironment = AccessEnvironment & { SESSION_SECRET?: string };
+type PairingEnvironment = AuthEnvironment;
 
 export async function serveAccountHosts(request: Request, env: PairingEnvironment, exports: AuthExports): Promise<Response> {
   if (request.method !== "GET") return methodNotAllowed("GET");
