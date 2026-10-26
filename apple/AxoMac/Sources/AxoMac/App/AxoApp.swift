@@ -55,29 +55,32 @@ struct AxoApp<Launch: AxoLaunchMode>: App {
     _ = NSApp.sendAction(responderAction, to: nil, from: nil)
   }
 
+  /// Whether the terminal comes up by way of the launch splash.
+  private var usesSplash: Bool { environment.opensTerminalWindow && environment.showsLaunchSplash }
+
   var body: some Scene {
     MenuBarExtra {
-      AxoMenu(daemon: daemon, settingsSection: $settingsSection)
+      AxoMenu(daemon: daemon, settingsSection: $settingsSection, usesSplash: usesSplash)
     } label: {
       AxoMenuBarLabel(
         mascot: mascot,
         pairingLink: pairingLink,
         settingsSection: $settingsSection,
         opensTerminalWindow: environment.opensTerminalWindow,
-        showsLaunchSplash: environment.showsLaunchSplash)
+        usesSplash: usesSplash)
     }
     .menuBarExtraStyle(.menu)
 
     Window("Axo", id: LaunchSplashView.windowID) {
       LaunchSplashView(
         daemon: daemon, sessions: sessions, daemonIsRunning: environment.daemonIsRunning,
-        enabled: environment.opensTerminalWindow && environment.showsLaunchSplash)
+        enabled: usesSplash)
     }
     .windowStyle(.hiddenTitleBar)
     .windowResizability(.contentSize)
     .defaultPosition(.center)
 
-    Window("Axo Terminal", id: "terminal") {
+    Window("Axo Terminal", id: TerminalWindowOpener.windowID) {
       TerminalAppWindow(
         daemon: daemon,
         sessions: sessions,
@@ -379,8 +382,9 @@ private struct AxoMenuBarLabel: View {
   var pairingLink: PairingLinkRouter
   @Binding var settingsSection: SettingsSection
   let opensTerminalWindow: Bool
-  let showsLaunchSplash: Bool
+  let usesSplash: Bool
   @State private var didOpenTerminal = false
+  private var reopenRequests = TerminalReopenRequests.shared
 
   var body: some View {
     Label {
@@ -395,9 +399,7 @@ private struct AxoMenuBarLabel: View {
       .task {
         if !didOpenTerminal {
           didOpenTerminal = true
-          if opensTerminalWindow {
-            openWindow(id: showsLaunchSplash ? LaunchSplashView.windowID : "terminal")
-          }
+          if opensTerminalWindow { TerminalWindowOpener.open(openWindow, viaSplash: usesSplash) }
         }
         if pairingLink.pendingCode != nil {
           openPairingSettings()
@@ -405,6 +407,9 @@ private struct AxoMenuBarLabel: View {
       }
       .onChange(of: pairingLink.routeRevision) {
         openPairingSettings()
+      }
+      .onChange(of: reopenRequests.revision) {
+        TerminalWindowOpener.open(openWindow, viaSplash: usesSplash)
       }
   }
 
@@ -418,6 +423,7 @@ private struct AxoMenu: View {
   @Environment(\.openWindow) private var openWindow
   var daemon: DaemonController
   @Binding var settingsSection: SettingsSection
+  let usesSplash: Bool
 
   var body: some View {
     Group {
@@ -439,7 +445,7 @@ private struct AxoMenu: View {
     Divider()
 
     Button("Open Terminal") {
-      openWindow(id: "terminal")
+      TerminalWindowOpener.open(openWindow, viaSplash: usesSplash)
     }
 
     Button("Settings…") {

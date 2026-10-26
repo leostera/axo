@@ -83,7 +83,7 @@ struct LaunchSplashView: View {
     guard !revealed else { return }
     revealed = true
     puppet?.setLoading(false)
-    openWindow(id: "terminal")
+    openWindow(id: TerminalWindowOpener.windowID)
     guard let window else {
       dismissWindow(id: Self.windowID)
       return
@@ -154,6 +154,8 @@ private struct WindowReader: NSViewRepresentable {
       for button in [NSWindow.ButtonType.closeButton, .miniaturizeButton, .zoomButton] {
         window.standardWindowButton(button)?.isHidden = true
       }
+      // SwiftUI may reuse the window it faded out last time.
+      window.alphaValue = 1
       window.isOpaque = false
       window.backgroundColor = .clear
       window.hasShadow = false
