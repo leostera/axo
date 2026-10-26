@@ -2903,7 +2903,7 @@
           "REPO_MAPPING:rules_swift_package_manager+,bazel_skylib bazel_skylib+",
           "REPO_MAPPING:rules_swift_package_manager+,bazel_tools bazel_tools",
           "REPO_MAPPING:rules_swift_package_manager+,cgrindel_bazel_starlib cgrindel_bazel_starlib+",
-          "FILE:@@//apple/Package.resolved 984393cf59808128a05be74c9727c9eccf5bd9dbd7d192ab1f8ed86cc90ff0de"
+          "FILE:@@//apple/Package.resolved bd8df9093a0e44578c45ca3e2b15f5d0842730b4878421f84e58a12f055e939a"
         ],
         "generatedRepoSpecs": {
           "swift_package": {
@@ -2917,7 +2917,8 @@
             "repoRuleId": "@@rules_swift_package_manager+//swiftpkg/bzlmod:swift_deps.bzl%_swift_deps_package_repos",
             "attributes": {
               "repo_names": [
-                "swiftpkg_fuzzymatch"
+                "swiftpkg_fuzzymatch",
+                "swiftpkg_rive_ios"
               ]
             }
           },
@@ -2939,11 +2940,31 @@
               "bazel_target_mods": "",
               "package_repos": "@@rules_swift_package_manager++swift_deps+swift_deps_package_repos//:package_repos.json"
             }
+          },
+          "swiftpkg_rive_ios": {
+            "repoRuleId": "@@rules_swift_package_manager+//swiftpkg/internal:swift_package.bzl%swift_package",
+            "attributes": {
+              "bazel_package_name": "swiftpkg_rive_ios",
+              "commit": "e04bb30881261a94643c9fede9be32ac620359d7",
+              "remote": "https://github.com/rive-app/rive-ios.git",
+              "version": "6.28.1",
+              "env": {},
+              "env_inherit": [],
+              "cached_json_directory": "",
+              "make_files_read_only": false,
+              "replace_scm_with_registry": false,
+              "target_deps": {},
+              "module_aliases": {},
+              "dep_module_aliases": "",
+              "bazel_target_mods": "",
+              "package_repos": "@@rules_swift_package_manager++swift_deps+swift_deps_package_repos//:package_repos.json"
+            }
           }
         },
         "moduleExtensionMetadata": {
           "explicitRootModuleDirectDeps": [
             "swiftpkg_fuzzymatch",
+            "swiftpkg_rive_ios",
             "swift_package"
           ],
           "explicitRootModuleDirectDevDeps": [],

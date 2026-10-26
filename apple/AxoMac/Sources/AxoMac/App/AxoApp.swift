@@ -9,6 +9,7 @@ struct AxoApp<Launch: AxoLaunchMode>: App {
   @NSApplicationDelegateAdaptor(AxoURLSchemeDelegate.self) private var urlSchemeDelegate
   @State private var ghostty: GhosttyRuntime
   @State private var sleepPrevention: SleepPreventionController
+  @State private var mascot: AxoMascot
   @State private var pairingLink = PairingLinkRouter.shared
   @State private var settingsSection = SettingsSection.general
   @State private var isPresentingWorkspaceCreation = false
@@ -26,6 +27,9 @@ struct AxoApp<Launch: AxoLaunchMode>: App {
     _sessions = State(initialValue: environment.sessions)
     _ghostty = State(initialValue: ghostty)
     _sleepPrevention = State(initialValue: SleepPreventionController())
+    let mascot = AxoMascot()
+    mascot.start(animatesDockIcon: true)
+    _mascot = State(initialValue: mascot)
     self.environment = environment
     // App.init runs once per process; the workbench owns the catalog and focus loops.
     workbench = AxoWorkbench(
@@ -56,6 +60,7 @@ struct AxoApp<Launch: AxoLaunchMode>: App {
       AxoMenu(daemon: daemon, settingsSection: $settingsSection)
     } label: {
       AxoMenuBarLabel(
+        mascot: mascot,
         pairingLink: pairingLink,
         settingsSection: $settingsSection,
         opensTerminalWindow: environment.opensTerminalWindow)
@@ -360,13 +365,22 @@ private struct WorkbenchViewCommands: Commands {
 
 private struct AxoMenuBarLabel: View {
   @Environment(\.openWindow) private var openWindow
+  var mascot: AxoMascot
   var pairingLink: PairingLinkRouter
   @Binding var settingsSection: SettingsSection
   let opensTerminalWindow: Bool
   @State private var didOpenTerminal = false
 
   var body: some View {
-    Label("Axo", systemImage: "command")
+    Label {
+      Text("Axo")
+    } icon: {
+      if let image = mascot.menuBarImage {
+        Image(nsImage: image)
+      } else {
+        Image(systemName: "command")
+      }
+    }
       .task {
         if !didOpenTerminal {
           didOpenTerminal = true
