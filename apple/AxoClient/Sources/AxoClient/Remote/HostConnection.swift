@@ -116,6 +116,16 @@ public final class HostConnection: Sendable {
     else { throw AxoClientError.invalidResponse("the host did not close that terminal") }
   }
 
+  /// Sends a prompt to the Session's Pi, as if typed and submitted in its pane. The host refuses it
+  /// when the Session has no Pi running.
+  public func promptPi(in id: SessionID, text: String) async throws {
+    let accepted: PromptAccepted = try await call(
+      "axo.remote.session.prompt", PromptTarget(target: host, sessionId: id, text: text))
+    guard accepted.accepted else {
+      throw AxoClientError.invalidResponse("the host did not accept that prompt")
+    }
+  }
+
   /// Types into a terminal. `sequence` numbers this client's input, starting at 0.
   public func sendInput(_ bytes: Data, to shell: ShellID, in id: SessionID, sequence: UInt64)
     async throws
@@ -190,6 +200,11 @@ private struct RenameTarget: Encodable, Sendable {
   let sessionId: SessionID
   let name: String
 }
+private struct PromptTarget: Encodable, Sendable {
+  let target: RemoteHostRef
+  let sessionId: SessionID
+  let text: String
+}
 private struct LayoutTarget: Encodable, Sendable {
   let target: RemoteHostRef
   let sessionId: SessionID
@@ -233,4 +248,5 @@ private struct InputAccepted: Decodable, Sendable {
   let accepted: Bool
   let sequence: UInt64
 }
+private struct PromptAccepted: Decodable, Sendable { let accepted: Bool }
 private struct ResizeAccepted: Decodable, Sendable { let accepted: Bool }

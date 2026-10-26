@@ -364,6 +364,27 @@ final class HostConnectionTests: XCTestCase {
     }
   }
 
+  func testAPromptNamesTheSessionAndMustBeAccepted() async throws {
+    let transport = FakeTransport()
+    let connection = HostConnection(transport: transport, host: host)
+    async let sent: Void = connection.promptPi(in: 3, text: "run the tests")
+    let channel = try await transport.channel(0)
+    let raw = try await channel.rawRequests(count: 1)[0]
+    let request = try XCTUnwrap(JSONSerialization.jsonObject(with: raw) as? [String: Any])
+    XCTAssertEqual(request["method"] as? String, "axo.remote.session.prompt")
+    let params = try XCTUnwrap(request["params"] as? [String: Any])
+    XCTAssertEqual(params["text"] as? String, "run the tests")
+    XCTAssertEqual(params["sessionId"] as? Int, 3)
+    XCTAssertNil(params["shellId"], "a prompt goes to the Session's Pi, not to a terminal")
+    channel.reply(to: try XCTUnwrap(request["id"] as? Int), result: #"{"accepted":false}"#)
+    do {
+      try await sent
+      XCTFail("a refusal must not count as sent")
+    } catch {
+      guard case .invalidResponse = error as? AxoClientError else { return XCTFail("\(error)") }
+    }
+  }
+
   func testInputIsBase64AndItsAcknowledgementMustMatch() async throws {
     let transport = FakeTransport()
     let connection = HostConnection(transport: transport, host: host)
