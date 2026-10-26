@@ -31,6 +31,7 @@ struct AxoApp<Launch: AxoLaunchMode>: App {
     mascot.start(animatesDockIcon: true)
     _mascot = State(initialValue: mascot)
     self.environment = environment
+    TerminalWindowOpener.heldForSplash = environment.opensTerminalWindow && environment.showsLaunchSplash
     // App.init runs once per process; the workbench owns the catalog and focus loops.
     workbench = AxoWorkbench(
       sessions: environment.sessions,
@@ -91,6 +92,7 @@ struct AxoApp<Launch: AxoLaunchMode>: App {
         palette: palette,
         isDaemonRunningOverride: environment.startsDaemon ? nil : true
       )
+      .background(SplashHoldOpener())
       .preferredColorScheme(appearanceTheme.colorScheme)
       .task { await environment.prepareTerminalWindow(sessions, ghostty) }
     }
@@ -247,6 +249,15 @@ struct AxoApp<Launch: AxoLaunchMode>: App {
       .preferredColorScheme(appearanceTheme.colorScheme)
     }
     .windowResizability(.contentSize)
+  }
+}
+
+/// Hands `TerminalSplashHold` a way to open the splash.
+private struct SplashHoldOpener: View {
+  @Environment(\.openWindow) private var openWindow
+
+  var body: some View {
+    TerminalSplashHold { openWindow(id: LaunchSplashView.windowID) }
   }
 }
 

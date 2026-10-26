@@ -83,7 +83,7 @@ struct LaunchSplashView: View {
     guard !revealed else { return }
     revealed = true
     puppet?.setLoading(false)
-    openWindow(id: TerminalWindowOpener.windowID)
+    TerminalWindowOpener.reveal(openWindow)
     guard let window else {
       dismissWindow(id: Self.windowID)
       return
