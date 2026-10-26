@@ -6,6 +6,7 @@ import Foundation
 enum CommandPaletteAction: Hashable {
   case showSession(SessionID)
   case focusPane(ShellID)
+  case cloneGitHubRepository(GitHubRepository)
   case run(CommandPaletteCommand)
 }
 

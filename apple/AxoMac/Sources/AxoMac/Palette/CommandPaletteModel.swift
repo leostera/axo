@@ -23,14 +23,14 @@ final class CommandPaletteModel {
   }
   private(set) var results: [CommandPaletteResult] = []
   private(set) var selectedIndex = 0
-  @ObservationIgnored private var index = SearchIndex<CommandPaletteItem>([]) { $0.document }
+  @ObservationIgnored private var items: [CommandPaletteItem] = []
 
   var selectedResult: CommandPaletteResult? {
     results.indices.contains(selectedIndex) ? results[selectedIndex] : nil
   }
 
   func present(_ items: [CommandPaletteItem]) {
-    index = SearchIndex(items) { $0.document }
+    self.items = items
     query = ""
     search()
     isPresented = true
@@ -60,7 +60,18 @@ final class CommandPaletteModel {
 
   /// Re-ranks for the current query and selects the best match.
   private func search() {
-    results = index.search(SearchQuery(query)).map {
+    var searchableItems = items
+    if let repository = GitHubRepository.parsePaletteInput(query) {
+      searchableItems.append(
+        CommandPaletteItem(
+          id: "command:github:\(repository.slug)", kind: .command,
+          title: "github:\(repository.slug)",
+          subtitle: "Clone and create a Workspace",
+          keywords: ["GitHub", "clone", "repository", "workspace"],
+          shortcut: nil, isCurrent: false,
+          action: .cloneGitHubRepository(repository)))
+    }
+    results = SearchIndex(searchableItems) { $0.document }.search(SearchQuery(query)).map {
       CommandPaletteResult(item: $0.item, match: $0.match)
     }
     selectedIndex = 0

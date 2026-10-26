@@ -198,6 +198,34 @@ final class CommandPaletteModelTests: XCTestCase {
     XCTAssertNil(palette.choose())
     XCTAssertTrue(palette.isPresented)
   }
+
+  func testGitHubRepositoryQueryAddsACloneWorkspaceAction() throws {
+    let palette = CommandPaletteModel()
+    palette.present(items.map { item($0) })
+    palette.query = "github:leostera/myrepo"
+    let repository = try XCTUnwrap(GitHubRepository.parsePaletteInput("github:leostera/myrepo"))
+    XCTAssertEqual(
+      palette.selectedResult?.item.action,
+      .cloneGitHubRepository(repository))
+    XCTAssertEqual(palette.selectedResult?.item.subtitle, "Clone and create a Workspace")
+  }
+}
+
+final class GitHubRepositoryTests: XCTestCase {
+  func testParsesGitHubOwnerAndRepositorySyntax() throws {
+    XCTAssertEqual(
+      try XCTUnwrap(GitHubRepository.parsePaletteInput("github:leostera/myrepo")).slug,
+      "leostera/myrepo")
+    XCTAssertEqual(
+      GitHubRepository.parsePaletteInput("  github:some-org/repo.name  ")?.slug,
+      "some-org/repo.name")
+    XCTAssertEqual(GitHubRepository.parsePaletteInput("gh:some-org/repo")?.slug, "some-org/repo")
+  }
+
+  func testRejectsMalformedOrPathEscapingRepositorySyntax() {
+    ["github:/repo", "github:org/", "github:../repo", "github:org/..", "github:a/b/c", "gh:org/"]
+      .forEach { XCTAssertNil(GitHubRepository.parsePaletteInput($0), $0) }
+  }
 }
 
 @MainActor
@@ -205,6 +233,7 @@ final class CommandPalettePerformerTests: XCTestCase {
   private var toggled = 0
   private var newWorkspaces = 0
   private var settings = 0
+  private var clonedRepository: GitHubRepository?
 
   private func model() async -> TerminalSessionsModel {
     let client = FakeAxodClient()
@@ -223,6 +252,7 @@ final class CommandPalettePerformerTests: XCTestCase {
       sessions: sessions,
       toggleSidebar: { self.toggled += 1 },
       newWorkspace: { self.newWorkspaces += 1 },
+      cloneGitHubRepository: { self.clonedRepository = $0 },
       openSettings: { self.settings += 1 })
   }
 
@@ -259,14 +289,17 @@ final class CommandPalettePerformerTests: XCTestCase {
     XCTAssertTrue(perform.perform(.run(.closeSession(1))))
   }
 
-  func testAppCommandsReachTheirHandlers() async {
+  func testAppCommandsReachTheirHandlers() async throws {
     let sessions = await model()
     let perform = performer(sessions)
+    let repository = try XCTUnwrap(GitHubRepository.parsePaletteInput("github:axo/app"))
     XCTAssertTrue(perform.perform(.run(.toggleSidebar)))
     XCTAssertTrue(perform.perform(.run(.newWorkspace)))
+    XCTAssertTrue(perform.perform(.cloneGitHubRepository(repository)))
     XCTAssertTrue(perform.perform(.run(.openSettings)))
     XCTAssertTrue(perform.perform(.run(.newSessionInWorkspace(workspaceID: "w1"))))
     XCTAssertEqual([toggled, newWorkspaces, settings], [1, 1, 1])
+    XCTAssertEqual(clonedRepository, repository)
   }
 
   func testTheContextListsSessionsInSidebarOrderWithRecentHistory() async {

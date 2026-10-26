@@ -243,6 +243,8 @@ private struct TerminalAppWindow: View {
   var palette: CommandPaletteModel
   var isDaemonRunningOverride: Bool?
   @AppStorage(AxoPreferenceKey.sidebarIsCollapsed) private var isSidebarCollapsed = false
+  @State private var isCloningRepository = false
+  @State private var repositoryCloneError: String?
 
   var body: some View {
     TerminalWorkbenchView(
@@ -252,6 +254,27 @@ private struct TerminalAppWindow: View {
       daemonIsRunningOverride: isDaemonRunningOverride
     )
     .overlay { CommandPaletteOverlay(palette: palette, onChoose: perform) }
+    .overlay(alignment: .top) {
+      if isCloningRepository {
+        Label("Cloning GitHub repository…", systemImage: "arrow.down.circle")
+          .padding(.horizontal, 14)
+          .padding(.vertical, 9)
+          .background(.regularMaterial, in: Capsule())
+          .padding(.top, 16)
+          .accessibilityIdentifier("github-clone-progress")
+      }
+    }
+    .alert(
+      "Couldn’t open GitHub repository",
+      isPresented: Binding(
+        get: { repositoryCloneError != nil },
+        set: { if !$0 { repositoryCloneError = nil } }
+      )
+    ) {
+      Button("OK", role: .cancel) { repositoryCloneError = nil }
+    } message: {
+      Text(repositoryCloneError ?? "")
+    }
     .onChange(of: palette.isPresented) { _, isPresented in
       // Back to the pane typing went to; a chosen Session or pane takes focus itself.
       if !isPresented, let shellID = sessions.focusedShellID {
@@ -266,11 +289,45 @@ private struct TerminalAppWindow: View {
       sessions: sessions,
       toggleSidebar: { isSidebarCollapsed.toggle() },
       newWorkspace: { isPresentingWorkspaceCreation = true },
+      cloneGitHubRepository: cloneGitHubRepository,
       openSettings: {
         settingsSection = .general
         openWindow(id: "settings")
       }
     ).perform(action)
+  }
+
+  private func cloneGitHubRepository(_ repository: GitHubRepository) {
+    guard !isCloningRepository else { return }
+    sessions.dismissWorkspaceCreationError()
+    repositoryCloneError = nil
+    isCloningRepository = true
+    Task {
+      defer { isCloningRepository = false }
+      do {
+        let directory = try await GitHubWorkspaceCloner.clone(repository)
+        if let workspace = sessions.workspaces.first(where: {
+          URL(fileURLWithPath: $0.directoryPath).standardizedFileURL.path
+            == directory.standardizedFileURL.path
+        }) {
+          if let session = sessions.sessions.first(where: { $0.workspaceId == workspace.workspaceId }) {
+            sessions.showSession(session.id)
+          } else {
+            await sessions.createSession(in: workspace.workspaceId)
+          }
+          return
+        }
+
+        let bookmark = try? directory.bookmarkData(
+          options: [.withSecurityScope], includingResourceValuesForKeys: nil, relativeTo: nil
+        ).base64EncodedString()
+        await sessions.createWorkspace(
+          name: repository.name, directoryPath: directory.path, directoryBookmark: bookmark)
+        repositoryCloneError = sessions.workspaceCreationError
+      } catch {
+        repositoryCloneError = error.localizedDescription
+      }
+    }
   }
 }
 

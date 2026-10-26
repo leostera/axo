@@ -9,6 +9,7 @@ struct CommandPalettePerformer {
   let sessions: TerminalSessionsModel
   let toggleSidebar: () -> Void
   let newWorkspace: () -> Void
+  let cloneGitHubRepository: (GitHubRepository) -> Void
   let openSettings: () -> Void
 
   /// Whether the action was started; `false` means its target is gone.
@@ -21,6 +22,8 @@ struct CommandPalettePerformer {
     case .focusPane(let shellID):
       guard sessions.shell(for: shellID) != nil else { return skipped(action) }
       sessions.focus(shellID)
+    case .cloneGitHubRepository(let repository):
+      cloneGitHubRepository(repository)
     case .run(let command):
       return run(command)
     }
