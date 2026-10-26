@@ -42,29 +42,48 @@ final class HostWorkbenchModelTests: XCTestCase {
       """.utf8))
   }
 
-  func testHistoryIsReadInPagesAndPutsLiveMessagesAfterIt() async throws {
+  func testOpeningAConversationReadsOnlyTheNewestPageAndPutsLiveMessagesAfterIt() async throws {
     let stream = UUID()
+    // The relay answers newest first.
     let pages = Pages([
-      PiEventPage(events: [stored(1, 1, role: "user", "q", stream: stream), stored(2, 2, role: "assistant", "a", stream: stream)], next: 2),
-      PiEventPage(events: [stored(3, 3, role: "user", "q2", stream: stream)], next: nil),
+      PiEventPage(events: [stored(3, 3, role: "user", "q2", stream: stream), stored(2, 2, role: "assistant", "a", stream: stream)], next: 2),
+      PiEventPage(events: [stored(1, 1, role: "user", "q", stream: stream)], next: nil),
     ])
     let (model, _, host, _) = try make(history: pages)
     model.apply(.piEvent(host: host.reference, sessionID: 1, event: PiEventRecord(
       streamId: stream, sequence: 4, name: "message.end",
       data: try JSONDecoder().decode(JSONValue.self, from: Data(#"{"message":{"role":"assistant","content":"live"}}"#.utf8)))))
     await model.loadHistory(of: 1)
-    XCTAssertEqual(model.chats[1]?.messages.map(\.text), ["q", "a", "q2", "live"])
-    XCTAssertEqual(model.historyStates[1], .loaded(events: 3))
-    XCTAssertEqual(pages.cursors, [0, 2], "each page starts where the last one ended")
+    XCTAssertEqual(model.chats[1]?.messages.map(\.text), ["a", "q2", "live"], "only the newest page, oldest first")
+    XCTAssertEqual(model.historyStates[1], .loaded(events: 2, hasOlder: true))
+    XCTAssertEqual(pages.cursors, [0], "nothing older is read until it is asked for")
   }
 
-  func testAVeryLongConversationIsReadUpToALimitAndSaysSo() async throws {
+  func testOlderPagesAreReadOnDemandAndGoBeforeWhatIsShown() async throws {
     let stream = UUID()
-    let endless = Pages(Array(repeating: PiEventPage(events: [stored(1, 1, role: "user", "q", stream: stream)], next: 9), count: 40))
-    let (model, _, _, _) = try make(history: endless)
+    let pages = Pages([
+      PiEventPage(events: [stored(3, 3, role: "user", "q2", stream: stream), stored(2, 2, role: "assistant", "a", stream: stream)], next: 2),
+      PiEventPage(events: [stored(1, 1, role: "user", "q", stream: stream)], next: nil),
+    ])
+    let (model, _, _, _) = try make(history: pages)
     await model.loadHistory(of: 1)
-    XCTAssertEqual(endless.cursors.count, HostWorkbenchModel.maximumHistoryPages)
-    XCTAssertEqual(model.historyStates[1], .truncated(events: HostWorkbenchModel.maximumHistoryPages))
+    await model.loadOlderHistory(of: 1)
+    XCTAssertEqual(model.chats[1]?.messages.map(\.text), ["q", "a", "q2"])
+    XCTAssertEqual(model.historyStates[1], .loaded(events: 3, hasOlder: false))
+    XCTAssertEqual(pages.cursors, [0, 2], "the next page starts before the oldest event shown")
+    await model.loadOlderHistory(of: 1)
+    XCTAssertEqual(pages.cursors, [0, 2], "the beginning has nothing older")
+  }
+
+  func testAFailedOlderPageKeepsWhatIsShownAndCanBeRetried() async throws {
+    let stream = UUID()
+    let history = FlakyOlder(first: PiEventPage(events: [stored(2, 2, role: "user", "q2", stream: stream)], next: 2))
+    let (model, _, _, _) = try make(history: history)
+    await model.loadHistory(of: 1)
+    await model.loadOlderHistory(of: 1)
+    XCTAssertEqual(model.chats[1]?.messages.map(\.text), ["q2"])
+    XCTAssertEqual(model.historyStates[1], .loaded(events: 1, hasOlder: true))
+    XCTAssertNotNil(model.failure)
   }
 
   func testAFailedHistoryReadIsReportedAndSignsOutOnlyForARefusedSession() async throws {
@@ -293,14 +312,14 @@ private struct RefusingTransport: AxoTransport {
 }
 
 struct NoHistory: PiHistoryLoading {
-  func piEvents(of host: RemoteHostRef, session: SessionID, after cursor: Int64, limit: Int) async throws -> PiEventPage {
+  func piEvents(of host: RemoteHostRef, session: SessionID, before cursor: Int64, limit: Int) async throws -> PiEventPage {
     PiEventPage(events: [], next: nil)
   }
 }
 
 struct FailingHistory: PiHistoryLoading {
   let error: Error
-  func piEvents(of host: RemoteHostRef, session: SessionID, after cursor: Int64, limit: Int) async throws -> PiEventPage {
+  func piEvents(of host: RemoteHostRef, session: SessionID, before cursor: Int64, limit: Int) async throws -> PiEventPage {
     throw error
   }
 }
@@ -310,10 +329,19 @@ final class Pages: PiHistoryLoading, @unchecked Sendable {
   private var pages: [PiEventPage]
   private(set) var cursors: [Int64] = []
   init(_ pages: [PiEventPage]) { self.pages = pages }
-  func piEvents(of host: RemoteHostRef, session: SessionID, after cursor: Int64, limit: Int) async throws -> PiEventPage {
+  func piEvents(of host: RemoteHostRef, session: SessionID, before cursor: Int64, limit: Int) async throws -> PiEventPage {
     lock.withLock {
       cursors.append(cursor)
       return pages.isEmpty ? PiEventPage(events: [], next: nil) : pages.removeFirst()
     }
+  }
+}
+
+final class FlakyOlder: PiHistoryLoading, @unchecked Sendable {
+  let first: PiEventPage
+  init(first: PiEventPage) { self.first = first }
+  func piEvents(of host: RemoteHostRef, session: SessionID, before cursor: Int64, limit: Int) async throws -> PiEventPage {
+    if cursor == 0 { return first }
+    throw RelayError.httpStatus(503)
   }
 }

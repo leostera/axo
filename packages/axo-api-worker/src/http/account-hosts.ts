@@ -72,14 +72,14 @@ export async function serveAccountHostEvents(
     return json({ error: "Valid host and Session IDs required" }, 400);
 
   const url = new URL(request.url);
-  const allowed = new Set(["after", "limit"]);
+  const allowed = new Set(["before", "limit"]);
   if ([...url.searchParams.keys()].some(key => !allowed.has(key)))
     return json({ error: "Unsupported query parameter" }, 400);
-  const afterText = url.searchParams.get("after");
+  const beforeText = url.searchParams.get("before");
   const limitText = url.searchParams.get("limit");
-  const after = afterText === null ? 0 : Number(afterText);
+  const before = beforeText === null ? 0 : Number(beforeText);
   const limit = limitText === null ? 20 : Number(limitText);
-  if (!Number.isSafeInteger(after) || after < 0 || String(after) !== (afterText ?? "0") ||
+  if (!Number.isSafeInteger(before) || before < 0 || String(before) !== (beforeText ?? "0") ||
       !Number.isSafeInteger(limit) || limit < 1 || limit > 50 || String(limit) !== (limitText ?? "20"))
     return json({ error: "Invalid event page cursor or limit" }, 400);
 
@@ -89,7 +89,7 @@ export async function serveAccountHostEvents(
     const page = sessionEventPageResultSchema.parse(await manager.listPiEvents({
       hostId: hostId.data,
       sessionId: sessionId.data,
-      after,
+      before,
       limit,
     }));
     return Response.json(page, { headers: privateHeaders });

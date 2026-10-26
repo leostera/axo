@@ -140,7 +140,7 @@ test("Pi event history uses the account-private cursor API and validates each ev
   const page = await api.listPiEvents(reference, 9, 0, 50);
   assert.equal(page.events[0].name, "message.end");
   assert.equal(requests[0].url.pathname, `/api/v1/account/hosts/${hostId}/sessions/9/events`);
-  assert.equal(requests[0].url.searchParams.get("after"), "0");
+  assert.equal(requests[0].url.searchParams.get("before"), "0");
   assert.equal(requests[0].url.searchParams.get("limit"), "50");
   assert.equal(requests[0].init.credentials, "include");
   assert.equal(requests[0].init.cache, "no-store");

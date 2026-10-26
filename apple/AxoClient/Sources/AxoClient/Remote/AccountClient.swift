@@ -77,11 +77,11 @@ public struct AccountClient: Sendable {
     return answer.sessions
   }
 
-  /// One page of a Session's Pi events, oldest first, starting after `cursor` (0 for the start).
-  public func piEvents(of host: RemoteHostRef, session: SessionID, after cursor: Int64 = 0, limit: Int = 50)
+  /// One page of a Session's Pi events, newest first. `before` is the id of the oldest event already read (0 starts at the newest).
+  public func piEvents(of host: RemoteHostRef, session: SessionID, before cursor: Int64 = 0, limit: Int = 50)
     async throws -> PiEventPage
   {
-    try await get(endpoint.piEventsURL(of: host, session: session, after: cursor, limit: min(max(limit, 1), 50)))
+    try await get(endpoint.piEventsURL(of: host, session: session, before: cursor, limit: min(max(limit, 1), 50)))
   }
 
   private func get<Value: Decodable>(_ url: URL, as: Value.Type = Value.self) async throws -> Value {

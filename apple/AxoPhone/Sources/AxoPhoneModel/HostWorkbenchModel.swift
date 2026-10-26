@@ -5,7 +5,7 @@ import Observation
 
 /// Where a Session's stored conversation comes from: the relay, over HTTPS.
 public protocol PiHistoryLoading: Sendable {
-  func piEvents(of host: RemoteHostRef, session: SessionID, after cursor: Int64, limit: Int) async throws -> PiEventPage
+  func piEvents(of host: RemoteHostRef, session: SessionID, before cursor: Int64, limit: Int) async throws -> PiEventPage
 }
 
 extension AccountClient: PiHistoryLoading {}
@@ -25,15 +25,22 @@ public final class HostWorkbenchModel {
   public private(set) var historyStates: [SessionID: HistoryState] = [:]
   public enum HistoryState: Equatable, Sendable {
     case loading
-    /// Read this many stored events (messages are only some of them).
-    case loaded(events: Int)
-    /// The stored history is longer than what was read; the newest part is missing.
-    case truncated(events: Int)
+    /// Read this many stored events (messages are only some of them); `hasOlder` says more are stored.
+    case loaded(events: Int, hasOlder: Bool)
+    case loadingOlder(events: Int)
     case failed(String)
   }
 
-  /// Most pages read for one Session (50 events each); a conversation longer than that shows its start.
-  static let maximumHistoryPages = 20
+  /// Events per page; pages are read newest first and only as a conversation is scrolled back.
+  static let historyPageSize = 50
+
+  private struct StoredHistory {
+    /// Oldest first.
+    var records: [PiEventRecord]
+    /// Where the next older page starts; nil when this is the beginning.
+    var olderCursor: Int64?
+  }
+  private var storedHistory: [SessionID: StoredHistory] = [:]
 
   public var selectedSessionID: SessionID?
   /// The last problem, for the screen to show; cleared by the next successful action.
@@ -128,29 +135,49 @@ public final class HostWorkbenchModel {
     }
   }
 
-  /// Reads a Session's stored conversation and puts it in front of what arrived live.
+  /// Reads the newest page of a Session's stored conversation and puts it in front of what arrived
+  /// live. Older pages are read only when asked for, by `loadOlderHistory`.
   public func loadHistory(of id: SessionID) async {
-    guard historyStates[id] != .loading else { return }
+    if case .loading = historyStates[id] { return }
+    if case .loadingOlder = historyStates[id] { return }
     historyStates[id] = .loading
-    var records: [PiEventRecord] = []
-    var cursor: Int64 = 0
-    var more = true
     do {
-      for _ in 0..<Self.maximumHistoryPages where more {
-        let page = try await history.piEvents(of: reference, session: id, after: cursor, limit: 50)
-        records.append(contentsOf: page.events.map(\.record))
-        if let next = page.next { cursor = next } else { more = false }
-      }
+      let page = try await history.piEvents(of: reference, session: id, before: 0, limit: Self.historyPageSize)
+      let records = Array(page.events.map(\.record).reversed())
+      storedHistory[id] = StoredHistory(records: records, olderCursor: page.next)
+      showStoredHistory(of: id)
     } catch is CancellationError {
       historyStates[id] = nil
-      return
     } catch {
       account.noteFailure(error)
       historyStates[id] = .failed(error.localizedDescription)
-      return
     }
-    chats[id, default: ChatTranscript()].merge(history: records)
-    historyStates[id] = more ? .truncated(events: records.count) : .loaded(events: records.count)
+  }
+
+  /// Reads the page before the oldest one already shown. Does nothing when there is none.
+  public func loadOlderHistory(of id: SessionID) async {
+    guard case .loaded(let events, true) = historyStates[id],
+      let stored = storedHistory[id], let cursor = stored.olderCursor
+    else { return }
+    historyStates[id] = .loadingOlder(events: events)
+    do {
+      let page = try await history.piEvents(of: reference, session: id, before: cursor, limit: Self.historyPageSize)
+      storedHistory[id] = StoredHistory(
+        records: Array(page.events.map(\.record).reversed()) + stored.records, olderCursor: page.next)
+      showStoredHistory(of: id)
+    } catch is CancellationError {
+      historyStates[id] = .loaded(events: events, hasOlder: true)
+    } catch {
+      account.noteFailure(error)
+      historyStates[id] = .loaded(events: events, hasOlder: true)
+      failure = error.localizedDescription
+    }
+  }
+
+  private func showStoredHistory(of id: SessionID) {
+    guard let stored = storedHistory[id] else { return }
+    chats[id, default: ChatTranscript()].merge(history: stored.records)
+    historyStates[id] = .loaded(events: stored.records.count, hasOlder: stored.olderCursor != nil)
   }
 
   private func forget(_ shell: ShellID) {

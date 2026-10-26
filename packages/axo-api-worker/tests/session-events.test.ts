@@ -97,7 +97,7 @@ test("Pi host events reach account-private durable history and the authenticated
 
   const unauthenticated = await fetch(eventsUrl);
   assert.equal(unauthenticated.status, 401);
-  const invalidPage = await fetch(new URL(`${eventsUrl}?after=01`, h.url), { headers });
+  const invalidPage = await fetch(new URL(`${eventsUrl}?before=01`, h.url), { headers });
   assert.equal(invalidPage.status, 400);
 
   const other = await signIn(h);

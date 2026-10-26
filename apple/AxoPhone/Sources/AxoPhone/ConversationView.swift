@@ -27,10 +27,7 @@ struct ConversationView: View {
     ScrollViewReader { proxy in
       ScrollView {
         LazyVStack(alignment: .leading, spacing: 30) {
-          if case .truncated = historyState {
-            Text("This conversation is long; the newest part is not shown here yet.")
-              .font(.caption).foregroundStyle(.secondary)
-          }
+          olderHistory
           if transcript.messages.isEmpty { emptyState }
           ForEach(transcript.messages) { message in
             ChatMessageView(message: message)
@@ -50,6 +47,25 @@ struct ConversationView: View {
     }
   }
 
+  /// At the top of the conversation: older messages are read as this scrolls into view.
+  @ViewBuilder private var olderHistory: some View {
+    switch historyState {
+    case .loaded(_, true):
+      Button("Load earlier messages") { loadOlder() }
+        .font(.caption).frame(maxWidth: .infinity)
+        .onAppear(perform: loadOlder)
+    case .loadingOlder:
+      ProgressView().frame(maxWidth: .infinity)
+    default:
+      EmptyView()
+    }
+  }
+
+  private func loadOlder() {
+    guard let id = session?.sessionId else { return }
+    Task { await workbench?.loadOlderHistory(of: id) }
+  }
+
   @ViewBuilder private var emptyState: some View {
     switch historyState {
     case nil, .loading:
@@ -60,7 +76,7 @@ struct ConversationView: View {
       }
     case .failed(let message):
       ChatEmptyState(message: message)
-    case .loaded(let events), .truncated(let events):
+    case .loaded(let events, _), .loadingOlder(let events):
       ChatEmptyState(
         message: events == 0
           ? "Nothing is stored for this session yet. Pi's messages appear here as they happen."

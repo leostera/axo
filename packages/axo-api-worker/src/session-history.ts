@@ -41,7 +41,7 @@ export const sessionEventPageRequestSchema = z.object({
   accountId: uuid,
   hostId: uuid,
   sessionId: sessionIdSchema,
-  after: z.number().int().min(0).max(Number.MAX_SAFE_INTEGER).default(0),
+  before: z.number().int().min(0).max(Number.MAX_SAFE_INTEGER).default(0),
   limit: z.number().int().min(1).max(50).default(20),
 }).strict();
 
@@ -61,6 +61,7 @@ type StoredEventRow = {
   received_at: number;
 };
 
+/** Pages are newest first; `before` is the id of the oldest event already seen (0 starts at the newest). */
 /** Durable, account-private Pi event history for exactly one host-owned Axo Session. */
 export class AxoSessionDO extends DurableObject<Env> {
   constructor(ctx: DurableObjectState, env: Env) {
@@ -153,8 +154,9 @@ export class AxoSessionDO extends DurableObject<Env> {
     if (identity.account_id !== input.accountId || identity.host_id !== input.hostId || identity.session_id !== input.sessionId)
       return { ok: false, reason: "identityConflict" };
     const rows = this.ctx.storage.sql.exec<StoredEventRow>(
-      `SELECT * FROM pi_events WHERE id > ? ORDER BY id LIMIT ?`,
-      input.after,
+      `SELECT * FROM pi_events WHERE (? = 0 OR id < ?) ORDER BY id DESC LIMIT ?`,
+      input.before,
+      input.before,
       input.limit + 1,
     ).toArray();
     const hasMore = rows.length > input.limit;

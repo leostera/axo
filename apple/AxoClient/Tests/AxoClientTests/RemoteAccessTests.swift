@@ -135,11 +135,11 @@ final class AccountClientTests: XCTestCase {
   func testPiEventsAreRequestedFromACursorWithABoundedPageSize() async throws {
     let ref = RemoteHostRef(hostId: hostID, hostGeneration: generation)
     let loader = StubLoader(status: 200, body: #"{"events":[],"next":null}"#)
-    let page = try await makeClient(loader).piEvents(of: ref, session: 7, after: 12, limit: 500)
+    let page = try await makeClient(loader).piEvents(of: ref, session: 7, before: 12, limit: 500)
     XCTAssertTrue(page.events.isEmpty)
     let url = try XCTUnwrap(loader.requests.first?.url)
     XCTAssertEqual(url.path, "/api/v1/account/hosts/\(hostID.uuidString.lowercased())/sessions/7/events")
-    XCTAssertEqual(URLComponents(url: url, resolvingAgainstBaseURL: false)?.queryItems?.map { "\($0.name)=\($0.value ?? "")" }, ["after=12", "limit=50"])
+    XCTAssertEqual(URLComponents(url: url, resolvingAgainstBaseURL: false)?.queryItems?.map { "\($0.name)=\($0.value ?? "")" }, ["before=12", "limit=50"])
   }
 
   private func makeClient(_ loader: StubLoader) -> AccountClient {

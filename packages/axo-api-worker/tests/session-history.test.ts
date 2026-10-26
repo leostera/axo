@@ -48,7 +48,7 @@ async function sessionHistoryNamespace(api: Awaited<ReturnType<typeof harness>>)
   return await api.mf.getDurableObjectNamespace("TEST_SESSION_HISTORY") as unknown as SessionHistoryNamespace;
 }
 
-test("a per-Session Durable Object stores full Pi events idempotently and pages by durable cursor", async () => {
+test("a per-Session Durable Object stores full Pi events idempotently and pages newest first by durable cursor", async () => {
   const api = await harness();
   try {
     const namespace = await sessionHistoryNamespace(api);
@@ -62,14 +62,14 @@ test("a per-Session Durable Object stores full Pi events idempotently and pages 
     assert.deepEqual(plain(await history.append(event(1, { prompt: "different payload" }))), { ok: false, reason: "eventConflict" });
     assert.deepEqual(second, { ok: true, eventId: 2, inserted: true });
 
-    const firstPage = eventPage(plain(await history.list({ accountId, hostId, sessionId, after: 0, limit: 1 })));
+    const firstPage = eventPage(plain(await history.list({ accountId, hostId, sessionId, before: 0, limit: 1 })));
     assert.equal(firstPage.events.length, 1);
-    assert.deepEqual(firstPage.events[0].data, { prompt: "private input", image: { data: "full" } });
+    assert.deepEqual(firstPage.events[0].data, { role: "assistant", thinking: "retained verbatim" });
     assert.equal(firstPage.next, firstPage.events[0].id);
 
-    const secondPage = eventPage(plain(await history.list({ accountId, hostId, sessionId, after: firstPage.next, limit: 1 })));
+    const secondPage = eventPage(plain(await history.list({ accountId, hostId, sessionId, before: firstPage.next, limit: 1 })));
     assert.equal(secondPage.events.length, 1);
-    assert.deepEqual(secondPage.events[0].data, { role: "assistant", thinking: "retained verbatim" });
+    assert.deepEqual(secondPage.events[0].data, { prompt: "private input", image: { data: "full" } });
     assert.equal(secondPage.next, null);
   } finally {
     await api.close();
@@ -84,7 +84,7 @@ test("event identity is fenced to the owning account, host, and Session", async 
     await history.append(event(1));
 
     assert.deepEqual(plain(await history.append({ ...event(2), hostId: "d48d1fb1-5a6c-4400-8a1a-97453f12247c" })), { ok: false, reason: "identityConflict" });
-    assert.deepEqual(plain(await history.list({ accountId, hostId, sessionId: sessionId + 1, after: 0, limit: 20 })), { ok: false, reason: "identityConflict" });
+    assert.deepEqual(plain(await history.list({ accountId, hostId, sessionId: sessionId + 1, before: 0, limit: 20 })), { ok: false, reason: "identityConflict" });
     assert.deepEqual(plain(await history.append({ ...event(2), accountId: "d48d1fb1-5a6c-4400-8a1a-97453f12247c" })), { ok: false, reason: "identityConflict" });
   } finally {
     await api.close();
@@ -100,13 +100,13 @@ test("history survives Worker restart with no automatic expiry", async () => {
     await api.restart();
 
     const restarted = await sessionHistoryNamespace(api);
-    const page = eventPage(plain(await restarted.getByName(name).list({ accountId, hostId, sessionId, after: 0, limit: 20 })));
+    const page = eventPage(plain(await restarted.getByName(name).list({ accountId, hostId, sessionId, before: 0, limit: 20 })));
     assert.equal(page.events.length, 1);
     assert.deepEqual(page.events[0].data, { role: "toolResult", content: "retained" });
     assert.ok(page.events[0].receivedAt > 0);
 
     const otherSession = plain(await restarted.getByName(sessionDOName(accountId, hostId, sessionId + 1))
-      .list({ accountId, hostId, sessionId: sessionId + 1, after: 0, limit: 20 }));
+      .list({ accountId, hostId, sessionId: sessionId + 1, before: 0, limit: 20 }));
     assert.deepEqual(otherSession, { ok: true, events: [], next: null });
   } finally {
     await api.close();
@@ -120,7 +120,7 @@ test("Pi event payloads are bounded JSON, but event contents are not redacted", 
     const history = namespace.getByName(sessionDOName(accountId, hostId, sessionId));
     const secretLikeContent = { tool: { input: "private file contents" }, tokenText: "unfiltered" };
     await history.append(event(1, secretLikeContent));
-    const page = eventPage(plain(await history.list({ accountId, hostId, sessionId, after: 0, limit: 20 })));
+    const page = eventPage(plain(await history.list({ accountId, hostId, sessionId, before: 0, limit: 20 })));
     assert.deepEqual(page.events[0].data, secretLikeContent);
     assert.deepEqual(plain(await history.append(event(2, { text: "x".repeat(60_001) }))), { ok: false, reason: "invalid" });
   } finally {

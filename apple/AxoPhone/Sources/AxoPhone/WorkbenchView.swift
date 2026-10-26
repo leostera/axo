@@ -317,7 +317,7 @@ private struct SessionRow: View {
 #if DEBUG && targetEnvironment(simulator)
   private struct PreviewListing: HostListing, PiHistoryLoading {
     func hosts() async throws -> [RemoteHost] { PreviewFixture.hosts }
-    func piEvents(of host: RemoteHostRef, session: SessionID, after cursor: Int64, limit: Int) async throws -> PiEventPage {
+    func piEvents(of host: RemoteHostRef, session: SessionID, before cursor: Int64, limit: Int) async throws -> PiEventPage {
       cursor == 0 ? PiEventPage(events: PreviewFixture.events(for: session), next: nil) : PiEventPage(events: [], next: nil)
     }
   }

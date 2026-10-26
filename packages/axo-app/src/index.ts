@@ -140,13 +140,13 @@ export class RemoteAxoApi {
   async listPiEvents(
     reference: HostRef,
     sessionId: number,
-    after = 0,
+    before = 0,
     limit = 20,
     signal?: AbortSignal,
   ): Promise<PiEventPageResult> {
     const host = hostRefSchema.parse(reference);
     const session = sessionIdSchema.parse(sessionId);
-    const query = new URLSearchParams({ after: String(after), limit: String(limit) });
+    const query = new URLSearchParams({ before: String(before), limit: String(limit) });
     const response = await this.get(
       `/api/v1/account/hosts/${encodeURIComponent(host.hostId)}/sessions/${session}/events?${query}`,
       signal,
