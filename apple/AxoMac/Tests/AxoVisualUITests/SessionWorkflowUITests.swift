@@ -92,6 +92,29 @@ extension AxoVisualUITests {
     XCTAssertEqual(model.sessions.count, 1)
   }
 
+  func testSessionRenameButtonAppearsOnHoverAndStartsInlineEditing() async throws {
+    try assertNoAxoUITestAppIsAlreadyRunning()
+    let app = XCUIApplication(bundleIdentifier: "dev.leostera.axo.ui-tests")
+    let fixture = try UITestFixture(app: app)
+    defer { fixture.stop() }
+    let model = TerminalSessionsModel(
+      socketPath: try UnixSocketPath(fixture.socketURL.path))
+    fixture.launchApp()
+    try await fixture.waitForWindow()
+    try await fixture.waitForTerminalReady()
+    try await waitForSessionCount(1, model: model)
+
+    let session = try XCTUnwrap(model.sessions.first)
+    let row = app.descendants(matching: .any)
+      .matching(identifier: "session-row-\(session.id)").firstMatch
+    row.hover()
+
+    let renameButton = app.buttons["rename-session-button-\(session.id)"]
+    XCTAssertTrue(renameButton.waitForExistence(timeout: 3))
+    renameButton.click()
+    XCTAssertTrue(app.textFields["rename-session-\(session.id)"].waitForExistence(timeout: 3))
+  }
+
   func testWorkspaceNameFieldReceivesPasteShortcut() async throws {
     try assertNoAxoUITestAppIsAlreadyRunning()
     let pasteboardSnapshot = PasteboardSnapshot()

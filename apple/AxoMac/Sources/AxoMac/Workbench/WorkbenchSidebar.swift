@@ -12,6 +12,7 @@ struct WorkbenchSidebar: View {
   @State private var collapsedWorkspaceIDs = Set<String>()
   @State private var renameTarget: SidebarRenameTarget?
   @State private var renameDraft = ""
+  @State private var hoveredSessionID: SessionID?
   @State private var sidebarActionError: String?
 
   var body: some View {
@@ -184,16 +185,41 @@ struct WorkbenchSidebar: View {
         .padding(.horizontal, 8)
         .frame(minHeight: 36)
       } else {
-        Button {
-          sessions.showSession(session.id)
-        } label: {
-          SessionSidebarRow(
-            session: session,
-            isSelected: sessions.selectedSessionID == session.id
-          )
+        HStack(spacing: 0) {
+          Button {
+            sessions.showSession(session.id)
+          } label: {
+            SessionSidebarRow(
+              session: session,
+              isSelected: sessions.selectedSessionID == session.id
+            )
+          }
+          .buttonStyle(.plain)
+          .accessibilityIdentifier("session-row-\(session.id)")
+
+          if hoveredSessionID == session.id {
+            Button { beginRenaming(.session(session)) } label: {
+              Image(systemName: "pencil")
+                .font(.system(size: 10, weight: .medium))
+                .frame(width: 24, height: 22)
+                .contentShape(Rectangle())
+            }
+            .buttonStyle(.plain)
+            .help("Rename Session")
+            .accessibilityLabel("Rename Session")
+            .accessibilityIdentifier("rename-session-button-\(session.id)")
+          }
         }
-        .buttonStyle(.plain)
-        .accessibilityIdentifier("session-row-\(session.id)")
+        .onHover { hovering in
+          withAnimation(.easeOut(duration: 0.12)) {
+            if hovering {
+              hoveredSessionID = session.id
+            } else if hoveredSessionID == session.id {
+              hoveredSessionID = nil
+            }
+          }
+        }
+        .help(session.displayName)
       }
     }
     .contextMenu {
