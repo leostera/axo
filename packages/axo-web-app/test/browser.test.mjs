@@ -360,9 +360,11 @@ test("browser discovers hosts, renders live PTY output, sends input, and uses Cm
     page.on("requestfailed", (request) => browserMessages.push(`request failed: ${request.url()} ${request.failure()?.errorText ?? ""}`));
     page.on("response", (response) => { if (response.status() >= 400) browserMessages.push(`HTTP ${response.status()}: ${response.url()}`); });
     await page.goto(`${appUrl}/`, { waitUntil: "networkidle" });
-    assert.equal(await page.getByRole("heading", { name: "Pick up where your Mac left off." }).count(), 1);
-    await page.getByRole("link", { name: "Continue to Axo" }).click();
-    await page.getByRole("heading", { name: "Sign in to Axo" }).waitFor({ timeout: 10_000 });
+    // The landing page is Axo and a way in.
+    await page.getByRole("img", { name: "Axo" }).waitFor({ timeout: 10_000 });
+    await page.waitForFunction(() => document.querySelector("canvas.mascot")?.width > 0, null, { timeout: 10_000 });
+    assert.ok((await page.getByRole("link", { name: "Continue with Cloudflare" }).getAttribute("href"))
+      .endsWith("/api/auth/cloudflare/start"), "the landing page starts the Worker's Cloudflare sign-in");
     await page.goto(`${appUrl}/__tests__/terminal`, { waitUntil: "networkidle" });
     await page.getByRole("button", { name: /Browser fixture Mac/ }).waitFor({ timeout: 10_000 }).catch(async (error) => {
       throw new Error(`${error.message}\npage: ${pageErrors.join(" | ")}\ntext: ${await page.locator("body").innerText()}\nconsole: ${browserMessages.join(" | ")}\napi: ${apiRequests.join(" | ")}`);
@@ -423,7 +425,7 @@ test("browser discovers hosts, renders live PTY output, sends input, and uses Cm
 
     await page.goto(`${appUrl}/app`, { waitUntil: "networkidle" });
     await page.getByRole("link", { name: "Continue with Cloudflare" }).waitFor({ timeout: 10_000 });
-    assert.equal(await page.getByRole("heading", { name: "Sign in to Axo" }).count(), 1);
+    assert.equal(await page.getByRole("img", { name: "Axo" }).count(), 1);
     assert.ok((await page.getByRole("link", { name: "Continue with Cloudflare" }).getAttribute("href"))
       .endsWith("/api/auth/cloudflare/start"), "signing in starts the Worker's Cloudflare sign-in");
 

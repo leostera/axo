@@ -1,5 +1,6 @@
 import { lazy, Suspense, useCallback, useEffect, useMemo, useState } from "react";
 import { hostPairingCreateResultSchema } from "@axo/protocol/v1";
+import { MascotSignIn } from "./mascot-sign-in";
 
 const RemoteTerminalApp = lazy(async () => {
   const module = await import("./remote-terminal-app");
@@ -132,21 +133,10 @@ export function CloudflareSignInApp() {
   }
 
   return (
-    <main className="auth-shell">
-      <section className="auth-card" aria-labelledby="auth-title">
-        <div className="auth-brand-mark" aria-hidden="true">A</div>
-        <p className="auth-eyebrow">AXO REMOTE ACCESS</p>
-        <h1 id="auth-title">Sign in to Axo</h1>
-        <p className="auth-description">
-          Sign in with your Cloudflare account to reach your Axo Macs from anywhere.
-        </p>
-        {loading ? <p className="auth-status" role="status">Checking sign-in status…</p> : null}
-        {error ? <p className="auth-error" role="alert">{error}</p> : null}
-        {!loading && !session ? (
-          <a className="auth-primary-button" href={signInUrl}>Continue with Cloudflare</a>
-        ) : null}
-        <p className="auth-footnote">Axo only learns who you are (your Cloudflare user ID and email). It never has access to manage your Cloudflare resources.</p>
-      </section>
-    </main>
+    <MascotSignIn
+      signInUrl={signInUrl}
+      status={loading ? "Checking sign-in status…" : undefined}
+      error={error}
+    />
   );
 }
