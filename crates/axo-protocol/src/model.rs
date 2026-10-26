@@ -103,6 +103,9 @@ pub struct SessionRecord {
     pub name: String,
     pub manual_name: Option<String>,
     pub emoji: Option<String>,
+    /// Unix timestamp in seconds for the most recent completed user or assistant message.
+    #[serde(default)]
+    pub last_message_at: Option<i64>,
     pub status: SessionStatus,
     pub initial_pwd: PathBuf,
     pub shells: Vec<ShellRecord>,
@@ -293,6 +296,7 @@ mod tests {
             name: "Fix".to_owned(),
             manual_name: None,
             emoji: Some("🦀".to_owned()),
+            last_message_at: None,
             status: SessionStatus::Ready,
             initial_pwd: "/private/path".into(),
             shells: vec![shell(11, PaneRole::Pi), shell(12, PaneRole::Terminal)],
@@ -320,6 +324,7 @@ mod tests {
             name: "Pi's title".to_owned(),
             manual_name: None,
             emoji: None,
+            last_message_at: None,
             status: SessionStatus::Ready,
             initial_pwd: "/".into(),
             shells: vec![shell(12, PaneRole::Terminal)],

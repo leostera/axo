@@ -12,7 +12,7 @@ use axo_pi::{BridgeSocketPath, SocketCleanup, worker};
 use axo_protocol::{Event, PaneRole, SessionId, SessionRecord, ShellId};
 use axo_store::Connection;
 use axo_store::{StoredPiSession, open_pi_session, pi_bridge_sockets};
-use axo_store::{bind_pi_session_id, describe_session};
+use axo_store::{bind_pi_session_id, describe_session, record_session_message, unix_timestamp};
 use serde_json::Value;
 
 pub(super) const PENDING_FOCUS_LIFETIME: Duration = Duration::from_secs(10);
@@ -177,6 +177,10 @@ pub(super) enum PiCatalogEvent<'a> {
     AgentSettled,
     PromptStarted,
     PromptEnded,
+    /// A user message started, before Pi emits `agent.start` for its run.
+    UserMessageStarted,
+    /// A user or assistant message was completed.
+    MessageEnded,
     /// Pi named its session (`session.info`).
     Named {
         title: &'a str,
@@ -199,6 +203,14 @@ impl<'a> PiCatalogEvent<'a> {
             "agent.settled" => PiCatalogEvent::AgentSettled,
             "ui.prompt.start" => PiCatalogEvent::PromptStarted,
             "ui.prompt.end" => PiCatalogEvent::PromptEnded,
+            "message.start" if data["message"]["role"].as_str() == Some("user") => {
+                PiCatalogEvent::UserMessageStarted
+            }
+            "message.end"
+                if matches!(data["message"]["role"].as_str(), Some("user" | "assistant")) =>
+            {
+                PiCatalogEvent::MessageEnded
+            }
             "session.info" => match field("name", valid_session_title) {
                 Some(title) => PiCatalogEvent::Named { title },
                 None => PiCatalogEvent::Ignored,
@@ -369,6 +381,13 @@ impl SessionManager {
                     *waits = waits.saturating_sub(1);
                     *waits != previous
                 }
+                PiCatalogEvent::UserMessageStarted => !std::mem::replace(
+                    &mut state.pi_activity.entry(session_id).or_default().working,
+                    true,
+                ),
+                PiCatalogEvent::MessageEnded => {
+                    record_session_message(&state.database, session_id, unix_timestamp())?
+                }
                 PiCatalogEvent::Named { title } => {
                     describe_session(&state.database, session_id, Some(title), None)?
                 }
@@ -453,6 +472,26 @@ mod tests {
         let parse = |name: &str, data: Value| format!("{:?}", PiCatalogEvent::parse(name, &data));
         assert_eq!(parse("agent.start", json!({})), "AgentStarted");
         assert_eq!(parse("ui.prompt.end", json!(null)), "PromptEnded");
+        assert_eq!(
+            parse("message.start", json!({"message": {"role": "user"}})),
+            "UserMessageStarted"
+        );
+        assert_eq!(
+            parse("message.start", json!({"message": {"role": "assistant"}})),
+            "Ignored"
+        );
+        assert_eq!(
+            parse("message.end", json!({"message": {"role": "user"}})),
+            "MessageEnded"
+        );
+        assert_eq!(
+            parse("message.end", json!({"message": {"role": "assistant"}})),
+            "MessageEnded"
+        );
+        assert_eq!(
+            parse("message.end", json!({"message": {"role": "toolResult"}})),
+            "Ignored"
+        );
         assert_eq!(
             parse("session.info", json!({ "name": "Fix the build" })),
             r#"Named { title: "Fix the build" }"#
@@ -574,6 +613,20 @@ mod tests {
                     old_binding,
                     "session.info",
                     &json!({ "name": "stale title" }),
+                )
+                .unwrap()
+        );
+        assert!(
+            manager
+                .observe_pi_event(binding, "agent.settled", &json!({}))
+                .unwrap()
+        );
+        assert!(
+            manager
+                .observe_pi_event(
+                    binding,
+                    "message.start",
+                    &json!({ "message": { "role": "user" } }),
                 )
                 .unwrap()
         );

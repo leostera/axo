@@ -16,6 +16,7 @@ extension TerminalSession {
       name: name,
       manualName: manualName,
       emoji: emoji,
+      lastMessageAt: lastMessageAt,
       status: status
     )
   }

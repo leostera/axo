@@ -244,7 +244,7 @@ pub fn initialize_database(database: &mut Connection) -> rusqlite::Result<()> {
         )?;
     }
 
-    transaction.pragma_update(None, "user_version", 7)?;
+    transaction.pragma_update(None, "user_version", 8)?;
     transaction.commit()
 }
 
@@ -271,6 +271,7 @@ pub fn create_tables(transaction: &rusqlite::Transaction<'_>) -> rusqlite::Resul
             session_uuid TEXT,
             name TEXT NOT NULL DEFAULT 'Session',
             manual_name TEXT,
+            last_message_at INTEGER,
             pi_session_file TEXT,
             pi_session_id TEXT,
             pi_bridge_socket_path TEXT
@@ -401,6 +402,7 @@ pub fn ensure_workspace_columns(transaction: &rusqlite::Transaction<'_>) -> rusq
         ("sessions", "session_uuid", "TEXT"),
         ("sessions", "name", "TEXT NOT NULL DEFAULT 'Session'"),
         ("sessions", "manual_name", "TEXT"),
+        ("sessions", "last_message_at", "INTEGER"),
         ("sessions", "emoji", "TEXT"),
         ("sessions", "pi_session_file", "TEXT"),
         ("sessions", "pi_session_id", "TEXT"),
@@ -766,6 +768,22 @@ pub fn unix_timestamp() -> i64 {
         .duration_since(std::time::UNIX_EPOCH)
         .unwrap_or_default()
         .as_secs() as i64
+}
+
+/// Records the receipt time of a completed user or assistant message for an open Session.
+pub fn record_session_message(
+    database: &Connection,
+    id: SessionId,
+    timestamp: i64,
+) -> io::Result<bool> {
+    let changed = database
+        .execute(
+            "UPDATE sessions SET last_message_at = MAX(COALESCE(last_message_at, 0), ?1) \
+             WHERE id = ?2 AND state = 'open'",
+            params![timestamp, id.get()],
+        )
+        .map_err(io::Error::other)?;
+    Ok(changed == 1)
 }
 
 fn not_found(message: &'static str) -> io::Error {
@@ -1239,6 +1257,7 @@ pub struct StoredSessionRow {
     pub emoji: Option<String>,
     pub pi_session_file: Option<PathBuf>,
     pub pi_session_id: Option<String>,
+    pub last_message_at: Option<i64>,
     pub layout: Option<Layout>,
 }
 
@@ -1248,7 +1267,7 @@ pub fn open_session_row(database: &Connection, id: SessionId) -> io::Result<Stor
     let (row, stored_layout) = database
         .prepare_cached(
             "SELECT s.initial_pwd, s.session_uuid, s.workspace_id, w.name, s.name, s.manual_name,
-                    s.emoji, s.pi_session_file, s.pi_session_id, s.layout_json
+                    s.emoji, s.pi_session_file, s.pi_session_id, s.layout_json, s.last_message_at
              FROM sessions s
              LEFT JOIN workspaces w ON w.workspace_id = s.workspace_id AND w.state = 'open'
              WHERE s.id = ?1 AND s.state = 'open'",
@@ -1266,6 +1285,7 @@ pub fn open_session_row(database: &Connection, id: SessionId) -> io::Result<Stor
                         emoji: row.get(6)?,
                         pi_session_file: row.get::<_, Option<String>>(7)?.map(PathBuf::from),
                         pi_session_id: row.get(8)?,
+                        last_message_at: row.get(10)?,
                         layout: None,
                     },
                     row.get::<_, Option<String>>(9)?,
@@ -1399,6 +1419,25 @@ mod tests {
             io::ErrorKind::NotFound
         );
         assert!(!describe_session(&database, archived, Some("t"), None).unwrap());
+    }
+
+    #[test]
+    fn last_message_timestamp_is_monotonic_and_only_updates_open_sessions() {
+        let database = database();
+        let open = insert_session(&database, "open-uuid", "open");
+        let archived = insert_session(&database, "archived-uuid", "archived");
+
+        assert!(record_session_message(&database, open, 100).unwrap());
+        assert!(record_session_message(&database, open, 90).unwrap());
+        let timestamp: Option<i64> = database
+            .query_row(
+                "SELECT last_message_at FROM sessions WHERE id = ?1",
+                params![open.get()],
+                |row| row.get(0),
+            )
+            .unwrap();
+        assert_eq!(timestamp, Some(100));
+        assert!(!record_session_message(&database, archived, 200).unwrap());
     }
 
     #[test]
@@ -1644,7 +1683,7 @@ mod tests {
             .query_row("PRAGMA user_version", [], |row| row.get(0))
             .unwrap();
         assert_eq!(layout, None);
-        assert_eq!(schema_version, 7);
+        assert_eq!(schema_version, 8);
         let manual_name_column: i64 = database
             .query_row(
                 "SELECT COUNT(*) FROM pragma_table_info('sessions') WHERE name = 'manual_name'",

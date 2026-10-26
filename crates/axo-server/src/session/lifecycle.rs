@@ -111,6 +111,7 @@ pub(super) fn close_session(
                     attach_socket_path,
                     pi_session_directory,
                     &workspace_id,
+                    None,
                 )
             })
             .transpose()?

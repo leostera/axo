@@ -81,6 +81,7 @@
         "name": { "type": "string", "minLength": 1, "maxLength": 80 },
         "manualName": { "anyOf": [{ "type": "string", "minLength": 1, "maxLength": 80 }, { "type": "null" }] },
         "emoji": { "anyOf": [{ "type": "string", "minLength": 1, "maxLength": 64 }, { "type": "null" }] },
+        "lastMessageAt": { "anyOf": [{ "type": "integer", "minimum": 0 }, { "type": "null" }] },
         "status": { "type": "string", "enum": ["starting", "ready", "working", "needsAttention", "unavailable"] },
         "initialPwd": { "type": "string", "minLength": 1 },
         "shells": { "type": "array", "items": { "$ref": "#/$defs/LocalShell" } },

@@ -15,11 +15,13 @@ private func shell(_ id: ShellID, _ role: PaneRole = .terminal, pwd: String = "/
 
 private func session(
   _ id: SessionID, _ name: String, shells: [TerminalShell] = [], workspace: String? = nil,
-  emoji: String? = nil, status: TerminalSessionStatus? = nil, pwd: String = "/"
+  emoji: String? = nil, lastMessageAt: Int64? = nil,
+  status: TerminalSessionStatus? = nil, pwd: String = "/"
 ) -> TerminalSession {
   TerminalSession(
     id: id, initialPwd: pwd, shells: shells, workspaceId: workspace,
-    workspaceName: workspace.map { $0.capitalized }, name: name, emoji: emoji, status: status)
+    workspaceName: workspace.map { $0.capitalized }, name: name, emoji: emoji,
+    lastMessageAt: lastMessageAt, status: status)
 }
 
 private func availability(focused: Bool = true, selected: Bool = true)
@@ -71,6 +73,21 @@ final class CommandPaletteCatalogTests: XCTestCase {
     XCTAssertEqual(notes.subtitle, "/Users/meadow", "ready says nothing; only whole home is ~")
   }
 
+  func testSessionSubtitleIncludesTheLatestMessageRecency() throws {
+    let now = Int64(Date().timeIntervalSince1970)
+    let tenDaysAgo = now - 10 * 24 * 60 * 60
+    let fifteenMinutesAgo = now - 15 * 60
+    let items = CommandPaletteCatalog.items(
+      context(sessions: [
+        session(1, "deploy", lastMessageAt: tenDaysAgo),
+        session(2, "notes", lastMessageAt: fifteenMinutesAgo),
+      ]))
+    let deploy = try XCTUnwrap(items.first { $0.action == .showSession(1) })
+    XCTAssertTrue(deploy.subtitle.contains("10 days ago"), deploy.subtitle)
+    let notes = try XCTUnwrap(items.first { $0.action == .showSession(2) })
+    XCTAssertTrue(notes.subtitle.contains("15 minutes ago"), notes.subtitle)
+  }
+
   func testPanesAreListedOnlyForSessionsWithSeveralAndNumberShellsAfterPi() {
     let items = CommandPaletteCatalog.items(
       context(sessions: [
@@ -81,6 +98,19 @@ final class CommandPaletteCatalogTests: XCTestCase {
     XCTAssertEqual(panes.map(\.title), ["Pi — work", "Shell 1 — work", "Shell 2 — work"])
     XCTAssertEqual(panes.map(\.action), [20, 21, 22].map { .focusPane($0) })
     XCTAssertEqual(panes.last?.subtitle, "~/x")
+  }
+
+  func testWorkspaceNameMatchesItsSessionsAndPanes() {
+    let items = CommandPaletteCatalog.items(
+      context(sessions: [
+        session(1, "deploy", shells: [shell(10, .pi), shell(11), shell(12)], workspace: "api"),
+        session(2, "website", shells: [shell(20, .pi), shell(21)], workspace: "web"),
+      ]))
+    let matches = SearchIndex(items) { $0.document }.search(SearchQuery("Api"))
+
+    XCTAssertEqual(
+      Set(matches.map { $0.item.action }),
+      Set([.showSession(1), .focusPane(10), .focusPane(11), .focusPane(12)]))
   }
 
   func testCommandsNeedingAPaneOrSessionAppearOnlyWhenThereIsOne() {

@@ -94,6 +94,7 @@ fn produced_session_records_conform_to_the_schema() {
         name: "Session 1".to_owned(),
         manual_name: None,
         emoji: Some("🦀".to_owned()),
+        last_message_at: None,
         status: SessionStatus::Ready,
         initial_pwd: "/tmp".into(),
         shells: vec![

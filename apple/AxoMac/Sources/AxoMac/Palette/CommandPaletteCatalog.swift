@@ -88,11 +88,12 @@ enum CommandPaletteCatalog {
 
     return ordered.map { session in
       let status = session.status.flatMap(statusDescription)
+      let lastMessage = session.lastMessageAt.map(relativeLastMessageDescription)
       return CommandPaletteItem(
         id: "session:\(session.id.rawValue)",
         kind: .session,
         title: [session.emoji, session.displayName].compactMap { $0 }.joined(separator: " "),
-        subtitle: [session.workspaceName, status, abbreviated(session.initialPwd, context)]
+        subtitle: [session.workspaceName, lastMessage, status, abbreviated(session.initialPwd, context)]
           .compactMap { $0 }.joined(separator: " · "),
         keywords: ["session"],
         shortcut: nil,
@@ -118,7 +119,8 @@ enum CommandPaletteCatalog {
           kind: .pane,
           title: "\(name) — \(session.displayName)",
           subtitle: abbreviated(shell.initialPwd, context),
-          keywords: ["pane", shell.isPi ? "agent" : "terminal"],
+          keywords: ["pane", shell.isPi ? "agent" : "terminal"]
+            + [session.workspaceName].compactMap { $0 },
           shortcut: nil,
           isCurrent: false,
           action: .focusPane(shell.id))
@@ -167,6 +169,21 @@ enum CommandPaletteCatalog {
     add(.toggleSidebar, "Toggle Sidebar", shortcut: "⌃⌘S")
     add(.openSettings, "Settings…", keywords: ["preferences"], shortcut: "⌘,")
     return commands
+  }
+
+  private static func relativeLastMessageDescription(_ timestamp: Int64) -> String {
+    let elapsed = max(0, Int64(Date().timeIntervalSince1970) - timestamp)
+    guard elapsed >= 60 else { return "just now" }
+
+    let (count, unit) = if elapsed < 60 * 60 {
+      (elapsed / 60, "minute")
+    } else if elapsed < 24 * 60 * 60 {
+      (elapsed / (60 * 60), "hour")
+    } else {
+      (elapsed / (24 * 60 * 60), "day")
+    }
+    let plural = count == 1 ? "" : "s"
+    return "\(count) \(unit)\(plural) ago"
   }
 
   /// Only states worth reading in a list; `ready` is the default and says nothing.

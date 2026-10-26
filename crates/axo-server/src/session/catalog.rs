@@ -217,6 +217,7 @@ pub(super) fn session_metadata(
         emoji,
         pi_session_file,
         pi_session_id,
+        last_message_at,
         layout,
     } = open_session_row(&state.database, id)?;
     let mut shells: Vec<_> = state
@@ -240,6 +241,11 @@ pub(super) fn session_metadata(
     } else {
         SessionStatus::Ready
     };
+    let last_message_at = last_message_at.or_else(|| {
+        pi_session_file
+            .as_deref()
+            .and_then(file_modification_timestamp)
+    });
     Ok(SessionRecord {
         id,
         session_uuid,
@@ -250,11 +256,24 @@ pub(super) fn session_metadata(
         name,
         manual_name,
         emoji,
+        last_message_at,
         status,
         initial_pwd,
         shells,
         layout,
     })
+}
+
+fn file_modification_timestamp(path: &Path) -> Option<i64> {
+    std::fs::metadata(path)
+        .ok()?
+        .modified()
+        .ok()?
+        .duration_since(std::time::UNIX_EPOCH)
+        .ok()?
+        .as_secs()
+        .try_into()
+        .ok()
 }
 
 pub(super) fn running_shell_record(
