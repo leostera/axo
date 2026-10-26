@@ -9,6 +9,10 @@ struct ConversationView: View {
   let showSidebar: () -> Void
   @State private var draft = ""
   @State private var showingTerminal = false
+  @State private var isNearBottom = true
+  /// The message at the top of the screen; holding it keeps the view still when older pages arrive above.
+  @State private var scrollAnchor: String?
+  @State private var scrollToLatestRequest = 0
 
   private var transcript: ChatTranscript { session.flatMap { workbench?.chats[$0.sessionId] } ?? ChatTranscript() }
   private var historyState: HostWorkbenchModel.HistoryState? { session.flatMap { workbench?.historyStates[$0.sessionId] } }
@@ -32,17 +36,30 @@ struct ConversationView: View {
           ForEach(transcript.messages) { message in
             ChatMessageView(message: message, piIsWorking: transcript.activity == .working)
           }
-          if transcript.activity == .working { AgentActivityView() }
+          if transcript.activity == .working {
+            AgentActivityView(callingTools: transcript.messages.contains { $0.tool?.status == .running })
+          }
           Color.clear.frame(height: 1).id("latest")
         }
+        .scrollTargetLayout()
         .padding(.horizontal, 20)
         .padding(.top, 24)
         .padding(.bottom, 20)
         .frame(maxWidth: .infinity, alignment: .leading)
       }
       .scrollDismissesKeyboard(.interactively)
-      .defaultScrollAnchor(.bottom)
-      .onChange(of: transcript.messages.last?.id) { withAnimation { proxy.scrollTo("latest", anchor: .bottom) } }
+      .scrollPosition(id: $scrollAnchor, anchor: .top)
+      .defaultScrollAnchor(.bottom, for: .initialOffset)
+      .onScrollGeometryChange(for: Bool.self) { geometry in
+        let bottom = max(0, geometry.contentSize.height + geometry.contentInsets.bottom - geometry.containerSize.height)
+        return geometry.contentOffset.y + geometry.contentInsets.top >= bottom - 60
+      } action: { _, nearBottom in
+        isNearBottom = nearBottom
+      }
+      .onChange(of: transcript.messages.last?.id) {
+        if isNearBottom { withAnimation { proxy.scrollTo("latest", anchor: .bottom) } }
+      }
+      .onChange(of: scrollToLatestRequest) { withAnimation { proxy.scrollTo("latest", anchor: .bottom) } }
       .refreshable { if let session { await workbench?.loadHistory(of: session.sessionId) } }
     }
   }
@@ -127,6 +144,18 @@ struct ConversationView: View {
     VStack(spacing: 10) {
       if let failure = workbench?.failure, !PreviewFixture.requested {
         Text(failure).font(.caption).foregroundStyle(.orange).padding(.horizontal, 24)
+      }
+      if !isNearBottom {
+        Button { scrollToLatestRequest += 1 } label: {
+          Image(systemName: "arrow.down")
+            .font(.system(size: 20, weight: .semibold))
+            .frame(width: 44, height: 44)
+            .contentShape(Capsule())
+        }
+        .buttonStyle(.plain)
+        .background(.regularMaterial, in: Capsule())
+        .shadow(color: .black.opacity(0.08), radius: 8, y: 3)
+        .accessibilityLabel("Jump to latest")
       }
       ChatComposer(
         draft: $draft, placeholder: "Read-only for now",

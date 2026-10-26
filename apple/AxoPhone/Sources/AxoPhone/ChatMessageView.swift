@@ -125,10 +125,13 @@ struct ChatEmptyState: View {
 
 /// Pi is busy; says so quietly under the last message.
 struct AgentActivityView: View {
+  /// A tool is running, as opposed to Pi only thinking.
+  let callingTools: Bool
+
   var body: some View {
     HStack(spacing: 8) {
       Image(systemName: "sparkles").foregroundStyle(.orange)
-      Text("Pi is working…").font(.subheadline.weight(.medium))
+      Text(callingTools ? "Pi is calling tools…" : "Pi is thinking…").font(.subheadline.weight(.medium))
       Spacer(minLength: 0)
       ProgressView().controlSize(.small).tint(.secondary)
     }

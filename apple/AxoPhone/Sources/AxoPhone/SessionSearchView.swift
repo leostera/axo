@@ -1,0 +1,90 @@
+import AxoPhoneModel
+import AxoProtocol
+import SwiftUI
+
+/// Finds a Session by its name or its Workspace, across every Mac. Names only, not conversation text.
+struct SessionSearchView: View {
+  let hosts: [RemoteHost]
+  let choose: (RemoteHost, RemoteSession) -> Void
+  @Environment(\.dismiss) private var dismiss
+  @FocusState private var searchFocused: Bool
+  @State private var query = ""
+
+  private struct Match: Identifiable {
+    let host: RemoteHost
+    let session: RemoteSession
+    var id: String { "\(host.hostId.uuidString)/\(session.sessionId)" }
+  }
+
+  private var trimmedQuery: String { query.trimmingCharacters(in: .whitespacesAndNewlines) }
+
+  private var matches: [Match] {
+    guard !trimmedQuery.isEmpty else { return [] }
+    return hosts.flatMap { host in
+      host.sessions.filter {
+        $0.displayName.localizedCaseInsensitiveContains(trimmedQuery)
+          || ($0.workspaceName ?? "").localizedCaseInsensitiveContains(trimmedQuery)
+      }.map { Match(host: host, session: $0) }
+    }
+  }
+
+  var body: some View {
+    NavigationStack {
+      List {
+        Section {
+          HStack(spacing: 8) {
+            Image(systemName: "magnifyingglass").foregroundStyle(.secondary)
+            TextField("Workspace or session name", text: $query)
+              .textInputAutocapitalization(.never)
+              .autocorrectionDisabled()
+              .focused($searchFocused)
+            if !query.isEmpty {
+              Button { query = "" } label: {
+                Image(systemName: "xmark.circle.fill").foregroundStyle(.secondary)
+              }
+              .accessibilityLabel("Clear search")
+            }
+          }
+        }
+        if trimmedQuery.isEmpty {
+          ContentUnavailableView(
+            "Search sessions", systemImage: "magnifyingglass",
+            description: Text("Search by session or workspace name."))
+        } else if matches.isEmpty {
+          ContentUnavailableView.search(text: query)
+        } else {
+          ForEach(matches) { match in
+            Button {
+              choose(match.host, match.session)
+              dismiss()
+            } label: {
+              VStack(alignment: .leading, spacing: 3) {
+                Text(match.session.displayName).font(.body)
+                Text([match.session.workspaceName, match.host.label].compactMap { $0 }.joined(separator: " · "))
+                  .font(.caption).foregroundStyle(.secondary)
+              }
+            }
+            .buttonStyle(.plain)
+          }
+        }
+        Text("Search uses session and workspace names only, not conversation text.")
+          .font(.footnote).foregroundStyle(.secondary)
+      }
+      .navigationTitle("Search")
+      .navigationBarTitleDisplayMode(.inline)
+      .toolbar {
+        ToolbarItem(placement: .topBarTrailing) {
+          Button { dismiss() } label: {
+            Image(systemName: "xmark")
+              .font(.system(size: 14, weight: .semibold))
+              .frame(width: 36, height: 36)
+              .background(.secondary.opacity(0.12), in: Circle())
+          }
+          .accessibilityLabel("Close search")
+        }
+      }
+    }
+    .presentationDetents([.large])
+    .task { searchFocused = true }
+  }
+}

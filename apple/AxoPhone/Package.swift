@@ -1,9 +1,9 @@
-// swift-tools-version: 5.9
+// swift-tools-version: 6.0
 import PackageDescription
 
 let package = Package(
   name: "AxoPhone",
-  platforms: [.macOS(.v14), .iOS(.v17)],
+  platforms: [.macOS(.v14), .iOS(.v18)],
   products: [.library(name: "AxoPhoneModel", targets: ["AxoPhoneModel"])],
   dependencies: [.package(path: "../AxoClient"), .package(path: "../AxoProtocol")],
   targets: [

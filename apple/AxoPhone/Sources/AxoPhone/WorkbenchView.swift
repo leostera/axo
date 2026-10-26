@@ -25,6 +25,7 @@ struct WorkbenchView: View {
   @State private var menuPresented = PreviewFixture.menuOpen
   @State private var menuDragOffset: CGFloat = 0
   @State private var showingSettings = PreviewFixture.settingsOpen
+  @State private var showingSearch = false
   @Environment(\.accessibilityReduceMotion) private var reduceMotion
   @AppStorage("appearance") private var appearance: AppAppearance = .system
   @AppStorage("accentColor") private var accentColor: AppAccentColor = .white
@@ -115,6 +116,12 @@ struct WorkbenchView: View {
     }
     .preferredColorScheme(appearance.colorScheme)
     .tint(accentColor.color)
+    .sheet(isPresented: $showingSearch) {
+      SessionSearchView(hosts: workbench.hosts.hosts) { host, session in
+        workbench.select(host: host.hostId, session: session.sessionId)
+        closeMenu()
+      }
+    }
     .sheet(isPresented: $showingSettings) {
       SettingsView(account: environment.account) {
         Task {
@@ -135,6 +142,15 @@ struct WorkbenchView: View {
         Text("Axo").font(.title2.weight(.semibold))
         Spacer(minLength: 8)
         if workbench.hosts.phase == .loading { ProgressView() }
+        Button { showingSearch = true } label: {
+          Image(systemName: "magnifyingglass")
+            .font(.system(size: 19, weight: .medium))
+            .frame(width: MenuLayout.controlSize, height: MenuLayout.controlSize)
+            .background(Color.primary.opacity(0.08), in: Circle())
+            .overlay { Circle().stroke(Color.primary.opacity(0.12), lineWidth: 0.5) }
+        }
+        .buttonStyle(.plain)
+        .accessibilityLabel("Search sessions")
       }
       .padding(.leading, MenuLayout.contentLeading)
       .padding(.trailing, MenuLayout.contentTrailing)
