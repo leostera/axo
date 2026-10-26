@@ -139,10 +139,9 @@ struct WorkbenchView: View {
   private var sidebar: some View {
     VStack(spacing: 0) {
       HStack(spacing: 10) {
-        OwnMascotView()
+        OwnMascotView(loading: workbench.hosts.phase == .loading)
           .frame(height: 34)
         Spacer(minLength: 8)
-        if workbench.hosts.phase == .loading { ProgressView() }
         Button { showingSearch = true } label: {
           Image(systemName: "magnifyingglass")
             .font(.system(size: 19, weight: .medium))

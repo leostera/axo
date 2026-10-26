@@ -15,6 +15,13 @@ final class Mascot: ObservableObject {
     static let covering = "covering"
     static let lookX = "lookX"
     static let lookY = "lookY"
+    static let loading = "loading"
+  }
+
+  enum Artboard {
+    static let face = "Face"
+    /// Square, with room to spin.
+    static let loader = "Loader"
   }
 
   /// Nil if the file is missing; the view then keeps its space empty.
@@ -23,10 +30,15 @@ final class Mascot: ObservableObject {
   var frame: CGRect = .zero
   private var pokes = MascotPokes()
 
-  init() {
+  init(artboard: String = Artboard.face) {
     rive = (try? RiveModel(fileName: "axo", extension: ".riv", in: .main, loadCdn: false)).map {
-      RiveViewModel($0, stateMachineName: "Mascot", fit: .contain, autoPlay: true, artboardName: "Face")
+      RiveViewModel($0, stateMachineName: "Mascot", fit: .contain, autoPlay: true, artboardName: artboard)
     }
+  }
+
+  /// Gills flutter and Axo bobs; on the `Loader` artboard it also spins.
+  func setLoading(_ loading: Bool) {
+    rive?.setInput(Input.loading, value: loading)
   }
 
   /// Looks towards `point` (global coordinates) while a finger is down; `screen` sets how far is
@@ -64,6 +76,7 @@ struct AxoMascotView: View {
   static let aspectRatio = 1064.0 / 564.0
 
   @ObservedObject var mascot: Mascot
+  var aspectRatio: Double = Self.aspectRatio
   @Environment(\.accessibilityReduceMotion) private var reduceMotion
 
   var body: some View {
@@ -72,7 +85,7 @@ struct AxoMascotView: View {
         rive.view()
       }
     }
-    .aspectRatio(Self.aspectRatio, contentMode: .fit)
+    .aspectRatio(aspectRatio, contentMode: .fit)
     .contentShape(Rectangle())
     .onTapGesture { mascot.poke() }
     .onGeometryChange(for: CGRect.self) { $0.frame(in: .global) } action: { mascot.frame = $0 }
@@ -85,11 +98,25 @@ struct AxoMascotView: View {
   }
 }
 
-/// A view that owns its own Axo.
+/// A view that owns its own Axo; while `loading`, its gills flutter and it bobs.
 struct OwnMascotView: View {
+  var loading = false
   @StateObject private var mascot = Mascot()
 
   var body: some View {
     AxoMascotView(mascot: mascot)
+      .onChange(of: loading, initial: true) { _, loading in mascot.setLoading(loading) }
+  }
+}
+
+/// Axo spinning while something loads, in place of a spinner.
+struct LoadingMascotView: View {
+  var label: String
+  @StateObject private var mascot = Mascot(artboard: Mascot.Artboard.loader)
+
+  var body: some View {
+    AxoMascotView(mascot: mascot, aspectRatio: 1)
+      .onAppear { mascot.setLoading(true) }
+      .accessibilityLabel(label)
   }
 }

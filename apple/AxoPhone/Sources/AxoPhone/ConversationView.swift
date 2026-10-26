@@ -72,7 +72,7 @@ struct ConversationView: View {
         .font(.caption).frame(maxWidth: .infinity)
         .onAppear(perform: loadOlder)
     case .loadingOlder:
-      ProgressView().frame(maxWidth: .infinity)
+      LoadingMascotView(label: "Loading earlier messages").frame(height: 44).frame(maxWidth: .infinity)
     default:
       EmptyView()
     }
@@ -89,7 +89,8 @@ struct ConversationView: View {
       if session == nil {
         ChatEmptyState(message: "Pick a session from the menu.")
       } else {
-        ProgressView("Loading the conversation…").frame(maxWidth: .infinity).padding(.vertical, 90)
+        LoadingMascotView(label: "Loading the conversation")
+          .frame(height: 120).frame(maxWidth: .infinity).padding(.vertical, 70)
       }
     case .failed(let message):
       ChatEmptyState(message: message)
