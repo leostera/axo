@@ -88,6 +88,7 @@ struct PendingTerminalPaneView: View {
     }
     .frame(maxWidth: .infinity, maxHeight: .infinity)
     .background(Color(nsColor: .textBackgroundColor))
+    .brightness(sessions.focusedShellID != nil ? -0.03 : 0)
     .accessibilityIdentifier("pending-terminal-pane")
     .task(id: pending.id) {
       try? await Task.sleep(for: Self.progressDelay)
@@ -104,8 +105,18 @@ struct TerminalPaneView: View {
   @State private var piRestartError: String?
   @State private var isRestartingPi = false
 
-  @ViewBuilder
   var body: some View {
+    paneContent
+      .brightness(isDimmed ? -0.03 : 0)
+  }
+
+  private var isDimmed: Bool {
+    guard let focusedShellID = sessions.focusedShellID else { return false }
+    return focusedShellID != shell.id
+  }
+
+  @ViewBuilder
+  private var paneContent: some View {
     if case .unavailable(let reason) = shell.availability {
       VStack(spacing: 12) {
         ContentUnavailableView(
