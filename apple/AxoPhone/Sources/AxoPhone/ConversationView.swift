@@ -30,7 +30,7 @@ struct ConversationView: View {
           olderHistory
           if transcript.messages.isEmpty { emptyState }
           ForEach(transcript.messages) { message in
-            ChatMessageView(message: message)
+            ChatMessageView(message: message, piIsWorking: transcript.activity == .working)
           }
           if transcript.activity == .working { AgentActivityView() }
           Color.clear.frame(height: 1).id("latest")

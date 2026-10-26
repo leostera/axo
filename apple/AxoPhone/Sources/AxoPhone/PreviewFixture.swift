@@ -32,6 +32,10 @@ enum PreviewFixture {
     }
 
     static func events(for session: SessionID) -> [StoredPiEvent] {
+      func raw(_ id: Int, _ message: String) -> StoredPiEvent {
+        let json = #"{"id":\#(id),"streamId":"41c77dd7-f2dc-4e91-b481-1507b62ec118","sequence":\#(id),"name":"message.end","data":{"message":\#(message)},"receivedAt":1}"#
+        return try! JSONDecoder().decode(StoredPiEvent.self, from: Data(json.utf8))
+      }
       func message(_ id: Int, _ role: String, _ text: String) -> StoredPiEvent {
         let escaped = text.replacingOccurrences(of: "\\", with: "\\\\").replacingOccurrences(of: "\"", with: "\\\"").replacingOccurrences(of: "\n", with: "\\n")
         let json = #"{"id":\#(id),"streamId":"41c77dd7-f2dc-4e91-b481-1507b62ec118","sequence":\#(id),"name":"message.end","data":{"message":{"role":"\#(role)","content":"\#(escaped)"}},"receivedAt":1}"#
@@ -42,6 +46,10 @@ enum PreviewFixture {
         message(1, "user", "Can you make the phone app feel like the old one again?"),
         message(2, "assistant", "Yes. Here is the plan:\n\n# Plan\n- Bring back the sliding **Sessions** menu\n- Chat-first layout with a rounded composer\n- Keep the terminal one tap away\n\nThe message box looks like this:\n\n```swift\nTextField(\"Message Axo\", text: $draft)\n    .padding(18)\n```\n\nI'll start with the menu."),
         message(3, "user", "Great, go ahead."),
+        raw(7, #"{"role":"assistant","timestamp":1792810292069,"content":[{"type":"thinking","thinking":"I should check the repository first."},{"type":"text","text":"Let me look at the project."},{"type":"toolCall","id":"c1","name":"bash","arguments":{"command":"git status --short --branch"}},{"type":"toolCall","id":"c2","name":"read","arguments":{"path":"apple/AxoPhone/README.md"}},{"type":"toolCall","id":"c3","name":"bash","arguments":{"command":"false"}}]}"#),
+        raw(8, #"{"role":"toolResult","toolCallId":"c1","content":[{"type":"text","text":"On branch main\n M apple/AxoPhone/Sources/AxoPhone/ChatMessageView.swift\n M apple/AxoPhone/Sources/AxoPhone/ConversationView.swift\n?? apple/AxoPhone/Sources/AxoPhone/ToolTranscriptView.swift\n M one\n M two\n M three"}],"isError":false}"#),
+        raw(9, #"{"role":"toolResult","toolCallId":"c2","content":"Axo Phone, the iPhone client.","isError":false}"#),
+        raw(10, #"{"role":"toolResult","toolCallId":"c3","content":"exit code 1","isError":true}"#),
         message(4, "assistant", "Done. Open the menu with the button at the top left, or swipe from the left edge."),
       ]
     }

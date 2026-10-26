@@ -3,19 +3,24 @@ import SwiftUI
 
 struct ChatMessageView: View {
   let message: ChatMessage
+  /// Pi is working now; a tool that has not answered is still running.
+  var piIsWorking = false
   @State private var copied = false
 
   var body: some View {
     switch message.role {
     case .user:
-      Text(message.text)
-        .font(.body).textSelection(.enabled)
-        .padding(.horizontal, 17).padding(.vertical, 13)
-        .background(Color.blue.opacity(0.24), in: RoundedRectangle(cornerRadius: 23))
-        .overlay(RoundedRectangle(cornerRadius: 23).stroke(Color.blue.opacity(0.34), lineWidth: 0.5))
-        .padding(.leading, 48)
-        .frame(maxWidth: .infinity, alignment: .trailing)
-        .contextMenu { copyButton; ShareLink(item: message.text) }
+      VStack(alignment: .trailing, spacing: 12) {
+        Text(message.text)
+          .font(.body).textSelection(.enabled)
+          .padding(.horizontal, 17).padding(.vertical, 13)
+          .background(Color.blue.opacity(0.24), in: RoundedRectangle(cornerRadius: 23))
+          .overlay(RoundedRectangle(cornerRadius: 23).stroke(Color.blue.opacity(0.34), lineWidth: 0.5))
+          .padding(.leading, 48)
+          .contextMenu { copyButton; ShareLink(item: message.text) }
+        if let timestamp = message.timestamp { MessageTimestamp(milliseconds: timestamp) }
+      }
+      .frame(maxWidth: .infinity, alignment: .trailing)
     case .assistant:
       VStack(alignment: .leading, spacing: 16) {
         ChatMarkdown(text: message.text)
@@ -23,18 +28,18 @@ struct ChatMessageView: View {
           copyButton
           ShareLink(item: message.text) { Image(systemName: "square.and.arrow.up") }
             .accessibilityLabel("Share response")
+          if let timestamp = message.timestamp { MessageTimestamp(milliseconds: timestamp) }
         }
         .font(.system(size: 16)).foregroundStyle(.secondary)
         .buttonStyle(.plain)
       }
       .frame(maxWidth: .infinity, alignment: .leading)
-    case .tool:
-      Label(message.text, systemImage: "wrench.and.screwdriver")
-        .font(.footnote)
-        .foregroundStyle(.secondary)
-        .padding(.horizontal, 12).padding(.vertical, 7)
-        .background(ChatColors.surface, in: Capsule())
+    case .thinking:
+      ChatMarkdown(text: message.text, isThinking: true)
         .frame(maxWidth: .infinity, alignment: .leading)
+        .accessibilityIdentifier("thinkingBlock")
+    case .tool:
+      if let tool = message.tool { ToolTranscriptView(tool: tool, piIsWorking: piIsWorking) }
     }
   }
 
@@ -51,6 +56,7 @@ struct ChatMessageView: View {
 /// (bold, links, `code`) comes from the text view. Remote images are never fetched.
 struct ChatMarkdown: View {
   let text: String
+  var isThinking = false
   @ScaledMetric(relativeTo: .body) private var bodySize = 18.0
 
   var body: some View {
@@ -82,7 +88,8 @@ struct ChatMarkdown: View {
         }
       }
     }
-    .font(.system(size: bodySize))
+    .font(.system(size: isThinking ? bodySize * 0.85 : bodySize))
+    .foregroundStyle(isThinking ? .secondary : .primary)
     .environment(\.openURL, OpenURLAction { url in
       ["https", "http"].contains(url.scheme?.lowercased() ?? "") ? .systemAction : .discarded
     })

@@ -30,20 +30,77 @@ final class ChatTranscriptTests: XCTestCase {
     XCTAssertEqual(transcript.messages.first?.text, "look\n[Image attachment]\nat this")
   }
 
-  func testThinkingAndToolResultsAreNotMessages() {
+  func testSystemMessagesAndBareToolResultsAreNotShown() {
     var transcript = ChatTranscript()
-    transcript.apply(message(1, role: "assistant", content: #"[{"type":"thinking","thinking":"hmm"}]"#))
-    transcript.apply(message(2, role: "toolResult", content: #""output""#))
-    transcript.apply(message(3, role: "system", content: #""setup""#))
+    transcript.apply(message(1, role: "toolResult", content: #""output""#))
+    transcript.apply(message(2, role: "system", content: #""setup""#))
     XCTAssertTrue(transcript.messages.isEmpty)
   }
 
-  func testToolCallsShowAsAQuietLineAfterTheReply() {
+  func testAReplyKeepsPiOrderReasoningWordsThenTools() {
     var transcript = ChatTranscript()
-    transcript.apply(event(1, "message.end", #"{"message":{"role":"assistant","content":[{"type":"text","text":"Checking"},{"type":"toolCall","name":"bash"},{"type":"toolCall","name":"bash"}]}}"#))
-    transcript.apply(event(2, "message.end", #"{"message":{"role":"assistant","content":[],"toolCalls":[{"name":"read"}]}}"#))
-    XCTAssertEqual(transcript.messages.map(\.role), [.assistant, .tool, .tool])
-    XCTAssertEqual(transcript.messages.map(\.text), ["Checking", "Using bash", "Using read"])
+    transcript.apply(event(1, "message.end", """
+      {"message":{"role":"assistant","timestamp":1792810292069,"content":[
+        {"type":"thinking","thinking":"Let me look"},
+        {"type":"text","text":"Checking"},{"type":"text","text":"the repo"},
+        {"type":"toolCall","id":"c1","name":"bash","arguments":{"command":"git status","timeout":10}},
+        {"type":"toolCall","id":"c2","name":"read","arguments":{"path":"README.md"}}]}}
+      """))
+    XCTAssertEqual(transcript.messages.map(\.role), [.thinking, .assistant, .tool, .tool])
+    XCTAssertEqual(transcript.messages[1].text, "Checking\nthe repo")
+    XCTAssertEqual(transcript.messages.map(\.timestamp), Array(repeating: 1792810292069, count: 4))
+    let shell = transcript.messages[2].tool
+    XCTAssertEqual(shell?.kind, .shell)
+    XCTAssertEqual(shell?.command, "git status")
+    XCTAssertNil(shell?.subtitle)
+    XCTAssertEqual(transcript.messages[3].tool?.subtitle, "README.md")
+    XCTAssertEqual(Set(transcript.messages.map(\.id)).count, 4, "each piece has its own id")
+  }
+
+  func testAToolResultFillsInTheToolThatAskedAndDoesNotAppearAsAMessage() {
+    var transcript = ChatTranscript()
+    transcript.apply(event(1, "message.end", #"{"message":{"role":"assistant","content":[{"type":"toolCall","id":"c1","name":"bash","arguments":{"command":"ls"}}]}}"#))
+    XCTAssertEqual(transcript.messages.first?.tool?.status, .running)
+    transcript.apply(event(2, "message.end", #"{"message":{"role":"toolResult","toolCallId":"c1","content":[{"type":"text","text":"a\nb"}],"isError":false}}"#))
+    XCTAssertEqual(transcript.messages.count, 1)
+    XCTAssertEqual(transcript.messages.first?.tool?.status, .completed)
+    XCTAssertEqual(transcript.messages.first?.tool?.output, "a\nb")
+  }
+
+  func testAFailedToolIsMarkedFailed() {
+    var transcript = ChatTranscript()
+    transcript.apply(event(1, "message.end", #"{"message":{"role":"assistant","content":[{"type":"toolCall","id":"c1","name":"bash","arguments":{"command":"false"}}]}}"#))
+    transcript.apply(event(2, "message.end", #"{"message":{"role":"toolResult","toolCallId":"c1","content":"boom","isError":true}}"#))
+    XCTAssertEqual(transcript.messages.first?.tool?.status, .failed)
+  }
+
+  func testAResultThatArrivedLiveStillAnswersAToolReadFromHistory() {
+    var transcript = ChatTranscript()
+    transcript.apply(event(2, "message.end", #"{"message":{"role":"toolResult","toolCallId":"c1","content":"done","isError":false}}"#))
+    transcript.merge(history: [
+      event(1, "message.end", #"{"message":{"role":"assistant","content":[{"type":"toolCall","id":"c1","name":"bash","arguments":{"command":"ls"}}]}}"#)
+    ])
+    XCTAssertEqual(transcript.messages.first?.tool?.status, .completed)
+    XCTAssertEqual(transcript.messages.first?.tool?.output, "done")
+  }
+
+  func testAResultThatArrivesBeforeItsCallStillAnswersItWhenTheCallArrives() {
+    var transcript = ChatTranscript()
+    transcript.apply(event(2, "message.end", #"{"message":{"role":"toolResult","toolCallId":"c1","content":"done","isError":false}}"#))
+    transcript.apply(event(1, "message.end", #"{"message":{"role":"assistant","content":[{"type":"toolCall","id":"c1","name":"bash","arguments":{"command":"ls"}}]}}"#))
+    XCTAssertEqual(transcript.messages.first?.tool?.status, .completed)
+  }
+
+  func testAResultOlderThanItsCallIsHeldUntilTheCallIsRead() {
+    // Older pages are read last, so a result can be read before the call that made it.
+    var transcript = ChatTranscript()
+    transcript.merge(history: [event(2, "message.end", #"{"message":{"role":"toolResult","toolCallId":"c1","content":"done","isError":false}}"#)])
+    XCTAssertTrue(transcript.messages.isEmpty)
+    transcript.merge(history: [
+      event(1, "message.end", #"{"message":{"role":"assistant","content":[{"type":"toolCall","id":"c1","name":"bash","arguments":{"command":"ls"}}]}}"#),
+      event(2, "message.end", #"{"message":{"role":"toolResult","toolCallId":"c1","content":"done","isError":false}}"#),
+    ])
+    XCTAssertEqual(transcript.messages.first?.tool?.status, .completed)
   }
 
   func testRepeatingAnEventNeverRepeatsAMessage() {
