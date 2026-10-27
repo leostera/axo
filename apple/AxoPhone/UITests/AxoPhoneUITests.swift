@@ -158,6 +158,19 @@ final class AxoPhoneUITests: XCTestCase {
   }
 
   @MainActor
+  func testHomeChatsAreListedUnderTheProjectsWithNoTitleOfTheirOwn() {
+    let app = launch()
+    app.buttons["Chats menu"].tapWhereItIs()
+    let lastProject = app.buttons["Website · Studio"]
+    let newest = app.buttons["Plan the week"]
+    let older = app.buttons["Draft the release notes"]
+    XCTAssertTrue(newest.waitForExistence(timeout: 5))
+    XCTAssertFalse(app.buttons["Home · Studio"].exists, "the open Mac's Home has no folding title")
+    XCTAssertGreaterThanOrEqual(newest.frame.minY, lastProject.frame.maxY, "under every project")
+    XCTAssertGreaterThanOrEqual(older.frame.minY, newest.frame.maxY, "newest first")
+  }
+
+  @MainActor
   func testChatsQuietForEightHoursWaitBehindAButtonAndAWorkspaceFoldsAway() {
     let app = launch()
     app.buttons["Chats menu"].tapWhereItIs()

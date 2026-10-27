@@ -77,7 +77,9 @@ enum PreviewFixture {
         {"hostId":"\(studio)","hostGeneration":"c3b6da28-55c0-4bb0-ac04-dd458fd41a2b","label":"Studio","hostKind":"macos","status":"online","stale":false,"lastSeenAt":"2026-10-16T00:00:00Z","sessions":[\
         \(session(studio, 1, "Ship the remote Workbench", "🦀", "Axo", status: "working", active: ago(20 * 60))),\
         \(session(studio, 2, "Fix the sidebar spacing", "🎨", "Axo", active: ago(2 * 3600))),\
-        \(session(studio, 3, "Explain the relay", "📡", "Axo", active: ago(3 * 3600)))]},
+        \(session(studio, 3, "Explain the relay", "📡", "Axo", active: ago(3 * 3600))),\
+        \(session(studio, 6, "Plan the week", "🗓️", "Home", active: ago(10 * 60))),\
+        \(session(studio, 7, "Draft the release notes", "📝", "Home", active: ago(5 * 3600)))]},
         {"hostId":"\(imac)","hostGeneration":"d3b6da28-55c0-4bb0-ac04-dd458fd41a2b","label":"Old iMac","hostKind":"macos","status":"offline","stale":true,"lastSeenAt":"2026-10-15T00:00:00Z","sessions":[\
         \(session(imac, 5, "Photo library cleanup", "📷", "Home", active: ago(12 * 86400)))]}]}
         """

@@ -9,9 +9,21 @@ public struct ChatMenuEntry: Equatable, Sendable {
 
 /// One Workspace's chats in the menu.
 public struct ChatMenuSection: Identifiable, Equatable, Sendable {
+  /// A project, listed by name and folded away by its title; or the Mac's Home Workspace, where
+  /// chats go by default, whose chats are listed after the projects without a title of their own.
+  public enum Kind: Equatable, Sendable { case project, home }
+
   public let id: String
   public let title: String
+  public let kind: Kind
   public let chats: [ChatMenuEntry]
+
+  public init(id: String, title: String, kind: Kind = .project, chats: [ChatMenuEntry]) {
+    self.id = id
+    self.title = title
+    self.kind = kind
+    self.chats = chats
+  }
 
   /// Chats active within this long are listed; older ones wait behind "Show older chats".
   public static let recentWindow: TimeInterval = 8 * 60 * 60
@@ -31,10 +43,11 @@ public struct ChatMenuSection: Identifiable, Equatable, Sendable {
   public var isBusy: Bool { chats.contains { $0.session.status == .working || $0.session.status == .needsAttention } }
 }
 
-/// The menu's chats, grouped by Workspace: the open Mac's Home Workspace first, then the rest in
-/// alphabetical order, so they stay where they are as chats come and go, and the chats within each the most recently active first.
-/// Bare terminals have no chat in them and are not listed; with several Macs a Workspace's title
-/// names its Mac.
+/// The menu's chats, grouped by Workspace: the projects in alphabetical order, so they stay where
+/// they are as chats come and go, then the open Mac's Home Workspace last, its chats under the
+/// projects; within each, the most recently active chat first. Bare terminals have no chat in them
+/// and are not listed; with several Macs a Workspace's title names its Mac. Only the open Mac's
+/// Workspaces are known, so another Mac's Home is listed as a project.
 public enum ChatMenu {
   /// `workspaces` are the open Mac's (`openHost`): those with no chat yet are listed too, in their
   /// place, so a new chat's place shows before it exists.
@@ -53,24 +66,24 @@ public enum ChatMenu {
         grouped[key, default: (title(workspace, on: host), [])].chats.append(ChatMenuEntry(host: host, session: session))
       }
     }
+    let homeIDs = Set(
+      workspaces.filter(\.isHome).compactMap { home in
+        openHost.map { "\($0.hostId.uuidString)/\(home.name)" }
+      })
+    func kind(_ key: String) -> ChatMenuSection.Kind { homeIDs.contains(key) ? .home : .project }
     var sections = grouped.map { key, group in
-      ChatMenuSection(id: key, title: group.title, chats: group.chats.sorted(by: isMoreRecent))
+      ChatMenuSection(id: key, title: group.title, kind: kind(key), chats: group.chats.sorted(by: isMoreRecent))
     }
     if let openHost {
       for workspace in workspaces {
         let key = "\(openHost.hostId.uuidString)/\(workspace.name)"
         if grouped[key] == nil, !sections.contains(where: { $0.id == key }) {
-          sections.append(ChatMenuSection(id: key, title: title(workspace.name, on: openHost), chats: []))
+          sections.append(ChatMenuSection(id: key, title: title(workspace.name, on: openHost), kind: kind(key), chats: []))
         }
       }
     }
-    let homeIDs = Set(
-      workspaces.filter(\.isHome).compactMap { home in
-        openHost.map { "\($0.hostId.uuidString)/\(home.name)" }
-      })
     return sections.sorted { a, b in
-      let (aIsHome, bIsHome) = (homeIDs.contains(a.id), homeIDs.contains(b.id))
-      return aIsHome != bIsHome ? aIsHome : isAlphabeticallyBefore(a, b)
+      a.kind != b.kind ? a.kind == .project : isAlphabeticallyBefore(a, b)
     }
   }
 

@@ -45,11 +45,12 @@ final class ChatMenuTests: XCTestCase {
     XCTAssertEqual(menu[1].chats, [])
   }
 
-  func testTheHomeWorkspaceIsAlwaysListedFirst() throws {
+  func testProjectsComeFirstAndTheHomeWorkspacesChatsGoUnderThemNewestFirst() throws {
     let id = UUID()
     let sessions = [
-      session(1, on: id, workspace: "Axo", at: "2026-10-27T10:00:00Z"),
-      session(2, on: id, workspace: "Home", at: "2026-10-20T10:00:00Z"),
+      session(1, on: id, workspace: "Axo", at: "2026-10-20T10:00:00Z"),
+      session(2, on: id, workspace: "Home", at: "2026-10-27T09:00:00Z"),
+      session(3, on: id, workspace: "Home", at: "2026-10-27T11:00:00Z"),
     ]
     let studio = host("Studio", sessions, id: id)
     let home = try JSONDecoder().decode(
@@ -59,7 +60,15 @@ final class ChatMenuTests: XCTestCase {
     let menu = ChatMenu.sections(hosts: [studio], sessionsOf: { _ in sessions }, openHost: studio, workspaces: [
       home, workspace("Axo"), workspace("A first"),
     ])
-    XCTAssertEqual(menu.map(\.title), ["Home", "A first", "Axo"], "Home first, the rest alphabetically")
+    XCTAssertEqual(menu.map(\.title), ["A first", "Axo", "Home"], "projects alphabetically, however recent; Home last")
+    XCTAssertEqual(menu.map(\.kind), [.project, .project, .home])
+    XCTAssertEqual(menu[2].chats.map(\.session.sessionId), [3, 2], "Home's chats newest first")
+
+    let unflagged = ChatMenu.sections(hosts: [studio], sessionsOf: { _ in sessions }, openHost: studio, workspaces: [
+      workspace("Home"), workspace("Axo"),
+    ])
+    XCTAssertEqual(unflagged.map(\.kind), [.project, .project], "a Workspace merely named Home is a project")
+    XCTAssertEqual(unflagged.map(\.title), ["Axo", "Home"])
   }
 
   func testWithSeveralMacsTheWorkspaceNamesItsMacAndTiesKeepTheNewerChatFirst() {

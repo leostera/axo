@@ -215,9 +215,17 @@ struct WorkbenchView: View {
             .padding(.horizontal, MenuLayout.rowInset + MenuLayout.rowTextInset)
         }
         ForEach(sections) { section in
-          let collapsed = collapsedWorkspaces.contains(section.id)
-          sectionHeader(section, collapsed: collapsed, first: section.id == sections.first?.id)
-          if !collapsed { sectionChats(section) }
+          switch section.kind {
+          case .project:
+            let collapsed = collapsedWorkspaces.contains(section.id)
+            sectionHeader(section, collapsed: collapsed, first: section.id == sections.first?.id)
+            if !collapsed { sectionChats(section) }
+          case .home:
+            // Home's chats are the everyday ones: listed under the projects, newest first,
+            // with no title to fold them away.
+            Color.clear.frame(height: section.id == sections.first?.id ? 4 : MenuLayout.sectionTopSpacing + 8)
+            sectionChats(section)
+          }
         }
         if sections.isEmpty {
           if workbench.hosts.hosts.isEmpty, workbench.hosts.phase == .loaded {
@@ -238,7 +246,9 @@ struct WorkbenchView: View {
     .scrollIndicators(.hidden)
     .softLayerEdges()
     .background(ChatColors.background.ignoresSafeArea())
-    .refreshable { await workbench.refresh() }
+    // SwiftUI cancels a refresh's task when the list redraws under it (which the refresh itself
+    // causes); a reload of its own finishes, so the pull never ends in a cancellation.
+    .refreshable { await Task { await workbench.refresh() }.value }
     .accessibilityIdentifier("workbench-menu")
     .layerBar(edge: .top) { menuHeader }
     .layerBar(edge: .bottom) { menuFooter }
@@ -322,7 +332,7 @@ struct WorkbenchView: View {
       .buttonStyle(.layerRow)
       .padding(.horizontal, MenuLayout.rowInset)
     }
-    if section.chats.isEmpty {
+    if section.chats.isEmpty, section.kind == .project {
       Text("No chats yet")
         .font(.callout).foregroundStyle(.tertiary)
         .padding(.horizontal, MenuLayout.rowInset + MenuLayout.rowTextInset)
@@ -525,7 +535,7 @@ private struct HostsPanel: View {
     }
     .scrollIndicators(.hidden)
     .softLayerEdges()
-    .refreshable { await refresh() }
+    .refreshable { await Task { await refresh() }.value }
     .frame(maxWidth: .infinity, alignment: .leading)
     .background(ChatColors.background.ignoresSafeArea())
     .layerBar(edge: .top) {
@@ -663,7 +673,7 @@ private struct HostRow: View {
         case "axo.protocol.negotiate": #"{"protocolVersion":1,"methods":[]}"#
         case "axo.host.subscribe": #"{"subscriptionId":"\#(UUID().uuidString)"}"#
         case "axo.remote.workspace.list":
-          #"{"workspaces":[{"workspaceId":"\#(UUID().uuidString)","name":"Axo"},{"workspaceId":"\#(UUID().uuidString)","name":"Website"}]}"#
+          #"{"workspaces":[{"workspaceId":"\#(UUID().uuidString)","name":"Home","home":true},{"workspaceId":"\#(UUID().uuidString)","name":"Axo"},{"workspaceId":"\#(UUID().uuidString)","name":"Website"}]}"#
         case "axo.remote.session.key": #"{"accepted":true}"#
         default: nil
         }
