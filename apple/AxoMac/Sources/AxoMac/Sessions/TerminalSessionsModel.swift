@@ -342,8 +342,10 @@ final class TerminalSessionsModel {
           "Workspace creation did not return its first Session.")
       }
       if !workspaces.contains(where: { $0.id == created.workspace.id }) {
+        // As Axod lists them: Home first, the rest by name.
         workspaces = (workspaces + [created.workspace]).sorted {
-          $0.name.localizedStandardCompare($1.name) == .orderedAscending
+          if $0.isHome != $1.isHome { return $0.isHome }
+          return $0.name.localizedStandardCompare($1.name) == .orderedAscending
         }
       }
       adopt(created.session)

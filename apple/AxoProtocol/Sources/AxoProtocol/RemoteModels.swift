@@ -77,6 +77,26 @@ public struct RemoteHostList: Decodable, Equatable, Sendable {
 public struct RemoteWorkspace: Decodable, Equatable, Sendable {
   public let workspaceId: UUID
   public let name: String
+  /// The Home Workspace, which is listed first.
+  public let isHome: Bool
+
+  public init(workspaceId: UUID, name: String, isHome: Bool = false) {
+    self.workspaceId = workspaceId
+    self.name = name
+    self.isHome = isHome
+  }
+
+  private enum CodingKeys: String, CodingKey {
+    case workspaceId, name
+    case isHome = "home"
+  }
+
+  public init(from decoder: any Decoder) throws {
+    let container = try decoder.container(keyedBy: CodingKeys.self)
+    workspaceId = try container.decode(UUID.self, forKey: .workspaceId)
+    name = try container.decode(String.self, forKey: .name)
+    isHome = try container.decodeIfPresent(Bool.self, forKey: .isHome) ?? false
+  }
 }
 
 public struct RemoteWorkspaceList: Decodable, Equatable, Sendable {

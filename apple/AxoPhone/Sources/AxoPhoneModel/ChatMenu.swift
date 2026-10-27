@@ -31,8 +31,8 @@ public struct ChatMenuSection: Identifiable, Equatable, Sendable {
   public var isBusy: Bool { chats.contains { $0.session.status == .working || $0.session.status == .needsAttention } }
 }
 
-/// The menu's chats, grouped by Workspace: the Workspaces in alphabetical order, so they stay
-/// where they are as chats come and go, and the chats within each the most recently active first.
+/// The menu's chats, grouped by Workspace: the open Mac's Home Workspace first, then the rest in
+/// alphabetical order, so they stay where they are as chats come and go, and the chats within each the most recently active first.
 /// Bare terminals have no chat in them and are not listed; with several Macs a Workspace's title
 /// names its Mac.
 public enum ChatMenu {
@@ -64,7 +64,14 @@ public enum ChatMenu {
         }
       }
     }
-    return sections.sorted(by: isAlphabeticallyBefore)
+    let homeIDs = Set(
+      workspaces.filter(\.isHome).compactMap { home in
+        openHost.map { "\($0.hostId.uuidString)/\(home.name)" }
+      })
+    return sections.sorted { a, b in
+      let (aIsHome, bIsHome) = (homeIDs.contains(a.id), homeIDs.contains(b.id))
+      return aIsHome != bIsHome ? aIsHome : isAlphabeticallyBefore(a, b)
+    }
   }
 
   /// By title, as people read them: case and accents aside, numbers by value.

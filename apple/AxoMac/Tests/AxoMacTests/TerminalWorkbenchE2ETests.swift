@@ -440,7 +440,6 @@ final class TerminalWorkbenchE2ETests: XCTestCase {
 
     try await withWorkbench { model, _ in
       let firstHomeID = try XCTUnwrap(model.selectedSessionID)
-      // "A Project" sorts before "Home".
       await model.createWorkspace(
         name: "A Project",
         directoryPath: directory.path,
@@ -453,14 +452,13 @@ final class TerminalWorkbenchE2ETests: XCTestCase {
       await model.createSession()
       let secondHomeID = try XCTUnwrap(model.selectedSessionID)
 
-      let sidebarOrder = [
-        firstWorkspaceSessionID,
-        secondWorkspaceSessionID,
-        firstHomeID,
-        secondHomeID,
-      ]
-      XCTAssertEqual(Set(model.sidebarOrderedSessions.prefix(2).map(\.id)), Set(sidebarOrder.prefix(2)))
-      XCTAssertEqual(Set(model.sidebarOrderedSessions.suffix(2).map(\.id)), Set(sidebarOrder.suffix(2)))
+      // Home is listed first, although "A Project" sorts before it by name.
+      XCTAssertEqual(model.workspaces.map(\.isHome), [true, false])
+      XCTAssertEqual(
+        Set(model.sidebarOrderedSessions.prefix(2).map(\.id)), [firstHomeID, secondHomeID])
+      XCTAssertEqual(
+        Set(model.sidebarOrderedSessions.suffix(2).map(\.id)),
+        [firstWorkspaceSessionID, secondWorkspaceSessionID])
 
       let ordered = model.sidebarOrderedSessions.map(\.id)
       model.showSession(ordered[0])

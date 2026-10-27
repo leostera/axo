@@ -45,6 +45,23 @@ final class ChatMenuTests: XCTestCase {
     XCTAssertEqual(menu[1].chats, [])
   }
 
+  func testTheHomeWorkspaceIsAlwaysListedFirst() throws {
+    let id = UUID()
+    let sessions = [
+      session(1, on: id, workspace: "Axo", at: "2026-10-27T10:00:00Z"),
+      session(2, on: id, workspace: "Home", at: "2026-10-20T10:00:00Z"),
+    ]
+    let studio = host("Studio", sessions, id: id)
+    let home = try JSONDecoder().decode(
+      RemoteWorkspace.self,
+      from: Data(#"{"workspaceId":"\#(UUID().uuidString)","name":"Home","home":true}"#.utf8))
+    XCTAssertTrue(home.isHome)
+    let menu = ChatMenu.sections(hosts: [studio], sessionsOf: { _ in sessions }, openHost: studio, workspaces: [
+      home, workspace("Axo"), workspace("A first"),
+    ])
+    XCTAssertEqual(menu.map(\.title), ["Home", "A first", "Axo"], "Home first, the rest alphabetically")
+  }
+
   func testWithSeveralMacsTheWorkspaceNamesItsMacAndTiesKeepTheNewerChatFirst() {
     let (a, b) = (UUID(), UUID())
     let left = [session(1, on: a, workspace: "Axo", at: "2026-10-20T10:00:00Z"), session(2, on: a, workspace: "Axo", at: "2026-10-20T10:00:00Z")]

@@ -213,6 +213,9 @@ pub struct WorkspaceRecord {
 pub struct RemoteWorkspace {
     pub workspace_id: String,
     pub name: String,
+    /// The Home Workspace, which clients list first. Omitted for every other Workspace.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub home: bool,
 }
 
 impl From<&WorkspaceRecord> for RemoteWorkspace {
@@ -220,6 +223,7 @@ impl From<&WorkspaceRecord> for RemoteWorkspace {
         RemoteWorkspace {
             workspace_id: record.workspace_id.clone(),
             name: record.name.clone(),
+            home: record.home,
         }
     }
 }

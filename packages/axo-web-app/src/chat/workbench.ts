@@ -12,6 +12,8 @@ import { ChatTranscript, type PiEventRecord } from "./transcript.ts";
 export interface Workspace {
   readonly workspaceId: string;
   readonly name: string;
+  /** The Home Workspace, which is listed first. */
+  readonly home?: true;
 }
 
 /** What the workbench needs of a live connection to a Mac (`HostRelayConnection`). */
@@ -124,10 +126,10 @@ function moreRecent(a: ChatMenuEntry, b: ChatMenuEntry): number {
 }
 
 /**
- * The menu's chats, grouped by Workspace: the Workspaces in alphabetical order, so they stay where
- * they are as chats come and go, and the chats within each the most recently active first. The
- * open Mac's Workspaces with no chat yet are listed in their place. With several Macs a
- * Workspace's title names its Mac.
+ * The menu's chats, grouped by Workspace: the open Mac's Home Workspace first, then the rest in
+ * alphabetical order, so they stay where they are as chats come and go, and the chats within each
+ * the most recently active first. The open Mac's Workspaces with no chat yet are listed in their
+ * place. With several Macs a Workspace's title names its Mac.
  */
 export function chatMenu(hosts: readonly Host[], openHostId: string | null, workspaces: readonly Workspace[]): ChatMenuSection[] {
   const title = (workspace: string, host: Host) => hosts.length > 1 ? `${workspace} · ${host.label}` : workspace;
@@ -150,7 +152,9 @@ export function chatMenu(hosts: readonly Host[], openHostId: string | null, work
       if (!grouped.has(id)) sections.push({ id, title: title(workspace.name, open), host: open, workspaceId: workspace.workspaceId, chats: [] });
     }
   }
-  return sections.sort((a, b) => alphabetical.compare(a.title, b.title) || a.id.localeCompare(b.id));
+  const homeIds = new Set(open ? workspaces.filter(workspace => workspace.home).map(home => `${open.hostId}/${home.name}`) : []);
+  const isHome = (section: ChatMenuSection) => homeIds.has(section.id) ? 0 : 1;
+  return sections.sort((a, b) => isHome(a) - isHome(b) || alphabetical.compare(a.title, b.title) || a.id.localeCompare(b.id));
 }
 
 /** Chats active within this long are listed; older ones wait behind "Show older chats". */

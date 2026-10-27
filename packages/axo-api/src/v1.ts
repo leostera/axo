@@ -228,7 +228,7 @@ export const hostSessionsListResultSchema = z.object({
 export const hostSubscribeResultSchema = z.object({ subscriptionId: z.uuid() }).strict();
 export const hostUnsubscribeResultSchema = z.object({ unsubscribed: z.literal(true) }).strict();
 export const remoteWorkspaceListResultSchema = z.object({
-  workspaces: z.array(z.object({ workspaceId: z.uuid(), name: z.string().min(1).max(256) }).strict()).max(256),
+  workspaces: z.array(z.object({ workspaceId: z.uuid(), name: z.string().min(1).max(256), home: z.literal(true).optional() }).strict()).max(256),
 }).strict();
 export const remoteSessionCreateResultSchema = z.object({ session: sessionSnapshotSchema }).strict();
 export const remoteSessionCloseResultSchema = z.object({

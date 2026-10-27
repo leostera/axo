@@ -850,12 +850,13 @@ pub fn bind_pi_session_id(
     expect_one_row(changed, "Pi Session binding changed")
 }
 
+/// Open Workspaces, Home first and the rest by name.
 pub fn list_open_workspaces(database: &Connection) -> io::Result<Vec<WorkspaceRecord>> {
     let mut statement = database
         .prepare(
             "SELECT workspace_id, name, directory_path, \
                  workspace_id IS (SELECT value FROM daemon_metadata WHERE key = ?1) \
-             FROM workspaces WHERE state = 'open' ORDER BY name, workspace_id",
+             FROM workspaces WHERE state = 'open' ORDER BY 4 DESC, name, workspace_id",
         )
         .map_err(io::Error::other)?;
     statement
@@ -1856,7 +1857,8 @@ mod tests {
             Path::new("/Users/me")
         );
         let other = new_uuid_v4().unwrap();
-        super::insert_workspace(database, &other, "Project", Path::new("/p"), None).unwrap();
+        // "A Project" sorts before "Home" by name, yet Home is listed first.
+        super::insert_workspace(database, &other, "A Project", Path::new("/p"), None).unwrap();
         let listed: Vec<_> = list_open_workspaces(database)
             .unwrap()
             .into_iter()
@@ -1864,7 +1866,7 @@ mod tests {
             .collect();
         assert_eq!(
             listed,
-            [("Home".to_owned(), true), ("Project".to_owned(), false)]
+            [("Home".to_owned(), true), ("A Project".to_owned(), false)]
         );
         assert_eq!(
             open_session_workspace_id(database, standalone).unwrap(),
