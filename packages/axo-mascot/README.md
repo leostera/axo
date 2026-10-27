@@ -31,6 +31,7 @@ Each artboard runs the `Mascot` state machine, in layers (a later layer wins a p
 | Eyes | Random waits of 2, 4 or 7 s, then a blink or (1 in 5) a double blink. | `blink` |
 | Hands (`Face` only) | Hands come up over the eyes. | `covering` |
 | Loading | Gills flutter and Axo bobs; on `Loader` it also hops and spins. | `loading` |
+| Squeeze | Eyes squeezed >_< and held, no shake. | `squeezed` |
 | Reactions | `poke`: "oh!", then a ^_^ giggle. `annoyed`: a shake, eyes squeezed >_<. `happy`: a bounce and ^_^. | `poke`, `annoyed`, `happy` |
 
 These are state machine inputs, which the web runtime and the Apple runtime's `RiveViewModel` take;

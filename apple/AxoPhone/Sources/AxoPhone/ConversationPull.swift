@@ -11,13 +11,16 @@ final class ConversationPull {
   @ObservationIgnored var touching = false
 }
 
-/// The Axo in the middle of an empty chat, as the pull plays it: it gets nervous as it is drawn
-/// (trembles, squashes, flutters, squeezes >_< when drawn all the way), is slung off the top of
-/// the screen when let go, and springs back in ^_^ when the refresh is over.
+/// The Axo in the middle of an empty chat, as the pull plays it: it is squished as it is drawn
+/// (and squeezes its eyes >_< once drawn all the way), is slung off the top of the screen when
+/// let go, and drops straight back into place ^_^ when the refresh is over.
 struct SlingMascotView: View {
   let pull: ConversationPull
   @StateObject private var mascot = Mascot()
+  /// Off the top of the screen.
   @State private var slung = false
+  /// Its turn as it is slung; only on the way up.
+  @State private var spin: Double = 0
   @Environment(\.accessibilityReduceMotion) private var reduceMotion
 
   private var phase: PullToRefresh.Phase { pull.state.phase }
@@ -29,43 +32,41 @@ struct SlingMascotView: View {
   }
 
   var body: some View {
-    TimelineView(.animation(paused: tension < 0.3)) { context in
-      AxoMascotView(mascot: mascot, rubbable: false)
-        .scaleEffect(x: 1 + 0.08 * tension, y: 1 - 0.12 * tension, anchor: .bottom)
-        .offset(x: tremble(at: context.date), y: 14 * tension)
-    }
-    .rotationEffect(.degrees(slung ? -540 : 0))
-    .offset(y: slung ? -900 : 0)
+    AxoMascotView(mascot: mascot, rubbable: false)
+      .scaleEffect(x: 1 + 0.14 * tension, y: 1 - 0.22 * tension, anchor: .bottom)
+      .offset(y: 10 * tension)
+      .animation(.interactiveSpring, value: tension)
+      .rotationEffect(.degrees(spin))
+      .offset(y: slung ? -900 : 0)
     .onChange(of: phase) { old, new in react(from: old, to: new) }
     .sensoryFeedback(.impact(weight: .light), trigger: phase) { _, new in new == .armed }
-  }
-
-  /// Shaking more the further it is drawn.
-  private func tremble(at date: Date) -> CGFloat {
-    guard tension >= 0.3 else { return 0 }
-    return sin(date.timeIntervalSinceReferenceDate * 70) * 2.5 * tension
   }
 
   private func react(from old: PullToRefresh.Phase, to new: PullToRefresh.Phase) {
     switch new {
     case .pulling:
-      if old == .idle { mascot.setLoading(true) }
+      mascot.setSqueezed(false)
     case .armed:
-      mascot.react(.annoyed)
+      mascot.setSqueezed(true)
     case .refreshing:
-      mascot.setLoading(false)
+      mascot.setSqueezed(false)
       guard !reduceMotion else { return }
-      withAnimation(.easeIn(duration: 0.3)) { slung = true }
+      withAnimation(.easeIn(duration: 0.3)) {
+        slung = true
+        spin = -540
+      }
     case .idle:
-      mascot.setLoading(false)
+      mascot.setSqueezed(false)
       guard old == .refreshing else { return }
-      if slung {
-        withAnimation(.spring(response: 0.6, dampingFraction: 0.55)) { slung = false }
-        Task {
-          try? await Task.sleep(for: .milliseconds(350))
-          mascot.react(.happy)
-        }
-      } else {
+      guard slung else {
+        mascot.react(.happy)
+        return
+      }
+      // Upright again while out of sight, so it falls without turning; then it just lands.
+      spin = 0
+      withAnimation(.easeOut(duration: 0.4)) { slung = false }
+      Task {
+        try? await Task.sleep(for: .milliseconds(400))
         mascot.react(.happy)
       }
     }

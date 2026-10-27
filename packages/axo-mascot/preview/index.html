@@ -22,6 +22,7 @@
     <button id="happy">Happy</button>
     <label><input type="checkbox" id="covering"> Cover eyes</label>
     <label><input type="checkbox" id="loading"> Loading</label>
+    <label><input type="checkbox" id="squeezed"> Squeezed</label>
   </p>
   <div class="row">
     <figure><canvas data-artboard="Icon" width="512" height="512" style="width:256px;height:256px"></canvas><figcaption>Icon</figcaption></figure>
@@ -54,7 +55,7 @@
     for (const trigger of ["blink", "poke", "annoyed", "happy"]) {
       document.getElementById(trigger).addEventListener("click", () => all(trigger, (i) => i.fire()));
     }
-    for (const name of ["covering", "loading"]) {
+    for (const name of ["covering", "loading", "squeezed"]) {
       document.getElementById(name).addEventListener("change", (event) => all(name, (i) => (i.value = event.target.checked)));
     }
     // Each mascot looks from its own centre towards the pointer.

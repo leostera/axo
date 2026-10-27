@@ -42,6 +42,8 @@ export const MascotContract = {
     covering: "covering",
     /** Waiting on something: gills flutter and Axo bobs; on `Loader` it also spins. */
     loading: "loading",
+    /** Eyes squeezed shut >_< and held, with no shake: braced for something (a pull-to-refresh). */
+    squeezed: "squeezed",
   },
   /** Where to look, from -100 (left, up) to 100 (right, down). */
   numbers: { lookX: "lookX", lookY: "lookY" },
@@ -495,6 +497,22 @@ function addMascotMachine(board: ArtboardBuilder, rig: Rig, options: { spins?: b
       { name: "loading", animation: loading, transitions: [{ to: "still", when: { bool: bools.loading, is: false }, mixMs: 250 }] },
     ],
   });
+  // Squeezed: >_< held for as long as the app says. Before Reactions, so a reaction still wins.
+  const eyesKeys = (squeezed: boolean) => [
+    ...hold(rig.eyes, "opacity", squeezed ? 0 : 1),
+    ...hold(rig.squeezedEyes, "opacity", squeezed ? 1 : 0),
+  ];
+  const open = board.animation({ name: "eyes-open", duration: 60, loop: Loop.loop, tracks: eyesKeys(false) });
+  const shut = board.animation({ name: "eyes-squeezed", duration: 60, loop: Loop.loop, tracks: eyesKeys(true) });
+  layers.push({
+    name: "Squeeze",
+    entry: "open",
+    any: [],
+    states: [
+      { name: "open", animation: open, transitions: [{ to: "squeezed", when: { bool: bools.squeezed, is: true }, mixMs: 80 }] },
+      { name: "squeezed", animation: shut, transitions: [{ to: "open", when: { bool: bools.squeezed, is: false }, mixMs: 120 }] },
+    ],
+  });
   // Last, so a reaction's face wins over blinking.
   layers.push({
     name: "Reactions",
@@ -523,6 +541,7 @@ function addMascotMachine(board: ArtboardBuilder, rig: Rig, options: { spins?: b
       { kind: "bool", name: bools.tracking },
       { kind: "bool", name: bools.covering },
       { kind: "bool", name: bools.loading },
+      { kind: "bool", name: bools.squeezed },
       { kind: "number", name: numbers.lookX },
       { kind: "number", name: numbers.lookY },
     ],

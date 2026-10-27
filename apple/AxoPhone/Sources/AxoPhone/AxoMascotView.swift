@@ -17,6 +17,7 @@ final class Mascot: ObservableObject {
     static let lookX = "lookX"
     static let lookY = "lookY"
     static let loading = "loading"
+    static let squeezed = "squeezed"
   }
 
   enum Artboard {
@@ -36,6 +37,11 @@ final class Mascot: ObservableObject {
     rive = (try? RiveModel(fileName: "axo", extension: ".riv", in: .main, loadCdn: false)).map {
       RiveViewModel($0, stateMachineName: "Mascot", fit: .contain, autoPlay: true, artboardName: artboard)
     }
+  }
+
+  /// Eyes squeezed >_< and held, with no shake.
+  func setSqueezed(_ squeezed: Bool) {
+    rive?.setInput(Input.squeezed, value: squeezed)
   }
 
   /// Gills flutter and Axo bobs; on the `Loader` artboard it also spins.
