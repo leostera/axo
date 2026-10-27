@@ -104,6 +104,29 @@ final class JSONRPCConnectionTests: XCTestCase {
     _ = try await again
   }
 
+  func testLosingTheConnectionInUseIsReportedOnceAndAReplacementIsNot() async throws {
+    let transport = FakeTransport()
+    let rpc = JSONRPCConnection(transport: transport)
+    var losses = rpc.connectionLost.makeAsyncIterator()
+
+    async let first: Echo = rpc.call("echo", params: Echo(value: "a"), timeout: Self.wait)
+    let channel = try await transport.channel(0)
+    channel.reply(to: try await channel.requests(count: 1)[0].id, result: #"{"value":"a"}"#)
+    _ = try await first
+    channel.endFromPeer()
+    let lost: Void? = await losses.next()
+    XCTAssertNotNil(lost, "the end of the connection in use is reported")
+
+    // Connecting again (and the next loss) is reported anew; a connect that fails is not a loss.
+    async let second: Echo = rpc.call("echo", params: Echo(value: "b"), timeout: Self.wait)
+    let replacement = try await transport.channel(1)
+    replacement.reply(to: try await replacement.requests(count: 1)[0].id, result: #"{"value":"b"}"#)
+    _ = try await second
+    await rpc.disconnect()
+    let lostAgain: Void? = await losses.next()
+    XCTAssertNotNil(lostAgain)
+  }
+
   func testACallWhoseRequestCannotBeSentFailsAtOnce() async throws {
     let transport = FakeTransport()
     let rpc = JSONRPCConnection(transport: transport)

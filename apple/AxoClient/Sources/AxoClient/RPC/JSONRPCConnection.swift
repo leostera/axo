@@ -24,6 +24,12 @@ public actor JSONRPCConnection {
   private let encoder = JSONEncoder()
   private let decoder = JSONDecoder()
   private let notificationSink: AsyncStream<JSONRPCNotification>.Continuation
+  private let lossSink: AsyncStream<Void>.Continuation
+
+  /// Yields each time the connection in use ends (dropped, or `disconnect()`) with no newer one
+  /// to take over. Notifications stop until the next call connects again, so a caller that wants
+  /// them reconnects. Never finishes on its own.
+  public nonisolated let connectionLost: AsyncStream<Void>
 
   /// Messages the host sent without being asked (JSON-RPC notifications), in order, from every
   /// connection this object opens. Never finishes on its own.
@@ -50,6 +56,7 @@ public actor JSONRPCConnection {
     self.handshake = handshake
     (notifications, notificationSink) = AsyncStream.makeStream(
       bufferingPolicy: .bufferingNewest(1024))
+    (connectionLost, lossSink) = AsyncStream.makeStream(bufferingPolicy: .bufferingNewest(1))
   }
 
   /// Calls `method` and decodes its result, or fails with an `AxoClientError` (or
@@ -86,6 +93,12 @@ public actor JSONRPCConnection {
     return try decodeResult(reply)
   }
 
+  /// Opens a connection (running its handshake) if there is none, without calling anything.
+  public func connect() async throws {
+    try Task.checkCancellation()
+    _ = try await openLink()
+  }
+
   /// Closes the connection now. Calls in flight fail with `connectionClosed`; the next call
   /// connects again.
   public func disconnect() {
@@ -99,6 +112,8 @@ public actor JSONRPCConnection {
     let channel: any AxoMessageChannel
     var inFlight = 0
     var isRetired = false
+    /// It passed its handshake and served calls (and notifications).
+    var wasCurrent = false
 
     init(channel: any AxoMessageChannel) {
       self.channel = channel
@@ -137,6 +152,7 @@ public actor JSONRPCConnection {
       }
     }
     current = link
+    link.wasCurrent = true
     return link
   }
 
@@ -191,7 +207,11 @@ public actor JSONRPCConnection {
   }
 
   private func linkEnded(_ link: Link) {
+    // Once only: a link ends by being closed here and again when its reader sees the close.
+    let lost = link.wasCurrent && (current == nil || current === link)
+    link.wasCurrent = false
     retire(link)
+    if lost { lossSink.yield() }
     for (id, call) in calls where call.link === link {
       end(id, with: .failure(AxoClientError.connectionClosed))
     }

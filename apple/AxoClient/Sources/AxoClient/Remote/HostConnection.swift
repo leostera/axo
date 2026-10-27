@@ -11,6 +11,10 @@ public final class HostConnection: Sendable {
   /// the relay sends nothing else on this connection that a caller needs.
   public let events: AsyncStream<RemoteHostEvent>
 
+  /// Yields when the connection to the relay ends; events stop until a call (such as
+  /// `subscribe()`) connects again.
+  public var connectionLost: AsyncStream<Void> { rpc.connectionLost }
+
   private let rpc: JSONRPCConnection
   private let relayTask: Task<Void, Never>
   private let wantsEvents = EventsWanted()
@@ -84,6 +88,12 @@ public final class HostConnection: Sendable {
     wantsEvents.value = true
   }
 
+  /// Connects again after the connection was lost, subscribing again (as every new connection
+  /// does once `subscribe()` has been called). Does nothing if a connection is open.
+  public func reconnect() async throws {
+    try await rpc.connect()
+  }
+
   // MARK: - Workspaces and Sessions
 
   public func workspaces() async throws -> [RemoteWorkspace] {
@@ -149,6 +159,23 @@ public final class HostConnection: Sendable {
       "axo.remote.session.prompt", PromptTarget(target: host, sessionId: id, text: text))
     guard accepted.accepted else {
       throw AxoClientError.invalidResponse("the host did not accept that prompt")
+    }
+  }
+
+  /// A key pressed in the Session's Pi, as a person at the Mac would press it.
+  public enum PiKey: String, Encodable, Sendable {
+    /// Stops the reply in progress, or declines Pi's question.
+    case escape
+    /// Accepts Pi's question.
+    case enter
+  }
+
+  /// Presses `key` in the Session's Pi. The host refuses it when the Session has no Pi running.
+  public func pressPiKey(_ key: PiKey, in id: SessionID) async throws {
+    let accepted: PromptAccepted = try await call(
+      "axo.remote.session.key", KeyTarget(target: host, sessionId: id, key: key))
+    guard accepted.accepted else {
+      throw AxoClientError.invalidResponse("the host did not accept that key")
     }
   }
 
@@ -230,6 +257,11 @@ private struct PromptTarget: Encodable, Sendable {
   let target: RemoteHostRef
   let sessionId: SessionID
   let text: String
+}
+private struct KeyTarget: Encodable, Sendable {
+  let target: RemoteHostRef
+  let sessionId: SessionID
+  let key: HostConnection.PiKey
 }
 private struct LayoutTarget: Encodable, Sendable {
   let target: RemoteHostRef

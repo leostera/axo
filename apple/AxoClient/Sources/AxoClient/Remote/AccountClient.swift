@@ -19,6 +19,23 @@ extension URLSession: HTTPDataLoading {
 /// Who the relay says the caller is.
 public struct SignedInAccount: Decodable, Equatable, Sendable {
   public let accountId: UUID
+  /// What the sign-in provider said about the person; either may be missing.
+  public let profile: Profile?
+
+  public struct Profile: Decodable, Equatable, Sendable {
+    public let email: String?
+    public let name: String?
+
+    public init(email: String?, name: String?) {
+      self.email = email
+      self.name = name
+    }
+  }
+
+  public init(accountId: UUID, profile: Profile?) {
+    self.accountId = accountId
+    self.profile = profile
+  }
 }
 
 /// An account's view of its hosts, over HTTPS.
