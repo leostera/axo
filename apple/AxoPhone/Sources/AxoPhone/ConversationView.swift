@@ -19,6 +19,10 @@ struct ConversationView: View {
   /// The message at the top of the screen; holding it keeps the view still when older pages arrive above.
   @State private var scrollAnchor: String?
   @State private var scrollToLatestRequest = 0
+  /// The screen's bottom inset: the home indicator's (at most a few dozen points), or the
+  /// keyboard's while it is up (always far taller).
+  @State private var bottomInset: CGFloat = 0
+  private var keyboardIsUp: Bool { bottomInset > 100 }
 
   /// This chat's own state: what it reads is what redraws it, so other chats' events do not.
   private var chat: Chat? { session.flatMap { workbench?.chat($0.sessionId) } }
@@ -30,8 +34,9 @@ struct ConversationView: View {
     let _ = RenderCount.note("Conversation")
     conversation
       .background(ChatColors.background)
-      .safeAreaInset(edge: .top, spacing: 0) { header }
-      .safeAreaInset(edge: .bottom, spacing: 0) { bottomBar }
+      .conversationBar(edge: .top) { header }
+      .conversationBar(edge: .bottom) { bottomBar }
+      .onGeometryChange(for: CGFloat.self) { $0.safeAreaInsets.bottom } action: { bottomInset = $0 }
       .confirmationDialog(
         "Start the chat in",
         isPresented: Binding(get: { workspaceChoices != nil }, set: { if !$0 { workspaceChoices = nil } }),
@@ -90,6 +95,7 @@ struct ConversationView: View {
         .frame(maxWidth: .infinity, alignment: .leading)
       }
       .scrollDismissesKeyboard(.interactively)
+      .softScrollEdges()
       .scrollPosition(id: $scrollAnchor, anchor: .top)
       .defaultScrollAnchor(.bottom, for: .initialOffset)
       .onScrollGeometryChange(for: Bool.self) { geometry in
@@ -215,7 +221,6 @@ struct ConversationView: View {
     .buttonStyle(.plain)
     .foregroundStyle(.primary)
     .padding(.horizontal, 14).padding(.bottom, 10)
-    .background(ChatColors.background)
   }
 
   private func hostLine(_ workbench: HostWorkbenchModel) -> String {
@@ -265,7 +270,33 @@ struct ConversationView: View {
       }
       DraftComposer(phone: phone, placeholder: composerPlaceholder, canSend: canSend, send: sendDraft)
     }
-    .padding(.bottom, 8)
-    .background(ChatColors.background)
+    // With the keyboard down the composer sits in the home indicator's area as system bars do,
+    // instead of above all of it plus a margin; with the keyboard up, just above it.
+    .padding(.bottom, keyboardIsUp ? 8 : max(8, bottomInset - 10))
+    .ignoresSafeArea(.container, edges: .bottom)
+  }
+}
+
+private extension View {
+  /// The transcript fades under the header and composer instead of stopping at a divider line.
+  @ViewBuilder
+  func softScrollEdges() -> some View {
+    if #available(iOS 26, *) {
+      scrollEdgeEffectStyle(.soft, for: .all)
+    } else {
+      self
+    }
+  }
+
+  /// A bar pinned to the top or bottom of the conversation. On iOS 26 the system bar reserves the
+  /// space and fades the transcript under it with the scroll edge effect, so there is no opaque
+  /// band hiding messages; earlier systems keep an inset with the screen's background.
+  @ViewBuilder
+  func conversationBar<Bar: View>(edge: VerticalEdge, @ViewBuilder _ bar: () -> Bar) -> some View {
+    if #available(iOS 26, *) {
+      safeAreaBar(edge: edge, spacing: 0, content: bar)
+    } else {
+      safeAreaInset(edge: edge, spacing: 0) { bar().background(ChatColors.background) }
+    }
   }
 }
