@@ -6,6 +6,8 @@ const HOUR = 60 * MIN;
 // retries, signing out, and everything a terminal does once a command reaches the Mac. The old
 // explainer's "Unlink button" and "Wi-Fi off" are proposals / a UI shortcut, not code: message loss
 // and restarts (the checker's faults) stand in for the network going away.
+//
+//
 
 type Entry = { account: string; expires: number };
 type Pairing = { account: string; expires: number; consumed: null | { host: string; verifier: string } };
