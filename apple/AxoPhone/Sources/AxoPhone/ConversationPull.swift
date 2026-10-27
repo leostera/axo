@@ -9,11 +9,29 @@ final class ConversationPull {
   var state = PullToRefresh()
   /// A finger is on the scroll view; set from its scroll phase.
   @ObservationIgnored var touching = false
+  /// The last pull let go short of drawn: how far it had got (0 to 1). Axo hops that high.
+  private(set) var hop = Hop(progress: 0, count: 0)
+
+  struct Hop: Equatable {
+    var progress: Double
+    var count: Int
+  }
+
+  /// The finger lifted: refreshes if drawn all the way, otherwise Axo hops.
+  func release(refresh: () -> Void) {
+    let progress = state.progress
+    if state.released() {
+      refresh()
+    } else if progress > 0.05 {
+      hop = Hop(progress: progress, count: hop.count + 1)
+    }
+  }
 }
 
-/// The Axo in the middle of an empty chat, as the pull plays it: it is squished as it is drawn
-/// (and squeezes its eyes >_< once drawn all the way), is slung off the top of the screen when
-/// let go, and drops straight back into place ^_^ when the refresh is over.
+/// The Axo in the middle of an empty chat, as the pull plays it. It is squished as it is drawn,
+/// and squeezes its eyes >_< once drawn all the way. Let go early, it hops up and falls back
+/// (the further it was pulled, the higher); let go drawn, it is slung off the top of the screen
+/// and, once the refresh is over, fades back in where it sits.
 struct SlingMascotView: View {
   let pull: ConversationPull
   @StateObject private var mascot = Mascot()
@@ -21,7 +39,17 @@ struct SlingMascotView: View {
   @State private var slung = false
   /// Its turn as it is slung; only on the way up.
   @State private var spin: Double = 0
+  @State private var shown = true
+  /// The hop under way: when it started and its initial upward speed.
+  @State private var hopStart: Date?
+  @State private var hopSpeed: Double = 0
   @Environment(\.accessibilityReduceMotion) private var reduceMotion
+
+  /// In points per second squared: a light, cartoon gravity.
+  private static let gravity = 2600.0
+  /// The hop for a pull just short of drawn; a small tug hops less.
+  private static let highestHop = 150.0
+  private static let lowestHop = 14.0
 
   private var phase: PullToRefresh.Phase { pull.state.phase }
 
@@ -32,14 +60,39 @@ struct SlingMascotView: View {
   }
 
   var body: some View {
-    AxoMascotView(mascot: mascot, rubbable: false)
-      .scaleEffect(x: 1 + 0.14 * tension, y: 1 - 0.22 * tension, anchor: .bottom)
-      .offset(y: 10 * tension)
-      .animation(.interactiveSpring, value: tension)
-      .rotationEffect(.degrees(spin))
-      .offset(y: slung ? -900 : 0)
+    TimelineView(.animation(paused: hopStart == nil)) { context in
+      AxoMascotView(mascot: mascot, rubbable: false)
+        .scaleEffect(x: 1 + 0.14 * tension, y: 1 - 0.22 * tension, anchor: .bottom)
+        .offset(y: 10 * tension - height(at: context.date))
+        .animation(.interactiveSpring, value: tension)
+    }
+    .rotationEffect(.degrees(spin))
+    .offset(y: slung ? -900 : 0)
+    .opacity(shown ? 1 : 0)
     .onChange(of: phase) { old, new in react(from: old, to: new) }
+    .onChange(of: pull.hop) { _, hop in jump(hop.progress) }
     .sensoryFeedback(.impact(weight: .light), trigger: phase) { _, new in new == .armed }
+  }
+
+  /// How high the hop has it at `date`: thrown up, pulled back by gravity, landing at rest.
+  private func height(at date: Date) -> CGFloat {
+    guard let hopStart else { return 0 }
+    let t = date.timeIntervalSince(hopStart)
+    return max(0, hopSpeed * t - Self.gravity * t * t / 2)
+  }
+
+  private func jump(_ progress: Double) {
+    guard !reduceMotion, !slung else { return }
+    let peak = Self.lowestHop + (Self.highestHop - Self.lowestHop) * min(progress, 1)
+    let speed = (2 * Self.gravity * peak).squareRoot()
+    let start = Date.now
+    hopSpeed = speed
+    hopStart = start
+    Task {
+      // Up and down again, then stop the clock.
+      try? await Task.sleep(for: .seconds(2 * speed / Self.gravity))
+      if hopStart == start { hopStart = nil }
+    }
   }
 
   private func react(from old: PullToRefresh.Phase, to new: PullToRefresh.Phase) {
@@ -50,6 +103,7 @@ struct SlingMascotView: View {
       mascot.setSqueezed(true)
     case .refreshing:
       mascot.setSqueezed(false)
+      hopStart = nil
       guard !reduceMotion else { return }
       withAnimation(.easeIn(duration: 0.3)) {
         slung = true
@@ -62,11 +116,15 @@ struct SlingMascotView: View {
         mascot.react(.happy)
         return
       }
-      // Upright again while out of sight, so it falls without turning; then it just lands.
+      // Back where it sits, unseen, then it fades in.
+      shown = false
+      slung = false
       spin = 0
-      withAnimation(.easeOut(duration: 0.4)) { slung = false }
       Task {
-        try? await Task.sleep(for: .milliseconds(400))
+        // A frame hidden in place first, or the fade has nothing to fade from.
+        try? await Task.sleep(for: .milliseconds(50))
+        withAnimation(.easeOut(duration: 0.35)) { shown = true }
+        try? await Task.sleep(for: .milliseconds(300))
         mascot.react(.happy)
       }
     }

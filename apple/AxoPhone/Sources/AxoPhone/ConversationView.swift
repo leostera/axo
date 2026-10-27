@@ -125,7 +125,7 @@ struct ConversationView: View {
       }
       .onScrollPhaseChange { old, new in
         pull.touching = new == .interacting
-        if old == .interacting, new != .interacting, pull.state.released() { refresh() }
+        if old == .interacting, new != .interacting { pull.release(refresh: refresh) }
       }
       .overlay(alignment: .top) {
         if !transcript.messages.isEmpty { SpinningPullMascotView(pull: pull) }
