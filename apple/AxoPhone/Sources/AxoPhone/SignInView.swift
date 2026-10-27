@@ -22,8 +22,11 @@ struct SignInView: View {
       Spacer()
       AxoMascotView(mascot: mascot)
         .frame(height: 96)
-      Text("Axo").font(.largeTitle.bold())
-      Text("Reach your Macs from anywhere.")
+      Text("axo")
+        .font(.custom("Fredoka-Bold", size: 64, relativeTo: .largeTitle))
+        .accessibilityLabel("Axo")
+      // Yes, olotl. Axo is an axolotl.
+      Text("your agentic experience olotl")
         .foregroundStyle(.secondary)
       Spacer()
       if let message = message ?? account.signInFailure {

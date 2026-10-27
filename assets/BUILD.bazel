@@ -16,3 +16,10 @@ filegroup(
     name = "mascot",
     srcs = ["mascot/axo.riv"],
 )
+
+# The "axo" wordmark's font: Fredoka (variable; the app uses Bold), SIL Open Font License 1.1
+# (see the OFL beside it).
+filegroup(
+    name = "fonts",
+    srcs = ["fonts/Fredoka.ttf", "fonts/Fredoka-OFL.txt"],
+)
