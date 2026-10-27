@@ -273,8 +273,58 @@ kbd { padding: 1px 4px; border: 1px solid #5c5d5f; border-radius: 3px; color: #d
 .host-pairing-code .auth-secondary-button { justify-content: center; margin-top: 0; text-decoration: none; }
 .auth-secondary-button { width: 100%; min-height: 36px; margin-top: 8px; border-color: #51465c; background: #211c28; }
 
-.mascot-shell { display: flex; min-height: 100%; flex-direction: column; align-items: center; justify-content: center; gap: 36px; padding: 24px; background: radial-gradient(ellipse at 50% 42%, #251a32 0%, transparent 52%), var(--bg); }
-.mascot { display: block; width: min(420px, 78vw); cursor: pointer; touch-action: none; -webkit-tap-highlight-color: transparent; }
-.mascot-actions { display: flex; width: min(320px, 100%); flex-direction: column; gap: 12px; text-align: center; }
-.mascot-sign-in { min-height: 46px; font-size: 13px; }
+/* Sign-in: the iPhone app's, following the system's light or dark. */
+@font-face {
+  font-family: "Fredoka";
+  src: url("../../../assets/fonts/Fredoka.ttf") format("truetype");
+  font-weight: 300 700;
+  font-display: swap;
+}
+.signin {
+  --signin-bg: #ffffff;
+  --signin-text: #000000;
+  --signin-secondary: rgba(60, 60, 67, 0.6);
+  --signin-tertiary: rgba(60, 60, 67, 0.3);
+  --cloudflare-orange: #f38020;
+  color-scheme: light dark;
+  display: flex;
+  min-height: 100%;
+  flex-direction: column;
+  align-items: center;
+  padding: 24px 24px max(24px, env(safe-area-inset-bottom));
+  color: var(--signin-text);
+  background: var(--signin-bg);
+}
+@media (prefers-color-scheme: dark) {
+  .signin {
+    --signin-bg: #000000;
+    --signin-text: #ffffff;
+    --signin-secondary: rgba(235, 235, 245, 0.6);
+    --signin-tertiary: rgba(235, 235, 245, 0.3);
+  }
+}
+.signin-hero { display: flex; flex: 1; flex-direction: column; align-items: center; justify-content: center; gap: 20px; }
+.mascot { display: block; width: 182px; cursor: pointer; touch-action: none; -webkit-tap-highlight-color: transparent; }
+.signin-wordmark { margin: 0; font: 700 128px/0.9 "Fredoka", ui-rounded, -apple-system, sans-serif; letter-spacing: 0; }
+.signin-tagline { margin: 0; color: var(--signin-secondary); font-size: 17px; }
+.signin-actions { display: flex; width: min(400px, 100%); flex-direction: column; align-items: stretch; gap: 20px; text-align: center; }
+.cloudflare-button {
+  display: flex;
+  min-height: 52px;
+  align-items: center;
+  justify-content: center;
+  border: 1.5px solid var(--cloudflare-orange);
+  border-radius: 999px;
+  color: var(--cloudflare-orange);
+  background: transparent;
+  font-size: 17px;
+  font-weight: 600;
+  text-decoration: none;
+  transition: background .15s;
+}
+.cloudflare-button:hover { background: color-mix(in srgb, var(--cloudflare-orange) 8%, transparent); }
+.cloudflare-button:focus-visible { outline: 3px solid color-mix(in srgb, var(--cloudflare-orange) 45%, transparent); outline-offset: 3px; }
+.signin-status { margin: 0; color: var(--signin-secondary); font-size: 15px; }
+.signin-error { margin: 0; color: #ff3b30; font-size: 13px; line-height: 1.4; }
+.signin-build { margin: 0; color: var(--signin-tertiary); font: 11px ui-monospace, SFMono-Regular, Menlo, monospace; }
 .visually-hidden { position: absolute; width: 1px; height: 1px; overflow: hidden; clip: rect(0 0 0 0); white-space: nowrap; }

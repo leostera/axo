@@ -326,13 +326,18 @@ test("browser discovers hosts, renders live PTY output, sends input, and uses Cm
     vite = await createViteServer({
       configFile: false,
       root: siteRoot,
-      define: { "import.meta.env.VITE_AXO_API_BASE_URL": JSON.stringify(apiBaseUrl) },
+      define: {
+        "import.meta.env.VITE_AXO_API_BASE_URL": JSON.stringify(apiBaseUrl),
+        __AXO_WEB_BUILD__: JSON.stringify("test"),
+      },
       plugins: [react()],
       resolve: { dedupe: ["react", "react-dom"] },
       server: {
         host: "127.0.0.1",
         port: appPort,
         strictPort: true,
+        // The wordmark's font is shared with the apps, in the repository's assets/.
+        fs: { allow: [resolve(siteRoot, "../..")] },
         proxy: {
           "/v1": { target: `http://127.0.0.1:${apiPort}`, changeOrigin: true, ws: true },
           "/api": { target: `http://127.0.0.1:${apiPort}`, changeOrigin: true, ws: true },

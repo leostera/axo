@@ -70,7 +70,7 @@ test("single site serves landing/app assets and keeps account APIs fail-closed",
   for (const path of ["/", "/app"]) {
     const response = await fetch(`${url}${path}`);
     assert.equal(response.status, 200, path);
-    assert.match(await response.text(), /Axo — Your terminal, wherever you are/);
+    assert.match(await response.text(), /axo — your agentic experience olotl/);
   }
 
   // Without an OAuth client and a session secret, sign-in fails closed.
