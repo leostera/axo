@@ -112,7 +112,6 @@ struct SessionState {
     pi_activity: HashMap<SessionId, axo_pi::Activity>,
     /// Prompts for a Pi that is still starting, typed once its bridge binds; see `prompt_pi`.
     queued_pi_prompts: HashMap<SessionId, Vec<String>>,
-    initial_pwd: PathBuf,
     /// Every shell's output is published here once it enters the catalog.
     events: EventBus,
     /// The latest client's terminal area; panes no client is attached to are sized from it.
@@ -134,6 +133,11 @@ pub struct SessionManager {
     next_subscription_id: AtomicU64,
     pending_resume_focus: Mutex<Option<(SessionId, Instant)>>,
     workspace_access: Mutex<HashMap<String, WorkspaceDirectoryAccess>>,
+    /// The Workspace at the user's home directory, where Sessions created outside any other
+    /// Workspace live. It always exists and cannot be archived.
+    home_workspace_id: String,
+    /// When each Workspace last failed to get a Session; see `ensure_open_workspace_sessions`.
+    workspace_session_failures: Mutex<HashMap<String, Instant>>,
 }
 
 impl SessionManager {
@@ -144,7 +148,7 @@ impl SessionManager {
         let attach_socket_path = server_directory.join(ATTACH_SOCKET_FILE);
         let initial_pwd = crate::current_user_home_directory()?;
 
-        let database = axo_store::open(&database_path)?;
+        let mut database = axo_store::open(&database_path)?;
         let host_id = load_or_create_host_id(&database)?;
         let agent_command = load_or_create_agent_command(&database)?;
         let shell_command = load_or_create_shell_command(&database)?;
@@ -156,6 +160,7 @@ impl SessionManager {
         ensure_pi_bridge_socket_paths(&database, &pi_session_directory)?;
         remove_abandoned_pi_bridge_sockets(&database)?;
 
+        let home_workspace_id = axo_store::ensure_home_workspace(&mut database, &initial_pwd)?;
         let workspace_access = restore_workspace_accesses(&database)?;
         let subscribers = EventBus::default();
         let manager = Arc::new(Self {
@@ -167,7 +172,6 @@ impl SessionManager {
                 shutting_down: false,
                 pi_activity: HashMap::new(),
                 queued_pi_prompts: HashMap::new(),
-                initial_pwd,
                 events: subscribers.clone(),
                 viewport,
                 takeover_grace: TakeoverGrace::default(),
@@ -183,16 +187,12 @@ impl SessionManager {
             next_subscription_id: AtomicU64::new(1),
             pending_resume_focus: Mutex::new(None),
             workspace_access: Mutex::new(workspace_access),
+            home_workspace_id,
+            workspace_session_failures: Mutex::new(HashMap::new()),
         });
 
         manager.restore_open_sessions()?;
         manager.ensure_open_workspace_sessions()?;
-        if let Some(session) = manager.ensure_home_session()? {
-            log::info!(
-                "event=session.default_created session_id={}",
-                session.id.get()
-            );
-        }
         manager.start_attachment_listener()?;
         manager.start_reaper();
         Ok(manager)
@@ -271,7 +271,7 @@ mod tests {
         let fixture = LifecycleFixture::new();
         let manager = &fixture.manager;
         let session = manager.list_sessions().unwrap().remove(0);
-        let shell_id = session.shells[0].id;
+        let shell_id = terminal_shell(&session);
         {
             let state = manager.lock_state().unwrap();
             let running = &state.panes.running(shell_id).unwrap();

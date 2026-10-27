@@ -372,7 +372,7 @@ mod tests {
     fn session_metadata_reads_emoji_workspace_name_and_ignores_a_corrupt_layout() {
         let fixture = LifecycleFixture::new();
         let manager = &fixture.manager;
-        let session = manager.create_session().unwrap();
+        let session = manager.create_session_and_publish().unwrap();
         let workspace_id = new_uuid_v4().unwrap();
         {
             let state = manager.lock_state().unwrap();
@@ -397,7 +397,7 @@ mod tests {
             assert_eq!(record.workspace_id.as_deref(), Some(workspace_id.as_str()));
             assert_eq!(record.workspace_name.as_deref(), Some("Axo"));
             assert_eq!(record.layout, None, "a corrupt stored layout is ignored");
-            assert_eq!(record.shells.len(), 1);
+            assert_eq!(record.shells.len(), 2, "Pi and its terminal");
 
             // A Session whose Workspace is gone is inconsistent, not Workspace-less.
             state

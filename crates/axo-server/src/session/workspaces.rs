@@ -1,14 +1,16 @@
 //! Workspaces: creating, renaming and archiving them, and the Sessions that live in them.
 
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::fs;
 use std::io::{self, BufRead, BufReader, Write};
 use std::os::unix::fs::{OpenOptionsExt, PermissionsExt};
 use std::path::Path;
 use std::sync::Arc;
+use std::time::{Duration, Instant};
 
 use super::catalog::{remove_session_shells, session_metadata};
 use super::pi_recovery::{PiLaunchRequest, spawn_new_pi};
+use super::spawn::spawn_shell;
 use super::{SessionManager, SessionState};
 use crate::workspace_access::WorkspaceDirectoryAccess;
 use axo_pi::BridgeSocketPath;
@@ -19,12 +21,16 @@ use axo_protocol::{
 };
 use axo_store::Connection;
 use axo_store::{
-    NewWorkspaceSession, abandon_workspace, insert_workspace, insert_workspace_session,
+    InsertedWorkspaceSession, NewWorkspaceSession, abandon_workspace,
+    archive_shell_and_prune_layout, insert_workspace, insert_workspace_session,
     next_session_ordinal, open_workspace_directories, open_workspace_directory,
     workspaces_without_open_sessions,
 };
 use axo_store::{archive_session, archive_workspace_records};
 use axo_store::{list_open_workspaces, open_session_ids_in_workspace, rename_open_workspace};
+
+/// How long a Workspace whose Session could not start waits before Axod tries again.
+const WORKSPACE_SESSION_RETRY: Duration = Duration::from_secs(30);
 
 fn copy_pi_transcript(source: &Path, destination: &Path, workspace: &Path) -> io::Result<()> {
     if !source.is_absolute() {
@@ -108,7 +114,7 @@ pub(super) fn create_workspace_session(
     import_source: Option<&Path>,
 ) -> io::Result<SessionRecord> {
     let initial_pwd = open_workspace_directory(&state.database, workspace_id)?;
-    let ordinal = next_session_ordinal(&state.database, Some(workspace_id))?;
+    let ordinal = next_session_ordinal(&state.database, workspace_id)?;
     let session_uuid = new_uuid_v4()?;
     let pane_id = new_uuid_v4()?;
     let pi_directory = pi_session_directory.join(workspace_id);
@@ -120,7 +126,8 @@ pub(super) fn create_workspace_session(
         copy_pi_transcript(source, &pi_session_file, &initial_pwd)?;
     }
     let session_name = format!("Session {ordinal}");
-    let (session_id, pane) = match insert_workspace_session(
+    let split_id = new_uuid_v4()?;
+    let inserted = match insert_workspace_session(
         &mut state.database,
         &NewWorkspaceSession {
             workspace_id,
@@ -130,6 +137,7 @@ pub(super) fn create_workspace_session(
             pi_session_file: &pi_session_file,
             bridge_socket: &bridge_socket,
             pane_id: &pane_id,
+            split_id: &split_id,
         },
     ) {
         Ok(inserted) => inserted,
@@ -140,6 +148,7 @@ pub(super) fn create_workspace_session(
             return Err(error);
         }
     };
+    let session_id = inserted.session_id;
     let request = PiLaunchRequest {
         agent_command: state.agent_command.clone(),
         session_id,
@@ -149,7 +158,7 @@ pub(super) fn create_workspace_session(
         session_uuid: session_uuid.clone(),
         pane_id: pane_id.clone(),
         previous_token: None,
-        size: state.pane_size(session_id, pane),
+        size: state.pane_size(session_id, inserted.pi),
     };
     let running = match spawn_new_pi(&state.database, &request) {
         Ok(running) => running,
@@ -161,8 +170,40 @@ pub(super) fn create_workspace_session(
             return Err(error);
         }
     };
-    state.install_running(pane, running);
+    state.install_running(inserted.pi, running);
+    start_companion_terminal(state, session_id, inserted, &initial_pwd)?;
     session_metadata(state, session_id, attach_socket_path)
+}
+
+/// Starts the terminal pane beside a new Session's Pi. If its shell cannot start, the Session
+/// keeps only its Pi pane rather than failing.
+fn start_companion_terminal(
+    state: &mut SessionState,
+    session_id: SessionId,
+    inserted: InsertedWorkspaceSession,
+    initial_pwd: &Path,
+) -> io::Result<()> {
+    let size = state.pane_size(session_id, inserted.terminal);
+    match spawn_shell(&state.shell_command, session_id, initial_pwd, size) {
+        Ok(running) => {
+            // A pane inserted just now holds no process to replace.
+            let _ = state.install_running(inserted.terminal, running);
+        }
+        Err(error) => {
+            log::warn!(
+                "event=session.companion_terminal_failed session_id={} reason={error}",
+                session_id.get()
+            );
+            archive_shell_and_prune_layout(
+                &mut state.database,
+                inserted.terminal,
+                session_id,
+                "spawn_failed",
+                &HashSet::from([inserted.pi]),
+            )?;
+        }
+    }
+    Ok(())
 }
 
 /// Reopens access to every open Workspace's directory. A Workspace whose directory is gone is
@@ -214,6 +255,7 @@ impl SessionManager {
                     name: name.to_owned(),
                     directory_path,
                     state: None,
+                    home: workspace_id == self.home_workspace_id,
                 },
                 session_ids,
             )
@@ -233,6 +275,12 @@ impl SessionManager {
             return Err(io::Error::new(
                 io::ErrorKind::InvalidInput,
                 "Workspace ID is invalid",
+            ));
+        }
+        if workspace_id == self.home_workspace_id {
+            return Err(io::Error::new(
+                io::ErrorKind::InvalidInput,
+                "The Home Workspace cannot be archived",
             ));
         }
         let (session_ids, shells) = {
@@ -261,22 +309,44 @@ impl SessionManager {
         Ok(session_ids)
     }
 
+    /// Gives every open Workspace without a Session a new one. A Workspace whose Session cannot
+    /// start (Pi fails to launch) is logged and retried after `WORKSPACE_SESSION_RETRY`; it
+    /// must not keep Axod from starting, nor be retried on every reaper tick.
     pub(super) fn ensure_open_workspace_sessions(self: &Arc<Self>) -> io::Result<()> {
         let sessions = {
             let mut state = self.lock_state()?;
-            let workspace_ids = workspaces_without_open_sessions(&state.database)?;
-            workspace_ids
-                .iter()
-                .map(|workspace_id| {
-                    create_workspace_session(
-                        &mut state,
-                        &self.attach_socket_path,
-                        &self.pi_session_directory,
-                        workspace_id,
-                        None,
-                    )
-                })
-                .collect::<io::Result<Vec<_>>>()?
+            let mut failures = self
+                .workspace_session_failures
+                .lock()
+                .map_err(|_| io::Error::other("Workspace session retry state is unavailable"))?;
+            let mut sessions = Vec::new();
+            for workspace_id in workspaces_without_open_sessions(&state.database)? {
+                if failures
+                    .get(&workspace_id)
+                    .is_some_and(|failed| failed.elapsed() < WORKSPACE_SESSION_RETRY)
+                {
+                    continue;
+                }
+                match create_workspace_session(
+                    &mut state,
+                    &self.attach_socket_path,
+                    &self.pi_session_directory,
+                    &workspace_id,
+                    None,
+                ) {
+                    Ok(session) => {
+                        failures.remove(&workspace_id);
+                        sessions.push(session);
+                    }
+                    Err(error) => {
+                        log::error!(
+                            "event=workspace.session_create_failed workspace_id={workspace_id} reason={error}"
+                        );
+                        failures.insert(workspace_id, Instant::now());
+                    }
+                }
+            }
+            sessions
         };
 
         for session in sessions {
@@ -347,6 +417,7 @@ impl SessionManager {
             name: request.name,
             directory_path: directory.to_string_lossy().into_owned(),
             state: Some(WorkspaceState::Open),
+            home: false,
         };
         self.publish_event(Event::snapshot(session.clone()));
         self.publish_workspace_changed(&workspace_id);
@@ -561,7 +632,22 @@ mod tests {
 
         let archived_sessions = manager.archive_workspace(&workspace_id).unwrap();
         assert_eq!(archived_sessions, vec![session_id]);
-        assert!(manager.list_workspaces().unwrap().is_empty());
+        let remaining: Vec<_> = manager
+            .list_workspaces()
+            .unwrap()
+            .into_iter()
+            .map(|workspace| workspace.workspace_id)
+            .collect();
+        assert_eq!(remaining, [manager.home_workspace_id.clone()]);
+        let refused = manager
+            .archive_workspace(&manager.home_workspace_id)
+            .unwrap_err();
+        assert_eq!(refused.kind(), std::io::ErrorKind::InvalidInput);
+        assert_eq!(
+            manager.list_workspaces().unwrap().len(),
+            1,
+            "Home stays open"
+        );
         let state = manager.lock_state().unwrap();
         let archived_state: (String, String) = state
             .database

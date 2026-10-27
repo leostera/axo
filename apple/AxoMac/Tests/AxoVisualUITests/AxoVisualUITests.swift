@@ -71,7 +71,10 @@ extension AxoVisualUITests {
     let deadline = Date().addingTimeInterval(20)
     while Date() < deadline {
       await model.refresh()
-      if model.sessions.contains(where: { $0.workspaceId != nil }) { return }
+      let homeID = model.workspaces.first(where: \.isHome)?.workspaceId
+      if model.sessions.contains(where: { $0.workspaceId != nil && $0.workspaceId != homeID }) {
+        return
+      }
       try await Task.sleep(for: .milliseconds(100))
     }
     throw UITestError.timedOut(

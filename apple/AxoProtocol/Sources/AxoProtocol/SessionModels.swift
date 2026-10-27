@@ -152,12 +152,28 @@ public struct WorkspaceRecord: Decodable, Equatable, Identifiable, Sendable {
   public let workspaceId: String
   public let name: String
   public let directoryPath: String
+  /// The Home Workspace, at the user's home directory: it always exists and cannot be archived.
+  public let isHome: Bool
   public var id: String { workspaceId }
 
-  public init(workspaceId: String, name: String, directoryPath: String) {
+  public init(workspaceId: String, name: String, directoryPath: String, isHome: Bool = false) {
     self.workspaceId = workspaceId
     self.name = name
     self.directoryPath = directoryPath
+    self.isHome = isHome
+  }
+
+  private enum CodingKeys: String, CodingKey {
+    case workspaceId, name, directoryPath
+    case isHome = "home"
+  }
+
+  public init(from decoder: any Decoder) throws {
+    let container = try decoder.container(keyedBy: CodingKeys.self)
+    workspaceId = try container.decode(String.self, forKey: .workspaceId)
+    name = try container.decode(String.self, forKey: .name)
+    directoryPath = try container.decode(String.self, forKey: .directoryPath)
+    isHome = try container.decodeIfPresent(Bool.self, forKey: .isHome) ?? false
   }
 }
 

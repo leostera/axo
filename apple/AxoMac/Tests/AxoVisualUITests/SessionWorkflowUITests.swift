@@ -170,7 +170,9 @@ extension AxoVisualUITests {
     try await fixture.createWorkspace(at: workspaceDirectory)
     try await waitForWorkspaceSession(model: model)
 
-    let original = try XCTUnwrap(model.sessions.first(where: { $0.workspaceId != nil }))
+    let homeID = model.workspaces.first(where: \.isHome)?.workspaceId
+    let original = try XCTUnwrap(
+      model.sessions.first(where: { $0.workspaceId != nil && $0.workspaceId != homeID }))
     let workspaceID = try XCTUnwrap(original.workspaceId)
     let workspace = try XCTUnwrap(model.workspaces.first(where: { $0.id == workspaceID }))
     XCTAssertEqual(workspace.name, "Workspace E2E")
@@ -478,7 +480,9 @@ extension AxoVisualUITests {
 
     window.typeKey("t", modifierFlags: .command)
     try await waitForSessionCount(2, model: model)
-    XCTAssertNil(model.session(for: try XCTUnwrap(model.selectedSessionID))?.workspaceId)
+    XCTAssertEqual(
+      model.session(for: try XCTUnwrap(model.selectedSessionID))?.workspaceId,
+      model.workspaces.first(where: \.isHome)?.workspaceId)
     try await fixture.waitForSurfaceCount(2)
     let newSession = try fixture.capture("13-new-session", in: window)
     try fixture.assertDoesNotContainText("AXO VISUAL SURVIVOR 5690", in: newSession)

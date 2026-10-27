@@ -42,6 +42,11 @@ final class TerminalAppE2ETests: XCTestCase {
       "--socket", socketPath,
       "--server-dir", serverDirectory.path,
     ]
+    // The Home Workspace's Session starts Pi at once: use the fixture, never the user's Pi.
+    daemon.environment = ProcessInfo.processInfo.environment.merging([
+      "AXO_PI_EXECUTABLE": try runfile(named: "AXO_TEST_PI_EXECUTABLE").absoluteURL.path,
+      "AXO_PI_EXTENSION_PATH": try runfile(named: "AXO_PI_EXTENSION_PATH").absoluteURL.path,
+    ]) { _, newValue in newValue }
     daemon.standardOutput = FileHandle.nullDevice
     daemon.standardError = FileHandle.nullDevice
     try daemon.run()

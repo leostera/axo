@@ -31,41 +31,40 @@ enum AxoAppSelfTest {
     guard baselineSessions.count == 1 else {
       throw SelfTestError.unexpectedInitialSession
     }
+    // A new Session opens with Pi and a terminal beside it; only terminals are typed into.
     let session = try await axod.createSession()
     do {
-      guard let firstShell = session.shells.first else {
+      guard let piShell = session.shells.first(where: \.isPi),
+        let firstShell = session.shells.first(where: { !$0.isPi })
+      else {
         throw SelfTestError.createdShellMissing
       }
       try await verifyShells(
-        [firstShell], in: session, on: axod, helperURL: helperURL)
+        [piShell, firstShell], in: session, on: axod, helperURL: helperURL)
       try await verifyUnchangedSessions(baselineSessions, on: axod)
 
       let secondShell = try await axod.createShell(inSession: session.id)
       let thirdShell = try await axod.createShell(inSession: session.id)
       try await verifyShells(
-        [firstShell, secondShell, thirdShell],
+        [piShell, firstShell, secondShell, thirdShell],
         in: session,
         on: axod,
         helperURL: helperURL
       )
       try await verifyUnchangedSessions(baselineSessions, on: axod)
 
-      let closedMiddleShell = try await axod.closeShell(secondShell.id, inSession: session.id)
-      guard closedMiddleShell.archivedShellId == secondShell.id,
-        closedMiddleShell.archivedSessionId == nil
-      else {
-        throw SelfTestError.splitShellCloseArchivedSession
+      for (closing, remaining) in [
+        (secondShell, [piShell, firstShell, thirdShell]),
+        (firstShell, [piShell, thirdShell]),
+        (thirdShell, [piShell]),
+      ] {
+        let closed = try await axod.closeShell(closing.id, inSession: session.id)
+        guard closed.archivedShellId == closing.id, closed.archivedSessionId == nil else {
+          throw SelfTestError.splitShellCloseArchivedSession
+        }
+        try await verifyShells(remaining, in: session, on: axod, helperURL: helperURL)
       }
-      try await verifyShells(
-        [firstShell, thirdShell], in: session, on: axod, helperURL: helperURL)
       try await verifyUnchangedSessions(baselineSessions, on: axod)
-
-      let closedFirstShell = try await axod.closeShell(firstShell.id, inSession: session.id)
-      guard closedFirstShell.archivedShellId == firstShell.id,
-        closedFirstShell.archivedSessionId == nil
-      else {
-        throw SelfTestError.nonLastShellCloseArchivedSession
-      }
 
       for baselineSession in baselineSessions {
         let closedBaseline = try await axod.closeSession(baselineSession.id)
@@ -76,10 +75,11 @@ enum AxoAppSelfTest {
         }
       }
 
-      let closedLastShell = try await axod.closeShell(thirdShell.id, inSession: session.id)
-      guard closedLastShell.archivedShellId == thirdShell.id,
-        closedLastShell.archivedSessionId == session.id,
-        let replacement = closedLastShell.replacement,
+      // Closing Pi closes its Session; Home's last Session is replaced.
+      let closedPi = try await axod.closeShell(piShell.id, inSession: session.id)
+      guard closedPi.archivedShellId == piShell.id,
+        closedPi.archivedSessionId == session.id,
+        let replacement = closedPi.replacement,
         replacement.id != session.id
       else {
         throw SelfTestError.lastShellDidNotReplaceSession
@@ -109,7 +109,7 @@ enum AxoAppSelfTest {
     guard Set(listedSession.shells.map(\.id)) == Set(shells.map(\.id)) else {
       throw SelfTestError.splitShellSetMismatch
     }
-    for shell in shells {
+    for shell in shells where !shell.isPi {
       try verifyPTYAttachment(shell, helperURL: helperURL)
     }
   }
@@ -218,7 +218,6 @@ private enum SelfTestError: Error, LocalizedError {
   case independentSessionCloseFailed
   case splitShellSetMismatch
   case splitShellCloseArchivedSession
-  case nonLastShellCloseArchivedSession
   case lastShellDidNotReplaceSession
   case replacementSessionMissing
   case helperMissing(String)
@@ -246,8 +245,6 @@ private enum SelfTestError: Error, LocalizedError {
       "The shells returned by axod did not match the expected session layout."
     case .splitShellCloseArchivedSession:
       "Closing a split shell unexpectedly archived its session."
-    case .nonLastShellCloseArchivedSession:
-      "Closing a shell with another shell still open archived its session."
     case .lastShellDidNotReplaceSession:
       "Closing the last shell did not archive its session and create a replacement."
     case .replacementSessionMissing:

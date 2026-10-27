@@ -19,16 +19,13 @@ use axo_panes::{Pane, UnavailablePane};
 use axo_protocol::rpc;
 use axo_protocol::{
     Event, Layout, PaneRole, SessionId, SessionRecord, ShellActivity, ShellId, ShellRecord,
-    Viewport, new_uuid_v4,
+    Viewport,
 };
 use axo_store::{
-    archive_session, archive_shell, archive_shell_and_prune_layout, open_standalone_session_count,
-    read_open_sessions, session_initial_pwd, store_viewport,
+    archive_session, archive_shell, archive_shell_and_prune_layout, read_open_sessions,
+    session_initial_pwd, store_viewport,
 };
-use axo_store::{
-    insert_standalone_session, insert_terminal_shell, next_session_ordinal,
-    open_session_workspace_id,
-};
+use axo_store::{insert_terminal_shell, open_session_workspace_id};
 use axo_store::{open_session_ids_in_workspace, set_manual_session_name, write_session_layout};
 
 const REAPER_INTERVAL: Duration = Duration::from_millis(100);
@@ -46,24 +43,6 @@ pub(super) fn valid_session_emoji(emoji: &str) -> bool {
         && emoji.trim() == emoji
         && !emoji.chars().any(char::is_whitespace)
         && !emoji.chars().any(char::is_control)
-}
-
-fn create_session(
-    state: &mut SessionState,
-    attach_socket_path: &Path,
-) -> io::Result<SessionRecord> {
-    let initial_pwd = state.initial_pwd.clone();
-    let session_uuid = new_uuid_v4()?;
-    let ordinal = next_session_ordinal(&state.database, None)?;
-    let session_name = format!("Session {ordinal}");
-    let id =
-        insert_standalone_session(&state.database, &initial_pwd, &session_uuid, &session_name)?;
-
-    if let Err(error) = create_shell(state, id, attach_socket_path) {
-        archive_session(&mut state.database, id, "spawn_failed")?;
-        return Err(error);
-    }
-    session_metadata(state, id, attach_socket_path)
 }
 
 fn create_shell(
@@ -115,9 +94,6 @@ pub(super) fn close_session(
                 )
             })
             .transpose()?
-    } else if open_standalone_session_count(&state.database)? == 1 {
-        // Workspace Sessions do not replace the standalone home Session.
-        Some(create_session(state, attach_socket_path)?)
     } else {
         None
     };
@@ -196,10 +172,9 @@ impl Drop for StopOnDrop {
 }
 
 impl SessionManager {
-    pub(super) fn create_session_and_publish(&self) -> io::Result<SessionRecord> {
-        let session = self.create_session()?;
-        self.publish_event(Event::snapshot(session.clone()));
-        Ok(session)
+    /// Creates a Session in the Home Workspace; `create_session_in_workspace` publishes it.
+    pub(super) fn create_session_and_publish(self: &Arc<Self>) -> io::Result<SessionRecord> {
+        self.create_session_in_workspace(&self.home_workspace_id)
     }
 
     /// Returns the replacement session created when the last one closes.
@@ -319,20 +294,6 @@ impl SessionManager {
             && let Ok(mut workers) = self.workers.lock()
         {
             workers.push(worker);
-        }
-    }
-
-    pub(super) fn create_session(&self) -> io::Result<SessionRecord> {
-        let mut state = self.lock_state()?;
-        create_session(&mut state, &self.attach_socket_path)
-    }
-
-    pub(super) fn ensure_home_session(&self) -> io::Result<Option<SessionRecord>> {
-        let mut state = self.lock_state()?;
-        if open_standalone_session_count(&state.database)? == 0 {
-            create_session(&mut state, &self.attach_socket_path).map(Some)
-        } else {
-            Ok(None)
         }
     }
 
@@ -583,9 +544,6 @@ impl SessionManager {
             self.publish_session_snapshot(session_id)?;
         }
         self.ensure_open_workspace_sessions()?;
-        if let Some(session) = self.ensure_home_session()? {
-            self.publish_event(Event::snapshot(session.clone()));
-        }
         Ok(())
     }
 }
@@ -675,10 +633,10 @@ mod tests {
     fn reaper_isolates_wait_errors_without_guessing_process_exit() {
         let fixture = LifecycleFixture::new();
         let manager = &fixture.manager;
-        let uncertain = manager.create_session().unwrap();
-        let exited = manager.create_session().unwrap();
-        let uncertain_shell = uncertain.shells[0].id;
-        let exited_shell = exited.shells[0].id;
+        let uncertain = manager.create_session_and_publish().unwrap();
+        let exited = manager.create_session_and_publish().unwrap();
+        let uncertain_shell = terminal_shell(&uncertain);
+        let exited_shell = terminal_shell(&exited);
         {
             let mut state = manager.lock_state().unwrap();
             let child = &mut state.panes.running_mut(uncertain_shell).unwrap().child;
@@ -705,31 +663,25 @@ mod tests {
                 .wait_error_reported
         );
         assert!(!state.panes.running(exited_shell).is_some());
-        let uncertain_state: String = state
-            .database
-            .query_row(
-                "SELECT state FROM sessions WHERE id = ?",
-                params![uncertain.id.get()],
-                |row| row.get(0),
-            )
-            .unwrap();
-        assert_eq!(uncertain_state, "open");
-        let exited_state: String = state
-            .database
-            .query_row(
-                "SELECT state FROM sessions WHERE id = ?",
-                params![exited.id.get()],
-                |row| row.get(0),
-            )
-            .unwrap();
-        assert_eq!(exited_state, "archived");
+        let shell_state = |shell_id: ShellId| -> String {
+            state
+                .database
+                .query_row(
+                    "SELECT state FROM shells WHERE id = ?",
+                    params![shell_id.get()],
+                    |row| row.get(0),
+                )
+                .unwrap()
+        };
+        assert_eq!(shell_state(uncertain_shell), "open");
+        assert_eq!(shell_state(exited_shell), "archived");
     }
 
     #[test]
     fn closing_a_session_stops_every_pane_together_on_one_worker() {
         let fixture = LifecycleFixture::new();
         let manager = &fixture.manager;
-        let session = manager.create_session().unwrap();
+        let session = manager.create_session_and_publish().unwrap();
         manager.create_shell(session.id).unwrap();
         manager.create_shell(session.id).unwrap();
         let process_ids: Vec<libc::pid_t> = {
@@ -743,7 +695,7 @@ mod tests {
                 })
                 .collect()
         };
-        assert_eq!(process_ids.len(), 3);
+        assert_eq!(process_ids.len(), 4, "Pi, its terminal and two more panes");
 
         let started = Instant::now();
         manager.close_session(session.id).unwrap();
@@ -799,7 +751,16 @@ mod tests {
         let fixture = LifecycleFixture::new();
         let manager = &fixture.manager;
         let session = manager.list_sessions().unwrap().remove(0);
-        let first = session.shells[0].id;
+        let pi = session
+            .shells
+            .iter()
+            .find(|shell| shell.role == PaneRole::Pi)
+            .unwrap()
+            .id;
+        manager
+            .close_shell(session.id, terminal_shell(&session))
+            .unwrap();
+        let first = pi;
         assert_eq!(pty_size(manager, first), (24, 80));
 
         manager.set_viewport(test_viewport(1000.0)).unwrap();

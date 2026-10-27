@@ -31,7 +31,8 @@ impl SessionProcessCleanup {
 
 impl Drop for SessionProcessCleanup {
     fn drop(&mut self) {
-        for process_id in &self.0 {
+        // An unavailable pane reports process 0, and kill(-0) would signal this test's group.
+        for process_id in self.0.iter().filter(|process_id| **process_id > 0) {
             // SAFETY: these PIDs came from sessions created by this isolated test daemon.
             unsafe {
                 libc::kill(-process_id, libc::SIGKILL);
@@ -140,17 +141,26 @@ fn unique_test_directory(tag: &str) -> std::path::PathBuf {
 }
 
 fn start_axod(directory: &std::path::Path, socket: &std::path::Path) -> ChildGuard {
-    std::fs::create_dir_all(directory).unwrap();
     let fixture_pi = std::env::var_os("AXO_TEST_PI_EXECUTABLE")
         .map(std::path::PathBuf::from)
         .unwrap_or_else(|| {
             std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("testdata/pi-fixture.sh")
         });
+    start_axod_with_pi(
+        directory,
+        socket,
+        &std::fs::canonicalize(fixture_pi).expect("declared Pi fixture executable"),
+    )
+}
+
+fn start_axod_with_pi(
+    directory: &std::path::Path,
+    socket: &std::path::Path,
+    pi: &std::path::Path,
+) -> ChildGuard {
+    std::fs::create_dir_all(directory).unwrap();
     let child = Command::new(axod_binary())
-        .env(
-            "AXO_PI_EXECUTABLE",
-            std::fs::canonicalize(fixture_pi).expect("declared Pi fixture executable"),
-        )
+        .env("AXO_PI_EXECUTABLE", pi)
         .arg("--socket")
         .arg(socket)
         .arg("--server-dir")
@@ -418,6 +428,20 @@ fn create_session(socket: &std::path::Path) -> Value {
     rpc(socket, "axo.session.create")["result"].clone()
 }
 
+/// A Session's pane with `role`; every new Session has a Pi pane and a terminal beside it.
+fn pane_with_role<'a>(session: &'a Value, role: &str) -> &'a Value {
+    session["shells"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|shell| shell["role"] == role)
+        .unwrap_or_else(|| panic!("Session has no {role} pane: {session}"))
+}
+
+fn terminal_shell(session: &Value) -> &Value {
+    pane_with_role(session, "terminal")
+}
+
 #[test]
 fn terminal_attach_subcommand_bridges_input_and_output() {
     let root = unique_test_directory("axoa");
@@ -426,7 +450,7 @@ fn terminal_attach_subcommand_bridges_input_and_output() {
     let mut daemon = start_axod(&server_directory, &socket);
     wait_for_socket(&socket, &mut daemon);
     let session = create_session(&socket);
-    let shell = &session["shells"][0];
+    let shell = terminal_shell(&session);
     let mut process = Command::new(axod_binary())
         .arg("terminal-attach")
         .arg("--attach-socket")
@@ -471,7 +495,7 @@ fn terminal_attachments_share_output_and_shells_never_stall_unattached() {
     wait_for_socket(&socket, &mut daemon);
     let session = create_session(&socket);
     let session_id = session["id"].as_i64().unwrap();
-    let shell = &session["shells"][0];
+    let shell = terminal_shell(&session);
     let shell_id = shell["id"].as_i64().unwrap();
     let attach_socket = shell["attachSocketPath"].as_str().unwrap();
 
@@ -575,7 +599,7 @@ fn local_protocol_streams_events_and_controls_the_pty() {
 
     let session = create_session(&socket);
     let session_id = session["id"].as_i64().unwrap();
-    let shell = &session["shells"][0];
+    let shell = terminal_shell(&session);
     let shell_id = shell["id"].as_i64().unwrap();
     let subscription = rpc_with_params(
         &socket,
@@ -929,77 +953,91 @@ fn stores_validated_allowlisted_configuration_for_future_processes() {
 }
 
 #[test]
-fn keeps_one_standalone_session_open_while_workspaces_exist() {
-    let directory = unique_test_directory("axo-standalone-invariant");
+fn axod_starts_when_pi_cannot_launch() {
+    let directory = unique_test_directory("axo-no-pi");
     let server_directory = directory.join("server");
     let socket = directory.join("axod.sock");
-    let workspace_directory = directory.join("workspace");
-    std::fs::create_dir_all(&workspace_directory).unwrap();
+    std::fs::create_dir_all(&directory).unwrap();
+    let broken_pi = directory.join("broken-pi");
+    std::fs::write(&broken_pi, "not executable").unwrap();
+
+    let mut daemon = start_axod_with_pi(&server_directory, &socket, &broken_pi);
+    wait_for_socket(&socket, &mut daemon);
+    assert_eq!(
+        rpc(&socket, "axo.daemon.health")["result"]["status"],
+        "running"
+    );
+    let workspaces = rpc(&socket, "axo.workspace.list")["result"]["workspaces"].clone();
+    assert_eq!(
+        workspaces[0]["home"], true,
+        "Home exists even without a Session: {workspaces}"
+    );
+    assert!(active_sessions(&socket).is_empty());
+
+    daemon.stop();
+    let _ = std::fs::remove_dir_all(directory);
+}
+
+#[test]
+fn the_home_workspace_always_has_a_session_and_cannot_be_archived() {
+    let directory = unique_test_directory("axo-home-workspace");
+    let server_directory = directory.join("server");
+    let socket = directory.join("axod.sock");
 
     let mut cleanup = SessionProcessCleanup::default();
     let mut daemon = start_axod(&server_directory, &socket);
     wait_for_socket(&socket, &mut daemon);
 
-    let home_session = active_sessions(&socket)
-        .into_iter()
-        .find(|session| session["workspaceId"].is_null())
-        .expect("axod should start a standalone home Session");
-    cleanup.track(&home_session);
-
-    let workspace = rpc_with_params(
-        &socket,
-        "axo.workspace.create",
-        json!({ "name": "Invariant", "directoryPath": workspace_directory }),
-    );
-    assert!(workspace["result"]["session"].is_object(), "{workspace}");
-    cleanup.track(&workspace["result"]["session"]);
-
-    let close_home = rpc_with_params(
-        &socket,
-        "axo.session.close",
-        json!({ "sessionId": home_session["id"] }),
-    );
-    let mut standalone_replacement = close_home["result"]["replacement"].clone();
-    assert!(
-        standalone_replacement.is_object(),
-        "closing the final standalone Session should create a replacement even when a Workspace Session is open: {close_home}"
-    );
-    cleanup.track(&standalone_replacement);
-
+    let workspaces = rpc(&socket, "axo.workspace.list")["result"]["workspaces"].clone();
+    let home = workspaces
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|workspace| workspace["name"] == "Home")
+        .unwrap_or_else(|| panic!("axod should create the Home Workspace: {workspaces}"))
+        .clone();
+    assert_eq!(home["directoryPath"], std::env::var("HOME").unwrap());
+    assert_eq!(home["home"], true);
     let sessions = active_sessions(&socket);
-    assert_eq!(
-        sessions
-            .iter()
-            .filter(|session| session["workspaceId"].is_null())
-            .count(),
-        1
-    );
-    assert_eq!(
-        sessions
-            .iter()
-            .filter(|session| !session["workspaceId"].is_null())
-            .count(),
-        1
-    );
+    assert_eq!(sessions.len(), 1);
+    assert_eq!(sessions[0]["workspaceId"], home["workspaceId"]);
+    cleanup.track(&sessions[0]);
 
-    let close_replacement = rpc_with_params(
-        &socket,
-        "axo.session.close",
-        json!({ "sessionId": standalone_replacement["id"] }),
-    );
-    standalone_replacement = close_replacement["result"]["replacement"].clone();
+    // A Session created outside any other Workspace goes to Home.
+    let created = create_session(&socket);
+    cleanup.track(&created);
+    assert_eq!(created["workspaceId"], home["workspaceId"]);
     assert!(
-        standalone_replacement.is_object(),
-        "the standalone Session invariant should also hold on subsequent closes: {close_replacement}"
-    );
-    cleanup.track(&standalone_replacement);
-    assert_eq!(
         active_sessions(&socket)
             .iter()
-            .filter(|session| session["workspaceId"].is_null())
-            .count(),
-        1
+            .all(|session| !session["workspaceId"].is_null())
     );
+
+    for session in [&sessions[0], &created] {
+        let close = rpc_with_params(
+            &socket,
+            "axo.session.close",
+            json!({ "sessionId": session["id"] }),
+        );
+        if let Some(replacement) = close["result"]["replacement"].as_object() {
+            cleanup.track(&Value::Object(replacement.clone()));
+        }
+    }
+    let remaining = active_sessions(&socket);
+    assert_eq!(
+        remaining.len(),
+        1,
+        "closing Home's last Session replaces it"
+    );
+    assert_eq!(remaining[0]["workspaceId"], home["workspaceId"]);
+
+    let archive = rpc_with_params(
+        &socket,
+        "axo.workspace.archive",
+        json!({ "workspaceId": home["workspaceId"] }),
+    );
+    assert_eq!(archive["error"]["code"], -32602, "{archive}");
+    assert_eq!(active_sessions(&socket).len(), 1);
 
     daemon.stop();
     let _ = std::fs::remove_dir_all(directory);
@@ -1065,9 +1103,18 @@ fn daemon_starts_with_and_restores_a_default_pty_session_after_restart() {
     let session = sessions[0].clone();
     cleanup.track(&session);
     assert_eq!(session["initialPwd"], home);
-    assert!(session["workspaceId"].is_null());
-    assert_eq!(session["shells"].as_array().unwrap().len(), 1);
-    let shell = &session["shells"][0];
+    let home_workspace_id = session["workspaceId"].clone();
+    assert!(
+        home_workspace_id.is_string(),
+        "the default Session is in Home"
+    );
+    assert_eq!(
+        session["shells"].as_array().unwrap().len(),
+        2,
+        "Pi and a terminal"
+    );
+    let pi_shell_id = pane_with_role(&session, "pi")["id"].as_i64().unwrap();
+    let shell = terminal_shell(&session);
     assert_eq!(shell["initialPwd"], home);
     assert!(shell["ptyDevice"].as_str().unwrap().starts_with("/dev/"));
     assert!(server_directory.join("axo.db").exists());
@@ -1096,15 +1143,22 @@ fn daemon_starts_with_and_restores_a_default_pty_session_after_restart() {
             .as_array()
             .unwrap()
             .len(),
-        2
+        3
     );
     let layout = json!({
         "kind": "split",
-        "id": "02a4c161-8143-4c9a-bbf2-1a625e8b8342",
-        "direction": "down",
-        "ratio": 0.63,
-        "first": { "kind": "pane", "shellId": shell_id },
-        "second": { "kind": "pane", "shellId": split_shell["id"] },
+        "id": "7d0e6a52-3f1c-4b8e-9a2d-6c4f1e8b9a10",
+        "direction": "right",
+        "ratio": 0.5,
+        "first": { "kind": "pane", "shellId": pi_shell_id },
+        "second": {
+            "kind": "split",
+            "id": "02a4c161-8143-4c9a-bbf2-1a625e8b8342",
+            "direction": "down",
+            "ratio": 0.63,
+            "first": { "kind": "pane", "shellId": shell_id },
+            "second": { "kind": "pane", "shellId": split_shell["id"] },
+        },
     });
     let expected_layout = layout.clone();
     let saved_layout = rpc_with_params(
@@ -1138,7 +1192,7 @@ fn daemon_starts_with_and_restores_a_default_pty_session_after_restart() {
         restored[0]["layout"], expected_layout,
         "restart should restore the session pane hierarchy"
     );
-    assert_eq!(restored[0]["shells"].as_array().unwrap().len(), 2);
+    assert_eq!(restored[0]["shells"].as_array().unwrap().len(), 3);
     let restored_shell = restored[0]["shells"]
         .as_array()
         .unwrap()
@@ -1178,7 +1232,7 @@ fn daemon_starts_with_and_restores_a_default_pty_session_after_restart() {
     let grouped = active_sessions(&socket);
     assert_eq!(grouped.len(), 1, "a split stays in the current tab");
     assert_eq!(grouped[0]["id"], session_id);
-    assert_eq!(grouped[0]["shells"].as_array().unwrap().len(), 2);
+    assert_eq!(grouped[0]["shells"].as_array().unwrap().len(), 3);
 
     let close_shell = rpc_with_params(
         &socket,
@@ -1192,11 +1246,18 @@ fn daemon_starts_with_and_restores_a_default_pty_session_after_restart() {
             .as_array()
             .unwrap()
             .len(),
-        1
+        2
     );
     assert_eq!(
         active_sessions(&socket)[0]["layout"],
-        json!({ "kind": "pane", "shellId": shell_id })
+        json!({
+            "kind": "split",
+            "id": "7d0e6a52-3f1c-4b8e-9a2d-6c4f1e8b9a10",
+            "direction": "right",
+            "ratio": 0.5,
+            "first": { "kind": "pane", "shellId": pi_shell_id },
+            "second": { "kind": "pane", "shellId": shell_id },
+        })
     );
 
     let close = rpc_with_params(
@@ -1213,7 +1274,7 @@ fn daemon_starts_with_and_restores_a_default_pty_session_after_restart() {
     cleanup.track(replacement);
     assert_ne!(replacement["id"], session_id);
     assert_eq!(replacement["initialPwd"], home);
-    assert!(replacement["workspaceId"].is_null());
+    assert_eq!(replacement["workspaceId"], home_workspace_id);
     assert_eq!(active_sessions(&socket).len(), 1);
 
     let replacement_id = replacement["id"].as_i64().unwrap();
@@ -1280,9 +1341,9 @@ fn new_panes_start_at_the_latest_clients_viewport_across_restarts() {
     );
     let session = create_session(&socket);
     cleanup.track(&session);
-    let (_control, master) = open_shell(&session["shells"][0]);
-    // 2000x1200 px minus Ghostty's scaled padding, in 16x34 px cells.
-    assert_eq!(pty_size(&master), (34, 124));
+    let (_control, master) = open_shell(terminal_shell(&session));
+    // 2000x1200 px minus Ghostty's scaled padding, in 16x34 px cells, halved beside Pi.
+    assert_eq!(pty_size(&master), (34, 61));
     drop(daemon);
 
     // The viewport outlives the daemon, so panes it starts before any client connects fit too.
@@ -1290,6 +1351,6 @@ fn new_panes_start_at_the_latest_clients_viewport_across_restarts() {
     wait_for_socket(&socket, &mut daemon);
     let session = create_session(&socket);
     cleanup.track(&session);
-    let (_control, master) = open_shell(&session["shells"][0]);
-    assert_eq!(pty_size(&master), (34, 124));
+    let (_control, master) = open_shell(terminal_shell(&session));
+    assert_eq!(pty_size(&master), (34, 61));
 }

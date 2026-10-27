@@ -201,6 +201,10 @@ pub struct WorkspaceRecord {
     /// Present only in `axo.workspace.create` results.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub state: Option<WorkspaceState>,
+    /// The Home Workspace, at the user's home directory: it always exists and cannot be
+    /// archived. Omitted for every other Workspace.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub home: bool,
 }
 
 /// A Workspace as a remote person sees it: its name, never its directory on the Mac.

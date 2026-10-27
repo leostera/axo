@@ -15,35 +15,28 @@ final class TerminalWorkbenchE2ETests: XCTestCase {
   func testExitingOneNestedShellKeepsSiblingShellsAndLayoutUsable() async throws {
     try await withWorkbench { model, daemon in
       let sessionID = try XCTUnwrap(model.selectedSessionID)
-      let firstShell = try XCTUnwrap(model.session(for: sessionID)?.shells.first)
+      let pi = try piShell(in: sessionID, of: model)
+      let firstShell = try terminal(in: sessionID, of: model)
+      model.focus(firstShell.id)
 
-      await model.split(.right)
-      let secondShell = try XCTUnwrap(
-        model.session(for: sessionID)?.shells.first { $0.id != firstShell.id })
-      await model.split(.down)
-      let thirdShell = try XCTUnwrap(
-        model.session(for: sessionID)?.shells.first {
-          $0.id != firstShell.id && $0.id != secondShell.id
-        }
-      )
+      let secondShell = try await split(.right, in: sessionID, of: model)
+      let thirdShell = try await split(.down, in: sessionID, of: model)
 
       try daemon.sendExit(to: secondShell)
       try await waitUntilShellIsGone(secondShell.id, from: model)
 
       XCTAssertEqual(model.selectedSessionID, sessionID)
       XCTAssertEqual(model.focusedShellID, thirdShell.id)
-      XCTAssertEqual(model.layout?.shellIDs, [firstShell.id, thirdShell.id])
+      XCTAssertEqual(model.layout?.shellIDs, [pi.id, firstShell.id, thirdShell.id])
       try daemon.assertCanRunCommand(in: firstShell)
       try daemon.assertCanRunCommand(in: thirdShell)
     }
   }
 
-  /// Relaunching Axo reattaches to programs that keep running. A new surface's grid is
-  /// libghostty's default window size until it is laid out; that must never reach the PTY.
   func testAttachingAnUnlaidOutSurfaceLeavesTheRunningProgramsSizeAlone() async throws {
     try await withWorkbench { model, _ in
       let sessionID = try XCTUnwrap(model.selectedSessionID)
-      let shell = try XCTUnwrap(model.session(for: sessionID)?.shells.first)
+      let shell = try terminal(in: sessionID, of: model)
       let probe = try TerminalAttachment.open(
         socketPath: try UnixSocketPath(shell.attachSocketPath), shellID: shell.id)
       defer { probe.close() }
@@ -102,7 +95,7 @@ final class TerminalWorkbenchE2ETests: XCTestCase {
   func testReplayIsParsedAtThePanesWidthNotTheDefaultSurfaceSize() async throws {
     try await withWorkbench { model, _ in
       let sessionID = try XCTUnwrap(model.selectedSessionID)
-      let shell = try XCTUnwrap(model.session(for: sessionID)?.shells.first)
+      let shell = try terminal(in: sessionID, of: model)
       let runtime = GhosttyRuntime()
       try XCTSkipIf(runtime.errorMessage != nil, "libghostty unavailable: \(runtime.errorMessage ?? "")")
       // A wide pane: the default 800x600 surface is far narrower.
@@ -284,7 +277,7 @@ final class TerminalWorkbenchE2ETests: XCTestCase {
   func testRefreshFocusesTheNewestCreatedPane() async throws {
     try await withWorkbench { model, daemon in
       let sessionID = try XCTUnwrap(model.selectedSessionID)
-      let firstShell = try XCTUnwrap(model.session(for: sessionID)?.shells.first)
+      let startingShellIDs = Set(try XCTUnwrap(model.session(for: sessionID)?.shells.map(\.id)))
       let socketPath = try UnixSocketPath(daemon.socketPath.path)
 
       let newestShell = try await AxodConnection.withFreshConnection(to: socketPath) {
@@ -293,7 +286,7 @@ final class TerminalWorkbenchE2ETests: XCTestCase {
       await model.refresh()
 
       XCTAssertEqual(model.focusedShellID, newestShell.id)
-      XCTAssertEqual(model.layout?.shellIDs, [firstShell.id, newestShell.id])
+      XCTAssertEqual(model.layout?.shellIDs, startingShellIDs.union([newestShell.id]))
     }
   }
 
@@ -311,7 +304,7 @@ final class TerminalWorkbenchE2ETests: XCTestCase {
     await firstModel.refresh()
     await firstModel.createSession()
     let sessionID = try XCTUnwrap(firstModel.selectedSessionID)
-    let firstShell = try XCTUnwrap(firstModel.session(for: sessionID)?.shells.first)
+    let firstShell = try piShell(in: sessionID, of: firstModel)
 
     await firstModel.split(.right)
     await firstModel.split(.down)
@@ -319,7 +312,7 @@ final class TerminalWorkbenchE2ETests: XCTestCase {
       firstModel.resizeSplit(splitID, to: 0.63)
     }
     let expectedLayout = try XCTUnwrap(firstModel.layout)
-    XCTAssertEqual(expectedLayout.orderedShellIDs.count, 3)
+    XCTAssertEqual(expectedLayout.orderedShellIDs.count, 4, "Pi, its terminal and two splits")
     try await waitUntilLayout(expectedLayout, for: sessionID, at: socketPath)
 
     let reopenedModel = TerminalSessionsModel(
@@ -395,28 +388,25 @@ final class TerminalWorkbenchE2ETests: XCTestCase {
   func testPaneNavigationCyclesInLayoutOrder() async throws {
     try await withWorkbench { model, _ in
       let sessionID = try XCTUnwrap(model.selectedSessionID)
-      let firstShell = try XCTUnwrap(model.session(for: sessionID)?.shells.first)
+      let pi = try piShell(in: sessionID, of: model)
+      let firstShell = try terminal(in: sessionID, of: model)
+      model.focus(firstShell.id)
 
-      await model.split(.right)
-      let secondShell = try XCTUnwrap(
-        model.session(for: sessionID)?.shells.first { $0.id != firstShell.id }
-      )
-      await model.split(.down)
-      let thirdShell = try XCTUnwrap(
-        model.session(for: sessionID)?.shells.first {
-          $0.id != firstShell.id && $0.id != secondShell.id
-        }
-      )
-      XCTAssertEqual(model.layout?.orderedShellIDs, [firstShell.id, secondShell.id, thirdShell.id])
+      let secondShell = try await split(.right, in: sessionID, of: model)
+      let thirdShell = try await split(.down, in: sessionID, of: model)
+      XCTAssertEqual(
+        model.layout?.orderedShellIDs, [pi.id, firstShell.id, secondShell.id, thirdShell.id])
 
       model.focusPreviousPane()
       XCTAssertEqual(model.focusedShellID, secondShell.id)
       model.focusPreviousPane()
       XCTAssertEqual(model.focusedShellID, firstShell.id)
       model.focusPreviousPane()
+      XCTAssertEqual(model.focusedShellID, pi.id)
+      model.focusPreviousPane()
       XCTAssertEqual(model.focusedShellID, thirdShell.id)
       model.focusNextPane()
-      XCTAssertEqual(model.focusedShellID, firstShell.id)
+      XCTAssertEqual(model.focusedShellID, pi.id)
     }
   }
 
@@ -427,7 +417,8 @@ final class TerminalWorkbenchE2ETests: XCTestCase {
       let secondSessionID = try XCTUnwrap(model.selectedSessionID)
       XCTAssertNotEqual(firstSessionID, secondSessionID)
       let secondSession = try XCTUnwrap(model.session(for: secondSessionID))
-      XCTAssertNil(secondSession.workspaceId)
+      let home = try XCTUnwrap(model.workspaces.first(where: \.isHome))
+      XCTAssertEqual(secondSession.workspaceId, home.workspaceId, "new Sessions go to Home")
       XCTAssertEqual(secondSession.initialPwd, daemon.homeDirectory.path)
 
       model.showNextSession()
@@ -441,16 +432,17 @@ final class TerminalWorkbenchE2ETests: XCTestCase {
     }
   }
 
-  func testSessionNavigationFollowsWorkspaceThenStandaloneSidebarOrder() async throws {
+  func testSessionNavigationFollowsSidebarWorkspaceOrder() async throws {
     let directory = FileManager.default.temporaryDirectory
       .appendingPathComponent("axo-sidebar-order-\(UUID().uuidString)", isDirectory: true)
     try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
     defer { try? FileManager.default.removeItem(at: directory) }
 
     try await withWorkbench { model, _ in
-      let firstStandaloneID = try XCTUnwrap(model.selectedSessionID)
+      let firstHomeID = try XCTUnwrap(model.selectedSessionID)
+      // "A Project" sorts before "Home".
       await model.createWorkspace(
-        name: "Sidebar Order",
+        name: "A Project",
         directoryPath: directory.path,
         directoryBookmark: nil
       )
@@ -459,24 +451,28 @@ final class TerminalWorkbenchE2ETests: XCTestCase {
       await model.createSession(in: workspaceID)
       let secondWorkspaceSessionID = try XCTUnwrap(model.selectedSessionID)
       await model.createSession()
-      let secondStandaloneID = try XCTUnwrap(model.selectedSessionID)
+      let secondHomeID = try XCTUnwrap(model.selectedSessionID)
 
       let sidebarOrder = [
         firstWorkspaceSessionID,
         secondWorkspaceSessionID,
-        firstStandaloneID,
-        secondStandaloneID,
+        firstHomeID,
+        secondHomeID,
       ]
-      XCTAssertEqual(model.sidebarOrderedSessions.map(\.id), sidebarOrder)
+      XCTAssertEqual(Set(model.sidebarOrderedSessions.prefix(2).map(\.id)), Set(sidebarOrder.prefix(2)))
+      XCTAssertEqual(Set(model.sidebarOrderedSessions.suffix(2).map(\.id)), Set(sidebarOrder.suffix(2)))
 
+      let ordered = model.sidebarOrderedSessions.map(\.id)
+      model.showSession(ordered[0])
       model.showNextSession()
-      XCTAssertEqual(model.selectedSessionID, firstWorkspaceSessionID)
+      XCTAssertEqual(model.selectedSessionID, ordered[1])
       model.showNextSession()
-      XCTAssertEqual(model.selectedSessionID, secondWorkspaceSessionID)
+      XCTAssertEqual(model.selectedSessionID, ordered[2])
       model.showPreviousSession()
-      XCTAssertEqual(model.selectedSessionID, firstWorkspaceSessionID)
+      XCTAssertEqual(model.selectedSessionID, ordered[1])
+      model.showSession(ordered[0])
       model.showPreviousSession()
-      XCTAssertEqual(model.selectedSessionID, secondStandaloneID)
+      XCTAssertEqual(model.selectedSessionID, ordered[3])
     }
   }
 
@@ -515,59 +511,48 @@ final class TerminalWorkbenchE2ETests: XCTestCase {
   func testCommandWClosureCollapsesNestedPaneWithoutKillingSiblings() async throws {
     try await withWorkbench { model, daemon in
       let sessionID = try XCTUnwrap(model.selectedSessionID)
-      let firstShell = try XCTUnwrap(model.session(for: sessionID)?.shells.first)
-      await model.split(.right)
-      let secondShell = try XCTUnwrap(
-        model.session(for: sessionID)?.shells.first { $0.id != firstShell.id }
-      )
-      await model.split(.down)
-      let thirdShell = try XCTUnwrap(
-        model.session(for: sessionID)?.shells.first {
-          $0.id != firstShell.id && $0.id != secondShell.id
-        }
-      )
+      let pi = try piShell(in: sessionID, of: model)
+      let firstShell = try terminal(in: sessionID, of: model)
+      model.focus(firstShell.id)
+      let secondShell = try await split(.right, in: sessionID, of: model)
+      let thirdShell = try await split(.down, in: sessionID, of: model)
       XCTAssertEqual(model.focusedShellID, thirdShell.id)
 
       await model.closeShell(try XCTUnwrap(model.focusedShellID))
 
-      XCTAssertEqual(model.layout?.shellIDs, [firstShell.id, secondShell.id])
+      XCTAssertEqual(model.layout?.shellIDs, [pi.id, firstShell.id, secondShell.id])
       XCTAssertEqual(model.focusedShellID, secondShell.id)
       try daemon.assertCanRunCommand(in: firstShell)
       try daemon.assertCanRunCommand(in: secondShell)
     }
   }
 
-  func testExitingTheOnlyShellSelectsTheDaemonReplacement() async throws {
+  func testExitingPiSelectsTheDaemonReplacement() async throws {
     try await withWorkbench { model, daemon in
       let oldSessionID = try XCTUnwrap(model.selectedSessionID)
-      let oldShell = try XCTUnwrap(model.session(for: oldSessionID)?.shells.first)
+      let oldPi = try piShell(in: oldSessionID, of: model)
 
-      try daemon.sendExit(to: oldShell)
+      // Closing Pi closes its Session; Home's last Session is replaced.
+      await model.closeShell(oldPi.id)
       try await waitUntilSessionIsGone(oldSessionID, from: model)
 
       let replacementID = try XCTUnwrap(model.selectedSessionID)
       XCTAssertNotEqual(replacementID, oldSessionID)
-      let replacementShell = try XCTUnwrap(model.session(for: replacementID)?.shells.first)
-      XCTAssertEqual(model.layout, .pane(replacementShell.id))
-      XCTAssertEqual(model.focusedShellID, replacementShell.id)
-      try daemon.assertCanRunCommand(in: replacementShell)
+      let replacementPi = try piShell(in: replacementID, of: model)
+      let replacementTerminal = try terminal(in: replacementID, of: model)
+      XCTAssertEqual(model.layout?.orderedShellIDs, [replacementPi.id, replacementTerminal.id])
+      try daemon.assertCanRunCommand(in: replacementTerminal)
     }
   }
 
   func testExitingUnselectedSessionPaneDoesNotResurrectItOnReturn() async throws {
     try await withWorkbench { model, daemon in
       let firstSessionID = try XCTUnwrap(model.selectedSessionID)
-      let firstShell = try XCTUnwrap(model.session(for: firstSessionID)?.shells.first)
-      await model.split(.right)
-      let secondShell = try XCTUnwrap(
-        model.session(for: firstSessionID)?.shells.first { $0.id != firstShell.id }
-      )
-      await model.split(.down)
-      let thirdShell = try XCTUnwrap(
-        model.session(for: firstSessionID)?.shells.first {
-          $0.id != firstShell.id && $0.id != secondShell.id
-        }
-      )
+      let pi = try piShell(in: firstSessionID, of: model)
+      let firstShell = try terminal(in: firstSessionID, of: model)
+      model.focus(firstShell.id)
+      let secondShell = try await split(.right, in: firstSessionID, of: model)
+      let thirdShell = try await split(.down, in: firstSessionID, of: model)
 
       await model.createSession()
       let otherSessionID = try XCTUnwrap(model.selectedSessionID)
@@ -578,67 +563,60 @@ final class TerminalWorkbenchE2ETests: XCTestCase {
       XCTAssertEqual(model.selectedSessionID, otherSessionID)
 
       model.showSession(firstSessionID)
-      XCTAssertEqual(model.layout?.shellIDs, [firstShell.id, thirdShell.id])
+      XCTAssertEqual(model.layout?.shellIDs, [pi.id, firstShell.id, thirdShell.id])
       XCTAssertFalse(model.layout?.contains(shellID: secondShell.id) ?? true)
       try daemon.assertCanRunCommand(in: firstShell)
       try daemon.assertCanRunCommand(in: thirdShell)
     }
   }
 
-  func testExitingAllShellsInOneTabLeavesOtherTabIntact() async throws {
+  func testExitingAllTerminalsInOneSessionLeavesOtherSessionsIntact() async throws {
     try await withWorkbench { model, daemon in
       let originalSessionID = try XCTUnwrap(model.selectedSessionID)
-      let originalShell = try XCTUnwrap(model.session(for: originalSessionID)?.shells.first)
+      let originalSession = try XCTUnwrap(model.session(for: originalSessionID))
+      let originalLayout = model.layout
+      let originalTerminal = try terminal(in: originalSessionID, of: model)
 
       await model.createSession()
-      let exitedSessionID = try XCTUnwrap(model.selectedSessionID)
-      let firstExitedShell = try XCTUnwrap(model.session(for: exitedSessionID)?.shells.first)
-      await model.split(.right)
-      let lastExitedShell = try XCTUnwrap(
-        model.session(for: exitedSessionID)?.shells.first { $0.id != firstExitedShell.id }
-      )
+      let otherSessionID = try XCTUnwrap(model.selectedSessionID)
+      let otherPi = try piShell(in: otherSessionID, of: model)
+      let firstExitedShell = try terminal(in: otherSessionID, of: model)
+      model.focus(firstExitedShell.id)
+      let lastExitedShell = try await split(.right, in: otherSessionID, of: model)
 
       try daemon.sendExit(to: firstExitedShell)
       try await waitUntilShellIsGone(firstExitedShell.id, from: model)
-      XCTAssertEqual(model.selectedSessionID, exitedSessionID)
+      XCTAssertEqual(model.selectedSessionID, otherSessionID)
       try daemon.sendExit(to: lastExitedShell)
-      try await waitUntilSessionIsGone(exitedSessionID, from: model)
+      try await waitUntilShellIsGone(lastExitedShell.id, from: model)
 
-      XCTAssertEqual(model.selectedSessionID, originalSessionID)
-      XCTAssertEqual(model.layout, .pane(originalShell.id))
-      XCTAssertEqual(model.session(for: originalSessionID)?.shells, [originalShell])
-      try daemon.assertCanRunCommand(in: originalShell)
+      // Pi keeps its Session open once its terminals are gone.
+      XCTAssertEqual(model.selectedSessionID, otherSessionID)
+      XCTAssertEqual(model.layout, .pane(otherPi.id))
+      model.showSession(originalSessionID)
+      XCTAssertEqual(model.layout, originalLayout)
+      XCTAssertEqual(model.session(for: originalSessionID)?.shells, originalSession.shells)
+      try daemon.assertCanRunCommand(in: originalTerminal)
     }
   }
 
   func testRepeatedNestedShellExitsCollapseOnlyTheirOwnBranches() async throws {
     try await withWorkbench { model, daemon in
       let sessionID = try XCTUnwrap(model.selectedSessionID)
-      let initialShell = try XCTUnwrap(model.session(for: sessionID)?.shells.first)
+      let pi = try piShell(in: sessionID, of: model)
+      let initialShell = try terminal(in: sessionID, of: model)
+      model.focus(initialShell.id)
 
-      await model.split(.right)
-      let secondShell = try XCTUnwrap(
-        model.session(for: sessionID)?.shells.first { $0.id != initialShell.id }
-      )
-      await model.split(.down)
-      let thirdShell = try XCTUnwrap(
-        model.session(for: sessionID)?.shells.first {
-          $0.id != initialShell.id && $0.id != secondShell.id
-        }
-      )
-      await model.split(.right)
-      let fourthShell = try XCTUnwrap(
-        model.session(for: sessionID)?.shells.first {
-          $0.id != initialShell.id && $0.id != secondShell.id && $0.id != thirdShell.id
-        }
-      )
+      let secondShell = try await split(.right, in: sessionID, of: model)
+      let thirdShell = try await split(.down, in: sessionID, of: model)
+      let fourthShell = try await split(.right, in: sessionID, of: model)
 
       try daemon.sendExit(to: thirdShell)
       try await waitUntilShellIsGone(thirdShell.id, from: model)
       try daemon.sendExit(to: secondShell)
       try await waitUntilShellIsGone(secondShell.id, from: model)
 
-      XCTAssertEqual(model.layout?.shellIDs, [initialShell.id, fourthShell.id])
+      XCTAssertEqual(model.layout?.shellIDs, [pi.id, initialShell.id, fourthShell.id])
       try daemon.assertCanRunCommand(in: initialShell)
       try daemon.assertCanRunCommand(in: fourthShell)
     }
@@ -679,6 +657,32 @@ final class TerminalWorkbenchE2ETests: XCTestCase {
     try await test(model, daemon)
   }
 
+  /// The Session's Pi pane; every new Session opens with Pi on the left.
+  private func piShell(in sessionID: SessionID, of model: TerminalSessionsModel) throws
+    -> TerminalShell
+  {
+    try XCTUnwrap(model.session(for: sessionID)?.shells.first(where: \.isPi))
+  }
+
+  /// The Session's first terminal pane, which opens beside Pi.
+  private func terminal(in sessionID: SessionID, of model: TerminalSessionsModel) throws
+    -> TerminalShell
+  {
+    try XCTUnwrap(model.session(for: sessionID)?.shells.first { !$0.isPi })
+  }
+
+  /// Splits the focused pane and returns the new one, which takes focus.
+  private func split(
+    _ direction: TerminalSplitDirection, in sessionID: SessionID, of model: TerminalSessionsModel
+  ) async throws -> TerminalShell {
+    let before = Set(try XCTUnwrap(model.session(for: sessionID)?.shells.map(\.id)))
+    await model.split(direction)
+    let created = try XCTUnwrap(
+      model.session(for: sessionID)?.shells.first { !before.contains($0.id) })
+    XCTAssertEqual(model.focusedShellID, created.id)
+    return created
+  }
+
   private func waitUntilShellIsGone(
     _ shellID: ShellID,
     from model: TerminalSessionsModel
@@ -714,7 +718,7 @@ final class TerminalWorkbenchE2ETests: XCTestCase {
 private final class DaemonFixture {
   let executableURL: URL
   let socketPath: URL
-  /// The daemon's `HOME`; standalone Sessions start here.
+  /// The daemon's `HOME`, where the Home Workspace is.
   let homeDirectory: URL
   private let root: URL
   private let daemon: Process

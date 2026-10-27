@@ -305,16 +305,6 @@ pub fn create_tables(transaction: &rusqlite::Transaction<'_>) -> rusqlite::Resul
     )
 }
 
-pub fn open_standalone_session_count(database: &Connection) -> io::Result<i64> {
-    database
-        .query_row(
-            "SELECT COUNT(*) FROM sessions WHERE workspace_id IS NULL AND state = 'open'",
-            [],
-            |row| row.get(0),
-        )
-        .map_err(io::Error::other)
-}
-
 pub fn read_open_sessions(database: &Connection) -> io::Result<Vec<StoredSession>> {
     let mut statement = database
         .prepare("SELECT id, initial_pwd FROM sessions WHERE state = 'open' ORDER BY id")
@@ -863,17 +853,19 @@ pub fn bind_pi_session_id(
 pub fn list_open_workspaces(database: &Connection) -> io::Result<Vec<WorkspaceRecord>> {
     let mut statement = database
         .prepare(
-            "SELECT workspace_id, name, directory_path FROM workspaces WHERE state = 'open' \
-             ORDER BY name, workspace_id",
+            "SELECT workspace_id, name, directory_path, \
+                 workspace_id IS (SELECT value FROM daemon_metadata WHERE key = ?1) \
+             FROM workspaces WHERE state = 'open' ORDER BY name, workspace_id",
         )
         .map_err(io::Error::other)?;
     statement
-        .query_map([], |row| {
+        .query_map(params![HOME_WORKSPACE_METADATA_KEY], |row| {
             Ok(WorkspaceRecord {
                 workspace_id: row.get(0)?,
                 name: row.get(1)?,
                 directory_path: row.get(2)?,
                 state: None,
+                home: row.get(3)?,
             })
         })
         .map_err(io::Error::other)?
@@ -1061,44 +1053,17 @@ pub fn open_workspace_directory(database: &Connection, workspace_id: &str) -> io
 
 /// The number in a new Session's default name ("Session N"): one more than the open Sessions
 /// in its Workspace, or the standalone ones.
-pub fn next_session_ordinal(database: &Connection, workspace_id: Option<&str>) -> io::Result<i64> {
-    match workspace_id {
-        Some(workspace_id) => database.query_row(
+pub fn next_session_ordinal(database: &Connection, workspace_id: &str) -> io::Result<i64> {
+    database
+        .query_row(
             "SELECT COUNT(*) + 1 FROM sessions WHERE workspace_id = ? AND state = 'open'",
             params![workspace_id],
             |row| row.get(0),
-        ),
-        None => database.query_row(
-            "SELECT COUNT(*) + 1 FROM sessions WHERE workspace_id IS NULL AND state = 'open'",
-            [],
-            |row| row.get(0),
-        ),
-    }
-    .map_err(io::Error::other)
-}
-
-pub fn insert_standalone_session(
-    database: &Connection,
-    initial_pwd: &Path,
-    session_uuid: &str,
-    name: &str,
-) -> io::Result<SessionId> {
-    database
-        .execute(
-            "INSERT INTO sessions (initial_pwd, state, created_at, session_uuid, name) \
-             VALUES (?1, 'open', ?2, ?3, ?4)",
-            params![
-                initial_pwd.to_string_lossy(),
-                unix_timestamp(),
-                session_uuid,
-                name
-            ],
         )
-        .map_err(io::Error::other)?;
-    inserted_session_id(database)
+        .map_err(io::Error::other)
 }
 
-/// A Workspace Session about to be created, with its one Pi pane.
+/// A Workspace Session about to be created, with its Pi pane and a terminal pane.
 pub struct NewWorkspaceSession<'a> {
     pub workspace_id: &'a str,
     pub initial_pwd: &'a Path,
@@ -1107,14 +1072,24 @@ pub struct NewWorkspaceSession<'a> {
     pub pi_session_file: &'a Path,
     pub bridge_socket: &'a BridgeSocketPath,
     pub pane_id: &'a str,
+    /// The UUID of the split between the Pi and terminal panes.
+    pub split_id: &'a str,
 }
 
-/// Inserts a Workspace Session, its Pi pane and the single-pane layout in one transaction, so
-/// a failure never leaves an open Session without its pane. Returns both IDs.
+/// The panes a new Workspace Session starts with.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub struct InsertedWorkspaceSession {
+    pub session_id: SessionId,
+    pub pi: ShellId,
+    pub terminal: ShellId,
+}
+
+/// Inserts a Workspace Session with Pi on the left and a terminal on the right, in one
+/// transaction, so a failure never leaves an open Session without its panes.
 pub fn insert_workspace_session(
     database: &mut Connection,
     new: &NewWorkspaceSession<'_>,
-) -> io::Result<(SessionId, ShellId)> {
+) -> io::Result<InsertedWorkspaceSession> {
     let transaction = database.transaction().map_err(io::Error::other)?;
     transaction
         .execute(
@@ -1145,10 +1120,17 @@ pub fn insert_workspace_session(
             ],
         )
         .map_err(io::Error::other)?;
-    let pane = inserted_shell_id(&transaction)?;
-    write_session_layout(&transaction, session_id, &Layout::single(pane))?;
+    let pi = inserted_shell_id(&transaction)?;
+    let terminal = insert_terminal_shell(&transaction, session_id, new.initial_pwd)?;
+    let layout = Layout::side_by_side(pi, terminal, new.split_id.to_owned())
+        .map_err(|error| io::Error::new(io::ErrorKind::InvalidInput, error))?;
+    write_session_layout(&transaction, session_id, &layout)?;
     transaction.commit().map_err(io::Error::other)?;
-    Ok((session_id, pane))
+    Ok(InsertedWorkspaceSession {
+        session_id,
+        pi,
+        terminal,
+    })
 }
 
 pub fn insert_terminal_shell(
@@ -1204,6 +1186,59 @@ pub fn insert_workspace(
         )
         .map_err(io::Error::other)?;
     Ok(())
+}
+
+const HOME_WORKSPACE_METADATA_KEY: &str = "home_workspace_id";
+const HOME_WORKSPACE_NAME: &str = "Home";
+
+/// The Home Workspace's ID, creating it at `directory` on first use (and reopening it if it was
+/// ever archived). Open Sessions outside any Workspace, from before Home existed, move into it.
+pub fn ensure_home_workspace(database: &mut Connection, directory: &Path) -> io::Result<String> {
+    let transaction = database.transaction().map_err(io::Error::other)?;
+    let existing: Option<String> = transaction
+        .query_row(
+            "SELECT value FROM daemon_metadata WHERE key = ?1",
+            params![HOME_WORKSPACE_METADATA_KEY],
+            |row| row.get(0),
+        )
+        .optional()
+        .map_err(io::Error::other)?;
+    let workspace_id = match existing {
+        Some(workspace_id) => {
+            transaction
+                .execute(
+                    "UPDATE workspaces SET state = 'open', archived_at = NULL WHERE workspace_id = ?1",
+                    params![workspace_id],
+                )
+                .map_err(io::Error::other)?;
+            workspace_id
+        }
+        None => {
+            let workspace_id = new_uuid_v4()?;
+            insert_workspace(
+                &transaction,
+                &workspace_id,
+                HOME_WORKSPACE_NAME,
+                directory,
+                None,
+            )?;
+            transaction
+                .execute(
+                    "INSERT INTO daemon_metadata (key, value) VALUES (?1, ?2)",
+                    params![HOME_WORKSPACE_METADATA_KEY, workspace_id],
+                )
+                .map_err(io::Error::other)?;
+            workspace_id
+        }
+    };
+    transaction
+        .execute(
+            "UPDATE sessions SET workspace_id = ?1 WHERE workspace_id IS NULL AND state = 'open'",
+            params![workspace_id],
+        )
+        .map_err(io::Error::other)?;
+    transaction.commit().map_err(io::Error::other)?;
+    Ok(workspace_id)
 }
 
 /// Archives a Workspace whose first Session could not be created.
@@ -1748,16 +1783,15 @@ mod tests {
     }
 
     #[test]
-    fn new_sessions_are_numbered_within_their_workspace_or_among_standalone_ones() {
+    fn new_sessions_are_numbered_within_their_workspace_and_open_with_pi_beside_a_terminal() {
         let database = &mut database();
         let workspace = new_uuid_v4().unwrap();
         super::insert_workspace(database, &workspace, "w", Path::new("/w"), None).unwrap();
-        assert_eq!(next_session_ordinal(database, None).unwrap(), 1);
-        assert_eq!(next_session_ordinal(database, Some(&workspace)).unwrap(), 1);
+        assert_eq!(next_session_ordinal(database, &workspace).unwrap(), 1);
 
-        insert_standalone_session(database, Path::new("/"), "standalone", "Session 1").unwrap();
         let socket = BridgeSocketPath::parse(PathBuf::from("/tmp/axo-store-test.sock")).unwrap();
-        let (session, pane) = insert_workspace_session(
+        let split = new_uuid_v4().unwrap();
+        let inserted = insert_workspace_session(
             database,
             &NewWorkspaceSession {
                 workspace_id: &workspace,
@@ -1767,16 +1801,36 @@ mod tests {
                 pi_session_file: Path::new("/h.jsonl"),
                 bridge_socket: &socket,
                 pane_id: "pane",
+                split_id: &split,
             },
         )
         .unwrap();
-        assert_eq!(next_session_ordinal(database, None).unwrap(), 2);
-        assert_eq!(next_session_ordinal(database, Some(&workspace)).unwrap(), 2);
+        let session = inserted.session_id;
+        assert_eq!(next_session_ordinal(database, &workspace).unwrap(), 2);
 
-        // The Workspace Session arrives whole: its Pi pane and single-pane layout.
+        // The Workspace Session arrives whole: Pi on the left, a terminal on the right.
         let row = open_session_row(database, session).unwrap();
-        assert_eq!(row.layout, Some(Layout::single(pane)));
+        assert_eq!(
+            row.layout,
+            Some(Layout::side_by_side(inserted.pi, inserted.terminal, split).unwrap())
+        );
         assert_eq!(row.workspace_name.as_deref(), Some("w"));
+        let session_record = read_open_sessions(database)
+            .unwrap()
+            .into_iter()
+            .find(|record| record.id == session)
+            .unwrap();
+        assert_eq!(
+            session_record
+                .shell_ids
+                .iter()
+                .map(|(id, role, _)| (*id, *role))
+                .collect::<Vec<_>>(),
+            vec![
+                (inserted.pi, PaneRole::Pi),
+                (inserted.terminal, PaneRole::Terminal)
+            ]
+        );
         let pi = open_pi_session(database, session).unwrap();
         assert_eq!(pi.session_file.as_deref(), Some(Path::new("/h.jsonl")));
         assert_eq!(pi.bridge_socket_path.as_deref(), Some(socket.as_str()));
@@ -1787,6 +1841,56 @@ mod tests {
         assert_eq!(
             open_workspace_directory(database, &workspace).unwrap(),
             Path::new("/w")
+        );
+    }
+
+    #[test]
+    fn the_home_workspace_is_created_once_reopened_and_adopts_standalone_sessions() {
+        let database = &mut database();
+        let standalone = insert_session(database, "standalone", "open");
+        let closed = insert_session(database, "closed", "archived");
+
+        let home = ensure_home_workspace(database, Path::new("/Users/me")).unwrap();
+        assert_eq!(
+            open_workspace_directory(database, &home).unwrap(),
+            Path::new("/Users/me")
+        );
+        let other = new_uuid_v4().unwrap();
+        super::insert_workspace(database, &other, "Project", Path::new("/p"), None).unwrap();
+        let listed: Vec<_> = list_open_workspaces(database)
+            .unwrap()
+            .into_iter()
+            .map(|workspace| (workspace.name, workspace.home))
+            .collect();
+        assert_eq!(
+            listed,
+            [("Home".to_owned(), true), ("Project".to_owned(), false)]
+        );
+        assert_eq!(
+            open_session_workspace_id(database, standalone).unwrap(),
+            Some(home.clone())
+        );
+        let closed_workspace: Option<String> = database
+            .query_row(
+                "SELECT workspace_id FROM sessions WHERE id = ?1",
+                params![closed.get()],
+                |row| row.get(0),
+            )
+            .unwrap();
+        assert_eq!(
+            closed_workspace, None,
+            "archived Sessions stay where they were"
+        );
+
+        abandon_workspace(database, &home).unwrap();
+        assert_eq!(
+            ensure_home_workspace(database, Path::new("/elsewhere")).unwrap(),
+            home
+        );
+        assert_eq!(
+            open_workspace_directory(database, &home).unwrap(),
+            Path::new("/Users/me"),
+            "an archived Home is reopened where it was"
         );
     }
 

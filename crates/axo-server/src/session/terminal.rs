@@ -772,17 +772,25 @@ mod tests {
     }
 
     /// A manager whose shells are `cat` writing everything they are typed to a file.
+    fn pi_shell(session: &axo_protocol::SessionRecord) -> ShellId {
+        session.shells.iter().find(|shell| shell.role == PaneRole::Pi).unwrap().id
+    }
+
     fn manager_recording_input(directory: &std::path::Path) -> (Arc<SessionManager>, std::path::PathBuf) {
+        // The Pi pane records what it is typed; the terminal pane beside it discards its input.
         let log = directory.join("typed.log");
-        let shell = directory.join("recording-shell");
-        std::fs::write(&shell, format!("#!/bin/sh\nexec /bin/cat > {}\n", log.display())).unwrap();
+        let agent = directory.join("recording-agent");
+        std::fs::write(&agent, format!("#!/bin/sh\nexec /bin/cat > {}\n", log.display())).unwrap();
+        std::fs::set_permissions(&agent, std::fs::Permissions::from_mode(0o700)).unwrap();
+        let shell = directory.join("silent-shell");
+        std::fs::write(&shell, "#!/bin/sh\nexec /bin/cat > /dev/null\n").unwrap();
         std::fs::set_permissions(&shell, std::fs::Permissions::from_mode(0o700)).unwrap();
         let mut database = axo_store::Connection::open(directory.join(axo_store::DATABASE_FILE)).unwrap();
         axo_store::initialize_database(&mut database).unwrap();
         database
             .execute(
-                "INSERT INTO daemon_metadata (key, value) VALUES ('shell_command', ?1)",
-                rusqlite::params![shell.to_string_lossy()],
+                "INSERT INTO daemon_metadata (key, value) VALUES ('shell_command', ?1), ('agent_command', ?2)",
+                rusqlite::params![shell.to_string_lossy(), agent.to_string_lossy()],
             )
             .unwrap();
         drop(database);
@@ -795,9 +803,10 @@ mod tests {
         std::fs::create_dir_all(&directory).unwrap();
         let (manager, log) = manager_recording_input(&directory);
         let session = manager.list_sessions().unwrap().remove(0);
-        let shell_id = session.shells[0].id;
+        let shell_id = pi_shell(&session);
 
         // No Pi in the Session yet: nothing to prompt, and nothing is typed anywhere.
+        manager.lock_state().unwrap().panes.running_mut(shell_id).unwrap().role = PaneRole::Terminal;
         let refused = manager.prompt_pi(session.id, "hello").unwrap_err();
         assert_eq!(refused.kind(), io::ErrorKind::NotFound);
 
@@ -848,8 +857,9 @@ mod tests {
         std::fs::create_dir_all(&directory).unwrap();
         let (manager, log) = manager_recording_input(&directory);
         let session = manager.list_sessions().unwrap().remove(0);
-        let shell_id = session.shells[0].id;
+        let shell_id = pi_shell(&session);
 
+        manager.lock_state().unwrap().panes.running_mut(shell_id).unwrap().role = PaneRole::Terminal;
         let refused = manager.press_pi_key(session.id, axo_relay::PiKey::Escape).unwrap_err();
         assert_eq!(refused.kind(), io::ErrorKind::NotFound);
 

@@ -89,9 +89,10 @@ pub(super) fn open_with_silent_shell(directory: &Path) -> Arc<SessionManager> {
     fs::set_permissions(&shell, fs::Permissions::from_mode(0o700)).unwrap();
     let mut database = Connection::open(directory.join(DATABASE_FILE)).unwrap();
     initialize_database(&mut database).unwrap();
+    // The Home Workspace's Session starts at once; it must not launch the user's real Pi.
     database
         .execute(
-            "INSERT INTO daemon_metadata (key, value) VALUES ('shell_command', ?1)
+            "INSERT INTO daemon_metadata (key, value) VALUES ('shell_command', ?1), ('agent_command', ?1)
              ON CONFLICT(key) DO UPDATE SET value = excluded.value",
             params![shell.to_string_lossy()],
         )
@@ -118,12 +119,16 @@ impl LifecycleFixture {
         )
         .unwrap();
         fs::set_permissions(&shell, fs::Permissions::from_mode(0o700)).unwrap();
+        // The Home Workspace's Session starts at once; it must not launch the user's real Pi.
+        let agent = directory.join("fixture-agent");
+        fs::write(&agent, "#!/bin/sh\nexec /bin/sleep 600\n").unwrap();
+        fs::set_permissions(&agent, fs::Permissions::from_mode(0o700)).unwrap();
         let mut database = Connection::open(directory.join(DATABASE_FILE)).unwrap();
         initialize_database(&mut database).unwrap();
         database
             .execute(
-                "INSERT INTO daemon_metadata (key, value) VALUES ('shell_command', ?1)",
-                params![shell.to_string_lossy()],
+                "INSERT INTO daemon_metadata (key, value) VALUES ('shell_command', ?1), ('agent_command', ?2)",
+                params![shell.to_string_lossy(), agent.to_string_lossy()],
             )
             .unwrap();
         drop(database);
@@ -350,4 +355,14 @@ pub(super) fn test_viewport(width: f64) -> Viewport {
         "dividerThickness": 1.0
     }))
     .unwrap()
+}
+
+/// The Session's terminal pane; every new Session also has a Pi pane, which comes first.
+pub(super) fn terminal_shell(session: &axo_protocol::SessionRecord) -> ShellId {
+    session
+        .shells
+        .iter()
+        .find(|shell| shell.role == PaneRole::Terminal)
+        .expect("Session has a terminal pane")
+        .id
 }

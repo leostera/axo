@@ -350,9 +350,7 @@ final class TerminalSessionsModel {
     } catch {
       report(error)
       workspaceCreationError = error.localizedDescription
-      return
     }
-    await addCompanionTerminal()
   }
 
   func dismissWorkspaceCreationError() {
@@ -365,21 +363,8 @@ final class TerminalSessionsModel {
     do {
       adopt(try await requireClient().createSession(inWorkspace: workspaceID))
     } catch {
-      return report(error)
+      report(error)
     }
-    await addCompanionTerminal()
-  }
-
-  /// Opens a new Pi Session as Pi beside a terminal pane, keeping focus on Pi. A failed split
-  /// leaves the Pi pane alone; the Session is usable either way.
-  private func addCompanionTerminal() async {
-    guard let sessionID = selectedSessionID,
-      let session = session(for: sessionID),
-      session.shells.count == 1,
-      let pi = session.shells.first, pi.isPi
-    else { return }
-    await split(.right)
-    if selectedSessionID == sessionID { focus(pi.id) }
   }
 
   func createSession() async {
@@ -485,10 +470,11 @@ final class TerminalSessionsModel {
       throw SessionCommandError("axod archived a different Workspace.")
     }
     workspaces.removeAll { $0.workspaceId == workspaceID }
-    // With the Workspace gone, prefer a standalone Session over another Workspace's.
+    // With the Workspace gone, prefer a Session in Home over another Workspace's.
+    let homeWorkspaceID = workspaces.first(where: \.isHome)?.workspaceId
     removeSessions(
       Set(archived.archivedSessionIds), closing: nil, replacement: nil,
-      fallback: { $0.first(where: { $0.workspaceId == nil })?.id ?? $0.first?.id })
+      fallback: { $0.first(where: { $0.workspaceId == homeWorkspaceID })?.id ?? $0.first?.id })
   }
 
   // MARK: - Panes

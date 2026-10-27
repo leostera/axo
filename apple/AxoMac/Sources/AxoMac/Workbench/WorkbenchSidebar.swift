@@ -51,32 +51,48 @@ struct WorkbenchSidebar: View {
                   .padding(.horizontal, 8)
                   .frame(minHeight: 28)
                 } else {
-                  Button {
-                    withAnimation(.easeInOut(duration: 0.12)) {
-                      if collapsedWorkspaceIDs.contains(workspace.id) {
-                        collapsedWorkspaceIDs.remove(workspace.id)
-                      } else {
-                        collapsedWorkspaceIDs.insert(workspace.id)
+                  HStack(spacing: 0) {
+                    Button {
+                      withAnimation(.easeInOut(duration: 0.12)) {
+                        if collapsedWorkspaceIDs.contains(workspace.id) {
+                          collapsedWorkspaceIDs.remove(workspace.id)
+                        } else {
+                          collapsedWorkspaceIDs.insert(workspace.id)
+                        }
                       }
+                    } label: {
+                      HStack(spacing: 6) {
+                        Image(systemName: collapsedWorkspaceIDs.contains(workspace.id) ? "chevron.right" : "chevron.down")
+                          .font(.system(size: 10, weight: .semibold))
+                          .foregroundStyle(.secondary)
+                          .frame(width: 10)
+                        Text(workspace.name)
+                          .font(.system(size: 13, weight: .medium))
+                        Spacer(minLength: 0)
+                      }
+                      .padding(.horizontal, 8)
+                      .frame(maxWidth: .infinity, minHeight: 24, alignment: .leading)
+                      .contentShape(Rectangle())
                     }
-                  } label: {
-                    HStack(spacing: 6) {
-                      Image(systemName: collapsedWorkspaceIDs.contains(workspace.id) ? "chevron.right" : "chevron.down")
-                        .font(.system(size: 10, weight: .semibold))
+                    .buttonStyle(.plain)
+                    .accessibilityLabel(workspace.name)
+                    .accessibilityValue(collapsedWorkspaceIDs.contains(workspace.id) ? "Collapsed" : "Expanded")
+                    .accessibilityIdentifier("workspace-row-\(workspace.workspaceId)")
+                    Button {
+                      Task { await sessions.createSession(in: workspace.workspaceId) }
+                    } label: {
+                      Image(systemName: "plus")
+                        .font(.system(size: 11, weight: .semibold))
                         .foregroundStyle(.secondary)
-                        .frame(width: 10)
-                      Text(workspace.name)
-                        .font(.system(size: 13, weight: .medium))
-                      Spacer(minLength: 0)
+                        .frame(width: 18, height: 18)
+                        .contentShape(Rectangle())
                     }
-                    .padding(.horizontal, 8)
-                    .frame(maxWidth: .infinity, minHeight: 24, alignment: .leading)
-                    .contentShape(Rectangle())
+                    .buttonStyle(.plain)
+                    .padding(.trailing, 8)
+                    .help("New Session in \(workspace.name) (⌘T)")
+                    .accessibilityLabel("New Session in \(workspace.name)")
+                    .accessibilityIdentifier("new-session-button-\(workspace.workspaceId)")
                   }
-                  .buttonStyle(.plain)
-                  .accessibilityLabel(workspace.name)
-                  .accessibilityValue(collapsedWorkspaceIDs.contains(workspace.id) ? "Collapsed" : "Expanded")
-                  .accessibilityIdentifier("workspace-row-\(workspace.workspaceId)")
                 }
               }
               .contextMenu {
@@ -87,8 +103,10 @@ struct WorkbenchSidebar: View {
                 Button("Rename Workspace") {
                   beginRenaming(.workspace(workspace))
                 }
-                Button("Archive Workspace and Sessions", role: .destructive) {
-                  archiveWorkspaceFromMenu(workspace)
+                if !workspace.isHome {
+                  Button("Archive Workspace and Sessions", role: .destructive) {
+                    archiveWorkspaceFromMenu(workspace)
+                  }
                 }
               }
 
@@ -100,19 +118,6 @@ struct WorkbenchSidebar: View {
             }
           }
 
-          SidebarSectionHeader(
-            title: "Sessions",
-            buttonLabel: "New Session",
-            helpText: "Create a Session in the selected Workspace, or in your home directory (⌘T)",
-            accessibilityIdentifier: "new-session-button",
-            topPadding: 8
-          ) {
-            Task { await sessions.createSession() }
-          }
-
-          ForEach(sections.ungrouped) { session in
-            sessionButton(for: session)
-          }
         }
         .frame(maxWidth: .infinity, alignment: .leading)
       }

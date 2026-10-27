@@ -39,6 +39,25 @@ final class CloseConfirmationsTests: XCTestCase {
       .close)
   }
 
+  func testHomesLastSessionClosesWithoutOfferingToArchiveHome() {
+    let home = WorkspaceRecord(workspaceId: "h", name: "Home", directoryPath: "/Users/me", isHome: true)
+    let onlyInHome = session(4, workspace: "h")
+    XCTAssertEqual(
+      SessionClosePlan(closing: onlyInHome, sessions: [onlyInHome], workspaces: [home, workspaceA]),
+      .close, "Axod replaces Home's last Session; Home is never archived")
+  }
+
+  func testTheWorkspaceHomeFlagIsDecodedAndDefaultsToFalse() throws {
+    let decoder = JSONDecoder()
+    let home = try decoder.decode(
+      WorkspaceRecord.self,
+      from: Data(#"{"workspaceId":"h","name":"Home","directoryPath":"/Users/me","home":true}"#.utf8))
+    XCTAssertTrue(home.isHome)
+    let other = try decoder.decode(
+      WorkspaceRecord.self, from: Data(#"{"workspaceId":"a","name":"A","directoryPath":"/a"}"#.utf8))
+    XCTAssertFalse(other.isHome)
+  }
+
   func testTheLastSessionOfAnUnlistedWorkspaceIsNotClosedBlind() {
     let onlyInA = session(2, workspace: "a")
     XCTAssertEqual(

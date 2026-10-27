@@ -164,9 +164,15 @@ swift_test(
     name = "AxoAppSelfTestTests",
     srcs = ["Tests/AxoMacTests/TerminalAppE2ETests.swift"],
     copts = ["-swift-version", "5"],
-    data = [":AxoUITestApp"],
+    data = [
+        ":AxoUITestApp",
+        "//crates/axo-server:pi_extension_fixture",
+        "//crates/axod:testdata/pi-fixture.sh",
+    ],
     env = {
         "AXO_APP_BUNDLE_ZIP": "$(rootpath :AxoUITestApp)",
+        "AXO_PI_EXTENSION_PATH": "$(rootpath //crates/axo-server:pi_extension_fixture)",
+        "AXO_TEST_PI_EXECUTABLE": "$(rootpath //crates/axod:testdata/pi-fixture.sh)",
     },
     tags = ["no-sandbox"],
     timeout = "short",

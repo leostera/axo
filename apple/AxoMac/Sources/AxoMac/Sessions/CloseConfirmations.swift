@@ -45,7 +45,8 @@ struct WorkspaceArchiveConfirmation: Equatable, Identifiable {
 /// What closing a Session takes.
 enum SessionClosePlan: Equatable {
   case close
-  /// It is its Workspace's last Session: closing archives the Workspace, so ask first.
+  /// It is its Workspace's last Session: closing archives the Workspace, so ask first. Never for
+  /// Home, which cannot be archived.
   case confirmArchive(WorkspaceArchiveConfirmation)
   /// It is the last Session of a Workspace Axo doesn't list; refuse rather than archive blind.
   case workspaceUnavailable
@@ -59,6 +60,11 @@ enum SessionClosePlan: Equatable {
     }
     guard let workspace = workspaces.first(where: { $0.workspaceId == workspaceID }) else {
       self = .workspaceUnavailable
+      return
+    }
+    // Home is never archived: Axod replaces its last Session instead.
+    guard !workspace.isHome else {
+      self = .close
       return
     }
     self = .confirmArchive(

@@ -85,6 +85,21 @@ impl Layout {
         }
     }
 
+    /// `left` and `right` side by side, each taking half the width. `split_id` must be a UUID.
+    pub fn side_by_side(
+        left: ShellId,
+        right: ShellId,
+        split_id: String,
+    ) -> Result<Layout, LayoutError> {
+        Layout::try_from(LayoutNode::Split {
+            id: split_id,
+            direction: LayoutDirection::Right,
+            ratio: 0.5,
+            first: Box::new(LayoutNode::Pane { shell_id: left }),
+            second: Box::new(LayoutNode::Pane { shell_id: right }),
+        })
+    }
+
     pub fn root(&self) -> &LayoutNode {
         &self.root
     }
