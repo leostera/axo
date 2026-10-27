@@ -1,13 +1,10 @@
-import AxoDaemonManager
 import AxoProtocol
 import SwiftUI
 
 /// The Workspace and Session list, expanded or collapsed, with inline renaming.
 struct WorkbenchSidebar: View {
-  var daemon: DaemonController
   var sessions: TerminalSessionsModel
   @Binding var isPresentingWorkspaceCreation: Bool
-  var daemonIsRunning: Bool
   @AppStorage(AxoPreferenceKey.sidebarIsCollapsed) private var isSidebarCollapsed = false
   @State private var collapsedWorkspaceIDs = Set<String>()
   @State private var renameTarget: SidebarRenameTarget?
@@ -122,14 +119,8 @@ struct WorkbenchSidebar: View {
       .overlay {
         if sessions.workspaces.isEmpty && !sessions.hasSessions {
           ContentUnavailableView(
-            daemonIsRunning ? "No Sessions" : "axod is not running",
-            systemImage: "terminal",
-            description: Text(
-              sessions.errorMessage
-                ?? (daemonIsRunning
-                  ? "Create a Workspace or Session to get started."
-                  : daemon.status.settingsTitle))
-          )
+            "No Sessions", systemImage: "terminal",
+            description: Text(sessions.errorMessage ?? "Create a Workspace or Session to get started."))
         }
       }
 

@@ -2,11 +2,12 @@ import AppKit
 import AxoDaemonManager
 import SwiftUI
 
-/// Axo spinning over a progress bar, on a transparent window, while Axod starts and the Session
-/// catalog loads. When `LaunchSplashGate` says so, it opens the terminal window and fades away.
+/// Axo spinning over a progress bar, on a transparent window, whenever Axod isn't up: at launch,
+/// while it restarts, and after it goes away. Once Axod runs and the Session catalog is live it
+/// reveals the terminal window and fades away; if Axod needs the person, it says so here.
 struct LaunchSplashView: View {
   static let windowID = "splash"
-  static let size = CGSize(width: 200, height: 230)
+  static let size = CGSize(width: 280, height: 340)
   private static let fadeOut: TimeInterval = 0.35
 
   var daemon: DaemonController
@@ -31,15 +32,12 @@ struct LaunchSplashView: View {
     LaunchSplashGate.progress(daemonRunning: daemonIsRunning(), catalogLive: sessions.catalogConnection == .live)
   }
 
-  private var needsAttention: Bool {
-    switch daemon.status {
-    case .requiresApproval, .disabled, .failed: true
-    case .starting, .running, .updating: false
-    }
+  private var attention: LaunchSplashGate.Attention? {
+    LaunchSplashGate.attention(for: daemon.status)
   }
 
   private var shouldReveal: Bool {
-    LaunchSplashGate.shouldReveal(ready: ready, needsAttention: needsAttention, elapsed: shownFor)
+    LaunchSplashGate.shouldReveal(ready: ready, elapsed: shownFor)
   }
 
   var body: some View {
@@ -58,24 +56,35 @@ struct LaunchSplashView: View {
       .frame(width: 180, height: 180)
       SplashProgressBar(progress: progress)
         .frame(width: 120)
+        .accessibilityLabel("Axo is starting")
+      if let attention {
+        SplashAttentionView(attention: attention) { resolve(attention) }
+      }
+      Spacer(minLength: 0)
     }
+    .padding(.top, 20)
     .frame(width: Self.size.width, height: Self.size.height)
     .modifier(ClearWindowBackground())
-    .accessibilityElement()
-    .accessibilityLabel("Axo is starting")
+    .animation(.easeOut(duration: 0.25), value: attention)
     .background(WindowReader { window = $0 })
-    // The gate's clock: wakes at the minimum and at the limit; readiness is observed.
+    // The gate's clock: wakes once at the minimum; readiness is observed.
     .task {
       try? await Task.sleep(for: LaunchSplashGate.minimumShown)
       shownFor = LaunchSplashGate.minimumShown
-      try? await Task.sleep(for: LaunchSplashGate.patience - LaunchSplashGate.minimumShown)
-      shownFor = LaunchSplashGate.patience
     }
     .onChange(of: shouldReveal, initial: true) { _, reveal in
       if reveal, enabled { revealTerminal() }
     }
     .onAppear {
       if !enabled { dismissWindow(id: Self.windowID) }
+    }
+  }
+
+  private func resolve(_ attention: LaunchSplashGate.Attention) {
+    switch attention {
+    case .approveInLoginItems: daemon.openLoginItemsSettings()
+    case .turnOn: daemon.enableDaemon()
+    case .retry: daemon.startIfNeeded()
     }
   }
 
@@ -105,6 +114,30 @@ private struct ClearWindowBackground: ViewModifier {
     } else {
       content
     }
+  }
+}
+
+/// Why Axod isn't starting, and the button that fixes it, on a small card under the bar.
+private struct SplashAttentionView: View {
+  var attention: LaunchSplashGate.Attention
+  var resolve: () -> Void
+
+  var body: some View {
+    VStack(spacing: 8) {
+      Text(attention.message)
+        .font(.callout)
+        .multilineTextAlignment(.center)
+        .lineLimit(4)
+        .fixedSize(horizontal: false, vertical: true)
+      Button(attention.actionTitle, action: resolve)
+        .controlSize(.regular)
+    }
+    .padding(12)
+    .frame(width: 250)
+    .background(.regularMaterial, in: RoundedRectangle(cornerRadius: 12))
+    .transition(.opacity)
+    .accessibilityElement(children: .contain)
+    .accessibilityIdentifier("launch-splash-attention")
   }
 }
 

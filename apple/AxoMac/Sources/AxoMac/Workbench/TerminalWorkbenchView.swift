@@ -22,11 +22,7 @@ struct TerminalWorkbenchView: View {
     HStack(spacing: 0) {
       // Its own view: Session status and names change on every Pi turn, and only the sidebar
       // presents them. The terminal area reads pane-level projections that those leave alone.
-      WorkbenchSidebar(
-        daemon: daemon,
-        sessions: sessions,
-        isPresentingWorkspaceCreation: $isPresentingWorkspaceCreation,
-        daemonIsRunning: daemonIsRunning)
+      WorkbenchSidebar(sessions: sessions, isPresentingWorkspaceCreation: $isPresentingWorkspaceCreation)
 
       Divider()
 
@@ -143,13 +139,10 @@ struct TerminalWorkbenchView: View {
       TerminalLayoutView(layout: layout, sessions: sessions)
         .id(layout.structuralIdentity)
     } else {
+      // Axod's own states (starting, restarting, needing approval) live on the launch splash.
       ContentUnavailableView(
-        daemonIsRunning ? "No Session Selected" : daemon.status.menuTitle,
-        systemImage: "terminal",
-        description: Text(
-          daemonIsRunning
-            ? "Choose a session in the sidebar or create a new one."
-            : daemon.status.settingsTitle))
+        "No Session Selected", systemImage: "terminal",
+        description: Text("Choose a session in the sidebar or create a new one."))
     }
   }
 }

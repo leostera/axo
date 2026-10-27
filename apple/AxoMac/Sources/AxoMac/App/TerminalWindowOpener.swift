@@ -14,8 +14,8 @@ enum TerminalWindowOpener {
     }
   }
 
-  /// True from launch until the splash first gives way. SwiftUI may open the terminal window by
-  /// itself at launch; while this holds, that window is kept hidden for the splash to reveal.
+  /// True while the splash owns the screen: from launch, and whenever Axod stops running, until
+  /// the splash gives way. While it holds, the terminal window is kept hidden.
   static var heldForSplash = false
   /// The terminal window kept hidden for the splash, if SwiftUI opened one.
   static weak var heldWindow: NSWindow?
@@ -37,31 +37,45 @@ enum TerminalWindowOpener {
   }
 }
 
-/// Put on the terminal window's content: if the window appears while the splash is pending, it
-/// is hidden before it draws and the splash is opened instead.
+/// Put on the terminal window's content: whenever the window shows while the splash is pending
+/// (at launch) or while Axod isn't running (starting, restarting, gone), it is hidden before it
+/// draws and the splash opens instead; the splash brings it back once Axod is up.
 struct TerminalSplashHold: NSViewRepresentable {
+  var daemonRunning: Bool
   var openSplash: () -> Void
 
   func makeNSView(context: Context) -> HoldView {
     let view = HoldView()
     view.openSplash = openSplash
+    view.daemonRunning = daemonRunning
     return view
   }
 
-  func updateNSView(_ nsView: HoldView, context: Context) {}
+  func updateNSView(_ nsView: HoldView, context: Context) {
+    nsView.openSplash = openSplash
+    nsView.daemonRunning = daemonRunning
+  }
 
   final class HoldView: NSView {
     var openSplash: (() -> Void)?
+    var daemonRunning = true {
+      didSet { if !daemonRunning, oldValue, let window { holdForSplash(window) } }
+    }
 
     override func viewWillMove(toWindow newWindow: NSWindow?) {
       super.viewWillMove(toWindow: newWindow)
-      guard let newWindow, TerminalWindowOpener.heldForSplash else { return }
-      newWindow.alphaValue = 0
-      TerminalWindowOpener.heldWindow = newWindow
+      guard let newWindow, TerminalWindowOpener.heldForSplash || !daemonRunning else { return }
+      holdForSplash(newWindow)
+    }
+
+    private func holdForSplash(_ window: NSWindow) {
+      TerminalWindowOpener.heldForSplash = true
+      TerminalWindowOpener.heldWindow = window
+      window.alphaValue = 0
       let openSplash = openSplash
       DispatchQueue.main.async {
         guard TerminalWindowOpener.heldForSplash else { return }
-        newWindow.orderOut(nil)
+        window.orderOut(nil)
         openSplash?()
       }
     }

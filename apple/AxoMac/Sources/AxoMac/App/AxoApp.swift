@@ -92,7 +92,9 @@ struct AxoApp<Launch: AxoLaunchMode>: App {
         palette: palette,
         isDaemonRunningOverride: environment.startsDaemon ? nil : true
       )
-      .background(SplashHoldOpener())
+      .background {
+        if usesSplash { SplashHoldOpener(daemonIsRunning: environment.daemonIsRunning) }
+      }
       .preferredColorScheme(appearanceTheme.colorScheme)
       .task { await environment.prepareTerminalWindow(sessions, ghostty) }
     }
@@ -252,12 +254,13 @@ struct AxoApp<Launch: AxoLaunchMode>: App {
   }
 }
 
-/// Hands `TerminalSplashHold` a way to open the splash.
+/// Hands `TerminalSplashHold` Axod's state and a way to open the splash.
 private struct SplashHoldOpener: View {
   @Environment(\.openWindow) private var openWindow
+  var daemonIsRunning: @MainActor () -> Bool
 
   var body: some View {
-    TerminalSplashHold { openWindow(id: LaunchSplashView.windowID) }
+    TerminalSplashHold(daemonRunning: daemonIsRunning()) { openWindow(id: LaunchSplashView.windowID) }
   }
 }
 
