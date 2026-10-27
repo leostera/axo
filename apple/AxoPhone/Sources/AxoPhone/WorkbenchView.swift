@@ -42,6 +42,9 @@ struct WorkbenchView: View {
   @Environment(\.scenePhase) private var scenePhase
   @State private var showingSettings = PreviewFixture.settingsOpen
   @State private var showingSearch = false
+  @State private var showingPairing = false
+  /// Asks the relay for codes that link a Mac (the preview's stand-in in the simulator preview).
+  private let pairingIssuer: any HostPairingIssuing
   @Environment(\.accessibilityReduceMotion) private var reduceMotion
   @AppStorage("appearance") private var appearance: AppAppearance = .system
   @AppStorage("accentColor") private var accentColor: AppAccentColor = .white
@@ -53,6 +56,7 @@ struct WorkbenchView: View {
     let client = AccountClient(endpoint: endpoint, tokens: account.tokens)
     #if DEBUG && targetEnvironment(simulator)
       if PreviewFixture.requested {
+        pairingIssuer = PreviewListing()
         _workbench = State(initialValue: PhoneWorkbench(
           hosts: HostsModel(listing: PreviewListing(), account: account),
           makeWorkbench: { host in
@@ -63,6 +67,7 @@ struct WorkbenchView: View {
         return
       }
     #endif
+    pairingIssuer = client
     _workbench = State(initialValue: PhoneWorkbench(
       hosts: HostsModel(listing: client, account: account),
       makeWorkbench: { host in
@@ -138,6 +143,9 @@ struct WorkbenchView: View {
         show(.conversation)
       }
     }
+    .sheet(isPresented: $showingPairing) {
+      PairMacSheet(issuer: pairingIssuer, hosts: workbench.hosts)
+    }
     .sheet(isPresented: $showingSettings) {
       SettingsView(account: environment.account) {
         Task {
@@ -149,7 +157,7 @@ struct WorkbenchView: View {
     }
     .task {
       await workbench.start()
-      let chats = sections.flatMap(\.sessions)
+      let chats = sections.flatMap(\.chats)
       if let index = PreviewFixture.chatOpen, chats.indices.contains(index - 1) {
         workbench.select(host: chats[index - 1].host.hostId, session: chats[index - 1].session.sessionId)
         #if DEBUG && targetEnvironment(simulator)
@@ -185,115 +193,79 @@ struct WorkbenchView: View {
 
   private var sidebar: some View {
     RenderCount.note("Menu")
-    return VStack(spacing: 0) {
-      menuHeader
-      // A plain stack rather than a List: List's section headers and row minimums are far
-      // taller than a menu of chat names needs.
-      ScrollView {
-        LazyVStack(alignment: .leading, spacing: 0) {
-          if case .failed(let message) = workbench.hosts.phase {
-            Text(message).font(.caption).foregroundStyle(.orange)
+    // A plain stack rather than a List: List's section headers and row minimums are far taller
+    // than a menu of chat names needs.
+    return ScrollView {
+      LazyVStack(alignment: .leading, spacing: 0) {
+        if case .failed(let message) = workbench.hosts.phase {
+          Text(message).font(.caption).foregroundStyle(.orange)
+            .padding(.horizontal, MenuLayout.rowInset + MenuLayout.rowTextInset)
+        }
+        ForEach(sections) { section in
+          Text(section.title)
+            .font(.footnote.weight(.semibold))
+            .foregroundStyle(.secondary)
+            .lineLimit(1)
+            .padding(.leading, MenuLayout.rowInset + MenuLayout.rowTextInset)
+            .padding(.trailing, MenuLayout.rowInset)
+            .padding(.top, section.id == sections.first?.id ? 4 : MenuLayout.sectionTopSpacing)
+            .padding(.bottom, 2)
+            .accessibilityAddTraits(.isHeader)
+          ForEach(section.chats, id: \.session.sessionId) { entry in
+            Button {
+              workbench.select(host: entry.host.hostId, session: entry.session.sessionId)
+              show(.conversation)
+            } label: {
+              SessionRow(
+                workbench: workbench,
+                selection: PhoneWorkbench.Selection(host: entry.host.hostId, session: entry.session.sessionId),
+                name: entry.session.displayName,
+                status: entry.session.status)
+                .frame(maxWidth: .infinity, alignment: .leading)
+                .contentShape(Rectangle())
+            }
+            .buttonStyle(.layerRow)
+            .padding(.horizontal, MenuLayout.rowInset)
+          }
+          if section.chats.isEmpty {
+            Text("No chats yet")
+              .font(.callout).foregroundStyle(.tertiary)
+              .padding(.horizontal, MenuLayout.rowInset + MenuLayout.rowTextInset)
+              .frame(height: MenuLayout.rowHeight)
+          }
+        }
+        if sections.isEmpty {
+          if workbench.hosts.hosts.isEmpty, workbench.hosts.phase == .loaded {
+            ContentUnavailableView(
+              "No Macs yet", systemImage: "laptopcomputer",
+              description: Text("On a Mac, open Axo → Settings → Remote Access and link it with a pairing code."))
+          } else {
+            Text(workbench.hosts.phase == .loading ? "Loading chats…" : "Your chats will appear here.")
+              .font(.subheadline)
+              .foregroundStyle(.secondary)
               .padding(.horizontal, MenuLayout.rowInset + MenuLayout.rowTextInset)
           }
-          ForEach(sections) { section in
-            Text(section.title)
-              .font(.footnote.weight(.semibold))
-              .foregroundStyle(.secondary)
-              .lineLimit(1)
-              .padding(.leading, MenuLayout.rowInset + MenuLayout.rowTextInset)
-              .padding(.trailing, MenuLayout.rowInset)
-              .padding(.top, section.id == sections.first?.id ? 4 : MenuLayout.sectionTopSpacing)
-              .padding(.bottom, 2)
-              .accessibilityAddTraits(.isHeader)
-            ForEach(section.sessions, id: \.session.sessionId) { entry in
-              Button {
-                workbench.select(host: entry.host.hostId, session: entry.session.sessionId)
-                show(.conversation)
-              } label: {
-                SessionRow(
-                  workbench: workbench,
-                  selection: PhoneWorkbench.Selection(host: entry.host.hostId, session: entry.session.sessionId),
-                  name: entry.session.displayName,
-                  status: entry.session.status)
-                  .frame(maxWidth: .infinity, alignment: .leading)
-                  .contentShape(Rectangle())
-              }
-              .buttonStyle(.layerRow)
-              .padding(.horizontal, MenuLayout.rowInset)
-            }
-            if section.sessions.isEmpty {
-              Text("No chats yet")
-                .font(.callout).foregroundStyle(.tertiary)
-                .padding(.horizontal, MenuLayout.rowInset + MenuLayout.rowTextInset)
-                .frame(height: MenuLayout.rowHeight)
-            }
-          }
-          if sections.isEmpty {
-            if workbench.hosts.hosts.isEmpty, workbench.hosts.phase == .loaded {
-              ContentUnavailableView(
-                "No Macs yet", systemImage: "laptopcomputer",
-                description: Text("On a Mac, open Axo → Settings → Remote Access and link it with a pairing code."))
-            } else {
-              Text(workbench.hosts.phase == .loading ? "Loading chats…" : "Your chats will appear here.")
-                .font(.subheadline)
-                .foregroundStyle(.secondary)
-                .padding(.horizontal, MenuLayout.rowInset + MenuLayout.rowTextInset)
-            }
-          }
         }
-        .padding(.top, 8)
-        .padding(.bottom, 12)
       }
-      .scrollIndicators(.hidden)
-      .background(ChatColors.background)
-      .refreshable { await workbench.refresh() }
-      .accessibilityIdentifier("workbench-menu")
+      .padding(.top, 8)
+      .padding(.bottom, 12)
     }
+    .scrollIndicators(.hidden)
+    .softLayerEdges()
     .background(ChatColors.background.ignoresSafeArea())
-    .safeAreaInset(edge: .bottom, spacing: 0) { menuFooter }
+    .refreshable { await workbench.refresh() }
+    .accessibilityIdentifier("workbench-menu")
+    .layerBar(edge: .top) { menuHeader }
+    .layerBar(edge: .bottom) { menuFooter }
   }
 
-  private struct Entry {
-    let host: RemoteHost
-    let session: RemoteSession
-  }
-
-  private struct MenuSection: Identifiable {
-    let id: String
-    let title: String
-    let sessions: [Entry]
-  }
-
-  /// The chats, grouped as the original menu grouped them: by Workspace. Bare terminals have no
-  /// chat in them and are not listed. With several Macs, a Workspace's Mac is named in its title.
-  private var sections: [MenuSection] {
+  /// The chats, by Workspace, the most recently active first (see `ChatMenu`).
+  private var sections: [ChatMenuSection] {
     let hosts = workbench.hosts.hosts
-    var order: [String] = []
-    var grouped: [String: (title: String, sessions: [Entry])] = [:]
-    for host in hosts {
-      for session in workbench.sessions(of: host).sorted(by: { $0.sessionId < $1.sessionId })
-      where session.hasAgent != false {
-        let workspace = session.workspaceName ?? "Chats"
-        let key = "\(host.hostId.uuidString)/\(workspace)"
-        if grouped[key] == nil {
-          order.append(key)
-          grouped[key] = (hosts.count > 1 ? "\(workspace) · \(host.label)" : workspace, [])
-        }
-        grouped[key]!.sessions.append(Entry(host: host, session: session))
-      }
-    }
-    // The open Mac's Workspaces with no chats in them yet are listed too, so a new chat's place
-    // is visible before it exists.
-    if let current = workbench.current, let host = hosts.first(where: { $0.hostId == current.reference.hostId }) {
-      for workspace in current.workspaceList {
-        let key = "\(host.hostId.uuidString)/\(workspace.name)"
-        if grouped[key] == nil {
-          order.append(key)
-          grouped[key] = (hosts.count > 1 ? "\(workspace.name) · \(host.label)" : workspace.name, [])
-        }
-      }
-    }
-    return order.map { MenuSection(id: $0, title: grouped[$0]!.title, sessions: grouped[$0]!.sessions) }
+    let open = workbench.current.flatMap { current in hosts.first { $0.hostId == current.reference.hostId } }
+    return ChatMenu.sections(
+      hosts: hosts, sessionsOf: workbench.sessions(of:), openHost: open,
+      workspaces: workbench.current?.workspaceList ?? [])
   }
 
   /// The account and its Macs, under the chats.
@@ -306,6 +278,7 @@ struct WorkbenchView: View {
         workbench.select(host: host.hostId, session: nil)
         show(.conversation)
       },
+      pair: { showingPairing = true },
       showSettings: { showingSettings = true },
       refresh: { await workbench.refresh() })
   }
@@ -326,9 +299,7 @@ struct WorkbenchView: View {
       } label: {
         Image(systemName: "person.crop.circle")
           .font(.system(size: 20, weight: .medium))
-          .frame(width: 44, height: 44)
-          .background(Color.primary.opacity(0.08), in: Circle())
-          .overlay { Circle().stroke(Color.primary.opacity(0.12), lineWidth: 0.5) }
+          .floatingCircle()
       }
       .accessibilityLabel("Account and Macs")
       Button {
@@ -336,20 +307,13 @@ struct WorkbenchView: View {
       } label: {
         Image(systemName: "magnifyingglass")
           .font(.system(size: 19, weight: .medium))
-          .frame(width: 44, height: 44)
-          .background(Color.primary.opacity(0.08), in: Circle())
-          .overlay {
-            Circle().stroke(Color.primary.opacity(0.12), lineWidth: 0.5)
-          }
+          .floatingCircle()
       }
       .accessibilityLabel("Search chats")
     }
     .buttonStyle(.plain)
     .padding(.leading, MenuLayout.contentLeading)
     .padding(.trailing, MenuLayout.contentTrailing)
-    .padding(.top, 0)
-    .padding(.bottom, 0)
-    .background(ChatColors.background)
   }
 
   private var menuFooter: some View {
@@ -375,17 +339,7 @@ struct WorkbenchView: View {
       } label: {
         Image(systemName: "gearshape")
           .font(.system(size: 19, weight: .medium))
-          .frame(width: MenuLayout.controlSize, height: MenuLayout.controlSize)
-          .background {
-            Circle()
-              .fill(Color.primary.opacity(0.08))
-              .padding(1)
-          }
-          .overlay {
-            Circle()
-              .inset(by: 1)
-              .stroke(Color.primary.opacity(0.12), lineWidth: 0.5)
-          }
+          .floatingCircle(diameter: MenuLayout.controlSize)
       }
       .buttonStyle(.plain)
       .accessibilityLabel("Settings")
@@ -394,8 +348,6 @@ struct WorkbenchView: View {
     .padding(.leading, MenuLayout.contentLeading)
     .padding(.trailing, MenuLayout.contentTrailing)
     .padding(.top, 10)
-    .padding(.bottom, 0)
-    .background(ChatColors.background)
   }
 }
 
@@ -470,66 +422,73 @@ private struct HostsPanel: View {
   let openHost: UUID?
   let chatsOf: (RemoteHost) -> Int
   let newChat: (RemoteHost) -> Void
+  let pair: () -> Void
   let showSettings: () -> Void
   let refresh: () async -> Void
 
   var body: some View {
-    VStack(alignment: .leading, spacing: 0) {
+    ScrollView {
+      VStack(alignment: .leading, spacing: 0) {
+        account
+          .padding(.horizontal, MenuLayout.rowInset + MenuLayout.rowTextInset)
+          .padding(.top, 18).padding(.bottom, 22)
+        Text("Macs")
+          .font(.footnote.weight(.semibold)).foregroundStyle(.secondary)
+          .padding(.leading, MenuLayout.rowInset + MenuLayout.rowTextInset)
+          .padding(.bottom, 4)
+          .accessibilityAddTraits(.isHeader)
+        if hosts.hosts.isEmpty {
+          Text(hosts.phase == .loading ? "Loading…" : "No Macs yet. Pair one to chat with it from here.")
+            .font(.callout).foregroundStyle(.secondary)
+            .padding(.horizontal, MenuLayout.rowInset + MenuLayout.rowTextInset)
+        }
+        ForEach(hosts.hosts, id: \.hostId) { host in
+          Button { newChat(host) } label: { HostRow(host: host, chats: chatsOf(host), isOpen: host.hostId == openHost) }
+            .buttonStyle(.layerRow)
+            .disabled(host.status != .online)
+            .padding(.horizontal, MenuLayout.rowInset)
+            .accessibilityHint(host.status == .online ? "Starts a new chat on this Mac" : "")
+        }
+      }
+      .padding(.bottom, 12)
+    }
+    .scrollIndicators(.hidden)
+    .softLayerEdges()
+    .refreshable { await refresh() }
+    .frame(maxWidth: .infinity, alignment: .leading)
+    .background(ChatColors.background.ignoresSafeArea())
+    .layerBar(edge: .top) {
       // No way back here: the chats are the strip at the edge, a tap or a swipe left away.
       Text("Account").font(.title3.weight(.semibold))
-        .frame(height: 44)
+        .frame(maxWidth: .infinity, minHeight: 44, alignment: .leading)
         .padding(.leading, MenuLayout.contentLeading)
         .padding(.trailing, MenuLayout.contentTrailing)
         .accessibilityAddTraits(.isHeader)
-
-      ScrollView {
-        VStack(alignment: .leading, spacing: 0) {
-          account
-            .padding(.horizontal, MenuLayout.rowInset + MenuLayout.rowTextInset)
-            .padding(.top, 18).padding(.bottom, 22)
-          Text("Macs")
-            .font(.footnote.weight(.semibold)).foregroundStyle(.secondary)
-            .padding(.leading, MenuLayout.rowInset + MenuLayout.rowTextInset)
-            .padding(.bottom, 4)
-            .accessibilityAddTraits(.isHeader)
-          if hosts.hosts.isEmpty {
-            Text(hosts.phase == .loading
-              ? "Loading…"
-              : "No Macs yet. On a Mac, open Axo → Settings → Remote Access and link it with a pairing code.")
-              .font(.callout).foregroundStyle(.secondary)
-              .padding(.horizontal, MenuLayout.rowInset + MenuLayout.rowTextInset)
-          }
-          ForEach(hosts.hosts, id: \.hostId) { host in
-            Button { newChat(host) } label: { HostRow(host: host, chats: chatsOf(host), isOpen: host.hostId == openHost) }
-              .buttonStyle(.layerRow)
-              .disabled(host.status != .online)
-              .padding(.horizontal, MenuLayout.rowInset)
-              .accessibilityHint(host.status == .online ? "Starts a new chat on this Mac" : "")
-          }
-        }
-        .padding(.bottom, 12)
-      }
-      .scrollIndicators(.hidden)
-      .refreshable { await refresh() }
     }
-    .frame(maxWidth: .infinity, alignment: .leading)
-    .background(ChatColors.background.ignoresSafeArea())
-    .safeAreaInset(edge: .bottom, spacing: 0) {
-      HStack {
+    .layerBar(edge: .bottom) {
+      HStack(spacing: 16) {
+        // Where the chats have their Chat button: the way to add what this layer lists.
+        Button(action: pair) {
+          Label("Pair a Mac", systemImage: "laptopcomputer.and.arrow.down")
+            .font(.headline)
+            .frame(minHeight: MenuLayout.controlSize)
+            .padding(.horizontal, 11)
+            .background(Color.primary, in: Capsule())
+            .foregroundStyle(ChatColors.background)
+        }
+        .accessibilityLabel("Pair a Mac")
         Spacer(minLength: 0)
         Button(action: showSettings) {
           Image(systemName: "gearshape")
             .font(.system(size: 19, weight: .medium))
-            .frame(width: MenuLayout.controlSize, height: MenuLayout.controlSize)
-            .background(Circle().fill(Color.primary.opacity(0.08)).padding(1))
+            .floatingCircle(diameter: MenuLayout.controlSize)
         }
-        .buttonStyle(.plain)
         .accessibilityLabel("Settings")
       }
+      .buttonStyle(.plain)
       .padding(.leading, MenuLayout.contentLeading)
       .padding(.trailing, MenuLayout.contentTrailing)
       .padding(.top, 10)
-      .background(ChatColors.background)
     }
     .accessibilityIdentifier("hosts-panel")
   }
@@ -601,8 +560,11 @@ private struct HostRow: View {
 }
 
 #if DEBUG && targetEnvironment(simulator)
-  private struct PreviewListing: HostListing, PiHistoryLoading {
+  private struct PreviewListing: HostListing, PiHistoryLoading, HostPairingIssuing {
     func hosts() async throws -> [RemoteHost] { PreviewFixture.hosts }
+    func createHostPairing() async throws -> HostPairing {
+      HostPairing(code: HostPairingCode(parsing: "7KQ2-M4XD")!, expiresAt: Date() + 600)
+    }
     func signedInAccount() async -> SignedInAccount? { PreviewFixture.account }
     func piEvents(of host: RemoteHostRef, session: SessionID, before cursor: Int64, limit: Int) async throws -> PiEventPage {
       cursor == 0 ? PiEventPage(events: PreviewFixture.events(for: session).reversed(), next: nil) : PiEventPage(events: [], next: nil)

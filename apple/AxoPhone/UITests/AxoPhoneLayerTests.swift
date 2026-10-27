@@ -110,6 +110,20 @@ final class AxoPhoneLayerTests: XCTestCase {
   }
 
   @MainActor
+  func testPairingAMacFromTheAccountShowsACodeToEnterOnTheMac() {
+    let app = launch(["AXO_PHONE_PREVIEW_HOSTS": "1"])
+    XCTAssertTrue(waitFor(.account, in: app))
+    app.buttons["Pair a Mac"].tapWhereItIs()
+    let code = app.staticTexts["pairing-code"]
+    XCTAssertTrue(code.waitForExistence(timeout: 5))
+    XCTAssertEqual(code.label, "7 K Q 2 - M 4 X D", "read out one character at a time")
+    XCTAssertTrue(app.staticTexts["Waiting for your Mac…"].exists)
+    XCTAssertTrue(app.buttons["Send to Mac"].exists)
+    app.buttons["Cancel"].tap()
+    XCTAssertFalse(code.waitForExistence(timeout: 2) && code.isHittable)
+  }
+
+  @MainActor
   func testAShortSlowDragSettlesBackWhereItWas() {
     let app = launch()
     let start = app.coordinate(withNormalizedOffset: CGVector(dx: 0.3, dy: 0.45))

@@ -66,17 +66,18 @@ enum PreviewFixture {
     static let imac = UUID(uuidString: "28355f00-95fd-4c93-8586-a71a8a52bf73")!
 
     static var hosts: [RemoteHost] {
-      func session(_ host: UUID, _ id: Int, _ name: String, _ emoji: String, _ workspace: String, status: String = "ready") -> String {
-        #"{"hostId":"\#(host)","sessionId":\#(id),"name":"\#(name)","emoji":"\#(emoji)","workspaceName":"\#(workspace)","status":"\#(status)","hasAgent":true,"shells":[{"shellId":\#(id * 10)}],"layout":{"kind":"pane","shellId":\#(id * 10)},"updatedAt":"2026-10-16T00:00:00Z"}"#
+      // The menu lists the most recently active first: in the order they are written here.
+      func session(_ host: UUID, _ id: Int, _ name: String, _ emoji: String, _ workspace: String, status: String = "ready", active: String) -> String {
+        #"{"hostId":"\#(host)","sessionId":\#(id),"name":"\#(name)","emoji":"\#(emoji)","workspaceName":"\#(workspace)","status":"\#(status)","hasAgent":true,"shells":[{"shellId":\#(id * 10)}],"layout":{"kind":"pane","shellId":\#(id * 10)},"updatedAt":"\#(active)"}"#
       }
       let json = """
         {"hosts":[
         {"hostId":"\(studio)","hostGeneration":"c3b6da28-55c0-4bb0-ac04-dd458fd41a2b","label":"Studio","hostKind":"macos","status":"online","stale":false,"lastSeenAt":"2026-10-16T00:00:00Z","sessions":[\
-        \(session(studio, 1, "Ship the remote Workbench", "🦀", "Axo", status: "working")),\
-        \(session(studio, 2, "Fix the sidebar spacing", "🎨", "Axo")),\
-        \(session(studio, 3, "Explain the relay", "📡", "Axo"))]},
+        \(session(studio, 1, "Ship the remote Workbench", "🦀", "Axo", status: "working", active: "2026-10-27T09:00:00Z")),\
+        \(session(studio, 2, "Fix the sidebar spacing", "🎨", "Axo", active: "2026-10-27T08:00:00Z")),\
+        \(session(studio, 3, "Explain the relay", "📡", "Axo", active: "2026-10-26T12:00:00Z"))]},
         {"hostId":"\(imac)","hostGeneration":"d3b6da28-55c0-4bb0-ac04-dd458fd41a2b","label":"Old iMac","hostKind":"macos","status":"offline","stale":true,"lastSeenAt":"2026-10-15T00:00:00Z","sessions":[\
-        \(session(imac, 5, "Photo library cleanup", "📷", "Home"))]}]}
+        \(session(imac, 5, "Photo library cleanup", "📷", "Home", active: "2026-10-15T00:00:00Z"))]}]}
         """
       return (try? JSONDecoder().decode(RemoteHostList.self, from: Data(json.utf8)).hosts) ?? []
     }
