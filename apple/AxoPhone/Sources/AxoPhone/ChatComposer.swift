@@ -24,6 +24,7 @@ struct ChatComposer: View {
         .frame(minHeight: 44)
         .onGeometryChange(for: CGFloat.self) { $0.size.height } action: { editorHeight = $0 }
         .disabled(!canSend)
+        .accessibilityIdentifier("composer")
         .submitLabel(.send)
         .onSubmit { if canSend && hasDraft { send() } }
       if isLong {
@@ -44,6 +45,7 @@ struct ChatComposer: View {
           .background(canSend && hasDraft ? Color.primary : ChatColors.disabledControl, in: Circle())
       }
       .accessibilityLabel("Send")
+      .accessibilityIdentifier("send-message")
       .disabled(!(canSend && hasDraft))
       .padding(.bottom, 1)
     }

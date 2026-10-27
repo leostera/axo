@@ -1,5 +1,6 @@
 load("@rules_apple//apple:apple.bzl", "local_provisioning_profile")
-load("@rules_apple//apple:ios.bzl", "ios_application")
+load("@rules_apple//apple:ios.bzl", "ios_application", "ios_ui_test")
+load("@rules_apple//apple/testing/default_runner:ios_xctestrun_runner.bzl", "ios_xctestrun_runner")
 load("@rules_swift//swift:swift_library.bzl", "swift_library")
 load("@rules_swift//swift:swift_test.bzl", "swift_test")
 
@@ -64,6 +65,31 @@ ios_application(
     minimum_os_version = "18.0",
     resources = ["//assets:mascot"],
     deps = [":AxoPhoneMain"],
+)
+
+# The app driven as a person would, against its simulator preview:
+# `bazel test //apple/AxoPhone:AxoPhoneUITests --ios_multi_cpus=sim_arm64`.
+swift_library(
+    name = "AxoPhoneUITestsLib",
+    testonly = True,
+    srcs = glob(["UITests/**/*.swift"]),
+    copts = ["-swift-version", "5"],
+    module_name = "AxoPhoneUITests",
+)
+
+ios_xctestrun_runner(
+    name = "AxoPhoneUITestRunner",
+    device_type = "iPhone 17",
+    os_version = "27.0",
+)
+
+ios_ui_test(
+    name = "AxoPhoneUITests",
+    minimum_os_version = "18.0",
+    runner = ":AxoPhoneUITestRunner",
+    tags = ["manual"],
+    test_host = ":AxoPhoneApp",
+    deps = [":AxoPhoneUITestsLib"],
 )
 
 # The profile Xcode made for this app id (it appears in ~/Library/Developer/Xcode/UserData/

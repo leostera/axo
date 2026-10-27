@@ -5,25 +5,32 @@ struct ChatMessageView: View {
   let message: ChatMessage
   /// Pi is working now; a tool that has not answered is still running.
   var piIsWorking = false
+  /// Part of the reply being written: no actions until it is whole.
+  var isLive = false
   @State private var copied = false
 
   var body: some View {
     switch message.role {
     case .user:
       VStack(alignment: .trailing, spacing: 12) {
-        Text(message.text)
-          .font(.body).textSelection(.enabled)
-          .padding(.horizontal, 17).padding(.vertical, 13)
-          .background(Color.blue.opacity(0.24), in: RoundedRectangle(cornerRadius: 23))
-          .overlay(RoundedRectangle(cornerRadius: 23).stroke(Color.blue.opacity(0.34), lineWidth: 0.5))
-          .padding(.leading, 48)
-          .contextMenu { copyButton; ShareLink(item: message.text) }
+        if !message.images.isEmpty { ChatImagesView(images: message.images, alignment: .trailing) }
+        if !message.text.isEmpty {
+          Text(message.text)
+            .font(.body).textSelection(.enabled)
+            .padding(.horizontal, 17).padding(.vertical, 13)
+            .background(Color.blue.opacity(0.24), in: RoundedRectangle(cornerRadius: 23))
+            .overlay(RoundedRectangle(cornerRadius: 23).stroke(Color.blue.opacity(0.34), lineWidth: 0.5))
+            .padding(.leading, 48)
+            .contextMenu { copyButton; ShareLink(item: message.text) }
+        }
         if let timestamp = message.timestamp { MessageTimestamp(milliseconds: timestamp) }
       }
       .frame(maxWidth: .infinity, alignment: .trailing)
     case .assistant:
       VStack(alignment: .leading, spacing: 16) {
+        if !message.images.isEmpty { ChatImagesView(images: message.images, alignment: .leading) }
         ChatMarkdown(blocks: message.blocks)
+        if !isLive {
         HStack(spacing: 18) {
           copyButton
           ShareLink(item: message.text) { Image(systemName: "square.and.arrow.up") }
@@ -32,6 +39,7 @@ struct ChatMessageView: View {
         }
         .font(.system(size: 16)).foregroundStyle(.secondary)
         .buttonStyle(.plain)
+        }
       }
       .frame(maxWidth: .infinity, alignment: .leading)
     case .thinking:
@@ -57,11 +65,16 @@ struct ChatMessageView: View {
 struct PendingPromptView: View {
   let prompt: HostWorkbenchModel.PendingPrompt
 
+  /// For a message that may not have arrived: put its words back in the box, or take it away.
+  var editAgain: () -> Void = {}
+  var dismiss: () -> Void = {}
+
   private var label: String {
     switch prompt.state {
     case .sending: "Sending…"
     case .sent: "Sent"
     case .queued: "Queued · answered after the current reply"
+    case .uncertain: "Delivery uncertain · check the chat before sending again"
     }
   }
 
@@ -74,7 +87,18 @@ struct PendingPromptView: View {
         .overlay(RoundedRectangle(cornerRadius: 23).stroke(Color.blue.opacity(0.24), lineWidth: 0.5))
         .padding(.leading, 48)
         .opacity(prompt.state == .sending ? 0.6 : 0.85)
-      Text(label).font(.caption).foregroundStyle(.secondary)
+        .contextMenu {
+          if prompt.state == .uncertain {
+            Button("Edit and send again", systemImage: "square.and.pencil", action: editAgain)
+            Button("Remove", systemImage: "trash", role: .destructive, action: dismiss)
+          }
+        }
+      HStack(spacing: 4) {
+        if prompt.state == .uncertain { Image(systemName: "exclamationmark.triangle.fill") }
+        Text(label)
+      }
+      .font(.caption).foregroundStyle(prompt.state == .uncertain ? Color.orange : Color.secondary)
+      .multilineTextAlignment(.trailing)
     }
     .frame(maxWidth: .infinity, alignment: .trailing)
     .accessibilityElement(children: .combine)
@@ -204,18 +228,171 @@ struct ChatEmptyState: View {
   }
 }
 
-/// Pi is busy; says so quietly under the last message.
+/// Pi is busy; says so quietly under the last message, with a way to stop it.
 struct AgentActivityView: View {
   /// A tool is running, as opposed to Pi only thinking.
   let callingTools: Bool
+  /// Pi is waiting for the person to answer.
+  var waiting = false
+  /// A stop was asked for and Pi has not stopped yet.
+  var stopping = false
+  var canStop = true
+  var stop: () -> Void = {}
+  @State private var confirmingStop = false
+
+  private var title: String {
+    if stopping { return "Stopping…" }
+    if waiting { return "Waiting for your answer" }
+    return callingTools ? "Using tools…" : "Thinking…"
+  }
 
   var body: some View {
     HStack(spacing: 8) {
       Image(systemName: "sparkles").foregroundStyle(.orange)
-      Text(callingTools ? "Using tools…" : "Thinking…").font(.subheadline.weight(.medium))
+      Text(title).font(.subheadline.weight(.medium))
       Spacer(minLength: 0)
       ProgressView().controlSize(.small).tint(.secondary)
+      Button { confirmingStop = true } label: {
+        Image(systemName: "xmark.circle.fill").font(.title3).foregroundStyle(.secondary)
+          .frame(width: 44, height: 44).contentShape(Rectangle())
+      }
+      .buttonStyle(.plain)
+      .accessibilityLabel("Stop the reply")
+      .disabled(stopping || !canStop)
     }
-    .padding(.vertical, 6)
+    .padding(.vertical, -4)
+    .accessibilityElement(children: .contain)
+    .accessibilityIdentifier("agentActivity")
+    .alert("Stop the reply?", isPresented: $confirmingStop) {
+      Button("Stop", role: .destructive, action: stop)
+      Button("Keep going", role: .cancel) {}
+    } message: {
+      Text("This stops everything the agent is doing now, including the tools it is running.")
+    }
+  }
+}
+
+/// What the agent is asking, with a way to answer it from here when that can be done.
+struct QuestionCard: View {
+  let question: ChatQuestion
+  let canAnswer: Bool
+  let answer: (HostWorkbenchModel.Answer) -> Void
+  @State private var words = ""
+
+  var body: some View {
+    VStack(alignment: .leading, spacing: 14) {
+      Label(question.title ?? "The agent is asking something", systemImage: "questionmark.bubble")
+        .font(.headline)
+      switch question.kind {
+      case .confirm:
+        HStack(spacing: 12) {
+          Button("Yes") { answer(.yes) }.buttonStyle(.borderedProminent)
+          Button("No") { answer(.no) }.buttonStyle(.bordered)
+        }
+        .disabled(!canAnswer)
+      case .input:
+        HStack(spacing: 10) {
+          TextField("Your answer", text: $words)
+            .textFieldStyle(.roundedBorder)
+            .submitLabel(.send)
+            .onSubmit(sendWords)
+          Button("Send", action: sendWords).buttonStyle(.borderedProminent)
+            .disabled(!canAnswer || words.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty)
+        }
+        Button("Skip", role: .cancel) { answer(.no) }.font(.callout).disabled(!canAnswer)
+      case .select, .editor, .custom:
+        Text("The choices are on your Mac. Answer there, or skip the question.")
+          .font(.callout).foregroundStyle(.secondary)
+        Button("Skip", role: .cancel) { answer(.no) }.font(.callout).disabled(!canAnswer)
+      }
+    }
+    .padding(18)
+    .frame(maxWidth: .infinity, alignment: .leading)
+    .background(ChatColors.surface, in: RoundedRectangle(cornerRadius: 20))
+    .overlay(RoundedRectangle(cornerRadius: 20).stroke(Color.orange.opacity(0.4), lineWidth: 1))
+    .accessibilityIdentifier("questionCard")
+  }
+
+  private func sendWords() {
+    let text = words.trimmingCharacters(in: .whitespacesAndNewlines)
+    guard canAnswer, !text.isEmpty else { return }
+    answer(.text(text))
+    words = ""
+  }
+}
+
+/// Pictures in a message, small; a tap opens one full screen.
+struct ChatImagesView: View {
+  let images: [ChatImage]
+  let alignment: HorizontalAlignment
+  @State private var opened: OpenedImage?
+
+  private struct OpenedImage: Identifiable {
+    let id: Int
+    let image: UIImage
+  }
+
+  var body: some View {
+    HStack(spacing: 8) {
+      ForEach(images) { image in
+        if let picture = UIImage(data: image.data) {
+          Button { opened = OpenedImage(id: image.id, image: picture) } label: {
+            Image(uiImage: picture).resizable().scaledToFill()
+              .frame(width: images.count == 1 ? 220 : 120, height: images.count == 1 ? 220 : 120)
+              .clipShape(RoundedRectangle(cornerRadius: 18))
+          }
+          .buttonStyle(.plain)
+          .accessibilityLabel("Image")
+          .accessibilityHint("Opens it full screen")
+        }
+      }
+    }
+    .frame(maxWidth: .infinity, alignment: alignment == .trailing ? .trailing : .leading)
+    .fullScreenCover(item: $opened) { opened in
+      FullScreenImage(image: opened.image)
+    }
+  }
+}
+
+/// One picture, full screen, pinch to zoom.
+private struct FullScreenImage: View {
+  let image: UIImage
+  @Environment(\.dismiss) private var dismiss
+  @State private var scale: CGFloat = 1
+  @GestureState private var pinch: CGFloat = 1
+
+  var body: some View {
+    ZStack(alignment: .topLeading) {
+      Color.black.ignoresSafeArea()
+      Image(uiImage: image).resizable().scaledToFit()
+        .scaleEffect(scale * pinch)
+        .gesture(
+          MagnifyGesture()
+            .updating($pinch) { value, state, _ in state = value.magnification }
+            .onEnded { value in scale = min(max(scale * value.magnification, 1), 6) }
+        )
+        .onTapGesture(count: 2) { withAnimation { scale = scale > 1 ? 1 : 2.5 } }
+        .frame(maxWidth: .infinity, maxHeight: .infinity)
+        .ignoresSafeArea()
+      HStack {
+        Button { dismiss() } label: {
+          Image(systemName: "xmark").font(.system(size: 20, weight: .semibold))
+            .foregroundStyle(.white).frame(width: 48, height: 48)
+            .background(.regularMaterial, in: Circle())
+        }
+        .accessibilityLabel("Close image")
+        Spacer()
+        ShareLink(item: Image(uiImage: image), preview: SharePreview("Image", image: Image(uiImage: image))) {
+          Image(systemName: "square.and.arrow.up").font(.system(size: 20, weight: .semibold))
+            .foregroundStyle(.white).frame(width: 48, height: 48)
+            .background(.regularMaterial, in: Circle())
+        }
+        .accessibilityLabel("Share image")
+      }
+      .buttonStyle(.plain)
+      .padding(.horizontal, 18).padding(.top, 12)
+    }
+    .environment(\.colorScheme, .dark)
+    .statusBarHidden()
   }
 }

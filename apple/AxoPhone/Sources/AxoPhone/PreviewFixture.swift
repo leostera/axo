@@ -13,6 +13,35 @@ enum PreviewFixture {
     /// Open this chat (1 is the first in the menu) instead of a blank one.
     static var chatOpen: Int? { ProcessInfo.processInfo.environment["AXO_PHONE_PREVIEW_CHAT"].flatMap(Int.init) }
     static var settingsOpen: Bool { ProcessInfo.processInfo.environment["AXO_PHONE_PREVIEW_SETTINGS"] == "1" }
+    /// Open the Macs and account panel (`AXO_PHONE_PREVIEW_HOSTS=1`).
+    static var hostsOpen: Bool { ProcessInfo.processInfo.environment["AXO_PHONE_PREVIEW_HOSTS"] == "1" }
+    /// Play a reply being written, a running tool and a question in the open chat
+    /// (`AXO_PHONE_PREVIEW_LIVE=reply|question|stopping`).
+    static var live: String? { ProcessInfo.processInfo.environment["AXO_PHONE_PREVIEW_LIVE"] }
+    static let account = SignedInAccount(
+      accountId: UUID(uuidString: "6b0f0e0e-2c43-4b8e-9d0a-0d8f7b2b9c11")!,
+      profile: .init(email: "leandro@example.com", name: "Leandro"))
+
+    static func liveEvents(_ kind: String) -> [PiEventRecord] {
+      let stream = UUID(uuidString: "51c77dd7-f2dc-4e91-b481-1507b62ec118")!
+      func record(_ sequence: UInt64, _ name: String, _ json: String) -> PiEventRecord {
+        PiEventRecord(streamId: stream, sequence: sequence, name: name,
+          data: (try? JSONDecoder().decode(JSONValue.self, from: Data(json.utf8))) ?? .null)
+      }
+      var events = [
+        record(1, "agent.start", "{}"),
+        record(2, "message.end", #"{"message":{"role":"user","content":"Run the tests and tell me what fails."}}"#),
+        record(3, "message.end", #"{"message":{"role":"assistant","content":[{"type":"text","text":"Running them now."},{"type":"toolCall","id":"t1","name":"bash","arguments":{"command":"swift test"}}]}}"#),
+        record(4, "tool.update", #"{"toolCallId":"t1","partialResult":{"content":[{"type":"text","text":"Building for debugging...\nCompiling AxoPhoneModel\nTest Suite 'All tests' started\nTest Case ChatTranscriptTests passed\nTest Case ScrollFollowTests passed\nTest Case HostWorkbenchLiveTests passed\nTest Case PhoneWorkbenchTests running"}]}}"#),
+      ]
+      switch kind {
+      case "question":
+        events.append(record(5, "ui.prompt.start", #"{"kind":"confirm","title":"Delete the build folder first?"}"#))
+      default:
+        events.append(record(5, "message.update", #"{"message":{"role":"assistant","content":[{"type":"text","text":"So far **83 tests** pass. Still waiting on the"}]}}"#))
+      }
+      return events
+    }
 
     static let studio = UUID(uuidString: "18355f00-95fd-4c93-8586-a71a8a52bf73")!
     static let imac = UUID(uuidString: "28355f00-95fd-4c93-8586-a71a8a52bf73")!
@@ -61,5 +90,7 @@ enum PreviewFixture {
     static var menuOpen: Bool { false }
     static var chatOpen: Int? { nil }
     static var settingsOpen: Bool { false }
+    static var hostsOpen: Bool { false }
+    static var live: String? { nil }
   #endif
 }

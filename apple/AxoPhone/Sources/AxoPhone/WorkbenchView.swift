@@ -26,8 +26,12 @@ struct WorkbenchView: View {
   @State private var workbench: PhoneWorkbench
   @State private var columnVisibility: NavigationSplitViewVisibility = .automatic
   @State private var preferredCompactColumn: NavigationSplitViewColumn = .detail
-  @State private var menuPresented = PreviewFixture.menuOpen
+  /// Which panel slides out: closed, the chats, or (one more swipe) the account and its Macs.
+  @State private var menuLevel: MenuLevel = PreviewFixture.hostsOpen ? .hosts : PreviewFixture.menuOpen ? .chats : .closed
   @State private var menuDragOffset: CGFloat = 0
+  /// The panel last shown; it stays while the menu closes, so closing does not swap panels.
+  @State private var openPanel: MenuLevel = PreviewFixture.hostsOpen ? .hosts : .chats
+  @Environment(\.scenePhase) private var scenePhase
   @Environment(\.horizontalSizeClass) private var horizontalSizeClass
   @State private var showingSettings = PreviewFixture.settingsOpen
   @State private var showingSearch = false
@@ -68,6 +72,9 @@ struct WorkbenchView: View {
 
   private var isCompact: Bool { horizontalSizeClass == .compact }
 
+  private enum MenuLevel { case closed, chats, hosts }
+  private var menuPresented: Bool { menuLevel != .closed }
+
   // The layout, the gesture and its areas of contact are the original app's, unchanged.
   var body: some View {
     GeometryReader { geometry in
@@ -78,17 +85,26 @@ struct WorkbenchView: View {
       let revealProgress = min(max(foregroundOffset / max(revealDistance, 1), 0), 1)
 
       ZStack(alignment: .leading) {
-        if isCompact {
-          sidebar
+        // Only there while it shows (or is being dragged into view): a closed menu left under
+        // the conversation would still answer taps and VoiceOver where the conversation is.
+        if isCompact && (menuPresented || foregroundOffset > 0) {
+          menuPanel
             .frame(width: revealDistance)
             .frame(maxHeight: .infinity)
             .background(ChatColors.background.ignoresSafeArea())
             .accessibilityHidden(!menuPresented)
+            // Above the split view: its hidden navigation bars stay where they were when the
+            // conversation slides aside, and would take taps meant for the top of the menu.
+            .zIndex(1)
         }
 
         NavigationSplitView(columnVisibility: $columnVisibility, preferredCompactColumn: $preferredCompactColumn) {
-          sidebar
-            .navigationSplitViewColumnWidth(min: 260, ideal: 300)
+          // On a compact screen the menu is the sliding panel above; a second copy here would sit
+          // hidden under the conversation, where VoiceOver and taps could still find it.
+          Group {
+            if isCompact { Color.clear } else { menuPanel }
+          }
+          .navigationSplitViewColumnWidth(min: 260, ideal: 300)
         } detail: {
           conversation
             .navigationBarBackButtonHidden(true)
@@ -121,12 +137,15 @@ struct WorkbenchView: View {
         .allowsHitTesting(!(isCompact && menuPresented))
 
         if isCompact && menuPresented {
+          // The slice of conversation still showing: a tap there closes the menu. Its shape is set
+          // before it moves: set after `offset`, it stays where the view was laid out, over the
+          // menu's left edge, and swallows taps on the menu's buttons there.
           Color.clear
             .frame(width: max(geometry.size.width - revealDistance, 0))
             .frame(maxHeight: .infinity)
-            .offset(x: revealDistance)
             .contentShape(Rectangle())
-            .allowsHitTesting(true)
+            .onTapGesture { closeMenu() }
+            .offset(x: revealDistance)
             .accessibilityHidden(true)
             .zIndex(2)
         }
@@ -157,6 +176,21 @@ struct WorkbenchView: View {
       let chats = sections.flatMap(\.sessions)
       if let index = PreviewFixture.chatOpen, chats.indices.contains(index - 1) {
         workbench.select(host: chats[index - 1].host.hostId, session: chats[index - 1].session.sessionId)
+        #if DEBUG && targetEnvironment(simulator)
+          if let live = PreviewFixture.live, let current = workbench.current, let id = current.selectedSessionID {
+            try? await Task.sleep(for: .milliseconds(300))
+            current.playForPreview(PreviewFixture.liveEvents(live), in: id)
+            if live == "stopping" { current.markStoppingForPreview(id) }
+          }
+        #endif
+      }
+    }
+    .onChange(of: scenePhase) { previous, phase in
+      // A socket left open in the background dies unnoticed; let it go, and come back fresh.
+      switch phase {
+      case .background: workbench.suspend()
+      case .active where previous == .background: Task { await workbench.resume() }
+      default: break
       }
     }
   }
@@ -214,12 +248,19 @@ struct WorkbenchView: View {
                 SessionRow(
                   workbench: workbench,
                   selection: PhoneWorkbench.Selection(host: entry.host.hostId, session: entry.session.sessionId),
-                  name: entry.session.displayName)
+                  name: entry.session.displayName,
+                  status: entry.session.status)
                   .frame(maxWidth: .infinity, alignment: .leading)
                   .contentShape(Rectangle())
               }
               .buttonStyle(.plain)
               .padding(.horizontal, MenuLayout.rowInset)
+            }
+            if section.sessions.isEmpty {
+              Text("No chats yet")
+                .font(.callout).foregroundStyle(.tertiary)
+                .padding(.horizontal, MenuLayout.rowInset + MenuLayout.rowTextInset)
+                .frame(height: MenuLayout.rowHeight)
             }
           }
           if sections.isEmpty {
@@ -277,7 +318,49 @@ struct WorkbenchView: View {
         grouped[key]!.sessions.append(Entry(host: host, session: session))
       }
     }
+    // The open Mac's Workspaces with no chats in them yet are listed too, so a new chat's place
+    // is visible before it exists.
+    if let current = workbench.current, let host = hosts.first(where: { $0.hostId == current.reference.hostId }) {
+      for workspace in current.workspaceList {
+        let key = "\(host.hostId.uuidString)/\(workspace.name)"
+        if grouped[key] == nil {
+          order.append(key)
+          grouped[key] = (hosts.count > 1 ? "\(workspace.name) · \(host.label)" : workspace.name, [])
+        }
+      }
+    }
     return order.map { MenuSection(id: $0, title: grouped[$0]!.title, sessions: grouped[$0]!.sessions) }
+  }
+
+  /// The chats menu, or one swipe further, the account and its Macs.
+  @ViewBuilder private var menuPanel: some View {
+    ZStack {
+      if openPanel == .hosts {
+        HostsPanel(
+          hosts: workbench.hosts,
+          openHost: workbench.current?.reference.hostId,
+          chatsOf: { workbench.sessions(of: $0).filter { $0.hasAgent != false }.count },
+          back: { withAnimation(menuAnimation) { show(.chats) } },
+          newChat: { host in
+            workbench.select(host: host.hostId, session: nil)
+            preferredCompactColumn = .detail
+            closeMenu()
+          },
+          showSettings: { showingSettings = true },
+          refresh: { await workbench.refresh() })
+          .transition(.move(edge: .leading).combined(with: .opacity))
+      } else {
+        sidebar
+          .transition(.move(edge: .trailing).combined(with: .opacity))
+      }
+    }
+    .clipped()
+  }
+
+  /// Opens `level`, or closes the menu; a closing menu keeps the panel it showed.
+  private func show(_ level: MenuLevel) {
+    menuLevel = level
+    if level != .closed { openPanel = level }
   }
 
   private var menuHeader: some View {
@@ -285,6 +368,17 @@ struct WorkbenchView: View {
       OwnMascotView(loading: workbench.hosts.phase == .loading)
         .frame(height: 34)
       Spacer(minLength: 8)
+      // The account and its Macs are also one more swipe to the right.
+      Button {
+        withAnimation(menuAnimation) { show(.hosts) }
+      } label: {
+        Image(systemName: "person.crop.circle")
+          .font(.system(size: 20, weight: .medium))
+          .frame(width: 44, height: 44)
+          .background(Color.primary.opacity(0.08), in: Circle())
+          .overlay { Circle().stroke(Color.primary.opacity(0.12), lineWidth: 0.5) }
+      }
+      .accessibilityLabel("Account and Macs")
       Button {
         showingSearch = true
       } label: {
@@ -360,7 +454,7 @@ struct WorkbenchView: View {
       return
     }
     withAnimation(menuAnimation) {
-      menuPresented = true
+      show(.chats)
       menuDragOffset = 0
     }
   }
@@ -368,7 +462,7 @@ struct WorkbenchView: View {
   private func closeMenu() {
     if isCompact {
       withAnimation(menuAnimation) {
-        menuPresented = false
+        show(.closed)
         menuDragOffset = 0
       }
     } else {
@@ -386,8 +480,11 @@ struct WorkbenchView: View {
       .onChanged { value in
         guard isCompact, abs(value.translation.width) > abs(value.translation.height) else { return }
 
-        if menuPresented {
+        if menuLevel == .chats {
+          // Left closes the menu (the conversation follows the finger); right goes on to the Macs.
           menuDragOffset = min(0, max(-revealDistance, value.translation.width))
+        } else if menuLevel == .hosts {
+          menuDragOffset = 0
         } else if value.startLocation.x <= 32, value.translation.width > 0 {
           menuDragOffset = min(revealDistance, value.translation.width)
         }
@@ -399,10 +496,14 @@ struct WorkbenchView: View {
         }
 
         withAnimation(menuAnimation) {
-          if menuPresented {
-            if value.translation.width < -80 { menuPresented = false }
-          } else if value.startLocation.x <= 32, value.translation.width > 80 {
-            menuPresented = true
+          switch menuLevel {
+          case .chats:
+            if value.translation.width < -80 { show(.closed) }
+            else if value.translation.width > 80 { show(.hosts) }
+          case .hosts:
+            if value.translation.width < -80 { show(.chats) }
+          case .closed:
+            if value.startLocation.x <= 32, value.translation.width > 80 { show(.chats) }
           }
           menuDragOffset = 0
         }
@@ -415,15 +516,20 @@ private struct SessionRow: View {
   let workbench: PhoneWorkbench
   let selection: PhoneWorkbench.Selection
   let name: String
+  let status: RemoteSessionStatus?
 
   // Read here, in the row's own body, so the row redraws when the open chat changes: a lazy
   // stack does not re-run its rows for a change only the menu's body saw.
   private var isSelected: Bool { workbench.selection == selection }
 
   var body: some View {
-    Text(name)
-      .font(.callout)
-      .lineLimit(1)
+    HStack(spacing: 8) {
+      Text(name)
+        .font(.callout)
+        .lineLimit(1)
+      Spacer(minLength: 0)
+      SessionStatusDot(status: status)
+    }
       .padding(.horizontal, MenuLayout.rowTextInset)
       .frame(maxWidth: .infinity, alignment: .leading)
       .frame(height: MenuLayout.rowHeight)
@@ -437,19 +543,223 @@ private struct SessionRow: View {
       }
       .accessibilityElement(children: .ignore)
       .accessibilityLabel(name)
+      .accessibilityValue(SessionStatusDot.spoken(status))
+  }
+}
+
+/// Whether a chat's agent is busy or needs the person, at the end of its row.
+private struct SessionStatusDot: View {
+  let status: RemoteSessionStatus?
+
+  static func spoken(_ status: RemoteSessionStatus?) -> String {
+    switch status {
+    case .working: "Working"
+    case .needsAttention: "Needs your attention"
+    case .starting: "Starting"
+    case .unavailable: "Stopped"
+    case .ready, nil: ""
+    }
+  }
+
+  var body: some View {
+    switch status {
+    case .working:
+      Circle().fill(Color.orange).frame(width: 7, height: 7)
+        .phaseAnimator([1.0, 0.35]) { dot, opacity in dot.opacity(opacity) } animation: { _ in .easeInOut(duration: 0.8) }
+    case .needsAttention:
+      Circle().fill(Color.blue).frame(width: 8, height: 8)
+    case .unavailable:
+      Image(systemName: "exclamationmark.triangle.fill").font(.caption2).foregroundStyle(.secondary)
+    case .starting, .ready, nil:
+      EmptyView()
+    }
+  }
+}
+
+/// One swipe past the chats: who is signed in, and their Macs.
+private struct HostsPanel: View {
+  let hosts: HostsModel
+  let openHost: UUID?
+  let chatsOf: (RemoteHost) -> Int
+  let back: () -> Void
+  let newChat: (RemoteHost) -> Void
+  let showSettings: () -> Void
+  let refresh: () async -> Void
+
+  var body: some View {
+    VStack(alignment: .leading, spacing: 0) {
+      HStack(spacing: 12) {
+        Button(action: back) {
+          Image(systemName: "chevron.left")
+            .font(.system(size: 17, weight: .semibold))
+            .frame(width: 44, height: 44)
+            .background(Color.primary.opacity(0.08), in: Circle())
+        }
+        .accessibilityLabel("Back to chats")
+        Text("Account").font(.title3.weight(.semibold))
+        Spacer(minLength: 0)
+      }
+      .buttonStyle(.plain)
+      .padding(.leading, MenuLayout.contentLeading - 8)
+      .padding(.trailing, MenuLayout.contentTrailing)
+
+      ScrollView {
+        VStack(alignment: .leading, spacing: 0) {
+          account
+            .padding(.horizontal, MenuLayout.rowInset + MenuLayout.rowTextInset)
+            .padding(.top, 18).padding(.bottom, 22)
+          Text("Macs")
+            .font(.footnote.weight(.semibold)).foregroundStyle(.secondary)
+            .padding(.leading, MenuLayout.rowInset + MenuLayout.rowTextInset)
+            .padding(.bottom, 4)
+            .accessibilityAddTraits(.isHeader)
+          if hosts.hosts.isEmpty {
+            Text(hosts.phase == .loading
+              ? "Loading…"
+              : "No Macs yet. On a Mac, open Axo → Settings → Remote Access and link it with a pairing code.")
+              .font(.callout).foregroundStyle(.secondary)
+              .padding(.horizontal, MenuLayout.rowInset + MenuLayout.rowTextInset)
+          }
+          ForEach(hosts.hosts, id: \.hostId) { host in
+            Button { newChat(host) } label: { HostRow(host: host, chats: chatsOf(host), isOpen: host.hostId == openHost) }
+              .buttonStyle(.plain)
+              .disabled(host.status != .online)
+              .padding(.horizontal, MenuLayout.rowInset)
+              .accessibilityHint(host.status == .online ? "Starts a new chat on this Mac" : "")
+          }
+        }
+        .padding(.bottom, 12)
+      }
+      .scrollIndicators(.hidden)
+      .refreshable { await refresh() }
+    }
+    .frame(maxWidth: .infinity, alignment: .leading)
+    .background(ChatColors.background.ignoresSafeArea())
+    .safeAreaInset(edge: .bottom, spacing: 0) {
+      HStack {
+        Spacer(minLength: 0)
+        Button(action: showSettings) {
+          Image(systemName: "gearshape")
+            .font(.system(size: 19, weight: .medium))
+            .frame(width: MenuLayout.controlSize, height: MenuLayout.controlSize)
+            .background(Circle().fill(Color.primary.opacity(0.08)).padding(1))
+        }
+        .buttonStyle(.plain)
+        .accessibilityLabel("Settings")
+      }
+      .padding(.leading, MenuLayout.contentLeading)
+      .padding(.trailing, MenuLayout.contentTrailing)
+      .padding(.top, 10)
+      .background(ChatColors.background)
+    }
+    .accessibilityIdentifier("hosts-panel")
+  }
+
+  @ViewBuilder private var account: some View {
+    let profile = hosts.signedIn?.profile
+    HStack(spacing: 14) {
+      Text(initials(profile))
+        .font(.headline)
+        .frame(width: 46, height: 46)
+        .background(Color.primary.opacity(0.1), in: Circle())
+      VStack(alignment: .leading, spacing: 2) {
+        Text(profile?.name ?? profile?.email ?? "Signed in").font(.headline).lineLimit(1)
+        if let email = profile?.email, profile?.name != nil {
+          Text(email).font(.subheadline).foregroundStyle(.secondary).lineLimit(1)
+        }
+        Text("Signed in with Cloudflare").font(.caption).foregroundStyle(.secondary)
+      }
+    }
+    .accessibilityElement(children: .combine)
+  }
+
+  private func initials(_ profile: SignedInAccount.Profile?) -> String {
+    let source = profile?.name ?? profile?.email ?? "?"
+    let words = source.split(whereSeparator: { $0 == " " || $0 == "@" || $0 == "." })
+    return String(words.prefix(2).compactMap(\.first)).uppercased()
+  }
+}
+
+private struct HostRow: View {
+  let host: RemoteHost
+  let chats: Int
+  let isOpen: Bool
+
+  var body: some View {
+    HStack(spacing: 12) {
+      Image(systemName: "laptopcomputer")
+        .font(.system(size: 17))
+        .foregroundStyle(host.status == .online ? Color.primary : Color.secondary)
+        .frame(width: 26)
+      VStack(alignment: .leading, spacing: 1) {
+        Text(host.label).font(.callout.weight(isOpen ? .semibold : .regular)).lineLimit(1)
+        Text(detail).font(.caption).foregroundStyle(.secondary).lineLimit(1)
+      }
+      Spacer(minLength: 0)
+      Circle().fill(host.status == .online ? Color.green : Color.secondary.opacity(0.5)).frame(width: 8, height: 8)
+    }
+    .padding(.horizontal, MenuLayout.rowTextInset - 8)
+    .frame(height: 52)
+    .background {
+      if isOpen {
+        RoundedRectangle(cornerRadius: 12, style: .continuous).fill(Color.primary.opacity(0.06))
+      }
+    }
+    .contentShape(Rectangle())
+    .accessibilityElement(children: .ignore)
+    .accessibilityLabel(host.label)
+    .accessibilityValue("\(host.status == .online ? "Online" : "Offline"), \(detail)")
+  }
+
+  private var detail: String {
+    let count = chats == 1 ? "1 chat" : "\(chats) chats"
+    guard host.status != .online else { return count }
+    let seen = ISO8601DateFormatter().date(from: host.lastSeenAt).map {
+      "last seen " + $0.formatted(.relative(presentation: .named))
+    }
+    return [count, seen ?? "offline"].joined(separator: " · ")
   }
 }
 
 #if DEBUG && targetEnvironment(simulator)
   private struct PreviewListing: HostListing, PiHistoryLoading {
     func hosts() async throws -> [RemoteHost] { PreviewFixture.hosts }
+    func signedInAccount() async -> SignedInAccount? { PreviewFixture.account }
     func piEvents(of host: RemoteHostRef, session: SessionID, before cursor: Int64, limit: Int) async throws -> PiEventPage {
       cursor == 0 ? PiEventPage(events: PreviewFixture.events(for: session).reversed(), next: nil) : PiEventPage(events: [], next: nil)
     }
   }
 
-  /// Answers just enough of the relay for a Mac to open.
+  /// Answers just enough of the relay for a Mac to open: it agrees, subscribes, lists one
+  /// Workspace, takes key presses, and refuses prompts (there is no Pi behind it).
   private struct PreviewTransport: AxoTransport {
-    func connect() async throws -> any AxoMessageChannel { throw AxoClientError.connectionFailed("preview") }
+    func connect() async throws -> any AxoMessageChannel { PreviewChannel() }
+  }
+
+  private final class PreviewChannel: AxoMessageChannel, @unchecked Sendable {
+    let messages: AsyncStream<Data>
+    private let sink: AsyncStream<Data>.Continuation
+
+    init() { (messages, sink) = AsyncStream.makeStream() }
+
+    func send(_ message: Data) async throws {
+      guard let request = try? JSONSerialization.jsonObject(with: message) as? [String: Any],
+        let id = request["id"] as? Int, let method = request["method"] as? String
+      else { return }
+      let result: String? =
+        switch method {
+        case "axo.protocol.negotiate": #"{"protocolVersion":1,"methods":[]}"#
+        case "axo.host.subscribe": #"{"subscriptionId":"\#(UUID().uuidString)"}"#
+        case "axo.remote.workspace.list":
+          #"{"workspaces":[{"workspaceId":"\#(UUID().uuidString)","name":"Axo"},{"workspaceId":"\#(UUID().uuidString)","name":"Website"}]}"#
+        case "axo.remote.session.key": #"{"accepted":true}"#
+        default: nil
+        }
+      let reply = result.map { #"{"jsonrpc":"2.0","id":\#(id),"result":\#($0)}"# }
+        ?? #"{"jsonrpc":"2.0","id":\#(id),"error":{"code":-32004,"message":"Resource not found"}}"#
+      sink.yield(Data(reply.utf8))
+    }
+
+    func close() { sink.finish() }
   }
 #endif

@@ -16,9 +16,8 @@ struct ConversationView: View {
   let sendIn: (UUID) async -> PhoneWorkbench.SendOutcome
   /// The Workspaces to choose from for a new chat; its first message waits in the box.
   @State private var workspaceChoices: [RemoteWorkspace]?
-  /// A message arrived while the conversation was scrolled up.
-  @State private var hasNewMessages = false
-  @State private var isNearBottom = true
+  /// When to follow what is new and when to leave the reader be.
+  @State private var follow = ScrollFollow()
   /// The message at the top of the screen; holding it keeps the view still when older pages arrive above.
   @State private var scrollAnchor: String?
   @State private var scrollToLatestRequest = 0
@@ -56,11 +55,31 @@ struct ConversationView: View {
           ForEach(transcript.messages) { message in
             ChatMessageView(message: message, piIsWorking: transcript.activity == .working)
           }
-          ForEach(pending) { prompt in
-            PendingPromptView(prompt: prompt)
+          // The reply as far as it has got.
+          ForEach(transcript.live) { message in
+            ChatMessageView(message: message, piIsWorking: true, isLive: true)
           }
-          if transcript.activity == .working {
-            AgentActivityView(callingTools: transcript.messages.contains { $0.tool?.status == .running })
+          ForEach(pending) { prompt in
+            PendingPromptView(
+              prompt: prompt,
+              editAgain: {
+                draft = prompt.text
+                if let id = session?.sessionId { workbench?.dismissPending(prompt.id, in: id) }
+              },
+              dismiss: { if let id = session?.sessionId { workbench?.dismissPending(prompt.id, in: id) } })
+          }
+          if let question = transcript.question, let id = session?.sessionId {
+            QuestionCard(question: question, canAnswer: canSend) { answer in
+              Task { await workbench?.answer(answer, in: id) }
+            }
+          }
+          if transcript.activity == .working, let id = session?.sessionId {
+            AgentActivityView(
+              callingTools: transcript.messages.contains { $0.tool?.status == .running },
+              waiting: transcript.question != nil,
+              stopping: workbench?.stopping.contains(id) == true,
+              canStop: workbench?.status == .online,
+              stop: { Task { await workbench?.stopReply(in: id) } })
           }
           Color.clear.frame(height: 1).id("latest")
         }
@@ -77,31 +96,56 @@ struct ConversationView: View {
         // What is on screen reaches (nearly) the end of the content.
         geometry.visibleRect.maxY >= geometry.contentSize.height - 60
       } action: { _, nearBottom in
-        isNearBottom = nearBottom
-        if nearBottom { hasNewMessages = false }
+        follow.readerScrolled(atEnd: nearBottom)
       }
-      .onChange(of: transcript.messages.last?.id) { previous, _ in
-        if previous == nil {
-          // The first page: go to its end without animating, then again once the lazy stack has
-          // measured what it estimated, or the end can land short of the real bottom.
-          proxy.scrollTo("latest", anchor: .bottom)
-          Task { @MainActor in
-            await Task.yield()
-            proxy.scrollTo("latest", anchor: .bottom)
-          }
-        } else if isNearBottom {
-          withAnimation { proxy.scrollTo("latest", anchor: .bottom) }
-        } else {
-          // Not the first page arriving: something new was said below the reader.
-          hasNewMessages = true
-        }
+      .onChange(of: endOfConversation) { _, end in
+        guard end != EndOfConversation() else { return }
+        move(follow.contentChangedAtEnd(), proxy: proxy)
       }
       .onChange(of: pending.count) { previous, count in
         // Sending something takes the reader to it.
-        if count > previous { withAnimation { proxy.scrollTo("latest", anchor: .bottom) } }
+        if count > previous { move(follow.sent(), proxy: proxy) }
       }
-      .onChange(of: scrollToLatestRequest) { withAnimation { proxy.scrollTo("latest", anchor: .bottom) } }
+      .onChange(of: scrollToLatestRequest) { move(follow.jumpRequested(), proxy: proxy) }
       .refreshable { if let session { await workbench?.loadHistory(of: session.sessionId) } }
+    }
+  }
+
+  /// What is at the end of the conversation; when it changes, there is something new to follow.
+  private struct EndOfConversation: Equatable {
+    var lastMessage: String?
+    var liveLength = 0
+    var runningOutputLength = 0
+    var asking = false
+    var working = false
+  }
+
+  private var endOfConversation: EndOfConversation {
+    EndOfConversation(
+      lastMessage: transcript.messages.last?.id,
+      liveLength: transcript.live.reduce(0) { $0 + $1.text.count },
+      runningOutputLength: transcript.messages.last(where: { $0.tool?.status == .running })?.tool?.output.count ?? 0,
+      asking: transcript.question != nil,
+      working: transcript.activity == .working)
+  }
+
+  private func move(_ move: ScrollFollow.Move, proxy: ScrollViewProxy) {
+    switch move {
+    case .stay:
+      break
+    case .jumpToEnd:
+      // The first page: go to its end without animating, then again once the lazy stack has
+      // measured what it estimated, or the end can land short of the real bottom.
+      proxy.scrollTo("latest", anchor: .bottom)
+      Task { @MainActor in
+        await Task.yield()
+        proxy.scrollTo("latest", anchor: .bottom)
+        // Once more after the rows above have been measured for real.
+        try? await Task.sleep(for: .milliseconds(150))
+        proxy.scrollTo("latest", anchor: .bottom)
+      }
+    case .followToEnd:
+      withAnimation { proxy.scrollTo("latest", anchor: .bottom) }
     }
   }
 
@@ -147,9 +191,11 @@ struct ConversationView: View {
     ZStack {
       VStack(spacing: 2) {
         Text(session?.displayName ?? "New chat").font(.headline).lineLimit(1)
+          .accessibilityIdentifier("conversation-title")
         if let workbench {
-          Text(workbench.status == .online ? workbench.hostLabel : "\(workbench.hostLabel) · offline")
-            .font(.caption).foregroundStyle(workbench.status == .online ? Color.secondary : Color.orange)
+          Text(hostLine(workbench))
+            .font(.caption)
+            .foregroundStyle(workbench.status == .online && workbench.link != .reconnecting ? Color.secondary : Color.orange)
         }
       }
       HStack {
@@ -172,6 +218,12 @@ struct ConversationView: View {
     .background(ChatColors.background)
   }
 
+  private func hostLine(_ workbench: HostWorkbenchModel) -> String {
+    if workbench.status != .online { return "\(workbench.hostLabel) · offline" }
+    if workbench.link == .reconnecting { return "\(workbench.hostLabel) · reconnecting…" }
+    return workbench.hostLabel
+  }
+
   /// A chat can be written to when its Mac is online and nothing is on its way.
   private var canSend: Bool {
     workbench?.status == .online && session?.hasAgent != false
@@ -190,16 +242,17 @@ struct ConversationView: View {
 
   private var bottomBar: some View {
     VStack(spacing: 10) {
-      if let failure = workbench?.failure, !PreviewFixture.requested {
+      if let failure = workbench?.failure {
         Text(failure).font(.caption).foregroundStyle(.orange).padding(.horizontal, 24)
+          .accessibilityIdentifier("chat-failure")
       }
-      if !isNearBottom {
+      if !follow.isAtEnd {
         Button { scrollToLatestRequest += 1 } label: {
           HStack(spacing: 6) {
             Image(systemName: "arrow.down")
               .font(.system(size: 20, weight: .semibold))
               .frame(width: 44, height: 44)
-            if hasNewMessages {
+            if follow.hasNew {
               Text("Jump to new message").font(.callout.weight(.semibold)).padding(.trailing, 14)
             }
           }
@@ -208,7 +261,7 @@ struct ConversationView: View {
         .buttonStyle(.plain)
         .background(.regularMaterial, in: Capsule())
         .shadow(color: .black.opacity(0.08), radius: 8, y: 3)
-        .accessibilityLabel(hasNewMessages ? "Jump to new message" : "Jump to latest")
+        .accessibilityLabel(follow.hasNew ? "Jump to new message" : "Jump to latest")
       }
       ChatComposer(
         draft: $draft, placeholder: composerPlaceholder,

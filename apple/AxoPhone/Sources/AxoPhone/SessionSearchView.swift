@@ -42,6 +42,7 @@ struct SessionSearchView: View {
               .textInputAutocapitalization(.never)
               .autocorrectionDisabled()
               .focused($searchFocused)
+              .accessibilityIdentifier("search-field")
             if !query.isEmpty {
               Button { query = "" } label: {
                 Image(systemName: "xmark.circle.fill").foregroundStyle(.secondary)
@@ -67,8 +68,12 @@ struct SessionSearchView: View {
                 Text([match.session.workspaceName, match.host.label].compactMap { $0 }.joined(separator: " · "))
                   .font(.caption).foregroundStyle(.secondary)
               }
+              // The whole row, not only its words, takes the tap.
+              .frame(maxWidth: .infinity, alignment: .leading)
+              .contentShape(Rectangle())
             }
             .buttonStyle(.plain)
+            .accessibilityIdentifier("search-result")
           }
         }
         Text("Search uses chat and workspace names only, not conversation text.")

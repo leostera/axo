@@ -49,7 +49,15 @@ struct ToolTranscriptView: View {
           .font(.callout.monospaced()).textSelection(.enabled)
           .lineLimit(expanded ? nil : 4)
       }
-      if !tool.output.isEmpty {
+      if !tool.output.isEmpty, isRunning, !expanded {
+        // While it runs, the newest lines are the news.
+        Text(tail)
+          .font(.caption.monospaced())
+          .foregroundStyle(.secondary)
+          .lineLimit(6)
+          .fixedSize(horizontal: false, vertical: true)
+          .accessibilityLabel("Latest output")
+      } else if !tool.output.isEmpty {
         Text(output)
           .font(.caption.monospaced())
           .foregroundStyle(.secondary)
@@ -60,6 +68,10 @@ struct ToolTranscriptView: View {
           Button(expanded ? "Collapse tool output" : "Expand tool output") { expanded.toggle() }
             .font(.caption).foregroundStyle(.secondary)
         }
+        if tool.outputTruncated {
+          Text("Output cut short here; the rest is on your Mac.")
+            .font(.caption2).foregroundStyle(.secondary)
+        }
       }
     }
     .padding(14)
@@ -67,6 +79,10 @@ struct ToolTranscriptView: View {
     .background(tint.opacity(0.17), in: RoundedRectangle(cornerRadius: corner))
     .overlay(RoundedRectangle(cornerRadius: corner).stroke(tint.opacity(0.32), lineWidth: 0.5))
     .accessibilityIdentifier("toolBlock")
+  }
+
+  private var tail: String {
+    tool.output.split(separator: "\n", omittingEmptySubsequences: false).suffix(6).joined(separator: "\n")
   }
 
   private var lineCount: Int { tool.output.split(separator: "\n", omittingEmptySubsequences: false).count }
