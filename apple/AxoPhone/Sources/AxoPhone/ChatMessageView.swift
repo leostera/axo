@@ -1,4 +1,5 @@
 import AxoPhoneModel
+import ImageIO
 import SwiftUI
 
 struct ChatMessageView: View {
@@ -10,6 +11,7 @@ struct ChatMessageView: View {
   @State private var copied = false
 
   var body: some View {
+    let _ = RenderCount.note("Message")
     switch message.role {
     case .user:
       VStack(alignment: .trailing, spacing: 12) {
@@ -114,6 +116,7 @@ struct ChatMarkdown: View {
   @ScaledMetric(relativeTo: .body) private var bodySize = 18.0
 
   var body: some View {
+    let _ = RenderCount.note("Markdown")
     VStack(alignment: .leading, spacing: 14) {
       ForEach(Array(blocks.enumerated()), id: \.offset) { _, block in
         switch block {
@@ -164,16 +167,10 @@ struct ChatMarkdown: View {
     })
   }
 
-  /// Bold, italics, links and `code` within a line, as Markdown writes them.
-  fileprivate static func inlineText(_ text: String) -> Text {
-    let attributed = (try? AttributedString(
-      markdown: text,
-      options: .init(allowsExtendedAttributes: false, interpretedSyntax: .inlineOnlyPreservingWhitespace)))
-      ?? AttributedString(text)
-    return Text(attributed)
-  }
+  /// Bold, italics, links and `code` within a line, read when the message was parsed.
+  fileprivate static func inlineText(_ text: InlineText) -> Text { Text(text.styled) }
 
-  private func inline(_ text: String) -> some View {
+  private func inline(_ text: InlineText) -> some View {
     Self.inlineText(text)
       .lineSpacing(bodySize * 0.2)
       .textSelection(.enabled)
@@ -184,10 +181,10 @@ struct ChatMarkdown: View {
 /// A table scrolls sideways rather than squeezing its columns; the header is bold, the rows are
 /// separated by hairlines.
 private struct MarkdownTable: View {
-  let header: [String]
-  let rows: [[String]]
+  let header: [InlineText]
+  let rows: [[InlineText]]
 
-  private func inline(_ cell: String) -> Text { ChatMarkdown.inlineText(cell) }
+  private func inline(_ cell: InlineText) -> Text { ChatMarkdown.inlineText(cell) }
 
   var body: some View {
     ScrollView(.horizontal) {
@@ -325,38 +322,81 @@ struct QuestionCard: View {
 struct ChatImagesView: View {
   let images: [ChatImage]
   let alignment: HorizontalAlignment
-  @State private var opened: OpenedImage?
-
-  private struct OpenedImage: Identifiable {
-    let id: Int
-    let image: UIImage
-  }
+  @State private var opened: ChatImage?
 
   var body: some View {
+    let side: CGFloat = images.count == 1 ? 220 : 120
     HStack(spacing: 8) {
       ForEach(images) { image in
-        if let picture = UIImage(data: image.data) {
-          Button { opened = OpenedImage(id: image.id, image: picture) } label: {
-            Image(uiImage: picture).resizable().scaledToFill()
-              .frame(width: images.count == 1 ? 220 : 120, height: images.count == 1 ? 220 : 120)
-              .clipShape(RoundedRectangle(cornerRadius: 18))
-          }
-          .buttonStyle(.plain)
-          .accessibilityLabel("Image")
-          .accessibilityHint("Opens it full screen")
+        Button { opened = image } label: {
+          DecodedImage(data: image.data, maxSide: side, fill: true)
+            .frame(width: side, height: side)
+            .clipShape(RoundedRectangle(cornerRadius: 18))
         }
+        .buttonStyle(.plain)
+        .accessibilityLabel("Image")
+        .accessibilityHint("Opens it full screen")
       }
     }
     .frame(maxWidth: .infinity, alignment: alignment == .trailing ? .trailing : .leading)
     .fullScreenCover(item: $opened) { opened in
-      FullScreenImage(image: opened.image)
+      FullScreenImage(data: opened.data)
     }
+  }
+}
+
+/// A picture decoded at the size it is shown, away from the main actor: a photo in a message is
+/// megapixels of data, and decoding it whole as its row scrolls into view drops frames.
+private struct DecodedImage: View {
+  let data: Data
+  /// The longest side it is shown at, in points.
+  let maxSide: CGFloat
+  var fill = false
+  @Environment(\.displayScale) private var displayScale
+  @State private var image: UIImage?
+
+  var body: some View {
+    ZStack {
+      if let image {
+        if fill { Image(uiImage: image).resizable().scaledToFill() } else { Image(uiImage: image).resizable().scaledToFit() }
+      } else {
+        ChatColors.surface
+      }
+    }
+    .task(id: maxSide) {
+      image = await ImageDecoding.image(data, maxPixels: Int(maxSide * displayScale))
+    }
+  }
+}
+
+/// Decoded pictures, kept while memory allows. `NSCache` is safe to use from any thread.
+private enum ImageDecoding {
+  nonisolated(unsafe) private static let cache = NSCache<NSString, UIImage>()
+
+  static func image(_ data: Data, maxPixels: Int) async -> UIImage? {
+    // A picture is the same picture wherever it appears; the bytes' size and first bytes tell
+    // them apart well enough for a cache key without hashing megabytes.
+    let key = "\(maxPixels):\(data.count):\(data.prefix(64).base64EncodedString())" as NSString
+    if let hit = cache.object(forKey: key) { return hit }
+    let decoded = await Task.detached(priority: .userInitiated) { () -> UIImage? in
+      guard let source = CGImageSourceCreateWithData(data as CFData, nil) else { return nil }
+      let options = [
+        kCGImageSourceCreateThumbnailFromImageAlways: true,
+        kCGImageSourceCreateThumbnailWithTransform: true,
+        kCGImageSourceShouldCacheImmediately: true,
+        kCGImageSourceThumbnailMaxPixelSize: max(maxPixels, 1),
+      ] as CFDictionary
+      return CGImageSourceCreateThumbnailAtIndex(source, 0, options).map { UIImage(cgImage: $0) }
+    }.value
+    if let decoded { cache.setObject(decoded, forKey: key) }
+    return decoded
   }
 }
 
 /// One picture, full screen, pinch to zoom.
 private struct FullScreenImage: View {
-  let image: UIImage
+  let data: Data
+  @State private var image: UIImage?
   @Environment(\.dismiss) private var dismiss
   @State private var scale: CGFloat = 1
   @GestureState private var pinch: CGFloat = 1
@@ -364,7 +404,8 @@ private struct FullScreenImage: View {
   var body: some View {
     ZStack(alignment: .topLeading) {
       Color.black.ignoresSafeArea()
-      Image(uiImage: image).resizable().scaledToFit()
+      // Large enough to stay sharp when zoomed in, without decoding a huge photo whole.
+      DecodedImage(data: data, maxSide: 1600)
         .scaleEffect(scale * pinch)
         .gesture(
           MagnifyGesture()
@@ -382,17 +423,21 @@ private struct FullScreenImage: View {
         }
         .accessibilityLabel("Close image")
         Spacer()
-        ShareLink(item: Image(uiImage: image), preview: SharePreview("Image", image: Image(uiImage: image))) {
-          Image(systemName: "square.and.arrow.up").font(.system(size: 20, weight: .semibold))
-            .foregroundStyle(.white).frame(width: 48, height: 48)
-            .background(.regularMaterial, in: Circle())
+        if let image {
+          ShareLink(item: Image(uiImage: image), preview: SharePreview("Image", image: Image(uiImage: image))) {
+            Image(systemName: "square.and.arrow.up").font(.system(size: 20, weight: .semibold))
+              .foregroundStyle(.white).frame(width: 48, height: 48)
+              .background(.regularMaterial, in: Circle())
+          }
+          .accessibilityLabel("Share image")
         }
-        .accessibilityLabel("Share image")
       }
       .buttonStyle(.plain)
       .padding(.horizontal, 18).padding(.top, 12)
     }
     .environment(\.colorScheme, .dark)
     .statusBarHidden()
+    // The original bytes, for sharing; decoded once, away from the main actor.
+    .task { image = await Task.detached(priority: .userInitiated) { UIImage(data: data) }.value }
   }
 }

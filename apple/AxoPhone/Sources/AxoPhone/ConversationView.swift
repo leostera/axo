@@ -5,15 +5,13 @@ import SwiftUI
 /// One chat: the replies and what was asked, newest at the bottom. With no `session` it is a new
 /// chat that does not exist yet; it comes to exist when its first message is sent.
 struct ConversationView: View {
+  /// Sends, and keeps each chat's box. Passed whole, rather than as a binding and closures: a
+  /// reference compares by identity, so a parent redrawing does not redraw this; and the box's
+  /// words are read only by the box, so typing does not either.
+  let phone: PhoneWorkbench
   let workbench: HostWorkbenchModel?
   let session: RemoteSession?
-  /// What is typed in this chat's box; kept by the workbench, so it survives switching chats.
-  @Binding var draft: String
-  /// A message is on its way.
-  let isSending: Bool
   let showSidebar: () -> Void
-  let send: () async -> PhoneWorkbench.SendOutcome
-  let sendIn: (UUID) async -> PhoneWorkbench.SendOutcome
   /// The Workspaces to choose from for a new chat; its first message waits in the box.
   @State private var workspaceChoices: [RemoteWorkspace]?
   /// When to follow what is new and when to leave the reader be.
@@ -22,13 +20,14 @@ struct ConversationView: View {
   @State private var scrollAnchor: String?
   @State private var scrollToLatestRequest = 0
 
-  private var transcript: ChatTranscript { session.flatMap { workbench?.chats[$0.sessionId] } ?? ChatTranscript() }
-  private var pending: [HostWorkbenchModel.PendingPrompt] {
-    session.flatMap { workbench?.pendingPrompts[$0.sessionId] } ?? []
-  }
-  private var historyState: HostWorkbenchModel.HistoryState? { session.flatMap { workbench?.historyStates[$0.sessionId] } }
+  /// This chat's own state: what it reads is what redraws it, so other chats' events do not.
+  private var chat: Chat? { session.flatMap { workbench?.chat($0.sessionId) } }
+  private var transcript: ChatTranscript { chat?.transcript ?? ChatTranscript() }
+  private var pending: [HostWorkbenchModel.PendingPrompt] { chat?.pending ?? [] }
+  private var historyState: HostWorkbenchModel.HistoryState? { chat?.history }
 
   var body: some View {
+    let _ = RenderCount.note("Conversation")
     conversation
       .background(ChatColors.background)
       .safeAreaInset(edge: .top, spacing: 0) { header }
@@ -40,7 +39,7 @@ struct ConversationView: View {
       ) {
         ForEach(workspaceChoices ?? [], id: \.workspaceId) { workspace in
           Button(workspace.name) {
-            Task { _ = await sendIn(workspace.workspaceId) }
+            Task { _ = await phone.send(in: workspace.workspaceId) }
           }
         }
       }
@@ -48,6 +47,7 @@ struct ConversationView: View {
 
   private var conversation: some View {
     ScrollViewReader { proxy in
+      let _ = RenderCount.note("Transcript")
       ScrollView {
         LazyVStack(alignment: .leading, spacing: 30) {
           olderHistory
@@ -63,7 +63,7 @@ struct ConversationView: View {
             PendingPromptView(
               prompt: prompt,
               editAgain: {
-                draft = prompt.text
+                if let selection = phone.selection { phone.setDraft(prompt.text, for: selection) }
                 if let id = session?.sessionId { workbench?.dismissPending(prompt.id, in: id) }
               },
               dismiss: { if let id = session?.sessionId { workbench?.dismissPending(prompt.id, in: id) } })
@@ -77,7 +77,7 @@ struct ConversationView: View {
             AgentActivityView(
               callingTools: transcript.messages.contains { $0.tool?.status == .running },
               waiting: transcript.question != nil,
-              stopping: workbench?.stopping.contains(id) == true,
+              stopping: chat?.isStopping == true,
               canStop: workbench?.status == .online,
               stop: { Task { await workbench?.stopReply(in: id) } })
           }
@@ -236,7 +236,7 @@ struct ConversationView: View {
 
   private func sendDraft() {
     Task {
-      if case .chooseWorkspace(let choices) = await send() { workspaceChoices = choices }
+      if case .chooseWorkspace(let choices) = await phone.send() { workspaceChoices = choices }
     }
   }
 
@@ -263,9 +263,7 @@ struct ConversationView: View {
         .shadow(color: .black.opacity(0.08), radius: 8, y: 3)
         .accessibilityLabel(follow.hasNew ? "Jump to new message" : "Jump to latest")
       }
-      ChatComposer(
-        draft: $draft, placeholder: composerPlaceholder,
-        canSend: canSend && !isSending, send: sendDraft)
+      DraftComposer(phone: phone, placeholder: composerPlaceholder, canSend: canSend, send: sendDraft)
     }
     .padding(.bottom, 8)
     .background(ChatColors.background)

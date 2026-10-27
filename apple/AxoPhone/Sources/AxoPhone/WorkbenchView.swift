@@ -3,6 +3,9 @@ import AxoPhoneModel
 import AxoProtocol
 import SwiftUI
 
+/// Which panel slides out: none, the chats, or (one more swipe) the account and its Macs.
+private enum MenuLevel { case closed, chats, hosts }
+
 // Proportions measured from the original sidebar reference on a compact phone.
 private enum MenuLayout {
   static let widthFraction: CGFloat = 0.79
@@ -28,7 +31,6 @@ struct WorkbenchView: View {
   @State private var preferredCompactColumn: NavigationSplitViewColumn = .detail
   /// Which panel slides out: closed, the chats, or (one more swipe) the account and its Macs.
   @State private var menuLevel: MenuLevel = PreviewFixture.hostsOpen ? .hosts : PreviewFixture.menuOpen ? .chats : .closed
-  @State private var menuDragOffset: CGFloat = 0
   /// The panel last shown; it stays while the menu closes, so closing does not swap panels.
   @State private var openPanel: MenuLevel = PreviewFixture.hostsOpen ? .hosts : .chats
   @Environment(\.scenePhase) private var scenePhase
@@ -72,87 +74,68 @@ struct WorkbenchView: View {
 
   private var isCompact: Bool { horizontalSizeClass == .compact }
 
-  private enum MenuLevel { case closed, chats, hosts }
-  private var menuPresented: Bool { menuLevel != .closed }
 
-  // The layout, the gesture and its areas of contact are the original app's, unchanged.
+  // The layout, the gesture and its areas of contact are the original app's, unchanged. The
+  // sliding is `SlidingMenu`'s alone: it re-runs on every frame of a drag, and what it moves,
+  // built here, is not rebuilt.
   var body: some View {
-    GeometryReader { geometry in
-      let revealDistance = min(geometry.size.width * MenuLayout.widthFraction, MenuLayout.maximumWidth)
-      let foregroundOffset = isCompact
-        ? min(max((menuPresented ? revealDistance : 0) + menuDragOffset, 0), revealDistance)
-        : 0
-      let revealProgress = min(max(foregroundOffset / max(revealDistance, 1), 0), 1)
-
-      ZStack(alignment: .leading) {
-        // Only there while it shows (or is being dragged into view): a closed menu left under
-        // the conversation would still answer taps and VoiceOver where the conversation is.
-        if isCompact && (menuPresented || foregroundOffset > 0) {
-          menuPanel
-            .frame(width: revealDistance)
-            .frame(maxHeight: .infinity)
-            .background(ChatColors.background.ignoresSafeArea())
-            .accessibilityHidden(!menuPresented)
-            // Above the split view: its hidden navigation bars stay where they were when the
-            // conversation slides aside, and would take taps meant for the top of the menu.
-            .zIndex(1)
+    let _ = RenderCount.note("Workbench")
+    SlidingMenu(
+      level: isCompact ? menuLevel : .closed,
+      enabled: isCompact,
+      animation: menuAnimation,
+      show: show,
+      close: closeMenu,
+      panel: { menuPanel }
+    ) {
+      NavigationSplitView(columnVisibility: $columnVisibility, preferredCompactColumn: $preferredCompactColumn) {
+        // On a compact screen the menu is the sliding panel; a second copy here would sit
+        // hidden under the conversation, where VoiceOver and taps could still find it.
+        Group {
+          if isCompact { Color.clear } else { menuPanel }
         }
-
-        NavigationSplitView(columnVisibility: $columnVisibility, preferredCompactColumn: $preferredCompactColumn) {
-          // On a compact screen the menu is the sliding panel above; a second copy here would sit
-          // hidden under the conversation, where VoiceOver and taps could still find it.
-          Group {
-            if isCompact { Color.clear } else { menuPanel }
-          }
-          .navigationSplitViewColumnWidth(min: 260, ideal: 300)
-        } detail: {
-          conversation
-            .navigationBarBackButtonHidden(true)
-            .toolbar(.hidden, for: .navigationBar)
-            .accessibilityHidden(isCompact && menuPresented)
-        }
-        .navigationSplitViewStyle(.balanced)
-        .background {
-          RoundedRectangle(cornerRadius: MenuLayout.cornerRadius * revealProgress, style: .continuous)
-            .fill(ChatColors.background)
-            .overlay {
-              RoundedRectangle(cornerRadius: MenuLayout.cornerRadius * revealProgress, style: .continuous)
-                .fill(ChatColors.surface.opacity(revealProgress))
-            }
-            .overlay {
-              RoundedRectangle(cornerRadius: MenuLayout.cornerRadius * revealProgress, style: .continuous)
-                .stroke(Color.primary.opacity(revealProgress * 0.22), lineWidth: 0.5)
-            }
-            .shadow(color: .black.opacity(revealProgress * 0.22), radius: 16, x: -6)
-            .ignoresSafeArea()
-        }
-        .overlay {
-          Color(uiColor: .tertiarySystemBackground)
-            .opacity(revealProgress * 0.64)
-            .allowsHitTesting(isCompact && menuPresented)
-            .accessibilityHidden(true)
-        }
-        .accessibilityHidden(isCompact && menuPresented)
-        .offset(x: foregroundOffset)
-        .allowsHitTesting(!(isCompact && menuPresented))
-
-        if isCompact && menuPresented {
-          // The slice of conversation still showing: a tap there closes the menu. Its shape is set
-          // before it moves: set after `offset`, it stays where the view was laid out, over the
-          // menu's left edge, and swallows taps on the menu's buttons there.
-          Color.clear
-            .frame(width: max(geometry.size.width - revealDistance, 0))
-            .frame(maxHeight: .infinity)
-            .contentShape(Rectangle())
-            .onTapGesture { closeMenu() }
-            .offset(x: revealDistance)
-            .accessibilityHidden(true)
-            .zIndex(2)
-        }
+        .navigationSplitViewColumnWidth(min: 260, ideal: 300)
+      } detail: {
+        conversation
+          .navigationBarBackButtonHidden(true)
+          .toolbar(.hidden, for: .navigationBar)
       }
-      .simultaneousGesture(menuGesture(revealDistance: revealDistance))
+      .navigationSplitViewStyle(.balanced)
     }
     .background(ChatColors.background.ignoresSafeArea())
+    .overlay(alignment: .trailing) {
+      if RenderCount.enabled { RenderCountLabel() }
+      #if DEBUG && targetEnvironment(simulator)
+        if PreviewFixture.live == "stream" {
+          // Starts the stream when a test is ready to count it.
+          Button("Play stream") {
+            guard let current = workbench.current, let id = current.selectedSessionID else { return }
+            Task {
+              // Five updates a second, as pi-axo sends them.
+              for event in PreviewFixture.streamEvents(steps: 20) {
+                current.playForPreview([event], in: id)
+                try? await Task.sleep(for: .milliseconds(200))
+              }
+            }
+          }
+          .font(.system(size: 12)).buttonStyle(.plain).contentShape(Rectangle())
+          .accessibilityIdentifier("play-stream")
+          // The same reply, in a chat that is not open (the first one, working on the Mac).
+          Button("Play stream elsewhere") {
+            guard let current = workbench.current else { return }
+            Task {
+              for event in PreviewFixture.streamEvents(steps: 20) {
+                current.playForPreview([event], in: 1)
+                try? await Task.sleep(for: .milliseconds(200))
+              }
+            }
+          }
+          .font(.system(size: 12)).buttonStyle(.plain).contentShape(Rectangle())
+          .padding(.top, 60)
+          .accessibilityIdentifier("play-stream-elsewhere")
+        }
+      #endif
+    }
     .preferredColorScheme(appearance.colorScheme)
     .tint(accentColor.color)
     .sheet(isPresented: $showingSearch) {
@@ -177,7 +160,7 @@ struct WorkbenchView: View {
       if let index = PreviewFixture.chatOpen, chats.indices.contains(index - 1) {
         workbench.select(host: chats[index - 1].host.hostId, session: chats[index - 1].session.sessionId)
         #if DEBUG && targetEnvironment(simulator)
-          if let live = PreviewFixture.live, let current = workbench.current, let id = current.selectedSessionID {
+          if let live = PreviewFixture.live, live != "stream", let current = workbench.current, let id = current.selectedSessionID {
             try? await Task.sleep(for: .milliseconds(300))
             current.playForPreview(PreviewFixture.liveEvents(live), in: id)
             if live == "stopping" { current.markStoppingForPreview(id) }
@@ -197,29 +180,19 @@ struct WorkbenchView: View {
 
   private var conversation: some View {
     ConversationView(
+      phone: workbench,
       workbench: workbench.current,
       session: currentSession,
-      draft: draftBinding,
-      isSending: workbench.isSending,
-      showSidebar: showMenu,
-      send: { await workbench.send() },
-      sendIn: { await workbench.send(in: $0) }
+      showSidebar: showMenu
     )
     .id(currentSession?.sessionId)
-  }
-
-  /// The open chat's box, kept per chat by the workbench.
-  private var draftBinding: Binding<String> {
-    guard let selection = workbench.selection else { return .constant("") }
-    return Binding(
-      get: { workbench.draft(for: selection) },
-      set: { workbench.setDraft($0, for: selection) })
   }
 
   // MARK: - The menu
 
   private var sidebar: some View {
-    VStack(spacing: 0) {
+    RenderCount.note("Menu")
+    return VStack(spacing: 0) {
       menuHeader
       // A plain stack rather than a List: List's section headers and row minimums are far
       // taller than a menu of chat names needs.
@@ -453,18 +426,12 @@ struct WorkbenchView: View {
       preferredCompactColumn = .sidebar
       return
     }
-    withAnimation(menuAnimation) {
-      show(.chats)
-      menuDragOffset = 0
-    }
+    withAnimation(menuAnimation) { show(.chats) }
   }
 
   private func closeMenu() {
     if isCompact {
-      withAnimation(menuAnimation) {
-        show(.closed)
-        menuDragOffset = 0
-      }
+      withAnimation(menuAnimation) { show(.closed) }
     } else {
       columnVisibility = .detailOnly
       preferredCompactColumn = .detail
@@ -474,29 +441,112 @@ struct WorkbenchView: View {
   private var menuAnimation: Animation? {
     reduceMotion ? nil : .spring(response: 0.36, dampingFraction: 0.88)
   }
+}
 
-  private func menuGesture(revealDistance: CGFloat) -> some Gesture {
+/// The conversation, slid aside to show the menu under it. This alone follows the finger: it
+/// re-runs on every frame of a drag, while `panel` and `content`, built by its parent, are the
+/// same values each time and are not redrawn.
+private struct SlidingMenu<Panel: View, Content: View>: View {
+  /// What is open; always `.closed` on a wide screen, where the menu is a column instead.
+  let level: MenuLevel
+  /// A wide screen has the menu as a column, and nothing to slide.
+  let enabled: Bool
+  let animation: Animation?
+  let show: (MenuLevel) -> Void
+  let close: () -> Void
+  @ViewBuilder let panel: Panel
+  @ViewBuilder let content: Content
+  @State private var dragOffset: CGFloat = 0
+
+  private var presented: Bool { level != .closed }
+
+  var body: some View {
+    let _ = RenderCount.note("Sliding")
+    GeometryReader { geometry in
+      let revealDistance = min(geometry.size.width * MenuLayout.widthFraction, MenuLayout.maximumWidth)
+      let offset = min(max((presented ? revealDistance : 0) + dragOffset, 0), revealDistance)
+      let progress = min(max(offset / max(revealDistance, 1), 0), 1)
+
+      ZStack(alignment: .leading) {
+        // Only there while it shows (or is being dragged into view): a closed menu left under
+        // the conversation would still answer taps and VoiceOver where the conversation is.
+        if presented || offset > 0 {
+          panel
+            .frame(width: revealDistance)
+            .frame(maxHeight: .infinity)
+            .background(ChatColors.background.ignoresSafeArea())
+            .accessibilityHidden(!presented)
+            // Above the content: its hidden navigation bars stay where they were when the
+            // conversation slides aside, and would take taps meant for the top of the menu.
+            .zIndex(1)
+        }
+
+        content
+          .background {
+            RoundedRectangle(cornerRadius: MenuLayout.cornerRadius * progress, style: .continuous)
+              .fill(ChatColors.background)
+              .overlay {
+                RoundedRectangle(cornerRadius: MenuLayout.cornerRadius * progress, style: .continuous)
+                  .fill(ChatColors.surface.opacity(progress))
+              }
+              .overlay {
+                RoundedRectangle(cornerRadius: MenuLayout.cornerRadius * progress, style: .continuous)
+                  .stroke(Color.primary.opacity(progress * 0.22), lineWidth: 0.5)
+              }
+              .shadow(color: .black.opacity(progress * 0.22), radius: 16, x: -6)
+              .ignoresSafeArea()
+          }
+          .overlay {
+            Color(uiColor: .tertiarySystemBackground)
+              .opacity(progress * 0.64)
+              .allowsHitTesting(presented)
+              .accessibilityHidden(true)
+          }
+          .accessibilityHidden(presented)
+          .offset(x: offset)
+          .allowsHitTesting(!presented)
+
+        if presented {
+          // The slice of conversation still showing: a tap there closes the menu. Its shape is set
+          // before it moves: set after `offset`, it stays where the view was laid out, over the
+          // menu's left edge, and swallows taps on the menu's buttons there.
+          Color.clear
+            .frame(width: max(geometry.size.width - revealDistance, 0))
+            .frame(maxHeight: .infinity)
+            .contentShape(Rectangle())
+            .onTapGesture(perform: close)
+            .offset(x: revealDistance)
+            .accessibilityHidden(true)
+            .zIndex(2)
+        }
+      }
+      .simultaneousGesture(gesture(revealDistance: revealDistance))
+    }
+  }
+
+  private func gesture(revealDistance: CGFloat) -> some Gesture {
     DragGesture(minimumDistance: 12)
       .onChanged { value in
-        guard isCompact, abs(value.translation.width) > abs(value.translation.height) else { return }
-
-        if menuLevel == .chats {
+        guard enabled, abs(value.translation.width) > abs(value.translation.height) else { return }
+        switch level {
+        case .chats:
           // Left closes the menu (the conversation follows the finger); right goes on to the Macs.
-          menuDragOffset = min(0, max(-revealDistance, value.translation.width))
-        } else if menuLevel == .hosts {
-          menuDragOffset = 0
-        } else if value.startLocation.x <= 32, value.translation.width > 0 {
-          menuDragOffset = min(revealDistance, value.translation.width)
+          dragOffset = min(0, max(-revealDistance, value.translation.width))
+        case .hosts:
+          dragOffset = 0
+        case .closed:
+          if value.startLocation.x <= 32, value.translation.width > 0 {
+            dragOffset = min(revealDistance, value.translation.width)
+          }
         }
       }
       .onEnded { value in
-        guard isCompact, abs(value.translation.width) > abs(value.translation.height) else {
-          menuDragOffset = 0
+        guard enabled, abs(value.translation.width) > abs(value.translation.height) else {
+          dragOffset = 0
           return
         }
-
-        withAnimation(menuAnimation) {
-          switch menuLevel {
+        withAnimation(animation) {
+          switch level {
           case .chats:
             if value.translation.width < -80 { show(.closed) }
             else if value.translation.width > 80 { show(.hosts) }
@@ -505,7 +555,7 @@ struct WorkbenchView: View {
           case .closed:
             if value.startLocation.x <= 32, value.translation.width > 80 { show(.chats) }
           }
-          menuDragOffset = 0
+          dragOffset = 0
         }
       }
   }
@@ -714,7 +764,7 @@ private struct HostRow: View {
   private var detail: String {
     let count = chats == 1 ? "1 chat" : "\(chats) chats"
     guard host.status != .online else { return count }
-    let seen = ISO8601DateFormatter().date(from: host.lastSeenAt).map {
+    let seen = (try? Date(host.lastSeenAt, strategy: .iso8601)).map {
       "last seen " + $0.formatted(.relative(presentation: .named))
     }
     return [count, seen ?? "offline"].joined(separator: " · ")

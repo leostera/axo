@@ -77,4 +77,14 @@ final class MarkdownBlocksTests: XCTestCase {
     ])
     XCTAssertEqual(MarkdownBlocks.parse("--"), [.paragraph("--")])
   }
+
+  func testInlineFormattingIsReadOnceWhenTheReplyIsParsed() throws {
+    guard case .paragraph(let text) = try XCTUnwrap(MarkdownBlocks.parse("say **hello** to `axo`").first) else {
+      return XCTFail("a paragraph")
+    }
+    XCTAssertEqual(text.source, "say **hello** to `axo`", "as written")
+    XCTAssertEqual(String(text.styled.characters), "say hello to axo", "as shown, markers gone")
+    let bold = text.styled.runs.first { $0.inlinePresentationIntent == .stronglyEmphasized }
+    XCTAssertEqual(bold.map { String(text.styled[$0.range].characters) }, "hello")
+  }
 }

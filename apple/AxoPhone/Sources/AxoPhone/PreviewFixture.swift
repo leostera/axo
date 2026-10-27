@@ -43,6 +43,25 @@ enum PreviewFixture {
       return events
     }
 
+    /// A reply written a little at a time, as Pi streams one (`AXO_PHONE_PREVIEW_LIVE=stream`):
+    /// `steps` updates, each a few words longer, then the whole message.
+    static func streamEvents(steps: Int) -> [PiEventRecord] {
+      let stream = UUID(uuidString: "61c77dd7-f2dc-4e91-b481-1507b62ec118")!
+      let words = (1...steps).map { "word\($0)" }
+      func text(_ count: Int) -> JSONValue {
+        .object(["message": .object(["role": .string("assistant"), "content": .array([
+          .object(["type": .string("text"), "text": .string("Streaming **now**: " + words.prefix(count).joined(separator: " "))])
+        ])])])
+      }
+      var events = [PiEventRecord(streamId: stream, sequence: 1, name: "agent.start", data: .object([:]))]
+      for step in 1...steps {
+        events.append(PiEventRecord(streamId: stream, sequence: UInt64(step + 1), name: "message.update", data: text(step)))
+      }
+      events.append(PiEventRecord(streamId: stream, sequence: UInt64(steps + 2), name: "message.end", data: text(steps)))
+      events.append(PiEventRecord(streamId: stream, sequence: UInt64(steps + 3), name: "agent.end", data: .object([:])))
+      return events
+    }
+
     static let studio = UUID(uuidString: "18355f00-95fd-4c93-8586-a71a8a52bf73")!
     static let imac = UUID(uuidString: "28355f00-95fd-4c93-8586-a71a8a52bf73")!
 

@@ -23,16 +23,20 @@ struct MessageTimestamp: View {
     }
   }
 
-  private func relativeTime(at now: Date) -> String {
+  // Made once: a formatter is costly to set up, and every message on screen has a timestamp.
+  private static let relative: RelativeDateTimeFormatter = {
     let formatter = RelativeDateTimeFormatter()
     formatter.unitsStyle = .full
-    return formatter.localizedString(for: date, relativeTo: now)
-  }
-
-  private var exactTime: String {
+    return formatter
+  }()
+  private static let exact: DateFormatter = {
     let formatter = DateFormatter()
     formatter.dateStyle = .full
     formatter.timeStyle = .long
-    return formatter.string(from: date)
-  }
+    return formatter
+  }()
+
+  private func relativeTime(at now: Date) -> String { Self.relative.localizedString(for: date, relativeTo: now) }
+
+  private var exactTime: String { Self.exact.string(from: date) }
 }

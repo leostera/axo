@@ -17,6 +17,7 @@ struct ChatComposer: View {
   private var isLong: Bool { editorHeight > 64 }
 
   var body: some View {
+    let _ = RenderCount.note("Composer")
     HStack(alignment: .bottom, spacing: 6) {
       TextField(placeholder, text: $draft, axis: .vertical)
         .lineLimit(1...6)

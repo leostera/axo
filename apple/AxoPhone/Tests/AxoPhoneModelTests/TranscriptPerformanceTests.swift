@@ -128,7 +128,7 @@ final class TranscriptPerformanceTests: XCTestCase {
     let blocks = MarkdownBlocks.parse(Self.reply)
     let lines: [String] = blocks.compactMap {
       switch $0 {
-      case .paragraph(let text), .heading(_, let text), .listItem(_, _, let text), .quote(let text): text
+      case .paragraph(let text), .heading(_, let text), .listItem(_, _, let text), .quote(let text): text.source
       default: nil
       }
     }

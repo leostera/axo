@@ -4,19 +4,42 @@ import Foundation
 /// and code.
 ///
 /// This is not a Markdown engine. It splits a reply where the look changes and leaves inline
-/// formatting (bold, links, `code`) to the text view. An unclosed fence runs to the end, so a
+/// formatting (bold, links, `code`) to `InlineText`. An unclosed fence runs to the end, so a
 /// reply that is still arriving never loses its code.
 public enum MarkdownBlock: Equatable, Sendable {
-  case paragraph(String)
-  case heading(level: Int, text: String)
+  case paragraph(InlineText)
+  case heading(level: Int, text: InlineText)
   /// One list item. `depth` is 0 at the margin and grows with each level of indentation.
-  case listItem(marker: ListMarker, depth: Int, text: String)
+  case listItem(marker: ListMarker, depth: Int, text: InlineText)
   /// Consecutive `>` lines, without their markers.
-  case quote(String)
+  case quote(InlineText)
   /// A pipe table. Every row has as many cells as the header.
-  case table(header: [String], rows: [[String]])
+  case table(header: [InlineText], rows: [[InlineText]])
   case rule
   case code(language: String?, text: String)
+}
+
+/// A line of prose with its inline formatting (bold, italics, links, `code`) read once, when the
+/// message is parsed, rather than each time the screen draws it: a row coming into view while
+/// the conversation scrolls has no Markdown left to read.
+public struct InlineText: Equatable, Sendable, ExpressibleByStringLiteral {
+  /// As written.
+  public let source: String
+  /// As shown.
+  public let styled: AttributedString
+
+  public init(_ source: String) {
+    self.source = source
+    styled = (try? AttributedString(
+      markdown: source,
+      options: .init(allowsExtendedAttributes: false, interpretedSyntax: .inlineOnlyPreservingWhitespace)))
+      ?? AttributedString(source)
+  }
+
+  public init(stringLiteral value: String) { self.init(value) }
+
+  /// The same words are the same text; the styling follows from them.
+  public static func == (lhs: InlineText, rhs: InlineText) -> Bool { lhs.source == rhs.source }
 }
 
 public enum ListMarker: Equatable, Sendable {
@@ -34,12 +57,12 @@ public enum MarkdownBlocks {
 
     func flushParagraph() {
       let joined = paragraph.joined(separator: "\n").trimmingCharacters(in: .whitespacesAndNewlines)
-      if !joined.isEmpty { blocks.append(.paragraph(joined)) }
+      if !joined.isEmpty { blocks.append(.paragraph(InlineText(joined))) }
       paragraph = []
     }
     func flushQuote() {
       let joined = quote.joined(separator: "\n").trimmingCharacters(in: .whitespacesAndNewlines)
-      if !joined.isEmpty { blocks.append(.quote(joined)) }
+      if !joined.isEmpty { blocks.append(.quote(InlineText(joined))) }
       quote = []
     }
     func flush() {
@@ -87,7 +110,8 @@ public enum MarkdownBlocks {
           rows.append(Self.fit(row, to: header.count))
           index += 1
         }
-        blocks.append(.table(header: header, rows: rows))
+        let styled: ([String]) -> [InlineText] = { $0.map { InlineText($0) } }
+        blocks.append(.table(header: styled(header), rows: rows.map(styled)))
       } else {
         flushQuote()
         paragraph.append(line)
@@ -101,7 +125,7 @@ public enum MarkdownBlocks {
     let hashes = line.prefix { $0 == "#" }.count
     guard (1...3).contains(hashes), line.dropFirst(hashes).first == " " else { return nil }
     let text = line.dropFirst(hashes).trimmingCharacters(in: .whitespaces)
-    return text.isEmpty ? nil : .heading(level: hashes, text: text)
+    return text.isEmpty ? nil : .heading(level: hashes, text: InlineText(text))
   }
 
   /// A list item, with its depth from the indentation: two spaces (or a tab) per level.
@@ -112,14 +136,14 @@ public enum MarkdownBlocks {
     let rest = line.dropFirst(indent.count)
     for marker in ["- ", "* ", "+ ", "• "] where rest.hasPrefix(marker) {
       let text = rest.dropFirst(marker.count).trimmingCharacters(in: .whitespaces)
-      return text.isEmpty ? nil : .listItem(marker: .bullet, depth: depth, text: text)
+      return text.isEmpty ? nil : .listItem(marker: .bullet, depth: depth, text: InlineText(text))
     }
     let digits = rest.prefix { $0.isNumber }
     if !digits.isEmpty, digits.count <= 9, let number = Int(digits),
       rest.dropFirst(digits.count).hasPrefix(". ") || rest.dropFirst(digits.count).hasPrefix(") ")
     {
       let text = rest.dropFirst(digits.count + 2).trimmingCharacters(in: .whitespaces)
-      return text.isEmpty ? nil : .listItem(marker: .number(number), depth: depth, text: text)
+      return text.isEmpty ? nil : .listItem(marker: .number(number), depth: depth, text: InlineText(text))
     }
     return nil
   }
