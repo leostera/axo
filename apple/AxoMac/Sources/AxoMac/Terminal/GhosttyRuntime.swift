@@ -207,7 +207,9 @@ final class GhosttyRuntime {
       dividerThickness: TerminalPaneGeometry.dividerThickness)
   }
 
-  private func initialize() {
+  /// Boots libghostty. The app defers this until the launch splash is on screen; it runs once.
+  func initialize() {
+    guard app == nil, errorMessage == nil else { return }
     Self.configureGhosttyResources()
 
     guard ghostty_init(UInt(CommandLine.argc), CommandLine.unsafeArgv) == GHOSTTY_SUCCESS else {

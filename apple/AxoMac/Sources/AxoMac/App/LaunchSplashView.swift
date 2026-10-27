@@ -2,12 +2,14 @@ import AppKit
 import AxoDaemonManager
 import SwiftUI
 
-/// Axo spinning over a progress bar, on a transparent window, whenever Axod isn't up: at launch,
+/// Axo spinning over a progress bar, on a small rounded card, whenever Axod isn't up: at launch,
 /// while it restarts, and after it goes away. Once Axod runs and the Session catalog is live it
 /// reveals the terminal window and fades away; if Axod needs the person, it says so here.
 struct LaunchSplashView: View {
   static let windowID = "splash"
-  static let size = CGSize(width: 280, height: 340)
+  /// The card's width; its height follows the content (taller when Axod needs the person).
+  static let width: CGFloat = 240
+  private static let cornerRadius: CGFloat = 28
   private static let fadeOut: TimeInterval = 0.35
 
   var daemon: DaemonController
@@ -41,7 +43,7 @@ struct LaunchSplashView: View {
   }
 
   var body: some View {
-    VStack(spacing: 14) {
+    VStack(spacing: 16) {
       Group {
         if let puppet {
           puppet.view
@@ -53,20 +55,35 @@ struct LaunchSplashView: View {
             .padding(20)
         }
       }
-      .frame(width: 180, height: 180)
+      .frame(width: 170, height: 170)
       SplashProgressBar(progress: progress)
         .frame(width: 120)
         .accessibilityLabel("Axo is starting")
       if let attention {
         SplashAttentionView(attention: attention) { resolve(attention) }
       }
-      Spacer(minLength: 0)
     }
-    .padding(.top, 20)
-    .frame(width: Self.size.width, height: Self.size.height)
+    .padding(.top, 16)
+    .padding(.bottom, 26)
+    .padding(.horizontal, 14)
+    .frame(width: Self.width)
+    .fixedSize(horizontal: false, vertical: true)
+    // A card in the window's own colour, so Axo reads on any desktop; the window around it is
+    // clear and its shadow follows the card.
+    .background {
+      RoundedRectangle(cornerRadius: Self.cornerRadius, style: .continuous)
+        .fill(.background)
+        .strokeBorder(.separator, lineWidth: 0.5)
+    }
+    .clipShape(RoundedRectangle(cornerRadius: Self.cornerRadius, style: .continuous))
     .modifier(ClearWindowBackground())
     .animation(.easeOut(duration: 0.25), value: attention)
-    .background(WindowReader { window = $0 })
+    .background(
+      WindowReader { drawn in
+        window = drawn
+        // Axo is on screen: now the rest of the app may boot.
+        LaunchBoot.run()
+      })
     // The gate's clock: wakes once at the minimum; readiness is observed.
     .task {
       try? await Task.sleep(for: LaunchSplashGate.minimumShown)
@@ -117,7 +134,7 @@ private struct ClearWindowBackground: ViewModifier {
   }
 }
 
-/// Why Axod isn't starting, and the button that fixes it, on a small card under the bar.
+/// Why Axod isn't starting, and the button that fixes it, under the bar.
 private struct SplashAttentionView: View {
   var attention: LaunchSplashGate.Attention
   var resolve: () -> Void
@@ -132,9 +149,7 @@ private struct SplashAttentionView: View {
       Button(attention.actionTitle, action: resolve)
         .controlSize(.regular)
     }
-    .padding(12)
-    .frame(width: 250)
-    .background(.regularMaterial, in: RoundedRectangle(cornerRadius: 12))
+    .padding(.top, 4)
     .transition(.opacity)
     .accessibilityElement(children: .contain)
     .accessibilityIdentifier("launch-splash-attention")
@@ -161,8 +176,8 @@ private struct SplashProgressBar: View {
   }
 }
 
-/// Hands over the hosting `NSWindow` once the view is in one, and makes it see-through: no
-/// background, shadow or title bar, not resizable, movable by Axo, centred.
+/// Hands over the hosting `NSWindow` once it has drawn its first frame, after making it a clear,
+/// borderless, shadowed window (the card is the only thing painted): movable by Axo, centred.
 private struct WindowReader: NSViewRepresentable {
   var onWindow: (NSWindow) -> Void
 
@@ -191,11 +206,18 @@ private struct WindowReader: NSViewRepresentable {
       window.alphaValue = 1
       window.isOpaque = false
       window.backgroundColor = .clear
-      window.hasShadow = false
+      window.hasShadow = true
+      // Launch state, never restored: the splash shows only while something is starting.
+      window.isRestorable = false
       window.isMovableByWindowBackground = true
       window.center()
       let onWindow = onWindow
-      DispatchQueue.main.async { onWindow?(window) }
+      DispatchQueue.main.async {
+        // Draw and commit the first frame before handing the window over.
+        window.displayIfNeeded()
+        CATransaction.flush()
+        DispatchQueue.main.async { onWindow?(window) }
+      }
     }
   }
 }

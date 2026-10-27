@@ -22,25 +22,30 @@ struct AxoApp<Launch: AxoLaunchMode>: App {
   init() {
     let daemon = DaemonController()
     let environment = Launch.environment(daemon: daemon)
-    let ghostty = GhosttyRuntime()
+    // Booted by `LaunchBoot` once the splash is up (or straight away without a splash).
+    let ghostty = GhosttyRuntime(initializeGhostty: false)
     _daemon = State(initialValue: daemon)
     _sessions = State(initialValue: environment.sessions)
     _ghostty = State(initialValue: ghostty)
     _sleepPrevention = State(initialValue: SleepPreventionController())
     let mascot = AxoMascot()
-    mascot.start(animatesDockIcon: true)
     _mascot = State(initialValue: mascot)
     self.environment = environment
-    TerminalWindowOpener.heldForSplash = environment.opensTerminalWindow && environment.showsLaunchSplash
+    let usesSplash = environment.opensTerminalWindow && environment.showsLaunchSplash
+    TerminalWindowOpener.heldForSplash = usesSplash
     // App.init runs once per process; the workbench owns the catalog and focus loops.
     workbench = AxoWorkbench(
       sessions: environment.sessions,
       ghostty: ghostty,
       daemonIsRunning: environment.daemonIsRunning,
       daemonUnreachable: environment.daemonUnreachable)
-    if environment.startsDaemon {
-      daemon.startIfNeeded()
+    let startsDaemon = environment.startsDaemon
+    LaunchBoot.hold {
+      ghostty.initialize()
+      mascot.start(animatesDockIcon: true)
+      if startsDaemon { daemon.startIfNeeded() }
     }
+    if !usesSplash { LaunchBoot.run() }
   }
 
   // Custom SwiftUI menu actions must preserve AppKit editing for non-terminal responders.
@@ -60,6 +65,17 @@ struct AxoApp<Launch: AxoLaunchMode>: App {
   private var usesSplash: Bool { environment.opensTerminalWindow && environment.showsLaunchSplash }
 
   var body: some Scene {
+    // First: SwiftUI presents only the first scene at launch, so Axo shows before the rest
+    // boots. (`defaultLaunchBehavior` says this outright, but needs macOS 15.)
+    Window("Axo", id: LaunchSplashView.windowID) {
+      LaunchSplashView(
+        daemon: daemon, sessions: sessions, daemonIsRunning: environment.daemonIsRunning,
+        enabled: usesSplash)
+    }
+    .windowStyle(.hiddenTitleBar)
+    .windowResizability(.contentSize)
+    .defaultPosition(.center)
+
     MenuBarExtra {
       AxoMenu(daemon: daemon, settingsSection: $settingsSection, usesSplash: usesSplash)
     } label: {
@@ -71,15 +87,6 @@ struct AxoApp<Launch: AxoLaunchMode>: App {
         usesSplash: usesSplash)
     }
     .menuBarExtraStyle(.menu)
-
-    Window("Axo", id: LaunchSplashView.windowID) {
-      LaunchSplashView(
-        daemon: daemon, sessions: sessions, daemonIsRunning: environment.daemonIsRunning,
-        enabled: usesSplash)
-    }
-    .windowStyle(.hiddenTitleBar)
-    .windowResizability(.contentSize)
-    .defaultPosition(.center)
 
     Window("Axo Terminal", id: TerminalWindowOpener.windowID) {
       TerminalAppWindow(

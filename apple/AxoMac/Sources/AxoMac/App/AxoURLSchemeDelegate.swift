@@ -2,6 +2,10 @@ import AppKit
 
 @MainActor
 final class AxoURLSchemeDelegate: NSObject, NSApplicationDelegate {
+  func applicationDidFinishLaunching(_ notification: Notification) {
+    LaunchBoot.scheduleFallback()
+  }
+
   func application(_ application: NSApplication, open urls: [URL]) {
     for url in urls {
       _ = PairingLinkRouter.shared.receive(url)
