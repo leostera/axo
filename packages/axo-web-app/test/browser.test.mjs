@@ -93,7 +93,19 @@ test("browser chats with Axo on a Mac: history, live replies, new chats, info, a
     hasAgent: true,
     shells: [{ shellId: 17 }],
     layout: { kind: "pane", shellId: 17 },
-    updatedAt: now,
+    // Active just now: listed. The next chat has been quiet for weeks: behind "Show older chats".
+    updatedAt: new Date().toISOString(),
+  }, {
+    hostId,
+    sessionId: 5,
+    workspaceId,
+    workspaceName: "Browser Workspace",
+    name: "Old idea",
+    status: "ready",
+    hasAgent: true,
+    shells: [],
+    layout: null,
+    updatedAt: "2026-10-01T12:00:00.000Z",
   }, {
     hostId,
     sessionId: 3,
@@ -284,8 +296,21 @@ test("browser chats with Axo on a Mac: history, live replies, new chats, info, a
     const chats = page.getByRole("navigation", { name: "Chats" });
     // Chats only: a bare terminal Session is not a chat.
     await expect(chats.getByRole("button", { name: "Browser Agent" }));
-    await expect(chats.getByText("Browser Workspace", { exact: true }));
+    await expect(chats.getByRole("button", { name: "Browser Workspace", exact: true }));
     assert.equal(await page.getByText("Standalone Shell").count(), 0);
+    // Chats quiet for more than 8 hours wait behind a button; a Workspace folds away.
+    assert.equal(await chats.getByRole("button", { name: "Old idea" }).count(), 0);
+    await chats.getByRole("button", { name: "Show 1 older chat" }).click();
+    await expect(chats.getByRole("button", { name: "Old idea" }));
+    await chats.getByRole("button", { name: "Show fewer" }).click();
+    assert.equal(await chats.getByRole("button", { name: "Old idea" }).count(), 0);
+    const workspaceToggle = chats.getByRole("button", { name: "Browser Workspace", exact: true });
+    await workspaceToggle.click();
+    assert.equal(await workspaceToggle.getAttribute("aria-expanded"), "false");
+    assert.equal(await chats.getByRole("button", { name: "Browser Agent" }).count(), 0);
+    await page.reload({ waitUntil: "networkidle" });
+    await expect(chats.getByRole("button", { name: "Browser Workspace", exact: true, expanded: false }));
+    await chats.getByRole("button", { name: "Browser Workspace", exact: true }).click();
     // Nothing is opened on its own: a new chat waits for its first message.
     await expect(page.getByRole("heading", { name: "New chat", exact: true }));
     await expect(page.getByText("What are we working on?"));
@@ -335,7 +360,7 @@ test("browser chats with Axo on a Mac: history, live replies, new chats, info, a
     await chats.getByRole("button", { name: "Account and Macs" }).click();
     const account = page.getByRole("navigation", { name: "Account" });
     await expect(account.getByText("Browser fixture Mac"));
-    await expect(account.getByText("2 chats"));
+    await expect(account.getByText("3 chats"));
     await shot("account");
     await account.getByRole("button", { name: "Pair a Mac" }).click();
     const pairing = page.getByRole("dialog", { name: "Pair a Mac" });

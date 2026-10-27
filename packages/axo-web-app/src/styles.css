@@ -128,7 +128,13 @@ button:disabled { cursor: default; }
 .chat-section { margin-top: 20px; }
 .chat-section.first { margin-top: 4px; }
 .section-title { display: flex; align-items: center; justify-content: space-between; gap: 8px; margin: 0 0 2px; padding: 0 10px; color: var(--secondary); font-size: 13px; font-weight: 600; }
-.section-title > span { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.section-toggle { display: flex; min-width: 0; flex: 1; align-items: center; gap: 4px; margin: 0 -4px; padding: 4px; border: 0; border-radius: 6px; color: inherit; background: none; font: inherit; text-align: left; }
+.section-toggle:hover { color: var(--text); }
+.section-name { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.chevron { display: grid; transition: transform .2s var(--spring); }
+.chevron.collapsed { transform: rotate(-90deg); }
+.older-row { display: block; width: 100%; height: 34px; padding: 0 10px; border: 0; border-radius: 10px; color: var(--secondary); background: none; font-size: 14px; text-align: left; }
+.older-row:hover { color: var(--text); background: var(--fill); }
 .section-title .plain-icon-button { opacity: 0; transition: opacity .15s; }
 .chat-section:hover .section-title .plain-icon-button, .section-title .plain-icon-button:focus-visible { opacity: 1; }
 @media (hover: none) { .section-title .plain-icon-button { opacity: 1; } }
@@ -338,6 +344,7 @@ button:disabled { cursor: default; }
   .chat-section { margin-top: 14px; }
   .section-title { padding: 0 8px; font-size: 11px; }
   .chat-row { height: 28px; padding: 0 8px; border-radius: 7px; font-size: 13.5px; }
+  .older-row { height: 26px; padding: 0 8px; border-radius: 7px; font-size: 12.5px; }
   .no-chats { height: 28px; padding: 0 8px; font-size: 13.5px; line-height: 28px; }
   .status-dot { width: 6px; height: 6px; }
   .panel-note, .panel-empty p { font-size: 13px; }

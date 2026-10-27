@@ -151,6 +151,22 @@ export function chatMenu(hosts: readonly Host[], openHostId: string | null, work
   return sections.sort((a, b) => alphabetical.compare(a.title, b.title) || a.id.localeCompare(b.id));
 }
 
+/** Chats active within this long are listed; older ones wait behind "Show older chats". */
+export const recentChatWindowMs = 8 * 60 * 60 * 1000;
+
+/**
+ * The chats of a section worth listing before older ones are asked for: those active in the last
+ * eight hours, any the agent is working in or needs the person for, and any `keep` names (the open
+ * chat), most recently active first.
+ */
+export function recentChats(section: ChatMenuSection, now: number, keep: (entry: ChatMenuEntry) => boolean = () => false): ChatMenuEntry[] {
+  return section.chats.filter(entry =>
+    now - activity(entry.session) <= recentChatWindowMs
+    || entry.session.status === "working"
+    || entry.session.status === "needsAttention"
+    || keep(entry));
+}
+
 /** As people read them: case and accents aside, numbers by value. */
 const alphabetical = new Intl.Collator(undefined, { sensitivity: "base", numeric: true });
 

@@ -2,7 +2,7 @@ import assert from "node:assert/strict";
 import { test } from "node:test";
 import { inlineSpans, parseMarkdown } from "../src/chat/markdown.ts";
 import { ChatTranscript, type PiEventRecord } from "../src/chat/transcript.ts";
-import { chatMenu, ChatWorkbench, type ChatBackend, type MacConnection } from "../src/chat/workbench.ts";
+import { chatMenu, ChatWorkbench, recentChats, type ChatBackend, type MacConnection } from "../src/chat/workbench.ts";
 
 const stream = "41c77dd7-f2dc-4e91-b481-1507b62ec118";
 const hostId = "1e1e7f91-3d8f-4f97-8f71-4fc7d53313c6";
@@ -140,6 +140,22 @@ test("the menu keeps Workspaces in alphabetical order, chats newest first within
   assert.deepEqual(sections.map(section => section.title), ["Axo", "home", "Website"]);
   assert.deepEqual(sections[0]!.chats.map(chat => chat.session.sessionId), [2, 1]);
   assert.equal(sections[1]!.chats.length, 0);
+});
+
+test("a section lists chats active in the last 8 hours, busy ones, and the open one; the rest wait", () => {
+  const now = Date.parse("2026-10-27T12:00:00Z");
+  const [section] = chatMenu([host([
+    session(1, "2026-10-27T11:00:00Z"),
+    session(2, "2026-10-27T04:00:01Z"),
+    session(3, "2026-10-27T03:59:59Z"),
+    session(4, "2026-10-20T00:00:00Z", "Axo", { status: "working" }),
+    session(5, "2026-10-19T00:00:00Z", "Axo", { status: "needsAttention" }),
+    session(6, "2026-10-18T00:00:00Z"),
+    session(7, "2026-10-17T00:00:00Z"),
+  ])], hostId, []);
+  const ids = (entries: { session: { sessionId: number } }[]) => entries.map(entry => entry.session.sessionId);
+  assert.deepEqual(ids(recentChats(section!, now)), [1, 2, 4, 5]);
+  assert.deepEqual(ids(recentChats(section!, now, entry => entry.session.sessionId === 7)), [1, 2, 4, 5, 7]);
 });
 
 // MARK: - Workbench

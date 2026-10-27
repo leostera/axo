@@ -5,7 +5,7 @@ import { AxoMascot } from "../axo-mascot.tsx";
 import { Conversation } from "./conversation.tsx";
 import { Icon } from "./icons.tsx";
 import { relativeTime } from "./message-views.tsx";
-import { chatTitle, ChatWorkbench, isChat, type ChatBackend } from "./workbench.ts";
+import { chatTitle, ChatWorkbench, isChat, recentChats, type ChatBackend, type ChatMenuSection } from "./workbench.ts";
 
 const DEFAULT_API_URL = "https://axo.leostera.dev";
 const apiBaseUrl = import.meta.env.VITE_AXO_API_BASE_URL || DEFAULT_API_URL;
@@ -193,6 +193,9 @@ function ChatsPanel({ workbench, onSelect, onNewChat, onAccount, onSettings }: {
 }) {
   const sections = workbench.sections();
   const selection = workbench.selection;
+  const [collapsed, toggleCollapsed] = useCollapsedWorkspaces();
+  // Not kept: older chats are a look back, not a way the menu stays.
+  const [showingOlder, setShowingOlder] = useState<ReadonlySet<string>>(new Set());
   return (
     <nav className="panel chats-panel" aria-label="Chats">
       <header className="layer-bar top panel-header">
@@ -203,27 +206,18 @@ function ChatsPanel({ workbench, onSelect, onNewChat, onAccount, onSettings }: {
       <div className="panel-scroll">
         {workbench.hostsPhase === "failed" && workbench.failure ? <p className="panel-warning">{workbench.failure}</p> : null}
         {sections.map((section, index) => (
-          <section key={section.id} className={index === 0 ? "chat-section first" : "chat-section"}>
-            <h2 className="section-title">
-              <span>{section.title}</span>
-              {section.workspaceId ? (
-                <button className="plain-icon-button" onClick={() => onNewChat(section.host.hostId, section.workspaceId)} aria-label={`New chat in ${section.title}`}>
-                  <Icon name="compose" size={15} />
-                </button>
-              ) : null}
-            </h2>
-            {section.chats.map(({ host, session }) => {
-              const selected = host.hostId === workbench.openHostId && selection?.kind === "chat" && selection.sessionId === session.sessionId;
-              return (
-                <button key={`${host.hostId}/${session.sessionId}`} className={selected ? "chat-row selected" : "chat-row"}
-                  aria-current={selected ? "page" : undefined} onClick={() => onSelect(host.hostId, session.sessionId)}>
-                  <span className="chat-row-name">{chatTitle(session)}</span>
-                  <StatusDot status={session.status} />
-                </button>
-              );
-            })}
-            {section.chats.length === 0 ? <p className="no-chats">No chats yet</p> : null}
-          </section>
+          <ChatSection
+            key={section.id}
+            section={section}
+            first={index === 0}
+            collapsed={collapsed.has(section.id)}
+            showingOlder={showingOlder.has(section.id)}
+            isSelected={(hostId, sessionId) => hostId === workbench.openHostId && selection?.kind === "chat" && selection.sessionId === sessionId}
+            onToggle={() => toggleCollapsed(section.id)}
+            onToggleOlder={() => setShowingOlder(toggled(showingOlder, section.id))}
+            onSelect={onSelect}
+            onNewChat={onNewChat}
+          />
         ))}
         {sections.length === 0 ? (
           workbench.hostsPhase === "loaded" && workbench.hosts.length === 0 ? (
@@ -241,6 +235,90 @@ function ChatsPanel({ workbench, onSelect, onNewChat, onAccount, onSettings }: {
         <button className="circle-button" onClick={onSettings} aria-label="Settings"><Icon name="gear" /></button>
       </footer>
     </nav>
+  );
+}
+
+function toggled(set: ReadonlySet<string>, id: string): ReadonlySet<string> {
+  const next = new Set(set);
+  if (!next.delete(id)) next.add(id);
+  return next;
+}
+
+const COLLAPSED_KEY = "axo.collapsedWorkspaces";
+
+/** Which Workspaces are folded away, kept in this browser across visits. */
+function useCollapsedWorkspaces(): [ReadonlySet<string>, (id: string) => void] {
+  const [collapsed, setCollapsed] = useState<ReadonlySet<string>>(() => {
+    try {
+      const stored: unknown = JSON.parse(localStorage.getItem(COLLAPSED_KEY) ?? "[]");
+      return new Set(Array.isArray(stored) ? stored.filter((id): id is string => typeof id === "string") : []);
+    } catch {
+      return new Set();
+    }
+  });
+  const toggle = (id: string) => {
+    const next = toggled(collapsed, id);
+    setCollapsed(next);
+    localStorage.setItem(COLLAPSED_KEY, JSON.stringify([...next]));
+  };
+  return [collapsed, toggle];
+}
+
+/**
+ * One Workspace in the menu: its title folds it away. Open, it lists the chats active in the last
+ * 8 hours (and busy ones, and the open one); the rest are behind "Show older chats".
+ */
+function ChatSection({ section, first, collapsed, showingOlder, isSelected, onToggle, onToggleOlder, onSelect, onNewChat }: {
+  section: ChatMenuSection;
+  first: boolean;
+  collapsed: boolean;
+  showingOlder: boolean;
+  isSelected: (hostId: string, sessionId: number) => boolean;
+  onToggle: () => void;
+  onToggleOlder: () => void;
+  onSelect: (hostId: string, sessionId: number) => void;
+  onNewChat: (hostId: string | null, workspaceId: string | null) => void;
+}) {
+  const recent = recentChats(section, Date.now(), entry => isSelected(entry.host.hostId, entry.session.sessionId));
+  const older = section.chats.length - recent.length;
+  const shown = showingOlder ? section.chats : recent;
+  const busy = section.chats.some(entry => entry.session.status === "working" || entry.session.status === "needsAttention");
+  const listId = `chats-${section.id}`;
+  return (
+    <section className={first ? "chat-section first" : "chat-section"}>
+      <h2 className="section-title">
+        <button className="section-toggle" onClick={onToggle} aria-expanded={!collapsed} aria-controls={listId}>
+          <span className={collapsed ? "chevron collapsed" : "chevron"} aria-hidden="true"><Icon name="chevron" size={12} /></span>
+          <span className="section-name">{section.title}</span>
+          {collapsed && busy ? <span className="status-dot working" aria-label="Working" /> : null}
+        </button>
+        {section.workspaceId ? (
+          <button className="plain-icon-button" onClick={() => onNewChat(section.host.hostId, section.workspaceId)} aria-label={`New chat in ${section.title}`}>
+            <Icon name="compose" size={15} />
+          </button>
+        ) : null}
+      </h2>
+      {collapsed ? null : (
+        <div id={listId}>
+          {shown.map(({ host, session }) => {
+            const selected = isSelected(host.hostId, session.sessionId);
+            return (
+              <button key={`${host.hostId}/${session.sessionId}`} className={selected ? "chat-row selected" : "chat-row"}
+                aria-current={selected ? "page" : undefined} onClick={() => onSelect(host.hostId, session.sessionId)}>
+                <span className="chat-row-name">{chatTitle(session)}</span>
+                <StatusDot status={session.status} />
+              </button>
+            );
+          })}
+          {older > 0 ? (
+            <button className="older-row" onClick={onToggleOlder}>
+              {showingOlder ? "Show fewer" : `Show ${older} older ${older === 1 ? "chat" : "chats"}`}
+            </button>
+          ) : null}
+          {section.chats.length === 0 ? <p className="no-chats">No chats yet</p> : null}
+        </div>
+      )}
+    </section>
   );
 }
 

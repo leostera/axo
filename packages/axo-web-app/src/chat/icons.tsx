@@ -1,7 +1,7 @@
 /** The few symbols the chat uses, drawn after their SF Symbols counterparts on the phone. */
 export type IconName =
   | "menu" | "info" | "person" | "gear" | "compose" | "arrowUp" | "stop" | "laptop" | "copy" | "check"
-  | "close" | "terminal" | "pencil" | "doc" | "search" | "wrench" | "warning" | "pair" | "arrowDown";
+  | "close" | "chevron" | "terminal" | "pencil" | "doc" | "search" | "wrench" | "warning" | "pair" | "arrowDown";
 
 const paths: Record<IconName, string> = {
   menu: "M5 9h14M5 15h14",
@@ -16,6 +16,7 @@ const paths: Record<IconName, string> = {
   copy: "M9 9h10a1 1 0 0 1 1 1v10a1 1 0 0 1-1 1H9a1 1 0 0 1-1-1V10a1 1 0 0 1 1-1Zm-4 6H4a1 1 0 0 1-1-1V4a1 1 0 0 1 1-1h10a1 1 0 0 1 1 1v1",
   check: "m5 12 5 5L20 7",
   close: "M6 6l12 12M18 6 6 18",
+  chevron: "m7 9 5 5 5-5",
   terminal: "M4 4h16a1 1 0 0 1 1 1v14a1 1 0 0 1-1 1H4a1 1 0 0 1-1-1V5a1 1 0 0 1 1-1Zm3 5 3 3-3 3m5 0h5",
   pencil: "M4 20h4L19 9l-4-4L4 16v4Zm9-13 4 4M13 20h7",
   doc: "M14 3H7a2 2 0 0 0-2 2v14a2 2 0 0 0 2 2h10a2 2 0 0 0 2-2V8l-5-5Zm0 0v5h5M9 13h6m-6 4h6",
