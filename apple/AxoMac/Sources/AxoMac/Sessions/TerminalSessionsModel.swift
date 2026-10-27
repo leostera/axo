@@ -350,7 +350,9 @@ final class TerminalSessionsModel {
     } catch {
       report(error)
       workspaceCreationError = error.localizedDescription
+      return
     }
+    await addCompanionTerminal()
   }
 
   func dismissWorkspaceCreationError() {
@@ -363,8 +365,21 @@ final class TerminalSessionsModel {
     do {
       adopt(try await requireClient().createSession(inWorkspace: workspaceID))
     } catch {
-      report(error)
+      return report(error)
     }
+    await addCompanionTerminal()
+  }
+
+  /// Opens a new Pi Session as Pi beside a terminal pane, keeping focus on Pi. A failed split
+  /// leaves the Pi pane alone; the Session is usable either way.
+  private func addCompanionTerminal() async {
+    guard let sessionID = selectedSessionID,
+      let session = session(for: sessionID),
+      session.shells.count == 1,
+      let pi = session.shells.first, pi.isPi
+    else { return }
+    await split(.right)
+    if selectedSessionID == sessionID { focus(pi.id) }
   }
 
   func createSession() async {

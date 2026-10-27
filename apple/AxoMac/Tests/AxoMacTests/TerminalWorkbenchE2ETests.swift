@@ -364,6 +364,34 @@ final class TerminalWorkbenchE2ETests: XCTestCase {
     }
   }
 
+  func testNewPiSessionsOpenPiBesideATerminalWithPiFocused() async throws {
+    let directory = FileManager.default.temporaryDirectory
+      .appendingPathComponent("axo-session-pair-\(UUID().uuidString)", isDirectory: true)
+    try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
+    defer { try? FileManager.default.removeItem(at: directory) }
+
+    try await withWorkbench { model, _ in
+      await model.createWorkspace(
+        name: "Session Pair", directoryPath: directory.path, directoryBookmark: nil)
+      let firstSessionID = try XCTUnwrap(model.selectedSessionID)
+      let workspaceID = try XCTUnwrap(model.session(for: firstSessionID)?.workspaceId)
+      await model.createSession(in: workspaceID)
+      let secondSessionID = try XCTUnwrap(model.selectedSessionID)
+
+      for sessionID in [firstSessionID, secondSessionID] {
+        let shells = try XCTUnwrap(model.session(for: sessionID)?.shells)
+        let pi = try XCTUnwrap(shells.first(where: \.isPi))
+        let terminal = try XCTUnwrap(shells.first { !$0.isPi })
+        XCTAssertEqual(shells.count, 2)
+        model.showSession(sessionID)
+        XCTAssertEqual(model.layout?.orderedShellIDs, [pi.id, terminal.id], "Pi left, terminal right")
+      }
+      model.showSession(secondSessionID)
+      XCTAssertTrue(model.focusedShellID.flatMap { model.shell(for: $0)?.isPi } ?? false)
+      XCTAssertNil(model.errorMessage)
+    }
+  }
+
   func testPaneNavigationCyclesInLayoutOrder() async throws {
     try await withWorkbench { model, _ in
       let sessionID = try XCTUnwrap(model.selectedSessionID)
