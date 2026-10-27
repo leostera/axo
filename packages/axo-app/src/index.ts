@@ -81,6 +81,7 @@ const appRemoteResults = {
   "axo.remote.shell.close": remoteShellCloseResultSchema,
   "axo.remote.terminal.input": remoteTerminalInputResultSchema,
   "axo.remote.session.prompt": remotePromptResultSchema,
+  "axo.remote.session.key": remotePromptResultSchema,
   "axo.remote.terminal.resize": remoteTerminalResizeResultSchema,
 } as const;
 type AppRemoteMethod = keyof typeof appRemoteResults;

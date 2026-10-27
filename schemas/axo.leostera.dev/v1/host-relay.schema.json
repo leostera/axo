@@ -57,6 +57,9 @@
           "$ref": "#/$defs/RemotePromptCall"
         },
         {
+          "$ref": "#/$defs/RemoteKeyCall"
+        },
+        {
           "$ref": "#/$defs/RemoteTerminalResizeCall"
         }
       ]
@@ -584,6 +587,47 @@
                   "type": "string",
                   "minLength": 1,
                   "maxLength": 16000
+                }
+              }
+            }
+          }
+        }
+      ],
+      "unevaluatedProperties": false,
+      "required": [
+        "params"
+      ]
+    },
+    "RemoteKeyCall": {
+      "allOf": [
+        {
+          "$ref": "#/$defs/BaseCall"
+        },
+        {
+          "properties": {
+            "method": {
+              "const": "axo.remote.session.key"
+            },
+            "params": {
+              "type": "object",
+              "additionalProperties": false,
+              "required": [
+                "target",
+                "sessionId",
+                "key"
+              ],
+              "properties": {
+                "target": {
+                  "$ref": "common.schema.json#/$defs/HostRef"
+                },
+                "sessionId": {
+                  "$ref": "common.schema.json#/$defs/SessionId"
+                },
+                "key": {
+                  "enum": [
+                    "escape",
+                    "enter"
+                  ]
                 }
               }
             }

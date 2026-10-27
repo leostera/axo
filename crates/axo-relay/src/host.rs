@@ -7,6 +7,16 @@ use axo_protocol::{
     Event, LayoutNode, RelayStatus, RemoteSessionSnapshot, RemoteWorkspace, SessionId, ShellId,
 };
 
+/// A key a remote person presses in a Session's Pi: what answering it on the Mac would take.
+#[derive(Clone, Copy, Debug, Eq, PartialEq, serde::Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub enum PiKey {
+    /// Stops the reply in progress, or declines the question Pi is asking.
+    Escape,
+    /// Accepts the question Pi is asking.
+    Enter,
+}
+
 /// The daemon's sessions, as seen by the cloud relay. Implemented by Axod's session manager.
 ///
 /// Identifiers arrive already parsed (positive); implementations still check that they name
@@ -61,6 +71,8 @@ pub trait RelayHost: Send + Sync {
     /// Sends `text` to the Session's Pi as a prompt, as if typed and submitted in its pane.
     /// Fails with `InvalidInput` for empty or oversized text, and `NotFound` if Pi is not running.
     fn remote_prompt_pi(&self, session_id: SessionId, text: &str) -> io::Result<()>;
+    /// Presses `key` in the Session's Pi pane. Fails with `NotFound` if Pi is not running.
+    fn remote_press_pi_key(&self, session_id: SessionId, key: PiKey) -> io::Result<()>;
     fn remote_terminal_resize(
         &self,
         session_id: SessionId,

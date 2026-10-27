@@ -300,6 +300,13 @@ pub(crate) mod testing {
         fn remote_prompt_pi(&self, _: axo_protocol::SessionId, _: &str) -> std::io::Result<()> {
             unreachable!()
         }
+        fn remote_press_pi_key(
+            &self,
+            _: axo_protocol::SessionId,
+            _: crate::PiKey,
+        ) -> std::io::Result<()> {
+            unreachable!()
+        }
         fn remote_terminal_resize(
             &self,
             _: axo_protocol::SessionId,

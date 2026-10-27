@@ -9,6 +9,6 @@ mod pairing;
 mod relay;
 
 pub use endpoint::{DEFAULT_RELAY_URL, RelayEndpoint};
-pub use host::RelayHost;
+pub use host::{PiKey, RelayHost};
 pub use link::{AccountLink, HostLink, HostLinkStore, PendingRedemption, host_label, link_host};
 pub use relay::{RelayControl, RelayDependencies, RelayWorker, unavailable_status};

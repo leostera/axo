@@ -147,6 +147,8 @@ pub const PARITY: &[Parity] = &[
 pub const REMOTE_ONLY: &[&str] = &[
     // Sends a prompt to the Session's Pi; on the Mac a person types into the pane instead.
     "axo.remote.session.prompt",
+    // Presses Escape or Enter in the Session's Pi: stops a reply, or answers Pi's question.
+    "axo.remote.session.key",
 ];
 
 /// The remote methods that must exist now: every [`Remote::Call`] and [`Remote::Events`] name,

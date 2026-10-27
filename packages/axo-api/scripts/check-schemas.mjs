@@ -282,6 +282,7 @@ validateWith(hostCallSchema, remoteCreate);
 validateWith(hostCallSchema, await fixture("host-register.call.json"));
 validateWith(hostCallSchema, await fixture("terminal-input.call.json"));
 validateWith(hostCallSchema, await fixture("session-prompt.call.json"));
+validateWith(hostCallSchema, await fixture("session-key.call.json"));
 const validateHostCall = ajv.getSchema(hostCallSchema);
 remoteCreate.params.target.hostId = "not-a-uuid";
 assert.equal(validateHostCall(remoteCreate), false, "malformed host identities must be rejected");

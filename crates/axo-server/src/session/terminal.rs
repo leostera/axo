@@ -449,6 +449,34 @@ impl SessionManager {
         type_pi_prompt(&mut state, session_id, pi_shell, &text)
     }
 
+    /// Presses one key in the Session's Pi pane, as a person at the Mac would: Escape stops a reply
+    /// or declines a question, Enter accepts one. A Pi still starting has nothing to stop or
+    /// answer, so the key is not queued like a prompt.
+    pub(super) fn press_pi_key(&self, session_id: SessionId, key: axo_relay::PiKey) -> io::Result<()> {
+        let mut state = self.lock_state()?;
+        let pi_shell = state
+            .panes
+            .in_session(session_id)
+            .find_map(|(id, pane)| match pane {
+                axo_panes::Pane::Running(shell) if shell.role == PaneRole::Pi => Some(id),
+                _ => None,
+            })
+            .ok_or_else(|| io::Error::new(io::ErrorKind::NotFound, "Pi is not running"))?;
+        let running = state
+            .panes
+            .running_in_mut(session_id, pi_shell)
+            .ok_or_else(|| io::Error::new(io::ErrorKind::NotFound, "Pi is not running"))?;
+        let bytes: &[u8] = match key {
+            axo_relay::PiKey::Escape => b"\x1b",
+            axo_relay::PiKey::Enter => b"\r",
+        };
+        log::info!(
+            "event=session.pi_key_pressed session_id={} key={key:?}",
+            session_id.get()
+        );
+        process::write_all(running.master.as_raw_fd(), bytes, TERMINAL_INPUT_WRITE_TIMEOUT)
+    }
+
     /// Types the prompts that waited for the Session's Pi to finish starting, oldest first.
     pub(super) fn flush_queued_pi_prompts(&self, session_id: SessionId) -> io::Result<()> {
         let mut state = self.lock_state()?;
@@ -744,6 +772,32 @@ mod tests {
             thread::sleep(Duration::from_millis(50));
         };
         assert!(typed.ends_with("\u{1b}[200~and again\u{1b}[201~\n"), "{typed:?}");
+        let _ = std::fs::remove_dir_all(&directory);
+    }
+    #[test]
+    fn a_remote_key_press_reaches_only_the_pi_pane() {
+        let directory = std::path::PathBuf::from("/tmp").join(format!("axo-key-{}", axo_protocol::new_uuid_v4().unwrap()));
+        std::fs::create_dir_all(&directory).unwrap();
+        let (manager, log) = manager_recording_input(&directory);
+        let session = manager.list_sessions().unwrap().remove(0);
+        let shell_id = session.shells[0].id;
+
+        let refused = manager.press_pi_key(session.id, axo_relay::PiKey::Escape).unwrap_err();
+        assert_eq!(refused.kind(), io::ErrorKind::NotFound);
+
+        manager.lock_state().unwrap().panes.running_mut(shell_id).unwrap().role = PaneRole::Pi;
+        manager.press_pi_key(session.id, axo_relay::PiKey::Escape).unwrap();
+        manager.press_pi_key(session.id, axo_relay::PiKey::Enter).unwrap();
+        let deadline = Instant::now() + Duration::from_secs(15);
+        let typed = loop {
+            let typed = std::fs::read_to_string(&log).unwrap_or_default();
+            if typed.ends_with('\n') || Instant::now() > deadline {
+                break typed;
+            }
+            thread::sleep(Duration::from_millis(50));
+        };
+        // Escape as itself; Enter as a carriage return (the terminal makes it a newline for `cat`).
+        assert_eq!(typed, "\u{1b}\n");
         let _ = std::fs::remove_dir_all(&directory);
     }
 }

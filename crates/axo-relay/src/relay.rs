@@ -885,6 +885,17 @@ enum RemoteResult {
     PromptAccepted {
         accepted: bool,
     },
+    KeyAccepted {
+        accepted: bool,
+    },
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+struct KeyParams {
+    target: HostRef,
+    session_id: SessionId,
+    key: crate::PiKey,
 }
 
 #[derive(Debug, Deserialize)]
@@ -1110,6 +1121,14 @@ fn dispatch_remote_call(
                 .remote_prompt_pi(request.session_id, &request.text)
                 .map_err(map_operation_error)?;
             Ok(RemoteResult::PromptAccepted { accepted: true })
+        }
+        "axo.remote.session.key" => {
+            let request = parsed!(KeyParams);
+            target_ok!(request.target);
+            sessions
+                .remote_press_pi_key(request.session_id, request.key)
+                .map_err(map_operation_error)?;
+            Ok(RemoteResult::KeyAccepted { accepted: true })
         }
         "axo.remote.terminal.resize" => {
             let request = parsed!(TerminalResizeParams);

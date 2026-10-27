@@ -13,7 +13,8 @@
     "axo.remote.shell.close",
     "axo.remote.terminal.input",
     "axo.remote.terminal.resize",
-    "axo.remote.session.prompt"
+    "axo.remote.session.prompt",
+    "axo.remote.session.key"
   ],
   "planned": [
     "axo.remote.workspace.rename",

@@ -159,6 +159,10 @@ impl axo_relay::RelayHost for RelayHostAdapter {
         self.0.prompt_pi(session_id, text)
     }
 
+    fn remote_press_pi_key(&self, session_id: SessionId, key: axo_relay::PiKey) -> io::Result<()> {
+        self.0.press_pi_key(session_id, key)
+    }
+
     fn remote_terminal_resize(
         &self,
         session_id: SessionId,
