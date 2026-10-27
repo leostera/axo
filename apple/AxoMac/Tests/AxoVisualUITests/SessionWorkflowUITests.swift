@@ -418,6 +418,21 @@ extension AxoVisualUITests {
     try fixture.assertTextInRightHalf("AXO VISUAL LOWER 3691", in: nestedOutput)
     try fixture.assertTextBelow("AXO VISUAL LOWER 3691", "AXO VISUAL RIGHT 2846", in: nestedOutput)
 
+    // Focus follows the visible leaf pane through repeated clicks across a nested split.
+    let leftPane = window.coordinate(withNormalizedOffset: CGVector(dx: 0.25, dy: 0.5))
+    let upperRightPane = window.coordinate(withNormalizedOffset: CGVector(dx: 0.75, dy: 0.25))
+    let lowerRightPane = window.coordinate(withNormalizedOffset: CGVector(dx: 0.75, dy: 0.75))
+    leftPane.click()
+    upperRightPane.click()
+    lowerRightPane.click()
+    leftPane.click()
+    upperRightPane.click()
+    window.typeText("printf 'AXO VISUAL CLICK FOCUS 5462\\n'\\n")
+    try await Task.sleep(for: .milliseconds(500))
+    let clickedUpperRight = try fixture.capture("06b-click-focus-upper-right", in: window)
+    try fixture.assertTextInRightHalf("AXO VISUAL CLICK FOCUS 5462", in: clickedUpperRight)
+    try fixture.assertTextBelow("AXO VISUAL LOWER 3691", "AXO VISUAL CLICK FOCUS 5462", in: clickedUpperRight)
+
     window.typeKey("[", modifierFlags: .command)
     window.typeText("printf 'AXO VISUAL PREVIOUS PANE 4128\\n'\n")
     try await Task.sleep(for: .milliseconds(500))

@@ -43,6 +43,7 @@ struct TerminalSplitView<First: View, Second: View>: View {
             height: direction == .down ? firstLength : size.height
           )
           .clipped()
+          .contentShape(Rectangle())
 
         second
           .frame(
@@ -50,6 +51,7 @@ struct TerminalSplitView<First: View, Second: View>: View {
             height: direction == .down ? secondLength : size.height
           )
           .clipped()
+          .contentShape(Rectangle())
           .offset(
             x: direction == .right ? firstLength + dividerThickness : 0,
             y: direction == .down ? firstLength + dividerThickness : 0
