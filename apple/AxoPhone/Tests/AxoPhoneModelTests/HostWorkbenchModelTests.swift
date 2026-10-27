@@ -69,6 +69,24 @@ final class HostWorkbenchModelTests: XCTestCase {
     XCTAssertEqual(pages.cursors, [0, 2], "the beginning has nothing older")
   }
 
+  func testReadingTheNewestPageAgainKeepsOlderPagesInOrder() async throws {
+    // After a reconnection the open chat reads its newest page again, while the person may be
+    // reading an older one.
+    let stream = UUID()
+    let newest = PiEventPage(events: [stored(3, 3, role: "user", "q2", stream: stream), stored(2, 2, role: "assistant", "a", stream: stream)], next: 2)
+    let pages = Pages([
+      newest,
+      PiEventPage(events: [stored(1, 1, role: "user", "q", stream: stream)], next: nil),
+      PiEventPage(events: [stored(4, 4, role: "assistant", "a2", stream: stream)] + newest.events, next: 2),
+    ])
+    let (model, _, _, _) = try make(history: pages)
+    await model.loadHistory(of: 1)
+    await model.loadOlderHistory(of: 1)
+    await model.loadHistory(of: 1)
+    XCTAssertEqual(model.chats[1]?.messages.map(\.text), ["q", "a", "q2", "a2"], "older pages stay before the newest")
+    XCTAssertEqual(model.historyStates[1], .loaded(events: 4, hasOlder: false), "and what is older is still known")
+  }
+
   func testAFailedOlderPageKeepsWhatIsShownAndCanBeRetried() async throws {
     let stream = UUID()
     let history = FlakyOlder(first: PiEventPage(events: [stored(2, 2, role: "user", "q2", stream: stream)], next: 2))
@@ -88,6 +106,29 @@ final class HostWorkbenchModelTests: XCTestCase {
     let (refused, _, _, refusedAccount) = try make(history: FailingHistory(error: RelayError.signInRequired))
     await refused.loadHistory(of: 1)
     XCTAssertEqual(refusedAccount.state, .signedOut)
+  }
+
+  /// Whether reading `read` is invalidated by `change`, as a SwiftUI view reading it would be.
+  private func invalidates(_ read: () -> Void, by change: () -> Void) -> Bool {
+    final class Flag: @unchecked Sendable { var raised = false }
+    let flag = Flag()
+    withObservationTracking(read) { flag.raised = true }
+    change()
+    return flag.raised
+  }
+
+  func testAnEventInOneChatDoesNotRedrawAnother() throws {
+    let (model, _, host, _) = try make(sessions: [(1, "One", [10]), (2, "Two", [20])])
+    let open = model.chat(2)
+    func reply(_ sequence: UInt64, in id: SessionID) {
+      model.apply(.piEvent(host: host.reference, sessionID: id, event: PiEventRecord(
+        streamId: UUID(), sequence: sequence, name: "agent.start", data: .null)))
+    }
+    // Everything a conversation reads, as it reads it.
+    let readOpenChat = { _ = (open.transcript, open.history, open.pending, open.isStopping) }
+    XCTAssertFalse(invalidates(readOpenChat, by: { reply(1, in: 1) }), "another chat's reply is not this chat's news")
+    XCTAssertTrue(invalidates(readOpenChat, by: { reply(2, in: 2) }), "its own is")
+    XCTAssertEqual(model.chats[2]?.activity, .working)
   }
 
   func testLivePiEventsReachTheConversationAndARemovedSessionForgetsIt() throws {

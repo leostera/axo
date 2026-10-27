@@ -108,8 +108,18 @@ public struct ChatTranscript: Equatable, Sendable {
   public private(set) var question: ChatQuestion?
   private var known: Set<String> = []
   private var results: [String: ToolResult] = [:]
+  /// The first this many messages came from stored history; the rest arrived live.
+  private var historical = 0
 
   public init() {}
+
+  /// A conversation read from stored events, oldest first. Parsing is the expensive part of
+  /// reading history (every message's Markdown), so this is made away from the main actor and
+  /// then joined to what is shown with `merge(newest:keepingOlder:)` or `prepend(older:)`.
+  public init(history records: [PiEventRecord]) {
+    for record in records { apply(record) }
+    historical = messages.count
+  }
 
   public mutating func apply(_ record: PiEventRecord) {
     switch record.name {
@@ -165,20 +175,45 @@ public struct ChatTranscript: Equatable, Sendable {
 
   /// Puts stored history first, keeping anything that arrived live and is not in it.
   public mutating func merge(history: [PiEventRecord]) {
-    var rebuilt = ChatTranscript()
-    for record in history { rebuilt.apply(record) }
-    let inHistory = Set(rebuilt.messages.map(\.id))
-    let live = messages.filter { !inHistory.contains($0.id) }
-    // A result that arrived live belongs to a tool the history may have recorded as unanswered.
-    results.merge(rebuilt.results) { live, _ in live }
-    messages = (rebuilt.messages + live).map { message in
-      var message = message
-      if let callID = message.tool?.callID, let result = results[callID] { message.tool?.fill(result) }
-      return message
-    }
-    known = Set(messages.map { String($0.id.split(separator: "#")[0]) })
-    // History says nothing about whether Pi is working right now; keep what live events said.
+    merge(newest: ChatTranscript(history: history), keepingOlder: true)
   }
+
+  /// Joins the newest page of stored history: it goes after the older history already shown
+  /// (when `keepingOlder`: the page reaches back into it) and before what arrived live and is
+  /// not in it. A page that does not reach back replaces the older history, which is read again
+  /// as the conversation is scrolled back. History says nothing about whether Pi is working now.
+  public mutating func merge(newest page: ChatTranscript, keepingOlder: Bool) {
+    let inPage = Set(page.messages.map(\.id))
+    let older = keepingOlder ? messages[..<historical].filter { !inPage.contains($0.id) } : []
+    let live = messages[historical...].filter { !inPage.contains($0.id) }
+    messages = older + page.messages + live
+    historical = older.count + page.messages.count
+    // Older history left out is forgotten, so scrolling back reads it in again.
+    if !keepingOlder { known = Set(messages.map { Self.baseID($0.id) }) }
+    joined(page)
+  }
+
+  /// Puts an older page of stored history before everything shown. Only the page's own messages
+  /// are touched (its tools may be answered by results already shown), not the whole conversation.
+  public mutating func prepend(older page: ChatTranscript) {
+    let new = page.messages.filter { !known.contains(Self.baseID($0.id)) }
+    messages.insert(contentsOf: new, at: 0)
+    historical += new.count
+    joined(page, filling: new.count)
+  }
+
+  /// Takes in `page`'s tool results and known events, and fills in tools answered by results
+  /// that arrived on the other side of the join: among the first `filling` messages, or all.
+  private mutating func joined(_ page: ChatTranscript, filling: Int? = nil) {
+    // A result that arrived live belongs to a tool the history may have recorded as unanswered.
+    results.merge(page.results) { live, _ in live }
+    for index in messages.indices.prefix(filling ?? messages.count) {
+      if let callID = messages[index].tool?.callID, let result = results[callID] { messages[index].tool?.fill(result) }
+    }
+    known.formUnion(page.known)
+  }
+
+  private static func baseID(_ id: String) -> String { String(id.split(separator: "#")[0]) }
 
   /// What the Mac last said about whether Pi is working, for when the live events were missed
   /// (the phone was asleep or offline). Going idle also ends a reply and a question left open.

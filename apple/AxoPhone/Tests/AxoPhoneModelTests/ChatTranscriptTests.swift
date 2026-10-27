@@ -16,6 +16,30 @@ final class ChatTranscriptTests: XCTestCase {
     event(sequence, "message.end", #"{"message":{"role":"\#(role)","content":\#(content)}}"#)
   }
 
+  func testAnOlderPageGoesFirstAndItsToolIsAnsweredByAResultAlreadyShown() {
+    // Pi's call is on the older page; its result arrived on the newer one.
+    let call = event(2, "message.end", #"{"message":{"role":"assistant","content":[{"type":"toolCall","id":"c1","name":"bash","arguments":{"command":"ls"}}]}}"#)
+    let result = event(3, "message.end", #"{"message":{"role":"toolResult","toolCallId":"c1","content":"README.md"}}"#)
+    var transcript = ChatTranscript()
+    transcript.merge(newest: ChatTranscript(history: [result, message(4, role: "user", content: #""thanks""#)]), keepingOlder: false)
+    transcript.prepend(older: ChatTranscript(history: [message(1, role: "user", content: #""list files""#), call]))
+    XCTAssertEqual(transcript.messages.map(\.role), [.user, .tool, .user])
+    XCTAssertEqual(transcript.messages[1].tool?.status, .completed)
+    XCTAssertEqual(transcript.messages[1].tool?.output, "README.md")
+  }
+
+  func testANewestPageThatDoesNotReachBackDropsOlderHistoryUntilItIsReadAgain() {
+    var transcript = ChatTranscript()
+    transcript.merge(newest: ChatTranscript(history: [message(2, role: "user", content: #""second""#)]), keepingOlder: false)
+    transcript.prepend(older: ChatTranscript(history: [message(1, role: "user", content: #""first""#)]))
+    transcript.apply(message(9, role: "user", content: #""live""#))
+    // A long gap: the fresh newest page has nothing in common with what was shown.
+    transcript.merge(newest: ChatTranscript(history: [message(8, role: "user", content: #""eighth""#)]), keepingOlder: false)
+    XCTAssertEqual(transcript.messages.map(\.text), ["eighth", "live"], "what arrived live stays, after the page")
+    transcript.prepend(older: ChatTranscript(history: [message(1, role: "user", content: #""first""#), message(2, role: "user", content: #""second""#)]))
+    XCTAssertEqual(transcript.messages.map(\.text), ["first", "second", "eighth", "live"], "scrolling back reads it in again")
+  }
+
   func testWholeMessagesBecomeTheConversationInOrder() {
     var transcript = ChatTranscript()
     transcript.apply(message(1, role: "user", content: #""hello""#))
