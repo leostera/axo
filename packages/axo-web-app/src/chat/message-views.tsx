@@ -1,20 +1,24 @@
 import { memo, useState } from "react";
-import { inlineSpans, type MarkdownBlock } from "./markdown.ts";
+import { inlineSpans, type InlineSpan, type MarkdownBlock } from "./markdown.ts";
 import type { ChatMessage, ChatQuestion, ToolActivity } from "./transcript.ts";
 import type { PendingPrompt } from "./workbench.ts";
 import { Icon, type IconName } from "./icons.tsx";
 
 /** Bold, italics, links and `code` within a line. Remote images are never fetched. */
 function Inline({ text }: { text: string }) {
+  return <Spans spans={inlineSpans(text)} />;
+}
+
+function Spans({ spans }: { spans: InlineSpan[] }) {
   return (
     <>
-      {inlineSpans(text).map((span, index) => {
+      {spans.map((span, index) => {
         switch (span.kind) {
           case "text": return <span key={index}>{span.text}</span>;
-          case "strong": return <strong key={index}>{span.text}</strong>;
-          case "emphasis": return <em key={index}>{span.text}</em>;
           case "code": return <code key={index}>{span.text}</code>;
-          case "link": return <a key={index} href={span.href} target="_blank" rel="noreferrer noopener">{span.text}</a>;
+          case "strong": return <strong key={index}><Spans spans={span.children} /></strong>;
+          case "emphasis": return <em key={index}><Spans spans={span.children} /></em>;
+          case "link": return <a key={index} href={span.href} target="_blank" rel="noreferrer noopener"><Spans spans={span.children} /></a>;
         }
       })}
     </>
@@ -142,8 +146,8 @@ function ToolCard({ tool, working }: { tool: ToolActivity; working: boolean }) {
         <Icon name={toolIcons[tool.kind]} size={18} />
         <span className="tool-name">{tool.name}</span>
         <span className="tool-status">
-          {tool.status === "completed" ? <span className="tool-done" aria-label="Completed"><Icon name="check" size={18} /></span>
-            : tool.status === "failed" ? <span className="tool-failed" aria-label="Failed"><Icon name="close" size={14} /></span>
+          {tool.status === "completed" ? <span className="tool-badge done" aria-label="Completed"><Icon name="check" size={18} /></span>
+            : tool.status === "failed" ? <span className="tool-badge failed" aria-label="Failed"><Icon name="close" size={14} /></span>
               : running ? <span className="spinner" aria-label="Running" /> : null}
         </span>
       </div>

@@ -140,15 +140,19 @@ function fit(row: string[], columns: number): string[] {
   return row.length >= columns ? row.slice(0, columns) : [...row, ...Array<string>(columns - row.length).fill("")];
 }
 
-/** A run of a line with one look: plain, bold, italic, `code`, or a link (http and https only). */
+/**
+ * A run of a line with one look: plain, `code`, or bold, italic and links holding runs of their
+ * own (`**`x`**`, `[`file`](url)`). Links are kept for http and https only; any other target
+ * (a relative path, `javascript:`) leaves just the label.
+ */
 export type InlineSpan =
   | { kind: "text"; text: string }
-  | { kind: "strong"; text: string }
-  | { kind: "emphasis"; text: string }
   | { kind: "code"; text: string }
-  | { kind: "link"; text: string; href: string };
+  | { kind: "strong"; children: InlineSpan[] }
+  | { kind: "emphasis"; children: InlineSpan[] }
+  | { kind: "link"; children: InlineSpan[]; href: string };
 
-const inlinePattern = /`([^`]+)`|\*\*([^*]+)\*\*|__([^_]+)__|\*([^*\s][^*]*)\*|_([^_\s][^_]*)_|\[([^\]]+)\]\(([^)\s]+)\)/g;
+const inlinePattern = /`([^`]+)`|\*\*(.+?)\*\*|__(.+?)__|\*([^*\s](?:[^*]*[^*\s])?)\*|(?<![\w])_([^_\s](?:[^_]*[^_\s])?)_(?![\w])|\[([^\]]+)\]\(([^)\s]+)\)/g;
 
 export function inlineSpans(text: string): InlineSpan[] {
   const spans: InlineSpan[] = [];
@@ -157,10 +161,13 @@ export function inlineSpans(text: string): InlineSpan[] {
     if (match.index > last) spans.push({ kind: "text", text: text.slice(last, match.index) });
     const [whole, code, strong, strongAlt, emphasis, emphasisAlt, label, href] = match;
     if (code !== undefined) spans.push({ kind: "code", text: code });
-    else if (strong !== undefined || strongAlt !== undefined) spans.push({ kind: "strong", text: (strong ?? strongAlt)! });
-    else if (emphasis !== undefined || emphasisAlt !== undefined) spans.push({ kind: "emphasis", text: (emphasis ?? emphasisAlt)! });
-    else if (label !== undefined && href !== undefined && /^https?:\/\//i.test(href)) spans.push({ kind: "link", text: label, href });
-    else spans.push({ kind: "text", text: whole });
+    else if (strong !== undefined || strongAlt !== undefined) spans.push({ kind: "strong", children: inlineSpans((strong ?? strongAlt)!) });
+    else if (emphasis !== undefined || emphasisAlt !== undefined) spans.push({ kind: "emphasis", children: inlineSpans((emphasis ?? emphasisAlt)!) });
+    else if (label !== undefined && href !== undefined) {
+      const children = inlineSpans(label);
+      if (/^https?:\/\//i.test(href)) spans.push({ kind: "link", children, href });
+      else spans.push(...children);
+    } else spans.push({ kind: "text", text: whole });
     last = match.index + whole.length;
   }
   if (last < text.length) spans.push({ kind: "text", text: text.slice(last) });

@@ -34,14 +34,23 @@ test("an unclosed code fence runs to the end, so a reply still arriving keeps it
   ]);
 });
 
-test("inline links are kept only for http and https", () => {
-  assert.deepEqual(inlineSpans("see [docs](https://x.dev) and [bad](javascript:alert(1)) `c`"), [
+test("inline links are kept only for http and https; other targets leave the label", () => {
+  assert.deepEqual(inlineSpans("see [docs](https://x.dev), [bad](javascript:alert) and [`a.ts`](src/a.ts)"), [
     { kind: "text", text: "see " },
-    { kind: "link", text: "docs", href: "https://x.dev" },
+    { kind: "link", children: [{ kind: "text", text: "docs" }], href: "https://x.dev" },
+    { kind: "text", text: ", " },
+    { kind: "text", text: "bad" },
     { kind: "text", text: " and " },
-    { kind: "text", text: "[bad](javascript:alert(1)" },
-    { kind: "text", text: ") " },
-    { kind: "code", text: "c" },
+    { kind: "code", text: "a.ts" },
+  ]);
+});
+
+test("bold and italics hold code and links, as replies write them", () => {
+  assert.deepEqual(inlineSpans("**`agent` Worker** — *very* nice, snake_case_name stays"), [
+    { kind: "strong", children: [{ kind: "code", text: "agent" }, { kind: "text", text: " Worker" }] },
+    { kind: "text", text: " — " },
+    { kind: "emphasis", children: [{ kind: "text", text: "very" }] },
+    { kind: "text", text: " nice, snake_case_name stays" },
   ]);
 });
 

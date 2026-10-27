@@ -114,7 +114,7 @@ button:disabled { cursor: default; }
 
 /* Floating bars: content fades under them instead of stopping at a line. */
 .layer-bar { position: relative; z-index: 2; display: flex; align-items: center; gap: 12px; padding: 12px 20px; }
-.layer-bar.top { background: linear-gradient(var(--bg) 65%, color-mix(in srgb, var(--bg) 0%, transparent)); }
+.layer-bar.top { background: linear-gradient(var(--bg) 80%, color-mix(in srgb, var(--bg) 0%, transparent)); }
 .layer-bar.bottom { padding-bottom: max(16px, env(safe-area-inset-bottom)); background: linear-gradient(color-mix(in srgb, var(--bg) 0%, transparent), var(--bg) 35%); }
 
 /* Panels: chats, account, info */
@@ -249,8 +249,8 @@ button:disabled { cursor: default; }
 .tool-card.tool-failed { --tint: var(--red); }
 .tool-heading { display: flex; align-items: center; gap: 8px; font-size: 16px; font-weight: 600; }
 .tool-name { flex: 1; }
-.tool-done { color: var(--green); }
-.tool-failed { display: grid; width: 20px; height: 20px; place-items: center; border-radius: 50%; color: #fff; background: var(--red); }
+.tool-badge.done { display: block; color: var(--green); }
+.tool-badge.failed { display: grid; width: 20px; height: 20px; place-items: center; border-radius: 50%; color: #fff; background: var(--red); }
 .tool-subtitle { font: 13px ui-monospace, SFMono-Regular, Menlo, monospace; overflow-wrap: anywhere; }
 .tool-command { font: 16px ui-monospace, SFMono-Regular, Menlo, monospace; white-space: pre-wrap; overflow-wrap: anywhere; }
 .tool-command.clamped { display: -webkit-box; overflow: hidden; -webkit-line-clamp: 4; -webkit-box-orient: vertical; }
@@ -385,7 +385,7 @@ button:disabled { cursor: default; }
   .tool-command { font-size: 12.5px; }
   .tool-output { font-size: 11.5px; }
   .tool-expand, .tool-truncated { font-size: 11.5px; }
-  .tool-failed { width: 16px; height: 16px; }
+  .tool-badge.failed { width: 16px; height: 16px; }
   .question-card { gap: 8px; padding: 12px 14px; border-radius: 14px; }
   .question-eyebrow { font-size: 11.5px; }
   .question-title { font-size: 14.5px; }
