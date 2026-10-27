@@ -285,9 +285,6 @@ button:disabled { cursor: default; }
 .chat-failure { display: flex; align-items: center; gap: 8px; padding: 0 8px; color: var(--orange); font-size: 13px; }
 .chat-failure span { flex: 1; }
 .jump-button { display: inline-flex; width: auto !important; align-items: center; gap: 6px; padding: 8px 14px; border: 0.5px solid var(--separator); border-radius: 999px; background: var(--raised); box-shadow: 0 4px 16px var(--shadow); font-size: 15px; font-weight: 600; }
-.workspace-choices p { margin: 0 0 8px; padding: 0 8px; color: var(--secondary); font-size: 13px; }
-.workspace-choices > div { display: flex; flex-wrap: wrap; gap: 8px; }
-.workspace-choices .pill-button { min-height: 38px; font-size: 15px; }
 .composer {
   display: flex; align-items: flex-end; gap: 8px; padding: 8px;
   border: 0.5px solid var(--separator); border-radius: 27px;
@@ -403,8 +400,6 @@ button:disabled { cursor: default; }
   .conversation-footer > * { max-width: 820px; }
   .chat-failure { font-size: 12px; }
   .jump-button { padding: 5px 11px; font-size: 13px; }
-  .workspace-choices p { font-size: 12px; }
-  .workspace-choices .pill-button { min-height: 30px; font-size: 13px; }
   .composer { gap: 6px; padding: 5px; border-radius: 20px; }
   .composer textarea { min-height: 30px; padding: 5px 8px; font-size: 14.5px; line-height: 20px; }
   .send-button { width: 30px; height: 30px; }

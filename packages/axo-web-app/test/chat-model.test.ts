@@ -175,7 +175,7 @@ class FakeMac implements MacConnection {
       throw error;
     }
     if (method === "axo.remote.workspace.list") return { workspaces: this.workspaces } as never;
-    if (method === "axo.remote.workspace.session.create") return { session: session(7, "2026-10-16T14:00:00Z") } as never;
+    if (method === "axo.remote.session.create" || method === "axo.remote.workspace.session.create") return { session: session(7, "2026-10-16T14:00:00Z") } as never;
     return { accepted: true } as never;
   }
 
@@ -199,12 +199,15 @@ async function workbenchWith(sessions = [session(1, "2026-10-16T10:00:00Z")]) {
   return { workbench, mac };
 }
 
-test("a new chat's first message starts it in the Mac's only Workspace and moves the words there", async () => {
+test("a new chat's first message starts it in the Mac's Home Workspace and moves the words there", async () => {
   const { workbench, mac } = await workbenchWith();
+  mac.workspaces = [{ workspaceId, name: "Axo" }, { workspaceId: "8f8f8f8f-0000-4000-8000-000000000000", name: "Home" }];
   assert.equal(workbench.link, "connected");
   workbench.setDraft("Fix the bug");
   assert.deepEqual(await workbench.send(), { kind: "sent" });
   assert.deepEqual(workbench.selection, { kind: "chat", sessionId: 7 });
+  const created = mac.calls.filter(call => call.method.endsWith("session.create"));
+  assert.deepEqual(created.map(call => call.method), ["axo.remote.session.create"], "however many Workspaces, a new chat goes Home");
   const prompt = mac.calls.find(call => call.method === "axo.remote.session.prompt");
   assert.equal(prompt?.params.text, "Fix the bug");
   assert.equal(prompt?.params.sessionId, 7);
@@ -213,13 +216,13 @@ test("a new chat's first message starts it in the Mac's only Workspace and moves
   workbench.dispose();
 });
 
-test("with several Workspaces the person picks one before anything is sent", async () => {
+test("a new chat started from a Workspace in the menu starts in that Workspace", async () => {
   const { workbench, mac } = await workbenchWith();
-  mac.workspaces = [{ workspaceId, name: "Axo" }, { workspaceId: "8f8f8f8f-0000-4000-8000-000000000000", name: "Home" }];
+  workbench.newChat(hostId, workspaceId);
   workbench.setDraft("Hello");
-  const outcome = await workbench.send();
-  assert.equal(outcome.kind, "chooseWorkspace");
-  assert.equal(mac.calls.some(call => call.method === "axo.remote.workspace.session.create"), false);
+  assert.deepEqual(await workbench.send(), { kind: "sent" });
+  const created = mac.calls.filter(call => call.method.endsWith("session.create"));
+  assert.deepEqual(created.map(call => [call.method, call.params.workspaceId]), [["axo.remote.workspace.session.create", workspaceId]]);
   workbench.dispose();
 });
 

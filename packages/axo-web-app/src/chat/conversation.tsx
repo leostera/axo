@@ -2,7 +2,7 @@ import { useEffect, useLayoutEffect, useRef, useState, type KeyboardEvent } from
 import { AxoMascot } from "../axo-mascot.tsx";
 import { Icon } from "./icons.tsx";
 import { MessageView, PendingView, QuestionCard } from "./message-views.tsx";
-import { chatTitle, type ChatWorkbench, type Workspace } from "./workbench.ts";
+import { chatTitle, type ChatWorkbench } from "./workbench.ts";
 
 /** How close to the bottom still counts as following the conversation. */
 const FOLLOW_SLACK_PX = 80;
@@ -26,7 +26,6 @@ export function Conversation({ workbench, wide, onShowChats, onToggleInfo }: {
     : session?.workspaceName;
   const subtitle = [workspaceName, host?.label].filter(Boolean).join(" · ") || "No Mac";
   const online = host?.status === "online" && workbench.link === "connected";
-  const [choices, setChoices] = useState<Workspace[] | null>(null);
 
   const scroller = useRef<HTMLDivElement>(null);
   const following = useRef(true);
@@ -40,7 +39,6 @@ export function Conversation({ workbench, wide, onShowChats, onToggleInfo }: {
   useEffect(() => {
     following.current = true;
     setShowJump(false);
-    setChoices(null);
   }, [session?.sessionId, selection?.kind]);
 
   useLayoutEffect(() => {
@@ -76,13 +74,7 @@ export function Conversation({ workbench, wide, onShowChats, onToggleInfo }: {
 
   const send = async () => {
     following.current = true;
-    const outcome = await workbench.send();
-    if (outcome.kind === "chooseWorkspace") setChoices(outcome.workspaces);
-  };
-  const sendIn = async (workspaceId: string) => {
-    setChoices(null);
-    following.current = true;
-    await workbench.sendIn(workspaceId);
+    await workbench.send();
   };
 
   const history = chat?.history ?? { kind: "none" as const };
@@ -159,17 +151,6 @@ export function Conversation({ workbench, wide, onShowChats, onToggleInfo }: {
         ) : null}
         {showJump ? (
           <button className="jump-button" onClick={jumpToEnd}><Icon name="arrowDown" size={16} /> Jump to new message</button>
-        ) : null}
-        {choices ? (
-          <div className="workspace-choices" role="group" aria-label="Choose a workspace">
-            <p>Start this chat in…</p>
-            <div>
-              {choices.map(workspace => (
-                <button key={workspace.workspaceId} className="pill-button" onClick={() => void sendIn(workspace.workspaceId)}>{workspace.name}</button>
-              ))}
-              <button className="pill-button quiet" onClick={() => setChoices(null)}>Cancel</button>
-            </div>
-          </div>
         ) : null}
         <Composer
           workbench={workbench}

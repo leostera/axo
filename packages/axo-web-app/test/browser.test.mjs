@@ -200,9 +200,9 @@ test("browser chats with Axo on a Mac: history, live replies, new chats, info, a
         reply({ subscriptionId });
       } else if (call.method === "axo.remote.workspace.list") {
         reply({ workspaces: [{ workspaceId, name: "Browser Workspace" }] });
-      } else if (call.method === "axo.remote.workspace.session.create") {
+      } else if (call.method === "axo.remote.session.create") {
         sessionCreateCount++;
-        assert.equal(call.params.workspaceId, workspaceId);
+        assert.equal(call.params.workspaceId, undefined, "a new chat goes to the Mac's Home Workspace");
         const created = {
           hostId,
           sessionId: 2,
@@ -337,7 +337,7 @@ test("browser chats with Axo on a Mac: history, live replies, new chats, info, a
     assert.equal(await page.getByTestId("pending-prompt").count(), 0, "the agent's record of the message retires the pending one");
     assert.equal(await box.inputValue(), "");
 
-    // A new chat: its first message starts it in the Mac's only Workspace.
+    // A new chat: its first message starts it in the Mac's Home Workspace.
     await chats.getByRole("button", { name: "Chat", exact: true }).click();
     await expect(page.getByRole("heading", { name: "New chat", exact: true }));
     await box.fill("Start fresh");

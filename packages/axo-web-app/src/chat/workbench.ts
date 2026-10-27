@@ -18,6 +18,7 @@ export interface Workspace {
 export interface MacConnection {
   readonly active: boolean;
   call(method: "axo.remote.workspace.list", params: { target: HostRef }): Promise<{ workspaces: Workspace[] }>;
+  call(method: "axo.remote.session.create", params: { target: HostRef }): Promise<{ session: Session }>;
   call(method: "axo.remote.workspace.session.create", params: { target: HostRef; workspaceId: string }): Promise<{ session: Session }>;
   call(method: "axo.remote.session.prompt", params: { target: HostRef; sessionId: number; text: string }): Promise<unknown>;
   call(method: "axo.remote.session.key", params: { target: HostRef; sessionId: number; key: "escape" | "enter" }): Promise<unknown>;
@@ -71,13 +72,14 @@ export class Chat {
   stored: StoredHistory | null = null;
 }
 
-/** The open chat, or a new one waiting for its first message on the open Mac. */
+/**
+ * The open chat, or a new one waiting for its first message on the open Mac: in the Workspace
+ * chosen for it, or with none chosen in the Mac's Home Workspace.
+ */
 export type Selection = { kind: "chat"; sessionId: number } | { kind: "new"; workspaceId: string | null };
 
 export type SendOutcome =
   | { kind: "sent" }
-  /** A new chat and several Workspaces: the person picks one, then `sendIn`. */
-  | { kind: "chooseWorkspace"; workspaces: Workspace[] }
   /** Nothing was sent; the words are back in the box and `failure` says why. */
   | { kind: "failed" }
   /** The connection dropped while sending: it may have arrived. Not sent again on its own. */
@@ -569,31 +571,25 @@ export class ChatWorkbench {
 
   /**
    * Sends what is typed. On a new chat the first message brings the chat into being: in the
-   * chosen Workspace, or the Mac's only one; with several, the person picks.
+   * Workspace chosen for it, or in the Mac's Home Workspace.
    */
   async send(): Promise<SendOutcome> {
     const selection = this.selection;
     if (this.isSending || !selection || !this.draft(selection).trim()) return { kind: "failed" };
     if (selection.kind === "chat") return this.sending(() => this.prompt(selection));
-    if (selection.workspaceId) return this.sendIn(selection.workspaceId);
-    const workspaces = await this.refreshWorkspaces();
-    if (!this.ready()) return { kind: "failed" };
-    if (!workspaces) return this.report("Could not read this Mac's workspaces. Try again.");
-    if (workspaces.length === 0) return this.report("This Mac has no workspaces yet. Create one in Axo on the Mac.");
-    if (workspaces.length === 1) return this.sendIn(workspaces[0]!.workspaceId);
-    return { kind: "chooseWorkspace", workspaces };
+    return this.startChat(selection);
   }
 
-  /** Starts the new chat in `workspaceId` with what is typed. */
-  async sendIn(workspaceId: string): Promise<SendOutcome> {
-    const draft = this.selection;
-    if (this.isSending || draft?.kind !== "new" || !this.draft(draft).trim()) return { kind: "failed" };
+  private startChat(draft: Extract<Selection, { kind: "new" }>): Promise<SendOutcome> {
     return this.sending(async () => {
       const host = this.openHost;
       if (!host || !this.ready()) return { kind: "failed" };
+      const target = this.reference(host);
       let session: Session;
       try {
-        ({ session } = await this.connection!.call("axo.remote.workspace.session.create", { target: this.reference(host), workspaceId }));
+        ({ session } = draft.workspaceId
+          ? await this.connection!.call("axo.remote.workspace.session.create", { target, workspaceId: draft.workspaceId })
+          : await this.connection!.call("axo.remote.session.create", { target }));
       } catch (error) {
         return this.report(`Could not start the chat: ${describe(error)}`);
       }
