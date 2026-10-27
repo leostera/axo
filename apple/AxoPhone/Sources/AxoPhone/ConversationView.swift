@@ -19,6 +19,8 @@ struct ConversationView: View {
   /// The message at the top of the screen; holding it keeps the view still when older pages arrive above.
   @State private var scrollAnchor: String?
   @State private var scrollToLatestRequest = 0
+  /// Pull-to-refresh, played by Axo: the empty chat's Axo, or a small one at the top.
+  @State private var pull = ConversationPull()
   /// The screen's bottom inset: the home indicator's (at most a few dozen points), or the
   /// keyboard's while it is up (always far taller).
   @State private var bottomInset: CGFloat = 0
@@ -113,7 +115,34 @@ struct ConversationView: View {
         if count > previous { move(follow.sent(), proxy: proxy) }
       }
       .onChange(of: scrollToLatestRequest) { move(follow.jumpRequested(), proxy: proxy) }
-      .refreshable { if let session { await workbench?.loadHistory(of: session.sessionId) } }
+      // Pull-to-refresh, by hand: `.refreshable` would show the system's spinner, and here Axo
+      // plays it. How far the content is past its top, and when the finger lifts.
+      .scrollBounceBehavior(.always, axes: .vertical)
+      .onScrollGeometryChange(for: CGFloat.self) { geometry in
+        max(0, -(geometry.contentOffset.y + geometry.contentInsets.top))
+      } action: { _, overscroll in
+        pull.state.pulled(to: overscroll, touching: pull.touching)
+      }
+      .onScrollPhaseChange { old, new in
+        pull.touching = new == .interacting
+        if old == .interacting, new != .interacting, pull.state.released() { refresh() }
+      }
+      .overlay(alignment: .top) {
+        if !transcript.messages.isEmpty { SpinningPullMascotView(pull: pull) }
+      }
+    }
+  }
+
+  /// Reloads the conversation; a new chat has nothing to reload, but Axo still goes round.
+  private func refresh() {
+    Task {
+      let started = ContinuousClock.now
+      if let session { await workbench?.loadHistory(of: session.sessionId) }
+      // Long enough for Axo to be slung off and come back.
+      let least: Duration = .milliseconds(800)
+      let took = ContinuousClock.now - started
+      if took < least { try? await Task.sleep(for: least - took) }
+      pull.state.finished()
     }
   }
 
@@ -178,18 +207,19 @@ struct ConversationView: View {
     switch historyState {
     case nil, .loading:
       if session == nil {
-        ChatEmptyState(message: canSend ? "Send a message to start a chat." : "Your Mac is offline.")
+        ChatEmptyState(message: canSend ? "Send a message to start a chat." : "Your Mac is offline.", pull: pull)
       } else {
         LoadingMascotView(label: "Loading the conversation")
           .frame(height: 120).frame(maxWidth: .infinity).padding(.vertical, 70)
       }
     case .failed(let message):
-      ChatEmptyState(message: message)
+      ChatEmptyState(message: message, pull: pull)
     case .loaded(let events, _), .loadingOlder(let events):
       ChatEmptyState(
         message: events == 0
           ? "Nothing here yet."
-          : "\(events) stored events, none of them messages yet.")
+          : "\(events) stored events, none of them messages yet.",
+        pull: pull)
     }
   }
 

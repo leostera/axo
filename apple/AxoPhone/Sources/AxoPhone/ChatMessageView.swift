@@ -212,11 +212,15 @@ private struct MarkdownTable: View {
 
 struct ChatEmptyState: View {
   let message: String
+  /// The conversation's pull-to-refresh, which this Axo plays (`SlingMascotView`).
+  var pull: ConversationPull?
 
   var body: some View {
     VStack(spacing: 18) {
-      OwnMascotView()
-        .frame(height: 72)
+      Group {
+        if let pull { SlingMascotView(pull: pull) } else { OwnMascotView() }
+      }
+      .frame(height: 72)
       Text("What are we working on?").font(.title2.weight(.semibold))
       Text(message).font(.body).foregroundStyle(.secondary)
     }

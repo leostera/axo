@@ -93,6 +93,9 @@ struct AxoMascotView: View {
 
   @ObservedObject var mascot: Mascot
   var aspectRatio: Double = Self.aspectRatio
+  /// Rubbing takes a finger's drag; off where that drag should scroll (the conversation's Axo,
+  /// which pull-to-refresh plays).
+  var rubbable = true
   @Environment(\.accessibilityReduceMotion) private var reduceMotion
 
   var body: some View {
@@ -109,7 +112,8 @@ struct AxoMascotView: View {
     .simultaneousGesture(
       DragGesture(minimumDistance: 6)
         .onChanged { mascot.rub(y: $0.location.y / max(mascot.frame.height, 1)) }
-        .onEnded { _ in mascot.endRub() }
+        .onEnded { _ in mascot.endRub() },
+      including: rubbable ? .all : .subviews
     )
     .onGeometryChange(for: CGRect.self) { $0.frame(in: .global) } action: { mascot.frame = $0 }
     .onChange(of: reduceMotion, initial: true) { _, reduce in
