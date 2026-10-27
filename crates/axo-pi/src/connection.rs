@@ -13,7 +13,7 @@ use crate::protocol::{Identity, Record};
 
 /// JavaScript's largest exact integer: sequences beyond it cannot round-trip through clients.
 pub const MAX_SEQUENCE: u64 = 9_007_199_254_740_991;
-/// Pi events are forwarded to clients; larger payloads are refused.
+/// Pi events are forwarded to clients; a larger one is skipped (the connection stays).
 pub const MAX_EVENT_DATA_BYTES: usize = 60_000;
 const MAX_NAME_BYTES: usize = 128;
 const MAX_PI_SESSION_ID_BYTES: usize = 128;
@@ -67,6 +67,12 @@ pub enum Step {
         name: String,
         data: Value,
     },
+    /// An event too large to forward. Its sequence still counts, so the stream stays in order;
+    /// Pi's transcript on the Mac keeps it.
+    Oversized {
+        name: String,
+        bytes: usize,
+    },
 }
 
 /// Why a connection was rejected.
@@ -85,7 +91,6 @@ pub enum Rejection {
     /// Not above the previous sequence, or beyond `MAX_SEQUENCE`.
     InvalidSequence,
     InvalidEventName,
-    EventDataTooLarge,
 }
 
 /// Which identity fields matched; any `false` rejects the binding.
@@ -172,8 +177,12 @@ impl<'a> Connection<'a> {
                     data,
                 },
             ) => {
-                let cursor = accept_event(stream.as_ref(), &stream_id, sequence, &name, &data)?;
+                let cursor = accept_event(stream.as_ref(), &stream_id, sequence, &name)?;
                 *stream = Some(cursor);
+                let bytes = serde_json::to_vec(&data).map_or(usize::MAX, |encoded| encoded.len());
+                if bytes > MAX_EVENT_DATA_BYTES {
+                    return Ok(Step::Oversized { name, bytes });
+                }
                 if name == RESUME_REQUESTED {
                     return Ok(Step::ResumeRequested {
                         target_session_file: resume_target(&data),
@@ -219,7 +228,6 @@ fn accept_event(
     stream_id: &str,
     sequence: u64,
     name: &str,
-    data: &Value,
 ) -> Result<StreamCursor, Rejection> {
     if !is_uuid(stream_id) {
         return Err(Rejection::InvalidStreamId);
@@ -233,9 +241,6 @@ fn accept_event(
     }
     if name.is_empty() || name.len() > MAX_NAME_BYTES || name.chars().any(char::is_control) {
         return Err(Rejection::InvalidEventName);
-    }
-    if serde_json::to_vec(data).map_or(true, |encoded| encoded.len() > MAX_EVENT_DATA_BYTES) {
-        return Err(Rejection::EventDataTooLarge);
     }
     Ok(StreamCursor {
         stream_id: stream_id.to_owned(),
@@ -451,6 +456,7 @@ mod tests {
                 Err(Rejection::InvalidEventName)
             );
         }
+        // Too large to forward: skipped, but the connection and the stream's order stay.
         assert_eq!(
             connection.receive(event(
                 STREAM,
@@ -458,8 +464,19 @@ mod tests {
                 "n",
                 json!("x".repeat(MAX_EVENT_DATA_BYTES))
             )),
-            Err(Rejection::EventDataTooLarge)
+            Ok(Step::Oversized {
+                name: "n".to_owned(),
+                bytes: MAX_EVENT_DATA_BYTES + 2
+            })
         );
+        assert_eq!(
+            connection.receive(event(STREAM, 1, "n", Value::Null)),
+            Err(Rejection::InvalidSequence)
+        );
+        assert!(matches!(
+            connection.receive(event(STREAM, 2, "n", Value::Null)),
+            Ok(Step::Event { sequence: 2, .. })
+        ));
     }
 
     #[test]

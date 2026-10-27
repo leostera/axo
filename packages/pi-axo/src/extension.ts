@@ -3,6 +3,7 @@ import { isAbsolute, resolve } from "node:path";
 import { AxoPiBridgeServer } from "./bridge-server.js";
 import { parsePiSessionIdentity, type PiControlCommand, type PiSessionIdentity } from "./protocol.js";
 import { installAxoSessionNaming } from "./title.js";
+import { messageEvent, ProgressThrottle, toolEvent, turnEndEvent } from "./events.js";
 
 export interface AxoPiExtensionConfig {
   socketPath: string;
@@ -96,6 +97,7 @@ export async function installAxoPiExtension(pi: ExtensionAPI, config: AxoPiExten
   });
 
   const publish = (name: string, data: unknown) => bridge.publish(name, data);
+  const progress = new ProgressThrottle((name, data) => void publish(name, data));
 
   pi.registerCommand("axo-import", {
     description: "Import a Pi JSONL transcript as a new Axo Session in this Workspace",
@@ -143,6 +145,7 @@ export async function installAxoPiExtension(pi: ExtensionAPI, config: AxoPiExten
   pi.on("session_shutdown", async event => {
     traceBridge(`shutdown (${event.reason})`);
     context = undefined;
+    progress.finishAll();
     await bridge.close();
   });
 
@@ -177,26 +180,30 @@ export async function installAxoPiExtension(pi: ExtensionAPI, config: AxoPiExten
     return { cancel: true };
   });
 
-  pi.on("message_start", event => publish("message.start", event));
-  pi.on("message_update", event => publish("message.update", event));
-  pi.on("message_end", event => publish("message.end", event));
+  // Every payload is shaped to fit the wire (see events.ts); progress is throttled.
+  pi.on("message_start", event => publish("message.start", messageEvent(event)));
+  pi.on("message_update", event => progress.offer("message.update", "message", messageEvent(event)));
+  pi.on("message_end", event => {
+    progress.finish("message.update", "message");
+    return publish("message.end", messageEvent(event));
+  });
   pi.on("turn_start", event => publish("turn.start", event));
-  pi.on("turn_end", event => publish("turn.end", {
-    turnIndex: event.turnIndex,
-    message: event.message,
-    toolResults: event.toolResults,
-    messageEntryId: event.messageEntryId,
-    toolResultEntryIds: event.toolResultEntryIds,
-    outcome: event.outcome,
-  }));
-  pi.on("agent_start", event => publish("agent.start", event));
-  pi.on("agent_end", event => publish("agent.end", event));
+  pi.on("turn_end", event => publish("turn.end", turnEndEvent(event)));
+  pi.on("agent_start", () => publish("agent.start", {}));
+  // The run's messages already went out one by one; repeating them could exceed the wire's limit.
+  pi.on("agent_end", () => {
+    progress.finishAll();
+    return publish("agent.end", {});
+  });
   pi.on("agent_settled", event => publish("agent.settled", event));
-  pi.on("tool_execution_start", event => publish("tool.start", event));
-  pi.on("tool_execution_update", event => publish("tool.update", event));
-  pi.on("tool_execution_end", event => publish("tool.end", event));
+  pi.on("tool_execution_start", event => publish("tool.start", toolEvent(event)));
+  pi.on("tool_execution_update", event => progress.offer("tool.update", event.toolCallId, toolEvent(event)));
+  pi.on("tool_execution_end", event => {
+    progress.finish("tool.update", event.toolCallId);
+    return publish("tool.end", toolEvent(event));
+  });
   pi.on("session_info_changed", event => publish("session.info", event));
-  pi.on("ui_prompt_start", event => publish("ui.prompt.start", { kind: event.kind }));
+  pi.on("ui_prompt_start", event => publish("ui.prompt.start", { kind: event.kind, ...(event.title ? { title: event.title.slice(0, 500) } : {}) }));
   pi.on("ui_prompt_end", event => publish("ui.prompt.end", { kind: event.kind }));
 
   installAxoSessionNaming(

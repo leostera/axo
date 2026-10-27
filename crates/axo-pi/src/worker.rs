@@ -207,6 +207,10 @@ fn apply(host: &impl BridgeHost, step: Step, context: &str) -> bool {
             name,
             data,
         } => host.event(&pi_session_id, &stream_id, sequence, &name, data),
+        Step::Oversized { name, bytes } => {
+            log::warn!("event=pi.event_skipped {context} name={name} bytes={bytes} reason=too_large");
+            true
+        }
     }
 }
 
