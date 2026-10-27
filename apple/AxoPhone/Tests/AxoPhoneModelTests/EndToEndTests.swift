@@ -103,7 +103,7 @@ final class EndToEndTests: XCTestCase {
       if typed.contains("please run the tests") { break }
       try await Task.sleep(for: .milliseconds(100))
     }
-    XCTAssertEqual(typed, "\u{1B}[200~please run the tests\u{1B}[201~\n")
+    XCTAssertEqual(typed, "\u{1B}[200~please run the tests\u{1B}[201~\r")
 
     // The connection drops (a phone in a pocket loses its socket all the time). The next message
     // opens a new socket, which the relay treats as a stranger until it negotiates: this used to
@@ -111,7 +111,7 @@ final class EndToEndTests: XCTestCase {
     workbench.current?.stop()
     try await Task.sleep(for: .milliseconds(500))  // stop() closes the socket in the background
     let again = await workbench.current?.sendPrompt("and again")
-    XCTAssertEqual(again, true, workbench.current?.failure ?? "")
+    XCTAssertEqual(again, .accepted, workbench.current?.failure ?? "")
     typed = ""
     let second = Date().addingTimeInterval(20)
     while Date() < second {
@@ -119,7 +119,7 @@ final class EndToEndTests: XCTestCase {
       if typed.contains("and again") { break }
       try await Task.sleep(for: .milliseconds(100))
     }
-    XCTAssertTrue(typed.hasSuffix("\u{1B}[200~and again\u{1B}[201~\n"), typed)
+    XCTAssertTrue(typed.hasSuffix("\u{1B}[200~and again\u{1B}[201~\r"), typed)
 
     workbench.close()
   }

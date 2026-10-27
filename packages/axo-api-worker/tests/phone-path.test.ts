@@ -97,7 +97,34 @@ test("a phone signed in with a token starts a chat on the Mac and prompts its Pi
       const text = await readFile(typedIntoPi, "utf8").catch(() => "");
       return text.includes("please run the tests") ? text : undefined;
     }, daemon);
-    assert.equal(typed, "\u001b[200~please run the tests\u001b[201~\n");
+    assert.equal(typed, "\u001b[200~please run the tests\u001b[201~\r");
+
+    // Pi's reply reaches the phone as it grows. An update too large to forward is skipped
+    // without cutting Pi off: the ones after it, and the whole message, still arrive.
+    const piEvents = () => events.flatMap((event) =>
+      event.type === "host.data" && event.event.type === "pi.event" ? [event.event] : []);
+    // (Waiting takes the awaited event off the list.)
+    await waitForHostEvent(events, (event) => event.type === "host.data" && event.event.type === "pi.event" && event.event.name === "agent.end",
+      "Pi's reply on the phone", daemon);
+    assert.deepEqual(piEvents().map((event) => event.name), [
+      "agent.start", "message.update", "message.update", "message.end",
+    ]);
+    assert.deepEqual(piEvents().filter((event) => event.name === "message.update").map((event) =>
+      (event.data as { message: { content: Array<{ text: string }> } }).message.content[0]!.text), ["Running", "Running the tests"]);
+
+    // History keeps what was said, not how it grew.
+    const stored = await waitFor("the reply in history", 10_000, async () => {
+      const response = await fetch(new URL(`api/v1/account/hosts/${host.hostId}/sessions/${session.sessionId}/events`, api.url), { headers: phone.headers });
+      const page = await response.json() as { events: Array<{ name: string }> };
+      return page.events.some((event) => event.name === "agent.end") ? page.events : undefined;
+    }, daemon);
+    assert.deepEqual(stored.map((event) => event.name).reverse(), ["agent.start", "message.end", "agent.end"]);
+
+    // Stopping a reply, or answering Pi's question, is a key pressed in Pi's pane.
+    const pressed = await client.call("axo.remote.session.key", { target, sessionId: session.sessionId, key: "escape" });
+    assert.equal(pressed.accepted, true);
+    await waitFor("Escape reaching Pi", 10_000, async () =>
+      (await readFile(typedIntoPi, "utf8").catch(() => "")).endsWith("\u001b") ? true : undefined, daemon);
   } finally {
     client?.close?.();
     if (daemon) await terminate(daemon);
