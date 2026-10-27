@@ -14,15 +14,14 @@
   "scripts": {
     "build": "tsc -p tsconfig.json --noEmit",
     "typecheck": "tsc -p tsconfig.json --noEmit",
+    "test:model": "node --test test/chat-model.test.ts",
     "test:browser": "node --test test/browser.test.mjs",
-    "test": "npm run typecheck && npm run test:browser"
+    "test": "npm run typecheck && npm run test:model && npm run test:browser"
   },
   "dependencies": {
     "@axo/app": "file:../axo-app",
     "@axo/protocol": "file:../axo-api",
     "@rive-app/canvas": "2.47.1",
-    "@xterm/addon-fit": "^0.11.0",
-    "@xterm/xterm": "^6.0.0",
     "react": "^19.3.1",
     "react-dom": "^19.3.1"
   },

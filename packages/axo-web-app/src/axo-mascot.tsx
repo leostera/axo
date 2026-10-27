@@ -18,6 +18,7 @@ const Contract = {
   covering: "covering",
   lookX: "lookX",
   lookY: "lookY",
+  loading: "loading",
 } as const;
 
 /** The `Face` artboard is 1064 x 604 (`MascotBounds.face` in packages/axo-mascot). */
@@ -105,9 +106,11 @@ export class MascotRubs {
 }
 
 /** The blinking Axo axolotl. It watches the pointer, giggles (or gets annoyed) when poked, and is happy when rubbed up and down. */
-export const AxoMascot = forwardRef<AxoMascotHandle, { className?: string }>(function AxoMascot({ className }, ref) {
+/** While `loading`, the gills flutter and Axo bobs. */
+export const AxoMascot = forwardRef<AxoMascotHandle, { className?: string; loading?: boolean }>(function AxoMascot({ className, loading = false }, ref) {
   const canvasRef = useRef<HTMLCanvasElement>(null);
   const riveRef = useRef<Rive | null>(null);
+  const loadingRef = useRef(loading);
   const inputs = (name: string): StateMachineInput | undefined =>
     riveRef.current?.stateMachineInputs(Contract.stateMachine)?.find((input) => input.name === name);
 
@@ -129,11 +132,17 @@ export const AxoMascot = forwardRef<AxoMascotHandle, { className?: string }>(fun
       stateMachines: Contract.stateMachine,
       autoplay: !reduceMotion,
       layout: new Layout({ fit: Fit.Contain, alignment: Alignment.Center }),
-      onLoad: () => rive.resizeDrawingSurfaceToCanvas(),
+      onLoad: () => {
+        rive.resizeDrawingSurfaceToCanvas();
+        const input = inputs(Contract.loading);
+        if (input) input.value = loadingRef.current;
+      },
     });
     riveRef.current = rive;
+    // Also when the canvas itself changes size: one first laid out hidden (a closed panel) has none.
     const resize = () => rive.resizeDrawingSurfaceToCanvas();
-    window.addEventListener("resize", resize);
+    const observer = new ResizeObserver(resize);
+    observer.observe(canvas);
 
     // Look from the mascot's centre towards the pointer; half the window away is all the way.
     let lookAway: number | undefined;
@@ -166,7 +175,7 @@ export const AxoMascot = forwardRef<AxoMascotHandle, { className?: string }>(fun
 
     return () => {
       window.clearTimeout(lookAway);
-      window.removeEventListener("resize", resize);
+      observer.disconnect();
       window.removeEventListener("pointermove", look);
       window.removeEventListener("pointerdown", look);
       window.removeEventListener("pointerup", touchEnded);
@@ -176,6 +185,12 @@ export const AxoMascot = forwardRef<AxoMascotHandle, { className?: string }>(fun
       rive.cleanup();
     };
   }, []);
+
+  useEffect(() => {
+    loadingRef.current = loading;
+    const input = inputs(Contract.loading);
+    if (input) input.value = loading;
+  }, [loading]);
 
   const pokes = useRef(new MascotPokes());
   const rubs = useRef(new MascotRubs());

@@ -18,22 +18,6 @@ const now = "2026-10-16T12:00:00.000Z";
 const siteRoot = resolve(import.meta.dirname, "../../../sites/axo.leostera.dev");
 const chromePath = process.env.CHROME_PATH ?? "/Applications/Google Chrome.app/Contents/MacOS/Google Chrome";
 
-function session(sessionId, shellId) {
-  return {
-    hostId,
-    sessionId,
-    workspaceId,
-    workspaceName: "Browser Workspace",
-    name: sessionId === 1 ? "Browser Agent" : `Session ${sessionId}`,
-    emoji: "🦀",
-    status: "ready",
-    hasAgent: true,
-    shells: [{ shellId }],
-    layout: { kind: "pane", shellId },
-    updatedAt: now,
-  };
-}
-
 function host(sessions) {
   return {
     hostId,
@@ -74,24 +58,29 @@ function sendEvent(socket, event) {
   }));
 }
 
-async function assertPanesFillSlots(page) {
-  const sizes = await page.locator(".layout-child").evaluateAll((slots) => slots.map((slot) => {
-    const pane = slot.querySelector(":scope > .terminal-pane");
-    return pane ? {
-      paneWidth: pane.getBoundingClientRect().width,
-      slotWidth: slot.getBoundingClientRect().width,
-    } : null;
-  }));
-  assert.equal(sizes.length, 2);
-  for (const size of sizes) {
-    assert.ok(size, "split slot should contain its terminal pane");
-    assert.ok(Math.abs(size.paneWidth - size.slotWidth) < 1, `pane width ${size.paneWidth} should fill slot width ${size.slotWidth}`);
-  }
+const liveStream = "9b1e6f0c-6c1d-4a51-9d0e-1f1b2c3d4e5f";
+const historyStream = "41c77dd7-f2dc-4e91-b481-1507b62ec118";
+
+function piEvent(socket, sessionId, sequence, name, data) {
+  sendEvent(socket, {
+    type: "host.data",
+    hostId,
+    hostGeneration,
+    event: { type: "pi.event", sessionId, piSessionId: "pi-session-1", streamId: liveStream, sequence, name, data },
+  });
 }
 
-test("browser discovers hosts, renders live PTY output, sends input, and uses Cmd+T", {
+function stored(id, name, data) {
+  return { id, hostGeneration, piSessionId: "pi-session-1", streamId: historyStream, sequence: id, name, data, receivedAt: 1_797_600_000_000 + id };
+}
+
+async function failWithContext(page, error, context) {
+  throw new Error(`${error.message}\npage: ${context.pageErrors.join(" | ")}\ntext: ${await page.locator("body").innerText()}\nconsole: ${context.browserMessages.slice(-20).join(" | ")}\nmethods: ${context.methods.join(",")}`);
+}
+
+test("browser chats with Axo on a Mac: history, live replies, new chats, info, account and pairing", {
   skip: !existsSync(chromePath) && "Set CHROME_PATH to a Chrome/Chromium executable to run this browser acceptance test",
-  timeout: 45_000,
+  timeout: 60_000,
 }, async () => {
   const sessions = [{
     hostId,
@@ -102,15 +91,8 @@ test("browser discovers hosts, renders live PTY output, sends input, and uses Cm
     emoji: "🦀",
     status: "ready",
     hasAgent: true,
-    shells: [{ shellId: 17 }, { shellId: 18 }],
-    layout: {
-      kind: "split",
-      id: "dce950b5-54b0-43eb-a56c-f807c927a881",
-      direction: "right",
-      ratio: 0.5,
-      first: { kind: "pane", shellId: 17 },
-      second: { kind: "pane", shellId: 18 },
-    },
+    shells: [{ shellId: 17 }],
+    layout: { kind: "pane", shellId: 17 },
     updatedAt: now,
   }, {
     hostId,
@@ -125,26 +107,13 @@ test("browser discovers hosts, renders live PTY output, sends input, and uses Cm
   }];
   const sockets = new Set();
   const methods = [];
-  const inputShellIds = [];
-  const apiRequests = [];
-  let inputText = "";
+  const prompts = [];
+  const keys = [];
   let sessionCreateCount = 0;
-  let standaloneCreateCount = 0;
   let authenticated = false;
-  let appOrigin = "";
   let pairingRequestCount = 0;
   const apiHttp = createHttpServer((request, response) => {
-    apiRequests.push(`${request.method} ${request.url} origin=${request.headers.origin ?? "none"}`);
     const origin = request.headers.origin;
-    if (request.method === "OPTIONS") {
-      response.statusCode = 204;
-      response.setHeader("Access-Control-Allow-Origin", origin ?? "null");
-      response.setHeader("Access-Control-Allow-Credentials", "true");
-      response.setHeader("Access-Control-Allow-Methods", "GET, POST, OPTIONS");
-      response.setHeader("Access-Control-Allow-Headers", "Content-Type");
-      response.end();
-      return;
-    }
     const url = new URL(request.url, "http://127.0.0.1");
     if (request.method === "GET" && url.pathname === "/api/auth/me") {
       if (!authenticated) {
@@ -161,18 +130,13 @@ test("browser discovers hosts, renders live PTY output, sends input, and uses Cm
     }
     if (request.method === "POST" && url.pathname === "/api/v1/account/host-pairings") {
       pairingRequestCount++;
-      json(response, {
-        code: "B26A-NRKT",
-        expiresAt: "2026-10-16T12:10:00.000Z",
-      }, origin);
+      json(response, { code: "B26A-NRKT", expiresAt: new Date(Date.now() + 600_000).toISOString() }, origin);
       return;
     }
     if (request.method === "POST" && url.pathname === "/api/auth/logout") {
       // The Worker forgetting this browser's sign-in.
       authenticated = false;
       response.statusCode = 204;
-      response.setHeader("Access-Control-Allow-Origin", origin ?? "null");
-      response.setHeader("Access-Control-Allow-Credentials", "true");
       response.end();
       return;
     }
@@ -180,41 +144,21 @@ test("browser discovers hosts, renders live PTY output, sends input, and uses Cm
       json(response, { hosts: [host(sessions)] }, origin);
       return;
     }
-    if (request.method === "GET" && url.pathname === `/api/v1/account/hosts/${hostId}/sessions`) {
-      if (url.searchParams.get("hostGeneration") !== hostGeneration) {
-        response.statusCode = 409;
-        response.end("stale host generation");
-        return;
-      }
-      json(response, { host: host(sessions), sessions }, origin);
-      return;
-    }
     if (request.method === "GET" && url.pathname === `/api/v1/account/hosts/${hostId}/sessions/1/events`) {
+      // Newest first, as the relay sends them.
       json(response, {
         events: [
-          {
-            id: 1,
-            hostGeneration,
-            piSessionId: "pi-session-1",
-            streamId: "41c77dd7-f2dc-4e91-b481-1507b62ec118",
-            sequence: 1,
-            name: "message.end",
-            data: { message: { role: "user", content: [{ type: "text", text: "Review the latest changes." }] } },
-            receivedAt: 1_797_600_000_000,
-          },
-          {
-            id: 2,
-            hostGeneration,
-            piSessionId: "pi-session-1",
-            streamId: "41c77dd7-f2dc-4e91-b481-1507b62ec118",
-            sequence: 2,
-            name: "message.end",
-            data: { message: { role: "assistant", content: [{ type: "text", text: "I’ll take a look." }] } },
-            receivedAt: 1_797_600_000_001,
-          },
+          stored(4, "message.end", { message: { role: "assistant", content: [{ type: "text", text: "I’ll take a **look**." }] } }),
+          stored(3, "message.end", { message: { role: "toolResult", toolCallId: "call-1", content: [{ type: "text", text: "On branch main" }] } }),
+          stored(2, "message.end", { message: { role: "assistant", content: [{ type: "toolCall", id: "call-1", name: "bash", arguments: { command: "git status" } }] } }),
+          stored(1, "message.end", { message: { role: "user", content: [{ type: "text", text: "Review the latest changes." }] } }),
         ],
         next: null,
       }, origin);
+      return;
+    }
+    if (request.method === "GET" && /\/sessions\/\d+\/events$/.test(url.pathname)) {
+      json(response, { events: [], next: null }, origin);
       return;
     }
     response.statusCode = 404;
@@ -242,34 +186,8 @@ test("browser discovers hosts, renders live PTY output, sends input, and uses Cm
         reply({ protocolVersion: 1, methods: [], deliveryCredits: { frames: 32, bytes: 131072 } });
       } else if (call.method === "axo.host.subscribe") {
         reply({ subscriptionId });
-        setTimeout(() => sendEvent(socket, {
-          type: "host.presence",
-          hostId,
-          hostGeneration,
-          status: "online",
-          observedAt: now,
-        }), 20);
-      } else if (call.method === "axo.remote.terminal.resize") {
-        reply({ accepted: true, rows: call.params.rows, columns: call.params.columns });
-      } else if (call.method === "axo.remote.terminal.input") {
-        const text = Buffer.from(call.params.data, "base64").toString("utf8");
-        inputText += text;
-        inputShellIds.push(call.params.shellId);
-        reply({ accepted: true, sequence: call.params.sequence });
-        if (inputText.includes("\r")) {
-          setTimeout(() => sendEvent(socket, {
-            type: "host.data",
-            hostId,
-            hostGeneration,
-            event: {
-              type: "terminal.output",
-              sessionId: 1,
-              shellId: call.params.shellId,
-              sequence: 0,
-              data: Buffer.from("\r\nREMOTE_INPUT_ACCEPTED\r\n").toString("base64"),
-            },
-          }), 20);
-        }
+      } else if (call.method === "axo.remote.workspace.list") {
+        reply({ workspaces: [{ workspaceId, name: "Browser Workspace" }] });
       } else if (call.method === "axo.remote.workspace.session.create") {
         sessionCreateCount++;
         assert.equal(call.params.workspaceId, workspaceId);
@@ -279,36 +197,34 @@ test("browser discovers hosts, renders live PTY output, sends input, and uses Cm
           workspaceId,
           workspaceName: "Browser Workspace",
           name: "Session 2",
-          emoji: "🌱",
           status: "starting",
           hasAgent: true,
           shells: [],
           layout: null,
-          updatedAt: now,
+          updatedAt: new Date().toISOString(),
         };
         sessions.push(created);
         reply({ session: created });
-      } else if (call.method === "axo.remote.session.create") {
-        standaloneCreateCount++;
-        const created = {
-          hostId,
-          sessionId: 4,
-          workspaceId: null,
-          workspaceName: null,
-          name: "Session 4",
-          hasAgent: false,
-          shells: [],
-          layout: null,
-          updatedAt: now,
-        };
-        sessions.push(created);
-        reply({ session: created });
+      } else if (call.method === "axo.remote.session.prompt") {
+        prompts.push({ sessionId: call.params.sessionId, text: call.params.text });
+        reply({ accepted: true });
+        // Pi records the message, works, and answers: word by word, then whole.
+        const base = prompts.length * 10;
+        const sessionId = call.params.sessionId;
+        setTimeout(() => {
+          piEvent(socket, sessionId, base + 1, "message.end", { message: { role: "user", content: [{ type: "text", text: call.params.text }] } });
+          piEvent(socket, sessionId, base + 2, "agent.start", {});
+          piEvent(socket, sessionId, base + 3, "message.update", { message: { role: "assistant", content: [{ type: "text", text: "Wor" }] } });
+        }, 30);
+        setTimeout(() => {
+          piEvent(socket, sessionId, base + 4, "message.end", { message: { role: "assistant", content: [{ type: "text", text: `Done with: ${call.params.text}` }] } });
+          piEvent(socket, sessionId, base + 5, "agent.end", {});
+        }, 400);
+      } else if (call.method === "axo.remote.session.key") {
+        keys.push(call.params.key);
+        reply({ accepted: true });
       } else {
-        socket.send(JSON.stringify({
-          jsonrpc: "2.0",
-          id: call.id,
-          error: { code: -32601, message: "unknown method" },
-        }));
+        socket.send(JSON.stringify({ jsonrpc: "2.0", id: call.id, error: { code: -32601, message: "unknown method" } }));
       }
     });
   });
@@ -321,13 +237,11 @@ test("browser discovers hosts, renders live PTY output, sends input, and uses Cm
     const apiPort = apiHttp.address().port;
     const appPort = await freePort();
     const appUrl = `http://127.0.0.1:${appPort}`;
-    appOrigin = appUrl;
-    const apiBaseUrl = appUrl;
     vite = await createViteServer({
       configFile: false,
       root: siteRoot,
       define: {
-        "import.meta.env.VITE_AXO_API_BASE_URL": JSON.stringify(apiBaseUrl),
+        "import.meta.env.VITE_AXO_API_BASE_URL": JSON.stringify(appUrl),
         __AXO_WEB_BUILD__: JSON.stringify("test"),
       },
       plugins: [react()],
@@ -336,123 +250,138 @@ test("browser discovers hosts, renders live PTY output, sends input, and uses Cm
         host: "127.0.0.1",
         port: appPort,
         strictPort: true,
-        // The wordmark's font is shared with the apps, in the repository's assets/.
+        // The wordmark's font and the mascot are shared with the apps, in the repository's assets/.
         fs: { allow: [resolve(siteRoot, "../..")] },
         proxy: {
-          "/v1": { target: `http://127.0.0.1:${apiPort}`, changeOrigin: true, ws: true },
           "/api": { target: `http://127.0.0.1:${apiPort}`, changeOrigin: true, ws: true },
-          // Cloudflare Access serves this on the app's own origin in production.
-          "/cdn-cgi/access": { target: `http://127.0.0.1:${apiPort}`, changeOrigin: true },
         },
       },
       logLevel: "error",
     });
     await vite.listen();
-    await fetch(`${appUrl}/`);
-    const proxyCheck = await fetch(`${appUrl}/api/v1/account/hosts`);
-    assert.equal(proxyCheck.status, 200, `Vite API proxy failed: ${await proxyCheck.text()}`);
     browser = await chromium.launch({
       executablePath: chromePath,
       headless: true,
       args: ["--no-sandbox", "--disable-dev-shm-usage"],
     });
     const page = await browser.newPage({ viewport: { width: 1440, height: 960 } });
-    const pageErrors = [];
-    const browserMessages = [];
-    page.on("pageerror", (error) => pageErrors.push(error.message));
-    page.on("request", (request) => browserMessages.push(`request: ${request.url()}`));
-    page.on("console", (message) => browserMessages.push(`${message.type()}: ${message.text()}`));
-    page.on("requestfailed", (request) => browserMessages.push(`request failed: ${request.url()} ${request.failure()?.errorText ?? ""}`));
-    page.on("response", (response) => { if (response.status() >= 400) browserMessages.push(`HTTP ${response.status()}: ${response.url()}`); });
+    const context = { pageErrors: [], browserMessages: [], methods };
+    page.on("pageerror", (error) => context.pageErrors.push(error.message));
+    page.on("console", (message) => context.browserMessages.push(`${message.type()}: ${message.text()}`));
+    // AXO_WEB_SHOTS=<dir> keeps a picture of each step, to compare with the phone's.
+    const shot = async (name) => {
+      if (process.env.AXO_WEB_SHOTS) await page.screenshot({ path: resolve(process.env.AXO_WEB_SHOTS, `web-${name}.png`) });
+    };
+    const expect = (locator) => locator.waitFor({ timeout: 10_000 }).catch((error) => failWithContext(page, error, context));
+
     await page.goto(`${appUrl}/`, { waitUntil: "networkidle" });
     // The landing page is Axo and a way in.
-    await page.getByRole("img", { name: "Axo" }).waitFor({ timeout: 10_000 });
-    await page.waitForFunction(() => document.querySelector("canvas.mascot")?.width > 0, null, { timeout: 10_000 });
+    await expect(page.getByRole("img", { name: "Axo" }));
     assert.ok((await page.getByRole("link", { name: "Continue with Cloudflare" }).getAttribute("href"))
       .endsWith("/api/auth/cloudflare/start"), "the landing page starts the Worker's Cloudflare sign-in");
-    await page.goto(`${appUrl}/__tests__/terminal`, { waitUntil: "networkidle" });
-    await page.getByRole("button", { name: /Browser fixture Mac/ }).waitFor({ timeout: 10_000 }).catch(async (error) => {
-      throw new Error(`${error.message}\npage: ${pageErrors.join(" | ")}\ntext: ${await page.locator("body").innerText()}\nconsole: ${browserMessages.join(" | ")}\napi: ${apiRequests.join(" | ")}`);
-    });
-    await page.getByRole("button", { name: /Browser Agent/ }).waitFor({ timeout: 10_000 });
-    await page.getByText("Workspaces", { exact: true }).waitFor({ timeout: 10_000 });
-    await page.getByText("Standalone Sessions", { exact: true }).waitFor({ timeout: 10_000 });
-    await page.getByRole("heading", { name: /Browser Agent/ }).waitFor({ timeout: 10_000 });
-    await page.getByText("I’ll take a look.", { exact: true }).waitFor({ timeout: 10_000 });
-    await page.waitForFunction(() => document.querySelector(".connection-chip.live"), null, { timeout: 10_000 });
-    await page.locator(".terminal-output .xterm-rows").first().waitFor({ timeout: 10_000 });
-    assert.equal(await page.locator(".terminal-pane").count(), 2);
-    await assertPanesFillSlots(page);
 
-    const liveText = "LIVE_BROWSER_OUTPUT";
-    for (const socket of sockets) {
-      sendEvent(socket, {
-        type: "host.data",
-        hostId,
-        hostGeneration,
-        event: {
-          type: "terminal.output",
-          sessionId: 1,
-          shellId: 17,
-          sequence: 1,
-          data: Buffer.from(`${liveText}\r\n`).toString("base64"),
-        },
-      });
-    }
-    await page.waitForFunction((needle) =>
-      document.querySelector(".terminal-pane:first-child .terminal-output .xterm-rows")
-        ?.textContent?.includes(needle),
-    liveText, { timeout: 10_000 });
-    await assertPanesFillSlots(page);
+    await page.goto(`${appUrl}/__tests__/chat`, { waitUntil: "networkidle" });
+    const chats = page.getByRole("navigation", { name: "Chats" });
+    // Chats only: a bare terminal Session is not a chat.
+    await expect(chats.getByRole("button", { name: "Browser Agent" }));
+    await expect(chats.getByText("Browser Workspace", { exact: true }));
+    assert.equal(await page.getByText("Standalone Shell").count(), 0);
+    // Nothing is opened on its own: a new chat waits for its first message.
+    await expect(page.getByRole("heading", { name: "New chat", exact: true }));
+    await expect(page.getByText("What are we working on?"));
+    await shot("new-chat");
 
-    const focusedPane = page.locator(".terminal-pane").nth(1);
-    await focusedPane.locator(".terminal-output").click();
-    assert.ok((await focusedPane.getAttribute("class")).includes("focused"));
-    await page.keyboard.type("browser-remote-input");
-    await page.keyboard.press("Enter");
-    await page.waitForFunction(() => [...document.querySelectorAll(".terminal-pane")][1]
-      ?.querySelector(".terminal-output .xterm-rows")?.textContent?.includes("REMOTE_INPUT_ACCEPTED"), null, { timeout: 10_000 });
-    assert.match(inputText, /browser-remote-input\r/);
-    assert.ok(inputShellIds.length > 0 && inputShellIds.every((shellId) => shellId === 18));
+    // A chat's history: words, Markdown and the tools Pi used.
+    await chats.getByRole("button", { name: "Browser Agent" }).click();
+    await expect(page.getByRole("heading", { name: "Browser Agent", exact: true }));
+    await expect(page.getByText("Review the latest changes.", { exact: true }));
+    await expect(page.locator("strong", { hasText: "look" }));
+    const tool = page.getByTestId("tool-card");
+    await expect(tool.getByText("$ git status"));
+    await expect(tool.getByLabel("Completed"));
+    await expect(tool.getByText("On branch main"));
+    await shot("history");
 
-    await page.keyboard.press("Meta+t");
-    await page.getByRole("button", { name: /Session 2/ }).waitFor({ timeout: 10_000 }).catch(async (error) => {
-      throw new Error(`${error.message}\npage: ${pageErrors.join(" | ")}\ntext: ${await page.locator("body").innerText()}\nconsole: ${browserMessages.join(" | ")}\nmethods: ${methods.join(",")}`);
-    });
+    // Sending: the message shows at once, then Pi's reply as it is written and once it is whole.
+    const box = page.getByRole("textbox", { name: "Message" });
+    await page.waitForFunction(() => !document.querySelector("textarea[aria-label='Message']")?.disabled, null, { timeout: 10_000 });
+    await box.fill("Ship it");
+    await box.press("Enter");
+    await expect(page.getByText("Done with: Ship it", { exact: true }));
+    assert.deepEqual(prompts[0], { sessionId: 1, text: "Ship it" });
+    assert.equal(await page.getByTestId("pending-prompt").count(), 0, "the agent's record of the message retires the pending one");
+    assert.equal(await box.inputValue(), "");
+
+    // A new chat: its first message starts it in the Mac's only Workspace.
+    await chats.getByRole("button", { name: "Chat", exact: true }).click();
+    await expect(page.getByRole("heading", { name: "New chat", exact: true }));
+    await box.fill("Start fresh");
+    await box.press("Enter");
+    await expect(page.getByRole("heading", { name: "Session 2", exact: true }));
+    await expect(page.getByText("Done with: Start fresh", { exact: true }));
     assert.equal(sessionCreateCount, 1);
-    await page.getByRole("button", { name: /Standalone Shell/ }).click();
-    await page.keyboard.press("Meta+t");
-    await page.getByRole("button", { name: /Session 4/ }).waitFor({ timeout: 10_000 });
-    assert.equal(standaloneCreateCount, 1);
-    assert.ok(methods.includes("axo.remote.terminal.input"));
-    assert.ok(methods.includes("axo.remote.workspace.session.create"));
-    assert.ok(methods.includes("axo.remote.session.create"));
+    assert.deepEqual(prompts[1], { sessionId: 2, text: "Start fresh" });
+    await expect(chats.getByRole("button", { name: "Session 2" }));
 
+    // The chat's info.
+    await page.getByRole("button", { name: "Chat info" }).click();
+    const info = page.getByRole("complementary", { name: "Chat info" });
+    await expect(info.getByText("Workspace", { exact: true }));
+    await expect(info.getByText("Browser fixture Mac, online"));
+    await shot("info");
+    await info.getByRole("button", { name: "Close chat info" }).click();
+
+    // The account, its Macs, and pairing another.
+    await chats.getByRole("button", { name: "Account and Macs" }).click();
+    const account = page.getByRole("navigation", { name: "Account" });
+    await expect(account.getByText("Browser fixture Mac"));
+    await expect(account.getByText("2 chats"));
+    await shot("account");
+    await account.getByRole("button", { name: "Pair a Mac" }).click();
+    const pairing = page.getByRole("dialog", { name: "Pair a Mac" });
+    await expect(pairing.getByText("B26A-NRKT"));
+    assert.equal(pairingRequestCount, 1);
+    await shot("pairing");
+    assert.equal(await pairing.getByRole("link", { name: "Open Axo on this Mac" }).getAttribute("href"), "axo://pair/B26A-NRKT");
+    await pairing.getByRole("button", { name: "Close Pair a Mac" }).click();
+    await account.getByRole("button", { name: "Back to chats" }).click();
+    await expect(chats.getByRole("button", { name: "Browser Agent" }));
+
+    // On a phone-sized screen the layers stack: the conversation first, the chats a swipe or a tap away.
+    await page.setViewportSize({ width: 390, height: 844 });
+    await expect(page.getByRole("button", { name: "Show chats" }));
+    const chatsLeft = () => page.locator(".layer-conversation").evaluate((layer) => layer.getBoundingClientRect().left);
+    assert.equal(await chatsLeft(), 0);
+    await page.getByRole("button", { name: "Show chats" }).click();
+    await page.waitForFunction(() => document.querySelector(".layer-conversation").getBoundingClientRect().left > 200, null, { timeout: 5_000 });
+    await page.waitForTimeout(500);
+    await shot("phone-chats");
+    await chats.getByRole("button", { name: "Browser Agent" }).click();
+    await page.waitForFunction(() => document.querySelector(".layer-conversation").getBoundingClientRect().left === 0, null, { timeout: 5_000 });
+    await expect(page.getByRole("heading", { name: "Browser Agent", exact: true }));
+    await shot("phone-chat");
+    await page.emulateMedia({ colorScheme: "dark" });
+    await shot("phone-chat-dark");
+    await page.setViewportSize({ width: 1440, height: 960 });
+    await shot("desktop-dark");
+    await page.emulateMedia({ colorScheme: "light" });
+
+    // Signed out, the app is the sign-in; signed in, it is the chats; signing out ends it.
     await page.goto(`${appUrl}/app`, { waitUntil: "networkidle" });
-    await page.getByRole("link", { name: "Continue with Cloudflare" }).waitFor({ timeout: 10_000 });
-    assert.equal(await page.getByRole("img", { name: "Axo" }).count(), 1);
-    assert.ok((await page.getByRole("link", { name: "Continue with Cloudflare" }).getAttribute("href"))
-      .endsWith("/api/auth/cloudflare/start"), "signing in starts the Worker's Cloudflare sign-in");
-
+    await expect(page.getByRole("link", { name: "Continue with Cloudflare" }));
     authenticated = true;
     await page.reload({ waitUntil: "networkidle" });
-    await page.getByRole("heading", { name: /Browser Agent/ }).waitFor({ timeout: 10_000 });
-    await page.waitForFunction(() => document.querySelector(".connection-chip.live"), null, { timeout: 10_000 });
-    assert.equal(await page.locator(".terminal-pane").count(), 2);
-    await page.getByRole("button", { name: "Link a Mac" }).click();
-    await page.getByRole("dialog", { name: "Link a Mac" }).getByText("B26A-NRKT").waitFor({ timeout: 10_000 });
-    assert.equal(pairingRequestCount, 1);
-    assert.equal(await page.getByRole("link", { name: "Open Axo on this Mac" }).getAttribute("href"), "axo://pair/B26A-NRKT");
-    assert.deepEqual(pageErrors, []);
-    await page.getByRole("button", { name: "Close pairing dialog" }).click();
-    await page.getByRole("button", { name: "Sign out" }).click();
-    await page.getByRole("link", { name: "Continue with Cloudflare" }).waitFor({ timeout: 10_000 });
+    await expect(page.getByRole("navigation", { name: "Chats" }).getByRole("button", { name: "Browser Agent" }));
+    await page.getByRole("navigation", { name: "Chats" }).getByRole("button", { name: "Settings" }).click();
+    await page.getByRole("dialog", { name: "Settings" }).getByRole("button", { name: "Sign out" }).click();
+    await expect(page.getByRole("link", { name: "Continue with Cloudflare" }));
+    assert.deepEqual(context.pageErrors, []);
+    assert.ok(!methods.some((method) => method.startsWith("axo.remote.terminal")), "the browser follows chats, not terminals");
   } finally {
     await browser?.close();
     await vite?.close();
     for (const socket of sockets) socket.close(1000, "test complete");
     websocketServer.close();
     await new Promise((resolveClose) => apiHttp.close(() => resolveClose()));
-
   }
 });

@@ -4,20 +4,21 @@ import { CloudflareSignInApp } from "./cloudflare-sign-in-app";
 import { LandingPage } from "./landing-page";
 import "./styles.css";
 
-const RemoteTerminalApp = React.lazy(() =>
-  import("./remote-terminal-app").then(({ RemoteTerminalApp }) => ({ default: RemoteTerminalApp })),
+const ChatApp = React.lazy(() =>
+  import("./chat/chat-app.tsx").then(({ ChatApp }) => ({ default: ChatApp })),
 );
 
 const path = window.location.pathname;
 const isAppPath = path === "/app" || path === "/app/";
-const isRemoteTerminalTestPath = import.meta.env.DEV && path === "/__tests__/terminal";
+// The signed-in app without signing in, for the browser tests against a fake API.
+const isChatTestPath = import.meta.env.DEV && path === "/__tests__/chat";
 
 createRoot(document.getElementById("root")!).render(
   <React.StrictMode>
     {isAppPath
       ? <CloudflareSignInApp />
-      : isRemoteTerminalTestPath
-        ? <React.Suspense fallback={null}><RemoteTerminalApp /></React.Suspense>
+      : isChatTestPath
+        ? <React.Suspense fallback={null}><ChatApp profile={{ name: "Fixture", email: "fixture@example.test" }} pairingUrl="/api/v1/account/host-pairings" /></React.Suspense>
         : <LandingPage />}
   </React.StrictMode>,
 );
