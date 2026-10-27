@@ -25,8 +25,9 @@ struct SignInView: View {
     return "axo \(version) (\(build))"
   }
 
-  /// Long enough for the hands to come down before the app takes over.
-  private static let uncoverPause: Duration = .milliseconds(650)
+  /// Long enough for the hands to come down, then for Axo's ^_^, before the app takes over.
+  private static let uncoverPause: Duration = .milliseconds(350)
+  private static let happyBeat: Duration = .milliseconds(650)
 
   var body: some View {
     VStack(spacing: 20) {
@@ -90,6 +91,8 @@ struct SignInView: View {
       let session = try await flow.complete(attempt, callback: callback)
       mascot.cover(false)
       try? await Task.sleep(for: Self.uncoverPause)
+      mascot.react(.happy)
+      try? await Task.sleep(for: Self.happyBeat)
       account.signIn(with: session.token)
     } catch ASWebAuthenticationSessionError.canceledLogin {
       // The person closed the sheet; nothing to report.
