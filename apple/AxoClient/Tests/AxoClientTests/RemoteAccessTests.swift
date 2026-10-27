@@ -129,6 +129,22 @@ final class AccountClientTests: XCTestCase {
     }
   }
 
+  func testACancelledRequestIsACancellationAndANetworkFailureSaysAxoIsUnreachable() async {
+    do {
+      _ = try await makeClient(StubLoader(failure: URLError(.cancelled))).hosts()
+      XCTFail("expected a cancellation")
+    } catch {
+      XCTAssertTrue(error is CancellationError, "a cancelled refresh is not a failure: \(error)")
+    }
+    do {
+      _ = try await makeClient(StubLoader(failure: URLError(.notConnectedToInternet))).hosts()
+      XCTFail("expected a failure")
+    } catch {
+      guard case .unreachable = error as? RelayError else { return XCTFail("\(error)") }
+      XCTAssertTrue(error.localizedDescription.hasPrefix("Couldn't reach Axo:"), error.localizedDescription)
+    }
+  }
+
   func testOtherStatusesAndGarbageAreTyped() async {
     do {
       _ = try await makeClient(StubLoader(status: 503, body: "")).hosts()
@@ -189,16 +205,25 @@ private final class StubLoader: HTTPDataLoading, @unchecked Sendable {
   private var seen: [URLRequest] = []
   let status: Int
   let body: String
+  let failure: Error?
 
   init(status: Int, body: String) {
     self.status = status
     self.body = body
+    self.failure = nil
+  }
+
+  init(failure: Error) {
+    self.status = 0
+    self.body = ""
+    self.failure = failure
   }
 
   var requests: [URLRequest] { lock.withLock { seen } }
 
   func load(_ request: URLRequest) async throws -> (Data, HTTPURLResponse) {
     lock.withLock { seen.append(request) }
+    if let failure { throw failure }
     let response = HTTPURLResponse(
       url: request.url!, statusCode: status, httpVersion: nil, headerFields: nil)!
     return (Data(body.utf8), response)

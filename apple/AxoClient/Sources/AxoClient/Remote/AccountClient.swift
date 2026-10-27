@@ -156,8 +156,11 @@ public struct AccountClient: HostPairingIssuing, Sendable {
       throw error
     } catch is CancellationError {
       throw CancellationError()
+    } catch let error as URLError where error.code == .cancelled {
+      // URLSession's word for the calling task being cancelled: nothing went wrong.
+      throw CancellationError()
     } catch {
-      throw AxoClientError.connectionFailed(error.localizedDescription)
+      throw RelayError.unreachable(error.localizedDescription)
     }
     switch response.statusCode {
     case 200: break
