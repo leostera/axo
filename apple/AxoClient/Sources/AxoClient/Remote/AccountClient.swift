@@ -38,11 +38,31 @@ public struct SignedInAccount: Decodable, Equatable, Sendable {
   }
 }
 
+/// A code that links one more Mac to the account, until it expires. The Mac redeems it: typed
+/// into Axo's Remote Access settings, or opened as `link`.
+public struct HostPairing: Equatable, Sendable {
+  public let code: HostPairingCode
+  public let expiresAt: Date
+
+  public init(code: HostPairingCode, expiresAt: Date) {
+    self.code = code
+    self.expiresAt = expiresAt
+  }
+
+  /// The link the Mac app opens to fill the code in (`axo://pair/<code>`).
+  public var link: URL { URL(string: "axo://pair/\(code.value)")! }
+}
+
+/// Who can ask the relay for a pairing code: `AccountClient`, or a stand-in.
+public protocol HostPairingIssuing: Sendable {
+  func createHostPairing() async throws -> HostPairing
+}
+
 /// An account's view of its hosts, over HTTPS.
 ///
 /// The relay owns this data and decides who may see it; the client only asks, and checks that
 /// what came back is what it asked about.
-public struct AccountClient: Sendable {
+public struct AccountClient: HostPairingIssuing, Sendable {
   private let endpoint: RelayEndpoint
   private let tokens: any SessionTokenProvider
   private let loader: any HTTPDataLoading
@@ -73,6 +93,25 @@ public struct AccountClient: Sendable {
     case 401: break
     case let status: throw RelayError.httpStatus(status)
     }
+  }
+
+  /// A new code to link a Mac to this account. Asking again makes another; each expires.
+  public func createHostPairing() async throws -> HostPairing {
+    struct Answer: Decodable {
+      let code: String
+      let expiresAt: String
+    }
+    var request = URLRequest(url: endpoint.hostPairingsURL)
+    request.httpMethod = "POST"
+    request.setValue("application/json", forHTTPHeaderField: "Accept")
+    request = try await RelayCredentials.authorize(request, with: tokens)
+    let answer: Answer = try await send(request)
+    guard let code = HostPairingCode(parsing: answer.code),
+      let expiresAt = try? Date(answer.expiresAt, strategy: .iso8601)
+    else {
+      throw AxoClientError.invalidResponse("the relay's pairing code is not one")
+    }
+    return HostPairing(code: code, expiresAt: expiresAt)
   }
 
   public func hosts() async throws -> [RemoteHost] {
@@ -106,6 +145,10 @@ public struct AccountClient: Sendable {
     request.httpMethod = "GET"
     request.setValue("application/json", forHTTPHeaderField: "Accept")
     request = try await RelayCredentials.authorize(request, with: tokens)
+    return try await send(request)
+  }
+
+  private func send<Value: Decodable>(_ request: URLRequest) async throws -> Value {
     let (data, response): (Data, HTTPURLResponse)
     do {
       (data, response) = try await loader.load(request)

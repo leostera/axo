@@ -89,6 +89,34 @@ final class AccountClientTests: XCTestCase {
     XCTAssertFalse(request.httpShouldHandleCookies)
   }
 
+  func testAPairingCodeIsAskedForWithAPostAndParsed() async throws {
+    let loader = StubLoader(status: 200, body: #"{"code":"7kq2-m4xd","expiresAt":"2026-10-27T10:10:00.000Z"}"#)
+    let pairing = try await makeClient(loader).createHostPairing()
+    XCTAssertEqual(pairing.code.value, "7KQ2-M4XD")
+    XCTAssertEqual(pairing.expiresAt, try Date("2026-10-27T10:10:00Z", strategy: .iso8601))
+    XCTAssertEqual(pairing.link.absoluteString, "axo://pair/7KQ2-M4XD")
+    XCTAssertEqual(HostPairingCode.fromPairingURL(pairing.link), pairing.code, "the link the Mac opens")
+    let request = try XCTUnwrap(loader.requests.first)
+    XCTAssertEqual(request.httpMethod, "POST")
+    XCTAssertEqual(request.url?.path, "/api/v1/account/host-pairings")
+    XCTAssertEqual(request.value(forHTTPHeaderField: "Authorization"), "Bearer \(SessionToken.fixture().value)")
+  }
+
+  func testAPairingCodeThatIsNotOneIsRefusedAndALimitIsTyped() async {
+    do {
+      _ = try await makeClient(StubLoader(status: 200, body: #"{"code":"nope","expiresAt":"2026-10-27T10:10:00Z"}"#)).createHostPairing()
+      XCTFail("a malformed code must not pass")
+    } catch {
+      guard case .invalidResponse = error as? AxoClientError else { return XCTFail("\(error)") }
+    }
+    do {
+      _ = try await makeClient(StubLoader(status: 429, body: "")).createHostPairing()
+      XCTFail()
+    } catch {
+      XCTAssertEqual(error as? RelayError, .httpStatus(429))
+    }
+  }
+
   func testAnAccessRefusalMeansSignInAgain() async {
     for status in [401, 403] {
       let client = makeClient(StubLoader(status: status, body: "{}"))

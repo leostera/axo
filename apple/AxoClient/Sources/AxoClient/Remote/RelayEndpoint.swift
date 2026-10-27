@@ -48,6 +48,8 @@ public struct RelayEndpoint: Equatable, Sendable {
     return components.url!
   }
   public var hostsURL: URL { url("/api/v1/account/hosts") }
+  /// Where a signed-in account asks for a code that links a new Mac to it.
+  public var hostPairingsURL: URL { url("/api/v1/account/host-pairings") }
 
   public func sessionsURL(of host: RemoteHostRef) -> URL {
     var components = URLComponents(
