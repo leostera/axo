@@ -114,6 +114,23 @@ interface Style {
 /** The face's centre: the body turns and bounces around it. */
 const PIVOT: Point = { x: 626, y: 690 };
 
+/**
+ * Where each cropped artboard sits in the logo's coordinates. Each holds every pose its
+ * animations reach (test/bounds.test.ts measures them), so nothing is clipped mid-animation;
+ * the arms are the exception and reach down out of the picture on purpose.
+ */
+export const MascotBounds = {
+  // Measured reach, in logo units: at rest y 368…914; a poke and loading's bob lift the gills to
+  // about y 340; the annoyed shake spans x 114…1142. Each edge keeps ~14 units of room.
+  /** Every behaviour: looking, pokes, the annoyed shake, loading's bob and the hands. The apps
+   * size their views to this: 1064 x 604. */
+  face: { x: 96, y: 326, width: 1064, height: 604 },
+  /** The menu bar's template; same crop as `face`. */
+  mark: { x: 96, y: 326, width: 1064, height: 604 },
+  /** A square wide enough for the axolotl to spin in, raised for the hop (it reaches y ≈ 100). */
+  loader: { x: PIVOT.x - 540, y: 76, width: 1080, height: 1080 },
+} as const satisfies Record<string, Bounds>;
+
 /** Where each hand sits over an eye; lowered, it is below the crop and transparent. */
 const HAND_DROP = 380;
 const leftHand = { at: { x: 468, y: 708 }, rotation: 0.35 };
@@ -519,31 +536,39 @@ function iconArtboard(): RivObject[] {
   return board.objects();
 }
 
-/** The axolotl alone, cropped tight: for in-app and web use (`face`) or a template image (`mark`). */
-/** Tight around the axolotl. */
-const FACE_BOUNDS = { x: 96, y: 366, width: 1064, height: 564 };
-/** A square around the face's centre, wide enough for the axolotl to spin in. */
-const LOADER_BOUNDS = { x: PIVOT.x - 540, y: PIVOT.y - 540, width: 1080, height: 1080 };
+interface Bounds {
+  readonly x: number;
+  readonly y: number;
+  readonly width: number;
+  readonly height: number;
+}
 
 /** The axolotl alone, cropped to `bounds`. */
-function croppedArtboard(
-  name: string,
-  style: Style,
-  bounds: { x: number; y: number; width: number; height: number } = FACE_BOUNDS,
-  spins = false,
-): RivObject[] {
+function croppedArtboard(name: string, style: Style, bounds: Bounds, spins = false): RivObject[] {
   const board = new ArtboardBuilder(name, { width: bounds.width, height: bounds.height });
   const axolotl = board.node(board.root, { name: "Axolotl", x: -bounds.x, y: -bounds.y });
   addMascotMachine(board, drawAxolotl(board, axolotl, style), { spins });
   return board.objects();
 }
 
-export function buildMascot(): Uint8Array {
+const grow = (bounds: Bounds, by: number): Bounds => ({
+  x: bounds.x - by,
+  y: bounds.y - by,
+  width: bounds.width + 2 * by,
+  height: bounds.height + 2 * by,
+});
+
+/**
+ * Builds the file. `measuringMargin` widens every cropped artboard by that much on each side,
+ * so a test can see whether any animation draws outside the real bounds.
+ */
+export function buildMascot(options: { measuringMargin?: number } = {}): Uint8Array {
+  const margin = options.measuringMargin ?? 0;
   return encodeRiv([
     { type: TypeKey.Backboard, props: {} },
     ...iconArtboard(),
-    ...croppedArtboard(MascotContract.artboards.face, { face: Color.face, ink: Color.ink, hands: true }),
-    ...croppedArtboard(MascotContract.artboards.mark, { ink: Color.black }),
-    ...croppedArtboard(MascotContract.artboards.loader, { face: Color.face, ink: Color.ink }, LOADER_BOUNDS, true),
+    ...croppedArtboard(MascotContract.artboards.face, { face: Color.face, ink: Color.ink, hands: true }, grow(MascotBounds.face, margin)),
+    ...croppedArtboard(MascotContract.artboards.mark, { ink: Color.black }, grow(MascotBounds.mark, margin)),
+    ...croppedArtboard(MascotContract.artboards.loader, { face: Color.face, ink: Color.ink }, grow(MascotBounds.loader, margin), true),
   ]);
 }

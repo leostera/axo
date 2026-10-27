@@ -72,8 +72,8 @@ final class Mascot: ObservableObject {
 
 /// Shows a `Mascot`. Tapping it pokes it; with Reduce Motion on it holds still.
 struct AxoMascotView: View {
-  /// The `Face` artboard is 1064 x 564.
-  static let aspectRatio = 1064.0 / 564.0
+  /// The `Face` artboard is 1064 x 604 (`MascotBounds.face` in packages/axo-mascot).
+  static let aspectRatio = 1064.0 / 604.0
 
   @ObservedObject var mascot: Mascot
   var aspectRatio: Double = Self.aspectRatio

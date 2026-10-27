@@ -12,7 +12,8 @@ const types: Record<string, string> = {
   ".riv": "application/octet-stream",
 };
 
-export function startPreviewServer(port = 0): Promise<{ server: Server; url: string }> {
+/** `riv` replaces the committed file, e.g. with a measuring build. */
+export function startPreviewServer(port = 0, riv?: Uint8Array): Promise<{ server: Server; url: string }> {
   const server = createServer(async (request, response) => {
     const path = new URL(request.url ?? "/", "http://localhost").pathname;
     const file =
@@ -25,7 +26,7 @@ export function startPreviewServer(port = 0): Promise<{ server: Server; url: str
       return;
     }
     try {
-      const body = await readFile(file);
+      const body = file === rivPath && riv !== undefined ? Buffer.from(riv) : await readFile(file);
       response.writeHead(200, { "content-type": types[extname(file)] ?? "application/octet-stream", "cache-control": "no-store" });
       response.end(body);
     } catch {

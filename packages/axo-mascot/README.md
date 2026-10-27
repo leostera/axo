@@ -15,9 +15,13 @@ npm test          # types, committed file up to date, encoding, and a headless C
 | Artboard | Use |
 | --- | --- |
 | `Icon` | The macOS app icon (rounded square at 80% of a 1024 canvas); replaces the Dock icon. |
-| `Face` | The axolotl alone, in colour, for in-app and web use. |
-| `Mark` | Black outlines only, drawn as a template image in the menu bar. |
-| `Loader` | A square with room to spin, for loading. |
+| `Face` | The axolotl alone, in colour, for in-app and web use. 1064 x 604. |
+| `Mark` | Black outlines only, drawn as a template image in the menu bar. 1064 x 604. |
+| `Loader` | A square with room to hop and spin, for loading. 1080 x 1080. |
+
+The crops (`MascotBounds`) hold every pose the animations reach, so nothing is clipped mid-jump
+or mid-shake: `test/bounds.test.ts` renders a widened build, plays every behaviour and fails if
+anything is drawn outside them. The arms are the exception and reach down out of the picture.
 
 Each artboard runs the `Mascot` state machine, in layers (a later layer wins a property both key):
 

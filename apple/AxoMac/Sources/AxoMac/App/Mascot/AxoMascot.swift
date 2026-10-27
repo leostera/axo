@@ -52,8 +52,8 @@ final class AxoMascot {
   /// Installed by the app's entry point before the app starts; nil leaves the static symbol.
   static var installedAnimation: (any MascotAnimation)?
 
-  /// In points; the `Mark` artboard is 1064 x 564.
-  static let menuBarSize = CGSize(width: 30, height: 16)
+  /// In points; the `Mark` artboard is 1064 x 604.
+  static let menuBarSize = CGSize(width: 28, height: 16)
   static let dockIconPixels = CGSize(width: 512, height: 512)
   static let framesPerSecond = 30.0
 

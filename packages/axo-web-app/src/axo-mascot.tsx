@@ -19,8 +19,8 @@ const Contract = {
   lookY: "lookY",
 } as const;
 
-/** The `Face` artboard is 1064 x 564. */
-const ASPECT_RATIO = 1064 / 564;
+/** The `Face` artboard is 1064 x 604 (`MascotBounds.face` in packages/axo-mascot). */
+const ASPECT_RATIO = 1064 / 604;
 /** After the pointer stops moving for this long, Axo goes back to looking around on its own. */
 const LOOK_AWAY_AFTER_MS = 1600;
 

@@ -4,8 +4,8 @@ import SwiftUI
 /// Axo in the About pane: it watches the pointer while it is over the pane and giggles (or gets
 /// annoyed) when clicked. Without the animation, the app icon.
 struct AboutMascotView: View {
-  /// The `Face` artboard is 1064 x 564.
-  private static let aspectRatio = 1064.0 / 564.0
+  /// The `Face` artboard is 1064 x 604 (`MascotBounds.face` in packages/axo-mascot).
+  private static let aspectRatio = 1064.0 / 604.0
   /// The pane's coordinate space, in which the pointer and the mascot are compared.
   static let space = "about-pane"
 
