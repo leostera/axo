@@ -284,6 +284,30 @@ function ChatSection({ section, first, collapsed, showingOlder, isSelected, onTo
   const shown = showingOlder ? section.chats : recent;
   const busy = section.chats.some(entry => entry.session.status === "working" || entry.session.status === "needsAttention");
   const listId = `chats-${section.id}`;
+  const rows = (
+    <>
+      {shown.map(({ host, session }) => {
+        const selected = isSelected(host.hostId, session.sessionId);
+        return (
+          <button key={`${host.hostId}/${session.sessionId}`} className={selected ? "chat-row selected" : "chat-row"}
+            aria-current={selected ? "page" : undefined} onClick={() => onSelect(host.hostId, session.sessionId)}>
+            <span className="chat-row-name">{chatTitle(session)}</span>
+            <StatusDot status={session.status} />
+          </button>
+        );
+      })}
+      {older > 0 ? (
+        <button className="older-row" onClick={onToggleOlder}>
+          {showingOlder ? "Show fewer" : `Show ${older} older ${older === 1 ? "chat" : "chats"}`}
+        </button>
+      ) : null}
+    </>
+  );
+  if (section.kind === "home") {
+    // Home's chats are the everyday ones: under the projects, newest first, with no title to fold
+    // them away (screen readers still hear which Workspace they are in).
+    return <section className={first ? "chat-section home first" : "chat-section home"} aria-label={section.title}>{rows}</section>;
+  }
   return (
     <section className={first ? "chat-section first" : "chat-section"}>
       <h2 className="section-title">
@@ -300,21 +324,7 @@ function ChatSection({ section, first, collapsed, showingOlder, isSelected, onTo
       </h2>
       {collapsed ? null : (
         <div id={listId}>
-          {shown.map(({ host, session }) => {
-            const selected = isSelected(host.hostId, session.sessionId);
-            return (
-              <button key={`${host.hostId}/${session.sessionId}`} className={selected ? "chat-row selected" : "chat-row"}
-                aria-current={selected ? "page" : undefined} onClick={() => onSelect(host.hostId, session.sessionId)}>
-                <span className="chat-row-name">{chatTitle(session)}</span>
-                <StatusDot status={session.status} />
-              </button>
-            );
-          })}
-          {older > 0 ? (
-            <button className="older-row" onClick={onToggleOlder}>
-              {showingOlder ? "Show fewer" : `Show ${older} older ${older === 1 ? "chat" : "chats"}`}
-            </button>
-          ) : null}
+          {rows}
           {section.chats.length === 0 ? <p className="no-chats">No chats yet</p> : null}
         </div>
       )}

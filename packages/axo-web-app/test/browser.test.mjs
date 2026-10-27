@@ -14,6 +14,7 @@ const hostId = "1e1e7f91-3d8f-4f97-8f71-4fc7d53313c6";
 const hostGeneration = "f9c5761c-3b2d-42a8-bb19-9a8c0b8cf230";
 const subscriptionId = "53c8b056-a7ba-4354-9659-dda29f57850a";
 const workspaceId = "04d389d1-9896-420e-9b42-fc7835522937";
+const homeWorkspaceId = "8f8f8f8f-0000-4000-8000-000000000001";
 const now = "2026-10-16T12:00:00.000Z";
 const siteRoot = resolve(import.meta.dirname, "../../../sites/axo.leostera.dev");
 const chromePath = process.env.CHROME_PATH ?? "/Applications/Google Chrome.app/Contents/MacOS/Google Chrome";
@@ -108,6 +109,17 @@ test("browser chats with Axo on a Mac: history, live replies, new chats, info, a
     updatedAt: "2026-10-01T12:00:00.000Z",
   }, {
     hostId,
+    sessionId: 4,
+    workspaceId: homeWorkspaceId,
+    workspaceName: "Home",
+    name: "Plan the week",
+    status: "ready",
+    hasAgent: true,
+    shells: [],
+    layout: null,
+    updatedAt: new Date().toISOString(),
+  }, {
+    hostId,
     sessionId: 3,
     workspaceId: null,
     workspaceName: null,
@@ -199,15 +211,15 @@ test("browser chats with Axo on a Mac: history, live replies, new chats, info, a
       } else if (call.method === "axo.host.subscribe") {
         reply({ subscriptionId });
       } else if (call.method === "axo.remote.workspace.list") {
-        reply({ workspaces: [{ workspaceId, name: "Browser Workspace" }] });
+        reply({ workspaces: [{ workspaceId: homeWorkspaceId, name: "Home", home: true }, { workspaceId, name: "Browser Workspace" }] });
       } else if (call.method === "axo.remote.session.create") {
         sessionCreateCount++;
         assert.equal(call.params.workspaceId, undefined, "a new chat goes to the Mac's Home Workspace");
         const created = {
           hostId,
           sessionId: 2,
-          workspaceId,
-          workspaceName: "Browser Workspace",
+          workspaceId: homeWorkspaceId,
+          workspaceName: "Home",
           name: "Session 2",
           status: "starting",
           hasAgent: true,
@@ -298,6 +310,13 @@ test("browser chats with Axo on a Mac: history, live replies, new chats, info, a
     await expect(chats.getByRole("button", { name: "Browser Agent" }));
     await expect(chats.getByRole("button", { name: "Browser Workspace", exact: true }));
     assert.equal(await page.getByText("Standalone Shell").count(), 0);
+    // Projects first; Home's chats under them, with no title to fold them away.
+    const homeChat = chats.getByRole("region", { name: "Home", exact: true }).getByRole("button", { name: "Plan the week" });
+    await expect(homeChat);
+    assert.equal(await chats.getByRole("button", { name: "Home", exact: true }).count(), 0);
+    const projectBox = await chats.getByRole("button", { name: "Browser Workspace", exact: true }).boundingBox();
+    const homeBox = await homeChat.boundingBox();
+    assert.ok(projectBox && homeBox && homeBox.y > projectBox.y, "Home's chats are under the projects");
     // Chats quiet for more than 8 hours wait behind a button; a Workspace folds away.
     assert.equal(await chats.getByRole("button", { name: "Old idea" }).count(), 0);
     await chats.getByRole("button", { name: "Show 1 older chat" }).click();
@@ -346,7 +365,7 @@ test("browser chats with Axo on a Mac: history, live replies, new chats, info, a
     await expect(page.getByText("Done with: Start fresh", { exact: true }));
     assert.equal(sessionCreateCount, 1);
     assert.deepEqual(prompts[1], { sessionId: 2, text: "Start fresh" });
-    await expect(chats.getByRole("button", { name: "Session 2" }));
+    await expect(chats.getByRole("region", { name: "Home", exact: true }).getByRole("button", { name: "Session 2" }));
 
     // The chat's info.
     await page.getByRole("button", { name: "Chat info" }).click();
@@ -360,7 +379,7 @@ test("browser chats with Axo on a Mac: history, live replies, new chats, info, a
     await chats.getByRole("button", { name: "Account and Macs" }).click();
     const account = page.getByRole("navigation", { name: "Account" });
     await expect(account.getByText("Browser fixture Mac"));
-    await expect(account.getByText("3 chats"));
+    await expect(account.getByText("4 chats"));
     await shot("account");
     await account.getByRole("button", { name: "Pair a Mac" }).click();
     const pairing = page.getByRole("dialog", { name: "Pair a Mac" });

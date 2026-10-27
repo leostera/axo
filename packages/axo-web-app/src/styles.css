@@ -127,6 +127,7 @@ button:disabled { cursor: default; }
 .header-mascot { display: block; height: 34px; cursor: pointer; }
 .chat-section { margin-top: 20px; }
 .chat-section.first { margin-top: 4px; }
+.chat-section.home:not(.first) { margin-top: 28px; }
 .section-title { display: flex; align-items: center; justify-content: space-between; gap: 8px; margin: 0 0 2px; padding: 0 10px; color: var(--secondary); font-size: 13px; font-weight: 600; }
 .section-toggle { display: flex; min-width: 0; flex: 1; align-items: center; gap: 4px; margin: 0 -4px; padding: 4px; border: 0; border-radius: 6px; color: inherit; background: none; font: inherit; text-align: left; }
 .section-toggle:hover { color: var(--text); }

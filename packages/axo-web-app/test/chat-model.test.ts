@@ -142,15 +142,22 @@ test("the menu keeps Workspaces in alphabetical order, chats newest first within
   assert.equal(sections[1]!.chats.length, 0);
 });
 
-test("the menu always lists the Home Workspace first", () => {
-  const sections = chatMenu([host([
-    session(1, "2026-10-16T10:00:00Z"),
+test("projects come first and the Home Workspace's chats go under them, newest first", () => {
+  const sessions = [
+    session(1, "2026-10-16T08:00:00Z"),
     session(2, "2026-10-16T09:00:00Z", "Home"),
-  ])], hostId, [
+    session(3, "2026-10-16T11:00:00Z", "Home"),
+  ];
+  const sections = chatMenu([host(sessions)], hostId, [
     { workspaceId: "8f8f8f8f-0000-4000-8000-000000000001", name: "Home", home: true },
     { workspaceId: "8f8f8f8f-0000-4000-8000-000000000002", name: "A first" },
   ]);
-  assert.deepEqual(sections.map(section => section.title), ["Home", "A first", "Axo"]);
+  assert.deepEqual(sections.map(section => section.title), ["A first", "Axo", "Home"], "projects alphabetically, however recent; Home last");
+  assert.deepEqual(sections.map(section => section.kind), ["project", "project", "home"]);
+  assert.deepEqual(sections[2]!.chats.map(chat => chat.session.sessionId), [3, 2]);
+
+  const unflagged = chatMenu([host(sessions)], hostId, [{ workspaceId: "8f8f8f8f-0000-4000-8000-000000000001", name: "Home" }]);
+  assert.deepEqual(unflagged.map(section => section.kind), ["project", "project"], "a Workspace merely named Home is a project");
 });
 
 test("a section lists chats active in the last 8 hours, busy ones, and the open one; the rest wait", () => {

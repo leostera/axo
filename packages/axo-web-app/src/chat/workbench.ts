@@ -97,6 +97,11 @@ export interface ChatMenuEntry {
 export interface ChatMenuSection {
   readonly id: string;
   readonly title: string;
+  /**
+   * A project, listed by name and folded away by its title; or the Mac's Home Workspace, where
+   * chats go by default, whose chats are listed after the projects without a title of their own.
+   */
+  readonly kind: "project" | "home";
   readonly host: Host;
   readonly workspaceId: string | null;
   readonly chats: ChatMenuEntry[];
@@ -126,10 +131,11 @@ function moreRecent(a: ChatMenuEntry, b: ChatMenuEntry): number {
 }
 
 /**
- * The menu's chats, grouped by Workspace: the open Mac's Home Workspace first, then the rest in
- * alphabetical order, so they stay where they are as chats come and go, and the chats within each
- * the most recently active first. The open Mac's Workspaces with no chat yet are listed in their
- * place. With several Macs a Workspace's title names its Mac.
+ * The menu's chats, grouped by Workspace: the projects in alphabetical order, so they stay where
+ * they are as chats come and go, then the open Mac's Home Workspace last, its chats under the
+ * projects; within each, the most recently active chat first. The open Mac's Workspaces with no
+ * chat yet are listed in their place. With several Macs a Workspace's title names its Mac. Only
+ * the open Mac's Workspaces are known, so another Mac's Home is listed as a project.
  */
 export function chatMenu(hosts: readonly Host[], openHostId: string | null, workspaces: readonly Workspace[]): ChatMenuSection[] {
   const title = (workspace: string, host: Host) => hosts.length > 1 ? `${workspace} · ${host.label}` : workspace;
@@ -144,17 +150,18 @@ export function chatMenu(hosts: readonly Host[], openHostId: string | null, work
       grouped.set(key, group);
     }
   }
-  const sections: ChatMenuSection[] = [...grouped].map(([id, group]) => ({ id, ...group, chats: group.chats.sort(moreRecent) }));
   const open = hosts.find(host => host.hostId === openHostId);
+  const homeIds = new Set(open ? workspaces.filter(workspace => workspace.home).map(home => `${open.hostId}/${home.name}`) : []);
+  const kind = (id: string): ChatMenuSection["kind"] => homeIds.has(id) ? "home" : "project";
+  const sections: ChatMenuSection[] = [...grouped].map(([id, group]) => ({ id, kind: kind(id), ...group, chats: group.chats.sort(moreRecent) }));
   if (open) {
     for (const workspace of workspaces) {
       const id = `${open.hostId}/${workspace.name}`;
-      if (!grouped.has(id)) sections.push({ id, title: title(workspace.name, open), host: open, workspaceId: workspace.workspaceId, chats: [] });
+      if (!grouped.has(id)) sections.push({ id, kind: kind(id), title: title(workspace.name, open), host: open, workspaceId: workspace.workspaceId, chats: [] });
     }
   }
-  const homeIds = new Set(open ? workspaces.filter(workspace => workspace.home).map(home => `${open.hostId}/${home.name}`) : []);
-  const isHome = (section: ChatMenuSection) => homeIds.has(section.id) ? 0 : 1;
-  return sections.sort((a, b) => isHome(a) - isHome(b) || alphabetical.compare(a.title, b.title) || a.id.localeCompare(b.id));
+  const order = (section: ChatMenuSection) => section.kind === "project" ? 0 : 1;
+  return sections.sort((a, b) => order(a) - order(b) || alphabetical.compare(a.title, b.title) || a.id.localeCompare(b.id));
 }
 
 /** Chats active within this long are listed; older ones wait behind "Show older chats". */
