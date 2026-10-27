@@ -1,8 +1,8 @@
 //! Axod is the single, permanent reader of every PTY it owns.
 //!
 //! Each shell gets one pump thread from the moment it is spawned until its PTY reaches end of
-//! file. The pump records replay history, publishes `terminal.output` events, and fans raw bytes
-//! out to every attached client. A shell therefore never blocks on a full PTY buffer because no
+//! file. The pump feeds every byte into the shell's headless terminal (its `TerminalScreen`),
+//! publishes `terminal.output` events, and fans raw bytes out to every attached client. A shell therefore never blocks on a full PTY buffer because no
 //! client is attached, and any number of clients (Mac windows, the web relay, the CLI) can watch
 //! the same shell.
 //!
@@ -11,8 +11,9 @@
 //!   input, resizing, and termios/foreground queries only.
 //! - The pump never blocks on a client. Each subscriber has a bounded backlog; a subscriber that
 //!   falls `MAX_SUBSCRIBER_BACKLOG_BYTES` behind is disconnected and must reattach (replay).
-//! - Subscribing is atomic with respect to recording: a subscriber's replay plus its live chunks
-//!   are exactly the PTY stream, with no gap and no duplicate.
+//! - Subscribing is atomic with respect to recording: a terminal that parses a subscriber's
+//!   replay and then its live chunks reaches exactly the state of one that parsed the whole PTY
+//!   stream, with no gap and no duplicate.
 
 use std::collections::VecDeque;
 use std::fmt;
@@ -23,50 +24,110 @@ use std::sync::{Arc, Condvar, Mutex, MutexGuard, OnceLock};
 use std::thread;
 use std::time::Duration;
 
-pub const MAX_TERMINAL_OUTPUT_HISTORY_BYTES: usize = 8 * 1024 * 1024;
+use crate::process::{self, WindowSize};
+
+/// The largest replay an attachment announces; see `TerminalScreen::replay`.
+pub const MAX_TERMINAL_REPLAY_BYTES: usize = 8 * 1024 * 1024;
 pub const MAX_SUBSCRIBER_BACKLOG_BYTES: usize = 8 * 1024 * 1024;
+/// History each PTY's headless terminal keeps, in libghostty-vt page memory. A replay of it is
+/// usually far smaller; `TerminalScreen::replay` sheds history if one would still be too large.
+const SCREEN_SCROLLBACK_MAX_BYTES: usize = 4 * 1024 * 1024;
 const READ_BUFFER_BYTES: usize = 64 * 1024;
 /// How often an idle pump rechecks whether its shell was removed from the catalog. Shell exit is
 /// observed immediately as end of file; this only bounds descriptor retention after a close.
 const STOP_POLL_INTERVAL_MILLIS: libc::c_int = 250;
 
-/// The complete VT stream since the shell started, or nothing once it outgrew the cap. A
-/// truncated stream could start mid-sequence or miss mode changes, so it is never replayed.
-#[derive(Debug)]
-pub struct TerminalOutputHistory {
-    bytes: Vec<u8>,
-    complete: bool,
+/// The screen a PTY's program has drawn, kept by a headless terminal fed every byte it writes.
+///
+/// Attaching clients receive a snapshot of this screen instead of the PTY's byte history, so a
+/// new client sees what an always-attached terminal would show, however long the program has
+/// run: the modes it set once at startup (alternate screen, mouse reporting, bracketed paste,
+/// keyboard protocol), its current contents and scrollback, and its cursor. A full-screen
+/// program such as Pi would otherwise come back blank and ignore the mouse until it repaints.
+struct TerminalScreen {
+    /// `None` only if libghostty-vt could not create a terminal; replays are then empty.
+    terminal: Option<axo_vt::Terminal>,
+    scrollback_max_bytes: usize,
 }
 
-impl Default for TerminalOutputHistory {
-    fn default() -> Self {
-        Self::new()
-    }
-}
-
-impl TerminalOutputHistory {
-    pub fn new() -> Self {
+impl TerminalScreen {
+    fn new(size: WindowSize) -> Self {
+        let terminal = axo_vt::Terminal::new(grid_size(size), SCREEN_SCROLLBACK_MAX_BYTES)
+            .inspect_err(|error| log::error!("event=terminal.screen_unavailable error={error}"))
+            .ok();
         Self {
-            bytes: Vec::new(),
-            complete: true,
+            terminal,
+            scrollback_max_bytes: SCREEN_SCROLLBACK_MAX_BYTES,
         }
     }
 
-    pub fn record(&mut self, output: &[u8]) {
-        if !self.complete {
-            return;
+    fn write(&mut self, output: &[u8]) {
+        if let Some(terminal) = &mut self.terminal {
+            terminal.write(output);
         }
-        if self.bytes.len().saturating_add(output.len()) > MAX_TERMINAL_OUTPUT_HISTORY_BYTES {
-            self.bytes = Vec::new();
-            self.complete = false;
-            return;
-        }
-        self.bytes.extend_from_slice(output);
     }
 
-    pub fn replay(&self) -> &[u8] {
-        if self.complete { &self.bytes } else { &[] }
+    /// Follows the PTY's size, which clients also change directly through their descriptor.
+    fn resize(&mut self, size: WindowSize) {
+        let Some(terminal) = &mut self.terminal else {
+            return;
+        };
+        if let Some(size) = axo_vt::GridSize::new(size.columns(), size.rows())
+            && let Err(error) = terminal.resize(size)
+        {
+            log::warn!("event=terminal.screen_resize_failed error={error}");
+        }
     }
+
+    /// VT bytes that rebuild this screen in a fresh terminal of the same size, then resume any
+    /// escape sequence the program is midway through, so its next bytes continue seamlessly.
+    /// A replay larger than `MAX_TERMINAL_REPLAY_BYTES` sheds the oldest history until it fits.
+    fn replay(&mut self) -> Vec<u8> {
+        self.replay_within(MAX_TERMINAL_REPLAY_BYTES)
+    }
+
+    fn replay_within(&mut self, max_bytes: usize) -> Vec<u8> {
+        let Some(terminal) = &mut self.terminal else {
+            return Vec::new();
+        };
+        loop {
+            match terminal.snapshot() {
+                Ok(replay) if replay.len() <= max_bytes => return replay,
+                Ok(replay) if self.scrollback_max_bytes > 0 => {
+                    self.scrollback_max_bytes /= 2;
+                    log::info!(
+                        "event=terminal.screen_history_shed replay_bytes={} scrollback_max_bytes={}",
+                        replay.len(),
+                        self.scrollback_max_bytes
+                    );
+                    if let Err(error) = terminal.set_scrollback_max_bytes(self.scrollback_max_bytes)
+                    {
+                        log::warn!("event=terminal.screen_replay_failed error={error}");
+                        return Vec::new();
+                    }
+                }
+                Ok(replay) => {
+                    log::warn!(
+                        "event=terminal.screen_replay_too_large replay_bytes={}",
+                        replay.len()
+                    );
+                    return Vec::new();
+                }
+                Err(error) => {
+                    log::warn!("event=terminal.screen_replay_failed error={error}");
+                    return Vec::new();
+                }
+            }
+        }
+    }
+}
+
+/// A PTY reports 0x0 until someone sizes it; the emulator needs a real grid.
+fn grid_size(size: WindowSize) -> axo_vt::GridSize {
+    axo_vt::GridSize::new(size.columns(), size.rows()).unwrap_or_else(|| {
+        let default = WindowSize::DEFAULT;
+        axo_vt::GridSize::new(default.columns(), default.rows()).expect("the default is sized")
+    })
 }
 
 /// Where a shell's output is published once its owner knows its identity.
@@ -89,7 +150,7 @@ pub struct TerminalOutput {
 }
 
 struct OutputState {
-    history: TerminalOutputHistory,
+    screen: TerminalScreen,
     ended: bool,
     subscribers: Vec<Arc<OutputSubscriber>>,
 }
@@ -99,7 +160,7 @@ impl fmt::Debug for TerminalOutput {
         let state = self.lock();
         formatter
             .debug_struct("TerminalOutput")
-            .field("history_bytes", &state.history.replay().len())
+            .field("screen", &state.screen.terminal.as_ref().map(|t| t.size()))
             .field("ended", &state.ended)
             .field("subscribers", &state.subscribers.len())
             .finish()
@@ -107,10 +168,10 @@ impl fmt::Debug for TerminalOutput {
 }
 
 impl TerminalOutput {
-    fn new() -> Self {
+    fn new(size: WindowSize) -> Self {
         Self {
             state: Mutex::new(OutputState {
-                history: TerminalOutputHistory::new(),
+                screen: TerminalScreen::new(size),
                 ended: false,
                 subscribers: Vec::new(),
             }),
@@ -129,7 +190,8 @@ impl TerminalOutput {
         }
         // SAFETY: fcntl returned a new descriptor owned by the pump.
         let reader = unsafe { OwnedFd::from_raw_fd(duplicate) };
-        let output = Arc::new(Self::new());
+        let size = process::window_size(&reader).unwrap_or(WindowSize::DEFAULT);
+        let output = Arc::new(Self::new(size));
         let pump = Arc::clone(&output);
         thread::Builder::new()
             .name("axo-pty-output".into())
@@ -140,7 +202,7 @@ impl TerminalOutput {
     /// An output with no pump, fed by `record`; for tests in dependent crates.
     #[doc(hidden)]
     pub fn detached_for_tests() -> Arc<Self> {
-        Arc::new(Self::new())
+        Arc::new(Self::new(WindowSize::DEFAULT))
     }
 
     /// Attaches the owner's identity; later output is published to `sink`. Idempotent.
@@ -154,19 +216,24 @@ impl TerminalOutput {
         self.stopped.store(true, Ordering::Relaxed);
     }
 
-    /// Registers a subscriber and returns the replay it must write first. `overflow_shutdown`,
-    /// when given, is shut down if the subscriber overflows, so a writer blocked on a stalled
-    /// client wakes up.
+    /// Registers a subscriber and returns the replay it must write first: a snapshot of the
+    /// screen, taken at `size` when given (the PTY's size now; a client may have resized it
+    /// since the last output). `overflow_shutdown`, when given, is shut down if the subscriber
+    /// overflows, so a writer blocked on a stalled client wakes up.
     pub fn subscribe(
         &self,
+        size: Option<WindowSize>,
         overflow_shutdown: Option<OwnedFd>,
     ) -> (Vec<u8>, Arc<OutputSubscriber>) {
         let mut state = self.lock();
+        if let Some(size) = size {
+            state.screen.resize(size);
+        }
         let subscriber = Arc::new(OutputSubscriber::new(overflow_shutdown, state.ended));
         if !state.ended {
             state.subscribers.push(Arc::clone(&subscriber));
         }
-        (state.history.replay().to_vec(), subscriber)
+        (state.screen.replay(), subscriber)
     }
 
     /// How many clients are attached; for diagnostics and tests.
@@ -176,9 +243,17 @@ impl TerminalOutput {
 
     /// Records one chunk and fans it out. Exposed for tests; the pump is the only production caller.
     pub fn record(&self, output: &[u8]) {
+        self.record_at(None, output);
+    }
+
+    /// Records one chunk the program wrote while its PTY had `size`.
+    fn record_at(&self, size: Option<WindowSize>, output: &[u8]) {
         let chunk: Arc<[u8]> = Arc::from(output);
         let mut state = self.lock();
-        state.history.record(output);
+        if let Some(size) = size {
+            state.screen.resize(size);
+        }
+        state.screen.write(output);
         state
             .subscribers
             .retain(|subscriber| subscriber.push(&chunk));
@@ -218,7 +293,9 @@ impl TerminalOutput {
             if count > 0 {
                 let output = &buffer[..count as usize];
                 total = total.saturating_add(output.len() as u64);
-                self.record(output);
+                // Output after a resize is drawn for the new grid, so the screen must have it
+                // first. One ioctl per chunk; clients resize through their own descriptor.
+                self.record_at(process::window_size(&reader).ok(), output);
                 if let Some(binding) = self.binding.get() {
                     binding.sink.publish_terminal_output(sequence, output);
                     sequence = sequence.saturating_add(1);
@@ -401,38 +478,115 @@ mod tests {
     use std::sync::atomic::AtomicU64;
     use std::time::Instant;
 
-    #[test]
-    fn history_replays_only_complete_streams() {
-        let mut history = TerminalOutputHistory::new();
-        history.record(b"hello");
-        assert_eq!(history.replay(), b"hello");
-        history.record(&vec![b'x'; MAX_TERMINAL_OUTPUT_HISTORY_BYTES]);
-        assert!(history.replay().is_empty());
-        history.record(b"later");
-        assert!(history.replay().is_empty());
+    /// What a client terminal of `size` shows after parsing `stream`.
+    fn parsed(size: WindowSize, stream: &[u8]) -> String {
+        let mut terminal =
+            axo_vt::Terminal::new(grid_size(size), SCREEN_SCROLLBACK_MAX_BYTES).unwrap();
+        terminal.write(stream);
+        String::from_utf8_lossy(&terminal.snapshot().unwrap()).into_owned()
+    }
+
+    fn contains(haystack: &[u8], needle: &str) -> bool {
+        haystack
+            .windows(needle.len())
+            .any(|window| window == needle.as_bytes())
+    }
+
+    fn live(subscriber: &OutputSubscriber) -> Vec<u8> {
+        let NextOutput::Chunks(chunks) = subscriber.next(Duration::from_millis(10)) else {
+            panic!("expected live output");
+        };
+        chunks.concat()
     }
 
     #[test]
     fn subscribers_get_replay_then_exactly_the_live_stream() {
         let output = TerminalOutput::detached_for_tests();
-        output.record(b"before ");
-        let (replay, subscriber) = output.subscribe(None);
-        output.record(b"after");
-        assert_eq!(replay, b"before ");
-        let NextOutput::Chunks(chunks) = subscriber.next(Duration::from_millis(10)) else {
-            panic!("expected live output");
-        };
-        assert_eq!(chunks.concat(), b"after");
+        output.record(b"before \x1b[3");
+        let (replay, subscriber) = output.subscribe(None, None);
+        output.record(b"1mafter");
+        let live = live(&subscriber);
+        assert_eq!(live, b"1mafter", "live output is the raw PTY stream");
         assert!(matches!(
             subscriber.next(Duration::from_millis(1)),
             NextOutput::Idle
         ));
+        // The replay ends inside the same escape sequence, so the live bytes complete it.
+        let size = WindowSize::DEFAULT;
+        assert_eq!(
+            parsed(size, &[replay, live].concat()),
+            parsed(size, b"before \x1b[31mafter")
+        );
+    }
+
+    #[test]
+    fn replay_restores_what_a_full_screen_program_set_up_long_ago() {
+        let output = TerminalOutput::detached_for_tests();
+        // Pi's fullscreen TUI sets its modes once at startup, then only redraws.
+        output.record(b"\x1b[?1049h\x1b[?1000h\x1b[?1003h\x1b[?1006h\x1b[?2004h\x1b[2J");
+        // Far more redraw output than the old byte history kept.
+        let frame = b"\x1b[H\x1b[2Kworking...\r\n".repeat(1024);
+        for _ in 0..(2 * MAX_TERMINAL_REPLAY_BYTES / frame.len()) {
+            output.record(&frame);
+        }
+        output.record(b"\x1b[H\x1b[2KPi transcript");
+        let (replay, _subscriber) = output.subscribe(None, None);
+        assert!(
+            replay.len() < MAX_TERMINAL_REPLAY_BYTES / 64,
+            "{} bytes",
+            replay.len()
+        );
+        for mode in [
+            "\x1b[?1049h",
+            "\x1b[?1000h",
+            "\x1b[?1003h",
+            "\x1b[?1006h",
+            "\x1b[?2004h",
+        ] {
+            assert!(contains(&replay, mode), "replay must restore {mode:?}");
+        }
+        assert!(contains(&replay, "Pi transcript"));
+    }
+
+    #[test]
+    fn replay_is_taken_at_the_size_the_pty_has_now() {
+        let output = TerminalOutput::detached_for_tests();
+        output.record(&b"x".repeat(100));
+        let wide = WindowSize::new(24, 120).unwrap();
+        let (replay, _subscriber) = output.subscribe(Some(wide), None);
+        assert!(
+            contains(&replay, &"x".repeat(100)),
+            "reflowed onto one 120-column row"
+        );
+        assert_eq!(parsed(wide, &replay), parsed(wide, &b"x".repeat(100)));
+    }
+
+    #[test]
+    fn an_oversized_replay_sheds_history_instead_of_disappearing() {
+        let mut screen = TerminalScreen::new(WindowSize::DEFAULT);
+        for line in 0..5_000 {
+            screen.write(format!("\x1b[31mhistory line {line}\r\n").as_bytes());
+        }
+        screen.write(b"\x1b[0mthe end");
+        let max_bytes = 16 * 1024;
+        let replay = screen.replay_within(max_bytes);
+        assert!(
+            !replay.is_empty() && replay.len() <= max_bytes,
+            "{} bytes",
+            replay.len()
+        );
+        assert!(contains(&replay, "the end"));
+        assert!(
+            !contains(&replay, "history line 0\r\n"),
+            "the oldest history went first"
+        );
+        assert!(screen.scrollback_max_bytes < SCREEN_SCROLLBACK_MAX_BYTES);
     }
 
     #[test]
     fn every_subscriber_sees_the_same_stream() {
         let output = TerminalOutput::detached_for_tests();
-        let subscribers: Vec<_> = (0..8).map(|_| output.subscribe(None).1).collect();
+        let subscribers: Vec<_> = (0..8).map(|_| output.subscribe(None, None).1).collect();
         output.record(b"one");
         output.record(b"two");
         for subscriber in &subscribers {
@@ -446,8 +600,8 @@ mod tests {
     #[test]
     fn a_stalled_subscriber_is_disconnected_without_slowing_others() {
         let output = TerminalOutput::detached_for_tests();
-        let (_, stalled) = output.subscribe(None);
-        let (_, active) = output.subscribe(None);
+        let (_, stalled) = output.subscribe(None, None);
+        let (_, active) = output.subscribe(None, None);
         let chunk = vec![b'x'; 64 * 1024];
         let started = Instant::now();
         for _ in 0..(MAX_SUBSCRIBER_BACKLOG_BYTES / chunk.len() + 1) {
@@ -465,7 +619,7 @@ mod tests {
     #[test]
     fn ended_output_drains_queued_chunks_before_reporting_end() {
         let output = TerminalOutput::detached_for_tests();
-        let (_, subscriber) = output.subscribe(None);
+        let (_, subscriber) = output.subscribe(None, None);
         output.record(b"last words");
         output.end();
         let NextOutput::Chunks(chunks) = subscriber.next(Duration::ZERO) else {
@@ -473,7 +627,7 @@ mod tests {
         };
         assert_eq!(chunks.concat(), b"last words");
         assert!(matches!(subscriber.next(Duration::ZERO), NextOutput::Ended));
-        let (_, late) = output.subscribe(None);
+        let (_, late) = output.subscribe(None, None);
         assert!(matches!(late.next(Duration::ZERO), NextOutput::Ended));
     }
 
@@ -507,7 +661,7 @@ mod tests {
         let output = TerminalOutput::start(&master).unwrap();
         let sink = Arc::new(CountingSink(AtomicU64::new(0)));
         output.bind("test".to_owned(), sink.clone());
-        let (_, subscriber) = output.subscribe(None);
+        let (_, subscriber) = output.subscribe(None, None);
 
         // Far more than a PTY buffer holds: this blocks forever unless something drains it.
         let payload = vec![b'y'; 1024 * 1024];

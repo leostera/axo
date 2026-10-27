@@ -676,7 +676,7 @@ mod tests {
         let mut command = Command::new("/bin/sh");
         command.args(["-c", "tty; echo leader=$(ps -o sess= -p $$ | tr -d ' ')"]);
         let process = spawn(command, WindowSize::DEFAULT, &[]).unwrap();
-        let (replay, subscriber) = process.output.subscribe(None);
+        let (replay, subscriber) = process.output.subscribe(None, None);
         let mut seen = replay;
         let deadline = Instant::now() + Duration::from_secs(5);
         while !String::from_utf8_lossy(&seen).contains(&process.device) && Instant::now() < deadline

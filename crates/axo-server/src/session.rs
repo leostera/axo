@@ -275,7 +275,7 @@ mod tests {
         {
             let state = manager.lock_state().unwrap();
             let running = &state.panes.running(shell_id).unwrap();
-            let (_, output) = running.output.subscribe(None);
+            let (_, output) = running.output.subscribe(None, None);
             process::write_all(
                 running.master.as_raw_fd(),
                 b"trap '' TERM; printf '%s%s\\n' AXO_STOP_ READY\n",

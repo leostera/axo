@@ -26,7 +26,11 @@ pub struct Error {
 
 impl fmt::Display for Error {
     fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
-        write!(formatter, "libghostty-vt {} failed ({})", self.operation, self.code)
+        write!(
+            formatter,
+            "libghostty-vt {} failed ({})",
+            self.operation, self.code
+        )
     }
 }
 
@@ -263,8 +267,11 @@ mod ffi {
             cell_width_px: u32,
             cell_height_px: u32,
         ) -> c_int;
-        pub fn ghostty_terminal_set(terminal: Terminal, option: c_int, value: *const c_void)
-        -> c_int;
+        pub fn ghostty_terminal_set(
+            terminal: Terminal,
+            option: c_int,
+            value: *const c_void,
+        ) -> c_int;
         pub fn ghostty_terminal_vt_write(terminal: Terminal, data: *const u8, len: usize);
         pub fn ghostty_terminal_continuation_alloc(
             terminal: Terminal,
@@ -313,7 +320,9 @@ mod tests {
     }
 
     fn contains(haystack: &[u8], needle: &str) -> bool {
-        haystack.windows(needle.len()).any(|window| window == needle.as_bytes())
+        haystack
+            .windows(needle.len())
+            .any(|window| window == needle.as_bytes())
     }
 
     #[test]
@@ -326,12 +335,20 @@ mod tests {
     fn snapshot_restores_a_full_screen_program_and_its_input_modes() {
         let mut original = terminal(40, 10);
         // What Pi's fullscreen TUI writes once at startup, then a frame.
-        original.write(b"\x1b[?1049h\x1b[?7l\x1b[?1000h\x1b[?1002h\x1b[?1003h\x1b[?1006h\x1b[?2004h");
+        original
+            .write(b"\x1b[?1049h\x1b[?7l\x1b[?1000h\x1b[?1002h\x1b[?1003h\x1b[?1006h\x1b[?2004h");
         original.write(b"\x1b[>7u\x1b[2J\x1b[H\x1b[1mPi transcript\x1b[0m\r\n> prompt");
 
         let snapshot = assert_round_trips(&mut original);
 
-        for mode in ["\x1b[?1049h", "\x1b[?1000h", "\x1b[?1003h", "\x1b[?1006h", "\x1b[?2004h", "\x1b[?7l"] {
+        for mode in [
+            "\x1b[?1049h",
+            "\x1b[?1000h",
+            "\x1b[?1003h",
+            "\x1b[?1006h",
+            "\x1b[?2004h",
+            "\x1b[?7l",
+        ] {
             assert!(contains(&snapshot, mode), "snapshot must restore {mode:?}");
         }
         assert!(contains(&snapshot, "Pi transcript"));
@@ -345,7 +362,10 @@ mod tests {
             original.write(format!("line {line}\r\n").as_bytes());
         }
         let snapshot = assert_round_trips(&mut original);
-        assert!(contains(&snapshot, "line 0\r\n"), "history above the viewport is kept");
+        assert!(
+            contains(&snapshot, "line 0\r\n"),
+            "history above the viewport is kept"
+        );
         assert!(contains(&snapshot, "line 49"));
     }
 
@@ -354,7 +374,10 @@ mod tests {
         let mut original = terminal(20, 4);
         original.write(b"before \x1b[3");
         let snapshot = original.snapshot().unwrap();
-        assert!(snapshot.ends_with(b"\x1b[3"), "the unfinished sequence is carried over");
+        assert!(
+            snapshot.ends_with(b"\x1b[3"),
+            "the unfinished sequence is carried over"
+        );
 
         // A client parsing the snapshot and then the rest of the stream ends up like Axod.
         let mut copy = terminal(20, 4);
@@ -371,7 +394,10 @@ mod tests {
         original.resize(GridSize::new(20, 4).unwrap()).unwrap();
         assert_eq!(original.size(), GridSize::new(20, 4).unwrap());
         let snapshot = assert_round_trips(&mut original);
-        assert!(contains(&snapshot, "0123456789abcdef"), "soft wrap is undone on widening");
+        assert!(
+            contains(&snapshot, "0123456789abcdef"),
+            "soft wrap is undone on widening"
+        );
     }
 
     #[test]

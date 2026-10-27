@@ -3,7 +3,7 @@
 //! The client writes its shell ID and a newline. Axod answers with either `u64::MAX` and a
 //! one-byte rejection code, or:
 //!
-//! 1. the replay length as a big-endian `u64` (at most `MAX_TERMINAL_OUTPUT_HISTORY_BYTES`),
+//! 1. the replay length as a big-endian `u64` (at most `MAX_TERMINAL_REPLAY_BYTES`),
 //! 2. a one-byte message (`'1'`) carrying the PTY master descriptor (`SCM_RIGHTS`), then
 //! 3. the replay followed by live output, as raw bytes, until the PTY reaches end of file.
 //!
@@ -18,7 +18,7 @@ use std::path::Path;
 use std::thread;
 use std::time::{Duration, Instant};
 
-use crate::output::MAX_TERMINAL_OUTPUT_HISTORY_BYTES;
+use crate::output::MAX_TERMINAL_REPLAY_BYTES;
 
 /// Sent in place of a replay length when the request is rejected.
 pub const REJECTION_MARKER: u64 = u64::MAX;
@@ -327,10 +327,10 @@ fn receive_header(control: &mut UnixStream) -> io::Result<u64> {
         };
         return Err(io::Error::new(kind, message));
     }
-    if length > MAX_TERMINAL_OUTPUT_HISTORY_BYTES as u64 {
+    if length > MAX_TERMINAL_REPLAY_BYTES as u64 {
         return Err(io::Error::new(
             io::ErrorKind::InvalidData,
-            "daemon announced an oversized terminal history",
+            "daemon announced an oversized terminal replay",
         ));
     }
     Ok(length)

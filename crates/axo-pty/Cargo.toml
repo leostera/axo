@@ -4,6 +4,7 @@ version = "0.1.0"
 edition = "2024"
 
 [dependencies]
+axo-vt = { path = "../axo-vt" }
 shlex = "2.0.1"
 libc = "0.2"
 log = "0.4"

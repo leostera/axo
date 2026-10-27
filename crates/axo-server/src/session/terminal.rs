@@ -210,8 +210,11 @@ pub(super) fn handle_attachment(
         runtime_id,
     };
     // Subscribe before replying: the replay plus queued chunks are then exactly the PTY stream.
+    // The replay is a snapshot of the screen at the PTY's current size, which the client's
+    // surface is created at too.
     let overflow_shutdown = stream.try_clone().ok().map(OwnedFd::from);
-    let (replay, subscriber) = output.subscribe(overflow_shutdown);
+    let size = axo_pty::process::window_size(&master).ok();
+    let (replay, subscriber) = output.subscribe(size, overflow_shutdown);
     let subscription = OutputSubscription(subscriber);
     drop(output);
     if first {
@@ -630,6 +633,71 @@ mod tests {
     use std::sync::mpsc;
     use std::thread::{self};
     use std::time::{Duration, Instant};
+
+    /// After a relaunch the app attaches to a Pi that set its modes long ago and has since written
+    /// far more output than any byte history keeps. The replay must still restore them.
+    #[test]
+    fn a_late_attachment_restores_a_long_running_full_screen_program() {
+        use std::io::Read;
+
+        let fixture = LifecycleFixture::new();
+        let manager = &fixture.manager;
+        manager.stop_workers.store(false, Ordering::Relaxed);
+        let session = manager.list_sessions().unwrap().remove(0);
+        let shell_id = session.shells[0].id;
+        let output = Arc::clone(
+            &manager
+                .lock_state()
+                .unwrap()
+                .panes
+                .running(shell_id)
+                .unwrap()
+                .output,
+        );
+        output.record(b"\x1b[?1049h\x1b[?1000h\x1b[?1003h\x1b[?1006h\x1b[?2004h\x1b[2J");
+        let frame = b"\x1b[H\x1b[2Kworking...\r\n".repeat(1024);
+        for _ in 0..(2 * axo_pty::output::MAX_TERMINAL_REPLAY_BYTES / frame.len()) {
+            output.record(&frame);
+        }
+        output.record(b"\x1b[H\x1b[2KLATE ATTACH FRAME");
+
+        let (mut client, server) = UnixStream::pair().unwrap();
+        client
+            .set_read_timeout(Some(Duration::from_secs(5)))
+            .unwrap();
+        writeln!(client, "{}", shell_id.get()).unwrap();
+        let permit = AttachmentPermit::try_acquire(Arc::new(AtomicUsize::new(0))).unwrap();
+        let weak = Arc::downgrade(manager);
+        let worker = thread::spawn(move || handle_attachment(server, weak, permit));
+
+        let mut length = [0_u8; 8];
+        client.read_exact(&mut length).unwrap();
+        let length = u64::from_be_bytes(length);
+        assert!(
+            length > 0 && length < 1024 * 1024,
+            "replay of {length} bytes"
+        );
+        // The one-byte message that carries the PTY descriptor; the descriptor is discarded.
+        let mut descriptor_message = [0_u8; 1];
+        client.read_exact(&mut descriptor_message).unwrap();
+        let mut replay = vec![0_u8; length as usize];
+        client.read_exact(&mut replay).unwrap();
+        let replay = String::from_utf8_lossy(&replay);
+        for mode in [
+            "\x1b[?1049h",
+            "\x1b[?1000h",
+            "\x1b[?1003h",
+            "\x1b[?1006h",
+            "\x1b[?2004h",
+        ] {
+            assert!(replay.contains(mode), "replay must restore {mode:?}");
+        }
+        assert!(replay.contains("LATE ATTACH FRAME"));
+
+        manager.stop_workers.store(true, Ordering::Relaxed);
+        drop(client);
+        worker.join().unwrap();
+    }
 
     #[test]
     fn a_stalled_client_is_released_without_blocking_the_shell() {

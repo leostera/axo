@@ -785,7 +785,7 @@ mod tests {
         assert_ne!(master_flags & libc::FD_CLOEXEC, 0);
 
         let master = session.master.as_raw_fd();
-        let (_, output) = session.output.subscribe(None);
+        let (_, output) = session.output.subscribe(None, None);
         let command = b"printf 'AXO_PTY_READY\\n'\n";
         // SAFETY: command points to initialized bytes and master is an open PTY.
         let written = unsafe { libc::write(master, command.as_ptr().cast(), command.len()) };

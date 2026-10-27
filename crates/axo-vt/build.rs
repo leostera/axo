@@ -31,8 +31,8 @@ fn main() {
 }
 
 fn bazel_install_dir() -> PathBuf {
-    let workspace = PathBuf::from(env::var_os("CARGO_MANIFEST_DIR").expect("Cargo sets it"))
-        .join("../..");
+    let workspace =
+        PathBuf::from(env::var_os("CARGO_MANIFEST_DIR").expect("Cargo sets it")).join("../..");
     let output = Command::new("bazel")
         .args(["info", "output_base"])
         .current_dir(&workspace)

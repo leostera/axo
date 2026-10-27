@@ -254,7 +254,8 @@ and the audit docs.
 ## Out of scope
 
 - **TypeScript** (`packages/axo-api-worker`, `axo-web-app`): skipped for now.
-- **Terminal state snapshots** to replace the 8 MiB raw replay cap.
+- **Terminal state snapshots** to replace the 8 MiB raw replay cap. (Since done: Axod keeps a
+  libghostty-vt terminal per PTY and replays its snapshot; see `crates/axo-vt`.)
 
 ## Decisions
 
