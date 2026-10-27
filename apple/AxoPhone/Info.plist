@@ -16,6 +16,8 @@
     <array>
         <string>Fredoka.ttf</string>
     </array>
+    <key>NSMicrophoneUsageDescription</key>
+    <string>Axo listens while you say a message, and turns it into words on this iPhone. Audio never leaves it.</string>
     <key>UILaunchScreen</key>
     <dict/>
     <key>UIApplicationSceneManifest</key>

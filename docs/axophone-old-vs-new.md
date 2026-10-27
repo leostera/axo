@@ -132,7 +132,7 @@ B had a full **session files** feature: `SessionFilesClient` and `SessionFilesVi
 
 1. **Live streaming of replies and tool output.** Replies appear only once finished.
 2. **Cancel a run** and **answer the agent's questions**.
-3. **Voice prompts** (Stop → draft, Send → send).
+3. ~~**Voice prompts** (Stop → draft, Send → send).~~ Done: on-device `SpeechAnalyzer` (iOS 26+), with the words shown live while listening; Cancel forgets them; listening stops on background, chat switch or an audio interruption.
 4. **Attachments:** camera, photos, files, clipboard paste; and **session files**.
 5. ~~**Pending-message bubbles with delivery state.**~~ Done in `b44f62c` (Sending, Sent, Queued).
 6. ~~**Per-chat drafts** that survive switching chats.~~ Done in `b44f62c`.

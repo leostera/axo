@@ -12,6 +12,8 @@ struct ConversationView: View {
   let workbench: HostWorkbenchModel?
   let session: RemoteSession?
   let showSidebar: () -> Void
+  /// Saying a message instead of typing it, where the iPhone can.
+  let voice: VoicePrompt?
   /// The Workspaces to choose from for a new chat; its first message waits in the box.
   @State private var workspaceChoices: [RemoteWorkspace]?
   /// When to follow what is new and when to leave the reader be.
@@ -308,7 +310,7 @@ struct ConversationView: View {
         .shadow(color: .black.opacity(0.08), radius: 8, y: 3)
         .accessibilityLabel(follow.hasNew ? "Jump to new message" : "Jump to latest")
       }
-      DraftComposer(phone: phone, placeholder: composerPlaceholder, canSend: canSend, send: sendDraft)
+      DraftComposer(phone: phone, placeholder: composerPlaceholder, canSend: canSend, voice: voice, send: sendDraft)
     }
     // With the keyboard down the composer sits in the home indicator's area as system bars do,
     // instead of above all of it plus a margin; with the keyboard up, just above it.

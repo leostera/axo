@@ -1,12 +1,15 @@
+import AxoPhoneModel
 import SwiftUI
 
 /// The message box. It stays closed, saying why in its placeholder, when there is nobody to send
 /// to. Once a message runs past a couple of lines it can be opened full screen, as the original
-/// app did.
+/// app did. With `voice`, a message can be said instead of typed: while listening the box
+/// becomes the listening bar.
 struct ChatComposer: View {
   @Binding var draft: String
   let placeholder: String
   let canSend: Bool
+  let voice: VoicePrompt?
   let send: () -> Void
 
   @State private var editorHeight: CGFloat = 0
@@ -16,8 +19,33 @@ struct ChatComposer: View {
   /// Taller than about two lines of body text.
   private var isLong: Bool { editorHeight > 64 }
 
+  private var isListening: Bool {
+    guard let voice else { return false }
+    return voice.isListening || voice.state == .finishing
+  }
+
+  private var showsVoiceStatus: Bool {
+    switch voice?.state {
+    case .preparing, .failed: true
+    default: false
+    }
+  }
+
   var body: some View {
     let _ = RenderCount.note("Composer")
+    VStack(spacing: 10) {
+      if let voice { VoiceStatusCard(voice: voice) }
+      if let voice, isListening {
+        VoiceListeningBar(voice: voice, canSend: canSend)
+      } else {
+        box
+      }
+    }
+    .animation(.spring(response: 0.32, dampingFraction: 0.86), value: isListening)
+    .animation(.spring(response: 0.32, dampingFraction: 0.86), value: showsVoiceStatus)
+  }
+
+  private var box: some View {
     HStack(alignment: .bottom, spacing: 6) {
       TextField(placeholder, text: $draft, axis: .vertical)
         .lineLimit(1...6)
@@ -39,16 +67,13 @@ struct ChatComposer: View {
         .accessibilityLabel("Expand message editor")
         .padding(.bottom, 3)
       }
-      Button(action: send) {
-        Image(systemName: "arrow.up").font(.system(size: 20, weight: .semibold))
-          .foregroundStyle(canSend && hasDraft ? ChatColors.background : Color.secondary)
-          .frame(width: 44, height: 44)
-          .background(canSend && hasDraft ? Color.primary : ChatColors.disabledControl, in: Circle())
+      // An empty box offers the microphone where Send goes; once something is typed, Send (the
+      // keyboard has its own dictation for adding to what is typed).
+      if let voice, !hasDraft {
+        VoiceButton(voice: voice, enabled: canSend)
+      } else {
+        sendButton
       }
-      .accessibilityLabel("Send")
-      .accessibilityIdentifier("send-message")
-      .disabled(!(canSend && hasDraft))
-      .padding(.bottom, 1)
     }
     .padding(.horizontal, 8).padding(.vertical, 8)
     .background(.regularMaterial, in: RoundedRectangle(cornerRadius: 27))
@@ -57,6 +82,19 @@ struct ChatComposer: View {
     .fullScreenCover(isPresented: $showingExpandedEditor) {
       ExpandedComposerEditor(draft: $draft, placeholder: placeholder)
     }
+  }
+
+  private var sendButton: some View {
+    Button(action: send) {
+      Image(systemName: "arrow.up").font(.system(size: 20, weight: .semibold))
+        .foregroundStyle(canSend && hasDraft ? ChatColors.background : Color.secondary)
+        .frame(width: 44, height: 44)
+        .background(canSend && hasDraft ? Color.primary : ChatColors.disabledControl, in: Circle())
+    }
+    .accessibilityLabel("Send")
+    .accessibilityIdentifier("send-message")
+    .disabled(!(canSend && hasDraft))
+    .padding(.bottom, 1)
   }
 }
 

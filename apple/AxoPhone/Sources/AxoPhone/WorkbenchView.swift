@@ -53,6 +53,8 @@ struct WorkbenchView: View {
   /// The Workspaces showing their older chats too. Not kept: that is a look back, not a way the
   /// menu stays.
   @State private var showingOlder: Set<String> = []
+  /// Voice prompting, one dictation at a time for the whole app (nil before iOS 26).
+  @State private var voice = Dictation.makeVoicePrompt()
 
   init(environment: AppEnvironment) {
     self.environment = environment
@@ -177,7 +179,10 @@ struct WorkbenchView: View {
     .onChange(of: scenePhase) { previous, phase in
       // A socket left open in the background dies unnoticed; let it go, and come back fresh.
       switch phase {
-      case .background: workbench.suspend()
+      case .background:
+        // Listening stops with the screen; what was heard is not kept.
+        voice?.cancel()
+        workbench.suspend()
       case .active where previous == .background: Task { await workbench.resume() }
       default: break
       }
@@ -189,9 +194,12 @@ struct WorkbenchView: View {
       phone: workbench,
       workbench: workbench.current,
       session: currentSession,
-      showSidebar: { show(.chats) }
+      showSidebar: { show(.chats) },
+      voice: voice
     )
     .id(currentSession?.sessionId)
+    // Words said for one chat never land in another.
+    .onChange(of: currentSession?.sessionId) { voice?.cancel() }
   }
 
   // MARK: - The menu
