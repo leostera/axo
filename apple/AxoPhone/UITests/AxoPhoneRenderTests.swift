@@ -37,6 +37,17 @@ final class AxoPhoneRenderTests: XCTestCase {
     })
   }
 
+  /// Waits until `element` can be tapped: on the layer showing, and settled.
+  private func hittable(_ element: XCUIElement) -> Bool {
+    let deadline = Date().addingTimeInterval(5)
+    while Date() < deadline {
+      // Every layer stays in the tree UI tests read; on the left edge means its layer shows.
+      if element.exists, element.frame.minX >= 0, element.frame.minX < 60 { return true }
+      RunLoop.current.run(until: Date().addingTimeInterval(0.1))
+    }
+    return false
+  }
+
   private func delta(_ before: [String: Int], _ after: [String: Int]) -> [String: Int] {
     after.reduce(into: [:]) { result, entry in result[entry.key] = entry.value - before[entry.key, default: 0] }
   }
@@ -49,15 +60,15 @@ final class AxoPhoneRenderTests: XCTestCase {
     for _ in 0..<3 {
       let start = app.coordinate(withNormalizedOffset: CGVector(dx: 0.01, dy: 0.5))
       start.press(forDuration: 0.05, thenDragTo: app.coordinate(withNormalizedOffset: CGVector(dx: 0.7, dy: 0.5)))
-      XCTAssertTrue(app.buttons["New chat"].waitForExistence(timeout: 5))
+      XCTAssertTrue(hittable(app.buttons["New chat"]))
       let back = app.coordinate(withNormalizedOffset: CGVector(dx: 0.9, dy: 0.5))
       back.press(forDuration: 0.05, thenDragTo: app.coordinate(withNormalizedOffset: CGVector(dx: 0.1, dy: 0.5)))
-      XCTAssertTrue(app.buttons["Chats menu"].waitForExistence(timeout: 5))
+      XCTAssertTrue(hittable(app.buttons["Chats menu"]))
     }
     let moved = delta(before, counts(app))
     print("RENDERS drag menu x3:", moved.sorted { $0.key < $1.key })
     // Only the sliding follows the finger; what slides redraws once as the menu opens or closes.
-    XCTAssertGreaterThan(moved["Sliding", default: 0], 30, "the drag was followed")
+    XCTAssertGreaterThan(moved["Layers", default: 0], 30, "the drag was followed")
     XCTAssertLessThanOrEqual(moved["Conversation", default: 0], 6, "twice per open and close, not every frame")
     XCTAssertLessThanOrEqual(moved["Transcript", default: 0], 6)
     XCTAssertLessThanOrEqual(moved["Composer", default: 0], 6)

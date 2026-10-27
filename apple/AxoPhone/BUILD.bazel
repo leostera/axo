@@ -89,8 +89,8 @@ ios_ui_test(
     runner = ":AxoPhoneUITestRunner",
     tags = ["manual"],
     test_host = ":AxoPhoneApp",
-    # About twenty tests that each launch the app take longer than Bazel's default five minutes.
-    timeout = "long",
+    # Some thirty tests that each launch the app (about fifteen minutes) take longer than "long".
+    timeout = "eternal",
     deps = [":AxoPhoneUITestsLib"],
 )
 

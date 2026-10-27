@@ -3,14 +3,23 @@ import AxoPhoneModel
 import AxoProtocol
 import SwiftUI
 
-/// Which panel slides out: none, the chats, or (one more swipe) the account and its Macs.
-private enum MenuLevel { case closed, chats, hosts }
+/// The phone's screens, stacked, the bottom first. At rest the conversation covers the rest;
+/// a swipe right shows the chats under it, and another the account and its Macs under those.
+private enum Layer: Int, CaseIterable {
+  case account, chats, conversation
+
+  /// What the strip of this layer, beside the one showing, says it does.
+  var edgeName: String {
+    switch self {
+    case .account: "Back to account"
+    case .chats: "Back to chats"
+    case .conversation: "Back to conversation"
+    }
+  }
+}
 
 // Proportions measured from the original sidebar reference on a compact phone.
 private enum MenuLayout {
-  static let widthFraction: CGFloat = 0.79
-  static let maximumWidth: CGFloat = 360
-  static let cornerRadius: CGFloat = 42
   static let contentLeading: CGFloat = 32
   static let contentTrailing: CGFloat = 24
   static let rowInset: CGFloat = 10
@@ -22,19 +31,13 @@ private enum MenuLayout {
   static let controlSize: CGFloat = 44
 }
 
-/// The phone's whole screen: the conversation, with the Macs and their sessions in a menu that
-/// the conversation slides aside to show.
+/// The phone's whole screen: three layers, the conversation on top of the chats on top of the
+/// account and its Macs (see `Layer` and `LayerStack`).
 struct WorkbenchView: View {
   let environment: AppEnvironment
   @State private var workbench: PhoneWorkbench
-  @State private var columnVisibility: NavigationSplitViewVisibility = .automatic
-  @State private var preferredCompactColumn: NavigationSplitViewColumn = .detail
-  /// Which panel slides out: closed, the chats, or (one more swipe) the account and its Macs.
-  @State private var menuLevel: MenuLevel = PreviewFixture.hostsOpen ? .hosts : PreviewFixture.menuOpen ? .chats : .closed
-  /// The panel last shown; it stays while the menu closes, so closing does not swap panels.
-  @State private var openPanel: MenuLevel = PreviewFixture.hostsOpen ? .hosts : .chats
+  @State private var layer: Layer = PreviewFixture.hostsOpen ? .account : PreviewFixture.menuOpen ? .chats : .conversation
   @Environment(\.scenePhase) private var scenePhase
-  @Environment(\.horizontalSizeClass) private var horizontalSizeClass
   @State private var showingSettings = PreviewFixture.settingsOpen
   @State private var showingSearch = false
   @Environment(\.accessibilityReduceMotion) private var reduceMotion
@@ -72,37 +75,23 @@ struct WorkbenchView: View {
     workbench.current?.selectedSession
   }
 
-  private var isCompact: Bool { horizontalSizeClass == .compact }
-
-
-  // The layout, the gesture and its areas of contact are the original app's, unchanged. The
-  // sliding is `SlidingMenu`'s alone: it re-runs on every frame of a drag, and what it moves,
-  // built here, is not rebuilt.
+  // The layers are built here, once per change to what they show; `LayerStack` alone moves
+  // them, on every frame of a swipe.
   var body: some View {
     let _ = RenderCount.note("Workbench")
-    SlidingMenu(
-      level: isCompact ? menuLevel : .closed,
-      enabled: isCompact,
-      animation: menuAnimation,
-      show: show,
-      close: closeMenu,
-      panel: { menuPanel }
-    ) {
-      NavigationSplitView(columnVisibility: $columnVisibility, preferredCompactColumn: $preferredCompactColumn) {
-        // On a compact screen the menu is the sliding panel; a second copy here would sit
-        // hidden under the conversation, where VoiceOver and taps could still find it.
-        Group {
-          if isCompact { Color.clear } else { menuPanel }
-        }
-        .navigationSplitViewColumnWidth(min: 260, ideal: 300)
-      } detail: {
-        conversation
-          .navigationBarBackButtonHidden(true)
-          .toolbar(.hidden, for: .navigationBar)
-      }
-      .navigationSplitViewStyle(.balanced)
-    }
+    LayerStack(
+      showing: Binding(get: { layer.rawValue }, set: { layer = Layer(rawValue: $0) ?? .conversation }),
+      home: Layer.conversation.rawValue,
+      edgeNames: Layer.allCases.map(\.edgeName),
+      layers: [AnyView(accountLayer), AnyView(sidebar), AnyView(conversation)]
+    )
     .background(ChatColors.background.ignoresSafeArea())
+    .onChange(of: layer) { _, layer in
+      // The keyboard belongs to the conversation's box; it goes when the conversation does.
+      if layer != .conversation {
+        UIApplication.shared.sendAction(#selector(UIResponder.resignFirstResponder), to: nil, from: nil, for: nil)
+      }
+    }
     .overlay(alignment: .trailing) {
       if RenderCount.enabled { RenderCountLabel() }
       #if DEBUG && targetEnvironment(simulator)
@@ -141,8 +130,7 @@ struct WorkbenchView: View {
     .sheet(isPresented: $showingSearch) {
       SessionSearchView(hosts: workbench.hosts.hosts, sessionsOf: workbench.sessions(of:)) { host, session in
         workbench.select(host: host.hostId, session: session.sessionId)
-        preferredCompactColumn = .detail
-        closeMenu()
+        show(.conversation)
       }
     }
     .sheet(isPresented: $showingSettings) {
@@ -183,7 +171,7 @@ struct WorkbenchView: View {
       phone: workbench,
       workbench: workbench.current,
       session: currentSession,
-      showSidebar: showMenu
+      showSidebar: { show(.chats) }
     )
     .id(currentSession?.sessionId)
   }
@@ -215,8 +203,7 @@ struct WorkbenchView: View {
             ForEach(section.sessions, id: \.session.sessionId) { entry in
               Button {
                 workbench.select(host: entry.host.hostId, session: entry.session.sessionId)
-                preferredCompactColumn = .detail
-                closeMenu()
+                show(.conversation)
               } label: {
                 SessionRow(
                   workbench: workbench,
@@ -259,7 +246,6 @@ struct WorkbenchView: View {
     }
     .background(ChatColors.background.ignoresSafeArea())
     .safeAreaInset(edge: .bottom, spacing: 0) { menuFooter }
-    .toolbar(.hidden, for: .navigationBar)
   }
 
   private struct Entry {
@@ -305,35 +291,23 @@ struct WorkbenchView: View {
     return order.map { MenuSection(id: $0, title: grouped[$0]!.title, sessions: grouped[$0]!.sessions) }
   }
 
-  /// The chats menu, or one swipe further, the account and its Macs.
-  @ViewBuilder private var menuPanel: some View {
-    ZStack {
-      if openPanel == .hosts {
-        HostsPanel(
-          hosts: workbench.hosts,
-          openHost: workbench.current?.reference.hostId,
-          chatsOf: { workbench.sessions(of: $0).filter { $0.hasAgent != false }.count },
-          back: { withAnimation(menuAnimation) { show(.chats) } },
-          newChat: { host in
-            workbench.select(host: host.hostId, session: nil)
-            preferredCompactColumn = .detail
-            closeMenu()
-          },
-          showSettings: { showingSettings = true },
-          refresh: { await workbench.refresh() })
-          .transition(.move(edge: .leading).combined(with: .opacity))
-      } else {
-        sidebar
-          .transition(.move(edge: .trailing).combined(with: .opacity))
-      }
-    }
-    .clipped()
+  /// The account and its Macs, under the chats.
+  private var accountLayer: some View {
+    HostsPanel(
+      hosts: workbench.hosts,
+      openHost: workbench.current?.reference.hostId,
+      chatsOf: { workbench.sessions(of: $0).filter { $0.hasAgent != false }.count },
+      newChat: { host in
+        workbench.select(host: host.hostId, session: nil)
+        show(.conversation)
+      },
+      showSettings: { showingSettings = true },
+      refresh: { await workbench.refresh() })
   }
 
-  /// Opens `level`, or closes the menu; a closing menu keeps the panel it showed.
-  private func show(_ level: MenuLevel) {
-    menuLevel = level
-    if level != .closed { openPanel = level }
+  /// Moves the stack to `layer`, as a swipe would.
+  private func show(_ layer: Layer) {
+    withAnimation(reduceMotion ? nil : .interpolatingSpring(duration: 0.42, bounce: 0.08)) { self.layer = layer }
   }
 
   private var menuHeader: some View {
@@ -343,7 +317,7 @@ struct WorkbenchView: View {
       Spacer(minLength: 8)
       // The account and its Macs are also one more swipe to the right.
       Button {
-        withAnimation(menuAnimation) { show(.hosts) }
+        show(.account)
       } label: {
         Image(systemName: "person.crop.circle")
           .font(.system(size: 20, weight: .medium))
@@ -377,8 +351,7 @@ struct WorkbenchView: View {
     HStack(spacing: 16) {
       Button {
         workbench.beginNewChat()
-        preferredCompactColumn = .detail
-        closeMenu()
+        show(.conversation)
       } label: {
         Label("Chat", systemImage: "square.and.pencil")
           .font(.headline)
@@ -418,146 +391,6 @@ struct WorkbenchView: View {
     .padding(.top, 10)
     .padding(.bottom, 0)
     .background(ChatColors.background)
-  }
-
-  private func showMenu() {
-    guard isCompact else {
-      columnVisibility = .all
-      preferredCompactColumn = .sidebar
-      return
-    }
-    withAnimation(menuAnimation) { show(.chats) }
-  }
-
-  private func closeMenu() {
-    if isCompact {
-      withAnimation(menuAnimation) { show(.closed) }
-    } else {
-      columnVisibility = .detailOnly
-      preferredCompactColumn = .detail
-    }
-  }
-
-  private var menuAnimation: Animation? {
-    reduceMotion ? nil : .spring(response: 0.36, dampingFraction: 0.88)
-  }
-}
-
-/// The conversation, slid aside to show the menu under it. This alone follows the finger: it
-/// re-runs on every frame of a drag, while `panel` and `content`, built by its parent, are the
-/// same values each time and are not redrawn.
-private struct SlidingMenu<Panel: View, Content: View>: View {
-  /// What is open; always `.closed` on a wide screen, where the menu is a column instead.
-  let level: MenuLevel
-  /// A wide screen has the menu as a column, and nothing to slide.
-  let enabled: Bool
-  let animation: Animation?
-  let show: (MenuLevel) -> Void
-  let close: () -> Void
-  @ViewBuilder let panel: Panel
-  @ViewBuilder let content: Content
-  @State private var dragOffset: CGFloat = 0
-
-  private var presented: Bool { level != .closed }
-
-  var body: some View {
-    let _ = RenderCount.note("Sliding")
-    GeometryReader { geometry in
-      let revealDistance = min(geometry.size.width * MenuLayout.widthFraction, MenuLayout.maximumWidth)
-      let offset = min(max((presented ? revealDistance : 0) + dragOffset, 0), revealDistance)
-      let progress = min(max(offset / max(revealDistance, 1), 0), 1)
-
-      ZStack(alignment: .leading) {
-        // Only there while it shows (or is being dragged into view): a closed menu left under
-        // the conversation would still answer taps and VoiceOver where the conversation is.
-        if presented || offset > 0 {
-          panel
-            .frame(width: revealDistance)
-            .frame(maxHeight: .infinity)
-            .background(ChatColors.background.ignoresSafeArea())
-            .accessibilityHidden(!presented)
-            // Above the content: its hidden navigation bars stay where they were when the
-            // conversation slides aside, and would take taps meant for the top of the menu.
-            .zIndex(1)
-        }
-
-        content
-          .background {
-            RoundedRectangle(cornerRadius: MenuLayout.cornerRadius * progress, style: .continuous)
-              .fill(ChatColors.background)
-              .overlay {
-                RoundedRectangle(cornerRadius: MenuLayout.cornerRadius * progress, style: .continuous)
-                  .fill(ChatColors.surface.opacity(progress))
-              }
-              .overlay {
-                RoundedRectangle(cornerRadius: MenuLayout.cornerRadius * progress, style: .continuous)
-                  .stroke(Color.primary.opacity(progress * 0.22), lineWidth: 0.5)
-              }
-              .shadow(color: .black.opacity(progress * 0.22), radius: 16, x: -6)
-              .ignoresSafeArea()
-          }
-          .overlay {
-            Color(uiColor: .tertiarySystemBackground)
-              .opacity(progress * 0.64)
-              .allowsHitTesting(presented)
-              .accessibilityHidden(true)
-          }
-          .accessibilityHidden(presented)
-          .offset(x: offset)
-          .allowsHitTesting(!presented)
-
-        if presented {
-          // The slice of conversation still showing: a tap there closes the menu. Its shape is set
-          // before it moves: set after `offset`, it stays where the view was laid out, over the
-          // menu's left edge, and swallows taps on the menu's buttons there.
-          Color.clear
-            .frame(width: max(geometry.size.width - revealDistance, 0))
-            .frame(maxHeight: .infinity)
-            .contentShape(Rectangle())
-            .onTapGesture(perform: close)
-            .offset(x: revealDistance)
-            .accessibilityHidden(true)
-            .zIndex(2)
-        }
-      }
-      .simultaneousGesture(gesture(revealDistance: revealDistance))
-    }
-  }
-
-  private func gesture(revealDistance: CGFloat) -> some Gesture {
-    DragGesture(minimumDistance: 12)
-      .onChanged { value in
-        guard enabled, abs(value.translation.width) > abs(value.translation.height) else { return }
-        switch level {
-        case .chats:
-          // Left closes the menu (the conversation follows the finger); right goes on to the Macs.
-          dragOffset = min(0, max(-revealDistance, value.translation.width))
-        case .hosts:
-          dragOffset = 0
-        case .closed:
-          if value.startLocation.x <= 32, value.translation.width > 0 {
-            dragOffset = min(revealDistance, value.translation.width)
-          }
-        }
-      }
-      .onEnded { value in
-        guard enabled, abs(value.translation.width) > abs(value.translation.height) else {
-          dragOffset = 0
-          return
-        }
-        withAnimation(animation) {
-          switch level {
-          case .chats:
-            if value.translation.width < -80 { show(.closed) }
-            else if value.translation.width > 80 { show(.hosts) }
-          case .hosts:
-            if value.translation.width < -80 { show(.chats) }
-          case .closed:
-            if value.startLocation.x <= 32, value.translation.width > 80 { show(.chats) }
-          }
-          dragOffset = 0
-        }
-      }
   }
 }
 
@@ -626,32 +459,23 @@ private struct SessionStatusDot: View {
   }
 }
 
-/// One swipe past the chats: who is signed in, and their Macs.
+/// Under the chats: who is signed in, and their Macs.
 private struct HostsPanel: View {
   let hosts: HostsModel
   let openHost: UUID?
   let chatsOf: (RemoteHost) -> Int
-  let back: () -> Void
   let newChat: (RemoteHost) -> Void
   let showSettings: () -> Void
   let refresh: () async -> Void
 
   var body: some View {
     VStack(alignment: .leading, spacing: 0) {
-      HStack(spacing: 12) {
-        Button(action: back) {
-          Image(systemName: "chevron.left")
-            .font(.system(size: 17, weight: .semibold))
-            .frame(width: 44, height: 44)
-            .background(Color.primary.opacity(0.08), in: Circle())
-        }
-        .accessibilityLabel("Back to chats")
-        Text("Account").font(.title3.weight(.semibold))
-        Spacer(minLength: 0)
-      }
-      .buttonStyle(.plain)
-      .padding(.leading, MenuLayout.contentLeading - 8)
-      .padding(.trailing, MenuLayout.contentTrailing)
+      // No way back here: the chats are the strip at the edge, a tap or a swipe left away.
+      Text("Account").font(.title3.weight(.semibold))
+        .frame(height: 44)
+        .padding(.leading, MenuLayout.contentLeading)
+        .padding(.trailing, MenuLayout.contentTrailing)
+        .accessibilityAddTraits(.isHeader)
 
       ScrollView {
         VStack(alignment: .leading, spacing: 0) {
