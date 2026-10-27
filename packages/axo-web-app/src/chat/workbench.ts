@@ -122,9 +122,10 @@ function moreRecent(a: ChatMenuEntry, b: ChatMenuEntry): number {
 }
 
 /**
- * The menu's chats, grouped by Workspace, the most recently active first: chats by their last
- * activity, Workspaces by their most recent chat. The open Mac's Workspaces with no chat yet are
- * listed last. With several Macs a Workspace's title names its Mac.
+ * The menu's chats, grouped by Workspace: the Workspaces in alphabetical order, so they stay where
+ * they are as chats come and go, and the chats within each the most recently active first. The
+ * open Mac's Workspaces with no chat yet are listed in their place. With several Macs a
+ * Workspace's title names its Mac.
  */
 export function chatMenu(hosts: readonly Host[], openHostId: string | null, workspaces: readonly Workspace[]): ChatMenuSection[] {
   const title = (workspace: string, host: Host) => hosts.length > 1 ? `${workspace} · ${host.label}` : workspace;
@@ -140,7 +141,6 @@ export function chatMenu(hosts: readonly Host[], openHostId: string | null, work
     }
   }
   const sections: ChatMenuSection[] = [...grouped].map(([id, group]) => ({ id, ...group, chats: group.chats.sort(moreRecent) }));
-  sections.sort((a, b) => moreRecent(a.chats[0]!, b.chats[0]!));
   const open = hosts.find(host => host.hostId === openHostId);
   if (open) {
     for (const workspace of workspaces) {
@@ -148,8 +148,11 @@ export function chatMenu(hosts: readonly Host[], openHostId: string | null, work
       if (!grouped.has(id)) sections.push({ id, title: title(workspace.name, open), host: open, workspaceId: workspace.workspaceId, chats: [] });
     }
   }
-  return sections;
+  return sections.sort((a, b) => alphabetical.compare(a.title, b.title) || a.id.localeCompare(b.id));
 }
+
+/** As people read them: case and accents aside, numbers by value. */
+const alphabetical = new Intl.Collator(undefined, { sensitivity: "base", numeric: true });
 
 /** The request may have reached the Mac although no answer came back. */
 function deliveryUncertain(error: unknown): boolean {

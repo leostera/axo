@@ -129,16 +129,17 @@ function host(sessions: ReturnType<typeof session>[], status: "online" | "offlin
   return { hostId, hostGeneration, label: "Studio", hostKind: "macos", status, stale: false, lastSeenAt: "2026-10-16T12:00:00.000Z", sessions } as never;
 }
 
-test("the menu lists chats newest first, leaves out bare terminals, and lists empty Workspaces last", () => {
+test("the menu keeps Workspaces in alphabetical order, chats newest first within each, and no bare terminals", () => {
   const sections = chatMenu([host([
     session(1, "2026-10-16T10:00:00Z"),
     session(2, "2026-10-16T12:00:00Z"),
     session(3, "2026-10-16T13:00:00Z", null, { hasAgent: false }),
-    session(4, "2026-10-16T11:00:00Z", "Home"),
-  ])], hostId, [{ workspaceId: "8f8f8f8f-0000-4000-8000-000000000000", name: "Website" }]);
-  assert.deepEqual(sections.map(section => section.title), ["Axo", "Home", "Website"]);
+    session(4, "2026-10-16T14:00:00Z", "Website"),
+  ])], hostId, [{ workspaceId: "8f8f8f8f-0000-4000-8000-000000000000", name: "home" }]);
+  // Website has the newest chat and home has none: neither moves.
+  assert.deepEqual(sections.map(section => section.title), ["Axo", "home", "Website"]);
   assert.deepEqual(sections[0]!.chats.map(chat => chat.session.sessionId), [2, 1]);
-  assert.equal(sections[2]!.chats.length, 0);
+  assert.equal(sections[1]!.chats.length, 0);
 });
 
 // MARK: - Workbench
