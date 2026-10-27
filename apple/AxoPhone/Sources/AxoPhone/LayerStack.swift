@@ -25,6 +25,8 @@ struct LayerStack: View {
   @State private var dragged: CGFloat = 0
   /// The finger is moving the stack: the swipe went sideways rather than scrolling.
   @State private var swiping = false
+  /// The stack is still springing to where a swipe left it.
+  @State private var settling = false
   @Environment(\.accessibilityReduceMotion) private var reduceMotion
 
   var body: some View {
@@ -56,7 +58,10 @@ struct LayerStack: View {
       // Home fills the screen; the others show beside a strip of the layer next to them.
       .frame(width: index == home ? stack.width : stack.reveal)
       .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
-      .allowsHitTesting(index == showing)
+      // No new touch starts in a layer while the stack moves, so a tap while it springs into
+      // place does not land on whatever is passing under the finger. (A touch already down is
+      // not cancelled by this; rows guard against swipes with `.layerRow`.)
+      .allowsHitTesting(index == showing && !swiping && !settling)
       .background(ChatColors.background.ignoresSafeArea())
       .overlay {
         Color(uiColor: .tertiarySystemBackground)
@@ -133,9 +138,12 @@ struct LayerStack: View {
     let towards = (Double(target) < from) == (velocity > 0)
     let initialVelocity = distance > 1 && towards ? min(abs(velocity) / distance, 30) : 0
     let animation: Animation? = reduceMotion ? nil : .interpolatingSpring(duration: 0.42, bounce: 0.08, initialVelocity: initialVelocity)
+    settling = true
     withAnimation(animation) {
       showing = target
       dragged = 0
+    } completion: {
+      settling = false
     }
   }
 }
@@ -148,4 +156,19 @@ enum DisplayCorners {
     let value = UIScreen.main.value(forKey: ["Radius", "Corner", "display", "_"].reversed().joined()) as? CGFloat
     return value ?? 55
   }()
+}
+
+/// A row as wide as its layer, chosen with a tap and only a tap. A `Button` acts when the finger
+/// lifts anywhere inside it, so a sideways swipe that starts on a full-width row and moves the
+/// stack would also open that row; a tap fails once the finger moves. Still a button to VoiceOver.
+struct LayerRowButtonStyle: PrimitiveButtonStyle {
+  func makeBody(configuration: Configuration) -> some View {
+    configuration.label
+      .contentShape(Rectangle())
+      .onTapGesture { configuration.trigger() }
+  }
+}
+
+extension PrimitiveButtonStyle where Self == LayerRowButtonStyle {
+  static var layerRow: LayerRowButtonStyle { LayerRowButtonStyle() }
 }

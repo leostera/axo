@@ -5,8 +5,9 @@ import SwiftUI
 
 /// The phone's screens, stacked, the bottom first. At rest the conversation covers the rest;
 /// a swipe right shows the chats under it, and another the account and its Macs under those.
+/// A swipe left on the conversation pulls the chat's info in over it from the right.
 private enum Layer: Int, CaseIterable {
-  case account, chats, conversation
+  case account, chats, conversation, info
 
   /// What the strip of this layer, beside the one showing, says it does.
   var edgeName: String {
@@ -14,6 +15,7 @@ private enum Layer: Int, CaseIterable {
     case .account: "Back to account"
     case .chats: "Back to chats"
     case .conversation: "Back to conversation"
+    case .info: "Chat info"
     }
   }
 }
@@ -83,7 +85,10 @@ struct WorkbenchView: View {
       showing: Binding(get: { layer.rawValue }, set: { layer = Layer(rawValue: $0) ?? .conversation }),
       home: Layer.conversation.rawValue,
       edgeNames: Layer.allCases.map(\.edgeName),
-      layers: [AnyView(accountLayer), AnyView(sidebar), AnyView(conversation)]
+      layers: [
+        AnyView(accountLayer), AnyView(sidebar), AnyView(conversation),
+        AnyView(SessionInfoPanel(workbench: workbench.current, session: currentSession)),
+      ]
     )
     .background(ChatColors.background.ignoresSafeArea())
     .onChange(of: layer) { _, layer in
@@ -213,7 +218,7 @@ struct WorkbenchView: View {
                   .frame(maxWidth: .infinity, alignment: .leading)
                   .contentShape(Rectangle())
               }
-              .buttonStyle(.plain)
+              .buttonStyle(.layerRow)
               .padding(.horizontal, MenuLayout.rowInset)
             }
             if section.sessions.isEmpty {
@@ -496,7 +501,7 @@ private struct HostsPanel: View {
           }
           ForEach(hosts.hosts, id: \.hostId) { host in
             Button { newChat(host) } label: { HostRow(host: host, chats: chatsOf(host), isOpen: host.hostId == openHost) }
-              .buttonStyle(.plain)
+              .buttonStyle(.layerRow)
               .disabled(host.status != .online)
               .padding(.horizontal, MenuLayout.rowInset)
               .accessibilityHint(host.status == .online ? "Starts a new chat on this Mac" : "")
