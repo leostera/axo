@@ -161,7 +161,7 @@ final class HostWorkbenchModelTests: XCTestCase {
     XCTAssertEqual(sent.params["text"] as? String, "run the tests", "trimmed, nothing else changed")
     channel.reply(to: sent.id, result: #"{"accepted":true}"#)
     let accepted = await sending.value
-    XCTAssertTrue(accepted)
+    XCTAssertEqual(accepted, .accepted)
     XCTAssertNil(model.failure)
     XCTAssertNil(model.chats[4], "Pi's own message brings the prompt back; nothing is invented here")
   }
@@ -235,8 +235,9 @@ final class HostWorkbenchModelTests: XCTestCase {
     let sent = try await channel.nextRequest()
     channel.reply(to: sent.id, error: -32004, message: "Resource not found")
     let accepted = await sending.value
-    XCTAssertFalse(accepted)
-    XCTAssertEqual(model.failure, "axod rejected the request (-32004): Resource not found")
+    XCTAssertEqual(accepted, .notSent)
+    XCTAssertEqual(model.failure, "Not sent: Resource not found")
+    XCTAssertNil(model.pendingPrompts[1])
   }
 
   func testAStaleHostIsReportedButIsNotAnAccessProblem() async throws {
@@ -246,7 +247,7 @@ final class HostWorkbenchModelTests: XCTestCase {
     let sent = try await channel.nextRequest()
     channel.reply(to: sent.id, error: -32002, message: "Stale host")
     _ = await typing.value
-    XCTAssertEqual(model.failure, "axod rejected the request (-32002): Stale host")
+    XCTAssertEqual(model.failure, "Not sent: Stale host")
     XCTAssertEqual(account.state, .signedIn, "a stale host is not a sign-in problem")
   }
 
@@ -261,16 +262,16 @@ final class HostWorkbenchModelTests: XCTestCase {
     model.selectedSessionID = 1
     _ = await model.sendPrompt("x")
     XCTAssertEqual(account.state, .signedOut)
-    XCTAssertEqual(model.failure, "Sign in to continue.")
+    XCTAssertEqual(model.failure, "Not sent: Sign in to continue.")
   }
 
   func testNothingIsSentWithoutTextOrASession() async throws {
     let (model, transport, _, _) = try make()
     let blank = await model.sendPrompt("  \n ")
-    XCTAssertFalse(blank)
+    XCTAssertEqual(blank, .notSent)
     let (empty, _, _, _) = try make(sessions: [])
     let nowhere = await empty.sendPrompt("hello")
-    XCTAssertFalse(nowhere)
+    XCTAssertEqual(nowhere, .notSent)
     XCTAssertEqual(transport.connects, 0)
   }
 
@@ -298,6 +299,16 @@ final class ScriptedTransport: AxoTransport, @unchecked Sendable {
       made = channel
       return channel
     }
+  }
+
+  /// The `number`th connection (1 is the first), once it is made.
+  func channel(number: Int) async throws -> ScriptedChannel {
+    let deadline = ContinuousClock.now + .seconds(15)
+    while ContinuousClock.now < deadline {
+      if let channel = lock.withLock({ count >= number ? made : nil }) { return channel }
+      try await Task.sleep(for: .milliseconds(2))
+    }
+    throw AxoClientError.connectionFailed("connection \(number) was never made")
   }
 
   func channel() async throws -> ScriptedChannel {

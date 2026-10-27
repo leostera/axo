@@ -59,8 +59,27 @@ public final class PhoneWorkbench {
     select(host: host.hostId, session: nil)
   }
 
+  /// The app went to the background.
+  public func suspend() { current?.suspend() }
+
+  /// The app is back: the Macs are listed again and the open one reconnects and catches up.
+  public func resume() async {
+    current?.resume()
+    await refresh()
+  }
+
   public func refresh() async {
     await hosts.refresh()
+    if let current, let listed = hosts.hosts.first(where: { $0.hostId == current.reference.hostId }) {
+      if listed.hostGeneration == current.reference.hostGeneration {
+        current.adopt(listing: listed)
+      } else if let selection {
+        // The Mac restarted: its old connection names a run that is gone. Open the new one.
+        current.stop()
+        self.current = nil
+        select(host: selection.host, session: selection.session)
+      }
+    }
     // The open Mac keeps its own live view; only a Mac that disappeared closes.
     if let selection, !hosts.hosts.contains(where: { $0.hostId == selection.host }), hosts.phase == .loaded {
       close()
@@ -107,6 +126,9 @@ public final class PhoneWorkbench {
     case chooseWorkspace([RemoteWorkspace])
     /// Nothing was sent; the reason is in `current?.failure` and the words are back in the box.
     case failed
+    /// The connection dropped while sending: the message may have arrived. It shows as
+    /// uncertain in the chat and its words do not come back, so it is not sent twice by mistake.
+    case uncertain
   }
 
   /// Sends what is typed in the open chat. On a new chat, the first message brings the chat into
@@ -163,9 +185,13 @@ public final class PhoneWorkbench {
     guard let workbench = current, workbench.reference.hostId == selection.host else { return .failed }
     let text = text(of: selection)
     setDraft("", for: selection)
-    if await workbench.sendPrompt(text) { return .sent }
-    if draft(for: selection).isEmpty { setDraft(text, for: selection) }
-    return .failed
+    switch await workbench.sendPrompt(text) {
+    case .accepted: return .sent
+    case .uncertain: return .uncertain
+    case .notSent:
+      if draft(for: selection).isEmpty { setDraft(text, for: selection) }
+      return .failed
+    }
   }
 
   // MARK: - What the menu lists

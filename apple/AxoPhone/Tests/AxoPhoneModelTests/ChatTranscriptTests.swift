@@ -152,4 +152,88 @@ final class ChatTranscriptTests: XCTestCase {
     transcript.apply(message(3, role: "user", content: #""   ""#))
     XCTAssertTrue(transcript.messages.isEmpty)
   }
+
+  // MARK: - Live
+
+  func testTheReplyBeingWrittenShowsAsItGrowsAndGivesWayToTheWholeMessage() {
+    var transcript = ChatTranscript()
+    transcript.apply(event(1, "message.update", #"{"message":{"role":"assistant","content":[{"type":"text","text":"Che"}]}}"#))
+    XCTAssertEqual(transcript.live.map(\.text), ["Che"])
+    transcript.apply(event(2, "message.update", #"{"message":{"role":"assistant","content":[{"type":"thinking","thinking":"hm"},{"type":"text","text":"Checking"}]}}"#))
+    XCTAssertEqual(transcript.live.map(\.role), [.thinking, .assistant], "each update is the whole reply so far")
+    XCTAssertTrue(transcript.messages.isEmpty, "nothing is part of the conversation until it is whole")
+    transcript.apply(message(3, role: "assistant", content: #"[{"type":"text","text":"Checking done"}]"#))
+    XCTAssertTrue(transcript.live.isEmpty)
+    XCTAssertEqual(transcript.messages.map(\.text), ["Checking done"])
+  }
+
+  func testAnUpdateForAUserMessageIsNotAReply() {
+    var transcript = ChatTranscript()
+    transcript.apply(event(1, "message.update", #"{"message":{"role":"user","content":"hi"}}"#))
+    XCTAssertTrue(transcript.live.isEmpty)
+  }
+
+  func testTheRunEndingClearsAReplyThatNeverFinished() {
+    var transcript = ChatTranscript()
+    transcript.apply(event(1, "agent.start"))
+    transcript.apply(event(2, "message.update", #"{"message":{"role":"assistant","content":"partial"}}"#))
+    transcript.apply(event(3, "agent.end"))
+    XCTAssertTrue(transcript.live.isEmpty)
+    XCTAssertEqual(transcript.activity, .idle)
+  }
+
+  func testARunningToolsOutputGrowsUntilItsResultArrives() {
+    var transcript = ChatTranscript()
+    transcript.apply(message(1, role: "assistant", content: #"[{"type":"toolCall","id":"c1","name":"bash","arguments":{"command":"make"}}]"#))
+    transcript.apply(event(2, "tool.update", #"{"toolCallId":"c1","partialResult":{"content":[{"type":"text","text":"building"}]}}"#))
+    XCTAssertEqual(transcript.messages.first?.tool?.output, "building")
+    XCTAssertEqual(transcript.messages.first?.tool?.status, .running)
+    transcript.apply(event(3, "message.end", #"{"message":{"role":"toolResult","toolCallId":"c1","content":[{"type":"text","text":"built"}],"truncated":true}}"#))
+    transcript.apply(event(4, "tool.update", #"{"toolCallId":"c1","partialResult":{"content":[{"type":"text","text":"late"}]}}"#))
+    XCTAssertEqual(transcript.messages.first?.tool?.output, "built", "a late update does not undo the result")
+    XCTAssertEqual(transcript.messages.first?.tool?.outputTruncated, true)
+  }
+
+  func testAQuestionShowsUntilPiStopsAsking() {
+    var transcript = ChatTranscript()
+    transcript.apply(event(1, "ui.prompt.start", #"{"kind":"confirm","title":"Delete the branch?"}"#))
+    XCTAssertEqual(transcript.question, ChatQuestion(kind: .confirm, title: "Delete the branch?"))
+    transcript.apply(event(2, "ui.prompt.end", #"{"kind":"confirm"}"#))
+    XCTAssertNil(transcript.question)
+    transcript.apply(event(3, "ui.prompt.start", #"{"kind":"something-new"}"#))
+    XCTAssertEqual(transcript.question?.kind, .custom, "an unknown kind is answered on the Mac")
+  }
+
+  func testAnActivitySnapshotSaysWhetherPiIsWorking() {
+    var transcript = ChatTranscript()
+    transcript.apply(event(1, "activity.snapshot", #"{"working":true}"#))
+    XCTAssertEqual(transcript.activity, .working)
+    transcript.apply(event(2, "activity.snapshot", #"{"working":false}"#))
+    XCTAssertEqual(transcript.activity, .idle)
+  }
+
+  func testSettlingIdleEndsAReplyAndAQuestionLeftOpen() {
+    var transcript = ChatTranscript()
+    transcript.apply(event(1, "agent.start"))
+    transcript.apply(event(2, "message.update", #"{"message":{"role":"assistant","content":"partial"}}"#))
+    transcript.apply(event(3, "ui.prompt.start", #"{"kind":"input"}"#))
+    transcript.settle(working: false)
+    XCTAssertEqual(transcript.activity, .idle)
+    XCTAssertTrue(transcript.live.isEmpty)
+    XCTAssertNil(transcript.question)
+  }
+
+  func testPicturesWithTheirDataAreShownAndOnesWithoutAreNamed() {
+    var transcript = ChatTranscript()
+    let png = Data([0x89, 0x50, 0x4E, 0x47]).base64EncodedString()
+    transcript.apply(message(1, role: "user", content: #"[{"type":"text","text":"look"},{"type":"image","data":"\#(png)","mimeType":"image/png"}]"#))
+    XCTAssertEqual(transcript.messages.first?.text, "look")
+    XCTAssertEqual(transcript.messages.first?.images.map(\.data), [Data([0x89, 0x50, 0x4E, 0x47])])
+    XCTAssertEqual(transcript.messages.first?.images.first?.mimeType, "image/png")
+    transcript.apply(message(2, role: "user", content: #"[{"type":"image","data":"cut…"}]"#))
+    XCTAssertEqual(transcript.messages.last?.text, "[Image attachment]", "a picture cut to cross the wire is named")
+    transcript.apply(message(3, role: "user", content: #"[{"type":"image","data":"\#(png)"}]"#))
+    XCTAssertEqual(transcript.messages.last?.text, "", "a picture alone is still a message")
+    XCTAssertEqual(transcript.messages.last?.images.count, 1)
+  }
 }
