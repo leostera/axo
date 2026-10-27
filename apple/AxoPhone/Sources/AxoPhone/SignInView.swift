@@ -14,6 +14,17 @@ struct SignInView: View {
   @State private var screen: CGSize = .zero
   @StateObject private var mascot = Mascot()
 
+  /// Cloudflare's orange, for the button that signs in with it.
+  private static let cloudflareOrange = Color(red: 0xF3 / 255, green: 0x80 / 255, blue: 0x20 / 255)
+
+  /// Which build this is, for bug reports: "0.1.0 (12)". Build 0 is an unstamped development build.
+  private static var buildLine: String {
+    let info = Bundle.main.infoDictionary
+    let version = info?["CFBundleShortVersionString"] as? String ?? "?"
+    let build = info?["CFBundleVersion"] as? String ?? "?"
+    return "axo \(version) (\(build))"
+  }
+
   /// Long enough for the hands to come down before the app takes over.
   private static let uncoverPause: Duration = .milliseconds(650)
 
@@ -23,7 +34,7 @@ struct SignInView: View {
       AxoMascotView(mascot: mascot)
         .frame(height: 96)
       Text("axo")
-        .font(.custom("Fredoka-Bold", size: 64, relativeTo: .largeTitle))
+        .font(.custom("Fredoka-Bold", size: 128, relativeTo: .largeTitle))
         .accessibilityLabel("Axo")
       // Yes, olotl. Axo is an axolotl.
       Text("your agentic experience olotl")
@@ -36,19 +47,21 @@ struct SignInView: View {
         Task { await signIn() }
       } label: {
         HStack {
-          if working { ProgressView() }
+          if working { ProgressView().tint(Self.cloudflareOrange) }
           Text("Continue with Cloudflare").bold()
         }
-        .frame(maxWidth: .infinity)
-        .padding(.vertical, 6)
+        .foregroundStyle(Self.cloudflareOrange)
+        .frame(maxWidth: .infinity, minHeight: 52)
+        .contentShape(Capsule())
+        .overlay { Capsule().stroke(Self.cloudflareOrange, lineWidth: 1.5) }
       }
-      .buttonStyle(.borderedProminent)
-      .controlSize(.large)
+      .buttonStyle(.plain)
+      .opacity(working ? 0.6 : 1)
       .disabled(working)
-      Text("Axo only learns who you are. It never manages your Cloudflare account.")
-        .font(.caption)
-        .foregroundStyle(.secondary)
-        .multilineTextAlignment(.center)
+      Text(Self.buildLine)
+        .font(.caption2.monospacedDigit())
+        .foregroundStyle(.tertiary)
+        .accessibilityIdentifier("build-number")
     }
     .padding(24)
     .contentShape(Rectangle())
