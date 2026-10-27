@@ -5,6 +5,8 @@ type ApiEvent =
   | { event: "host_registered" }
   | { event: "sign_in"; client: "web" | "native"; outcome: "started" | "completed" | "refused" | "failed"; stage?: string }
   | { event: "connection_closed"; role: "client" | "daemon"; code: number }
+  | { event: "pi_event_not_stored"; reason: "unknown_session" | "invalid" | "conflict" }
+  | { event: "pi_event_trimmed"; bytes: number }
   | {
       event: "relay_reply";
       method: RemoteMethod;

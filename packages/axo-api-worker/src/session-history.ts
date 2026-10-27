@@ -11,7 +11,56 @@ export { storedPiEventSchema };
 export type { StoredPiEvent };
 export const sessionEventPageResultSchema = piEventPageResultSchema;
 
-const SESSION_EVENT_MAX_BYTES = 60_000;
+export const SESSION_EVENT_MAX_BYTES = 60_000;
+
+/**
+ * Pi events that only show progress: each `message.update` repeats the whole message so far and
+ * `tool.update` a tool's output so far, and the finished `message.end` / `tool.end` follows.
+ * They go to the clients watching, live, and are never stored: history keeps what was said.
+ */
+export const TRANSIENT_PI_EVENTS: ReadonlySet<string> = new Set(["message.update", "tool.update"]);
+
+/** Room kept for everything around a trimmed tool result's text. */
+const TRIMMED_TEXT_BYTES = 40_000;
+
+/**
+ * Makes an event fit history. Only a tool's result is commonly too large (a long command's
+ * output): its text is cut to the first 40 kB and the message marked `truncated`, so a client can
+ * ask the Mac for the rest. Any other event too large to keep is not kept (`null`).
+ */
+export function fitForHistory(data: unknown): { data: unknown; trimmedFrom?: number } | null {
+  const bytes = byteLength(data);
+  if (bytes === null) return null;
+  if (bytes <= SESSION_EVENT_MAX_BYTES) return { data };
+  const message = (data as { message?: { role?: unknown; content?: unknown } } | null)?.message;
+  if (typeof data !== "object" || data === null || message?.role !== "toolResult") return null;
+  const text = typeof message.content === "string"
+    ? message.content
+    : Array.isArray(message.content)
+      ? message.content.map(block => (block as { type?: unknown; text?: unknown }).type === "text" ? String((block as { text?: unknown }).text ?? "") : "").join("")
+      : "";
+  const trimmed = {
+    ...data,
+    message: { ...message, content: [{ type: "text", text: cutUtf8(text, TRIMMED_TEXT_BYTES) }], truncated: true },
+  };
+  return byteLength(trimmed)! <= SESSION_EVENT_MAX_BYTES ? { data: trimmed, trimmedFrom: bytes } : null;
+}
+
+function byteLength(value: unknown): number | null {
+  try {
+    const encoded = JSON.stringify(value);
+    return encoded === undefined ? null : new TextEncoder().encode(encoded).byteLength;
+  } catch {
+    return null;
+  }
+}
+
+/** The longest prefix of `text` within `limit` UTF-8 bytes, never splitting a character. */
+function cutUtf8(text: string, limit: number): string {
+  const bytes = new TextEncoder().encode(text);
+  if (bytes.byteLength <= limit) return text;
+  return new TextDecoder().decode(bytes.slice(0, limit)).replace(/\uFFFD$/u, "");
+}
 const sessionIdSchema = z.number().int().positive().max(Number.MAX_SAFE_INTEGER);
 const piSessionIdSchema = z.string().min(1).max(128).refine(value => !/[\u0000-\u001f\u007f]/u.test(value));
 const streamSequenceSchema = z.number().int().positive().max(Number.MAX_SAFE_INTEGER);

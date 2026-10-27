@@ -15,7 +15,8 @@ import {
 } from "@axo/protocol/v1";
 import { constantTimeEqual, hmac } from "./crypto";
 import type { Peer } from "../relay/peer";
-import { sessionDOName, sessionEventBindingSchema, sessionEventPageRequestSchema, sessionEventPageResultSchema } from "../session-history";
+import { fitForHistory, sessionDOName, sessionEventBindingSchema, sessionEventPageRequestSchema, sessionEventPageResultSchema, TRANSIENT_PI_EVENTS } from "../session-history";
+import { recordApiEvent } from "../observability";
 
 import type { AccountProfile } from "./account-access";
 type PairingRow = {
@@ -404,15 +405,28 @@ export class AxoAccountManager extends AxoHostRelay {
       case "terminal.output":
         return;
       case "pi.event": {
+        // Progress is for whoever is watching now; the relay forwards it without keeping it.
+        if (TRANSIENT_PI_EVENTS.has(hostEvent.name)) return;
+        // An event history cannot keep is skipped, never a reason to drop the Mac's connection:
+        // that would cut every client off over one long reply.
         const session = sql.exec<StoredHostSessionRow>(
           "SELECT * FROM host_sessions_v1 WHERE host_id = ? AND session_id = ?",
           input.hostId,
           hostEvent.sessionId,
         ).toArray()[0];
-        if (!session) throw new Error("Pi event references an unknown Session");
+        if (!session) {
+          recordApiEvent({ event: "pi_event_not_stored", reason: "unknown_session" });
+          return;
+        }
         const accountId = this.accountId();
         if (!accountId) throw new Error("Account identity is unavailable");
-        const binding = sessionEventBindingSchema.parse({
+        const fitted = fitForHistory(hostEvent.data);
+        if (!fitted) {
+          recordApiEvent({ event: "pi_event_not_stored", reason: "invalid" });
+          return;
+        }
+        if (fitted.trimmedFrom !== undefined) recordApiEvent({ event: "pi_event_trimmed", bytes: fitted.trimmedFrom });
+        const binding = sessionEventBindingSchema.safeParse({
           accountId,
           hostId: input.hostId,
           hostGeneration: input.hostGeneration,
@@ -421,12 +435,19 @@ export class AxoAccountManager extends AxoHostRelay {
           streamId: hostEvent.streamId,
           sequence: hostEvent.sequence,
           name: hostEvent.name,
-          data: hostEvent.data,
+          data: fitted.data,
         });
+        if (!binding.success) {
+          recordApiEvent({ event: "pi_event_not_stored", reason: "invalid" });
+          return;
+        }
         const appended = await this.ctx.exports.AxoSessionDO.getByName(
           sessionDOName(accountId, input.hostId, hostEvent.sessionId),
-        ).append(binding) as unknown as { ok: boolean };
-        if (!appended.ok) throw new Error("Session history binding conflict");
+        ).append(binding.data) as unknown as { ok: boolean };
+        if (!appended.ok) {
+          recordApiEvent({ event: "pi_event_not_stored", reason: "conflict" });
+          return;
+        }
         sql.exec("UPDATE account_hosts SET last_seen_at = ? WHERE host_id = ?", now, input.hostId);
         return;
       }
