@@ -9,263 +9,219 @@
 
 ## Summary
 
-I propose that the Pi agent running in each Axo Session becomes a client of Axod: it speaks the Axo protocol as an identified, scoped client. Axod issues each Pi pane a credential at spawn and accepts it on its existing local JSON-RPC socket. Calls made with it carry an *agent principal* that Axod checks against per-method scopes, attributes in logs and UI, and protects with loop limits. The protocol stays the single source of capabilities. Axod gains the read methods agents need (list, read and search Sessions) and a local prompt method, including prompting the agent's own Session. The pi-axo extension exposes these as Pi tools and is a thin adapter over the protocol, never a place where capabilities are implemented. Other clients, such as an `axo` command line or an MCP server, are left for later; the design does not rule them out. Requests that name Sessions on another Mac are routed by Axod to the cloud API, which implements the same methods by relaying to the owning Axod or by answering from its stored Pi history. This lets an agent control its harness: start Sessions, find and read other conversations, send messages to panes, and queue messages to itself.
+I propose that the Pi agent running in each Axo Session becomes a client of Axod: the pi-axo extension inside Pi connects to Axod's local JSON-RPC socket and speaks the same Axo protocol as the Mac app. Pi says which Session it is when it connects, so Axod knows who is calling. That identity lets Axod resolve "my Session", attribute what an agent did, and stop runaway chains of agents prompting each other. Axo is a closed, trusted system, so there is no authentication and there are no permission scopes. Axod gains a few methods agents need: the path to any Session's transcript, so Pi can search and read it with ordinary Unix tools; a local prompt method, including prompting the agent's own Session; and plain-text pane screens. pi-axo exposes these as Pi tools and implements no capabilities of its own. Other clients, such as an `axo` command line, are left for later.
 
 ## Motivation
 
 An agent in an Axo Session sees one PTY and nothing else. It cannot see that other Sessions exist, find out what they are about, look up what another conversation decided, start a Session for a side task, or send a message to another pane. The person has to do all of that by hand, copying between panes.
 
-The capability already exists, but without any rules. `crates/axo-server/src/lib.rs` binds `axod.sock` with mode `0600` and no further authentication, so any process running as the user, including Pi through its shell tool, can already call every `axo.*` method: list Sessions, type into any PTY, archive Workspaces, change the agent command. Nothing records which Session did it, nothing limits it, and nothing documents it for agents. An agent that finds the socket gets full owner powers anonymously.
-
 What exists today, verified in the code:
 
-- **Local protocol:** `crates/axo-protocol/src/rpc.rs` defines `axo.session.*`, `axo.workspace.*`, `axo.shell.*`, `axo.terminal.*`, `axo.config.*` and `axo.relay.*`. There is no method to read or search a conversation, and no local equivalent of `axo.remote.session.prompt`.
-- **Pi bridge:** `packages/pi-axo` runs a per-Session bridge *server* that Axod connects to. Pi only emits events (`axo.session.metadata`, `session.import.requested`), and Axod sends `send` (with `steer`/`followUp`), `cancel`, `shutdown` and `shutdownIfIdle`. Pi has no way to ask Axod a question and get an answer, so a tool like "list Sessions" cannot be built on it today.
-- **Pane environment:** Pi panes receive `AXO_SESSION_ID`, `AXO_PANE_ID`, `AXO_PI_SESSION_FILE`, `AXO_PI_BRIDGE_SOCKET` and `AXO_PI_BRIDGE_TOKEN` (`crates/axo-pi/src/launch.rs`). Terminal panes receive no `AXO_*` variables at all (`crates/axo-server/src/session/spawn.rs`).
-- **Remote:** `packages/axo-api/src/v1.ts` defines `axo.remote.*`, which the cloud relays to the owning Axod (`crates/axo-server/src/session/handlers.rs`). The API worker stores each Session's Pi events in a Durable Object (`packages/axo-api-worker/src/session-history.ts`).
+- **Local protocol:** `crates/axo-protocol/src/rpc.rs` defines `axo.session.*`, `axo.workspace.*`, `axo.shell.*`, `axo.terminal.*`, `axo.config.*` and `axo.relay.*` on `axod.sock`. The socket is mode `0600` with no other authentication (`crates/axo-server/src/lib.rs`), and the Mac app is its only intended client. There is no method that reveals where a Session's conversation is, and no local equivalent of `axo.remote.session.prompt`.
+- **Pi bridge:** Axod and Pi already talk over a per-Session Unix socket, but in the opposite direction. The pi-axo extension listens on it and Axod connects (`packages/pi-axo/src/bridge-server.ts`, `crates/axo-pi/src/connection.rs`). Axod sends commands (`send` with `steer`/`followUp`, `cancel`, `shutdown`, `shutdownIfIdle`), and Pi can only emit events (`axo.session.metadata`, `session.import.requested`). Pi cannot ask Axod a question and get an answer, so a tool like "list Sessions" cannot be built on it.
+- **Pi's environment:** Axod starts Pi with `AXO_SESSION_ID`, `AXO_PANE_ID`, `AXO_PI_SESSION_FILE`, `AXO_PI_BRIDGE_SOCKET` and `AXO_PI_BRIDGE_TOKEN` (`crates/axo-pi/src/launch.rs`). Pi does not know where `axod.sock` is.
+- **Transcripts:** each Session's Pi conversation is a JSONL file Pi writes under Axod's private directory (`<server-dir>/pi-sessions/<workspace-id>/<uuid>.jsonl`). Axod stores its path as `pi_session_file` and never writes it.
+
+Pi could already reach `axod.sock` through its shell tool if it knew the path, but it would be anonymous: Axod couldn't tell which Session acted, so it couldn't resolve "my Session", show who did what, or stop a loop.
 
 Use cases:
 
-1. "What did we decide about the relay reconnect backoff?" The agent searches this Mac's Sessions and reads the matching messages.
-2. "Spin off a Session to investigate the flaky test and report back." The agent creates a Session in its Workspace, prompts it, and later reads its result.
+1. "What did we decide about the relay reconnect backoff?" The agent lists Sessions, gets their transcript paths, and runs `rg` over them.
+2. "Spin off a Session to investigate the flaky test and report back." The agent creates a Session in its Workspace, prompts it, and later reads its transcript.
 3. "Run the dev server in my terminal pane and tell me when it's up." The agent types into its own terminal pane and reads its screen.
 4. "Remind yourself to re-run the benchmarks after the build finishes." The agent queues a follow-up message to its own Session.
-5. "Which of my Sessions on the studio Mac are waiting for me?" The agent lists Sessions on another Mac through the cloud.
 
 ## Goals
 
 - One protocol: Pi uses the same `axo.*` methods as the Mac app, with no separate agent API.
-- Every Pi agent gets an identity Axod can attribute, scope and revoke.
-- Read access: list Sessions, read a Session's conversation page by page, search conversations.
-- Control: create Sessions, prompt any Session (including the caller's own), send input to panes, read pane screens.
-- The same methods work across Macs, with each request routed to whoever owns the Session.
-- Nothing in the design is Pi-specific beyond how the credential reaches the agent, so other clients can be added later.
+- Axod knows which Session every agent call comes from.
+- Pi can find and read any local Session's conversation with the tools it already has.
+- Pi can create Sessions, prompt any Session including its own, send input to panes, and read pane screens.
+- Agents prompting agents cannot run away.
 
 ## Non-goals
 
-- Clients other than Pi for now: no `axo` command line, MCP server, or credentials for terminal panes. See [Future possibilities](#future-possibilities).
-- A security sandbox between programs running as the same Unix user. See [Security and privacy](#security-and-privacy).
-- New Pi bridge record types for introspection. The bridge keeps its current job: Pi lifecycle, Pi events and Pi commands.
-- Searching terminal scrollback. Search covers Pi conversations.
-- Scheduled or timed messages (`at 5pm`, cron). Queuing a follow-up message is in scope; timers are a future possibility.
-- Sharing Sessions between accounts.
+- Authentication, permission scopes or approvals. Axo is a closed, trusted system: everything runs as the same user on the person's own Mac.
+- A search engine in Axod. Pi searches transcripts itself.
+- Sessions on other Macs. See [Future possibilities](#future-possibilities).
+- Clients other than Pi: an `axo` command line, MCP, or agents in terminal panes.
+- Scheduled or timed messages (`at 5pm`, cron). Queuing a follow-up message is in scope.
+- Replacing the existing bridge. It keeps carrying Pi lifecycle, Pi events and Axod's commands to Pi.
 
 ## Guide-level explanation
 
 ### Mental model
 
-Axod has two kinds of client:
+Pi becomes a client of Axod, just like the Mac app. There are two connections between them, one in each direction:
 
-- **Owner:** the person, through the Mac app, phone or web. Owners can do everything, as today.
-- **Agent:** the Pi running in a Session's Pi pane. An agent client is tied to its Session, and can only use the methods its scopes allow.
-
-Axod already starts Pi with `AXO_SESSION_ID` and `AXO_PANE_ID`. It adds two variables:
-
-```text
-AXO_SOCKET=/Users/me/Library/Application Support/Axo/run/axod.sock
-AXO_AGENT_TOKEN=<opaque, per Pi process>
-```
-
-The pi-axo extension opens the socket, sends `axo.client.authenticate` with the token, and from then on every call on that connection is made as *that agent*. `axo.client.whoami` says which Session, Workspace and Mac that is, and which scopes the agent holds.
+- **Axod → Pi (exists):** the bridge. Axod dials the socket pi-axo serves, receives Pi's events, and sends it commands.
+- **Pi → Axod (new):** pi-axo dials `axod.sock` and calls `axo.*` methods, like the Mac app does.
 
 ```mermaid
 flowchart LR
-  Pi[Pi + pi-axo tools] -->|JSON-RPC + agent token| Axod
-  App[Mac app] -->|JSON-RPC, owner| Axod
-  Axod -->|other Macs' Sessions| API[Cloud API]
-  API -->|axo.remote.* relay| OtherAxod[Another Mac's Axod]
-  API -->|offline: stored Pi history| Store[(Session history)]
+  App[Mac app] -->|axo.* JSON-RPC| Axod
+  Pi[Pi + pi-axo tools] -->|axo.* JSON-RPC, as Session N| Axod
+  Axod -->|bridge: commands| Pi
+  Pi -->|bridge: events| Axod
 ```
 
-### Using it from Pi
+Axod adds one variable to Pi's environment, next to the `AXO_SESSION_ID` it already sets:
 
-The pi-axo extension adds tools that turn into protocol calls:
+```text
+AXO_SOCKET=/Users/me/Library/Application Support/Axo/run/axod.sock
+```
+
+pi-axo connects and sends `axo.client.hello { sessionId }`. From then on, calls on that connection come from that Session. Axod uses this to resolve "my Session", record which Session started or prompted what, and apply the loop limits below. The hello is identification, not authentication.
+
+### The tools
 
 | Tool | Method |
 |---|---|
 | `axo_list_sessions` | `axo.session.list` |
-| `axo_search_sessions` | `axo.session.search` |
-| `axo_read_session` | `axo.session.history` |
+| `axo_session_file` | `axo.session.file` |
 | `axo_new_session` | `axo.workspace.session.create` |
 | `axo_prompt_session` | `axo.session.prompt` |
-| `axo_pane_input` / `axo_pane_screen` | `axo.terminal.input` / `axo.terminal.screen` |
+| `axo_pane_input` | `axo.terminal.input` |
+| `axo_pane_screen` | `axo.terminal.screen` |
 
-A conversation might go:
+Searching is two steps: find the files, then use Pi's own tools on them.
+
+> **You:** What did we decide about the relay reconnect backoff?
+>
+> **Pi:** *(calls `axo_list_sessions`, then `axo_session_file` for the likely Sessions, then runs `rg -n "backoff" <paths>` and reads the surrounding messages with `jq`)* In **Relay reconnect** (yesterday) we capped it at 30 s with jitter, because …
+
+Delegating and following up:
 
 > **You:** Spin off a session to bisect the flaky `relay_reconnect` test, and tell me when it has an answer.
 >
-> **Pi:** *(calls `axo_new_session`, then `axo_prompt_session` with the task, then `axo_prompt_session` on its own Session with `delivery: "followUp"` and the text "Check Session 7's result")* Started **Session 7** for the bisect; I'll check on it when this turn ends.
+> **Pi:** *(calls `axo_new_session`, `axo_prompt_session` with the task, then `axo_prompt_session` on its own Session with `delivery: "followUp"` and "Check Session 7's result")* Started **Session 7** for the bisect; I'll check on it when this turn ends.
 
-The new Session's sidebar row shows that it was started by the asking Session, and the prompt in its transcript is marked as coming from that Session.
-
-### What an agent may do by default
-
-| Scope | Grants | Default |
-|---|---|---|
-| `read:host` | List Sessions and Workspaces on this Mac; read and search their conversations | Granted |
-| `control:self` | Prompt its own Session; input to and read the screens of its own Session's panes; open and close its own terminal panes | Granted |
-| `control:workspace` | Create Sessions in its Workspace; prompt them; input to their panes | Granted |
-| `control:host` | The same for Sessions in other Workspaces | Asks the owner |
-| `read:account` | Read and search Sessions on the person's other Macs | Asks the owner |
-
-Some methods are never available to agents: `axo.config.set`, `axo.relay.*`, `axo.workspace.archive`, `axo.workspace.create`, and closing another Session.
+The new Session's sidebar row shows which Session started it, and the prompt in its transcript is marked as coming from that Session.
 
 ## Reference-level explanation
 
-### Principals and credentials
+### Identifying the caller
 
-- Axod creates a 256-bit random agent token each time it launches Pi, next to the bridge token it already creates (`spawn_new_pi`). It keeps only a hash in memory, mapped to `(session_id, pane_id, runtime_id)`.
-- The token reaches Pi through `AXO_AGENT_TOKEN`, alongside `AXO_SOCKET`. It is separate from `AXO_PI_BRIDGE_TOKEN`, which proves Axod to the bridge, the opposite direction.
-- A token is revoked when its Pi process exits or is replaced (Pi restart, `/resume`, Axod restart). Tokens are never stored on disk; a relaunched Pi gets a new one.
-- `axo.client.authenticate { token }` binds a connection to an agent principal and fails with `-32001` for an unknown or revoked token. A connection that never authenticates stays an owner connection, so the Mac app keeps working unchanged. See the unresolved question on making that boundary real.
-- Once a token is revoked, calls on connections bound to it fail with `-32001`.
+- Axod sets `AXO_SOCKET` when it launches Pi (`crates/axo-pi/src/launch.rs`).
+- `axo.client.hello { sessionId }` names the calling Session on a connection, using the `AXO_SESSION_ID` UUID. Axod checks that the Session is open and has a Pi pane, and fails with `-32602` otherwise. A connection that never says hello is the person, as today.
+- Calls that need a calling Session (prompt provenance, `"self"` targets) fail with `-32602` on a connection without a hello.
+- `axo.client.whoami` returns the calling Session's ID, Workspace and panes.
 
 ### Methods
 
-New methods. Each existing method also gets a required scope.
+New methods:
 
-| Method | Scope | Notes |
+| Method | Result | Notes |
 |---|---|---|
-| `axo.client.authenticate` | none | Binds the connection to an agent principal |
-| `axo.client.whoami` | none | Returns the agent's Session, pane, Workspace, Mac and scopes |
-| `axo.session.history { sessionId, before?, limit }` | `read:host` | Pages of Pi messages, newest first, from the Pi transcript |
-| `axo.session.search { query, scope, limit }` | `read:host` or `read:account` | Returns matches with a snippet, Session, message ID and time |
-| `axo.session.prompt { sessionId, text, delivery }` | `control:*` by target | `delivery`: `steer`, `followUp` or `turn`. Sent through the Pi bridge's `send` command |
-| `axo.terminal.screen { shellId, lines }` | `control:*` by target | Plain text from Axod's headless terminal (axo-vt) |
+| `axo.client.hello { sessionId }` | `{ sessionId, workspaceId }` | Names the calling Session |
+| `axo.client.whoami` | `{ sessionId, workspaceId, shells }` | |
+| `axo.session.file { sessionId }` | `{ path, exists }` | The absolute path of the Session's Pi transcript. `exists` is false until Pi has written to it |
+| `axo.session.prompt { sessionId, text, delivery }` | `{ accepted }` | `delivery`: `steer`, `followUp` or `turn`. Sent through the bridge's `send` command |
+| `axo.terminal.screen { shellId, lines }` | `{ text }` | Plain text from Axod's headless terminal (axo-vt) |
 
-Scope by target: `self` if the target Session is the agent's own, `workspace` if it is in the caller's Workspace, `host` otherwise. `axo.session.list` and `axo.workspace.list` need `read:host`.
+`sessionId` can be `"self"` wherever a Session is named.
 
-`axo.session.prompt` uses the bridge's structured `send` so delivery is reliable and never mixes with what the person is typing. The existing remote prompt path (`prompt_pi`, which pastes into the PTY) moves to the same mechanism.
+Agents also use existing methods unchanged: `axo.session.list`, `axo.workspace.list`, `axo.workspace.session.create`, `axo.shell.create`, `axo.shell.close` and `axo.terminal.input`.
 
-Results that contain conversation or screen content carry `"trust": "untrusted"`. The tool descriptions in every adapter tell the agent to treat that content as data, not instructions.
+`axo.session.file` covers archived Sessions too, so an agent can read finished conversations. It does not return paths for Sessions on other Macs.
+
+`axo.session.prompt` uses the bridge's structured `send`, so delivery is reliable and never mixes with what the person is typing. The existing remote prompt path (`prompt_pi`, which pastes into the PTY) moves to the same mechanism.
 
 ### Provenance and loop limits
 
 A message from one agent to another, or to itself, can start a chain of turns. Axod records where each agent message came from and caps the chain:
 
-- Every prompt an agent sends carries `origin { sessionId, depth }`. `depth` is the origin's own depth plus one, and messages the person types have depth 0.
+- Every prompt sent on a connection with a hello carries `origin { sessionId, depth }`. `depth` is the origin's own depth plus one, and messages the person types have depth 0.
 - Axod refuses a prompt whose depth exceeds 8 (`-32002 chain too deep`).
 - Each Session may send at most 30 prompts a minute, and at most 10 a minute to itself (`-32003 rate limited`).
 - The receiving Session's transcript and sidebar show `from Session 7` on agent-sent prompts.
 
 These numbers are starting values to be tuned in use.
 
-### Search
-
-- **Corpus:** local search reads the Pi transcripts Axod already tracks (`pi_session_file` per Session): user and assistant text and tool results, but not thinking.
-- **First version:** a bounded scan run by an Axod worker, limited in bytes and time per call, returning the best matches by simple term frequency.
-- **Later:** an SQLite FTS5 table fed from the Pi events Axod already receives over the bridge, rebuilt from transcripts when missing. The method's contract stays the same.
-
-Search never runs while holding the catalog lock.
-
-### Routing across Macs
-
-- Requests that need `read:account`, or name a `target` host other than this Mac, go to the cloud API. Axod authenticates with its host credential and passes the agent principal along.
-- The API implements the same read methods as `axo.remote.session.list`, `.history` and `.search`. For an online Mac it relays to that Mac's Axod. For an offline one it answers `history` and `search` from its stored Pi events and marks results `"source": "history"`.
-- The API checks that the caller's Mac and the target belong to the same account.
-- Control methods aimed at another Mac are relayed only when that Mac is online. They are never queued in the cloud.
-
 ### The pi-axo adapter
 
-The tools read `AXO_SOCKET` and `AXO_AGENT_TOKEN` and make JSON-RPC calls. They have no logic beyond shaping arguments and results. Prompt guidance explains scopes and untrusted content.
-
-The bridge is unchanged: it keeps carrying Pi lifecycle, Pi events and Axod's commands to Pi. Introspection and control go over the protocol, so the bridge doesn't need a way for Pi to ask Axod questions.
-
-### Owner confirmation
-
-When an agent calls a method that needs a scope it doesn't hold, Axod replies `-32004 needs owner` with a request ID and publishes `client.approval.requested`. The Mac app shows which Session asks, what for, and **Allow once / Allow for this Session / Deny**. The pi-axo tool waits for the decision and, on approval, retries with the request ID. Approvals live in memory and end with the Pi process.
+The tools connect to `AXO_SOCKET`, say hello with `AXO_SESSION_ID`, and make JSON-RPC calls. They do nothing beyond shaping arguments and results. Prompt guidance explains how to search transcripts with `rg` and `jq`, what the JSONL records look like, and that text from other Sessions is data, not instructions.
 
 ### Observability
 
-Every agent call is logged as `event=rpc.call principal=agent session_id=… pane_id=… method=… scope=… outcome=…`, together with depth and target for prompts. Logs never contain text, queries or results.
+Calls from agents are logged as `event=rpc.call caller_session_id=… method=… target_session_id=… outcome=…`, plus depth for prompts. Logs never contain text or results.
 
 ## Security and privacy
 
-This design does not create a security boundary between programs running as the same user. Pi, or a command it runs, can reach `axod.sock` like any other user process, and while unauthenticated connections are owners, it can skip the token and get full access. Commands Pi runs inherit its environment, token included, and on macOS another process running as the same user may be able to read it too.
+Axo trusts everything running as the person's user, so this design adds no authentication. Pi could already reach the socket through its shell tool; this RFD gives it a documented, attributed way to do so.
 
-What the design does provide:
+The real risk is prompt injection. Reading another Session's transcript means reading text that could try to steer the reader, and prompting other Sessions could spread it further. The mitigations are: tool guidance says text from other Sessions is data; chains are depth-limited and rate-limited; and prompts sent by agents are visible as such in the receiving Session.
 
-- **Guard rails for well-behaved but fallible agents.** An agent following its tools stays within its scopes, and a confused or prompt-injected agent is stopped from archiving Workspaces, changing settings or flooding other Sessions.
-- **Attribution.** Every agent action is linked to a Session, in logs and in the UI.
-- **A place to enforce later.** Once owner connections authenticate too (see [Unresolved questions](#unresolved-questions)), the same scopes become a real boundary without changing the protocol.
-
-Cross-Session reading creates a new path for prompt injection: text in one conversation can try to steer whichever agent reads it, and prompting can spread it further. The defenses are: content is marked untrusted; by default control reaches only the caller's own Workspace; chains are depth-limited and rate-limited; and agent-sent prompts are visible as such.
-
-Transcripts and screens can contain secrets. By default read access covers this Mac only. Reading other Macs needs owner approval, and conversation content leaves the Mac only to the person's own account, as RFD0014 already allows.
+Transcripts can contain secrets. `axo.session.file` only reveals paths on this Mac to a process that could already read them.
 
 ## Rollout
 
-1. **Spec:** agent principal, scopes, error codes, and the new method schemas in `axo-protocol` and `packages/axo-api`. Bump the protocol version and advertise the new methods.
-2. **Axod, local:** agent tokens and environment, `authenticate` and `whoami`, scope checks on all methods, `history`, `search` (scan), `prompt` through the bridge, `terminal.screen`, provenance and limits, logging.
-3. **Pi:** pi-axo tools.
-4. **Mac:** approval sheet, "from Session N" markers, sidebar attribution.
-5. **Cross-Mac:** `axo.remote.session.history` and `.search` in the API and the relay, routing in Axod.
-6. **Later:** FTS5 index.
+1. **Spec:** `axo.client.*`, `axo.session.file`, `axo.session.prompt`, `axo.terminal.screen` and their errors in `axo-protocol`. Bump the protocol version and advertise them.
+2. **Axod:** `AXO_SOCKET` in Pi's environment, hello and whoami, the new methods, provenance and limits, logging, and moving `prompt_pi` to the bridge's `send`.
+3. **Pi:** pi-axo tools and prompt guidance.
+4. **Mac:** "from Session N" markers and sidebar attribution.
 
-Every step adds to the protocol without breaking existing clients: unauthenticated connections behave as today.
+Each step adds to the protocol without breaking existing clients: connections without a hello behave as today.
 
 ## Testing
 
-- Axod integration tests: each method under each scope; revocation on Pi exit, Pi restart and Axod restart; depth and rate limits; untrusted marking.
+- Axod integration tests: hello for an open, closed and Pi-less Session; `"self"` resolution; `session.file` for open and archived Sessions; depth and rate limits; screen text matching what a command printed.
 - An end-to-end test with the Pi fixture: one Session creates and prompts another, which answers. Then a self follow-up is delivered after the turn ends.
-- API tests for cross-account refusal and offline history answers.
+- pi-axo tests against a fake Axod socket.
 
 ## Drawbacks
 
-- **Larger surface.** Every method needs a scope decision, and the protocol now has two kinds of client.
-- **Pi only, for now.** Claude Code or Codex running in a terminal pane gets nothing until another client is added.
-- **Guard rails, not a sandbox.** People may read scopes as security they don't provide. The documentation and UI have to be clear about that.
+- **Raw transcripts are an interface.** Agents read Pi's JSONL format directly, so a format change in Pi can break the agent's queries. Pi's session format is documented, which limits this.
+- **Two connections between Pi and Axod,** one per direction, with separate lifecycles.
 - **Agents talking to agents.** Chains of agent prompts are hard to follow and debug, and can cost money. The limits blunt this but don't remove it.
-- **Two implementations.** The read methods exist in Axod and in the cloud API and must stay in step.
+- **Pi only, for now.** Claude Code or Codex running in a terminal pane gets nothing until another client is added.
 
 ## Rationale and alternatives
 
-### Curated tools over the Pi bridge
+### A search method in Axod
 
-Add a request channel to the bridge and implement list, search and prompt as bridge records. This is about as quick as the proposal, but it creates a second, Pi-only API alongside the protocol, and every capability would have to be implemented again for the next client (an `axo` command line, MCP, the phone). Rejected.
+Index transcripts in Axod (a scan, later SQLite FTS5) and offer `axo.session.search` and `axo.session.history`. This gives structured results and works across Macs through the cloud, but it builds a search engine Pi doesn't need: Pi already has `rg` and `jq`, and transcripts are local files. It can be added later without changing `axo.session.file`.
 
-### MCP as the primary interface
+### A request channel on the existing bridge
 
-Implement capabilities in an MCP server. MCP is a good adapter, but making it the source of truth puts Axo's capabilities behind a protocol Axo's own clients don't speak, and still leaves identity unsolved. MCP stays an adapter over the protocol.
+Let Pi send requests over the bridge Axod already connects to. This avoids a second connection, but it creates a second, Pi-only API alongside the protocol, and every capability would have to be implemented again for the next client. Rejected for now. See the unresolved question on merging the connections.
 
-### A separate socket per agent
+### Authentication and scopes
 
-Give each Pi its own socket that implies its identity, with no token. It needs no credential in the environment, but it multiplies listeners and paths and adds lifecycle work for little gain while the user boundary is the same either way. It's worth reconsidering if tokens in the environment turn out to be a real problem.
+Give each Pi a token and check per-method scopes, with owner approval for wider reach. In a closed system where everything runs as the same user, this is ceremony without a boundary: a process can skip the token and use the socket directly. Identification gives attribution and loop limits without it.
 
 ### Do nothing
 
-Pi can already reach `axod.sock` through its shell tool and get full, anonymous, unlimited access. Doing nothing keeps that and gives a well-behaved agent nothing to use.
+Pi can already reach `axod.sock` through its shell tool if it finds the path, anonymously and without limits. Doing nothing keeps that and gives a well-behaved agent nothing to use.
 
 ## Prior art
 
-- RFD0014 established Axod as the sole owner of Session topology and Pi as the sole writer of transcripts. This RFD keeps both: agents read transcripts through Axod and act through Axod. RFD0014's standalone home Sessions have since been replaced by a Home Workspace, so every Session now has a Workspace, which keeps the `workspace` scope simple.
-- tmux exposes its whole control surface through the client protocol to any process in a pane (`tmux send-keys`, `capture-pane`, `new-session`), with no identity or limits. This RFD takes the reach, adds identity, scopes and attribution, and starts with one client: the agent.
-- Unix capability tokens in the environment (`SSH_AUTH_SOCK`, `GPG_AGENT_INFO`, `DBUS_SESSION_BUS_ADDRESS`) show a familiar way of handing a child process access to an agent, along with its known weakness that same-user processes can read it.
+- RFD0014 established Axod as the sole owner of Session topology and Pi as the sole writer of transcripts. This RFD keeps both: agents read transcripts but never write them, and act through Axod. RFD0014's standalone home Sessions have since been replaced by a Home Workspace, so every Session has a Workspace.
+- tmux exposes its whole control surface to any process in a pane (`tmux send-keys`, `capture-pane`, `new-session`) through `$TMUX`, without identity or limits. This RFD takes that reach and adds caller identity and loop limits.
 
 ## Unresolved questions
 
 ### Before acceptance
 
-- Should owner connections authenticate too, for example with a credential held by the Mac app, so that scopes become a real boundary? That changes how the Mac app connects to Axod.
-- Default grants: should `control:workspace` be granted by default, or ask the first time?
+- Should the bridge eventually become a single connection that Pi dials into Axod, carrying events, commands and `axo.*` calls, instead of two connections in opposite directions?
+- Should some methods be off-limits to agents even in a trusted system (`axo.config.set`, `axo.relay.*`, `axo.workspace.archive`), as a guard against mistakes rather than attacks?
 
 ### During implementation
 
 - The exact depth and rate limits.
-- Paging and cursors for `axo.session.history`, and how they match the cloud's stored-event cursors.
 - How `turn` delivery behaves when the target Pi is mid-turn (queued like `followUp`, or refused).
-- What "the best matches" means for the first search version.
+- How much of Pi's JSONL format the tool guidance should describe.
 
 ### Out of scope
 
 - Timed and scheduled messages.
-- Sharing between accounts.
 - Searching terminal scrollback.
 
 ## Future possibilities
 
-- An `axo` command line that speaks the same protocol: locally against Axod, authorized either by an agent token or by the person, or remotely by authorizing against the API. Agents in terminal panes (Claude Code, Codex) and scripts could use it.
-- An MCP server exposing the same methods, for agents that prefer MCP.
+- **Other Macs:** the agent keeps asking its own Axod, which forwards requests about Sessions on other Macs to the cloud API using its host credential. The API relays them to the owning Axod, or answers reads from its stored Pi history when that Mac is offline. Since there are no local files for those Sessions, reading them would need a method like `axo.session.history` or a transcript download from the API.
+- **An `axo` command line** speaking the same protocol, locally against Axod or remotely through the API, for agents in terminal panes (Claude Code, Codex) and scripts.
+- An MCP server exposing the same methods.
 - `axo.session.prompt { at }` and recurring wake-ups, so an agent can check back on long work.
 - Agents subscribing to events (`axo.session.subscribe`) to react when another Session finishes or needs attention.
-- Workspace-level policies set by the person, such as "Sessions here may control each other freely".
+- A search method in Axod if `rg` over files stops being enough.
