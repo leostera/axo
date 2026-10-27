@@ -118,10 +118,14 @@ struct ConversationView: View {
       // Pull-to-refresh, by hand: `.refreshable` would show the system's spinner, and here Axo
       // plays it. How far the content is past its top, and when the finger lifts.
       .scrollBounceBehavior(.always, axes: .vertical)
-      .onScrollGeometryChange(for: CGFloat.self) { geometry in
-        max(0, -(geometry.contentOffset.y + geometry.contentInsets.top))
+      .onScrollGeometryChange(for: Overscroll.self) { geometry in
+        Overscroll(
+          points: max(0, -(geometry.contentOffset.y + geometry.contentInsets.top)),
+          height: geometry.containerSize.height)
       } action: { _, overscroll in
-        pull.state.pulled(to: overscroll, touching: pull.touching)
+        // A new chat's Axo takes a long pull, to near the bottom; a chat's, a short one.
+        pull.state.armTravel = transcript.messages.isEmpty ? PullToRefresh.longPull : PullToRefresh.shortPull
+        pull.state.pulled(to: overscroll.points, height: overscroll.height, touching: pull.touching)
       }
       .onScrollPhaseChange { old, new in
         pull.touching = new == .interacting
@@ -144,6 +148,12 @@ struct ConversationView: View {
       if took < least { try? await Task.sleep(for: least - took) }
       pull.state.finished()
     }
+  }
+
+  /// How far the content is past its top, and how tall the scroll view is.
+  private struct Overscroll: Equatable {
+    var points: Double
+    var height: Double
   }
 
   /// What is at the end of the conversation; when it changes, there is something new to follow.

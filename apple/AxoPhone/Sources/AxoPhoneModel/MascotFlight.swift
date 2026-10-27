@@ -5,8 +5,12 @@ import Foundation
 public struct MascotFlight: Equatable, Sendable {
   /// Points per second squared: a light, cartoon gravity.
   public static let gravity = 2600.0
-  /// A pull just short of drawn throws it this high; a tiny tug, `lowestPeak`.
-  public static let highestHop = 150.0
+  /// The finger's travel (`PullToRefresh.travel`) for the highest hop: from where the new chat's
+  /// Axo sits, a third of the way down the screen, to about two thirds down.
+  public static let highestHopTravel = 0.42
+  /// The highest hop: as high as it goes without leaving the screen from a third of the way down.
+  public static let highestHop = 200.0
+  /// A tiny tug's.
   public static let lowestPeak = 14.0
   /// A full pull throws it this high: well past the top of any phone.
   public static let slingPeak = 1400.0
@@ -21,13 +25,14 @@ public struct MascotFlight: Equatable, Sendable {
     self.spin = spin
   }
 
-  /// The throw for a pull let go at `progress` (0 to 1): short of drawn it hops, higher the
-  /// further it was pulled; drawn, it is slung with a spin.
-  public static func released(at progress: Double, drawn: Bool) -> MascotFlight {
+  /// The throw for a pull let go after the finger travelled `travel` (as `PullToRefresh.travel`):
+  /// short of drawn it hops, higher the further it was pulled, up to `highestHop` at
+  /// `highestHopTravel` and no higher; drawn, it is slung with a spin.
+  public static func released(travel: Double, drawn: Bool) -> MascotFlight {
     if drawn {
       return MascotFlight(speed: speed(toReach: slingPeak), spin: -720)
     }
-    let peak = lowestPeak + (highestHop - lowestPeak) * min(max(progress, 0), 1)
+    let peak = lowestPeak + (highestHop - lowestPeak) * min(max(travel / highestHopTravel, 0), 1)
     return MascotFlight(speed: speed(toReach: peak))
   }
 

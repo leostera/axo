@@ -11,21 +11,22 @@ final class ConversationPull {
   @ObservationIgnored var touching = false
   /// The last time a pull was let go: how far it had got, and whether it was drawn all the way
   /// (which refreshes). Axo is thrown up by it.
-  private(set) var letGo = LetGo(progress: 0, drawn: false, count: 0)
+  private(set) var letGo = LetGo(travel: 0, drawn: false, count: 0)
 
   struct LetGo: Equatable {
-    var progress: Double
+    /// How far the finger had travelled, as a fraction of the screen.
+    var travel: Double
     var drawn: Bool
     var count: Int
   }
 
   /// The finger lifted: refreshes if drawn all the way; either way Axo is thrown.
   func release(refresh: () -> Void) {
-    let progress = state.progress
+    let travel = state.travel
     let drawn = state.released()
     if drawn { refresh() }
-    guard drawn || progress > 0.05 else { return }
-    letGo = LetGo(progress: progress, drawn: drawn, count: letGo.count + 1)
+    guard drawn || travel > 0.01 else { return }
+    letGo = LetGo(travel: travel, drawn: drawn, count: letGo.count + 1)
   }
 }
 
@@ -77,7 +78,7 @@ struct SlingMascotView: View {
 
   private func throwUp(_ letGo: ConversationPull.LetGo) {
     guard !reduceMotion else { return }
-    let flight = MascotFlight.released(at: letGo.progress, drawn: letGo.drawn)
+    let flight = MascotFlight.released(travel: letGo.travel, drawn: letGo.drawn)
     // A hop is fun ^_^; being slung off the screen is not.
     mascot.react(letGo.drawn ? .scream : .happy)
     let start = Date.now
@@ -119,13 +120,12 @@ struct SlingMascotView: View {
           mascot.react(.happy)
           return
         }
-        // Back where it sits, unseen for a frame, then it fades in.
+        // Back where it sits, unseen, smiling already (not still screaming), then it fades in.
         shown = false
         away = false
-        try? await Task.sleep(for: .milliseconds(50))
-        withAnimation(.easeOut(duration: 0.35)) { shown = true }
-        try? await Task.sleep(for: .milliseconds(300))
         mascot.react(.happy)
+        try? await Task.sleep(for: .milliseconds(120))
+        withAnimation(.easeOut(duration: 0.35)) { shown = true }
       }
     }
   }
