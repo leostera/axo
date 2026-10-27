@@ -11,6 +11,8 @@ struct LaunchSplashView: View {
   static let width: CGFloat = 240
   private static let cornerRadius: CGFloat = 28
   private static let fadeOut: TimeInterval = 0.35
+  /// Long enough to see Axo's ^_^ before the terminal takes over.
+  private static let happyBeat: Duration = .milliseconds(600)
 
   var daemon: DaemonController
   var sessions: TerminalSessionsModel
@@ -21,6 +23,7 @@ struct LaunchSplashView: View {
 
   @Environment(\.openWindow) private var openWindow
   @Environment(\.dismissWindow) private var dismissWindow
+  @Environment(\.accessibilityReduceMotion) private var reduceMotion
   @State private var puppet = AxoMascot.installedAnimation?.makePuppet(artboard: AxoMascot.Contract.loaderArtboard)
   @State private var window: NSWindow?
   @State private var shownFor: Duration = .zero
@@ -90,7 +93,7 @@ struct LaunchSplashView: View {
       shownFor = LaunchSplashGate.minimumShown
     }
     .onChange(of: shouldReveal, initial: true) { _, reveal in
-      if reveal, enabled { revealTerminal() }
+      if reveal, enabled { Task { await celebrateThenReveal() } }
     }
     .onAppear {
       if !enabled { dismissWindow(id: Self.windowID) }
@@ -105,10 +108,20 @@ struct LaunchSplashView: View {
     }
   }
 
-  private func revealTerminal() {
+  /// Axo is done waiting: it stops, smiles ^_^ for a beat (unless Reduce Motion is on), and the
+  /// terminal takes over.
+  private func celebrateThenReveal() async {
     guard !revealed else { return }
     revealed = true
     puppet?.setLoading(false)
+    if let puppet, !reduceMotion {
+      puppet.react(.happy)
+      try? await Task.sleep(for: Self.happyBeat)
+    }
+    revealTerminal()
+  }
+
+  private func revealTerminal() {
     TerminalWindowOpener.reveal(openWindow)
     guard let window else {
       dismissWindow(id: Self.windowID)

@@ -71,7 +71,11 @@ test("every artboard loads with the Mascot state machine and blinks on the trigg
     await page.waitForTimeout(1200);
     await page.click("#annoyed");
     await page.waitForTimeout(300);
-    assert.notDeepEqual(await face.screenshot(), calm, "annoyed frowns");
+    assert.notDeepEqual(await face.screenshot(), calm, "annoyed squeezes its eyes shut");
+    await page.waitForTimeout(1400);
+    await page.click("#happy");
+    await page.waitForTimeout(300);
+    assert.notDeepEqual(await face.screenshot(), calm, "happy smiles with its eyes");
   } finally {
     await browser.close();
     server.close();

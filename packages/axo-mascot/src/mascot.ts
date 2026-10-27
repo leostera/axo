@@ -28,10 +28,12 @@ export const MascotContract = {
   /** Fire to play once. */
   triggers: {
     blink: "blink",
-    /** A poke on the face: "oh!", then a giggle. */
+    /** A poke on the face: "oh!", then a ^_^ giggle. */
     poke: "poke",
-    /** Too many pokes: a shake and a frown. */
+    /** Too many pokes: a shake, squeezed shut: >_< */
     annoyed: "annoyed",
+    /** Something went well: a little bounce, eyes smiling: ^_^ */
+    happy: "happy",
   },
   bools: {
     /** Follow `lookX`/`lookY` instead of looking around on its own. */
@@ -120,8 +122,8 @@ const PIVOT: Point = { x: 626, y: 690 };
  * the arms are the exception and reach down out of the picture on purpose.
  */
 export const MascotBounds = {
-  // Measured reach, in logo units: at rest y 368…914; a poke and loading's bob lift the gills to
-  // about y 340; the annoyed shake spans x 114…1142. Each edge keeps ~14 units of room.
+  // Measured reach, in logo units: at rest y 368…914; a poke, ^_^ and loading's bob lift the
+  // gills to about y 340; the annoyed shake spans x 114…1142. Each edge keeps ~14 units of room.
   /** Every behaviour: looking, pokes, the annoyed shake, loading's bob and the hands. The apps
    * size their views to this: 1064 x 604. */
   face: { x: 96, y: 326, width: 1064, height: 604 },
@@ -139,8 +141,12 @@ const leftHand = { at: { x: 468, y: 708 }, rotation: 0.35 };
 interface Rig {
   readonly body: ComponentId;
   readonly features: ComponentId;
+  /** The round eyes; the shaped ones below take their place in some reactions. */
   readonly eyes: readonly ComponentId[];
-  readonly brows: readonly ComponentId[];
+  /** ^ ^, left first. */
+  readonly happyEyes: readonly ComponentId[];
+  /** > <, left first. */
+  readonly squeezedEyes: readonly ComponentId[];
   readonly mouth: ComponentId;
   readonly mouthO: ComponentId;
   readonly hands: readonly ComponentId[];
@@ -191,7 +197,7 @@ function drawAxolotl(board: ArtboardBuilder, parent: ComponentId, style: Style):
     }
   }
 
-  // Eyes, brows and mouth move together when Axo looks somewhere.
+  // Eyes and mouth move together when Axo looks somewhere.
   const features = board.node(art, { name: "Features", x: 0, y: 0 });
   const eyes: ComponentId[] = [];
   for (const [name, x] of [
@@ -204,17 +210,22 @@ function drawAxolotl(board: ArtboardBuilder, parent: ComponentId, style: Style):
     eyes.push(eye);
   }
 
-  // Frowning brows, slanting down towards the middle.
-  const brows: ComponentId[] = [];
-  for (const [name, from, to] of [
-    ["Left Brow", { x: 398, y: 598 }, { x: 506, y: 634 }],
-    ["Right Brow", mirror({ x: 398, y: 598 }), mirror({ x: 506, y: 634 })],
-  ] as const) {
-    const brow = board.shape(features, { name, x: 0, y: 0, opacity: 0 });
-    board.cubicPath(brow, `${name} Path`, [{ at: from, in: from, out: from }, { at: to, in: to, out: to }], false);
-    board.stroke(brow, style.ink, 34);
-    brows.push(brow);
-  }
+  // Eyes drawn as strokes, hidden until a reaction swaps them in for the round ones.
+  const strokedEyes = (kind: string, points: (x: number, side: 1 | -1) => Point[]) =>
+    ([["Left", 455, 1], ["Right", 797, -1]] as const).map(([side, x, sign]) => {
+      const eye = board.shape(features, { name: `${side} ${kind} Eye`, x: 0, y: 0, opacity: 0 });
+      board.cubicPath(eye, `${side} ${kind} Eye Path`, points(x, sign).map((at) => ({ at, in: at, out: at })), false);
+      board.stroke(eye, style.ink, 36);
+      return eye;
+    });
+  // ^ ^: a peak over each eye.
+  const happyEyes = strokedEyes("Happy", (x) => [{ x: x - 46, y: 718 }, { x, y: 670 }, { x: x + 46, y: 718 }]);
+  // > <: each points in towards the nose.
+  const squeezedEyes = strokedEyes("Squeezed", (x, sign) => [
+    { x: x - sign * 38, y: 652 },
+    { x: x + sign * 38, y: 695 },
+    { x: x - sign * 38, y: 738 },
+  ]);
 
   const mouthO = board.shape(features, { name: "Mouth O", x: 626, y: 750, opacity: 0 });
   board.ellipse(mouthO, { name: "Mouth O Path", width: 54, height: 64 });
@@ -253,7 +264,7 @@ function drawAxolotl(board: ArtboardBuilder, parent: ComponentId, style: Style):
       nodes.push(node);
     });
   }
-  return { body, features, eyes, brows, mouth, mouthO, hands, gills };
+  return { body, features, eyes, happyEyes, squeezedEyes, mouth, mouthO, hands, gills };
 }
 
 type Key = readonly [frame: number, value: number];
@@ -336,7 +347,13 @@ function addMascotMachine(board: ArtboardBuilder, rig: Rig, options: { spins?: b
   const neutral = (frame: number) => [
     ...each([rig.mouth], "opacity", [[frame, 1]]),
     ...each([rig.mouthO], "opacity", [[frame, 0]]),
-    ...each(rig.brows, "opacity", [[frame, 0]]),
+    ...each(rig.eyes, "opacity", [[frame, 1]]),
+    ...each([...rig.happyEyes, ...rig.squeezedEyes], "opacity", [[frame, 0]]),
+  ];
+  /** Swaps the round eyes for `shaped` from `from` to `to`, with quick fades either side. */
+  const swapEyes = (shaped: readonly ComponentId[], from: number, to: number) => [
+    ...each(rig.eyes, "opacity", [[from, 1], [from + 3, 0], [to - 4, 0], [to, 1]]),
+    ...each(shaped, "opacity", [[from, 0], [from + 3, 1], [to - 4, 1], [to, 0]]),
   ];
   const reaction = (name: string, duration: number, tracks: Track[]) => {
     // A property keyed here wins over the neutral key at frame 0 for the same object.
@@ -355,14 +372,17 @@ function addMascotMachine(board: ArtboardBuilder, rig: Rig, options: { spins?: b
     ...each([rig.body], "y", offset(PIVOT.y, [[0, 0], [6, -18], [16, 0]])),
   ]);
   const giggle = reaction("giggle", 48, [
-    ...each(rig.eyes, "scaleY", [[0, 0.3], [40, 0.3], [47, 1]]),
+    ...swapEyes(rig.happyEyes, 0, 47),
     ...each([rig.body], "y", offset(PIVOT.y, [[0, 0], [6, -12], [12, 0], [18, -9], [24, 0], [30, -6], [36, 0]])),
     ...each([rig.body], "rotation", [[0, 0], [6, 0.05], [12, -0.05], [18, 0.04], [24, -0.04], [30, 0.02], [36, 0]]),
   ]);
   const annoyed = reaction("annoyed", 72, [
-    ...each(rig.brows, "opacity", [[0, 0], [4, 1], [60, 1], [70, 0]]),
-    ...each(rig.eyes, "scaleY", [[0, 1], [4, 0.55], [60, 0.55], [70, 1]]),
+    ...swapEyes(rig.squeezedEyes, 0, 70),
     ...each([rig.body], "x", offset(PIVOT.x, [[0, 0], [3, 16], [6, -16], [9, 14], [12, -14], [15, 10], [18, -10], [21, 6], [24, -4], [27, 0]])),
+  ]);
+  const happy = reaction("happy", 66, [
+    ...swapEyes(rig.happyEyes, 0, 64),
+    ...each([rig.body], "y", offset(PIVOT.y, [[0, 0], [8, -14], [16, 0], [24, -7], [32, 0]])),
   ]);
 
   const afterWait = [
@@ -482,12 +502,14 @@ function addMascotMachine(board: ArtboardBuilder, rig: Rig, options: { spins?: b
     any: [
       { to: "oh", when: { trigger: triggers.poke } },
       { to: "annoyed", when: { trigger: triggers.annoyed } },
+      { to: "happy", when: { trigger: triggers.happy } },
     ],
     states: [
       { name: "calm", animation: rest, transitions: [] },
       { name: "oh", animation: oh, transitions: [{ to: "giggle", exitAtPercent: 100 }] },
       { name: "giggle", animation: giggle, transitions: [{ to: "calm", exitAtPercent: 100 }] },
       { name: "annoyed", animation: annoyed, transitions: [{ to: "calm", exitAtPercent: 100 }] },
+      { name: "happy", animation: happy, transitions: [{ to: "calm", exitAtPercent: 100 }] },
     ],
   });
 
@@ -497,6 +519,7 @@ function addMascotMachine(board: ArtboardBuilder, rig: Rig, options: { spins?: b
       { kind: "trigger", name: triggers.blink },
       { kind: "trigger", name: triggers.poke },
       { kind: "trigger", name: triggers.annoyed },
+      { kind: "trigger", name: triggers.happy },
       { kind: "bool", name: bools.tracking },
       { kind: "bool", name: bools.covering },
       { kind: "bool", name: bools.loading },

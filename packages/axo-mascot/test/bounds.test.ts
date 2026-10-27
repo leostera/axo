@@ -129,6 +129,10 @@ async function playEverything(page: Page) {
   await fire(page, triggers.annoyed);
   await page.waitForTimeout(1600);
 
+  await phase(page, "happy");
+  await fire(page, triggers.happy);
+  await page.waitForTimeout(1400);
+
   await phase(page, "loading");
   await set(page, bools.loading, true);
   await page.waitForTimeout(4500);

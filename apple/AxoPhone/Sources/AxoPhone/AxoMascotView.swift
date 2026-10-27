@@ -11,6 +11,7 @@ final class Mascot: ObservableObject {
   private enum Input {
     static let poke = "poke"
     static let annoyed = "annoyed"
+    static let happy = "happy"
     static let tracking = "tracking"
     static let covering = "covering"
     static let lookX = "lookX"
@@ -62,10 +63,15 @@ final class Mascot: ObservableObject {
   }
 
   func poke() {
-    switch pokes.poke(at: Date()) {
+    if let reaction = pokes.poke(at: Date()) { react(reaction) }
+  }
+
+  /// `.happy` is for something going well: a bounce and ^_^.
+  func react(_ reaction: MascotReaction) {
+    switch reaction {
     case .giggle: rive?.triggerInput(Input.poke)
     case .annoyed: rive?.triggerInput(Input.annoyed)
-    case nil: break
+    case .happy: rive?.triggerInput(Input.happy)
     }
   }
 }
