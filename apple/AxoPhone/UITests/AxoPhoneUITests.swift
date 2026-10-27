@@ -8,9 +8,13 @@ final class AxoPhoneUITests: XCTestCase {
   }
 
   @MainActor
-  private func launch(_ environment: [String: String] = [:]) -> XCUIApplication {
+  private func launch(
+    _ environment: [String: String] = [:], appearance: String = "light"
+  ) -> XCUIApplication {
     let app = XCUIApplication()
     app.launchEnvironment = ["AXO_PHONE_PREVIEW": "1"].merging(environment) { $1 }
+    // NSArgumentDomain overrides AppStorage without leaving a preference behind in the simulator.
+    app.launchArguments = ["-appearance", appearance]
     app.launch()
     let title = app.staticTexts["conversation-title"]
     XCTAssertTrue(title.waitForExistence(timeout: 15))
@@ -22,6 +26,14 @@ final class AxoPhoneUITests: XCTestCase {
       label = title.label
     }
     return app
+  }
+
+  @MainActor
+  private func capture(_ app: XCUIApplication, named name: String) {
+    let attachment = XCTAttachment(screenshot: app.screenshot())
+    attachment.name = name
+    attachment.lifetime = .keepAlways
+    add(attachment)
   }
 
   // Every layer stays in the accessibility tree UI tests read (VoiceOver reads only the one
@@ -190,6 +202,49 @@ final class AxoPhoneUITests: XCTestCase {
     settings?.tapWhereItIs()
     XCTAssertTrue(app.navigationBars["Settings"].waitForExistence(timeout: 5))
     XCTAssertTrue(app.buttons["Sign out"].exists)
+  }
+
+  // MARK: - Visual snapshots and interaction recording
+
+  @MainActor
+  func testVisualSnapshotBlankChatLight() {
+    let app = launch(appearance: "light")
+    XCTAssertTrue(app.textFields["composer"].exists)
+    capture(app, named: "blank-chat-light")
+  }
+
+  @MainActor
+  func testVisualSnapshotConversationDark() {
+    let app = launch(["AXO_PHONE_PREVIEW_CHAT": "1"], appearance: "dark")
+    XCTAssertEqual(app.staticTexts["conversation-title"].label, "Ship the remote Workbench")
+    capture(app, named: "conversation-dark")
+  }
+
+  @MainActor
+  func testVisualSnapshotComposerWithKeyboard() {
+    let app = launch(["AXO_PHONE_PREVIEW_CHAT": "1"], appearance: "light")
+    let composer = app.textFields["composer"]
+    XCTAssertTrue(composer.waitForExistence(timeout: 10))
+    composer.tap()
+    composer.typeText("Check the composer while the keyboard is open")
+    XCTAssertTrue(app.keyboards.firstMatch.waitForExistence(timeout: 5))
+    capture(app, named: "composer-keyboard-light")
+  }
+
+  /// A short, deterministic interaction sequence. XCTest records a screen video for the test;
+  /// the visual-loop script exports it as a reviewable artifact.
+  @MainActor
+  func testVisualInteractionSequence() {
+    let app = launch(["AXO_PHONE_PREVIEW_CHAT": "1"], appearance: "dark")
+    app.buttons["Chats menu"].tap()
+    XCTAssertTrue(app.buttons["Fix the sidebar spacing"].waitForExistence(timeout: 5))
+    app.buttons["Fix the sidebar spacing"].tap()
+    let composer = app.textFields["composer"]
+    XCTAssertTrue(composer.waitForExistence(timeout: 5))
+    composer.tap()
+    composer.typeText("A deterministic interaction recording")
+    XCTAssertTrue(app.keyboards.firstMatch.waitForExistence(timeout: 5))
+    capture(app, named: "interaction-composer-keyboard-dark")
   }
 
   // MARK: - Conversation
