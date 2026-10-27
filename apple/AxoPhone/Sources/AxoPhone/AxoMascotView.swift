@@ -30,6 +30,7 @@ final class Mascot: ObservableObject {
   /// Where the mascot is on screen, in the global coordinate space.
   var frame: CGRect = .zero
   private var pokes = MascotPokes()
+  private var rubs = MascotRubs()
 
   init(artboard: String = Artboard.face) {
     rive = (try? RiveModel(fileName: "axo", extension: ".riv", in: .main, loadCdn: false)).map {
@@ -66,6 +67,15 @@ final class Mascot: ObservableObject {
     if let reaction = pokes.poke(at: Date()) { react(reaction) }
   }
 
+  /// A finger dragged over Axo, at `y` in its own height; rubbing up and down makes it happy.
+  func rub(y: Double) {
+    if let reaction = rubs.move(y: y, at: Date()) { react(reaction) }
+  }
+
+  func endRub() {
+    rubs.end()
+  }
+
   /// `.happy` is for something going well: a bounce and ^_^.
   func react(_ reaction: MascotReaction) {
     switch reaction {
@@ -94,6 +104,13 @@ struct AxoMascotView: View {
     .aspectRatio(aspectRatio, contentMode: .fit)
     .contentShape(Rectangle())
     .onTapGesture { mascot.poke() }
+    // Rubbing it up and down: simultaneous, so a screen-wide gesture (Axo watching the finger
+    // on sign-in) keeps working.
+    .simultaneousGesture(
+      DragGesture(minimumDistance: 6)
+        .onChanged { mascot.rub(y: $0.location.y / max(mascot.frame.height, 1)) }
+        .onEnded { _ in mascot.endRub() }
+    )
     .onGeometryChange(for: CGRect.self) { $0.frame(in: .global) } action: { mascot.frame = $0 }
     .onChange(of: reduceMotion, initial: true) { _, reduce in
       if reduce { mascot.rive?.pause() } else { mascot.rive?.play() }

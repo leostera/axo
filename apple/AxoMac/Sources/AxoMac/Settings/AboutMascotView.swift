@@ -1,8 +1,8 @@
 import AxoMascot
 import SwiftUI
 
-/// Axo in the About pane: it watches the pointer while it is over the pane and giggles (or gets
-/// annoyed) when clicked. Without the animation, the app icon.
+/// Axo in the About pane: it watches the pointer while it is over the pane, giggles (or gets
+/// annoyed) when clicked, and is happy when rubbed up and down. Without the animation, the app icon.
 struct AboutMascotView: View {
   /// The `Face` artboard is 1064 x 604 (`MascotBounds.face` in packages/axo-mascot).
   private static let aspectRatio = 1064.0 / 604.0
@@ -16,6 +16,7 @@ struct AboutMascotView: View {
 
   @State private var puppet = AxoMascot.installedAnimation?.makePuppet(artboard: AxoMascot.Contract.faceArtboard)
   @State private var pokes = MascotPokes()
+  @State private var rubs = MascotRubs()
   @State private var frame: CGRect = .zero
   @Environment(\.accessibilityReduceMotion) private var reduceMotion
 
@@ -28,6 +29,16 @@ struct AboutMascotView: View {
         .onTapGesture {
           if let reaction = pokes.poke(at: Date()) { puppet.react(reaction) }
         }
+        // Rubbing it up and down with the pointer held makes it happy.
+        .simultaneousGesture(
+          DragGesture(minimumDistance: 4)
+            .onChanged {
+              if let reaction = rubs.move(y: $0.location.y / max(frame.height, 1), at: Date()) {
+                puppet.react(reaction)
+              }
+            }
+            .onEnded { _ in rubs.end() }
+        )
         .onGeometryChange(for: CGRect.self) { $0.frame(in: .named(Self.space)) } action: { frame = $0 }
         .onChange(of: pointer) { _, pointer in follow(pointer, puppet) }
         .accessibilityElement()
