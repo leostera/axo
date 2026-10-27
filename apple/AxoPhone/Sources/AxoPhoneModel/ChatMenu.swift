@@ -14,13 +14,13 @@ public struct ChatMenuSection: Identifiable, Equatable, Sendable {
   public let chats: [ChatMenuEntry]
 }
 
-/// The menu's chats, grouped by Workspace, the most recently active first: the chats within a
-/// Workspace by their last activity, and the Workspaces by their most recent chat. Bare
-/// terminals have no chat in them and are not listed; with several Macs a Workspace's title
+/// The menu's chats, grouped by Workspace: the Workspaces in alphabetical order, so they stay
+/// where they are as chats come and go, and the chats within each the most recently active first.
+/// Bare terminals have no chat in them and are not listed; with several Macs a Workspace's title
 /// names its Mac.
 public enum ChatMenu {
-  /// `workspaces` are the open Mac's (`openHost`): those with no chat yet are listed last, so a
-  /// new chat's place shows before it exists.
+  /// `workspaces` are the open Mac's (`openHost`): those with no chat yet are listed too, in their
+  /// place, so a new chat's place shows before it exists.
   public static func sections(
     hosts: [RemoteHost], sessionsOf: (RemoteHost) -> [RemoteSession],
     openHost: RemoteHost?, workspaces: [RemoteWorkspace]
@@ -39,7 +39,6 @@ public enum ChatMenu {
     var sections = grouped.map { key, group in
       ChatMenuSection(id: key, title: group.title, chats: group.chats.sorted(by: isMoreRecent))
     }
-    sections.sort { isMoreRecent($0.chats[0], than: $1.chats[0]) }
     if let openHost {
       for workspace in workspaces {
         let key = "\(openHost.hostId.uuidString)/\(workspace.name)"
@@ -48,7 +47,16 @@ public enum ChatMenu {
         }
       }
     }
-    return sections
+    return sections.sorted(by: isAlphabeticallyBefore)
+  }
+
+  /// By title, as people read them: case and accents aside, numbers by value.
+  static func isAlphabeticallyBefore(_ a: ChatMenuSection, _ b: ChatMenuSection) -> Bool {
+    switch a.title.localizedStandardCompare(b.title) {
+    case .orderedAscending: true
+    case .orderedDescending: false
+    case .orderedSame: a.id < b.id
+    }
   }
 
   /// Last active first; among chats as recent, the newer one first. Stable as activity is equal.

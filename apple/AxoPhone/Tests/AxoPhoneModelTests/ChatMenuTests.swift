@@ -23,7 +23,7 @@ final class ChatMenuTests: XCTestCase {
       """.utf8))
   }
 
-  func testChatsAndWorkspacesAreListedMostRecentlyActiveFirst() {
+  func testWorkspacesStayInAlphabeticalOrderAndTheirChatsAreMostRecentlyActiveFirst() {
     let id = UUID()
     let sessions = [
       session(1, on: id, workspace: "Axo", at: "2026-10-20T10:00:00Z"),
@@ -34,11 +34,13 @@ final class ChatMenuTests: XCTestCase {
     ]
     let studio = host("Studio", sessions, id: id)
     let menu = ChatMenu.sections(hosts: [studio], sessionsOf: { _ in sessions }, openHost: studio, workspaces: [
-      workspace("Axo"), workspace("Notes"),
+      workspace("Axo"), workspace("notes"),
     ])
-    XCTAssertEqual(menu.map(\.title), ["Website", "Axo", "Notes"], "by the newest chat in each; an empty one last")
-    XCTAssertEqual(menu[1].chats.map(\.session.sessionId), [3, 4, 1], "newest activity first; a bare terminal is not a chat")
-    XCTAssertEqual(menu[2].chats, [])
+    XCTAssertEqual(
+      menu.map(\.title), ["Axo", "notes", "Website"],
+      "alphabetically, case aside, however recent their chats; an empty one in its place")
+    XCTAssertEqual(menu[0].chats.map(\.session.sessionId), [3, 4, 1], "newest activity first; a bare terminal is not a chat")
+    XCTAssertEqual(menu[1].chats, [])
   }
 
   func testWithSeveralMacsTheWorkspaceNamesItsMacAndTiesKeepTheNewerChatFirst() {
