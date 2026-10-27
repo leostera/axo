@@ -150,11 +150,32 @@ final class AxoPhoneUITests: XCTestCase {
   func testTheMenuGroupsChatsByWorkspaceShowsEmptyOnesAndWhoIsWorking() {
     let app = launch()
     app.buttons["Chats menu"].tapWhereItIs()
-    XCTAssertTrue(app.staticTexts["Axo · Studio"].waitForExistence(timeout: 5))
-    XCTAssertTrue(app.staticTexts["Home · Old iMac"].exists)
-    XCTAssertTrue(app.staticTexts["Website · Studio"].waitForExistence(timeout: 5), "a Workspace with no chats is listed")
+    XCTAssertTrue(app.buttons["Axo · Studio"].waitForExistence(timeout: 5))
+    XCTAssertTrue(app.buttons["Home · Old iMac"].exists)
+    XCTAssertTrue(app.buttons["Website · Studio"].waitForExistence(timeout: 5), "a Workspace with no chats is listed")
     XCTAssertTrue(app.staticTexts["No chats yet"].exists)
     XCTAssertEqual(app.buttons["Ship the remote Workbench"].value as? String, "Working")
+  }
+
+  @MainActor
+  func testChatsQuietForEightHoursWaitBehindAButtonAndAWorkspaceFoldsAway() {
+    let app = launch()
+    app.buttons["Chats menu"].tapWhereItIs()
+    let older = app.buttons["Show 1 older chat"]
+    XCTAssertTrue(older.waitForExistence(timeout: 5))
+    XCTAssertFalse(app.buttons["Photo library cleanup"].exists, "twelve days quiet: not listed")
+    older.tapWhereItIs()
+    XCTAssertTrue(app.buttons["Photo library cleanup"].waitForExistence(timeout: 5))
+    app.buttons["Show fewer"].tapWhereItIs()
+    XCTAssertTrue(waitUntil(5) { !app.buttons["Photo library cleanup"].exists })
+
+    let axo = app.buttons["Axo · Studio"]
+    XCTAssertEqual(axo.value as? String, "Expanded")
+    axo.tapWhereItIs()
+    XCTAssertTrue(waitUntil(5) { !app.buttons["Fix the sidebar spacing"].exists }, "a folded Workspace hides its chats")
+    XCTAssertEqual(axo.value as? String, "Collapsed")
+    axo.tapWhereItIs()
+    XCTAssertTrue(app.buttons["Fix the sidebar spacing"].waitForExistence(timeout: 5))
   }
 
   @MainActor

@@ -4,10 +4,12 @@ import XCTest
 @testable import AxoPhoneModel
 
 final class ChatMenuTests: XCTestCase {
-  private func session(_ id: Int, on host: UUID, workspace: String, at time: String, agent: Bool = true) -> RemoteSession {
+  private func session(
+    _ id: Int, on host: UUID, workspace: String, at time: String, agent: Bool = true, status: String = "ready"
+  ) -> RemoteSession {
     try! JSONDecoder().decode(RemoteSession.self, from: Data("""
       {"hostId":"\(host.uuidString)","sessionId":\(id),"name":"S\(id)","workspaceName":"\(workspace)",
-      "hasAgent":\(agent),"shells":[],"layout":null,"updatedAt":"\(time)"}
+      "hasAgent":\(agent),"status":"\(status)","shells":[],"layout":null,"updatedAt":"\(time)"}
       """.utf8))
   }
 
@@ -52,5 +54,24 @@ final class ChatMenuTests: XCTestCase {
     let menu = ChatMenu.sections(hosts: [studio, imac], sessionsOf: { $0.hostId == a ? left : right }, openHost: nil, workspaces: [])
     XCTAssertEqual(menu.map(\.title), ["Axo · iMac", "Axo · Studio"])
     XCTAssertEqual(menu[1].chats.map(\.session.sessionId), [2, 1])
+  }
+
+  func testASectionListsChatsActiveInTheLastEightHoursBusyOnesAndTheOpenOne() {
+    let id = UUID()
+    let sessions = [
+      session(1, on: id, workspace: "Axo", at: "2026-10-27T11:00:00Z"),
+      session(2, on: id, workspace: "Axo", at: "2026-10-27T04:00:01Z"),
+      session(3, on: id, workspace: "Axo", at: "2026-10-27T03:59:59Z"),
+      session(4, on: id, workspace: "Axo", at: "2026-10-20T00:00:00Z", status: "working"),
+      session(5, on: id, workspace: "Axo", at: "2026-10-19T00:00:00Z", status: "needsAttention"),
+      session(6, on: id, workspace: "Axo", at: "2026-10-18T00:00:00Z"),
+    ]
+    let studio = host("Studio", sessions, id: id)
+    let section = ChatMenu.sections(hosts: [studio], sessionsOf: { _ in sessions }, openHost: nil, workspaces: [])[0]
+    let now = try! Date("2026-10-27T12:00:00Z", strategy: .iso8601)
+    XCTAssertEqual(section.recentChats(now: now).map(\.session.sessionId), [1, 2, 4, 5])
+    XCTAssertEqual(
+      section.recentChats(now: now, keeping: { $0.session.sessionId == 6 }).map(\.session.sessionId), [1, 2, 4, 5, 6])
+    XCTAssertTrue(section.isBusy)
   }
 }

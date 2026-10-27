@@ -66,18 +66,20 @@ enum PreviewFixture {
     static let imac = UUID(uuidString: "28355f00-95fd-4c93-8586-a71a8a52bf73")!
 
     static var hosts: [RemoteHost] {
-      // The menu lists the most recently active first: in the order they are written here.
+      // The menu lists the most recently active first: in the order they are written here. Times
+      // are relative to now, so the last 8 hours (what the menu lists before "older") stay put.
+      func ago(_ seconds: TimeInterval) -> String { Date.now.addingTimeInterval(-seconds).ISO8601Format() }
       func session(_ host: UUID, _ id: Int, _ name: String, _ emoji: String, _ workspace: String, status: String = "ready", active: String) -> String {
         #"{"hostId":"\#(host)","sessionId":\#(id),"name":"\#(name)","emoji":"\#(emoji)","workspaceName":"\#(workspace)","status":"\#(status)","hasAgent":true,"shells":[{"shellId":\#(id * 10)}],"layout":{"kind":"pane","shellId":\#(id * 10)},"updatedAt":"\#(active)"}"#
       }
       let json = """
         {"hosts":[
         {"hostId":"\(studio)","hostGeneration":"c3b6da28-55c0-4bb0-ac04-dd458fd41a2b","label":"Studio","hostKind":"macos","status":"online","stale":false,"lastSeenAt":"2026-10-16T00:00:00Z","sessions":[\
-        \(session(studio, 1, "Ship the remote Workbench", "🦀", "Axo", status: "working", active: "2026-10-27T09:00:00Z")),\
-        \(session(studio, 2, "Fix the sidebar spacing", "🎨", "Axo", active: "2026-10-27T08:00:00Z")),\
-        \(session(studio, 3, "Explain the relay", "📡", "Axo", active: "2026-10-26T12:00:00Z"))]},
+        \(session(studio, 1, "Ship the remote Workbench", "🦀", "Axo", status: "working", active: ago(20 * 60))),\
+        \(session(studio, 2, "Fix the sidebar spacing", "🎨", "Axo", active: ago(2 * 3600))),\
+        \(session(studio, 3, "Explain the relay", "📡", "Axo", active: ago(3 * 3600)))]},
         {"hostId":"\(imac)","hostGeneration":"d3b6da28-55c0-4bb0-ac04-dd458fd41a2b","label":"Old iMac","hostKind":"macos","status":"offline","stale":true,"lastSeenAt":"2026-10-15T00:00:00Z","sessions":[\
-        \(session(imac, 5, "Photo library cleanup", "📷", "Home", active: "2026-10-15T00:00:00Z"))]}]}
+        \(session(imac, 5, "Photo library cleanup", "📷", "Home", active: ago(12 * 86400)))]}]}
         """
       return (try? JSONDecoder().decode(RemoteHostList.self, from: Data(json.utf8)).hosts) ?? []
     }

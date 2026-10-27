@@ -12,6 +12,23 @@ public struct ChatMenuSection: Identifiable, Equatable, Sendable {
   public let id: String
   public let title: String
   public let chats: [ChatMenuEntry]
+
+  /// Chats active within this long are listed; older ones wait behind "Show older chats".
+  public static let recentWindow: TimeInterval = 8 * 60 * 60
+
+  /// The chats worth listing before older ones are asked for: those active in the last eight
+  /// hours, any the agent is working in or needs the person for, and any `keep` names (the open
+  /// chat), most recently active first.
+  public func recentChats(now: Date, keeping keep: (ChatMenuEntry) -> Bool = { _ in false }) -> [ChatMenuEntry] {
+    chats.filter { entry in
+      now.timeIntervalSince(ChatMenu.activity(entry.session)) <= Self.recentWindow
+        || entry.session.status == .working || entry.session.status == .needsAttention
+        || keep(entry)
+    }
+  }
+
+  /// Whether the agent is busy, or waiting for the person, in any of these chats.
+  public var isBusy: Bool { chats.contains { $0.session.status == .working || $0.session.status == .needsAttention } }
 }
 
 /// The menu's chats, grouped by Workspace: the Workspaces in alphabetical order, so they stay
@@ -67,7 +84,7 @@ public enum ChatMenu {
     return a.host.hostId.uuidString < b.host.hostId.uuidString
   }
 
-  private static func activity(_ session: RemoteSession) -> Date {
+  static func activity(_ session: RemoteSession) -> Date {
     (try? Date(session.updatedAt, strategy: .iso8601))
       ?? (try? Date(session.updatedAt, strategy: Date.ISO8601FormatStyle(includingFractionalSeconds: true)))
       ?? .distantPast

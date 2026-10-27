@@ -48,6 +48,11 @@ struct WorkbenchView: View {
   @Environment(\.accessibilityReduceMotion) private var reduceMotion
   @AppStorage("appearance") private var appearance: AppAppearance = .system
   @AppStorage("accentColor") private var accentColor: AppAccentColor = .white
+  /// The Workspaces folded away in the menu, by section id, one a line; kept across launches.
+  @AppStorage("collapsedWorkspaces") private var collapsedWorkspaceList = ""
+  /// The Workspaces showing their older chats too. Not kept: that is a look back, not a way the
+  /// menu stays.
+  @State private var showingOlder: Set<String> = []
 
   init(environment: AppEnvironment) {
     self.environment = environment
@@ -202,37 +207,9 @@ struct WorkbenchView: View {
             .padding(.horizontal, MenuLayout.rowInset + MenuLayout.rowTextInset)
         }
         ForEach(sections) { section in
-          Text(section.title)
-            .font(.footnote.weight(.semibold))
-            .foregroundStyle(.secondary)
-            .lineLimit(1)
-            .padding(.leading, MenuLayout.rowInset + MenuLayout.rowTextInset)
-            .padding(.trailing, MenuLayout.rowInset)
-            .padding(.top, section.id == sections.first?.id ? 4 : MenuLayout.sectionTopSpacing)
-            .padding(.bottom, 2)
-            .accessibilityAddTraits(.isHeader)
-          ForEach(section.chats, id: \.session.sessionId) { entry in
-            Button {
-              workbench.select(host: entry.host.hostId, session: entry.session.sessionId)
-              show(.conversation)
-            } label: {
-              SessionRow(
-                workbench: workbench,
-                selection: PhoneWorkbench.Selection(host: entry.host.hostId, session: entry.session.sessionId),
-                name: entry.session.displayName,
-                status: entry.session.status)
-                .frame(maxWidth: .infinity, alignment: .leading)
-                .contentShape(Rectangle())
-            }
-            .buttonStyle(.layerRow)
-            .padding(.horizontal, MenuLayout.rowInset)
-          }
-          if section.chats.isEmpty {
-            Text("No chats yet")
-              .font(.callout).foregroundStyle(.tertiary)
-              .padding(.horizontal, MenuLayout.rowInset + MenuLayout.rowTextInset)
-              .frame(height: MenuLayout.rowHeight)
-          }
+          let collapsed = collapsedWorkspaces.contains(section.id)
+          sectionHeader(section, collapsed: collapsed, first: section.id == sections.first?.id)
+          if !collapsed { sectionChats(section) }
         }
         if sections.isEmpty {
           if workbench.hosts.hosts.isEmpty, workbench.hosts.phase == .loaded {
@@ -257,6 +234,92 @@ struct WorkbenchView: View {
     .accessibilityIdentifier("workbench-menu")
     .layerBar(edge: .top) { menuHeader }
     .layerBar(edge: .bottom) { menuFooter }
+  }
+
+  private var collapsedWorkspaces: Set<String> {
+    Set(collapsedWorkspaceList.split(separator: "\n").map(String.init))
+  }
+
+  private func toggleCollapsed(_ id: String) {
+    var collapsed = collapsedWorkspaces
+    if collapsed.remove(id) == nil { collapsed.insert(id) }
+    collapsedWorkspaceList = collapsed.sorted().joined(separator: "\n")
+  }
+
+  /// A Workspace's title, which folds it away; a dot says a chat in a folded one is busy.
+  private func sectionHeader(_ section: ChatMenuSection, collapsed: Bool, first: Bool) -> some View {
+    Button {
+      withAnimation(reduceMotion ? nil : .snappy(duration: 0.25)) { toggleCollapsed(section.id) }
+    } label: {
+      HStack(spacing: 6) {
+        Text(section.title).lineLimit(1)
+        Image(systemName: "chevron.down")
+          .font(.caption2.weight(.bold))
+          .rotationEffect(.degrees(collapsed ? -90 : 0))
+        Spacer(minLength: 0)
+        if collapsed, section.isBusy { Circle().fill(Color.orange).frame(width: 6, height: 6) }
+      }
+      .font(.footnote.weight(.semibold))
+      .foregroundStyle(.secondary)
+      .padding(.leading, MenuLayout.rowInset + MenuLayout.rowTextInset)
+      .padding(.trailing, MenuLayout.rowInset + MenuLayout.rowTextInset)
+      .padding(.top, first ? 4 : MenuLayout.sectionTopSpacing)
+      .padding(.bottom, 2)
+      .contentShape(Rectangle())
+    }
+    .buttonStyle(.layerRow)
+    .accessibilityLabel(section.title)
+    .accessibilityValue(collapsed ? "Collapsed" : "Expanded")
+    .accessibilityHint(collapsed ? "Shows its chats" : "Hides its chats")
+    .accessibilityAddTraits(.isHeader)
+    .accessibilityIdentifier("workspace-section")
+  }
+
+  /// An open Workspace's chats: those active in the last 8 hours (and busy ones, and the open one),
+  /// then the rest when asked for.
+  @ViewBuilder private func sectionChats(_ section: ChatMenuSection) -> some View {
+    let recent = section.recentChats(now: .now) { entry in
+      workbench.selection == PhoneWorkbench.Selection(host: entry.host.hostId, session: entry.session.sessionId)
+    }
+    let olderCount = section.chats.count - recent.count
+    let expanded = showingOlder.contains(section.id)
+    ForEach(expanded ? section.chats : recent, id: \.session.sessionId) { entry in
+            Button {
+              workbench.select(host: entry.host.hostId, session: entry.session.sessionId)
+              show(.conversation)
+            } label: {
+              SessionRow(
+                workbench: workbench,
+                selection: PhoneWorkbench.Selection(host: entry.host.hostId, session: entry.session.sessionId),
+                name: entry.session.displayName,
+                status: entry.session.status)
+                .frame(maxWidth: .infinity, alignment: .leading)
+                .contentShape(Rectangle())
+            }
+            .buttonStyle(.layerRow)
+            .padding(.horizontal, MenuLayout.rowInset)
+          }
+    if olderCount > 0 {
+      Button {
+        withAnimation(reduceMotion ? nil : .snappy(duration: 0.25)) {
+          if expanded { showingOlder.remove(section.id) } else { showingOlder.insert(section.id) }
+        }
+      } label: {
+        Text(expanded ? "Show fewer" : "Show \(olderCount) older \(olderCount == 1 ? "chat" : "chats")")
+          .font(.callout).foregroundStyle(.secondary)
+          .padding(.horizontal, MenuLayout.rowTextInset)
+          .frame(maxWidth: .infinity, minHeight: MenuLayout.rowHeight, alignment: .leading)
+          .contentShape(Rectangle())
+      }
+      .buttonStyle(.layerRow)
+      .padding(.horizontal, MenuLayout.rowInset)
+    }
+    if section.chats.isEmpty {
+      Text("No chats yet")
+        .font(.callout).foregroundStyle(.tertiary)
+        .padding(.horizontal, MenuLayout.rowInset + MenuLayout.rowTextInset)
+        .frame(height: MenuLayout.rowHeight)
+    }
   }
 
   /// The chats, by Workspace, the most recently active first (see `ChatMenu`).
