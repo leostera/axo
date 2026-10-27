@@ -103,6 +103,7 @@ dependencies = [
 name = "axo-pty"
 version = "0.1.0"
 dependencies = [
+ "axo-vt",
  "libc",
  "log",
  "shlex",
