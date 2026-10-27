@@ -218,6 +218,33 @@ final class TerminalPointerInputTests: XCTestCase {
       sendType: nil, returnType: nil, hasSelection: false))
   }
 
+  func testDroppedScreenshotThumbnailsAreStagedWhereOtherProcessesCanReadThem() throws {
+    let root = FileManager.default.temporaryDirectory
+      .appendingPathComponent("axo-drop-test-\(UUID().uuidString)", isDirectory: true)
+    defer { try? FileManager.default.removeItem(at: root) }
+    let thumbnail = root.appendingPathComponent(
+      "TemporaryItems/NSIRD_screencaptureui_test/Screenshot 1.png")
+    try FileManager.default.createDirectory(
+      at: thumbnail.deletingLastPathComponent(), withIntermediateDirectories: true)
+    try Data("png".utf8).write(to: thumbnail)
+    let projectFile = root.appendingPathComponent("project/main.swift")
+    let staging = root.appendingPathComponent("staging", isDirectory: true)
+
+    let staged = TerminalDropInput.staged([thumbnail, projectFile], in: staging)
+
+    XCTAssertEqual(staged[1], projectFile, "other files keep their real path")
+    XCTAssertEqual(staged[0].lastPathComponent, "Screenshot 1.png")
+    XCTAssertTrue(staged[0].path.hasPrefix(staging.path))
+    XCTAssertEqual(try Data(contentsOf: staged[0]), Data("png".utf8))
+    XCTAssertTrue(TerminalDropInput.needsStaging(thumbnail))
+    XCTAssertFalse(TerminalDropInput.needsStaging(projectFile))
+
+    let missing = root.appendingPathComponent("TemporaryItems/gone.png")
+    XCTAssertEqual(
+      TerminalDropInput.staged([missing], in: staging), [missing],
+      "a file that cannot be copied keeps its original path")
+  }
+
   func testDroppedTextAndFileURLsUseOnlySupportedContent() {
     XCTAssertTrue(TerminalDropInput.accepts([.string]))
     XCTAssertTrue(TerminalDropInput.accepts([.fileURL]))

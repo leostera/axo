@@ -146,6 +146,42 @@ enum TerminalDropInput {
     types.contains(.string) || types.contains(.fileURL)
   }
 
+  /// Where dropped files that only Axo may read are copied for the terminal's programs.
+  static var stagingDirectory: URL {
+    FileManager.default.temporaryDirectory.appendingPathComponent("axo-drops", isDirectory: true)
+  }
+
+  /// Whether a dropped file lives where only the app that received the drag may read it.
+  ///
+  /// The screenshot thumbnail keeps its file under `$TMPDIR/TemporaryItems`, which macOS
+  /// privacy protection opens to the drag's receiver (Axo) but not to other processes, such as
+  /// Pi under Axod; the file is also deleted once the thumbnail goes away. Other files keep
+  /// their real path, so a program can edit the file the user meant.
+  static func needsStaging(_ url: URL) -> Bool {
+    url.isFileURL && url.standardizedFileURL.pathComponents.contains("TemporaryItems")
+  }
+
+  /// `urls` with every file that needs staging replaced by a copy in `directory` that keeps its
+  /// name. A file that cannot be copied keeps its original URL.
+  static func staged(_ urls: [URL], in directory: URL) -> [URL] {
+    urls.map { url in
+      guard needsStaging(url) else { return url }
+      let destination = directory
+        .appendingPathComponent(UUID().uuidString, isDirectory: true)
+        .appendingPathComponent(url.lastPathComponent)
+      do {
+        try FileManager.default.createDirectory(
+          at: destination.deletingLastPathComponent(), withIntermediateDirectories: true)
+        try FileManager.default.copyItem(at: url, to: destination)
+        return destination
+      } catch {
+        AxoTrace.surfaces.error(
+          "event=surface.drop_staging_failed error=\(error.localizedDescription, privacy: .public)")
+        return url
+      }
+    }
+  }
+
   static func text(plainText: String?, fileURLs: [URL]?) -> String? {
     if let plainText, !plainText.isEmpty { return plainText }
     guard let fileURLs, !fileURLs.isEmpty, fileURLs.allSatisfy(\.isFileURL) else { return nil }

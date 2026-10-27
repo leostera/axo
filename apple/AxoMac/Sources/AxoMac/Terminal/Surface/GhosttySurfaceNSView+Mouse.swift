@@ -62,7 +62,11 @@ extension GhosttySurfaceNSView {
     let pasteboard = sender.draggingPasteboard
     let hasFileURLs = pasteboard.pasteboardItems?.contains { $0.types.contains(.fileURL) } ?? false
     let plainText = hasFileURLs ? nil : pasteboard.string(forType: .string)
-    let fileURLs = hasFileURLs ? Self.fileURLs(from: pasteboard) : nil
+    let fileURLs = hasFileURLs
+      ? Self.fileURLs(from: pasteboard).map {
+        TerminalDropInput.staged($0, in: TerminalDropInput.stagingDirectory)
+      }
+      : nil
     guard !hasFileURLs || fileURLs != nil,
       let text = TerminalDropInput.text(plainText: plainText, fileURLs: fileURLs)
     else { return false }
