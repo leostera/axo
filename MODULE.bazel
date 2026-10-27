@@ -5,6 +5,7 @@ module(
 
 bazel_dep(name = "platforms", version = "1.1.0")
 bazel_dep(name = "rules_apple", version = "5.3.0")
+bazel_dep(name = "rules_cc", version = "0.2.25")
 bazel_dep(name = "rules_rust", version = "0.74.0")
 bazel_dep(name = "rules_swift", version = "4.2.1")
 bazel_dep(name = "rules_swift_package_manager", version = "1.25.0")
@@ -40,3 +41,6 @@ use_repo(swift_deps, "swift_package", "swiftpkg_fuzzymatch", "swiftpkg_rive_ios"
 
 ghostty_repository = use_repo_rule("//:ghostty_repository.bzl", "ghostty_repository")
 ghostty_repository(name = "ghostty")
+
+ghostty_vt_repository = use_repo_rule("//:ghostty_vt_repository.bzl", "ghostty_vt_repository")
+ghostty_vt_repository(name = "ghostty_vt")

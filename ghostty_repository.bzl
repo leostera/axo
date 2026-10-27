@@ -1,37 +1,12 @@
+load("//:ghostty_pin.bzl", "download_zig_and_ghostty")
+
 def _ghostty_repository_impl(ctx):
-    if ctx.os.name != "mac os x":
-        fail("GhosttyKit is currently built for macOS hosts only")
-
-    if ctx.os.arch == "aarch64":
-        zig_url = "https://ziglang.org/download/0.16.0/zig-aarch64-macos-0.16.0.tar.xz"
-        zig_sha256 = "b23d70deaa879b5c2d486ed3316f7eaa53e84acf6fc9cc747de152450d401489"
-        zig_dir = "zig-aarch64-macos-0.16.0"
-    elif ctx.os.arch == "x86_64":
-        zig_url = "https://ziglang.org/download/0.16.0/zig-x86_64-macos-0.16.0.tar.xz"
-        zig_sha256 = "0387557ed1877bc6a2e1802c8391953baddba76081876301c522f52977b52ba7"
-        zig_dir = "zig-x86_64-macos-0.16.0"
-    else:
-        fail("Unsupported macOS host architecture for Zig: %s" % ctx.os.arch)
-
-    ctx.download_and_extract(
-        url = zig_url,
-        sha256 = zig_sha256,
-        strip_prefix = zig_dir,
-        output = "zig-toolchain",
-    )
-    ctx.download_and_extract(
-        url = "https://github.com/ghostty-org/ghostty/archive/81598385d608dda4946093d6d6a234d204a2f225.tar.gz",
-        sha256 = "1bb165d1e9458c8694370039cc1a8f2a2958929760bb80f6251499158ad6b694",
-        strip_prefix = "ghostty-81598385d608dda4946093d6d6a234d204a2f225",
-        output = "source",
-    )
+    zig, source = download_zig_and_ghostty(ctx)
 
     # Axo carries a small patch set on the pinned commit; see third_party/ghostty/README.md.
     for patch in ctx.attr.patches:
         ctx.patch(patch, strip = 1)
 
-    zig = ctx.path("zig-toolchain/zig")
-    source = ctx.path("source")
     result = ctx.execute(
         [
             str(zig),

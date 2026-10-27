@@ -1,0 +1,7 @@
+[package]
+name = "axo-vt"
+version = "0.1.0"
+edition = "2024"
+links = "ghostty-vt"
+
+[dependencies]

@@ -1,0 +1,18 @@
+load("@crates//:defs.bzl", "crate_edition")
+load("@rules_rust//rust:defs.bzl", "rust_library", "rust_test")
+
+package(default_visibility = ["//visibility:public"])
+
+# build.rs only serves Cargo builds; Bazel links libghostty-vt from the pinned Ghostty build.
+rust_library(
+    name = "axo_vt",
+    srcs = glob(["src/*.rs"]),
+    edition = crate_edition(),
+    link_deps = ["@ghostty_vt"],
+)
+
+rust_test(
+    name = "axo_vt_tests",
+    crate = ":axo_vt",
+    edition = crate_edition(),
+)

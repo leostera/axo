@@ -157,6 +157,10 @@ dependencies = [
 ]
 
 [[package]]
+name = "axo-vt"
+version = "0.1.0"
+
+[[package]]
 name = "axod"
 version = "0.1.0"
 dependencies = [
