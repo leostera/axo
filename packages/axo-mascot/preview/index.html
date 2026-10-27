@@ -20,6 +20,7 @@
     <button id="poke">Poke</button>
     <button id="annoyed">Annoyed</button>
     <button id="happy">Happy</button>
+    <button id="scream">Scream</button>
     <label><input type="checkbox" id="covering"> Cover eyes</label>
     <label><input type="checkbox" id="loading"> Loading</label>
     <label><input type="checkbox" id="squeezed"> Squeezed</label>
@@ -52,7 +53,7 @@
     }
     const input = (mascot, name) => mascot.stateMachineInputs("Mascot")?.find((i) => i.name === name);
     const all = (name, apply) => { for (const mascot of window.mascots) { const i = input(mascot, name); if (i) apply(i); } };
-    for (const trigger of ["blink", "poke", "annoyed", "happy"]) {
+    for (const trigger of ["blink", "poke", "annoyed", "happy", "scream"]) {
       document.getElementById(trigger).addEventListener("click", () => all(trigger, (i) => i.fire()));
     }
     for (const name of ["covering", "loading", "squeezed"]) {

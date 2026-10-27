@@ -12,6 +12,7 @@ final class RiveMascotPuppet: MascotPuppet {
     static let poke = "poke"
     static let annoyed = "annoyed"
     static let happy = "happy"
+    static let scream = "scream"
     static let tracking = "tracking"
     static let lookX = "lookX"
     static let lookY = "lookY"
@@ -43,6 +44,7 @@ final class RiveMascotPuppet: MascotPuppet {
     case .giggle: rive.triggerInput(Input.poke)
     case .annoyed: rive.triggerInput(Input.annoyed)
     case .happy: rive.triggerInput(Input.happy)
+    case .scream: rive.triggerInput(Input.scream)
     }
   }
 

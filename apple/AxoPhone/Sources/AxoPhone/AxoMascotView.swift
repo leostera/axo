@@ -12,6 +12,7 @@ final class Mascot: ObservableObject {
     static let poke = "poke"
     static let annoyed = "annoyed"
     static let happy = "happy"
+    static let scream = "scream"
     static let tracking = "tracking"
     static let covering = "covering"
     static let lookX = "lookX"
@@ -88,6 +89,7 @@ final class Mascot: ObservableObject {
     case .giggle: rive?.triggerInput(Input.poke)
     case .annoyed: rive?.triggerInput(Input.annoyed)
     case .happy: rive?.triggerInput(Input.happy)
+    case .scream: rive?.triggerInput(Input.scream)
     }
   }
 }

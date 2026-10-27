@@ -32,7 +32,7 @@ Each artboard runs the `Mascot` state machine, in layers (a later layer wins a p
 | Hands (`Face` only) | Hands come up over the eyes. | `covering` |
 | Loading | Gills flutter and Axo bobs; on `Loader` it also hops and spins. | `loading` |
 | Squeeze | Eyes squeezed >_< and held, no shake. | `squeezed` |
-| Reactions | `poke`: "oh!", then a ^_^ giggle. `annoyed`: a shake, eyes squeezed >_<. `happy`: a bounce and ^_^. | `poke`, `annoyed`, `happy` |
+| Reactions | `poke`: "oh!", then a ^_^ giggle. `annoyed`: a shake, eyes squeezed >_<. `happy`: a bounce and ^_^. `scream`: eyes wide, mouth open. | `poke`, `annoyed`, `happy`, `scream` |
 
 These are state machine inputs, which the web runtime and the Apple runtime's `RiveViewModel` take;
 Rive's newer Apple API expects data binding instead, which the generator does not write yet.

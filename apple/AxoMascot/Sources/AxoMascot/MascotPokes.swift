@@ -1,11 +1,13 @@
 import Foundation
 
 /// How Axo reacts. To pokes (`MascotPokes`): a few make it giggle ^_^, poking on and on annoys
-/// it >_<. To something going well, which the app decides: `happy` ^_^.
+/// it >_<. To something going well, which the app decides: `happy` ^_^. To being flung off
+/// the screen: `scream`, eyes wide and mouth open.
 public enum MascotReaction: Equatable, Sendable {
   case giggle
   case annoyed
   case happy
+  case scream
 }
 
 /// Counts quick pokes on the mascot.

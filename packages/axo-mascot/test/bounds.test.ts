@@ -133,6 +133,10 @@ async function playEverything(page: Page) {
   await fire(page, triggers.happy);
   await page.waitForTimeout(1400);
 
+  await phase(page, "scream");
+  await fire(page, triggers.scream);
+  await page.waitForTimeout(1700);
+
   await phase(page, "squeezed");
   await set(page, bools.squeezed, true);
   await page.waitForTimeout(500);

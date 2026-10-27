@@ -31,9 +31,9 @@ final class ConversationPull {
 
 /// The Axo in the middle of an empty chat, as the pull plays it. It is squished as it is drawn,
 /// and squeezes its eyes >_< once drawn all the way. Let go, it is thrown straight up and gravity
-/// does the rest (`MascotFlight`): short of drawn it hops, higher the further it was pulled, and
-/// lands with a tiny squish; drawn, it is slung clean off the top with a spin and, once the refresh is over, fades
-/// back in where it sits.
+/// does the rest (`MascotFlight`). Short of drawn it hops ^_^, higher the further it was pulled,
+/// and lands with a tiny squish. Drawn, it is slung clean off the top, spinning and screaming,
+/// and once the refresh is over it fades back in where it sits.
 struct SlingMascotView: View {
   let pull: ConversationPull
   @StateObject private var mascot = Mascot()
@@ -78,6 +78,8 @@ struct SlingMascotView: View {
   private func throwUp(_ letGo: ConversationPull.LetGo) {
     guard !reduceMotion else { return }
     let flight = MascotFlight.released(at: letGo.progress, drawn: letGo.drawn)
+    // A hop is fun ^_^; being slung off the screen is not.
+    mascot.react(letGo.drawn ? .scream : .happy)
     let start = Date.now
     self.flight = flight
     thrownAt = start
