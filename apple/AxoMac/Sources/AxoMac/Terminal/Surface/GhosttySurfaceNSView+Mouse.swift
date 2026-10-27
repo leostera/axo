@@ -166,11 +166,9 @@ extension GhosttySurfaceNSView {
   }
 
   func handleFocusOnlyLeftClick(_ event: NSEvent) -> Bool {
-    guard let window, event.window === window, let contentView = window.contentView else {
-      return false
-    }
-    let location = contentView.convert(event.locationInWindow, from: nil)
-    guard contentView.hitTest(location) === self else { return false }
+    guard let window, event.window === window,
+      TerminalMouseInput.view(at: event.locationInWindow, in: window) === self
+    else { return false }
 
     suppressNextLeftMouseUp = false
     let surfaceIsFirstResponder = window.firstResponder === self

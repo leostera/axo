@@ -42,6 +42,16 @@ enum TerminalMouseInput {
     return (momentum << 1) | (isPrecise ? 1 : 0)
   }
 
+  /// The view a click at `locationInWindow` lands on, overlays included. `hitTest` takes a point
+  /// in the receiver's superview's coordinates; Axo's content view is a flipped `NSHostingView`,
+  /// so converting into the content view's own space would mirror the click vertically.
+  static func view(at locationInWindow: NSPoint, in window: NSWindow) -> NSView? {
+    guard let contentView = window.contentView else { return nil }
+    let location =
+      contentView.superview?.convert(locationInWindow, from: nil) ?? locationInWindow
+    return contentView.hitTest(location)
+  }
+
   static func shouldConsumeFocusOnlyClick(
     surfaceIsFirstResponder: Bool,
     applicationIsActive: Bool,

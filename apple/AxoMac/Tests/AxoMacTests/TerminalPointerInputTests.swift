@@ -1,11 +1,62 @@
 import AppKit
 import GhosttyKit
+import SwiftUI
 import XCTest
 
 @testable import AxoMac
 
 @MainActor
+private final class ClickTargetPanes {
+  var views: [String: NSView] = [:]
+}
+
+private struct ClickTargetPane: NSViewRepresentable {
+  let name: String
+  let panes: ClickTargetPanes
+
+  func makeNSView(context: Context) -> NSView {
+    let view = NSView()
+    panes.views[name] = view
+    return view
+  }
+
+  func updateNSView(_ view: NSView, context: Context) {}
+}
+
+@MainActor
 final class TerminalPointerInputTests: XCTestCase {
+  /// The app's content view is a flipped NSHostingView; a click on each pane of `[1 [2 3]]`
+  /// must resolve to that pane, not its vertical mirror.
+  func testClickLocationResolvesToTheVisiblePaneOfANestedSplit() throws {
+    let panes = ClickTargetPanes()
+    let hostingView = NSHostingView(
+      rootView: TerminalSplitView(
+        id: UUID(), direction: .right, ratio: 0.5, onRatioChange: { _ in },
+        first: { ClickTargetPane(name: "1", panes: panes) },
+        second: {
+          TerminalSplitView(
+            id: UUID(), direction: .down, ratio: 0.5, onRatioChange: { _ in },
+            first: { ClickTargetPane(name: "2", panes: panes) },
+            second: { ClickTargetPane(name: "3", panes: panes) })
+        }))
+    let window = NSWindow(
+      contentRect: CGRect(x: 0, y: 0, width: 1_000, height: 600),
+      styleMask: [.titled], backing: .buffered, defer: false)
+    window.contentView = hostingView
+    hostingView.layoutSubtreeIfNeeded()
+    RunLoop.main.run(until: Date().addingTimeInterval(0.05))
+    hostingView.layoutSubtreeIfNeeded()
+    XCTAssertTrue(hostingView.isFlipped)
+
+    for name in ["1", "2", "3"] {
+      let pane = try XCTUnwrap(panes.views[name])
+      let center = pane.convert(NSPoint(x: pane.bounds.midX, y: pane.bounds.midY), to: nil)
+      XCTAssertTrue(
+        TerminalMouseInput.view(at: center, in: window) === pane,
+        "A click on pane \(name) should land on pane \(name).")
+    }
+  }
+
   func testSupportedNSEventButtonsMapToGhosttyButtons() {
     let expected: [ghostty_input_mouse_button_e] = [
       GHOSTTY_MOUSE_LEFT,
