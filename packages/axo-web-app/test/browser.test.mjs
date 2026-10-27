@@ -148,7 +148,7 @@ test("browser chats with Axo on a Mac: history, live replies, new chats, info, a
       // Newest first, as the relay sends them.
       json(response, {
         events: [
-          stored(4, "message.end", { message: { role: "assistant", content: [{ type: "text", text: "I’ll take a **look**." }] } }),
+          stored(4, "message.end", { message: { role: "assistant", content: [{ type: "text", text: "I’ll take a **look**.\n\n## What changed\n\n- The relay now retries with `backoff`\n- History loads newest first\n  - a page at a time\n\n```swift\nlet delay = delays[min(attempt, delays.count - 1)]\n```\n\n| File | Lines |\n|---|---|\n| relay.rs | +42 |\n| peer.ts | -7 |" }] } }),
           stored(3, "message.end", { message: { role: "toolResult", toolCallId: "call-1", content: [{ type: "text", text: "On branch main" }] } }),
           stored(2, "message.end", { message: { role: "assistant", content: [{ type: "toolCall", id: "call-1", name: "bash", arguments: { command: "git status" } }] } }),
           stored(1, "message.end", { message: { role: "user", content: [{ type: "text", text: "Review the latest changes." }] } }),

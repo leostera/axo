@@ -321,6 +321,102 @@ button:disabled { cursor: default; }
 .pairing-note { max-width: 340px; margin: 0; color: var(--secondary); font-size: 14px; line-height: 1.45; }
 .pairing-done { font-size: 20px; }
 
+/* On a big screen, with a pointer: the same look, denser. The phone's sizes are for thumbs. */
+@media (min-width: 900px) {
+  .stack.wide { grid-template-columns: 260px minmax(0, 1fr); }
+  .stack.wide.info-open { grid-template-columns: 260px minmax(0, 1fr) 300px; }
+  .circle-button { width: 32px; height: 32px; }
+  .circle-button .icon { width: 17px; height: 17px; }
+  .circle-placeholder { width: 32px; }
+  .pill-button { min-height: 32px; gap: 6px; padding: 0 14px; font-size: 14px; }
+  .pill-button .icon { width: 15px; height: 15px; }
+  .layer-bar { gap: 10px; padding: 10px 14px; }
+  .layer-bar.bottom { padding-bottom: 12px; }
+  .panel-scroll { padding: 54px 8px 64px; }
+  .panel-title { font-size: 17px; }
+  .header-mascot { height: 26px; }
+  .chat-section { margin-top: 14px; }
+  .section-title { padding: 0 8px; font-size: 11px; }
+  .chat-row { height: 28px; padding: 0 8px; border-radius: 7px; font-size: 13.5px; }
+  .no-chats { height: 28px; padding: 0 8px; font-size: 13.5px; line-height: 28px; }
+  .status-dot { width: 6px; height: 6px; }
+  .panel-note, .panel-empty p { font-size: 13px; }
+  .profile { gap: 10px; padding: 4px 8px 16px; }
+  .avatar { width: 38px; height: 38px; font-size: 15px; }
+  .profile-copy strong { font-size: 14px; }
+  .profile-copy span { font-size: 12.5px; }
+  .profile-copy small { font-size: 11px; }
+  .mac-row { min-height: 40px; gap: 10px; padding: 4px 8px; border-radius: 8px; }
+  .mac-row .icon { width: 18px; height: 18px; }
+  .mac-copy strong { font-size: 13.5px; }
+  .mac-copy small { font-size: 11.5px; }
+  .info-mascot { width: 96px; margin-top: 4px; }
+  .info-title { font-size: 16px; }
+  .info-subtitle { margin-bottom: 16px; font-size: 12.5px; }
+  .facts { border-radius: 10px; font-size: 13px; }
+  .facts > div { padding: 7px 12px; }
+  .facts dd.mono { font-size: 11.5px; }
+
+  .conversation-title h1 { font-size: 14px; }
+  .conversation-title p { font-size: 11px; }
+  .transcript { padding: 56px 24px 16px; }
+  .transcript-column { max-width: 820px; gap: 14px; }
+  .empty-chat-mascot { width: 92px; margin-bottom: 12px; }
+  .empty-chat h2 { margin-bottom: 6px; font-size: 18px; }
+  .empty-chat p { font-size: 14px; }
+  .message { gap: 6px; }
+  .user-bubble { padding: 8px 13px; border-radius: 17px; font-size: 14.5px; }
+  .message-time { font-size: 11.5px; }
+  .message-actions { gap: 10px; }
+  .message-actions .icon { width: 15px; height: 15px; }
+  .pending-label { font-size: 11px; }
+  .markdown { gap: 9px; font-size: 14.5px; line-height: 1.5; }
+  .markdown.thinking { font-size: 13px; }
+  .md-list-item + .md-list-item { margin-top: -5px; }
+  .md-code { padding: 10px 12px; border-radius: 10px; }
+  .md-code code { font-size: 12.5px; }
+  .md-code-language { margin-bottom: 6px; font-size: 11px; }
+  .md-table table { font-size: 13.5px; }
+  .md-table th, .md-table td { padding: 4px 14px 4px 0; }
+  .tool-card { gap: 6px; padding: 9px 11px; border-radius: 10px; }
+  .tool-heading { gap: 6px; font-size: 13px; }
+  .tool-heading .icon { width: 15px; height: 15px; }
+  .tool-subtitle { font-size: 11.5px; }
+  .tool-command { font-size: 12.5px; }
+  .tool-output { font-size: 11.5px; }
+  .tool-expand, .tool-truncated { font-size: 11.5px; }
+  .tool-failed { width: 16px; height: 16px; }
+  .question-card { gap: 8px; padding: 12px 14px; border-radius: 14px; }
+  .question-eyebrow { font-size: 11.5px; }
+  .question-title { font-size: 14.5px; }
+  .question-elsewhere { font-size: 13px; }
+  .question-input input { font-size: 14px; }
+
+  .conversation-footer { gap: 8px; padding: 0 16px 14px; margin-top: -20px; padding-top: 20px; }
+  .conversation-footer > * { max-width: 820px; }
+  .chat-failure { font-size: 12px; }
+  .jump-button { padding: 5px 11px; font-size: 13px; }
+  .workspace-choices p { font-size: 12px; }
+  .workspace-choices .pill-button { min-height: 30px; font-size: 13px; }
+  .composer { gap: 6px; padding: 5px; border-radius: 20px; }
+  .composer textarea { min-height: 30px; padding: 5px 8px; font-size: 14.5px; line-height: 20px; }
+  .send-button { width: 30px; height: 30px; }
+  .send-button .icon { width: 16px; height: 16px; }
+
+  .sheet { width: min(400px, 100%); padding: 12px 16px 18px; border-radius: 18px; }
+  .sheet-header h2 { font-size: 15px; }
+  .sheet-section { font-size: 13px; }
+  .setting-row, .setting-row select, .sign-out { font-size: 14px; }
+  .setting-row { min-height: 40px; }
+  .sign-out { margin-top: 22px; }
+  .sheet-note { font-size: 12px; }
+  .pairing { gap: 10px; }
+  .pairing-mascot { width: 110px; }
+  .pairing-code { font-size: 32px; }
+  .pairing-countdown, .pairing-note { font-size: 12.5px; }
+  .pairing-done { font-size: 17px; }
+}
+
 /* Sign-in: the iPhone app's, following the system's light or dark. */
 @font-face {
   font-family: "Fredoka";
