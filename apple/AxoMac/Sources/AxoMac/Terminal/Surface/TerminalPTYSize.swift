@@ -36,7 +36,9 @@ struct TerminalGridSize: Equatable, CustomStringConvertible {
 /// libghostty resizes the PTY only when its own grid changes, so a PTY resized behind its back
 /// (a process relaunched by Axod at the default size, another client, a surface reattached at
 /// an unchanged grid) would otherwise stay wrong until the window is resized. The surface
-/// re-asserts its size whenever it attaches, gains focus, or its window becomes key.
+/// re-asserts its size whenever its grid is applied (attach and every layout change), it gains
+/// focus, or its window becomes key. libghostty also skips the first resize of an adopted PTY,
+/// so the host's assertion is what sizes the PTY after a transient first layout pass.
 ///
 /// Owns a duplicate of the PTY master; libghostty keeps its own.
 final class TerminalPTYSizeReporter {

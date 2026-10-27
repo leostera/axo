@@ -238,10 +238,11 @@ final class GhosttySurfaceNSView: NSView, @MainActor NSTextInputClient,
     return surface
   }
 
-  /// Called after every `ghostty_surface_set_size`; the first one makes the grid real, so it is
-  /// asserted on the PTY then.
+  /// Called after every `ghostty_surface_set_size`. The first one makes the grid real; every
+  /// one is asserted on the PTY, because libghostty skips the first resize of an adopted PTY
+  /// (external I/O patch). When the first layout pass is transient (a window still opening),
+  /// that skipped resize is the real grid, and the PTY would keep the transient one.
   func didApplySurfaceSize() {
-    guard !hasAppliedSize else { return }
     hasAppliedSize = true
     reportPTYSize()
   }

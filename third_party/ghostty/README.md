@@ -23,8 +23,9 @@ reader, so a surface must not spawn a process or read the PTY itself:
 - An adopted PTY keeps its size until the surface is really laid out. Its
   program is already running, and the first resize the I/O thread sees is the
   provisional default window size from `Surface.init`; that one is skipped and
-  the host asserts the first real grid itself (`GhosttySurfaceNSView`). Later
-  resizes reach the PTY as usual.
+  the host asserts every applied grid itself (`GhosttySurfaceNSView`), because
+  when the first layout pass is transient the skipped resize is the real grid.
+  Later resizes reach the PTY as usual.
 
 Without this, the app needs `axod terminal-attach` as a bridge process with a
 second PTY between Ghostty and the shell.
