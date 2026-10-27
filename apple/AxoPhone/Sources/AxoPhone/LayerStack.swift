@@ -18,6 +18,10 @@ struct LayerStack: View {
   /// Bottom first. Built by the parent, so a frame of a swipe does not rebuild them.
   let layers: [AnyView]
 
+  /// The corners of every layer: exactly the phone screen's, so each layer is cut like the
+  /// screen itself and home at rest is the screen.
+  static let cornerRadius: CGFloat = DisplayCorners.radius
+
   @State private var dragged: CGFloat = 0
   /// The finger is moving the stack: the swipe went sideways rather than scrolling.
   @State private var swiping = false
@@ -35,6 +39,8 @@ struct LayerStack: View {
         }
       }
       .frame(width: geometry.size.width, height: geometry.size.height, alignment: .topLeading)
+      // What lies under the bottom layer: dark, so the rounded corners show screens on screens.
+      .background(Color.black.ignoresSafeArea())
       .simultaneousGesture(swipe(stack))
     }
   }
@@ -43,7 +49,7 @@ struct LayerStack: View {
     _ content: AnyView, _ index: Int, stack: LayerStackGeometry, position: Double, isEdge: Bool
   ) -> some View {
     let moved = stack.moved(index, at: position)
-    let corner = 42 * moved
+    let screen = RoundedRectangle(cornerRadius: Self.cornerRadius, style: .continuous)
     // A layer that cannot be seen is not drawn; it stays, with its state.
     let seen = stack.isOnScreen(index, at: position)
     return content
@@ -51,23 +57,29 @@ struct LayerStack: View {
       .frame(width: index == home ? stack.width : stack.reveal)
       .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
       .allowsHitTesting(index == showing)
-      .opacity(seen ? 1 : 0)
-      .background {
-        RoundedRectangle(cornerRadius: corner, style: .continuous)
-          .fill(ChatColors.background)
-          .overlay {
-            RoundedRectangle(cornerRadius: corner, style: .continuous)
-              .stroke(Color.primary.opacity(moved * 0.22), lineWidth: 0.5)
-          }
-          .shadow(color: .black.opacity(moved * 0.22), radius: 16, x: index > home ? 6 : -6)
-          .ignoresSafeArea()
-      }
+      .background(ChatColors.background.ignoresSafeArea())
       .overlay {
         Color(uiColor: .tertiarySystemBackground)
           .opacity(stack.dimming(of: index, at: position) * 0.64)
           .ignoresSafeArea()
           .allowsHitTesting(false)
       }
+      // Every layer is a screen of its own, rounded like the phone's, at rest too: what is under
+      // it shows at its corners and its edge, so the stack reads as screens on screens.
+      .mask { screen.ignoresSafeArea() }
+      .overlay {
+        screen
+          .stroke(Color.primary.opacity(0.1 + moved * 0.12), lineWidth: 0.5)
+          .ignoresSafeArea()
+          .allowsHitTesting(false)
+      }
+      .background {
+        screen
+          .fill(ChatColors.background)
+          .shadow(color: .black.opacity(0.1 + moved * 0.14), radius: 16, x: index > home ? 6 : -6)
+          .ignoresSafeArea()
+      }
+      .opacity(seen ? 1 : 0)
       .overlay(alignment: .leading) {
         if isEdge { edgeButton(for: index, stack: stack) }
       }
@@ -126,4 +138,14 @@ struct LayerStack: View {
       dragged = 0
     }
   }
+}
+
+/// The radius of the screen's own corners. UIKit knows it, per model, but only under a private
+/// key; read once. (The curve is Apple's continuous one, which `.continuous` draws.) Screens
+/// without rounded corners report 0, and a missing key falls back to a recent iPhone's.
+enum DisplayCorners {
+  static let radius: CGFloat = {
+    let value = UIScreen.main.value(forKey: ["Radius", "Corner", "display", "_"].reversed().joined()) as? CGFloat
+    return value ?? 55
+  }()
 }
