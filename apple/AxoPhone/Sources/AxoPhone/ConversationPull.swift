@@ -32,7 +32,7 @@ final class ConversationPull {
 /// The Axo in the middle of an empty chat, as the pull plays it. It is squished as it is drawn,
 /// and squeezes its eyes >_< once drawn all the way. Let go, it is thrown straight up and gravity
 /// does the rest (`MascotFlight`): short of drawn it hops, higher the further it was pulled, and
-/// lands; drawn, it is slung clean off the top with a spin and, once the refresh is over, fades
+/// lands with a tiny squish; drawn, it is slung clean off the top with a spin and, once the refresh is over, fades
 /// back in where it sits.
 struct SlingMascotView: View {
   let pull: ConversationPull
@@ -43,6 +43,8 @@ struct SlingMascotView: View {
   /// Slung off the screen and not back yet.
   @State private var away = false
   @State private var shown = true
+  /// The squish of landing: a blink of a moment, then back to its size.
+  @State private var landed = false
   @Environment(\.accessibilityReduceMotion) private var reduceMotion
 
   /// Above this it is out of sight, past the top of the screen.
@@ -61,6 +63,7 @@ struct SlingMascotView: View {
       let t = context.date.timeIntervalSince(thrownAt)
       AxoMascotView(mascot: mascot, rubbable: false)
         .scaleEffect(x: 1 + 0.14 * tension, y: 1 - 0.22 * tension, anchor: .bottom)
+        .scaleEffect(x: landed ? 1.06 : 1, y: landed ? 0.92 : 1, anchor: .bottom)
         .offset(y: 10 * tension)
         .animation(.interactiveSpring, value: tension)
         .rotationEffect(.degrees(flight?.angle(after: t) ?? 0))
@@ -86,6 +89,13 @@ struct SlingMascotView: View {
         away = true
       } else {
         try? await Task.sleep(for: .seconds(flight.duration))
+        guard thrownAt == start else { return }
+        self.flight = nil
+        // Touching down: squish for a couple of frames, then back, no rebound.
+        withAnimation(.linear(duration: 0.035)) { landed = true }
+        try? await Task.sleep(for: .milliseconds(35))
+        withAnimation(.easeOut(duration: 0.09)) { landed = false }
+        return
       }
       if thrownAt == start { self.flight = nil }
     }
