@@ -371,19 +371,16 @@ public final class HostWorkbenchModel {
 
   // MARK: - Actions
 
-  /// The Workspaces a chat can start in. A chat is a Session in a Workspace, which runs Pi in the
-  /// Workspace's directory; a Session made outside one is a bare terminal with no Pi.
-  public func workspaces() async -> [RemoteWorkspace]? {
-    var found: [RemoteWorkspace]?
-    await attempt { found = try await connection.workspaces() }
-    if let found { workspaceList = found }
-    return found
-  }
-
-  /// Starts a chat in `workspace` and opens it.
-  public func createChat(in workspace: UUID) async {
+  /// Starts a chat in `place` and opens it. A chat is a Session in a Workspace, running the agent
+  /// in the Workspace's directory; every Mac has a Home Workspace, its home folder, which is
+  /// where a chat goes unless it is started somewhere else.
+  public func createChat(in place: NewChatPlace) async {
     await attempt {
-      let session = try await connection.createSession(inWorkspace: workspace)
+      let session =
+        switch place {
+        case .home: try await connection.createSession()
+        case .workspace(let workspace): try await connection.createSession(inWorkspace: workspace)
+        }
       apply(.sessionSnapshot(host: reference, session: session))
       selectedSessionID = session.sessionId
     }

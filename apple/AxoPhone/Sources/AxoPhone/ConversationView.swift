@@ -3,7 +3,8 @@ import AxoProtocol
 import SwiftUI
 
 /// One chat: the replies and what was asked, newest at the bottom. With no `session` it is a new
-/// chat that does not exist yet; it comes to exist when its first message is sent.
+/// chat that does not exist yet; it comes to exist, in the Mac's Home Workspace, when its first
+/// message is sent.
 struct ConversationView: View {
   /// Sends, and keeps each chat's box. Passed whole, rather than as a binding and closures: a
   /// reference compares by identity, so a parent redrawing does not redraw this; and the box's
@@ -14,8 +15,6 @@ struct ConversationView: View {
   let showSidebar: () -> Void
   /// Saying a message instead of typing it, where the iPhone can.
   let voice: VoicePrompt?
-  /// The Workspaces to choose from for a new chat; its first message waits in the box.
-  @State private var workspaceChoices: [RemoteWorkspace]?
   /// When to follow what is new and when to leave the reader be.
   @State private var follow = ScrollFollow()
   /// The message at the top of the screen; holding it keeps the view still when older pages arrive above.
@@ -41,17 +40,6 @@ struct ConversationView: View {
       .conversationBar(edge: .top) { header }
       .conversationBar(edge: .bottom) { bottomBar }
       .onGeometryChange(for: CGFloat.self) { $0.safeAreaInsets.bottom } action: { bottomInset = $0 }
-      .confirmationDialog(
-        "Start the chat in",
-        isPresented: Binding(get: { workspaceChoices != nil }, set: { if !$0 { workspaceChoices = nil } }),
-        titleVisibility: .visible
-      ) {
-        ForEach(workspaceChoices ?? [], id: \.workspaceId) { workspace in
-          Button(workspace.name) {
-            Task { _ = await phone.send(in: workspace.workspaceId) }
-          }
-        }
-      }
   }
 
   private var conversation: some View {
@@ -282,9 +270,7 @@ struct ConversationView: View {
   }
 
   private func sendDraft() {
-    Task {
-      if case .chooseWorkspace(let choices) = await phone.send() { workspaceChoices = choices }
-    }
+    Task { _ = await phone.send() }
   }
 
   private var bottomBar: some View {

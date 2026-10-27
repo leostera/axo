@@ -122,8 +122,6 @@ public final class PhoneWorkbench {
   public enum SendOutcome: Equatable, Sendable {
     /// The Mac took the message (for a new chat: the chat exists, is open, and took it).
     case sent
-    /// A new chat, and the Mac has several Workspaces: the person picks one, then `send(in:)`.
-    case chooseWorkspace([RemoteWorkspace])
     /// Nothing was sent; the reason is in `current?.failure` and the words are back in the box.
     case failed
     /// The connection dropped while sending: the message may have arrived. It shows as
@@ -132,46 +130,32 @@ public final class PhoneWorkbench {
   }
 
   /// Sends what is typed in the open chat. On a new chat, the first message brings the chat into
-  /// being: in the Mac's only Workspace at once, or in the one chosen; with none, it says so.
-  /// The words leave the box as they go and come back if the Mac refuses them.
+  /// being in the Mac's Home Workspace. The words leave the box as they go and come back if the
+  /// Mac refuses them.
   public func send() async -> SendOutcome {
     guard !isSending, let selection, !text(of: selection).isEmpty else { return .failed }
     isSending = true
     defer { isSending = false }
-    guard selection.session != nil else { return await startChat(from: selection) }
+    guard selection.session != nil else { return await startChat(in: .home, from: selection) }
     return await prompt(from: selection)
   }
 
-  /// Starts the new chat in `workspace` with what is typed in it.
-  public func send(in workspace: UUID) async -> SendOutcome {
+  /// Starts the new chat in `place` with what is typed in it: how a chat starts somewhere other
+  /// than Home.
+  public func send(in place: NewChatPlace) async -> SendOutcome {
     guard !isSending, let selection, selection.session == nil, !text(of: selection).isEmpty else { return .failed }
     isSending = true
     defer { isSending = false }
-    return await startChat(in: workspace, from: selection)
+    return await startChat(in: place, from: selection)
   }
 
   private func text(of selection: Selection) -> String {
     draft(for: selection).trimmingCharacters(in: .whitespacesAndNewlines)
   }
 
-  private func startChat(from draft: Selection) async -> SendOutcome {
-    guard let workbench = await openNewChatHost(for: draft), let workspaces = await workbench.workspaces() else {
-      return .failed
-    }
-    switch workspaces.count {
-    case 0:
-      workbench.report("This Mac has no workspaces yet. Create one in Axo on the Mac.")
-      return .failed
-    case 1:
-      return await startChat(in: workspaces[0].workspaceId, from: draft)
-    default:
-      return .chooseWorkspace(workspaces)
-    }
-  }
-
-  private func startChat(in workspace: UUID, from draft: Selection) async -> SendOutcome {
+  private func startChat(in place: NewChatPlace, from draft: Selection) async -> SendOutcome {
     guard let workbench = await openNewChatHost(for: draft) else { return .failed }
-    await workbench.createChat(in: workspace)
+    await workbench.createChat(in: place)
     guard workbench.failure == nil, let id = workbench.selectedSessionID else { return .failed }
     // The words move to the chat they started; a refusal leaves them in its box.
     let chat = Selection(host: draft.host, session: id)
@@ -225,4 +209,12 @@ public final class PhoneWorkbench {
     current = nil
     selection = nil
   }
+}
+
+/// Where a new chat starts on its Mac.
+public enum NewChatPlace: Equatable, Hashable, Sendable {
+  /// The Mac's Home Workspace (its home folder): where a chat goes unless it is told otherwise.
+  case home
+  /// One of the Mac's Workspaces, chosen by the person.
+  case workspace(UUID)
 }
