@@ -18,6 +18,8 @@ enum Dictation {
 
 enum AppleDictationError: LocalizedError {
   case unavailable, unsupportedLanguage, modelNotReady, noMicrophone
+  /// Starting to listen failed at `step`; the system's own error says why.
+  case couldNotStart(ListeningStep, any Error)
 
   var errorDescription: String? {
     switch self {
@@ -25,7 +27,32 @@ enum AppleDictationError: LocalizedError {
     case .unsupportedLanguage: "On-device speech doesn't support this iPhone's language yet."
     case .modelNotReady: "The speech model isn't ready. Connect to Wi-Fi and try again."
     case .noMicrophone: "No microphone is available."
+    case .couldNotStart(let step, let error):
+      "Couldn't start listening (\(step.rawValue)): \(error.localizedDescription)"
     }
+  }
+}
+
+/// The steps of starting to listen, so a failure says which one went wrong.
+enum ListeningStep: String {
+  case audioSession = "audio session"
+  case speechFormat = "speech format"
+  case recogniser = "recogniser"
+  case microphone = "microphone"
+}
+
+private let log = Logger(subsystem: "dev.leostera.axo.phone", category: "dictation")
+
+/// Runs `work`, labelling any error with the step it happened in.
+private func during<T>(_ step: ListeningStep, _ work: () async throws -> T) async throws -> T {
+  do {
+    return try await work()
+  } catch let error as AppleDictationError {
+    throw error
+  } catch {
+    let nsError = error as NSError
+    log.error("dictation.start_failed step=\(step.rawValue, privacy: .public) domain=\(nsError.domain, privacy: .public) code=\(nsError.code, privacy: .public)")
+    throw AppleDictationError.couldNotStart(step, error)
   }
 }
 
@@ -89,10 +116,14 @@ final class AppleDictation: DictationEngine {
   func start(heard: @escaping @MainActor (HeardText) -> Void, interrupted: @escaping @MainActor () -> Void) async throws {
     await cancel()
     guard let locale else { throw AppleDictationError.modelNotReady }
-    let session = AVAudioSession.sharedInstance()
-    try session.setCategory(.record, mode: .spokenAudio, options: [.allowBluetoothHFP])
-    try session.setActive(true)
     do {
+      // Recording only, unprocessed as speech recognition wants it. (`.spokenAudio` is a
+      // playback mode; with `.record` the session refuses it with OSStatus -50.)
+      try await during(.audioSession) {
+        let session = AVAudioSession.sharedInstance()
+        try session.setCategory(.record, mode: .measurement, options: [.allowBluetoothHFP])
+        try session.setActive(true)
+      }
       let module = Self.transcriber(locale)
       let analyzer = SpeechAnalyzer(modules: [module], options: .init(priority: .userInitiated, modelRetention: .whileInUse))
       let (stream, input) = AsyncStream<AnalyzerInput>.makeStream(bufferingPolicy: .unbounded)
@@ -103,7 +134,7 @@ final class AppleDictation: DictationEngine {
       guard microphone.sampleRate > 0, microphone.channelCount > 0 else { throw AppleDictationError.noMicrophone }
       guard let format = await SpeechAnalyzer.bestAvailableAudioFormat(compatibleWith: [module], considering: microphone)
       else { throw AppleDictationError.modelNotReady }
-      try await analyzer.prepareToAnalyze(in: format)
+      try await during(.speechFormat) { try await analyzer.prepareToAnalyze(in: format) }
 
       listening.results = Task { @MainActor in
         var settled = AttributedString()
@@ -117,10 +148,14 @@ final class AppleDictation: DictationEngine {
         }
         return String(settled.characters)
       }
-      try await analyzer.start(inputSequence: stream)
-      Self.tap(listening.audio.inputNode, from: microphone, to: format, into: input, level: listening.level)
-      listening.audio.prepare()
-      try listening.audio.start()
+      try await during(.recogniser) { try await analyzer.start(inputSequence: stream) }
+      try await during(.microphone) {
+        guard Self.tap(listening.audio.inputNode, from: microphone, to: format, into: input, level: listening.level) else {
+          throw AppleDictationError.noMicrophone
+        }
+        listening.audio.prepare()
+        try listening.audio.start()
+      }
       watch(for: interrupted)
     } catch {
       await cancel()
@@ -178,8 +213,12 @@ final class AppleDictation: DictationEngine {
   nonisolated private static func tap(
     _ node: AVAudioInputNode, from microphone: AVAudioFormat, to format: AVAudioFormat,
     into input: AsyncStream<AnalyzerInput>.Continuation, level: AudioLevel
-  ) {
-    let converter = microphone == format ? nil : AVAudioConverter(from: microphone, to: format)
+  ) -> Bool {
+    let needsConverting = microphone != format
+    let converter = needsConverting ? AVAudioConverter(from: microphone, to: format) : nil
+    // A converter the system will not make would otherwise mean feeding the recogniser audio
+    // in a format it did not ask for.
+    if needsConverting && converter == nil { return false }
     node.installTap(onBus: 0, bufferSize: 4096, format: microphone) { buffer, _ in
       level.measure(buffer)
       guard let converter else {
@@ -199,6 +238,7 @@ final class AppleDictation: DictationEngine {
       }
       if error == nil, converted.frameLength > 0 { input.yield(AnalyzerInput(buffer: converted)) }
     }
+    return true
   }
 }
 
