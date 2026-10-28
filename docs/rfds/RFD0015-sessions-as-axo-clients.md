@@ -143,7 +143,7 @@ Methods that change Axo itself rather than its Sessions are not exposed: `axo.co
 | `axo.terminal.write { sessionId, shellId, text }` | `{ accepted }` | Text typed into a pane outside its input sequence, which belongs to the one client typing in it (`axo.terminal.input`). Control characters act as keys |
 | `axo.terminal.screen { sessionId, shellId, lines? }` | `{ text, truncated }` | The last `lines` (default 200, at most 10000) of screen and scrollback, as plain text from Axod's headless terminal (axo-vt) |
 
-`axo.session.prompt` sends the bridge's structured `send` command on a connection of its own, so delivery is confirmed and never mixes with what the person is typing. A prompt for a Pi that is still starting waits (up to 8) and is sent when its bridge binds. The remote prompt path (`axo.remote.session.prompt`) moved to the same mechanism with `steer` delivery, so `axo.session.prompt` is now its local counterpart in the parity table. `axo.terminal.screen` is planned remotely; `axo.session.catalog` and `axo.terminal.write` are local only.
+`axo.session.prompt` sends the bridge's structured `send` command on the Pi's bridge worker connection (pi-axo's bridge serves one Axod connection at a time and closes any other), so delivery is confirmed and never mixes with what the person is typing. A prompt for a Pi that is still starting waits (up to 8) and is sent when its bridge binds. The remote prompt path (`axo.remote.session.prompt`) moved to the same mechanism with `steer` delivery, so `axo.session.prompt` is now its local counterpart in the parity table. `axo.terminal.screen` is planned remotely; `axo.session.catalog` and `axo.terminal.write` are local only.
 
 Errors: invalid text or sender `-32602`; `-32002` chain too deep; `-32003` rate limited; `-32004` not delivered (no Pi, Pi busy for `turn`, queue full, or the bridge refused).
 
@@ -186,8 +186,8 @@ Each step adds to the protocol without breaking existing clients.
 
 ## Testing
 
-- Axod unit tests (`session/terminal.rs`) against a fake pi-axo bridge: a prompt queued while Pi starts is sent when the bridge binds; later prompts are sent at once; the sender header; depth climbing to the limit, a person's typing resetting it, and the self rate limit.
-- `axo-pi`: `send_command` on its own bridge connection; `axo-vt`/`axo-pty`: plain screen text.
+- Axod unit tests (`session/terminal.rs`) against a fake pi-axo bridge that, like pi-axo, serves one connection at a time: a prompt queued while Pi starts is sent when the bridge binds; later prompts are sent at once; the sender header; depth climbing to the limit, a person's typing resetting it, and the self rate limit.
+- `axo-pi`: the bridge connection accepts `commandResult` once bound; `axo-vt`/`axo-pty`: plain screen text.
 - Axod integration tests (`crates/axod/tests/rpc.rs`): Pi's environment carries `AXO_SOCKET` and `AXOD`; `terminal.write` then `terminal.screen` shows the command's output; a prompt to a starting Pi is queued; `session.catalog` lists an archived Session with its transcript path.
 - `axod mcp` over stdio against a real Axod: an unknown `AXO_SESSION_ID` exits with an error; `initialize`, `tools/list`, `whoami`; `"self"` reaching the Session's own terminal pane; `fromSessionId` always set (the prompt has depth 1).
 - pi-axo: the environment parser and the registration.
