@@ -20,6 +20,7 @@
     "axo.remote.workspace.rename",
     "axo.remote.workspace.archive",
     "axo.remote.session.pi.restart.force",
-    "axo.remote.session.pi.restart.auto"
+    "axo.remote.session.pi.restart.auto",
+    "axo.remote.terminal.screen"
   ]
 }

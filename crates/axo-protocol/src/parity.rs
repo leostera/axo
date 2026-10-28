@@ -53,6 +53,10 @@ pub const PARITY: &[Parity] = &[
         Remote::Events("axo.host.sessions.list"),
     ),
     row(
+        method::SESSION_CATALOG,
+        Remote::LocalOnly("archived Sessions and transcript paths for agents on this Mac"),
+    ),
+    row(
         method::SESSION_CREATE,
         Remote::Call("axo.remote.session.create"),
     ),
@@ -126,6 +130,20 @@ pub const PARITY: &[Parity] = &[
         Remote::Call("axo.remote.terminal.resize"),
     ),
     row(
+        method::TERMINAL_WRITE,
+        Remote::LocalOnly(
+            "agents on this Mac type into panes; remote clients send sequenced input",
+        ),
+    ),
+    row(
+        method::TERMINAL_SCREEN,
+        Remote::Planned("axo.remote.terminal.screen"),
+    ),
+    row(
+        method::SESSION_PROMPT,
+        Remote::Call("axo.remote.session.prompt"),
+    ),
+    row(
         method::CLIENT_VIEWPORT_SET,
         Remote::LocalOnly("window geometry of a client on this Mac"),
     ),
@@ -145,8 +163,6 @@ pub const PARITY: &[Parity] = &[
 
 /// Remote calls with no local counterpart: what only a person away from the Mac needs.
 pub const REMOTE_ONLY: &[&str] = &[
-    // Sends a prompt to the Session's Pi; on the Mac a person types into the pane instead.
-    "axo.remote.session.prompt",
     // Presses Escape or Enter in the Session's Pi: stops a reply, or answers Pi's question.
     "axo.remote.session.key",
 ];

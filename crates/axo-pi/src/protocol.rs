@@ -50,19 +50,34 @@ pub enum Outgoing<'a> {
     Command {
         request_id: &'a str,
         axo_session_id: &'a str,
-        action: Action,
+        action: Action<'a>,
     },
 }
 
-/// What a command asks Pi to do. Axod only asks Pi to exit; the extension also accepts
-/// `send` and `cancel` from other clients.
+/// What a command asks Pi to do.
 #[derive(Clone, Copy, Debug, Eq, PartialEq, Serialize)]
 #[serde(tag = "kind", rename_all = "camelCase")]
-pub enum Action {
+pub enum Action<'a> {
     /// Exit now, aborting any turn in progress.
     Shutdown,
     /// Exit only if no turn is in progress; otherwise answer `busy`.
     ShutdownIfIdle,
+    /// Submit `text` as a user message. An idle Pi starts a turn with it; a working Pi queues
+    /// it as `delivery` says, or answers `busy` when there is none.
+    Send {
+        text: &'a str,
+        #[serde(skip_serializing_if = "Option::is_none")]
+        delivery: Option<QueuedDelivery>,
+    },
+}
+
+/// How a working Pi takes a message: `steer` after the current tool calls, `followUp` once the
+/// turn ends.
+#[derive(Clone, Copy, Debug, Eq, PartialEq, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub enum QueuedDelivery {
+    Steer,
+    FollowUp,
 }
 
 /// Records Pi sends.
@@ -195,6 +210,22 @@ mod tests {
         assert_eq!(
             serde_json::to_value(Action::Shutdown).unwrap(),
             json!({ "kind": "shutdown" })
+        );
+        assert_eq!(
+            serde_json::to_value(Action::Send {
+                text: "hi",
+                delivery: Some(QueuedDelivery::FollowUp)
+            })
+            .unwrap(),
+            json!({ "kind": "send", "text": "hi", "delivery": "followUp" })
+        );
+        assert_eq!(
+            serde_json::to_value(Action::Send {
+                text: "hi",
+                delivery: None
+            })
+            .unwrap(),
+            json!({ "kind": "send", "text": "hi" })
         );
     }
 

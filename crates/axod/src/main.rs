@@ -59,6 +59,9 @@ enum AxodCommand {
         #[arg(long, value_name = "ID")]
         shell_id: i64,
     },
+    /// Serve the Session in `AXO_SESSION_ID` to its agent as an MCP server on standard input
+    /// and output, reaching Axod at `AXO_SOCKET` (RFD0015).
+    Mcp,
 }
 
 fn main() {
@@ -69,16 +72,25 @@ fn main() {
     );
     let matches = Cli::command().version(version).get_matches();
     let cli = Cli::from_arg_matches(&matches).expect("clap validated the arguments");
-    if let Some(AxodCommand::TerminalAttach {
-        attach_socket,
-        shell_id,
-    }) = cli.command
-    {
-        if let Err(error) = attach_terminal(&attach_socket, shell_id) {
-            eprintln!("axod terminal-attach: {error}");
-            std::process::exit(1);
+    match cli.command {
+        Some(AxodCommand::TerminalAttach {
+            attach_socket,
+            shell_id,
+        }) => {
+            if let Err(error) = attach_terminal(&attach_socket, shell_id) {
+                eprintln!("axod terminal-attach: {error}");
+                std::process::exit(1);
+            }
+            return;
         }
-        return;
+        Some(AxodCommand::Mcp) => {
+            if let Err(error) = axo_server::mcp::serve_stdio() {
+                eprintln!("axod mcp: {error}");
+                std::process::exit(1);
+            }
+            return;
+        }
+        None => {}
     }
 
     let server_directory = match cli.server_dir {

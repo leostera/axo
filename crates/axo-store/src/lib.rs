@@ -8,6 +8,7 @@ use std::os::unix::fs::PermissionsExt;
 use std::path::{Path, PathBuf};
 
 use axo_pi::BridgeSocketPath;
+use axo_protocol::rpc::ArchivedSessionRecord;
 use axo_protocol::{
     ConfigKey, Layout, PaneRole, SessionId, ShellId, Viewport, WorkspaceRecord, is_uuid,
     new_uuid_v4,
@@ -1336,6 +1337,43 @@ pub fn open_session_row(database: &Connection, id: SessionId) -> io::Result<Stor
         layout: stored_layout.and_then(|json| parse_stored_layout(id, &json)),
         ..row
     })
+}
+
+/// The most archived Sessions `read_archived_sessions` returns.
+pub const MAX_ARCHIVED_SESSIONS: usize = 1000;
+
+/// Archived Sessions that had a Pi, most recently archived first, at most
+/// [`MAX_ARCHIVED_SESSIONS`].
+pub fn read_archived_sessions(database: &Connection) -> io::Result<Vec<ArchivedSessionRecord>> {
+    let mut statement = database
+        .prepare(
+            "SELECT s.id, s.session_uuid, COALESCE(s.manual_name, s.name), s.emoji, s.workspace_id,
+                    w.name, s.initial_pwd, s.pi_session_file, s.last_message_at, s.archived_at
+             FROM sessions s
+             LEFT JOIN workspaces w ON w.workspace_id = s.workspace_id
+             WHERE s.state = 'archived' AND s.session_uuid IS NOT NULL
+             ORDER BY s.archived_at DESC, s.id DESC
+             LIMIT ?1",
+        )
+        .map_err(io::Error::other)?;
+    statement
+        .query_map(params![MAX_ARCHIVED_SESSIONS as i64], |row| {
+            Ok(ArchivedSessionRecord {
+                id: stored_session_id(row.get(0)?)?,
+                session_uuid: row.get(1)?,
+                name: row.get(2)?,
+                emoji: row.get(3)?,
+                workspace_id: row.get(4)?,
+                workspace_name: row.get(5)?,
+                initial_pwd: PathBuf::from(row.get::<_, String>(6)?),
+                pi_session_file: row.get::<_, Option<String>>(7)?.map(PathBuf::from),
+                last_message_at: row.get(8)?,
+                archived_at: row.get(9)?,
+            })
+        })
+        .map_err(io::Error::other)?
+        .collect::<Result<Vec<_>, _>>()
+        .map_err(io::Error::other)
 }
 
 /// Every Session that records a Pi bridge socket: its ID, history file and socket path.

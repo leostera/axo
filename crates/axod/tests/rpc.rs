@@ -978,6 +978,247 @@ fn axod_starts_when_pi_cannot_launch() {
     let _ = std::fs::remove_dir_all(directory);
 }
 
+/// RFD0015: what a Session's agent uses to see and drive Axo.
+#[test]
+fn agents_can_find_transcripts_drive_panes_and_prompt_sessions() {
+    let directory = unique_test_directory("axo-agents");
+    let server_directory = directory.join("server");
+    let socket = directory.join("axod.sock");
+    std::fs::create_dir_all(&directory).unwrap();
+    // A Pi that records its environment, then waits like the usual fixture.
+    let environment = directory.join("pi-environment");
+    let pi = directory.join("recording-pi");
+    std::fs::write(
+        &pi,
+        format!(
+            "#!/bin/sh\nenv > {}\nexec /bin/sleep 60\n",
+            environment.display()
+        ),
+    )
+    .unwrap();
+    std::fs::set_permissions(&pi, std::os::unix::fs::PermissionsExt::from_mode(0o700)).unwrap();
+
+    let mut cleanup = SessionProcessCleanup::default();
+    let mut daemon = start_axod_with_pi(&server_directory, &socket, &pi);
+    wait_for_socket(&socket, &mut daemon);
+    let session = active_sessions(&socket).remove(0);
+    cleanup.track(&session);
+
+    // Pi is told where Axod listens and which axod to run for its MCP server.
+    let deadline = Instant::now() + READY_WAIT;
+    while !std::fs::read_to_string(&environment).is_ok_and(|text| text.contains("AXOD=")) {
+        assert!(Instant::now() < deadline, "Pi did not start");
+        thread::sleep(Duration::from_millis(20));
+    }
+    let recorded = std::fs::read_to_string(&environment).unwrap();
+    assert!(
+        recorded.contains(&format!("AXO_SOCKET={}\n", socket.display())),
+        "{recorded}"
+    );
+
+    // Typing into the terminal pane and reading its screen back as plain text.
+    let terminal = terminal_shell(&session);
+    let ids = json!({ "sessionId": session["id"], "shellId": terminal["id"] });
+    let written = rpc_with_params(
+        &socket,
+        "axo.terminal.write",
+        json!({ "sessionId": session["id"], "shellId": terminal["id"], "text": "echo axo-$((6*7))\r" }),
+    );
+    assert_eq!(written["result"]["accepted"], true, "{written}");
+    let deadline = Instant::now() + READY_WAIT;
+    let screen = loop {
+        let screen = rpc_with_params(&socket, "axo.terminal.screen", ids.clone());
+        let text = screen["result"]["text"]
+            .as_str()
+            .unwrap_or_default()
+            .to_owned();
+        if text.contains("axo-42") || Instant::now() > deadline {
+            break text;
+        }
+        thread::sleep(Duration::from_millis(50));
+    };
+    assert!(
+        screen.contains("axo-42") && !screen.contains('\x1b'),
+        "{screen:?}"
+    );
+    let one_line = rpc_with_params(
+        &socket,
+        "axo.terminal.screen",
+        json!({ "sessionId": session["id"], "shellId": terminal["id"], "lines": 1 }),
+    );
+    assert!(
+        !one_line["result"]["text"].as_str().unwrap().contains('\n'),
+        "{one_line}"
+    );
+
+    // A prompt for a Pi whose bridge never binds waits for it, and says so.
+    let prompted = rpc_with_params(
+        &socket,
+        "axo.session.prompt",
+        json!({ "sessionId": session["id"], "text": "hello", "fromSessionId": session["id"] }),
+    );
+    assert_eq!(
+        prompted["result"],
+        json!({ "accepted": true, "depth": 1, "queued": true })
+    );
+    let empty = rpc_with_params(
+        &socket,
+        "axo.session.prompt",
+        json!({ "sessionId": session["id"], "text": " " }),
+    );
+    assert_eq!(empty["error"]["code"], -32602, "{empty}");
+
+    // Archived Sessions stay findable, with their transcript paths.
+    let created = create_session(&socket);
+    cleanup.track(&created);
+    let closed = rpc_with_params(
+        &socket,
+        "axo.session.close",
+        json!({ "sessionId": created["id"] }),
+    );
+    assert!(closed["error"].is_null(), "{closed}");
+    let catalog = rpc(&socket, "axo.session.catalog")["result"].clone();
+    assert!(
+        catalog["sessions"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .any(|open| open["id"] == session["id"]),
+        "{catalog}"
+    );
+    let archived = &catalog["archived"][0];
+    assert_eq!(archived["id"], created["id"], "{catalog}");
+    assert_eq!(archived["piSessionFile"], created["piSessionFile"]);
+    assert_eq!(archived["sessionUuid"], created["sessionUuid"]);
+
+    daemon.stop();
+    let _ = std::fs::remove_dir_all(directory);
+}
+
+#[test]
+fn axod_mcp_serves_one_sessions_agent_over_stdio() {
+    let directory = unique_test_directory("axo-mcp");
+    let server_directory = directory.join("server");
+    let socket = directory.join("axod.sock");
+    let mut cleanup = SessionProcessCleanup::default();
+    let mut daemon = start_axod(&server_directory, &socket);
+    wait_for_socket(&socket, &mut daemon);
+    let session = active_sessions(&socket).remove(0);
+    cleanup.track(&session);
+
+    // An unknown Session is refused at startup.
+    let refused = Command::new(axod_binary())
+        .arg("mcp")
+        .env("AXO_SOCKET", &socket)
+        .env("AXO_SESSION_ID", "00000000-0000-4000-8000-000000000000")
+        .stdin(Stdio::null())
+        .output()
+        .unwrap();
+    assert!(!refused.status.success());
+
+    let mut mcp = Command::new(axod_binary())
+        .arg("mcp")
+        .env("AXO_SOCKET", &socket)
+        .env("AXO_SESSION_ID", session["sessionUuid"].as_str().unwrap())
+        .stdin(Stdio::piped())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::null())
+        .spawn()
+        .unwrap();
+    let mut input = mcp.stdin.take().unwrap();
+    let mut output = BufReader::new(mcp.stdout.take().unwrap());
+    let mut next_id = 0;
+    let mut request = |method: &str, params: Value| -> Value {
+        next_id += 1;
+        let message =
+            json!({ "jsonrpc": "2.0", "id": next_id, "method": method, "params": params });
+        writeln!(input, "{message}").unwrap();
+        let mut line = String::new();
+        output.read_line(&mut line).unwrap();
+        let response: Value = serde_json::from_str(&line).unwrap();
+        assert_eq!(response["id"], next_id, "{response}");
+        response["result"].clone()
+    };
+
+    let initialized = request(
+        "initialize",
+        json!({ "protocolVersion": "2025-06-18", "capabilities": {}, "clientInfo": { "name": "test", "version": "1" } }),
+    );
+    assert!(
+        initialized["instructions"]
+            .as_str()
+            .unwrap()
+            .contains("piSessionFile")
+    );
+    let tools = request("tools/list", json!({}));
+    let names: Vec<&str> = tools["tools"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|tool| tool["name"].as_str().unwrap())
+        .collect();
+    for name in [
+        "whoami",
+        "session_catalog",
+        "session_prompt",
+        "terminal_write",
+        "terminal_screen",
+    ] {
+        assert!(names.contains(&name), "{names:?}");
+    }
+
+    let call = |request: &mut dyn FnMut(&str, Value) -> Value, name: &str, arguments: Value| {
+        let result = request(
+            "tools/call",
+            json!({ "name": name, "arguments": arguments }),
+        );
+        assert_ne!(result["isError"], true, "{name}: {result}");
+        result["structuredContent"].clone()
+    };
+    let me = call(&mut request, "whoami", json!({}));
+    assert_eq!(me["sessionId"], session["id"]);
+    assert_eq!(me["workspaceId"], session["workspaceId"]);
+
+    // "self" reaches this Session's own terminal pane.
+    let terminal = terminal_shell(&session)["id"].clone();
+    call(
+        &mut request,
+        "terminal_write",
+        json!({ "sessionId": "self", "shellId": terminal, "text": "echo mcp-$((40+2))\r" }),
+    );
+    let deadline = Instant::now() + READY_WAIT;
+    loop {
+        let screen = call(
+            &mut request,
+            "terminal_screen",
+            json!({ "sessionId": "self", "shellId": terminal }),
+        );
+        if screen["text"].as_str().unwrap().contains("mcp-42") {
+            break;
+        }
+        assert!(Instant::now() < deadline, "{screen}");
+        thread::sleep(Duration::from_millis(50));
+    }
+
+    // A prompt always names this Session as its sender, so it counts toward the chain.
+    let prompted = call(
+        &mut request,
+        "session_prompt",
+        json!({ "sessionId": "self", "text": "remind me" }),
+    );
+    assert_eq!(prompted["depth"], 1, "{prompted}");
+    let refused = request(
+        "tools/call",
+        json!({ "name": "session_prompt", "arguments": { "sessionId": "self", "text": "" } }),
+    );
+    assert_eq!(refused["isError"], true, "{refused}");
+
+    drop(input);
+    assert!(wait_for_exit(&mut mcp, READY_WAIT).success());
+    daemon.stop();
+    let _ = std::fs::remove_dir_all(directory);
+}
+
 #[test]
 fn the_home_workspace_always_has_a_session_and_cannot_be_archived() {
     let directory = unique_test_directory("axo-home-workspace");

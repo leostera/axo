@@ -14,6 +14,7 @@ use axo_ipc::{ErrorCode, RpcError, TypedMethods};
 use axo_protocol::rpc::{self, method};
 use jsonrpc_core::IoHandler;
 
+pub mod mcp;
 mod session;
 mod workspace_access;
 
@@ -208,6 +209,7 @@ pub fn serve_ipc(
     prepare_runtime_directory(&socket_path.0)?;
     remove_stale_socket(&socket_path.0)?;
 
+    session::set_agent_socket(&socket_path.0);
     let sessions = session::SessionManager::open(server_directory)?;
     let host = Arc::new(session::RelayHostAdapter(Arc::clone(&sessions)));
     let credentials = remote_access.credential_storage.open(server_directory);

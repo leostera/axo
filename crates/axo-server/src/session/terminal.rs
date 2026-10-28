@@ -10,17 +10,12 @@ use std::sync::{Arc, Weak};
 use std::thread;
 use std::time::{Duration, Instant};
 
-use super::{SessionManager, SessionState};
+use super::SessionManager;
 use axo_panes::RuntimeId;
 use axo_protocol::rpc;
 use axo_protocol::{GridSize, PaneRole, SessionId, ShellActivity, ShellId};
 use axo_pty::process;
 use axo_pty::{NextOutput, OutputSubscriber, TerminalOutput, WindowSize, attach};
-
-/// Most prompt text one remote prompt carries.
-const MAX_PI_PROMPT_BYTES: usize = 16_000;
-/// Prompts that may wait for one starting Pi; more is a client sending blind.
-const MAX_QUEUED_PI_PROMPTS: usize = 8;
 
 const ATTACH_STOP_POLL_INTERVAL: Duration = Duration::from_millis(100);
 
@@ -401,55 +396,11 @@ impl SessionManager {
             TERMINAL_INPUT_WRITE_TIMEOUT,
         )?;
         running.last_input_sequence = Some(sequence);
+        if running.role == PaneRole::Pi {
+            // A person is talking to this Pi: any chain of agent prompts ends here.
+            state.prompt_provenance.reset(session_id);
+        }
         Ok(())
-    }
-
-    /// Types a prompt into the Session's Pi pane and submits it. The text goes in as a bracketed
-    /// paste, so newlines and control characters in it stay text instead of acting as keys; only
-    /// the final carriage return submits. This does not use the pane's input sequence: that
-    /// belongs to the one client typing into the pane.
-    /// Types `text` into the Session's Pi as one bracketed paste and a submit.
-    ///
-    /// Pi ignores a submit until its startup has finished ("Startup is still in progress"): the
-    /// words stay in its editor and nothing is sent. Its bridge binds only after that point, so a
-    /// prompt for a Pi whose bridge has not bound yet waits here and is typed by
-    /// `flush_queued_pi_prompts` when it does. This is what a chat's first message meets.
-    pub(super) fn prompt_pi(&self, session_id: SessionId, text: &str) -> io::Result<()> {
-        if text.trim().is_empty() || text.len() > MAX_PI_PROMPT_BYTES {
-            return Err(io::Error::new(
-                io::ErrorKind::InvalidInput,
-                "a prompt must contain 1 to 16000 bytes of text",
-            ));
-        }
-        // A pasted escape could close the paste early and run the rest as keystrokes.
-        let text: String = text.chars().filter(|&c| c != '\u{1b}').collect();
-        let mut state = self.lock_state()?;
-        let pi_shell = state
-            .panes
-            .in_session(session_id)
-            .find_map(|(id, pane)| match pane {
-                axo_panes::Pane::Running(shell) if shell.role == PaneRole::Pi => Some(id),
-                _ => None,
-            })
-            .ok_or_else(|| io::Error::new(io::ErrorKind::NotFound, "Pi is not running"))?;
-        let ready = state.pi_activity.get(&session_id).is_some_and(|activity| activity.connected);
-        if !ready {
-            let queue = state.queued_pi_prompts.entry(session_id).or_default();
-            if queue.len() >= MAX_QUEUED_PI_PROMPTS {
-                return Err(io::Error::new(
-                    io::ErrorKind::WouldBlock,
-                    "Pi is still starting and already has prompts waiting",
-                ));
-            }
-            log::info!(
-                "event=session.pi_prompt_queued session_id={} queued={}",
-                session_id.get(),
-                queue.len() + 1
-            );
-            queue.push(text);
-            return Ok(());
-        }
-        type_pi_prompt(&mut state, session_id, pi_shell, &text)
     }
 
     /// Presses one key in the Session's Pi pane, as a person at the Mac would: Escape stops a reply
@@ -480,27 +431,60 @@ impl SessionManager {
         process::write_all(running.master.as_raw_fd(), bytes, TERMINAL_INPUT_WRITE_TIMEOUT)
     }
 
-    /// Types the prompts that waited for the Session's Pi to finish starting, oldest first.
-    pub(super) fn flush_queued_pi_prompts(&self, session_id: SessionId) -> io::Result<()> {
-        let mut state = self.lock_state()?;
-        let Some(queue) = state.queued_pi_prompts.remove(&session_id) else {
-            return Ok(());
-        };
-        let Some(pi_shell) = state.panes.in_session(session_id).find_map(|(id, pane)| match pane {
-            axo_panes::Pane::Running(shell) if shell.role == PaneRole::Pi => Some(id),
-            _ => None,
-        }) else {
-            return Ok(());
-        };
-        log::info!(
-            "event=session.pi_prompts_flushed session_id={} count={}",
-            session_id.get(),
-            queue.len()
-        );
-        for text in &queue {
-            type_pi_prompt(&mut state, session_id, pi_shell, text)?;
+    /// Types `text` into a pane as a keyboard would, outside its input sequence: for agents
+    /// driving panes (RFD0015). Control characters act as keys.
+    pub(super) fn write_terminal_text(
+        &self,
+        session_id: SessionId,
+        shell_id: ShellId,
+        text: &str,
+    ) -> io::Result<()> {
+        if text.is_empty() || text.len() > 49_152 {
+            return Err(io::Error::new(
+                io::ErrorKind::InvalidInput,
+                "terminal text must contain 1 to 49152 bytes",
+            ));
         }
-        Ok(())
+        let state = self.lock_state()?;
+        let running = state
+            .panes
+            .running_in(session_id, shell_id)
+            .ok_or_else(|| io::Error::new(io::ErrorKind::NotFound, "shell is not open"))?;
+        log::info!(
+            "event=terminal.write session_id={} shell_id={} bytes={}",
+            session_id.get(),
+            shell_id.get(),
+            text.len()
+        );
+        process::write_all(
+            running.master.as_raw_fd(),
+            text.as_bytes(),
+            TERMINAL_INPUT_WRITE_TIMEOUT,
+        )
+    }
+
+    /// The last `lines` lines of a pane's screen and scrollback as plain text, and whether
+    /// earlier lines were left out.
+    pub(super) fn terminal_screen(
+        &self,
+        session_id: SessionId,
+        shell_id: ShellId,
+        lines: usize,
+    ) -> io::Result<rpc::TerminalScreen> {
+        let output = {
+            let state = self.lock_state()?;
+            let running = state
+                .panes
+                .running_in(session_id, shell_id)
+                .ok_or_else(|| io::Error::new(io::ErrorKind::NotFound, "shell is not open"))?;
+            Arc::clone(&running.output)
+        };
+        let text = output.screen_text();
+        let (text, truncated) = last_lines(&text, lines);
+        Ok(rpc::TerminalScreen {
+            text: text.to_owned(),
+            truncated,
+        })
     }
 
     pub(super) fn resize_terminal(
@@ -600,22 +584,15 @@ impl SessionManager {
     }
 }
 
-fn type_pi_prompt(
-    state: &mut SessionState,
-    session_id: SessionId,
-    pi_shell: ShellId,
-    text: &str,
-) -> io::Result<()> {
-    let running = state
-        .panes
-        .running_in_mut(session_id, pi_shell)
-        .ok_or_else(|| io::Error::new(io::ErrorKind::NotFound, "Pi is not running"))?;
-    let input = format!("\u{1b}[200~{text}\u{1b}[201~\r");
-    process::write_all(
-        running.master.as_raw_fd(),
-        input.as_bytes(),
-        TERMINAL_INPUT_WRITE_TIMEOUT,
-    )
+/// The last `count` lines of `text`, and whether any came before them.
+fn last_lines(text: &str, count: usize) -> (&str, bool) {
+    if count == 0 {
+        return ("", !text.is_empty());
+    }
+    match text.rmatch_indices('\n').nth(count - 1) {
+        Some((index, _)) => (&text[index + 1..], true),
+        None => (text, false),
+    }
 }
 
 #[cfg(test)]
@@ -797,15 +774,76 @@ mod tests {
         (SessionManager::open(directory).unwrap(), log)
     }
 
+    /// Stands in for pi-axo's bridge listener: proves the pane's identity on every connection
+    /// and accepts every command, reporting each action it was sent.
+    fn fake_pi_bridge(
+        manager: &SessionManager,
+        session: &axo_protocol::SessionRecord,
+    ) -> mpsc::Receiver<serde_json::Value> {
+        use std::io::{BufRead, BufReader};
+        let (socket, identity) = {
+            let state = manager.lock_state().unwrap();
+            let running = state.panes.running(pi_shell(session)).unwrap();
+            let identity = serde_json::json!({
+                "axoSessionId": session.session_uuid,
+                "axoPaneId": running.pane_id,
+                "piSessionId": axo_protocol::new_uuid_v4().unwrap(),
+                "sessionFile": session.pi_session_file,
+                "cwd": running.initial_pwd,
+                "processId": running.child.id(),
+            });
+            (running.pi_bridge_socket.clone().unwrap(), identity)
+        };
+        let listener = std::os::unix::net::UnixListener::bind(socket.as_path()).unwrap();
+        let (actions, received) = mpsc::channel();
+        thread::spawn(move || {
+            for stream in listener.incoming() {
+                let Ok(stream) = stream else { return };
+                let identity = identity.clone();
+                let actions = actions.clone();
+                thread::spawn(move || {
+                    let mut reader = BufReader::new(stream.try_clone().unwrap());
+                    let mut writer = stream;
+                    let mut line = String::new();
+                    if reader.read_line(&mut line).unwrap_or(0) == 0 {
+                        return;
+                    }
+                    for record in [
+                        serde_json::json!({ "type": "authenticated", "protocolVersion": 1 }),
+                        serde_json::json!({ "type": "hello", "protocolVersion": 1, "identity": identity }),
+                    ] {
+                        let _ = writeln!(writer, "{record}");
+                    }
+                    loop {
+                        line.clear();
+                        if reader.read_line(&mut line).unwrap_or(0) == 0 {
+                            return;
+                        }
+                        let command: serde_json::Value = serde_json::from_str(&line).unwrap();
+                        let answer = serde_json::json!({
+                            "type": "commandResult",
+                            "requestId": command["requestId"],
+                            "result": { "accepted": true },
+                        });
+                        let _ = writeln!(writer, "{answer}");
+                        let _ = actions.send(command["action"].clone());
+                    }
+                });
+            }
+        });
+        received
+    }
+
     #[test]
-    fn a_prompt_reaches_pi_as_one_bracketed_paste_and_a_submit() {
+    fn a_prompt_reaches_pi_over_its_bridge_once_pi_is_up() {
+        use crate::session::prompts::{MAX_PI_PROMPT_BYTES, PromptError};
         let directory = std::path::PathBuf::from("/tmp").join(format!("axo-prompt-{}", axo_protocol::new_uuid_v4().unwrap()));
         std::fs::create_dir_all(&directory).unwrap();
         let (manager, log) = manager_recording_input(&directory);
         let session = manager.list_sessions().unwrap().remove(0);
         let shell_id = pi_shell(&session);
 
-        // No Pi in the Session yet: nothing to prompt, and nothing is typed anywhere.
+        // No Pi in the Session: nothing to prompt.
         manager.lock_state().unwrap().panes.running_mut(shell_id).unwrap().role = PaneRole::Terminal;
         let refused = manager.prompt_pi(session.id, "hello").unwrap_err();
         assert_eq!(refused.kind(), io::ErrorKind::NotFound);
@@ -815,42 +853,70 @@ mod tests {
             let error = manager.prompt_pi(session.id, bad).unwrap_err();
             assert_eq!(error.kind(), io::ErrorKind::InvalidInput);
         }
-        manager.prompt_pi(session.id, "fix the build\nthen run tests\u{1b}[201~evil").unwrap();
-        // Pi is still starting (its bridge has not bound): the prompt waits instead of being
-        // typed into an editor that ignores Enter.
-        thread::sleep(Duration::from_millis(300));
-        assert_eq!(std::fs::read_to_string(&log).unwrap_or_default(), "");
+        // Pi is still starting (its bridge has not bound): the prompt waits.
+        manager.prompt_pi(session.id, "fix the build\nthen run tests").unwrap();
         assert_eq!(manager.lock_state().unwrap().queued_pi_prompts[&session.id].len(), 1);
 
-        manager.lock_state().unwrap().pi_activity.entry(session.id).or_default().connected = true;
-        manager.flush_queued_pi_prompts(session.id).unwrap();
+        // Pi comes up: the worker binds, and what waited is sent.
+        let actions = fake_pi_bridge(&manager, &session);
+        assert_eq!(
+            actions.recv_timeout(Duration::from_secs(15)).unwrap(),
+            serde_json::json!({ "kind": "send", "text": "fix the build\nthen run tests", "delivery": "steer" })
+        );
         assert!(!manager.lock_state().unwrap().queued_pi_prompts.contains_key(&session.id));
 
-        let deadline = Instant::now() + Duration::from_secs(15);
-        let typed = loop {
-            let typed = std::fs::read_to_string(&log).unwrap_or_default();
-            if typed.contains("evil") || Instant::now() > deadline {
-                break typed;
-            }
-            thread::sleep(Duration::from_millis(50));
-        };
-        // One paste around the whole text, a stray escape removed from inside it, then Enter
-        // (the terminal turns it into a newline for `cat`).
-        assert_eq!(typed, "\u{1b}[200~fix the build\nthen run tests[201~evil\u{1b}[201~\n");
+        // Once Pi is up, a prompt is sent at once.
+        let accepted = manager
+            .prompt_session(&rpc::PromptSession {
+                session_id: session.id,
+                text: "and again".to_owned(),
+                delivery: rpc::PromptDelivery::Turn,
+                from_session_id: None,
+            })
+            .unwrap();
+        assert_eq!((accepted.depth, accepted.queued), (0, false));
+        assert_eq!(
+            actions.recv_timeout(Duration::from_secs(5)).unwrap(),
+            serde_json::json!({ "kind": "send", "text": "and again" })
+        );
 
-        // Once Pi is up, a prompt is typed at once, after the ones that waited.
-        manager.prompt_pi(session.id, "and again").unwrap();
-        let deadline = Instant::now() + Duration::from_secs(15);
-        let typed = loop {
-            let typed = std::fs::read_to_string(&log).unwrap_or_default();
-            if typed.contains("again") || Instant::now() > deadline {
-                break typed;
-            }
-            thread::sleep(Duration::from_millis(50));
+        // An agent prompting itself climbs one level per prompt and stops at the limit.
+        let to_self = |text: &str| {
+            manager.prompt_session(&rpc::PromptSession {
+                session_id: session.id,
+                text: text.to_owned(),
+                delivery: rpc::PromptDelivery::FollowUp,
+                from_session_id: Some(session.id),
+            })
         };
-        assert!(typed.ends_with("\u{1b}[200~and again\u{1b}[201~\n"), "{typed:?}");
+        for depth in 1..=crate::session::prompts::MAX_PROMPT_DEPTH {
+            assert_eq!(to_self("again").unwrap().depth, depth);
+        }
+        let sent = actions.recv_timeout(Duration::from_secs(5)).unwrap();
+        assert_eq!(
+            sent["text"],
+            format!("[From Axo Session {} {:?}]\n\nagain", session.id.get(), session.name),
+            "an agent's prompt names its sender"
+        );
+        assert_eq!(sent["delivery"], "followUp");
+        assert!(matches!(to_self("again"), Err(PromptError::ChainTooDeep)));
+        // A person typing into the pane ends the chain.
+        let typed = axo_protocol::base64::encode(b"x\r");
+        manager.write_terminal_input(session.id, shell_id, 0, &typed).unwrap();
+        assert_eq!(to_self("again").unwrap().depth, 1);
+        assert_eq!(to_self("again").unwrap().depth, 2);
+        // Ten prompts to itself a minute, then no more.
+        assert!(matches!(to_self("again"), Err(PromptError::RateLimited)));
+
+        // Nothing was typed into the pane except what the person typed.
+        let deadline = Instant::now() + Duration::from_secs(5);
+        while std::fs::read_to_string(&log).unwrap_or_default().is_empty() && Instant::now() < deadline {
+            thread::sleep(Duration::from_millis(50));
+        }
+        assert_eq!(std::fs::read_to_string(&log).unwrap_or_default(), "x\n");
         let _ = std::fs::remove_dir_all(&directory);
     }
+
     #[test]
     fn a_remote_key_press_reaches_only_the_pi_pane() {
         let directory = std::path::PathBuf::from("/tmp").join(format!("axo-key-{}", axo_protocol::new_uuid_v4().unwrap()));

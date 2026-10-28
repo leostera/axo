@@ -329,6 +329,13 @@ impl SessionManager {
         Ok(sessions)
     }
 
+    /// Open Sessions as `list_sessions` reports them, and archived ones from the store.
+    pub(super) fn session_catalog(&self) -> io::Result<axo_protocol::rpc::SessionCatalog> {
+        let sessions = self.list_sessions()?;
+        let archived = axo_store::read_archived_sessions(&self.lock_state()?.database)?;
+        Ok(axo_protocol::rpc::SessionCatalog { sessions, archived })
+    }
+
     /// Every RPC, attach and event path goes through this one lock, so holding it across slow
     /// work (spawning, SQLite, signalling) stalls every client. Long waits and long holds are
     /// logged with the caller's source location; see `CatalogGuard`.

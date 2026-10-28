@@ -23,6 +23,10 @@ pi \
 
 The extension starts listening during extension initialization, then binds only after Pi reports `session_start`. It verifies that Pi opened the exact session-file path Axod supplied. Once bound, it reports the Axo Session/Pane IDs, Pi session ID, actual file path, working directory, and process ID. Axod must independently validate this binding before relaying anything. The path and working directory are local Axod metadata; the extension does not send them to Cloudflare.
 
+## Axo MCP server
+
+When Axod also passes `AXOD` (its executable) and `AXO_SOCKET` (its local socket), the extension registers `axod mcp` for this Session as the `axo` MCP server with `codemode` exposure (`src/mcp.ts`). Its tools are not declared to the model; codemode scripts call them as `tools.mcp__axo__<tool>(...)` and read their instructions with `describeNamespace("mcp__axo")`. See RFD0015. The registration is independent of the bridge, and nothing is registered outside Axo.
+
 ## Local bridge v1
 
 Records are UTF-8 JSON objects terminated by LF. Each direction is full-duplex. The server accepts one Axod connection at a time and can accept a replacement connection after disconnect.

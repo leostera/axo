@@ -159,6 +159,49 @@ impl Terminal {
         Ok(snapshot)
     }
 
+    /// The screen and its scrollback as plain text: soft-wrapped rows joined, trailing blanks
+    /// trimmed, no styling or escape sequences. What a person would copy out of the terminal.
+    pub fn plain_text(&mut self) -> Result<String, Error> {
+        let screen = ffi::ScreenExtra {
+            size: size_of::<ffi::ScreenExtra>(),
+            cursor: false,
+            style: false,
+            hyperlink: false,
+            protection: false,
+            kitty_keyboard: false,
+            charsets: false,
+        };
+        let options = ffi::FormatterTerminalOptions {
+            size: size_of::<ffi::FormatterTerminalOptions>(),
+            emit: ffi::FORMAT_PLAIN,
+            unwrap: true,
+            trim: true,
+            extra: ffi::TerminalExtra {
+                size: size_of::<ffi::TerminalExtra>(),
+                palette: false,
+                modes: false,
+                scrolling_region: false,
+                tabstops: false,
+                pwd: false,
+                keyboard: false,
+                screen,
+            },
+            selection: ptr::null(),
+        };
+        let mut formatter = ptr::null_mut();
+        // SAFETY: the terminal outlives the formatter, which is freed below.
+        check("formatter_terminal_new", unsafe {
+            ffi::ghostty_formatter_terminal_new(ptr::null(), &mut formatter, self.raw, options)
+        })?;
+        let text = take_allocated("formatter_format_alloc", |out, len| unsafe {
+            // SAFETY: the formatter is live and the out pointers are valid.
+            ffi::ghostty_formatter_format_alloc(formatter, ptr::null(), out, len)
+        });
+        // SAFETY: created above and not used after this.
+        unsafe { ffi::ghostty_formatter_free(formatter) };
+        Ok(String::from_utf8_lossy(&text?).into_owned())
+    }
+
     fn set_size_option(&mut self, option: c_int, value: usize) -> Result<(), Error> {
         // SAFETY: both options read a `size_t` through the pointer during the call.
         check("terminal_set", unsafe {
@@ -209,6 +252,8 @@ mod ffi {
     pub type Formatter = *mut c_void;
 
     pub const SUCCESS: c_int = 0;
+    /// `GHOSTTY_FORMATTER_FORMAT_PLAIN`.
+    pub const FORMAT_PLAIN: c_int = 0;
     /// `GHOSTTY_FORMATTER_FORMAT_VT`.
     pub const FORMAT_VT: c_int = 1;
     /// `GHOSTTY_TERMINAL_OPT_SCROLLBACK_MAX_BYTES`.
@@ -353,6 +398,22 @@ mod tests {
         }
         assert!(contains(&snapshot, "Pi transcript"));
         assert!(contains(&snapshot, "> prompt"));
+    }
+
+    #[test]
+    fn plain_text_is_what_the_program_printed_without_styling() {
+        let mut terminal = terminal(20, 4);
+        for line in 0..6 {
+            terminal.write(format!("\x1b[1mline\x1b[0m {line}\r\n").as_bytes());
+        }
+        terminal.write(b"a long row that wraps past twenty columns");
+        let text = terminal.plain_text().unwrap();
+        assert!(text.starts_with("line 0\nline 1\n"), "{text:?}");
+        assert!(
+            text.ends_with("line 5\na long row that wraps past twenty columns"),
+            "{text:?}"
+        );
+        assert!(!text.contains('\x1b'));
     }
 
     #[test]

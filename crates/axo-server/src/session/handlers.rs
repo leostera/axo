@@ -6,6 +6,7 @@ use std::time::Duration;
 
 use super::SessionManager;
 use super::events::SharedEvent;
+use super::prompts::PromptError;
 use axo_ipc::TypedMethods;
 use axo_pi::takeover::TakeoverPolicy;
 use axo_protocol::rpc::{self, method};
@@ -187,6 +188,28 @@ fn invalid_input_or_internal(error: io::Error, message: Option<&str>) -> RpcErro
         invalid_params(message.unwrap_or(&error.to_string()))
     } else {
         internal_rpc_error(error)
+    }
+}
+
+const DEFAULT_SCREEN_LINES: u32 = 200;
+const MAX_SCREEN_LINES: u32 = 10_000;
+
+/// RPC errors for `axo.session.prompt`: the caller's mistakes are invalid params; loop limits
+/// have codes of their own so an agent can tell them apart from Pi not taking the prompt.
+fn prompt_rpc_error(error: PromptError) -> RpcError {
+    let code = match error {
+        PromptError::Invalid(_) => ErrorCode::InvalidParams,
+        PromptError::ChainTooDeep => ErrorCode::ServerError(-32002),
+        PromptError::RateLimited => ErrorCode::ServerError(-32003),
+        PromptError::NoPi
+        | PromptError::Busy
+        | PromptError::QueueFull
+        | PromptError::Unavailable(_) => ErrorCode::ServerError(-32004),
+    };
+    RpcError {
+        code,
+        message: error.to_string(),
+        data: None,
     }
 }
 
@@ -420,6 +443,55 @@ impl SessionManager {
                     .list_workspaces()
                     .map(|workspaces| rpc::WorkspaceList { workspaces })
                     .map_err(internal_rpc_error)
+            },
+        );
+
+        let manager = Arc::clone(self);
+        handler.add_typed(
+            method::SESSION_CATALOG,
+            "expected no parameters",
+            move |_: rpc::NoParams| manager.session_catalog().map_err(internal_rpc_error),
+        );
+
+        let manager = Arc::clone(self);
+        handler.add_typed(
+            method::SESSION_PROMPT,
+            "expected {sessionId, text, delivery?: steer|followUp|turn, fromSessionId?}",
+            move |request: rpc::PromptSession| {
+                manager.prompt_session(&request).map_err(prompt_rpc_error)
+            },
+        );
+
+        let manager = Arc::clone(self);
+        handler.add_typed(
+            method::TERMINAL_WRITE,
+            "expected {sessionId, shellId, text}",
+            move |request: rpc::WriteTerminal| {
+                manager
+                    .write_terminal_text(request.session_id, request.shell_id, &request.text)
+                    .map(|()| rpc::WriteAccepted { accepted: true })
+                    .map_err(|error| match error.kind() {
+                        io::ErrorKind::NotFound => invalid_params("shell is not open"),
+                        _ => invalid_input_or_internal(error, None),
+                    })
+            },
+        );
+
+        let manager = Arc::clone(self);
+        handler.add_typed(
+            method::TERMINAL_SCREEN,
+            "expected {sessionId, shellId, lines?: 1 to 10000}",
+            move |request: rpc::ReadTerminalScreen| {
+                let lines = request.lines.unwrap_or(DEFAULT_SCREEN_LINES);
+                if !(1..=MAX_SCREEN_LINES).contains(&lines) {
+                    return Err(invalid_params("lines must be 1 to 10000"));
+                }
+                manager
+                    .terminal_screen(request.session_id, request.shell_id, lines as usize)
+                    .map_err(|error| match error.kind() {
+                        io::ErrorKind::NotFound => invalid_params("shell is not open"),
+                        _ => internal_rpc_error(error),
+                    })
             },
         );
 

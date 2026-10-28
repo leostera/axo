@@ -236,6 +236,18 @@ impl TerminalOutput {
         (state.screen.replay(), subscriber)
     }
 
+    /// The screen and its scrollback as plain text; empty if the headless terminal is missing.
+    pub fn screen_text(&self) -> String {
+        let mut state = self.lock();
+        let Some(terminal) = &mut state.screen.terminal else {
+            return String::new();
+        };
+        terminal.plain_text().unwrap_or_else(|error| {
+            log::warn!("event=terminal.screen_text_failed error={error}");
+            String::new()
+        })
+    }
+
     /// How many clients are attached; for diagnostics and tests.
     pub fn subscriber_count(&self) -> usize {
         self.lock().subscribers.len()
@@ -497,6 +509,13 @@ mod tests {
             panic!("expected live output");
         };
         chunks.concat()
+    }
+
+    #[test]
+    fn screen_text_is_plain() {
+        let output = TerminalOutput::detached_for_tests();
+        output.record(b"\x1b[31m$ cargo test\x1b[0m\r\nok\r\n");
+        assert_eq!(output.screen_text(), "$ cargo test\nok");
     }
 
     #[test]

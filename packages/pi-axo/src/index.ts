@@ -1,5 +1,6 @@
 import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
 import { installAxoPiExtension, type AxoPiExtensionConfig } from "./extension.js";
+import { parseAxoMcpConfig, registerAxoMcpServer } from "./mcp.js";
 
 const UUID_PATTERN = /^[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/iu;
 // Keep aligned with MAX_PI_BRIDGE_SOCKET_PATH_BYTES in Axod's session manager.
@@ -32,7 +33,17 @@ export {
   type PiSessionIdentity,
 } from "./protocol.js";
 
+export { parseAxoMcpConfig, registerAxoMcpServer, type AxoMcpConfig } from "./mcp.js";
+
 export default function axoPiExtension(pi: ExtensionAPI): void {
+  const mcp = parseAxoMcpConfig(process.env);
+  if (mcp !== null) {
+    try {
+      registerAxoMcpServer(pi, mcp);
+    } catch (error) {
+      console.error(`Axo MCP server unavailable: ${error instanceof Error ? error.message : String(error)}`);
+    }
+  }
   const config = parseAxoPiExtensionConfig(process.env);
   if (config === null) {
     console.error("Axo Pi bridge unavailable: missing or invalid Axod environment");

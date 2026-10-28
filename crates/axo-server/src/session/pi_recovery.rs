@@ -10,7 +10,7 @@ use std::sync::Arc;
 use super::catalog::session_metadata;
 use super::lifecycle::close_session;
 use super::pi_bridge::{PiRuntimeBinding, log_socket_cleanup};
-use super::spawn::{spawn_shell, terminal_environment};
+use super::spawn::{pi_environment, spawn_shell};
 use super::{RunningShell, SessionManager, SessionState, stop_panes};
 use crate::workspace_access::WorkspaceDirectoryAccess;
 use axo_panes::{RecoveryRefused, RuntimeId, UnavailablePane};
@@ -118,7 +118,7 @@ fn spawn_pi(
     bridge_token: String,
 ) -> io::Result<RunningShell> {
     let home = crate::current_user_home_directory()?;
-    let environment = terminal_environment();
+    let environment = pi_environment();
     let PiProcess {
         pty:
             PtyProcess {

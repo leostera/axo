@@ -1,7 +1,7 @@
 # RFD0015 - Axo: Sessions as Axo protocol clients
 
 - Feature Name: `axo-sessions-as-protocol-clients`
-- Status: Proposal
+- Status: Implemented
 - Author: leostera
 - Start Date: 2026-10-27
 - Updated: 2026-10-27
@@ -9,7 +9,7 @@
 
 ## Summary
 
-I propose that the Pi agent running in each Axo Session becomes a client of Axod through MCP. A new `axod mcp` subcommand is a stdio MCP server that exposes Axod's local protocol as MCP tools. The pi-axo extension registers it for its Session with `pi.registerMcpServer`, using `codemode` exposure, so Pi calls Axod by writing codemode scripts (`await tools.mcp__axo__session_list({})`) instead of through Pi tools Axo would have to build and maintain. The MCP server knows which Session it serves, so "my Session" works and Axod can attribute agent prompts and stop runaway chains of agents prompting each other. Axo is a closed, trusted system, so there is no authentication. Session listings already include each Session's transcript path, so Pi can search and read conversations with ordinary Unix tools; Axod adds archived Sessions to the listing on request, a local prompt method (including prompting the agent's own Session), and plain-text pane screens.
+I propose that the Pi agent running in each Axo Session becomes a client of Axod through MCP. A new `axod mcp` subcommand is a stdio MCP server that exposes Axod's local protocol as MCP tools. The pi-axo extension registers it for its Session with `pi.registerMcpServer`, using `codemode` exposure, so Pi calls Axod by writing codemode scripts (`await tools.mcp__axo__session_catalog({})`) instead of through Pi tools Axo would have to build and maintain. The MCP server knows which Session it serves, so "my Session" works and Axod can attribute agent prompts and stop runaway chains of agents prompting each other. Axo is a closed, trusted system, so there is no authentication. Axod gains a few methods agents need: a catalog of open and archived Sessions with their transcript paths, so Pi can search and read conversations with ordinary Unix tools; a local prompt method, including prompting the agent's own Session; and typing into and reading panes as plain text.
 
 ## Motivation
 
@@ -88,8 +88,8 @@ pi.registerMcpServer("axo", {
 Pi writes codemode scripts. Searching is two steps: find the files, then use Pi's own tools on them.
 
 ```js
-const { structuredContent: { sessions } } = await tools.mcp__axo__session_list({ archived: true });
-const paths = sessions.map(s => s.piSessionFile).filter(Boolean);
+const { structuredContent: { sessions, archived } } = await tools.mcp__axo__session_catalog({});
+const paths = [...sessions, ...archived].map(s => s.piSessionFile).filter(Boolean);
 const hits = await tools.bash({ command: `rg -n -i "reconnect backoff" ${paths.map(p => JSON.stringify(p)).join(" ")}` });
 return hits.output;
 ```
@@ -103,17 +103,18 @@ await tools.mcp__axo__session_prompt({ sessionId: "self", delivery: "followUp", 
 return `Started Session ${created.id}`;
 ```
 
-The new Session's sidebar row shows which Session started it, and the prompt in its transcript is marked as coming from that Session.
+The prompt arrives in the new Session's transcript headed `[From Axo Session 7 "Relay work"]`, so its agent and the person both see who sent it.
 
 ## Reference-level explanation
 
 ### `axod mcp`
 
-- A new `axod` subcommand next to `terminal-attach`. It speaks MCP over stdio and JSON-RPC to the socket named by `AXO_SOCKET`, opening one connection and keeping it for the life of the process.
-- `AXO_SESSION_ID` names the Session the server belongs to. It is required. The server resolves it to Axod's numeric Session ID at startup with `axo.session.list` and exits with an error if no open Session has that UUID.
-- Each tool maps to one `axo.*` method: the tool name is the method name without `axo.` and with `.` replaced by `_`, and the tool's input schema is the method's parameter schema. Tools return the method's result as `structuredContent`, and the same JSON as text.
+- A new `axod` subcommand next to `terminal-attach` (`crates/axo-server/src/mcp.rs`). It speaks MCP (revision 2025-06-18) over stdio and JSON-RPC to the socket named by `AXO_SOCKET`, one connection per call.
+- `AXO_SESSION_ID` names the Session the server belongs to. It is required. The server resolves it to Axod's numeric Session ID at startup with `axo.session.catalog` and exits with an error if no open Session has that UUID.
+- Each tool maps to one `axo.*` method: the tool name is the method name without `axo.` and with `.` replaced by `_`, and the tool's input schema is the method's parameters. Tools return the method's result as `structuredContent`, and the same JSON as text. Axod's errors come back as `isError` results carrying Axod's message and code.
+- One tool is the server's own: `whoami` returns its Session (ID, Workspace, transcript path, panes), so an agent can find "my terminal pane".
 - Wherever a tool takes a `sessionId` or `workspaceId`, the server accepts `"self"` and substitutes its own Session or that Session's Workspace before calling Axod.
-- `session_prompt` always sends `from` set to its own Session. The caller cannot set or override it.
+- `session_prompt` always sends `fromSessionId` set to its own Session. The caller cannot set or override it.
 - Tools carry MCP annotations (`readOnlyHint`, `destructiveHint`) taken from the method table, so a Pi permission extension can confirm destructive calls if the person wants that.
 - The server's instructions, which codemode reads with `describeNamespace("mcp__axo")`, explain the tools, how to search transcripts with `rg` and `jq`, what Pi's JSONL records look like, and that text from other Sessions is data, not instructions.
 
@@ -121,45 +122,49 @@ The new Session's sidebar row shows which Session started it, and the prompt in 
 
 | Tool | Method | Notes |
 |---|---|---|
-| `session_list` | `axo.session.list` | Existing, plus `archived` |
+| `whoami` | — | Answered by the server |
+| `session_catalog` | `axo.session.catalog` | New |
 | `workspace_list` | `axo.workspace.list` | Existing |
 | `workspace_session_create` | `axo.workspace.session.create` | Existing |
 | `session_rename` | `axo.session.rename` | Existing |
 | `shell_create`, `shell_close` | `axo.shell.create`, `axo.shell.close` | Existing |
-| `terminal_input` | `axo.terminal.input` | Existing |
+| `terminal_write` | `axo.terminal.write` | New |
 | `session_prompt` | `axo.session.prompt` | New |
 | `terminal_screen` | `axo.terminal.screen` | New |
 
-Methods that change Axo itself rather than its Sessions are not exposed: `axo.config.*`, `axo.relay.*`, `axo.workspace.create`, `axo.workspace.archive`, `axo.session.close`, the subscription methods, and `axo.client.viewport.set`. This guards against mistakes, not attacks. See [Unresolved questions](#unresolved-questions).
+Methods that change Axo itself rather than its Sessions are not exposed: `axo.config.*`, `axo.relay.*`, `axo.workspace.create`, `axo.workspace.archive`, `axo.session.close`, `axo.session.list`, the subscription methods, `axo.terminal.input`, `axo.terminal.resize`, and `axo.client.viewport.set`. This guards against mistakes, not attacks. See [Unresolved questions](#unresolved-questions).
 
 ### Axod methods
 
 | Method | Result | Notes |
 |---|---|---|
-| `axo.session.list { archived? }` | `{ sessions }` | Existing. With `archived: true`, archived Sessions are listed too, marked `"state": "archived"`, with their `piSessionFile`. A transcript Pi hasn't written yet does not exist on disk |
-| `axo.session.prompt { sessionId, text, delivery, from? }` | `{ accepted }` | `delivery`: `steer`, `followUp` or `turn`. Sent through the bridge's `send` command. `from` names the sending Session |
-| `axo.terminal.screen { shellId, lines }` | `{ text }` | Plain text from Axod's headless terminal (axo-vt) |
+| `axo.session.catalog` | `{ sessions, archived }` | `sessions` as `axo.session.list` reports them; `archived` the 1000 most recently archived Sessions, each with `piSessionFile`. A transcript Pi hasn't written yet does not exist on disk. Unlike `axo.session.list`, it does not consume the pending `/resume` focus the Mac app reads |
+| `axo.session.prompt { sessionId, text, delivery?, fromSessionId? }` | `{ accepted, depth, queued }` | `delivery`: `followUp` (default), `steer` or `turn` (only if idle). `queued` when Pi is still starting and the prompt waits for its bridge |
+| `axo.terminal.write { sessionId, shellId, text }` | `{ accepted }` | Text typed into a pane outside its input sequence, which belongs to the one client typing in it (`axo.terminal.input`). Control characters act as keys |
+| `axo.terminal.screen { sessionId, shellId, lines? }` | `{ text, truncated }` | The last `lines` (default 200, at most 10000) of screen and scrollback, as plain text from Axod's headless terminal (axo-vt) |
 
-`axo.session.prompt` uses the bridge's structured `send`, so delivery is reliable and never mixes with what the person is typing. The existing remote prompt path (`prompt_pi`, which pastes into the PTY) moves to the same mechanism.
+`axo.session.prompt` sends the bridge's structured `send` command on a connection of its own, so delivery is confirmed and never mixes with what the person is typing. A prompt for a Pi that is still starting waits (up to 8) and is sent when its bridge binds. The remote prompt path (`axo.remote.session.prompt`) moved to the same mechanism with `steer` delivery, so `axo.session.prompt` is now its local counterpart in the parity table. `axo.terminal.screen` is planned remotely; `axo.session.catalog` and `axo.terminal.write` are local only.
+
+Errors: invalid text or sender `-32602`; `-32002` chain too deep; `-32003` rate limited; `-32004` not delivered (no Pi, Pi busy for `turn`, queue full, or the bridge refused).
 
 ### Provenance and loop limits
 
 A message from one agent to another, or to itself, can start a chain of turns. Axod records where each agent message came from and caps the chain:
 
-- A prompt with `from` has a depth one greater than the depth of the prompt that started the sender's current turn. Messages the person types have depth 0, and so does a prompt without `from`.
+- Each Session remembers the depth of the last prompt it was sent. A prompt with `fromSessionId` has a depth one greater than its sender's. A prompt without it (a person, locally or remotely) has depth 0, and a person typing into a Pi pane (`axo.terminal.input`) resets that Session to 0.
 - Axod refuses a prompt whose depth exceeds 8 (`-32002 chain too deep`).
 - Each Session may send at most 30 prompts a minute, and at most 10 a minute to itself (`-32003 rate limited`).
-- The receiving Session's transcript and sidebar show `from Session 7` on agent-sent prompts.
+- An agent-sent prompt reaches Pi headed `[From Axo Session 7 "Name"]`, so the receiving transcript shows its sender.
 
-These numbers are starting values to be tuned in use. Because `from` is a parameter, a client that omits it is treated as the person. That is acceptable in a trusted system, and `axod mcp` always sets it.
+These numbers are starting values to be tuned in use. Because `fromSessionId` is a parameter, a client that omits it is treated as the person. That is acceptable in a trusted system, and `axod mcp` always sets it.
 
 ### The pi-axo adapter
 
-pi-axo registers the `axo` MCP server on load, as shown in the guide. It adds no tools. If `AXOD` or `AXO_SOCKET` is missing, as when Pi runs outside Axo, it registers nothing.
+pi-axo registers the `axo` MCP server on load, as shown in the guide. It adds no tools. If `AXOD` or `AXO_SOCKET` is missing, as when Pi runs outside Axo or under an older Axod, it registers nothing. The registration does not depend on the bridge: an agent whose bridge failed can still reach Axod.
 
 ### Observability
 
-Prompts with `from` are logged as `event=session.prompt from_session_id=… target_session_id=… depth=… outcome=…`. `axod mcp` logs tool calls to stderr, which Pi shows in `/mcp`. Logs never contain text or results.
+Every prompt is logged as `event=session.prompt target_session_id=… from_session_id=… depth=… delivery=… outcome=…`, and pane writes as `event=terminal.write … bytes=…`. `axod mcp` logs each tool call's name and outcome to stderr, which Pi shows in `/mcp`. Logs never contain text or results.
 
 ## Security and privacy
 
@@ -171,19 +176,22 @@ Transcripts can contain secrets. Listings only reveal paths on this Mac to a pro
 
 ## Rollout
 
-1. **Spec:** `archived` on `axo.session.list`, `axo.session.prompt`, `axo.terminal.screen` and their errors in `axo-protocol`. Bump the protocol version and advertise them.
+1. **Spec:** `axo.session.catalog`, `axo.session.prompt`, `axo.terminal.write`, `axo.terminal.screen` and their errors in `axo-protocol`, advertised under protocol version 1 (they are additions).
 2. **Axod:** the new methods, provenance and limits, logging, moving `prompt_pi` to the bridge's `send`, and `AXOD`/`AXO_SOCKET` in Pi's environment.
 3. **`axod mcp`:** the stdio server, tool table, `"self"` substitution and instructions.
 4. **Pi:** pi-axo registers the server.
-5. **Mac:** "from Session N" markers and sidebar attribution.
+5. **Mac:** sidebar attribution ("started by Session N"). Not built yet; the transcript header covers attribution for now.
 
 Each step adds to the protocol without breaking existing clients.
 
 ## Testing
 
-- Axod integration tests: `session.list` with and without archived Sessions; prompt delivery; depth and rate limits; screen text matching what a command printed.
-- `axod mcp` tests over stdio: the tool list matches the method table; `"self"` resolution; `from` is always set; an unknown `AXO_SESSION_ID` exits with an error.
-- An end-to-end test with the Pi fixture: one Session creates and prompts another, which answers. Then a self follow-up is delivered after the turn ends.
+- Axod unit tests (`session/terminal.rs`) against a fake pi-axo bridge: a prompt queued while Pi starts is sent when the bridge binds; later prompts are sent at once; the sender header; depth climbing to the limit, a person's typing resetting it, and the self rate limit.
+- `axo-pi`: `send_command` on its own bridge connection; `axo-vt`/`axo-pty`: plain screen text.
+- Axod integration tests (`crates/axod/tests/rpc.rs`): Pi's environment carries `AXO_SOCKET` and `AXOD`; `terminal.write` then `terminal.screen` shows the command's output; a prompt to a starting Pi is queued; `session.catalog` lists an archived Session with its transcript path.
+- `axod mcp` over stdio against a real Axod: an unknown `AXO_SESSION_ID` exits with an error; `initialize`, `tools/list`, `whoami`; `"self"` reaching the Session's own terminal pane; `fromSessionId` always set (the prompt has depth 1).
+- pi-axo: the environment parser and the registration.
+- Not covered: a real Pi calling the tools from codemode end to end.
 
 ## Drawbacks
 
@@ -222,16 +230,18 @@ Pi can already reach `axod.sock` through its shell tool if it finds the path, an
 
 ## Unresolved questions
 
-### Before acceptance
+### Open
 
 - Is the list of methods kept from agents right, or should agents be able to close Sessions and archive Workspaces too?
 - Should the bridge eventually become a single connection that Pi dials into Axod, carrying events and commands, so Pi has one link to Axod instead of two?
+- The exact depth and rate limits, once used.
 
-### During implementation
+### Settled during implementation
 
-- The exact depth and rate limits.
-- How `turn` delivery behaves when the target Pi is mid-turn (queued like `followUp`, or refused).
-- How much of Pi's JSONL format the server instructions should describe.
+- `turn` delivery to a working Pi is refused (`-32004`), not queued; `followUp` is the default.
+- The server instructions describe Pi's `message` records and give one `rg` and one `jq` example.
+- Archived Sessions come from a separate `axo.session.catalog`, because `axo.session.list` consumes the Mac app's pending `/resume` focus.
+- Agents type into panes with a new unsequenced `axo.terminal.write`: `axo.terminal.input`'s sequence belongs to the one client typing into the pane.
 
 ### Out of scope
 

@@ -3,6 +3,7 @@
 use std::io;
 use std::path::{Path, PathBuf};
 use std::process::Command;
+use std::sync::OnceLock;
 
 use super::RunningShell;
 use super::settings::ShellCommand;
@@ -40,6 +41,27 @@ pub(super) fn terminal_environment() -> Vec<(&'static str, PathBuf)> {
     }
     if let Some(terminfo_directory) = bundled_terminfo_directory() {
         environment.push(("TERMINFO", terminfo_directory));
+    }
+    environment
+}
+
+/// The local socket this Axod serves, for agents that call back into it (RFD0015).
+static AGENT_SOCKET: OnceLock<PathBuf> = OnceLock::new();
+
+/// Records the socket agents are told to call. Set once, before any Pi starts.
+pub(crate) fn set_agent_socket(path: &Path) {
+    let _ = AGENT_SOCKET.set(path.to_path_buf());
+}
+
+/// A Pi's environment: the terminal resources, plus where Axod listens (`AXO_SOCKET`) and the
+/// `axod` executable (`AXOD`), so pi-axo can start `axod mcp` for its Session.
+pub(super) fn pi_environment() -> Vec<(&'static str, PathBuf)> {
+    let mut environment = terminal_environment();
+    if let Some(socket) = AGENT_SOCKET.get() {
+        environment.push(("AXO_SOCKET", socket.clone()));
+        if let Ok(executable) = std::env::current_exe() {
+            environment.push(("AXOD", executable));
+        }
     }
     environment
 }

@@ -5,6 +5,7 @@
 ```sh
 axod [--socket <absolute-path>] [--server-dir <absolute-path>] [--host-credentials keychain|files]
 axod --version
+axod mcp            # with AXO_SOCKET and AXO_SESSION_ID set; see below
 ```
 
 Without `--socket`, the server uses `~/Library/Application Support/Axo/run/axod.sock`. Without `--server-dir`, it stores `axo.pid`, `stdout.log`, and `stderr.log` under `~/.axo/server/`. It uses `HOME` when absolute and falls back to the current account's home directory when LaunchAgent environments omit it. The directory is private to the user; logs include timestamps, levels, and stable lifecycle event names, append across launches, and rotate to one `.log.1` backup on startup when larger than 10 MiB. `--server-dir` is useful for isolated tests and local runs. `--host-credentials` chooses where relay host credentials live: the login Keychain (default on macOS) or `0600` files under `<server-dir>/host-credentials` (default elsewhere, and required in isolated tests so they never write to the Keychain).
@@ -15,8 +16,8 @@ The PID file is diagnostic metadata, not a process-control mechanism: launchd re
 
 | Crate | Owns |
 | --- | --- |
-| `axod` | This binary and the `terminal-attach` CLI. |
-| `axo-server` | `SessionManager` orchestration; no SQL outside its tests. `session.rs` holds `SessionManager`, `open`/`shutdown` and the shared `RunningShell`/`SessionState`; its modules each add their part of `impl SessionManager`: `catalog` (the catalog lock, `lock_state`, which logs `catalog.lock_wait_long`/`lock_held_long` with the caller, and Session records), `handlers` (JSON-RPC methods, the relay adapter, RPC errors), `events` (subscriptions and publishing), `terminal` (attach socket, input, resize, busy), `lifecycle` (create, close, restore, reap), `spawn` (plain shells), `workspaces`, `pi_bridge` (Pi's worker and events), `pi_recovery` (restart, startup recovery, `/resume`), and `settings` (agent and shell commands). |
+| `axod` | This binary and the `terminal-attach` and `mcp` subcommands. |
+| `axo-server` | `SessionManager` orchestration; no SQL outside its tests. `session.rs` holds `SessionManager`, `open`/`shutdown` and the shared `RunningShell`/`SessionState`; its modules each add their part of `impl SessionManager`: `catalog` (the catalog lock, `lock_state`, which logs `catalog.lock_wait_long`/`lock_held_long` with the caller, and Session records), `handlers` (JSON-RPC methods, the relay adapter, RPC errors), `events` (subscriptions and publishing), `terminal` (attach socket, input, agent writes, plain-text screens, resize, busy), `prompts` (prompting a Pi over its bridge, provenance and loop limits), `lifecycle` (create, close, restore, reap), `spawn` (plain shells), `workspaces`, `pi_bridge` (Pi's worker and events), `pi_recovery` (restart, startup recovery, `/resume`), and `settings` (agent and shell commands). |
 | `axo-panes` | The pane table and its state machine (`Pane::Running`/`Unavailable`, `Recovery::Idle`/`InProgress`), generic over the process so its transitions are tested alone. |
 | `axo-store` | The SQLite catalog: `open` (WAL, `synchronous=FULL`, owner-only file), schema and migrations, and every database-only read and write, each tested against an in-memory database. It knows no processes, files or settings syntax. |
 | `axo-protocol` | Wire types: IDs, `PaneRole`, layouts, records, typed RPC params/results and events, and `base64` for terminal bytes (bounded, canonical input decoding). |
@@ -48,6 +49,14 @@ The PID file is diagnostic metadata, not a process-control mechanism: launchd re
 See [recovery hardening evidence and remaining boundaries](../../docs/axod-recovery-hardening.md) for verification and follow-up scope.
 
 These guarantees do not make a daemon restart transparent: restarting Axod still replaces its PTYs/processes. Automatic Pi recovery remains idle-only and non-forcing, and restoration can leave a pane unavailable when the original transcript or safe writer ownership is unavailable.
+
+## Agents as clients (RFD0015)
+
+Each Pi gets `AXO_SOCKET` (this socket) and `AXOD` (this executable) in its environment, and pi-axo registers `axod mcp` for its Session as Pi's `axo` MCP server with `codemode` exposure. `axod mcp` (`axo-server/src/mcp.rs`) translates MCP tool calls into calls on the socket: `whoami`, `session_catalog`, `workspace_list`, `workspace_session_create`, `session_rename`, `session_prompt`, `shell_create`, `shell_close`, `terminal_write`, `terminal_screen`. It accepts `"self"` for a Session or Workspace ID and always names its own Session as a prompt's sender. There is no authentication: everything runs as the person's user.
+
+- `axo.session.catalog`: open Sessions plus the 1000 most recently archived, each with `piSessionFile`, so agents search transcripts with `rg`/`jq`. Side-effect free, unlike `axo.session.list`, which consumes the Mac's `/resume` focus.
+- `axo.session.prompt { sessionId, text, delivery?, fromSessionId? }`: sends the bridge's `send` command on its own connection (`axo_pi::takeover::send_command`); a Pi still starting queues up to 8. Remote prompts use the same path with `steer`. A prompt from an agent is headed `[From Axo Session N "Name"]`. Each Session's depth is that of the last prompt it was sent; an agent's prompt is one deeper than its sender, a person's is 0, and a person typing into a Pi pane resets it. Depth > 8 is `-32002`; more than 30 prompts a minute per sender, or 10 to itself, is `-32003`; not delivered is `-32004`.
+- `axo.terminal.write { sessionId, shellId, text }`: types into a pane outside `axo.terminal.input`'s sequence. `axo.terminal.screen { sessionId, shellId, lines? }`: the last lines (default 200) of the pane's headless terminal as plain text.
 
 ## Cloudflare host relay
 

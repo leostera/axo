@@ -27,8 +27,10 @@ mod handlers;
 mod lifecycle;
 mod pi_bridge;
 mod pi_recovery;
+mod prompts;
 mod settings;
 mod spawn;
+pub(crate) use spawn::set_agent_socket;
 mod terminal;
 #[cfg(test)]
 mod test_support;
@@ -110,8 +112,10 @@ struct SessionState {
     panes: Panes<RunningShell>,
     shutting_down: bool,
     pi_activity: HashMap<SessionId, axo_pi::Activity>,
-    /// Prompts for a Pi that is still starting, typed once its bridge binds; see `prompt_pi`.
-    queued_pi_prompts: HashMap<SessionId, Vec<String>>,
+    /// Prompts for a Pi that is still starting, sent once its bridge binds; see `prompts`.
+    queued_pi_prompts: HashMap<SessionId, Vec<prompts::QueuedPrompt>>,
+    /// Who prompted whom, for agent loop limits; see `prompts`.
+    prompt_provenance: prompts::PromptProvenance,
     /// Every shell's output is published here once it enters the catalog.
     events: EventBus,
     /// The latest client's terminal area; panes no client is attached to are sized from it.
@@ -172,6 +176,7 @@ impl SessionManager {
                 shutting_down: false,
                 pi_activity: HashMap::new(),
                 queued_pi_prompts: HashMap::new(),
+                prompt_provenance: prompts::PromptProvenance::default(),
                 events: subscribers.clone(),
                 viewport,
                 takeover_grace: TakeoverGrace::default(),

@@ -15,6 +15,8 @@ pub mod method {
     pub const CONFIG_GET: &str = "axo.config.get";
     pub const CONFIG_SET: &str = "axo.config.set";
     pub const SESSION_LIST: &str = "axo.session.list";
+    pub const SESSION_CATALOG: &str = "axo.session.catalog";
+    pub const SESSION_PROMPT: &str = "axo.session.prompt";
     pub const SESSION_CREATE: &str = "axo.session.create";
     pub const WORKSPACE_LIST: &str = "axo.workspace.list";
     pub const WORKSPACE_CREATE: &str = "axo.workspace.create";
@@ -34,6 +36,8 @@ pub mod method {
     pub const SHELL_BUSY: &str = "axo.shell.busy";
     pub const TERMINAL_INPUT: &str = "axo.terminal.input";
     pub const TERMINAL_RESIZE: &str = "axo.terminal.resize";
+    pub const TERMINAL_WRITE: &str = "axo.terminal.write";
+    pub const TERMINAL_SCREEN: &str = "axo.terminal.screen";
     pub const CLIENT_VIEWPORT_SET: &str = "axo.client.viewport.set";
     pub const RELAY_LINK: &str = "axo.relay.link";
     pub const RELAY_STATUS: &str = "axo.relay.status";
@@ -45,6 +49,7 @@ pub mod method {
         CONFIG_GET,
         CONFIG_SET,
         SESSION_LIST,
+        SESSION_CATALOG,
         SESSION_CREATE,
         WORKSPACE_LIST,
         WORKSPACE_CREATE,
@@ -64,6 +69,9 @@ pub mod method {
         SHELL_BUSY,
         TERMINAL_INPUT,
         TERMINAL_RESIZE,
+        TERMINAL_WRITE,
+        TERMINAL_SCREEN,
+        SESSION_PROMPT,
         CLIENT_VIEWPORT_SET,
         RELAY_LINK,
         RELAY_STATUS,
@@ -207,6 +215,54 @@ pub struct TerminalResize {
     pub columns: u32,
 }
 
+/// Text typed into a pane as if from a keyboard, outside the pane's input sequence: control
+/// characters act as keys (`\r` submits, `\u0003` interrupts).
+#[derive(Debug, Deserialize, Serialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct WriteTerminal {
+    pub session_id: SessionId,
+    pub shell_id: ShellId,
+    /// 1 to 49,152 bytes of UTF-8.
+    pub text: String,
+}
+
+#[derive(Debug, Deserialize, Serialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct ReadTerminalScreen {
+    pub session_id: SessionId,
+    pub shell_id: ShellId,
+    /// The last this many lines of screen and scrollback; 1 to 10,000, default 200.
+    #[serde(default)]
+    pub lines: Option<u32>,
+}
+
+/// How a Session's Pi takes a prompt that arrives while it is working. An idle Pi starts a
+/// turn with it whatever the delivery.
+#[derive(Clone, Copy, Debug, Default, Deserialize, Eq, PartialEq, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub enum PromptDelivery {
+    /// After its current tool calls, before its next model call.
+    Steer,
+    /// Once its current turn ends.
+    #[default]
+    FollowUp,
+    /// Only if idle; refused while working.
+    Turn,
+}
+
+#[derive(Debug, Deserialize, Serialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct PromptSession {
+    pub session_id: SessionId,
+    /// 1 to 16,000 bytes.
+    pub text: String,
+    #[serde(default)]
+    pub delivery: PromptDelivery,
+    /// The Session whose agent sends this; absent when a person does.
+    #[serde(default)]
+    pub from_session_id: Option<SessionId>,
+}
+
 #[derive(Debug, Deserialize, Serialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct LinkHost {
@@ -278,6 +334,56 @@ pub enum EventsNext<E = Event> {
 #[serde(rename_all = "camelCase")]
 pub struct Unsubscribed {
     pub unsubscribed: bool,
+}
+
+/// Every Session on this Mac: open ones as `axo.session.list` reports them, and archived ones.
+/// Unlike `axo.session.list`, this has no side effects.
+#[derive(Debug, Deserialize, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct SessionCatalog {
+    pub sessions: Vec<SessionRecord>,
+    pub archived: Vec<ArchivedSessionRecord>,
+}
+
+/// An archived Session: no panes, but its conversation is still on disk.
+#[derive(Clone, Debug, Deserialize, PartialEq, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ArchivedSessionRecord {
+    pub id: SessionId,
+    pub session_uuid: String,
+    pub name: String,
+    pub emoji: Option<String>,
+    pub workspace_id: Option<String>,
+    pub workspace_name: Option<String>,
+    pub initial_pwd: PathBuf,
+    /// Pi's JSONL transcript; it may not exist if Pi never wrote to it.
+    pub pi_session_file: Option<PathBuf>,
+    pub last_message_at: Option<i64>,
+    pub archived_at: Option<i64>,
+}
+
+#[derive(Debug, Deserialize, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct PromptAccepted {
+    pub accepted: bool,
+    /// Agent prompts between this one and the last thing a person said (0 for a person).
+    pub depth: u32,
+    /// True when Pi is still starting and the prompt waits for it.
+    pub queued: bool,
+}
+
+#[derive(Debug, Deserialize, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct WriteAccepted {
+    pub accepted: bool,
+}
+
+#[derive(Debug, Deserialize, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct TerminalScreen {
+    pub text: String,
+    /// Whether earlier lines were left out.
+    pub truncated: bool,
 }
 
 #[derive(Debug, Deserialize, Serialize)]
