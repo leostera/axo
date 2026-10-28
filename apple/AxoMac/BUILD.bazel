@@ -13,6 +13,7 @@ exports_files([
 ])
 
 AXO_MAC_DEPS = [
+    "//apple/AxoGoo",
     "//apple/AxoDaemonManager:AxoDaemonManager",
     "//apple/AxoProtocol",
     "//apple/AxoClient:AxoClient",

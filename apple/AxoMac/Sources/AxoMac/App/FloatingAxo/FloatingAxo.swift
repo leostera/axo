@@ -34,9 +34,59 @@ final class FloatingAxo {
   @ObservationIgnored private var velocity = ThrowVelocity()
   /// Where on Axo it is held, from its centre.
   @ObservationIgnored private var grip: CGVector = .zero
+  /// Coming out of the menu bar on a string of goo, until it snaps.
+  @ObservationIgnored private var goo: PluckGoo?
   @ObservationIgnored private var reduceMotion: Bool { NSWorkspace.shared.accessibilityDisplayShouldReduceMotion }
 
   private init() {}
+
+  // MARK: Plucked
+
+  /// The pointer pulled Axo out of the menu bar icon: it stretches out on goo until it snaps
+  /// free, or springs back in if let go first. With Reduce Motion it just comes out.
+  func pluck(at point: CGPoint) {
+    guard !isOut, !reduceMotion, let icon = home() else { return grab(at: point) }
+    takeOut(at: point)
+    guard let world, let panel else { return }
+    grip = .zero
+    world.hold(at: point)
+    let anchor = CGPoint(x: icon.midX, y: icon.midY)
+    guard let goo = PluckGoo(from: anchor, to: point) else { return grab(at: point) }
+    // Over the goo, which is over the menu bar.
+    panel.level = NSWindow.Level(rawValue: NSWindow.Level.statusBar.rawValue + 1)
+    goo.axoPosition = { [weak world] in world?.axoPosition ?? point }
+    goo.onStep = { [weak self] head in self?.stretched(to: head) }
+    goo.onSnap = { [weak self] in self?.snapped() }
+    goo.onReturned = { [weak self] in self?.backIn() }
+    self.goo = goo
+  }
+
+  /// Axo is at `head`, held back by the goo: stretched towards the icon, squeezing harder.
+  private func stretched(to head: CGPoint) {
+    guard let goo else { return }
+    world?.hold(at: head)
+    let pull = goo.pull
+    pose.stretch = 0.22 * goo.tension
+    pose.stretchAngle = .radians(atan2(-pull.dy, pull.dx))
+    puppet?.setSqueezed(goo.tension > 0.55)
+  }
+
+  /// Free: it boings back into shape and giggles; still held, so it can be thrown.
+  private func snapped() {
+    goo = nil
+    panel?.level = .floating
+    puppet?.setSqueezed(false)
+    puppet?.react(.giggle)
+    velocity.reset()
+    pose.boing()
+  }
+
+  /// Let go too early: the goo pulled it back home.
+  private func backIn() {
+    goo = nil
+    puppet?.setSqueezed(false)
+    putAway(fading: false)
+  }
 
   // MARK: Held
 
@@ -51,11 +101,13 @@ final class FloatingAxo {
   }
 
   func drag(to point: CGPoint) {
+    if let goo { return goo.move(to: point) }
     velocity.add(point, at: ProcessInfo.processInfo.systemUptime)
     world?.hold(at: CGPoint(x: point.x - grip.dx, y: point.y - grip.dy))
   }
 
   func letGo(at point: CGPoint) {
+    if let goo { return goo.letGo() }
     if let home = home(), home.insetBy(dx: -12, dy: -12).contains(point) {
       putAway()
       return
@@ -103,12 +155,15 @@ final class FloatingAxo {
     isOut = true
   }
 
-  func putAway() {
+  /// Back in the menu bar; `fading` out where it is, or gone at once (it is at the icon already).
+  func putAway(fading: Bool = true) {
     guard let panel else { return }
     isOut = false
     world?.isPaused = true
+    goo?.close()
+    goo = nil
     NSAnimationContext.runAnimationGroup { context in
-      context.duration = 0.18
+      context.duration = fading ? 0.18 : 0
       panel.animator().alphaValue = 0
     } completionHandler: {
       Task { @MainActor in
@@ -145,6 +200,15 @@ final class FloatingAxoPose {
   /// Radians, counterclockwise (SpriteKit's).
   var rotation: CGFloat = 0
   var squished = false
+  /// Stretched along `stretchAngle` by this much (0.2 is a fifth longer), and thinner across.
+  var stretch: CGFloat = 0
+  /// SwiftUI's: clockwise from the right, since its y is down.
+  var stretchAngle: Angle = .zero
+
+  /// Snapped free of the goo: back into shape on a loose spring, wobbling past it.
+  func boing() {
+    withAnimation(.interpolatingSpring(stiffness: 260, damping: 6)) { stretch = 0 }
+  }
 
   /// Touching down: squish for a couple of frames, then back.
   func squish() {
@@ -164,6 +228,10 @@ private struct FloatingAxoFace: View {
     puppet.view
       .frame(width: FloatingAxo.size.width, height: FloatingAxo.size.height)
       .scaleEffect(x: pose.squished ? 1.06 : 1, y: pose.squished ? 0.92 : 1, anchor: .bottom)
+      // Stretched along the pull: turned to it, stretched across x, turned back.
+      .rotationEffect(-pose.stretchAngle)
+      .scaleEffect(x: 1 + pose.stretch, y: 1 / (1 + pose.stretch))
+      .rotationEffect(pose.stretchAngle)
       .rotationEffect(.radians(-pose.rotation))
       .frame(width: FloatingAxo.panelSide, height: FloatingAxo.panelSide)
       .accessibilityElement()

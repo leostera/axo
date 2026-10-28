@@ -17,6 +17,7 @@ final class RiveMascotPuppet: MascotPuppet {
     static let lookX = "lookX"
     static let lookY = "lookY"
     static let loading = "loading"
+    static let squeezed = "squeezed"
   }
 
   private let rive: RiveViewModel
@@ -50,5 +51,9 @@ final class RiveMascotPuppet: MascotPuppet {
 
   func setLoading(_ loading: Bool) {
     rive.setInput(Input.loading, value: loading)
+  }
+
+  func setSqueezed(_ squeezed: Bool) {
+    rive.setInput(Input.squeezed, value: squeezed)
   }
 }

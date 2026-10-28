@@ -28,7 +28,7 @@ enum StatusItemDrag {
       case .leftMouseDragged:
         if !dragging, DragThreshold.isDrag(from: start, to: point) {
           dragging = true
-          FloatingAxo.shared.grab(at: point)
+          FloatingAxo.shared.pluck(at: point)
         }
         if dragging { FloatingAxo.shared.drag(to: point) }
       case .leftMouseUp:

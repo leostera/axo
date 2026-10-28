@@ -30,6 +30,8 @@ public protocol MascotPuppet: AnyObject {
   func react(_ reaction: MascotReaction)
   /// Gills flutter and Axo bobs; on the `Loader` artboard it also spins.
   func setLoading(_ loading: Bool)
+  /// Eyes squeezed >_< and held, until set false.
+  func setSqueezed(_ squeezed: Bool)
 }
 
 /// The animated Axo axolotl in the menu bar and the Dock.
