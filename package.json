@@ -16,6 +16,7 @@
   },
   "devDependencies": {
     "@earendil-works/pi-coding-agent": "1.1.0",
+    "@leostera/feynman": "^0.10.0",
     "@types/node": "^24.0.0",
     "tsx": "^4.20.0",
     "typescript": "^7.0.2"

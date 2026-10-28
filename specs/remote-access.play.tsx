@@ -1,4 +1,4 @@
-import { definePlayground, Terminal } from "@feynman/play";
+import { definePlayground, Terminal } from "@leostera/feynman/play";
 import spec from "./remote-access.ts";
 
 const { Person, Manager, Axod } = spec.handles;
@@ -6,9 +6,9 @@ const { Person, Manager, Axod } = spec.handles;
 export default definePlayground(spec, (play) => {
   // While the relay is closed, say how many pairing codes are waiting to be typed into a Mac.
   play.group("Axo relay", {
-    status: ({ member, clock }) => {
+    status: ({ member }) => {
       const pairings = Object.values(member(Manager)?.state.pairings ?? {});
-      const waiting = pairings.filter((p) => p.consumed === null && p.expires > clock).length;
+      const waiting = pairings.filter((p) => p.consumed === null).length;
       return waiting === 1 ? "1 code waiting" : waiting > 1 ? `${waiting} codes waiting` : "no codes waiting";
     },
   });

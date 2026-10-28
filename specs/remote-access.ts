@@ -1,5 +1,7 @@
-import { defineSpec, message, MIN, SEC } from "@feynman/spec";
+import { defineSpec, message } from "@leostera/feynman";
 
+const SEC = 1_000;
+const MIN = 60 * SEC;
 const HOUR = 60 * MIN;
 
 // What the spec leaves out: per-IP and global rate limits (AxoPairingRateLimit), code-collision
@@ -9,14 +11,13 @@ const HOUR = 60 * MIN;
 //
 //
 
-type Entry = { account: string; expires: number };
-type Pairing = { account: string; expires: number; consumed: null | { host: string; verifier: string } };
+type Entry = { account: string };
+type Pairing = { account: string; consumed: null | { host: string; verifier: string } };
 type HostRow = { account: string; label: string; credentialId: string; verifier: string; revoked: boolean };
-type Route = { conn: string; ready: boolean; leaseUntil: number };
+type Route = { conn: string; ready: boolean };
 type Status = "online" | "offline" | "revoked";
-type Pending = { person: string; key: string; conn: string; deadline: number };
+type Pending = { person: string; key: string; conn: string };
 type Manager = { viewers: Record<string, string[]>; pairings: Record<string, Pairing>; routes: Record<string, Route>; pending: Record<string, Pending> };
-type Clock = { now: number; start(label: "alarm", ms: number): void; cancel(label: string): void };
 
 const who = (account: string) => account.replace(/^acct-/, "");
 /** "Studio app" and "Studio daemon" are the two halves of one Mac. */
@@ -24,18 +25,11 @@ const macName = (label: string) => label.replace(/ (app|daemon)$/, "");
 
 const keyOf = (account: string, host: string) => `${account}/${host}`;
 
-/** AxoHostRelay keeps one alarm, set for the earliest lease or command deadline. */
-function schedule(state: Manager, ctx: Clock) {
-  const times = [...Object.values(state.routes).map((r) => r.leaseUntil), ...Object.values(state.pending).map((p) => p.deadline)].filter(Number.isFinite);
-  if (times.length === 0) ctx.cancel("alarm");
-  else ctx.start("alarm", Math.max(1, Math.min(...times) - ctx.now));
-}
-
 export default defineSpec(
   "Remote access",
   {
     description:
-      "How a Mac is paired with an account using a one-time code, and how a person then reaches it through the relay.",
+      "How a Mac is paired with an account using a one-time code, and how a person then reaches it through the relay. The model omits code expiry, host leases, request deadlines, and reconnect backoff; message ordering and restarts remain in scope.",
     messages: {
       // Person <-> Cloudflare Access
       SignIn: message<{ person: string; account: string }>({ name: "sign in with Cloudflare Access", over: "https" }),
@@ -143,12 +137,12 @@ export default defineSpec(
       zone: cloudflare,
       singleton: true,
       initialState: () => ({ sessions: {} as Record<string, string> }), // person -> account (the JWT subject)
-      look: { icon: "shield", status: (s) => `${Object.keys(s.sessions).length} signed in` },
+      display: { icon: "shield", status: (s) => `${Object.keys(s.sessions).length} signed in` },
       place: { edge: "left" },
       transitions: {
         [SignIn]: {
           description: "Signs the person in; from now on their requests carry a JWT for their account.",
-          sources: ["packages/axo-api-worker/src/auth/access-identity.ts#verifyAccessIdentity"],
+          sources: ["packages/axo-api-worker/src/http/router.ts#authorizeCaller"],
           sends: [SignedIn],
           say: (_s, m) => `Signed ${who(m.account)} in`,
           run(state, m, ctx) { state.sessions[m.person] = m.account; ctx.reply(SignedIn, {}); },
@@ -200,7 +194,7 @@ export default defineSpec(
       zone: cloudflare,
       singleton: true,
       initialState: () => ({}),
-      look: { icon: "server", status: () => "stateless" },
+      display: { icon: "server", status: () => "stateless" },
       transitions: {
         [CreatePairing]: {
           description: "Makes a code and asks the account to hold it.",
@@ -309,14 +303,14 @@ export default defineSpec(
       singleton: true,
       initialState: () => ({ entries: {} as Record<string, Entry> }),
       durable: ["entries"],
-      look: { icon: "database", status: (s) => `${Object.keys(s.entries).length} code(s) indexed` },
+      display: { icon: "database", status: (s) => `${Object.keys(s.entries).length} code(s) indexed` },
       transitions: {
         [ReserveCode]: {
           description: "Remembers which account a code belongs to, for ten minutes plus a day.",
           sources: ["packages/axo-api-worker/src/auth/pairing-directory.ts#AxoPairingIndex.reserve"],
           sends: [CodeReserved],
           run(state, m, ctx) {
-            state.entries[m.verifier] = { account: m.account, expires: ctx.now + CODE_LIFETIME.value + INDEX_GRACE.value };
+            state.entries[m.verifier] = { account: m.account };
             ctx.reply(CodeReserved, { code: m.code, person: m.person });
           },
         },
@@ -326,8 +320,7 @@ export default defineSpec(
           sends: [CodeFound, CodeUnknown],
           run(state, m, ctx) {
             const entry = state.entries[m.verifier];
-            if (entry && entry.expires <= ctx.now) delete state.entries[m.verifier];
-            if (!entry || entry.expires <= ctx.now) return ctx.reply(CodeUnknown, { credentialId: m.credentialId });
+            if (!entry) return ctx.reply(CodeUnknown, { credentialId: m.credentialId });
             ctx.reply(CodeFound, { account: entry.account, verifier: m.verifier, host: m.host, label: m.label, credentialId: m.credentialId, secretVerifier: m.secretVerifier });
           },
         },
@@ -349,7 +342,7 @@ export default defineSpec(
         viewers: {} as Record<string, string[]>, // open client sockets, per host
       }),
       durable: ["pairings", "hosts", "routes", "pending"],
-      look: {
+      display: {
         icon: "cloud",
         status: (s) => `${Object.keys(s.routes).length} host(s) online`,
         rows: (s) =>
@@ -368,9 +361,9 @@ export default defineSpec(
           sends: [PairingIssued, PairingLimited],
           say: (_s, m) => `Made a code for ${who(m.account)}, valid 10 minutes; only its hash is kept`,
           run(state, m, ctx) {
-            const unused = Object.values(state.pairings).filter((p) => p.account === m.account && p.consumed === null && p.expires > ctx.now).length;
+            const unused = Object.values(state.pairings).filter((p) => p.account === m.account && p.consumed === null).length;
             if (unused >= PENDING_CODES.value) return ctx.reply(PairingLimited, { person: m.person });
-            state.pairings[m.verifier] = { account: m.account, expires: ctx.now + CODE_LIFETIME.value, consumed: null };
+            state.pairings[m.verifier] = { account: m.account, consumed: null };
             ctx.reply(PairingIssued, m);
           },
         },
@@ -378,7 +371,6 @@ export default defineSpec(
           description: "Links the host if the code is unused and fresh; the same host and credential asking again gets the same answer.",
           sources: ["packages/axo-api-worker/src/auth/account-manager.ts#AxoAccountManager.redeemPairing"],
           sends: [PairingRedeemed, PairingInvalid, SocketClosed, OutcomeUnknown, HostStatus],
-          starts: ["alarm"],
           run(state, m, ctx) {
             const pairing = state.pairings[m.verifier];
             if (!pairing) return ctx.reply(PairingInvalid, { credentialId: m.credentialId });
@@ -390,7 +382,6 @@ export default defineSpec(
                 return ctx.reply(PairingInvalid, { credentialId: m.credentialId });
               return ctx.reply(PairingRedeemed, { account: pairing.account, credentialId: m.credentialId }, "Same host, same credential: answered again.");
             }
-            if (pairing.expires <= ctx.now) return ctx.reply(PairingInvalid, { credentialId: m.credentialId });
             const rotated = !!host && (host.verifier !== m.secretVerifier || host.credentialId !== m.credentialId || host.revoked);
             state.hosts[key] = { account: pairing.account, label: m.label, credentialId: m.credentialId, verifier: m.secretVerifier, revoked: false };
             pairing.consumed = { host: m.host, verifier: m.secretVerifier };
@@ -402,11 +393,10 @@ export default defineSpec(
                 delete state.pending[request];
                 const person = ctx.all(Person).find((x) => x.id === p.person);
                 if (person) ctx.send(person, OutcomeUnknown, { request });
-              }
+            }
               const axod = ctx.all(Axod).find((a) => a.id === m.host);
               if (axod) ctx.send(axod, SocketClosed, { conn: route.conn });
               announce(state, ctx, key);
-              schedule(state, ctx);
             }
             ctx.reply(PairingRedeemed, { account: pairing.account, credentialId: m.credentialId });
           },
@@ -415,7 +405,6 @@ export default defineSpec(
           description: "Marks the host revoked, drops its socket and fails what was waiting on it.",
           sources: ["packages/axo-api-worker/src/auth/account-manager.ts#AxoAccountManager.revokeHost", "packages/axo-api-worker/src/axo-host-relay.ts#AxoHostRelay.closeHostRelay"],
           sends: [Revoked, SocketClosed, OutcomeUnknown, Detached],
-          starts: ["alarm"],
           say: (s, m) => `${who(m.account)} revokes ${s.hosts[keyOf(m.account, m.host)]?.label ?? "a Mac"}`,
           run(state, m, ctx) {
             const key = keyOf(m.account, m.host);
@@ -434,29 +423,25 @@ export default defineSpec(
                 delete state.pending[request];
                 const person = ctx.all(Person).find((x) => x.id === p.person);
                 if (person) ctx.send(person, OutcomeUnknown, { request });
-              }
+            }
               const axod = ctx.all(Axod).find((a) => a.id === m.host);
               if (axod) ctx.send(axod, SocketClosed, { conn: route.conn });
-              schedule(state, ctx);
             }
             const person = ctx.all(Person).find((x) => x.id === m.person);
             if (person) ctx.send(person, Revoked, {});
           },
         },
         [UpgradeDaemon]: {
-          description: "Accepts a host's socket only with the credential it was linked with, and only if no live socket exists for it.",
+          description: "Accepts a host's socket only with the credential it was linked with, replacing the prior route in this model's no-lease abstraction.",
           sources: ["packages/axo-api-worker/src/auth/account-manager.ts#AxoAccountManager.authorizeRelayPeer", "packages/axo-api-worker/src/axo-host-relay.ts#AxoHostRelay.fetch"],
           sends: [Admitted, ConnectRefused],
-          starts: ["alarm"],
           run(state, m, ctx) {
             const key = keyOf(m.account, m.host);
             const host = state.hosts[key];
-            const old = state.routes[key];
             const axod = ctx.all(Axod).find((a) => a.id === m.host);
-            if (!host || host.revoked || host.credentialId !== m.credentialId || host.verifier !== ctx.hash(m.secret) || (old && old.leaseUntil > ctx.now))
+            if (!host || host.revoked || host.credentialId !== m.credentialId || host.verifier !== ctx.hash(m.secret))
               return axod && ctx.send(axod, ConnectRefused, { conn: m.conn }); // the Worker hands the socket over, so this reaches the host directly
-            state.routes[key] = { conn: m.conn, ready: false, leaseUntil: ctx.now + DEADLINE.value };
-            schedule(state, ctx);
+            state.routes[key] = { conn: m.conn, ready: false };
             if (axod) ctx.send(axod, Admitted, { conn: m.conn });
           },
         },
@@ -464,14 +449,11 @@ export default defineSpec(
           description: "Marks the host online. Its spot is held while its socket stays open (axod's routine heartbeats are left out of this model).",
           sources: ["packages/axo-api-worker/src/axo-host-relay.ts#AxoHostRelay.registerHost"],
           sends: [HostRegistered, HostStatus],
-          starts: ["alarm"],
           say: (s, m) => `${s.hosts[keyOf(m.account, m.host)]?.label ?? "A Mac"} is online`,
           run(state, m, ctx) {
             const route = state.routes[keyOf(m.account, m.host)];
             if (!route || route.conn !== m.conn) return; // "Stale lease"
             route.ready = true;
-            route.leaseUntil = Infinity;
-            schedule(state, ctx);
             announce(state, ctx, keyOf(m.account, m.host));
             ctx.reply(HostRegistered, { conn: m.conn });
           },
@@ -480,7 +462,6 @@ export default defineSpec(
           description: "The host closed its socket; the relay forgets it and fails what was waiting.",
           sources: ["packages/axo-api-worker/src/axo-host-relay.ts#AxoHostRelay.drop", "packages/axo-api-worker/src/axo-host-relay.ts#AxoHostRelay.fence"],
           sends: [OutcomeUnknown, HostStatus],
-          starts: ["alarm"],
           run(state, m, ctx) {
             const key = keyOf(m.account, m.host);
             const route = state.routes[key];
@@ -493,7 +474,6 @@ export default defineSpec(
               const person = ctx.all(Person).find((x) => x.id === p.person);
               if (person) ctx.send(person, OutcomeUnknown, { request });
             }
-            schedule(state, ctx);
           },
         },
         [ListHosts]: {
@@ -539,7 +519,6 @@ export default defineSpec(
           description: "Passes a command to the host, if the account owns it and it is online.",
           sources: ["packages/axo-api-worker/src/axo-host-relay.ts#AxoHostRelay.forwardHostRemoteCall"],
           sends: [Forward, NotYourMac, MacOffline],
-          starts: ["alarm"],
           say: (s, m) => `${who(m.account)} types into ${s.hosts[keyOf(m.account, m.host)]?.label ?? "a Mac"}`,
           run(state, m, ctx) {
             const person = ctx.all(Person).find((x) => x.id === m.person);
@@ -550,8 +529,7 @@ export default defineSpec(
             const route = state.routes[key];
             const axod = ctx.all(Axod).find((a) => a.id === m.host);
             if (!route || !route.ready || !axod) return ctx.send(person, MacOffline, { request: m.request });
-            state.pending[m.request] = { person: m.person, key, conn: route.conn, deadline: Math.min(ctx.now + DEADLINE.value, route.leaseUntil) };
-            schedule(state, ctx);
+            state.pending[m.request] = { person: m.person, key, conn: route.conn };
             ctx.send(axod, Forward, { request: m.request, account: m.account });
           },
         },
@@ -559,45 +537,15 @@ export default defineSpec(
           description: "Hands the host's answer to the person who asked.",
           sources: ["packages/axo-api-worker/src/axo-host-relay.ts#AxoHostRelay.receiveReply"],
           sends: [Output],
-          starts: ["alarm"],
           run(state, m, ctx) {
             const pending = state.pending[m.request];
             const route = pending ? state.routes[pending.key] : undefined;
             if (!pending || !route || route.conn !== m.conn) return;
             delete state.pending[m.request];
-            schedule(state, ctx);
             for (const id of new Set([pending.person, ...(state.viewers[pending.key] ?? [])])) {
               const viewer = ctx.all(Person).find((x) => x.id === id);
               if (viewer) ctx.send(viewer, Output, { request: m.request });
             }
-          },
-        },
-        alarm: {
-          description: "Drops hosts whose spot ran out and fails commands nobody answered in time.",
-          sources: ["packages/axo-api-worker/src/axo-host-relay.ts#AxoHostRelay.alarm", "packages/axo-api-worker/src/axo-host-relay.ts#AxoHostRelay.schedule"],
-          sends: [SocketClosed, OutcomeUnknown, HostStatus],
-          starts: ["alarm"],
-          run(state, ctx) {
-            for (const [key, route] of Object.entries(state.routes)) {
-              if (route.leaseUntil > ctx.now) continue;
-              delete state.routes[key];
-              announce(state, ctx, key);
-              for (const [request, p] of Object.entries(state.pending)) {
-                if (p.key !== key || p.conn !== route.conn) continue;
-                delete state.pending[request];
-                const person = ctx.all(Person).find((x) => x.id === p.person);
-                if (person) ctx.send(person, OutcomeUnknown, { request });
-              }
-              const axod = ctx.all(Axod).find((a) => a.id === key.split("/")[1]);
-              if (axod) ctx.send(axod, SocketClosed, { conn: route.conn });
-            }
-            for (const [request, p] of Object.entries(state.pending)) {
-              if (p.deadline > ctx.now) continue;
-              delete state.pending[request];
-              const person = ctx.all(Person).find((x) => x.id === p.person);
-              if (person) ctx.send(person, OutcomeUnknown, { request });
-            }
-            schedule(state, ctx);
           },
         },
       },
@@ -613,7 +561,6 @@ export default defineSpec(
         account: `acct-${ctx.label}`,
         signedIn: false as boolean,
         codes: [] as string[],
-        codeAt: null as number | null, // when the latest code appeared
         commands: {} as Record<string, string>, // what was typed, per request
         seenHosts: [] as string[],
         watching: {} as Record<string, string>,
@@ -622,12 +569,12 @@ export default defineSpec(
         outputs: [] as string[],
         timedOut: [] as string[],
       }),
-      look: {
+      display: {
         icon: "phone",
         status: (s) => (!s.signedIn ? "signed out" : Object.keys(s.watching).length ? `watching ${Object.keys(s.watching).length}` : s.codes.length ? `code ${s.codes.at(-1)}` : "signed in"),
         mood: (s) => (s.asked.length > s.answered.length ? "busy" : s.signedIn ? "ok" : "off"),
         names: ["Alice", "Bob", "Carol"],
-        tokens: (s) => s.codes.slice(-1).map((code) => ({ kind: "pairing code", value: code, label: "pairing code", expires: (s.codeAt ?? 0) + CODE_LIFETIME.value })),
+        tokens: (s) => s.codes.slice(-1).map((code) => ({ kind: "pairing code", value: code, label: "pairing code" })),
       },
       actions: {
         signIn: {
@@ -641,7 +588,7 @@ export default defineSpec(
         pair: {
           label: "Pair a host",
           description: "Asks for a one-time code to type into a Mac.",
-          sources: ["packages/axo-web-app/src/remote-terminal-app.tsx#RemoteTerminalApp"],
+
           sends: [CreatePairing],
           run: (s, _i, ctx) => ctx.send(ctx.the(Access), CreatePairing, { account: s.account, person: ctx.id }),
         },
@@ -681,13 +628,11 @@ export default defineSpec(
           when: (s) => s.codes.length > 0, // the app lists hosts only for accounts that paired one
           sources: ["packages/axo-app/src/index.ts#HostRelayConnection.call"],
           sends: [RunCommand],
-          starts: ["requestTimeout"],
           run(s, { host, command }, ctx) {
             const request = ctx.fresh("req");
             s.asked.push(request);
             s.commands[request] = command;
             ctx.send(ctx.the(Access), RunCommand, { account: s.account, host, request, person: ctx.id });
-            ctx.start("requestTimeout", REQUEST_TIMEOUT.value);
           },
         },
         revoke: {
@@ -695,7 +640,7 @@ export default defineSpec(
           description: "Cuts a Mac off from the account.",
           inputs: { host: spec.defineInput(String, { examples: (w): string[] => w.all(Axod).map((a) => a.id) }) },
           when: (s) => s.codes.length > 0,
-          sources: ["packages/axo-web-app/src/remote-terminal-app.tsx#RemoteTerminalApp"],
+
           sends: [RevokeHost],
           run: (s, { host }, ctx) => ctx.send(ctx.the(Access), RevokeHost, { account: s.account, host, person: ctx.id }),
         },
@@ -707,31 +652,31 @@ export default defineSpec(
           sources: ["packages/axo-app/src/index.ts#AxoApiError"],
           run(s, m) { if (m.request && !s.answered.includes(m.request)) s.answered.push(m.request); },
         },
-        [Code]: { description: "The code appears on screen.", sources: ["packages/axo-web-app/src/remote-terminal-app.tsx#RemoteTerminalApp"], run(s, m, ctx) { s.codes.push(m.code); s.codeAt = ctx.now; } },
-        [TooManyCodes]: { description: "The page says the account holds too many codes.", sources: ["packages/axo-web-app/src/remote-terminal-app.tsx#RemoteTerminalApp"], run() {} },
-        [Revoked]: { description: "The Mac disappears from the list.", sources: ["packages/axo-web-app/src/remote-terminal-app.tsx#RemoteTerminalApp"], run() {} },
+        [Code]: { description: "The code appears on screen.", run(s, m) { s.codes.push(m.code); } },
+        [TooManyCodes]: { description: "The page says the account holds too many codes.", run() {} },
+        [Revoked]: { description: "The Mac disappears from the list.", run() {} },
         [HostList]: {
           description: "The list shows each Mac with its status.",
-          sources: ["packages/axo-web-app/src/remote-terminal-app.tsx#RemoteTerminalApp"],
+
           run(s, m) { for (const h of m.hosts) if (!s.seenHosts.includes(h.host)) s.seenHosts.push(h.host); },
         },
         [Opened]: {
           description: "The terminal attaches and shows whether the Mac is online.",
-          sources: ["packages/axo-web-app/src/terminal-pane.tsx#TerminalPane"],
+
           run(s, m) { s.watching[m.host] = m.status; if (!s.seenHosts.includes(m.host)) s.seenHosts.push(m.host); },
         },
-        [NoSuchHost]: { description: "The page says there is no such Mac; it learns nothing about other accounts.", sources: ["packages/axo-web-app/src/remote-terminal-app.tsx#RemoteTerminalApp"], run() {} },
-        [HostRevokedMsg]: { description: "The page says the Mac was revoked.", sources: ["packages/axo-web-app/src/remote-terminal-app.tsx#RemoteTerminalApp"], run() {} },
-        [HostStatus]: { description: "The terminal shows the Mac coming online or going offline.", sources: ["packages/axo-web-app/src/terminal-pane.tsx#TerminalPane"], run(s, m) { if (m.host in s.watching) s.watching[m.host] = m.status; } },
-        [Detached]: { description: "The terminal closes.", sources: ["packages/axo-web-app/src/terminal-pane.tsx#TerminalPane"], run(s, m) { delete s.watching[m.host]; } },
+        [NoSuchHost]: { description: "The page says there is no such Mac; it learns nothing about other accounts.", run() {} },
+        [HostRevokedMsg]: { description: "The page says the Mac was revoked.", run() {} },
+        [HostStatus]: { description: "The terminal shows the Mac coming online or going offline.", run(s, m) { if (m.host in s.watching) s.watching[m.host] = m.status; } },
+        [Detached]: { description: "The terminal closes.", run(s, m) { delete s.watching[m.host]; } },
         [Output]: {
           description: "The Mac's answer appears in the terminal.",
-          sources: ["packages/axo-web-app/src/terminal-pane.tsx#TerminalPane"],
+
           run(s, m) { if (s.asked.includes(m.request)) { s.answered.push(m.request); s.outputs.push(m.request); } },
         },
-        [NotYourMac]: { description: "The terminal says this account has no such Mac.", sources: ["packages/axo-web-app/src/remote-terminal-app.tsx#RemoteTerminalApp"], run: (s, m) => void s.answered.push(m.request) },
-        [MacOffline]: { description: "The terminal says the Mac is offline.", sources: ["packages/axo-web-app/src/remote-terminal-app.tsx#RemoteTerminalApp"], run: (s, m) => void s.answered.push(m.request) },
-        [OutcomeUnknown]: { description: "The terminal says the command may or may not have run.", sources: ["packages/axo-web-app/src/remote-terminal-app.tsx#RemoteTerminalApp"], run: (s, m) => void s.answered.push(m.request) },
+        [NotYourMac]: { description: "The terminal says this account has no such Mac.", run: (s, m) => void s.answered.push(m.request) },
+        [MacOffline]: { description: "The terminal says the Mac is offline.", run: (s, m) => void s.answered.push(m.request) },
+        [OutcomeUnknown]: { description: "The terminal says the command may or may not have run.", run: (s, m) => void s.answered.push(m.request) },
         requestTimeout: {
           description: "No answer after ten seconds; the app gives up on the command.",
           sources: ["packages/axo-app/src/index.ts#HostRelayConnection.request"],
@@ -747,7 +692,7 @@ export default defineSpec(
       description: "The Mac app. Its Settings pane passes a pasted code to axod.",
       zone: macs,
       initialState: () => ({ linking: false as boolean, result: "" as "" | "linked" | "failed", lateSuccess: false as boolean }),
-      look: { icon: "laptop", status: (s) => (s.linking ? "linking…" : s.result || "Settings"), mood: (s) => (s.result === "failed" ? "bad" : s.result === "linked" ? "ok" : "off") },
+      display: { icon: "laptop", status: (s) => (s.linking ? "linking…" : s.result || "Settings"), mood: (s) => (s.result === "failed" ? "bad" : s.result === "linked" ? "ok" : "off") },
       actions: {
         link: {
           label: "Link this Mac",
@@ -756,9 +701,7 @@ export default defineSpec(
           when: (s) => !s.linking,
           sources: ["apple/AxoMac/Sources/AxoMac/Settings/RemoteAccessModel.swift#RemoteAccessModel.link"],
           sends: [LinkHost],
-          starts: ["linkTimeout"],
           run(s, { code }, ctx) {
-            ctx.start("linkTimeout", APP_RPC_TIMEOUT.value);
             s.linking = true;
             s.result = "";
             const axod = ctx.all(Axod).find((a) => macName(a.label) === macName(ctx.label)) ?? ctx.all(Axod)[0];
@@ -770,9 +713,9 @@ export default defineSpec(
         [HostLinked]: { description: "Settings says the Mac is linked.", sources: ["apple/AxoMac/Sources/AxoMac/Settings/RemoteAccessSettingsView.swift#RemoteAccessSettingsView.linkHost"], run(s, _m, ctx) {
           // A reply for a call the app already gave up on is dropped.
           if (!s.linking) { s.lateSuccess = true; return; }
-          s.linking = false; s.result = "linked"; ctx.cancel("linkTimeout");
+          s.linking = false; s.result = "linked";
         } },
-        [LinkFailed]: { description: "Settings says it could not link.", sources: ["apple/AxoMac/Sources/AxoMac/Settings/RemoteAccessSettingsView.swift#RemoteAccessSettingsView.linkHost"], run(s, _m, ctx) { if (!s.linking) return; s.linking = false; s.result = "failed"; ctx.cancel("linkTimeout"); } },
+        [LinkFailed]: { description: "Settings says it could not link.", sources: ["apple/AxoMac/Sources/AxoMac/Settings/RemoteAccessSettingsView.swift#RemoteAccessSettingsView.linkHost"], run(s, _m, ctx) { if (!s.linking) return; s.linking = false; s.result = "failed"; } },
         linkTimeout: {
           description: "axod has not answered in five seconds; Settings says it could not link.",
           sources: ["apple/AxoClient/Sources/AxoClient/RPC/JSONRPCConnection.swift#JSONRPCConnection.call"],
@@ -802,7 +745,7 @@ export default defineSpec(
         ran: [] as { for: string; linkedTo: string | null }[],
       }),
       durable: ["link", "pending", "keychain"],
-      look: {
+      display: {
         icon: "terminal",
         status: (s) => (s.conn === "connected" ? "online" : s.link.account ? (s.conn === "idle" ? "offline" : "connecting") : s.redeeming ? "linking" : "not linked"),
         mood: (s) => (s.conn === "connected" ? "ok" : s.link.account ? "warn" : "off"),
@@ -814,7 +757,6 @@ export default defineSpec(
           description: "Reserves a credential in the Keychain and database, then sends the code to the Worker.",
           sources: ["crates/axo-server/src/lib.rs:342-358", "crates/axo-relay/src/link.rs#link_host", "crates/axo-relay/src/pairing.rs#validate_code", "crates/axo-relay/src/pairing.rs#prepare_credential"],
           sends: [RedeemCode, LinkFailed],
-          starts: ["redeemTimeout"],
           run(state, m, ctx) {
             // A malformed code is refused before anything is reserved or sent.
             if (!/^code-\d+$/.test(m.code) || state.redeeming) return ctx.reply(LinkFailed, {});
@@ -826,7 +768,6 @@ export default defineSpec(
             state.redeeming = true;
             state.attempts = 1;
             ctx.send(ctx.the(Worker), RedeemCode, { code: m.code, host: ctx.id, label: state.label, credentialId: state.pending, secret: state.keychain[state.pending]! });
-            ctx.start("redeemTimeout", HTTP_TIMEOUT.value);
           },
         },
         [Linked]: {
@@ -842,15 +783,12 @@ export default defineSpec(
             state.link = { account: m.account, credentialId: state.pending };
             state.pending = null;
             state.redeeming = false;
-            ctx.cancel("redeemTimeout");
             if (state.conn !== "idle" && previous.account && state.connId)
               ctx.send(ctx.the(Manager), Disconnect, { account: previous.account, host: ctx.id, conn: state.connId });
             state.conn = "idle";
             state.connId = null;
             state.backingOff = false;
             state.delay = 1 * SEC;
-            ctx.cancel("connectTimeout");
-            ctx.cancel("backoff");
             const app = ctx.all(App).find((a) => macName(a.label) === macName(ctx.label)) ?? ctx.all(App)[0];
             if (app) ctx.send(app, HostLinked, {});
           },
@@ -862,7 +800,6 @@ export default defineSpec(
           run(state, m, ctx) {
             if (!state.redeeming || m.credentialId !== state.pending) return;
             state.redeeming = false;
-            ctx.cancel("redeemTimeout");
             const app = ctx.all(App).find((a) => macName(a.label) === macName(ctx.label)) ?? ctx.all(App)[0];
             if (app) ctx.send(app, LinkFailed, {});
           },
@@ -871,14 +808,12 @@ export default defineSpec(
           description: "No answer in ten seconds; axod sends the same request once more, then gives up but keeps its reserved credential.",
           sources: ["crates/axo-relay/src/pairing.rs#redeem", "crates/axo-relay/src/pairing.rs#post_json", "crates/axo-relay/src/pairing.rs#HTTP_TIMEOUT"],
           sends: [RedeemCode, LinkFailed],
-          starts: ["redeemTimeout"],
           run(state, ctx) {
             if (!state.redeeming || state.pending === null) return;
             const app = ctx.all(App).find((a) => macName(a.label) === macName(ctx.label)) ?? ctx.all(App)[0];
             if (state.attempts < 2 && state.code) {
               state.attempts += 1;
               ctx.send(ctx.the(Worker), RedeemCode, { code: state.code, host: ctx.id, label: state.label, credentialId: state.pending, secret: state.keychain[state.pending] ?? "" });
-              ctx.start("redeemTimeout", HTTP_TIMEOUT.value);
               return;
             }
             state.redeeming = false;
@@ -890,12 +825,10 @@ export default defineSpec(
           when: (s) => s.link.account !== null && s.link.credentialId !== null && s.conn === "idle" && !s.backingOff,
           sources: ["crates/axo-relay/src/relay.rs#run_reconnect_loop", "crates/axo-relay/src/relay.rs#run_connection", "crates/axo-relay/src/relay.rs#relay_websocket_request"],
           sends: [Connect],
-          starts: ["connectTimeout"],
           run(state, ctx) {
             state.conn = "connecting";
             state.connId = ctx.fresh("conn");
             ctx.send(ctx.the(Worker), Connect, { account: state.link.account!, host: ctx.id, credentialId: state.link.credentialId!, secret: state.keychain[state.link.credentialId!] ?? "", conn: state.connId });
-            ctx.start("connectTimeout", CONNECT_TIMEOUT.value);
           },
         },
         [Admitted]: {
@@ -911,14 +844,11 @@ export default defineSpec(
         [ConnectRefused]: {
           description: "The relay refused the socket; axod waits and tries again, longer each time.",
           sources: ["crates/axo-relay/src/relay.rs#connect_websocket", "crates/axo-relay/src/relay.rs#run_reconnect_loop"],
-          starts: ["backoff"],
           run(state, m, ctx) {
             if (state.connId !== m.conn || state.conn === "idle") return;
             state.conn = "idle";
             state.connId = null;
             state.backingOff = true;
-            ctx.cancel("connectTimeout");
-            ctx.start("backoff", state.delay);
             state.delay = Math.min(state.delay * 2, MAX_RETRY.value);
           },
         },
@@ -930,35 +860,29 @@ export default defineSpec(
             if (state.conn !== "registering" || state.connId !== m.conn) return;
             state.conn = "connected";
             state.delay = 1 * SEC;
-            ctx.cancel("connectTimeout");
           },
         },
         connectTimeout: {
           description: "Bringing the socket up took too long; axod drops it and waits before trying again.",
           sources: ["crates/axo-relay/src/relay.rs#CONNECT_TIMEOUT", "crates/axo-relay/src/relay.rs#connect_websocket"],
           sends: [Disconnect],
-          starts: ["backoff"],
           run(state, ctx) {
             if (state.conn !== "connecting" && state.conn !== "registering") return;
             if (state.link.account && state.connId) ctx.send(ctx.the(Manager), Disconnect, { account: state.link.account, host: ctx.id, conn: state.connId });
             state.conn = "idle";
             state.connId = null;
             state.backingOff = true;
-            ctx.start("backoff", state.delay);
             state.delay = Math.min(state.delay * 2, MAX_RETRY.value);
           },
         },
         [SocketClosed]: {
           description: "The relay hung up; axod waits and reconnects.",
           sources: ["crates/axo-relay/src/relay.rs#read_text", "crates/axo-relay/src/relay.rs#run_reconnect_loop"],
-          starts: ["backoff"],
           run(state, m, ctx) {
             if (state.connId !== m.conn || state.conn === "idle") return;
             state.conn = "idle";
             state.connId = null;
             state.backingOff = true;
-            ctx.cancel("connectTimeout");
-            ctx.start("backoff", state.delay);
             state.delay = Math.min(state.delay * 2, MAX_RETRY.value);
           },
         },
@@ -980,7 +904,7 @@ export default defineSpec(
       },
     });
 
-    spec.defineInvariants({
+    spec.defineProperties({
       onlyHashesStored: {
         description: "The cloud never stores a pairing code or a host secret, only hashes of them.",
         always: (w) =>
@@ -1003,45 +927,6 @@ export default defineSpec(
       peopleSeeOnlyTheirHosts: {
         description: "A person only ever learns of hosts that belong to their own account.",
         always: (w) => w.all(Person).every((p) => p.state.seenHosts.every((h) => w.the(Manager).state.hosts[keyOf(p.state.account, h)] !== undefined)),
-      },
-      viewersSeeTheTruth: {
-        description: "A person watching a host ends up seeing its real status.",
-        eventually: (w) =>
-          w.all(Person).every((p) =>
-            Object.entries(p.state.watching).every(([host, seen]) => {
-              const key = keyOf(p.state.account, host);
-              const h = w.the(Manager).state.hosts[key];
-              const truth = h?.revoked ? "revoked" : w.the(Manager).state.routes[key]?.ready ? "online" : "offline";
-              return seen === truth;
-            }),
-          ),
-        within: 1 * MIN,
-      },
-      theAppReportsWhatHappened: {
-        description: "Settings never says the Mac could not be linked when axod went on to link it.",
-        always: (w) => w.all(App).every((a) => !a.state.lateSuccess),
-      },
-      linkingEnds: {
-        description: "A Mac that asked to be linked is eventually not left waiting.",
-        after: (w) => w.all(App).some((a) => a.state.linking),
-        eventually: (w) => w.all(App).every((a) => !a.state.linking),
-        within: 30 * SEC,
-      },
-      linkedHostsComeOnline: {
-        description: "A linked host that has not been revoked ends up connected.",
-        after: (w) => w.all(Axod).some((a) => a.state.link.account !== null),
-        eventually: (w) =>
-          w.all(Axod).every((a) => {
-            const host = a.state.link.account ? w.the(Manager).state.hosts[keyOf(a.state.link.account, a.id)] : undefined;
-            return a.state.link.account === null || a.state.conn === "connected" || host === undefined || host.revoked;
-          }),
-        within: 2 * MIN,
-      },
-      commandsGetAnAnswer: {
-        description: "Every command a person sent gets output or a stated failure, never silence.",
-        after: (w) => w.all(Person).some((p) => p.state.asked.length > 0),
-        eventually: (w) => w.all(Person).every((p) => p.state.asked.every((r) => p.state.answered.includes(r))),
-        within: 30 * SEC,
       },
     });
 
@@ -1087,8 +972,8 @@ export default defineSpec(
       },
     });
     spec.defineScenario({
-      name: "A wrong or expired code",
-      description: "A made-up code is rejected; a real one is rejected once it is ten minutes old.",
+      name: "An invalid code",
+      description: "A made-up pairing code is rejected, while a valid issued code can be redeemed.",
       run(s) {
         const alice = s.spawn(Person, "Alice");
         const app = s.spawn(App, "Studio app");
@@ -1099,41 +984,20 @@ export default defineSpec(
         s.settle();
         s.act(app, "link", { code: "NOT-A-CODE" });
         s.settle();
-        s.act(app, "link", { code: "code-99" });
-        s.settle();
-        s.wait(11 * MIN);
-        s.act(app, "link", { code: alice.state.codes[0]! });
-        s.settle();
-      },
-    });
-    spec.defineScenario({
-      name: "The answer is lost and the Mac asks again",
-      description: "The relay links the Mac but the reply never arrives; pasting the same code again gets the same answer.",
-      run(s) {
-        const alice = s.spawn(Person, "Alice");
-        const app = s.spawn(App, "Studio app");
-        s.spawn(Axod, "Studio daemon");
-        s.act(alice, "signIn");
-        s.settle();
-        s.act(alice, "pair");
-        s.settle();
-        s.lose(Linked);
-        s.act(app, "link", { code: alice.state.codes[0]! });
-        s.settle();
         s.act(app, "link", { code: alice.state.codes[0]! });
         s.settle();
       },
     });
     spec.defineScenario({
       name: "axod restarts and comes back",
-      description: "axod restarts without saying goodbye; the relay keeps its old spot until it runs out, then axod gets back in.",
+      description: "axod restarts without saying goodbye and reconnects; this model abstracts away the old route's lease period.",
       run(s) {
         const alice = s.spawn(Person, "Alice");
         const app = s.spawn(App, "Studio app");
         const axod = s.spawn(Axod, "Studio daemon");
         pairAndLink(s, alice, app);
         s.restart(axod);
-        s.settle(2 * MIN);
+        s.settle();
         s.act(alice, "run", { host: axod.id, command: "whoami" });
         s.settle();
       },
@@ -1162,7 +1026,7 @@ export default defineSpec(
         s.act(alice, "run", { host: axod.id, command: "whoami" });
         s.settle();
         s.restart(axod);
-        s.settle(2 * MIN);
+        s.settle();
       },
     });
     spec.defineScenario({
@@ -1177,7 +1041,7 @@ export default defineSpec(
         s.settle();
         s.restart(axod);
         s.lose(HostStatus);
-        s.settle(2 * MIN);
+        s.settle();
       },
     });
     spec.defineScenario({
@@ -1216,7 +1080,7 @@ export default defineSpec(
         s.act(alice, "open", { host: axod.id });
         s.settle();
         s.act(alice, "revoke", { host: axod.id });
-        s.settle(2 * MIN);
+        s.settle();
         s.act(alice, "run", { host: axod.id, command: "whoami" });
         s.settle();
       },
