@@ -1,7 +1,8 @@
 //! Prompting a Session's Pi through its bridge, from a person away from the Mac or from another
 //! Session's agent (RFD0015), and keeping agents that prompt agents from running away.
 //!
-//! Every prompt goes to Pi as the bridge's structured `send` command, so it never mixes with
+//! Every prompt goes to Pi as the bridge's structured `send` command, written on the Pi's bridge
+//! worker connection (Pi's bridge serves one Axod connection at a time), so it never mixes with
 //! what someone is typing in the pane. A Pi still starting (its bridge not bound yet) cannot take
 //! one: the prompt waits in `queued_pi_prompts` and is sent when the bridge binds.
 //!
@@ -13,16 +14,14 @@
 use std::collections::VecDeque;
 use std::fmt;
 use std::io;
-use std::path::PathBuf;
 use std::thread;
 use std::time::{Duration, Instant};
 
 use super::{SessionManager, SessionState};
-use axo_pi::protocol::{Action, CommandResult, QueuedDelivery, RejectReason};
-use axo_pi::takeover::{BridgeTarget, send_command};
+use axo_pi::protocol::{CommandResult, QueuedDelivery, RejectReason};
+use axo_pi::worker::CommandSender;
 use axo_protocol::rpc::{PromptAccepted, PromptDelivery, PromptSession};
 use axo_protocol::{PaneRole, SessionId, ShellId};
-use axo_store::{StoredPiSession, open_pi_session};
 
 pub(super) const MAX_PI_PROMPT_BYTES: usize = 16_000;
 /// A starting Pi holds at most this many prompts; more are refused until it is up.
@@ -140,36 +139,23 @@ impl From<PromptError> for io::Error {
     }
 }
 
-/// Everything needed to reach a Pi's bridge without holding the catalog lock.
-struct PiBridge {
-    socket: PathBuf,
-    token: String,
-    session_uuid: String,
-    pane_id: String,
-    initial_pwd: PathBuf,
-    session_file: PathBuf,
-}
+/// How long a prompt waits for Pi to answer on its bridge.
+const PROMPT_ANSWER_TIMEOUT: Duration = Duration::from_secs(5);
+
+/// A running Pi's bridge worker, reachable without holding the catalog lock.
+struct PiBridge(CommandSender);
 
 impl PiBridge {
     fn send(&self, text: &str, delivery: PromptDelivery) -> Result<(), PromptError> {
-        let target = BridgeTarget {
-            bridge_socket: &self.socket,
-            token: &self.token,
-            session_uuid: &self.session_uuid,
-            pane_id: &self.pane_id,
-            initial_pwd: &self.initial_pwd,
-            session_file: &self.session_file,
-        };
         let delivery_on_bridge = match delivery {
             PromptDelivery::Steer => Some(QueuedDelivery::Steer),
             PromptDelivery::FollowUp => Some(QueuedDelivery::FollowUp),
             PromptDelivery::Turn => None,
         };
-        let action = Action::Send {
-            text,
-            delivery: delivery_on_bridge,
-        };
-        match send_command(target, action, &|| Ok(())) {
+        match self
+            .0
+            .send_message(text, delivery_on_bridge, PROMPT_ANSWER_TIMEOUT)
+        {
             Ok(CommandResult::Accepted) => Ok(()),
             Ok(CommandResult::Rejected(RejectReason::Busy)) => Err(PromptError::Busy),
             Ok(CommandResult::Rejected(reason)) => Err(PromptError::Unavailable(
@@ -193,33 +179,12 @@ fn pi_shell(state: &SessionState, session_id: SessionId) -> Option<ShellId> {
 fn pi_bridge(state: &SessionState, session_id: SessionId) -> io::Result<PiBridge> {
     let shell_id = pi_shell(state, session_id)
         .ok_or_else(|| io::Error::new(io::ErrorKind::NotFound, "Pi is not running"))?;
-    let running = state
+    state
         .panes
         .running(shell_id)
-        .ok_or_else(|| io::Error::new(io::ErrorKind::NotFound, "Pi is not running"))?;
-    let missing =
-        |what: &str| io::Error::new(io::ErrorKind::InvalidData, format!("Pi {what} is missing"));
-    let StoredPiSession {
-        session_uuid,
-        session_file,
-        ..
-    } = open_pi_session(&state.database, session_id)?;
-    Ok(PiBridge {
-        socket: running
-            .pi_bridge_socket
-            .as_ref()
-            .ok_or_else(|| missing("bridge socket"))?
-            .as_path()
-            .to_path_buf(),
-        token: running
-            .pi_bridge_token
-            .clone()
-            .ok_or_else(|| missing("bridge token"))?,
-        session_uuid,
-        pane_id: running.pane_id.clone().ok_or_else(|| missing("pane ID"))?,
-        initial_pwd: running.initial_pwd.clone(),
-        session_file: session_file.ok_or_else(|| missing("history path"))?,
-    })
+        .and_then(|running| running.pi_commands.clone())
+        .map(PiBridge)
+        .ok_or_else(|| io::Error::new(io::ErrorKind::NotConnected, "Pi's bridge is not running"))
 }
 
 impl SessionManager {

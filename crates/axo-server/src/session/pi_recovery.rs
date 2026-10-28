@@ -152,6 +152,7 @@ fn spawn_pi(
         _writer_lock: Some(writer_lock),
         pi_bridge_socket: Some(request.bridge_socket.clone()),
         pi_bridge_token: Some(bridge_token),
+        pi_commands: None,
     })
 }
 

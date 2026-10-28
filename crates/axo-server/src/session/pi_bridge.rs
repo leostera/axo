@@ -249,20 +249,26 @@ impl SessionManager {
             bridge_token,
             process_id,
             runtime_id,
+            commands,
         ) = {
-            let state = self.lock_state()?;
-            let running = state
+            let mut state = self.lock_state()?;
+            let not_running = || io::Error::new(io::ErrorKind::NotFound, "Pi pane is not running");
+            let session_id = state
                 .panes
                 .running(shell_id)
-                .ok_or_else(|| io::Error::new(io::ErrorKind::NotFound, "Pi pane is not running"))?;
+                .ok_or_else(not_running)?
+                .session_id;
             let StoredPiSession {
                 session_uuid,
                 session_file,
                 ..
-            } = open_pi_session(&state.database, running.session_id)?;
+            } = open_pi_session(&state.database, session_id)?;
             let session_file = session_file.ok_or_else(|| {
                 io::Error::new(io::ErrorKind::InvalidData, "Pi history path is missing")
             })?;
+            let running = state.panes.running_mut(shell_id).ok_or_else(not_running)?;
+            let (command_sender, commands) = worker::command_channel();
+            running.pi_commands = Some(command_sender);
             (
                 running.session_id,
                 session_uuid,
@@ -282,6 +288,7 @@ impl SessionManager {
                 })?,
                 running.child.id(),
                 running.runtime_id,
+                commands,
             )
         };
         let host = PiBridgeHost {
@@ -302,6 +309,7 @@ impl SessionManager {
             bridge_socket,
             bridge_token,
             process_id,
+            commands,
         };
         let stop = Arc::clone(&self.stop_workers);
         let worker = thread::Builder::new()

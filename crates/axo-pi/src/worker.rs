@@ -1,9 +1,13 @@
 //! Following one running Pi over its bridge for as long as it is the pane's current process.
 
-use std::io::{self, Read};
+use std::collections::HashMap;
+use std::io;
+use std::io::Read;
+use std::os::unix::net::UnixStream;
 use std::path::PathBuf;
 use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::mpsc;
 use std::thread;
 use std::time::{Duration, Instant};
 
@@ -12,7 +16,9 @@ use serde_json::Value;
 use crate::BridgeSocketPath;
 use crate::bridge::{self, MAX_RECORD_BYTES};
 use crate::connection::{Connection, ExpectedPane, Rejection, Step};
-use crate::protocol::{Outgoing, ProtocolVersion, parse_record};
+use crate::protocol::{
+    Action, CommandResult, Outgoing, ProtocolVersion, QueuedDelivery, parse_record,
+};
 use crate::takeover::BRIDGE_REQUEST_TIMEOUT;
 
 const RECONNECT_DELAY: Duration = Duration::from_millis(100);
@@ -41,6 +47,78 @@ pub trait BridgeHost {
     ) -> bool;
 }
 
+/// A command for the Pi a worker follows, and where its answer goes.
+enum WorkerCommand {
+    Send {
+        text: String,
+        delivery: Option<QueuedDelivery>,
+        reply: mpsc::Sender<io::Result<CommandResult>>,
+    },
+}
+
+/// Sends commands to a running Pi over its worker's bridge connection. Pi's bridge serves one
+/// Axod connection at a time, so commands cannot open their own while the worker holds it.
+#[derive(Clone, Debug)]
+pub struct CommandSender(mpsc::Sender<WorkerCommand>);
+
+impl std::fmt::Debug for WorkerCommand {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        formatter.write_str("WorkerCommand")
+    }
+}
+
+/// The worker's end of a [`CommandSender`].
+pub struct CommandReceiver(mpsc::Receiver<WorkerCommand>);
+
+pub fn command_channel() -> (CommandSender, CommandReceiver) {
+    let (sender, receiver) = mpsc::channel();
+    (CommandSender(sender), CommandReceiver(receiver))
+}
+
+impl CommandSender {
+    /// Submits `text` as a user message and waits for Pi's answer. Fails if the bridge is not
+    /// bound, drops before answering, or Pi does not answer within `timeout`.
+    pub fn send_message(
+        &self,
+        text: &str,
+        delivery: Option<QueuedDelivery>,
+        timeout: Duration,
+    ) -> io::Result<CommandResult> {
+        let (reply, answer) = mpsc::channel();
+        self.0
+            .send(WorkerCommand::Send {
+                text: text.to_owned(),
+                delivery,
+                reply,
+            })
+            .map_err(|_| {
+                io::Error::new(
+                    io::ErrorKind::NotConnected,
+                    "Pi's bridge worker has stopped",
+                )
+            })?;
+        answer.recv_timeout(timeout).unwrap_or_else(|_| {
+            Err(io::Error::new(
+                io::ErrorKind::TimedOut,
+                "Pi did not answer the command in time",
+            ))
+        })
+    }
+}
+
+impl CommandReceiver {
+    /// Refuses every command waiting now: there is no bound connection to send it on.
+    fn refuse_waiting(&self) {
+        while let Ok(WorkerCommand::Send { reply, .. }) = self.0.try_recv() {
+            let _ = reply.send(Err(not_bound()));
+        }
+    }
+}
+
+fn not_bound() -> io::Error {
+    io::Error::new(io::ErrorKind::NotConnected, "Pi's bridge is not connected")
+}
+
 /// Everything needed to reach and verify one running Pi.
 pub struct WorkerConfig {
     pub session_uuid: String,
@@ -52,6 +130,8 @@ pub struct WorkerConfig {
     pub process_id: u32,
     /// Prefix for log lines, e.g. `session_id=1 shell_id=2`.
     pub log_context: String,
+    /// Commands to send while bound; see [`CommandSender`].
+    pub commands: CommandReceiver,
 }
 
 /// Connects (and reconnects while Pi restarts its listener) until `stop` is set, the Pi is
@@ -60,6 +140,7 @@ pub fn run(host: &impl BridgeHost, stop: &Arc<AtomicBool>, config: &WorkerConfig
     let context = &config.log_context;
     let mut has_connected = false;
     while !stop.load(Ordering::Relaxed) && host.is_current() {
+        config.commands.refuse_waiting();
         let check_current = || {
             if stop.load(Ordering::Relaxed) || !host.is_current() {
                 Err(io::Error::new(
@@ -104,7 +185,14 @@ pub fn run(host: &impl BridgeHost, stop: &Arc<AtomicBool>, config: &WorkerConfig
             cwd: &config.initial_pwd,
             process_id: config.process_id,
         });
-        let outcome = follow(host, stop, &mut stream, &mut connection, context);
+        let outcome = follow(
+            host,
+            stop,
+            &mut stream,
+            &mut connection,
+            &config.commands,
+            context,
+        );
         if connection.is_bound() {
             host.disconnected();
         }
@@ -127,15 +215,91 @@ enum Outcome {
 fn follow(
     host: &impl BridgeHost,
     stop: &AtomicBool,
-    stream: &mut impl Read,
+    stream: &mut UnixStream,
     connection: &mut Connection<'_>,
+    commands: &CommandReceiver,
+    context: &str,
+) -> Outcome {
+    // Commands sent and not answered yet; dropping a reply fails its caller's wait.
+    let mut pending: HashMap<String, mpsc::Sender<io::Result<CommandResult>>> = HashMap::new();
+    let outcome = follow_records(
+        host,
+        stop,
+        stream,
+        connection,
+        commands,
+        &mut pending,
+        context,
+    );
+    for (_, reply) in pending {
+        let _ = reply.send(Err(io::Error::new(
+            io::ErrorKind::ConnectionAborted,
+            "Pi's bridge closed before answering",
+        )));
+    }
+    outcome
+}
+
+/// Writes waiting commands once bound; refuses them before that.
+fn send_waiting(
+    stream: &mut UnixStream,
+    connection: &Connection<'_>,
+    commands: &CommandReceiver,
+    pending: &mut HashMap<String, mpsc::Sender<io::Result<CommandResult>>>,
+    session_uuid: &str,
+) -> bool {
+    if !connection.is_bound() {
+        commands.refuse_waiting();
+        return true;
+    }
+    while let Ok(WorkerCommand::Send {
+        text,
+        delivery,
+        reply,
+    }) = commands.0.try_recv()
+    {
+        let request_id = match axo_protocol::new_uuid_v4() {
+            Ok(uuid) => format!("axod-{uuid}"),
+            Err(error) => {
+                let _ = reply.send(Err(error));
+                continue;
+            }
+        };
+        let command = Outgoing::Command {
+            request_id: &request_id,
+            axo_session_id: session_uuid,
+            action: Action::Send {
+                text: &text,
+                delivery,
+            },
+        };
+        if let Err(error) = bridge::write_record(stream, &command) {
+            let _ = reply.send(Err(error));
+            return false;
+        }
+        pending.insert(request_id, reply);
+    }
+    true
+}
+
+fn follow_records(
+    host: &impl BridgeHost,
+    stop: &AtomicBool,
+    stream: &mut UnixStream,
+    connection: &mut Connection<'_>,
+    commands: &CommandReceiver,
+    pending: &mut HashMap<String, mpsc::Sender<io::Result<CommandResult>>>,
     context: &str,
 ) -> Outcome {
     let mut buffer = Vec::new();
     let mut chunk = [0_u8; 8192];
+    let session_uuid = connection.session_uuid().to_owned();
     loop {
         if stop.load(Ordering::Relaxed) || !host.is_current() {
             return Outcome::Stop;
+        }
+        if !send_waiting(stream, connection, commands, pending, &session_uuid) {
+            return Outcome::Closed;
         }
         let length = match stream.read(&mut chunk) {
             Ok(0) => return Outcome::Closed,
@@ -163,6 +327,12 @@ fn follow(
                 return Outcome::Invalid;
             };
             match connection.receive(record) {
+                Ok(Step::CommandResult { request_id, result }) => {
+                    // An answer nobody waits for (it timed out) is dropped.
+                    if let Some(reply) = pending.remove(&request_id) {
+                        let _ = reply.send(Ok(result));
+                    }
+                }
                 Ok(step) => {
                     if !apply(host, step, context) {
                         return Outcome::Invalid;
@@ -208,9 +378,13 @@ fn apply(host: &impl BridgeHost, step: Step, context: &str) -> bool {
             data,
         } => host.event(&pi_session_id, &stream_id, sequence, &name, data),
         Step::Oversized { name, bytes } => {
-            log::warn!("event=pi.event_skipped {context} name={name} bytes={bytes} reason=too_large");
+            log::warn!(
+                "event=pi.event_skipped {context} name={name} bytes={bytes} reason=too_large"
+            );
             true
         }
+        // Routed to its caller in `follow_records`.
+        Step::CommandResult { .. } => true,
     }
 }
 

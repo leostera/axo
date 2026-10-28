@@ -62,6 +62,8 @@ struct RunningShell {
     _writer_lock: Option<WriterLock>,
     pi_bridge_socket: Option<BridgeSocketPath>,
     pi_bridge_token: Option<String>,
+    /// Commands for this Pi, sent on its bridge worker's connection; set when the worker starts.
+    pi_commands: Option<axo_pi::worker::CommandSender>,
 }
 
 impl RunningShell {

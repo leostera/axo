@@ -774,8 +774,9 @@ mod tests {
         (SessionManager::open(directory).unwrap(), log)
     }
 
-    /// Stands in for pi-axo's bridge listener: proves the pane's identity on every connection
-    /// and accepts every command, reporting each action it was sent.
+    /// Stands in for pi-axo's bridge listener: serves one connection at a time and closes any
+    /// other while it does (as pi-axo does), proves the pane's identity, and accepts every
+    /// command, reporting each action it was sent.
     fn fake_pi_bridge(
         manager: &SessionManager,
         session: &axo_protocol::SessionRecord,
@@ -796,12 +797,19 @@ mod tests {
         };
         let listener = std::os::unix::net::UnixListener::bind(socket.as_path()).unwrap();
         let (actions, received) = mpsc::channel();
+        let serving = Arc::new(std::sync::atomic::AtomicBool::new(false));
         thread::spawn(move || {
             for stream in listener.incoming() {
                 let Ok(stream) = stream else { return };
+                if serving.swap(true, Ordering::SeqCst) {
+                    drop(stream);
+                    continue;
+                }
                 let identity = identity.clone();
                 let actions = actions.clone();
+                let serving = Arc::clone(&serving);
                 thread::spawn(move || {
+                    let _served = ServingGuard(serving);
                     let mut reader = BufReader::new(stream.try_clone().unwrap());
                     let mut writer = stream;
                     let mut line = String::new();
@@ -832,6 +840,15 @@ mod tests {
             }
         });
         received
+    }
+
+    /// Marks the fake bridge free again when its one connection ends.
+    struct ServingGuard(Arc<std::sync::atomic::AtomicBool>);
+
+    impl Drop for ServingGuard {
+        fn drop(&mut self) {
+            self.0.store(false, Ordering::SeqCst);
+        }
     }
 
     #[test]

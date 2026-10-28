@@ -361,36 +361,6 @@ fn request_shutdown(
     })
 }
 
-/// Sends one command to the Pi behind `target` on a connection of its own and returns Pi's
-/// answer. The worker's long-lived connection only listens; commands never share it.
-pub fn send_command(
-    target: BridgeTarget<'_>,
-    action: Action<'_>,
-    check_current: &impl Fn() -> io::Result<()>,
-) -> io::Result<CommandResult> {
-    let deadline = Instant::now() + BRIDGE_REQUEST_TIMEOUT;
-    let (mut reader, _) = connect_to_bridge(target, deadline, check_current)?;
-    let request_id = format!("axod-{}", new_uuid_v4()?);
-    bridge::write_record(
-        reader.get_mut(),
-        &Outgoing::Command {
-            request_id: &request_id,
-            axo_session_id: target.session_uuid,
-            action,
-        },
-    )?;
-    loop {
-        if let Record::CommandResult {
-            request_id: answered,
-            result,
-        } = bridge::read_record_until(&mut reader, deadline, check_current)?
-            && answered == request_id
-        {
-            return Ok(result);
-        }
-    }
-}
-
 pub fn signal_verified_process(
     process_id: VerifiedProcessId,
     signal: libc::c_int,
@@ -710,69 +680,6 @@ mod tests {
         )
         .unwrap();
         assert!(spawning.join().unwrap().success());
-        std::fs::remove_dir_all(directory).unwrap();
-    }
-
-    #[test]
-    fn a_command_is_answered_on_its_own_connection() {
-        use std::io::{BufRead, Write};
-        let directory = crate::test_directory();
-        let session_uuid = axo_protocol::new_uuid_v4().unwrap();
-        let socket = BridgeSocketPath::for_session(&directory, &session_uuid).unwrap();
-        let listener = std::os::unix::net::UnixListener::bind(socket.as_path()).unwrap();
-        let session_file = directory.join("session.jsonl");
-        let identity = serde_json::json!({
-            "axoSessionId": session_uuid,
-            "axoPaneId": "pane",
-            "piSessionId": "pi",
-            "sessionFile": session_file,
-            "cwd": directory,
-            "processId": 4242,
-        });
-        let pi = std::thread::spawn(move || {
-            let (stream, _) = listener.accept().unwrap();
-            let mut reader = std::io::BufReader::new(stream.try_clone().unwrap());
-            let mut writer = stream;
-            let mut line = String::new();
-            reader.read_line(&mut line).unwrap();
-            assert!(line.contains("\"authenticate\""), "{line}");
-            for record in [
-                serde_json::json!({ "type": "authenticated", "protocolVersion": 1 }),
-                serde_json::json!({ "type": "hello", "protocolVersion": 1, "identity": identity }),
-            ] {
-                writeln!(writer, "{record}").unwrap();
-            }
-            line.clear();
-            reader.read_line(&mut line).unwrap();
-            let command: serde_json::Value = serde_json::from_str(&line).unwrap();
-            let answer = serde_json::json!({
-                "type": "commandResult",
-                "requestId": command["requestId"],
-                "result": { "accepted": true },
-            });
-            writeln!(writer, "{answer}").unwrap();
-            command["action"].clone()
-        });
-        let target = BridgeTarget {
-            bridge_socket: socket.as_path(),
-            token: "token",
-            session_uuid: &session_uuid,
-            pane_id: "pane",
-            initial_pwd: &directory,
-            session_file: &session_file,
-        };
-        let action = Action::Send {
-            text: "check the build",
-            delivery: Some(crate::protocol::QueuedDelivery::Steer),
-        };
-        assert_eq!(
-            send_command(target, action, &|| Ok(())).unwrap(),
-            CommandResult::Accepted
-        );
-        assert_eq!(
-            pi.join().unwrap(),
-            serde_json::json!({ "kind": "send", "text": "check the build", "delivery": "steer" })
-        );
         std::fs::remove_dir_all(directory).unwrap();
     }
 

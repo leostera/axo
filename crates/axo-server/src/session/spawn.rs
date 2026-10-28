@@ -112,6 +112,7 @@ pub(super) fn spawn_shell(
         _writer_lock: None,
         pi_bridge_socket: None,
         pi_bridge_token: None,
+        pi_commands: None,
     })
 }
 

@@ -1,7 +1,8 @@
 //! The bridge connection as a state machine: what each record means in each phase.
 //!
 //! A connection authenticates, then binds to the exact pane Axod launched (every identity field
-//! must match), then carries one event stream whose sequence only increases. Any other record,
+//! must match), then carries one event stream whose sequence only increases, and the answers to
+//! the commands Axod sends on it. Any other record,
 //! or a record that breaks these rules, rejects the connection; the caller drops it.
 
 use std::path::Path;
@@ -9,7 +10,7 @@ use std::path::Path;
 use axo_protocol::is_uuid;
 use serde_json::Value;
 
-use crate::protocol::{Identity, Record};
+use crate::protocol::{CommandResult, Identity, Record};
 
 /// JavaScript's largest exact integer: sequences beyond it cannot round-trip through clients.
 pub const MAX_SEQUENCE: u64 = 9_007_199_254_740_991;
@@ -66,6 +67,11 @@ pub enum Step {
         sequence: u64,
         name: String,
         data: Value,
+    },
+    /// Pi's answer to a command Axod sent on this connection.
+    CommandResult {
+        request_id: String,
+        result: CommandResult,
     },
     /// An event too large to forward. Its sequence still counts, so the stream stays in order;
     /// Pi's transcript on the Mac keeps it.
@@ -142,6 +148,11 @@ impl<'a> Connection<'a> {
         }
     }
 
+    /// The Session this connection must serve.
+    pub fn session_uuid(&self) -> &str {
+        self.expected.session_uuid
+    }
+
     pub fn phase(&self) -> &Phase {
         &self.phase
     }
@@ -195,6 +206,9 @@ impl<'a> Connection<'a> {
                     name,
                     data,
                 })
+            }
+            (Phase::Bound { .. }, Record::CommandResult { request_id, result }) => {
+                Ok(Step::CommandResult { request_id, result })
             }
             (phase, record) => Err(Rejection::Unexpected {
                 phase: phase.name(),
@@ -362,7 +376,7 @@ mod tests {
             accepted_by(awaiting_hello),
             [false, true, false, false, false]
         );
-        assert_eq!(accepted_by(bound), [false, false, true, false, false]);
+        assert_eq!(accepted_by(bound), [false, false, true, true, false]);
     }
 
     #[test]
