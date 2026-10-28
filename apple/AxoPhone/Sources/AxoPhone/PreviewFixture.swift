@@ -62,6 +62,25 @@ enum PreviewFixture {
       return events
     }
 
+    /// Many whole replies landing quickly, each long and with a wide code block
+    /// (`AXO_PHONE_PREVIEW_LIVE=flood`): what a busy agent sends while the phone is following.
+    static func floodEvents(replies: Int) -> [PiEventRecord] {
+      let stream = UUID(uuidString: "71c77dd7-f2dc-4e91-b481-1507b62ec118")!
+      func reply(_ number: Int) -> JSONValue {
+        let words = Array(repeating: "and then the next step of the plan", count: 6).joined(separator: ", ")
+        let code = "```swift\nlet reply\(number) = Array(repeating: \"a line far wider than any phone screen could ever show at once\", count: \(number))\n```"
+        return .object(["message": .object(["role": .string("assistant"), "content": .array([
+          .object(["type": .string("text"), "text": .string("Flood reply \(number): \(words).\n\n\(code)")])
+        ])])])
+      }
+      var events = [PiEventRecord(streamId: stream, sequence: 1, name: "agent.start", data: .object([:]))]
+      for number in 1...replies {
+        events.append(PiEventRecord(streamId: stream, sequence: UInt64(number + 1), name: "message.end", data: reply(number)))
+      }
+      events.append(PiEventRecord(streamId: stream, sequence: UInt64(replies + 2), name: "agent.end", data: .object([:])))
+      return events
+    }
+
     static let studio = UUID(uuidString: "18355f00-95fd-4c93-8586-a71a8a52bf73")!
     static let imac = UUID(uuidString: "28355f00-95fd-4c93-8586-a71a8a52bf73")!
 

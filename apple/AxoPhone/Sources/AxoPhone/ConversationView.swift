@@ -17,6 +17,16 @@ struct ConversationView: View {
   let voice: VoicePrompt?
   /// When to follow what is new and when to leave the reader be.
   @State private var follow = ScrollFollow()
+  #if DEBUG && targetEnvironment(simulator)
+    /// For the flood preview's test: what the scroll view and `follow` did, newest last.
+    @State private var followTrace: [String] = []
+    private func trace(_ line: String) {
+      guard PreviewFixture.live == "flood" else { return }
+      followTrace = Array((followTrace + [line]).suffix(40))
+    }
+  #else
+    private func trace(_ line: String) {}
+  #endif
   /// The message at the top of the screen; holding it keeps the view still when older pages arrive above.
   @State private var scrollAnchor: String?
   @State private var scrollToLatestRequest = 0
@@ -40,6 +50,14 @@ struct ConversationView: View {
       .conversationBar(edge: .top) { header }
       .conversationBar(edge: .bottom) { bottomBar }
       .onGeometryChange(for: CGFloat.self) { $0.safeAreaInsets.bottom } action: { bottomInset = $0 }
+      #if DEBUG && targetEnvironment(simulator)
+        .overlay(alignment: .topTrailing) {
+          if PreviewFixture.live == "flood" {
+            Text(followTrace.joined(separator: " | ")).font(.system(size: 1)).opacity(0.01)
+              .frame(width: 1, height: 1).accessibilityIdentifier("follow-trace")
+          }
+        }
+      #endif
   }
 
   private var conversation: some View {
@@ -78,33 +96,33 @@ struct ConversationView: View {
               canStop: workbench?.status == .online,
               stop: { Task { await workbench?.stopReply(in: id) } })
           }
-          Color.clear.frame(height: 1).id("latest")
+          Color.clear.frame(height: 1).id(Self.end)
         }
         .scrollTargetLayout()
         .padding(.horizontal, 20)
         .padding(.top, 24)
         .padding(.bottom, 20)
-        .frame(maxWidth: .infinity, alignment: .leading)
+        // Exactly as wide as the screen: a row that asked for more would otherwise widen the
+        // column, and scrolling to the end would slide it sideways.
+        .containerRelativeFrame(.horizontal, alignment: .leading)
       }
       .scrollDismissesKeyboard(.interactively)
       .softScrollEdges()
-      .scrollPosition(id: $scrollAnchor, anchor: .top)
+      // The row at the bottom of the screen stays put when content changes elsewhere (an older
+      // page arriving above keeps the reader's place); the end itself is kept by `follow`.
+      .scrollPosition(id: $scrollAnchor, anchor: .bottom)
       .defaultScrollAnchor(.bottom, for: .initialOffset)
       // The keyboard opening or the composer growing raises the bottom inset (the scroll view
-      // itself keeps its size under the bars). A reader at the end stays at the end, rather than
-      // the last messages going under them.
+      // itself keeps its size under the bars). A follower keeps the end in view, rather than the
+      // last messages going under them.
       .onScrollGeometryChange(for: CGFloat.self) { $0.contentInsets.bottom } action: { old, new in
-        if new > old, follow.isAtEnd, !transcript.messages.isEmpty { proxy.scrollTo("latest", anchor: .bottom) }
-      }
-      .onScrollGeometryChange(for: Bool.self) { geometry in
-        // What is on screen reaches (nearly) the end of the content.
-        geometry.visibleRect.maxY >= geometry.contentSize.height - 60
-      } action: { _, nearBottom in
-        follow.readerScrolled(atEnd: nearBottom)
+        if new > old, !transcript.messages.isEmpty { move(follow.bottomInsetGrew(), proxy: proxy) }
       }
       .onChange(of: endOfConversation) { _, end in
         guard end != EndOfConversation() else { return }
-        move(follow.contentChangedAtEnd(), proxy: proxy)
+        let decided = follow.contentChangedAtEnd()
+        trace("content \(decided)")
+        move(decided, proxy: proxy)
       }
       .onChange(of: pending.count) { previous, count in
         // Sending something takes the reader to it.
@@ -123,9 +141,15 @@ struct ConversationView: View {
         pull.state.armTravel = transcript.messages.isEmpty ? PullToRefresh.longPull : PullToRefresh.shortPull
         pull.state.pulled(to: overscroll.points, height: overscroll.height, touching: pull.touching)
       }
-      .onScrollPhaseChange { old, new in
+      .onScrollPhaseChange { old, new, context in
         pull.touching = new == .interacting
         if old == .interacting, new != .interacting { pull.release(refresh: refresh) }
+        // Whether to follow is the reader's to decide, by where they leave the conversation.
+        let geometry = context.geometry
+        let atEnd = geometry.visibleRect.maxY >= geometry.contentSize.height - 60
+        let decided = follow.scrollingChanged(to: Self.scrolling(new), atEnd: atEnd)
+        trace("phase \(old)->\(new) atEnd=\(atEnd) following=\(follow.isFollowing) \(decided)")
+        move(decided, proxy: proxy)
       }
       .overlay(alignment: .top) {
         if !transcript.messages.isEmpty { SpinningPullMascotView(pull: pull) }
@@ -170,23 +194,45 @@ struct ConversationView: View {
       working: transcript.activity == .working)
   }
 
+  private static func scrolling(_ phase: ScrollPhase) -> ScrollFollow.Scrolling {
+    switch phase {
+    case .idle: .idle
+    case .tracking: .touched
+    case .interacting, .decelerating: .byReader
+    case .animating: .byScreen
+    @unknown default: .byReader
+    }
+  }
+
+  /// The marker after the last row: the scroll position while following.
+  private static let end = "latest"
+
   private func move(_ move: ScrollFollow.Move, proxy: ScrollViewProxy) {
     switch move {
     case .stay:
       break
-    case .jumpToEnd:
-      // The first page: go to its end without animating, then again once the lazy stack has
-      // measured what it estimated, or the end can land short of the real bottom.
-      proxy.scrollTo("latest", anchor: .bottom)
+    case .keepAtEnd:
+      // Without animating: as content grows, the end simply stays in view. The scroll position
+      // is the end marker, so SwiftUI keeps *it* at the bottom as rows are added, rather than
+      // the message that was at the bottom (which would leave the new ones below the screen).
+      // Once more on the next turn, after the lazy stack has measured rows it had only
+      // estimated, or the end can land short of the real bottom.
+      var instant = Transaction()
+      instant.disablesAnimations = true
+      withTransaction(instant) {
+        scrollAnchor = Self.end
+        proxy.scrollTo(Self.end, anchor: .bottom)
+      }
       Task { @MainActor in
         await Task.yield()
-        proxy.scrollTo("latest", anchor: .bottom)
-        // Once more after the rows above have been measured for real.
-        try? await Task.sleep(for: .milliseconds(150))
-        proxy.scrollTo("latest", anchor: .bottom)
+        guard follow.isFollowing else { return }
+        withTransaction(instant) { proxy.scrollTo(Self.end, anchor: .bottom) }
       }
-    case .followToEnd:
-      withAnimation { proxy.scrollTo("latest", anchor: .bottom) }
+    case .goToEnd:
+      withAnimation(.snappy(duration: 0.3)) {
+        scrollAnchor = Self.end
+        proxy.scrollTo(Self.end, anchor: .bottom)
+      }
     }
   }
 
@@ -229,16 +275,23 @@ struct ConversationView: View {
     }
   }
 
+  /// The menu button, and the Mac's state when it is not simply online. No title: inside the
+  /// chat, its name only takes room (VoiceOver still hears it, as the screen's heading).
   private var header: some View {
     ZStack {
-      VStack(spacing: 2) {
-        Text(session?.displayName ?? "New chat").font(.headline).lineLimit(1)
-          .accessibilityIdentifier("conversation-title")
-        if let workbench {
-          Text(hostLine(workbench))
-            .font(.caption)
-            .foregroundStyle(workbench.status == .online && workbench.link != .reconnecting ? Color.secondary : Color.orange)
-        }
+      Color.clear
+        .frame(width: 1, height: 1)
+        .accessibilityElement()
+        .accessibilityLabel(session?.displayName ?? "New chat")
+        .accessibilityAddTraits([.isHeader, .isStaticText])
+        .accessibilityIdentifier("conversation-title")
+      if let workbench, let trouble = hostTrouble(workbench) {
+        Text(trouble)
+          .font(.caption.weight(.medium))
+          .foregroundStyle(.orange)
+          .padding(.horizontal, 12).padding(.vertical, 6)
+          .background(.ultraThinMaterial, in: Capsule())
+          .accessibilityIdentifier("host-trouble")
       }
       HStack {
         Button(action: showSidebar) {
@@ -259,10 +312,11 @@ struct ConversationView: View {
     .padding(.horizontal, 14).padding(.bottom, 10)
   }
 
-  private func hostLine(_ workbench: HostWorkbenchModel) -> String {
-    if workbench.status != .online { return "\(workbench.hostLabel) · offline" }
-    if workbench.link == .reconnecting { return "\(workbench.hostLabel) · reconnecting…" }
-    return workbench.hostLabel
+  /// What is wrong with the chat's Mac, if anything: offline, or reconnecting.
+  private func hostTrouble(_ workbench: HostWorkbenchModel) -> String? {
+    if workbench.status != .online { return "\(workbench.hostLabel) is offline" }
+    if workbench.link == .reconnecting { return "Reconnecting to \(workbench.hostLabel)…" }
+    return nil
   }
 
   /// A chat can be written to when its Mac is online and nothing is on its way.
@@ -285,7 +339,7 @@ struct ConversationView: View {
         Text(failure).font(.caption).foregroundStyle(.orange).padding(.horizontal, 24)
           .accessibilityIdentifier("chat-failure")
       }
-      if !follow.isAtEnd {
+      if !follow.isFollowing {
         Button { scrollToLatestRequest += 1 } label: {
           HStack(spacing: 6) {
             Image(systemName: "arrow.down")
@@ -304,9 +358,9 @@ struct ConversationView: View {
       }
       DraftComposer(phone: phone, placeholder: composerPlaceholder, canSend: canSend, voice: voice, send: sendDraft)
     }
-    // With the keyboard down the composer sits in the home indicator's area as system bars do,
-    // instead of above all of it plus a margin; with the keyboard up, just above it.
-    .padding(.bottom, keyboardIsUp ? 8 : max(8, bottomInset - 10))
+    // With the keyboard down the composer sits down in the home indicator's area, as the
+    // system's own bars do, rather than above all of it; with the keyboard up, just above it.
+    .padding(.bottom, keyboardIsUp ? 6 : max(6, bottomInset - 22))
     .ignoresSafeArea(.container, edges: .bottom)
   }
 }

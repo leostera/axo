@@ -140,6 +140,21 @@ struct WorkbenchView: View {
           .padding(.top, 60)
           .accessibilityIdentifier("play-stream-elsewhere")
         }
+        if PreviewFixture.live == "flood" {
+          // Thirty long replies, ten a second, when a test is ready.
+          Button("Play flood") {
+            guard let current = workbench.current, let id = current.selectedSessionID else { return }
+            Task {
+              for event in PreviewFixture.floodEvents(replies: 30) {
+                current.playForPreview([event], in: id)
+                try? await Task.sleep(for: .milliseconds(100))
+              }
+            }
+          }
+          .font(.system(size: 12)).buttonStyle(.plain).contentShape(Rectangle())
+          .padding(.top, 120)
+          .accessibilityIdentifier("play-flood")
+        }
       #endif
     }
     .preferredColorScheme(appearance.colorScheme)

@@ -18,7 +18,7 @@ struct ChatComposer: View {
   private var hasDraft: Bool { !draft.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty }
   /// Tall enough (about three lines) for the expand button to sit above Send inside the box: the
   /// button, the spacing and Send.
-  private var isLong: Bool { editorHeight >= Self.expandSize + Self.expandSpacing + 44 }
+  private var isLong: Bool { editorHeight >= Self.expandSize + Self.expandSpacing + ComposerMetrics.control }
   private static let expandSize: CGFloat = 40
   private static let expandSpacing: CGFloat = 6
 
@@ -52,8 +52,8 @@ struct ChatComposer: View {
     HStack(alignment: .bottom, spacing: 6) {
       TextField(placeholder, text: $draft, axis: .vertical)
         .lineLimit(1...6)
-        .padding(.leading, 18).padding(.vertical, 12)
-        .frame(minHeight: 44)
+        .padding(.leading, 14).padding(.vertical, ComposerMetrics.textInset)
+        .frame(minHeight: ComposerMetrics.control)
         .onGeometryChange(for: CGFloat.self) { $0.size.height } action: { editorHeight = $0 }
         .disabled(!canSend)
         .accessibilityIdentifier("composer")
@@ -74,10 +74,7 @@ struct ChatComposer: View {
           }
       }
     }
-    .padding(.horizontal, 8).padding(.vertical, 8)
-    .background(.regularMaterial, in: RoundedRectangle(cornerRadius: 27))
-    .overlay(RoundedRectangle(cornerRadius: 27).stroke(Color.primary.opacity(0.06), lineWidth: 0.5))
-    .padding(.horizontal, 16)
+    .composerBox()
     .fullScreenCover(isPresented: $showingExpandedEditor) {
       ExpandedComposerEditor(draft: $draft, placeholder: placeholder)
     }
@@ -96,15 +93,38 @@ struct ChatComposer: View {
 
   private var sendButton: some View {
     Button(action: send) {
-      Image(systemName: "arrow.up").font(.system(size: 20, weight: .semibold))
+      Image(systemName: "arrow.up").font(.system(size: 17, weight: .semibold))
         .foregroundStyle(canSend && hasDraft ? ChatColors.background : Color.secondary)
-        .frame(width: 44, height: 44)
+        .frame(width: ComposerMetrics.control, height: ComposerMetrics.control)
         .background(canSend && hasDraft ? Color.primary : ChatColors.disabledControl, in: Circle())
     }
     .accessibilityLabel("Send")
     .accessibilityIdentifier("send-message")
     .disabled(!(canSend && hasDraft))
-    .padding(.bottom, 1)
+  }
+}
+
+/// The composer's measurements, shared by the text box and the voice bar that takes its place:
+/// slim, a little room above and below one line of text, round ends.
+enum ComposerMetrics {
+  /// A button's circle, and the box's height for one line.
+  static let control: CGFloat = 36
+  /// Between the box's edge and the buttons in it.
+  static let edge: CGFloat = 5
+  /// Above and below the text, inside the button's height.
+  static let textInset: CGFloat = 8
+  static var cornerRadius: CGFloat { control / 2 + edge }
+}
+
+extension View {
+  /// The composer's rounded box around one row of controls.
+  func composerBox() -> some View {
+    padding(ComposerMetrics.edge)
+      .background(.regularMaterial, in: RoundedRectangle(cornerRadius: ComposerMetrics.cornerRadius))
+      .overlay(
+        RoundedRectangle(cornerRadius: ComposerMetrics.cornerRadius).stroke(Color.primary.opacity(0.06), lineWidth: 0.5)
+      )
+      .padding(.horizontal, 12)
   }
 }
 

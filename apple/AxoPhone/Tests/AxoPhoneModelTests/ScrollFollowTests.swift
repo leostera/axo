@@ -3,53 +3,81 @@ import XCTest
 @testable import AxoPhoneModel
 
 final class ScrollFollowTests: XCTestCase {
-  func testTheFirstPageOpensAtItsEndWithoutAnimating() {
+  func testAConversationOpensFollowingAndKeepsItsEndInViewWithoutAnimating() {
     var follow = ScrollFollow()
-    XCTAssertEqual(follow.contentChangedAtEnd(), .jumpToEnd)
-    XCTAssertEqual(follow.contentChangedAtEnd(), .followToEnd, "only the first change jumps")
-  }
-
-  func testNewContentFollowsAReaderAtTheEnd() {
-    var follow = ScrollFollow()
-    _ = follow.contentChangedAtEnd()
-    follow.readerScrolled(atEnd: true)
-    XCTAssertEqual(follow.contentChangedAtEnd(), .followToEnd)
+    XCTAssertTrue(follow.isFollowing)
+    XCTAssertEqual(follow.contentChangedAtEnd(), .keepAtEnd)
+    XCTAssertEqual(follow.contentChangedAtEnd(), .keepAtEnd)
     XCTAssertFalse(follow.hasNew)
   }
 
-  func testAReaderWhoScrolledUpKeepsTheirPlaceAndIsToldAboutNewContent() {
+  func testAReaderWhoScrollsAwayKeepsTheirPlaceAndIsToldAboutNewContent() {
     var follow = ScrollFollow()
-    _ = follow.contentChangedAtEnd()
-    follow.readerScrolled(atEnd: false)
+    _ = follow.scrollingChanged(to: .byReader, atEnd: true)
+    XCTAssertEqual(follow.contentChangedAtEnd(), .stay, "never moved under the finger")
+    _ = follow.scrollingChanged(to: .idle, atEnd: false)
+    XCTAssertFalse(follow.isFollowing)
     XCTAssertEqual(follow.contentChangedAtEnd(), .stay)
     XCTAssertTrue(follow.hasNew)
-    follow.readerScrolled(atEnd: false)
-    XCTAssertTrue(follow.hasNew, "scrolling elsewhere does not clear it")
-    follow.readerScrolled(atEnd: true)
-    XCTAssertFalse(follow.hasNew, "reaching the end does")
   }
 
-  func testGoingToTheEndCountsAsBeingThereUntilTheReaderScrollsAway() {
+  func testComingBackToTheEndFollowsAgain() {
     var follow = ScrollFollow()
-    follow.readerScrolled(atEnd: false)  // the list opens at its top before the first jump
-    XCTAssertEqual(follow.contentChangedAtEnd(), .jumpToEnd)
-    // The jump landed a little short and the list never said so: the next message still follows.
-    XCTAssertEqual(follow.contentChangedAtEnd(), .followToEnd)
-    follow.readerScrolled(atEnd: false)
-    XCTAssertEqual(follow.contentChangedAtEnd(), .stay)
-    _ = follow.sent()
-    XCTAssertEqual(follow.contentChangedAtEnd(), .followToEnd, "sending took the reader to the end")
+    _ = follow.scrollingChanged(to: .byReader, atEnd: true)
+    _ = follow.scrollingChanged(to: .idle, atEnd: false)
+    _ = follow.contentChangedAtEnd()
+    _ = follow.scrollingChanged(to: .byReader, atEnd: false)
+    _ = follow.scrollingChanged(to: .idle, atEnd: true)
+    XCTAssertTrue(follow.isFollowing)
+    XCTAssertFalse(follow.hasNew, "reaching the end clears it")
+    XCTAssertEqual(follow.contentChangedAtEnd(), .keepAtEnd)
   }
 
-  func testSendingOrAskingGoesToTheEndFromAnywhere() {
+  func testAJumpKeepsFollowingWhileItIsUnderWayAndCatchesUpIfTheEndMoved() {
     var follow = ScrollFollow()
+    _ = follow.scrollingChanged(to: .byReader, atEnd: true)
+    _ = follow.scrollingChanged(to: .idle, atEnd: false)
     _ = follow.contentChangedAtEnd()
-    follow.readerScrolled(atEnd: false)
-    _ = follow.contentChangedAtEnd()
-    XCTAssertEqual(follow.sent(), .followToEnd)
+    XCTAssertEqual(follow.jumpRequested(), .goToEnd)
     XCTAssertFalse(follow.hasNew)
+    _ = follow.scrollingChanged(to: .byScreen, atEnd: false)
+    // Messages keep arriving while the jump is still on its way: they overtake it.
+    XCTAssertEqual(follow.contentChangedAtEnd(), .keepAtEnd)
+    XCTAssertEqual(follow.scrollingChanged(to: .idle, atEnd: false), .keepAtEnd, "landed short of the moved end: catch up")
+    XCTAssertTrue(follow.isFollowing, "only the reader stops the following")
+    XCTAssertEqual(follow.contentChangedAtEnd(), .keepAtEnd)
+  }
+
+  func testSendingGoesToTheEndFromAnywhere() {
+    var follow = ScrollFollow()
+    _ = follow.scrollingChanged(to: .byReader, atEnd: true)
+    _ = follow.scrollingChanged(to: .idle, atEnd: false)
     _ = follow.contentChangedAtEnd()
-    XCTAssertEqual(follow.jumpRequested(), .followToEnd)
+    XCTAssertEqual(follow.sent(), .goToEnd)
+    XCTAssertTrue(follow.isFollowing)
     XCTAssertFalse(follow.hasNew)
+  }
+
+  func testTheKeyboardRisingKeepsAFollowersEndInView() {
+    var follow = ScrollFollow()
+    XCTAssertEqual(follow.bottomInsetGrew(), .keepAtEnd)
+    _ = follow.scrollingChanged(to: .byReader, atEnd: true)
+    _ = follow.scrollingChanged(to: .idle, atEnd: false)
+    XCTAssertEqual(follow.bottomInsetGrew(), .stay)
+  }
+}
+
+extension ScrollFollowTests {
+  /// Tapping "Jump to new message" puts a finger on the conversation without scrolling it; the
+  /// finger lifts after the jump began, still short of the end.
+  func testATapThatScrollsNothingDecidesNothing() {
+    var follow = ScrollFollow()
+    _ = follow.scrollingChanged(to: .byReader, atEnd: true)
+    _ = follow.scrollingChanged(to: .idle, atEnd: false)
+    _ = follow.scrollingChanged(to: .touched, atEnd: false)
+    _ = follow.jumpRequested()
+    _ = follow.scrollingChanged(to: .idle, atEnd: false)
+    XCTAssertTrue(follow.isFollowing)
+    XCTAssertEqual(follow.contentChangedAtEnd(), .keepAtEnd)
   }
 }

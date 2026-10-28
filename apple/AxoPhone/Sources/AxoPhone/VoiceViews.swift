@@ -12,17 +12,16 @@ struct VoiceButton: View {
         if case .requestingPermission = voice.state {
           ProgressView().tint(ChatColors.background)
         } else {
-          Image(systemName: "waveform").font(.system(size: 20, weight: .medium))
+          Image(systemName: "waveform").font(.system(size: 17, weight: .medium))
         }
       }
       .foregroundStyle(enabled ? ChatColors.background : Color.secondary)
-      .frame(width: 44, height: 44)
+      .frame(width: ComposerMetrics.control, height: ComposerMetrics.control)
       .background(enabled ? Color.primary : ChatColors.disabledControl, in: Circle())
       .contentShape(Circle())
     }
     .buttonStyle(.plain)
     .disabled(!enabled || voice.isBusy)
-    .padding(.bottom, 1)
     .accessibilityLabel("Talk")
     .accessibilityHint("Say your message; stop to read it first, or send it straight away")
     .accessibilityIdentifier("voice-start")
@@ -55,9 +54,9 @@ struct VoiceListeningBar: View {
           .accessibilityHint("Put the words in the message box to read first")
           .disabled(finishing)
         Button { voice.finish(.send) } label: {
-          Image(systemName: "arrow.up").font(.system(size: 20, weight: .semibold))
+          Image(systemName: "arrow.up").font(.system(size: 17, weight: .semibold))
             .foregroundStyle(canSend ? ChatColors.background : Color.secondary)
-            .frame(width: 44, height: 44)
+            .frame(width: ComposerMetrics.control, height: ComposerMetrics.control)
             .background(canSend ? Color.primary : ChatColors.disabledControl, in: Circle())
         }
         .buttonStyle(.plain)
@@ -67,10 +66,7 @@ struct VoiceListeningBar: View {
         .accessibilityIdentifier("voice-send")
       }
     }
-    .padding(8)
-    .background(.regularMaterial, in: RoundedRectangle(cornerRadius: 27))
-    .overlay(RoundedRectangle(cornerRadius: 27).stroke(Color.primary.opacity(0.06), lineWidth: 0.5))
-    .padding(.horizontal, 16)
+    .composerBox()
     .accessibilityElement(children: .contain)
     .accessibilityIdentifier("voice-listening")
   }
@@ -90,8 +86,8 @@ struct VoiceListeningBar: View {
 
   private func circleButton(_ symbol: String, label: String, id: String, action: @escaping () -> Void) -> some View {
     Button(action: action) {
-      Image(systemName: symbol).font(.system(size: 18, weight: .medium))
-        .frame(width: 44, height: 44)
+      Image(systemName: symbol).font(.system(size: 16, weight: .medium))
+        .frame(width: ComposerMetrics.control, height: ComposerMetrics.control)
         .background(ChatColors.inset, in: Circle())
     }
     .buttonStyle(.plain)
@@ -183,7 +179,7 @@ struct VoiceStatusCard: View {
     content()
       .padding(14)
       .background(.regularMaterial, in: RoundedRectangle(cornerRadius: 20))
-      .padding(.horizontal, 16)
+      .padding(.horizontal, 12)
       .transition(.move(edge: .bottom).combined(with: .opacity))
   }
 
