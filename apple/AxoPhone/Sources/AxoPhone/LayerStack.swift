@@ -22,31 +22,37 @@ struct LayerStack: View {
   /// screen itself and home at rest is the screen.
   static let cornerRadius: CGFloat = DisplayCorners.radius
 
-  /// Where the finger has taken the stack, while it is down. Gesture state: SwiftUI puts it back to
-  /// rest itself when the drag ends or is cancelled (a scroll view taking the touch), so the
-  /// stack is never left half-moved, nor its layers deaf to taps, with no finger on it.
-  @GestureState private var drag = Dragging()
-  /// What the drag in progress turned out to be, for when the finger lifts (gesture state is
-  /// already back to rest by then). Keyed by where the drag started, so a cancelled drag's
-  /// decision never carries over to the next one.
-  @State private var decided = Dragging()
+  /// Where the finger has taken the stack. State rather than gesture state, so that letting go
+  /// is one change, animated as one spring from where the finger left the stack: the drag going
+  /// back to rest and the layer showing changing together.
+  @State private var drag = Dragging()
+  /// The finger is down on the stack. Gesture state, which SwiftUI resets itself when a drag is
+  /// cancelled (a scroll view taking the touch) without ending: then the stack goes back to rest,
+  /// so it is never left half-moved, nor its layers deaf to taps, with no finger on it.
+  @GestureState private var touching = false
   /// The stack is still springing to where a swipe left it.
   @State private var settling = false
   /// Code blocks and tables that scroll sideways say so here; a drag on one is theirs.
   @Environment(SidewaysScrolling.self) private var sidewaysScrolling
   @Environment(\.accessibilityReduceMotion) private var reduceMotion
 
-  /// A drag on the stack: where it started, what it is, how far it went sideways.
+  /// A drag on the stack: where it started, what it is, how far it went sideways since it became
+  /// a swipe.
   private struct Dragging: Equatable {
     var start: CGPoint = .zero
     var kind = LayerStackGeometry.Drag.undecided
+    /// How far sideways the finger had gone when the drag became a swipe.
+    var origin: CGFloat = 0
     var width: CGFloat = 0
 
     func next(_ value: DragGesture.Value, sidewaysScrolling: Bool) -> Dragging {
       let fresh = value.startLocation == start ? self : Dragging(start: value.startLocation)
       let kind = fresh.kind.next(
         width: value.translation.width, height: value.translation.height, sidewaysScrolling: sidewaysScrolling)
-      return Dragging(start: value.startLocation, kind: kind, width: value.translation.width)
+      // The stack follows from where the drag became a swipe, not from the touch, so it does not
+      // jump by the distance it took to tell a swipe from a scroll.
+      let origin = fresh.kind == .swipe ? fresh.origin : value.translation.width
+      return Dragging(start: value.startLocation, kind: kind, origin: origin, width: value.translation.width - origin)
     }
   }
 
@@ -68,6 +74,9 @@ struct LayerStack: View {
       // What lies under the bottom layer: dark, so the rounded corners show screens on screens.
       .background(Color.black.ignoresSafeArea())
       .simultaneousGesture(swipe(stack))
+      .onChange(of: touching) { _, touching in
+        if !touching, drag != Dragging() { withAnimation(reduceMotion ? nil : Self.spring()) { drag = Dragging() } }
+      }
     }
   }
 
@@ -112,6 +121,12 @@ struct LayerStack: View {
       .overlay(alignment: .leading) {
         if isEdge { edgeButton(for: index, stack: stack) }
       }
+      .overlay(alignment: .leading) {
+        // Only for measuring motion in the simulator (`PreviewFixture.markers`).
+        if PreviewFixture.markers && index == home {
+          Color(red: 1, green: 0, blue: 1).frame(width: 4).ignoresSafeArea().allowsHitTesting(false)
+        }
+      }
       .offset(x: stack.offset(of: index, at: position))
       // VoiceOver reads the layer showing only. (UI tests still find the others' elements.)
       .accessibilityHidden(index != showing)
@@ -138,32 +153,37 @@ struct LayerStack: View {
 
   private func swipe(_ stack: LayerStackGeometry) -> some Gesture {
     DragGesture(minimumDistance: 12)
-      .updating($drag) { value, drag, _ in
+      .updating($touching) { _, touching, _ in touching = true }
+      .onChanged { value in
         drag = drag.next(value, sidewaysScrolling: sidewaysScrolling.isActive)
       }
-      .onChanged { value in
-        decided = decided.next(value, sidewaysScrolling: sidewaysScrolling.isActive)
-      }
       .onEnded { value in
-        let swiped = decided.start == value.startLocation && decided.kind == .swipe
-        decided = Dragging()
-        guard swiped else { return }
-        let target = stack.target(showing: showing, dragged: value.translation.width, velocity: value.velocity.width)
-        settle(on: target, velocity: value.velocity.width, stack: stack)
+        let swiped = drag.start == value.startLocation && drag.kind == .swipe
+        guard swiped else { drag = Dragging(); return }
+        let dragged = value.translation.width - drag.origin
+        let target = stack.target(showing: showing, dragged: dragged, velocity: value.velocity.width)
+        settle(on: target, from: dragged, velocity: value.velocity.width, stack: stack)
       }
   }
 
-  /// Moves the stack to `target` with a spring that carries on at the finger's speed.
-  private func settle(on target: Int, velocity: CGFloat, stack: LayerStackGeometry) {
+  /// The spring every move of the stack takes; `initialVelocity` carries on a finger's speed.
+  private static func spring(initialVelocity: Double = 0) -> Animation {
+    .interpolatingSpring(duration: 0.42, bounce: 0.08, initialVelocity: initialVelocity)
+  }
+
+  /// Moves the stack to `target` with a spring that carries on at the finger's speed, from where
+  /// the finger left it (`dragged` from `showing`).
+  private func settle(on target: Int, from dragged: CGFloat = 0, velocity: CGFloat, stack: LayerStackGeometry) {
     let from = stack.position(showing: showing, dragged: dragged)
     let distance = abs(Double(target) - from) * stack.reveal
     // Rightwards moves the stack down; a finger moving the way the stack goes keeps it going.
     let towards = (Double(target) < from) == (velocity > 0)
     let initialVelocity = distance > 1 && towards ? min(abs(velocity) / distance, 30) : 0
-    let animation: Animation? = reduceMotion ? nil : .interpolatingSpring(duration: 0.42, bounce: 0.08, initialVelocity: initialVelocity)
+    let animation: Animation? = reduceMotion ? nil : Self.spring(initialVelocity: initialVelocity)
     settling = true
     withAnimation(animation) {
       showing = target
+      drag = Dragging()
     } completion: {
       settling = false
     }

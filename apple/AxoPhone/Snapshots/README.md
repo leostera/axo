@@ -22,3 +22,11 @@ git diff -- apple/AxoPhone/Snapshots
 The PNG comparison ignores per-channel differences up to 18 and allows at most 0.3% changed pixels to accommodate small rendering noise. It still fails on dimension changes and meaningful geometry or color changes. The MP4 is a human-reviewed behavior reference, not a byte-for-byte video golden: simulator timing and codecs make that comparison noisy. XCTest regenerates a fresh video with every run so the interaction remains easy to inspect.
 
 The committed reference set is tied to an **iPhone 17 / iOS 27.0 simulator**. When intentionally changing that device/runtime, regenerate and review the full set together. Keep changes to screenshots and the reference video in the same commit as the UI change that explains them.
+
+## Swipe motion
+
+`scripts/phone-swipe-motion.sh` records the simulator while `AxoPhoneMotionTests` swipes between
+layers (slow drags held before release, and flicks), then follows a magenta stripe the app draws on
+the conversation layer's edge (`AXO_PHONE_PREVIEW_MARKERS=1`) frame by frame. It prints each
+movement's path and flags jumps back against the swipe (a snap on release) and late frames. Run it
+after touching `LayerStack`; a smooth run has no `REVERSES`.

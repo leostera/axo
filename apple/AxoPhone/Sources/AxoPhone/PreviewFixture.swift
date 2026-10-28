@@ -18,6 +18,9 @@ enum PreviewFixture {
     /// Play a reply being written, a running tool and a question in the open chat
     /// (`AXO_PHONE_PREVIEW_LIVE=reply|question|stopping`).
     static var live: String? { ProcessInfo.processInfo.environment["AXO_PHONE_PREVIEW_LIVE"] }
+    /// Draw a magenta stripe on the conversation layer's leading edge, so a screen recording can
+    /// follow the layer frame by frame (`AXO_PHONE_PREVIEW_MARKERS=1`, scripts/phone-swipe-motion.sh).
+    static let markers = ProcessInfo.processInfo.environment["AXO_PHONE_PREVIEW_MARKERS"] == "1"
     static let account = SignedInAccount(
       accountId: UUID(uuidString: "6b0f0e0e-2c43-4b8e-9d0a-0d8f7b2b9c11")!,
       profile: .init(email: "leandro@example.com", name: "Leandro"))
@@ -135,5 +138,6 @@ enum PreviewFixture {
     static var settingsOpen: Bool { false }
     static var hostsOpen: Bool { false }
     static var live: String? { nil }
+    static let markers = false
   #endif
 }
