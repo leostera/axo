@@ -269,7 +269,17 @@ public final class HostWorkbenchModel {
 
   // MARK: - Events
 
+  /// Whether the Mac said it is running again as a new run (axod restarted): this model's
+  /// connection names the old one, so the phone opens the Mac afresh.
+  public private(set) var newRunOnline = false
+
   func apply(_ event: RemoteHostEvent) {
+    if case .presence(let host, .online) = event, host.hostId == reference.hostId,
+      host.hostGeneration != reference.hostGeneration
+    {
+      newRunOnline = true
+      return
+    }
     guard event.host == reference else { return }
     switch event {
     case .presence(_, let newStatus):

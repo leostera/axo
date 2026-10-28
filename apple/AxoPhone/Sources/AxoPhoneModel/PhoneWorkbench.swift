@@ -59,11 +59,20 @@ public final class PhoneWorkbench {
     select(host: host.hostId, session: nil)
   }
 
-  /// The app went to the background.
-  public func suspend() { current?.suspend() }
+  /// The app is in the background and has let the open Mac's connection go.
+  private var suspended = false
 
-  /// The app is back: the Macs are listed again and the open one reconnects and catches up.
+  /// The app went to the background.
+  public func suspend() {
+    suspended = true
+    current?.suspend()
+  }
+
+  /// The app is active again (from the background, or just from a passing alert, which needs
+  /// nothing): the Macs are listed again and the open one reconnects and catches up.
   public func resume() async {
+    guard suspended else { return }
+    suspended = false
     current?.resume()
     await refresh()
   }
@@ -71,19 +80,29 @@ public final class PhoneWorkbench {
   public func refresh() async {
     await hosts.refresh()
     if let current, let listed = hosts.hosts.first(where: { $0.hostId == current.reference.hostId }) {
+      // (The relay lists a Mac's new run before announcing it, so after `newRunOnline` the
+      // listing already names it.)
       if listed.hostGeneration == current.reference.hostGeneration {
         current.adopt(listing: listed)
-      } else if let selection {
-        // The Mac restarted: its old connection names a run that is gone. Open the new one.
-        current.stop()
-        self.current = nil
-        select(host: selection.host, session: selection.session)
+        // Its first connection failed (the network was not up yet): try again now.
+        if !current.isFollowing { await current.start() }
+      } else {
+        reopenCurrent()
       }
     }
     // The open Mac keeps its own live view; only a Mac that disappeared closes.
     if let selection, !hosts.hosts.contains(where: { $0.hostId == selection.host }), hosts.phase == .loaded {
       close()
     }
+  }
+
+  /// The open Mac restarted: its connection names a run that is gone. Open the new one, on the
+  /// same chat.
+  private func reopenCurrent() {
+    guard let current, let selection else { return }
+    current.stop()
+    self.current = nil
+    select(host: selection.host, session: selection.session)
   }
 
   public func select(host hostID: UUID, session: SessionID?) {

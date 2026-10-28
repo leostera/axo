@@ -279,8 +279,16 @@ final class SwitchableListing: HostListing, @unchecked Sendable {
   private let lock = NSLock()
   private var hosts: [RemoteHost]
   init(_ hosts: [RemoteHost]) { self.hosts = hosts }
+  private var read = 0
+  /// How many times the Macs were listed.
+  var reads: Int { lock.withLock { read } }
   func set(_ hosts: [RemoteHost]) { lock.withLock { self.hosts = hosts } }
-  func hosts() async throws -> [RemoteHost] { lock.withLock { hosts } }
+  func hosts() async throws -> [RemoteHost] {
+    lock.withLock {
+      read += 1
+      return hosts
+    }
+  }
 }
 
 /// A relay that answers the two calls opening a Mac needs.
@@ -303,8 +311,13 @@ final class RespondingTransport: AxoTransport, @unchecked Sendable {
   /// The number of the Session a create answers with; nil refuses.
   var createsSessionNumber: Int?
   var refusesPrompts = false
+  private let connectCount = NSLock()
+  private var connected = 0
+  /// How many connections were opened.
+  var connects: Int { connectCount.withLock { connected } }
 
   func connect() async throws -> any AxoMessageChannel {
+    connectCount.withLock { connected += 1 }
     let channel = ScriptedChannel()
     Task {
       while let request = try? await channel.nextRequest() {
@@ -337,4 +350,81 @@ final class RespondingTransport: AxoTransport, @unchecked Sendable {
     }
     return channel
   }
+}
+
+@MainActor
+final class PhoneWorkbenchResumeTests: XCTestCase {
+  private func host(generation: UUID = UUID(), id: UUID = UUID()) throws -> RemoteHost {
+    try JSONDecoder().decode(
+      RemoteHost.self,
+      from: Data("""
+        {"hostId":"\(id.uuidString)","hostGeneration":"\(generation.uuidString)","label":"Studio","hostKind":"macos",
+        "status":"online","stale":false,"lastSeenAt":"2026-10-16T00:00:00Z","sessions":[]}
+        """.utf8))
+  }
+
+  private func make(_ listing: SwitchableListing, transports: Transports) -> PhoneWorkbench {
+    let account = AccountSession(store: MemoryTokenStore(SessionToken.fixture()))
+    return PhoneWorkbench(hosts: HostsModel(listing: listing, account: account)) { remote in
+      let transport = RespondingTransport()
+      transports.made.append(transport)
+      return HostWorkbenchModel(
+        host: remote, connection: HostConnection(transport: transport, host: remote.reference),
+        history: NoHistory(), account: account)
+    }
+  }
+
+  func testComingBackFromTheBackgroundReconnectsTheOpenMac() async throws {
+    let listing = SwitchableListing([try host()])
+    let transports = Transports()
+    let workbench = make(listing, transports: transports)
+    await workbench.start()
+    try await eventually { workbench.current?.link == .connected }
+    workbench.suspend()
+    XCTAssertEqual(workbench.current?.link, .suspended)
+    await workbench.resume()
+    try await eventually { workbench.current?.link == .connected }
+    XCTAssertEqual(transports.made.first?.connects, 2, "connected again")
+  }
+
+  func testBecomingActiveWithoutHavingBeenAwayDoesNothing() async throws {
+    let listing = SwitchableListing([try host()])
+    let transports = Transports()
+    let workbench = make(listing, transports: transports)
+    await workbench.start()
+    try await eventually { workbench.current?.link == .connected }
+    let listed = listing.reads
+    await workbench.resume()
+    try await Task.sleep(for: .milliseconds(30))
+    XCTAssertEqual(transports.made.first?.connects, 1)
+    XCTAssertEqual(listing.reads, listed, "an alert coming and going lists nothing again")
+  }
+
+  func testAMacThatComesBackAsANewRunIsOpenedAfreshOnTheSameChat() async throws {
+    let id = UUID()
+    let listing = SwitchableListing([try host(id: id)])
+    let transports = Transports()
+    let workbench = make(listing, transports: transports)
+    await workbench.start()
+    let old = try XCTUnwrap(workbench.current)
+    let next = try host(id: id)
+    old.apply(.presence(host: next.reference, status: .online))
+    XCTAssertTrue(old.newRunOnline)
+    listing.set([next])
+    await workbench.refresh()
+    XCTAssertEqual(workbench.current?.reference, next.reference)
+    XCTAssertFalse(workbench.current === old)
+  }
+
+  private func eventually(_ condition: @MainActor () -> Bool) async throws {
+    let deadline = ContinuousClock.now + .seconds(5)
+    while !condition() {
+      guard ContinuousClock.now < deadline else { return XCTFail("condition never held") }
+      try await Task.sleep(for: .milliseconds(5))
+    }
+  }
+}
+
+final class Transports: @unchecked Sendable {
+  @MainActor var made: [RespondingTransport] = []
 }

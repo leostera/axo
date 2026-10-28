@@ -176,14 +176,20 @@ struct WorkbenchView: View {
         #endif
       }
     }
-    .onChange(of: scenePhase) { previous, phase in
+    // The open Mac came back as a new run: list it again, which opens the new run.
+    .onChange(of: workbench.current?.newRunOnline) { _, restarted in
+      if restarted == true { Task { await workbench.refresh() } }
+    }
+    .onChange(of: scenePhase) { _, phase in
       // A socket left open in the background dies unnoticed; let it go, and come back fresh.
       switch phase {
       case .background:
         // Listening stops with the screen; what was heard is not kept.
         voice?.cancel()
         workbench.suspend()
-      case .active where previous == .background: Task { await workbench.resume() }
+      // From the background the scene passes through inactive first; the model knows whether
+      // it let go and has anything to resume.
+      case .active: Task { await workbench.resume() }
       default: break
       }
     }
