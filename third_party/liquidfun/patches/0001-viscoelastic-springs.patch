@@ -1,0 +1,61 @@
+diff -ru a/Box2D/Particle/b2ParticleSystem.cpp b/Box2D/Particle/b2ParticleSystem.cpp
+--- a/Box2D/Particle/b2ParticleSystem.cpp	2026-10-28 18:27:38
++++ b/Box2D/Particle/b2ParticleSystem.cpp	2026-10-28 18:27:38
+@@ -3587,7 +3587,7 @@
+ 	float32 springStrength = step.inv_dt * m_def.springStrength;
+ 	for (int32 k = 0; k < m_pairBuffer.GetCount(); k++)
+ 	{
+-		const b2ParticlePair& pair = m_pairBuffer[k];
++		b2ParticlePair& pair = m_pairBuffer[k];
+ 		if (pair.flags & b2_springParticle)
+ 		{
+ 			int32 a = pair.indexA;
+@@ -3601,6 +3601,18 @@
+ 			b2Vec2 d = pb - pa;
+ 			float32 r0 = pair.distance;
+ 			float32 r1 = d.Length();
++			if (m_def.springBreak > 0 &&
++				r1 > m_particleDiameter * m_def.springBreak * pair.strength)
++			{
++				pair.flags &= ~b2_springParticle;
++				continue;
++			}
++			float32 excess = r1 - r0 * (1 + m_def.springYield);
++			if (m_def.springPlasticity > 0 && excess > 0)
++			{
++				pair.distance += step.dt * m_def.springPlasticity * excess;
++				r0 = pair.distance;
++			}
+ 			float32 strength = springStrength * pair.strength;
+ 			b2Vec2 f = strength * (r0 - r1) / r1 * d;
+ 			va -= f;
+diff -ru a/Box2D/Particle/b2ParticleSystem.h b/Box2D/Particle/b2ParticleSystem.h
+--- a/Box2D/Particle/b2ParticleSystem.h	2026-10-28 18:27:38
++++ b/Box2D/Particle/b2ParticleSystem.h	2026-10-28 18:27:38
+@@ -176,6 +176,9 @@
+ 		staticPressureRelaxation = 0.2f;
+ 		staticPressureIterations = 8;
+ 		colorMixingStrength = 0.5f;
++		springYield = 0.0f;
++		springPlasticity = 0.0f;
++		springBreak = 0.0f;
+ 		destroyByAge = true;
+ 		lifetimeGranularity = 1.0f / 60.0f;
+ 	}
+@@ -262,6 +265,16 @@
+ 	/// 1.0f ==> mixed immediately
+ 	/// 0.5f ==> mixed half way each simulation step (see b2World::Step())
+ 	float32 colorMixingStrength;
++
++	/// Viscoelastic springs (Clavet et al. 2005, "Particle-based Viscoelastic
++	/// Fluid Simulation"): a spring stretched more than springYield of its
++	/// rest length flows, its rest length growing by springPlasticity of the
++	/// excess per second; one whose particles are more than springBreak
++	/// particle diameters apart (times the pair's strength) snaps. Zero turns
++	/// each off.
++	float32 springYield;
++	float32 springPlasticity;
++	float32 springBreak;
+ 
+ 	/// Whether to destroy particles by age when no more particles can be
+ 	/// created.  See #b2ParticleSystem::SetDestructionByAge() for

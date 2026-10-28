@@ -1,0 +1,15 @@
+# LiquidFun 1.1.0 (Box2D 2.3 with particle fluids), vendored from
+# https://github.com/google/liquidfun at 7f20402173fd143a3988c921bc384459c6a858f2: the Box2D
+# directory without its docs, CMake files and NEON assembly. zlib licence (LICENSE).
+load("@rules_cc//cc:cc_library.bzl", "cc_library")
+
+package(default_visibility = ["//visibility:public"])
+
+cc_library(
+    name = "liquidfun",
+    srcs = glob(["Box2D/**/*.cpp"]),
+    hdrs = glob(["Box2D/**/*.h"]),
+    copts = ["-O2", "-w", "-std=c++11"],
+    includes = ["."],
+    linkopts = ["-lc++"],
+)
