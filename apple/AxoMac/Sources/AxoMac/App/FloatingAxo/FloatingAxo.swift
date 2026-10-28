@@ -129,6 +129,9 @@ final class FloatingAxo {
   static let panelSide: CGFloat = 48
   /// Throws faster than this are frightening.
   static let screamingSpeed: CGFloat = 1800
+  /// Left alone this long, it fades away over `fadeAway`; touching it brings it back.
+  static let lifetime: Duration = .seconds(20)
+  static let fadeAway: TimeInterval = 1.5
 
   private unowned let keeper: FloatingAxos
   private let panel: NSPanel
@@ -140,6 +143,8 @@ final class FloatingAxo {
   /// Where on Axo it is held, from its centre.
   private var grip: CGVector = .zero
   private var reduceMotion: Bool { NSWorkspace.shared.accessibilityDisplayShouldReduceMotion }
+  /// Counting down to fading away, while it is left alone.
+  private var lonely: Task<Void, Never>?
 
   init?(at point: CGPoint, keeper: FloatingAxos) {
     guard let puppet = AxoMascot.installedAnimation?.makePuppet(artboard: AxoMascot.Contract.faceArtboard) else { return nil }
@@ -187,6 +192,7 @@ final class FloatingAxo {
 
   /// The pointer picked it up at `point`.
   func grab(at point: CGPoint) {
+    stayAround()
     grip = CGVector(dx: point.x - world.axoPosition.x, dy: point.y - world.axoPosition.y)
     velocity.reset()
     velocity.add(point, at: ProcessInfo.processInfo.systemUptime)
@@ -200,6 +206,7 @@ final class FloatingAxo {
 
   func letGo(at point: CGPoint) {
     if keeper.isHome(point) { return keeper.putAway(self) }
+    startLonely()
     let throwing = reduceMotion ? .zero : velocity.velocity(at: ProcessInfo.processInfo.systemUptime)
     world.letGo(velocity: throwing, freeze: reduceMotion)
     if hypot(throwing.dx, throwing.dy) > Self.screamingSpeed { puppet.react(.scream) }
@@ -207,11 +214,13 @@ final class FloatingAxo {
 
   /// A click on it, not a drag: it is poked.
   func poke() {
+    startLonely()
     if let reaction = pokes.poke(at: Date()) { puppet.react(reaction) }
   }
 
   /// Gone: back in the menu bar.
   func vanish() {
+    lonely?.cancel()
     world.isPaused = true
     let panel = panel
     NSAnimationContext.runAnimationGroup { context in
@@ -219,6 +228,35 @@ final class FloatingAxo {
       panel.animator().alphaValue = 0
     } completionHandler: {
       Task { @MainActor in panel.orderOut(nil) }
+    }
+  }
+
+  // MARK: Left alone
+
+  /// Touched: no fading, and back in full if it had started to.
+  private func stayAround() {
+    lonely?.cancel()
+    lonely = nil
+    if panel.alphaValue < 1 { fade(to: 1, over: 0.15) }
+  }
+
+  /// Let go: from now, left alone for `lifetime`, it fades away and is gone.
+  private func startLonely() {
+    stayAround()
+    lonely = Task { [weak self] in
+      try? await Task.sleep(for: Self.lifetime)
+      guard !Task.isCancelled, let self else { return }
+      self.fade(to: 0, over: Self.fadeAway)
+      try? await Task.sleep(for: .seconds(Self.fadeAway))
+      guard !Task.isCancelled else { return }
+      self.keeper.putAway(self)
+    }
+  }
+
+  private func fade(to alpha: CGFloat, over seconds: TimeInterval) {
+    NSAnimationContext.runAnimationGroup { context in
+      context.duration = seconds
+      panel.animator().alphaValue = alpha
     }
   }
 
