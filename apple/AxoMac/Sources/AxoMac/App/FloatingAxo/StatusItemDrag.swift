@@ -10,6 +10,7 @@ enum StatusItemDrag {
   static func install() {
     guard monitor == nil else { return }
     FloatingAxo.shared.home = { statusBarWindow()?.frame }
+    FloatingAxo.shared.menuBarAppearance = { statusBarWindow()?.effectiveAppearance }
     monitor = NSEvent.addLocalMonitorForEvents(matching: .leftMouseDown) { event in
       guard let window = event.window, isStatusBarWindow(window) else { return event }
       return track(from: event) ? nil : event

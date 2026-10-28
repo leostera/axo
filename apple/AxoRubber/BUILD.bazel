@@ -4,12 +4,12 @@ load("@rules_swift//swift:swift_test.bzl", "swift_test")
 
 package(default_visibility = ["//visibility:public"])
 
-# The goo Axo stretches out of the menu bar on: a LiquidFun fluid behind a small C interface,
-# which Swift imports as `AxoGoo`.
+# Axo in the menu bar, made of rubber: a LiquidFun soft body behind a small C interface, which
+# Swift imports as `AxoRubber`.
 cc_library(
-    name = "AxoGoo",
-    srcs = ["src/axo_goo.cpp"],
-    hdrs = ["include/axo_goo.h"],
+    name = "AxoRubber",
+    srcs = ["src/axo_rubber.cpp"],
+    hdrs = ["include/axo_rubber.h"],
     aspect_hints = [":module"],
     copts = ["-O2", "-std=c++17"],
     strip_include_prefix = "include",
@@ -18,11 +18,11 @@ cc_library(
 
 swift_interop_hint(
     name = "module",
-    module_name = "AxoGoo",
+    module_name = "AxoRubber",
 )
 
 swift_test(
-    name = "AxoGooTests",
-    srcs = ["Tests/AxoGooTests.swift"],
-    deps = [":AxoGoo"],
+    name = "AxoRubberTests",
+    srcs = ["Tests/AxoRubberTests.swift"],
+    deps = [":AxoRubber"],
 )

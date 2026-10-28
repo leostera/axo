@@ -411,9 +411,9 @@ private struct AxoMenuBarLabel: View {
     Label {
       Text("Axo")
     } icon: {
-      if FloatingAxo.shared.isOut {
-        // Out on the screen: an empty spot where it lives.
-        Image(systemName: "circle.dotted")
+      if FloatingAxo.shared.menuBarIconHidden {
+        // Stretched out of shape: the rubber Axo is drawn over the menu bar instead.
+        Image(nsImage: Self.blank)
       } else if let image = mascot.menuBarImage {
         Image(nsImage: image)
       } else {
@@ -421,6 +421,7 @@ private struct AxoMenuBarLabel: View {
       }
     }
       .task {
+        FloatingAxo.shared.mark = { [mascot] in mascot.menuBarImage }
         if !didOpenTerminal {
           didOpenTerminal = true
           if opensTerminalWindow { TerminalWindowOpener.open(openWindow, viaSplash: usesSplash) }
@@ -436,6 +437,13 @@ private struct AxoMenuBarLabel: View {
         TerminalWindowOpener.open(openWindow, viaSplash: usesSplash)
       }
   }
+
+  /// Nothing, the icon's size: the item keeps its place while the icon is hidden.
+  private static let blank: NSImage = {
+    let image = NSImage(size: AxoMascot.menuBarSize)
+    image.isTemplate = true
+    return image
+  }()
 
   private func openPairingSettings() {
     settingsSection = .remoteAccess

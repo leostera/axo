@@ -4,8 +4,9 @@ import Observation
 import SpriteKit
 import SwiftUI
 
-/// Axo, dragged out of the menu bar: a little floating panel that can be thrown around the
-/// screen and lands on the screen's edges and on the tops of windows.
+/// Axo, pulled out of the menu bar: the menu bar's Axo is rubber, and pulled far enough it pops
+/// (`RubberAxo`), leaving a second, same-sized Axo under the pointer: a little floating panel that
+/// can be thrown around the screen and lands on the screen's edges and on the tops of windows.
 ///
 /// The physics is SpriteKit's (`FloatingAxoWorld`), in screen coordinates; the panel follows
 /// the body each frame. Drag it back onto the menu bar icon (or choose "Put Axo Away") to put
@@ -15,16 +16,22 @@ import SwiftUI
 final class FloatingAxo {
   static let shared = FloatingAxo()
 
-  /// Axo's size on screen: the `Face` artboard's shape (1064 x 604).
-  static let size = CGSize(width: 96, height: 96 * 604 / 1064)
-  /// Square and larger than Axo, so it can turn inside it.
-  static let panelSide: CGFloat = 124
+  /// Axo's size on screen: the menu bar's, since it is a second one of those.
+  static let size = AxoMascot.menuBarSize
+  /// Square and larger than Axo, so it can turn and stretch inside it.
+  static let panelSide: CGFloat = 48
   /// Throws faster than this are frightening.
   static let screamingSpeed: CGFloat = 1800
 
   private(set) var isOut = false
+  /// While the rubber Axo is drawn over it, the menu bar's own icon is hidden.
+  private(set) var menuBarIconHidden = false
   /// Where the menu bar icon is, in screen coordinates; dropping Axo there puts it away.
   @ObservationIgnored var home: () -> CGRect? = { nil }
+  /// The menu bar's Axo image now (a template image), and the menu bar's appearance, to draw the
+  /// rubber one as the menu bar does.
+  @ObservationIgnored var mark: () -> NSImage? = { nil }
+  @ObservationIgnored var menuBarAppearance: () -> NSAppearance? = { nil }
 
   @ObservationIgnored private var panel: NSPanel?
   @ObservationIgnored private var world: FloatingAxoWorld?
@@ -34,58 +41,65 @@ final class FloatingAxo {
   @ObservationIgnored private var velocity = ThrowVelocity()
   /// Where on Axo it is held, from its centre.
   @ObservationIgnored private var grip: CGVector = .zero
-  /// Coming out of the menu bar on a string of goo, until it snaps.
-  @ObservationIgnored private var goo: PluckGoo?
+  /// The menu bar's Axo, stretched by the pointer, until it pops.
+  @ObservationIgnored private var rubber: RubberAxo?
   @ObservationIgnored private var reduceMotion: Bool { NSWorkspace.shared.accessibilityDisplayShouldReduceMotion }
 
   private init() {}
 
   // MARK: Plucked
 
-  /// The pointer pulled Axo out of the menu bar icon: it stretches out on goo until it snaps
-  /// free, or springs back in if let go first. With Reduce Motion it just comes out.
+  /// The pointer pulled the menu bar's Axo at `point`: it stretches, rubbery, until it pops and a
+  /// second Axo comes away under the pointer, or springs back if let go first. With Reduce Motion
+  /// the second Axo just comes out.
   func pluck(at point: CGPoint) {
-    guard !isOut, !reduceMotion, let icon = home() else { return grab(at: point) }
+    guard !isOut, !reduceMotion, let window = home(), let image = tintedMark() else { return grab(at: point) }
+    let icon = CGRect(
+      x: window.midX - Self.size.width / 2, y: window.midY - Self.size.height / 2, width: Self.size.width,
+      height: Self.size.height)
+    guard let rubber = RubberAxo(icon: icon, image: image, grab: point) else { return grab(at: point) }
+    rubber.onPop = { [weak self] in self?.popped() }
+    rubber.onRest = { [weak self] in self?.menuBarIconHidden = false }
+    self.rubber = rubber
+    menuBarIconHidden = true
+  }
+
+  /// It popped: the menu bar's Axo springs back on its own, and the new one, under the pointer,
+  /// boings into shape after the stretch and giggles; still held, so it can be thrown.
+  private func popped() {
+    let pull = rubber?.pull ?? .zero
+    rubber = nil
+    let point = NSEvent.mouseLocation
     takeOut(at: point)
-    guard let world, let panel else { return }
+    guard let world else { return }
     grip = .zero
-    world.hold(at: point)
-    let anchor = CGPoint(x: icon.midX, y: icon.midY)
-    guard let goo = PluckGoo(from: anchor, to: point) else { return grab(at: point) }
-    // Over the goo, which is over the menu bar.
-    panel.level = NSWindow.Level(rawValue: NSWindow.Level.statusBar.rawValue + 1)
-    goo.axoPosition = { [weak world] in world?.axoPosition ?? point }
-    goo.onStep = { [weak self] head in self?.stretched(to: head) }
-    goo.onSnap = { [weak self] in self?.snapped() }
-    goo.onReturned = { [weak self] in self?.backIn() }
-    self.goo = goo
-  }
-
-  /// Axo is at `head`, held back by the goo: stretched towards the icon, squeezing harder.
-  private func stretched(to head: CGPoint) {
-    guard let goo else { return }
-    world?.hold(at: head)
-    let pull = goo.pull
-    pose.stretch = 0.22 * goo.tension
-    pose.stretchAngle = .radians(atan2(-pull.dy, pull.dx))
-    puppet?.setSqueezed(goo.tension > 0.55)
-  }
-
-  /// Free: it boings back into shape and giggles; still held, so it can be thrown.
-  private func snapped() {
-    goo = nil
-    panel?.level = .floating
-    puppet?.setSqueezed(false)
-    puppet?.react(.giggle)
     velocity.reset()
+    world.hold(at: point)
+    pose.stretch = 0.3
+    pose.stretchAngle = .radians(atan2(-pull.dy, pull.dx))
     pose.boing()
+    puppet?.react(.giggle)
   }
 
-  /// Let go too early: the goo pulled it back home.
-  private func backIn() {
-    goo = nil
-    puppet?.setSqueezed(false)
-    putAway(fading: false)
+  /// The menu bar's Axo in the colour the menu bar draws it, sharp enough to stretch.
+  private func tintedMark() -> CGImage? {
+    guard let mark = mark()?.cgImage(forProposedRect: nil, context: nil, hints: nil) else { return nil }
+    var color = NSColor.black.cgColor
+    (menuBarAppearance() ?? NSApp.effectiveAppearance).performAsCurrentDrawingAppearance {
+      color = NSColor.labelColor.withAlphaComponent(1).cgColor
+    }
+    let width = mark.width, height = mark.height
+    guard let context = CGContext(
+      data: nil, width: width, height: height, bitsPerComponent: 8, bytesPerRow: 0,
+      space: CGColorSpace(name: CGColorSpace.sRGB)!, bitmapInfo: CGImageAlphaInfo.premultipliedLast.rawValue)
+    else { return nil }
+    let rect = CGRect(x: 0, y: 0, width: width, height: height)
+    context.draw(mark, in: rect)
+    // A template image: its shape, in the menu bar's colour.
+    context.setBlendMode(.sourceIn)
+    context.setFillColor(color)
+    context.fill(rect)
+    return context.makeImage()
   }
 
   // MARK: Held
@@ -101,13 +115,17 @@ final class FloatingAxo {
   }
 
   func drag(to point: CGPoint) {
-    if let goo { return goo.move(to: point) }
+    if let rubber { return rubber.move(to: point) }
     velocity.add(point, at: ProcessInfo.processInfo.systemUptime)
     world?.hold(at: CGPoint(x: point.x - grip.dx, y: point.y - grip.dy))
   }
 
   func letGo(at point: CGPoint) {
-    if let goo { return goo.letGo() }
+    if let rubber {
+      rubber.letGo()
+      self.rubber = nil
+      return
+    }
     if let home = home(), home.insetBy(dx: -12, dy: -12).contains(point) {
       putAway()
       return
@@ -160,8 +178,6 @@ final class FloatingAxo {
     guard let panel else { return }
     isOut = false
     world?.isPaused = true
-    goo?.close()
-    goo = nil
     NSAnimationContext.runAnimationGroup { context in
       context.duration = fading ? 0.18 : 0
       panel.animator().alphaValue = 0
@@ -188,7 +204,7 @@ final class FloatingAxo {
   }
 
   private func landed(_ impulse: CGFloat) {
-    guard impulse > 18, !reduceMotion else { return }
+    guard impulse > 1.5, !reduceMotion else { return }
     pose.squish()
   }
 }
@@ -205,7 +221,7 @@ final class FloatingAxoPose {
   /// SwiftUI's: clockwise from the right, since its y is down.
   var stretchAngle: Angle = .zero
 
-  /// Snapped free of the goo: back into shape on a loose spring, wobbling past it.
+  /// Popped out of the menu bar's Axo: back into shape on a loose spring, wobbling past it.
   func boing() {
     withAnimation(.interpolatingSpring(stiffness: 260, damping: 6)) { stretch = 0 }
   }
@@ -269,7 +285,8 @@ private final class FloatingAxoHandle: NSView {
     let axo = CGRect(
       x: bounds.midX - FloatingAxo.size.width / 2, y: bounds.midY - FloatingAxo.size.height / 2,
       width: FloatingAxo.size.width, height: FloatingAxo.size.height)
-    return axo.contains(local) ? self : nil
+    // Axo is small: a little slack around it.
+    return axo.insetBy(dx: -6, dy: -6).contains(local) ? self : nil
   }
 
   override func mouseDown(with event: NSEvent) {

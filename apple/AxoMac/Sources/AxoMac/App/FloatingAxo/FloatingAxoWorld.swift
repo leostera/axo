@@ -47,7 +47,8 @@ final class FloatingAxoWorld: SKScene, @preconcurrency SKPhysicsContactDelegate 
     physicsWorld.gravity = CGVector(dx: 0, dy: Self.gravity / 150)
     physicsWorld.contactDelegate = self
 
-    let body = SKPhysicsBody(rectangleOf: CGSize(width: bodySize.width - 10, height: bodySize.height - 6))
+    // A little inside Axo's outline: its gills are not solid.
+    let body = SKPhysicsBody(rectangleOf: CGSize(width: bodySize.width * 0.8, height: bodySize.height * 0.8))
     body.restitution = 0.32
     body.friction = 0.6
     body.linearDamping = 0.08

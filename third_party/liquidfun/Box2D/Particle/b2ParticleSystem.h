@@ -176,9 +176,6 @@ struct b2ParticleSystemDef
 		staticPressureRelaxation = 0.2f;
 		staticPressureIterations = 8;
 		colorMixingStrength = 0.5f;
-		springYield = 0.0f;
-		springPlasticity = 0.0f;
-		springBreak = 0.0f;
 		destroyByAge = true;
 		lifetimeGranularity = 1.0f / 60.0f;
 	}
@@ -265,16 +262,6 @@ struct b2ParticleSystemDef
 	/// 1.0f ==> mixed immediately
 	/// 0.5f ==> mixed half way each simulation step (see b2World::Step())
 	float32 colorMixingStrength;
-
-	/// Viscoelastic springs (Clavet et al. 2005, "Particle-based Viscoelastic
-	/// Fluid Simulation"): a spring stretched more than springYield of its
-	/// rest length flows, its rest length growing by springPlasticity of the
-	/// excess per second; one whose particles are more than springBreak
-	/// particle diameters apart (times the pair's strength) snaps. Zero turns
-	/// each off.
-	float32 springYield;
-	float32 springPlasticity;
-	float32 springBreak;
 
 	/// Whether to destroy particles by age when no more particles can be
 	/// created.  See #b2ParticleSystem::SetDestructionByAge() for

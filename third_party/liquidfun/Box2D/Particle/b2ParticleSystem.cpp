@@ -3587,7 +3587,7 @@ void b2ParticleSystem::SolveSpring(const b2TimeStep& step)
 	float32 springStrength = step.inv_dt * m_def.springStrength;
 	for (int32 k = 0; k < m_pairBuffer.GetCount(); k++)
 	{
-		b2ParticlePair& pair = m_pairBuffer[k];
+		const b2ParticlePair& pair = m_pairBuffer[k];
 		if (pair.flags & b2_springParticle)
 		{
 			int32 a = pair.indexA;
@@ -3601,18 +3601,6 @@ void b2ParticleSystem::SolveSpring(const b2TimeStep& step)
 			b2Vec2 d = pb - pa;
 			float32 r0 = pair.distance;
 			float32 r1 = d.Length();
-			if (m_def.springBreak > 0 &&
-				r1 > m_particleDiameter * m_def.springBreak * pair.strength)
-			{
-				pair.flags &= ~b2_springParticle;
-				continue;
-			}
-			float32 excess = r1 - r0 * (1 + m_def.springYield);
-			if (m_def.springPlasticity > 0 && excess > 0)
-			{
-				pair.distance += step.dt * m_def.springPlasticity * excess;
-				r0 = pair.distance;
-			}
 			float32 strength = springStrength * pair.strength;
 			b2Vec2 f = strength * (r0 - r1) / r1 * d;
 			va -= f;
