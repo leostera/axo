@@ -411,7 +411,10 @@ private struct AxoMenuBarLabel: View {
     Label {
       Text("Axo")
     } icon: {
-      if let image = mascot.menuBarImage {
+      if FloatingAxo.shared.isOut {
+        // Out on the screen: an empty spot where it lives.
+        Image(systemName: "circle.dotted")
+      } else if let image = mascot.menuBarImage {
         Image(nsImage: image)
       } else {
         Image(systemName: "command")
@@ -467,6 +470,11 @@ private struct AxoMenu: View {
 
     Button("Open Terminal") {
       TerminalWindowOpener.open(openWindow, viaSplash: usesSplash)
+    }
+
+    // Drag the menu bar icon to take Axo out; this, or dropping it back on the icon, puts it away.
+    if FloatingAxo.shared.isOut {
+      Button("Put Axo Away") { FloatingAxo.shared.putAway() }
     }
 
     Button("Settings…") {

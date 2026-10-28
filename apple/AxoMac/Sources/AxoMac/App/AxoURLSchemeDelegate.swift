@@ -4,6 +4,7 @@ import AppKit
 final class AxoURLSchemeDelegate: NSObject, NSApplicationDelegate {
   func applicationDidFinishLaunching(_ notification: Notification) {
     LaunchBoot.scheduleFallback()
+    StatusItemDrag.install()
   }
 
   func application(_ application: NSApplication, open urls: [URL]) {
