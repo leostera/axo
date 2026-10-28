@@ -9,8 +9,8 @@ enum StatusItemDrag {
 
   static func install() {
     guard monitor == nil else { return }
-    FloatingAxo.shared.home = { statusBarWindow()?.frame }
-    FloatingAxo.shared.menuBarAppearance = { statusBarWindow()?.effectiveAppearance }
+    FloatingAxos.shared.home = { statusBarWindow()?.frame }
+    FloatingAxos.shared.menuBarAppearance = { statusBarWindow()?.effectiveAppearance }
     monitor = NSEvent.addLocalMonitorForEvents(matching: .leftMouseDown) { event in
       guard let window = event.window, isStatusBarWindow(window) else { return event }
       return track(from: event) ? nil : event
@@ -29,11 +29,11 @@ enum StatusItemDrag {
       case .leftMouseDragged:
         if !dragging, DragThreshold.isDrag(from: start, to: point) {
           dragging = true
-          FloatingAxo.shared.pluck(at: point)
+          FloatingAxos.shared.pluck(at: point)
         }
-        if dragging { FloatingAxo.shared.drag(to: point) }
+        if dragging { FloatingAxos.shared.drag(to: point) }
       case .leftMouseUp:
-        if dragging { FloatingAxo.shared.letGo(at: point) }
+        if dragging { FloatingAxos.shared.letGo(at: point) }
         return dragging
       default:
         break

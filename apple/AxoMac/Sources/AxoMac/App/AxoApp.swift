@@ -411,7 +411,7 @@ private struct AxoMenuBarLabel: View {
     Label {
       Text("Axo")
     } icon: {
-      if FloatingAxo.shared.menuBarIconHidden {
+      if FloatingAxos.shared.menuBarIconHidden {
         // Stretched out of shape: the rubber Axo is drawn over the menu bar instead.
         Image(nsImage: Self.blank)
       } else if let image = mascot.menuBarImage {
@@ -421,7 +421,7 @@ private struct AxoMenuBarLabel: View {
       }
     }
       .task {
-        FloatingAxo.shared.mark = { [mascot] in mascot.menuBarImage }
+        FloatingAxos.shared.mark = { [mascot] in mascot.menuBarImage }
         if !didOpenTerminal {
           didOpenTerminal = true
           if opensTerminalWindow { TerminalWindowOpener.open(openWindow, viaSplash: usesSplash) }
@@ -480,9 +480,10 @@ private struct AxoMenu: View {
       TerminalWindowOpener.open(openWindow, viaSplash: usesSplash)
     }
 
-    // Drag the menu bar icon to take Axo out; this, or dropping it back on the icon, puts it away.
-    if FloatingAxo.shared.isOut {
-      Button("Put Axo Away") { FloatingAxo.shared.putAway() }
+    // Drag the menu bar icon to pull an Axo out; this, or dropping one back on the icon, puts
+    // them away.
+    if !FloatingAxos.shared.axos.isEmpty {
+      Button(FloatingAxos.shared.axos.count == 1 ? "Put Axo Away" : "Put Axos Away") { FloatingAxos.shared.putAllAway() }
     }
 
     Button("Settings…") {
