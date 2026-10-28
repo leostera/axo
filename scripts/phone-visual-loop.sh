@@ -20,7 +20,7 @@ cd "$ROOT"
 bazel test //apple/AxoPhone:AxoPhoneUITests \
   --ios_multi_cpus=sim_arm64 \
   --nocache_test_results \
-  --test_filter='AxoPhoneUITests/testVisualSnapshotBlankChatLight,AxoPhoneUITests/testVisualSnapshotConversationDark,AxoPhoneUITests/testVisualSnapshotComposerWithKeyboard,AxoPhoneUITests/testVisualInteractionSequence' \
+  --test_filter='AxoPhoneLayoutTests,AxoPhoneUITests/testVisualSnapshotBlankChatLight,AxoPhoneUITests/testVisualSnapshotConversationDark,AxoPhoneUITests/testVisualSnapshotComposerWithKeyboard,AxoPhoneUITests/testVisualInteractionSequence' \
   --test_env=CREATE_XCRESULT_BUNDLE=1 \
   --test_arg=--xctestrun_attachment_lifetime=keepAlways \
   --test_output=errors

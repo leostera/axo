@@ -16,8 +16,11 @@ struct ChatComposer: View {
   @State private var showingExpandedEditor = false
 
   private var hasDraft: Bool { !draft.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty }
-  /// Taller than about two lines of body text.
-  private var isLong: Bool { editorHeight > 64 }
+  /// Tall enough (about three lines) for the expand button to sit above Send inside the box: the
+  /// button, the spacing and Send.
+  private var isLong: Bool { editorHeight >= Self.expandSize + Self.expandSpacing + 44 }
+  private static let expandSize: CGFloat = 40
+  private static let expandSpacing: CGFloat = 6
 
   private var isListening: Bool {
     guard let voice else { return false }
@@ -56,23 +59,19 @@ struct ChatComposer: View {
         .accessibilityIdentifier("composer")
         .submitLabel(.send)
         .onSubmit { if canSend && hasDraft { send() } }
-      if isLong {
-        Button { showingExpandedEditor = true } label: {
-          Image(systemName: "arrow.up.left.and.arrow.down.right")
-            .font(.system(size: 16, weight: .medium))
-            .frame(width: 40, height: 40)
-            .background(.secondary.opacity(0.12), in: Circle())
-        }
-        .buttonStyle(.plain)
-        .accessibilityLabel("Expand message editor")
-        .padding(.bottom, 3)
-      }
       // An empty box offers the microphone where Send goes; once something is typed, Send (the
       // keyboard has its own dictation for adding to what is typed).
       if let voice, !hasDraft {
         VoiceButton(voice: voice, enabled: canSend)
       } else {
         sendButton
+          // Drawn above Send rather than beside the text, so the text never narrows and re-wraps
+          // as it appears, and the box's layout is the same with it or without.
+          .overlay(alignment: .top) {
+            if isLong {
+              expandButton.offset(y: -(Self.expandSize + Self.expandSpacing))
+            }
+          }
       }
     }
     .padding(.horizontal, 8).padding(.vertical, 8)
@@ -82,6 +81,17 @@ struct ChatComposer: View {
     .fullScreenCover(isPresented: $showingExpandedEditor) {
       ExpandedComposerEditor(draft: $draft, placeholder: placeholder)
     }
+  }
+
+  private var expandButton: some View {
+    Button { showingExpandedEditor = true } label: {
+      Image(systemName: "arrow.up.left.and.arrow.down.right")
+        .font(.system(size: 16, weight: .medium))
+        .frame(width: Self.expandSize, height: Self.expandSize)
+        .background(.secondary.opacity(0.12), in: Circle())
+    }
+    .buttonStyle(.plain)
+    .accessibilityLabel("Expand message editor")
   }
 
   private var sendButton: some View {

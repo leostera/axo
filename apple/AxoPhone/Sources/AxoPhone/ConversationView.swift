@@ -90,6 +90,12 @@ struct ConversationView: View {
       .softScrollEdges()
       .scrollPosition(id: $scrollAnchor, anchor: .top)
       .defaultScrollAnchor(.bottom, for: .initialOffset)
+      // The keyboard opening or the composer growing raises the bottom inset (the scroll view
+      // itself keeps its size under the bars). A reader at the end stays at the end, rather than
+      // the last messages going under them.
+      .onScrollGeometryChange(for: CGFloat.self) { $0.contentInsets.bottom } action: { old, new in
+        if new > old, follow.isAtEnd, !transcript.messages.isEmpty { proxy.scrollTo("latest", anchor: .bottom) }
+      }
       .onScrollGeometryChange(for: Bool.self) { geometry in
         // What is on screen reaches (nearly) the end of the content.
         geometry.visibleRect.maxY >= geometry.contentSize.height - 60
