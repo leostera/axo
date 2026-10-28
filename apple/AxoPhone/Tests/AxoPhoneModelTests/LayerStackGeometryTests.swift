@@ -94,3 +94,25 @@ final class LayerStackGeometryTests: XCTestCase {
     XCTAssertEqual(stack.target(showing: 2, dragged: reveal * 0.7, velocity: -400), 2)
   }
 }
+
+final class LayerStackDragTests: XCTestCase {
+  typealias Drag = LayerStackGeometry.Drag
+
+  func testASwipeIsClearlySidewaysAndFarEnough() {
+    XCTAssertEqual(Drag.undecided.next(width: 20, height: 0, sidewaysScrolling: false), .undecided, "not far yet")
+    XCTAssertEqual(Drag.undecided.next(width: 30, height: 4, sidewaysScrolling: false), .swipe)
+    XCTAssertEqual(Drag.undecided.next(width: -30, height: -4, sidewaysScrolling: false), .swipe, "either way")
+    XCTAssertEqual(Drag.undecided.next(width: 30, height: 14, sidewaysScrolling: false), .undecided, "a drifting drag waits")
+  }
+
+  func testAScrollStaysAScrollWhateverItDoesNext() {
+    let scroll = Drag.undecided.next(width: 4, height: 30, sidewaysScrolling: false)
+    XCTAssertEqual(scroll, .scroll)
+    XCTAssertEqual(scroll.next(width: 300, height: 30, sidewaysScrolling: false), .scroll)
+    XCTAssertEqual(Drag.swipe.next(width: 10, height: 200, sidewaysScrolling: false), .swipe, "a swipe stays a swipe")
+  }
+
+  func testACodeBlockScrollingSidewaysIsNeverASwipe() {
+    XCTAssertEqual(Drag.undecided.next(width: 200, height: 0, sidewaysScrolling: true), .scroll)
+  }
+}

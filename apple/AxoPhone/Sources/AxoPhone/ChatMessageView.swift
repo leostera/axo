@@ -153,6 +153,7 @@ struct ChatMarkdown: View {
                 .fixedSize(horizontal: true, vertical: false)
                 .textSelection(.enabled)
             }
+            .scrollsSideways()
           }
           .padding(16)
           .frame(maxWidth: .infinity, alignment: .leading)
@@ -206,6 +207,7 @@ private struct MarkdownTable: View {
       .padding(14)
     }
     .scrollIndicators(.hidden)
+    .scrollsSideways()
     .background(ChatColors.surface, in: RoundedRectangle(cornerRadius: 16))
   }
 }

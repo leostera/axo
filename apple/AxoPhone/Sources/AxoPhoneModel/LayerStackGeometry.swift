@@ -20,6 +20,33 @@ public struct LayerStackGeometry: Equatable, Sendable {
   /// screen, leaving a strip to tap or drag back. Proportions of the original phone menu.
   public var reveal: Double { min(width * 0.79, 360) }
 
+  /// How far a finger must go before a drag can be a swipe of the stack rather than a scroll.
+  public static let swipeStart: Double = 24
+  /// How much more sideways than up or down a drag must be to move the stack: a scroll that
+  /// drifts, even a lot, stays a scroll.
+  public static let swipeSlope: Double = 2.5
+
+  /// What one drag on the stack is. It starts undecided and is decided once, for good: a drag
+  /// that began as a scroll never turns into a swipe, however it ends.
+  public enum Drag: Equatable, Sendable {
+    case undecided
+    /// The stack follows the finger.
+    case swipe
+    /// Someone else's: a scroll up or down, or a code block scrolling sideways.
+    case scroll
+
+    /// The drag after the finger has gone `width` points sideways and `height` up or down;
+    /// `sidewaysScrolling` says a sideways scroll view has taken it.
+    public func next(width: Double, height: Double, sidewaysScrolling: Bool) -> Drag {
+      guard self == .undecided else { return self }
+      if sidewaysScrolling || abs(height) >= LayerStackGeometry.swipeStart { return .scroll }
+      if abs(width) >= LayerStackGeometry.swipeStart && abs(width) >= abs(height) * LayerStackGeometry.swipeSlope {
+        return .swipe
+      }
+      return .undecided
+    }
+  }
+
   public init(count: Int, home: Int, width: Double) {
     precondition(count > 0 && (0..<count).contains(home), "home is one of the layers")
     self.count = count

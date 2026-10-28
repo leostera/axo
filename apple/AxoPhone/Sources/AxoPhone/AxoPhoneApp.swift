@@ -29,6 +29,7 @@ final class AppEnvironment: ObservableObject {
 
 public struct AxoPhoneRoot: View {
   @StateObject private var environment = AppEnvironment()
+  @State private var sidewaysScrolling = SidewaysScrolling()
 
   public init() {}
 
@@ -41,6 +42,7 @@ public struct AxoPhoneRoot: View {
         WorkbenchView(environment: environment)
       }
     }
+    .environment(sidewaysScrolling)
   }
 }
 

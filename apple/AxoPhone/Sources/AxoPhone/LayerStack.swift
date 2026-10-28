@@ -22,12 +22,36 @@ struct LayerStack: View {
   /// screen itself and home at rest is the screen.
   static let cornerRadius: CGFloat = DisplayCorners.radius
 
-  @State private var dragged: CGFloat = 0
-  /// The finger is moving the stack: the swipe went sideways rather than scrolling.
-  @State private var swiping = false
+  /// Where the finger has taken the stack, while it is down. Gesture state: SwiftUI puts it back to
+  /// rest itself when the drag ends or is cancelled (a scroll view taking the touch), so the
+  /// stack is never left half-moved, nor its layers deaf to taps, with no finger on it.
+  @GestureState private var drag = Dragging()
+  /// What the drag in progress turned out to be, for when the finger lifts (gesture state is
+  /// already back to rest by then). Keyed by where the drag started, so a cancelled drag's
+  /// decision never carries over to the next one.
+  @State private var decided = Dragging()
   /// The stack is still springing to where a swipe left it.
   @State private var settling = false
+  /// Code blocks and tables that scroll sideways say so here; a drag on one is theirs.
+  @Environment(SidewaysScrolling.self) private var sidewaysScrolling
   @Environment(\.accessibilityReduceMotion) private var reduceMotion
+
+  /// A drag on the stack: where it started, what it is, how far it went sideways.
+  private struct Dragging: Equatable {
+    var start: CGPoint = .zero
+    var kind = LayerStackGeometry.Drag.undecided
+    var width: CGFloat = 0
+
+    func next(_ value: DragGesture.Value, sidewaysScrolling: Bool) -> Dragging {
+      let fresh = value.startLocation == start ? self : Dragging(start: value.startLocation)
+      let kind = fresh.kind.next(
+        width: value.translation.width, height: value.translation.height, sidewaysScrolling: sidewaysScrolling)
+      return Dragging(start: value.startLocation, kind: kind, width: value.translation.width)
+    }
+  }
+
+  private var dragged: CGFloat { drag.kind == .swipe ? drag.width : 0 }
+  private var swiping: Bool { drag.kind == .swipe }
 
   var body: some View {
     let _ = RenderCount.note("Layers")
@@ -114,17 +138,16 @@ struct LayerStack: View {
 
   private func swipe(_ stack: LayerStackGeometry) -> some Gesture {
     DragGesture(minimumDistance: 12)
+      .updating($drag) { value, drag, _ in
+        drag = drag.next(value, sidewaysScrolling: sidewaysScrolling.isActive)
+      }
       .onChanged { value in
-        if !swiping {
-          // Sideways, clearly: a scroll that drifts is still a scroll.
-          guard abs(value.translation.width) > abs(value.translation.height) * 1.2 else { return }
-          swiping = true
-        }
-        dragged = value.translation.width
+        decided = decided.next(value, sidewaysScrolling: sidewaysScrolling.isActive)
       }
       .onEnded { value in
-        guard swiping else { return }
-        swiping = false
+        let swiped = decided.start == value.startLocation && decided.kind == .swipe
+        decided = Dragging()
+        guard swiped else { return }
         let target = stack.target(showing: showing, dragged: value.translation.width, velocity: value.velocity.width)
         settle(on: target, velocity: value.velocity.width, stack: stack)
       }
@@ -141,7 +164,6 @@ struct LayerStack: View {
     settling = true
     withAnimation(animation) {
       showing = target
-      dragged = 0
     } completion: {
       settling = false
     }
@@ -171,4 +193,38 @@ struct LayerRowButtonStyle: PrimitiveButtonStyle {
 
 extension PrimitiveButtonStyle where Self == LayerRowButtonStyle {
   static var layerRow: LayerRowButtonStyle { LayerRowButtonStyle() }
+}
+
+/// Whether something that scrolls sideways (a code block, a table) is being scrolled: a drag
+/// there is that view's, never a swipe of the layer stack.
+@MainActor @Observable
+final class SidewaysScrolling {
+  private var scrolling = 0
+  var isActive: Bool { scrolling > 0 }
+
+  func began() { scrolling += 1 }
+  func ended() { scrolling = max(0, scrolling - 1) }
+}
+
+extension View {
+  /// For a horizontal scroll view: while it scrolls, the layer stack does not swipe.
+  func scrollsSideways() -> some View { modifier(SidewaysScrollReporter()) }
+}
+
+private struct SidewaysScrollReporter: ViewModifier {
+  @Environment(SidewaysScrolling.self) private var sidewaysScrolling
+  @State private var reported = false
+
+  func body(content: Content) -> some View {
+    content
+      .onScrollPhaseChange { _, phase in
+        let moving = phase != .idle
+        guard moving != reported else { return }
+        reported = moving
+        if moving { sidewaysScrolling.began() } else { sidewaysScrolling.ended() }
+      }
+      .onDisappear {
+        if reported { sidewaysScrolling.ended(); reported = false }
+      }
+  }
 }
