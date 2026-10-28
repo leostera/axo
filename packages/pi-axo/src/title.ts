@@ -1,3 +1,5 @@
+import { basename } from "node:path";
+import { homedir } from "node:os";
 import { Type } from "typebox";
 import type { ExtensionAPI, ExtensionContext } from "@earendil-works/pi-coding-agent";
 import type { AxoPiBridgeServer } from "./bridge-server.js";
@@ -5,22 +7,50 @@ import type { PiSessionIdentity } from "./protocol.js";
 
 const AXO_APPEARANCE_ENTRY = "axo_session_appearance";
 const TITLE_TOOL = "axo_set_title";
+/**
+ * How titles read: a project keyword first, then a few words, so the sidebar sorts by eye and
+ * typing the keyword finds every Session about that project.
+ */
+const TITLE_STYLE = [
+  "Titles are very short (2 to 5 words, about 30 characters at most) and start with one keyword naming the project, product or ticket they are about, so searching that keyword finds every Session about it.",
+  "Write it as `<keyword>: <focus>`, lowercase except for names and ticket IDs, with no filler words, or just the keyword and a word or two when that says it all.",
+  "Good: \"r2facts: optimize push flow\", \"iphone app\", \"evalkit: prepare release\", \"mu: pi parity\", \"workers-sdk PR-16888\", \"JIRA-1234: testing\".",
+  "Bad: \"find townlake and sentry data for debugging\", \"Address review feedback on PR 16186\".",
+].join(" ");
+
 const titleParameters = Type.Object({
-  title: Type.String({ minLength: 1, maxLength: 80, description: "A concise title for this session's current focus, without the emoji." }),
+  title: Type.String({
+    minLength: 1,
+    maxLength: 80,
+    description: "A very short title: a project keyword, then the focus, e.g. \"evalkit: prepare release\". No emoji.",
+  }),
   emoji: Type.String({ minLength: 1, maxLength: 16, description: "One emoji that represents the session's current focus." }),
 });
 
-const FIRST_MESSAGE_NAMING_GUIDANCE = [
-  "Name this Axo Session from the intent of the user's first request in this conversation.",
-  "Before answering the first request, call axo_set_title with a concise title (at most 80 characters) and one representative emoji in the separate emoji field.",
-  "Do not include the emoji in the title, ask the user to name the session, or make a separate model request just for naming.",
-].join(" ");
+/** The project keyword the working directory suggests; none in the home directory. */
+function projectHint(cwd: string): string {
+  const name = basename(cwd);
+  if (name.length === 0 || cwd === homedir()) return "";
+  return ` This Session works in \`${cwd}\`, so the keyword is probably \`${name}\` unless the request is about something more specific.`;
+}
 
-const EXISTING_TITLE_GUIDANCE = [
-  "Keep this Axo Session's title and emoji representative of its current focus.",
-  "If the conversation's focus changes materially or the current title becomes inaccurate, call axo_set_title again to update the title and emoji.",
-  "Do not rename on routine turns.",
-].join(" ");
+function firstMessageNamingGuidance(cwd: string): string {
+  return [
+    "Name this Axo Session from the intent of the user's first request in this conversation.",
+    "Before answering the first request, call axo_set_title with a title and one representative emoji in the separate emoji field.",
+    TITLE_STYLE + projectHint(cwd),
+    "Do not include the emoji in the title, ask the user to name the session, or make a separate model request just for naming.",
+  ].join(" ");
+}
+
+function existingTitleGuidance(cwd: string): string {
+  return [
+    "Keep this Axo Session's title and emoji representative of its current focus.",
+    "If the conversation's focus changes materially or the current title becomes inaccurate, call axo_set_title again to update the title and emoji.",
+    TITLE_STYLE + projectHint(cwd),
+    "Do not rename on routine turns.",
+  ].join(" ");
+}
 
 function validTitle(value: string): string | undefined {
   const title = value.trim();
@@ -68,7 +98,7 @@ export function installAxoSessionNaming(
   pi.registerTool({
     name: TITLE_TOOL,
     label: "Set Axo Session Title",
-    description: "Set or update this Axo Session's concise title and representative emoji. Update it when the conversation's focus materially changes; do not rename on routine turns.",
+    description: `Set or update this Axo Session's title and representative emoji. ${TITLE_STYLE} Update it when the conversation's focus materially changes; do not rename on routine turns.`,
     promptSnippet: "Set or update the Axo Session title and emoji to reflect the conversation's current focus.",
     parameters: titleParameters,
     async execute(_toolCallId, parameters, _signal, _onUpdate, context) {
@@ -118,7 +148,7 @@ export function installAxoSessionNaming(
     if (event.messageType !== "user") return;
     if (!event.systemPromptOptions.selectedTools.includes(TITLE_TOOL)) return;
     event.systemPromptOptions.sections.axo_session_title = title === undefined
-      ? FIRST_MESSAGE_NAMING_GUIDANCE
-      : EXISTING_TITLE_GUIDANCE;
+      ? firstMessageNamingGuidance(context.cwd)
+      : existingTitleGuidance(context.cwd);
   });
 }

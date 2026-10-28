@@ -41,6 +41,7 @@ test("axo_set_title can update an existing session title repeatedly", async () =
       getSessionName: () => sessionName,
       getBranch: () => branch,
     },
+    cwd: identity.cwd,
   } as unknown as ExtensionContext;
   const bridge = {
     publish: async (name: string, data: unknown) => {
@@ -78,5 +79,10 @@ test("axo_set_title can update an existing session title repeatedly", async () =
     systemPromptOptions: { selectedTools: ["axo_set_title"], sections: {} as Record<string, string> },
   };
   beforeAgentStart(event, context);
-  assert.match(event.systemPromptOptions.sections.axo_session_title ?? "", /changes materially/u);
+  const guidance = event.systemPromptOptions.sections.axo_session_title ?? "";
+  assert.match(guidance, /changes materially/u);
+  // Titles lead with a project keyword; the working directory suggests one.
+  assert.match(guidance, /<keyword>: <focus>/u);
+  assert.match(guidance, /evalkit: prepare release/u);
+  assert.match(guidance, /keyword is probably `axo-title-test`/u);
 });
