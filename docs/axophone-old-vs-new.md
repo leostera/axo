@@ -130,19 +130,39 @@ B had a full **session files** feature: `SessionFilesClient` and `SessionFilesVi
 
 ## What C is missing compared with B, roughly by how much people would notice
 
-1. **Live streaming of replies and tool output.** Replies appear only once finished.
-2. **Cancel a run** and **answer the agent's questions**.
+1. ~~**Live streaming of replies and tool output.**~~ Done: `message.update` / `tool.update` events redraw only the reply that changed (render budgets enforced by UI tests).
+2. ~~**Cancel a run** and **answer the agent's questions**.~~ Done: `axo.remote.session.key` presses Escape or Enter in the chat's Pi; typed answers go as prompts.
 3. ~~**Voice prompts** (Stop → draft, Send → send).~~ Done: on-device `SpeechAnalyzer` (iOS 26+), with the words shown live while listening; Cancel forgets them; listening stops on background, chat switch or an audio interruption.
-4. **Attachments:** camera, photos, files, clipboard paste; and **session files**.
+4. **Attachments:** camera, photos, files, clipboard paste; and **session files**. Not started; see the plan below.
 5. ~~**Pending-message bubbles with delivery state.**~~ Done in `b44f62c` (Sending, Sent, Queued).
 6. ~~**Per-chat drafts** that survive switching chats.~~ Done in `b44f62c`.
 7. ~~**Rich markdown:** tables, quotes, numbered lists.~~ Done in `b44f62c` (plus nested lists and rules).
-8. **Paged full tool output** ("Load more output").
-9. ~~**"Jump to new message"**~~ Done in `b44f62c`. The scroll-follow logic still has no tests.
-10. **Background/foreground handling** of the connection.
-11. **Creating workspaces and named sessions** from the phone.
-12. **XCUITests.**
+8. **Paged full tool output** ("Load more output"). History keeps a tool's first 40 kB, marked `truncated`; nothing yet fetches the rest. See the plan below.
+9. ~~**"Jump to new message"**~~ Done in `b44f62c`, with `ScrollFollow` tests.
+10. ~~**Background/foreground handling** of the connection.~~ Done: the phone lets the socket go in the background and resumes fresh in the foreground.
+11. **Creating workspaces** from the phone. Named sessions are done (Pi names chats). New chats go to the Mac's Home Workspace (`axo.remote.session.create`); a chat can be started in a chosen Workspace (`PhoneWorkbench.send(in:)`, and the web menu's per-Workspace button), but the phone has no picker yet. See the plan below.
+12. ~~**XCUITests.**~~ Done: 35 cases (layers, rendering budgets, voice, menu, composer, visual snapshots).
 13. ~~**iPhone-only device family.**~~ Done in `95c1ee0`.
+
+## Plans for what is left (each needs a decision first)
+
+### Attachments (photos first)
+
+The relay link to axod takes JSON-RPC messages of at most 64 kB (`MAX_FRAME_BYTES` in `axo-relay`), and a phone photo is several hundred kB even as a compressed JPEG. Prompts are text only from the relay to Pi. The Mac already solves "Pi should see this file" by staging it where Pi can read it and putting its path in the prompt (`7cefd8c`); Pi's `read` tool opens images.
+
+Proposal:
+- `axo.remote.session.attachment.begin {sessionId, name, mimeType, bytes}` → `{attachmentId}`; `...chunk {attachmentId, index, data}` (base64, ≤ 40 kB each); `...commit {attachmentId, sha256}` → `{path}`. axod writes to `~/.axo/server/attachments/<session>/<uuid>.<ext>` (0600), checks size (cap, say, 10 MB) and hash, and forgets uncommitted uploads after a few minutes.
+- The prompt then carries the paths (`axo.remote.session.prompt` gains `attachments: [attachmentId]`, and axod appends the paths to the text), so a prompt and its files arrive together or not at all.
+- The phone downsizes photos (longest side ~2048 px, JPEG ~0.8) before upload; the web does the same with a canvas.
+- Decision needed: this is a new protocol in `axo-relay`/`axo-server` (RFD-sized), and staged files need a retention rule (delete with the Session?).
+
+### Paged full tool output
+
+axod knows each Session's Pi transcript file. Proposal: `axo.remote.session.tool.output {sessionId, toolCallId, offset, limit ≤ 40 kB}` → `{text, nextOffset | null}`, read from the transcript's `toolResult` for that call. The phone's and web's "Output cut short" line becomes "Load more output". Decision needed: reading Pi's transcript from axod (Pi owns transcripts; axod would only read).
+
+### Starting a chat in a chosen Workspace, and creating Workspaces
+
+Starting in an existing Workspace needs only UI: the model call exists. Options: a Workspace chip above the empty chat's composer ("Home ▾") that opens the Workspace list; or the web's approach, a compose button on each project in the menu. Creating a Workspace needs a folder on the Mac, which remote clients never see (`RemoteWorkspace` carries no path); options: Mac-side only, or pick from folders under the Mac's home that axod lists by name. Decision needed: which.
 
 ## A bug found while comparing (C)
 
