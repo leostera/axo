@@ -26,6 +26,15 @@ final class AxoPhoneMotionTests: XCTestCase {
     }
 
     pause(1.5)
+    // Gentle pushes, let go while moving: not enough momentum to carry the stack halfway, so it
+    // eases back from where the finger left it. (A rule that took any 300 pt/s for a flick opened
+    // the chats on these.)
+    drag(from: 0.04, to: 0.2, speed: 300, hold: 0)
+    pause(1.5)
+    XCTAssertEqual(title.frame.minX, rest, accuracy: 1, "a gentle push eased back")
+    drag(from: 0.04, to: 0.25, speed: 700, hold: 0)
+    pause(1.5)
+    XCTAssertEqual(title.frame.minX, rest, accuracy: 1, "a quicker push, still short, eased back")
     // A slow drag that stops before letting go: the spring should start where the finger left it.
     drag(from: 0.04, to: 0.6, speed: 500, hold: 0.4)
     pause(1.5)

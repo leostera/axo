@@ -115,21 +115,24 @@ public struct LayerStackGeometry: Equatable, Sendable {
   public var edgeWidth: Double { width - reveal }
 
   /// Where a swipe that ended after `translation` points, moving at `velocity` points a second,
-  /// settles. A flick goes one layer in its direction however short it was; a slow drag settles
-  /// on the nearest layer; a flick back against the drag stays. A swipe moves one layer at most:
-  /// two swipes to go two layers.
+  /// settles: the layer nearest to where the finger's momentum would carry the stack if it glided
+  /// on and slowed down (`projected`). A gentle push carries a few points and the stack eases back;
+  /// a flick carries it past halfway and on, however short the drag. A flick back against the
+  /// drag carries it back. A swipe moves one layer at most: two swipes to go two layers.
   public func target(showing layer: Int, dragged translation: Double, velocity: Double) -> Int {
-    var target = Int(position(showing: layer, dragged: translation).rounded())
-    if abs(velocity) >= Self.flickSpeed {
-      let along = translation == 0 || (velocity > 0) == (translation > 0)
-      // Rightwards goes down the stack.
-      target = along ? layer + (velocity > 0 ? -1 : 1) : layer
-    }
+    let target = Int(position(showing: layer, dragged: Self.projected(translation, velocity: velocity)).rounded())
     return min(max(target, layer - 1, 0), layer + 1, count - 1)
   }
 
-  /// Points a second; a deliberate flick of the thumb is several times this.
-  public static let flickSpeed = 300.0
+  /// Where a drag at `translation`, moving at `velocity`, would stop gliding on: it slows as a
+  /// scroll view's fast deceleration does (UIKit's `.fast`, 0.99 of its speed left per
+  /// millisecond), so it carries on about a tenth of its speed in points.
+  public static func projected(_ translation: Double, velocity: Double) -> Double {
+    translation + velocity / 1000 * deceleration / (1 - deceleration)
+  }
+
+  /// The share of its speed a gliding stack keeps every millisecond.
+  public static let deceleration = 0.99
 
   private func shown(_ layer: Int, at position: Double) -> Double { clamp(position - Double(layer - 1)) }
   private func clamp(_ value: Double) -> Double { min(max(value, 0), 1) }

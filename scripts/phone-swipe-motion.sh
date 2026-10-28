@@ -1,8 +1,7 @@
 #!/usr/bin/env bash
 # Records the simulator while AxoPhoneMotionTests swipes between layers, then follows the magenta
 # stripe the app draws on the conversation layer's edge, frame by frame. Prints, per swipe, how
-# the layer moved: frames, longest gap between frames, the largest jump, and any reversal (the
-# layer moving back against the swipe, as a snap on release does).
+# the layer moved, and flags snaps: its speed changing all at once, as a canned jump on release does.
 #
 #   scripts/phone-swipe-motion.sh            # record and analyse
 #   scripts/phone-swipe-motion.sh VIDEO.mp4  # analyse an existing recording
@@ -52,7 +51,7 @@ fi
 read -r WIDTH HEIGHT < <(ffprobe -v error -select_streams v:0 -show_entries stream=width,height -of csv=p=0 "$VIDEO" | tr ',' ' ')
 ROW=$((HEIGHT * 40 / 100))
 ffprobe -v error -select_streams v:0 -show_entries frame=pts_time -of csv=p=0 "$VIDEO" >"$OUT/times.txt"
-ffmpeg -v error -i "$VIDEO" -fps_mode passthrough -vf "crop=${WIDTH}:2:0:${ROW}" -f rawvideo -pix_fmt rgb24 - >"$OUT/rows.rgb"
+ffmpeg -v quiet -i "$VIDEO" -fps_mode passthrough -vf "crop=${WIDTH}:2:0:${ROW}" -f rawvideo -pix_fmt rgb24 - >"$OUT/rows.rgb"
 
 python3 - "$OUT/times.txt" "$OUT/rows.rgb" "$WIDTH" <<'PY'
 import sys
@@ -93,28 +92,29 @@ if current:
     movements.append(current)
 
 print(f"{len(frames)} frames with the marker, {len(movements)} movements\n")
+# A snap is the stack's speed changing all at once: hundreds of points in one frame. A spring, a
+# finger, or a push easing back changes speed a little every frame.
+JUMP = 2500  # points a second, from one frame to the next
 problems = 0
 for n, m in enumerate(movements, 1):
     start, end = m[0][1], m[-1][1]
-    direction = 1 if end > start else -1
     duration = m[-1][0] - m[0][0]
     gaps = [b[0] - a[0] for a, b in zip(m, m[1:])]
-    steps = [b[1] - a[1] for a, b in zip(m, m[1:])]
-    longest_gap = max(gaps) if gaps else 0
-    biggest = max((abs(s) for s in steps), default=0)
-    reversal = max((-s * direction for s in steps), default=0)
+    speeds = [(b[1] - a[1]) / max(b[0] - a[0], 1 / 120) for a, b in zip(m, m[1:])]
+    jumps = [abs(b - a) for a, b in zip(speeds, speeds[1:])]
+    biggest = max(jumps, default=0)
     late = sum(1 for g in gaps if g > 1.5 / 60)
     flags = []
-    if reversal > 2:
-        flags.append(f"REVERSES {reversal:.0f}pt")
+    if biggest > JUMP:
+        flags.append(f"SNAPS: speed changed by {biggest:.0f} pt/s in a frame")
     if late:
         flags.append(f"{late} late frames")
-    problems += bool(flags)
+    problems += biggest > JUMP
     print(f"movement {n}: {start:6.1f} -> {end:6.1f} pt in {duration*1000:4.0f} ms, {len(m)} frames, "
-          f"longest gap {longest_gap*1000:3.0f} ms, biggest step {biggest:5.1f} pt"
+          f"top speed {max((abs(v) for v in speeds), default=0):5.0f} pt/s, largest change of speed {biggest:5.0f} pt/s"
           + (f"   <-- {', '.join(flags)}" if flags else ""))
-    # The path, every few frames, to see where it goes wrong.
     path = " ".join(f"{x:.0f}" for _, x in m[::max(1, len(m) // 24)])
     print(f"   x: {path}")
-print("\nno jumps or reversals" if not problems else f"\n{problems} movement(s) with problems")
+print("\nno snaps" if not problems else f"\n{problems} movement(s) snap")
+sys.exit(1 if problems else 0)
 PY

@@ -176,9 +176,13 @@ struct LayerStack: View {
   private func settle(on target: Int, from dragged: CGFloat = 0, velocity: CGFloat, stack: LayerStackGeometry) {
     let from = stack.position(showing: showing, dragged: dragged)
     let distance = abs(Double(target) - from) * stack.reveal
-    // Rightwards moves the stack down; a finger moving the way the stack goes keeps it going.
+    // The spring starts at the finger's speed, as a share of the way left to go: on, if the
+    // finger was moving towards the target; if away (a gentle push easing back), the stack
+    // carries on a little the way it was going before the spring brings it back, rather than
+    // stopping dead. Rightwards moves the stack down.
     let towards = (Double(target) < from) == (velocity > 0)
-    let initialVelocity = distance > 1 && towards ? min(abs(velocity) / distance, 30) : 0
+    let speed = distance > 1 ? min(abs(velocity) / distance, 30) : 0
+    let initialVelocity = towards ? speed : -speed
     let animation: Animation? = reduceMotion ? nil : Self.spring(initialVelocity: initialVelocity)
     settling = true
     withAnimation(animation) {

@@ -71,10 +71,17 @@ final class LayerStackGeometryTests: XCTestCase {
   }
 
   func testAFlickGoesOneLayerHoweverShort() {
-    XCTAssertEqual(stack.target(showing: 2, dragged: 30, velocity: 900), 1, "right: the chats")
-    XCTAssertEqual(stack.target(showing: 1, dragged: 30, velocity: 900), 0, "again: the account")
-    XCTAssertEqual(stack.target(showing: 0, dragged: -30, velocity: -900), 1, "left: back to the chats")
-    XCTAssertEqual(stack.target(showing: 2, dragged: -30, velocity: -900), 3, "left from home: the layer above")
+    XCTAssertEqual(stack.target(showing: 2, dragged: 30, velocity: 1800), 1, "right: the chats")
+    XCTAssertEqual(stack.target(showing: 1, dragged: 30, velocity: 1800), 0, "again: the account")
+    XCTAssertEqual(stack.target(showing: 0, dragged: -30, velocity: -1800), 1, "left: back to the chats")
+    XCTAssertEqual(stack.target(showing: 2, dragged: -30, velocity: -1800), 3, "left from home: the layer above")
+  }
+
+  func testAGentlePushEasesBack() {
+    // Moving, but not enough to carry the stack halfway: the old rule took any 300 pt/s for a flick.
+    XCTAssertEqual(stack.target(showing: 2, dragged: 30, velocity: 600), 2)
+    XCTAssertEqual(stack.target(showing: 2, dragged: reveal * 0.3, velocity: 400), 2)
+    XCTAssertEqual(stack.target(showing: 2, dragged: reveal * 0.3, velocity: 1200), 1, "the same drag, quicker, carries on")
   }
 
   func testASlowDragSettlesOnTheNearestLayer() {
@@ -91,7 +98,7 @@ final class LayerStackGeometryTests: XCTestCase {
 
   func testAFlickAgainstTheDragIsNotTakenForOne() {
     // Dragged right most of the way, then flicked back left at the end: it stays.
-    XCTAssertEqual(stack.target(showing: 2, dragged: reveal * 0.7, velocity: -400), 2)
+    XCTAssertEqual(stack.target(showing: 2, dragged: reveal * 0.7, velocity: -1200), 2)
   }
 }
 

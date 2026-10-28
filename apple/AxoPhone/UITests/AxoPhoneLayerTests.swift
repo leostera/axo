@@ -53,7 +53,8 @@ final class AxoPhoneLayerTests: XCTestCase {
   private func flick(_ app: XCUIApplication, right: Bool) {
     let start = app.coordinate(withNormalizedOffset: CGVector(dx: right ? 0.35 : 0.65, dy: 0.45))
     let end = app.coordinate(withNormalizedOffset: CGVector(dx: right ? 0.6 : 0.4, dy: 0.45))
-    // Well past `LayerStackGeometry.flickSpeed`, over too short a way to settle there by distance.
+    // Too short a way to settle there by distance; its momentum carries it on
+    // (`LayerStackGeometry.projected`).
     start.press(forDuration: 0.01, thenDragTo: end, withVelocity: XCUIGestureVelocity(2400), thenHoldForDuration: 0)
   }
 
