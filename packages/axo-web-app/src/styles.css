@@ -146,6 +146,7 @@ button:disabled { cursor: default; }
 .chat-row:hover { background: var(--fill); }
 .chat-row.selected { background: var(--fill-strong); }
 .chat-row-name { flex: 1; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.chat-row-age { flex: none; min-width: 2.2em; color: var(--tertiary); font-size: 11px; font-variant-numeric: tabular-nums; text-align: right; }
 .no-chats { height: 40px; margin: 0; padding: 0 10px; color: var(--tertiary); font-size: 16px; line-height: 40px; }
 .status-dot { width: 7px; height: 7px; flex: none; border-radius: 50%; }
 .status-dot.working { background: var(--orange); animation: breathe 1.6s ease-in-out infinite; }

@@ -2,7 +2,7 @@ import assert from "node:assert/strict";
 import { test } from "node:test";
 import { inlineSpans, parseMarkdown } from "../src/chat/markdown.ts";
 import { ChatTranscript, type PiEventRecord } from "../src/chat/transcript.ts";
-import { chatMenu, ChatWorkbench, recentChats, type ChatBackend, type MacConnection } from "../src/chat/workbench.ts";
+import { chatKey, chatMenu, ChatWorkbench, holdingOrder, lastActivity, recentChatList, recentChats, shortAge, type ChatBackend, type MacConnection } from "../src/chat/workbench.ts";
 
 const stream = "41c77dd7-f2dc-4e91-b481-1507b62ec118";
 const hostId = "1e1e7f91-3d8f-4f97-8f71-4fc7d53313c6";
@@ -174,6 +174,54 @@ test("a section lists chats active in the last 8 hours, busy ones, and the open 
   const ids = (entries: { session: { sessionId: number } }[]) => entries.map(entry => entry.session.sessionId);
   assert.deepEqual(ids(recentChats(section!, now)), [1, 2, 4, 5]);
   assert.deepEqual(ids(recentChats(section!, now, entry => entry.session.sessionId === 7)), [1, 2, 4, 5, 7]);
+});
+
+// The time every snapshot from one Mac shares: when it was sent, not when a chat was active.
+const sent = "2026-10-27T12:00:00Z";
+const at = (iso: string) => Date.parse(iso) / 1000;
+
+test("a chat's activity is its latest finished message, or its creation, not the snapshot's time", () => {
+  assert.equal(lastActivity(session(1, sent, "Axo", { lastMessageAt: at("2026-10-27T09:00:00Z"), createdAt: at("2026-10-26T00:00:00Z") }) as never),
+    Date.parse("2026-10-27T09:00:00Z"));
+  assert.equal(lastActivity(session(2, sent, "Axo", { lastMessageAt: null, createdAt: at("2026-10-27T11:00:00Z") }) as never),
+    Date.parse("2026-10-27T11:00:00Z"), "a chat with no messages yet counts from its creation");
+  assert.equal(lastActivity(session(3, sent) as never), Date.parse(sent), "a Mac that reports neither");
+});
+
+test("the recent list puts every chat on every Mac in one list, the most recently active first", () => {
+  const other = { ...(host([session(9, sent, "Axo", { lastMessageAt: at("2026-10-27T10:30:00Z") })]) as object), hostId: "11111111-2222-4333-8444-555555555555", label: "Laptop" } as never;
+  const list = recentChatList([host([
+    session(1, sent, "Axo", { lastMessageAt: at("2026-10-27T08:00:00Z") }),
+    session(2, sent, "Website", { lastMessageAt: at("2026-10-27T11:00:00Z") }),
+    session(3, sent, null, { hasAgent: false, lastMessageAt: at("2026-10-27T11:59:00Z") }),
+    session(4, sent, null, { createdAt: at("2026-10-27T10:00:00Z") }),
+  ]), other]);
+  assert.deepEqual(list.map(entry => entry.session.sessionId), [2, 9, 4, 1], "no bare terminals; across Workspaces and Macs");
+});
+
+test("Workspaces list their chats by real activity too", () => {
+  const [section] = chatMenu([host([
+    session(1, sent, "Axo", { lastMessageAt: at("2026-10-27T11:00:00Z") }),
+    session(2, sent, "Axo", { lastMessageAt: at("2026-10-27T01:00:00Z") }),
+  ])], hostId, []);
+  assert.deepEqual(section!.chats.map(chat => chat.session.sessionId), [1, 2]);
+  assert.deepEqual(recentChats(section!, Date.parse(sent)).map(chat => chat.session.sessionId), [1], "quiet for 11 hours: behind the button");
+});
+
+test("held rows keep their order; chats new since go first and closed ones drop out", () => {
+  const live = recentChatList([host([
+    session(1, sent, "Axo", { lastMessageAt: at("2026-10-27T11:00:00Z") }),
+    session(2, sent, "Axo", { lastMessageAt: at("2026-10-27T11:30:00Z") }),
+    session(3, sent, "Axo", { lastMessageAt: at("2026-10-27T11:45:00Z") }),
+  ])]);
+  const held = [`${hostId}/1`, `${hostId}/4`, `${hostId}/2`];
+  assert.deepEqual(holdingOrder(held, live).map(chatKey), [`${hostId}/3`, `${hostId}/1`, `${hostId}/2`]);
+  assert.deepEqual(holdingOrder(null, live).map(entry => entry.session.sessionId), [3, 2, 1]);
+});
+
+test("ages are short, as on the Mac", () => {
+  const now = Date.parse(sent);
+  assert.deepEqual([30, 300, 3 * 3_600, 2 * 86_400, 4 * 604_800].map(seconds => shortAge(now - seconds * 1000, now)), ["now", "5m", "3h", "2d", "4w"]);
 });
 
 // MARK: - Workbench

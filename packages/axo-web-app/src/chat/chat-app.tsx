@@ -5,7 +5,10 @@ import { AxoMascot } from "../axo-mascot.tsx";
 import { Conversation } from "./conversation.tsx";
 import { Icon } from "./icons.tsx";
 import { relativeTime } from "./message-views.tsx";
-import { chatTitle, ChatWorkbench, isChat, recentChats, type ChatBackend, type ChatMenuSection } from "./workbench.ts";
+import {
+  chatKey, chatTitle, ChatWorkbench, holdingOrder, isChat, lastActivity, recentChatList, recentChats, shortAge,
+  type ChatBackend, type ChatListMode, type ChatMenuEntry, type ChatMenuSection,
+} from "./workbench.ts";
 
 const DEFAULT_API_URL = "https://axo.leostera.dev";
 const apiBaseUrl = import.meta.env.VITE_AXO_API_BASE_URL || DEFAULT_API_URL;
@@ -193,6 +196,7 @@ function ChatsPanel({ workbench, onSelect, onNewChat, onAccount, onSettings }: {
 }) {
   const sections = workbench.sections();
   const selection = workbench.selection;
+  const [mode, setMode] = useChatListMode();
   const [collapsed, toggleCollapsed] = useCollapsedWorkspaces();
   // Not kept: older chats are a look back, not a way the menu stays.
   const [showingOlder, setShowingOlder] = useState<ReadonlySet<string>>(new Set());
@@ -201,11 +205,23 @@ function ChatsPanel({ workbench, onSelect, onNewChat, onAccount, onSettings }: {
       <header className="layer-bar top panel-header">
         <AxoMascot className="header-mascot" loading={workbench.hostsPhase === "loading"} />
         <span className="spacer" />
+        <button className="circle-button" onClick={() => setMode(mode === "workspaces" ? "recent" : "workspaces")}
+          aria-label={mode === "workspaces" ? "Show recent chats" : "Show Workspaces"}
+          title={mode === "workspaces" ? "List chats by recent activity" : "Group chats by Workspace"}>
+          <Icon name={mode === "workspaces" ? "clock" : "listIndent"} />
+        </button>
         <button className="circle-button" onClick={onAccount} aria-label="Account and Macs"><Icon name="person" /></button>
       </header>
       <div className="panel-scroll">
         {workbench.hostsPhase === "failed" && workbench.failure ? <p className="panel-warning">{workbench.failure}</p> : null}
-        {sections.map((section, index) => (
+        {mode === "recent" && sections.length > 0 ? (
+          <RecentChats
+            entries={recentChatList(workbench.hosts)}
+            isSelected={(hostId, sessionId) => hostId === workbench.openHostId && selection?.kind === "chat" && selection.sessionId === sessionId}
+            onSelect={onSelect}
+          />
+        ) : null}
+        {mode === "workspaces" && sections.map((section, index) => (
           <ChatSection
             key={section.id}
             section={section}
@@ -242,6 +258,55 @@ function toggled(set: ReadonlySet<string>, id: string): ReadonlySet<string> {
   const next = new Set(set);
   if (!next.delete(id)) next.add(id);
   return next;
+}
+
+const LIST_MODE_KEY = "axo.chatListMode";
+
+/** Whether the menu groups chats by Workspace or lists them by recent activity; kept in this browser. */
+function useChatListMode(): [ChatListMode, (mode: ChatListMode) => void] {
+  const [mode, setMode] = useState<ChatListMode>(() => localStorage.getItem(LIST_MODE_KEY) === "recent" ? "recent" : "workspaces");
+  const choose = (next: ChatListMode) => {
+    setMode(next);
+    localStorage.setItem(LIST_MODE_KEY, next);
+  };
+  return [mode, choose];
+}
+
+/**
+ * Every chat, the most recently active first, each with how long ago. Rows hold their order while
+ * the pointer is over the list, so a chat that just finished a message does not jump out from
+ * under a click; they move into place once it leaves.
+ */
+function RecentChats({ entries, isSelected, onSelect }: {
+  entries: ChatMenuEntry[];
+  isSelected: (hostId: string, sessionId: number) => boolean;
+  onSelect: (hostId: string, sessionId: number) => void;
+}) {
+  const [held, setHeld] = useState<string[] | null>(null);
+  // Ages only need to move once a minute.
+  const [now, setNow] = useState(() => Date.now());
+  useEffect(() => {
+    const timer = setInterval(() => setNow(Date.now()), 60_000);
+    return () => clearInterval(timer);
+  }, []);
+  const shown = holdingOrder(held, entries);
+  return (
+    <section className="chat-section recent first" aria-label="Recent chats"
+      onPointerEnter={() => setHeld(entries.map(chatKey))} onPointerLeave={() => setHeld(null)}>
+      {shown.map(entry => {
+        const { host, session } = entry;
+        const selected = isSelected(host.hostId, session.sessionId);
+        return (
+          <button key={chatKey(entry)} className={selected ? "chat-row selected" : "chat-row"}
+            aria-current={selected ? "page" : undefined} onClick={() => onSelect(host.hostId, session.sessionId)}>
+            <span className="chat-row-name">{chatTitle(session)}</span>
+            <StatusDot status={session.status} />
+            <span className="chat-row-age">{shortAge(lastActivity(session), now)}</span>
+          </button>
+        );
+      })}
+    </section>
+  );
 }
 
 const COLLAPSED_KEY = "axo.collapsedWorkspaces";

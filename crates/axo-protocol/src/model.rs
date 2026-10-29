@@ -151,7 +151,15 @@ pub struct RemoteSessionSnapshot {
     pub shells: Vec<RemoteShell>,
     /// The local layout pruned to terminal panes.
     pub layout: Option<Layout>,
+    /// When this snapshot was taken, not when the Session was last active.
     pub updated_at: String,
+    /// Unix seconds of the Session's latest completed user or assistant message, for listing
+    /// chats by recent activity as the Mac does.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub last_message_at: Option<i64>,
+    /// Unix seconds when the Session was created; absent when the store does not know.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub created_at: Option<i64>,
 }
 
 #[derive(Clone, Copy, Debug, Deserialize, Eq, PartialEq, Serialize)]
@@ -184,6 +192,8 @@ impl RemoteSessionSnapshot {
                 .as_ref()
                 .and_then(|layout| layout.pruned_to(&keep)),
             updated_at: updated_at.to_owned(),
+            last_message_at: record.last_message_at,
+            created_at: (record.created_at > 0).then_some(record.created_at),
         }
     }
 }

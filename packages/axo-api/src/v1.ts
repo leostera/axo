@@ -60,7 +60,12 @@ export const sessionSnapshotSchema = z.object({
   hasAgent: z.boolean().optional(),
   shells: z.array(z.object({ shellId: shellIdSchema }).strict()).max(256),
   layout: layoutSchema.nullable(),
+  /** When this snapshot was taken, not when the Session was last active. */
   updatedAt: z.string().datetime({ offset: true }),
+  /** Unix seconds of the Session's latest completed user or assistant message. */
+  lastMessageAt: z.number().int().nonnegative().nullable().optional(),
+  /** Unix seconds when the Session was created. */
+  createdAt: z.number().int().nonnegative().optional(),
 }).strict();
 export type SessionSnapshot = z.infer<typeof sessionSnapshotSchema>;
 

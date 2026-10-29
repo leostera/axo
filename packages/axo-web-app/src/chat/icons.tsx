@@ -1,7 +1,8 @@
 /** The few symbols the chat uses, drawn after their SF Symbols counterparts on the phone. */
 export type IconName =
   | "menu" | "info" | "person" | "gear" | "compose" | "arrowUp" | "stop" | "laptop" | "copy" | "check"
-  | "close" | "chevron" | "terminal" | "pencil" | "doc" | "search" | "wrench" | "warning" | "pair" | "arrowDown";
+  | "close" | "chevron" | "terminal" | "pencil" | "doc" | "search" | "wrench" | "warning" | "pair" | "arrowDown"
+  | "clock" | "listIndent";
 
 const paths: Record<IconName, string> = {
   menu: "M5 9h14M5 15h14",
@@ -24,6 +25,8 @@ const paths: Record<IconName, string> = {
   wrench: "M14.7 6.3a4 4 0 0 0 5 5l-9.4 9.4a2.1 2.1 0 0 1-3-3l9.4-9.4a4 4 0 0 0-2-2Zm0 0L18 3l3 3-3.3 3.3",
   warning: "M12 4 2.5 20h19L12 4Zm0 6v4m0 3v.5",
   pair: "M12 3v12m-4-4 4 4 4-4M4 15v4a1 1 0 0 0 1 1h14a1 1 0 0 0 1-1v-4",
+  clock: "M12 21a9 9 0 1 0 0-18 9 9 0 0 0 0 18Zm0-13v4.5l3 2",
+  listIndent: "M4 6h16M9 12h11M9 18h11M4 11.5v1M4 17.5v1",
 };
 
 export function Icon({ name, size = 20 }: { name: IconName; size?: number }) {

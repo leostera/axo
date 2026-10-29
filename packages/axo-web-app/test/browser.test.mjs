@@ -94,8 +94,9 @@ test("browser chats with Axo on a Mac: history, live replies, new chats, info, a
     hasAgent: true,
     shells: [{ shellId: 17 }],
     layout: { kind: "pane", shellId: 17 },
-    // Active just now: listed. The next chat has been quiet for weeks: behind "Show older chats".
+    // Active a minute ago: listed. The next chat has been quiet for weeks: behind "Show older chats".
     updatedAt: new Date().toISOString(),
+    lastMessageAt: Math.floor(Date.now() / 1000) - 60,
   }, {
     hostId,
     sessionId: 5,
@@ -106,7 +107,9 @@ test("browser chats with Axo on a Mac: history, live replies, new chats, info, a
     hasAgent: true,
     shells: [],
     layout: null,
-    updatedAt: "2026-10-01T12:00:00.000Z",
+    // Every snapshot says when it was sent; the chat's own activity is its last message.
+    updatedAt: new Date().toISOString(),
+    lastMessageAt: Math.floor(Date.now() / 1000) - 3 * 7 * 86_400,
   }, {
     hostId,
     sessionId: 4,
@@ -118,6 +121,8 @@ test("browser chats with Axo on a Mac: history, live replies, new chats, info, a
     shells: [],
     layout: null,
     updatedAt: new Date().toISOString(),
+    lastMessageAt: null,
+    createdAt: Math.floor(Date.now() / 1000) - 2 * 3_600,
   }, {
     hostId,
     sessionId: 3,
@@ -323,6 +328,18 @@ test("browser chats with Axo on a Mac: history, live replies, new chats, info, a
     await expect(chats.getByRole("button", { name: "Old idea" }));
     await chats.getByRole("button", { name: "Show fewer" }).click();
     assert.equal(await chats.getByRole("button", { name: "Old idea" }).count(), 0);
+    // The recent list, as on the Mac: every chat in one list by its last message (or creation),
+    // with how long ago; remembered across visits.
+    await chats.getByRole("button", { name: "Show recent chats" }).click();
+    const recent = chats.getByRole("region", { name: "Recent chats" });
+    await expect(recent.getByRole("button", { name: "Old idea" }));
+    assert.deepEqual(await recent.locator(".chat-row-name").allTextContents(), ["Browser Agent", "Plan the week", "Old idea"]);
+    assert.deepEqual(await recent.locator(".chat-row-age").allTextContents(), ["1m", "2h", "3w"]);
+    assert.equal(await chats.getByRole("button", { name: "Browser Workspace", exact: true }).count(), 0);
+    await shot("recent-chats");
+    await page.reload({ waitUntil: "networkidle" });
+    await expect(chats.getByRole("region", { name: "Recent chats" }).getByRole("button", { name: "Old idea" }));
+    await chats.getByRole("button", { name: "Show Workspaces" }).click();
     const workspaceToggle = chats.getByRole("button", { name: "Browser Workspace", exact: true });
     await workspaceToggle.click();
     assert.equal(await workspaceToggle.getAttribute("aria-expanded"), "false");

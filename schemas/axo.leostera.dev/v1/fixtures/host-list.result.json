@@ -25,7 +25,9 @@
           "hasAgent": true,
           "shells": [{ "shellId": 12 }],
           "layout": { "kind": "pane", "shellId": 12 },
-          "updatedAt": "2026-10-15T23:59:00Z"
+          "updatedAt": "2026-10-15T23:59:00Z",
+          "lastMessageAt": 1792108740,
+          "createdAt": 1792022400
         }
       ]
     }

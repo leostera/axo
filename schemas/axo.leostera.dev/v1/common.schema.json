@@ -113,7 +113,9 @@
           }
         },
         "layout": { "anyOf": [{ "$ref": "#/$defs/Layout" }, { "type": "null" }] },
-        "updatedAt": { "type": "string", "format": "date-time" }
+        "updatedAt": { "type": "string", "format": "date-time" },
+        "lastMessageAt": { "anyOf": [{ "type": "integer", "minimum": 0 }, { "type": "null" }] },
+        "createdAt": { "type": "integer", "minimum": 0 }
       }
     },
     "HostCapability": {

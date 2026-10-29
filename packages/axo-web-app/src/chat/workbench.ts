@@ -118,10 +118,19 @@ export function chatTitle(session: Session | null | undefined): string {
   return session ? session.name ?? `Session ${session.sessionId}` : "New chat";
 }
 
-function activity(session: Session): number {
+/**
+ * When a chat was last active, in milliseconds: its latest completed message, or its creation for
+ * a chat with none yet, as the Mac's recent list orders them. Activity is a finished message, not
+ * streaming, so chats move when a turn produces something rather than on every token. A Mac too
+ * old to report either leaves the snapshot's time, which says when it was sent, not used.
+ */
+export function lastActivity(session: Session): number {
+  const seconds = Math.max(session.lastMessageAt ?? 0, session.createdAt ?? 0);
+  if (seconds > 0) return seconds * 1000;
   const time = Date.parse(session.updatedAt);
   return Number.isNaN(time) ? 0 : time;
 }
+const activity = lastActivity;
 
 /** Last active first; among chats as recent, the newer one first. */
 function moreRecent(a: ChatMenuEntry, b: ChatMenuEntry): number {
@@ -162,6 +171,40 @@ export function chatMenu(hosts: readonly Host[], openHostId: string | null, work
   }
   const order = (section: ChatMenuSection) => section.kind === "project" ? 0 : 1;
   return sections.sort((a, b) => order(a) - order(b) || alphabetical.compare(a.title, b.title) || a.id.localeCompare(b.id));
+}
+
+/** How the menu lists chats: grouped under their Workspaces, or one list by recent activity. */
+export type ChatListMode = "workspaces" | "recent";
+
+/** Every chat on every Mac, the most recently active first: the menu's recent list. */
+export function recentChatList(hosts: readonly Host[]): ChatMenuEntry[] {
+  return hosts.flatMap(host => host.sessions.filter(isChat).map(session => ({ host, session }))).sort(moreRecent);
+}
+
+/** A chat's key in the menu: a session id is only unique on its Mac. */
+export function chatKey(entry: ChatMenuEntry): string {
+  return `${entry.host.hostId}/${entry.session.sessionId}`;
+}
+
+/**
+ * `live` in the order `held` remembers, so rows don't move under the pointer. Chats gone drop
+ * out; chats new since go first, in `live` order.
+ */
+export function holdingOrder(held: readonly string[] | null, live: readonly ChatMenuEntry[]): ChatMenuEntry[] {
+  if (!held) return [...live];
+  const byKey = new Map(live.map(entry => [chatKey(entry), entry]));
+  const heldKeys = new Set(held);
+  return [...live.filter(entry => !heldKeys.has(chatKey(entry))), ...held.flatMap(key => byKey.get(key) ?? [])];
+}
+
+/** A short age for a row, as the Mac's sidebar shows: "now", "5m", "3h", "2d", "4w". */
+export function shortAge(time: number, now: number): string {
+  const elapsed = Math.max(0, Math.floor((now - time) / 1000));
+  if (elapsed < 60) return "now";
+  if (elapsed < 3_600) return `${Math.floor(elapsed / 60)}m`;
+  if (elapsed < 86_400) return `${Math.floor(elapsed / 3_600)}h`;
+  if (elapsed < 604_800) return `${Math.floor(elapsed / 86_400)}d`;
+  return `${Math.floor(elapsed / 604_800)}w`;
 }
 
 /** Chats active within this long are listed; older ones wait behind "Show older chats". */

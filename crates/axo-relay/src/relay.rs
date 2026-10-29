@@ -1429,6 +1429,8 @@ mod tests {
                     "name": "Session 1",
                     "manualName": null,
                     "emoji": "🦀",
+                    "lastMessageAt": 1_800_000_100_i64,
+                    "createdAt": 1_800_000_000_i64,
                     "status": "working",
                     "initialPwd": "/Users/me/axo",
                     "shells": [
@@ -1466,6 +1468,9 @@ mod tests {
         assert_eq!(snapshot["status"], "working");
         assert_eq!(snapshot["shells"], json!([{ "shellId": 21 }]));
         assert_eq!(snapshot["layout"], json!({ "kind": "pane", "shellId": 21 }));
+        // The phone and web list chats by these, as the Mac's recent list does.
+        assert_eq!(snapshot["lastMessageAt"], 1_800_000_100_i64);
+        assert_eq!(snapshot["createdAt"], 1_800_000_000_i64);
 
         let pi_event = project(
             json!({
