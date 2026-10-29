@@ -77,6 +77,16 @@ final class FloatingAxos {
     axo.popped(pull: pull)
   }
 
+  /// A squishy 3D Axo (`SquishyAxoView`), dropped from just under the menu bar icon (or the top
+  /// of the screen), to try it out alongside the flat ones.
+  func dropSquishy() {
+    let screen = NSScreen.main?.visibleFrame ?? .zero
+    let at = home().map { CGPoint(x: $0.midX, y: $0.minY - 60) } ?? CGPoint(x: screen.midX, y: screen.maxY - 60)
+    guard let axo = FloatingAxo(at: at, keeper: self, kind: .squishy) else { return }
+    axos.append(axo)
+    axo.letGo(at: at)
+  }
+
   // MARK: Put away
 
   /// Dropped at `point`: on the menu bar icon, it goes back in.
@@ -128,10 +138,24 @@ final class FloatingAxos {
 /// body each frame. With Reduce Motion on it stays where it is dropped.
 @MainActor
 final class FloatingAxo {
+  /// How it is drawn.
+  enum Kind {
+    /// The menu bar's Axo, flat (Rive).
+    case flat
+    /// A squishy 3D one: a cel-shaded soft body (`SquishyAxoView`).
+    case squishy
+  }
+
   /// Axo's size on screen: the menu bar's, since it is another one of those.
   static let size = AxoMascot.menuBarSize
   /// Square and larger than Axo, so it can turn, stretch and blow up inside it.
   static let panelSide: CGFloat = 88
+  /// The squishy one is bigger, to see its face and how it squishes.
+  static let squishyWidth: CGFloat = 76
+
+  /// This one's size, and its panel's side.
+  let size: CGSize
+  private let panelSide: CGFloat
   /// Throws faster than this are frightening.
   static let screamingSpeed: CGFloat = 1800
   /// Left alone this long, it fades away over `fadeAway`; touching it brings it back.
@@ -141,8 +165,15 @@ final class FloatingAxo {
   private unowned let keeper: FloatingAxos
   private let panel: NSPanel
   private let world: FloatingAxoWorld
-  private let puppet: any MascotPuppet
+  /// The flat one's face, or the squishy one.
+  private let puppet: (any MascotPuppet)?
+  private let squishy: SquishyAxoView?
   private let pose = FloatingAxoPose()
+  /// Its velocity at the last frame, in points a second: what a landing stops, and what changes
+  /// in a drag jolt the squishy one.
+  private var lastPosition: CGPoint?
+  private var lastVelocity: CGVector = .zero
+  private var lastStep: CFTimeInterval?
   private var pokes = MascotPokes()
   private var inflation = Inflation()
   /// How big its physics body is, which follows how blown up it is, in steps.
@@ -154,16 +185,31 @@ final class FloatingAxo {
   /// Counting down to fading away, while it is left alone.
   private var lonely: Task<Void, Never>?
 
-  init?(at point: CGPoint, keeper: FloatingAxos) {
-    guard let puppet = AxoMascot.installedAnimation?.makePuppet(artboard: AxoMascot.Contract.faceArtboard) else { return nil }
+  init?(at point: CGPoint, keeper: FloatingAxos, kind: Kind = .flat) {
+    switch kind {
+    case .flat:
+      guard let puppet = AxoMascot.installedAnimation?.makePuppet(artboard: AxoMascot.Contract.faceArtboard) else { return nil }
+      self.puppet = puppet
+      squishy = nil
+      size = Self.size
+      panelSide = Self.panelSide
+    case .squishy:
+      size = SquishyAxoView.size(width: Self.squishyWidth)
+      // Room to turn, stretch and blow up (up to `Inflation.biggest`) in.
+      panelSide = (Self.squishyWidth * 2.4).rounded()
+      guard let view = SquishyAxoView(frame: CGRect(x: 0, y: 0, width: panelSide, height: panelSide), width: Self.squishyWidth)
+      else { return nil }
+      squishy = view
+      puppet = nil
+    }
     self.keeper = keeper
-    self.puppet = puppet
-    world = FloatingAxoWorld(start: point, bodySize: Self.size)
-    let side = Self.panelSide
+    // The squishy one's body is its head: its gills are soft.
+    world = FloatingAxoWorld(start: point, bodySize: squishy == nil ? size : CGSize(width: size.width * 0.75, height: size.height * 0.8))
+    let side = panelSide
     panel = FloatingAxoPanel(contentRect: CGRect(x: point.x - side / 2, y: point.y - side / 2, width: side, height: side))
     world.onStep = { [weak self] in self?.follow() }
     world.onLanded = { [weak self] impulse in self?.landed(impulse) }
-    world.onSettled = { [weak self] in self?.puppet.react(.happy) }
+    world.onSettled = { [weak self] in self?.react(.happy) }
 
     let content = NSView(frame: CGRect(x: 0, y: 0, width: side, height: side))
     // The physics' clock: an SKView presenting the world; it draws nothing.
@@ -172,10 +218,16 @@ final class FloatingAxo {
     clock.autoresizingMask = [.width, .height]
     clock.presentScene(world)
     content.addSubview(clock)
-    let face = NSHostingView(rootView: FloatingAxoFace(puppet: puppet, pose: pose))
-    face.frame = content.bounds
-    face.autoresizingMask = [.width, .height]
-    content.addSubview(face)
+    if let puppet {
+      let face = NSHostingView(rootView: FloatingAxoFace(puppet: puppet, pose: pose))
+      face.frame = content.bounds
+      face.autoresizingMask = [.width, .height]
+      content.addSubview(face)
+    }
+    if let squishy {
+      squishy.autoresizingMask = [.width, .height]
+      content.addSubview(squishy)
+    }
     let handle = FloatingAxoHandle(frame: content.bounds)
     handle.autoresizingMask = [.width, .height]
     handle.axo = self
@@ -193,7 +245,17 @@ final class FloatingAxo {
     pose.stretch = 0.3
     pose.stretchAngle = .radians(atan2(-pull.dy, pull.dx))
     pose.boing()
-    puppet.react(.giggle)
+    react(.giggle)
+  }
+
+  private func react(_ reaction: MascotReaction) {
+    puppet?.react(reaction)
+    squishy?.react(reaction)
+  }
+
+  private func setSqueezed(_ squeezed: Bool) {
+    puppet?.setSqueezed(squeezed)
+    squishy?.setSqueezed(squeezed)
   }
 
   // MARK: Held
@@ -205,6 +267,7 @@ final class FloatingAxo {
     velocity.reset()
     velocity.add(point, at: ProcessInfo.processInfo.systemUptime)
     world.hold(at: world.axoPosition)
+    squishy?.grab(at: CGPoint(x: grip.dx, y: grip.dy))
   }
 
   func drag(to point: CGPoint) {
@@ -213,11 +276,12 @@ final class FloatingAxo {
   }
 
   func letGo(at point: CGPoint) {
+    squishy?.letGo()
     if keeper.isHome(point) { return keeper.putAway(self) }
     startLonely()
     let throwing = reduceMotion ? .zero : velocity.velocity(at: ProcessInfo.processInfo.systemUptime)
     world.letGo(velocity: throwing, freeze: reduceMotion)
-    if hypot(throwing.dx, throwing.dy) > Self.screamingSpeed { puppet.react(.scream) }
+    if hypot(throwing.dx, throwing.dy) > Self.screamingSpeed { react(.scream) }
   }
 
   /// A click on it, not a drag: it is poked.
@@ -227,9 +291,13 @@ final class FloatingAxo {
     let (fullness, bursts) = inflation.poke(at: now)
     if bursts { return keeper.burst(self) }
     startLonely()
-    if let reaction = pokes.poke(at: now) { puppet.react(reaction) }
+    if let reaction = pokes.poke(at: now) { react(reaction) }
+    if !reduceMotion, let squishy {
+      let pointer = NSEvent.mouseLocation
+      squishy.poke(at: CGPoint(x: pointer.x - world.axoPosition.x, y: pointer.y - world.axoPosition.y))
+    }
     // Straining, eyes squeezed shut, as it gets near.
-    if fullness > 0.65 { puppet.setSqueezed(true) }
+    if fullness > 0.65 { setSqueezed(true) }
     inflate(at: now)
   }
 
@@ -240,13 +308,19 @@ final class FloatingAxo {
   private func inflate(at now: Date) {
     let scale = inflation.scale(at: now)
     if abs(scale - pose.inflation) > 0.005 {
-      withAnimation(.interpolatingSpring(stiffness: 400, damping: 14)) { pose.inflation = scale }
+      if let squishy {
+        // Its own air blows it up, and lets it down.
+        pose.inflation = scale
+        squishy.inflate(scale)
+      } else {
+        withAnimation(.interpolatingSpring(stiffness: 400, damping: 14)) { pose.inflation = scale }
+      }
     }
     if abs(scale - bodyScale) > 0.08 || (scale == 1 && bodyScale != 1) {
       bodyScale = scale
       world.resize(to: scale)
     }
-    if inflation.fullness(at: now) < 0.6 { puppet.setSqueezed(false) }
+    if inflation.fullness(at: now) < 0.6 { setSqueezed(false) }
   }
 
   /// Burst: it is gone in a spray of bits.
@@ -254,7 +328,7 @@ final class FloatingAxo {
     lonely?.cancel()
     world.isPaused = true
     panel.orderOut(nil)
-    if !reduceMotion { AxoBurst.spray(at: world.axoPosition, size: Self.size.applying(.init(scaleX: scale, y: scale))) }
+    if !reduceMotion { AxoBurst.spray(at: world.axoPosition, size: size.applying(.init(scaleX: scale, y: scale))) }
   }
 
   /// Gone: back in the menu bar.
@@ -302,19 +376,36 @@ final class FloatingAxo {
   // MARK: Each frame
 
   private func follow() {
-    let side = Self.panelSide
-    panel.setFrameOrigin(CGPoint(x: world.axoPosition.x - side / 2, y: world.axoPosition.y - side / 2))
+    let side = panelSide
+    let position = world.axoPosition
+    panel.setFrameOrigin(CGPoint(x: position.x - side / 2, y: position.y - side / 2))
     pose.rotation = world.axoRotation
+    // How fast it is going, and how much that changed: the squishy one lags behind changes.
+    let now = CACurrentMediaTime()
+    if let lastPosition, let lastStep, now - lastStep > 0.001 {
+      let seconds = now - lastStep
+      let velocity = CGVector(dx: (position.x - lastPosition.x) / seconds, dy: (position.y - lastPosition.y) / seconds)
+      if !reduceMotion { squishy?.jolt(CGVector(dx: velocity.dx - lastVelocity.dx, dy: velocity.dy - lastVelocity.dy)) }
+      lastVelocity = velocity
+    }
+    lastPosition = position
+    lastStep = now
     // The air leaking out.
     if pose.inflation > 1 { inflate(at: Date()) }
     // Watch the pointer, from Axo's centre; 400 points away is all the way.
     let pointer = NSEvent.mouseLocation
-    puppet.look(x: (pointer.x - world.axoPosition.x) / 4, y: -(pointer.y - world.axoPosition.y) / 4)
+    puppet?.look(x: (pointer.x - position.x) / 4, y: -(pointer.y - position.y) / 4)
+    if let squishy {
+      squishy.roll = world.axoRotation
+      squishy.look = CGPoint(x: max(-1, min(1, (pointer.x - position.x) / 400)), y: max(-1, min(1, (pointer.y - position.y) / 400)))
+    }
   }
 
   private func landed(_ impulse: CGFloat) {
     guard impulse > 1.5, !reduceMotion else { return }
-    pose.squish()
+    guard let squishy else { return pose.squish() }
+    // Its window just stopped; it keeps going, from as fast as it was falling.
+    squishy.land(speed: min(1500, max(0, -lastVelocity.dy)))
   }
 }
 
@@ -395,9 +486,8 @@ private final class FloatingAxoHandle: NSView {
   override func hitTest(_ point: NSPoint) -> NSView? {
     // Only Axo itself, not the panel's empty corners.
     let local = convert(point, from: superview)
-    let axo = CGRect(
-      x: bounds.midX - FloatingAxo.size.width / 2, y: bounds.midY - FloatingAxo.size.height / 2,
-      width: FloatingAxo.size.width, height: FloatingAxo.size.height)
+    let size = self.axo?.size ?? FloatingAxo.size
+    let axo = CGRect(x: bounds.midX - size.width / 2, y: bounds.midY - size.height / 2, width: size.width, height: size.height)
     // Axo is small: a little slack around it. Blown up, it is bigger.
     let scale = self.axo?.scale ?? 1
     let grown = axo.insetBy(dx: -axo.width * (scale - 1) / 2, dy: -axo.height * (scale - 1) / 2)
