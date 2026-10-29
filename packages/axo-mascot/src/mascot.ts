@@ -261,8 +261,8 @@ function drawAxolotl(board: ArtboardBuilder, parent: ComponentId, style: Style):
     mouth,
     "Mouth Path",
     [
-      { at: { x: 566, y: 744 }, in: { x: 566, y: 744 }, out: { x: 566, y: 744 } },
-      { at: { x: 686, y: 744 }, in: { x: 686, y: 744 }, out: { x: 686, y: 744 } },
+      { at: { x: 566, y: 744 }, in: { x: 566, y: 744 }, out: { x: 606, y: 756 } },
+      { at: { x: 686, y: 744 }, in: { x: 646, y: 756 }, out: { x: 686, y: 744 } },
     ],
     false,
   );
