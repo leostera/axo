@@ -480,9 +480,6 @@ private struct AxoMenu: View {
       TerminalWindowOpener.open(openWindow, viaSplash: usesSplash)
     }
 
-    // A squishy 3D Axo, to try alongside the flat ones.
-    Button("Squishy Axo") { FloatingAxos.shared.dropSquishy() }
-
     // Drag the menu bar icon to pull an Axo out; this, or dropping one back on the icon, puts
     // them away.
     if !FloatingAxos.shared.axos.isEmpty {

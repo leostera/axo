@@ -22,9 +22,9 @@ final class SquishyMeshTests: XCTestCase {
   func testItIsShapedLikeAxo() {
     let xs = axo.vertices.map(\.x), ys = axo.vertices.map(\.y), zs = axo.vertices.map(\.z)
     let width = xs.max()! - xs.min()!, height = ys.max()! - ys.min()!, depth = zs.max()! - zs.min()!
-    // Wider than tall, its gills reaching out past the head.
-    XCTAssertGreaterThan(width, 2 * SquishyMesh.head.x + 20)
-    XCTAssertGreaterThan(width, height * 1.4)
+    // As in the logo: its gills reaching out past its head, to over twice as wide as tall.
+    XCTAssertGreaterThan(width, 2 * SquishyMesh.head.x + 30)
+    XCTAssertEqual(width / height, 2.3, accuracy: 0.3)
     XCTAssertLessThan(depth, width / 1.5)
     // Symmetric, and flatter underneath than on top.
     XCTAssertEqual(xs.max()!, -xs.min()!, accuracy: 0.5)
@@ -56,14 +56,13 @@ final class SquishySkinTests: XCTestCase {
     XCTAssertLessThan(simd_length(skin.fineVertices(for: dented)[0] - skin.fine.vertices[0] - shift), 1e-3)
   }
 
-  func testItsPartsAreHeadGillsAndArms() {
+  func testItsPartsAreItsHeadAndItsGills() {
     let parts = SquishyMesh.axo(subdivisions: 3).parts
     XCTAssertEqual(parts.count, 642)
-    let gills = parts.filter { $0.kind == .gill }
-    // A good part of it is gills, out to their points.
-    XCTAssertGreaterThan(gills.count, parts.count / 40)
-    XCTAssertGreaterThan(parts.filter { $0.kind == .arm }.count, parts.count / 100)
-    XCTAssertGreaterThan(gills.map(\.along).max()!, 0.9)
-    XCTAssertTrue(gills.allSatisfy { $0.gill > 0.4 })
+    // A good part of it is gills, and most of it head.
+    let gills = parts.filter { $0.gill > 0.5 }.count
+    XCTAssertGreaterThan(gills, parts.count / 25)
+    XCTAssertLessThan(gills, parts.count / 2)
   }
+
 }

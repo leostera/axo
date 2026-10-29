@@ -1,8 +1,8 @@
 import Metal
 import simd
 
-/// Draws the squishy Axo like a drawing: cel-shaded in two flat tones, peach with coral gills, with its ink outline round it, a gloss on its head, and its face
-/// drawn on it.
+/// Draws the squishy Axo like a drawing, like the logo: cel-shaded in two flat tones of its
+/// white, with its ink outline round it, and its face drawn on it.
 ///
 /// - The outline is the mesh again, puffed out along its normals with its front faces culled, so
 ///   only a rim of it shows past the body: an ink line that follows every dent and stretch.
@@ -52,7 +52,8 @@ final class SquishyRenderer {
   private let indexCount: Int
 
   init?(mesh: SquishyMesh, device: MTLDevice? = MTLCreateSystemDefaultDevice()) {
-    guard let device, let library = try? device.makeLibrary(source: Self.shaders, options: nil) else { return nil }
+    guard let device, let library = try? device.makeLibrary(source: Self.shaders + SquishyMesh.shaderShape + Self.fragment, options: nil)
+    else { return nil }
     self.device = device
     func pipeline(vertex: String, fragment: String) -> MTLRenderPipelineState? {
       let descriptor = MTLRenderPipelineDescriptor()
@@ -74,8 +75,8 @@ final class SquishyRenderer {
       let rest = device.makeBuffer(bytes: mesh.vertices.map { SIMD4($0, 0) }, length: mesh.vertices.count * 16),
       let parts = device.makeBuffer(
         bytes: mesh.vertices.indices.map { index -> SIMD4<Float> in
-          let part = index < mesh.parts.count ? mesh.parts[index] : SquishyMesh.Part(kind: .head)
-          return SIMD4(part.gill, part.along, part.across, 0)
+          let part = index < mesh.parts.count ? mesh.parts[index] : SquishyMesh.Part()
+          return SIMD4(part.gill, 0, 0, 0)
         }, length: mesh.vertices.count * 16)
     else { return nil }
     outlinePipeline = outline
@@ -135,7 +136,8 @@ final class SquishyRenderer {
       turn: roll * turn * tilt,
       toClip: [Float(2 / frame.size.width), Float(2 / frame.size.height)],
       zoom: frame.zoom,
-      outline: 2.4 / frame.zoom,
+      // As thick as the logo's, for its size, and never thinner than a point and a half.
+      outline: max(3.2, 1.5 / frame.zoom),
       blink: frame.blink,
       face: frame.face.rawValue)
   }
@@ -172,7 +174,7 @@ final class SquishyRenderer {
       return out;
     }
 
-    fragment half4 ink_fragment(Out in [[stage_in]]) { return half4(0.1h, 0.07h, 0.08h, 1); }
+    fragment half4 ink_fragment(Out in [[stage_in]]) { return half4(0.12h, 0.12h, 0.12h, 1); }
 
     vertex Out body_vertex(uint id [[vertex_id]], const device Vertex *vertices [[buffer(0)]],
                            const device float4 *rest [[buffer(1)]], constant Uniforms &u [[buffer(2)]],
@@ -195,45 +197,41 @@ final class SquishyRenderer {
     // How much of a shape `d` (a signed distance, negative inside) covers, with an edge `aa` soft.
     static float cover(float d, float aa) { return 1.0 - smoothstep(-aa, aa, d); }
 
-    constant float3 ink = float3(0.1, 0.07, 0.08);
+    constant float3 ink = float3(0.12);
 
-    // Its face at `p` (a point on its front at rest, in points), over `color`.
+    """
+
+  /// The body's fragment shader, after the shape's distance fields (`SquishyMesh.shaderShape`).
+  private static let fragment = """
+    // Its face at `p` (a point on its front at rest, in points), over `color`: the logo's, two
+    // big dots set wide and a short flat dash.
     static float3 face(float3 color, float2 p, constant Uniforms &u, float aa) {
-      // Blush, under the eyes.
       for (int side = -1; side <= 1; side += 2) {
-        float2 q = (p - float2(23.0 * side, -4.0)) / float2(5.5, 3.2);
-        color = mix(color, float3(0.98, 0.62, 0.64), cover(length(q) - 1.0, aa / 4.0) * 0.8);
-      }
-      // Eyes, far apart.
-      for (int side = -1; side <= 1; side += 2) {
-        float2 q = p - float2(16.0 * side, 4.0);
+        float2 q = p - float2(20.0 * side, -3.0);
         if (u.face == 1) {
           // ^ : two strokes meeting above.
           float2 r = float2(abs(q.x), q.y);
-          color = mix(color, ink, cover(segment(r, float2(0, 2.6), float2(4.0, -1.4)) - 1.2, aa));
+          color = mix(color, ink, cover(segment(r, float2(0, 3.0), float2(4.6, -1.6)) - 1.6, aa));
         } else if (u.face == 2) {
           // > < : pointing in at the nose.
           float2 r = float2(-q.x * side, abs(q.y));
-          color = mix(color, ink, cover(segment(r, float2(3.0, 0), float2(-2.8, 3.0)) - 1.2, aa));
+          color = mix(color, ink, cover(segment(r, float2(3.6, 0), float2(-3.4, 3.6)) - 1.6, aa));
         } else {
-          float radius = u.face == 3 ? 5.0 : 4.4;
-          float tall = max(0.1, 1.0 - u.blink);
+          float radius = u.face == 3 ? 6.6 : 5.6;
+          float tall = max(0.12, 1.0 - u.blink);
           float d = length(float2(q.x, q.y / tall)) - radius;
-          color = mix(color, ink, cover(d * min(1.0, tall * 1.5), aa));
-          // A shine in each eye, while it is open.
-          float shine = length(q - float2(-1.4, 1.6)) - 1.5;
-          color = mix(color, float3(1), cover(shine, aa) * step(0.6, tall));
+          color = mix(color, ink, cover(d * min(1.0, tall * 1.6), aa));
         }
       }
-      // An open smile: a half moon, with its tongue in it; wide open screaming.
-      float2 m = p - float2(0, -6.0);
-      float mouth = u.face == 3
-        ? length(m / float2(0.8, 1.0) + float2(0, 1.5)) - 5.0
-        : max(length(m / float2(1.25, 1.0)) - 6.5, m.y - 0.8);
-      float tongue = length(m - float2(0, -6.5)) - 4.0;
-      float3 inside = mix(float3(0.45, 0.12, 0.16), float3(0.97, 0.55, 0.6), cover(tongue, aa));
-      color = mix(color, ink, cover(mouth - 1.0, aa));
-      color = mix(color, inside, cover(mouth, aa));
+      float2 m = p - float2(0, -9.5);
+      if (u.face == 3) {
+        color = mix(color, ink, cover(length(float2(m.x * 0.8, m.y + 1.0)) - 4.0, aa));
+      } else if (u.face == 1) {
+        // A laugh: the dash opened into a little half moon.
+        color = mix(color, ink, cover(max(length(m / float2(1.6, 1.0)) - 4.2, m.y - 1.2), aa));
+      } else {
+        color = mix(color, ink, cover(segment(m, float2(-8.5, 0), float2(8.5, 0)) - 1.9, aa));
+      }
       return color;
     }
 
@@ -241,25 +239,27 @@ final class SquishyRenderer {
       float3 n = normalize(in.normal);
       float3 light = normalize(float3(-0.45, 0.6, 0.65));
       float lit = dot(n, light);
-      // Two flat tones, and the edge between them soft by a pixel.
+      // Two flat tones of its white, and the edge between them soft by a pixel.
       float aa = fwidth(lit);
-      float band = smoothstep(0.15 - aa, 0.15 + aa, lit);
-      float gillAA = fwidth(in.part.x);
-      float gill = smoothstep(0.5 - gillAA, 0.5 + gillAA, in.part.x);
-      float3 light_tone = mix(float3(1.0, 0.87, 0.83), float3(0.95, 0.47, 0.5), gill);
-      float3 shade_tone = mix(float3(0.95, 0.7, 0.69), float3(0.8, 0.33, 0.39), gill);
-      float3 color = mix(shade_tone, light_tone, band);
-      if (in.part.x > 0.3) {
-        // Plain: its two tones are enough.
-      } else {
-        // A gloss, up on the top of its head, towards the light (and only on the head, not where
-        // it meets its gills).
-        float gloss = dot(n, normalize(float3(-0.3, 0.85, 0.45)));
-        float glossAA = fwidth(gloss);
-        float head = 1.0 - smoothstep(0.0, 0.3, in.part.x);
-        color = mix(color, float3(1), smoothstep(0.97 - glossAA, 0.97 + glossAA, gloss) * 0.85 * head);
+      float band = smoothstep(0.12 - aa, 0.12 + aa, lit);
+      float3 color = mix(float3(0.84, 0.84, 0.88), float3(0.985, 0.985, 0.985), band);
+      // Ink where its pieces meet, as in the logo: round the head where the gills come out of
+      // it, and between one gill and the next. Worked out from where this point was made, so the
+      // lines stretch with it.
+      float3 p = in.rest;
+      float head = head_distance(p);
+      float nearest = 1e3, next = 1e3;
+      for (int i = 0; i < LOBES; i++) {
+        float d = lobe_distance(i, p);
+        if (d < nearest) { next = nearest; nearest = d; } else if (d < next) { next = d; }
       }
-      // The face, on its front (and not through to its back).
+      float line = u.outline * 0.5;
+      // Between gills only where two of them meet (both at the surface), not across one.
+      float between = next < 2.5 ? next - nearest : 1e3;
+      float edge = min(abs(head - nearest), between);
+      float edgeAA = fwidth(edge);
+      color = mix(color, ink, cover(edge - line, edgeAA));
+      // The face, on its front (and not on its gills, or through to its back).
       if (in.part.x < 0.3 && in.rest.z > 8.0) {
         float faceAA = max(fwidth(in.rest.x), fwidth(in.rest.y)) * 0.75;
         color = face(color, in.rest.xy, u, faceAA);

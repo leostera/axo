@@ -79,7 +79,13 @@ final class SquishyAxoView: MTKView, MTKViewDelegate {
     body.grab(at: at)
     body.pull(to: at)
   }
+  /// Pulls what is held to `point` (from its middle), stretching it.
+  func pull(to point: CGPoint) { body.pull(to: model(point)) }
   func letGo() { body.letGo() }
+  /// Sitting on the ground: from now on, nothing goes below its bottom.
+  func sit() { body.land(speed: 0) }
+  /// Off the ground.
+  func lift() { body.lift() }
   /// Its window sped up by `change` points a second (screen, y up).
   func jolt(_ change: CGVector) {
     let c = cos(-roll), s = sin(-roll)

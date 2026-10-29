@@ -40,7 +40,11 @@ struct AboutSettingsView: View {
     VStack(spacing: 14) {
       Spacer(minLength: 0)
 
-      AboutMascotView(pointer: pointer, paneSize: paneSize)
+      HStack(spacing: 8) {
+        AboutMascotView(pointer: pointer, paneSize: paneSize)
+        // The squishy 3D Axo, to try out next to the flat one.
+        AboutSquishyView(pointer: pointer, paneSize: paneSize)
+      }
 
       VStack(spacing: 6) {
         Text("Axo")

@@ -39,37 +39,42 @@ final class SquishyBodyTests: XCTestCase {
     XCTAssertEqual(body.positions[nose].z, before, accuracy: 2, "back")
   }
 
-  func testCarriedByOneSideItHangsBackAndLetGoItSpringsBack() {
-    let body = axo()
-    let width = { (b: SquishyBody) in b.positions.map(\.x).max()! - b.positions.map(\.x).min()! }
-    let rest = width(body)
-    // Held by its right side, and its window pulled right faster and faster: the rest lags.
-    body.grab(at: CGPoint(x: 30, y: 0))
-    var widest = rest
-    for _ in 0..<30 {
-      body.jolt(CGVector(dx: 40, dy: 0))
-      body.step(1.0 / 60)
-      widest = max(widest, width(body))
-    }
-    XCTAssertGreaterThan(widest, rest + 5, "stretched")
-    body.letGo()
-    run(body, 3)
-    XCTAssertEqual(width(body), rest, accuracy: 2, "back")
-  }
-
-  func testLandingSquashesIt() {
+  func testLiftedByItsTopItComesAlongAndLetGoItIsItsShapeAgain() {
     let body = axo()
     let height = { (b: SquishyBody) in b.positions.map(\.y).max()! - b.positions.map(\.y).min()! }
-    let rest = height(body)
+    let middle = { (b: SquishyBody) in b.positions.map(\.y).reduce(0, +) / Float(b.positions.count) }
+    let rest = height(body), restMiddle = middle(body)
+    body.land(speed: 0)
+    // Held by its top and lifted: it comes along, under its weight.
+    body.grab(at: CGPoint(x: 0, y: 20))
+    body.pull(to: CGPoint(x: 0, y: 40))
+    run(body, 1)
+    XCTAssertGreaterThan(middle(body), restMiddle + 5, "lifted")
+    // Let go, it falls back to the ground and is its own shape again.
+    body.letGo()
+    run(body, 3)
+    XCTAssertEqual(height(body), rest, accuracy: 3, "back")
+    XCTAssertEqual(middle(body), restMiddle, accuracy: 3, "down")
+  }
+
+  func testOnTheGroundItSitsUnderItsWeightAndLandingSquashesIt() {
+    let body = axo()
+    let height = { (b: SquishyBody) in b.positions.map(\.y).max()! - b.positions.map(\.y).min()! }
+    let made = height(body)
+    body.land(speed: 0)
+    run(body, 3)
+    let sitting = height(body)
+    // Held up by the ground: sagging only a little.
+    XCTAssertEqual(sitting, made, accuracy: 4, "sitting")
     body.land(speed: 400)
-    var lowest = rest
+    var lowest = sitting
     for _ in 0..<30 {
       body.step(1.0 / 60)
       lowest = min(lowest, height(body))
     }
-    XCTAssertLessThan(lowest, rest - 3, "squashed")
+    XCTAssertLessThan(lowest, sitting - 3, "squashed")
     run(body, 3)
-    XCTAssertEqual(height(body), rest, accuracy: 1, "back")
+    XCTAssertEqual(height(body), sitting, accuracy: 1, "back")
   }
 
   func testBlownUpItGrows() {

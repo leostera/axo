@@ -42,8 +42,12 @@ void axo_squishy_let_go(AxoSquishy *squishy);
 void axo_squishy_jolt(AxoSquishy *squishy, float dx, float dy);
 
 /// It hit the ground at `speed` points a second: its bottom stops, the rest keeps going, and it
-/// squashes and springs back.
+/// squashes against the ground and springs back. It is on the ground from then until
+/// `axo_squishy_lift`.
 void axo_squishy_land(AxoSquishy *squishy, float speed);
+
+/// Off the ground (picked up, or thrown): nothing under it.
+void axo_squishy_lift(AxoSquishy *squishy);
 
 /// How far its vertices are, on average, from where its shape would have them: 0 at rest.
 float axo_squishy_wobble(const AxoSquishy *squishy);

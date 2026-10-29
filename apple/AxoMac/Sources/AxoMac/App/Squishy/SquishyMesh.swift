@@ -1,25 +1,20 @@
 import simd
 
-/// The squishy Axo's body as a closed triangle mesh, made here rather than in a 3D editor: an
-/// icosphere pushed out onto Axo's shape, which is its head (an ellipsoid, wider than tall and
-/// flatter underneath) with three gill fronds a side fanning out of it as in the logo, and two
-/// little arms in front. Points, x right, y up, z towards the viewer; centred on the origin.
+/// The squishy Axo's body as a closed triangle mesh, made here rather than in a 3D editor, after
+/// the logo: a wide dome of a head, flatter underneath, with three short, round gill lobes a side
+/// stacked on its sides (up and out, out, and a little down). Points, x right, y up, z towards
+/// the viewer; centred on the origin.
 ///
-/// The pieces are joined smoothly (a smooth union of their distance fields), so the gills grow out
-/// of the head without a crease, and each icosphere vertex goes where a ray out from the centre
-/// last leaves the joined shape.
+/// An icosphere, each vertex pushed out to where a ray from the centre last leaves the shape:
+/// the head and each lobe as distance fields, each lobe smoothly joined to the head (and not to
+/// the others, so they stay apart).
 ///
 /// It has no face: the face is drawn on it by the renderer, from each point's place at rest.
 struct SquishyMesh {
-  /// Which part of Axo a vertex is on, for its colour: its kind, how much it is gill (from 0 to
-  /// 1, smoothly across where a gill grows out of the head), and on a gill how far along it (0 at
-  /// the centre, 1 at the tip) and how far off its middle line (in points).
+  /// Which part of Axo a vertex is on: how much it is gill, from 0 to 1, smoothly across where a
+  /// gill grows out of the head (the face is drawn only on the head).
   struct Part: Equatable {
-    enum Kind: Int { case head = 0, gill = 1, arm = 2 }
-    var kind: Kind
     var gill: Float = 0
-    var along: Float = 0
-    var across: Float = 0
   }
 
   /// Every vertex, at rest.
@@ -29,104 +24,42 @@ struct SquishyMesh {
   /// Each vertex's part, for `axo`; all head otherwise.
   var parts: [Part] = []
 
-  /// Half its head's width, height and depth.
-  static let head = SIMD3<Float>(38, 27, 30)
+  /// Half its head's width, height (above; it is flatter underneath) and depth: the logo's
+  /// proportions, about 1.4 times as wide as tall.
+  static let head = SIMD3<Float>(40, 28, 28)
+  private static let underneath: Float = 0.85
 
-  /// A gill frond or an arm: a tube along a curved spine from the centre out to `tip`, flattened
-  /// front to back by `depth`. A frond is shaped like a leaf: `radius` thick inside the head, widest
-  /// (`leaf`) just past where it leaves it (`root`, of its length), and tapering to a point; it curls
-  /// its tip by `curl` (of its length), waves along the way by `wave`, and its edges ripple by
-  /// `ripple` (of its width).
+  /// A gill lobe: a capsule from inside the head out to `tip`, `radius` thick, flattened front to
+  /// back by `depth`, a little behind the face.
   private struct Lobe {
-    var kind: Part.Kind
-    var spine: [SIMD3<Float>]
-    var radii: [Float]
-    var depth: Float
+    var root: SIMD3<Float>
+    var tip: SIMD3<Float>
+    var radius: Float
+    var depth: Float = 0.75
 
-    init(
-      kind: Part.Kind, tip: SIMD3<Float>, radius: Float, leaf: Float? = nil, root: Float = 0.5,
-      curl: Float = 0, wave: Float = 0, ripple: Float = 0, depth: Float = 0.7
-    ) {
-      self.kind = kind
-      self.depth = depth
-      let length = simd_length(tip)
-      let axis = tip / length
-      let up = Lobe.up(axis)
-      let samples = 32
-      spine = (0...samples).map { index in
-        let t = Float(index) / Float(samples)
-        // Curled up more towards its tip, and a wave and a half along it, still at both ends.
-        let bend = curl * length * t * t + wave * sin(t * 3 * .pi) * t * (1 - t) * 4
-        return tip * t + up * bend
-      }
-      radii = (0...samples).map { index in
-        let t = Float(index) / Float(samples)
-        guard let leaf, t > root else { return radius }
-        let u = (t - root) / (1 - root)
-        let ripples = 1 + ripple * sin(u * 5 * .pi)
-        return max(0.7, leaf * pow(sin(.pi * (0.3 + 0.7 * u)), 0.75) * ripples)
-      }
-    }
-
-    /// Up across a frond pointing along `axis`, in the picture's plane: up for one going sideways.
-    static func up(_ axis: SIMD3<Float>) -> SIMD3<Float> {
-      simd_normalize(SIMD3(-axis.y, axis.x, 0)) * (axis.x < 0 ? -1 : 1)
-    }
-
-    private func flattened(_ point: SIMD3<Float>) -> SIMD3<Float> { SIMD3(point.x, point.y, point.z / depth) }
-
-    /// The nearest point of its spine to `point`: which segment, how far along it, and how far
-    /// out of the tube there `point` is.
-    private func nearest(_ point: SIMD3<Float>) -> (segment: Int, t: Float, distance: Float) {
-      let p = flattened(point)
-      var best = (segment: 0, t: Float(0), distance: Float.greatestFiniteMagnitude)
-      for index in 0..<(spine.count - 1) {
-        let a = flattened(spine[index]), b = flattened(spine[index + 1])
-        let ab = b - a
-        let t = min(1, max(0, simd_dot(p - a, ab) / simd_dot(ab, ab)))
-        let radius = radii[index] + (radii[index + 1] - radii[index]) * t
-        let d = simd_length(p - (a + ab * t)) - radius
-        if d < best.distance { best = (index, t, d) }
-      }
-      return best
-    }
-
-    /// Its signed distance at `point`, roughly.
-    func distance(_ point: SIMD3<Float>) -> Float { nearest(point).distance }
-
-    /// Where `point`, on its surface, is along it and to which side.
-    func part(at point: SIMD3<Float>) -> Part {
-      let near = nearest(point)
-      let a = spine[near.segment], b = spine[near.segment + 1]
-      let up = Lobe.up(simd_normalize(b - a))
-      let along = (Float(near.segment) + near.t) / Float(spine.count - 1)
-      return Part(kind: kind, along: along, across: simd_dot(point - (a + (b - a) * near.t), up))
+    func distance(_ point: SIMD3<Float>) -> Float {
+      let flat = SIMD3<Float>(1, 1, 1 / depth)
+      let p = point * flat, a = root * flat, b = tip * flat
+      let t = min(1, max(0, simd_dot(p - a, b - a) / simd_length_squared(b - a)))
+      return simd_length(p - (a + (b - a) * t)) - radius
     }
   }
 
+  /// After the logo, in head half-widths from its middle: the middle of each lobe's round end,
+  /// top, middle and bottom, a side; each starts inside the head, towards the middle.
   private static let lobes: [Lobe] = {
-    var lobes: [Lobe] = []
-    // Three fronds a side, out of the back of its head, fanning from up and out to out and a
-    // little down, each reaching past the head, tapering to a point with its tip curled up.
-    // Out of the back of its head, fanning down its sides as in the logo, each curling up a
-    // little to its point.
-    for (degrees, reach, curl): (Float, Float, Float) in [(52, 54, 0.1), (22, 57, 0.12), (-8, 52, 0.14)] {
-      let angle = degrees * .pi / 180
-      for side: Float in [1, -1] {
-        let tip = SIMD3(side * cos(angle) * reach, sin(angle) * reach * 0.88, -10)
-        // It leaves the head about where the head is, that way.
-        let root = 1 / simd_length(tip / head) / 1.05
-        lobes.append(
-          Lobe(kind: .gill, tip: tip, radius: 4.5, leaf: 5.6, root: min(0.8, root), curl: curl, wave: 1.5,
-            ripple: 0.06))
+    let tips: [SIMD2<Float>] = [[1.2, 0.62], [1.42, 0.22], [1.34, -0.17]]
+    return tips.flatMap { tip in
+      [Float(1), -1].map { side in
+        Lobe(
+          root: SIMD3(side * 0.55 * head.x, tip.y * 0.6 * head.x, -6),
+          tip: SIMD3(side * tip.x * head.x, tip.y * head.x, -6), radius: 0.19 * head.x)
       }
     }
-    // Stubby arms, low in front.
-    for side: Float in [1, -1] {
-      lobes.append(Lobe(kind: .arm, tip: SIMD3(side * 18, -25, 13), radius: 5.5, depth: 1))
-    }
-    return lobes
   }()
+
+  /// How far each lobe's join to the head is rounded, in points.
+  private static let fillet: Float = 4
 
   /// Axo, from an icosphere subdivided `subdivisions` times (4 is 2562 vertices).
   static func axo(subdivisions: Int = 4) -> SquishyMesh {
@@ -137,18 +70,14 @@ struct SquishyMesh {
     return sphere
   }
 
-  /// How far the pieces' joins are rounded, in points.
-  private static let fillet: Float = 5
-
   /// The head's distance at `point`, roughly (an ellipsoid's, flatter underneath).
   private static func headDistance(_ point: SIMD3<Float>) -> Float {
-    let radii = SIMD3(head.x, point.y < 0 ? head.y * 0.8 : head.y, head.z)
+    let radii = SIMD3(head.x, point.y < 0 ? head.y * underneath : head.y, head.z)
     let k0 = simd_length(point / radii), k1 = simd_length(point / (radii * radii))
     return k0 * (k0 - 1) / k1
   }
 
-  /// The whole shape's distance at `point`: each piece smoothly joined to the head (and not to
-  /// each other, so the gills stay apart).
+  /// The whole shape's distance at `point`.
   private static func distance(_ point: SIMD3<Float>) -> Float {
     let head = headDistance(point)
     return lobes.reduce(head) { joined, lobe in
@@ -159,10 +88,10 @@ struct SquishyMesh {
   }
 
   /// Where a ray from the centre towards `direction` last leaves the shape, and which part of it
-  /// is there (the piece nearest).
+  /// is there.
   private static func surface(_ direction: SIMD3<Float>) -> (point: SIMD3<Float>, part: Part) {
-    // In from well outside, to the first point inside; then halved down to the surface.
-    // Stepping by most of the distance to the shape, which it cannot be nearer than (roughly).
+    // In from well outside, stepping by most of the distance to the shape (which it cannot be
+    // nearer than, roughly), to the first point inside; then halved down to the surface.
     var inside: Float = 90, outside: Float = 90
     while inside > 0 {
       let d = distance(direction * inside)
@@ -176,14 +105,38 @@ struct SquishyMesh {
       if distance(direction * middle) < 0 { inside = middle } else { outside = middle }
     }
     let point = direction * inside
-    let nearest = lobes.min { $0.distance(point) < $1.distance(point) }!
-    var part = nearest.distance(point) < headDistance(point) ? nearest.part(at: point) : Part(kind: .head)
+    let lobe = lobes.map { $0.distance(point) }.min()!
     // Gill where a gill is nearer than the head, blending over a couple of points: a smooth field,
-    // so the colour's edge does not follow the triangles.
-    let gills = lobes.filter { $0.kind == .gill }
-    let gill = gills.min { $0.distance(point) < $1.distance(point) }!
-    part.gill = min(1, max(0, 0.5 + (headDistance(point) - gill.distance(point)) / 3))
-    return (point, part)
+    // so its edge does not follow the triangles.
+    return (point, Part(gill: min(1, max(0, 0.5 + (headDistance(point) - lobe) / 3))))
+  }
+
+  /// The head's and the lobes' distance fields in Metal, the same as here, for the renderer to
+  /// ink where they meet on the surface: `head_distance(p)` and `lobe_distance(i, p)` for `i` below
+  /// `LOBES`.
+  static var shaderShape: String {
+    func f(_ v: Float) -> String { String(format: "%.4f", v) }
+    func f3(_ v: SIMD3<Float>) -> String { "float3(\(f(v.x)), \(f(v.y)), \(f(v.z)))" }
+    return """
+      constant int LOBES = \(lobes.count);
+      constant float3 lobe_roots[] = { \(lobes.map { f3($0.root) }.joined(separator: ", ")) };
+      constant float3 lobe_tips[] = { \(lobes.map { f3($0.tip) }.joined(separator: ", ")) };
+      constant float lobe_radii[] = { \(lobes.map { f($0.radius) }.joined(separator: ", ")) };
+      constant float lobe_depths[] = { \(lobes.map { f($0.depth) }.joined(separator: ", ")) };
+
+      static float head_distance(float3 p) {
+        float3 radii = float3(\(f(head.x)), p.y < 0 ? \(f(head.y * underneath)) : \(f(head.y)), \(f(head.z)));
+        float k0 = length(p / radii), k1 = length(p / (radii * radii));
+        return k0 * (k0 - 1) / k1;
+      }
+
+      static float lobe_distance(int i, float3 p) {
+        float3 flat = float3(1, 1, 1 / lobe_depths[i]);
+        float3 q = p * flat, a = lobe_roots[i] * flat, b = lobe_tips[i] * flat;
+        float t = clamp(dot(q - a, b - a) / dot(b - a, b - a), 0.0, 1.0);
+        return length(q - (a + (b - a) * t)) - lobe_radii[i];
+      }
+      """
   }
 
   /// A unit icosphere: an icosahedron with each triangle cut into four, `subdivisions` times, and

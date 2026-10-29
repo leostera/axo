@@ -21,17 +21,34 @@ constexpr btScalar kStep = 1.0 / 120.0;
 constexpr btScalar kPressure = 5;
 /// The part of it a grab holds, and a poke pushes, in points.
 constexpr btScalar kHandRadius = 14;
-/// How hard a grab pulls its patch to the pointer, and how hard a poke pushes, in points a second.
-constexpr btScalar kPull = 120;
+/// A grab holds a broad, soft region around where it took hold, not a point: everything within
+/// about `kGrip` points of it (a Gaussian falloff), each on a spring to where the hand has moved it,
+/// as stiff as `kGripSpring` (per second squared) and damped by `kGripDamping` (per second) where
+/// it is held hardest. The rest of it follows through its own shape, lagging by its weight.
+constexpr btScalar kGrip = 20;
+constexpr btScalar kGripSpring = 900;
+constexpr btScalar kGripDamping = 40;
+/// Its weight, in points a second squared, which it feels when something holds it up (the ground,
+/// or a hand), and not while it flies (then its window falls with it).
+constexpr btScalar kGravity = 900;
+/// How firmly the ground holds it up, per second squared, and damps it, per second: pushing up
+/// on its centre as it sinks below where it sits, and not at all as it is lifted. (Holding up
+/// only the parts of it touching the ground would leave the rest to sink.)
+constexpr btScalar kGround = 400;
+constexpr btScalar kGroundDamping = 30;
+/// How hard a poke pushes, in points a second.
 constexpr btScalar kPoke = 300;
 /// How firmly it is pulled back to its shape, upright, per second squared: it comes back after a
 /// dent, wobbling, and does not stay turned (its window turns it). Bullet's own shape matching
 /// lets it turn.
-constexpr btScalar kShape = 300;
+constexpr btScalar kShape = 1200;
 /// How firmly it is kept in the middle of its window, per second squared.
 constexpr btScalar kTether = 10;
-/// The part of its bottom that stops when it lands, in points.
-constexpr btScalar kFoot = 8;
+/// The most a jolt can change its speed by, in points a second: its window can jerk about far
+/// more than a body this soft can follow without tangling.
+constexpr btScalar kMostJolt = 500;
+/// The fastest any part of it moves (relative to its window), in points a second.
+constexpr btScalar kFastest = 1500;
 
 btVector3 units(float x, float y, float z) { return btVector3(x, y, z) / kPointsPerUnit; }
 
@@ -47,6 +64,7 @@ struct AxoSquishy {
   int32_t count = 0;
   std::vector<int> held;
   std::vector<btVector3> heldOffsets;
+  std::vector<btScalar> heldWeights;
   btVector3 hold;
   float pending = 0;
   /// Its shape and volume as made, which blowing it up scales (with its springs).
@@ -54,6 +72,9 @@ struct AxoSquishy {
   btScalar volume = 0;
   /// Where its centre is kept: where it was made.
   btVector3 home;
+  /// Where the ground is under it, while it is on the ground: its bottom as made.
+  btScalar floor = 0;
+  bool grounded = false;
 
   ~AxoSquishy() {
     if (body) {
@@ -143,6 +164,8 @@ AxoSquishy *axo_squishy_create(const float *vertices, int32_t vertex_count, cons
   body->updateNormals();
   // Bullet keeps the shape about the origin unless it also lets it turn: about its centre, here.
   squishy->home = centre(body);
+  squishy->floor = BT_LARGE_FLOAT;
+  for (int i = 0; i < body->m_nodes.size(); i++) squishy->floor = std::min(squishy->floor, body->m_nodes[i].m_x.y());
   for (int i = 0; i < body->m_pose.m_pos.size(); i++) body->m_pose.m_pos[i] -= squishy->home;
   for (int i = 0; i < body->m_pose.m_pos.size(); i++) squishy->pose.push_back(body->m_pose.m_pos[i]);
   // Bullet would work out its constants (its springs' lengths among them) from where it is at its
@@ -171,13 +194,16 @@ void axo_squishy_step(AxoSquishy *squishy, float seconds) {
   squishy->pending = std::min(squishy->pending + seconds, 0.1f);
   while (squishy->pending >= kStep) {
     squishy->pending -= float(kStep);
+    if (squishy->grounded || !squishy->held.empty()) {
+      squishy->body->addVelocity(btVector3(0, -kGravity / kPointsPerUnit * kStep, 0));
+    }
     if (!squishy->held.empty()) {
       btSoftBody::tNodeArray &nodes = squishy->body->m_nodes;
       for (size_t k = 0; k < squishy->held.size(); k++) {
         btSoftBody::Node &node = nodes[squishy->held[k]];
         const btVector3 target = squishy->hold + squishy->heldOffsets[k];
-        // Pulled there through its velocity, which the rest of it feels through its springs.
-        node.m_v = (target - node.m_x) * kPull;
+        const btVector3 pull = (target - node.m_x) * kGripSpring - node.m_v * kGripDamping;
+        node.m_v += pull * (squishy->heldWeights[k] * kStep);
       }
     }
     squishy->world->stepSimulation(kStep, 0);
@@ -186,10 +212,25 @@ void axo_squishy_step(AxoSquishy *squishy, float seconds) {
     btSoftBody::tNodeArray &nodes = squishy->body->m_nodes;
     const btSoftBody::Pose &pose = squishy->body->m_pose;
     const btVector3 middle = centre(squishy->body);
-    const btVector3 back = (squishy->home - middle) * (kTether * kStep);
+    btVector3 back = (squishy->home - middle) * (kTether * kStep);
+    if (squishy->grounded && middle.y() < squishy->home.y()) {
+      btVector3 drift(0, 0, 0);
+      for (int i = 0; i < nodes.size(); i++) drift += nodes[i].m_v;
+      drift /= btScalar(nodes.size());
+      back.setY(((squishy->home.y() - middle.y()) * kGround - std::min<btScalar>(0, drift.y()) * kGroundDamping) * kStep);
+    }
+    const btScalar fastest = kFastest / kPointsPerUnit;
     for (int i = 0; i < nodes.size(); i++) {
+      btSoftBody::Node &node = nodes[i];
       const btVector3 goal = middle + pose.m_pos[i];
-      nodes[i].m_v += back + (goal - nodes[i].m_x) * (kShape * kStep);
+      node.m_v += back + (goal - node.m_x) * (kShape * kStep);
+      if (node.m_v.length2() > fastest * fastest) node.m_v *= fastest / node.m_v.length();
+      // On the ground, nothing goes through it, and what touches it sticks a little.
+      if (squishy->grounded && node.m_x.y() < squishy->floor) {
+        node.m_x.setY(squishy->floor);
+        if (node.m_v.y() < 0) node.m_v.setY(0);
+        node.m_v.setX(node.m_v.x() * 0.8);
+      }
     }
   }
 }
@@ -215,14 +256,22 @@ void axo_squishy_poke(AxoSquishy *squishy, float x, float y) {
 }
 
 void axo_squishy_grab(AxoSquishy *squishy, float x, float y) {
-  squishy->held = under(squishy, x, y);
+  axo_squishy_let_go(squishy);
+  const std::vector<int> touched = under(squishy, x, y);
+  if (touched.empty()) return;
+  // Held around the point of it under the hand, by how near each part of it is to that, in 3D (so
+  // not through to its back).
+  const btSoftBody::tNodeArray &nodes = squishy->body->m_nodes;
+  const btVector3 at = nodes[touched.front()].m_x;
+  const btScalar spread = kGrip / kPointsPerUnit;
   squishy->hold = units(x, y, 0);
-  squishy->heldOffsets.clear();
-  for (int i : squishy->held) {
-    const btVector3 &at = squishy->body->m_nodes[i].m_x;
-    squishy->heldOffsets.push_back(btVector3(at.x() - squishy->hold.x(), at.y() - squishy->hold.y(), at.z()));
+  for (int i = 0; i < nodes.size(); i++) {
+    const btScalar weight = std::exp(-(nodes[i].m_x - at).length2() / (2 * spread * spread));
+    if (weight < 0.03) continue;
+    squishy->held.push_back(i);
+    squishy->heldWeights.push_back(weight);
+    squishy->heldOffsets.push_back(nodes[i].m_x - squishy->hold);
   }
-  squishy->hold.setZ(0);
 }
 
 void axo_squishy_pull_to(AxoSquishy *squishy, float x, float y) { squishy->hold = units(x, y, 0); }
@@ -230,24 +279,27 @@ void axo_squishy_pull_to(AxoSquishy *squishy, float x, float y) { squishy->hold 
 void axo_squishy_let_go(AxoSquishy *squishy) {
   squishy->held.clear();
   squishy->heldOffsets.clear();
+  squishy->heldWeights.clear();
 }
 
 void axo_squishy_jolt(AxoSquishy *squishy, float dx, float dy) {
   // Carried along, it is left behind by however much its carrier sped up; the held part keeps up
   // (it is pulled back to the pointer each step).
-  squishy->body->addVelocity(-units(dx, dy, 0));
+  btVector3 change = units(dx, dy, 0);
+  const btScalar most = kMostJolt / kPointsPerUnit;
+  if (change.length2() > most * most) change *= most / change.length();
+  squishy->body->addVelocity(-change);
 }
 
+void axo_squishy_lift(AxoSquishy *squishy) { squishy->grounded = false; }
+
 void axo_squishy_land(AxoSquishy *squishy, float speed) {
+  // Its window has stopped on the ground; in it, all of it carries on down, onto the ground.
+  squishy->grounded = true;
   btSoftBody::tNodeArray &nodes = squishy->body->m_nodes;
-  btScalar bottom = BT_LARGE_FLOAT;
-  for (int i = 0; i < nodes.size(); i++) bottom = std::min(bottom, nodes[i].m_x.y());
-  const btScalar foot = bottom + kFoot / kPointsPerUnit;
-  // Its window has stopped; in it, everything but its foot carries on down.
-  const btVector3 down = units(0, -speed, 0);
-  for (int i = 0; i < nodes.size(); i++) {
-    if (nodes[i].m_x.y() > foot) nodes[i].m_v += down;
-  }
+  const btScalar most = kFastest / kPointsPerUnit;
+  const btVector3 down = units(0, -std::min<btScalar>(speed, most * kPointsPerUnit), 0);
+  for (int i = 0; i < nodes.size(); i++) nodes[i].m_v += down;
 }
 
 float axo_squishy_wobble(const AxoSquishy *squishy) {

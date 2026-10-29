@@ -37,8 +37,10 @@ final class SquishyBody {
   func grab(at point: CGPoint) { axo_squishy_grab(body, Float(point.x), Float(point.y)) }
   func pull(to point: CGPoint) { axo_squishy_pull_to(body, Float(point.x), Float(point.y)) }
   func letGo() { axo_squishy_let_go(body) }
-  /// It landed at `speed` points a second: it squashes and springs back.
+  /// It landed at `speed` points a second: it squashes and springs back, and stays on the ground
+  /// until `lift`.
   func land(speed: CGFloat) { axo_squishy_land(body, Float(speed)) }
+  func lift() { axo_squishy_lift(body) }
   /// Its window sped up by `change` points a second.
   func jolt(_ change: CGVector) { axo_squishy_jolt(body, Float(change.dx), Float(change.dy)) }
 }

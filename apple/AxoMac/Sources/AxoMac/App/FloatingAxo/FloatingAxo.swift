@@ -267,6 +267,7 @@ final class FloatingAxo {
     velocity.reset()
     velocity.add(point, at: ProcessInfo.processInfo.systemUptime)
     world.hold(at: world.axoPosition)
+    squishy?.lift()
     squishy?.grab(at: CGPoint(x: grip.dx, y: grip.dy))
   }
 
@@ -276,7 +277,9 @@ final class FloatingAxo {
   }
 
   func letGo(at point: CGPoint) {
+    // Off the ground until it lands.
     squishy?.letGo()
+    squishy?.lift()
     if keeper.isHome(point) { return keeper.putAway(self) }
     startLonely()
     let throwing = reduceMotion ? .zero : velocity.velocity(at: ProcessInfo.processInfo.systemUptime)
