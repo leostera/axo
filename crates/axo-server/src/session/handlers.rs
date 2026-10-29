@@ -191,6 +191,9 @@ fn invalid_input_or_internal(error: io::Error, message: Option<&str>) -> RpcErro
     }
 }
 
+/// `axo.session.reopen` found no closed Session it could reopen.
+const SESSION_NOT_REOPENED: i64 = -32005;
+
 const DEFAULT_SCREEN_LINES: u32 = 200;
 const MAX_SCREEN_LINES: u32 = 10_000;
 
@@ -577,6 +580,24 @@ impl SessionManager {
                         replacement,
                     })
                     .map_err(internal_rpc_error)
+            },
+        );
+
+        let manager = Arc::clone(self);
+        handler.add_typed(
+            method::SESSION_REOPEN,
+            "expected no parameters",
+            move |_: rpc::NoParams| {
+                manager
+                    .reopen_closed_session()
+                    .map_err(|error| match error.kind() {
+                        io::ErrorKind::NotFound => RpcError {
+                            code: ErrorCode::ServerError(SESSION_NOT_REOPENED),
+                            message: error.to_string(),
+                            data: None,
+                        },
+                        _ => internal_rpc_error(error),
+                    })
             },
         );
 

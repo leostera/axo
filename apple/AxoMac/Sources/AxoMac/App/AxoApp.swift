@@ -185,6 +185,13 @@ struct AxoApp<Launch: AxoLaunchMode>: App {
         }
         .keyboardShortcut("t", modifiers: .command)
 
+        Button("Reopen Closed Session") {
+          Task {
+            if await sessions.reopenClosedSession() == .nothingToReopen { NSSound.beep() }
+          }
+        }
+        .keyboardShortcut("t", modifiers: [.command, .shift])
+
         Button("Split Right") {
           Task { await sessions.split(.right) }
         }

@@ -422,6 +422,24 @@ final class TerminalSessionsModel {
     }
   }
 
+  /// Brings back the Session most recently closed (⌘W on its Pi pane or last pane, or Close
+  /// Session) and shows it. Repeating it reopens the one closed before that.
+  @discardableResult
+  func reopenClosedSession() async -> ClosedSessionReopen {
+    do {
+      let client = try requireClient()
+      try await requireCapabilities().require(.sessionReopen)
+      let session = try await client.reopenClosedSession()
+      adopt(session)
+      return .reopened(session.id)
+    } catch AxoClientError.serverRejected(code: AxodConnection.sessionNotReopenedCode, _) {
+      return .nothingToReopen
+    } catch {
+      report(error)
+      return .failed
+    }
+  }
+
   func closeSession(_ sessionID: SessionID) async {
     do {
       try await archiveSession(sessionID)
@@ -807,6 +825,15 @@ final class TerminalSessionsModel {
   private func replace(_ session: TerminalSession, withShells shells: [TerminalShell]) {
     catalog.replaceShells(of: session.id, with: shells)
   }
+}
+
+/// What reopening a closed Session did.
+enum ClosedSessionReopen: Equatable {
+  case reopened(SessionID)
+  /// No closed Session was left to reopen.
+  case nothingToReopen
+  /// Reported through `errorMessage`.
+  case failed
 }
 
 /// Whether each menu command applies; see `TerminalSessionsModel.commandAvailability`.

@@ -965,6 +965,34 @@ pub fn pi_history_owners(
         .map_err(io::Error::other)
 }
 
+/// Sessions a person closed, most recently closed first, at most `limit`: what reopening a
+/// closed Session offers. Sessions that ended any other way (their shell exited, Pi failed to
+/// start, their Workspace was archived) are not offered.
+pub fn recently_closed_sessions(
+    database: &Connection,
+    limit: usize,
+) -> io::Result<Vec<PiHistoryOwner>> {
+    let mut statement = database
+        .prepare(
+            "SELECT id, state, initial_pwd, workspace_id FROM sessions
+             WHERE state = 'archived' AND termination_reason = 'explicit_close'
+             ORDER BY archived_at DESC, id DESC LIMIT ?1",
+        )
+        .map_err(io::Error::other)?;
+    statement
+        .query_map(params![limit as i64], |row| {
+            Ok(PiHistoryOwner {
+                session_id: stored_session_id(row.get(0)?)?,
+                lifecycle: row.get(1)?,
+                initial_pwd: PathBuf::from(row.get::<_, String>(2)?),
+                workspace_id: row.get(3)?,
+            })
+        })
+        .map_err(io::Error::other)?
+        .collect::<Result<Vec<_>, _>>()
+        .map_err(io::Error::other)
+}
+
 /// A Workspace's directory and security-scoped bookmark, whether or not it is open.
 pub fn workspace_directory(
     database: &Connection,
@@ -989,8 +1017,9 @@ pub fn archived_pi_pane_count(database: &Connection, id: SessionId) -> io::Resul
         .map_err(io::Error::other)
 }
 
-/// Reopens an archived Session, its shells and (if it has one) its Workspace, all or nothing.
-/// Fails with `AlreadyExists` if the Session is no longer archived, `NotFound` if its Workspace
+/// Reopens an archived Session, the shells that closed with it and (if it has one) its
+/// Workspace, all or nothing. Shells closed earlier on their own stay closed; `archive_session`
+/// stamps a Session and its last shells with the same time and reason. Fails with `AlreadyExists` if the Session is no longer archived, `NotFound` if its Workspace
 /// row is gone.
 pub fn reopen_archived_session(
     database: &mut Connection,
@@ -1016,6 +1045,16 @@ pub fn reopen_archived_session(
             )
             .map_err(io::Error::other)?;
     }
+    // Before the Session row loses the time and reason that identify its last shells.
+    transaction
+        .execute(
+            "UPDATE shells SET state = 'open', archived_at = NULL, termination_reason = NULL
+             WHERE session_id = ?1 AND state = 'archived'
+               AND archived_at IS (SELECT archived_at FROM sessions WHERE id = ?1)
+               AND termination_reason IS (SELECT termination_reason FROM sessions WHERE id = ?1)",
+            params![id.get()],
+        )
+        .map_err(io::Error::other)?;
     let changed = transaction
         .execute(
             "UPDATE sessions SET state = 'open', archived_at = NULL, termination_reason = NULL
@@ -1029,13 +1068,6 @@ pub fn reopen_archived_session(
             "Session changed while it was being resumed",
         ));
     }
-    transaction
-        .execute(
-            "UPDATE shells SET state = 'open', archived_at = NULL, termination_reason = NULL
-             WHERE session_id = ?1 AND state = 'archived'",
-            params![id.get()],
-        )
-        .map_err(io::Error::other)?;
     transaction.commit().map_err(io::Error::other)
 }
 
@@ -1154,19 +1186,23 @@ pub struct StoredPiSession {
     pub session_uuid: String,
     pub session_file: Option<PathBuf>,
     pub bridge_socket_path: Option<String>,
+    /// Whether Pi ever completed a message, and so wrote its history.
+    pub has_messages: bool,
 }
 
 pub fn open_pi_session(database: &Connection, id: SessionId) -> io::Result<StoredPiSession> {
     database
         .query_row(
-            "SELECT session_uuid, pi_session_file, pi_bridge_socket_path FROM sessions
-             WHERE id = ?1 AND state = 'open'",
+            "SELECT session_uuid, pi_session_file, pi_bridge_socket_path,
+                    last_message_at IS NOT NULL
+             FROM sessions WHERE id = ?1 AND state = 'open'",
             params![id.get()],
             |row| {
                 Ok(StoredPiSession {
                     session_uuid: row.get(0)?,
                     session_file: row.get::<_, Option<String>>(1)?.map(PathBuf::from),
                     bridge_socket_path: row.get(2)?,
+                    has_messages: row.get(3)?,
                 })
             },
         )
@@ -1610,12 +1646,30 @@ mod tests {
         let session = insert_session(database, "uuid", "archived");
         database
             .execute(
-                "INSERT INTO shells (session_id, initial_pwd, state, created_at, role)
-                 VALUES (?1, '/', 'archived', 0, 'pi')",
+                "UPDATE sessions SET archived_at = 9, termination_reason = 'explicit_close'
+                 WHERE id = ?1",
+                params![session.get()],
+            )
+            .unwrap();
+        database
+            .execute(
+                "INSERT INTO shells (session_id, initial_pwd, state, created_at, role,
+                                     archived_at, termination_reason)
+                 VALUES (?1, '/', 'archived', 0, 'pi', 9, 'explicit_close')",
                 params![session.get()],
             )
             .unwrap();
         let shell = inserted_shell_id(database).unwrap().get().to_string();
+        // Closed on its own before the Session closed: stays closed.
+        database
+            .execute(
+                "INSERT INTO shells (session_id, initial_pwd, state, created_at, role,
+                                     archived_at, termination_reason)
+                 VALUES (?1, '/', 'archived', 0, 'terminal', 9, 'pane_closed')",
+                params![session.get()],
+            )
+            .unwrap();
+        let closed_alone = inserted_shell_id(database).unwrap().get().to_string();
         let id = session.get().to_string();
 
         // A missing Workspace leaves everything archived.
@@ -1633,6 +1687,10 @@ mod tests {
         reopen_archived_session(database, session, Some(&workspace)).unwrap();
         assert_eq!(lifecycle(database, "sessions", "id", &id), "open");
         assert_eq!(lifecycle(database, "shells", "id", &shell), "open");
+        assert_eq!(
+            lifecycle(database, "shells", "id", &closed_alone),
+            "archived"
+        );
         assert_eq!(
             lifecycle(database, "workspaces", "workspace_id", &workspace),
             "open"

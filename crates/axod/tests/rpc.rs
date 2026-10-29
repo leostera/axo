@@ -1220,6 +1220,97 @@ fn axod_mcp_serves_one_sessions_agent_over_stdio() {
 }
 
 #[test]
+fn closed_sessions_reopen_most_recent_first_with_the_panes_they_closed_with() {
+    let directory = unique_test_directory("axo-reopen");
+    let server_directory = directory.join("server");
+    let socket = directory.join("axod.sock");
+    let mut cleanup = SessionProcessCleanup::default();
+    let mut daemon = start_axod(&server_directory, &socket);
+    wait_for_socket(&socket, &mut daemon);
+
+    let nothing = rpc(&socket, "axo.session.reopen");
+    assert_eq!(nothing["error"]["code"], -32005, "{nothing}");
+
+    let first = active_sessions(&socket).remove(0);
+    let second = create_session(&socket);
+    cleanup.track(&first);
+    cleanup.track(&second);
+
+    // A terminal pane closed on its own stays closed when its Session comes back.
+    let extra = rpc_with_params(
+        &socket,
+        "axo.shell.create",
+        json!({ "sessionId": first["id"] }),
+    )["result"]
+        .clone();
+    let closed_extra = rpc_with_params(
+        &socket,
+        "axo.shell.close",
+        json!({ "sessionId": first["id"], "shellId": extra["id"] }),
+    );
+    assert!(closed_extra["error"].is_null(), "{closed_extra}");
+
+    // Closing a Session's Pi pane (⌘W on it) closes the Session.
+    for session in [&first, &second] {
+        let closed = rpc_with_params(
+            &socket,
+            "axo.shell.close",
+            json!({ "sessionId": session["id"], "shellId": pane_with_role(session, "pi")["id"] }),
+        );
+        assert_eq!(
+            closed["result"]["archivedSessionId"], session["id"],
+            "{closed}"
+        );
+    }
+
+    // The most recently closed comes back first, then the one before it.
+    for expected in [&second, &first] {
+        let reopened = rpc(&socket, "axo.session.reopen")["result"].clone();
+        cleanup.track(&reopened);
+        assert_eq!(reopened["id"], expected["id"], "{reopened}");
+        let mut pane_ids: Vec<_> = reopened["shells"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(|shell| shell["id"].clone())
+            .collect();
+        let mut expected_ids: Vec<_> = expected["shells"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(|shell| shell["id"].clone())
+            .collect();
+        pane_ids.sort_by_key(|id| id.as_i64());
+        expected_ids.sort_by_key(|id| id.as_i64());
+        assert_eq!(pane_ids, expected_ids, "{reopened}");
+    }
+    let open_ids: Vec<_> = active_sessions(&socket)
+        .iter()
+        .map(|session| session["id"].clone())
+        .collect();
+    assert!(open_ids.contains(&first["id"]) && open_ids.contains(&second["id"]));
+
+    // Pi resumes in the reopened Session.
+    let deadline = Instant::now() + READY_WAIT;
+    loop {
+        let sessions = active_sessions(&socket);
+        let reopened = sessions
+            .iter()
+            .find(|session| session["id"] == first["id"])
+            .unwrap();
+        if pane_with_role(reopened, "pi")["available"] == true {
+            cleanup.track(reopened);
+            break;
+        }
+        assert!(Instant::now() < deadline, "Pi did not resume: {reopened}");
+        thread::sleep(Duration::from_millis(50));
+    }
+
+    let exhausted = rpc(&socket, "axo.session.reopen");
+    assert_eq!(exhausted["error"]["code"], -32005, "{exhausted}");
+}
+
+#[test]
 fn the_home_workspace_always_has_a_session_and_cannot_be_archived() {
     let directory = unique_test_directory("axo-home-workspace");
     let server_directory = directory.join("server");

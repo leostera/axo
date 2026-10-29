@@ -24,6 +24,7 @@ pub mod method {
     pub const WORKSPACE_ARCHIVE: &str = "axo.workspace.archive";
     pub const WORKSPACE_SESSION_CREATE: &str = "axo.workspace.session.create";
     pub const SESSION_CLOSE: &str = "axo.session.close";
+    pub const SESSION_REOPEN: &str = "axo.session.reopen";
     pub const SESSION_RENAME: &str = "axo.session.rename";
     pub const SESSION_PI_RESTART_FORCE: &str = "axo.session.pi.restart.force.v2";
     pub const SESSION_PI_RESTART_AUTO: &str = "axo.session.pi.restart.auto.v1";
@@ -57,6 +58,7 @@ pub mod method {
         WORKSPACE_ARCHIVE,
         WORKSPACE_SESSION_CREATE,
         SESSION_CLOSE,
+        SESSION_REOPEN,
         SESSION_RENAME,
         SESSION_PI_RESTART_FORCE,
         SESSION_PI_RESTART_AUTO,

@@ -11,6 +11,7 @@ public enum AxodMethodName: String, CaseIterable, Sendable {
   case sessionList = "axo.session.list"
   case sessionCreate = "axo.session.create"
   case sessionClose = "axo.session.close"
+  case sessionReopen = "axo.session.reopen"
   case sessionRename = "axo.session.rename"
   case sessionLayoutSet = "axo.session.layout.set"
   case sessionSubscribe = "axo.session.subscribe"

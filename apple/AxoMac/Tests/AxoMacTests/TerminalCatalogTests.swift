@@ -1,3 +1,4 @@
+import AxoClient
 import AxoProtocol
 import Observation
 import XCTest
@@ -11,7 +12,7 @@ final class FakeAxodClient: AxodClient {
   var workspaces: [WorkspaceRecord] = []
   var resumeSessionID: SessionID?
   var methods: [String] = (AxodCapabilities.requiredMethods.union([
-    .sessionRename, .workspaceRename, .workspaceArchive, .shellBusy,
+    .sessionRename, .sessionReopen, .workspaceRename, .workspaceArchive, .shellBusy,
   ])).map(\.rawValue)
   private(set) var listCount = 0
   private(set) var workspaceListCount = 0
@@ -79,6 +80,18 @@ final class FakeAxodClient: AxodClient {
   }
   func renameSession(_ sessionID: SessionID, to name: String) async throws -> TerminalSession {
     throw Unsupported()
+  }
+  /// What `reopenClosedSession` answers, most recently closed first; empty is Axod's
+  /// "nothing to reopen".
+  var closedSessions: [TerminalSession] = []
+  func reopenClosedSession() async throws -> TerminalSession {
+    guard !closedSessions.isEmpty else {
+      throw AxoClientError.serverRejected(
+        code: AxodConnection.sessionNotReopenedCode, message: "no closed Session to reopen")
+    }
+    let session = closedSessions.removeFirst()
+    sessions.append(session)
+    return session
   }
   func renameWorkspace(_ workspaceID: String, to name: String) async throws -> WorkspaceRecord {
     throw Unsupported()

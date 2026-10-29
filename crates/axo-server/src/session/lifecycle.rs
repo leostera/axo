@@ -149,7 +149,9 @@ fn close_shell(
         &mut state.database,
         shell_id,
         session_id,
-        "explicit_close",
+        // Not `explicit_close`, which marks the panes that closed with their Session and so
+        // come back when it is reopened.
+        "pane_closed",
         &remaining_shell_ids,
     )?;
     let shell = state.panes.remove(shell_id).into_iter().collect();

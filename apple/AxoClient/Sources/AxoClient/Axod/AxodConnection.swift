@@ -140,6 +140,15 @@ public final class AxodConnection: Sendable {
     try await call(AxodMethods.sessionClose, CloseTerminalSessionRequest(sessionId: sessionID))
   }
 
+  /// Reopens the Session most recently closed on this Mac. Axod rejects it with
+  /// `sessionNotReopenedCode` when no closed Session can be reopened.
+  public func reopenClosedSession() async throws -> TerminalSession {
+    try await call(AxodMethods.sessionReopen)
+  }
+
+  /// `axo.session.reopen`'s error when there is no closed Session it can reopen.
+  public static let sessionNotReopenedCode = -32005
+
   public func renameSession(_ sessionID: SessionID, to name: String) async throws
     -> TerminalSession
   {

@@ -85,6 +85,10 @@ pub const PARITY: &[Parity] = &[
         Remote::Call("axo.remote.session.close"),
     ),
     row(
+        method::SESSION_REOPEN,
+        Remote::LocalOnly("undoes a close made on this Mac"),
+    ),
+    row(
         method::SESSION_RENAME,
         Remote::Call("axo.remote.session.rename"),
     ),

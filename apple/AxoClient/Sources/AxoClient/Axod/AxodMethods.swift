@@ -141,6 +141,8 @@ enum AxodMethods {
   static let sessionCreate = AxodMethod<NoParams, TerminalSession>(.sessionCreate)
   static let sessionClose = AxodMethod<CloseTerminalSessionRequest, ClosedTerminalSession>(.sessionClose)
   static let sessionRename = AxodMethod<SessionRenameRequest, TerminalSession>(.sessionRename)
+  /// Starts the Session's terminals and resumes its Pi before answering.
+  static let sessionReopen = AxodMethod<NoParams, TerminalSession>(.sessionReopen, timeout: .seconds(20))
   static let sessionLayoutSet = AxodMethod<SetSessionLayoutRequest, SessionLayoutAcknowledgement>(.sessionLayoutSet)
   static let sessionSubscribe = AxodMethod<SessionSubscribeRequest, TerminalSubscriptionID>(.sessionSubscribe)
   static let sessionEventsNext = AxodMethod<SessionEventsNextRequest, SessionEventsNextResponse>(.sessionEventsNext)

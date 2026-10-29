@@ -22,6 +22,7 @@ protocol AxodClient: AnyObject {
     name: String, directoryPath: String, directoryBookmark: String?
   ) async throws -> CreatedWorkspace
   func closeSession(_ sessionID: SessionID) async throws -> ClosedTerminalSession
+  func reopenClosedSession() async throws -> TerminalSession
   func renameSession(_ sessionID: SessionID, to name: String) async throws -> TerminalSession
   func renameWorkspace(_ workspaceID: String, to name: String) async throws -> WorkspaceRecord
   func archiveWorkspace(_ workspaceID: String) async throws -> ArchivedWorkspace

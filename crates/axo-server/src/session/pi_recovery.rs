@@ -21,8 +21,8 @@ use axo_pty::WindowSize;
 use axo_pty::process::PtyProcess;
 use axo_store::Connection;
 use axo_store::{
-    PiHistoryOwner, archived_pi_pane_count, pi_history_owners, reopen_archived_session,
-    workspace_directory,
+    PiHistoryOwner, archived_pi_pane_count, pi_history_owners, recently_closed_sessions,
+    reopen_archived_session, workspace_directory,
 };
 use axo_store::{
     StoredLifecycle, archive_shell_and_prune_layout, load_pi_bridge_token, read_open_sessions,
@@ -32,6 +32,8 @@ use axo_store::{StoredPiSession, open_pi_session};
 
 /// The longest transcript path Pi may ask to resume; the extension enforces the same bound.
 const MAX_RESUME_PATH_BYTES: usize = 4096;
+/// How many recently closed Sessions reopening tries before giving up.
+const REOPEN_CANDIDATES: usize = 10;
 
 // A reservation keeps the unavailable pane in the catalog while recovery waits
 // outside its mutex. Close/removal/shutdown invalidates it; failures release it.
@@ -225,7 +227,7 @@ impl SessionManager {
         shell_id: ShellId,
         takeover_policy: TakeoverPolicy,
     ) -> io::Result<SessionRecord> {
-        let (request, recovery, grace) = {
+        let (request, recovery, grace, has_messages) = {
             let mut state = self.lock_state()?;
             if state.shutting_down {
                 return Err(io::Error::new(
@@ -249,6 +251,7 @@ impl SessionManager {
                 session_uuid,
                 session_file,
                 bridge_socket_path,
+                has_messages,
             } = open_pi_session(&state.database, session_id)?;
             let session_file = session_file.ok_or_else(|| {
                 io::Error::new(
@@ -291,12 +294,15 @@ impl SessionManager {
                 shell_id,
                 recovery_id,
             };
-            (request, recovery, state.takeover_grace)
+            (request, recovery, state.takeover_grace, has_messages)
         };
 
         let check_current = || recovery.ensure_current();
-        let history =
-            axo_pi::ensure_existing_history(&request.session_file, &self.pi_session_directory)?;
+        let history = axo_pi::recoverable_history(
+            &request.session_file,
+            &self.pi_session_directory,
+            has_messages,
+        )?;
         let lock = takeover::take_over(
             request.takeover_target(),
             takeover_policy,
@@ -304,8 +310,11 @@ impl SessionManager {
             &|| recovery.ensure_current(),
             &|process_id, signal| recovery.signal_current(process_id, signal),
         )?;
-        if axo_pi::ensure_existing_history(&request.session_file, &self.pi_session_directory)?
-            != history
+        if axo_pi::recoverable_history(
+            &request.session_file,
+            &self.pi_session_directory,
+            has_messages,
+        )? != history
         {
             return Err(io::Error::new(
                 io::ErrorKind::InvalidData,
@@ -427,6 +436,67 @@ impl SessionManager {
         if lifecycle == StoredLifecycle::Open {
             return self.complete_pi_resume(requester, session_id);
         }
+        let owner = PiHistoryOwner {
+            session_id,
+            lifecycle,
+            initial_pwd,
+            workspace_id,
+        };
+        self.reopen_archived(&owner, |state| requester.is_current(state))?;
+        self.complete_pi_resume(requester, session_id)
+    }
+
+    /// Reopens the Session a person most recently closed, as it was when it closed: Pi resumes
+    /// its history and terminals start fresh in its directory. A Session that can no longer be
+    /// reopened (its directory or history is gone) is skipped for the next most recent one.
+    pub(super) fn reopen_closed_session(self: &Arc<Self>) -> io::Result<SessionRecord> {
+        let candidates = recently_closed_sessions(&self.lock_state()?.database, REOPEN_CANDIDATES)?;
+        let mut skipped = None;
+        for owner in candidates {
+            match self.reopen_archived(&owner, |_| true) {
+                Ok(()) => {
+                    self.publish_session_snapshot(owner.session_id)?;
+                    log::info!(
+                        "event=session.reopened session_id={}",
+                        owner.session_id.get()
+                    );
+                    let state = self.lock_state()?;
+                    return session_metadata(&state, owner.session_id, &self.attach_socket_path);
+                }
+                Err(error) => {
+                    log::warn!(
+                        "event=session.reopen_skipped session_id={} error_kind={:?} reason={error}",
+                        owner.session_id.get(),
+                        error.kind()
+                    );
+                    skipped = Some(error);
+                }
+            }
+        }
+        Err(io::Error::new(
+            io::ErrorKind::NotFound,
+            match skipped {
+                Some(error) => format!("no closed Session could be reopened: {error}"),
+                None => "no closed Session to reopen".to_owned(),
+            },
+        ))
+    }
+
+    /// Reopens archived `owner` with the panes that closed with it, starting its terminals and
+    /// Pi's recovery (in the background). `is_current` must still hold under the catalog lock
+    /// when the reopen commits.
+    fn reopen_archived(
+        self: &Arc<Self>,
+        owner: &PiHistoryOwner,
+        is_current: impl Fn(&SessionState) -> bool,
+    ) -> io::Result<()> {
+        let PiHistoryOwner {
+            session_id,
+            initial_pwd,
+            workspace_id,
+            ..
+        } = owner;
+        let session_id = *session_id;
         let workspace_access = if let Some(workspace_id) = &workspace_id {
             let (directory_path, bookmark) =
                 workspace_directory(&self.lock_state()?.database, workspace_id)?;
@@ -458,10 +528,10 @@ impl SessionManager {
 
         let pi_shells = {
             let mut state = self.lock_state()?;
-            if state.shutting_down || !requester.is_current(&state) {
+            if state.shutting_down || !is_current(&state) {
                 return Err(io::Error::new(
                     io::ErrorKind::Interrupted,
-                    "Pi resume request is no longer current",
+                    "the request to reopen the Session is no longer current",
                 ));
             }
             if state.panes.has_session(session_id) {
@@ -536,7 +606,7 @@ impl SessionManager {
         };
 
         self.recover_pi_shells(pi_shells);
-        self.complete_pi_resume(requester, session_id)
+        Ok(())
     }
 
     pub(super) fn complete_pi_resume(
@@ -892,9 +962,53 @@ mod tests {
     }
 
     #[test]
+    fn a_pi_that_never_wrote_history_starts_fresh_on_the_same_path() {
+        let fixture = PiRecoveryFixture::new();
+        let manager = &fixture.lifecycle.manager;
+        // No message yet, so Pi has not created its transcript.
+        fs::remove_file(&fixture.file).unwrap();
+        let session = manager
+            .restart_unavailable_pi(
+                fixture.session_id,
+                fixture.shell_id,
+                TakeoverPolicy::PreserveExistingProcess,
+            )
+            .unwrap();
+        let pi = session
+            .shells
+            .iter()
+            .find(|shell| shell.role == PaneRole::Pi)
+            .unwrap();
+        assert!(pi.is_available(), "{session:?}");
+        assert_eq!(
+            session.pi_session_file.as_deref(),
+            Some(fixture.file.as_path())
+        );
+        stop_panes(
+            manager
+                .lock_state()
+                .unwrap()
+                .panes
+                .remove(fixture.shell_id)
+                .into_iter()
+                .collect(),
+        );
+    }
+
+    #[test]
     fn pi_recovery_rejects_missing_and_ambiguously_owned_history() {
         let fixture = PiRecoveryFixture::new();
         let manager = &fixture.lifecycle.manager;
+        // Pi wrote messages, so its transcript existed: a missing one is refused, not replaced.
+        manager
+            .lock_state()
+            .unwrap()
+            .database
+            .execute(
+                "UPDATE sessions SET last_message_at = 1 WHERE id = ?1",
+                params![fixture.session_id.get()],
+            )
+            .unwrap();
         fs::remove_file(&fixture.file).unwrap();
         assert_eq!(
             manager

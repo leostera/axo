@@ -110,6 +110,31 @@ final class SessionNavigationTests: XCTestCase {
 
 @MainActor
 final class TerminalSessionsModelPublishingTests: XCTestCase {
+  func testReopeningAClosedSessionShowsItAndBeepsWorthyWhenNoneAreLeft() async {
+    let client = FakeAxodClient()
+    client.sessions = [TerminalSession(id: 1, initialPwd: "/", shells: [])]
+    client.closedSessions = [
+      TerminalSession(id: 7, initialPwd: "/", shells: []),
+      TerminalSession(id: 4, initialPwd: "/", shells: []),
+    ]
+    let model = TerminalSessionsModel(client: client)
+    await model.refresh()
+
+    let first = await model.reopenClosedSession()
+    XCTAssertEqual(first, .reopened(7))
+    XCTAssertEqual(model.selectedSessionID, 7)
+    let second = await model.reopenClosedSession()
+    XCTAssertEqual(second, .reopened(4))
+    XCTAssertEqual(model.selectedSessionID, 4)
+    XCTAssertEqual(Set(model.sessions.map(\.id)), [1, 4, 7])
+
+    // Nothing left: not an error, so nothing is reported (the menu command beeps).
+    let none = await model.reopenClosedSession()
+    XCTAssertEqual(none, .nothingToReopen)
+    XCTAssertNil(model.errorMessage)
+    XCTAssertEqual(model.selectedSessionID, 4)
+  }
+
   func testTheRecentListIsRememberedAndNextSessionFollowsIt() async throws {
     let suiteName = "axo-sidebar-mode-\(UUID().uuidString)"
     let defaults = try XCTUnwrap(UserDefaults(suiteName: suiteName))
