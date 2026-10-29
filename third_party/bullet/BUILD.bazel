@@ -1,0 +1,14 @@
+load("@rules_cc//cc:cc_library.bzl", "cc_library")
+
+# Bullet Physics 3.27: the LinearMath, BulletCollision, BulletDynamics and BulletSoftBody
+# libraries, vendored from https://github.com/bulletphysics/bullet3 (README.md). zlib licence.
+package(default_visibility = ["//visibility:public"])
+
+cc_library(
+    name = "bullet",
+    srcs = glob(["src/**/*.cpp"]),
+    hdrs = glob(["src/**/*.h"]),
+    copts = ["-O2", "-w", "-std=c++14"],
+    includes = ["src"],
+    linkopts = ["-lc++"],
+)
