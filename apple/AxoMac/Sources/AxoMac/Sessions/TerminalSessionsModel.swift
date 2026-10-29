@@ -69,6 +69,9 @@ final class TerminalSessionsModel {
   private(set) var automaticallyRestartUnavailablePi: Bool
   /// How the sidebar lists Sessions; Previous/Next Session follow the same order.
   private(set) var sidebarMode: SidebarMode
+  /// The recent list's order frozen while the pointer is over the sidebar, so rows don't move
+  /// under a click and Previous/Next Session step through the rows as shown.
+  private(set) var heldRecentOrder: [SessionID]?
 
   /// The daemon client, for collaborators such as `TerminalCatalogSync`.
   var catalogClient: AxodClient? { client }
@@ -194,7 +197,17 @@ final class TerminalSessionsModel {
   var sidebarOrderedSessions: [TerminalSession] {
     switch sidebarMode {
     case .workspaces: sidebarSections.ordered
-    case .recent: SessionActivityOrder.sorted(sessions)
+    case .recent:
+      SessionActivityOrder.holding(heldRecentOrder, live: SessionActivityOrder.sorted(sessions))
+    }
+  }
+
+  /// Freezes the recent list's current order, or releases it so rows move to their places.
+  func holdRecentOrder(_ isHeld: Bool) {
+    if !isHeld {
+      assign(\.heldRecentOrder, nil)
+    } else if heldRecentOrder == nil {
+      heldRecentOrder = SessionActivityOrder.sorted(sessions).map(\.id)
     }
   }
 
@@ -334,6 +347,7 @@ final class TerminalSessionsModel {
   func setSidebarMode(_ mode: SidebarMode) {
     guard sidebarMode != mode else { return }
     sidebarMode = mode
+    heldRecentOrder = nil
     preferenceDefaults.set(mode.rawValue, forKey: AxoPreferenceKey.sidebarMode)
   }
 

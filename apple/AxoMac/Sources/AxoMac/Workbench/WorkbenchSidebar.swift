@@ -11,8 +11,6 @@ struct WorkbenchSidebar: View {
   @State private var renameDraft = ""
   @State private var hoveredSessionID: SessionID?
   @State private var sidebarActionError: String?
-  /// The recent list's order while the pointer is over it, so rows don't move under a click.
-  @State private var heldRecentOrder: [SessionID]?
 
   var body: some View {
     if isSidebarCollapsed {
@@ -34,7 +32,6 @@ struct WorkbenchSidebar: View {
             mode: sessions.sidebarMode,
             topPadding: 4,
             onSelectMode: { mode in
-              heldRecentOrder = nil
               withAnimation(.easeInOut(duration: 0.15)) { sessions.setSidebarMode(mode) }
             },
             onNewWorkspace: { isPresentingWorkspaceCreation = true })
@@ -181,21 +178,14 @@ struct WorkbenchSidebar: View {
   /// front of each title says what it is about. Rows hold still while the pointer is over
   /// the list and move when it leaves.
   private var recentList: some View {
-    let live = SessionActivityOrder.sorted(sessions.sessions)
-    let shown = SessionActivityOrder.holding(heldRecentOrder, live: live)
+    let shown = sessions.sidebarOrderedSessions
     return VStack(alignment: .leading, spacing: 0) {
       ForEach(shown) { session in
         sessionButton(for: session, showsAge: true)
       }
     }
     .animation(.easeInOut(duration: 0.2), value: shown.map(\.id))
-    .onHover { hovering in
-      if hovering {
-        if heldRecentOrder == nil { heldRecentOrder = live.map(\.id) }
-      } else {
-        heldRecentOrder = nil
-      }
-    }
+    .onHover { sessions.holdRecentOrder($0) }
   }
 
   private func sessionButton(for session: TerminalSession, showsAge: Bool = false) -> some View {

@@ -132,6 +132,19 @@ final class TerminalSessionsModelPublishingTests: XCTestCase {
     model.showNextSession()
     XCTAssertEqual(model.selectedSessionID, 3)
 
+    // While the pointer holds the list still, the shortcuts step through the rows as shown.
+    model.holdRecentOrder(true)
+    client.sessions[0] = TerminalSession(
+      id: 1, initialPwd: "/", shells: [], workspaceId: "a", lastMessageAt: 400)
+    await model.refresh()
+    model.showNextSession()
+    XCTAssertEqual(model.selectedSessionID, 1)
+    // Released, the list takes the live order: 1 is now the most recent.
+    model.holdRecentOrder(false)
+    XCTAssertEqual(model.sidebarOrderedSessions.map(\.id), [1, 2, 3])
+    model.showNextSession()
+    XCTAssertEqual(model.selectedSessionID, 2)
+
     let reopened = TerminalSessionsModel(client: client, selectedSessionDefaults: defaults)
     XCTAssertEqual(reopened.sidebarMode, .recent)
   }
