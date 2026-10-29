@@ -53,6 +53,12 @@ struct WorkbenchView: View {
   /// The Workspaces showing their older chats too. Not kept: that is a look back, not a way the
   /// menu stays.
   @State private var showingOlder: Set<String> = []
+  /// Whether the menu groups chats by Workspace or lists them by recent activity, as the Mac's
+  /// sidebar can; kept across launches.
+  @AppStorage("chatListMode") private var chatListMode: ChatListMode = .workspaces
+  /// The recent list's order while the chats are showing, so a chat that just finished a message
+  /// does not move under a finger reaching for a row; it moves into place the next time they show.
+  @State private var heldRecent: [ChatMenuEntry.Key]?
   /// Voice prompting, one dictation at a time for the whole app (nil before iOS 26).
   @State private var voice = Dictation.makeVoicePrompt()
 
@@ -108,6 +114,9 @@ struct WorkbenchView: View {
       if layer != .conversation {
         UIApplication.shared.sendAction(#selector(UIResponder.resignFirstResponder), to: nil, from: nil, for: nil)
       }
+      // The recent list holds still while the chats show, and catches up when they show again.
+      heldRecent = layer == .chats
+        ? ChatMenu.recent(hosts: workbench.hosts.hosts, sessionsOf: workbench.sessions(of:)).map(\.key) : nil
     }
     .overlay(alignment: .trailing) {
       if RenderCount.enabled { RenderCountLabel() }
@@ -235,7 +244,10 @@ struct WorkbenchView: View {
           Text(message).font(.caption).foregroundStyle(.orange)
             .padding(.horizontal, MenuLayout.rowInset + MenuLayout.rowTextInset)
         }
-        ForEach(sections) { section in
+        if chatListMode == .recent, !sections.isEmpty {
+          recentChats
+        }
+        ForEach(chatListMode == .workspaces ? sections : []) { section in
           switch section.kind {
           case .project:
             let collapsed = collapsedWorkspaces.contains(section.id)
@@ -273,6 +285,14 @@ struct WorkbenchView: View {
     .accessibilityIdentifier("workbench-menu")
     .layerBar(edge: .top) { menuHeader }
     .layerBar(edge: .bottom) { menuFooter }
+  }
+
+  /// Every chat on every Mac, the most recently active first, each with how long ago.
+  private var recentChats: some View {
+    let live = ChatMenu.recent(hosts: workbench.hosts.hosts, sessionsOf: workbench.sessions(of:))
+    return ForEach(ChatMenu.holding(heldRecent, live: live), id: \.key) { entry in
+      chatRow(entry, showsAge: true)
+    }
   }
 
   private var collapsedWorkspaces: Set<String> {
@@ -323,21 +343,8 @@ struct WorkbenchView: View {
     let olderCount = section.chats.count - recent.count
     let expanded = showingOlder.contains(section.id)
     ForEach(expanded ? section.chats : recent, id: \.session.sessionId) { entry in
-            Button {
-              workbench.select(host: entry.host.hostId, session: entry.session.sessionId)
-              show(.conversation)
-            } label: {
-              SessionRow(
-                workbench: workbench,
-                selection: PhoneWorkbench.Selection(host: entry.host.hostId, session: entry.session.sessionId),
-                name: entry.session.displayName,
-                status: entry.session.status)
-                .frame(maxWidth: .infinity, alignment: .leading)
-                .contentShape(Rectangle())
-            }
-            .buttonStyle(.layerRow)
-            .padding(.horizontal, MenuLayout.rowInset)
-          }
+      chatRow(entry, showsAge: false)
+    }
     if olderCount > 0 {
       Button {
         withAnimation(reduceMotion ? nil : .snappy(duration: 0.25)) {
@@ -359,6 +366,25 @@ struct WorkbenchView: View {
         .padding(.horizontal, MenuLayout.rowInset + MenuLayout.rowTextInset)
         .frame(height: MenuLayout.rowHeight)
     }
+  }
+
+  /// A chat in the menu, which opens it.
+  private func chatRow(_ entry: ChatMenuEntry, showsAge: Bool) -> some View {
+    Button {
+      workbench.select(host: entry.host.hostId, session: entry.session.sessionId)
+      show(.conversation)
+    } label: {
+      SessionRow(
+        workbench: workbench,
+        selection: PhoneWorkbench.Selection(host: entry.host.hostId, session: entry.session.sessionId),
+        name: entry.session.displayName,
+        status: entry.session.status,
+        lastActive: showsAge ? ChatMenu.activity(entry.session) : nil)
+        .frame(maxWidth: .infinity, alignment: .leading)
+        .contentShape(Rectangle())
+    }
+    .buttonStyle(.layerRow)
+    .padding(.horizontal, MenuLayout.rowInset)
   }
 
   /// The chats, by Workspace, the most recently active first (see `ChatMenu`).
@@ -395,6 +421,15 @@ struct WorkbenchView: View {
       OwnMascotView(loading: workbench.hosts.phase == .loading)
         .frame(height: 34)
       Spacer(minLength: 8)
+      Button {
+        chatListMode = chatListMode == .workspaces ? .recent : .workspaces
+      } label: {
+        Image(systemName: chatListMode == .workspaces ? "clock" : "list.bullet.indent")
+          .font(.system(size: 18, weight: .medium))
+          .floatingCircle()
+      }
+      .accessibilityLabel(chatListMode == .workspaces ? "Show recent chats" : "Show Workspaces")
+      .accessibilityIdentifier("chat-list-mode")
       // The account and its Macs are also one more swipe to the right.
       Button {
         show(.account)
@@ -459,6 +494,8 @@ private struct SessionRow: View {
   let selection: PhoneWorkbench.Selection
   let name: String
   let status: RemoteSessionStatus?
+  /// When the chat was last active, shown as a short age in the recent list; nil in Workspaces.
+  var lastActive: Date?
 
   // Read here, in the row's own body, so the row redraws when the open chat changes: a lazy
   // stack does not re-run its rows for a change only the menu's body saw.
@@ -471,6 +508,14 @@ private struct SessionRow: View {
         .lineLimit(1)
       Spacer(minLength: 0)
       SessionStatusDot(status: status)
+      if let lastActive {
+        // Ages only need to move once a minute.
+        TimelineView(.periodic(from: .now, by: 60)) { context in
+          Text(ChatMenu.age(of: lastActive, now: context.date))
+            .font(.caption.monospacedDigit())
+            .foregroundStyle(.tertiary)
+        }
+      }
     }
       .padding(.horizontal, MenuLayout.rowTextInset)
       .frame(maxWidth: .infinity, alignment: .leading)
@@ -485,7 +530,12 @@ private struct SessionRow: View {
       }
       .accessibilityElement(children: .ignore)
       .accessibilityLabel(name)
-      .accessibilityValue(SessionStatusDot.spoken(status))
+      .accessibilityValue(spokenValue)
+  }
+
+  private var spokenValue: String {
+    let age = lastActive.map { $0.formatted(.relative(presentation: .named)) }
+    return [SessionStatusDot.spoken(status), age ?? ""].filter { !$0.isEmpty }.joined(separator: ", ")
   }
 }
 

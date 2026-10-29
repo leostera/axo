@@ -192,6 +192,42 @@ final class AxoPhoneUITests: XCTestCase {
   }
 
   @MainActor
+  func testTheMenuCanListEveryChatByRecentActivityAsTheMacDoes() {
+    var app = launch()
+    // The choice is kept across launches: put it back for the other tests, however this one ends.
+    addTeardownBlock { @MainActor in
+      let back = XCUIApplication().buttons["Show Workspaces"]
+      if back.exists { back.tapWhereItIs() }
+    }
+    app.buttons["Chats menu"].tapWhereItIs()
+    let toggle = app.buttons["chat-list-mode"]
+    XCTAssertTrue(toggle.waitForExistence(timeout: 5))
+    XCTAssertEqual(toggle.label, "Show recent chats")
+    toggle.tapWhereItIs()
+    XCTAssertTrue(waitUntil(5) { !app.buttons["Axo · Studio"].exists }, "no Workspace titles")
+    // Every chat on every Mac, by its last message, offline Macs and quiet chats too.
+    let order = ["Plan the week", "Ship the remote Workbench", "Fix the sidebar spacing", "Explain the relay",
+      "Draft the release notes", "Photo library cleanup"]
+    let rows = order.map { app.buttons[$0] }
+    XCTAssertTrue(rows.last!.waitForExistence(timeout: 5))
+    for (above, below) in zip(rows, rows.dropFirst()) {
+      XCTAssertLessThan(above.frame.minY, below.frame.minY, "\(above.label) above \(below.label)")
+    }
+    XCTAssertTrue(app.staticTexts["10m"].exists, "each row says how long ago")
+    XCTAssertTrue(app.staticTexts["1w"].exists)
+    XCTAssertEqual(rows[1].value as? String, "Working, 20 minutes ago")
+    capture(app, named: "menu-recent-light")
+
+    app.terminate()
+    app = launch()
+    app.buttons["Chats menu"].tapWhereItIs()
+    XCTAssertTrue(app.buttons["Show Workspaces"].waitForExistence(timeout: 5), "kept across launches")
+    XCTAssertFalse(app.buttons["Axo · Studio"].exists)
+    app.buttons["Show Workspaces"].tapWhereItIs()
+    XCTAssertTrue(app.buttons["Axo · Studio"].waitForExistence(timeout: 5))
+  }
+
+  @MainActor
   func testChoosingAChatOpensItAndTheNewChatButtonLeavesIt() {
     let app = launch()
     app.buttons["Chats menu"].tapWhereItIs()

@@ -52,7 +52,12 @@ public struct RemoteSession: Decodable, Equatable, Sendable {
   public let hasAgent: Bool?
   public let shells: [RemoteShell]
   public let layout: SessionLayout?
+  /// When this snapshot was sent, not when the Session was last active.
   public let updatedAt: String
+  /// Unix seconds of the Session's latest completed user or assistant message.
+  public let lastMessageAt: Int64?
+  /// Unix seconds when the Session was created.
+  public let createdAt: Int64?
 
   public var displayName: String { name ?? "Session \(sessionId)" }
 }

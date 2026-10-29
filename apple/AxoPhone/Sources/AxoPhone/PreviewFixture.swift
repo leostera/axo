@@ -90,9 +90,11 @@ enum PreviewFixture {
     static var hosts: [RemoteHost] {
       // The menu lists the most recently active first: in the order they are written here. Times
       // are relative to now, so the last 8 hours (what the menu lists before "older") stay put.
-      func ago(_ seconds: TimeInterval) -> String { Date.now.addingTimeInterval(-seconds).ISO8601Format() }
-      func session(_ host: UUID, _ id: Int, _ name: String, _ emoji: String, _ workspace: String, status: String = "ready", active: String) -> String {
-        #"{"hostId":"\#(host)","sessionId":\#(id),"name":"\#(name)","emoji":"\#(emoji)","workspaceName":"\#(workspace)","status":"\#(status)","hasAgent":true,"shells":[{"shellId":\#(id * 10)}],"layout":{"kind":"pane","shellId":\#(id * 10)},"updatedAt":"\#(active)"}"#
+      // As a Mac sends them: every snapshot says when it was sent; a chat's activity is its last message.
+      func ago(_ seconds: TimeInterval) -> Int64 { Int64(Date.now.addingTimeInterval(-seconds).timeIntervalSince1970) }
+      let sent = Date.now.ISO8601Format()
+      func session(_ host: UUID, _ id: Int, _ name: String, _ emoji: String, _ workspace: String, status: String = "ready", active: Int64) -> String {
+        #"{"hostId":"\#(host)","sessionId":\#(id),"name":"\#(name)","emoji":"\#(emoji)","workspaceName":"\#(workspace)","status":"\#(status)","hasAgent":true,"shells":[{"shellId":\#(id * 10)}],"layout":{"kind":"pane","shellId":\#(id * 10)},"updatedAt":"\#(sent)","lastMessageAt":\#(active)}"#
       }
       let json = """
         {"hosts":[
