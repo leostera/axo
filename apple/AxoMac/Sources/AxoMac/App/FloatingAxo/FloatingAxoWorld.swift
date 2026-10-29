@@ -34,6 +34,8 @@ final class FloatingAxoWorld: SKScene, @preconcurrency SKPhysicsContactDelegate 
   private var flying = false
   private var stillSince: TimeInterval?
   private let bodySize: CGSize
+  /// How blown up the body is (`resize`).
+  private var bodyScale: CGFloat = 1
 
   var axoPosition: CGPoint { axo.position }
   var axoRotation: CGFloat { axo.zRotation }
@@ -47,8 +49,19 @@ final class FloatingAxoWorld: SKScene, @preconcurrency SKPhysicsContactDelegate 
     physicsWorld.gravity = CGVector(dx: 0, dy: Self.gravity / 150)
     physicsWorld.contactDelegate = self
 
+    axo.physicsBody = Self.body(size: bodySize)
+    axo.position = start
+    addChild(axo)
+    addChild(walls)
+    fitWalls(to: start)
+  }
+
+  @available(*, unavailable)
+  required init?(coder: NSCoder) { fatalError("init(coder:) is not used") }
+
+  private static func body(size: CGSize) -> SKPhysicsBody {
     // A little inside Axo's outline: its gills are not solid.
-    let body = SKPhysicsBody(rectangleOf: CGSize(width: bodySize.width * 0.8, height: bodySize.height * 0.8))
+    let body = SKPhysicsBody(rectangleOf: CGSize(width: size.width * 0.8, height: size.height * 0.8))
     body.restitution = 0.32
     body.friction = 0.6
     body.linearDamping = 0.08
@@ -59,15 +72,20 @@ final class FloatingAxoWorld: SKScene, @preconcurrency SKPhysicsContactDelegate 
     body.categoryBitMask = Category.axo
     body.collisionBitMask = Category.walls | Category.ledges
     body.contactTestBitMask = Category.walls | Category.ledges
-    axo.physicsBody = body
-    axo.position = start
-    addChild(axo)
-    addChild(walls)
-    fitWalls(to: start)
+    return body
   }
 
-  @available(*, unavailable)
-  required init?(coder: NSCoder) { fatalError("init(coder:) is not used") }
+  /// Blown up `scale` times its size: a body that big, moving as the old one was.
+  func resize(to scale: CGFloat) {
+    guard let old = axo.physicsBody else { return }
+    let body = Self.body(size: CGSize(width: bodySize.width * scale, height: bodySize.height * scale))
+    body.isDynamic = old.isDynamic
+    body.velocity = old.velocity
+    body.angularVelocity = old.angularVelocity
+    axo.physicsBody = body
+    bodyScale = scale
+    stillSince = nil
+  }
 
   // MARK: Held and let go
 
@@ -142,7 +160,7 @@ final class FloatingAxoWorld: SKScene, @preconcurrency SKPhysicsContactDelegate 
       readLedges()
     }
     // One-way ledges: solid only to an Axo whose bottom is above them.
-    let bottom = axo.position.y - bodySize.height / 2
+    let bottom = axo.position.y - bodySize.height * bodyScale / 2
     for (ledge, node) in ledges {
       node.physicsBody?.categoryBitMask = bottom >= ledge.y - 2 ? Category.ledges : 0
     }

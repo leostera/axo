@@ -72,3 +72,41 @@ enum DragThreshold {
     hypot(point.x - start.x, point.y - start.y) >= distance
   }
 }
+
+/// Clicking an Axo blows it up: each click is a puff of air, and the twentieth in a row
+/// (`pokesToBurst`) bursts it. Stop clicking for a moment (`holdsBreath`) and the air leaks out.
+struct Inflation {
+  static let pokesToBurst: Double = 20
+  /// After a click it holds its breath this long, then leaks `leakPerSecond` clicks' worth of air
+  /// a second: clicked about once a second or slower, it never bursts.
+  static let holdsBreath: TimeInterval = 0.6
+  static let leakPerSecond: Double = 2
+  /// As big as it gets, just before it bursts.
+  static let biggest: CGFloat = 2.2
+
+  private var air: Double = 0
+  private var since: Date?
+
+  /// A click at `now`: how full it is (0 to 1), and whether that burst it.
+  mutating func poke(at now: Date) -> (fullness: Double, bursts: Bool) {
+    air = remaining(at: now) + 1
+    since = now
+    return (min(1, air / Self.pokesToBurst), air >= Self.pokesToBurst)
+  }
+
+  /// How full it is at `now`, from 0 to 1.
+  func fullness(at now: Date) -> Double {
+    min(1, remaining(at: now) / Self.pokesToBurst)
+  }
+
+  /// How much bigger than itself it is at `now`.
+  func scale(at now: Date) -> CGFloat {
+    1 + (Self.biggest - 1) * CGFloat(fullness(at: now))
+  }
+
+  private func remaining(at now: Date) -> Double {
+    guard let since else { return 0 }
+    let leaking = max(0, now.timeIntervalSince(since) - Self.holdsBreath)
+    return max(0, air - leaking * Self.leakPerSecond)
+  }
+}

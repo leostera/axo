@@ -89,6 +89,11 @@ final class FloatingAxos {
     axo.vanish()
   }
 
+  func burst(_ axo: FloatingAxo) {
+    axos.removeAll { $0 === axo }
+    axo.explode()
+  }
+
   func putAllAway() {
     axos.forEach { $0.vanish() }
     axos.removeAll()
@@ -125,8 +130,8 @@ final class FloatingAxos {
 final class FloatingAxo {
   /// Axo's size on screen: the menu bar's, since it is another one of those.
   static let size = AxoMascot.menuBarSize
-  /// Square and larger than Axo, so it can turn and stretch inside it.
-  static let panelSide: CGFloat = 48
+  /// Square and larger than Axo, so it can turn, stretch and blow up inside it.
+  static let panelSide: CGFloat = 88
   /// Throws faster than this are frightening.
   static let screamingSpeed: CGFloat = 1800
   /// Left alone this long, it fades away over `fadeAway`; touching it brings it back.
@@ -139,6 +144,9 @@ final class FloatingAxo {
   private let puppet: any MascotPuppet
   private let pose = FloatingAxoPose()
   private var pokes = MascotPokes()
+  private var inflation = Inflation()
+  /// How big its physics body is, which follows how blown up it is, in steps.
+  private var bodyScale: CGFloat = 1
   private var velocity = ThrowVelocity()
   /// Where on Axo it is held, from its centre.
   private var grip: CGVector = .zero
@@ -213,9 +221,40 @@ final class FloatingAxo {
   }
 
   /// A click on it, not a drag: it is poked.
+  /// Each one blows it up a little more; enough in a row, and it bursts.
   func poke() {
+    let now = Date()
+    let (fullness, bursts) = inflation.poke(at: now)
+    if bursts { return keeper.burst(self) }
     startLonely()
-    if let reaction = pokes.poke(at: Date()) { puppet.react(reaction) }
+    if let reaction = pokes.poke(at: now) { puppet.react(reaction) }
+    // Straining, eyes squeezed shut, as it gets near.
+    if fullness > 0.65 { puppet.setSqueezed(true) }
+    inflate(at: now)
+  }
+
+  /// How much bigger than itself it is now, for grabbing it.
+  var scale: CGFloat { pose.inflation }
+
+  /// Blown up as `inflation` says now: its look, and its body when that has moved on enough.
+  private func inflate(at now: Date) {
+    let scale = inflation.scale(at: now)
+    if abs(scale - pose.inflation) > 0.005 {
+      withAnimation(.interpolatingSpring(stiffness: 400, damping: 14)) { pose.inflation = scale }
+    }
+    if abs(scale - bodyScale) > 0.08 || (scale == 1 && bodyScale != 1) {
+      bodyScale = scale
+      world.resize(to: scale)
+    }
+    if inflation.fullness(at: now) < 0.6 { puppet.setSqueezed(false) }
+  }
+
+  /// Burst: it is gone in a spray of bits.
+  func explode() {
+    lonely?.cancel()
+    world.isPaused = true
+    panel.orderOut(nil)
+    if !reduceMotion { AxoBurst.spray(at: world.axoPosition, size: Self.size.applying(.init(scaleX: scale, y: scale))) }
   }
 
   /// Gone: back in the menu bar.
@@ -266,6 +305,8 @@ final class FloatingAxo {
     let side = Self.panelSide
     panel.setFrameOrigin(CGPoint(x: world.axoPosition.x - side / 2, y: world.axoPosition.y - side / 2))
     pose.rotation = world.axoRotation
+    // The air leaking out.
+    if pose.inflation > 1 { inflate(at: Date()) }
     // Watch the pointer, from Axo's centre; 400 points away is all the way.
     let pointer = NSEvent.mouseLocation
     puppet.look(x: (pointer.x - world.axoPosition.x) / 4, y: -(pointer.y - world.axoPosition.y) / 4)
@@ -284,6 +325,8 @@ final class FloatingAxoPose {
   /// Radians, counterclockwise (SpriteKit's).
   var rotation: CGFloat = 0
   var squished = false
+  /// Blown up this many times its size by clicking.
+  var inflation: CGFloat = 1
   /// Stretched along `stretchAngle` by this much (0.2 is a fifth longer), and thinner across.
   var stretch: CGFloat = 0
   /// SwiftUI's: clockwise from the right, since its y is down.
@@ -312,6 +355,7 @@ private struct FloatingAxoFace: View {
     puppet.view
       .frame(width: FloatingAxo.size.width, height: FloatingAxo.size.height)
       .scaleEffect(x: pose.squished ? 1.06 : 1, y: pose.squished ? 0.92 : 1, anchor: .bottom)
+      .scaleEffect(pose.inflation)
       // Stretched along the pull: turned to it, stretched across x, turned back.
       .rotationEffect(-pose.stretchAngle)
       .scaleEffect(x: 1 + pose.stretch, y: 1 / (1 + pose.stretch))
@@ -354,8 +398,10 @@ private final class FloatingAxoHandle: NSView {
     let axo = CGRect(
       x: bounds.midX - FloatingAxo.size.width / 2, y: bounds.midY - FloatingAxo.size.height / 2,
       width: FloatingAxo.size.width, height: FloatingAxo.size.height)
-    // Axo is small: a little slack around it.
-    return axo.insetBy(dx: -6, dy: -6).contains(local) ? self : nil
+    // Axo is small: a little slack around it. Blown up, it is bigger.
+    let scale = self.axo?.scale ?? 1
+    let grown = axo.insetBy(dx: -axo.width * (scale - 1) / 2, dy: -axo.height * (scale - 1) / 2)
+    return grown.insetBy(dx: -6, dy: -6).contains(local) ? self : nil
   }
 
   override func mouseDown(with event: NSEvent) {

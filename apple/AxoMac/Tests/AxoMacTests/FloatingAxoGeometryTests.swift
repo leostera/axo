@@ -49,6 +49,36 @@ final class FloatingAxoGeometryTests: XCTestCase {
     XCTAssertEqual(WindowLedges.ledges(of: [front, back]), [Ledge(y: 500, minX: 10, maxX: 590)])
   }
 
+  func testTwentyQuickClicksBurstIt() {
+    var inflation = Inflation()
+    let start = Date()
+    for click in 0..<19 {
+      XCTAssertFalse(inflation.poke(at: start.addingTimeInterval(Double(click) * 0.1)).bursts, "click \(click + 1)")
+    }
+    XCTAssertTrue(inflation.poke(at: start.addingTimeInterval(1.8 + 0.5)).bursts, "the twentieth")
+  }
+
+  func testEachClickBlowsItUpAndTheAirLeaksOut() {
+    var inflation = Inflation()
+    let start = Date()
+    for click in 0..<10 { _ = inflation.poke(at: start.addingTimeInterval(Double(click) * 0.01)) }
+    let after = start.addingTimeInterval(0.09)
+    XCTAssertEqual(inflation.fullness(at: after), 0.5, accuracy: 0.01)
+    XCTAssertEqual(inflation.scale(at: after), 1.6, accuracy: 0.01)
+    // It holds its breath, then leaks two clicks' worth a second.
+    XCTAssertEqual(inflation.fullness(at: after.addingTimeInterval(0.5)), 0.5, accuracy: 0.01)
+    XCTAssertEqual(inflation.fullness(at: after.addingTimeInterval(0.6 + 2.5)), 0.25, accuracy: 0.01)
+    XCTAssertEqual(inflation.scale(at: after.addingTimeInterval(60)), 1)
+  }
+
+  func testClickingSlowerThanItLeaksNeverBurstsIt() {
+    var inflation = Inflation()
+    let start = Date()
+    for click in 0..<200 {
+      XCTAssertFalse(inflation.poke(at: start.addingTimeInterval(Double(click) * 1.2)).bursts)
+    }
+  }
+
   func testAPressIsAClickUntilItMoves() {
     XCTAssertFalse(DragThreshold.isDrag(from: .zero, to: CGPoint(x: 2, y: 2)))
     XCTAssertTrue(DragThreshold.isDrag(from: .zero, to: CGPoint(x: 4, y: 0)))
