@@ -11,6 +11,8 @@ struct WorkbenchSidebar: View {
   @State private var renameDraft = ""
   @State private var hoveredSessionID: SessionID?
   @State private var sidebarActionError: String?
+  /// The recent list's order while the pointer is over it, so rows don't move under a click.
+  @State private var heldRecentOrder: [SessionID]?
 
   var body: some View {
     if isSidebarCollapsed {
@@ -28,17 +30,73 @@ struct WorkbenchSidebar: View {
         .frame(height: WindowDragStrip.height)
       ScrollView {
         LazyVStack(alignment: .leading, spacing: 0) {
-          SidebarSectionHeader(
-            title: "Workspaces",
-            buttonLabel: "New Workspace",
-            helpText: "Create a Workspace (⌘N)",
-            accessibilityIdentifier: "new-workspace-button",
-            topPadding: 4
-          ) {
-            isPresentingWorkspaceCreation = true
-          }
+          SidebarHeader(
+            mode: sessions.sidebarMode,
+            topPadding: 4,
+            onSelectMode: { mode in
+              heldRecentOrder = nil
+              withAnimation(.easeInOut(duration: 0.15)) { sessions.setSidebarMode(mode) }
+            },
+            onNewWorkspace: { isPresentingWorkspaceCreation = true })
 
-          ForEach(sessions.workspaces) { workspace in
+          switch sessions.sidebarMode {
+          case .workspaces: workspaceTree(sections)
+          case .recent: recentList
+          }
+        }
+        .frame(maxWidth: .infinity, alignment: .leading)
+      }
+      .overlay {
+        if sessions.workspaces.isEmpty && !sessions.hasSessions {
+          ContentUnavailableView(
+            "No Sessions", systemImage: "terminal",
+            description: Text(sessions.errorMessage ?? "Create a Workspace or Session to get started."))
+        }
+      }
+
+      if let error = sidebarActionError {
+        Label(error, systemImage: "exclamationmark.triangle.fill")
+          .font(.caption)
+          .foregroundStyle(.red)
+          .fixedSize(horizontal: false, vertical: true)
+          .padding(.horizontal, 8)
+          .padding(.vertical, 4)
+          .accessibilityIdentifier("sidebar-action-error")
+      }
+
+      if let error = sessions.workspaceCreationError {
+        HStack(alignment: .top, spacing: 8) {
+          Label(error, systemImage: "exclamationmark.triangle.fill")
+            .font(.caption)
+            .foregroundStyle(.red)
+            .fixedSize(horizontal: false, vertical: true)
+          Spacer(minLength: 0)
+          Button {
+            sessions.dismissWorkspaceCreationError()
+          } label: {
+            Image(systemName: "xmark")
+          }
+          .buttonStyle(.plain)
+          .accessibilityLabel("Dismiss Workspace creation error")
+        }
+        .padding(.horizontal, 8)
+        .padding(.vertical, 4)
+        .accessibilityIdentifier("workspace-creation-error")
+      }
+
+      sidebarToggle(isCollapsed: false)
+        .frame(maxWidth: .infinity, alignment: .leading)
+        .padding(.horizontal, 8)
+        .padding(.vertical, 4)
+    }
+    .frame(width: 220)
+    .frame(maxHeight: .infinity)
+    .background(Color(nsColor: .windowBackgroundColor))
+  }
+
+  @ViewBuilder
+  private func workspaceTree(_ sections: SidebarSections) -> some View {
+    ForEach(sessions.workspaces) { workspace in
             VStack(alignment: .leading, spacing: 0) {
               Group {
                 if renameTarget?.id == .workspace(workspace.workspaceId) {
@@ -116,60 +174,31 @@ struct WorkbenchSidebar: View {
                 }
               }
             }
-          }
-
-        }
-        .frame(maxWidth: .infinity, alignment: .leading)
-      }
-      .overlay {
-        if sessions.workspaces.isEmpty && !sessions.hasSessions {
-          ContentUnavailableView(
-            "No Sessions", systemImage: "terminal",
-            description: Text(sessions.errorMessage ?? "Create a Workspace or Session to get started."))
-        }
-      }
-
-      if let error = sidebarActionError {
-        Label(error, systemImage: "exclamationmark.triangle.fill")
-          .font(.caption)
-          .foregroundStyle(.red)
-          .fixedSize(horizontal: false, vertical: true)
-          .padding(.horizontal, 8)
-          .padding(.vertical, 4)
-          .accessibilityIdentifier("sidebar-action-error")
-      }
-
-      if let error = sessions.workspaceCreationError {
-        HStack(alignment: .top, spacing: 8) {
-          Label(error, systemImage: "exclamationmark.triangle.fill")
-            .font(.caption)
-            .foregroundStyle(.red)
-            .fixedSize(horizontal: false, vertical: true)
-          Spacer(minLength: 0)
-          Button {
-            sessions.dismissWorkspaceCreationError()
-          } label: {
-            Image(systemName: "xmark")
-          }
-          .buttonStyle(.plain)
-          .accessibilityLabel("Dismiss Workspace creation error")
-        }
-        .padding(.horizontal, 8)
-        .padding(.vertical, 4)
-        .accessibilityIdentifier("workspace-creation-error")
-      }
-
-      sidebarToggle(isCollapsed: false)
-        .frame(maxWidth: .infinity, alignment: .leading)
-        .padding(.horizontal, 8)
-        .padding(.vertical, 4)
     }
-    .frame(width: 220)
-    .frame(maxHeight: .infinity)
-    .background(Color(nsColor: .windowBackgroundColor))
   }
 
-  private func sessionButton(for session: TerminalSession) -> some View {
+  /// Every open Session, latest activity first, without Workspaces: the project keyword at the
+  /// front of each title says what it is about. Rows hold still while the pointer is over
+  /// the list and move when it leaves.
+  private var recentList: some View {
+    let live = SessionActivityOrder.sorted(sessions.sessions)
+    let shown = SessionActivityOrder.holding(heldRecentOrder, live: live)
+    return VStack(alignment: .leading, spacing: 0) {
+      ForEach(shown) { session in
+        sessionButton(for: session, showsAge: true)
+      }
+    }
+    .animation(.easeInOut(duration: 0.2), value: shown.map(\.id))
+    .onHover { hovering in
+      if hovering {
+        if heldRecentOrder == nil { heldRecentOrder = live.map(\.id) }
+      } else {
+        heldRecentOrder = nil
+      }
+    }
+  }
+
+  private func sessionButton(for session: TerminalSession, showsAge: Bool = false) -> some View {
     Group {
       if renameTarget?.id == .session(session.id) {
         SidebarInlineRenameEditor(
@@ -187,7 +216,8 @@ struct WorkbenchSidebar: View {
           } label: {
             SessionSidebarRow(
               session: session,
-              isSelected: sessions.selectedSessionID == session.id
+              isSelected: sessions.selectedSessionID == session.id,
+              showsAge: showsAge
             )
           }
           .buttonStyle(.plain)

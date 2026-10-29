@@ -1,4 +1,5 @@
 import AxoProtocol
+import Foundation
 
 /// Most-recently-focused Sessions, newest first, bounded so long-running apps don't grow it.
 struct RecentSessions: Equatable {
@@ -78,5 +79,53 @@ enum SessionNavigation {
     if let replacement, isOpenSibling(replacement.id) { return replacement.id }
     return remaining.first(where: { $0.workspaceId == closed.workspaceId })?.id
       ?? remaining.first?.id
+  }
+}
+
+/// How the sidebar lists Sessions: grouped under their Workspaces, or one flat list by recent
+/// activity.
+enum SidebarMode: String, CaseIterable, Sendable {
+  case workspaces
+  case recent
+}
+
+/// The recent-activity order: the Session whose agent or user last finished a message first.
+///
+/// Activity is a completed message (Axod's `lastMessageAt`), not terminal output or streaming,
+/// so Sessions move when a turn produces something rather than on every token. A Session with
+/// no messages yet counts from its creation, so a new Session starts at the top.
+enum SessionActivityOrder {
+  /// When `session` was last active, in Unix seconds; 0 when Axod reports neither time.
+  static func lastActivity(of session: TerminalSession) -> Int64 {
+    max(session.lastMessageAt ?? 0, session.createdAt ?? 0)
+  }
+
+  /// Newest activity first; ties go to the newer Session.
+  static func sorted(_ sessions: [TerminalSession]) -> [TerminalSession] {
+    sessions.sorted { left, right in
+      let (leftActivity, rightActivity) = (lastActivity(of: left), lastActivity(of: right))
+      return leftActivity != rightActivity ? leftActivity > rightActivity : left.id > right.id
+    }
+  }
+
+  /// `live` shown in the order `held` remembers, so rows don't move while the pointer is over
+  /// the list. Closed Sessions drop out; Sessions opened since go first, in `live` order.
+  static func holding(_ held: [SessionID]?, live: [TerminalSession]) -> [TerminalSession] {
+    guard let held else { return live }
+    let byID = Dictionary(uniqueKeysWithValues: live.map { ($0.id, $0) })
+    let heldIDs = Set(held)
+    return live.filter { !heldIDs.contains($0.id) } + held.compactMap { byID[$0] }
+  }
+
+  /// A short age for a row: "now", "5m", "3h", "2d", "4w".
+  static func age(of timestamp: Int64, now: Date) -> String {
+    let elapsed = max(0, Int64(now.timeIntervalSince1970) - timestamp)
+    switch elapsed {
+    case ..<60: return "now"
+    case ..<3_600: return "\(elapsed / 60)m"
+    case ..<86_400: return "\(elapsed / 3_600)h"
+    case ..<604_800: return "\(elapsed / 86_400)d"
+    default: return "\(elapsed / 604_800)w"
+    }
   }
 }

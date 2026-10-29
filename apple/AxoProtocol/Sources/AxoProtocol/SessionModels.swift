@@ -30,6 +30,8 @@ public struct TerminalSession: Decodable, Equatable, Identifiable, Sendable {
   public let emoji: String?
   /// Unix timestamp in seconds of the latest completed user or assistant message.
   public let lastMessageAt: Int64?
+  /// Unix timestamp in seconds when the Session was created; absent from older daemons.
+  public let createdAt: Int64?
   public let status: TerminalSessionStatus?
   public let initialPwd: String
   public let shells: [TerminalShell]
@@ -51,6 +53,7 @@ public struct TerminalSession: Decodable, Equatable, Identifiable, Sendable {
     manualName: String? = nil,
     emoji: String? = nil,
     lastMessageAt: Int64? = nil,
+    createdAt: Int64? = nil,
     status: TerminalSessionStatus? = nil
   ) {
     self.id = id
@@ -63,6 +66,7 @@ public struct TerminalSession: Decodable, Equatable, Identifiable, Sendable {
     self.manualName = manualName
     self.emoji = emoji
     self.lastMessageAt = lastMessageAt
+    self.createdAt = createdAt
     self.status = status
     self.initialPwd = initialPwd
     self.shells = shells

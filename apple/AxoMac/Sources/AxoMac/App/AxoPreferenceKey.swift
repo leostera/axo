@@ -9,9 +9,10 @@ enum AxoPreferenceKey {
   static let appearanceTheme = "appearance.theme"
   static let scrollSensitivity = "terminalScrollSensitivity"
   static let preventSystemSleep = "preventSystemSleep"
+  static let sidebarMode = "sidebar.mode.v1"
 
   static let all = [
     sidebarIsCollapsed, selectedSession, automaticPiRestart, appearanceTheme, scrollSensitivity,
-    preventSystemSleep,
+    preventSystemSleep, sidebarMode,
   ]
 }

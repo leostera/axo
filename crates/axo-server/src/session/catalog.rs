@@ -218,6 +218,7 @@ pub(super) fn session_metadata(
         pi_session_file,
         pi_session_id,
         last_message_at,
+        created_at,
         layout,
     } = open_session_row(&state.database, id)?;
     let mut shells: Vec<_> = state
@@ -257,6 +258,7 @@ pub(super) fn session_metadata(
         manual_name,
         emoji,
         last_message_at,
+        created_at,
         status,
         initial_pwd,
         shells,

@@ -1295,6 +1295,8 @@ pub struct StoredSessionRow {
     pub pi_session_file: Option<PathBuf>,
     pub pi_session_id: Option<String>,
     pub last_message_at: Option<i64>,
+    /// Unix seconds.
+    pub created_at: i64,
     pub layout: Option<Layout>,
 }
 
@@ -1304,7 +1306,8 @@ pub fn open_session_row(database: &Connection, id: SessionId) -> io::Result<Stor
     let (row, stored_layout) = database
         .prepare_cached(
             "SELECT s.initial_pwd, s.session_uuid, s.workspace_id, w.name, s.name, s.manual_name,
-                    s.emoji, s.pi_session_file, s.pi_session_id, s.layout_json, s.last_message_at
+                    s.emoji, s.pi_session_file, s.pi_session_id, s.layout_json, s.last_message_at,
+                    s.created_at
              FROM sessions s
              LEFT JOIN workspaces w ON w.workspace_id = s.workspace_id AND w.state = 'open'
              WHERE s.id = ?1 AND s.state = 'open'",
@@ -1323,6 +1326,7 @@ pub fn open_session_row(database: &Connection, id: SessionId) -> io::Result<Stor
                         pi_session_file: row.get::<_, Option<String>>(7)?.map(PathBuf::from),
                         pi_session_id: row.get(8)?,
                         last_message_at: row.get(10)?,
+                        created_at: row.get(11)?,
                         layout: None,
                     },
                     row.get::<_, Option<String>>(9)?,

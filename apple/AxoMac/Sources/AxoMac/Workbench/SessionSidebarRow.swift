@@ -1,30 +1,43 @@
 import AxoProtocol
 import SwiftUI
 
-struct SidebarSectionHeader: View {
-  let title: String
-  let buttonLabel: String
-  let helpText: String
-  let accessibilityIdentifier: String
+/// The sidebar's header: what it lists, a switch between the Workspace tree and the recent
+/// list, and in the tree a button to create a Workspace.
+struct SidebarHeader: View {
+  let mode: SidebarMode
   let topPadding: CGFloat
-  let action: () -> Void
+  let onSelectMode: (SidebarMode) -> Void
+  let onNewWorkspace: () -> Void
 
   var body: some View {
-    HStack(spacing: 4) {
-      Text(title)
+    HStack(spacing: 2) {
+      Text(mode == .workspaces ? "Workspaces" : "Recent")
         .font(.system(size: 12, weight: .semibold))
         .foregroundStyle(.secondary)
       Spacer(minLength: 0)
-      Button(action: action) {
-        Image(systemName: "plus")
+      let other: SidebarMode = mode == .workspaces ? .recent : .workspaces
+      Button { onSelectMode(other) } label: {
+        Image(systemName: mode == .workspaces ? "clock" : "list.bullet.indent")
           .font(.system(size: 11, weight: .semibold))
           .frame(width: 18, height: 18)
           .contentShape(Rectangle())
       }
       .buttonStyle(.plain)
-      .help(helpText)
-      .accessibilityLabel(buttonLabel)
-      .accessibilityIdentifier(accessibilityIdentifier)
+      .help(other == .recent ? "List Sessions by recent activity" : "Group Sessions by Workspace")
+      .accessibilityLabel(other == .recent ? "Show recent Sessions" : "Show Workspaces")
+      .accessibilityIdentifier("sidebar-mode-button")
+      if mode == .workspaces {
+        Button(action: onNewWorkspace) {
+          Image(systemName: "plus")
+            .font(.system(size: 11, weight: .semibold))
+            .frame(width: 18, height: 18)
+            .contentShape(Rectangle())
+        }
+        .buttonStyle(.plain)
+        .help("Create a Workspace (⌘N)")
+        .accessibilityLabel("New Workspace")
+        .accessibilityIdentifier("new-workspace-button")
+      }
     }
     .padding(.horizontal, 8)
     .padding(.top, topPadding)
@@ -36,6 +49,8 @@ struct SidebarSectionHeader: View {
 struct SessionSidebarRow: View {
   let session: TerminalSession
   let isSelected: Bool
+  /// Shows how long ago the Session was last active, as the recent list does.
+  var showsAge = false
   @Environment(GhosttyRuntime.self) private var ghostty
 
   var body: some View {
@@ -52,6 +67,14 @@ struct SessionSidebarRow: View {
         .lineLimit(1)
         .truncationMode(.tail)
       Spacer(minLength: 0)
+      if showsAge {
+        // Ages only need to move once a minute.
+        TimelineView(.periodic(from: .now, by: 60)) { context in
+          Text(SessionActivityOrder.age(of: SessionActivityOrder.lastActivity(of: session), now: context.date))
+            .font(.system(size: 10).monospacedDigit())
+            .foregroundStyle(.tertiary)
+        }
+      }
     }
     .padding(.leading, 6)
     .padding(.trailing, 8)

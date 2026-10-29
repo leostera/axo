@@ -1,4 +1,5 @@
 import AxoProtocol
+import Foundation
 import Observation
 import XCTest
 
@@ -19,6 +20,37 @@ final class SessionNavigationTests: XCTestCase {
     XCTAssertEqual(recent.ids, [2])
     for id in 0..<Int64(RecentSessions.capacity + 10) { recent.remember(SessionID(rawValue: id)) }
     XCTAssertEqual(recent.ids.count, RecentSessions.capacity)
+  }
+
+  private func active(_ id: SessionID, message: Int64? = nil, created: Int64? = nil) -> TerminalSession {
+    TerminalSession(id: id, initialPwd: "/", shells: [], lastMessageAt: message, createdAt: created)
+  }
+
+  func testRecentActivityPutsTheLatestMessageFirstAndNewSessionsByCreation() {
+    let sessions = [
+      active(1, message: 100, created: 10),
+      active(2, message: 300, created: 20),
+      // No message yet: counts from its creation, so a new Session is near the top.
+      active(3, created: 250),
+      // Equal activity: the newer Session first. Older daemons send no creation time.
+      active(4, message: 100),
+      active(5),
+    ]
+    XCTAssertEqual(SessionActivityOrder.sorted(sessions).map(\.id), [2, 3, 4, 1, 5])
+  }
+
+  func testAHeldOrderKeepsRowsStillButDropsClosedAndLeadsWithNewSessions() {
+    let live = [active(4, message: 400), active(2, message: 300), active(1, message: 100)]
+    XCTAssertEqual(SessionActivityOrder.holding(nil, live: live).map(\.id), [4, 2, 1])
+    // Held as [1, 2, 3]: 3 closed since, 4 opened since.
+    XCTAssertEqual(SessionActivityOrder.holding([1, 2, 3], live: live).map(\.id), [4, 1, 2])
+  }
+
+  func testAgesAreShort() {
+    let now = Date(timeIntervalSince1970: 1_000_000)
+    let age = { SessionActivityOrder.age(of: 1_000_000 - $0, now: now) }
+    XCTAssertEqual([age(5), age(-30), age(120), age(7_200), age(172_800), age(1_209_600)],
+      ["now", "now", "2m", "2h", "2d", "2w"])
   }
 
   func testSidebarOrderGroupsByWorkspaceOrderThenStandalone() {
@@ -78,6 +110,32 @@ final class SessionNavigationTests: XCTestCase {
 
 @MainActor
 final class TerminalSessionsModelPublishingTests: XCTestCase {
+  func testTheRecentListIsRememberedAndNextSessionFollowsIt() async throws {
+    let suiteName = "axo-sidebar-mode-\(UUID().uuidString)"
+    let defaults = try XCTUnwrap(UserDefaults(suiteName: suiteName))
+    defer { defaults.removePersistentDomain(forName: suiteName) }
+    let client = FakeAxodClient()
+    client.workspaces = [WorkspaceRecord(workspaceId: "a", name: "A", directoryPath: "/")]
+    client.sessions = [
+      TerminalSession(id: 1, initialPwd: "/", shells: [], workspaceId: "a", lastMessageAt: 100),
+      TerminalSession(id: 2, initialPwd: "/", shells: [], workspaceId: "a", lastMessageAt: 300),
+      TerminalSession(id: 3, initialPwd: "/", shells: [], lastMessageAt: 200),
+    ]
+    let model = TerminalSessionsModel(client: client, selectedSessionDefaults: defaults)
+    await model.refresh()
+    XCTAssertEqual(model.sidebarMode, .workspaces)
+    XCTAssertEqual(model.sidebarOrderedSessions.map(\.id), [1, 2, 3])
+
+    model.setSidebarMode(.recent)
+    XCTAssertEqual(model.sidebarOrderedSessions.map(\.id), [2, 3, 1])
+    model.showSession(2)
+    model.showNextSession()
+    XCTAssertEqual(model.selectedSessionID, 3)
+
+    let reopened = TerminalSessionsModel(client: client, selectedSessionDefaults: defaults)
+    XCTAssertEqual(reopened.sidebarMode, .recent)
+  }
+
   func testUnchangedCatalogEventDoesNotRepublish() async {
     let client = FakeAxodClient()
     let shell = TerminalShell(

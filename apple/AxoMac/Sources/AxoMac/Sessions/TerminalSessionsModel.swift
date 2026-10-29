@@ -67,6 +67,8 @@ final class TerminalSessionsModel {
   private(set) var pendingShellCloseConfirmation: ShellCloseConfirmation?
   private(set) var pendingTerminalSplit: PendingTerminalSplit?
   private(set) var automaticallyRestartUnavailablePi: Bool
+  /// How the sidebar lists Sessions; Previous/Next Session follow the same order.
+  private(set) var sidebarMode: SidebarMode
 
   /// The daemon client, for collaborators such as `TerminalCatalogSync`.
   var catalogClient: AxodClient? { client }
@@ -153,6 +155,9 @@ final class TerminalSessionsModel {
     selection = WorkbenchSelection(selectedSessionID: storedSelection)
     selectedSessionID = storedSelection
     automaticallyRestartUnavailablePi = restartsAutomatically
+    sidebarMode =
+      preferenceDefaults.string(forKey: AxoPreferenceKey.sidebarMode).flatMap(SidebarMode.init)
+      ?? .workspaces
     layoutWriter = TerminalLayoutWriter(client: client)
     piRestarter = AutomaticPiRestarter(isEnabled: restartsAutomatically)
     viewportReporter = ViewportReporter(client: client)
@@ -185,7 +190,13 @@ final class TerminalSessionsModel {
     SidebarSections(sessions: sessions, workspaces: workspaces)
   }
 
-  var sidebarOrderedSessions: [TerminalSession] { sidebarSections.ordered }
+  /// Every open Session in the order the sidebar lists it.
+  var sidebarOrderedSessions: [TerminalSession] {
+    switch sidebarMode {
+    case .workspaces: sidebarSections.ordered
+    case .recent: SessionActivityOrder.sorted(sessions)
+    }
+  }
 
   /// Sessions most recently shown first. Not observed: read when needed, as by the palette.
   var recentSessionIDs: [SessionID] { selection.recent.ids }
@@ -319,6 +330,12 @@ final class TerminalSessionsModel {
   }
 
   // MARK: - Preferences
+
+  func setSidebarMode(_ mode: SidebarMode) {
+    guard sidebarMode != mode else { return }
+    sidebarMode = mode
+    preferenceDefaults.set(mode.rawValue, forKey: AxoPreferenceKey.sidebarMode)
+  }
 
   func setAutomaticPiRestartEnabled(_ enabled: Bool) {
     guard automaticallyRestartUnavailablePi != enabled else { return }
