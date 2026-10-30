@@ -7,6 +7,13 @@ const MIN = 60 * SEC;
 // cloud Dynamic Worker; third-party tools are called from the cloud with the account's grant, and
 // `bash` travels over the host relay to the Mac it names.
 //
+// Each Mac's relay socket ends in the Durable Object that owns it ("HostIngress DO", a per-host
+// object in the relay data flow redesign; today AxoAccountManager itself). Connections state lives
+// only in the account's AxoAccountManager, one RPC hop away: the socket owner forwards a Mac's
+// connections calls to it, and sends it `bash` for its Mac. The model holds whichever object owns
+// the socket. Names match the relay data flow specs: zones "Host Mac" and "Cloudflare"; actors
+// "axod relay", "HostIngress DO", "AxoAccountManager".
+//
 // Not built yet, so no step has sources. Left out: pairing (RFD0013, see remote-access.ts),
 // third-party sign-in and refresh (connection-sign-in.ts), tool lists (tool-lists.ts), and how a
 // large message crosses the relay (relay-fragments.ts). Limits are scaled down: a script may make
@@ -46,7 +53,7 @@ const hostOf = (label: string) => label.replace(/ (daemon|session)$/, "").toLowe
 const grantOf = (account: string) => `grant:${who(account)}-linear`;
 
 type Connection = { kind: "third-party"; grant: string } | { kind: "host" };
-type Run = { account: string; from: string; calls: number };
+type Run = { account: string; host: string; calls: number };
 type Dispatch = { request: string; account: string; target: string };
 type LogRecord = { account: string; request: string; service: string; tool: string; input: string; call: string };
 
@@ -61,15 +68,24 @@ export default defineSpec(
       Done: message<{ request: string; results: string[] }>({ name: "script result", over: "unix socket", tone: "reply" }),
       Failed: message<{ request: string; error: string }>({ name: "script failed", over: "unix socket", tone: "refused" }),
       RelayDown: message<{ request: string }>({ name: "this Mac is not connected to its account", over: "unix socket", tone: "refused" }),
-      // axod <-> AxoAccountManager over the host relay WebSocket
-      Forward: message<{ request: string; account: string; script: ScriptName }>({ name: "axo.connections.execute", over: "websocket" }),
-      Answer: message<{ request: string; results: string[] }>({ name: "execute result", over: "websocket", tone: "reply" }),
-      Refused: message<{ request: string; error: string }>({ name: "execute failed", over: "websocket", tone: "refused" }),
+      // axod <-> the Durable Object that owns its relay socket
+      Forward: message<{ request: string; script: ScriptName; epoch: number }>({ name: "axo.connections.execute", over: "websocket" }),
+      Answer: message<{ request: string; results: string[]; epoch: number }>({ name: "execute result", over: "websocket", tone: "reply" }),
+      Refused: message<{ request: string; error: string; epoch: number }>({ name: "execute failed", over: "websocket", tone: "refused" }),
       Bash: message<{ call: string; account: string; command: string; epoch: number }>({ name: "axo.connections.bash", over: "websocket" }),
       BashDone: message<{ call: string; output: string; epoch: number }>({ name: "bash result", over: "websocket", tone: "reply" }),
       Disconnected: message<{ host: string; epoch: number }>({ name: "relay socket closed", over: "websocket", tone: "refused" }),
       Reconnected: message<{ host: string; epoch: number }>({ name: "relay socket open", over: "websocket" }),
       Revoked: message<{ epoch: number }>({ name: "close 4003: host revoked", over: "websocket", tone: "refused" }),
+      // The socket owner <-> AxoAccountManager (Durable Object RPC)
+      ExecuteFor: call<{ request: string; account: string; host: string; script: ScriptName }>({ name: "executeConnections", over: "rpc" }),
+      Finished: message<{ request: string; results: string[] }>({ name: "script finished", over: "rpc", tone: "reply" }),
+      NotFinished: message<{ request: string; error: string }>({ name: "script failed", over: "rpc", tone: "refused" }),
+      SendBash: call<{ call: string; account: string; host: string; command: string }>({ name: "sendBash", over: "rpc" }),
+      BashSent: message<{ call: string }>({ name: "sent to the Mac", over: "rpc", tone: "reply" }),
+      BashResult: message<{ call: string; host: string; output: string }>({ name: "bashResult", over: "rpc" }),
+      HostOffline: message<{ host: string; call: string | null }>({ name: "hostOffline", over: "rpc", tone: "refused" }),
+      Unpair: call<{ host: string }>({ name: "closeHost", over: "rpc" }),
       // AxoAccountManager <-> script Worker (Dynamic Worker binding)
       RunScript: message<{ request: string; account: string; calls: Call[] }>({ name: "run script", over: "rpc" }),
       ToolCall: message<{ request: string; call: Call }>({ name: "codemode tool call", over: "rpc" }),
@@ -86,11 +102,12 @@ export default defineSpec(
   (spec) => {
     const {
       Execute, Done, Failed, RelayDown, Forward, Answer, Refused, Bash, BashDone, Disconnected, Reconnected, Revoked,
+      ExecuteFor, Finished, NotFinished, SendBash, BashSent, BashResult, HostOffline, Unpair,
       RunScript, ToolCall, ToolResult, ToolError, ScriptDone, ScriptFailed, Abort, McpCall, McpResult,
     } = spec.messages;
 
-    const macs = spec.defineZone({ name: "Macs", description: "each runs axod and Axo Sessions" });
-    const cloudflare = spec.defineZone({ name: "Cloudflare", description: "the account's Durable Object and its script Worker", place: { column: 1, region: true } });
+    const macs = spec.defineZone({ name: "Host Mac", description: "each runs axod and Axo Sessions" });
+    const cloudflare = spec.defineZone({ name: "Cloudflare", description: "the host's socket owner, the account's Durable Object and its script Worker", place: { column: 1, region: true } });
     const services = spec.defineZone({ name: "Third-party services", description: "remote MCP servers", place: { column: 2 } });
 
     spec.defineLimit({ name: "Script wall time", value: 5 * MIN });
@@ -98,6 +115,123 @@ export default defineSpec(
     spec.defineLimit({ name: "Concurrent tool calls per script", value: 4, unit: "calls" });
     spec.defineLimit({ name: "bash default timeout", value: 60 * SEC });
     spec.defineLimit({ name: "Call log retention", value: 30, unit: "days" });
+
+    const Ingress = spec.defineActor({
+      name: "HostIngress DO",
+      description: "The Durable Object that owns each Mac's relay socket. It knows which sockets are open, forwards a Mac's connections calls to the account, and sends the account's commands down the right socket. It holds no connections state.",
+      zone: cloudflare,
+      singleton: true,
+      initialState: () => ({
+        /** Each Mac's current socket, if open, with its epoch. */
+        sockets: Object.fromEntries(Object.keys(MACS).map((host) => [host, { open: true, epoch: 1 }])) as Record<string, { open: boolean; epoch: number }>,
+        /** Hosts the account revoked; their sockets are refused. */
+        revoked: [] as string[],
+        /** Scripts forwarded for a Mac, so the answer goes back down its socket. */
+        forwarded: {} as Record<string, { host: string; epoch: number }>,
+      }),
+      display: {
+        icon: "plug",
+        status: (s) => `${Object.values(s.sockets).filter((x) => x.open).length} socket(s) open`,
+        rows: (s) => Object.entries(s.sockets).map(([host, x]) => ({ group: "Host sockets", label: host, detail: x.open ? `open, epoch ${x.epoch}` : "closed", mood: x.open ? ("ok" as const) : ("off" as const) })),
+      },
+      transitions: {
+        [Forward]: {
+          description: "A Mac's script goes to its account, if it came on the Mac's current socket.",
+          sends: [ExecuteFor],
+          run(state, m, ctx) {
+            const host = hostOf(ctx.from.label);
+            const socket = state.sockets[host];
+            if (!socket?.open || socket.epoch !== m.epoch) return;
+            state.forwarded[m.request] = { host, epoch: m.epoch };
+            ctx.send(ctx.the(Manager), ExecuteFor, { request: m.request, account: MACS[host]!, host, script: m.script });
+          },
+        },
+        [Finished]: {
+          description: "Returns the script's result down the socket it came on; if that socket closed, the Mac already failed the call.",
+          sends: [Answer],
+          run(state, m, ctx) {
+            const f = state.forwarded[m.request];
+            delete state.forwarded[m.request];
+            if (!f || state.sockets[f.host]?.epoch !== f.epoch || !state.sockets[f.host]?.open) return;
+            const daemon = ctx.all(Axod).find((a) => hostOf(a.label) === f.host);
+            if (daemon) ctx.send(daemon, Answer, { request: m.request, results: m.results, epoch: f.epoch });
+          },
+        },
+        [NotFinished]: {
+          description: "Returns the script's error down the socket it came on.",
+          sends: [Refused],
+          run(state, m, ctx) {
+            const f = state.forwarded[m.request];
+            delete state.forwarded[m.request];
+            if (!f || state.sockets[f.host]?.epoch !== f.epoch || !state.sockets[f.host]?.open) return;
+            const daemon = ctx.all(Axod).find((a) => hostOf(a.label) === f.host);
+            if (daemon) ctx.send(daemon, Refused, { request: m.request, error: m.error, epoch: f.epoch });
+          },
+        },
+        [spec.failed(ExecuteFor)]: {
+          description: "The account did not answer; the Mac hears that the script failed and may have run.",
+          sends: [Refused],
+          run(state, failure, ctx) {
+            const f = state.forwarded[failure.payload.request];
+            delete state.forwarded[failure.payload.request];
+            if (!f || state.sockets[f.host]?.epoch !== f.epoch || !state.sockets[f.host]?.open) return;
+            const daemon = ctx.all(Axod).find((a) => hostOf(a.label) === f.host);
+            if (daemon) ctx.send(daemon, Refused, { request: failure.payload.request, error: "the account did not answer; the script may have run", epoch: f.epoch });
+          },
+        },
+        [SendBash]: {
+          description: "Sends a command down the Mac's current socket, or says the Mac is offline.",
+          sends: [Bash, BashSent, HostOffline],
+          run(state, m, ctx) {
+            const socket = state.sockets[m.host];
+            const daemon = ctx.all(Axod).find((a) => hostOf(a.label) === m.host);
+            if (!socket?.open || !daemon) return ctx.reply(HostOffline, { host: m.host, call: m.call });
+            ctx.send(daemon, Bash, { call: m.call, account: m.account, command: m.command, epoch: socket.epoch });
+            ctx.reply(BashSent, { call: m.call });
+          },
+        },
+        [BashDone]: {
+          description: "Hands a command's output to the account, if it came on the socket the command went down.",
+          sends: [BashResult],
+          run(state, m, ctx) {
+            const host = hostOf(ctx.from.label);
+            if (state.sockets[host]?.epoch !== m.epoch || !state.sockets[host]?.open) return;
+            ctx.send(ctx.the(Manager), BashResult, { call: m.call, host, output: m.output });
+          },
+        },
+        [Disconnected]: {
+          description: "A Mac's socket closed; the account hears the Mac is offline, so it fails every command sent there.",
+          sends: [HostOffline],
+          run(state, m, ctx) {
+            const socket = state.sockets[m.host];
+            if (!socket || socket.epoch !== m.epoch || !socket.open) return;
+            socket.open = false;
+            for (const [request, f] of Object.entries(state.forwarded)) if (f.host === m.host) delete state.forwarded[request];
+            ctx.send(ctx.the(Manager), HostOffline, { host: m.host, call: null });
+          },
+        },
+        [Reconnected]: {
+          description: "A Mac opened a new socket; a revoked Mac is refused.",
+          run(state, m) {
+            if (state.revoked.includes(m.host)) return;
+            const socket = state.sockets[m.host];
+            if (socket && m.epoch > socket.epoch) state.sockets[m.host] = { open: true, epoch: m.epoch };
+          },
+        },
+        [Unpair]: {
+          description: "The account revoked a Mac: its socket closes with 4003 and is refused from now on.",
+          sends: [Revoked],
+          run(state, m, ctx) {
+            if (!state.revoked.includes(m.host)) state.revoked.push(m.host);
+            const socket = state.sockets[m.host];
+            if (!socket?.open) return;
+            socket.open = false;
+            const daemon = ctx.all(Axod).find((a) => hostOf(a.label) === m.host);
+            if (daemon) ctx.send(daemon, Revoked, { epoch: socket.epoch });
+          },
+        },
+      },
+    });
 
     const Manager = spec.defineActor({
       name: "AxoAccountManager",
@@ -114,14 +248,13 @@ export default defineSpec(
             },
           ]),
         ) as Record<string, Record<string, Connection>>,
-        online: Object.fromEntries(Object.keys(MACS).map((host) => [host, true])) as Record<string, boolean>,
-        /** The epoch of each Mac's current relay socket. */
-        epochs: Object.fromEntries(Object.keys(MACS).map((host) => [host, 1])) as Record<string, number>,
         runs: {} as Record<string, Run>,
         dispatched: {} as Record<string, Dispatch>,
         log: [] as LogRecord[],
+        /** How long the call log was when each Mac was unpaired. */
+        unpairedAt: {} as Record<string, number>,
       }),
-      durable: ["connections", "log"],
+      durable: ["connections", "log", "unpairedAt"],
       display: {
         icon: "cloud",
         status: (s) => `${Object.keys(s.runs).length} script(s) running`,
@@ -131,8 +264,7 @@ export default defineSpec(
               group: `${cap(who(account))}'s connections`,
               owner: cap(who(account)),
               label: name,
-              detail: c.kind === "host" ? (s.online[name] ? "host, online" : "host, offline") : "third-party, grant held here",
-              mood: c.kind === "host" && !s.online[name] ? ("off" as const) : ("ok" as const),
+              detail: c.kind === "host" ? "host" : "third-party, grant held here",
             })),
           ),
           ...(s.log.length ? [{ group: "Call log", label: `${s.log.length} record(s)`, detail: s.log.at(-1)!.service + "." + s.log.at(-1)!.tool }] : []),
@@ -141,27 +273,26 @@ export default defineSpec(
       actions: {
         unpair: {
           label: "Unpair a Mac",
-          description: "The person revokes a Mac (RFD0013): its host connection is removed, its relay closed, and commands sent to it fail.",
+          description: "The person revokes a Mac (RFD0013): its host connection is removed, commands sent to it fail, and its socket is closed.",
           inputs: { host: spec.defineInput(String, { examples: ["studio"] }) },
           when: (s) => Object.values(s.connections).some((cs) => "studio" in cs),
-          sends: [ToolError, Revoked],
+          sends: [ToolError, Unpair],
           run(state, { host }, ctx) {
             for (const cs of Object.values(state.connections)) delete cs[host];
-            state.online[host] = false;
+            state.unpairedAt[host] = state.log.length;
             failCommandsTo(state, host, `${host} was unpaired; the command may have run`, ctx);
-            const daemon = ctx.all(Axod).find((a) => hostOf(a.label) === host);
-            if (daemon) ctx.send(daemon, Revoked, { epoch: state.epochs[host]! });
+            ctx.send(ctx.the(Ingress), Unpair, { host });
           },
         },
       },
       transitions: {
-        [Forward]: {
+        [ExecuteFor]: {
           description: "Starts the script in the account's Worker, under the script's wall time.",
           sends: [RunScript],
           starts: ["wallTime"],
           say: (_s, m) => `Running ${m.script} for ${cap(who(m.account))} in a Dynamic Worker`,
           run(state, m, ctx) {
-            state.runs[m.request] = { account: m.account, from: ctx.from.id, calls: 0 };
+            state.runs[m.request] = { account: m.account, host: m.host, calls: 0 };
             ctx.send(ctx.the(Worker), RunScript, { request: m.request, account: m.account, calls: CALLS[m.script] });
             ctx.start("wallTime");
           },
@@ -169,20 +300,23 @@ export default defineSpec(
         wallTime: {
           description: "A script ran past its wall time: it is aborted, its calls in flight are abandoned, and the Mac that asked hears so.",
           after: "5 minutes",
-          sends: [Abort, Refused],
+          sends: [Abort, NotFinished],
           run(state, ctx) {
-            for (const [request, run] of Object.entries(state.runs)) {
+            for (const request of Object.keys(state.runs)) {
               delete state.runs[request];
               for (const [call, d] of Object.entries(state.dispatched)) if (d.request === request) delete state.dispatched[call];
               ctx.send(ctx.the(Worker), Abort, { request });
-              const from = ctx.all(Axod).find((a) => a.id === run.from);
-              if (from) ctx.send(from, Refused, { request, error: "script wall time exceeded; calls in flight may have run" });
+              ctx.send(ctx.the(Ingress), NotFinished, { request, error: "script wall time exceeded; calls in flight may have run" });
             }
           },
         },
+        [spec.failed(Unpair)]: {
+          description: "Closing the Mac's socket failed; the Mac is already no connection, and its socket owner refuses it when it reconnects.",
+          run: () => {},
+        },
         [ToolCall]: {
-          description: "Counts the call against the script's limit, looks the service up among the account's own connections, logs the call, and sends it to the service or the Mac.",
-          sends: [McpCall, Bash, ToolError],
+          description: "Counts the call against the script's limit, looks the service up among the account's own connections, logs the call, and sends it to the service or, through the Mac's socket owner, to the Mac.",
+          sends: [McpCall, SendBash, ToolError],
           run(state, m, ctx) {
             const run = state.runs[m.request];
             if (!run) return;
@@ -190,13 +324,11 @@ export default defineSpec(
             run.calls += 1;
             const connection = state.connections[run.account]?.[m.call.service];
             if (!connection) return ctx.reply(ToolError, { request: m.request, error: `no connection named ${m.call.service}` });
-            if (connection.kind === "host" && !state.online[m.call.service]) return ctx.reply(ToolError, { request: m.request, error: `${m.call.service} is offline` });
             const call = ctx.fresh("call");
             state.log.push({ account: run.account, request: m.request, service: m.call.service, tool: m.call.tool, input: m.call.input, call });
             state.dispatched[call] = { request: m.request, account: run.account, target: m.call.service };
             if (connection.kind === "third-party") return ctx.send(ctx.the(Linear), McpCall, { call, tool: m.call.tool, token: connection.grant });
-            const daemon = ctx.all(Axod).find((a) => hostOf(a.label) === m.call.service);
-            if (daemon) ctx.send(daemon, Bash, { call, account: run.account, command: m.call.input, epoch: state.epochs[m.call.service]! });
+            ctx.send(ctx.the(Ingress), SendBash, { call, account: run.account, host: m.call.service, command: m.call.input });
           },
         },
         [McpResult]: {
@@ -219,56 +351,58 @@ export default defineSpec(
             ctx.send(ctx.the(Worker), ToolError, { request: d.request, error: `${d.target} did not answer; the call may have run` });
           },
         },
-        [BashDone]: {
-          description: "Hands the command's output back to the script, if it came on the socket the command was sent on.",
+        [BashSent]: { description: "The command is on its way to the Mac.", run: () => {} },
+        [spec.failed(SendBash)]: {
+          description: "The socket owner did not answer; the command may have been sent, so it fails and is not sent again.",
+          sends: [ToolError],
+          run(state, failure, ctx) {
+            const d = state.dispatched[failure.payload.call];
+            if (!d) return;
+            delete state.dispatched[failure.payload.call];
+            ctx.send(ctx.the(Worker), ToolError, { request: d.request, error: `${d.target} did not answer; the command may have run` });
+          },
+        },
+        [BashResult]: {
+          description: "Hands the command's output back to the script.",
           sends: [ToolResult],
           run(state, m, ctx) {
             const d = state.dispatched[m.call];
-            if (!d || state.epochs[d.target] !== m.epoch) return;
+            if (!d || d.target !== m.host) return;
             delete state.dispatched[m.call];
             ctx.send(ctx.the(Worker), ToolResult, { request: d.request, output: m.output });
           },
         },
-        [Disconnected]: {
-          description: "The Mac's relay closed: every command sent to it fails at once and is not sent again, since it may already have run.",
+        [HostOffline]: {
+          description: "A Mac is offline, or went offline: the command to it, or every command sent there, fails at once and is not sent again, since it may already have run.",
           sends: [ToolError],
           run(state, m, ctx) {
-            if (m.epoch !== state.epochs[m.host]) return;
-            state.online[m.host] = false;
+            if (m.call) {
+              const d = state.dispatched[m.call];
+              if (!d) return;
+              delete state.dispatched[m.call];
+              return ctx.send(ctx.the(Worker), ToolError, { request: d.request, error: `${m.host} is offline` });
+            }
             failCommandsTo(state, m.host, `${m.host} went offline; the command may have run`, ctx);
-            for (const [request, run] of Object.entries(state.runs)) if (hostOf(ctx.all(Axod).find((a) => a.id === run.from)?.label ?? "") === m.host) delete state.runs[request];
-          },
-        },
-        [Reconnected]: {
-          description: "The Mac's relay is back on a new socket, if the Mac is still paired.",
-          run(state, m) {
-            if (m.epoch <= state.epochs[m.host]!) return;
-            state.epochs[m.host] = m.epoch;
-            if (Object.values(state.connections).some((cs) => m.host in cs)) state.online[m.host] = true;
           },
         },
         [ScriptDone]: {
-          description: "Returns the script's result to the Mac that asked.",
-          sends: [Answer],
+          description: "Returns the script's result to the socket owner of the Mac that asked.",
+          sends: [Finished],
           run(state, m, ctx) {
-            const run = state.runs[m.request];
-            if (!run) return;
+            if (!state.runs[m.request]) return;
             delete state.runs[m.request];
             if (!Object.keys(state.runs).length) ctx.cancel("wallTime");
-            const from = ctx.all(Axod).find((a) => a.id === run.from);
-            if (from) ctx.send(from, Answer, { request: m.request, results: m.results });
+            ctx.send(ctx.the(Ingress), Finished, { request: m.request, results: m.results });
           },
         },
         [ScriptFailed]: {
-          description: "Returns the script's error to the Mac that asked.",
-          sends: [Refused],
+          description: "Returns the script's error to the socket owner of the Mac that asked.",
+          sends: [NotFinished],
           run(state, m, ctx) {
-            const run = state.runs[m.request];
-            if (!run) return;
+            if (!state.runs[m.request]) return;
             delete state.runs[m.request];
             if (!Object.keys(state.runs).length) ctx.cancel("wallTime");
-            const from = ctx.all(Axod).find((a) => a.id === run.from);
-            if (from) ctx.send(from, Refused, { request: m.request, error: m.error });
+            ctx.send(ctx.the(Ingress), NotFinished, { request: m.request, error: m.error });
           },
         },
       },
@@ -355,8 +489,8 @@ export default defineSpec(
     });
 
     const Axod = spec.defineActor({
-      name: "axod",
-      description: "The daemon on each Mac: it holds the relay to the account, forwards Sessions' scripts, and runs bash.",
+      name: "axod relay",
+      description: "The daemon on each Mac and its relay socket: it forwards Sessions' scripts and runs bash, each command on a thread of its own.",
       zone: macs,
       initialState: (ctx) => ({
         host: hostOf(ctx.label),
@@ -378,7 +512,7 @@ export default defineSpec(
         mood: (s) => (s.connected ? "ok" : "off"),
         owner: (s) => (s.account ? cap(who(s.account)) : null),
       },
-      links: (s) => (s.connected ? [{ to: "AxoAccountManager", kind: "websocket", row: s.host }] : []),
+      links: (s) => (s.connected ? [{ to: "HostIngress DO", kind: "websocket", row: s.host }] : []),
       actions: {
         dropRelay: {
           label: "Relay drops",
@@ -387,23 +521,19 @@ export default defineSpec(
           sends: [Disconnected, RelayDown],
           run(state, _inputs, ctx) {
             state.connected = false;
-            ctx.send(ctx.the(Manager), Disconnected, { host: state.host, epoch: state.epoch });
-            for (const [request, session] of Object.entries(state.waiting)) {
-              const s = ctx.all(Session).find((x) => x.id === session);
-              if (s) ctx.send(s, RelayDown, { request });
-            }
-            state.waiting = {};
+            ctx.send(ctx.the(Ingress), Disconnected, { host: state.host, epoch: state.epoch });
+            failWaiting(state, ctx);
           },
         },
         reconnect: {
           label: "Relay reconnects",
-          description: "axod brings the relay back up.",
+          description: "axod brings the relay back up on a new socket.",
           when: (s) => !s.connected && s.account !== null,
           sends: [Reconnected],
           run(state, _inputs, ctx) {
             state.connected = true;
             state.epoch += 1;
-            ctx.send(ctx.the(Manager), Reconnected, { host: state.host, epoch: state.epoch });
+            ctx.send(ctx.the(Ingress), Reconnected, { host: state.host, epoch: state.epoch });
           },
         },
       },
@@ -414,13 +544,14 @@ export default defineSpec(
           run(state, m, ctx) {
             if (!state.connected || !state.account) return ctx.reply(RelayDown, { request: m.request });
             state.waiting[m.request] = ctx.from.id;
-            ctx.send(ctx.the(Manager), Forward, { request: m.request, account: state.account, script: m.script });
+            ctx.send(ctx.the(Ingress), Forward, { request: m.request, script: m.script, epoch: state.epoch });
           },
         },
         [Answer]: {
           description: "Hands the script's result to the Session that asked.",
           sends: [Done],
           run(state, m, ctx) {
+            if (m.epoch !== state.epoch) return;
             const session = ctx.all(Session).find((x) => x.id === state.waiting[m.request]);
             delete state.waiting[m.request];
             if (session) ctx.send(session, Done, { request: m.request, results: m.results });
@@ -430,6 +561,7 @@ export default defineSpec(
           description: "Hands the script's error to the Session that asked.",
           sends: [Failed],
           run(state, m, ctx) {
+            if (m.epoch !== state.epoch) return;
             const session = ctx.all(Session).find((x) => x.id === state.waiting[m.request]);
             delete state.waiting[m.request];
             if (session) ctx.send(session, Failed, { request: m.request, error: m.error });
@@ -442,15 +574,11 @@ export default defineSpec(
             if (m.epoch !== state.epoch) return;
             state.account = null;
             state.connected = false;
-            for (const [request, session] of Object.entries(state.waiting)) {
-              const s = ctx.all(Session).find((x) => x.id === session);
-              if (s) ctx.send(s, RelayDown, { request });
-            }
-            state.waiting = {};
+            failWaiting(state, ctx);
           },
         },
         [Bash]: {
-          description: "Starts the command on a thread of its own as axod's user, so the relay keeps serving; one for another socket is dropped.",
+          description: "Starts the command on a thread of its own as axod's user, so the relay keeps serving; one for another socket or account is dropped.",
           say: (s, m) => `Started \`${m.command}\` on ${cap(s.host)}`,
           run(state, m) {
             if (!state.connected || !state.account || m.epoch !== state.epoch || m.account !== state.account) return;
@@ -466,11 +594,19 @@ export default defineSpec(
             const [call, job] = Object.entries(state.jobs)[0]!;
             delete state.jobs[call];
             if (state.connected && job.epoch === state.epoch)
-              ctx.send(ctx.the(Manager), BashDone, { call, output: `${job.command} on ${state.host}`, epoch: job.epoch });
+              ctx.send(ctx.the(Ingress), BashDone, { call, output: `${job.command} on ${state.host}`, epoch: job.epoch });
           },
         },
       },
     });
+
+    function failWaiting(state: any, ctx: any): void {
+      for (const [request, session] of Object.entries(state.waiting) as [string, string][]) {
+        const s = ctx.all(Session).find((x: any) => x.id === session);
+        if (s) ctx.send(s, RelayDown, { request });
+      }
+      state.waiting = {};
+    }
 
     const Session = spec.defineActor({
       name: "Session",
@@ -559,16 +695,22 @@ export default defineSpec(
         },
       },
       grantsStayInTheCloud: {
-        description: "No Mac or Session ever holds a grant.",
-        always: (w) => [...w.all(Axod), ...w.all(Session)].every((x) => !JSON.stringify(x.state).includes("grant:")),
+        description: "No Mac, Session or socket owner ever holds a grant.",
+        always: (w) => [...w.all(Axod), ...w.all(Session), w.the(Ingress)].every((x) => !JSON.stringify(x.state).includes("grant:")),
       },
       noThirdPartyCallRunsTwice: {
         description: "A third-party tool call reaches the service at most once, even when its answer is lost.",
         always: (w) => { const calls = w.the(Linear).state.calls.map((c) => c.call); return new Set(calls).size === calls.length; },
       },
-      onlinePairedMacsOnly: {
-        description: "A Mac is offered as an online connection only while it is paired.",
-        always: (w) => { const m = w.the(Manager).state; return Object.entries(m.online).every(([host, on]) => !on || Object.values(m.connections).some((cs) => host in cs)); },
+      revokedMacsRunNothingNew: {
+        description: "Once a Mac is unpaired, no command dispatched after that runs on it.",
+        always: (w) => {
+          const m = w.the(Manager).state;
+          return w.all(Axod).every((a) => {
+            const at = m.unpairedAt[a.state.host];
+            return at === undefined || a.state.ran.every((r) => m.log.findIndex((l) => l.call === r.call) < at);
+          });
+        },
       },
       scriptsStayWithinLimit: {
         description: "No script reaches a service or a Mac more often than its call limit allows.",
@@ -585,6 +727,10 @@ export default defineSpec(
           return w.all(Axod).every((a) => a.state.ran.every((r) => logged.has(r.call))) && w.the(Linear).state.calls.every((c) => logged.has(c.call));
         },
       },
+      connectionsStateStaysInTheAccount: {
+        description: "The socket owner never holds connections, runs or the call log: it only knows sockets and what it forwarded.",
+        always: (w) => Object.keys(w.the(Ingress).state).every((k) => ["sockets", "revoked", "forwarded"].includes(k)),
+      },
       sessionsGetAnAnswer: {
         description: "A Session waiting on a script always gets an answer: a result, an error, or its deadline.",
         leadsTo: { whenever: (w) => w.all(Session).some((s) => s.state.pending !== null), then: (w) => w.all(Session).every((s) => s.state.pending === null) },
@@ -597,6 +743,7 @@ export default defineSpec(
       w.spawn(Axod, "Workbench daemon", { connected: true });
       w.spawn(Session, "Laptop session");
     };
+    const jobRunning = (w: any) => w.all(Axod).some((a: any) => Object.keys(a.state.jobs).length > 0);
 
     spec.defineScenario({
       name: "Read Linear from a Session",
@@ -609,7 +756,7 @@ export default defineSpec(
     });
     spec.defineScenario({
       name: "Run a command on another Mac",
-      description: "Alice's agent on her laptop runs uptime on her Studio, through the cloud and the Studio's relay.",
+      description: "Alice's agent on her laptop runs uptime on her Studio: through the laptop's socket owner to the account, and through the Studio's socket owner down to the Studio.",
       setup: aliceAndBob,
       run(s) {
         s.act(s.world.all(Session)[0]!, "execute", { script: "bash:studio" });
@@ -636,12 +783,12 @@ export default defineSpec(
     });
     spec.defineScenario({
       name: "The Studio drops mid-command",
-      description: "The Studio's relay closes after the command was sent; the script fails with 'may have run' and the command is not sent again.",
+      description: "The Studio's relay closes while its command runs; the script fails with 'may have run', the command is not sent again, and its late output is dropped.",
       setup: aliceAndBob,
       run(s) {
         const studio = s.world.all(Axod).find((a) => a.label === "Studio daemon")!;
         s.act(s.world.all(Session)[0]!, "execute", { script: "bash:studio" });
-        s.settle({ until: (w) => Object.keys(w.the(Manager).state.dispatched).length > 0 });
+        s.settle({ until: jobRunning });
         s.act(studio, "dropRelay");
         s.settle();
       },
@@ -657,22 +804,22 @@ export default defineSpec(
     });
     spec.defineScenario({
       name: "The Studio is unpaired mid-command",
-      description: "Alice unpairs her Studio while a command runs there; the script fails at once, the Studio's late output is dropped, and the Studio is no longer a connection.",
+      description: "Alice unpairs her Studio while a command runs there; the script fails at once, the Studio's socket closes, its late output is dropped, and the Studio is no longer a connection.",
       setup: aliceAndBob,
       run(s) {
         s.act(s.world.all(Session)[0]!, "execute", { script: "bash:studio" });
-        s.settle({ until: (w) => w.all(Axod).some((a) => Object.keys(a.state.jobs).length > 0) });
+        s.settle({ until: jobRunning });
         s.act(s.the(Manager), "unpair", { host: "studio" });
         s.settle();
       },
     });
     spec.defineScenario({
       name: "A script runs out of time",
-      description: "The script's wall time passes while a command runs; the Durable Object aborts it and tells the laptop, and the command's late output is ignored.",
+      description: "The script's wall time passes while a command runs; the account aborts it and tells the laptop, and the command's late output is ignored.",
       setup: aliceAndBob,
       run(s) {
         s.act(s.world.all(Session)[0]!, "execute", { script: "bash:studio" });
-        s.settle({ until: (w) => w.all(Axod).some((a) => Object.keys(a.state.jobs).length > 0) });
+        s.settle({ until: jobRunning });
         s.fire(s.the(Manager), "wallTime");
         s.settle();
       },
@@ -690,8 +837,8 @@ export default defineSpec(
     });
 
     spec.defineGroup({ name: "Mac", actors: { daemon: Axod, session: Session }, icon: "laptop", names: ["Laptop", "Studio", "Workbench"] });
-    spec.defineGroup({ name: "Axo cloud", actors: [Manager, Worker], icon: "cloud", collapsed: false });
+    spec.defineGroup({ name: "Axo cloud", actors: [Ingress, Manager, Worker], icon: "cloud", collapsed: false });
 
-    return { Manager, Worker, Linear, Axod, Session };
+    return { Ingress, Manager, Worker, Linear, Axod, Session };
   },
 );
