@@ -7,7 +7,7 @@
     "hostGeneration": "7f1918d3-8b6d-4af4-a57e-7e6ae28e89e2",
     "event": {
       "type": "pi.event",
-      "sessionId": 17,
+      "sessionId": "6e2d9c41-3b7a-4f58-8c1e-2a9d7b4f6c03",
       "piSessionId": "pi-session-example",
       "streamId": "0f00f22d-a24c-4cbc-9196-74dbed95ca80",
       "sequence": 1,

@@ -3,7 +3,7 @@
   "id": 3,
   "method": "axo.terminal.input",
   "params": {
-    "sessionId": 9,
+    "sessionId": "0b8f4e2a-7c1d-4e6b-9a3f-5d2c8e1b7a49",
     "shellId": 12,
     "sequence": 0,
     "data": "ZWNobyBoZXkK"

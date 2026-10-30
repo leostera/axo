@@ -2,5 +2,5 @@
   "jsonrpc": "2.0",
   "id": 1,
   "method": "axo.protocol.negotiate",
-  "params": { "protocolVersion": 1 }
+  "params": { "protocolVersion": 2 }
 }

@@ -10,7 +10,7 @@ use axo_pty::process;
 use axo_pty::{NextOutput, OutputSubscriber};
 use axo_store::Connection;
 use axo_store::{DATABASE_FILE, store_pi_bridge_token};
-use axo_store::{initialize_database, inserted_session_id, inserted_shell_id, unix_timestamp};
+use axo_store::{initialize_database, inserted_shell_id, unix_timestamp};
 use rusqlite::params;
 use serde_json::{Value, json};
 use std::fs;
@@ -37,7 +37,7 @@ pub(super) fn wait_for_shell_exit(child: &mut Child, timeout: Duration) -> io::R
 }
 
 pub(super) fn sid(value: i64) -> SessionId {
-    SessionId::new(value).unwrap()
+    SessionId::from_u128(value as u128)
 }
 
 pub(super) fn shid(value: i64) -> ShellId {
@@ -164,7 +164,8 @@ impl PiRecoveryFixture {
     pub(super) fn new() -> Self {
         let lifecycle = LifecycleFixture::new();
         let manager = &lifecycle.manager;
-        let session_uuid = new_uuid_v4().unwrap();
+        let session_id = SessionId::new_v4().unwrap();
+        let session_uuid = session_id.to_string();
         let pane_id = new_uuid_v4().unwrap();
         let token = new_uuid_v4().unwrap();
         let file = manager
@@ -176,18 +177,17 @@ impl PiRecoveryFixture {
         let executable = lifecycle.directory.join("fake-pi");
         fs::write(&executable, "#!/bin/sh\nexec /bin/sleep 60\n").unwrap();
         fs::set_permissions(&executable, fs::Permissions::from_mode(0o700)).unwrap();
-        let (session_id, shell_id) = {
+        let shell_id = {
             let mut state = manager.lock_state().unwrap();
             state.agent_command = AgentCommand::parse(executable.to_str().unwrap()).unwrap();
             state.database.execute(
-                "INSERT INTO sessions (initial_pwd, state, created_at, session_uuid, pi_session_file, pi_bridge_socket_path)
-                 VALUES (?1, 'open', ?2, ?3, ?4, ?5)",
-                params![lifecycle.directory.to_string_lossy(), unix_timestamp(), session_uuid, file.to_string_lossy(), socket.as_str()],
+                "INSERT INTO sessions (id, initial_pwd, state, created_at, pi_session_file, pi_bridge_socket_path)
+                 VALUES (?1, ?2, 'open', ?3, ?4, ?5)",
+                params![session_uuid, lifecycle.directory.to_string_lossy(), unix_timestamp(), file.to_string_lossy(), socket.as_str()],
             ).unwrap();
-            let session_id = inserted_session_id(&state.database).unwrap();
             state.database.execute(
                 "INSERT INTO shells (session_id, initial_pwd, state, created_at, role, pane_id) VALUES (?1, ?2, 'open', ?3, 'pi', ?4)",
-                params![session_id.get(), lifecycle.directory.to_string_lossy(), unix_timestamp(), pane_id],
+                params![session_id.to_string(), lifecycle.directory.to_string_lossy(), unix_timestamp(), pane_id],
             ).unwrap();
             let shell_id = inserted_shell_id(&state.database).unwrap();
             state
@@ -196,11 +196,11 @@ impl PiRecoveryFixture {
                     "UPDATE sessions SET layout_json = ?1 WHERE id = ?2",
                     params![
                         serde_json::to_string(&Layout::single(shell_id)).unwrap(),
-                        session_id.get()
+                        session_id.to_string()
                     ],
                 )
                 .unwrap();
-            store_pi_bridge_token(&state.database, &session_uuid, &token).unwrap();
+            store_pi_bridge_token(&state.database, session_id, &token).unwrap();
             state
                 .panes
                 .insert_unavailable(
@@ -212,7 +212,7 @@ impl PiRecoveryFixture {
                     ),
                 )
                 .unwrap();
-            (session_id, shell_id)
+            shell_id
         };
         Self {
             lifecycle,

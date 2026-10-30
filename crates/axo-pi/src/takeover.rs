@@ -129,7 +129,7 @@ pub fn take_over(
         Err(error) if error.kind() == io::ErrorKind::WouldBlock => {
             log::info!(
                 "event=session.pi_takeover_requested session_id={}",
-                session_id.get()
+                session_id
             );
             let shutdown_attempt = match previous_token {
                 Some(token) => match request_shutdown(
@@ -182,7 +182,7 @@ pub fn take_over(
                     if let Err(error) = &shutdown_attempt.graceful_shutdown {
                         log::warn!(
                             "event=session.pi_shutdown_unconfirmed session_id={} error_kind={:?}",
-                            session_id.get(),
+                            session_id,
                             error.kind()
                         );
                     }
@@ -197,7 +197,7 @@ pub fn take_over(
             };
             log::info!(
                 "event=session.pi_takeover_completed session_id={}",
-                session_id.get()
+                session_id
             );
             Ok(lock)
         }
@@ -403,12 +403,12 @@ fn shutdown_attempt_from_lock(
     let process_id = writer_process_id_from_lock(session_file, check_current).inspect_err(|error| {
         log::info!(
             "event=session.pi_lock_inspection_rejected session_id={} elapsed_ms={} error_kind={:?}",
-            session_id.get(), started.elapsed().as_millis(), error.kind()
+            session_id, started.elapsed().as_millis(), error.kind()
         );
     })?;
     log::warn!(
         "event=session.pi_process_verified_by_lock session_id={} pid={} elapsed_ms={}",
-        session_id.get(),
+        session_id,
         process_id.0,
         started.elapsed().as_millis()
     );
@@ -663,7 +663,7 @@ mod tests {
             child.exec()
         });
         let target = TakeoverTarget {
-            session_id: SessionId::new(1).unwrap(),
+            session_id: SessionId::from_u128(1),
             initial_pwd: &directory,
             session_file: &session_file,
             bridge_socket: &bridge_socket,

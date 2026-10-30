@@ -2,7 +2,7 @@
   "resumeSessionId": null,
   "sessions": [
     {
-      "id": 9,
+      "id": "0b8f4e2a-7c1d-4e6b-9a3f-5d2c8e1b7a49",
       "initialPwd": "/tmp",
       "manualName": null,
       "shells": [

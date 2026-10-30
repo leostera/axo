@@ -488,7 +488,7 @@ mod tests {
             .unwrap();
         let focus = wire(focus);
         assert_eq!(focus["type"], "session.focus");
-        assert_eq!(focus["sessionId"], 5);
+        assert_eq!(focus["sessionId"], sid(5).to_string());
         assert_eq!(manager.take_pending_resume_focus().unwrap(), Some(sid(5)));
         *manager.pending_resume_focus.lock().unwrap() = Some((
             sid(6),

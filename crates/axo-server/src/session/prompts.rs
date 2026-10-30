@@ -267,7 +267,7 @@ impl SessionManager {
                 let sender = axo_store::open_session_row(&state.database, from)
                     .map(|row| row.manual_name.unwrap_or(row.name))
                     .unwrap_or_default();
-                format!("[From Axo Session {} {sender:?}]\n\n{text}", from.get())
+                format!("[From Axo Session {} {sender:?}]\n\n{text}", from)
             }
             None => text.to_owned(),
         };
@@ -327,17 +327,17 @@ impl SessionManager {
         };
         log::info!(
             "event=session.pi_prompts_flushed session_id={} count={}",
-            session_id.get(),
+            session_id,
             queue.len()
         );
         thread::Builder::new()
-            .name(format!("axo-pi-prompts-{}", session_id.get()))
+            .name(format!("axo-pi-prompts-{}", session_id))
             .spawn(move || {
                 for prompt in queue {
                     if let Err(error) = bridge.send(&prompt.text, prompt.delivery) {
                         log::warn!(
                             "event=session.pi_prompt_lost session_id={} reason={}",
-                            session_id.get(),
+                            session_id,
                             refusal(&error)
                         );
                     }
@@ -380,7 +380,7 @@ fn log_prompt(
 ) {
     log::info!(
         "event=session.prompt target_session_id={} from_session_id={} depth={depth} delivery={delivery:?} outcome={outcome}",
-        target.get(),
-        from.map_or_else(|| "person".to_owned(), |from| from.get().to_string()),
+        target,
+        from.map_or_else(|| "person".to_owned(), |from| from.to_string()),
     );
 }

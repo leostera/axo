@@ -37,11 +37,11 @@ pub(super) fn log_socket_cleanup(session_id: SessionId, cleanup: SocketCleanup) 
     match cleanup {
         SocketCleanup::Removed => log::info!(
             "event=pi.bridge_socket_removed session_id={} reason=abandoned",
-            session_id.get()
+            session_id
         ),
         SocketCleanup::NotASocket => log::warn!(
             "event=pi.bridge_socket_blocked session_id={} reason=not_a_socket",
-            session_id.get()
+            session_id
         ),
         SocketCleanup::Absent | SocketCleanup::InUse => {}
     }
@@ -58,7 +58,7 @@ pub(super) fn remove_abandoned_pi_bridge_sockets(database: &Connection) -> io::R
             Ok(cleanup) => log_socket_cleanup(session_id, cleanup),
             Err(error) => log::warn!(
                 "event=pi.bridge_socket_reconcile_failed session_id={} error_kind={:?}",
-                session_id.get(),
+                session_id,
                 error.kind()
             ),
         }
@@ -70,14 +70,13 @@ pub(super) fn remove_abandoned_pi_bridge_sockets(database: &Connection) -> io::R
 struct PiBridgeHost {
     manager: Weak<SessionManager>,
     binding: PiRuntimeBinding,
-    session_uuid: String,
 }
 
 impl PiBridgeHost {
     fn log_context(&self) -> String {
         format!(
             "session_id={} shell_id={}",
-            self.binding.session_id.get(),
+            self.binding.session_id,
             self.binding.shell_id.get()
         )
     }
@@ -95,7 +94,7 @@ impl worker::BridgeHost for PiBridgeHost {
             .manager
             .upgrade()
             .ok_or_else(|| io::Error::new(io::ErrorKind::Interrupted, "Axod is stopping"))?;
-        owner.persist_pi_session_id(self.binding, &self.session_uuid, pi_session_id)?;
+        owner.persist_pi_session_id(self.binding, pi_session_id)?;
         owner.set_pi_connection(self.binding, true)
     }
 
@@ -241,7 +240,6 @@ impl SessionManager {
     pub(super) fn start_pi_bridge_worker(self: &Arc<Self>, shell_id: ShellId) -> io::Result<()> {
         let (
             session_id,
-            session_uuid,
             pane_id,
             initial_pwd,
             session_file,
@@ -258,11 +256,8 @@ impl SessionManager {
                 .running(shell_id)
                 .ok_or_else(not_running)?
                 .session_id;
-            let StoredPiSession {
-                session_uuid,
-                session_file,
-                ..
-            } = open_pi_session(&state.database, session_id)?;
+            let StoredPiSession { session_file, .. } =
+                open_pi_session(&state.database, session_id)?;
             let session_file = session_file.ok_or_else(|| {
                 io::Error::new(io::ErrorKind::InvalidData, "Pi history path is missing")
             })?;
@@ -271,7 +266,6 @@ impl SessionManager {
             running.pi_commands = Some(command_sender);
             (
                 running.session_id,
-                session_uuid,
                 running.pane_id.clone().ok_or_else(|| {
                     io::Error::new(io::ErrorKind::InvalidData, "Pi pane ID is missing")
                 })?,
@@ -298,11 +292,10 @@ impl SessionManager {
                 shell_id,
                 runtime_id,
             },
-            session_uuid: session_uuid.clone(),
         };
         let config = worker::WorkerConfig {
             log_context: host.log_context(),
-            session_uuid,
+            session_uuid: session_id.to_string(),
             pane_id,
             initial_pwd,
             session_file,
@@ -432,7 +425,6 @@ impl SessionManager {
     pub(super) fn persist_pi_session_id(
         &self,
         binding: PiRuntimeBinding,
-        session_uuid: &str,
         pi_session_id: &str,
     ) -> io::Result<()> {
         let state = self.lock_state()?;
@@ -442,12 +434,7 @@ impl SessionManager {
                 "Pi runtime was replaced",
             ));
         }
-        bind_pi_session_id(
-            &state.database,
-            binding.session_id,
-            session_uuid,
-            pi_session_id,
-        )
+        bind_pi_session_id(&state.database, binding.session_id, pi_session_id)
     }
 
     pub(super) fn request_session_focus(&self, session_id: SessionId) -> io::Result<()> {
@@ -556,7 +543,7 @@ mod tests {
         let database = Connection::open_in_memory().unwrap();
         database
             .execute_batch(
-                "CREATE TABLE sessions (id INTEGER PRIMARY KEY, pi_session_file TEXT, pi_bridge_socket_path TEXT);",
+                "CREATE TABLE sessions (id TEXT PRIMARY KEY, pi_session_file TEXT, pi_bridge_socket_path TEXT);",
             )
             .unwrap();
         let live_file = directory.join("live.jsonl");
@@ -568,7 +555,11 @@ mod tests {
             database
                 .execute(
                     "INSERT INTO sessions VALUES (?1, ?2, ?3)",
-                    params![id, file.to_string_lossy(), socket.to_string_lossy()],
+                    params![
+                        sid(id).to_string(),
+                        file.to_string_lossy(),
+                        socket.to_string_lossy()
+                    ],
                 )
                 .unwrap();
         }
@@ -632,7 +623,7 @@ mod tests {
                 .unwrap()
         );
         manager
-            .persist_pi_session_id(binding, &session.session_uuid, "replacement")
+            .persist_pi_session_id(binding, "replacement")
             .unwrap();
         // A stale attachment's release must not detach the replacement's clients.
         drop(old_attachment);
@@ -667,7 +658,7 @@ mod tests {
         );
         assert_eq!(
             manager
-                .persist_pi_session_id(old_binding, &session.session_uuid, "old")
+                .persist_pi_session_id(old_binding, "old")
                 .unwrap_err()
                 .kind(),
             io::ErrorKind::NotFound
@@ -737,22 +728,19 @@ mod tests {
     fn pi_bridge_credential_is_persisted_per_session() {
         let mut database = Connection::open_in_memory().unwrap();
         initialize_database(&mut database).unwrap();
-        let session_uuid = new_uuid_v4().unwrap();
+        let session_id = SessionId::new_v4().unwrap();
         let first_token = new_uuid_v4().unwrap();
         let second_token = new_uuid_v4().unwrap();
 
+        assert_eq!(load_pi_bridge_token(&database, session_id).unwrap(), None);
+        store_pi_bridge_token(&database, session_id, &first_token).unwrap();
         assert_eq!(
-            load_pi_bridge_token(&database, &session_uuid).unwrap(),
-            None
-        );
-        store_pi_bridge_token(&database, &session_uuid, &first_token).unwrap();
-        assert_eq!(
-            load_pi_bridge_token(&database, &session_uuid).unwrap(),
+            load_pi_bridge_token(&database, session_id).unwrap(),
             Some(first_token)
         );
-        store_pi_bridge_token(&database, &session_uuid, &second_token).unwrap();
+        store_pi_bridge_token(&database, session_id, &second_token).unwrap();
         assert_eq!(
-            load_pi_bridge_token(&database, &session_uuid).unwrap(),
+            load_pi_bridge_token(&database, session_id).unwrap(),
             Some(second_token)
         );
     }

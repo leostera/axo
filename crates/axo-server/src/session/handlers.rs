@@ -239,7 +239,7 @@ fn automatic_pi_restart_rpc_error(
 ) -> RpcError {
     log::debug!(
         "event=session.pi_auto_restart_deferred session_id={} shell_id={} error_kind={:?}",
-        session_id.get(),
+        session_id,
         shell_id.get(),
         error.kind()
     );
@@ -254,7 +254,7 @@ fn automatic_pi_restart_rpc_error(
 fn pi_restart_rpc_error(session_id: SessionId, shell_id: ShellId, error: io::Error) -> RpcError {
     log::error!(
         "event=session.pi_restart_failed session_id={} shell_id={} error_kind={:?}",
-        session_id.get(),
+        session_id,
         shell_id.get(),
         error.kind()
     );

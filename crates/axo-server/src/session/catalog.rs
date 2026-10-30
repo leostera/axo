@@ -81,7 +81,7 @@ impl SessionState {
             match process::resize_if_changed(&running.master, &running.child, size) {
                 Ok(true) => log::debug!(
                     "event=pane.fitted_to_viewport session_id={} shell_id={} rows={} columns={}",
-                    session_id.get(),
+                    session_id,
                     shell_id.get(),
                     size.rows(),
                     size.columns()
@@ -89,7 +89,7 @@ impl SessionState {
                 Ok(false) => {}
                 Err(error) => log::warn!(
                     "event=pane.fit_failed session_id={} shell_id={} error_kind={:?}",
-                    session_id.get(),
+                    session_id,
                     shell_id.get(),
                     error.kind()
                 ),
@@ -137,11 +137,7 @@ impl SessionState {
     fn bind_output(&self, shell_id: ShellId, running: &RunningShell) {
         let session_id = running.session_id;
         running.output.bind(
-            format!(
-                "session_id={} shell_id={}",
-                session_id.get(),
-                shell_id.get()
-            ),
+            format!("session_id={} shell_id={}", session_id, shell_id.get()),
             Arc::new(ShellOutputSink {
                 events: self.events.clone(),
                 session_id,
@@ -209,7 +205,6 @@ pub(super) fn session_metadata(
 ) -> io::Result<SessionRecord> {
     let StoredSessionRow {
         initial_pwd,
-        session_uuid,
         workspace_id,
         workspace_name,
         name,
@@ -249,7 +244,6 @@ pub(super) fn session_metadata(
     });
     Ok(SessionRecord {
         id,
-        session_uuid,
         pi_session_file,
         pi_session_id,
         workspace_id,
@@ -327,7 +321,7 @@ impl SessionManager {
             .into_iter()
             .map(|id| session_metadata(&state, id, &self.attach_socket_path))
             .collect::<io::Result<Vec<_>>>()?;
-        sessions.sort_by_key(|session| session.id.get());
+        sessions.sort_by_key(|session| (session.created_at, session.id));
         Ok(sessions)
     }
 
@@ -398,7 +392,7 @@ mod tests {
                 .execute(
                     "UPDATE sessions SET emoji = '🦀', workspace_id = ?1, layout_json = '{\"not\": 1}'
                      WHERE id = ?2",
-                    params![workspace_id, session.id.get()],
+                    params![workspace_id, session.id.to_string()],
                 )
                 .unwrap();
             let record = session_metadata(&state, session.id, &manager.attach_socket_path).unwrap();

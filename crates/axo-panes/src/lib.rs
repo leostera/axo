@@ -332,7 +332,7 @@ mod tests {
     }
 
     fn sid(value: i64) -> SessionId {
-        SessionId::new(value).unwrap()
+        SessionId::from_u128(value as u128)
     }
 
     fn shid(value: i64) -> ShellId {

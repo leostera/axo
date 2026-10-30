@@ -94,6 +94,7 @@ pub(super) struct PiLaunchRequest {
     pub(super) initial_pwd: PathBuf,
     pub(super) session_file: PathBuf,
     pub(super) bridge_socket: BridgeSocketPath,
+    /// `session_id` as Pi's environment and bridge handshake carry it.
     pub(super) session_uuid: String,
     pub(super) pane_id: String,
     pub(super) previous_token: Option<String>,
@@ -110,7 +111,7 @@ pub(super) fn spawn_new_pi(
 ) -> io::Result<RunningShell> {
     let lock = WriterLock::acquire(&request.session_file)?;
     let bridge_token = new_uuid_v4()?;
-    store_pi_bridge_token(database, &request.session_uuid, &bridge_token)?;
+    store_pi_bridge_token(database, request.session_id, &bridge_token)?;
     spawn_pi(request, lock, bridge_token)
 }
 
@@ -213,7 +214,7 @@ impl SessionManager {
             ) {
                 log::warn!(
                     "event=session.pi_restore_unavailable session_id={} shell_id={} error_kind={:?}",
-                    session_id.get(),
+                    session_id,
                     shell_id.get(),
                     error.kind()
                 );
@@ -248,7 +249,6 @@ impl SessionManager {
             })?;
             let initial_pwd = unavailable.initial_pwd.clone();
             let StoredPiSession {
-                session_uuid,
                 session_file,
                 bridge_socket_path,
                 has_messages,
@@ -278,8 +278,8 @@ impl SessionManager {
                 initial_pwd,
                 session_file,
                 bridge_socket,
-                previous_token: load_pi_bridge_token(&state.database, &session_uuid)?,
-                session_uuid,
+                previous_token: load_pi_bridge_token(&state.database, session_id)?,
+                session_uuid: session_id.to_string(),
                 pane_id,
                 size: state.pane_size(session_id, shell_id),
             };
@@ -331,7 +331,7 @@ impl SessionManager {
                 ));
             }
             // Rotate only while owning the original exclusive transcript lock.
-            store_pi_bridge_token(&state.database, &request.session_uuid, &bridge_token)?;
+            store_pi_bridge_token(&state.database, request.session_id, &bridge_token)?;
         }
         check_current()?;
         let pending = spawn_pi(&request, lock, bridge_token)?;
@@ -456,17 +456,14 @@ impl SessionManager {
             match self.reopen_archived(&owner, |_| true) {
                 Ok(()) => {
                     self.publish_session_snapshot(owner.session_id)?;
-                    log::info!(
-                        "event=session.reopened session_id={}",
-                        owner.session_id.get()
-                    );
+                    log::info!("event=session.reopened session_id={}", owner.session_id);
                     let state = self.lock_state()?;
                     return session_metadata(&state, owner.session_id, &self.attach_socket_path);
                 }
                 Err(error) => {
                     log::warn!(
                         "event=session.reopen_skipped session_id={} error_kind={:?} reason={error}",
-                        owner.session_id.get(),
+                        owner.session_id,
                         error.kind()
                     );
                     skipped = Some(error);
@@ -577,7 +574,7 @@ impl SessionManager {
                             Err(error) => {
                                 log::warn!(
                                     "event=session.terminal_restore_unavailable session_id={} shell_id={} error_kind={:?}",
-                                    session_id.get(),
+                                    session_id,
                                     shell_id.get(),
                                     error.kind()
                                 );
@@ -663,7 +660,7 @@ impl SessionManager {
         self.publish_session_snapshot(target_session_id)?;
         log::info!(
             "event=session.pi_resume_completed session_id={}",
-            target_session_id.get()
+            target_session_id
         );
         Ok(target_session_id)
     }
@@ -744,7 +741,7 @@ mod tests {
                 .is_recovering()
         );
         assert_eq!(
-            load_pi_bridge_token(&state.database, &fixture.session_uuid)
+            load_pi_bridge_token(&state.database, fixture.session_id)
                 .unwrap()
                 .as_deref(),
             Some(fixture.token.as_str())
@@ -799,7 +796,7 @@ mod tests {
                 .database
                 .query_row(
                     "SELECT state FROM sessions WHERE id = ?1",
-                    params![fixture.session_id.get()],
+                    params![fixture.session_id.to_string()],
                     |row| row.get(0),
                 )
                 .unwrap();
@@ -1006,7 +1003,7 @@ mod tests {
             .database
             .execute(
                 "UPDATE sessions SET last_message_at = 1 WHERE id = ?1",
-                params![fixture.session_id.get()],
+                params![fixture.session_id.to_string()],
             )
             .unwrap();
         fs::remove_file(&fixture.file).unwrap();
@@ -1025,7 +1022,7 @@ mod tests {
         assert!(!fixture.file.with_extension("jsonl.lock").exists());
         fs::write(&fixture.file, b"original history\n").unwrap();
         manager.lock_state().unwrap().database.execute(
-            "INSERT INTO sessions (initial_pwd, state, created_at, session_uuid, pi_session_file) VALUES ('/tmp', 'archived', ?1, ?2, ?3)",
+            "INSERT INTO sessions (initial_pwd, state, created_at, id, pi_session_file) VALUES ('/tmp', 'archived', ?1, ?2, ?3)",
             params![unix_timestamp(), new_uuid_v4().unwrap(), fixture.file.to_string_lossy()],
         ).unwrap();
         assert_eq!(
@@ -1071,7 +1068,7 @@ mod tests {
                 .is_recovering()
         );
         assert_eq!(
-            load_pi_bridge_token(&state.database, &fixture.session_uuid)
+            load_pi_bridge_token(&state.database, fixture.session_id)
                 .unwrap()
                 .as_deref(),
             Some(fixture.token.as_str())
@@ -1108,7 +1105,7 @@ mod tests {
             .database
             .execute(
                 "UPDATE sessions SET pi_session_file = ?1 WHERE id = ?2",
-                params![outside.to_string_lossy(), fixture.session_id.get()],
+                params![outside.to_string_lossy(), fixture.session_id.to_string()],
             )
             .unwrap();
         assert_eq!(
@@ -1279,7 +1276,7 @@ mod tests {
 
         let session_id = sid(701);
         let shell_id = shid(801);
-        let session_uuid = new_uuid_v4().unwrap();
+        let session_uuid = session_id.to_string();
         let pane_id = new_uuid_v4().unwrap();
         let session_file = pi_session_directory.join(format!("{session_uuid}.jsonl"));
         fs::write(&session_file, b"preserved Pi transcript\n").unwrap();
@@ -1321,13 +1318,12 @@ mod tests {
         database
             .execute(
                 "INSERT INTO sessions
-                    (id, initial_pwd, state, created_at, layout_json, session_uuid, name, pi_session_file)
-                 VALUES (?1, '/tmp', 'open', ?2, ?3, ?4, 'Recovery fixture', ?5)",
+                    (id, initial_pwd, state, created_at, layout_json, name, pi_session_file)
+                 VALUES (?1, '/tmp', 'open', ?2, ?3, 'Recovery fixture', ?4)",
                 params![
-                    session_id.get(),
+                    session_id.to_string(),
                     unix_timestamp(),
                     serde_json::to_string(&Layout::single(shell_id)).unwrap(),
-                    session_uuid,
                     session_file.to_string_lossy(),
                 ],
             )
@@ -1336,11 +1332,16 @@ mod tests {
             .execute(
                 "INSERT INTO shells (id, session_id, initial_pwd, state, created_at, role, pane_id)
                  VALUES (?1, ?2, '/tmp', 'open', ?3, 'pi', ?4)",
-                params![shell_id.get(), session_id.get(), unix_timestamp(), pane_id],
+                params![
+                    shell_id.get(),
+                    session_id.to_string(),
+                    unix_timestamp(),
+                    pane_id
+                ],
             )
             .unwrap();
         let bridge_token = new_uuid_v4().unwrap();
-        store_pi_bridge_token(&database, &session_uuid, &bridge_token).unwrap();
+        store_pi_bridge_token(&database, session_id, &bridge_token).unwrap();
         drop(database);
 
         let bridge_socket =
@@ -1359,7 +1360,7 @@ mod tests {
             .database
             .query_row(
                 "SELECT pi_bridge_socket_path FROM sessions WHERE id = ?1",
-                params![session_id.get()],
+                params![session_id.to_string()],
                 |row| row.get(0),
             )
             .unwrap();
@@ -1567,7 +1568,7 @@ mod tests {
                 .database
                 .query_row(
                     "SELECT state, termination_reason FROM sessions WHERE id = ?1",
-                    params![session_id.get()],
+                    params![session_id.to_string()],
                     |row| Ok((row.get(0)?, row.get(1)?)),
                 )
                 .unwrap();
@@ -1587,7 +1588,7 @@ mod tests {
         let database_path = server_directory.join(DATABASE_FILE);
         let session_id = sid(901);
         let shell_id = shid(902);
-        let session_uuid = new_uuid_v4().unwrap();
+        let session_uuid = session_id.to_string();
         let pane_id = new_uuid_v4().unwrap();
         let workspace_id = new_uuid_v4().unwrap();
         let workspace_root = PathBuf::from("/tmp").canonicalize().unwrap();
@@ -1614,16 +1615,15 @@ mod tests {
             .execute(
                 "INSERT INTO sessions
                     (id, initial_pwd, state, created_at, archived_at, termination_reason,
-                     layout_json, workspace_id, session_uuid, pi_session_file, pi_session_id)
-                 VALUES (?1, ?2, 'archived', ?3, ?4, 'pi_exited', ?5, ?6, ?7, ?8, 'pi-session-archived')",
+                     layout_json, workspace_id, pi_session_file, pi_session_id)
+                 VALUES (?1, ?2, 'archived', ?3, ?4, 'pi_exited', ?5, ?6, ?7, 'pi-session-archived')",
                 params![
-                    session_id.get(),
+                    session_id.to_string(),
                     workspace_root_string,
                     unix_timestamp(),
                     unix_timestamp(),
                     serde_json::to_string(&Layout::single(shell_id)).unwrap(),
                     workspace_id,
-                    session_uuid,
                     session_file.to_string_lossy(),
                 ],
             )
@@ -1635,7 +1635,7 @@ mod tests {
                  VALUES (?1, ?2, ?3, 'archived', ?4, ?5, 'pi_exited', 'pi', ?6)",
                 params![
                     shell_id.get(),
-                    session_id.get(),
+                    session_id.to_string(),
                     workspace_root_string,
                     unix_timestamp(),
                     unix_timestamp(),
@@ -1717,7 +1717,7 @@ mod tests {
             .database
             .query_row(
                 "SELECT state, termination_reason FROM sessions WHERE id = ?1",
-                params![requester_session_id.get()],
+                params![requester_session_id.to_string()],
                 |row| Ok((row.get(0)?, row.get(1)?)),
             )
             .unwrap();

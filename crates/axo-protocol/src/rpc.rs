@@ -82,7 +82,7 @@ pub mod method {
 }
 
 /// The only protocol version.
-pub const PROTOCOL_VERSION: u32 = 1;
+pub const PROTOCOL_VERSION: u32 = 2;
 /// Upper bound for `NextEvents::timeout_ms`.
 pub const MAX_EVENTS_TIMEOUT_MS: u64 = 20_000;
 /// Upper bound for `NextEvents::max_events`.
@@ -352,7 +352,6 @@ pub struct SessionCatalog {
 #[serde(rename_all = "camelCase")]
 pub struct ArchivedSessionRecord {
     pub id: SessionId,
-    pub session_uuid: String,
     pub name: String,
     pub emoji: Option<String>,
     pub workspace_id: Option<String>,
@@ -481,17 +480,25 @@ mod tests {
     use super::*;
     use serde_json::json;
 
+    const SID: &str = "2f5c3a1e-8d4b-4c6a-9e1f-0b7d3c2a5e41";
+
     #[test]
     fn parameters_reject_unknown_fields_and_invalid_ids() {
         assert!(
-            serde_json::from_value::<ShellRef>(json!({ "sessionId": 1, "shellId": 2 })).is_ok()
+            serde_json::from_value::<ShellRef>(json!({ "sessionId": SID, "shellId": 2 })).is_ok()
         );
         assert!(
-            serde_json::from_value::<ShellRef>(json!({ "sessionId": 1, "shellId": 2, "x": 1 }))
+            serde_json::from_value::<ShellRef>(json!({ "sessionId": SID, "shellId": 2, "x": 1 }))
                 .is_err()
         );
         assert!(
-            serde_json::from_value::<ShellRef>(json!({ "sessionId": 0, "shellId": 2 })).is_err()
+            serde_json::from_value::<ShellRef>(json!({ "sessionId": 1, "shellId": 2 })).is_err()
+        );
+        assert!(
+            serde_json::from_value::<ShellRef>(
+                json!({ "sessionId": SID.to_uppercase(), "shellId": 2 })
+            )
+            .is_err()
         );
         assert!(serde_json::from_value::<NoParams>(json!({})).is_ok());
     }

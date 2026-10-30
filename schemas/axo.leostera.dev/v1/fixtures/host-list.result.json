@@ -6,9 +6,18 @@
       "label": "Axo Mac",
       "hostKind": "macos",
       "capabilities": [
-        { "id": "agent.pi", "version": 1 },
-        { "id": "terminal.pty", "version": 1 },
-        { "id": "workspace.filesystem", "version": 1 }
+        {
+          "id": "agent.pi",
+          "version": 1
+        },
+        {
+          "id": "terminal.pty",
+          "version": 1
+        },
+        {
+          "id": "workspace.filesystem",
+          "version": 1
+        }
       ],
       "status": "offline",
       "stale": true,
@@ -16,15 +25,22 @@
       "sessions": [
         {
           "hostId": "18355f00-95fd-4c93-8586-a71a8a52bf73",
-          "sessionId": 9,
+          "sessionId": "0b8f4e2a-7c1d-4e6b-9a3f-5d2c8e1b7a49",
           "workspaceId": "7f1918d3-8b6d-4af4-a57e-7e6ae28e89e2",
           "workspaceName": "Axo",
           "name": "Ship the remote Workbench",
           "emoji": "🦀",
           "status": "working",
           "hasAgent": true,
-          "shells": [{ "shellId": 12 }],
-          "layout": { "kind": "pane", "shellId": 12 },
+          "shells": [
+            {
+              "shellId": 12
+            }
+          ],
+          "layout": {
+            "kind": "pane",
+            "shellId": 12
+          },
           "updatedAt": "2026-10-15T23:59:00Z",
           "lastMessageAt": 1792108740,
           "createdAt": 1792022400

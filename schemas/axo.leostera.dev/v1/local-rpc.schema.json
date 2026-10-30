@@ -100,7 +100,7 @@
               ],
               "properties": {
                 "protocolVersion": {
-                  "const": 1
+                  "const": 2
                 }
               }
             }
@@ -784,7 +784,7 @@
       ],
       "properties": {
         "protocolVersion": {
-          "const": 1
+          "const": 2
         },
         "methods": {
           "type": "array",

@@ -11,7 +11,7 @@
     },
     "HostId": { "type": "string", "format": "uuid" },
     "HostGeneration": { "type": "string", "format": "uuid" },
-    "SessionId": { "type": "integer", "minimum": 1, "maximum": 9007199254740991 },
+    "SessionId": { "type": "string", "pattern": "^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$" },
     "ShellId": { "type": "integer", "minimum": 1, "maximum": 9007199254740991 },
     "SplitDirection": { "type": "string", "enum": ["right", "down"] },
     "Layout": {

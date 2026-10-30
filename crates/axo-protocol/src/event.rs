@@ -120,24 +120,24 @@ mod tests {
     #[test]
     fn events_use_their_wire_type_names_and_camel_case_fields() {
         let event = Event::ShellActivity {
-            session_id: SessionId::new(1).unwrap(),
+            session_id: SessionId::from_u128(1),
             shell_id: ShellId::new(2).unwrap(),
             activity: ShellActivity::Exited,
         };
         assert_eq!(
             serde_json::to_value(&event).unwrap(),
-            json!({ "type": "shell.activity", "sessionId": 1, "shellId": 2, "activity": "exited" })
+            json!({ "type": "shell.activity", "sessionId": "00000000-0000-0000-0000-000000000001", "shellId": 2, "activity": "exited" })
         );
         assert_eq!(
             serde_json::to_value(Event::SubscriptionLagged).unwrap(),
             json!({ "type": "subscription.lagged" })
         );
         let output: Event = serde_json::from_value(
-            json!({ "type": "terminal.output", "sessionId": 1, "shellId": 2, "sequence": 0, "data": "aGk=" }),
+            json!({ "type": "terminal.output", "sessionId": "00000000-0000-0000-0000-000000000001", "shellId": 2, "sequence": 0, "data": "aGk=" }),
         )
         .unwrap();
         assert_eq!(output.scope(), EventScope::Streams);
-        assert_eq!(output.session_id(), SessionId::new(1));
+        assert_eq!(output.session_id(), Some(SessionId::from_u128(1)));
     }
 
     #[test]

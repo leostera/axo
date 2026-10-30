@@ -228,7 +228,7 @@ pub(super) fn handle_attachment(
     if let Err((phase, error)) = response {
         log::warn!(
             "event=session.attach_failed session_id={} shell_id={} phase={} replay_bytes={} elapsed_ms={} error_kind={:?}",
-            session_id.get(),
+            session_id,
             id.get(),
             phase,
             replay.len(),
@@ -239,7 +239,7 @@ pub(super) fn handle_attachment(
     }
     log::info!(
         "event=session.attach_ready session_id={} shell_id={} replay_bytes={} elapsed_ms={}",
-        session_id.get(),
+        session_id,
         id.get(),
         replay.len(),
         started_at.elapsed().as_millis()
@@ -279,7 +279,7 @@ pub(super) fn handle_attachment(
     log::log!(
         level,
         "event=session.attach_ended session_id={} shell_id={} reason={} bytes={} elapsed_ms={}",
-        session_id.get(),
+        session_id,
         id.get(),
         reason,
         delivered,
@@ -406,7 +406,11 @@ impl SessionManager {
     /// Presses one key in the Session's Pi pane, as a person at the Mac would: Escape stops a reply
     /// or declines a question, Enter accepts one. A Pi still starting has nothing to stop or
     /// answer, so the key is not queued like a prompt.
-    pub(super) fn press_pi_key(&self, session_id: SessionId, key: axo_relay::PiKey) -> io::Result<()> {
+    pub(super) fn press_pi_key(
+        &self,
+        session_id: SessionId,
+        key: axo_relay::PiKey,
+    ) -> io::Result<()> {
         let mut state = self.lock_state()?;
         let pi_shell = state
             .panes
@@ -426,9 +430,13 @@ impl SessionManager {
         };
         log::info!(
             "event=session.pi_key_pressed session_id={} key={key:?}",
-            session_id.get()
+            session_id
         );
-        process::write_all(running.master.as_raw_fd(), bytes, TERMINAL_INPUT_WRITE_TIMEOUT)
+        process::write_all(
+            running.master.as_raw_fd(),
+            bytes,
+            TERMINAL_INPUT_WRITE_TIMEOUT,
+        )
     }
 
     /// Types `text` into a pane as a keyboard would, outside its input sequence: for agents
@@ -452,7 +460,7 @@ impl SessionManager {
             .ok_or_else(|| io::Error::new(io::ErrorKind::NotFound, "shell is not open"))?;
         log::info!(
             "event=terminal.write session_id={} shell_id={} bytes={}",
-            session_id.get(),
+            session_id,
             shell_id.get(),
             text.len()
         );
@@ -750,19 +758,31 @@ mod tests {
 
     /// A manager whose shells are `cat` writing everything they are typed to a file.
     fn pi_shell(session: &axo_protocol::SessionRecord) -> ShellId {
-        session.shells.iter().find(|shell| shell.role == PaneRole::Pi).unwrap().id
+        session
+            .shells
+            .iter()
+            .find(|shell| shell.role == PaneRole::Pi)
+            .unwrap()
+            .id
     }
 
-    fn manager_recording_input(directory: &std::path::Path) -> (Arc<SessionManager>, std::path::PathBuf) {
+    fn manager_recording_input(
+        directory: &std::path::Path,
+    ) -> (Arc<SessionManager>, std::path::PathBuf) {
         // The Pi pane records what it is typed; the terminal pane beside it discards its input.
         let log = directory.join("typed.log");
         let agent = directory.join("recording-agent");
-        std::fs::write(&agent, format!("#!/bin/sh\nexec /bin/cat > {}\n", log.display())).unwrap();
+        std::fs::write(
+            &agent,
+            format!("#!/bin/sh\nexec /bin/cat > {}\n", log.display()),
+        )
+        .unwrap();
         std::fs::set_permissions(&agent, std::fs::Permissions::from_mode(0o700)).unwrap();
         let shell = directory.join("silent-shell");
         std::fs::write(&shell, "#!/bin/sh\nexec /bin/cat > /dev/null\n").unwrap();
         std::fs::set_permissions(&shell, std::fs::Permissions::from_mode(0o700)).unwrap();
-        let mut database = axo_store::Connection::open(directory.join(axo_store::DATABASE_FILE)).unwrap();
+        let mut database =
+            axo_store::Connection::open(directory.join(axo_store::DATABASE_FILE)).unwrap();
         axo_store::initialize_database(&mut database).unwrap();
         database
             .execute(
@@ -786,7 +806,7 @@ mod tests {
             let state = manager.lock_state().unwrap();
             let running = state.panes.running(pi_shell(session)).unwrap();
             let identity = serde_json::json!({
-                "axoSessionId": session.session_uuid,
+                "axoSessionId": session.id,
                 "axoPaneId": running.pane_id,
                 "piSessionId": axo_protocol::new_uuid_v4().unwrap(),
                 "sessionFile": session.pi_session_file,
@@ -854,25 +874,45 @@ mod tests {
     #[test]
     fn a_prompt_reaches_pi_over_its_bridge_once_pi_is_up() {
         use crate::session::prompts::{MAX_PI_PROMPT_BYTES, PromptError};
-        let directory = std::path::PathBuf::from("/tmp").join(format!("axo-prompt-{}", axo_protocol::new_uuid_v4().unwrap()));
+        let directory = std::path::PathBuf::from("/tmp").join(format!(
+            "axo-prompt-{}",
+            axo_protocol::new_uuid_v4().unwrap()
+        ));
         std::fs::create_dir_all(&directory).unwrap();
         let (manager, log) = manager_recording_input(&directory);
         let session = manager.list_sessions().unwrap().remove(0);
         let shell_id = pi_shell(&session);
 
         // No Pi in the Session: nothing to prompt.
-        manager.lock_state().unwrap().panes.running_mut(shell_id).unwrap().role = PaneRole::Terminal;
+        manager
+            .lock_state()
+            .unwrap()
+            .panes
+            .running_mut(shell_id)
+            .unwrap()
+            .role = PaneRole::Terminal;
         let refused = manager.prompt_pi(session.id, "hello").unwrap_err();
         assert_eq!(refused.kind(), io::ErrorKind::NotFound);
 
-        manager.lock_state().unwrap().panes.running_mut(shell_id).unwrap().role = PaneRole::Pi;
+        manager
+            .lock_state()
+            .unwrap()
+            .panes
+            .running_mut(shell_id)
+            .unwrap()
+            .role = PaneRole::Pi;
         for bad in ["", "   \n", &"x".repeat(MAX_PI_PROMPT_BYTES + 1)] {
             let error = manager.prompt_pi(session.id, bad).unwrap_err();
             assert_eq!(error.kind(), io::ErrorKind::InvalidInput);
         }
         // Pi is still starting (its bridge has not bound): the prompt waits.
-        manager.prompt_pi(session.id, "fix the build\nthen run tests").unwrap();
-        assert_eq!(manager.lock_state().unwrap().queued_pi_prompts[&session.id].len(), 1);
+        manager
+            .prompt_pi(session.id, "fix the build\nthen run tests")
+            .unwrap();
+        assert_eq!(
+            manager.lock_state().unwrap().queued_pi_prompts[&session.id].len(),
+            1
+        );
 
         // Pi comes up: the worker binds, and what waited is sent.
         let actions = fake_pi_bridge(&manager, &session);
@@ -880,7 +920,13 @@ mod tests {
             actions.recv_timeout(Duration::from_secs(15)).unwrap(),
             serde_json::json!({ "kind": "send", "text": "fix the build\nthen run tests", "delivery": "steer" })
         );
-        assert!(!manager.lock_state().unwrap().queued_pi_prompts.contains_key(&session.id));
+        assert!(
+            !manager
+                .lock_state()
+                .unwrap()
+                .queued_pi_prompts
+                .contains_key(&session.id)
+        );
 
         // Once Pi is up, a prompt is sent at once.
         let accepted = manager
@@ -912,14 +958,19 @@ mod tests {
         let sent = actions.recv_timeout(Duration::from_secs(5)).unwrap();
         assert_eq!(
             sent["text"],
-            format!("[From Axo Session {} {:?}]\n\nagain", session.id.get(), session.name),
+            format!(
+                "[From Axo Session {} {:?}]\n\nagain",
+                session.id, session.name
+            ),
             "an agent's prompt names its sender"
         );
         assert_eq!(sent["delivery"], "followUp");
         assert!(matches!(to_self("again"), Err(PromptError::ChainTooDeep)));
         // A person typing into the pane ends the chain.
         let typed = axo_protocol::base64::encode(b"x\r");
-        manager.write_terminal_input(session.id, shell_id, 0, &typed).unwrap();
+        manager
+            .write_terminal_input(session.id, shell_id, 0, &typed)
+            .unwrap();
         assert_eq!(to_self("again").unwrap().depth, 1);
         assert_eq!(to_self("again").unwrap().depth, 2);
         // Ten prompts to itself a minute, then no more.
@@ -927,7 +978,9 @@ mod tests {
 
         // Nothing was typed into the pane except what the person typed.
         let deadline = Instant::now() + Duration::from_secs(5);
-        while std::fs::read_to_string(&log).unwrap_or_default().is_empty() && Instant::now() < deadline {
+        while std::fs::read_to_string(&log).unwrap_or_default().is_empty()
+            && Instant::now() < deadline
+        {
             thread::sleep(Duration::from_millis(50));
         }
         assert_eq!(std::fs::read_to_string(&log).unwrap_or_default(), "x\n");
@@ -936,19 +989,38 @@ mod tests {
 
     #[test]
     fn a_remote_key_press_reaches_only_the_pi_pane() {
-        let directory = std::path::PathBuf::from("/tmp").join(format!("axo-key-{}", axo_protocol::new_uuid_v4().unwrap()));
+        let directory = std::path::PathBuf::from("/tmp")
+            .join(format!("axo-key-{}", axo_protocol::new_uuid_v4().unwrap()));
         std::fs::create_dir_all(&directory).unwrap();
         let (manager, log) = manager_recording_input(&directory);
         let session = manager.list_sessions().unwrap().remove(0);
         let shell_id = pi_shell(&session);
 
-        manager.lock_state().unwrap().panes.running_mut(shell_id).unwrap().role = PaneRole::Terminal;
-        let refused = manager.press_pi_key(session.id, axo_relay::PiKey::Escape).unwrap_err();
+        manager
+            .lock_state()
+            .unwrap()
+            .panes
+            .running_mut(shell_id)
+            .unwrap()
+            .role = PaneRole::Terminal;
+        let refused = manager
+            .press_pi_key(session.id, axo_relay::PiKey::Escape)
+            .unwrap_err();
         assert_eq!(refused.kind(), io::ErrorKind::NotFound);
 
-        manager.lock_state().unwrap().panes.running_mut(shell_id).unwrap().role = PaneRole::Pi;
-        manager.press_pi_key(session.id, axo_relay::PiKey::Escape).unwrap();
-        manager.press_pi_key(session.id, axo_relay::PiKey::Enter).unwrap();
+        manager
+            .lock_state()
+            .unwrap()
+            .panes
+            .running_mut(shell_id)
+            .unwrap()
+            .role = PaneRole::Pi;
+        manager
+            .press_pi_key(session.id, axo_relay::PiKey::Escape)
+            .unwrap();
+        manager
+            .press_pi_key(session.id, axo_relay::PiKey::Enter)
+            .unwrap();
         let deadline = Instant::now() + Duration::from_secs(15);
         let typed = loop {
             let typed = std::fs::read_to_string(&log).unwrap_or_default();

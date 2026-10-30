@@ -6,7 +6,7 @@
     "event": {
       "type": "session.snapshot",
       "session": {
-        "id": 9,
+        "id": "0b8f4e2a-7c1d-4e6b-9a3f-5d2c8e1b7a49",
         "initialPwd": "/Users/example",
         "manualName": null,
         "shells": [
@@ -20,7 +20,10 @@
             "availabilityReason": null
           }
         ],
-        "layout": { "kind": "pane", "shellId": 12 }
+        "layout": {
+          "kind": "pane",
+          "shellId": 12
+        }
       }
     }
   }

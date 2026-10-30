@@ -1574,8 +1574,7 @@ mod tests {
             json!({
                 "type": "session.snapshot",
                 "session": {
-                    "id": 17,
-                    "sessionUuid": "70fa4f38-71d9-42f8-9013-43b4fd688693",
+                    "id": "70fa4f38-71d9-42f8-9013-43b4fd688693",
                     "piSessionFile": "/Users/me/.axo/server/pi-sessions/session.jsonl",
                     "piSessionId": "pi-session-1",
                     "workspaceId": "7f1918d3-8b6d-4af4-a57e-7e6ae28e89e2",
@@ -1629,7 +1628,7 @@ mod tests {
         let pi_event = project(
             json!({
                 "type": "pi.event",
-                "sessionId": 17,
+                "sessionId": "70fa4f38-71d9-42f8-9013-43b4fd688693",
                 "piSessionId": "pi-session-1",
                 "streamId": "0f00f22d-a24c-4cbc-9196-74dbed95ca80",
                 "sequence": 1,

@@ -197,6 +197,7 @@ pub fn open(path: &Path) -> io::Result<Connection> {
         .and_then(|()| database.pragma_update(None, "journal_mode", "WAL"))
         .and_then(|()| database.pragma_update(None, "synchronous", "FULL"))
         .and_then(|()| database.pragma_update(None, "foreign_keys", "ON"))
+        .and_then(|()| back_up_before_uuid_rekey(&database, path))
         .and_then(|()| initialize_database(&mut database))
         .map_err(io::Error::other)?;
     std::fs::set_permissions(path, std::fs::Permissions::from_mode(0o600))?;
@@ -216,9 +217,13 @@ pub fn initialize_database(database: &mut Connection) -> rusqlite::Result<()> {
         |row| row.get::<_, bool>(0),
     )?;
     let transaction = database.transaction()?;
+    // A catalog from before version 9 keys Sessions by integers; it is brought up to date in
+    // that shape and then rekeyed by UUID (RFD0017).
+    let integer_keyed = sessions_exist && old_version < 9;
 
     if sessions_exist && !shells_exist {
         transaction.execute_batch("ALTER TABLE sessions RENAME TO legacy_sessions;")?;
+        create_integer_keyed_session_tables(&transaction)?;
         create_tables(&transaction)?;
         transaction.execute_batch(
             "INSERT INTO sessions (id, initial_pwd, state, created_at, archived_at, termination_reason)
@@ -233,6 +238,9 @@ pub fn initialize_database(database: &mut Connection) -> rusqlite::Result<()> {
         create_tables(&transaction)?;
     }
     ensure_session_layout_column(&transaction)?;
+    if integer_keyed {
+        ensure_integer_keyed_session_columns(&transaction)?;
+    }
     ensure_workspace_columns(&transaction)?;
     if old_version < 4 {
         transaction.execute(
@@ -245,8 +253,198 @@ pub fn initialize_database(database: &mut Connection) -> rusqlite::Result<()> {
         )?;
     }
 
-    transaction.pragma_update(None, "user_version", 8)?;
+    if integer_keyed {
+        rekey_sessions_by_uuid(&transaction)?;
+    }
+    ensure_session_indexes(&transaction)?;
+
+    transaction.pragma_update(None, "user_version", SCHEMA_VERSION)?;
     transaction.commit()
+}
+
+/// The catalog's schema version (`PRAGMA user_version`). Version 9 keys Sessions by UUID.
+pub const SCHEMA_VERSION: i64 = 9;
+
+/// Where `open` keeps a copy of a catalog before rekeying it by UUID, next to the catalog.
+pub fn pre_uuid_backup_path(path: &Path) -> PathBuf {
+    let mut name = path.file_name().unwrap_or_default().to_os_string();
+    name.push(".pre-uuid");
+    path.with_file_name(name)
+}
+
+/// Copies a catalog that is about to be rekeyed by UUID, once: an existing copy is kept.
+fn back_up_before_uuid_rekey(database: &Connection, path: &Path) -> rusqlite::Result<()> {
+    let version: i64 = database.query_row("PRAGMA user_version", [], |row| row.get(0))?;
+    let has_sessions: bool = database.query_row(
+        "SELECT EXISTS(SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = 'sessions')",
+        [],
+        |row| row.get(0),
+    )?;
+    let backup = pre_uuid_backup_path(path);
+    if version >= SCHEMA_VERSION || !has_sessions || backup.exists() {
+        return Ok(());
+    }
+    database.execute("VACUUM INTO ?1", params![backup.to_string_lossy()])?;
+    std::fs::set_permissions(&backup, std::fs::Permissions::from_mode(0o600))
+        .map_err(|error| rusqlite::Error::ToSqlConversionFailure(Box::new(error)))?;
+    log::info!(
+        "event=catalog.backup reason=uuid_rekey path={}",
+        backup.display()
+    );
+    Ok(())
+}
+
+/// Sessions and shells as they were before version 9, for catalogs older than shells.
+fn create_integer_keyed_session_tables(
+    transaction: &rusqlite::Transaction<'_>,
+) -> rusqlite::Result<()> {
+    transaction.execute_batch(
+        "CREATE TABLE sessions (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            initial_pwd TEXT NOT NULL,
+            state TEXT NOT NULL CHECK (state IN ('open', 'archived')),
+            created_at INTEGER NOT NULL,
+            archived_at INTEGER,
+            termination_reason TEXT
+        );
+        CREATE TABLE shells (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            session_id INTEGER NOT NULL REFERENCES sessions(id),
+            initial_pwd TEXT NOT NULL,
+            state TEXT NOT NULL CHECK (state IN ('open', 'archived')),
+            created_at INTEGER NOT NULL,
+            archived_at INTEGER,
+            termination_reason TEXT
+        );",
+    )
+}
+
+/// Columns a pre-version-9 catalog may lack before it can be rekeyed.
+fn ensure_integer_keyed_session_columns(
+    transaction: &rusqlite::Transaction<'_>,
+) -> rusqlite::Result<()> {
+    add_missing_columns(transaction, &[("sessions", "session_uuid", "TEXT")])
+}
+
+/// Rekeys Sessions by UUID (RFD0017), in the caller's transaction. A Session that already has a
+/// `session_uuid` keeps it as its ID, so its Pi transcript, bridge socket and token still match;
+/// one without gets a new random UUID. Shells follow their Session; shell IDs do not change.
+fn rekey_sessions_by_uuid(transaction: &rusqlite::Transaction<'_>) -> rusqlite::Result<()> {
+    let missing = {
+        let mut statement =
+            transaction.prepare("SELECT id FROM sessions WHERE session_uuid IS NULL")?;
+        statement
+            .query_map([], |row| row.get::<_, i64>(0))?
+            .collect::<Result<Vec<_>, _>>()?
+    };
+    for id in &missing {
+        let uuid = SessionId::new_v4()
+            .map_err(|error| rusqlite::Error::ToSqlConversionFailure(Box::new(error)))?;
+        transaction.execute(
+            "UPDATE sessions SET session_uuid = ?1 WHERE id = ?2",
+            params![uuid.to_string(), id],
+        )?;
+    }
+    let invalid: i64 = transaction.query_row(
+        "SELECT COUNT(*) FROM sessions WHERE session_uuid NOT GLOB
+         '[0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f]-[0-9a-f][0-9a-f][0-9a-f][0-9a-f]-[0-9a-f][0-9a-f][0-9a-f][0-9a-f]-[0-9a-f][0-9a-f][0-9a-f][0-9a-f]-[0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f]'",
+        [],
+        |row| row.get(0),
+    )?;
+    if invalid > 0 {
+        return Err(rusqlite::Error::ToSqlConversionFailure(
+            format!("{invalid} Session UUIDs are not canonical lowercase UUIDs").into(),
+        ));
+    }
+    let count = |table: &str| -> rusqlite::Result<i64> {
+        transaction.query_row(&format!("SELECT COUNT(*) FROM {table}"), [], |row| {
+            row.get(0)
+        })
+    };
+    let (sessions, shells) = (count("sessions")?, count("shells")?);
+    let shell_sequence: i64 = transaction
+        .query_row(
+            "SELECT seq FROM sqlite_sequence WHERE name = 'shells'",
+            [],
+            |row| row.get(0),
+        )
+        .optional()?
+        .unwrap_or(0);
+
+    // The new tables reference each other by their final names only after the renames, which
+    // rewrite references; the old tables go first so nothing points at them.
+    transaction.execute_batch(&format!(
+        "CREATE TABLE sessions_v9 ({SESSIONS_V9_COLUMNS});
+         CREATE TABLE shells_v9 ({SHELLS_V9_COLUMNS_REFERENCING_V9});
+         INSERT INTO sessions_v9 (id, initial_pwd, state, created_at, archived_at, termination_reason,
+                layout_json, workspace_id, name, manual_name, last_message_at, pi_session_file,
+                pi_session_id, pi_bridge_socket_path, emoji)
+             SELECT session_uuid, initial_pwd, state, created_at, archived_at, termination_reason,
+                layout_json, workspace_id, name, manual_name, last_message_at, pi_session_file,
+                pi_session_id, pi_bridge_socket_path, emoji
+             FROM sessions;
+         INSERT INTO shells_v9 (id, session_id, initial_pwd, state, created_at, archived_at,
+                termination_reason, role, pane_id)
+             SELECT h.id, s.session_uuid, h.initial_pwd, h.state, h.created_at, h.archived_at,
+                h.termination_reason, h.role, h.pane_id
+             FROM shells h JOIN sessions s ON s.id = h.session_id;"
+    ))?;
+    if count("sessions_v9")? != sessions || count("shells_v9")? != shells {
+        return Err(rusqlite::Error::ToSqlConversionFailure(
+            "rekeying Sessions by UUID would lose rows".into(),
+        ));
+    }
+    transaction.execute_batch(
+        "DROP TABLE shells;
+         DROP TABLE sessions;
+         ALTER TABLE sessions_v9 RENAME TO sessions;
+         ALTER TABLE shells_v9 RENAME TO shells;",
+    )?;
+    // Shell IDs are never reused, including ones whose rows are gone.
+    transaction.execute(
+        "UPDATE sqlite_sequence SET seq = MAX(seq, ?1) WHERE name = 'shells'",
+        params![shell_sequence],
+    )?;
+    log::info!(
+        "event=catalog.rekeyed_by_uuid sessions={sessions} shells={shells} new_uuids={}",
+        missing.len()
+    );
+    Ok(())
+}
+
+const SESSIONS_V9_COLUMNS: &str = "
+            id TEXT PRIMARY KEY NOT NULL,
+            initial_pwd TEXT NOT NULL,
+            state TEXT NOT NULL CHECK (state IN ('open', 'archived')),
+            created_at INTEGER NOT NULL,
+            archived_at INTEGER,
+            termination_reason TEXT,
+            layout_json TEXT,
+            workspace_id TEXT REFERENCES workspaces(workspace_id),
+            name TEXT NOT NULL DEFAULT 'Session',
+            manual_name TEXT,
+            last_message_at INTEGER,
+            pi_session_file TEXT,
+            pi_session_id TEXT,
+            pi_bridge_socket_path TEXT,
+            emoji TEXT";
+
+const SHELLS_V9_COLUMNS_REFERENCING_V9: &str = "
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            session_id TEXT NOT NULL REFERENCES sessions_v9(id),
+            initial_pwd TEXT NOT NULL,
+            state TEXT NOT NULL CHECK (state IN ('open', 'archived')),
+            created_at INTEGER NOT NULL,
+            archived_at INTEGER,
+            termination_reason TEXT,
+            role TEXT NOT NULL DEFAULT 'terminal' CHECK (role IN ('pi', 'terminal')),
+            pane_id TEXT";
+
+fn ensure_session_indexes(transaction: &rusqlite::Transaction<'_>) -> rusqlite::Result<()> {
+    transaction.execute_batch(
+        "CREATE INDEX IF NOT EXISTS shells_by_session_state ON shells(session_id, state, id);
+         CREATE INDEX IF NOT EXISTS sessions_by_workspace_state ON sessions(workspace_id, state, created_at);",
+    )
 }
 
 pub fn create_tables(transaction: &rusqlite::Transaction<'_>) -> rusqlite::Result<()> {
@@ -261,7 +459,7 @@ pub fn create_tables(transaction: &rusqlite::Transaction<'_>) -> rusqlite::Resul
             archived_at INTEGER
         );
         CREATE TABLE IF NOT EXISTS sessions (
-            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            id TEXT PRIMARY KEY NOT NULL,
             initial_pwd TEXT NOT NULL,
             state TEXT NOT NULL CHECK (state IN ('open', 'archived')),
             created_at INTEGER NOT NULL,
@@ -269,17 +467,17 @@ pub fn create_tables(transaction: &rusqlite::Transaction<'_>) -> rusqlite::Resul
             termination_reason TEXT,
             layout_json TEXT,
             workspace_id TEXT REFERENCES workspaces(workspace_id),
-            session_uuid TEXT,
             name TEXT NOT NULL DEFAULT 'Session',
             manual_name TEXT,
             last_message_at INTEGER,
             pi_session_file TEXT,
             pi_session_id TEXT,
-            pi_bridge_socket_path TEXT
+            pi_bridge_socket_path TEXT,
+            emoji TEXT
         );
         CREATE TABLE IF NOT EXISTS shells (
             id INTEGER PRIMARY KEY AUTOINCREMENT,
-            session_id INTEGER NOT NULL REFERENCES sessions(id),
+            session_id TEXT NOT NULL REFERENCES sessions(id),
             initial_pwd TEXT NOT NULL,
             state TEXT NOT NULL CHECK (state IN ('open', 'archived')),
             created_at INTEGER NOT NULL,
@@ -288,8 +486,6 @@ pub fn create_tables(transaction: &rusqlite::Transaction<'_>) -> rusqlite::Resul
             role TEXT NOT NULL DEFAULT 'terminal' CHECK (role IN ('pi', 'terminal')),
             pane_id TEXT
         );
-        CREATE INDEX IF NOT EXISTS shells_by_session_state
-            ON shells(session_id, state, id);
         CREATE TABLE IF NOT EXISTS daemon_metadata (
             key TEXT PRIMARY KEY,
             value TEXT NOT NULL
@@ -308,12 +504,14 @@ pub fn create_tables(transaction: &rusqlite::Transaction<'_>) -> rusqlite::Resul
 
 pub fn read_open_sessions(database: &Connection) -> io::Result<Vec<StoredSession>> {
     let mut statement = database
-        .prepare("SELECT id, initial_pwd FROM sessions WHERE state = 'open' ORDER BY id")
+        .prepare(
+            "SELECT id, initial_pwd FROM sessions WHERE state = 'open' ORDER BY created_at, id",
+        )
         .map_err(io::Error::other)?;
     let rows = statement
         .query_map([], |row| {
             Ok((
-                stored_session_id(row.get(0)?)?,
+                stored_session_id(row.get::<_, String>(0)?)?,
                 PathBuf::from(row.get::<_, String>(1)?),
             ))
         })
@@ -325,7 +523,7 @@ pub fn read_open_sessions(database: &Connection) -> io::Result<Vec<StoredSession
             "SELECT id, role, pane_id FROM shells WHERE session_id = ?1 AND state = 'open' ORDER BY id",
         ).map_err(io::Error::other)?;
         let shell_ids = shell_statement
-            .query_map(params![id.get()], |row| {
+            .query_map(params![id.to_string()], |row| {
                 let role: String = row.get(1)?;
                 let role = match role.as_str() {
                     "pi" => PaneRole::Pi,
@@ -350,7 +548,7 @@ pub fn read_session_layout(database: &Connection, id: SessionId) -> io::Result<O
     let stored_layout = database
         .query_row(
             "SELECT layout_json FROM sessions WHERE id = ?1 AND state = 'open'",
-            params![id.get()],
+            params![id.to_string()],
             |row| row.get::<_, Option<String>>(0),
         )
         .optional()
@@ -365,7 +563,7 @@ pub fn parse_stored_layout(id: SessionId, json: &str) -> Option<Layout> {
         .inspect_err(|error| {
             log::warn!(
                 "event=session.layout_invalid session_id={} reason={error}",
-                id.get()
+                id
             );
         })
         .ok()
@@ -383,14 +581,13 @@ pub fn ensure_workspace_columns(transaction: &rusqlite::Transaction<'_>) -> rusq
             archived_at INTEGER
         );",
     )?;
-    for (table, column, definition) in [
+    let columns: &[(&str, &str, &str)] = &[
         ("workspaces", "directory_bookmark", "TEXT"),
         (
             "sessions",
             "workspace_id",
             "TEXT REFERENCES workspaces(workspace_id)",
         ),
-        ("sessions", "session_uuid", "TEXT"),
         ("sessions", "name", "TEXT NOT NULL DEFAULT 'Session'"),
         ("sessions", "manual_name", "TEXT"),
         ("sessions", "last_message_at", "INTEGER"),
@@ -404,21 +601,26 @@ pub fn ensure_workspace_columns(transaction: &rusqlite::Transaction<'_>) -> rusq
             "TEXT NOT NULL DEFAULT 'terminal' CHECK (role IN ('pi', 'terminal'))",
         ),
         ("shells", "pane_id", "TEXT"),
-    ] {
-        let columns = transaction
+    ];
+    add_missing_columns(transaction, columns)
+}
+
+fn add_missing_columns(
+    transaction: &rusqlite::Transaction<'_>,
+    columns: &[(&str, &str, &str)],
+) -> rusqlite::Result<()> {
+    for (table, column, definition) in columns {
+        let existing = transaction
             .prepare(&format!("PRAGMA table_info({table})"))?
             .query_map([], |row| row.get::<_, String>(1))?
             .collect::<Result<Vec<_>, _>>()?;
-        if !columns.iter().any(|existing| existing == column) {
+        if !existing.iter().any(|existing| existing == column) {
             transaction.execute(
                 &format!("ALTER TABLE {table} ADD COLUMN {column} {definition}"),
                 [],
             )?;
         }
     }
-    transaction.execute_batch(
-        "CREATE INDEX IF NOT EXISTS sessions_by_workspace_state ON sessions(workspace_id, state, id);",
-    )?;
     Ok(())
 }
 
@@ -429,16 +631,14 @@ pub fn ensure_pi_bridge_socket_paths(
     let records = {
         let mut statement = database
             .prepare(
-                "SELECT id, session_uuid, pi_bridge_socket_path FROM sessions
-                 WHERE session_uuid IS NOT NULL",
+                "SELECT id, pi_bridge_socket_path FROM sessions WHERE pi_session_file IS NOT NULL",
             )
             .map_err(io::Error::other)?;
         statement
             .query_map([], |row| {
                 Ok((
-                    row.get::<_, i64>(0)?,
-                    row.get::<_, String>(1)?,
-                    row.get::<_, Option<String>>(2)?,
+                    stored_session_id(row.get::<_, String>(0)?)?,
+                    row.get::<_, Option<String>>(1)?,
                 ))
             })
             .map_err(io::Error::other)?
@@ -446,7 +646,7 @@ pub fn ensure_pi_bridge_socket_paths(
             .map_err(io::Error::other)?
     };
 
-    for (session_id, session_uuid, stored_path) in records {
+    for (session_id, stored_path) in records {
         match stored_path {
             Some(path) => {
                 BridgeSocketPath::parse(PathBuf::from(path)).map_err(|error| {
@@ -458,12 +658,12 @@ pub fn ensure_pi_bridge_socket_paths(
             }
             None => {
                 let socket_path =
-                    BridgeSocketPath::for_session(pi_session_directory, &session_uuid)?;
+                    BridgeSocketPath::for_session(pi_session_directory, &session_id.to_string())?;
                 let changed = database
                     .execute(
                         "UPDATE sessions SET pi_bridge_socket_path = ?1
                          WHERE id = ?2 AND pi_bridge_socket_path IS NULL",
-                        params![socket_path.as_str(), session_id],
+                        params![socket_path.as_str(), session_id.to_string()],
                     )
                     .map_err(io::Error::other)?;
                 if changed != 1 {
@@ -498,7 +698,7 @@ pub fn session_initial_pwd(database: &Connection, id: SessionId) -> io::Result<P
     database
         .query_row(
             "SELECT initial_pwd FROM sessions WHERE id = ?1 AND state = 'open'",
-            params![id.get()],
+            params![id.to_string()],
             |row| row.get::<_, String>(0),
         )
         .optional()
@@ -556,7 +756,7 @@ pub fn archive_shell_and_prune_layout(
         transaction
             .execute(
                 "UPDATE sessions SET layout_json = ?1 WHERE id = ?2 AND state = 'open'",
-                params![layout_json, session_id.get()],
+                params![layout_json, session_id.to_string()],
             )
             .map_err(io::Error::other)?;
     }
@@ -574,7 +774,7 @@ pub fn archive_workspace_records(
             .prepare("SELECT id FROM sessions WHERE workspace_id = ?1 AND state = 'open'")
             .map_err(io::Error::other)?;
         statement
-            .query_map(params![workspace_id], |row| row.get::<_, i64>(0))
+            .query_map(params![workspace_id], |row| row.get::<_, String>(0))
             .map_err(io::Error::other)?
             .map(|id| id.and_then(stored_session_id))
             .collect::<Result<Vec<_>, _>>()
@@ -621,14 +821,14 @@ pub fn archive_session(database: &mut Connection, id: SessionId, reason: &str) -
         .execute(
             "UPDATE shells SET state = 'archived', archived_at = ?1, termination_reason = ?2
              WHERE session_id = ?3 AND state = 'open'",
-            params![archived_at, reason, id.get()],
+            params![archived_at, reason, id.to_string()],
         )
         .map_err(io::Error::other)?;
     let changed = transaction
         .execute(
             "UPDATE sessions SET state = 'archived', archived_at = ?1, termination_reason = ?2
              WHERE id = ?3 AND state = 'open'",
-            params![archived_at, reason, id.get()],
+            params![archived_at, reason, id.to_string()],
         )
         .map_err(io::Error::other)?;
     if changed != 1 {
@@ -640,18 +840,18 @@ pub fn archive_session(database: &mut Connection, id: SessionId, reason: &str) -
     transaction.commit().map_err(io::Error::other)
 }
 
-pub fn pi_bridge_token_key(session_uuid: &str) -> String {
-    format!("pi_bridge_token:{session_uuid}")
+pub fn pi_bridge_token_key(session_id: SessionId) -> String {
+    format!("pi_bridge_token:{session_id}")
 }
 
 pub fn load_pi_bridge_token(
     database: &Connection,
-    session_uuid: &str,
+    session_id: SessionId,
 ) -> io::Result<Option<String>> {
     let token = database
         .query_row(
             "SELECT value FROM daemon_metadata WHERE key = ?1",
-            params![pi_bridge_token_key(session_uuid)],
+            params![pi_bridge_token_key(session_id)],
             |row| row.get::<_, String>(0),
         )
         .optional()
@@ -667,14 +867,14 @@ pub fn load_pi_bridge_token(
 
 pub fn store_pi_bridge_token(
     database: &Connection,
-    session_uuid: &str,
+    session_id: SessionId,
     token: &str,
 ) -> io::Result<()> {
     database
         .execute(
             "INSERT INTO daemon_metadata (key, value) VALUES (?1, ?2)
              ON CONFLICT(key) DO UPDATE SET value = excluded.value",
-            params![pi_bridge_token_key(session_uuid), token],
+            params![pi_bridge_token_key(session_id), token],
         )
         .map_err(io::Error::other)?;
     Ok(())
@@ -736,18 +936,22 @@ impl rusqlite::types::FromSql for StoredLifecycle {
     }
 }
 
-/// Catalog IDs come from `AUTOINCREMENT` columns, so a stored ID is positive unless the database
-/// is corrupt; reading one that is not fails instead of producing an invalid ID.
-pub fn stored_session_id(value: i64) -> rusqlite::Result<SessionId> {
-    SessionId::new(value).ok_or(rusqlite::Error::IntegralValueOutOfRange(0, value))
+/// A stored Session ID is a canonical UUID unless the database is corrupt; reading one that is
+/// not fails instead of producing an invalid ID.
+pub fn stored_session_id(value: String) -> rusqlite::Result<SessionId> {
+    SessionId::parse(&value).ok_or_else(|| {
+        rusqlite::Error::FromSqlConversionFailure(
+            0,
+            rusqlite::types::Type::Text,
+            Box::new(axo_protocol::InvalidSessionId(value)),
+        )
+    })
 }
 
+/// Shell IDs come from an `AUTOINCREMENT` column, so a stored one is positive unless the
+/// database is corrupt; reading one that is not fails instead of producing an invalid ID.
 pub fn stored_shell_id(value: i64) -> rusqlite::Result<ShellId> {
     ShellId::new(value).ok_or(rusqlite::Error::IntegralValueOutOfRange(0, value))
-}
-
-pub fn inserted_session_id(database: &Connection) -> io::Result<SessionId> {
-    stored_session_id(database.last_insert_rowid()).map_err(io::Error::other)
 }
 
 pub fn inserted_shell_id(database: &Connection) -> io::Result<ShellId> {
@@ -771,7 +975,7 @@ pub fn record_session_message(
         .execute(
             "UPDATE sessions SET last_message_at = MAX(COALESCE(last_message_at, 0), ?1) \
              WHERE id = ?2 AND state = 'open'",
-            params![timestamp, id.get()],
+            params![timestamp, id.to_string()],
         )
         .map_err(io::Error::other)?;
     Ok(changed == 1)
@@ -799,7 +1003,7 @@ pub fn write_session_layout(
     let changed = database
         .execute(
             "UPDATE sessions SET layout_json = ?1 WHERE id = ?2 AND state = 'open'",
-            params![layout_json, id.get()],
+            params![layout_json, id.to_string()],
         )
         .map_err(io::Error::other)?;
     expect_one_row(changed, "session record is missing")
@@ -810,7 +1014,7 @@ pub fn set_manual_session_name(database: &Connection, id: SessionId, name: &str)
     let changed = database
         .execute(
             "UPDATE sessions SET manual_name = ?1 WHERE id = ?2 AND state = 'open'",
-            params![name, id.get()],
+            params![name, id.to_string()],
         )
         .map_err(io::Error::other)?;
     expect_one_row(changed, "Session is not open")
@@ -828,24 +1032,22 @@ pub fn describe_session(
         .execute(
             "UPDATE sessions SET name = COALESCE(?1, name), emoji = COALESCE(?2, emoji) \
              WHERE id = ?3 AND state = 'open'",
-            params![title, emoji, id.get()],
+            params![title, emoji, id.to_string()],
         )
         .map_err(io::Error::other)?;
     Ok(changed > 0)
 }
 
-/// Records which Pi session a Session's transcript belongs to, only while the row still has
-/// `session_uuid`, so a stale bridge cannot rebind it.
+/// Records which Pi session an open Session's transcript belongs to.
 pub fn bind_pi_session_id(
     database: &Connection,
     id: SessionId,
-    session_uuid: &str,
     pi_session_id: &str,
 ) -> io::Result<()> {
     let changed = database
         .execute(
-            "UPDATE sessions SET pi_session_id = ? WHERE id = ? AND session_uuid = ? AND state = 'open'",
-            params![pi_session_id, id.get(), session_uuid],
+            "UPDATE sessions SET pi_session_id = ? WHERE id = ? AND state = 'open'",
+            params![pi_session_id, id.to_string()],
         )
         .map_err(io::Error::other)?;
     expect_one_row(changed, "Pi Session binding changed")
@@ -905,7 +1107,7 @@ pub fn open_session_ids_in_workspace(
         .prepare("SELECT id FROM sessions WHERE workspace_id = ?1 AND state = 'open'")
         .map_err(io::Error::other)?;
     statement
-        .query_map(params![workspace_id], |row| row.get::<_, i64>(0))
+        .query_map(params![workspace_id], |row| row.get::<_, String>(0))
         .map_err(io::Error::other)?
         .map(|id| id.and_then(stored_session_id))
         .collect::<Result<Vec<_>, _>>()
@@ -954,7 +1156,7 @@ pub fn pi_history_owners(
     statement
         .query_map(params![session_file], |row| {
             Ok(PiHistoryOwner {
-                session_id: stored_session_id(row.get(0)?)?,
+                session_id: stored_session_id(row.get::<_, String>(0)?)?,
                 lifecycle: row.get(1)?,
                 initial_pwd: PathBuf::from(row.get::<_, String>(2)?),
                 workspace_id: row.get(3)?,
@@ -976,13 +1178,13 @@ pub fn recently_closed_sessions(
         .prepare(
             "SELECT id, state, initial_pwd, workspace_id FROM sessions
              WHERE state = 'archived' AND termination_reason = 'explicit_close'
-             ORDER BY archived_at DESC, id DESC LIMIT ?1",
+             ORDER BY archived_at DESC, created_at DESC, id LIMIT ?1",
         )
         .map_err(io::Error::other)?;
     statement
         .query_map(params![limit as i64], |row| {
             Ok(PiHistoryOwner {
-                session_id: stored_session_id(row.get(0)?)?,
+                session_id: stored_session_id(row.get::<_, String>(0)?)?,
                 lifecycle: row.get(1)?,
                 initial_pwd: PathBuf::from(row.get::<_, String>(2)?),
                 workspace_id: row.get(3)?,
@@ -1011,7 +1213,7 @@ pub fn archived_pi_pane_count(database: &Connection, id: SessionId) -> io::Resul
     database
         .query_row(
             "SELECT COUNT(*) FROM shells WHERE session_id = ?1 AND role = 'pi' AND state = 'archived'",
-            params![id.get()],
+            params![id.to_string()],
             |row| row.get(0),
         )
         .map_err(io::Error::other)
@@ -1052,14 +1254,14 @@ pub fn reopen_archived_session(
              WHERE session_id = ?1 AND state = 'archived'
                AND archived_at IS (SELECT archived_at FROM sessions WHERE id = ?1)
                AND termination_reason IS (SELECT termination_reason FROM sessions WHERE id = ?1)",
-            params![id.get()],
+            params![id.to_string()],
         )
         .map_err(io::Error::other)?;
     let changed = transaction
         .execute(
             "UPDATE sessions SET state = 'open', archived_at = NULL, termination_reason = NULL
              WHERE id = ?1 AND state = 'archived'",
-            params![id.get()],
+            params![id.to_string()],
         )
         .map_err(io::Error::other)?;
     if changed != 1 {
@@ -1099,9 +1301,9 @@ pub fn next_session_ordinal(database: &Connection, workspace_id: &str) -> io::Re
 
 /// A Workspace Session about to be created, with its Pi pane and a terminal pane.
 pub struct NewWorkspaceSession<'a> {
+    pub session_id: SessionId,
     pub workspace_id: &'a str,
     pub initial_pwd: &'a Path,
-    pub session_uuid: &'a str,
     pub name: &'a str,
     pub pi_session_file: &'a Path,
     pub bridge_socket: &'a BridgeSocketPath,
@@ -1128,26 +1330,26 @@ pub fn insert_workspace_session(
     transaction
         .execute(
             "INSERT INTO sessions
-                (initial_pwd, state, created_at, workspace_id, session_uuid, name, pi_session_file, pi_bridge_socket_path)
-             VALUES (?, 'open', ?, ?, ?, ?, ?, ?)",
+                (id, initial_pwd, state, created_at, workspace_id, name, pi_session_file, pi_bridge_socket_path)
+             VALUES (?, ?, 'open', ?, ?, ?, ?, ?)",
             params![
+                new.session_id.to_string(),
                 new.initial_pwd.to_string_lossy(),
                 unix_timestamp(),
                 new.workspace_id,
-                new.session_uuid,
                 new.name,
                 new.pi_session_file.to_string_lossy(),
                 new.bridge_socket.as_str(),
             ],
         )
         .map_err(io::Error::other)?;
-    let session_id = inserted_session_id(&transaction)?;
+    let session_id = new.session_id;
     transaction
         .execute(
             "INSERT INTO shells (session_id, initial_pwd, state, created_at, role, pane_id)
              VALUES (?, ?, 'open', ?, 'pi', ?)",
             params![
-                session_id.get(),
+                session_id.to_string(),
                 new.initial_pwd.to_string_lossy(),
                 unix_timestamp(),
                 new.pane_id
@@ -1175,7 +1377,7 @@ pub fn insert_terminal_shell(
     database
         .execute(
             "INSERT INTO shells (session_id, initial_pwd, state, created_at) VALUES (?1, ?2, 'open', ?3)",
-            params![session_id.get(), initial_pwd.to_string_lossy(), unix_timestamp()],
+            params![session_id.to_string(), initial_pwd.to_string_lossy(), unix_timestamp()],
         )
         .map_err(io::Error::other)?;
     inserted_shell_id(database)
@@ -1183,7 +1385,6 @@ pub fn insert_terminal_shell(
 
 /// What an open Session stores about its Pi.
 pub struct StoredPiSession {
-    pub session_uuid: String,
     pub session_file: Option<PathBuf>,
     pub bridge_socket_path: Option<String>,
     /// Whether Pi ever completed a message, and so wrote its history.
@@ -1193,16 +1394,14 @@ pub struct StoredPiSession {
 pub fn open_pi_session(database: &Connection, id: SessionId) -> io::Result<StoredPiSession> {
     database
         .query_row(
-            "SELECT session_uuid, pi_session_file, pi_bridge_socket_path,
-                    last_message_at IS NOT NULL
+            "SELECT pi_session_file, pi_bridge_socket_path, last_message_at IS NOT NULL
              FROM sessions WHERE id = ?1 AND state = 'open'",
-            params![id.get()],
+            params![id.to_string()],
             |row| {
                 Ok(StoredPiSession {
-                    session_uuid: row.get(0)?,
-                    session_file: row.get::<_, Option<String>>(1)?.map(PathBuf::from),
-                    bridge_socket_path: row.get(2)?,
-                    has_messages: row.get(3)?,
+                    session_file: row.get::<_, Option<String>>(0)?.map(PathBuf::from),
+                    bridge_socket_path: row.get(1)?,
+                    has_messages: row.get(2)?,
                 })
             },
         )
@@ -1313,7 +1512,7 @@ pub fn open_session_workspace_id(
     database
         .query_row(
             "SELECT workspace_id FROM sessions WHERE id = ? AND state = 'open'",
-            params![id.get()],
+            params![id.to_string()],
             |row| row.get(0),
         )
         .map_err(io::Error::other)
@@ -1322,7 +1521,6 @@ pub fn open_session_workspace_id(
 /// An open Session's stored fields, with its Workspace's name.
 pub struct StoredSessionRow {
     pub initial_pwd: PathBuf,
-    pub session_uuid: String,
     pub workspace_id: Option<String>,
     pub workspace_name: Option<String>,
     pub name: String,
@@ -1341,7 +1539,7 @@ pub struct StoredSessionRow {
 pub fn open_session_row(database: &Connection, id: SessionId) -> io::Result<StoredSessionRow> {
     let (row, stored_layout) = database
         .prepare_cached(
-            "SELECT s.initial_pwd, s.session_uuid, s.workspace_id, w.name, s.name, s.manual_name,
+            "SELECT s.initial_pwd, s.workspace_id, w.name, s.name, s.manual_name,
                     s.emoji, s.pi_session_file, s.pi_session_id, s.layout_json, s.last_message_at,
                     s.created_at
              FROM sessions s
@@ -1349,23 +1547,22 @@ pub fn open_session_row(database: &Connection, id: SessionId) -> io::Result<Stor
              WHERE s.id = ?1 AND s.state = 'open'",
         )
         .and_then(|mut statement| {
-            statement.query_row(params![id.get()], |row| {
+            statement.query_row(params![id.to_string()], |row| {
                 Ok((
                     StoredSessionRow {
                         initial_pwd: PathBuf::from(row.get::<_, String>(0)?),
-                        session_uuid: row.get(1)?,
-                        workspace_id: row.get(2)?,
-                        workspace_name: row.get(3)?,
-                        name: row.get(4)?,
-                        manual_name: row.get(5)?,
-                        emoji: row.get(6)?,
-                        pi_session_file: row.get::<_, Option<String>>(7)?.map(PathBuf::from),
-                        pi_session_id: row.get(8)?,
-                        last_message_at: row.get(10)?,
-                        created_at: row.get(11)?,
+                        workspace_id: row.get(1)?,
+                        workspace_name: row.get(2)?,
+                        name: row.get(3)?,
+                        manual_name: row.get(4)?,
+                        emoji: row.get(5)?,
+                        pi_session_file: row.get::<_, Option<String>>(6)?.map(PathBuf::from),
+                        pi_session_id: row.get(7)?,
+                        last_message_at: row.get(9)?,
+                        created_at: row.get(10)?,
                         layout: None,
                     },
-                    row.get::<_, Option<String>>(9)?,
+                    row.get::<_, Option<String>>(8)?,
                 ))
             })
         })
@@ -1387,28 +1584,27 @@ pub const MAX_ARCHIVED_SESSIONS: usize = 1000;
 pub fn read_archived_sessions(database: &Connection) -> io::Result<Vec<ArchivedSessionRecord>> {
     let mut statement = database
         .prepare(
-            "SELECT s.id, s.session_uuid, COALESCE(s.manual_name, s.name), s.emoji, s.workspace_id,
+            "SELECT s.id, COALESCE(s.manual_name, s.name), s.emoji, s.workspace_id,
                     w.name, s.initial_pwd, s.pi_session_file, s.last_message_at, s.archived_at
              FROM sessions s
              LEFT JOIN workspaces w ON w.workspace_id = s.workspace_id
-             WHERE s.state = 'archived' AND s.session_uuid IS NOT NULL
-             ORDER BY s.archived_at DESC, s.id DESC
+             WHERE s.state = 'archived' AND s.pi_session_file IS NOT NULL
+             ORDER BY s.archived_at DESC, s.created_at DESC, s.id
              LIMIT ?1",
         )
         .map_err(io::Error::other)?;
     statement
         .query_map(params![MAX_ARCHIVED_SESSIONS as i64], |row| {
             Ok(ArchivedSessionRecord {
-                id: stored_session_id(row.get(0)?)?,
-                session_uuid: row.get(1)?,
-                name: row.get(2)?,
-                emoji: row.get(3)?,
-                workspace_id: row.get(4)?,
-                workspace_name: row.get(5)?,
-                initial_pwd: PathBuf::from(row.get::<_, String>(6)?),
-                pi_session_file: row.get::<_, Option<String>>(7)?.map(PathBuf::from),
-                last_message_at: row.get(8)?,
-                archived_at: row.get(9)?,
+                id: stored_session_id(row.get::<_, String>(0)?)?,
+                name: row.get(1)?,
+                emoji: row.get(2)?,
+                workspace_id: row.get(3)?,
+                workspace_name: row.get(4)?,
+                initial_pwd: PathBuf::from(row.get::<_, String>(5)?),
+                pi_session_file: row.get::<_, Option<String>>(6)?.map(PathBuf::from),
+                last_message_at: row.get(7)?,
+                archived_at: row.get(8)?,
             })
         })
         .map_err(io::Error::other)?
@@ -1427,7 +1623,7 @@ pub fn pi_bridge_sockets(database: &Connection) -> io::Result<Vec<(SessionId, Pa
     statement
         .query_map([], |row| {
             Ok((
-                stored_session_id(row.get(0)?)?,
+                stored_session_id(row.get::<_, String>(0)?)?,
                 PathBuf::from(row.get::<_, String>(1)?),
                 PathBuf::from(row.get::<_, String>(2)?),
             ))
@@ -1486,15 +1682,16 @@ mod tests {
         }
     }
 
-    fn insert_session(database: &Connection, uuid: &str, state: &str) -> SessionId {
+    fn insert_session(database: &Connection, state: &str) -> SessionId {
+        let id = SessionId::new_v4().unwrap();
         database
             .execute(
-                "INSERT INTO sessions (initial_pwd, state, created_at, session_uuid, name, emoji)
-                 VALUES ('/', ?1, 0, ?2, 'Pi title', '🦀')",
-                params![state, uuid],
+                "INSERT INTO sessions (id, initial_pwd, state, created_at, name, emoji)
+                 VALUES (?1, '/', ?2, 0, 'Pi title', '🦀')",
+                params![id.to_string(), state],
             )
             .unwrap();
-        inserted_session_id(database).unwrap()
+        id
     }
 
     fn insert_workspace(database: &Connection, id: &str, name: &str, state: &str) {
@@ -1514,8 +1711,8 @@ mod tests {
     #[test]
     fn session_writes_apply_only_to_open_sessions() {
         let database = database();
-        let open = insert_session(&database, "open-uuid", "open");
-        let archived = insert_session(&database, "archived-uuid", "archived");
+        let open = insert_session(&database, "open");
+        let archived = insert_session(&database, "archived");
         let layout = Layout::single(ShellId::new(1).unwrap());
 
         write_session_layout(&database, open, &layout).unwrap();
@@ -1538,15 +1735,15 @@ mod tests {
     #[test]
     fn last_message_timestamp_is_monotonic_and_only_updates_open_sessions() {
         let database = database();
-        let open = insert_session(&database, "open-uuid", "open");
-        let archived = insert_session(&database, "archived-uuid", "archived");
+        let open = insert_session(&database, "open");
+        let archived = insert_session(&database, "archived");
 
         assert!(record_session_message(&database, open, 100).unwrap());
         assert!(record_session_message(&database, open, 90).unwrap());
         let timestamp: Option<i64> = database
             .query_row(
                 "SELECT last_message_at FROM sessions WHERE id = ?1",
-                params![open.get()],
+                params![open.to_string()],
                 |row| row.get(0),
             )
             .unwrap();
@@ -1557,12 +1754,12 @@ mod tests {
     #[test]
     fn describing_a_session_keeps_the_fields_pi_leaves_out() {
         let database = database();
-        let id = insert_session(&database, "uuid", "open");
+        let id = insert_session(&database, "open");
         let read = |database: &Connection| -> (String, Option<String>) {
             database
                 .query_row(
                     "SELECT name, emoji FROM sessions WHERE id = ?1",
-                    params![id.get()],
+                    params![id.to_string()],
                     |row| Ok((row.get(0)?, row.get(1)?)),
                 )
                 .unwrap()
@@ -1574,14 +1771,15 @@ mod tests {
     }
 
     #[test]
-    fn a_pi_session_id_binds_only_to_the_session_uuid_it_was_launched_for() {
+    fn a_pi_session_id_binds_only_to_an_open_session() {
         let database = database();
-        let id = insert_session(&database, "launched-uuid", "open");
+        let open = insert_session(&database, "open");
+        let archived = insert_session(&database, "archived");
         assert_eq!(
-            kind(bind_pi_session_id(&database, id, "other-uuid", "pi-1")),
+            kind(bind_pi_session_id(&database, archived, "pi-1")),
             io::ErrorKind::NotFound
         );
-        bind_pi_session_id(&database, id, "launched-uuid", "pi-1").unwrap();
+        bind_pi_session_id(&database, open, "pi-1").unwrap();
     }
 
     #[test]
@@ -1610,11 +1808,11 @@ mod tests {
             kind(rename_open_workspace(&database, &gone, "back")),
             io::ErrorKind::NotFound
         );
-        let session = insert_session(&database, "in-zed", "open");
+        let session = insert_session(&database, "open");
         database
             .execute(
                 "UPDATE sessions SET workspace_id = ?1 WHERE id = ?2",
-                params![zed, session.get()],
+                params![zed, session.to_string()],
             )
             .unwrap();
         assert_eq!(
@@ -1643,12 +1841,12 @@ mod tests {
         let database = &mut database();
         let workspace = new_uuid_v4().unwrap();
         insert_workspace(database, &workspace, "w", "archived");
-        let session = insert_session(database, "uuid", "archived");
+        let session = insert_session(database, "archived");
         database
             .execute(
                 "UPDATE sessions SET archived_at = 9, termination_reason = 'explicit_close'
                  WHERE id = ?1",
-                params![session.get()],
+                params![session.to_string()],
             )
             .unwrap();
         database
@@ -1656,7 +1854,7 @@ mod tests {
                 "INSERT INTO shells (session_id, initial_pwd, state, created_at, role,
                                      archived_at, termination_reason)
                  VALUES (?1, '/', 'archived', 0, 'pi', 9, 'explicit_close')",
-                params![session.get()],
+                params![session.to_string()],
             )
             .unwrap();
         let shell = inserted_shell_id(database).unwrap().get().to_string();
@@ -1666,11 +1864,11 @@ mod tests {
                 "INSERT INTO shells (session_id, initial_pwd, state, created_at, role,
                                      archived_at, termination_reason)
                  VALUES (?1, '/', 'archived', 0, 'terminal', 9, 'pane_closed')",
-                params![session.get()],
+                params![session.to_string()],
             )
             .unwrap();
         let closed_alone = inserted_shell_id(database).unwrap().get().to_string();
-        let id = session.get().to_string();
+        let id = session.to_string();
 
         // A missing Workspace leaves everything archived.
         assert_eq!(
@@ -1707,13 +1905,13 @@ mod tests {
     #[test]
     fn every_session_owning_a_pi_history_is_reported() {
         let database = database();
-        let first = insert_session(&database, "a", "open");
-        let second = insert_session(&database, "b", "archived");
+        let first = insert_session(&database, "open");
+        let second = insert_session(&database, "archived");
         for id in [first, second] {
             database
                 .execute(
                     "UPDATE sessions SET pi_session_file = '/h.jsonl' WHERE id = ?1",
-                    params![id.get()],
+                    params![id.to_string()],
                 )
                 .unwrap();
         }
@@ -1761,22 +1959,24 @@ mod tests {
 
         initialize_database(&mut database).unwrap();
 
-        let session: (i64, String, String) = database
-            .query_row(
-                "SELECT id, initial_pwd, state FROM sessions WHERE id = 7",
-                [],
-                |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?)),
-            )
+        let session: (String, String, String) = database
+            .query_row("SELECT id, initial_pwd, state FROM sessions", [], |row| {
+                Ok((row.get(0)?, row.get(1)?, row.get(2)?))
+            })
             .unwrap();
-        let shell: (i64, i64, String, String) = database
+        let shell: (i64, String, String, String) = database
             .query_row(
                 "SELECT id, session_id, initial_pwd, state FROM shells WHERE id = 7",
                 [],
                 |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?, row.get(3)?)),
             )
             .unwrap();
-        assert_eq!(session, (7, "/tmp".to_owned(), "archived".to_owned()));
-        assert_eq!(shell, (7, 7, "/tmp".to_owned(), "archived".to_owned()));
+        assert!(SessionId::parse(&session.0).is_some(), "{}", session.0);
+        assert_eq!((&*session.1, &*session.2), ("/tmp", "archived"));
+        assert_eq!(
+            shell,
+            (7, session.0, "/tmp".to_owned(), "archived".to_owned())
+        );
     }
 
     #[test]
@@ -1811,15 +2011,13 @@ mod tests {
         initialize_database(&mut database).unwrap();
 
         let layout: Option<String> = database
-            .query_row("SELECT layout_json FROM sessions WHERE id = 1", [], |row| {
-                row.get(0)
-            })
+            .query_row("SELECT layout_json FROM sessions", [], |row| row.get(0))
             .unwrap();
         let schema_version: i64 = database
             .query_row("PRAGMA user_version", [], |row| row.get(0))
             .unwrap();
         assert_eq!(layout, None);
-        assert_eq!(schema_version, 8);
+        assert_eq!(schema_version, SCHEMA_VERSION);
         let manual_name_column: i64 = database
             .query_row(
                 "SELECT COUNT(*) FROM pragma_table_info('sessions') WHERE name = 'manual_name'",
@@ -1837,9 +2035,7 @@ mod tests {
             .unwrap();
         assert_eq!(bridge_socket_column, 1);
         let session_state: String = database
-            .query_row("SELECT state FROM sessions WHERE id = 1", [], |row| {
-                row.get(0)
-            })
+            .query_row("SELECT state FROM sessions", [], |row| row.get(0))
             .unwrap();
         assert_eq!(session_state, "archived");
     }
@@ -1895,9 +2091,9 @@ mod tests {
         let inserted = insert_workspace_session(
             database,
             &NewWorkspaceSession {
+                session_id: SessionId::new_v4().unwrap(),
                 workspace_id: &workspace,
                 initial_pwd: Path::new("/w"),
-                session_uuid: "in-workspace",
                 name: "Session 1",
                 pi_session_file: Path::new("/h.jsonl"),
                 bridge_socket: &socket,
@@ -1948,8 +2144,8 @@ mod tests {
     #[test]
     fn the_home_workspace_is_created_once_reopened_and_adopts_standalone_sessions() {
         let database = &mut database();
-        let standalone = insert_session(database, "standalone", "open");
-        let closed = insert_session(database, "closed", "archived");
+        let standalone = insert_session(database, "open");
+        let closed = insert_session(database, "archived");
 
         let home = ensure_home_workspace(database, Path::new("/Users/me")).unwrap();
         assert_eq!(
@@ -1975,7 +2171,7 @@ mod tests {
         let closed_workspace: Option<String> = database
             .query_row(
                 "SELECT workspace_id FROM sessions WHERE id = ?1",
-                params![closed.get()],
+                params![closed.to_string()],
                 |row| row.get(0),
             )
             .unwrap();
@@ -2008,11 +2204,11 @@ mod tests {
         super::insert_workspace(&database, &busy, "busy", Path::new("/b"), None).unwrap();
         super::insert_workspace(&database, &archived, "archived", Path::new("/a"), None).unwrap();
         abandon_workspace(&database, &archived).unwrap();
-        let session = insert_session(&database, "in-busy", "open");
+        let session = insert_session(&database, "open");
         database
             .execute(
                 "UPDATE sessions SET workspace_id = ?1 WHERE id = ?2",
-                params![busy, session.get()],
+                params![busy, session.to_string()],
             )
             .unwrap();
         assert_eq!(
@@ -2038,5 +2234,152 @@ mod tests {
             )
             .unwrap();
         assert_eq!(value, "/bin/bash");
+    }
+
+    /// A version 8 catalog as Axo last wrote one: integer Session IDs, a `session_uuid` on
+    /// Sessions launched with Pi.
+    const VERSION_8_CATALOG: &str = "
+        CREATE TABLE workspaces (
+            workspace_id TEXT PRIMARY KEY, name TEXT NOT NULL, directory_path TEXT NOT NULL,
+            state TEXT NOT NULL CHECK (state IN ('open', 'archived')), created_at INTEGER NOT NULL,
+            archived_at INTEGER, directory_bookmark TEXT);
+        CREATE TABLE sessions (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            initial_pwd TEXT NOT NULL,
+            state TEXT NOT NULL CHECK (state IN ('open', 'archived')),
+            created_at INTEGER NOT NULL,
+            archived_at INTEGER,
+            termination_reason TEXT,
+            layout_json TEXT, workspace_id TEXT REFERENCES workspaces(workspace_id),
+            session_uuid TEXT, name TEXT NOT NULL DEFAULT 'Session', pi_session_file TEXT,
+            pi_session_id TEXT, emoji TEXT, manual_name TEXT, pi_bridge_socket_path TEXT,
+            last_message_at INTEGER);
+        CREATE TABLE shells (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            session_id INTEGER NOT NULL REFERENCES sessions(id),
+            initial_pwd TEXT NOT NULL,
+            state TEXT NOT NULL CHECK (state IN ('open', 'archived')),
+            created_at INTEGER NOT NULL,
+            archived_at INTEGER,
+            termination_reason TEXT,
+            role TEXT NOT NULL DEFAULT 'terminal' CHECK (role IN ('pi', 'terminal')), pane_id TEXT);
+        CREATE INDEX shells_by_session_state ON shells(session_id, state, id);
+        CREATE INDEX sessions_by_workspace_state ON sessions(workspace_id, state, id);
+        INSERT INTO workspaces VALUES ('w', 'W', '/w', 'open', 0, NULL, NULL);
+        INSERT INTO sessions (id, initial_pwd, state, created_at, workspace_id, session_uuid, name,
+                              pi_session_file, layout_json, manual_name)
+            VALUES (3, '/w', 'open', 10, 'w', '0b8f4e2a-7c1d-4e6b-9a3f-5d2c8e1b7a49', 'Pi',
+                    '/h.jsonl', '{\"kind\":\"leaf\"}', 'Mine');
+        INSERT INTO sessions (id, initial_pwd, state, created_at, archived_at)
+            VALUES (5, '/old', 'archived', 1, 2);
+        INSERT INTO shells (id, session_id, initial_pwd, state, created_at, role)
+            VALUES (40, 3, '/w', 'open', 10, 'pi');
+        INSERT INTO shells (id, session_id, initial_pwd, state, created_at)
+            VALUES (41, 5, '/old', 'archived', 1);
+        INSERT INTO shells (id, session_id, initial_pwd, state, created_at)
+            VALUES (60, 5, '/old', 'archived', 1);
+        DELETE FROM shells WHERE id = 60;
+        PRAGMA user_version = 8;";
+
+    #[test]
+    fn a_version_8_catalog_is_rekeyed_by_uuid_keeping_existing_uuids_and_shell_ids() {
+        let mut database = Connection::open_in_memory().unwrap();
+        database.pragma_update(None, "foreign_keys", "ON").unwrap();
+        database.execute_batch(VERSION_8_CATALOG).unwrap();
+
+        initialize_database(&mut database).unwrap();
+
+        let rows: Vec<(String, String, Option<String>, Option<String>)> = database
+            .prepare("SELECT id, initial_pwd, manual_name, layout_json FROM sessions ORDER BY created_at DESC")
+            .unwrap()
+            .query_map([], |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?, row.get(3)?)))
+            .unwrap()
+            .collect::<Result<_, _>>()
+            .unwrap();
+        assert_eq!(rows.len(), 2);
+        assert_eq!(
+            rows[0].0, "0b8f4e2a-7c1d-4e6b-9a3f-5d2c8e1b7a49",
+            "its UUID is kept"
+        );
+        assert_eq!(rows[0].2.as_deref(), Some("Mine"));
+        assert_eq!(rows[0].3.as_deref(), Some("{\"kind\":\"leaf\"}"));
+        assert!(
+            SessionId::parse(&rows[1].0).is_some(),
+            "a new UUID: {}",
+            rows[1].0
+        );
+        let shells: Vec<(i64, String)> = database
+            .prepare("SELECT id, session_id FROM shells ORDER BY id")
+            .unwrap()
+            .query_map([], |row| Ok((row.get(0)?, row.get(1)?)))
+            .unwrap()
+            .collect::<Result<_, _>>()
+            .unwrap();
+        assert_eq!(shells, [(40, rows[0].0.clone()), (41, rows[1].0.clone())]);
+        let columns: Vec<String> = database
+            .prepare("SELECT name FROM pragma_table_info('sessions')")
+            .unwrap()
+            .query_map([], |row| row.get(0))
+            .unwrap()
+            .collect::<Result<_, _>>()
+            .unwrap();
+        assert!(!columns.iter().any(|column| column == "session_uuid"));
+        let version: i64 = database
+            .query_row("PRAGMA user_version", [], |row| row.get(0))
+            .unwrap();
+        assert_eq!(version, SCHEMA_VERSION);
+        let violations: i64 = database
+            .query_row("SELECT COUNT(*) FROM pragma_foreign_key_check", [], |row| {
+                row.get(0)
+            })
+            .unwrap();
+        assert_eq!(violations, 0);
+
+        // A deleted shell's ID is not handed out again.
+        let open = SessionId::parse(&rows[0].0).unwrap();
+        let next = insert_terminal_shell(&database, open, Path::new("/w")).unwrap();
+        assert_eq!(next.get(), 61);
+        assert_eq!(read_open_sessions(&database).unwrap()[0].id, open);
+
+        // Running it again changes nothing.
+        initialize_database(&mut database).unwrap();
+        let again: String = database
+            .query_row("SELECT id FROM sessions WHERE created_at = 10", [], |row| {
+                row.get(0)
+            })
+            .unwrap();
+        assert_eq!(again, rows[0].0);
+    }
+
+    #[test]
+    fn open_backs_up_a_catalog_before_rekeying_it_by_uuid() {
+        let directory = std::env::temp_dir().join(format!(
+            "axo-store-backup-{}-{}",
+            std::process::id(),
+            new_uuid_v4().unwrap()
+        ));
+        std::fs::create_dir_all(&directory).unwrap();
+        let path = directory.join(DATABASE_FILE);
+        Connection::open(&path)
+            .unwrap()
+            .execute_batch(VERSION_8_CATALOG)
+            .unwrap();
+
+        drop(open(&path).unwrap());
+        let backup = pre_uuid_backup_path(&path);
+        let old = Connection::open(&backup).unwrap();
+        let (version, id): (i64, i64) = (
+            old.query_row("PRAGMA user_version", [], |row| row.get(0))
+                .unwrap(),
+            old.query_row("SELECT MAX(id) FROM sessions", [], |row| row.get(0))
+                .unwrap(),
+        );
+        assert_eq!((version, id), (8, 5));
+        assert_eq!(
+            std::fs::metadata(&backup).unwrap().permissions().mode() & 0o777,
+            0o600
+        );
+        drop(old);
+        std::fs::remove_dir_all(directory).unwrap();
     }
 }

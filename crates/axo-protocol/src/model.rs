@@ -94,7 +94,6 @@ pub struct ShellRecord {
 #[serde(rename_all = "camelCase")]
 pub struct SessionRecord {
     pub id: SessionId,
-    pub session_uuid: String,
     pub pi_session_file: Option<PathBuf>,
     pub pi_session_id: Option<String>,
     pub workspace_id: Option<String>,
@@ -141,7 +140,6 @@ impl SessionRecord {
 pub struct RemoteSessionSnapshot {
     pub host_id: String,
     pub session_id: SessionId,
-    pub session_uuid: String,
     pub workspace_id: Option<String>,
     pub workspace_name: Option<String>,
     pub name: String,
@@ -175,7 +173,6 @@ impl RemoteSessionSnapshot {
         RemoteSessionSnapshot {
             host_id: host_id.to_owned(),
             session_id: record.id,
-            session_uuid: record.session_uuid.clone(),
             workspace_id: record.workspace_id.clone(),
             workspace_name: record.workspace_name.clone(),
             // What the Mac shows: a name someone typed wins over the one Pi chose.
@@ -308,8 +305,7 @@ mod tests {
     #[test]
     fn remote_snapshots_expose_terminals_only_and_no_local_details() {
         let record = SessionRecord {
-            id: SessionId::new(5).unwrap(),
-            session_uuid: "uuid".to_owned(),
+            id: SessionId::from_u128(5),
             pi_session_file: Some("/private/pi.jsonl".into()),
             pi_session_id: None,
             workspace_id: Some("w".to_owned()),
@@ -337,8 +333,7 @@ mod tests {
     #[test]
     fn a_manual_name_wins_in_remote_snapshots() {
         let mut record = SessionRecord {
-            id: SessionId::new(5).unwrap(),
-            session_uuid: "uuid".to_owned(),
+            id: SessionId::from_u128(5),
             pi_session_file: None,
             pi_session_id: None,
             workspace_id: None,

@@ -85,8 +85,7 @@ fn shell(id: i64, role: PaneRole, availability: Availability) -> ShellRecord {
 #[test]
 fn produced_session_records_conform_to_the_schema() {
     let session = SessionRecord {
-        id: SessionId::new(9).unwrap(),
-        session_uuid: "a0b7d77a-5551-4cbc-8dfc-75b2d466dece".to_owned(),
+        id: SessionId::from_u128(9),
         pi_session_file: Some("/tmp/session.jsonl".into()),
         pi_session_id: Some("pi-session".to_owned()),
         workspace_id: Some("7f1918d3-8b6d-4af4-a57e-7e6ae28e89e2".to_owned()),

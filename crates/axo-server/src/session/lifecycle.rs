@@ -455,14 +455,14 @@ impl SessionManager {
             .filter_map(|(shell_id, running)| match running.child.try_wait() {
                 Ok(Some(status)) => {
                     log::info!("event=session.child_exited session_id={} shell_id={} runtime_id={} pid={} status={status}",
-                        running.session_id.get(), shell_id.get(), running.runtime_id, running.child.id());
+                        running.session_id, shell_id.get(), running.runtime_id, running.child.id());
                     Some((shell_id, running.session_id))
                 }
                 Ok(None) => None,
                 Err(error) => {
                     if !running.wait_error_reported {
                         log::error!("event=session.child_wait_failed session_id={} shell_id={} runtime_id={} pid={} error_kind={:?}",
-                            running.session_id.get(), shell_id.get(), running.runtime_id, running.child.id(), error.kind());
+                            running.session_id, shell_id.get(), running.runtime_id, running.child.id(), error.kind());
                         running.wait_error_reported = true;
                     }
                     // Do not guess that the child exited or signal a potentially

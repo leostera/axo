@@ -11,6 +11,7 @@ use std::os::unix::net::UnixStream;
 use std::path::{Path, PathBuf};
 use std::time::Duration;
 
+use axo_protocol::SessionId;
 use axo_protocol::rpc::method;
 use serde_json::{Map, Value, json};
 
@@ -44,7 +45,7 @@ struct Tool {
 }
 
 fn session_id_schema() -> Value {
-    json!({ "type": ["integer", "string"], "description": "A Session ID, or \"self\"." })
+    json!({ "type": "string", "description": "A Session ID (a UUID), or \"self\"." })
 }
 
 fn shell_id_schema() -> Value {
@@ -178,25 +179,22 @@ impl From<io::Error> for ToolError {
 /// The MCP server for one Session.
 pub struct McpServer {
     socket: PathBuf,
-    session_uuid: String,
-    session_id: i64,
+    session_id: SessionId,
 }
 
 impl McpServer {
-    /// Finds the open Session `session_uuid` names. Fails if Axod is unreachable or has no
-    /// such Session.
-    pub fn connect(socket: &Path, session_uuid: &str) -> io::Result<Self> {
-        let mut server = Self {
+    /// Serves the open Session `session_id` names. Fails if it is not a Session ID, Axod is
+    /// unreachable, or Axod has no such Session.
+    pub fn connect(socket: &Path, session_id: &str) -> io::Result<Self> {
+        let session_id = SessionId::parse(session_id)
+            .ok_or_else(|| io::Error::other(format!("{session_id:?} is not a Session ID")))?;
+        let server = Self {
             socket: socket.to_path_buf(),
-            session_uuid: session_uuid.to_owned(),
-            session_id: 0,
+            session_id,
         };
-        let own = server
+        server
             .own_session()
             .map_err(|ToolError(message)| io::Error::other(message))?;
-        server.session_id = own["id"]
-            .as_i64()
-            .ok_or_else(|| io::Error::other("Axod listed a Session without an ID"))?;
         Ok(server)
     }
 
@@ -261,7 +259,6 @@ impl McpServer {
             None => self.own_session().map(|session| {
                 json!({
                     "sessionId": session["id"],
-                    "sessionUuid": session["sessionUuid"],
                     "workspaceId": session["workspaceId"],
                     "session": session,
                 })
@@ -312,10 +309,10 @@ impl McpServer {
             .and_then(|sessions| {
                 sessions
                     .iter()
-                    .find(|session| session["sessionUuid"] == self.session_uuid.as_str())
+                    .find(|session| session["id"] == json!(self.session_id))
             })
             .cloned()
-            .ok_or_else(|| ToolError(format!("Axod has no open Session {}", self.session_uuid)))
+            .ok_or_else(|| ToolError(format!("Axod has no open Session {}", self.session_id)))
     }
 
     /// One request to Axod on a connection of its own.
@@ -372,14 +369,16 @@ pub fn serve_stdio() -> io::Result<()> {
             .map_err(|_| io::Error::new(io::ErrorKind::InvalidInput, format!("{name} is not set")))
     };
     let socket = PathBuf::from(variable("AXO_SOCKET")?);
-    let session_uuid = variable("AXO_SESSION_ID")?;
-    let server = McpServer::connect(&socket, &session_uuid)?;
+    let session_id = variable("AXO_SESSION_ID")?;
+    let server = McpServer::connect(&socket, &session_id)?;
     server.serve(io::stdin().lock(), io::stdout().lock())
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    const SID: SessionId = SessionId::from_u128(0x0b8f4e2a_7c1d_4e6b_9a3f_5d2c8e1b7a49);
 
     #[test]
     fn every_tool_names_an_advertised_method_and_declares_an_object_schema() {
@@ -409,8 +408,7 @@ mod tests {
     fn requests_without_axod_still_get_protocol_answers() {
         let server = McpServer {
             socket: PathBuf::from("/nonexistent/axod.sock"),
-            session_uuid: "uuid".into(),
-            session_id: 7,
+            session_id: SID,
         };
         let initialized = server
             .handle(&json!({ "jsonrpc": "2.0", "id": 1, "method": "initialize", "params": {} }))
@@ -435,8 +433,7 @@ mod tests {
     fn self_and_the_sender_are_filled_in() {
         let server = McpServer {
             socket: PathBuf::from("/nonexistent/axod.sock"),
-            session_uuid: "uuid".into(),
-            session_id: 7,
+            session_id: SID,
         };
         let prompt = TOOLS
             .iter()
@@ -449,7 +446,7 @@ mod tests {
             .unwrap();
         assert_eq!(
             Value::Object(resolved),
-            json!({ "sessionId": 7, "text": "hi", "fromSessionId": 7 })
+            json!({ "sessionId": SID, "text": "hi", "fromSessionId": SID })
         );
     }
 }

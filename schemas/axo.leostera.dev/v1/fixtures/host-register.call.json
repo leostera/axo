@@ -3,22 +3,38 @@
   "id": 1,
   "method": "axo.host.register",
   "params": {
-    "protocolVersion": 1,
+    "protocolVersion": 2,
     "hostId": "18355f00-95fd-4c93-8586-a71a8a52bf73",
     "hostGeneration": "c3b6da28-55c0-4bb0-ac04-dd458fd41a2b",
     "label": "Axo Mac",
     "hostKind": "macos",
     "capabilities": [
-      { "id": "agent.pi", "version": 1 },
-      { "id": "terminal.pty", "version": 1 },
-      { "id": "workspace.filesystem", "version": 1 }
+      {
+        "id": "agent.pi",
+        "version": 1
+      },
+      {
+        "id": "terminal.pty",
+        "version": 1
+      },
+      {
+        "id": "workspace.filesystem",
+        "version": 1
+      }
     ],
     "sessions": [
       {
         "hostId": "18355f00-95fd-4c93-8586-a71a8a52bf73",
-        "sessionId": 9,
-        "shells": [{ "shellId": 12 }],
-        "layout": { "kind": "pane", "shellId": 12 },
+        "sessionId": "0b8f4e2a-7c1d-4e6b-9a3f-5d2c8e1b7a49",
+        "shells": [
+          {
+            "shellId": 12
+          }
+        ],
+        "layout": {
+          "kind": "pane",
+          "shellId": 12
+        },
         "updatedAt": "2026-10-16T00:00:00Z"
       }
     ]

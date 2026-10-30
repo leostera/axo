@@ -115,7 +115,8 @@ pub(super) fn create_workspace_session(
 ) -> io::Result<SessionRecord> {
     let initial_pwd = open_workspace_directory(&state.database, workspace_id)?;
     let ordinal = next_session_ordinal(&state.database, workspace_id)?;
-    let session_uuid = new_uuid_v4()?;
+    let session_id = SessionId::new_v4()?;
+    let session_uuid = session_id.to_string();
     let pane_id = new_uuid_v4()?;
     let pi_directory = pi_session_directory.join(workspace_id);
     fs::create_dir_all(&pi_directory)?;
@@ -130,9 +131,9 @@ pub(super) fn create_workspace_session(
     let inserted = match insert_workspace_session(
         &mut state.database,
         &NewWorkspaceSession {
+            session_id,
             workspace_id,
             initial_pwd: &initial_pwd,
-            session_uuid: &session_uuid,
             name: &session_name,
             pi_session_file: &pi_session_file,
             bridge_socket: &bridge_socket,
@@ -148,7 +149,6 @@ pub(super) fn create_workspace_session(
             return Err(error);
         }
     };
-    let session_id = inserted.session_id;
     let request = PiLaunchRequest {
         agent_command: state.agent_command.clone(),
         session_id,
@@ -192,7 +192,7 @@ fn start_companion_terminal(
         Err(error) => {
             log::warn!(
                 "event=session.companion_terminal_failed session_id={} reason={error}",
-                session_id.get()
+                session_id
             );
             archive_shell_and_prune_layout(
                 &mut state.database,
@@ -576,7 +576,6 @@ mod tests {
         fs::create_dir_all(&directory).unwrap();
         let manager = open_with_silent_shell(&directory);
         let workspace_id = new_uuid_v4().unwrap();
-        let session_uuid = new_uuid_v4().unwrap();
         let session_id = sid(702);
         let history = directory.join("pi-session.jsonl");
         fs::write(&history, b"canonical Pi history").unwrap();
@@ -595,13 +594,12 @@ mod tests {
                 .database
                 .execute(
                     "INSERT INTO sessions
-                     (id, initial_pwd, state, created_at, workspace_id, session_uuid, name, pi_session_file)
-                     VALUES (?1, '/tmp', 'open', ?2, ?3, ?4, 'Pi conversation title', ?5)",
+                     (id, initial_pwd, state, created_at, workspace_id, name, pi_session_file)
+                     VALUES (?1, '/tmp', 'open', ?2, ?3, 'Pi conversation title', ?4)",
                     params![
-                        session_id.get(),
+                        session_id.to_string(),
                         unix_timestamp(),
                         workspace_id,
-                        session_uuid,
                         history.to_string_lossy(),
                     ],
                 )
@@ -653,7 +651,7 @@ mod tests {
             .database
             .query_row(
                 "SELECT state, termination_reason FROM sessions WHERE id = ?1",
-                params![session_id.get()],
+                params![session_id.to_string()],
                 |row| Ok((row.get(0)?, row.get(1)?)),
             )
             .unwrap();

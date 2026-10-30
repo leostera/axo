@@ -494,7 +494,7 @@ fn terminal_attachments_share_output_and_shells_never_stall_unattached() {
     let mut daemon = start_axod(&server_directory, &socket);
     wait_for_socket(&socket, &mut daemon);
     let session = create_session(&socket);
-    let session_id = session["id"].as_i64().unwrap();
+    let session_id = session["id"].as_str().unwrap().to_owned();
     let shell = terminal_shell(&session);
     let shell_id = shell["id"].as_i64().unwrap();
     let attach_socket = shell["attachSocketPath"].as_str().unwrap();
@@ -598,7 +598,7 @@ fn local_protocol_streams_events_and_controls_the_pty() {
     wait_for_socket(&socket, &mut daemon);
 
     let session = create_session(&socket);
-    let session_id = session["id"].as_i64().unwrap();
+    let session_id = session["id"].as_str().unwrap().to_owned();
     let shell = terminal_shell(&session);
     let shell_id = shell["id"].as_i64().unwrap();
     let subscription = rpc_with_params(
@@ -763,7 +763,7 @@ fn long_polls_never_delay_unrelated_requests() {
     let socket = root.join("axod.sock");
     let mut daemon = start_axod(&server_directory, &socket);
     wait_for_socket(&socket, &mut daemon);
-    let session_id = create_session(&socket)["id"].as_i64().unwrap();
+    let session_id = create_session(&socket)["id"].as_str().unwrap().to_owned();
 
     // Regression: axod used to serve requests one at a time, so each waiting long-poll delayed
     // every other request by up to its full timeout.
@@ -1089,7 +1089,6 @@ fn agents_can_find_transcripts_drive_panes_and_prompt_sessions() {
     let archived = &catalog["archived"][0];
     assert_eq!(archived["id"], created["id"], "{catalog}");
     assert_eq!(archived["piSessionFile"], created["piSessionFile"]);
-    assert_eq!(archived["sessionUuid"], created["sessionUuid"]);
 
     daemon.stop();
     let _ = std::fs::remove_dir_all(directory);
@@ -1119,7 +1118,7 @@ fn axod_mcp_serves_one_sessions_agent_over_stdio() {
     let mut mcp = Command::new(axod_binary())
         .arg("mcp")
         .env("AXO_SOCKET", &socket)
-        .env("AXO_SESSION_ID", session["sessionUuid"].as_str().unwrap())
+        .env("AXO_SESSION_ID", session["id"].as_str().unwrap())
         .stdin(Stdio::piped())
         .stdout(Stdio::piped())
         .stderr(Stdio::null())
@@ -1388,9 +1387,9 @@ fn daemon_starts_with_and_restores_a_default_pty_session_after_restart() {
     let negotiated = rpc_with_params(
         &socket,
         "axo.protocol.negotiate",
-        json!({ "protocolVersion": 1 }),
+        json!({ "protocolVersion": 2 }),
     );
-    assert_eq!(negotiated["result"]["protocolVersion"], 1);
+    assert_eq!(negotiated["result"]["protocolVersion"], 2);
     for method in [
         "axo.session.subscribe",
         "axo.session.events.next",
@@ -1458,7 +1457,7 @@ fn daemon_starts_with_and_restores_a_default_pty_session_after_restart() {
         "the attached PTY should execute commands and return their output"
     );
 
-    let session_id = session["id"].as_i64().unwrap();
+    let session_id = session["id"].as_str().unwrap().to_owned();
     let shell_id = shell["id"].as_i64().unwrap();
     let original_process_id = shell["processId"].as_u64().unwrap();
     let split_shell = rpc_with_params(
@@ -1609,7 +1608,7 @@ fn daemon_starts_with_and_restores_a_default_pty_session_after_restart() {
     assert_eq!(replacement["workspaceId"], home_workspace_id);
     assert_eq!(active_sessions(&socket).len(), 1);
 
-    let replacement_id = replacement["id"].as_i64().unwrap();
+    let replacement_id = replacement["id"].as_str().unwrap().to_owned();
     let replacement_shell_id = replacement["shells"][0]["id"].as_i64().unwrap();
     let close_last_shell = rpc_with_params(
         &socket,

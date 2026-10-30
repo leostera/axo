@@ -9,9 +9,16 @@
       "type": "session.snapshot",
       "snapshot": {
         "hostId": "18355f00-95fd-4c93-8586-a71a8a52bf73",
-        "sessionId": 9,
-        "shells": [{ "shellId": 12 }],
-        "layout": { "kind": "pane", "shellId": 12 },
+        "sessionId": "0b8f4e2a-7c1d-4e6b-9a3f-5d2c8e1b7a49",
+        "shells": [
+          {
+            "shellId": 12
+          }
+        ],
+        "layout": {
+          "kind": "pane",
+          "shellId": 12
+        },
         "updatedAt": "2026-10-16T00:00:00Z"
       }
     }
