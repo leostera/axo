@@ -7,7 +7,7 @@ import {
   type TypedJSONRPCClient,
   type TypedJSONRPCServer,
 } from "json-rpc-2.0";
-import { hostMutationMethods } from "./v1.js";
+import { hostMutationMethods } from "./v1.ts";
 import {
   decode,
   callSchema,
@@ -21,7 +21,7 @@ import {
   type LocalMethod,
   results,
   type Reply,
-} from "./contracts.js";
+} from "./contracts.ts";
 
 export type Negotiated = {
   protocolVersion: 2;

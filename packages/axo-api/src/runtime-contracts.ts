@@ -1,5 +1,5 @@
 import { z } from "zod";
-import { uuid } from "./identity.js";
+import { uuid } from "./identity.ts";
 
 export const processSchema = z.discriminatedUnion("kind", [
   z.object({ kind: z.literal("starting") }).strict(),

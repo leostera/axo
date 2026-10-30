@@ -31,22 +31,23 @@ export type HostRef = z.infer<typeof hostRefSchema>;
 export type { HostEvent };
 
 export class AxoApiError extends Error {
-  constructor(
-    message: string,
-    readonly status: number,
-    readonly url: string,
-  ) {
+  readonly status: number;
+  readonly url: string;
+
+  constructor(message: string, status: number, url: string) {
     super(message);
+    this.status = status;
+    this.url = url;
     this.name = "AxoApiError";
   }
 }
 
 export class AxoRpcError extends Error {
-  constructor(
-    message: string,
-    readonly code: number,
-  ) {
+  readonly code: number;
+
+  constructor(message: string, code: number) {
     super(message);
+    this.code = code;
     this.name = "AxoRpcError";
   }
 }
@@ -106,12 +107,14 @@ export class RemoteAxoApi {
   readonly baseUrl: URL;
 
   private readonly fetcher: typeof fetch;
+  private readonly makeWebSocket: WebSocketFactory;
 
   constructor(
     baseUrl: string | URL,
     fetcher?: typeof fetch,
-    private readonly makeWebSocket: WebSocketFactory = (url) => new WebSocket(url),
+    makeWebSocket: WebSocketFactory = (url) => new WebSocket(url),
   ) {
+    this.makeWebSocket = makeWebSocket;
     this.fetcher = fetcher ?? globalThis.fetch.bind(globalThis);
     this.baseUrl = new URL(baseUrl);
     if (this.baseUrl.protocol !== "https:" && this.baseUrl.protocol !== "http:") {
@@ -222,12 +225,21 @@ export class HostRelayConnection {
   private closedError: Error | null = null;
   private subscriptionId: string | null = null;
 
+  private readonly socket: WebSocketLike;
+  readonly reference: HostRef;
+  private readonly onEvent: HostEventHandler;
+  private readonly onClose?: (error: Error) => void;
+
   private constructor(
-    private readonly socket: WebSocketLike,
-    readonly reference: HostRef,
-    private readonly onEvent: HostEventHandler,
-    private readonly onClose?: (error: Error) => void,
+    socket: WebSocketLike,
+    reference: HostRef,
+    onEvent: HostEventHandler,
+    onClose?: (error: Error) => void,
   ) {
+    this.socket = socket;
+    this.reference = reference;
+    this.onEvent = onEvent;
+    this.onClose = onClose;
     socket.onmessage = (event) => this.receive(event.data);
     socket.onerror = () => this.fail(new Error("Axo API WebSocket failed"));
     socket.onclose = (event) => {

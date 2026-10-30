@@ -1,6 +1,6 @@
 import { z } from "zod";
-import { uuid } from "./identity.js";
-import { runtimeRefSchema, terminalSchema } from "./runtime-contracts.js";
+import { uuid } from "./identity.ts";
+import { runtimeRefSchema, terminalSchema } from "./runtime-contracts.ts";
 
 // Retained presentation metadata, not a pane mutation or launch authority.
 export const shellPaneSchema = z.object({

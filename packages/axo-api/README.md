@@ -6,4 +6,4 @@ This package is the TypeScript runtime and type layer used by the Cloudflare API
 
 Host registration may advertise a versioned capability manifest (`agent.pi`, `terminal.pty`, and `workspace.filesystem`). The account API persists that manifest and returns it with host metadata. Omitted capabilities mean the host has not declared a manifest; an explicit empty array means it declares no capabilities. These are availability claims for host selection, **not authorization grants**. A client must not infer that a Session has permission to use every advertised capability; per-Workspace/per-Session grants are a separate future contract.
 
-Run `npm run schema:check` to validate the canonical schemas and cross-language fixtures, and `npm run build` to compile the package.
+Run `npm run schema:check` to validate the canonical schemas and cross-language fixtures, and `npm run build` to type-check it. There is no build output: consumers import the TypeScript source (`src/index.ts`, `src/v1.ts`) directly.

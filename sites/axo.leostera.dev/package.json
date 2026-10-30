@@ -4,9 +4,9 @@
   "type": "module",
   "scripts": {
     "dev": "cf dev",
-    "build": "npm --prefix ../../packages/axo-api run build && npm --prefix ../../packages/axo-app run build && npm --prefix ../../packages/axo-web-app run build && cf build",
+    "build": "npm --prefix ../../packages/axo-web-app run build && cf build",
     "preview": "cf preview",
-    "typecheck": "npm --prefix ../../packages/axo-api run build && npm --prefix ../../packages/axo-app run build && npm --prefix ../../packages/axo-web-app run typecheck && cf workers types && tsc --noEmit",
+    "typecheck": "npm --prefix ../../packages/axo-web-app run typecheck && cf workers types && tsc --noEmit",
     "test": "node --test tests/*.test.mjs && npm --prefix ../../packages/axo-api-worker run test:core && npm --prefix ../../packages/axo-web-app run test"
   },
   "dependencies": {

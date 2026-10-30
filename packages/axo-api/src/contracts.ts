@@ -1,14 +1,14 @@
 import { z } from "zod";
-import { uuid, destinationSchema } from "./identity.js";
-import { terminalSchema } from "./runtime-contracts.js";
-import { hostMethods, hostResults } from "./host-contracts.js";
-import { stateRemoteMethods, stateLocalMethods, stateResults } from "./state-contracts.js";
-export { uuid, destinationSchema } from "./identity.js";
-export * from "./runtime-contracts.js";
-export * from "./pi-history.js";
-export * from "./pane-records.js";
-export * from "./host-contracts.js";
-export * from "./state-contracts.js";
+import { uuid, destinationSchema } from "./identity.ts";
+import { terminalSchema } from "./runtime-contracts.ts";
+import { hostMethods, hostResults } from "./host-contracts.ts";
+import { stateRemoteMethods, stateLocalMethods, stateResults } from "./state-contracts.ts";
+export { uuid, destinationSchema } from "./identity.ts";
+export * from "./runtime-contracts.ts";
+export * from "./pi-history.ts";
+export * from "./pane-records.ts";
+export * from "./host-contracts.ts";
+export * from "./state-contracts.ts";
 import {
   createJSONRPCErrorResponse,
   createJSONRPCSuccessResponse,

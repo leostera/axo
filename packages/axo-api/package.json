@@ -5,21 +5,16 @@
   "type": "module",
   "description": "Shared Axo RPC contracts and schema validation",
   "exports": {
-    ".": {
-      "types": "./dist/index.d.ts",
-      "import": "./dist/index.js",
-      "default": "./dist/index.js"
-    },
-    "./v1": {
-      "types": "./dist/v1.d.ts",
-      "import": "./dist/v1.js",
-      "default": "./dist/v1.js"
-    }
+    ".": "./src/index.ts",
+    "./v1": "./src/v1.ts"
   },
-  "files": ["dist", "fixtures", "README.md"],
+  "files": [
+    "fixtures",
+    "README.md"
+  ],
   "scripts": {
     "build": "tsc -p tsconfig.json",
-    "schema:check": "npm run build && node scripts/check-schemas.mjs",
+    "schema:check": "node scripts/check-schemas.mjs",
     "test": "npm run build && npm run schema:check"
   },
   "dependencies": {

@@ -15,7 +15,7 @@
  * of a message it dropped.
  */
 import { z } from "zod";
-import { LIMITS } from "./contracts.js";
+import { LIMITS } from "./contracts.ts";
 
 export const FRAGMENT_METHOD = "axo.transport.fragment";
 export const DISCARD_METHOD = "axo.transport.discard";

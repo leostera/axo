@@ -1,7 +1,7 @@
 import { z } from "zod";
-import { uuid, destinationSchema } from "./identity.js";
-import { terminalSchema, runtimeRefSchema } from "./runtime-contracts.js";
-import { centralPiProjectionSchema } from "./pi-history.js";
+import { uuid, destinationSchema } from "./identity.ts";
+import { terminalSchema, runtimeRefSchema } from "./runtime-contracts.ts";
+import { centralPiProjectionSchema } from "./pi-history.ts";
 const revision = z.number().int().min(0).max(Number.MAX_SAFE_INTEGER);
 const name = z.string().min(1).max(80).refine(value => value.trim() === value && !/[\u0000-\u001f\u007f]/u.test(value));
 export const stateTargetSchema = destinationSchema.extend({ storeGeneration: uuid }).strict();

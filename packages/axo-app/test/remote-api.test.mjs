@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import test from "node:test";
-import { RemoteAxoApi } from "../dist/index.js";
+import { RemoteAxoApi } from "../src/index.ts";
 
 const hostId = "236dcf13-f476-48c4-a1a0-70b3755b8096";
 const hostGeneration = "ccde1302-6fde-4813-a339-1c1d233c3b53";

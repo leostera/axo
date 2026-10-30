@@ -16,8 +16,8 @@ import {
   hostV1Methods,
   hostV1Results,
   sessionIdSchema,
-} from "../dist/v1.js";
-import { desiredSessionGraphSchema, stateSessionViewSchema, workspaceGraphSchema, fragmentSchema, discardSchema, MAX_FRAGMENTS } from "../dist/index.js";
+} from "../src/v1.ts";
+import { desiredSessionGraphSchema, stateSessionViewSchema, workspaceGraphSchema, fragmentSchema, discardSchema, MAX_FRAGMENTS } from "../src/index.ts";
 
 const schemaRoot = resolve(import.meta.dirname, "../../../schemas/axo.leostera.dev/v1");
 const ajv = new Ajv2020({ allErrors: true, strict: true, strictTypes: false });

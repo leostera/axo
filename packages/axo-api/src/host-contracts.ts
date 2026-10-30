@@ -1,5 +1,5 @@
 import { z } from "zod";
-import { uuid, destinationSchema } from "./identity.js";
+import { uuid, destinationSchema } from "./identity.ts";
 const helperVersion = z.string().min(1).max(128).refine(value => new TextEncoder().encode(value).length <= 128 && !/[\p{Cc}\p{Cs}]/u.test(value));
 export const hostUpgradePlanSchema = z.object({
   handoffId: uuid,

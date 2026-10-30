@@ -356,4 +356,4 @@ export const hostNotificationSchema = z.object({
 export type HostEvent = z.infer<typeof hostEventSchema>;
 export type HostDataEvent = z.infer<typeof hostDataEventSchema>;
 
-export * from "./pairing.js";
+export * from "./pairing.ts";

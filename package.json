@@ -8,7 +8,7 @@
     "build:mac": "bash scripts/build-mac.sh",
     "test": "npm --prefix packages/axo-api run test && npm --prefix sites/axo.leostera.dev test && npm run test:pi-control",
     "test:pi-control": "npm --prefix packages/pi-axo test",
-    "typecheck": "npm --prefix packages/axo-api run build && npm --prefix sites/axo.leostera.dev run typecheck && npm --prefix packages/pi-axo run build"
+    "typecheck": "npm --prefix sites/axo.leostera.dev run typecheck && npm --prefix packages/pi-axo run build"
   },
   "dependencies": {
     "typebox": "^1.0.0",

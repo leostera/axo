@@ -5,13 +5,11 @@
   "type": "module",
   "description": "Browser API and remote terminal transport for Axo",
   "exports": {
-    ".": {
-      "types": "./dist/index.d.ts",
-      "import": "./dist/index.js",
-      "default": "./dist/index.js"
-    }
+    ".": "./src/index.ts"
   },
-  "files": ["dist", "README.md"],
+  "files": [
+    "README.md"
+  ],
   "scripts": {
     "build": "tsc -p tsconfig.json",
     "test": "npm run build && node --test test/*.test.mjs"
