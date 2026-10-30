@@ -1,8 +1,8 @@
 /** The few symbols the chat uses, drawn after their SF Symbols counterparts on the phone. */
 export type IconName =
-  | "menu" | "info" | "person" | "gear" | "compose" | "arrowUp" | "stop" | "laptop" | "copy" | "check"
+  | "menu" | "info" | "person" | "gear" | "compose" | "arrowUp" | "laptop" | "copy" | "check"
   | "close" | "terminal" | "pencil" | "doc" | "search" | "wrench" | "warning" | "pair" | "arrowDown"
-  | "mic";
+  | "micSlash" | "waveform" | "stopFill" | "sparkles" | "closeCircle" | "share" | "question" | "moon" | "signOut";
 
 const paths: Record<IconName, string> = {
   menu: "M5 9h14M5 15h14",
@@ -12,7 +12,6 @@ const paths: Record<IconName, string> = {
   compose: "M11 4H6a2 2 0 0 0-2 2v12a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2v-5M18.5 2.5a2.1 2.1 0 0 1 3 3L12 15l-4 1 1-4 9.5-9.5Z",
   arrowUp: "M12 19V5m-6 6 6-6 6 6",
   arrowDown: "M12 5v14m6-6-6 6-6-6",
-  stop: "M8 7h8a1 1 0 0 1 1 1v8a1 1 0 0 1-1 1H8a1 1 0 0 1-1-1V8a1 1 0 0 1 1-1Z",
   laptop: "M5 6a1 1 0 0 1 1-1h12a1 1 0 0 1 1 1v9H5V6Zm-3 11h20l-1 2H3l-1-2Z",
   copy: "M9 9h10a1 1 0 0 1 1 1v10a1 1 0 0 1-1 1H9a1 1 0 0 1-1-1V10a1 1 0 0 1 1-1Zm-4 6H4a1 1 0 0 1-1-1V4a1 1 0 0 1 1-1h10a1 1 0 0 1 1 1v1",
   check: "m5 12 5 5L20 7",
@@ -24,13 +23,25 @@ const paths: Record<IconName, string> = {
   wrench: "M14.7 6.3a4 4 0 0 0 5 5l-9.4 9.4a2.1 2.1 0 0 1-3-3l9.4-9.4a4 4 0 0 0-2-2Zm0 0L18 3l3 3-3.3 3.3",
   warning: "M12 4 2.5 20h19L12 4Zm0 6v4m0 3v.5",
   pair: "M12 3v12m-4-4 4 4 4-4M4 15v4a1 1 0 0 0 1 1h14a1 1 0 0 0 1-1v-4",
-  mic: "M12 15a3 3 0 0 0 3-3V6a3 3 0 0 0-6 0v6a3 3 0 0 0 3 3Zm-6-4a6 6 0 0 0 12 0m-6 6v4m-3 0h6",
+  micSlash: "M15 9.3V6a3 3 0 0 0-5.7-1.3M9 9v3a3 3 0 0 0 4.6 2.5M18 11a6 6 0 0 1-1 3.3M6 11a6 6 0 0 0 9.5 4.9M12 17v4m-3 0h6M4 4l16 16",
+  waveform: "M4 10v4M8 7v10M12 4v16M16 7v10M20 10v4",
+  stopFill: "M8 7h8a1 1 0 0 1 1 1v8a1 1 0 0 1-1 1H8a1 1 0 0 1-1-1V8a1 1 0 0 1 1-1Z",
+  sparkles: "M10 3.5 11.6 8 16 9.5 11.6 11 10 15.5 8.4 11 4 9.5 8.4 8 10 3.5ZM17.5 13l.8 2.2 2.2.8-2.2.8-.8 2.2-.8-2.2-2.2-.8 2.2-.8.8-2.2Z",
+  closeCircle: "M12 21a9 9 0 1 0 0-18 9 9 0 0 0 0 18Zm-3-12 6 6m0-6-6 6",
+  question: "M12 20c4.4 0 8-3.1 8-7s-3.6-7-8-7-8 3.1-8 7c0 1.6.6 3.1 1.6 4.3L5 21l3.7-1.6c1 .4 2.1.6 3.3.6Zm-2-9a2 2 0 1 1 2.8 1.8c-.5.3-.8.7-.8 1.2m0 2.2v.3",
+  moon: "M20 14.5A8 8 0 0 1 9.5 4a8 8 0 1 0 10.5 10.5Z",
+  signOut: "M14 4H6a1 1 0 0 0-1 1v14a1 1 0 0 0 1 1h8M10 12h11m-3-3 3 3-3 3",
+  share: "M12 3v12M8 7l4-4 4 4M6 11H5a1 1 0 0 0-1 1v8a1 1 0 0 0 1 1h14a1 1 0 0 0 1-1v-8a1 1 0 0 0-1-1h-1",
 };
 
+/** Drawn filled, as their ".fill" SF Symbols are. */
+const filled: ReadonlySet<IconName> = new Set(["stopFill", "sparkles"]);
+
 export function Icon({ name, size = 20 }: { name: IconName; size?: number }) {
+  const solid = filled.has(name);
   return (
-    <svg className="icon" width={size} height={size} viewBox="0 0 24 24" fill="none" stroke="currentColor"
-      strokeWidth={1.8} strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
+    <svg className="icon" width={size} height={size} viewBox="0 0 24 24" fill={solid ? "currentColor" : "none"} stroke="currentColor"
+      strokeWidth={solid ? 1 : 1.8} strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
       <path d={paths[name]} />
     </svg>
   );

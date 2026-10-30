@@ -112,7 +112,7 @@ export function ChatApp({ profile, backend, onSignOut, pairingUrl, basePath = "/
   const wide = useWide();
   const [layer, setLayer] = useState<Layer>("conversation");
   const [infoOpen, setInfoOpen] = useState(false);
-  const [sheet, setSheet] = useState<"settings" | "pair" | null>(null);
+  const [sheet, setSheet] = useState<"settings" | "pair" | "search" | null>(null);
   useChatRoute(workbench, basePath, () => setLayer("conversation"));
 
   useEffect(() => {
@@ -176,8 +176,8 @@ export function ChatApp({ profile, backend, onSignOut, pairingUrl, basePath = "/
             workbench={workbench}
             profile={profile}
             onOpenMac={hostId => {
-              workbench.openMac(hostId);
-              show("chats");
+              workbench.newChat(hostId);
+              show("conversation");
             }}
             onShowChats={() => show("chats")}
             onPair={pairingUrl ? () => setSheet("pair") : undefined}
@@ -196,6 +196,7 @@ export function ChatApp({ profile, backend, onSignOut, pairingUrl, basePath = "/
               show("conversation");
             }}
             onAccount={() => show("account")}
+            onSearch={() => setSheet("search")}
             onSettings={() => setSheet("settings")}
           />
         </div>
@@ -214,6 +215,13 @@ export function ChatApp({ profile, backend, onSignOut, pairingUrl, basePath = "/
           <button className="layer-edge info-edge" onClick={() => show("conversation")} aria-label="Conversation" />
         ) : null}
       </div>
+      {sheet === "search" ? (
+        <SearchSheet workbench={workbench} onClose={() => setSheet(null)} onChoose={(hostId, sessionId) => {
+          setSheet(null);
+          workbench.selectChat(hostId, sessionId);
+          show("conversation");
+        }} />
+      ) : null}
       {sheet === "settings" ? <SettingsSheet onClose={() => setSheet(null)} onSignOut={onSignOut} /> : null}
       {sheet === "pair" && pairingUrl ? <PairMacSheet workbench={workbench} pairingUrl={pairingUrl} onClose={() => setSheet(null)} /> : null}
     </main>
@@ -231,11 +239,12 @@ function StatusDot({ status }: { status: Host["sessions"][number]["status"] }) {
   }
 }
 
-function ChatsPanel({ workbench, onSelect, onNewChat, onAccount, onSettings }: {
+function ChatsPanel({ workbench, onSelect, onNewChat, onAccount, onSearch, onSettings }: {
   workbench: ChatWorkbench;
   onSelect: (hostId: string, sessionId: number) => void;
   onNewChat: () => void;
   onAccount: () => void;
+  onSearch: () => void;
   onSettings: () => void;
 }) {
   const entries = recentChatList(workbench.hosts);
@@ -246,6 +255,7 @@ function ChatsPanel({ workbench, onSelect, onNewChat, onAccount, onSettings }: {
         <AxoMascot className="header-mascot" loading={workbench.hostsPhase === "loading"} />
         <span className="spacer" />
         <button className="circle-button" onClick={onAccount} aria-label="Account and Macs"><Icon name="person" /></button>
+        <button className="circle-button" onClick={onSearch} aria-label="Search chats"><Icon name="search" /></button>
       </header>
       <div className="panel-scroll">
         {workbench.hostsPhase === "failed" && workbench.failure ? <p className="panel-warning">{workbench.failure}</p> : null}
@@ -266,7 +276,7 @@ function ChatsPanel({ workbench, onSelect, onNewChat, onAccount, onSettings }: {
         )}
       </div>
       <footer className="layer-bar bottom panel-footer">
-        <button className="pill-button primary" onClick={onNewChat}><Icon name="compose" size={18} /> Chat</button>
+        <button className="pill-button primary" onClick={onNewChat} aria-label="New chat"><Icon name="compose" size={18} /> Chat</button>
         <span className="spacer" />
         <button className="circle-button" onClick={onSettings} aria-label="Settings"><Icon name="gear" /></button>
       </footer>
@@ -323,7 +333,8 @@ function AccountPanel({ workbench, profile, onOpenMac, onShowChats, onPair, onSe
   onPair?: () => void;
   onSettings: () => void;
 }) {
-  const name = profile?.name || profile?.email?.split("@")[0] || "Axo account";
+  const name = profile?.name || profile?.email || "Signed in";
+  const initials = name.split(/[ @.]/).filter(Boolean).slice(0, 2).map(word => word[0]!.toUpperCase()).join("") || "?";
   return (
     <nav className="panel account-panel" aria-label="Account">
       <header className="layer-bar top panel-header">
@@ -333,17 +344,19 @@ function AccountPanel({ workbench, profile, onOpenMac, onShowChats, onPair, onSe
       </header>
       <div className="panel-scroll">
         <div className="profile">
-          <span className="avatar" aria-hidden="true">{name.slice(0, 1).toUpperCase()}</span>
+          <span className="avatar" aria-hidden="true">{initials}</span>
           <span className="profile-copy">
             <strong>{name}</strong>
-            {profile?.email ? <span>{profile.email}</span> : null}
+            {profile?.email && profile.name ? <span>{profile.email}</span> : null}
             <small>Signed in with Cloudflare</small>
           </span>
         </div>
         <h2 className="section-title"><span>Macs</span></h2>
         {workbench.hosts.map(host => (
+          // A Mac starts a new chat on it, as on the phone; an offline one cannot.
           <button key={host.hostId} className={host.hostId === workbench.openHostId ? "mac-row selected" : "mac-row"}
-            aria-current={host.hostId === workbench.openHostId ? "true" : undefined} onClick={() => onOpenMac(host.hostId)}>
+            aria-current={host.hostId === workbench.openHostId ? "true" : undefined} onClick={() => onOpenMac(host.hostId)}
+            disabled={host.status !== "online"} title={host.status === "online" ? "Start a new chat on this Mac" : undefined}>
             <Icon name="laptop" size={22} />
             <span className="mac-copy">
               <strong>{host.label}</strong>
@@ -352,7 +365,7 @@ function AccountPanel({ workbench, profile, onOpenMac, onShowChats, onPair, onSe
             <span className={`mac-dot ${host.status}`} aria-label={host.status === "online" ? "Online" : "Offline"} />
           </button>
         ))}
-        {workbench.hostsPhase === "loaded" && workbench.hosts.length === 0 ? <p className="panel-note">No Macs yet. Pair one to start.</p> : null}
+        {workbench.hostsPhase === "loaded" && workbench.hosts.length === 0 ? <p className="panel-note">No Macs yet. Pair one to chat with it from here.</p> : null}
       </div>
       <footer className="layer-bar bottom panel-footer">
         {onPair ? <button className="pill-button primary" onClick={onPair}><Icon name="pair" size={18} /> Pair a Mac</button> : null}
@@ -426,26 +439,80 @@ function Sheet({ title, onClose, children }: { title: string; onClose: () => voi
   );
 }
 
+/** Settings, in the phone's inset groups: the theme, then signing out. */
 function SettingsSheet({ onClose, onSignOut }: { onClose: () => void; onSignOut?: () => void }) {
   const [appearance, setAppearance] = useAppearance();
   return (
     <Sheet title="Settings" onClose={onClose}>
       <h3 className="sheet-section">Theme</h3>
-      <label className="setting-row">
-        <span>Appearance</span>
-        <select value={appearance} onChange={event => setAppearance(event.target.value as Appearance)}>
-          <option value="system">System</option>
-          <option value="light">Light</option>
-          <option value="dark">Dark</option>
-        </select>
-      </label>
+      <div className="grouped">
+        <label className="grouped-row">
+          <Icon name="moon" size={18} />
+          <span className="grouped-label">Appearance</span>
+          <select value={appearance} onChange={event => setAppearance(event.target.value as Appearance)}>
+            <option value="system">System</option>
+            <option value="light">Light</option>
+            <option value="dark">Dark</option>
+          </select>
+        </label>
+      </div>
       {onSignOut ? (
         <>
-          <button className="sign-out" onClick={onSignOut}>Sign out</button>
+          <div className="grouped spaced">
+            <button className="grouped-row destructive" onClick={onSignOut}>
+              <Icon name="signOut" size={18} />
+              <span className="grouped-label">Sign out</span>
+            </button>
+          </div>
           <p className="sheet-note">Signing out ends this browser's session. Your Macs and conversations stay on your account.</p>
         </>
       ) : null}
       <p className="sheet-build">axo web · {__AXO_WEB_BUILD__}</p>
+    </Sheet>
+  );
+}
+
+/** Finds a chat by its name or its Workspace, across every Mac. Names only, not conversation text. */
+function SearchSheet({ workbench, onClose, onChoose }: {
+  workbench: ChatWorkbench;
+  onClose: () => void;
+  onChoose: (hostId: string, sessionId: number) => void;
+}) {
+  const [query, setQuery] = useState("");
+  const words = query.trim().toLocaleLowerCase();
+  const matches = words ? recentChatList(workbench.hosts).filter(({ session }) =>
+    chatTitle(session).toLocaleLowerCase().includes(words) || (session.workspaceName ?? "").toLocaleLowerCase().includes(words)) : [];
+  return (
+    <Sheet title="Search" onClose={onClose}>
+      <div className="grouped">
+        <label className="grouped-row search-row">
+          <Icon name="search" size={18} />
+          <input autoFocus value={query} onChange={event => setQuery(event.target.value)} placeholder="Workspace or chat name"
+            aria-label="Search chats" autoCapitalize="off" autoCorrect="off" spellCheck={false}
+            onKeyDown={event => {
+              const first = matches[0];
+              if (event.key === "Enter" && first) onChoose(first.host.hostId, first.session.sessionId);
+            }} />
+          {query ? <button className="plain-icon-button" onClick={() => setQuery("")} aria-label="Clear search"><Icon name="closeCircle" size={18} /></button> : null}
+        </label>
+      </div>
+      {!words ? (
+        <div className="sheet-empty"><Icon name="search" size={28} /><strong>Search chats</strong><p>Search by chat or workspace name.</p></div>
+      ) : matches.length === 0 ? (
+        <div className="sheet-empty"><Icon name="search" size={28} /><strong>No results for “{query.trim()}”</strong><p>Check the spelling or try a new search.</p></div>
+      ) : (
+        <div className="grouped spaced">
+          {matches.map(({ host, session }) => (
+            <button key={`${host.hostId}/${session.sessionId}`} className="grouped-row search-result" onClick={() => onChoose(host.hostId, session.sessionId)}>
+              <span className="search-result-copy">
+                <span>{chatTitle(session)}</span>
+                <small>{[session.workspaceName, host.label].filter(Boolean).join(" · ")}</small>
+              </span>
+            </button>
+          ))}
+        </div>
+      )}
+      <p className="sheet-note">Search uses chat and workspace names only, not conversation text.</p>
     </Sheet>
   );
 }
@@ -515,29 +582,37 @@ function PairMacSheet({ workbench, pairingUrl, onClose }: { workbench: ChatWorkb
   return (
     <Sheet title="Pair a Mac" onClose={onClose}>
       <div className="pairing">
-        <AxoMascot className="pairing-mascot" loading={pairing.kind === "creating" || pairing.kind === "waiting"} />
-        {pairing.kind === "creating" ? <p className="pairing-note">Making a code…</p> : null}
+        {pairing.kind === "creating" ? (
+          <>
+            <AxoMascot className="pairing-mascot" loading />
+            <p className="pairing-note">Getting a code…</p>
+          </>
+        ) : null}
         {pairing.kind === "waiting" ? (
           <>
+            <p className="pairing-note">On your Mac, open Axo → Settings → Remote Access, and enter this code under Link this Mac.</p>
             <strong className="pairing-code" aria-label="Pairing code">{pairing.code}</strong>
             <p className="pairing-countdown">Expires in {Math.floor(remaining / 60)}:{String(remaining % 60).padStart(2, "0")}</p>
             <div className="pairing-actions">
-              <button className="pill-button" onClick={() => void copy(pairing.code)}><Icon name={copied ? "check" : "copy"} size={16} /> {copied ? "Copied" : "Copy"}</button>
-              <a className="pill-button primary" href={`axo://pair/${pairing.code}`}>Open Axo on this Mac</a>
+              <button className="bordered-button" onClick={() => void copy(pairing.code)}><Icon name={copied ? "check" : "copy"} size={17} /> {copied ? "Copied" : "Copy"}</button>
+              <a className="bordered-button" href={`axo://pair/${pairing.code}`}><Icon name="laptop" size={17} /> Open on this Mac</a>
             </div>
-            <p className="pairing-note">On your Mac, open Axo → Settings → Remote Access, and enter this code under Link this Mac.</p>
+            <p className="pairing-waiting"><span className="spinner" aria-hidden="true" /> Waiting for your Mac…</p>
           </>
         ) : null}
         {pairing.kind === "linked" ? (
           <>
-            <strong className="pairing-done">{pairing.label} is linked</strong>
+            <AxoMascot className="pairing-mascot" />
+            <strong className="pairing-done">{pairing.label} is paired</strong>
+            <p className="pairing-note">Its chats are in the menu now.</p>
             <button className="pill-button primary" onClick={onClose}>Done</button>
           </>
         ) : null}
         {pairing.kind === "expired" || pairing.kind === "failed" ? (
           <>
-            <p className="pairing-note">{pairing.kind === "expired" ? "That code expired." : pairing.message}</p>
-            <button className="pill-button primary" onClick={() => void create()}>New code</button>
+            <strong className="pairing-done">{pairing.kind === "expired" ? "The code expired" : "No code"}</strong>
+            <p className="pairing-note">{pairing.kind === "expired" ? "Codes last ten minutes. Get a new one and enter it on your Mac." : pairing.message}</p>
+            <button className="pill-button primary" onClick={() => void create()}>Get a new code</button>
           </>
         ) : null}
       </div>

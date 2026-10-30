@@ -57,8 +57,8 @@ button:disabled { cursor: default; }
 /* Controls */
 .circle-button {
   display: grid; width: 44px; height: 44px; flex: none; place-items: center; padding: 0;
-  border: 0.5px solid var(--separator); border-radius: 50%; color: var(--text);
-  background: color-mix(in srgb, var(--surface) 82%, transparent); backdrop-filter: blur(20px);
+  border: 0.5px solid color-mix(in srgb, var(--text) 14%, transparent); border-radius: 50%; color: var(--text);
+  background: color-mix(in srgb, var(--bg) 55%, transparent); backdrop-filter: blur(20px) saturate(1.6);
   transition: background .15s, transform .15s;
 }
 .circle-button:hover { background: var(--fill-strong); }
@@ -128,14 +128,9 @@ button:disabled { cursor: default; }
 .chat-section { margin-top: 20px; }
 .chat-section.first { margin-top: 4px; }
 .section-title { display: flex; align-items: center; justify-content: space-between; gap: 8px; margin: 0 0 2px; padding: 0 10px; color: var(--secondary); font-size: 12px; font-weight: 600; }
-.chat-row {
-  display: flex; width: 100%; height: 40px; align-items: center; gap: 8px; padding: 0 10px;
-  border: 0; border-radius: 10px; background: transparent; font-size: 15px; text-align: left;
-}
 .chat-row:hover { background: var(--fill); }
 .chat-row.selected { background: var(--fill-strong); }
 .chat-row-name { flex: 1; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
-.chat-row-age { flex: none; min-width: 2.2em; color: var(--tertiary); font-size: 10px; font-variant-numeric: tabular-nums; text-align: right; }
 .status-dot { width: 7px; height: 7px; flex: none; border-radius: 50%; }
 .status-dot.working { background: var(--orange); animation: breathe 1.6s ease-in-out infinite; }
 .status-dot.attention { width: 8px; height: 8px; background: var(--blue); }
@@ -149,7 +144,7 @@ button:disabled { cursor: default; }
 .panel-empty p { margin: 0; font-size: 13px; line-height: 1.4; }
 
 .profile { display: flex; align-items: center; gap: 14px; padding: 8px 10px 24px; }
-.avatar { display: grid; width: 52px; height: 52px; flex: none; place-items: center; border-radius: 50%; background: var(--fill-strong); font-size: 18.5px; font-weight: 600; }
+.avatar { display: grid; width: 46px; height: 46px; flex: none; place-items: center; border-radius: 50%; background: color-mix(in srgb, var(--text) 10%, transparent); font-size: 18.5px; font-weight: 600; }
 .profile-copy { display: flex; min-width: 0; flex-direction: column; gap: 2px; }
 .profile-copy strong { font-size: 16px; font-weight: 600; }
 .profile-copy span { overflow: hidden; color: var(--secondary); font-size: 14px; text-overflow: ellipsis; }
@@ -158,10 +153,12 @@ button:disabled { cursor: default; }
   display: flex; width: 100%; min-height: 54px; align-items: center; gap: 12px; padding: 6px 12px;
   border: 0; border-radius: 12px; background: transparent; text-align: left;
 }
-.mac-row:hover { background: var(--fill); }
-.mac-row.selected { background: var(--fill-strong); }
+.mac-row:hover:not(:disabled) { background: color-mix(in srgb, var(--text) 4%, transparent); }
+.mac-row.selected { background: color-mix(in srgb, var(--text) 6%, transparent); }
+.mac-row:disabled { color: var(--secondary); cursor: default; }
 .mac-copy { display: flex; min-width: 0; flex: 1; flex-direction: column; }
-.mac-copy strong { font-size: 15px; font-weight: 600; }
+.mac-copy strong { font-size: 15px; font-weight: 400; }
+.mac-row.selected .mac-copy strong { font-weight: 600; }
 .mac-copy small { color: var(--secondary); font-size: 12px; }
 .mac-dot { width: 8px; height: 8px; flex: none; border-radius: 50%; background: var(--gray); opacity: 0.6; }
 .mac-dot.online { background: var(--green); opacity: 1; }
@@ -179,11 +176,8 @@ button:disabled { cursor: default; }
 /* The conversation */
 .conversation { position: relative; display: flex; height: 100%; flex-direction: column; background: var(--bg); }
 .conversation-header { position: absolute; top: 0; left: 0; right: 0; padding-top: max(12px, env(safe-area-inset-top)); }
-.conversation-title { min-width: 0; flex: 1; text-align: center; }
-.conversation-title h1 { margin: 0; overflow: hidden; font-size: 16px; font-weight: 600; text-overflow: ellipsis; white-space: nowrap; }
-.conversation-title p { margin: 1px 0 0; overflow: hidden; color: var(--secondary); font-size: 11px; text-overflow: ellipsis; white-space: nowrap; }
 .transcript { min-height: 0; flex: 1; overflow-y: auto; overflow-anchor: none; padding: 80px 20px 24px; }
-.transcript-column { display: flex; width: 100%; max-width: 760px; min-height: 100%; flex-direction: column; gap: 22px; margin: 0 auto; }
+.transcript-column { display: flex; width: 100%; max-width: 760px; min-height: 100%; flex-direction: column; gap: 30px; margin: 0 auto; }
 .history-note { align-self: center; margin: 0; border: 0; color: var(--secondary); background: none; font-size: 12px; }
 .history-note.link { color: var(--blue); }
 .history-note.warning { color: var(--orange); }
@@ -195,7 +189,7 @@ button:disabled { cursor: default; }
 .message { display: flex; flex-direction: column; gap: 10px; }
 .user-message { align-items: flex-end; }
 .user-bubble {
-  max-width: min(85%, 600px); padding: 13px 17px; border: 0.5px solid color-mix(in srgb, var(--blue) 34%, transparent);
+  max-width: min(calc(100% - 48px), 600px); padding: 13px 17px; border: 0.5px solid color-mix(in srgb, var(--blue) 34%, transparent);
   border-radius: 23px; background: color-mix(in srgb, var(--blue) 24%, transparent);
   font-size: 16px; line-height: 1.4; white-space: pre-wrap; overflow-wrap: anywhere;
 }
@@ -228,7 +222,6 @@ button:disabled { cursor: default; }
 .md-code-language { display: block; margin-bottom: 10px; color: var(--secondary); font-size: 11px; }
 .md-code pre { margin: 0; overflow-x: auto; }
 .md-code code { padding: 0; background: none; font-size: 14px; }
-.md-table { overflow-x: auto; }
 .md-table table { border-collapse: collapse; font-size: 15px; }
 .md-table th { font-weight: 600; text-align: left; }
 .md-table th, .md-table td { padding: 6px 18px 6px 0; white-space: nowrap; }
@@ -256,43 +249,13 @@ button:disabled { cursor: default; }
 .tool-expand { align-self: flex-start; padding: 0; border: 0; color: var(--secondary); background: none; font-size: 12px; }
 .tool-expand:hover { color: var(--text); }
 .tool-truncated { margin: 0; color: var(--secondary); font-size: 10px; }
-.spinner { display: block; width: 16px; height: 16px; border: 2px solid var(--fill-strong); border-top-color: var(--secondary); border-radius: 50%; animation: spin .8s linear infinite; }
-@keyframes spin { to { transform: rotate(360deg); } }
-.working-dots { display: flex; gap: 6px; padding: 4px 0; }
-.working-dots span { width: 8px; height: 8px; border-radius: 50%; background: var(--secondary); animation: breathe 1.2s ease-in-out infinite; }
-.working-dots span:nth-child(2) { animation-delay: .2s; }
-.working-dots span:nth-child(3) { animation-delay: .4s; }
 
-.question-card { display: flex; flex-direction: column; gap: 12px; padding: 18px; border: 0.5px solid var(--separator); border-radius: 20px; background: var(--surface); }
-.question-eyebrow { margin: 0; color: var(--secondary); font-size: 12px; font-weight: 600; }
-.question-title { margin: 0; font-size: 16px; line-height: 1.4; }
-.question-buttons, .question-input { display: flex; gap: 10px; }
-.question-input input { min-width: 0; flex: 1; padding: 0 16px; border: 0.5px solid var(--separator); border-radius: 999px; background: var(--bg); font-size: 16px; }
-.question-elsewhere { margin: 0; color: var(--secondary); font-size: 14px; }
 
 .conversation-footer { flex-direction: column; align-items: stretch; gap: 10px; padding: 0 16px max(16px, env(safe-area-inset-bottom)); margin-top: -28px; padding-top: 28px; }
 .conversation-footer > * { width: 100%; max-width: 760px; margin: 0 auto; }
 .chat-failure { display: flex; align-items: center; gap: 8px; padding: 0 8px; color: var(--orange); font-size: 12px; }
 .chat-failure span { flex: 1; }
-.jump-button { display: inline-flex; width: auto !important; align-items: center; gap: 6px; padding: 8px 14px; border: 0.5px solid var(--separator); border-radius: 999px; background: var(--raised); box-shadow: 0 4px 16px var(--shadow); font-size: 14px; font-weight: 600; }
-.composer {
-  display: flex; align-items: flex-end; gap: 8px; padding: 8px;
-  border: 0.5px solid var(--separator); border-radius: 27px;
-  background: color-mix(in srgb, var(--surface) 88%, transparent); backdrop-filter: blur(30px);
-}
-.composer textarea {
-  min-height: 38px; flex: 1; padding: 8px 10px 8px 10px; resize: none; border: 0; outline: none;
-  background: transparent; font-size: 16px; line-height: 22px;
-}
 .composer textarea::placeholder { color: var(--tertiary); }
-.send-button { display: grid; width: 38px; height: 38px; flex: none; place-items: center; padding: 0; border: 0; border-radius: 50%; color: var(--secondary); background: var(--control-disabled); transition: background .15s, color .15s; }
-.send-button.ready, .send-button.stop { color: var(--bg); background: var(--text); }
-.send-button.stop:disabled { opacity: 0.5; }
-.mic-button { display: grid; width: 38px; height: 38px; flex: none; place-items: center; padding: 0; border: 0; border-radius: 50%; color: var(--secondary); background: transparent; transition: background .15s, color .15s; }
-.mic-button:hover { color: var(--text); background: var(--fill); }
-.mic-button.listening { color: #fff; background: var(--red); animation: breathe 1.6s ease-in-out infinite; }
-.composer.listening { border-color: color-mix(in srgb, var(--red) 50%, transparent); }
-.composer-note { margin: 0; padding: 0 8px; color: var(--orange); font-size: 12px; }
 
 /* Sheets */
 .sheet-backdrop { position: fixed; z-index: 20; inset: 0; display: flex; align-items: center; justify-content: center; padding: 20px; background: rgba(0, 0, 0, 0.35); animation: fade .2s; }
@@ -306,18 +269,130 @@ button:disabled { cursor: default; }
 .sheet-header { display: flex; align-items: center; gap: 12px; margin-bottom: 12px; }
 .sheet-header h2 { flex: 1; margin: 0; font-size: 16px; font-weight: 600; text-align: center; }
 .sheet-section { margin: 12px 0 4px; color: var(--secondary); font-size: 14px; font-weight: 500; }
-.setting-row { display: flex; min-height: 48px; align-items: center; justify-content: space-between; border-bottom: 0.5px solid var(--separator); font-size: 16px; }
-.setting-row select { padding: 4px; border: 0; background: transparent; font-size: 16px; }
-.sign-out { margin-top: 32px; padding: 0; border: 0; color: var(--red); background: none; font-size: 16px; }
 .sheet-note { margin: 10px 0 0; color: var(--secondary); font-size: 12px; line-height: 1.4; }
 .sheet-build { margin: 24px 0 0; color: var(--tertiary); font: 10px ui-monospace, SFMono-Regular, Menlo, monospace; text-align: center; }
-.pairing { display: flex; flex-direction: column; align-items: center; gap: 14px; text-align: center; }
-.pairing-mascot { display: block; width: 140px; cursor: pointer; }
-.pairing-code { font: 600 40px/1.1 ui-monospace, SFMono-Regular, Menlo, monospace; letter-spacing: 0.12em; user-select: all; }
-.pairing-countdown { margin: -6px 0 0; color: var(--secondary); font-size: 13px; font-variant-numeric: tabular-nums; }
-.pairing-actions { display: flex; flex-wrap: wrap; justify-content: center; gap: 10px; }
-.pairing-note { max-width: 340px; margin: 0; color: var(--secondary); font-size: 13px; line-height: 1.45; }
-.pairing-done { font-size: 18.5px; }
+
+/* The phone's components: the menu's rows, the conversation's bars, the message box and voice. */
+.chats-panel .panel-header, .chats-panel .panel-footer, .account-panel .panel-header, .account-panel .panel-footer { padding-left: 32px; padding-right: 24px; }
+.chat-row {
+  display: flex; width: 100%; height: 34px; align-items: center; gap: 8px; padding: 0 22px;
+  border: 0; border-radius: 10px; background: transparent; font-size: 15px; text-align: left;
+}
+.chat-row:hover { background: color-mix(in srgb, var(--text) 4%, transparent); }
+.chat-row.selected { background: color-mix(in srgb, var(--text) 8%, transparent); }
+.chat-row-age { flex: none; min-width: 2.2em; color: var(--tertiary); font-size: 11px; font-variant-numeric: tabular-nums; text-align: right; }
+
+.spinner { display: block; width: 16px; height: 16px; flex: none; border: 2px solid var(--fill-strong); border-top-color: var(--secondary); border-radius: 50%; animation: spin .8s linear infinite; }
+.spinner.inverse { border-color: color-mix(in srgb, var(--bg) 35%, transparent); border-top-color: var(--bg); }
+@keyframes spin { to { transform: rotate(360deg); } }
+
+.host-trouble { padding: 6px 12px; border-radius: 999px; color: var(--orange); background: color-mix(in srgb, var(--bg) 55%, transparent); backdrop-filter: blur(20px); font-size: 12px; font-weight: 500; white-space: nowrap; }
+
+/* Axo at work, under the last message, with a way to stop it. */
+.agent-activity { display: flex; align-items: center; gap: 8px; margin: -4px 0; font-size: 14px; font-weight: 500; }
+.agent-activity-icon { display: grid; color: var(--orange); }
+.agent-activity-stop { display: grid; width: 44px; height: 44px; place-items: center; color: var(--secondary); }
+.agent-activity-stop:disabled { opacity: 0.4; }
+
+.jump-button {
+  display: inline-flex; width: auto !important; min-width: 44px; height: 44px; align-items: center; justify-content: center; align-self: center; gap: 6px; padding: 0;
+  border: 0; border-radius: 999px; background: color-mix(in srgb, var(--surface) 85%, transparent); backdrop-filter: blur(30px);
+  box-shadow: 0 3px 8px rgba(0, 0, 0, 0.08); font-size: 15px; font-weight: 600;
+}
+.jump-button .icon { width: 44px; }
+.jump-button.with-label { padding-right: 14px; }
+
+/* The message box: slim, round ends, a little room around one line of text. */
+.composer-stack { display: flex; flex-direction: column; gap: 10px; }
+.composer {
+  display: flex; align-items: flex-end; gap: 6px; padding: 5px;
+  border: 0.5px solid color-mix(in srgb, var(--text) 6%, transparent); border-radius: 23px;
+  background: color-mix(in srgb, var(--surface) 85%, transparent); backdrop-filter: blur(30px) saturate(1.6);
+}
+.composer textarea {
+  min-height: 36px; flex: 1; padding: 7px 0 7px 14px; resize: none; border: 0; outline: none;
+  background: transparent; font-size: 16px; line-height: 22px;
+}
+.composer textarea::placeholder { color: var(--tertiary); }
+.composer-note { margin: 0; padding: 0 12px; color: var(--orange); font-size: 12px; }
+.round-button {
+  display: grid; width: 36px; height: 36px; flex: none; place-items: center; padding: 0;
+  border: 0; border-radius: 50%; color: var(--secondary); background: var(--control-disabled); transition: background .15s, color .15s, opacity .15s;
+}
+.round-button.primary { color: var(--bg); background: var(--text); }
+.round-button.primary:hover:not(:disabled) { opacity: 0.85; }
+.round-button.inset { color: var(--text); background: var(--fill); }
+.round-button.inset:hover:not(:disabled) { background: var(--fill-strong); }
+.round-button:disabled { cursor: default; }
+.round-button.inset:disabled { opacity: 0.4; }
+
+/* Listening: the box shows the words as they are heard, how loud, and what to do with them. */
+.voice-listening { flex-direction: column; align-items: stretch; gap: 8px; }
+.voice-heard { max-height: 132px; margin: 0; overflow-y: auto; padding: 6px 12px 0; font-size: 16px; line-height: 22px; white-space: pre-wrap; }
+.voice-placeholder, .voice-tentative { color: var(--secondary); }
+.voice-controls { display: flex; align-items: center; gap: 10px; }
+.voice-waveform { display: flex; height: 34px; min-width: 0; flex: 1; align-items: center; gap: 3px; }
+.voice-waveform span { min-width: 0; flex: 1; border-radius: 999px; background: var(--secondary); transition: height .05s linear; }
+.voice-finishing { display: flex; height: 34px; flex: 1; align-items: center; justify-content: center; }
+.voice-card { display: flex; align-items: flex-start; gap: 10px; padding: 14px; border-radius: 20px; background: color-mix(in srgb, var(--surface) 85%, transparent); backdrop-filter: blur(30px); font-size: 14px; animation: rise .3s var(--spring); }
+.voice-card-icon { display: grid; color: var(--orange); }
+.voice-card-message { flex: 1; }
+
+/* What the agent is asking. */
+.question-card { display: flex; flex-direction: column; align-items: flex-start; gap: 14px; padding: 18px; border: 1px solid color-mix(in srgb, var(--orange) 40%, transparent); border-radius: 20px; background: var(--surface); }
+.question-title { display: flex; align-items: flex-start; gap: 8px; margin: 0; font-size: 16px; font-weight: 600; line-height: 1.35; }
+.question-title .icon { margin-top: 1px; color: var(--blue); }
+.question-buttons { display: flex; gap: 12px; }
+.question-input { display: flex; width: 100%; gap: 10px; }
+.question-input input { min-width: 0; flex: 1; padding: 0 12px; border: 0.5px solid var(--separator); border-radius: 8px; background: var(--bg); font-size: 16px; }
+.question-elsewhere { margin: 0; color: var(--secondary); font-size: 15px; }
+.question-skip { padding: 0; border: 0; color: var(--blue); background: none; font-size: 15px; }
+.question-skip:disabled { opacity: 0.4; }
+
+.md-table { overflow-x: auto; padding: 14px; border-radius: 16px; background: var(--surface); scrollbar-width: none; }
+
+/* A question to answer before going on, as the phone's alerts ask it. */
+.alert-backdrop { position: fixed; z-index: 30; inset: 0; display: grid; place-items: center; padding: 20px; background: rgba(0, 0, 0, 0.3); animation: fade .15s; }
+.alert { width: min(300px, 100%); overflow: hidden; border-radius: 22px; background: var(--raised); box-shadow: 0 20px 60px var(--shadow); animation: pop .2s var(--spring); }
+@keyframes pop { from { transform: scale(1.1); opacity: 0; } }
+.alert-copy { padding: 20px 18px 16px; text-align: center; }
+.alert-copy h2 { margin: 0 0 4px; font-size: 16px; font-weight: 600; }
+.alert-copy p { margin: 0; color: var(--secondary); font-size: 13px; line-height: 1.4; }
+.alert-buttons { display: flex; gap: 8px; padding: 0 14px 14px; }
+.alert-buttons button { min-height: 44px; flex: 1; border: 0; border-radius: 999px; color: var(--text); background: var(--fill); font-size: 16px; font-weight: 500; }
+.alert-buttons button:hover { background: var(--fill-strong); }
+.alert-buttons .destructive { color: #fff; background: var(--red); font-weight: 600; }
+.alert-buttons .destructive:hover { background: var(--red); opacity: 0.88; }
+
+/* Sheets' inset groups, as the phone's lists. */
+.grouped { overflow: hidden; border-radius: 12px; background: var(--surface); }
+.grouped.spaced { margin-top: 20px; }
+.grouped-row { display: flex; width: 100%; min-height: 46px; align-items: center; gap: 12px; padding: 0 16px; border: 0; color: var(--text); background: transparent; font-size: 16px; text-align: left; }
+.grouped-row + .grouped-row { box-shadow: inset 16px 0.5px 0 0 var(--surface), inset 0 0.5px 0 0 var(--separator); }
+button.grouped-row:hover { background: var(--fill); }
+.grouped-row.destructive { color: var(--red); }
+.grouped-label { flex: 1; }
+.grouped-row select { border: 0; color: var(--secondary); background: transparent; font-size: 16px; text-align: right; }
+.search-row input { min-width: 0; flex: 1; border: 0; outline: none; background: transparent; font-size: 16px; }
+.search-row > .icon { color: var(--secondary); }
+.search-result { padding: 8px 16px; }
+.search-result-copy { display: flex; min-width: 0; flex-direction: column; gap: 3px; }
+.search-result-copy small { color: var(--secondary); font-size: 12px; }
+.sheet-empty { display: flex; flex-direction: column; align-items: center; gap: 6px; padding: 40px 16px; color: var(--secondary); text-align: center; }
+.sheet-empty strong { color: var(--text); font-size: 18px; }
+.sheet-empty p { margin: 0; font-size: 14px; }
+
+/* Pairing a Mac. */
+.pairing { display: flex; flex-direction: column; align-items: center; gap: 20px; padding: 8px 8px 4px; text-align: center; }
+.pairing-mascot { display: block; width: 140px; margin-top: 24px; cursor: pointer; }
+.pairing-note { max-width: 360px; margin: 0; color: var(--secondary); font-size: 15px; line-height: 1.4; }
+.pairing-code { display: block; width: 100%; padding: 18px 0; border-radius: 18px; background: var(--surface); font: 600 40px/1.1 ui-monospace, SFMono-Regular, Menlo, monospace; letter-spacing: 2px; user-select: all; }
+.pairing-countdown { margin: -8px 0 0; color: var(--secondary); font-size: 13px; font-variant-numeric: tabular-nums; }
+.pairing-actions { display: flex; width: 100%; gap: 12px; }
+.bordered-button { display: inline-flex; min-height: 50px; flex: 1; align-items: center; justify-content: center; gap: 8px; border: 0; border-radius: 14px; color: var(--text); background: var(--fill); font-size: 16px; font-weight: 500; text-decoration: none; }
+.bordered-button:hover { background: var(--fill-strong); }
+.pairing-waiting { display: flex; align-items: center; gap: 10px; margin: 0; color: var(--secondary); font-size: 15px; }
+.pairing-done { font-size: 20px; font-weight: 600; }
 
 /* On a big screen, with a pointer: the same look, denser. The phone's sizes are for thumbs. */
 @media (min-width: 900px) {
@@ -335,7 +410,6 @@ button:disabled { cursor: default; }
   .header-mascot { height: 26px; }
   .chat-section { margin-top: 14px; }
   .section-title { padding: 0 8px; font-size: 10px; }
-  .chat-row { height: 28px; padding: 0 8px; border-radius: 7px; font-size: 12.5px; }
   .status-dot { width: 6px; height: 6px; }
   .panel-note, .panel-empty p { font-size: 12px; }
   .profile { gap: 10px; padding: 4px 8px 16px; }
@@ -354,8 +428,6 @@ button:disabled { cursor: default; }
   .facts > div { padding: 7px 12px; }
   .facts dd.mono { font-size: 10.5px; }
 
-  .conversation-title h1 { font-size: 13px; }
-  .conversation-title p { font-size: 10px; }
   .transcript { padding: 56px 24px 16px; }
   .transcript-column { max-width: 820px; gap: 14px; }
   .empty-chat-mascot { width: 92px; margin-bottom: 12px; }
@@ -383,34 +455,57 @@ button:disabled { cursor: default; }
   .tool-output { font-size: 10.5px; }
   .tool-expand, .tool-truncated { font-size: 10.5px; }
   .tool-badge.failed { width: 16px; height: 16px; }
-  .question-card { gap: 8px; padding: 12px 14px; border-radius: 14px; }
-  .question-eyebrow { font-size: 10.5px; }
-  .question-title { font-size: 13.5px; }
-  .question-elsewhere { font-size: 12px; }
-  .question-input input { font-size: 13px; }
 
   .conversation-footer { gap: 8px; padding: 0 16px 14px; margin-top: -20px; padding-top: 20px; }
   .conversation-footer > * { max-width: 820px; }
   .chat-failure { font-size: 11px; }
-  .jump-button { padding: 5px 11px; font-size: 12px; }
-  .composer { gap: 6px; padding: 5px; border-radius: 20px; }
-  .composer textarea { min-height: 30px; padding: 5px 8px; font-size: 13.5px; line-height: 20px; }
-  .send-button { width: 30px; height: 30px; }
-  .send-button .icon { width: 16px; height: 16px; }
-  .mic-button { width: 30px; height: 30px; }
-  .mic-button .icon { width: 16px; height: 16px; }
 
   .sheet { width: min(400px, 100%); padding: 12px 16px 18px; border-radius: 18px; }
   .sheet-header h2 { font-size: 14px; }
   .sheet-section { font-size: 12px; }
-  .setting-row, .setting-row select, .sign-out { font-size: 13px; }
-  .setting-row { min-height: 40px; }
-  .sign-out { margin-top: 22px; }
   .sheet-note { font-size: 11px; }
-  .pairing { gap: 10px; }
-  .pairing-mascot { width: 110px; }
-  .pairing-code { font-size: 30px; }
-  .pairing-countdown, .pairing-note { font-size: 11.5px; }
+  .chats-panel .panel-header, .chats-panel .panel-footer, .account-panel .panel-header, .account-panel .panel-footer { padding-left: 14px; padding-right: 14px; }
+  .chat-row { height: 28px; padding: 0 10px; border-radius: 7px; font-size: 13px; }
+  .chat-row-age { font-size: 10px; }
+  .transcript-column { gap: 22px; }
+  .host-trouble { padding: 4px 10px; font-size: 11px; }
+  .agent-activity { font-size: 13px; }
+  .agent-activity-stop { width: 32px; height: 32px; }
+  .jump-button { min-width: 32px; height: 32px; font-size: 12.5px; }
+  .jump-button .icon { width: 32px; }
+  .jump-button.with-label { padding-right: 11px; }
+  .composer { gap: 4px; padding: 4px; border-radius: 19px; }
+  .composer textarea { min-height: 30px; padding: 5px 0 5px 11px; font-size: 13.5px; line-height: 20px; }
+  .round-button { width: 30px; height: 30px; }
+  .round-button .icon { width: 16px; height: 16px; }
+  .voice-heard { padding: 4px 10px 0; font-size: 13.5px; line-height: 20px; }
+  .voice-controls { gap: 8px; }
+  .voice-waveform, .voice-finishing { height: 28px; }
+  .voice-card { padding: 10px 12px; border-radius: 14px; font-size: 12.5px; }
+  .question-card { gap: 10px; padding: 12px 14px; border-radius: 14px; }
+  .question-title { font-size: 13.5px; }
+  .question-elsewhere, .question-skip { font-size: 12.5px; }
+  .question-input input { min-height: 30px; font-size: 13px; }
+  .md-table { padding: 10px 12px; border-radius: 10px; }
+  .alert { width: min(260px, 100%); border-radius: 16px; }
+  .alert-copy { padding: 16px 16px 12px; }
+  .alert-copy h2 { font-size: 13.5px; }
+  .alert-copy p { font-size: 11.5px; }
+  .alert-buttons { padding: 0 12px 12px; }
+  .alert-buttons button { min-height: 30px; font-size: 13px; }
+  .grouped { border-radius: 10px; }
+  .grouped-row { min-height: 36px; gap: 10px; padding: 0 12px; font-size: 13px; }
+  .grouped-row select, .search-row input { font-size: 13px; }
+  .search-result-copy small { font-size: 11px; }
+  .sheet-empty { padding: 28px 12px; }
+  .sheet-empty strong { font-size: 15px; }
+  .sheet-empty p { font-size: 12px; }
+  .pairing { gap: 14px; }
+  .pairing-mascot { width: 110px; margin-top: 12px; }
+  .pairing-note, .pairing-waiting { font-size: 12.5px; }
+  .pairing-code { padding: 14px 0; border-radius: 14px; font-size: 30px; }
+  .pairing-countdown { font-size: 11.5px; }
+  .bordered-button { min-height: 36px; border-radius: 10px; font-size: 13px; }
   .pairing-done { font-size: 16px; }
 }
 

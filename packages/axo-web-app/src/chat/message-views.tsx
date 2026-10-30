@@ -100,6 +100,16 @@ function CopyButton({ text }: { text: string }) {
   );
 }
 
+/** Shares a reply where the browser can (the system's share sheet), as the phone does. */
+function ShareButton({ text }: { text: string }) {
+  if (typeof navigator.share !== "function") return null;
+  return (
+    <button className="plain-icon-button" onClick={() => void navigator.share({ text }).catch(() => {})} aria-label="Share response">
+      <Icon name="share" size={17} />
+    </button>
+  );
+}
+
 export const MessageView = memo(function MessageView({ message, working, live = false }: { message: ChatMessage; working: boolean; live?: boolean }) {
   switch (message.role) {
     case "user":
@@ -118,6 +128,7 @@ export const MessageView = memo(function MessageView({ message, working, live = 
           {live ? null : (
             <div className="message-actions">
               <CopyButton text={message.text} />
+              <ShareButton text={message.text} />
               {message.timestamp ? <Timestamp milliseconds={message.timestamp} /> : null}
             </div>
           )}
@@ -194,32 +205,42 @@ export function PendingView({ prompt, onEditAgain, onDismiss }: { prompt: Pendin
   );
 }
 
-/** What Pi is asking, with the answers the browser can give. */
+/** What the agent is asking, with a way to answer it from here when that can be done. */
 export function QuestionCard({ question, canAnswer, onAnswer }: {
   question: ChatQuestion;
   canAnswer: boolean;
   onAnswer: (answer: { kind: "yes" } | { kind: "no" } | { kind: "text"; text: string }) => void;
 }) {
   const [text, setText] = useState("");
+  const title = question.title ?? "The agent is asking something";
+  const skip = <button className="question-skip" disabled={!canAnswer} onClick={() => onAnswer({ kind: "no" })}>Skip</button>;
   return (
-    <div className="question-card" role="group" aria-label="Axo is asking">
-      <p className="question-eyebrow">Axo is asking</p>
-      {question.title ? <p className="question-title">{question.title}</p> : null}
+    <div className="question-card" role="group" aria-label={title}>
+      <p className="question-title"><Icon name="question" size={20} /><span>{title}</span></p>
       {question.kind === "confirm" ? (
         <div className="question-buttons">
           <button className="pill-button primary" disabled={!canAnswer} onClick={() => onAnswer({ kind: "yes" })}>Yes</button>
           <button className="pill-button" disabled={!canAnswer} onClick={() => onAnswer({ kind: "no" })}>No</button>
         </div>
       ) : question.kind === "input" ? (
-        <form className="question-input" onSubmit={event => {
-          event.preventDefault();
-          if (text.trim()) onAnswer({ kind: "text", text: text.trim() });
-        }}>
-          <input value={text} onChange={event => setText(event.target.value)} placeholder="Your answer" aria-label="Your answer" />
-          <button className="pill-button primary" disabled={!canAnswer || !text.trim()}>Answer</button>
-        </form>
+        <>
+          <form className="question-input" onSubmit={event => {
+            event.preventDefault();
+            if (canAnswer && text.trim()) {
+              onAnswer({ kind: "text", text: text.trim() });
+              setText("");
+            }
+          }}>
+            <input value={text} onChange={event => setText(event.target.value)} placeholder="Your answer" aria-label="Your answer" />
+            <button className="pill-button primary" disabled={!canAnswer || !text.trim()}>Send</button>
+          </form>
+          {skip}
+        </>
       ) : (
-        <p className="question-elsewhere">Answer this on your Mac.</p>
+        <>
+          <p className="question-elsewhere">The choices are on your Mac. Answer there, or skip the question.</p>
+          {skip}
+        </>
       )}
     </div>
   );

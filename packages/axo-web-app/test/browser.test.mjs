@@ -249,7 +249,7 @@ test("browser chats with Axo on a Mac: history, live replies, new chats, info, a
         setTimeout(() => {
           piEvent(socket, sessionId, base + 4, "message.end", { message: { role: "assistant", content: [{ type: "text", text: `Done with: ${call.params.text}` }] } });
           piEvent(socket, sessionId, base + 5, "agent.end", {});
-        }, 400);
+        }, call.params.text === "Ship it" ? 3_000 : 400);
       } else if (call.method === "axo.remote.session.key") {
         keys.push(call.params.key);
         reply({ accepted: true });
@@ -310,15 +310,19 @@ test("browser chats with Axo on a Mac: history, live replies, new chats, info, a
     assert.ok((await page.getByRole("link", { name: "Continue with Cloudflare" }).getAttribute("href"))
       .endsWith("/api/auth/cloudflare/start"), "the landing page starts the Worker's Cloudflare sign-in");
 
-    // Dictation, with a stand-in for the browser's speech recognition.
+    // Voice, with stand-ins for the microphone and the browser's speech recognition: a guess at
+    // the words first, then the words settled.
     await page.addInitScript(() => {
+      const result = (transcript, isFinal) => Object.assign([{ transcript }], { isFinal });
       window.SpeechRecognition = window.webkitSpeechRecognition = class {
         start() {
-          setTimeout(() => this.onresult?.({ resultIndex: 0, results: [Object.assign([{ transcript: "and check the logs" }], { isFinal: true })] }), 20);
+          setTimeout(() => this.onresult?.({ results: [result("and check the", false)] }), 20);
+          setTimeout(() => this.onresult?.({ results: [result("and check the logs", true)] }), 400);
         }
         stop() { setTimeout(() => this.onend?.(), 0); }
-        abort() { this.onend?.(); }
+        abort() {}
       };
+      navigator.mediaDevices.getUserMedia = async () => new AudioContext().createMediaStreamDestination().stream;
     });
     await page.goto(`${appUrl}/__tests__/chat`, { waitUntil: "networkidle" });
     const chats = page.getByRole("navigation", { name: "Chats" });
@@ -383,21 +387,43 @@ test("browser chats with Axo on a Mac: history, live replies, new chats, info, a
     await box.fill("x".repeat(16_001));
     await expect(page.getByText("Too long to send", { exact: false }));
     assert.equal(await page.getByRole("button", { name: "Send" }).isDisabled(), true);
-    // Dictation adds what is said to what is typed.
-    await box.fill("Look around");
-    await page.getByRole("button", { name: "Dictate" }).click();
-    await page.waitForFunction(() => document.querySelector("textarea[aria-label='Message']")?.value === "Look around and check the logs", null, { timeout: 5_000 });
-    await page.getByRole("button", { name: "Stop dictating" }).click();
-    await expect(page.getByRole("button", { name: "Dictate" }));
+    // Voice, as on the phone: an empty box offers it where Send goes. While listening the box
+    // shows the words as heard; Stop puts them in the box to read first.
+    await box.fill("");
+    await page.getByRole("button", { name: "Talk" }).click();
+    const listening = page.getByRole("group", { name: "Listening" });
+    await expect(listening.locator(".voice-tentative", { hasText: "and check the" }));
+    await expect(listening.getByText("and check the logs"));
+    await shot("voice-listening");
+    await listening.getByRole("button", { name: "Stop" }).click();
+    await page.waitForFunction(() => document.querySelector("textarea[aria-label='Message']")?.value === "and check the logs", null, { timeout: 5_000 });
+    assert.equal(await page.getByRole("button", { name: "Talk" }).count(), 0, "once something is typed, Send takes its place");
+    // Cancel forgets what was heard.
+    await box.fill("");
+    await page.getByRole("button", { name: "Talk" }).click();
+    await listening.getByRole("button", { name: "Cancel" }).click();
+    assert.equal(await box.inputValue(), "");
     await box.fill("Ship it");
     await box.press("Enter");
+    // While Axo works it says so under the last message, with a way to stop it that asks first.
+    const activity = page.getByTestId("agent-activity");
+    await expect(activity.getByText("Thinking…"));
+    await shot("working");
+    await activity.getByRole("button", { name: "Stop the reply" }).click();
+    const confirmStop = page.getByRole("alertdialog", { name: "Stop the reply?" });
+    await confirmStop.getByRole("button", { name: "Keep going" }).click();
+    assert.equal(keys.length, 0, "keeping going stops nothing");
+    await box.press("Escape");
+    await confirmStop.getByRole("button", { name: "Stop" }).click();
+    await expect(activity.getByText("Stopping…"));
+    assert.deepEqual(keys, ["escape"]);
     await expect(page.getByText("Done with: Ship it", { exact: true }));
     assert.deepEqual(prompts[0], { sessionId: 1, text: "Ship it" });
     assert.equal(await page.getByTestId("pending-prompt").count(), 0, "the agent's record of the message retires the pending one");
     assert.equal(await box.inputValue(), "");
 
     // A new chat: its first message starts it in the Mac's Home Workspace.
-    await chats.getByRole("button", { name: "Chat", exact: true }).click();
+    await chats.getByRole("button", { name: "New chat", exact: true }).click();
     await expect(page.getByRole("heading", { name: "New chat", exact: true }));
     await box.fill("Start fresh");
     await box.press("Enter");
@@ -405,9 +431,24 @@ test("browser chats with Axo on a Mac: history, live replies, new chats, info, a
     await expect(page.getByText("Done with: Start fresh", { exact: true }));
     assert.equal(sessionCreateCount, 1);
     assert.deepEqual(prompts[1], { sessionId: 2, text: "Start fresh" });
+    // Send in the listening bar sends what was said.
+    await page.getByText("Done with: Start fresh", { exact: true }).waitFor();
+    await page.getByRole("button", { name: "Talk" }).click();
+    await expect(listening.getByText("and check the logs"));
+    await listening.getByRole("button", { name: "Send" }).click();
+    await expect(page.getByText("Done with: and check the logs", { exact: true }));
+    assert.deepEqual(prompts[2], { sessionId: 2, text: "and check the logs" });
     // The new chat goes to the top of the list, and into the URL.
     assert.equal(await recent.locator(".chat-row-name").first().textContent(), "Session 2");
     assert.equal(new URL(page.url()).pathname, `/__tests__/chat/${hostId}/2`);
+
+    // Search finds a chat by its name.
+    await chats.getByRole("button", { name: "Search chats" }).click();
+    const search = page.getByRole("dialog", { name: "Search" });
+    await search.getByRole("textbox", { name: "Search chats" }).fill("week");
+    await search.getByRole("button", { name: /Plan the week/ }).click();
+    await expect(page.getByRole("heading", { name: "Plan the week", exact: true }));
+    await chats.getByRole("button", { name: "Session 2" }).click();
 
     // The chat's info.
     await page.getByRole("button", { name: "Chat info" }).click();
@@ -428,17 +469,17 @@ test("browser chats with Axo on a Mac: history, live replies, new chats, info, a
     await expect(pairing.getByText("B26A-NRKT"));
     assert.equal(pairingRequestCount, 1);
     await shot("pairing");
-    assert.equal(await pairing.getByRole("link", { name: "Open Axo on this Mac" }).getAttribute("href"), "axo://pair/B26A-NRKT");
+    assert.equal(await pairing.getByRole("link", { name: "Open on this Mac" }).getAttribute("href"), "axo://pair/B26A-NRKT");
     await pairing.getByRole("button", { name: "Close Pair a Mac" }).click();
     await account.getByRole("button", { name: "Back to chats" }).click();
     await expect(chats.getByRole("button", { name: "Browser Agent" }));
 
     // On a phone-sized screen the layers stack: the conversation first, the chats a swipe or a tap away.
     await page.setViewportSize({ width: 390, height: 844 });
-    await expect(page.getByRole("button", { name: "Show chats" }));
+    await expect(page.getByRole("button", { name: "Chats menu" }));
     const chatsLeft = () => page.locator(".layer-conversation").evaluate((layer) => layer.getBoundingClientRect().left);
     assert.equal(await chatsLeft(), 0);
-    await page.getByRole("button", { name: "Show chats" }).click();
+    await page.getByRole("button", { name: "Chats menu" }).click();
     await page.waitForFunction(() => document.querySelector(".layer-conversation").getBoundingClientRect().left > 200, null, { timeout: 5_000 });
     await page.waitForTimeout(500);
     await shot("phone-chats");

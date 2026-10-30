@@ -2,7 +2,7 @@ import assert from "node:assert/strict";
 import { test } from "node:test";
 import { inlineSpans, parseMarkdown } from "../src/chat/markdown.ts";
 import { ChatTranscript, type PiEventRecord } from "../src/chat/transcript.ts";
-import { withDictated } from "../src/chat/dictation.ts";
+import { appendTranscript, VoicePrompt, voiceMessages, waveformHeight, type DictationEngine, type HeardText } from "../src/chat/voice.ts";
 import { parseRoute, routePath } from "../src/chat/route.ts";
 import { ChatWorkbench, lastActivity, recentChatList, shortAge, type ChatBackend, type MacConnection } from "../src/chat/workbench.ts";
 
@@ -166,7 +166,7 @@ test("ages are short, as on the Mac", () => {
   assert.deepEqual([30, 300, 3 * 3_600, 2 * 86_400, 4 * 604_800].map(seconds => shortAge(now - seconds * 1000, now)), ["now", "5m", "3h", "2d", "4w"]);
 });
 
-// MARK: - Routes and dictation
+// MARK: - Routes and voice
 
 test("the URL names the open chat on its Mac, and anything else is a new chat", () => {
   assert.deepEqual(parseRoute("/app", `/app/${hostId}/12`), { kind: "chat", hostId, sessionId: 12 });
@@ -179,11 +179,80 @@ test("the URL names the open chat on its Mac, and anything else is a new chat", 
   assert.equal(routePath("/app", null, null), "/app");
 });
 
-test("dictated words join what was typed with one space", () => {
-  assert.equal(withDictated("", " hello there "), "hello there");
-  assert.equal(withDictated("Look at", "the logs"), "Look at the logs");
-  assert.equal(withDictated("Look at\n", "the logs"), "Look at\nthe logs");
-  assert.equal(withDictated("Typed", "  "), "Typed");
+/** A stand-in for the microphone and recogniser, driven by the test. */
+class FakeDictation implements DictationEngine {
+  audioLevel = 0.5;
+  allowed = true;
+  heard: ((text: HeardText) => void) | null = null;
+  interrupted: ((message: string) => void) | null = null;
+  final = "";
+  cancelled = 0;
+  async requestPermission() { return this.allowed; }
+  async start(heard: (text: HeardText) => void, interrupted: (message: string) => void) {
+    this.heard = heard;
+    this.interrupted = interrupted;
+  }
+  async finish() { return this.final; }
+  cancel() { this.cancelled += 1; }
+}
+
+test("voice: words show as heard, Stop puts them in the box and Send sends them", async () => {
+  const engine = new FakeDictation();
+  const voice = new VoicePrompt(engine);
+  await voice.start();
+  assert.equal(voice.state.kind, "listening");
+  engine.heard!({ settled: "look at", tentative: "the lo" });
+  assert.deepEqual(voice.state, { kind: "listening", heard: { settled: "look at", tentative: "the lo" } });
+  engine.final = " look at the logs ";
+  await voice.finish("draft");
+  assert.equal(voice.state.kind, "idle");
+  assert.deepEqual({ text: voice.transcript?.text, delivery: voice.transcript?.delivery }, { text: "look at the logs", delivery: "draft" });
+  voice.consume(voice.transcript!);
+  assert.equal(voice.transcript, null);
+
+  await voice.start();
+  engine.final = "ship it";
+  await voice.finish("send");
+  assert.equal(voice.transcript?.delivery, "send");
+});
+
+test("voice: a cancel forgets what was heard, and failures say why", async () => {
+  const engine = new FakeDictation();
+  const voice = new VoicePrompt(engine);
+  await voice.start();
+  voice.cancel();
+  assert.equal(voice.state.kind, "idle");
+  engine.heard!({ settled: "too late", tentative: "" });
+  assert.equal(voice.state.kind, "idle", "words after a cancel never come back");
+
+  await voice.start();
+  engine.final = "  ";
+  await voice.finish("draft");
+  assert.deepEqual(voice.state, { kind: "failed", message: voiceMessages.noSpeech });
+  voice.dismissFailure();
+
+  engine.allowed = false;
+  await voice.start();
+  assert.deepEqual(voice.state, { kind: "failed", message: voiceMessages.microphoneDenied });
+
+  engine.allowed = true;
+  await voice.start();
+  engine.interrupted!("No microphone is available.");
+  assert.deepEqual(voice.state, { kind: "failed", message: "No microphone is available." });
+});
+
+test("voice: dictated words go after what was typed, with one space", () => {
+  assert.equal(appendTranscript("", "hello there"), "hello there");
+  assert.equal(appendTranscript("Look at", "the logs"), "Look at the logs");
+  assert.equal(appendTranscript("Look at\n", "the logs"), "Look at\nthe logs");
+});
+
+test("voice: the waveform shows quiet speech, stays flat in silence and tops out at -18 dB", () => {
+  assert.equal(waveformHeight(0), 0);
+  assert.equal(waveformHeight(Number.NaN), 0);
+  assert.equal(waveformHeight(0.001), 0);
+  assert.equal(waveformHeight(10 ** (-18 / 20)), 1);
+  assert.ok(waveformHeight(0.01) > 0 && waveformHeight(0.01) < 1);
 });
 
 // MARK: - Workbench

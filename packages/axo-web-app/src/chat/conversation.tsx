@@ -1,8 +1,9 @@
-import { useEffect, useLayoutEffect, useRef, useState, type ClipboardEvent, type KeyboardEvent } from "react";
+import { useEffect, useLayoutEffect, useMemo, useRef, useState, useSyncExternalStore, type ClipboardEvent, type KeyboardEvent } from "react";
 import { AxoMascot } from "../axo-mascot.tsx";
-import { useDictation } from "./dictation.ts";
 import { Icon } from "./icons.tsx";
 import { MessageView, PendingView, QuestionCard } from "./message-views.tsx";
+import { Alert } from "./alert.tsx";
+import { appendTranscript, BrowserDictation, VoicePrompt, waveformHeight } from "./voice.ts";
 import { chatTitle, type ChatWorkbench } from "./workbench.ts";
 
 /** How close to the bottom still counts as following the conversation. */
@@ -10,27 +11,32 @@ const FOLLOW_SLACK_PX = 80;
 /** How close to the top starts reading the page before. */
 const OLDER_SLACK_PX = 400;
 
-/** The open chat, or a new one: the header, the transcript and the message box. */
-export function Conversation({ workbench, wide, onShowChats, onToggleInfo }: {
+/**
+ * The open chat, or a new one, as on the phone: no title (its name only takes room; screen readers
+ * still hear it), the menu button, the Mac's trouble when it has any, the transcript, what Axo is
+ * doing with a way to stop it, and the message box.
+ */
+export function Conversation({ workbench, wide, onShowChats, onToggleInfo, voice: givenVoice }: {
   workbench: ChatWorkbench;
   wide: boolean;
   onShowChats: () => void;
   onToggleInfo: () => void;
+  /** Tests give their own; otherwise the browser's speech recognition, where there is one. */
+  voice?: VoicePrompt | null;
 }) {
   const host = workbench.openHost;
   const session = workbench.selectedSession;
   const selection = workbench.selection;
   const chat = session ? workbench.chat(session.sessionId) : null;
   const transcript = chat?.transcript ?? null;
-  const workspaceName = selection?.kind === "new" && selection.workspaceId
-    ? workbench.workspaces.find(workspace => workspace.workspaceId === selection.workspaceId)?.name
-    : session?.workspaceName;
-  const subtitle = [workspaceName, host?.label].filter(Boolean).join(" · ") || "No Mac";
   const online = host?.status === "online" && workbench.link === "connected";
+  const voice = useMemo(() => givenVoice !== undefined ? givenVoice : BrowserDictation.supported ? new VoicePrompt(new BrowserDictation()) : null, [givenVoice]);
 
   const scroller = useRef<HTMLDivElement>(null);
   const following = useRef(true);
   const [showJump, setShowJump] = useState(false);
+  const [hasNew, setHasNew] = useState(false);
+  const [confirmingStop, setConfirmingStop] = useState(false);
   /** The height before an older page went in above, to keep the view still. */
   const heightBeforeOlder = useRef<number | null>(null);
   const messageCount = transcript?.messages.length ?? 0;
@@ -40,6 +46,7 @@ export function Conversation({ workbench, wide, onShowChats, onToggleInfo }: {
   useEffect(() => {
     following.current = true;
     setShowJump(false);
+    setHasNew(false);
   }, [session?.sessionId, selection?.kind]);
 
   useLayoutEffect(() => {
@@ -51,14 +58,15 @@ export function Conversation({ workbench, wide, onShowChats, onToggleInfo }: {
       return;
     }
     if (following.current) element.scrollTop = element.scrollHeight;
-    else setShowJump(true);
+    else setHasNew(true);
   }, [workbench.version, firstId]);
 
   const onScroll = () => {
     const element = scroller.current;
     if (!element || !session) return;
     following.current = element.scrollHeight - element.scrollTop - element.clientHeight < FOLLOW_SLACK_PX;
-    if (following.current) setShowJump(false);
+    setShowJump(!following.current);
+    if (following.current) setHasNew(false);
     if (element.scrollTop < OLDER_SLACK_PX && chat?.history.kind === "loaded" && chat.history.hasOlder) {
       heightBeforeOlder.current = element.scrollHeight;
       void workbench.loadOlderHistory(session.sessionId);
@@ -70,6 +78,7 @@ export function Conversation({ workbench, wide, onShowChats, onToggleInfo }: {
     if (!element) return;
     following.current = true;
     setShowJump(false);
+    setHasNew(false);
     element.scrollTo({ top: element.scrollHeight, behavior: "smooth" });
   };
 
@@ -78,19 +87,27 @@ export function Conversation({ workbench, wide, onShowChats, onToggleInfo }: {
     await workbench.send();
   };
 
+  const working = Boolean(transcript?.working);
+  const canStop = online && working && !chat?.stopping;
   const history = chat?.history ?? { kind: "none" as const };
   const empty = !session || (messageCount === 0 && !transcript?.live.length && !chat?.pending.length);
+  const trouble = !host ? null
+    : host.status !== "online" ? `${host.label} is offline`
+      : workbench.link === "reconnecting" ? `Reconnecting to ${host.label}…` : null;
+  const activityTitle = chat?.stopping ? "Stopping…"
+    : transcript?.question ? "Waiting for your answer"
+      : transcript?.messages.some(message => message.tool?.status === "running") ? "Using tools…" : "Thinking…";
 
   return (
     <section className="conversation" aria-label="Conversation">
       <header className="layer-bar top conversation-header">
+        <h1 className="visually-hidden">{chatTitle(session)}</h1>
         {wide ? <span className="circle-placeholder" /> : (
-          <button className="circle-button" onClick={onShowChats} aria-label="Show chats"><Icon name="menu" /></button>
+          <button className="circle-button" onClick={onShowChats} aria-label="Chats menu"><Icon name="menu" /></button>
         )}
-        <div className="conversation-title">
-          <h1>{chatTitle(session)}</h1>
-          <p>{subtitle}</p>
-        </div>
+        <span className="spacer" />
+        {trouble ? <span className="host-trouble" role="status">{trouble}</span> : null}
+        <span className="spacer" />
         <button className="circle-button" onClick={onToggleInfo} aria-label="Chat info"><Icon name="info" /></button>
       </header>
 
@@ -112,8 +129,8 @@ export function Conversation({ workbench, wide, onShowChats, onToggleInfo }: {
           {empty && history.kind !== "loading" ? (
             <div className="empty-chat">
               <AxoMascot className="empty-chat-mascot" />
-              <h2>{session ? "Nothing said yet" : "What are we working on?"}</h2>
-              <p>{session ? "Send a message to get going." : host ? "Send a message to start a chat." : "Pair a Mac to start chatting."}</p>
+              <h2>What are we working on?</h2>
+              <p>{session ? "Nothing here yet." : !host ? "Pair a Mac to start chatting." : host.status === "online" ? "Send a message to start a chat." : "Your Mac is offline."}</p>
             </div>
           ) : null}
 
@@ -130,15 +147,24 @@ export function Conversation({ workbench, wide, onShowChats, onToggleInfo }: {
               onDismiss={() => workbench.dismissPending(session.sessionId, prompt.id)}
             />
           ))}
-          {transcript?.working && !transcript.live.length && !transcript.question ? (
-            <div className="working-dots" aria-label="Axo is working"><span /><span /><span /></div>
-          ) : null}
           {session && transcript?.question ? (
             <QuestionCard
               question={transcript.question}
               canAnswer={online}
               onAnswer={answer => void workbench.answer(session.sessionId, answer)}
             />
+          ) : null}
+          {session && working ? (
+            <div className="agent-activity" data-testid="agent-activity">
+              <span className="agent-activity-icon"><Icon name="sparkles" size={18} /></span>
+              <span className="agent-activity-title">{activityTitle}</span>
+              <span className="spacer" />
+              <span className="spinner" aria-hidden="true" />
+              <button className="plain-icon-button agent-activity-stop" onClick={() => setConfirmingStop(true)}
+                disabled={!canStop} aria-label="Stop the reply">
+                <Icon name="closeCircle" size={22} />
+              </button>
+            </div>
           ) : null}
         </div>
       </div>
@@ -151,18 +177,34 @@ export function Conversation({ workbench, wide, onShowChats, onToggleInfo }: {
           </div>
         ) : null}
         {showJump ? (
-          <button className="jump-button" onClick={jumpToEnd}><Icon name="arrowDown" size={16} /> Jump to new message</button>
+          <button className={hasNew ? "jump-button with-label" : "jump-button"} onClick={jumpToEnd}
+            aria-label={hasNew ? "Jump to new message" : "Jump to latest"}>
+            <Icon name="arrowDown" size={18} />{hasNew ? <span>Jump to new message</span> : null}
+          </button>
         ) : null}
         <Composer
           workbench={workbench}
-          placeholder={!host ? "Pair a Mac to chat" : host.status !== "online" ? `${host.label} is offline` : "Message Axo"}
+          voice={voice}
+          placeholder={!host ? "Your Mac is offline" : host.status !== "online" ? `${host.label} is offline` : "Message Axo"}
           canSend={Boolean(host && host.status === "online")}
-          working={Boolean(transcript?.working)}
-          stopping={Boolean(chat?.stopping)}
           onSend={() => void send()}
-          onStop={() => session && void workbench.stop(session.sessionId)}
+          onEscape={() => { if (canStop) setConfirmingStop(true); }}
         />
       </footer>
+      {confirmingStop ? (
+        <Alert
+          title="Stop the reply?"
+          message="This stops everything the agent is doing now, including the tools it is running."
+          confirm="Stop"
+          cancel="Keep going"
+          destructive
+          onConfirm={() => {
+            setConfirmingStop(false);
+            if (session) void workbench.stop(session.sessionId);
+          }}
+          onCancel={() => setConfirmingStop(false)}
+        />
+      ) : null}
     </section>
   );
 }
@@ -172,27 +214,30 @@ export const maxMessageBytes = 16_000;
 const encoder = new TextEncoder();
 
 /**
- * The message box: Enter sends, Shift-Enter starts a new line; while Axo works, it can stop. The
- * microphone dictates into it where the browser can listen.
+ * The message box, as on the phone. An empty box offers voice where Send goes; once something is
+ * typed, Send. While listening the box becomes the listening bar. Enter sends and Shift-Enter
+ * starts a new line.
  */
-function Composer({ workbench, placeholder, canSend, working, stopping, onSend, onStop }: {
+function Composer({ workbench, voice, placeholder, canSend, onSend, onEscape }: {
   workbench: ChatWorkbench;
+  voice: VoicePrompt | null;
   placeholder: string;
   canSend: boolean;
-  working: boolean;
-  stopping: boolean;
   onSend: () => void;
-  onStop: () => void;
+  /** Escape with nothing to cancel: asks to stop the reply. */
+  onEscape: () => void;
 }) {
   const draft = workbench.draft();
   const field = useRef<HTMLTextAreaElement>(null);
   const hasDraft = draft.trim().length > 0;
   const bytes = encoder.encode(draft).length;
   const tooLong = bytes > maxMessageBytes;
-  const showStop = working && !hasDraft;
-  const dictation = useDictation(text => workbench.setDraft(text));
+  const ready = canSend && hasDraft && !tooLong && !workbench.isSending;
   /** Where the caret goes once a paste is in, after React has put the new words in the box. */
   const caret = useRef<number | null>(null);
+  useSyncExternalStore(voice?.subscribe ?? noSubscribe, voice?.getVersion ?? zero);
+  const voiceState = voice?.state.kind ?? "idle";
+  const listening = voiceState === "listening" || voiceState === "finishing";
 
   useLayoutEffect(() => {
     const element = field.current;
@@ -203,28 +248,33 @@ function Composer({ workbench, placeholder, canSend, working, stopping, onSend, 
       element.setSelectionRange(caret.current, caret.current);
       caret.current = null;
     }
-  }, [draft]);
-
-  // Dictation is for this chat's box: another chat, or sending, ends it.
-  useEffect(() => dictation.stop, [workbench.selection]);
+  }, [draft, listening]);
 
   useEffect(() => {
     if (window.matchMedia("(pointer: fine)").matches) field.current?.focus();
   }, [workbench.selection]);
 
+  // Words said for one chat never land in another.
+  useEffect(() => () => voice?.cancel(), [workbench.selection, voice]);
+
+  // A finished dictation goes after what is typed, and is sent if Send ended it.
+  useEffect(() => {
+    const transcript = voice?.transcript;
+    if (!voice || !transcript) return;
+    voice.consume(transcript);
+    workbench.setDraft(appendTranscript(workbench.draft(), transcript.text));
+    if (transcript.delivery === "send" && canSend && !workbench.isSending) onSend();
+    else if (window.matchMedia("(pointer: fine)").matches) field.current?.focus();
+  }, [voice?.version]);
+
   const onKeyDown = (event: KeyboardEvent<HTMLTextAreaElement>) => {
     if (event.key === "Enter" && !event.shiftKey && !event.nativeEvent.isComposing) {
       event.preventDefault();
-      if (canSend && hasDraft && !tooLong && !workbench.isSending) submit();
-    } else if (event.key === "Escape" && working) {
+      if (ready) onSend();
+    } else if (event.key === "Escape" && !hasDraft) {
       event.preventDefault();
-      onStop();
+      onEscape();
     }
-  };
-
-  const submit = () => {
-    dictation.stop();
-    onSend();
   };
 
   // Pasted words go in as plain text where the caret is, whatever the clipboard also carries.
@@ -239,48 +289,109 @@ function Composer({ workbench, placeholder, canSend, working, stopping, onSend, 
     workbench.setDraft(draft.slice(0, start) + text + draft.slice(end));
   };
 
-  const note = dictation.failure
-    ?? (tooLong ? `Too long to send: ${bytes.toLocaleString()} of ${maxMessageBytes.toLocaleString()} bytes.` : null);
+  return (
+    <div className="composer-stack">
+      {voice ? <VoiceStatusCard voice={voice} /> : null}
+      {tooLong ? <p className="composer-note" role="status">Too long to send: {bytes.toLocaleString()} of {maxMessageBytes.toLocaleString()} bytes.</p> : null}
+      {voice && listening ? <VoiceListeningBar voice={voice} canSend={canSend} /> : (
+        <form className="composer" onSubmit={event => {
+          event.preventDefault();
+          if (ready) onSend();
+        }}>
+          <textarea
+            ref={field}
+            rows={1}
+            value={draft}
+            placeholder={placeholder}
+            aria-label="Message"
+            disabled={!canSend}
+            onChange={event => workbench.setDraft(event.target.value)}
+            onKeyDown={onKeyDown}
+            onPaste={onPaste}
+          />
+          {voice && !hasDraft ? (
+            <button type="button" className={canSend ? "round-button primary" : "round-button"}
+              disabled={!canSend || voice.isBusy} onClick={() => void voice.start()}
+              aria-label="Talk" title="Say your message; stop to read it first, or send it straight away">
+              {voiceState === "requestingPermission" ? <span className="spinner inverse" aria-hidden="true" /> : <Icon name="waveform" size={20} />}
+            </button>
+          ) : (
+            <button className={ready ? "round-button primary" : "round-button"} disabled={!ready} aria-label="Send">
+              <Icon name="arrowUp" size={20} />
+            </button>
+          )}
+        </form>
+      )}
+    </div>
+  );
+}
+
+const noSubscribe = () => () => {};
+const zero = () => 0;
+
+/** While listening, the message box becomes this: the words as heard, how loud, and what to do with them. */
+function VoiceListeningBar({ voice, canSend }: { voice: VoicePrompt; canSend: boolean }) {
+  const state = voice.state;
+  const finishing = state.kind === "finishing";
+  const heard = state.kind === "listening" ? state.heard : { settled: "", tentative: "" };
+  const empty = !heard.settled && !heard.tentative;
+
+  useEffect(() => {
+    const onKeyDown = (event: globalThis.KeyboardEvent) => {
+      if (event.key === "Escape") voice.cancel();
+      else if (event.key === "Enter" && !finishing) {
+        event.preventDefault();
+        void voice.finish(canSend ? "send" : "draft");
+      }
+    };
+    window.addEventListener("keydown", onKeyDown);
+    return () => window.removeEventListener("keydown", onKeyDown);
+  }, [voice, finishing, canSend]);
 
   return (
-    <>
-    {note ? <p className="composer-note" role="status">{note}</p> : null}
-    <form className={dictation.listening ? "composer listening" : "composer"} onSubmit={event => {
-      event.preventDefault();
-      if (showStop) onStop();
-      else if (canSend && hasDraft && !tooLong) submit();
-    }}>
-      <textarea
-        ref={field}
-        rows={1}
-        value={draft}
-        placeholder={placeholder}
-        aria-label="Message"
-        disabled={!canSend}
-        onChange={event => workbench.setDraft(event.target.value)}
-        onKeyDown={onKeyDown}
-        onPaste={onPaste}
-      />
-      {dictation.supported && canSend ? (
-        <button type="button" className={dictation.listening ? "mic-button listening" : "mic-button"}
-          onClick={() => {
-            dictation.toggle(draft);
-            field.current?.focus();
-          }}
-          aria-label={dictation.listening ? "Stop dictating" : "Dictate"} aria-pressed={dictation.listening}>
-          <Icon name="mic" size={18} />
-        </button>
-      ) : null}
-      {showStop ? (
-        <button className="send-button stop" disabled={stopping || !canSend} aria-label={stopping ? "Stopping" : "Stop"}>
-          <Icon name="stop" size={18} />
-        </button>
-      ) : (
-        <button className={hasDraft && canSend && !tooLong ? "send-button ready" : "send-button"} disabled={!hasDraft || !canSend || tooLong || workbench.isSending} aria-label="Send">
-          <Icon name="arrowUp" size={20} />
-        </button>
-      )}
-    </form>
-    </>
+    <div className="composer voice-listening" role="group" aria-label="Listening">
+      <p className="voice-heard" aria-live="polite">
+        {empty ? <span className="voice-placeholder">{finishing ? "Finishing…" : "Listening…"}</span> : (
+          <>{heard.settled}{heard.settled && heard.tentative ? " " : ""}<span className="voice-tentative">{heard.tentative}</span></>
+        )}
+      </p>
+      <div className="voice-controls">
+        <button type="button" className="round-button inset" onClick={() => voice.cancel()} aria-label="Cancel"><Icon name="close" size={17} /></button>
+        {finishing ? <span className="voice-finishing"><span className="spinner" aria-hidden="true" /></span> : <VoiceWaveform voice={voice} />}
+        <button type="button" className="round-button inset" onClick={() => void voice.finish("draft")} disabled={finishing}
+          aria-label="Stop" title="Put the words in the message box to read first"><Icon name="stopFill" size={16} /></button>
+        <button type="button" className={canSend ? "round-button primary" : "round-button"} onClick={() => void voice.finish("send")}
+          disabled={!canSend || finishing} aria-label="Send" title="Send what you said"><Icon name="arrowUp" size={20} /></button>
+      </div>
+    </div>
+  );
+}
+
+const WAVEFORM_BARS = 30;
+
+/** The microphone's loudness over the last second and a half, as bars. Only measured levels are drawn. */
+function VoiceWaveform({ voice }: { voice: VoicePrompt }) {
+  const [levels, setLevels] = useState<number[]>(() => Array(WAVEFORM_BARS).fill(0));
+  useEffect(() => {
+    const reduce = window.matchMedia("(prefers-reduced-motion: reduce)").matches;
+    const timer = window.setInterval(() => setLevels(previous => [...previous.slice(1), voice.audioLevel]), reduce ? 200 : 50);
+    return () => window.clearInterval(timer);
+  }, [voice]);
+  return (
+    <span className="voice-waveform" aria-hidden="true">
+      {levels.map((level, index) => <span key={index} style={{ height: `${Math.max(3, waveformHeight(level) * 30)}px` }} />)}
+    </span>
+  );
+}
+
+/** Why voice did not work, above the box. */
+function VoiceStatusCard({ voice }: { voice: VoicePrompt }) {
+  if (voice.state.kind !== "failed") return null;
+  return (
+    <div className="voice-card" role="alert">
+      <span className="voice-card-icon"><Icon name="micSlash" size={18} /></span>
+      <span className="voice-card-message">{voice.state.message}</span>
+      <button className="plain-icon-button" onClick={() => voice.dismissFailure()} aria-label="Dismiss"><Icon name="close" size={14} /></button>
+    </div>
   );
 }
