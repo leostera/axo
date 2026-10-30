@@ -16,7 +16,7 @@ import {
   hostV1Methods,
   hostV1Results,
 } from "../dist/v1.js";
-import { desiredSessionGraphSchema, stateSessionViewSchema, workspaceGraphSchema } from "../dist/index.js";
+import { desiredSessionGraphSchema, stateSessionViewSchema, workspaceGraphSchema, fragmentSchema, MAX_FRAGMENTS } from "../dist/index.js";
 
 const schemaRoot = resolve(import.meta.dirname, "../../../schemas/axo.leostera.dev/v1");
 const ajv = new Ajv2020({ allErrors: true, strict: true, strictTypes: false });
@@ -28,6 +28,7 @@ const schemaNames = [
   "local-rpc.schema.json",
   "host-relay.schema.json",
   "pairing.schema.json",
+  "connections.schema.json",
 ];
 for (const name of schemaNames) {
   const schema = JSON.parse(await readFile(resolve(schemaRoot, name), "utf8"));
@@ -276,6 +277,14 @@ const falselyFresh = structuredClone(hostList.hosts[0]);
 falselyFresh.status = "offline";
 falselyFresh.stale = false;
 assert.equal(hostSnapshotSchema.safeParse(falselyFresh).success, false, "offline hosts must be explicitly stale");
+const fragment = await fixture("transport-fragment.relay.json");
+validateWith("https://schemas.axo.leostera.dev/v1/connections.schema.json#/$defs/TransportFragment", fragment);
+assert.equal(fragmentSchema.safeParse(fragment).success, true, "Zod must accept the fragment fixture");
+assert.equal(MAX_FRAGMENTS, 46, "the schema's fragment bounds must match the runtime's");
+const oversizedFragment = structuredClone(fragment);
+oversizedFragment.params.count = MAX_FRAGMENTS + 1;
+assert.equal(fragmentSchema.safeParse(oversizedFragment).success, false, "too many fragments are refused at runtime");
+assert.equal(ajv.getSchema("https://schemas.axo.leostera.dev/v1/connections.schema.json#/$defs/TransportFragment")(oversizedFragment), false, "and by the schema");
 const remoteCreate = await fixture("host-session-create.call.json");
 const hostCallSchema = "https://schemas.axo.leostera.dev/v1/host-relay.schema.json#/$defs/Call";
 validateWith(hostCallSchema, remoteCreate);

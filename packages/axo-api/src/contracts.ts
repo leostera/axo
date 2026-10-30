@@ -80,10 +80,11 @@ export function success(
   return createJSONRPCSuccessResponse(id, result);
 }
 export type Decoded = { batch: boolean; entries: unknown[] } | { error: Reply };
-export function decode(raw: string): Decoded {
+/** Parses one relay message; `maxBytes` is one frame, or more for a message reassembled from fragments. */
+export function decode(raw: string, maxBytes: number = LIMITS.frameBytes): Decoded {
   if (
-    raw.length > LIMITS.frameBytes ||
-    new TextEncoder().encode(raw).byteLength > LIMITS.frameBytes
+    raw.length > maxBytes ||
+    new TextEncoder().encode(raw).byteLength > maxBytes
   )
     return { error: failure(null, -32600, "Frame limit") };
   let value: unknown;

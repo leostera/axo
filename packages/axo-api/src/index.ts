@@ -1,5 +1,6 @@
 export * from "./contracts.js";
 export * from "./rpc.js";
+export * from "./fragments.js";
 export * from "./v1.js";
 export {
   JSONRPCClient,

@@ -1,0 +1,28 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://schemas.axo.leostera.dev/v1/connections.schema.json",
+  "title": "Axo connections and the relay transport they need (RFD0016)",
+  "$defs": {
+    "TransportFragment": {
+      "description": "One piece of a relay message larger than one 64 KiB frame. The receiver joins the base64-decoded `data` of fragments 0 to count - 1 and parses the result as one message. Every fragment but the last carries exactly 46080 bytes; a reassembled message is at most 2 MiB; at most 4 may be partly received per socket.",
+      "type": "object",
+      "properties": {
+        "jsonrpc": { "const": "2.0" },
+        "method": { "const": "axo.transport.fragment" },
+        "params": {
+          "type": "object",
+          "properties": {
+            "messageId": { "type": "string", "pattern": "^[A-Za-z0-9_-]{1,64}$" },
+            "index": { "type": "integer", "minimum": 0, "maximum": 45 },
+            "count": { "type": "integer", "minimum": 2, "maximum": 46 },
+            "data": { "type": "string", "maxLength": 61440, "pattern": "^[A-Za-z0-9+/]*={0,2}$" }
+          },
+          "required": ["messageId", "index", "count", "data"],
+          "additionalProperties": false
+        }
+      },
+      "required": ["jsonrpc", "method", "params"],
+      "additionalProperties": false
+    }
+  }
+}
