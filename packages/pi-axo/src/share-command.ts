@@ -113,7 +113,7 @@ async function writePrivately(path: string, contents: string): Promise<void> {
  * `/axo-share [--dry-run]`: publish a redacted, read-only snapshot of this conversation.
  *
  * The snapshot is built and redacted on this Mac, saved under ~/.axo/shares for review, and only
- * uploaded to the public-sessions R2 bucket after an explicit confirmation. Axo's API and its
+ * uploaded to the public-sessions R2 bucket (with the `cf` CLI) after an explicit confirmation. Axo's API and its
  * stored session history are never involved.
  */
 export function registerShareCommand(pi: ExtensionAPI): void {
@@ -181,11 +181,12 @@ export function registerShareCommand(pi: ExtensionAPI): void {
       const bucket = process.env.AXO_SHARE_BUCKET || DEFAULT_BUCKET;
       const upload = await pi.exec("env", [
         `CLOUDFLARE_ACCOUNT_ID=${process.env.CLOUDFLARE_ACCOUNT_ID || DEFAULT_ACCOUNT_ID}`,
-        "wrangler", "r2", "object", "put", `${bucket}/shares/${shareId}.json`,
-        "--file", path, "--content-type", "application/json; charset=utf-8", "--remote",
+        "cf", "r2", "objects", "put", `shares/${shareId}.json`, "--bucket-name", bucket,
+        "--file", path, "--content-type", "application/json; charset=utf-8",
       ], { timeout: UPLOAD_TIMEOUT_MS });
       if (upload.code !== 0) {
-        context.ui.notify(`Upload failed; nothing was published. The redacted snapshot stays at ${path}.\n${upload.stderr.slice(-500)}`, "error");
+        const reason = (upload.stderr.trim() || upload.stdout.trim()).slice(-500);
+        context.ui.notify(`Upload failed; nothing was published. The redacted snapshot stays at ${path}. Run \`cf auth login\` if you are signed out.\n${reason}`, "error");
         return;
       }
       pi.appendEntry(SHARE_ENTRY, { shareId, url, publishedAt: snapshot.publishedAt, bucket });
