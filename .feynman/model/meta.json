@@ -1,0 +1,32 @@
+{
+  "system": "Axo",
+  "summary": "Axo is a macOS terminal workspace for local agentic sessions, built around a SwiftUI application and a persistent Rust daemon that owns shell PTYs and session state, with optional remote access through a Cloudflare relay.",
+  "source": {
+    "repository": ".",
+    "commit": "4b820700fafce7377352a0a1bcfe6d425279ae5d",
+    "committedAt": "2026-10-25T03:16:48Z",
+    "url": "https://github.com/leostera/axo",
+    "commitUrl": "https://github.com/leostera/axo/commit/4b820700fafce7377352a0a1bcfe6d425279ae5d",
+    "fileUrl": "https://github.com/leostera/axo/blob/4b820700fafce7377352a0a1bcfe6d425279ae5d/{path}",
+    "main": {
+      "ref": "main",
+      "commit": "fc030931bd0ccf39723362c7cbe326d2a8659987",
+      "ahead": 0,
+      "behind": 8,
+      "checkedAt": "2026-10-25T04:04:02.519Z"
+    },
+    "footprint": {
+      "files": 509,
+      "lines": 87766,
+      "excludes": [
+        "vendor/",
+        "third_party/",
+        "*.lock",
+        "package-lock.json",
+        "*.lock.json"
+      ]
+    }
+  },
+  "extractedBy": "feynman",
+  "extraction": "bootstrap"
+}
