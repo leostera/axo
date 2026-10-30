@@ -3,6 +3,7 @@
 
 pub mod credential;
 mod endpoint;
+pub mod fragments;
 mod host;
 mod link;
 mod pairing;

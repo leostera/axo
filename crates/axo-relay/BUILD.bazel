@@ -13,6 +13,7 @@ rust_library(
 
 rust_test(
     name = "axo_relay_tests",
+    compile_data = ["//schemas/axo.leostera.dev/v1"],
     crate = ":axo_relay",
     edition = crate_edition(),
 )

@@ -1,5 +1,6 @@
 use crate::credential::HostCredentialStore;
 use crate::endpoint::RelayEndpoint;
+use crate::fragments::{self, Reassembler};
 use crate::host::RelayHost;
 use crate::link::{AccountLink, HostLinkStore, host_label};
 use axo_protocol::{
@@ -10,7 +11,7 @@ use serde::{Deserialize, Serialize};
 use serde_json::Value;
 use std::io;
 use std::net::{TcpStream, ToSocketAddrs};
-use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::{Arc, Mutex};
 use std::thread::{self, JoinHandle};
 use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
@@ -21,7 +22,7 @@ use tungstenite::protocol::WebSocketConfig;
 use tungstenite::stream::MaybeTlsStream;
 use tungstenite::{Message, WebSocket};
 
-const MAX_FRAME_BYTES: usize = 65_536;
+const MAX_FRAME_BYTES: usize = fragments::FRAME_BYTES;
 const SOCKET_READ_TIMEOUT: Duration = Duration::from_millis(20);
 const HEARTBEAT_INTERVAL: Duration = Duration::from_secs(10);
 const MAX_RECONNECT_DELAY: Duration = Duration::from_secs(30);
@@ -276,8 +277,11 @@ fn run_connection(
     set_read_timeout(&mut socket, SOCKET_READ_TIMEOUT)?;
 
     let mut request_number = 0_u64;
+    // Partial messages die with this socket (RFD0016, Transport).
+    let mut reassembler = Reassembler::default();
     rpc_call(
         &mut socket,
+        &mut reassembler,
         &mut request_number,
         "axo.protocol.negotiate",
         NegotiateParams {
@@ -307,6 +311,7 @@ fn run_connection(
     };
     if let Err(error) = rpc_call(
         &mut socket,
+        &mut reassembler,
         &mut request_number,
         "axo.host.register",
         registration,
@@ -321,6 +326,7 @@ fn run_connection(
 
     let result = relay_session(
         &mut socket,
+        &mut reassembler,
         &mut request_number,
         RelaySessionContext {
             sessions,
@@ -435,6 +441,7 @@ fn connect_websocket(
 
 fn rpc_call(
     socket: &mut RelaySocket,
+    reassembler: &mut Reassembler,
     request_number: &mut u64,
     method: &str,
     params: impl Serialize,
@@ -454,7 +461,7 @@ fn rpc_call(
         },
     )?;
     loop {
-        let Some(raw) = read_text(socket)? else {
+        let Some(raw) = read_message(socket, reassembler)? else {
             continue;
         };
         let response: IncomingMessage = serde_json::from_str(&raw)
@@ -482,6 +489,7 @@ struct RelaySessionContext<'a> {
 
 fn relay_session(
     socket: &mut RelaySocket,
+    reassembler: &mut Reassembler,
     request_number: &mut u64,
     context: RelaySessionContext<'_>,
 ) -> io::Result<()> {
@@ -526,7 +534,7 @@ fn relay_session(
             }
         }
 
-        let Some(raw) = read_text(socket)? else {
+        let Some(raw) = read_message(socket, reassembler)? else {
             continue;
         };
         let message: IncomingMessage = serde_json::from_str(&raw)
@@ -542,6 +550,33 @@ fn relay_session(
     }
     let _ = socket.close(None);
     Ok(())
+}
+
+/// One whole message: a frame, or the last fragment's frame completing a larger message. A
+/// fragment that breaks the rules ends the connection.
+fn read_message(
+    socket: &mut RelaySocket,
+    reassembler: &mut Reassembler,
+) -> io::Result<Option<String>> {
+    let Some(raw) = read_text(socket)? else {
+        return Ok(None);
+    };
+    if !raw.contains(fragments::FRAGMENT_METHOD) {
+        return Ok(Some(raw));
+    }
+    let value: Value = serde_json::from_str(&raw)
+        .map_err(|_| io::Error::new(io::ErrorKind::InvalidData, "invalid relay JSON"))?;
+    let Some(params) = fragments::fragment_params(&value) else {
+        return Ok(Some(raw));
+    };
+    reassembler
+        .receive(params)
+        .map_err(|fragments::InvalidFragment(reason)| {
+            io::Error::new(
+                io::ErrorKind::InvalidData,
+                format!("relay sent an invalid fragment: {reason}"),
+            )
+        })
 }
 
 fn read_text(socket: &mut RelaySocket) -> io::Result<Option<String>> {
@@ -582,17 +617,27 @@ fn read_text(socket: &mut RelaySocket) -> io::Result<Option<String>> {
     }
 }
 
+/// Sends one message: in one frame, or as fragments when it is larger (RFD0016, Transport).
 fn send_json(socket: &mut RelaySocket, value: &impl Serialize) -> io::Result<()> {
+    static MESSAGES: AtomicU64 = AtomicU64::new(0);
     let text = serde_json::to_string(value).map_err(io::Error::other)?;
-    if text.len() > MAX_FRAME_BYTES {
-        return Err(io::Error::new(
+    let message_id = format!(
+        "axod-{}-{}",
+        std::process::id(),
+        MESSAGES.fetch_add(1, Ordering::Relaxed)
+    );
+    let frames = fragments::split(&text, &message_id).ok_or_else(|| {
+        io::Error::new(
             io::ErrorKind::InvalidData,
-            "relay message exceeds its frame limit",
-        ));
+            "relay message exceeds the largest message the relay reassembles",
+        )
+    })?;
+    for frame in frames {
+        socket
+            .send(Message::Text(frame.into()))
+            .map_err(io::Error::other)?;
     }
-    socket
-        .send(Message::Text(text.into()))
-        .map_err(io::Error::other)
+    Ok(())
 }
 
 fn set_read_timeout(

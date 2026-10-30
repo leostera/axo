@@ -9,11 +9,20 @@ pub const MAX_TERMINAL_INPUT_BASE64_BYTES: usize = 65_536;
 /// Decodes one terminal input request: non-empty, at most `MAX_TERMINAL_INPUT_BASE64_BYTES`,
 /// padded, and canonical (padding bits zero), so every input has exactly one encoding.
 pub fn decode_terminal_input(input: &str) -> io::Result<Vec<u8>> {
+    if input.len() > MAX_TERMINAL_INPUT_BASE64_BYTES {
+        return Err(io::Error::new(
+            io::ErrorKind::InvalidInput,
+            "terminal input is not bounded, padded base64",
+        ));
+    }
+    decode(input)
+}
+
+/// Decodes non-empty, padded, canonical base64 (padding bits zero), so every value has exactly
+/// one encoding.
+pub fn decode(input: &str) -> io::Result<Vec<u8>> {
     let (chunks, trailing_bytes) = input.as_bytes().as_chunks::<4>();
-    if input.is_empty()
-        || input.len() > MAX_TERMINAL_INPUT_BASE64_BYTES
-        || !trailing_bytes.is_empty()
-    {
+    if input.is_empty() || !trailing_bytes.is_empty() {
         return Err(io::Error::new(
             io::ErrorKind::InvalidInput,
             "terminal input is not bounded, padded base64",
