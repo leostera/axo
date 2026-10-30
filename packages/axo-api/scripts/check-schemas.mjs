@@ -16,7 +16,7 @@ import {
   hostV1Methods,
   hostV1Results,
 } from "../dist/v1.js";
-import { desiredSessionGraphSchema, stateSessionViewSchema, workspaceGraphSchema, fragmentSchema, MAX_FRAGMENTS } from "../dist/index.js";
+import { desiredSessionGraphSchema, stateSessionViewSchema, workspaceGraphSchema, fragmentSchema, discardSchema, MAX_FRAGMENTS } from "../dist/index.js";
 
 const schemaRoot = resolve(import.meta.dirname, "../../../schemas/axo.leostera.dev/v1");
 const ajv = new Ajv2020({ allErrors: true, strict: true, strictTypes: false });
@@ -285,6 +285,9 @@ const oversizedFragment = structuredClone(fragment);
 oversizedFragment.params.count = MAX_FRAGMENTS + 1;
 assert.equal(fragmentSchema.safeParse(oversizedFragment).success, false, "too many fragments are refused at runtime");
 assert.equal(ajv.getSchema("https://schemas.axo.leostera.dev/v1/connections.schema.json#/$defs/TransportFragment")(oversizedFragment), false, "and by the schema");
+const discard = await fixture("transport-discard.relay.json");
+validateWith("https://schemas.axo.leostera.dev/v1/connections.schema.json#/$defs/TransportDiscard", discard);
+assert.equal(discardSchema.safeParse(discard).success, true, "Zod must accept the discard fixture");
 const remoteCreate = await fixture("host-session-create.call.json");
 const hostCallSchema = "https://schemas.axo.leostera.dev/v1/host-relay.schema.json#/$defs/Call";
 validateWith(hostCallSchema, remoteCreate);

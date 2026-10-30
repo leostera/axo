@@ -105,3 +105,12 @@ test("any message survives splitting, in any order of its fragments", () => {
     { numRuns: 60 },
   );
 });
+
+test("a dropped message's late fragments are ignored", () => {
+  const frames = splitMessage(message(LIMITS.frameBytes * 2), "m1")!;
+  const store = new MemoryPartialStore();
+  assert.equal(receiveFragment(store, paramsOf(frames[0]!)).status, "partial");
+  store.discard("m1");
+  assert.equal(store.count(), 0);
+  assert.deepEqual(frames.slice(1).map((frame) => receiveFragment(store, paramsOf(frame)).status), frames.slice(1).map(() => "ignored"));
+});

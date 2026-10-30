@@ -6,11 +6,26 @@
  * notification. The receiver collects every chunk of a message, then parses the whole as if it
  * had arrived in one frame. Fragments of a socket that closed are discarded with it, and a
  * message that breaks these bounds closes the socket.
+ *
+ * Running out of credit never closes a host socket: everything shares it. Messages have a
+ * priority class, and senders interleave fragments by class, so a large reply never waits behind
+ * an upload. A message that waits too long for credit is dropped on its own; if some of its
+ * fragments went out, an `axo.transport.discard` notice tells the receiver to drop its partial.
+ * A receiver also drops a partial that gets no fragment for a minute, and ignores late fragments
+ * of a message it dropped.
  */
 import { z } from "zod";
 import { LIMITS } from "./contracts.js";
 
 export const FRAGMENT_METHOD = "axo.transport.fragment";
+export const DISCARD_METHOD = "axo.transport.discard";
+
+/**
+ * The order in which a sender spends credit: replies and control first, then durable upload
+ * (transcripts), then ephemeral progress. Within a class, messages go in order.
+ */
+export const PRIORITY = { control: 0, durable: 1, ephemeral: 2 } as const;
+export type Priority = (typeof PRIORITY)[keyof typeof PRIORITY];
 
 export const FRAGMENTS = {
   /** Bytes of the message in one fragment: base64 makes it 61,440 characters, under one frame with its envelope. */
@@ -19,6 +34,12 @@ export const FRAGMENTS = {
   messageBytes: 2 * 1_048_576,
   /** At most this many fragmented messages may be partly received on one socket. */
   partialPerSocket: 4,
+  /** A message that waits this long for credit is dropped, and the socket stays open. */
+  creditTimeoutMs: 30_000,
+  /** A partial message that gets no fragment for this long is dropped by its receiver. */
+  partialTimeoutMs: 60_000,
+  /** Dropped messages a receiver remembers per socket, to ignore their late fragments. */
+  discardedPerSocket: 64,
 } as const;
 
 /** Fragments one message may have: enough for the largest message. */
@@ -38,6 +59,16 @@ export type FragmentParams = z.infer<typeof fragmentParamsSchema>;
 export const fragmentSchema = z
   .object({ jsonrpc: z.literal("2.0"), method: z.literal(FRAGMENT_METHOD), params: fragmentParamsSchema })
   .strict();
+
+export const discardParamsSchema = z.object({ messageId: fragmentParamsSchema.shape.messageId }).strict();
+export const discardSchema = z
+  .object({ jsonrpc: z.literal("2.0"), method: z.literal(DISCARD_METHOD), params: discardParamsSchema })
+  .strict();
+
+/** The notice that tells a receiver to drop a message's partial. */
+export function discardNotice(messageId: string): string {
+  return JSON.stringify({ jsonrpc: "2.0", method: DISCARD_METHOD, params: { messageId } });
+}
 
 const encoder = new TextEncoder();
 
@@ -73,11 +104,16 @@ export interface PartialStore {
   take(messageId: string): string[];
   /** Messages partly received. */
   count(): number;
+  /** Drops a partial and remembers its message, so late fragments of it are ignored. */
+  discard(messageId: string): void;
+  discarded(messageId: string): boolean;
 }
 
 export type FragmentOutcome =
   /** More fragments are needed. */
   | { status: "partial" }
+  /** A late fragment of a message the receiver dropped. */
+  | { status: "ignored" }
   /** Every fragment is here: `raw` is the whole message, to be parsed as one frame would be. */
   | { status: "complete"; raw: string }
   /** The sender broke the rules; the receiver closes the socket. */
@@ -88,6 +124,7 @@ export function receiveFragment(store: PartialStore, params: unknown): FragmentO
   const parsed = fragmentParamsSchema.safeParse(params);
   if (!parsed.success) return { status: "invalid", reason: "malformed fragment" };
   const { messageId, index, count, data } = parsed.data;
+  if (store.discarded(messageId)) return { status: "ignored" };
   let bytes: number;
   try {
     bytes = fromBase64(data).byteLength;
@@ -123,6 +160,14 @@ export function receiveFragment(store: PartialStore, params: unknown): FragmentO
 /** A `PartialStore` in memory, for a receiver whose partials need not survive a restart. */
 export class MemoryPartialStore implements PartialStore {
   private readonly messages = new Map<string, { count: number; bytes: number; chunks: Map<number, string> }>();
+  private readonly dropped: string[] = [];
+  discard(messageId: string) {
+    this.messages.delete(messageId);
+    if (this.dropped.includes(messageId)) return;
+    this.dropped.push(messageId);
+    if (this.dropped.length > FRAGMENTS.discardedPerSocket) this.dropped.shift();
+  }
+  discarded(messageId: string) { return this.dropped.includes(messageId); }
   partial(messageId: string): PartialMessage | undefined {
     const m = this.messages.get(messageId);
     return m && { count: m.count, received: m.chunks.size, bytes: m.bytes };
@@ -140,7 +185,7 @@ export class MemoryPartialStore implements PartialStore {
     return m ? [...m.chunks.entries()].sort(([a], [b]) => a - b).map(([, data]) => data) : [];
   }
   count() { return this.messages.size; }
-  clear() { this.messages.clear(); }
+  clear() { this.messages.clear(); this.dropped.length = 0; }
 }
 
 function toBase64(bytes: Uint8Array): string {
