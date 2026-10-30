@@ -373,7 +373,7 @@ final class FakeChannel: AxoMessageChannel, @unchecked Sendable {
       sent.append(message)
       return nil
     }
-    if let handshake { reply(to: handshake, result: #"{"protocolVersion":1,"methods":[]}"#) }
+    if let handshake { reply(to: handshake, result: #"{"protocolVersion":2,"methods":[]}"#) }
   }
 
   func close() {

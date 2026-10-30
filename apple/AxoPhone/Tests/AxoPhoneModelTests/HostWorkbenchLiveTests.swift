@@ -100,7 +100,7 @@ final class HostWorkbenchLiveTests: XCTestCase {
     let request = try await channel.nextRequest()
     XCTAssertEqual(request.method, "axo.remote.session.key")
     XCTAssertEqual(request.params["key"] as? String, "escape")
-    XCTAssertEqual(request.params["sessionId"] as? Int, 1)
+    XCTAssertEqual(request.params["sessionId"] as? String, SessionID.fixture(1).rawValue)
     XCTAssertTrue(model.stopping.contains(1))
     channel.reply(to: request.id, result: #"{"accepted":true}"#)
     await stopping.value
@@ -165,7 +165,7 @@ final class HostWorkbenchLiveTests: XCTestCase {
 
     // Events flow again on the new connection.
     second.push(
-      #"{"jsonrpc":"2.0","method":"axo.host.event","params":{"subscriptionId":"\#(UUID().uuidString)","event":{"type":"host.data","hostId":"\#(host.hostId.uuidString)","hostGeneration":"\#(host.hostGeneration.uuidString)","event":{"type":"pi.event","sessionId":1,"piSessionId":"pi-1","streamId":"\#(UUID().uuidString)","sequence":1,"name":"agent.start","data":null}}}}"#
+      #"{"jsonrpc":"2.0","method":"axo.host.event","params":{"subscriptionId":"\#(UUID().uuidString)","event":{"type":"host.data","hostId":"\#(host.hostId.uuidString)","hostGeneration":"\#(host.hostGeneration.uuidString)","event":{"type":"pi.event","sessionId":"00000001-0000-4000-8000-000000000001","piSessionId":"pi-1","streamId":"\#(UUID().uuidString)","sequence":1,"name":"agent.start","data":null}}}}"#
     )
     try await eventually { model.chats[1]?.activity == .working }
     model.stop()

@@ -1,14 +1,62 @@
 import Foundation
 
-/// Axod's identifier for a Session. Distinct from `ShellID` so the two can never be swapped; both
-/// encode as plain JSON integers, matching the wire protocol.
+/// Axod's identifier for a Session: a UUID, the same on every surface (RFD0017). Distinct from
+/// `ShellID` so the two can never be swapped.
 ///
-/// Invariant: Axod allocates both with SQLite `INTEGER PRIMARY KEY AUTOINCREMENT`, so an ID is
-/// never reused for a different Session or shell. Code that awaits may therefore revalidate by
-/// looking the ID up again; no secondary identity (such as `sessionUuid`) is needed.
-public struct SessionID: AxodIdentifier {
-  public let rawValue: Int64
-  public init(rawValue: Int64) { self.rawValue = rawValue }
+/// Invariant: `rawValue` is the canonical lowercase hyphenated form, and the JSON encoding is
+/// that string. Foundation's `UUID` encodes uppercase, so this type encodes its own string and
+/// decoding rejects anything that is not canonical. IDs are assigned once and never reused, so code
+/// that awaits may revalidate by looking the ID up again.
+public struct SessionID: Hashable, Codable, Sendable, CustomStringConvertible {
+  public let rawValue: String
+
+  /// Fails unless `rawValue` is a canonical lowercase UUID.
+  public init?(rawValue: String) {
+    guard Self.isCanonical(rawValue) else { return nil }
+    self.rawValue = rawValue
+  }
+
+  public init(_ uuid: UUID) {
+    rawValue = uuid.uuidString.lowercased()
+  }
+
+  /// A new random Session ID.
+  public static func random() -> SessionID { SessionID(UUID()) }
+
+  public var uuid: UUID { UUID(uuidString: rawValue)! }
+
+  public init(from decoder: Decoder) throws {
+    let container = try decoder.singleValueContainer()
+    let value = try container.decode(String.self)
+    guard let id = SessionID(rawValue: value) else {
+      throw DecodingError.dataCorruptedError(
+        in: container, debugDescription: "Session IDs are canonical lowercase UUIDs")
+    }
+    self = id
+  }
+
+  public func encode(to encoder: Encoder) throws {
+    var container = encoder.singleValueContainer()
+    try container.encode(rawValue)
+  }
+
+  public var description: String { rawValue }
+
+  private static func isCanonical(_ value: String) -> Bool {
+    let utf8 = Array(value.utf8)
+    guard utf8.count == 36 else { return false }
+    for (index, byte) in utf8.enumerated() {
+      switch index {
+      case 8, 13, 18, 23:
+        guard byte == UInt8(ascii: "-") else { return false }
+      default:
+        guard (UInt8(ascii: "0")...UInt8(ascii: "9")).contains(byte)
+          || (UInt8(ascii: "a")...UInt8(ascii: "f")).contains(byte)
+        else { return false }
+      }
+    }
+    return true
+  }
 }
 
 /// Axod's identifier for one pane (shell/PTY) within a Session.

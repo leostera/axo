@@ -7,6 +7,7 @@ import {
   failure,
   success,
   negotiateSchema,
+  unsupportedProtocolVersionCode,
   registrationSchema,
   remoteMethods,
   replySchema,
@@ -136,12 +137,15 @@ export class AxoHostRelay extends DurableObject<Env> {
     > = server;
     typed.addMethod("axo.protocol.negotiate", (params, { socket }) => {
       if (!negotiateSchema.safeParse(params).success)
-        throw new JSONRPCErrorException("Invalid version", -32602);
+        throw new JSONRPCErrorException(
+          "Unsupported protocol version: this Mac's Axo and the cloud must both speak protocol 2; update Axo",
+          unsupportedProtocolVersionCode,
+        );
       const current = this.peer(socket);
       current.negotiated = true;
       socket.serializeAttachment(current);
       return {
-        protocolVersion: 1,
+        protocolVersion: 2,
         methods: [
           ...(this.supportsLegacyMachineMethods() ? ["axo.machine.register", "axo.machine.heartbeat"] : []),
           ...Object.keys(remoteMethods),

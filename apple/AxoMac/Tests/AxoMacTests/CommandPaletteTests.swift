@@ -68,7 +68,7 @@ final class CommandPaletteCatalogTests: XCTestCase {
     let deploy = try XCTUnwrap(items.first { $0.action == .showSession(1) })
     XCTAssertEqual(deploy.title, "🚀 deploy")
     XCTAssertEqual(deploy.subtitle, "Api · Needs attention · ~/src/api")
-    XCTAssertEqual(deploy.id, "session:1")
+    XCTAssertEqual(deploy.id, "session:\(SessionID.fixture(1))")
     let notes = try XCTUnwrap(items.first { $0.action == .showSession(2) })
     XCTAssertEqual(notes.subtitle, "/Users/meadow", "ready says nothing; only whole home is ~")
   }

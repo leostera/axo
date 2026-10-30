@@ -180,11 +180,17 @@ final class TerminalSessionsModel {
     }
   }
 
+  /// The Session selected when the app last ran. Before Session IDs were UUIDs (RFD0017) this
+  /// was an integer; such a value names no Session now, so it is removed and the default Session
+  /// is selected.
   private static func storedSelectedSessionID(from defaults: UserDefaults?) -> SessionID? {
-    guard let rawValue = defaults?.object(forKey: AxoPreferenceKey.selectedSession) as? Int64,
-      rawValue > 0
+    guard let defaults, let stored = defaults.object(forKey: AxoPreferenceKey.selectedSession)
     else { return nil }
-    return SessionID(rawValue: rawValue)
+    if let rawValue = stored as? String, let sessionID = SessionID(rawValue: rawValue) {
+      return sessionID
+    }
+    defaults.removeObject(forKey: AxoPreferenceKey.selectedSession)
+    return nil
   }
 
   // MARK: - Queries
@@ -245,7 +251,7 @@ final class TerminalSessionsModel {
     assign(\.focusedShellID, selection.focusedShellID)
     assign(\.layout, selection.layout)
     assign(
-      \.sessionLayouts, selection.layouts.sorted { $0.key < $1.key }.map(\.value.sessionLayout))
+      \.sessionLayouts, selection.layouts.sorted { $0.key.rawValue < $1.key.rawValue }.map(\.value.sessionLayout))
     projectCommandAvailability()
   }
 

@@ -87,6 +87,11 @@ enum PreviewFixture {
     static let studio = UUID(uuidString: "18355f00-95fd-4c93-8586-a71a8a52bf73")!
     static let imac = UUID(uuidString: "28355f00-95fd-4c93-8586-a71a8a52bf73")!
 
+    /// Preview chats are numbered; this is the Session ID of chat `number`.
+    static func sessionID(_ number: Int) -> SessionID {
+      SessionID(rawValue: String(format: "%08x-0000-4000-8000-%012x", number, number))!
+    }
+
     static var hosts: [RemoteHost] {
       // The menu lists the most recently active first: in the order they are written here. Times
       // are relative to now, so the last 8 hours (what the menu lists before "older") stay put.
@@ -94,7 +99,7 @@ enum PreviewFixture {
       func ago(_ seconds: TimeInterval) -> Int64 { Int64(Date.now.addingTimeInterval(-seconds).timeIntervalSince1970) }
       let sent = Date.now.ISO8601Format()
       func session(_ host: UUID, _ id: Int, _ name: String, _ emoji: String, _ workspace: String, status: String = "ready", active: Int64) -> String {
-        #"{"hostId":"\#(host)","sessionId":\#(id),"name":"\#(name)","emoji":"\#(emoji)","workspaceName":"\#(workspace)","status":"\#(status)","hasAgent":true,"shells":[{"shellId":\#(id * 10)}],"layout":{"kind":"pane","shellId":\#(id * 10)},"updatedAt":"\#(sent)","lastMessageAt":\#(active)}"#
+        #"{"hostId":"\#(host)","sessionId":"\#(sessionID(id))","name":"\#(name)","emoji":"\#(emoji)","workspaceName":"\#(workspace)","status":"\#(status)","hasAgent":true,"shells":[{"shellId":\#(id * 10)}],"layout":{"kind":"pane","shellId":\#(id * 10)},"updatedAt":"\#(sent)","lastMessageAt":\#(active)}"#
       }
       let json = """
         {"hosts":[
@@ -120,8 +125,8 @@ enum PreviewFixture {
         let json = #"{"id":\#(id),"streamId":"41c77dd7-f2dc-4e91-b481-1507b62ec118","sequence":\#(id),"name":"message.end","data":{"message":{"role":"\#(role)","content":"\#(escaped)"}},"receivedAt":1}"#
         return try! JSONDecoder().decode(StoredPiEvent.self, from: Data(json.utf8))
       }
-      if session == 2 { return [message(1, "user", "What's the plan?"), message(2, "assistant", "Yes. Here is the plan:\n\n# Plan\n1. Bring back the sliding **chats** menu\n2. Chat-first layout\n   - a rounded composer\n   - nothing else on screen\n3. Ship it\n\n> The old app is the reference.\n\n| Part | State |\n|---|---|\n| Menu | done |\n| Composer | in progress |\n\n---\n\nThe message box looks like this:\n\n```swift\nTextField(\"Message Axo\", text: $draft)\n    .padding(18)\n```\n\nI'll start with the menu.")] }
-      guard session == 1 else { return [message(1, "user", "Hello"), message(2, "assistant", "Hi! What are we working on?")] }
+      if session == sessionID(2) { return [message(1, "user", "What's the plan?"), message(2, "assistant", "Yes. Here is the plan:\n\n# Plan\n1. Bring back the sliding **chats** menu\n2. Chat-first layout\n   - a rounded composer\n   - nothing else on screen\n3. Ship it\n\n> The old app is the reference.\n\n| Part | State |\n|---|---|\n| Menu | done |\n| Composer | in progress |\n\n---\n\nThe message box looks like this:\n\n```swift\nTextField(\"Message Axo\", text: $draft)\n    .padding(18)\n```\n\nI'll start with the menu.")] }
+      guard session == sessionID(1) else { return [message(1, "user", "Hello"), message(2, "assistant", "Hi! What are we working on?")] }
       return [
         message(1, "user", "Can you make the phone app feel like the old one again?"),
         message(2, "assistant", "Yes. Here is the plan:\n\n# Plan\n1. Bring back the sliding **chats** menu\n2. Chat-first layout\n   - a rounded composer\n   - nothing else on screen\n3. Ship it\n\n> The old app is the reference.\n\n| Part | State |\n|---|---|\n| Menu | done |\n| Composer | in progress |\n\n---\n\nThe message box looks like this:\n\n```swift\nTextField(\"Message Axo\", text: $draft)\n    .padding(18)\n```\n\nI'll start with the menu."),

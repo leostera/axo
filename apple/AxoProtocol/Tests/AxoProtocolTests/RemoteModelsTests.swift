@@ -12,7 +12,7 @@ final class RemoteModelsTests: XCTestCase {
       {"hosts":[{"hostId":"\(host)","hostGeneration":"\(generation)","label":"Axo Mac",
       "hostKind":"macos","capabilities":[{"id":"agent.pi","version":1}],"status":"offline",
       "stale":true,"lastSeenAt":"2026-10-16T00:00:00Z","sessions":[{"hostId":"\(host)",
-      "sessionId":9,"workspaceId":"7f1918d3-8b6d-4af4-a57e-7e6ae28e89e2","workspaceName":"Axo",
+      "sessionId":"00000009-0000-4000-8000-000000000009","workspaceId":"7f1918d3-8b6d-4af4-a57e-7e6ae28e89e2","workspaceName":"Axo",
       "name":"Ship it","emoji":"🦀","status":"working","hasAgent":true,"shells":[{"shellId":12}],
       "layout":{"kind":"pane","shellId":12},"updatedAt":"2026-10-15T23:59:00Z"}]}]}
       """
@@ -40,7 +40,7 @@ final class RemoteModelsTests: XCTestCase {
 
     let output = """
       {"subscriptionId":"\(UUID().uuidString)","event":{"type":"host.data","hostId":"\(host)",
-      "hostGeneration":"\(generation)","event":{"type":"terminal.output","sessionId":3,
+      "hostGeneration":"\(generation)","event":{"type":"terminal.output","sessionId":"00000003-0000-4000-8000-000000000003",
       "shellId":4,"sequence":7,"data":"aGkK"}}}
       """
     let event = try JSONDecoder().decode(RemoteHostNotification.self, from: Data(output.utf8)).event
@@ -52,7 +52,7 @@ final class RemoteModelsTests: XCTestCase {
     let stream = UUID().uuidString
     let live = """
       {"subscriptionId":"\(UUID().uuidString)","event":{"type":"host.data","hostId":"\(host)",
-      "hostGeneration":"\(generation)","event":{"type":"pi.event","sessionId":2,"piSessionId":"pi-1",
+      "hostGeneration":"\(generation)","event":{"type":"pi.event","sessionId":"00000002-0000-4000-8000-000000000002","piSessionId":"pi-1",
       "streamId":"\(stream)","sequence":5,"name":"message.end",
       "data":{"message":{"role":"user","content":[{"type":"text","text":"hi"}]}}}}}
       """
@@ -76,7 +76,7 @@ final class RemoteModelsTests: XCTestCase {
     let json = """
       {"subscriptionId":"\(UUID().uuidString)","event":{"type":"host.data","hostId":"\(host)",
       "hostGeneration":"\(generation)","event":{"type":"session.snapshot","snapshot":
-      {"hostId":"\(UUID().uuidString)","sessionId":1,"shells":[],"layout":null,
+      {"hostId":"\(UUID().uuidString)","sessionId":"00000001-0000-4000-8000-000000000001","shells":[],"layout":null,
       "updatedAt":"2026-10-16T00:00:00Z"}}}}
       """
     XCTAssertThrowsError(try JSONDecoder().decode(RemoteHostNotification.self, from: Data(json.utf8)))
@@ -86,7 +86,7 @@ final class RemoteModelsTests: XCTestCase {
     for event in [
       #"{"type":"host.data","hostId":"\#(host)","hostGeneration":"\#(generation)","event":{"type":"surprise"}}"#,
       #"{"type":"host.nope","hostId":"\#(host)","hostGeneration":"\#(generation)"}"#,
-      #"{"type":"host.data","hostId":"\#(host)","hostGeneration":"\#(generation)","event":{"type":"terminal.output","sessionId":1,"shellId":1,"sequence":0,"data":"***"}}"#,
+      #"{"type":"host.data","hostId":"\#(host)","hostGeneration":"\#(generation)","event":{"type":"terminal.output","sessionId":"00000001-0000-4000-8000-000000000001","shellId":1,"sequence":0,"data":"***"}}"#,
     ] {
       let json = #"{"subscriptionId":"\#(UUID().uuidString)","event":\#(event)}"#
       XCTAssertThrowsError(

@@ -1,6 +1,6 @@
 import { z } from "zod";
 
-export const protocolVersion = 1 as const;
+export const protocolVersion = 2 as const;
 export const hostIdSchema = z.uuid();
 export const hostGenerationSchema = z.uuid();
 export const hostCapabilitySchema = z.object({
@@ -14,7 +14,9 @@ export const hostCapabilitiesSchema = z.array(hostCapabilitySchema).max(32).supe
     ids.add(capability.id);
   });
 });
-export const sessionIdSchema = z.number().int().positive().max(Number.MAX_SAFE_INTEGER);
+/** A Session ID: a UUID in canonical lowercase form (RFD0017). */
+export const sessionIdSchema = z.string().regex(/^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/, "Session IDs are lowercase UUIDs");
+export type SessionId = z.infer<typeof sessionIdSchema>;
 export const shellIdSchema = z.number().int().positive().max(Number.MAX_SAFE_INTEGER);
 export const hostRefSchema = z.object({
   hostId: hostIdSchema,
@@ -51,7 +53,6 @@ export { layoutSchema };
 export const sessionSnapshotSchema = z.object({
   hostId: hostIdSchema,
   sessionId: sessionIdSchema,
-  sessionUuid: z.uuid().optional(),
   workspaceId: z.uuid().nullable().optional(),
   workspaceName: z.string().max(80).nullable().optional(),
   name: z.string().min(1).max(80).optional(),
@@ -74,7 +75,7 @@ function checkSessionOwnership(
   sessions: SessionSnapshot[],
   context: z.RefinementCtx,
 ): void {
-  const sessionIds = new Set<number>();
+  const sessionIds = new Set<string>();
   sessions.forEach((session, index) => {
     if (session.hostId !== hostId) {
       context.addIssue({

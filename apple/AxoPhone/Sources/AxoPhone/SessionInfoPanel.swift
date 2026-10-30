@@ -75,7 +75,7 @@ private struct SessionFacts: View {
       if let updated = try? Date(session.updatedAt, strategy: .iso8601) {
         Fact(label: "Last active", value: updated.formatted(.relative(presentation: .named)))
       }
-      Fact(label: "Chat", value: session.sessionUuid?.uuidString.lowercased() ?? "\(session.sessionId)", monospaced: true)
+      Fact(label: "Chat", value: session.sessionId.rawValue, monospaced: true)
     }
     .background(ChatColors.surface, in: RoundedRectangle(cornerRadius: 16, style: .continuous))
   }

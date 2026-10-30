@@ -127,7 +127,8 @@ pub struct Shell {
 
 #[derive(Clone, Debug, Deserialize)]
 pub struct Session {
-    pub id: i64,
+    /// A UUID; the load test only passes it back.
+    pub id: String,
     pub shells: Vec<Shell>,
 }
 
@@ -142,20 +143,20 @@ pub struct NoParams {}
 #[derive(Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct SessionRef {
-    pub session_id: i64,
+    pub session_id: String,
 }
 
 #[derive(Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct ShellRef {
-    pub session_id: i64,
+    pub session_id: String,
     pub shell_id: i64,
 }
 
 #[derive(Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct Resize {
-    pub session_id: i64,
+    pub session_id: String,
     pub shell_id: i64,
     pub rows: u32,
     pub columns: u32,
@@ -164,7 +165,7 @@ pub struct Resize {
 #[derive(Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct TerminalInput {
-    pub session_id: i64,
+    pub session_id: String,
     pub shell_id: i64,
     pub sequence: u64,
     /// Base64.
@@ -179,7 +180,7 @@ pub struct ConfigGet {
 #[derive(Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct Subscribe {
-    pub session_id: Option<i64>,
+    pub session_id: Option<String>,
     pub include_terminal_output: bool,
 }
 
@@ -211,7 +212,7 @@ pub struct Event {
 #[derive(Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct SetLayout<'a> {
-    pub session_id: i64,
+    pub session_id: String,
     pub layout: &'a Layout,
 }
 

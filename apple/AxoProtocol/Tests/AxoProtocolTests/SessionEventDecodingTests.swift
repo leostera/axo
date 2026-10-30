@@ -8,7 +8,7 @@ final class SessionEventDecodingTests: XCTestCase {
 
   func testTerminalOutputCarriesItsDecodedBytes() throws {
     let event = try decode(
-      #"{"type":"terminal.output","sessionId":1,"shellId":2,"sequence":3,"data":"aGk="}"#)
+      #"{"type":"terminal.output","sessionId":"00000001-0000-4000-8000-000000000001","shellId":2,"sequence":3,"data":"aGk="}"#)
     XCTAssertEqual(
       event, .terminalOutput(sessionID: 1, shellID: 2, sequence: 3, data: Data("hi".utf8)))
   }
@@ -16,7 +16,7 @@ final class SessionEventDecodingTests: XCTestCase {
   func testTerminalOutputThatIsNotBase64IsADecodingError() {
     XCTAssertThrowsError(
       try decode(
-        #"{"type":"terminal.output","sessionId":1,"shellId":2,"sequence":3,"data":"%%"}"#)
+        #"{"type":"terminal.output","sessionId":"00000001-0000-4000-8000-000000000001","shellId":2,"sequence":3,"data":"%%"}"#)
     ) { error in
       guard case DecodingError.dataCorrupted = error else {
         return XCTFail("expected dataCorrupted, got \(error)")

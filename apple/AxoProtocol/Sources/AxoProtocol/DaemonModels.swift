@@ -34,7 +34,7 @@ public struct ProtocolNegotiation: Decodable, Equatable, Sendable {
   public let methods: [String]
 
   /// The protocol version this Axo speaks; Axod must answer with the same.
-  public static let supportedVersion: UInt32 = 1
+  public static let supportedVersion: UInt32 = 2
 
   public init(protocolVersion: UInt32, methods: [String]) {
     self.protocolVersion = protocolVersion

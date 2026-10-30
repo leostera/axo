@@ -62,7 +62,7 @@ test("host metadata is available without Worker JWT validation and becomes stale
   const daemon = await Peer.connectHost(h.url, await h.token("daemon"), hostId, "daemon");
   await daemon.negotiate();
   const registered = await daemon.call("axo.host.register", {
-    protocolVersion: 1,
+    protocolVersion: 2,
     hostId,
     hostGeneration,
     label: "Axo Mac metadata fixture",
@@ -70,7 +70,7 @@ test("host metadata is available without Worker JWT validation and becomes stale
     capabilities: [{ id: "agent.pi", version: 1 }, { id: "terminal.pty", version: 1 }],
     sessions: [{
       hostId,
-      sessionId: 9,
+      sessionId: "00000009-0000-4000-8000-000000000009",
       shells: [{ shellId: 12 }, { shellId: 13 }],
       layout: {
         kind: "split",
@@ -98,7 +98,7 @@ test("host metadata is available without Worker JWT validation and becomes stale
     { id: "agent.pi", version: 1 },
     { id: "terminal.pty", version: 1 },
   ]);
-  assert.equal(listed.hosts[0].sessions[0].sessionId, 9);
+  assert.equal(listed.hosts[0].sessions[0].sessionId, "00000009-0000-4000-8000-000000000009");
 
   const sessionsURL = new URL(`v1/hosts/${hostId}/sessions`, h.url);
   sessionsURL.searchParams.set("hostGeneration", hostGeneration);
@@ -124,7 +124,7 @@ test("host metadata is available without Worker JWT validation and becomes stale
     hostGeneration,
     sessions: [{
       hostId,
-      sessionId: 10,
+      sessionId: "0000000a-0000-4000-8000-00000000000a",
       shells: [{ shellId: 14 }],
       layout: { kind: "pane", shellId: 14 },
       updatedAt: new Date().toISOString(),
@@ -134,7 +134,7 @@ test("host metadata is available without Worker JWT validation and becomes stale
   assert.equal(sessionsPublishResultSchema.parse(publication.result).storedAt.length > 0, true);
   const latestResponse = await fetch(sessionsURL, { headers });
   const latest = hostSessionsListResultSchema.parse(await latestResponse.json());
-  assert.deepEqual(latest.sessions.map((session) => session.sessionId), [10]);
+  assert.deepEqual(latest.sessions.map((session) => session.sessionId), ["0000000a-0000-4000-8000-00000000000a"]);
 
   const staleGenerationURL = new URL(sessionsURL);
   staleGenerationURL.searchParams.set("hostGeneration", crypto.randomUUID());
@@ -155,7 +155,7 @@ test("host metadata is available without Worker JWT validation and becomes stale
     name: "private-fleet",
   });
   const storedRows = await storage.exec<{ host_id: string; snapshot_json: string }>(
-    "SELECT host_id, snapshot_json FROM host_sessions_v1 WHERE host_id = ?",
+    "SELECT host_id, snapshot_json FROM host_sessions_v2 WHERE host_id = ?",
     hostId,
   );
   assert.equal(storedRows.length, 1);
@@ -167,7 +167,7 @@ test("host metadata is available without Worker JWT validation and becomes stale
   daemon.close();
   const offline = await waitForOffline(String(listURL), headers, hostId);
   assert.equal(offline.stale, true);
-  assert.equal(offline.sessions[0].sessionId, 10);
+  assert.equal(offline.sessions[0].sessionId, "0000000a-0000-4000-8000-00000000000a");
 
   await h.restart();
   const restartedListURL = new URL("v1/hosts", h.url);
@@ -175,7 +175,7 @@ test("host metadata is available without Worker JWT validation and becomes stale
   const afterRestart = hostListResultSchema.parse(await afterRestartResponse.json());
   assert.equal(afterRestart.hosts[0].status, "offline");
   assert.equal(afterRestart.hosts[0].stale, true);
-  assert.equal(afterRestart.hosts[0].sessions[0].sessionId, 10);
+  assert.equal(afterRestart.hosts[0].sessions[0].sessionId, "0000000a-0000-4000-8000-00000000000a");
 });
 
 test("host subscriptions stream metadata and output; remote controls are routed without storing terminal bytes", async (t) => {
@@ -187,13 +187,13 @@ test("host subscriptions stream metadata and output; remote controls are routed 
   await daemon.negotiate();
   const initialSnapshot = {
     hostId,
-    sessionId: 1,
+    sessionId: "00000001-0000-4000-8000-000000000001",
     shells: [{ shellId: 2 }],
     layout: { kind: "pane", shellId: 2 },
     updatedAt: new Date().toISOString(),
   };
   const registration = await daemon.call("axo.host.register", {
-    protocolVersion: 1,
+    protocolVersion: 2,
     hostId,
     hostGeneration,
     label: "Relay fixture",
@@ -220,7 +220,7 @@ test("host subscriptions stream metadata and output; remote controls are routed 
 
   const liveSnapshot = {
     ...initialSnapshot,
-    sessionId: 3,
+    sessionId: "00000003-0000-4000-8000-000000000003",
     updatedAt: new Date().toISOString(),
   };
   const metadataEvent = hostDataEventSchema.parse({
@@ -236,7 +236,7 @@ test("host subscriptions stream metadata and output; remote controls are routed 
     headers: accessHeaders(await h.token("client")),
   });
   const persisted = hostSessionsListResultSchema.parse(await stored.json());
-  assert.ok(persisted.sessions.some((session) => session.sessionId === 3));
+  assert.ok(persisted.sessions.some((session) => session.sessionId === "00000003-0000-4000-8000-000000000003"));
 
   const terminalText = "REMOTE_TERMINAL_BYTES_MUST_NOT_PERSIST";
   const terminalEvent = hostDataEventSchema.parse({
@@ -245,7 +245,7 @@ test("host subscriptions stream metadata and output; remote controls are routed 
     hostGeneration,
     event: {
       type: "terminal.output",
-      sessionId: 3,
+      sessionId: "00000003-0000-4000-8000-000000000003",
       shellId: 2,
       sequence: 1,
       data: Buffer.from(terminalText).toString("base64"),
@@ -257,7 +257,7 @@ test("host subscriptions stream metadata and output; remote controls are routed 
 
   const remoteInput = client.call("axo.remote.terminal.input", {
     target: { hostId, hostGeneration },
-    sessionId: 3,
+    sessionId: "00000003-0000-4000-8000-000000000003",
     shellId: 2,
     sequence: 0,
     data: Buffer.from("echo remote").toString("base64"),
@@ -283,11 +283,11 @@ test("host subscriptions stream metadata and output; remote controls are routed 
   daemon.send({
     jsonrpc: "2.0",
     id: createRequest.id,
-    result: { session: { ...initialSnapshot, sessionId: 4 } },
+    result: { session: { ...initialSnapshot, sessionId: "00000004-0000-4000-8000-000000000004" } },
   });
   const createResult = await createSession;
   assert.ok("result" in createResult);
-  assert.equal(remoteSessionCreateResultSchema.parse(createResult.result).session.sessionId, 4);
+  assert.equal(remoteSessionCreateResultSchema.parse(createResult.result).session.sessionId, "00000004-0000-4000-8000-000000000004");
 
   const workspaceSessionCreate = client.call("axo.remote.workspace.session.create", {
     target: { hostId, hostGeneration },
@@ -299,17 +299,17 @@ test("host subscriptions stream metadata and output; remote controls are routed 
   daemon.send({
     jsonrpc: "2.0",
     id: workspaceCreateRequest.id,
-    result: { session: { ...initialSnapshot, sessionId: 5, workspaceId: workspaceCreateRequest.params.workspaceId, workspaceName: "Test workspace", hasAgent: true, shells: [], layout: null } },
+    result: { session: { ...initialSnapshot, sessionId: "00000005-0000-4000-8000-000000000005", workspaceId: workspaceCreateRequest.params.workspaceId, workspaceName: "Test workspace", hasAgent: true, shells: [], layout: null } },
   });
   const workspaceCreateResult = await workspaceSessionCreate;
   assert.ok("result" in workspaceCreateResult);
-  assert.equal(remoteSessionCreateResultSchema.parse(workspaceCreateResult.result).session.sessionId, 5);
+  assert.equal(remoteSessionCreateResultSchema.parse(workspaceCreateResult.result).session.sessionId, "00000005-0000-4000-8000-000000000005");
 
   const directoryStorage = await h.mf.unsafeGetDurableObjectStorage("api-test", "AxoHostDirectory", {
     name: "private-fleet",
   });
   const persistedRows = await directoryStorage.exec<{ snapshot_json: string }>(
-    "SELECT snapshot_json FROM host_sessions_v1 WHERE host_id = ?",
+    "SELECT snapshot_json FROM host_sessions_v2 WHERE host_id = ?",
     hostId,
   );
   assert.equal(JSON.stringify(persistedRows).includes(terminalText), false);

@@ -16,15 +16,7 @@ final class AxodInteropTests: XCTestCase {
     defer { try? FileManager.default.removeItem(at: directory) }
 
     let socketPath = try UnixSocketPath(directory.appendingPathComponent("axod.sock").path)
-    let daemon = Process()
-    daemon.executableURL = try axodExecutable()
-    daemon.arguments = [
-      "--socket", socketPath.value,
-      "--server-dir", directory.appendingPathComponent("server").path,
-    ]
-    daemon.standardOutput = FileHandle.nullDevice
-    daemon.standardError = FileHandle.nullDevice
-    try daemon.run()
+    let daemon = try startAxod(socket: socketPath, in: directory)
     defer { stop(daemon) }
 
     try await waitForSocket(at: socketPath, from: daemon)
@@ -57,7 +49,8 @@ final class AxodInteropTests: XCTestCase {
     let initialSessions = try await axod.listSessionSnapshot().sessions
     XCTAssertEqual(initialSessions.count, 1)
     let baselineSession = try XCTUnwrap(initialSessions.first)
-    let baselineShell = try XCTUnwrap(baselineSession.shells.first)
+    // The Home Session starts with Pi beside a terminal.
+    let baselineShell = try XCTUnwrap(baselineSession.shells.first { $0.role == .terminal })
     do {
       _ = try await axod.restartPi(
         shellID: baselineShell.id,
@@ -95,7 +88,7 @@ final class AxodInteropTests: XCTestCase {
     try await axod.unsubscribe(subscription)
     XCTAssertEqual(
       sessionsAfterCreate.first(where: { $0.id == createdSession.id })?.shells.map(\.id),
-      [createdSession.shells[0].id, createdShell.id]
+      createdSession.shells.map(\.id) + [createdShell.id]
     )
 
     let closedShell = try await axod.closeShell(
@@ -177,15 +170,7 @@ final class AxodInteropTests: XCTestCase {
     try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
     defer { try? FileManager.default.removeItem(at: directory) }
     let socketPath = try UnixSocketPath(directory.appendingPathComponent("axod.sock").path)
-    let daemon = Process()
-    daemon.executableURL = try axodExecutable()
-    daemon.arguments = [
-      "--socket", socketPath.value,
-      "--server-dir", directory.appendingPathComponent("server").path,
-    ]
-    daemon.standardOutput = FileHandle.nullDevice
-    daemon.standardError = FileHandle.nullDevice
-    try daemon.run()
+    let daemon = try startAxod(socket: socketPath, in: directory)
     defer { stop(daemon) }
     try await waitForSocket(at: socketPath, from: daemon)
     let axod = AxodConnection(socketPath: socketPath)
@@ -199,22 +184,14 @@ final class AxodInteropTests: XCTestCase {
     try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
     defer { try? FileManager.default.removeItem(at: directory) }
     let socketPath = try UnixSocketPath(directory.appendingPathComponent("axod.sock").path)
-    let daemon = Process()
-    daemon.executableURL = try axodExecutable()
-    daemon.arguments = [
-      "--socket", socketPath.value,
-      "--server-dir", directory.appendingPathComponent("server").path,
-    ]
-    daemon.standardOutput = FileHandle.nullDevice
-    daemon.standardError = FileHandle.nullDevice
-    try daemon.run()
+    let daemon = try startAxod(socket: socketPath, in: directory)
     defer { stop(daemon) }
     try await waitForSocket(at: socketPath, from: daemon)
     let axod = AxodConnection(socketPath: socketPath)
 
     let sessions = try await axod.listSessionSnapshot().sessions
     let session = try XCTUnwrap(sessions.first)
-    let shell = try XCTUnwrap(session.shells.first)
+    let shell = try XCTUnwrap(session.shells.first { $0.role == .terminal })
     let attachSocket = try UnixSocketPath(shell.attachSocketPath)
     let first = try TerminalAttachment.open(socketPath: attachSocket, shellID: shell.id)
     defer { first.close() }
@@ -246,10 +223,37 @@ final class AxodInteropTests: XCTestCase {
   }
 }
 
-private func axodExecutable() throws -> URL {
+/// Starts Axod with its catalog in `directory`. Pi panes run the declared inert fixtures, never
+/// the developer's Pi or extension: without an extension Axod cannot start a Workspace Session,
+/// and a test expecting the Home Session would find none.
+private func startAxod(socket: UnixSocketPath, in directory: URL) throws -> Process {
+  let home = directory.appendingPathComponent("home", isDirectory: true)
+  try FileManager.default.createDirectory(at: home, withIntermediateDirectories: true)
+  let daemon = Process()
+  daemon.executableURL = try runfile(named: "AXOD_BINARY", executable: true)
+  daemon.arguments = [
+    "--socket", socket.value,
+    "--server-dir", directory.appendingPathComponent("server").path,
+  ]
+  var environment = ProcessInfo.processInfo.environment
+  environment["HOME"] = home.path
+  environment["AXO_PI_EXTENSION_PATH"] = try runfile(
+    named: "AXO_PI_EXTENSION_PATH", executable: false
+  ).path
+  environment["AXO_PI_EXECUTABLE"] = try runfile(named: "AXO_TEST_PI_EXECUTABLE", executable: true)
+    .path
+  daemon.environment = environment
+  daemon.standardOutput = FileHandle.nullDevice
+  daemon.standardError = FileHandle.nullDevice
+  try daemon.run()
+  return daemon
+}
+
+/// The runfile whose path the test environment variable `name` holds.
+private func runfile(named name: String, executable: Bool) throws -> URL {
   let environment = ProcessInfo.processInfo.environment
-  guard let configuredPath = environment["AXOD_BINARY"] else {
-    throw AxodInteropError.missingBinaryPath
+  guard let configuredPath = environment[name] else {
+    throw AxodInteropError.missingRunfile(name)
   }
 
   let fileManager = FileManager.default
@@ -267,9 +271,13 @@ private func axodExecutable() throws -> URL {
       runfiles.appendingPathComponent("_main").appendingPathComponent(configuredPath))
   }
 
-  guard let executable = candidates.first(where: { fileManager.isExecutableFile(atPath: $0.path) })
+  guard
+    let executable = candidates.first(where: {
+      executable
+        ? fileManager.isExecutableFile(atPath: $0.path) : fileManager.fileExists(atPath: $0.path)
+    })
   else {
-    throw AxodInteropError.binaryNotFound(configuredPath)
+    throw AxodInteropError.runfileNotFound(configuredPath)
   }
   return executable
 }
@@ -322,16 +330,16 @@ private func socketAcceptsConnections(atPath path: String) -> Bool {
 }
 
 private enum AxodInteropError: LocalizedError {
-  case missingBinaryPath
-  case binaryNotFound(String)
+  case missingRunfile(String)
+  case runfileNotFound(String)
   case daemonExitedEarly
 
   var errorDescription: String? {
     switch self {
-    case .missingBinaryPath:
-      "Bazel must provide AXOD_BINARY to the interop test."
-    case .binaryNotFound(let path):
-      "Could not resolve axod from Bazel runfiles at \(path)."
+    case .missingRunfile(let name):
+      "Bazel must provide \(name) to the interop test."
+    case .runfileNotFound(let path):
+      "Could not resolve \(path) from Bazel runfiles."
     case .daemonExitedEarly:
       "axod exited before creating its Unix-domain socket."
     }

@@ -182,7 +182,7 @@ final class AccountClientTests: XCTestCase {
     let page = try await makeClient(loader).piEvents(of: ref, session: 7, before: 12, limit: 500)
     XCTAssertTrue(page.events.isEmpty)
     let url = try XCTUnwrap(loader.requests.first?.url)
-    XCTAssertEqual(url.path, "/api/v1/account/hosts/\(hostID.uuidString.lowercased())/sessions/7/events")
+    XCTAssertEqual(url.path, "/api/v1/account/hosts/\(hostID.uuidString.lowercased())/sessions/\(SessionID.fixture(7))/events")
     XCTAssertEqual(URLComponents(url: url, resolvingAgainstBaseURL: false)?.queryItems?.map { "\($0.name)=\($0.value ?? "")" }, ["before=12", "limit=50"])
   }
 
@@ -196,7 +196,7 @@ final class AccountClientTests: XCTestCase {
   }
 
   private func sessions(generation: UUID) -> String {
-    #"{"host":{"hostId":"\#(hostID.uuidString)","hostGeneration":"\#(generation.uuidString)","label":"Studio","hostKind":"macos","status":"online","stale":false,"lastSeenAt":"2026-10-16T00:00:00Z","sessions":[]},"sessions":[{"hostId":"\#(hostID.uuidString)","sessionId":4,"shells":[],"layout":null,"updatedAt":"2026-10-16T00:00:00Z"}]}"#
+    #"{"host":{"hostId":"\#(hostID.uuidString)","hostGeneration":"\#(generation.uuidString)","label":"Studio","hostKind":"macos","status":"online","stale":false,"lastSeenAt":"2026-10-16T00:00:00Z","sessions":[]},"sessions":[{"hostId":"\#(hostID.uuidString)","sessionId":"00000004-0000-4000-8000-000000000004","shells":[],"layout":null,"updatedAt":"2026-10-16T00:00:00Z"}]}"#
   }
 }
 
@@ -371,7 +371,7 @@ final class HostConnectionTests: XCTestCase {
     XCTAssertEqual(target["hostGeneration"]?.lowercased(), host.hostGeneration.uuidString.lowercased())
     channel.reply(
       to: try XCTUnwrap(request["id"] as? Int),
-      result: #"{"session":{"hostId":"\#(host.hostId.uuidString)","sessionId":7,"shells":[],"layout":null,"updatedAt":"2026-10-16T00:00:00Z"}}"#
+      result: #"{"session":{"hostId":"\#(host.hostId.uuidString)","sessionId":"00000007-0000-4000-8000-000000000007","shells":[],"layout":null,"updatedAt":"2026-10-16T00:00:00Z"}}"#
     )
     let session = try await created
     XCTAssertEqual(session.sessionId, 7)
@@ -407,7 +407,7 @@ final class HostConnectionTests: XCTestCase {
     let id = try await channel.firstRequestID()
     channel.reply(
       to: id,
-      result: #"{"session":{"hostId":"\#(UUID().uuidString)","sessionId":7,"shells":[],"layout":null,"updatedAt":"2026-10-16T00:00:00Z"}}"#
+      result: #"{"session":{"hostId":"\#(UUID().uuidString)","sessionId":"00000007-0000-4000-8000-000000000007","shells":[],"layout":null,"updatedAt":"2026-10-16T00:00:00Z"}}"#
     )
     do {
       _ = try await created
@@ -435,7 +435,7 @@ final class HostConnectionTests: XCTestCase {
     XCTAssertEqual(handshake.map(\.method), ["axo.protocol.negotiate"], "nothing else goes first")
     try await Task.sleep(for: .milliseconds(100))
     XCTAssertEqual(channel.sentCount, 1, "the call waits for the handshake")
-    channel.reply(to: handshake[0].id, result: #"{"protocolVersion":1,"methods":[]}"#)
+    channel.reply(to: handshake[0].id, result: #"{"protocolVersion":2,"methods":[]}"#)
     let calls = try await sentCalls(channel, count: 2)
     XCTAssertEqual(calls.map(\.method), ["axo.protocol.negotiate", "axo.remote.session.prompt"])
     channel.reply(to: calls[1].id, result: #"{"accepted":true}"#)
@@ -491,7 +491,7 @@ final class HostConnectionTests: XCTestCase {
     XCTAssertEqual(request["method"] as? String, "axo.remote.session.prompt")
     let params = try XCTUnwrap(request["params"] as? [String: Any])
     XCTAssertEqual(params["text"] as? String, "run the tests")
-    XCTAssertEqual(params["sessionId"] as? Int, 3)
+    XCTAssertEqual(params["sessionId"] as? String, SessionID.fixture(3).rawValue)
     XCTAssertNil(params["shellId"], "a prompt goes to the Session's Pi, not to a terminal")
     channel.reply(to: try XCTUnwrap(request["id"] as? Int), result: #"{"accepted":false}"#)
     do {
@@ -533,7 +533,7 @@ final class HostConnectionTests: XCTestCase {
 
     let subscription = UUID().uuidString
     func event(for ref: RemoteHostRef, text: String) -> String {
-      #"{"jsonrpc":"2.0","method":"axo.host.event","params":{"subscriptionId":"\#(subscription)","event":{"type":"host.data","hostId":"\#(ref.hostId.uuidString)","hostGeneration":"\#(ref.hostGeneration.uuidString)","event":{"type":"terminal.output","sessionId":1,"shellId":2,"sequence":0,"data":"\#(Data(text.utf8).base64EncodedString())"}}}}"#
+      #"{"jsonrpc":"2.0","method":"axo.host.event","params":{"subscriptionId":"\#(subscription)","event":{"type":"host.data","hostId":"\#(ref.hostId.uuidString)","hostGeneration":"\#(ref.hostGeneration.uuidString)","event":{"type":"terminal.output","sessionId":"00000001-0000-4000-8000-000000000001","shellId":2,"sequence":0,"data":"\#(Data(text.utf8).base64EncodedString())"}}}}"#
     }
     let stranger = RemoteHostRef(hostId: UUID(), hostGeneration: UUID())
     channel.send(raw: event(for: stranger, text: "nope"))

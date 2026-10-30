@@ -22,8 +22,12 @@ test("a fragmented call from a daemon is reassembled and answered", async (t) =>
   assert.equal(reply.error?.code, -32602);
 
   // The socket still serves ordinary calls.
-  const negotiated = await daemon.call("axo.protocol.negotiate", { protocolVersion: 1 });
+  const negotiated = await daemon.call("axo.protocol.negotiate", { protocolVersion: 2 });
   assert.ok("result" in negotiated);
+  // A Mac on protocol 1 (integer Session IDs) is refused with a reason it can show (RFD0017).
+  const outdated = await daemon.call("axo.protocol.negotiate", { protocolVersion: 1 }) as { error?: { code: number; message: string } };
+  assert.equal(outdated.error?.code, -32010);
+  assert.match(outdated.error?.message ?? "", /protocol 2/);
   daemon.close();
 });
 
@@ -47,7 +51,7 @@ test("a discard notice drops a partial message and the socket stays open", async
   daemon.send({ jsonrpc: "2.0", method: "axo.transport.discard", params: { messageId: "big-2" } });
   // The rest arrives late and is ignored: no reply comes for the dropped message.
   for (const frame of frames.slice(1)) daemon.send(frame);
-  const negotiated = await daemon.call("axo.protocol.negotiate", { protocolVersion: 1 });
+  const negotiated = await daemon.call("axo.protocol.negotiate", { protocolVersion: 2 });
   assert.ok("result" in negotiated);
   daemon.send({ jsonrpc: "2.0", id: "after", method: "axo.host.heartbeat", params: {} });
   const reply = (await daemon.next()) as { id: string };

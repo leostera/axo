@@ -741,7 +741,7 @@ private struct HostRow: View {
       else { return }
       let result: String? =
         switch method {
-        case "axo.protocol.negotiate": #"{"protocolVersion":1,"methods":[]}"#
+        case "axo.protocol.negotiate": #"{"protocolVersion":2,"methods":[]}"#
         case "axo.host.subscribe": #"{"subscriptionId":"\#(UUID().uuidString)"}"#
         case "axo.remote.workspace.list":
           #"{"workspaces":[{"workspaceId":"\#(UUID().uuidString)","name":"Home","home":true},{"workspaceId":"\#(UUID().uuidString)","name":"Axo"},{"workspaceId":"\#(UUID().uuidString)","name":"Website"}]}"#

@@ -11,7 +11,7 @@ final class ChatMenuTests: XCTestCase {
     let times = [lastMessageAt.map { ",\"lastMessageAt\":\($0)" }, createdAt.map { ",\"createdAt\":\($0)" }]
       .compactMap { $0 }.joined()
     return try! JSONDecoder().decode(RemoteSession.self, from: Data("""
-      {"hostId":"\(host.uuidString)","sessionId":\(id),"name":"S\(id)","workspaceName":"\(workspace)",
+      {"hostId":"\(host.uuidString)","sessionId":"\(SessionID.fixture(UInt32(id)))","name":"S\(id)","workspaceName":"\(workspace)",
       "hasAgent":\(agent),"status":"\(status)","shells":[],"layout":null,"updatedAt":"\(time)"\(times)}
       """.utf8))
   }
@@ -21,7 +21,7 @@ final class ChatMenuTests: XCTestCase {
   }
 
   private func host(_ label: String, _ sessions: [RemoteSession], id: UUID) -> RemoteHost {
-    let list = sessions.map { "{\"hostId\":\"\(id.uuidString)\",\"sessionId\":\($0.sessionId),\"shells\":[],\"updatedAt\":\"\($0.updatedAt)\"}" }
+    let list = sessions.map { "{\"hostId\":\"\(id.uuidString)\",\"sessionId\":\"\($0.sessionId)\",\"shells\":[],\"updatedAt\":\"\($0.updatedAt)\"}" }
     return try! JSONDecoder().decode(RemoteHost.self, from: Data("""
       {"hostId":"\(id.uuidString)","hostGeneration":"\(UUID().uuidString)","label":"\(label)","hostKind":"macos",
       "status":"online","stale":false,"lastSeenAt":"2026-10-16T00:00:00Z","sessions":[\(list.joined(separator: ","))]}

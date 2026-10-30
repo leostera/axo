@@ -215,7 +215,7 @@ export class Peer {
   }
   async negotiate() {
     const reply = await this.call("axo.protocol.negotiate", {
-      protocolVersion: 1,
+      protocolVersion: 2,
     });
     if (!("result" in reply)) throw new Error("Negotiation failed");
   }

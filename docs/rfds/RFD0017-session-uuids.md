@@ -1,10 +1,10 @@
 # RFD0017 - Axo: Sessions are identified by UUIDs
 
 - Feature Name: `axo-session-uuids`
-- Status: Draft
+- Status: Implemented
 - Author: leostera
 - Start Date: 2026-10-29
-- Updated: 2026-10-29
+- Updated: 2026-10-30
 - Document Type: Proposal
 
 ## Summary
@@ -179,10 +179,14 @@ History and catalogs stay one database reset away from showing one Session's con
 - Delete the integer-keyed history Durable Objects explicitly, or just leave them unread? Leaving them is simpler and costs only storage.
 - Should `/axo-share` links carry a short Session ID prefix, as first discussed, now that Session IDs are account-wide? The current design uses a random share ID only.
 
-### During implementation
+### Resolved during implementation
 
-- The exact SQLite steps for rebuilding `shells` without losing `AUTOINCREMENT` sequence state for shell IDs.
-- Whether any Mac UI shows a Session number to people today. If it does, it should show the Session's name or a short UUID prefix instead.
+- **Shell ID sequence.** The rebuilt `shells` keeps every shell's ID, and `sqlite_sequence` is raised back to the old high-water mark afterwards, so the ID of a shell whose row is gone is never reused.
+- **Backup.** `axo_store::open` writes `axo.db.pre-uuid` with `VACUUM INTO` before the migrating transaction (it includes the WAL), only once.
+- **Ties.** Sessions created or closed in the same second are ordered by SQLite's `rowid` (insertion order), which the migration preserves by copying in the old integer order. Clients tie-break on creation time, then the ID string, only to be deterministic.
+- **Session numbers in the UI.** None were shown except fallbacks such as "Session 42" for an unnamed Session; they now say "Session".
+- **Protocol refusal.** `axo.protocol.negotiate` refuses any version but 2 with code `-32010` and a fixed message ("this Mac's Axo and the cloud must both speak protocol 2; update Axo"), which the relay does not replace with "Operation rejected".
+- **Swift fixtures.** Test targets give `SessionID` an integer literal (`7` is `00000007-0000-4000-8000-000000000007`) in a test-only `SessionIDFixtures.swift`; the app's `SessionID` has no integer form.
 
 ### Out of scope
 

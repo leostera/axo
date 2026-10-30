@@ -3,6 +3,7 @@ import { spawn, type ChildProcess } from "node:child_process";
 import { existsSync } from "node:fs";
 import { mkdir, mkdtemp, readdir, readFile, rm, stat } from "node:fs/promises";
 import { tmpdir } from "node:os";
+import { fileURLToPath } from "node:url";
 import { join, resolve } from "node:path";
 import { test } from "node:test";
 import { RemoteAxoApi, type HostEvent, type WebSocketLike } from "@axo/app";
@@ -38,7 +39,14 @@ test("an isolated axod pairs with an account, then the account drives it through
       "--host-credentials", "files",
     ], {
       stdio: "ignore",
-      env: { ...process.env, HOME: root },
+      // Pi panes run the inert fixtures, never the developer's Pi; without an extension axod
+      // starts no Home Session and registers none.
+      env: {
+        ...process.env,
+        HOME: root,
+        AXO_PI_EXTENSION_PATH: fileURLToPath(new URL("../../../crates/axo-server/testdata/pi-extension.js", import.meta.url)),
+        AXO_PI_EXECUTABLE: fileURLToPath(new URL("../../../crates/axod/testdata/pi-fixture.sh", import.meta.url)),
+      },
     });
     await new Promise<void>((resolveSpawn, rejectSpawn) => {
       daemon!.once("spawn", () => resolveSpawn());
@@ -142,12 +150,12 @@ test("an isolated axod pairs with an account, then the account drives it through
     });
     assert.equal(inputReply.accepted, true);
 
-    // The call is wired through the Worker to the host. This isolated Session runs a plain shell,
-    // not Pi, so the host refuses it as not found; an empty prompt never leaves the Worker.
+    // The call is wired through the Worker to the host, which refuses a Session it does not have
+    // as not found; an empty prompt never leaves the Worker.
     await assert.rejects(
       client.call("axo.remote.session.prompt", {
         target: { hostId, hostGeneration },
-        sessionId: firstSession.sessionId,
+        sessionId: crypto.randomUUID(),
         text: "run the tests",
       }),
       { code: -32004 },
@@ -206,7 +214,7 @@ test("an isolated axod pairs with an account, then the account drives it through
       name: account.accountId,
     });
     const storedSessions = await accountStorage.exec<{ snapshot_json: string }>(
-      "SELECT snapshot_json FROM host_sessions_v1 WHERE host_id = ?",
+      "SELECT snapshot_json FROM host_sessions_v2 WHERE host_id = ?",
       hostId,
     );
     assert.ok(storedSessions.length > 0, "session metadata is retained for the account");

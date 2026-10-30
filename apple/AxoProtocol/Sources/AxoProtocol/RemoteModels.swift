@@ -43,7 +43,6 @@ public struct RemoteShell: Decodable, Hashable, Sendable {
 public struct RemoteSession: Decodable, Equatable, Sendable {
   public let hostId: UUID
   public let sessionId: SessionID
-  public let sessionUuid: UUID?
   public let workspaceId: UUID?
   public let workspaceName: String?
   public let name: String?
@@ -59,7 +58,7 @@ public struct RemoteSession: Decodable, Equatable, Sendable {
   /// Unix seconds when the Session was created.
   public let createdAt: Int64?
 
-  public var displayName: String { name ?? "Session \(sessionId)" }
+  public var displayName: String { name ?? "Session" }
 }
 
 public struct RemoteHost: Decodable, Equatable, Sendable {

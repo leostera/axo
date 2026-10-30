@@ -100,11 +100,14 @@ enum SessionActivityOrder {
     max(session.lastMessageAt ?? 0, session.createdAt ?? 0)
   }
 
-  /// Newest activity first; ties go to the newer Session.
+  /// Newest activity first; ties go to the newer Session, then by ID.
   static func sorted(_ sessions: [TerminalSession]) -> [TerminalSession] {
     sessions.sorted { left, right in
       let (leftActivity, rightActivity) = (lastActivity(of: left), lastActivity(of: right))
-      return leftActivity != rightActivity ? leftActivity > rightActivity : left.id > right.id
+      if leftActivity != rightActivity { return leftActivity > rightActivity }
+      let (leftCreated, rightCreated) = (left.createdAt ?? 0, right.createdAt ?? 0)
+      if leftCreated != rightCreated { return leftCreated > rightCreated }
+      return left.id.rawValue > right.id.rawValue
     }
   }
 

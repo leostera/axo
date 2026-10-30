@@ -299,7 +299,7 @@ fn run_connection(
         &mut request_number,
         "axo.protocol.negotiate",
         NegotiateParams {
-            protocol_version: 1,
+            protocol_version: axo_protocol::rpc::PROTOCOL_VERSION,
         },
         sessions,
         &host_id,
@@ -315,7 +315,7 @@ fn run_connection(
     };
     let label = host_label();
     let registration = HostRegistration {
-        protocol_version: 1,
+        protocol_version: axo_protocol::rpc::PROTOCOL_VERSION,
         host_id: &host_id,
         host_generation: &host_generation,
         label: &label,

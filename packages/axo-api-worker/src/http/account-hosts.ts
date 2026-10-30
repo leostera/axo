@@ -67,8 +67,8 @@ export async function serveAccountHostEvents(
   if (caller instanceof Response) return caller;
   const { accountId } = caller;
   const hostId = uuid.safeParse(rawHostId);
-  const sessionId = sessionIdSchema.safeParse(Number(rawSessionId));
-  if (!hostId.success || !sessionId.success || String(sessionId.data) !== rawSessionId)
+  const sessionId = sessionIdSchema.safeParse(rawSessionId);
+  if (!hostId.success || !sessionId.success)
     return json({ error: "Valid host and Session IDs required" }, 400);
 
   const url = new URL(request.url);

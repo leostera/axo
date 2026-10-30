@@ -134,7 +134,7 @@ public final class HostWorkbenchModel {
     hostLabel = host.label
     reference = host.reference
     status = host.status
-    let ordered = host.sessions.sorted { $0.sessionId < $1.sessionId }
+    let ordered = host.sessions.sorted(by: RemoteSession.isCreatedBefore)
     sessions = ordered
     self.connection = connection
     self.history = history
@@ -261,7 +261,7 @@ public final class HostWorkbenchModel {
   public func adopt(listing host: RemoteHost) {
     guard host.reference == reference else { return }
     status = host.status
-    sessions = host.sessions.sorted { $0.sessionId < $1.sessionId }
+    sessions = host.sessions.sorted(by: RemoteSession.isCreatedBefore)
     if let selected = selectedSessionID, !sessions.contains(where: { $0.sessionId == selected }) {
       selectedSessionID = nil
     }
@@ -289,7 +289,7 @@ public final class HostWorkbenchModel {
         sessions[index] = session
       } else {
         sessions.append(session)
-        sessions.sort { $0.sessionId < $1.sessionId }
+        sessions.sort(by: RemoteSession.isCreatedBefore)
       }
     case .sessionRemoved(_, let id):
       sessions.removeAll { $0.sessionId == id }
@@ -557,5 +557,14 @@ public final class HostWorkbenchModel {
   private func fail(_ error: Error) {
     account.noteFailure(error)
     failure = error.localizedDescription
+  }
+}
+
+extension RemoteSession {
+  /// The order a Mac's Sessions are kept in: oldest first, as Axod lists them. Session IDs carry
+  /// no order, so they only break ties.
+  static func isCreatedBefore(_ a: RemoteSession, _ b: RemoteSession) -> Bool {
+    if a.createdAt != b.createdAt { return (a.createdAt ?? 0) < (b.createdAt ?? 0) }
+    return a.sessionId.rawValue < b.sessionId.rawValue
   }
 }

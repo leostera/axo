@@ -22,15 +22,15 @@ export interface MacConnection {
   call(method: "axo.remote.workspace.list", params: { target: HostRef }): Promise<{ workspaces: Workspace[] }>;
   call(method: "axo.remote.session.create", params: { target: HostRef }): Promise<{ session: Session }>;
   call(method: "axo.remote.workspace.session.create", params: { target: HostRef; workspaceId: string }): Promise<{ session: Session }>;
-  call(method: "axo.remote.session.prompt", params: { target: HostRef; sessionId: number; text: string }): Promise<unknown>;
-  call(method: "axo.remote.session.key", params: { target: HostRef; sessionId: number; key: "escape" | "enter" }): Promise<unknown>;
+  call(method: "axo.remote.session.prompt", params: { target: HostRef; sessionId: string; text: string }): Promise<unknown>;
+  call(method: "axo.remote.session.key", params: { target: HostRef; sessionId: string; key: "escape" | "enter" }): Promise<unknown>;
   close(): void;
 }
 
 /** What the workbench needs of the account's API (`RemoteAxoApi`). */
 export interface ChatBackend {
   listHosts(signal?: AbortSignal): Promise<Host[]>;
-  listPiEvents(reference: HostRef, sessionId: number, before: number, limit: number, signal?: AbortSignal): Promise<PiEventPageResult>;
+  listPiEvents(reference: HostRef, sessionId: string, before: number, limit: number, signal?: AbortSignal): Promise<PiEventPageResult>;
   connectHost(reference: HostRef, onEvent: (event: HostEvent) => void, onClose: (error: Error) => void): Promise<MacConnection>;
 }
 
@@ -78,7 +78,7 @@ export class Chat {
  * The open chat, or a new one waiting for its first message on the open Mac: in the Workspace
  * chosen for it, or with none chosen in the Mac's Home Workspace.
  */
-export type Selection = { kind: "chat"; sessionId: number } | { kind: "new"; workspaceId: string | null };
+export type Selection = { kind: "chat"; sessionId: string } | { kind: "new"; workspaceId: string | null };
 
 export type SendOutcome =
   | { kind: "sent" }
@@ -102,7 +102,7 @@ export function isChat(session: Session): boolean {
 }
 
 export function chatTitle(session: Session | null | undefined): string {
-  return session ? session.name ?? `Session ${session.sessionId}` : "New chat";
+  return session ? session.name ?? "Session" : "New chat";
 }
 
 /**
@@ -120,7 +120,8 @@ const activity = lastActivity;
 /** Last active first; among chats as recent, the newer one first. */
 function moreRecent(a: ChatMenuEntry, b: ChatMenuEntry): number {
   return activity(b.session) - activity(a.session)
-    || b.session.sessionId - a.session.sessionId
+    || (b.session.createdAt ?? 0) - (a.session.createdAt ?? 0)
+    || b.session.sessionId.localeCompare(a.session.sessionId)
     || a.host.hostId.localeCompare(b.host.hostId);
 }
 
@@ -129,7 +130,7 @@ export function recentChatList(hosts: readonly Host[]): ChatMenuEntry[] {
   return hosts.flatMap(host => host.sessions.filter(isChat).map(session => ({ host, session }))).sort(moreRecent);
 }
 
-/** A chat's key in the menu: a session id is only unique on its Mac. */
+/** A chat's key in the menu. */
 export function chatKey(entry: ChatMenuEntry): string {
   return `${entry.host.hostId}/${entry.session.sessionId}`;
 }
@@ -169,7 +170,7 @@ export class ChatWorkbench {
   /** Bumped on every change, for `useSyncExternalStore`. */
   version = 0;
 
-  private readonly chats = new Map<number, Chat>();
+  private readonly chats = new Map<string, Chat>();
   private readonly drafts = new Map<string, string>();
   private readonly listeners = new Set<() => void>();
   private connection: MacConnection | null = null;
@@ -215,7 +216,7 @@ export class ChatWorkbench {
     return this.openHost?.sessions.find(session => session.sessionId === selection.sessionId) ?? null;
   }
 
-  chat(sessionId: number): Chat {
+  chat(sessionId: string): Chat {
     let chat = this.chats.get(sessionId);
     if (!chat) {
       chat = new Chat();
@@ -389,7 +390,7 @@ export class ChatWorkbench {
         this.updateOpenHost(host => {
           const index = host.sessions.findIndex(session => session.sessionId === data.snapshot.sessionId);
           const sessions = index < 0
-            ? [...host.sessions, data.snapshot].sort((a, b) => a.sessionId - b.sessionId)
+            ? [...host.sessions, data.snapshot].sort((a, b) => (a.createdAt ?? 0) - (b.createdAt ?? 0) || a.sessionId.localeCompare(b.sessionId))
             : host.sessions.map((session, at) => at === index ? data.snapshot : session);
           return { ...host, sessions };
         });
@@ -417,7 +418,7 @@ export class ChatWorkbench {
    * Changes a chat, then retires the pending messages its newest user messages account for: the
    * one with the same words, or else the oldest the Mac has taken (the agent records them in order).
    */
-  private changeChat(sessionId: number, change: (transcript: ChatTranscript) => void): void {
+  private changeChat(sessionId: string, change: (transcript: ChatTranscript) => void): void {
     const chat = this.chat(sessionId);
     const before = chat.pending.length ? new Set(chat.transcript?.messages.map(message => message.id) ?? []) : new Set<string>();
     chat.transcript ??= new ChatTranscript();
@@ -447,7 +448,7 @@ export class ChatWorkbench {
   // MARK: - History
 
   /** Reads the newest page of a chat's stored conversation, in front of what arrived live. */
-  async loadHistory(sessionId: number): Promise<void> {
+  async loadHistory(sessionId: string): Promise<void> {
     const host = this.openHost;
     const chat = this.chat(sessionId);
     if (!host || chat.history.kind === "loading" || chat.history.kind === "loadingOlder") return;
@@ -473,7 +474,7 @@ export class ChatWorkbench {
   }
 
   /** Reads the page before the oldest one shown; nothing when this is the beginning. */
-  async loadOlderHistory(sessionId: number): Promise<void> {
+  async loadOlderHistory(sessionId: string): Promise<void> {
     const host = this.openHost;
     const chat = this.chat(sessionId);
     const stored = chat.stored;
@@ -497,7 +498,7 @@ export class ChatWorkbench {
   // MARK: - Selecting
 
   /** Opens a chat, on whichever Mac it is. */
-  selectChat(hostId: string, sessionId: number): void {
+  selectChat(hostId: string, sessionId: string): void {
     if (hostId !== this.openHostId) this.openMac(hostId);
     this.selection = { kind: "chat", sessionId };
     this.failure = null;
@@ -637,7 +638,7 @@ export class ChatWorkbench {
   }
 
   /** Takes a message marked uncertain off the screen, once the person has checked. */
-  dismissPending(sessionId: number, pendingId: string): void {
+  dismissPending(sessionId: string, pendingId: string): void {
     const chat = this.chats.get(sessionId);
     if (!chat) return;
     chat.pending = chat.pending.filter(prompt => prompt.id !== pendingId);
@@ -645,7 +646,7 @@ export class ChatWorkbench {
   }
 
   /** Stops the reply in progress, as Escape does on the Mac. */
-  async stop(sessionId: number): Promise<void> {
+  async stop(sessionId: string): Promise<void> {
     const host = this.openHost;
     const chat = this.chat(sessionId);
     if (!host || !chat.transcript?.working || chat.stopping || !this.ready()) return;
@@ -661,7 +662,7 @@ export class ChatWorkbench {
   }
 
   /** Answers Pi's question: yes is Enter, no is Escape, words are sent as a prompt is. */
-  async answer(sessionId: number, answer: Answer): Promise<void> {
+  async answer(sessionId: string, answer: Answer): Promise<void> {
     const host = this.openHost;
     if (!host || !this.chats.get(sessionId)?.transcript?.question || !this.ready()) return;
     const target = this.reference(host);

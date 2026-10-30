@@ -186,7 +186,7 @@ final class HostWorkbenchModelTests: XCTestCase {
     await started.value
     XCTAssertNil(model.failure)
     channel.push(
-      #"{"jsonrpc":"2.0","method":"axo.host.event","params":{"subscriptionId":"\#(UUID().uuidString)","event":{"type":"host.data","hostId":"\#(host.hostId.uuidString)","hostGeneration":"\#(host.hostGeneration.uuidString)","event":{"type":"pi.event","sessionId":1,"piSessionId":"pi-1","streamId":"\#(UUID().uuidString)","sequence":1,"name":"agent.start","data":null}}}}"#
+      #"{"jsonrpc":"2.0","method":"axo.host.event","params":{"subscriptionId":"\#(UUID().uuidString)","event":{"type":"host.data","hostId":"\#(host.hostId.uuidString)","hostGeneration":"\#(host.hostGeneration.uuidString)","event":{"type":"pi.event","sessionId":"00000001-0000-4000-8000-000000000001","piSessionId":"pi-1","streamId":"\#(UUID().uuidString)","sequence":1,"name":"agent.start","data":null}}}}"#
     )
     try await eventually { model.chats[1]?.activity == .working }
     model.stop()
@@ -198,7 +198,7 @@ final class HostWorkbenchModelTests: XCTestCase {
     let channel = try await transport.channel()
     let sent = try await channel.nextRequest()
     XCTAssertEqual(sent.method, "axo.remote.session.prompt")
-    XCTAssertEqual(sent.params["sessionId"] as? Int, 4)
+    XCTAssertEqual(sent.params["sessionId"] as? String, SessionID.fixture(4).rawValue)
     XCTAssertEqual(sent.params["text"] as? String, "run the tests", "trimmed, nothing else changed")
     channel.reply(to: sent.id, result: #"{"accepted":true}"#)
     let accepted = await sending.value
@@ -388,7 +388,7 @@ final class ScriptedChannel: AxoMessageChannel, @unchecked Sendable {
       sent.append(message)
       return nil
     }
-    if let negotiation { reply(to: negotiation, result: #"{"protocolVersion":1,"methods":[]}"#) }
+    if let negotiation { reply(to: negotiation, result: #"{"protocolVersion":2,"methods":[]}"#) }
   }
   func close() { continuation.finish() }
 

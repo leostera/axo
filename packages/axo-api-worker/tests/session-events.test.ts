@@ -7,7 +7,7 @@ import { harness, signIn } from "./harness";
 
 const hostId = "d9b73fd0-c826-43fd-8d95-459fb9a7267f";
 const hostGeneration = "104f1de4-6b07-4278-a23b-1e1ee1fe9fd5";
-const sessionId = 23;
+const sessionId = "00000017-0000-4000-8000-000000000017";
 
 test("Pi host events reach account-private durable history and the authenticated owner route", async (t) => {
   const h = await harness();
@@ -53,7 +53,7 @@ test("Pi host events reach account-private durable history and the authenticated
     updatedAt: new Date().toISOString(),
   };
   const registration = await daemon.call("axo.host.register", {
-    protocolVersion: 1,
+    protocolVersion: 2,
     hostId,
     hostGeneration,
     label: "Pi event test host",

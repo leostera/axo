@@ -234,7 +234,6 @@ extension AxoVisualUITests {
 
     let reopened = try XCTUnwrap(model.session(for: original.id))
     XCTAssertEqual(reopened.id, original.id)
-    XCTAssertEqual(reopened.sessionUuid, original.sessionUuid)
     XCTAssertEqual(reopened.piSessionFile, original.piSessionFile)
     XCTAssertEqual(reopened.piSessionId, originalPiSessionId)
     XCTAssertEqual(reopened.shells.first?.id, originalShell.id)
@@ -269,7 +268,7 @@ extension AxoVisualUITests {
     let commandTSession = try XCTUnwrap(
       model.sessions
         .filter { $0.workspaceId == workspaceID }
-        .max { $0.id < $1.id }
+        .max { ($0.createdAt ?? 0) < ($1.createdAt ?? 0) }
     )
     XCTAssertEqual(commandTSession.workspaceId, workspaceID)
     XCTAssertEqual(

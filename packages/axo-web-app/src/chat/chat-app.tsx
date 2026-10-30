@@ -241,7 +241,7 @@ function StatusDot({ status }: { status: Host["sessions"][number]["status"] }) {
 
 function ChatsPanel({ workbench, onSelect, onNewChat, onAccount, onSearch, onSettings }: {
   workbench: ChatWorkbench;
-  onSelect: (hostId: string, sessionId: number) => void;
+  onSelect: (hostId: string, sessionId: string) => void;
   onNewChat: () => void;
   onAccount: () => void;
   onSearch: () => void;
@@ -287,8 +287,8 @@ function ChatsPanel({ workbench, onSelect, onNewChat, onAccount, onSearch, onSet
 /** Every chat, the most recently active at the top, each with how long ago. */
 function RecentChats({ entries, isSelected, onSelect }: {
   entries: ChatMenuEntry[];
-  isSelected: (hostId: string, sessionId: number) => boolean;
-  onSelect: (hostId: string, sessionId: number) => void;
+  isSelected: (hostId: string, sessionId: string) => boolean;
+  onSelect: (hostId: string, sessionId: string) => void;
 }) {
   // Ages only need to move once a minute.
   const [now, setNow] = useState(() => Date.now());
@@ -407,7 +407,7 @@ function InfoPanel({ workbench, onClose }: { workbench: ChatWorkbench; onClose: 
             <div><dt>Messages</dt><dd>{messages}</dd></div>
             <div><dt>Terminals</dt><dd>{session.shells.length}</dd></div>
             {Number.isNaN(updated) ? null : <div><dt>Last active</dt><dd>{relativeTime(updated)}</dd></div>}
-            <div><dt>Chat</dt><dd className="mono">{session.sessionUuid ?? session.sessionId}</dd></div>
+            <div><dt>Chat</dt><dd className="mono">{session.sessionId}</dd></div>
           </dl>
         ) : (
           <p className="panel-note centered">Nothing here yet. Send a message and this chat starts on your Mac.</p>
@@ -476,7 +476,7 @@ function SettingsSheet({ onClose, onSignOut }: { onClose: () => void; onSignOut?
 function SearchSheet({ workbench, onClose, onChoose }: {
   workbench: ChatWorkbench;
   onClose: () => void;
-  onChoose: (hostId: string, sessionId: number) => void;
+  onChoose: (hostId: string, sessionId: string) => void;
 }) {
   const [query, setQuery] = useState("");
   const words = query.trim().toLocaleLowerCase();

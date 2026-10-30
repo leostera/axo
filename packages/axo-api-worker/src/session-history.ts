@@ -1,5 +1,6 @@
 import { DurableObject } from "cloudflare:workers";
 import { z } from "zod";
+import { sessionIdSchema } from "@axo/protocol/v1";
 import {
   piEventPageResultSchema,
   storedPiEventSchema,
@@ -61,7 +62,6 @@ function cutUtf8(text: string, limit: number): string {
   if (bytes.byteLength <= limit) return text;
   return new TextDecoder().decode(bytes.slice(0, limit)).replace(/\uFFFD$/u, "");
 }
-const sessionIdSchema = z.number().int().positive().max(Number.MAX_SAFE_INTEGER);
 const piSessionIdSchema = z.string().min(1).max(128).refine(value => !/[\u0000-\u001f\u007f]/u.test(value));
 const streamSequenceSchema = z.number().int().positive().max(Number.MAX_SAFE_INTEGER);
 const eventDataSchema = z.unknown().refine(value => {
@@ -97,7 +97,7 @@ export const sessionEventPageRequestSchema = z.object({
 type SessionIdentity = {
   account_id: string;
   host_id: string;
-  session_id: number;
+  session_id: string;
 };
 type StoredEventRow = {
   id: number;
@@ -120,7 +120,7 @@ export class AxoSessionDO extends DurableObject<Env> {
         singleton INTEGER PRIMARY KEY CHECK (singleton = 1),
         account_id TEXT NOT NULL,
         host_id TEXT NOT NULL,
-        session_id INTEGER NOT NULL
+        session_id TEXT NOT NULL
       )
     `);
     ctx.storage.sql.exec(`
@@ -233,7 +233,7 @@ export class AxoSessionDO extends DurableObject<Env> {
   }
 }
 
-export function sessionDOName(accountId: string, hostId: string, sessionId: number): string {
+export function sessionDOName(accountId: string, hostId: string, sessionId: string): string {
   const parsedAccount = uuid.parse(accountId);
   const parsedHost = uuid.parse(hostId);
   const parsedSession = sessionIdSchema.parse(sessionId);

@@ -8,7 +8,9 @@ const subscriptionId = "674f50dc-e716-4e04-8eb7-b3c6b86a35c0";
 const reference = { hostId, hostGeneration };
 const timestamp = "2026-10-16T12:00:00.000Z";
 
-function snapshot(sessionId = 1, shellId = 2) {
+const sid = (n) => `${n.toString(16).padStart(8, "0")}-0000-4000-8000-${n.toString(16).padStart(12, "0")}`;
+
+function snapshot(sessionId = sid(1), shellId = 2) {
   return {
     hostId,
     sessionId,
@@ -53,7 +55,7 @@ class FakeWebSocket {
       queueMicrotask(() => this.emit({
         jsonrpc: "2.0",
         id: request.id,
-        result: { protocolVersion: 1, methods: [], deliveryCredits: { frames: 32, bytes: 131072 } },
+        result: { protocolVersion: 2, methods: [], deliveryCredits: { frames: 32, bytes: 131072 } },
       }));
     } else if (request.method === "axo.host.subscribe") {
       queueMicrotask(() => {
@@ -77,7 +79,7 @@ class FakeWebSocket {
       queueMicrotask(() => this.emit({
         jsonrpc: "2.0",
         id: request.id,
-        result: { session: snapshot(3, 4) },
+        result: { session: snapshot(sid(3), 4) },
       }));
     } else {
       queueMicrotask(() => this.emit({
@@ -109,7 +111,7 @@ test("HTTP metadata calls include browser Access credentials and validate the AP
   const hosts = await api.listHosts();
   const sessions = await api.listHostSessions(reference);
   assert.equal(hosts[0].hostId, hostId);
-  assert.equal(sessions[0].sessionId, 1);
+  assert.equal(sessions[0].sessionId, sid(1));
   assert.equal(requests[0].init.credentials, "include");
   assert.equal(requests[0].init.cache, "no-store");
   assert.equal(requests[0].init.method, "GET");
@@ -137,9 +139,9 @@ test("Pi event history uses the account-private cursor API and validates each ev
     });
   });
 
-  const page = await api.listPiEvents(reference, 9, 0, 50);
+  const page = await api.listPiEvents(reference, sid(9), 0, 50);
   assert.equal(page.events[0].name, "message.end");
-  assert.equal(requests[0].url.pathname, `/api/v1/account/hosts/${hostId}/sessions/9/events`);
+  assert.equal(requests[0].url.pathname, `/api/v1/account/hosts/${hostId}/sessions/${sid(9)}/events`);
   assert.equal(requests[0].url.searchParams.get("before"), "0");
   assert.equal(requests[0].url.searchParams.get("limit"), "50");
   assert.equal(requests[0].init.credentials, "include");
@@ -175,7 +177,7 @@ test("WebSocket negotiates, subscribes, dispatches live events, and calls sessio
   assert.equal(receivedEvents[0].type, "host.presence");
 
   const result = await connection.call("axo.remote.session.create", { target: reference });
-  assert.equal(result.session.sessionId, 3);
+  assert.equal(result.session.sessionId, sid(3));
   assert.equal(socket.sent
     .filter((request) => request.method !== "axo.transport.ack")
     .map((request) => request.method)

@@ -65,7 +65,7 @@ test("one AccountManager owns pairing, host metadata, and live relays for multip
     const host = index === 0 ? first : second;
     await daemon.negotiate();
     const registered = await daemon.call("axo.host.register", {
-      protocolVersion: 1,
+      protocolVersion: 2,
       hostId: host.hostId,
       hostGeneration: host.hostGeneration,
       label: host.label,
@@ -122,7 +122,7 @@ test("one AccountManager owns pairing, host metadata, and live relays for multip
     hostGeneration: first.hostGeneration,
     event: {
       type: "terminal.output",
-      sessionId: 1,
+      sessionId: "00000001-0000-4000-8000-000000000001",
       shellId: 1,
       sequence: 0,
       data: Buffer.from(terminalSecret).toString("base64"),
@@ -131,12 +131,12 @@ test("one AccountManager owns pairing, host metadata, and live relays for multip
   daemons[0]!.send({ jsonrpc: "2.0", method: "axo.host.event", params: terminalEvent });
   const output = hostNotificationSchema.parse(await clients[0]!.next());
   assert.deepEqual(output.params.event, terminalEvent);
-  const snapshots = await managerStorage.exec<{ snapshot_json: string }>("SELECT snapshot_json FROM host_sessions_v1");
+  const snapshots = await managerStorage.exec<{ snapshot_json: string }>("SELECT snapshot_json FROM host_sessions_v2");
   assert.equal(JSON.stringify(snapshots).includes(terminalSecret), false);
 
   const inputCall = clients[0]!.call("axo.remote.terminal.input", {
     target: { hostId: first.hostId, hostGeneration: first.hostGeneration },
-    sessionId: 1,
+    sessionId: "00000001-0000-4000-8000-000000000001",
     shellId: 1,
     sequence: 0,
     data: Buffer.from("isolated").toString("base64"),

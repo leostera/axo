@@ -42,7 +42,7 @@ type AccountHostRow = {
 };
 const MAX_SESSIONS = 20;
 const MAX_PENDING_LOGIN_CODES = 10;
-type StoredHostSessionRow = { host_id: string; session_id: number; snapshot_json: string };
+type StoredHostSessionRow = { host_id: string; session_id: string; snapshot_json: string };
 
 export type PairingCreationStatus = "created" | "collision" | "limited";
 export type PairingRedemption =
@@ -92,12 +92,15 @@ export class AxoAccountManager extends AxoHostRelay {
     if (!hostColumns.some(column => column.name === "capabilities_json")) {
       ctx.storage.sql.exec("ALTER TABLE account_hosts ADD COLUMN capabilities_json TEXT");
     }
-    ctx.storage.sql.exec(`CREATE TABLE IF NOT EXISTS host_sessions_v1 (
+    // Session IDs became UUIDs (RFD0017); v1 rows are keyed by integers and are dropped. A host
+    // replaces all of its snapshots when it registers, so nothing is lost.
+    ctx.storage.sql.exec("DROP TABLE IF EXISTS host_sessions_v1");
+    ctx.storage.sql.exec(`CREATE TABLE IF NOT EXISTS host_sessions_v2 (
       host_id TEXT NOT NULL REFERENCES account_hosts(host_id) ON DELETE CASCADE,
-      session_id INTEGER NOT NULL, snapshot_json TEXT NOT NULL CHECK (json_valid(snapshot_json)),
+      session_id TEXT NOT NULL, snapshot_json TEXT NOT NULL CHECK (json_valid(snapshot_json)),
       PRIMARY KEY (host_id, session_id)
     )`);
-    ctx.storage.sql.exec("CREATE INDEX IF NOT EXISTS host_sessions_v1_by_host ON host_sessions_v1(host_id, session_id)");
+    ctx.storage.sql.exec("CREATE INDEX IF NOT EXISTS host_sessions_v2_by_host ON host_sessions_v2(host_id, session_id)");
   }
 
   /** Starts a sign-in: binds this object's account ID, keeps the profile current, and keeps at most 20. */
@@ -389,7 +392,7 @@ export class AxoAccountManager extends AxoHostRelay {
         const snapshot = sessionSnapshotSchema.parse({ ...hostEvent.snapshot, updatedAt: new Date(now).toISOString() });
         this.ctx.storage.transactionSync(() => {
           sql.exec("UPDATE account_hosts SET last_seen_at = ? WHERE host_id = ?", now, input.hostId);
-          sql.exec(`INSERT INTO host_sessions_v1 (host_id, session_id, snapshot_json) VALUES (?, ?, ?)
+          sql.exec(`INSERT INTO host_sessions_v2 (host_id, session_id, snapshot_json) VALUES (?, ?, ?)
             ON CONFLICT(host_id, session_id) DO UPDATE SET snapshot_json = excluded.snapshot_json`, input.hostId, snapshot.sessionId, JSON.stringify(snapshot));
         });
         return;
@@ -397,7 +400,7 @@ export class AxoAccountManager extends AxoHostRelay {
       case "session.removed": {
         this.ctx.storage.transactionSync(() => {
           sql.exec("UPDATE account_hosts SET last_seen_at = ? WHERE host_id = ?", now, input.hostId);
-          sql.exec("DELETE FROM host_sessions_v1 WHERE host_id = ? AND session_id = ?", input.hostId, hostEvent.sessionId);
+          sql.exec("DELETE FROM host_sessions_v2 WHERE host_id = ? AND session_id = ?", input.hostId, hostEvent.sessionId);
         });
         return;
       }
@@ -410,7 +413,7 @@ export class AxoAccountManager extends AxoHostRelay {
         // An event history cannot keep is skipped, never a reason to drop the Mac's connection:
         // that would cut every client off over one long reply.
         const session = sql.exec<StoredHostSessionRow>(
-          "SELECT * FROM host_sessions_v1 WHERE host_id = ? AND session_id = ?",
+          "SELECT * FROM host_sessions_v2 WHERE host_id = ? AND session_id = ?",
           input.hostId,
           hostEvent.sessionId,
         ).toArray()[0];
@@ -456,9 +459,9 @@ export class AxoAccountManager extends AxoHostRelay {
 
   private replaceHostSessions(hostId: string, sessions: SessionSnapshot[]): void {
     const sql = this.ctx.storage.sql;
-    sql.exec("DELETE FROM host_sessions_v1 WHERE host_id = ?", hostId);
+    sql.exec("DELETE FROM host_sessions_v2 WHERE host_id = ?", hostId);
     for (const session of sessions) {
-      sql.exec("INSERT INTO host_sessions_v1 (host_id, session_id, snapshot_json) VALUES (?, ?, ?)", hostId, session.sessionId, JSON.stringify(session));
+      sql.exec("INSERT INTO host_sessions_v2 (host_id, session_id, snapshot_json) VALUES (?, ?, ?)", hostId, session.sessionId, JSON.stringify(session));
     }
   }
 
@@ -466,7 +469,7 @@ export class AxoAccountManager extends AxoHostRelay {
     const presence = this.presence(row.host_id);
     const online = row.revoked_at === null && presence.online && presence.hostGeneration === row.host_generation;
     const sessions = this.ctx.storage.sql.exec<StoredHostSessionRow>(
-      "SELECT * FROM host_sessions_v1 WHERE host_id = ? ORDER BY session_id LIMIT 256", row.host_id,
+      "SELECT * FROM host_sessions_v2 WHERE host_id = ? ORDER BY json_extract(snapshot_json, '$.createdAt'), session_id LIMIT 256", row.host_id,
     ).toArray().map((session) => sessionSnapshotSchema.parse(JSON.parse(session.snapshot_json)));
     return hostSnapshotSchema.parse({
       hostId: row.host_id, hostGeneration: row.host_generation, label: row.label, hostKind: row.host_kind,

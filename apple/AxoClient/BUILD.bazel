@@ -18,8 +18,16 @@ swift_test(
     name = "AxoClientDaemonInteropTests",
     srcs = glob(["Tests/AxoClientDaemonInteropTests/**/*.swift"]),
     copts = ["-swift-version", "5"],
-    data = ["//crates/axod:axod"],
-    env = {"AXOD_BINARY": "$(rootpath //crates/axod:axod)"},
+    data = [
+        "//crates/axo-server:pi_extension_fixture",
+        "//crates/axod:axod",
+        "//crates/axod:testdata/pi-fixture.sh",
+    ],
+    env = {
+        "AXOD_BINARY": "$(rootpath //crates/axod:axod)",
+        "AXO_PI_EXTENSION_PATH": "$(rootpath //crates/axo-server:pi_extension_fixture)",
+        "AXO_TEST_PI_EXECUTABLE": "$(rootpath //crates/axod:testdata/pi-fixture.sh)",
+    },
     tags = ["no-sandbox"],
     timeout = "short",
     deps = [

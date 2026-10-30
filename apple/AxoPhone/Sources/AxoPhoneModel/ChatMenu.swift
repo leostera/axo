@@ -108,7 +108,12 @@ public enum ChatMenu {
   static func isMoreRecent(_ a: ChatMenuEntry, than b: ChatMenuEntry) -> Bool {
     let (left, right) = (activity(a.session), activity(b.session))
     if left != right { return left > right }
-    if a.session.sessionId != b.session.sessionId { return a.session.sessionId > b.session.sessionId }
+    if a.session.createdAt != b.session.createdAt {
+      return (a.session.createdAt ?? 0) > (b.session.createdAt ?? 0)
+    }
+    if a.session.sessionId != b.session.sessionId {
+      return a.session.sessionId.rawValue > b.session.sessionId.rawValue
+    }
     return a.host.hostId.uuidString < b.host.hostId.uuidString
   }
 

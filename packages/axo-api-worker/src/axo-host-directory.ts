@@ -37,7 +37,7 @@ type HostRow = {
 
 type StoredHostSessionRow = {
   host_id: string;
-  session_id: number;
+  session_id: string;
   snapshot_json: string;
 };
 export class AxoHostDirectory extends DurableObject<Env> {
@@ -61,10 +61,13 @@ export class AxoHostDirectory extends DurableObject<Env> {
     if (!hostColumns.some(column => column.name === "capabilities_json")) {
       ctx.storage.sql.exec("ALTER TABLE hosts_v1 ADD COLUMN capabilities_json TEXT");
     }
+    // Session IDs became UUIDs (RFD0017); v1 rows are keyed by integers and are dropped. A host
+    // replaces all of its snapshots when it registers, so nothing is lost.
+    ctx.storage.sql.exec("DROP TABLE IF EXISTS host_sessions_v1");
     ctx.storage.sql.exec(`
-      CREATE TABLE IF NOT EXISTS host_sessions_v1 (
+      CREATE TABLE IF NOT EXISTS host_sessions_v2 (
         host_id TEXT NOT NULL REFERENCES hosts_v1(host_id) ON DELETE CASCADE,
-        session_id INTEGER NOT NULL,
+        session_id TEXT NOT NULL,
         snapshot_json TEXT NOT NULL CHECK (json_valid(snapshot_json)),
         PRIMARY KEY (host_id, session_id)
       )
@@ -77,7 +80,7 @@ export class AxoHostDirectory extends DurableObject<Env> {
       )
     `);
     ctx.storage.sql.exec(
-      "CREATE INDEX IF NOT EXISTS host_sessions_v1_by_host ON host_sessions_v1(host_id, session_id)",
+      "CREATE INDEX IF NOT EXISTS host_sessions_v2_by_host ON host_sessions_v2(host_id, session_id)",
     );
   }
   admit(
@@ -238,10 +241,10 @@ export class AxoHostDirectory extends DurableObject<Env> {
         input.hostGeneration,
         now,
       );
-      sql.exec("DELETE FROM host_sessions_v1 WHERE host_id = ?", input.hostId);
+      sql.exec("DELETE FROM host_sessions_v2 WHERE host_id = ?", input.hostId);
       for (const session of sessions) {
         sql.exec(
-          "INSERT INTO host_sessions_v1 (host_id, session_id, snapshot_json) VALUES (?, ?, ?)",
+          "INSERT INTO host_sessions_v2 (host_id, session_id, snapshot_json) VALUES (?, ?, ?)",
           input.hostId,
           session.sessionId,
           JSON.stringify(session),
@@ -307,10 +310,10 @@ export class AxoHostDirectory extends DurableObject<Env> {
         input.hostId,
         input.hostGeneration,
       );
-      sql.exec("DELETE FROM host_sessions_v1 WHERE host_id = ?", input.hostId);
+      sql.exec("DELETE FROM host_sessions_v2 WHERE host_id = ?", input.hostId);
       for (const session of sessions) {
         sql.exec(
-          "INSERT INTO host_sessions_v1 (host_id, session_id, snapshot_json) VALUES (?, ?, ?)",
+          "INSERT INTO host_sessions_v2 (host_id, session_id, snapshot_json) VALUES (?, ?, ?)",
           input.hostId,
           session.sessionId,
           JSON.stringify(session),
@@ -346,7 +349,7 @@ export class AxoHostDirectory extends DurableObject<Env> {
             parsed.hostGeneration,
           );
           sql.exec(
-            `INSERT INTO host_sessions_v1 (host_id, session_id, snapshot_json)
+            `INSERT INTO host_sessions_v2 (host_id, session_id, snapshot_json)
              VALUES (?, ?, ?)
              ON CONFLICT(host_id, session_id) DO UPDATE SET snapshot_json = excluded.snapshot_json`,
             parsed.hostId,
@@ -366,7 +369,7 @@ export class AxoHostDirectory extends DurableObject<Env> {
             parsed.hostGeneration,
           );
           sql.exec(
-            "DELETE FROM host_sessions_v1 WHERE host_id = ? AND session_id = ?",
+            "DELETE FROM host_sessions_v2 WHERE host_id = ? AND session_id = ?",
             parsed.hostId,
             sessionId,
           );
@@ -408,7 +411,7 @@ export class AxoHostDirectory extends DurableObject<Env> {
     const online = presence.online && presence.hostGeneration === row.host_generation;
     const sessionRows = this.ctx.storage.sql
       .exec<StoredHostSessionRow>(
-        "SELECT * FROM host_sessions_v1 WHERE host_id = ? ORDER BY session_id LIMIT 256",
+        "SELECT * FROM host_sessions_v2 WHERE host_id = ? ORDER BY json_extract(snapshot_json, '$.createdAt'), session_id LIMIT 256",
         row.host_id,
       )
       .toArray();

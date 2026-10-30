@@ -25,13 +25,14 @@ const hostId = "5b7cc2d0-4e6c-4693-9d2a-9d96a01bdc11";
 const hostGeneration = "981d46f8-5a6c-4b22-a789-f90d981beb4d";
 const piSessionId = "pi-session-1";
 const streamId = "6fba62a2-e8e8-4d86-9188-7cc63dcab7a1";
-const sessionId = 42;
+const sessionId = "0000002a-0000-4000-8000-00000000002a";
+const otherSessionId = "0000002b-0000-4000-8000-00000000002b";
 
 function event(sequence: number, data: unknown = { role: "assistant", text: `message ${sequence}` }) {
   return { accountId, hostId, hostGeneration, sessionId, piSessionId, streamId, sequence, name: "message.end", data };
 }
 
-function sessionDOName(account: string, host: string, session: number): string {
+function sessionDOName(account: string, host: string, session: string): string {
   return `${account}:${host}:${session}`;
 }
 
@@ -84,7 +85,7 @@ test("event identity is fenced to the owning account, host, and Session", async 
     await history.append(event(1));
 
     assert.deepEqual(plain(await history.append({ ...event(2), hostId: "d48d1fb1-5a6c-4400-8a1a-97453f12247c" })), { ok: false, reason: "identityConflict" });
-    assert.deepEqual(plain(await history.list({ accountId, hostId, sessionId: sessionId + 1, before: 0, limit: 20 })), { ok: false, reason: "identityConflict" });
+    assert.deepEqual(plain(await history.list({ accountId, hostId, sessionId: otherSessionId, before: 0, limit: 20 })), { ok: false, reason: "identityConflict" });
     assert.deepEqual(plain(await history.append({ ...event(2), accountId: "d48d1fb1-5a6c-4400-8a1a-97453f12247c" })), { ok: false, reason: "identityConflict" });
   } finally {
     await api.close();
@@ -105,8 +106,8 @@ test("history survives Worker restart with no automatic expiry", async () => {
     assert.deepEqual(page.events[0].data, { role: "toolResult", content: "retained" });
     assert.ok(page.events[0].receivedAt > 0);
 
-    const otherSession = plain(await restarted.getByName(sessionDOName(accountId, hostId, sessionId + 1))
-      .list({ accountId, hostId, sessionId: sessionId + 1, before: 0, limit: 20 }));
+    const otherSession = plain(await restarted.getByName(sessionDOName(accountId, hostId, otherSessionId))
+      .list({ accountId, hostId, sessionId: otherSessionId, before: 0, limit: 20 }));
     assert.deepEqual(otherSession, { ok: true, events: [], next: null });
   } finally {
     await api.close();

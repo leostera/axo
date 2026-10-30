@@ -119,7 +119,7 @@ func host(_ label: String, _ status: RemoteHostStatus, sessions: [String] = []) 
 func sessionJSON(host: UUID, id: Int, name: String, shells: [Int]) -> String {
   let shellList = shells.map { #"{"shellId":\#($0)}"# }.joined(separator: ",")
   let layout = shells.first.map { #"{"kind":"pane","shellId":\#($0)}"# } ?? "null"
-  return #"{"hostId":"\#(host.uuidString)","sessionId":\#(id),"name":"\#(name)","shells":[\#(shellList)],"layout":\#(layout),"updatedAt":"2026-10-16T00:00:00Z"}"#
+  return #"{"hostId":"\#(host.uuidString)","sessionId":"\#(SessionID.fixture(UInt32(id)))","name":"\#(name)","shells":[\#(shellList)],"layout":\#(layout),"updatedAt":"2026-10-16T00:00:00Z"}"#
 }
 
 extension SessionToken {

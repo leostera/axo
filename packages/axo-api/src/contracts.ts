@@ -130,7 +130,7 @@ function scalarString(value: string): boolean {
   return true;
 }
 export const negotiateSchema = z
-  .object({ protocolVersion: z.literal(1) })
+  .object({ protocolVersion: z.literal(2) })
   .strict();
 // Private, boot-fenced local discovery. Routing metadata, not authentication.
 export const localEndpointSchema = z

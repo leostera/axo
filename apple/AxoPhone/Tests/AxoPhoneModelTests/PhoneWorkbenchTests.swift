@@ -322,7 +322,7 @@ final class RespondingTransport: AxoTransport, @unchecked Sendable {
     Task {
       while let request = try? await channel.nextRequest() {
         switch request.method {
-        case "axo.protocol.negotiate": channel.reply(to: request.id, result: #"{"protocolVersion":1,"methods":[]}"#)
+        case "axo.protocol.negotiate": channel.reply(to: request.id, result: #"{"protocolVersion":2,"methods":[]}"#)
         case "axo.host.subscribe": channel.reply(to: request.id, result: #"{"subscriptionId":"\#(UUID().uuidString)"}"#)
         case "axo.remote.workspace.list":
           let list = self.workspaces.map { #"{"workspaceId":"\#($0.id.uuidString.lowercased())","name":"\#($0.name)"}"# }

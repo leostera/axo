@@ -124,8 +124,10 @@ test("a picture without its data is named, and one with it is shown", () => {
 
 // MARK: - Menu
 
-function session(sessionId: number, updatedAt: string, workspaceName: string | null = "Axo", extra: Record<string, unknown> = {}) {
-  return { hostId, sessionId, workspaceId: workspaceName ? workspaceId : null, workspaceName, name: `Chat ${sessionId}`, hasAgent: true, shells: [], layout: null, updatedAt, ...extra };
+/** A Session ID for fixture `n`; they sort like the numbers they come from. */
+const sid = (n: number) => `${n.toString(16).padStart(8, "0")}-0000-4000-8000-${n.toString(16).padStart(12, "0")}`;
+function session(n: number, updatedAt: string, workspaceName: string | null = "Axo", extra: Record<string, unknown> = {}) {
+  return { hostId, sessionId: sid(n), workspaceId: workspaceName ? workspaceId : null, workspaceName, name: `Chat ${n}`, hasAgent: true, shells: [], layout: null, updatedAt, ...extra };
 }
 function host(sessions: ReturnType<typeof session>[], status: "online" | "offline" = "online") {
   return { hostId, hostGeneration, label: "Studio", hostKind: "macos", status, stale: false, lastSeenAt: "2026-10-16T12:00:00.000Z", sessions } as never;
@@ -151,14 +153,14 @@ test("the recent list puts every chat on every Mac in one list, the most recentl
     session(3, sent, null, { hasAgent: false, lastMessageAt: at("2026-10-27T11:59:00Z") }),
     session(4, sent, null, { createdAt: at("2026-10-27T10:00:00Z") }),
   ]), other]);
-  assert.deepEqual(list.map(entry => entry.session.sessionId), [2, 9, 4, 1], "no bare terminals; across Workspaces and Macs");
+  assert.deepEqual(list.map(entry => entry.session.sessionId), [2, 9, 4, 1].map(sid), "no bare terminals; across Workspaces and Macs");
 });
 
 test("the list does not move when snapshots are sent again, only when a chat is active", () => {
   const before = recentChatList([host([session(1, sent), session(2, sent), session(3, sent, "Axo", { lastMessageAt: at("2026-10-27T11:00:00Z") })])]);
   const resent = recentChatList([host([session(1, sent), session(2, "2026-10-27T12:05:00Z"), session(3, sent, "Axo", { lastMessageAt: at("2026-10-27T11:00:00Z") })])]);
-  assert.deepEqual(before.map(entry => entry.session.sessionId), [3, 2, 1]);
-  assert.deepEqual(resent.map(entry => entry.session.sessionId), [3, 2, 1]);
+  assert.deepEqual(before.map(entry => entry.session.sessionId), [3, 2, 1].map(sid));
+  assert.deepEqual(resent.map(entry => entry.session.sessionId), [3, 2, 1].map(sid));
 });
 
 test("ages are short, as on the Mac", () => {
@@ -169,12 +171,12 @@ test("ages are short, as on the Mac", () => {
 // MARK: - Routes and voice
 
 test("the URL names the open chat on its Mac, and anything else is a new chat", () => {
-  assert.deepEqual(parseRoute("/app", `/app/${hostId}/12`), { kind: "chat", hostId, sessionId: 12 });
-  assert.deepEqual(parseRoute("/app", `/app/${hostId}/12/`), { kind: "chat", hostId, sessionId: 12 });
-  for (const path of ["/app", "/app/", `/app/${hostId}`, `/app/${hostId}/0`, `/app/${hostId}/x`, `/app/${hostId}/1/more`, `/elsewhere/${hostId}/1`]) {
+  assert.deepEqual(parseRoute("/app", `/app/${hostId}/${sid(12)}`), { kind: "chat", hostId, sessionId: sid(12) });
+  assert.deepEqual(parseRoute("/app", `/app/${hostId}/${sid(12)}/`), { kind: "chat", hostId, sessionId: sid(12) });
+  for (const path of ["/app", "/app/", `/app/${hostId}`, `/app/${hostId}/12`, `/app/${hostId}/${sid(12).toUpperCase()}`, `/app/${hostId}/x`, `/app/${hostId}/${sid(1)}/more`, `/elsewhere/${hostId}/${sid(1)}`]) {
     assert.deepEqual(parseRoute("/app", path), { kind: "new" }, path);
   }
-  assert.equal(routePath("/app", hostId, { kind: "chat", sessionId: 12 }), `/app/${hostId}/12`);
+  assert.equal(routePath("/app", hostId, { kind: "chat", sessionId: sid(12) }), `/app/${hostId}/${sid(12)}`);
   assert.equal(routePath("/app", hostId, { kind: "new", workspaceId: null }), "/app");
   assert.equal(routePath("/app", null, null), "/app");
 });
@@ -302,14 +304,14 @@ test("a new chat's first message starts it in the Mac's Home Workspace and moves
   assert.equal(workbench.link, "connected");
   workbench.setDraft("Fix the bug");
   assert.deepEqual(await workbench.send(), { kind: "sent" });
-  assert.deepEqual(workbench.selection, { kind: "chat", sessionId: 7 });
+  assert.deepEqual(workbench.selection, { kind: "chat", sessionId: sid(7) });
   const created = mac.calls.filter(call => call.method.endsWith("session.create"));
   assert.deepEqual(created.map(call => call.method), ["axo.remote.session.create"], "however many Workspaces, a new chat goes Home");
   const prompt = mac.calls.find(call => call.method === "axo.remote.session.prompt");
   assert.equal(prompt?.params.text, "Fix the bug");
-  assert.equal(prompt?.params.sessionId, 7);
+  assert.equal(prompt?.params.sessionId, sid(7));
   assert.equal(workbench.draft(), "");
-  assert.equal(workbench.chat(7).pending[0]?.state, "sent");
+  assert.equal(workbench.chat(sid(7)).pending[0]?.state, "sent");
   workbench.dispose();
 });
 
@@ -325,39 +327,39 @@ test("a new chat started from a Workspace in the menu starts in that Workspace",
 
 test("a refused message comes back to the box; one whose delivery is uncertain stays, marked", async () => {
   const { workbench, mac } = await workbenchWith();
-  workbench.selectChat(hostId, 1);
+  workbench.selectChat(hostId, sid(1));
   workbench.setDraft("first");
   mac.failNext = Object.assign(new Error("busy"), { code: -32000 });
   assert.deepEqual(await workbench.send(), { kind: "failed" });
   assert.equal(workbench.draft(), "first");
-  assert.equal(workbench.chat(1).pending.length, 0);
+  assert.equal(workbench.chat(sid(1)).pending.length, 0);
 
   mac.failNext = new Error("Axo API request timed out: axo.remote.session.prompt");
   assert.deepEqual(await workbench.send(), { kind: "uncertain" });
   assert.equal(workbench.draft(), "");
-  assert.equal(workbench.chat(1).pending[0]?.state, "uncertain");
+  assert.equal(workbench.chat(sid(1)).pending[0]?.state, "uncertain");
   workbench.dispose();
 });
 
 test("a pending message is retired when the agent records it", async () => {
   const { workbench, mac } = await workbenchWith();
-  workbench.selectChat(hostId, 1);
+  workbench.selectChat(hostId, sid(1));
   workbench.setDraft("hello there");
   await workbench.send();
-  assert.equal(workbench.chat(1).pending.length, 1);
-  mac.onEvent!({ type: "host.data", hostId, hostGeneration, event: { type: "pi.event", sessionId: 1, piSessionId: "p", ...said(1, "user", "hello there") } } as never);
-  assert.equal(workbench.chat(1).pending.length, 0);
-  assert.equal(workbench.chat(1).transcript?.messages[0]?.text, "hello there");
+  assert.equal(workbench.chat(sid(1)).pending.length, 1);
+  mac.onEvent!({ type: "host.data", hostId, hostGeneration, event: { type: "pi.event", sessionId: sid(1), piSessionId: "p", ...said(1, "user", "hello there") } } as never);
+  assert.equal(workbench.chat(sid(1)).pending.length, 0);
+  assert.equal(workbench.chat(sid(1)).transcript?.messages[0]?.text, "hello there");
   workbench.dispose();
 });
 
 test("stop presses Escape once, only while the agent works", async () => {
   const { workbench, mac } = await workbenchWith();
-  workbench.selectChat(hostId, 1);
-  await workbench.stop(1);
+  workbench.selectChat(hostId, sid(1));
+  await workbench.stop(sid(1));
   assert.equal(mac.calls.filter(call => call.method === "axo.remote.session.key").length, 0);
-  mac.onEvent!({ type: "host.data", hostId, hostGeneration, event: { type: "pi.event", sessionId: 1, piSessionId: "p", ...event(1, "agent.start", {}) } } as never);
-  await Promise.all([workbench.stop(1), workbench.stop(1)]);
+  mac.onEvent!({ type: "host.data", hostId, hostGeneration, event: { type: "pi.event", sessionId: sid(1), piSessionId: "p", ...event(1, "agent.start", {}) } } as never);
+  await Promise.all([workbench.stop(sid(1)), workbench.stop(sid(1))]);
   const keys = mac.calls.filter(call => call.method === "axo.remote.session.key");
   assert.deepEqual(keys.map(call => call.params.key), ["escape"]);
   workbench.dispose();

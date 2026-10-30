@@ -105,7 +105,7 @@ impl Profile {
 /// Shells set aside for each kind of worker, so no two workers race on one shell's input
 /// sequence.
 struct Assignment {
-    flood: Vec<(i64, Shell)>,
+    flood: Vec<(String, Shell)>,
     probe: Vec<(Session, Option<Shell>)>,
 }
 
@@ -158,7 +158,7 @@ fn run(args: &Args, profile: Profile) -> Result<Report, String> {
         }));
     }
     for index in 0..profile.stream_subscribers {
-        let session_id = sessions[index % sessions.len()].id;
+        let session_id = sessions[index % sessions.len()].id.clone();
         workers.push(spawn(&format!("stream-{index}"), {
             let (socket, stop, recorder) = (daemon.socket(), stop.clone(), recorder.clone());
             move || subscribe_until(socket, Some(session_id), true, stop, recorder)
@@ -231,16 +231,18 @@ fn spawn(name: &str, work: impl FnOnce() + Send + 'static) -> thread::JoinHandle
 
 fn create_sessions(daemon: &Daemon, profile: Profile) -> Result<Vec<Session>, String> {
     let mut client = daemon.connect()?;
+    let mut created = Vec::new();
     for _ in 0..profile.sessions {
         let session: Session = client
             .call("axo.session.create", &NoParams {})
             .map_err(|error| format!("axo.session.create: {error}"))?;
+        created.push(session.id.clone());
         for _ in 0..profile.terminals_per_session {
             client
                 .call::<_, Shell>(
                     "axo.shell.create",
                     &SessionRef {
-                        session_id: session.id,
+                        session_id: session.id.clone(),
                     },
                 )
                 .map_err(|error| format!("axo.shell.create: {error}"))?;
@@ -249,10 +251,12 @@ fn create_sessions(daemon: &Daemon, profile: Profile) -> Result<Vec<Session>, St
     let list: SessionList = client
         .call("axo.session.list", &NoParams {})
         .map_err(|error| format!("axo.session.list: {error}"))?;
-    // The newest sessions are the ones just created.
-    let mut sessions = list.sessions;
-    sessions.sort_by_key(|session| session.id);
-    Ok(sessions.split_off(sessions.len().saturating_sub(profile.sessions)))
+    // As listed now, with the shells just added.
+    Ok(list
+        .sessions
+        .into_iter()
+        .filter(|session| created.contains(&session.id))
+        .collect())
 }
 
 fn assign_shells(sessions: &[Session], profile: Profile) -> Result<Assignment, String> {
@@ -261,7 +265,7 @@ fn assign_shells(sessions: &[Session], profile: Profile) -> Result<Assignment, S
             .shells
             .iter()
             .filter(|shell| shell.role == PaneRole::Terminal)
-            .map(move |shell| (session.id, shell.clone()))
+            .map(move |shell| (session.id.clone(), shell.clone()))
     });
     if profile.terminal_count() < profile.flooders + profile.probes || profile.flooders == 0 {
         return Err("profile needs at least one flood shell and one terminal per probe".to_owned());
@@ -272,8 +276,8 @@ fn assign_shells(sessions: &[Session], profile: Profile) -> Result<Assignment, S
             let input = terminals.next().map(|(_, shell)| shell);
             let session_id = input
                 .as_ref()
-                .map_or(sessions[index % sessions.len()].id, |shell| {
-                    sessions
+                .map_or(&sessions[index % sessions.len()].id, |shell| {
+                    &sessions
                         .iter()
                         .find(|s| s.shells.iter().any(|t| t.id == shell.id))
                         .unwrap()
@@ -281,7 +285,7 @@ fn assign_shells(sessions: &[Session], profile: Profile) -> Result<Assignment, S
                 });
             let session = sessions
                 .iter()
-                .find(|s| s.id == session_id)
+                .find(|s| &s.id == session_id)
                 .unwrap()
                 .clone();
             (session, input)
@@ -292,7 +296,7 @@ fn assign_shells(sessions: &[Session], profile: Profile) -> Result<Assignment, S
 
 fn subscribe_until(
     socket: PathBuf,
-    session_id: Option<i64>,
+    session_id: Option<String>,
     include_terminal_output: bool,
     stop: Arc<AtomicBool>,
     recorder: Recorder,
@@ -336,7 +340,7 @@ fn subscribe_until(
     }
 }
 
-fn start_flood(socket: PathBuf, session_id: i64, shell_id: i64, recorder: Recorder) {
+fn start_flood(socket: PathBuf, session_id: String, shell_id: i64, recorder: Recorder) {
     let command = b"while :; do seq 1 20000; done\n";
     let result = Client::connect(&socket, Duration::from_secs(10))
         .map_err(|error| error.to_string())
@@ -369,14 +373,19 @@ fn churn_attachments(shell: Shell, stop: Arc<AtomicBool>, recorder: Recorder) {
     }
 }
 
-fn cycle_lifecycle(socket: PathBuf, session_id: i64, stop: Arc<AtomicBool>, recorder: Recorder) {
+fn cycle_lifecycle(socket: PathBuf, session_id: String, stop: Arc<AtomicBool>, recorder: Recorder) {
     let Ok(mut client) = Client::connect(&socket, Duration::from_secs(30)) else {
         recorder.error("lifecycle.connect", "could not connect".to_owned());
         return;
     };
     while !stop.load(Ordering::Relaxed) {
         let started = Instant::now();
-        let shell = match client.call::<_, Shell>("axo.shell.create", &SessionRef { session_id }) {
+        let shell = match client.call::<_, Shell>(
+            "axo.shell.create",
+            &SessionRef {
+                session_id: session_id.clone(),
+            },
+        ) {
             Ok(shell) => shell,
             Err(error) => return recorder.error("axo.shell.create", error.to_string()),
         };
@@ -386,7 +395,7 @@ fn cycle_lifecycle(socket: PathBuf, session_id: i64, stop: Arc<AtomicBool>, reco
         match client.call::<_, client::Ignored>(
             "axo.shell.close",
             &ShellRef {
-                session_id,
+                session_id: session_id.clone(),
                 shell_id: shell.id,
             },
         ) {
@@ -425,7 +434,7 @@ fn probe_until(
                 .call::<_, client::Ignored>(
                     "axo.shell.busy",
                     &ShellRef {
-                        session_id: session.id,
+                        session_id: session.id.clone(),
                         shell_id: any_shell,
                     },
                 )
@@ -448,7 +457,7 @@ fn probe_until(
                     .call::<_, client::Ignored>(
                         "axo.session.layout.set",
                         &SetLayout {
-                            session_id: session.id,
+                            session_id: session.id.clone(),
                             layout: &layout,
                         },
                     )
@@ -462,7 +471,7 @@ fn probe_until(
                     .call::<_, client::Ignored>(
                         "axo.terminal.resize",
                         &Resize {
-                            session_id: session.id,
+                            session_id: session.id.clone(),
                             shell_id: shell.id,
                             rows,
                             columns: 80,
@@ -471,7 +480,7 @@ fn probe_until(
                     .map(drop)
             });
             let input = TerminalInput {
-                session_id: session.id,
+                session_id: session.id.clone(),
                 shell_id: shell.id,
                 sequence,
                 data: base64(b":\n"),

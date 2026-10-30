@@ -20,7 +20,6 @@ public struct TerminalSessionListSnapshot: Decodable, Sendable {
 
 public struct TerminalSession: Decodable, Equatable, Identifiable, Sendable {
   public let id: SessionID
-  public let sessionUuid: String?
   public let piSessionFile: String?
   public let piSessionId: String?
   public let workspaceId: String?
@@ -37,14 +36,13 @@ public struct TerminalSession: Decodable, Equatable, Identifiable, Sendable {
   public let shells: [TerminalShell]
   public let layout: SessionLayout?
 
-  public var displayName: String { manualName ?? name ?? "Session \(id)" }
+  public var displayName: String { manualName ?? name ?? "Session" }
 
   public init(
     id: SessionID,
     initialPwd: String,
     shells: [TerminalShell],
     layout: SessionLayout? = nil,
-    sessionUuid: String? = nil,
     piSessionFile: String? = nil,
     piSessionId: String? = nil,
     workspaceId: String? = nil,
@@ -57,7 +55,6 @@ public struct TerminalSession: Decodable, Equatable, Identifiable, Sendable {
     status: TerminalSessionStatus? = nil
   ) {
     self.id = id
-    self.sessionUuid = sessionUuid
     self.piSessionFile = piSessionFile
     self.piSessionId = piSessionId
     self.workspaceId = workspaceId

@@ -8,7 +8,6 @@ extension TerminalSession {
       initialPwd: initialPwd,
       shells: shells,
       layout: layout,
-      sessionUuid: sessionUuid,
       piSessionFile: piSessionFile,
       piSessionId: piSessionId,
       workspaceId: workspaceId,

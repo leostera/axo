@@ -382,7 +382,7 @@ fn rekey_sessions_by_uuid(transaction: &rusqlite::Transaction<'_>) -> rusqlite::
              SELECT session_uuid, initial_pwd, state, created_at, archived_at, termination_reason,
                 layout_json, workspace_id, name, manual_name, last_message_at, pi_session_file,
                 pi_session_id, pi_bridge_socket_path, emoji
-             FROM sessions;
+             FROM sessions ORDER BY id;
          INSERT INTO shells_v9 (id, session_id, initial_pwd, state, created_at, archived_at,
                 termination_reason, role, pane_id)
              SELECT h.id, s.session_uuid, h.initial_pwd, h.state, h.created_at, h.archived_at,
@@ -412,6 +412,8 @@ fn rekey_sessions_by_uuid(transaction: &rusqlite::Transaction<'_>) -> rusqlite::
     Ok(())
 }
 
+/// Session IDs carry no order, so ties in time go to the row inserted later: `rowid`, which the
+/// rekey preserves by copying Sessions in their old integer order. It only breaks ties.
 const SESSIONS_V9_COLUMNS: &str = "
             id TEXT PRIMARY KEY NOT NULL,
             initial_pwd TEXT NOT NULL,
@@ -505,7 +507,7 @@ pub fn create_tables(transaction: &rusqlite::Transaction<'_>) -> rusqlite::Resul
 pub fn read_open_sessions(database: &Connection) -> io::Result<Vec<StoredSession>> {
     let mut statement = database
         .prepare(
-            "SELECT id, initial_pwd FROM sessions WHERE state = 'open' ORDER BY created_at, id",
+            "SELECT id, initial_pwd FROM sessions WHERE state = 'open' ORDER BY created_at, rowid",
         )
         .map_err(io::Error::other)?;
     let rows = statement
@@ -1178,7 +1180,7 @@ pub fn recently_closed_sessions(
         .prepare(
             "SELECT id, state, initial_pwd, workspace_id FROM sessions
              WHERE state = 'archived' AND termination_reason = 'explicit_close'
-             ORDER BY archived_at DESC, created_at DESC, id LIMIT ?1",
+             ORDER BY archived_at DESC, created_at DESC, rowid DESC LIMIT ?1",
         )
         .map_err(io::Error::other)?;
     statement
@@ -1589,7 +1591,7 @@ pub fn read_archived_sessions(database: &Connection) -> io::Result<Vec<ArchivedS
              FROM sessions s
              LEFT JOIN workspaces w ON w.workspace_id = s.workspace_id
              WHERE s.state = 'archived' AND s.pi_session_file IS NOT NULL
-             ORDER BY s.archived_at DESC, s.created_at DESC, s.id
+             ORDER BY s.archived_at DESC, s.created_at DESC, s.rowid DESC
              LIMIT ?1",
         )
         .map_err(io::Error::other)?;

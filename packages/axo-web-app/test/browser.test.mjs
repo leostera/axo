@@ -59,6 +59,9 @@ function sendEvent(socket, event) {
   }));
 }
 
+/** A Session ID for fixture `n`. */
+const sid = (n) => `${n.toString(16).padStart(8, "0")}-0000-4000-8000-${n.toString(16).padStart(12, "0")}`;
+
 const liveStream = "9b1e6f0c-6c1d-4a51-9d0e-1f1b2c3d4e5f";
 const historyStream = "41c77dd7-f2dc-4e91-b481-1507b62ec118";
 
@@ -85,7 +88,7 @@ test("browser chats with Axo on a Mac: history, live replies, new chats, info, a
 }, async () => {
   const sessions = [{
     hostId,
-    sessionId: 1,
+    sessionId: sid(1),
     workspaceId,
     workspaceName: "Browser Workspace",
     name: "Browser Agent",
@@ -99,7 +102,7 @@ test("browser chats with Axo on a Mac: history, live replies, new chats, info, a
     lastMessageAt: Math.floor(Date.now() / 1000) - 60,
   }, {
     hostId,
-    sessionId: 5,
+    sessionId: sid(5),
     workspaceId,
     workspaceName: "Browser Workspace",
     name: "Old idea",
@@ -112,7 +115,7 @@ test("browser chats with Axo on a Mac: history, live replies, new chats, info, a
     lastMessageAt: Math.floor(Date.now() / 1000) - 3 * 7 * 86_400,
   }, {
     hostId,
-    sessionId: 4,
+    sessionId: sid(4),
     workspaceId: homeWorkspaceId,
     workspaceName: "Home",
     name: "Plan the week",
@@ -125,7 +128,7 @@ test("browser chats with Axo on a Mac: history, live replies, new chats, info, a
     createdAt: Math.floor(Date.now() / 1000) - 2 * 3_600,
   }, {
     hostId,
-    sessionId: 3,
+    sessionId: sid(3),
     workspaceId: null,
     workspaceName: null,
     name: "Standalone Shell",
@@ -173,7 +176,7 @@ test("browser chats with Axo on a Mac: history, live replies, new chats, info, a
       json(response, { hosts: [host(sessions)] }, origin);
       return;
     }
-    if (request.method === "GET" && url.pathname === `/api/v1/account/hosts/${hostId}/sessions/1/events`) {
+    if (request.method === "GET" && url.pathname === `/api/v1/account/hosts/${hostId}/sessions/${sid(1)}/events`) {
       // Newest first, as the relay sends them.
       json(response, {
         events: [
@@ -222,7 +225,7 @@ test("browser chats with Axo on a Mac: history, live replies, new chats, info, a
         assert.equal(call.params.workspaceId, undefined, "a new chat goes to the Mac's Home Workspace");
         const created = {
           hostId,
-          sessionId: 2,
+          sessionId: sid(2),
           workspaceId: homeWorkspaceId,
           workspaceName: "Home",
           name: "Session 2",
@@ -353,20 +356,22 @@ test("browser chats with Axo on a Mac: history, live replies, new chats, info, a
     await shot("history");
 
     // The open chat is in the URL: a reload opens it again, and Back goes to where it was before.
-    assert.equal(new URL(page.url()).pathname, `/__tests__/chat/${hostId}/1`);
+    assert.equal(new URL(page.url()).pathname, `/__tests__/chat/${hostId}/${sid(1)}`);
     await page.reload({ waitUntil: "networkidle" });
     await expect(page.getByRole("heading", { name: "Browser Agent", exact: true }));
     await expect(page.getByText("Review the latest changes.", { exact: true }));
     await chats.getByRole("button", { name: "Plan the week" }).click();
     await expect(page.getByRole("heading", { name: "Plan the week", exact: true }));
-    assert.equal(new URL(page.url()).pathname, `/__tests__/chat/${hostId}/4`);
+    assert.equal(new URL(page.url()).pathname, `/__tests__/chat/${hostId}/${sid(4)}`);
     await page.goBack();
     await expect(page.getByRole("heading", { name: "Browser Agent", exact: true }));
-    assert.equal(new URL(page.url()).pathname, `/__tests__/chat/${hostId}/1`);
-    // A chat that is gone opens a new one.
-    await page.goto(`${appUrl}/__tests__/chat/${hostId}/99`, { waitUntil: "networkidle" });
-    await expect(page.getByRole("heading", { name: "New chat", exact: true }));
-    await page.waitForFunction(() => location.pathname === "/__tests__/chat", null, { timeout: 5_000 });
+    assert.equal(new URL(page.url()).pathname, `/__tests__/chat/${hostId}/${sid(1)}`);
+    // A chat that is gone opens a new one, and so does an old integer Session URL.
+    for (const gone of [sid(99), "1"]) {
+      await page.goto(`${appUrl}/__tests__/chat/${hostId}/${gone}`, { waitUntil: "networkidle" });
+      await expect(page.getByRole("heading", { name: "New chat", exact: true }));
+      await page.waitForFunction(() => location.pathname === "/__tests__/chat", null, { timeout: 5_000 });
+    }
     await chats.getByRole("button", { name: "Browser Agent" }).click();
     await expect(page.getByRole("heading", { name: "Browser Agent", exact: true }));
 
@@ -418,7 +423,7 @@ test("browser chats with Axo on a Mac: history, live replies, new chats, info, a
     await expect(activity.getByText("Stopping…"));
     assert.deepEqual(keys, ["escape"]);
     await expect(page.getByText("Done with: Ship it", { exact: true }));
-    assert.deepEqual(prompts[0], { sessionId: 1, text: "Ship it" });
+    assert.deepEqual(prompts[0], { sessionId: sid(1), text: "Ship it" });
     assert.equal(await page.getByTestId("pending-prompt").count(), 0, "the agent's record of the message retires the pending one");
     assert.equal(await box.inputValue(), "");
 
@@ -430,17 +435,17 @@ test("browser chats with Axo on a Mac: history, live replies, new chats, info, a
     await expect(page.getByRole("heading", { name: "Session 2", exact: true }));
     await expect(page.getByText("Done with: Start fresh", { exact: true }));
     assert.equal(sessionCreateCount, 1);
-    assert.deepEqual(prompts[1], { sessionId: 2, text: "Start fresh" });
+    assert.deepEqual(prompts[1], { sessionId: sid(2), text: "Start fresh" });
     // Send in the listening bar sends what was said.
     await page.getByText("Done with: Start fresh", { exact: true }).waitFor();
     await page.getByRole("button", { name: "Talk" }).click();
     await expect(listening.getByText("and check the logs"));
     await listening.getByRole("button", { name: "Send" }).click();
     await expect(page.getByText("Done with: and check the logs", { exact: true }));
-    assert.deepEqual(prompts[2], { sessionId: 2, text: "and check the logs" });
+    assert.deepEqual(prompts[2], { sessionId: sid(2), text: "and check the logs" });
     // The new chat goes to the top of the list, and into the URL.
     assert.equal(await recent.locator(".chat-row-name").first().textContent(), "Session 2");
-    assert.equal(new URL(page.url()).pathname, `/__tests__/chat/${hostId}/2`);
+    assert.equal(new URL(page.url()).pathname, `/__tests__/chat/${hostId}/${sid(2)}`);
 
     // Search finds a chat by its name.
     await chats.getByRole("button", { name: "Search chats" }).click();

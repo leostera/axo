@@ -18,7 +18,7 @@ final class SessionNavigationTests: XCTestCase {
     XCTAssertEqual(recent.ids, [1, 2])
     recent.forget(1)
     XCTAssertEqual(recent.ids, [2])
-    for id in 0..<Int64(RecentSessions.capacity + 10) { recent.remember(SessionID(rawValue: id)) }
+    for id in 0..<UInt32(RecentSessions.capacity + 10) { recent.remember(.fixture(id)) }
     XCTAssertEqual(recent.ids.count, RecentSessions.capacity)
   }
 
@@ -33,7 +33,7 @@ final class SessionNavigationTests: XCTestCase {
       // No message yet: counts from its creation, so a new Session is near the top.
       active(3, created: 250),
       // Equal activity: the newer Session first. Older daemons send no creation time.
-      active(4, message: 100),
+      active(4, message: 100, created: 50),
       active(5),
     ]
     XCTAssertEqual(SessionActivityOrder.sorted(sessions).map(\.id), [2, 3, 4, 1, 5])

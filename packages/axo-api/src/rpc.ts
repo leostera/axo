@@ -24,7 +24,7 @@ import {
 } from "./contracts.js";
 
 export type Negotiated = {
-  protocolVersion: 1;
+  protocolVersion: 2;
   methods: string[];
   deliveryCredits: { frames: number; bytes: number };
 };
@@ -56,12 +56,18 @@ export function createAxoClient<Context = void>(
 ): AxoClient<Context> {
   return new JSONRPCClient<Context>(send, () => crypto.randomUUID());
 }
+/**
+ * The error a peer on another protocol version gets from `axo.protocol.negotiate`. Its message is
+ * fixed and safe to show, so it is not replaced by "Operation rejected".
+ */
+export const unsupportedProtocolVersionCode = -32010;
+
 export function createProfileServer<Context = void>(): JSONRPCServer<Context> {
   const server = new JSONRPCServer<Context>({ errorListener: () => {} });
   // The library defaults to console.warn(error): unsafe for credential/prompt-bearing exceptions.
   server.mapErrorToJSONRPCErrorResponse = (id, error: unknown) =>
     error instanceof JSONRPCErrorException && Number.isSafeInteger(error.code)
-      ? failure(id, error.code, "Operation rejected")
+      ? failure(id, error.code, error.code === unsupportedProtocolVersionCode ? error.message : "Operation rejected")
       : failure(id, -32603, "Internal error");
   server.applyMiddleware((next, request, context) => {
     if (

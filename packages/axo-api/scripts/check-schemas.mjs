@@ -15,6 +15,7 @@ import {
   hostPairingRedeemResultSchema,
   hostV1Methods,
   hostV1Results,
+  sessionIdSchema,
 } from "../dist/v1.js";
 import { desiredSessionGraphSchema, stateSessionViewSchema, workspaceGraphSchema, fragmentSchema, discardSchema, MAX_FRAGMENTS } from "../dist/index.js";
 
@@ -220,7 +221,7 @@ validateWith(localCallSchema, {
   jsonrpc: "2.0",
   id: 1,
   method: "axo.shell.busy",
-  params: { sessionId: 1, shellId: 2 },
+  params: { sessionId: "0b8f4e2a-7c1d-4e6b-9a3f-5d2c8e1b7a49", shellId: 2 },
 });
 validateWith(
   "https://schemas.axo.leostera.dev/v1/local-rpc.schema.json#/$defs/ShellBusyResult",
@@ -304,6 +305,21 @@ assert.equal(validateHostCall(missingParams), false, "control calls require thei
 const extraField = await fixture("host-session-create.call.json");
 extraField.params.unscopedSessionId = 9;
 assert.equal(validateHostCall(extraField), false, "host-scoped calls reject unscoped fields");
+// Session IDs are canonical lowercase UUIDs on both sides (RFD0017).
+const sessionIdJsonSchema = ajv.getSchema("https://schemas.axo.leostera.dev/v1/common.schema.json#/$defs/SessionId");
+for (const [value, valid] of [
+  ["0b8f4e2a-7c1d-4e6b-9a3f-5d2c8e1b7a49", true],
+  ["0B8F4E2A-7C1D-4E6B-9A3F-5D2C8E1B7A49", false],
+  [9, false],
+  ["9", false],
+]) {
+  assert.equal(sessionIdJsonSchema(value), valid, `JSON Schema SessionId ${JSON.stringify(value)}`);
+  assert.equal(sessionIdSchema.safeParse(value).success, valid, `zod SessionId ${JSON.stringify(value)}`);
+}
+const protocolOne = await fixture("host-register.call.json");
+protocolOne.params.protocolVersion = 1;
+assert.equal(validateHostCall(protocolOne), false, "protocol 1 hosts are refused");
+assert.equal(hostRegisterSchema.safeParse(protocolOne.params).success, false, "protocol 1 hosts are refused");
 const pairingSchema = "https://schemas.axo.leostera.dev/v1/pairing.schema.json#/$defs/";
 const createPairing = await fixture("host-pairing-create.result.json");
 validateWith(`${pairingSchema}HostPairingCreateResult`, createPairing);

@@ -3,15 +3,16 @@ import AxoProtocol
 /// The open Sessions as Axod last described them, plus shell membership the app has already
 /// applied from command results. A pure value: `TerminalSessionsModel` holds one and projects it.
 ///
-/// Invariant: `sessions` is sorted by ID with no duplicates, whatever order Axod or a command
-/// result delivers them in.
+/// Invariant: `sessions` is in creation order (oldest first, ties by ID, as Axod lists them) with
+/// no duplicate IDs, whatever order Axod or a command result delivers them in. Session IDs are
+/// UUIDs and carry no order of their own.
 struct SessionCatalog: Equatable {
   private(set) var sessions: [TerminalSession]
 
   init(_ sessions: [TerminalSession] = []) {
     // The last record for an ID wins, as it would if they arrived one at a time.
     let byID = Dictionary(sessions.map { ($0.id, $0) }, uniquingKeysWith: { _, last in last })
-    self.sessions = byID.values.sorted { $0.id < $1.id }
+    self.sessions = byID.values.sorted(by: Self.isCreatedBefore)
   }
 
   var isEmpty: Bool { sessions.isEmpty }
@@ -33,10 +34,15 @@ struct SessionCatalog: Equatable {
 
   /// Inserts `session`, or replaces the record with its ID.
   mutating func upsert(_ session: TerminalSession) {
-    switch search(session.id) {
-    case .found(let index): sessions[index] = session
-    case .insertAt(let index): sessions.insert(session, at: index)
+    if let index = index(of: session.id) {
+      guard sessions[index].createdAt != session.createdAt else {
+        sessions[index] = session
+        return
+      }
+      sessions.remove(at: index)
     }
+    let position = sessions.firstIndex { Self.isCreatedBefore(session, $0) } ?? sessions.endIndex
+    sessions.insert(session, at: position)
   }
 
   func upserting(_ session: TerminalSession) -> SessionCatalog {
@@ -63,24 +69,12 @@ struct SessionCatalog: Equatable {
   }
 
   private func index(of sessionID: SessionID) -> Int? {
-    guard case .found(let index) = search(sessionID) else { return nil }
-    return index
+    sessions.firstIndex { $0.id == sessionID }
   }
 
-  private enum SearchResult {
-    case found(Int)
-    case insertAt(Int)
-  }
-
-  /// Binary search over the sorted `sessions`.
-  private func search(_ sessionID: SessionID) -> SearchResult {
-    var low = 0
-    var high = sessions.count
-    while low < high {
-      let middle = (low + high) / 2
-      if sessions[middle].id == sessionID { return .found(middle) }
-      if sessions[middle].id < sessionID { low = middle + 1 } else { high = middle }
-    }
-    return .insertAt(low)
+  private static func isCreatedBefore(_ left: TerminalSession, _ right: TerminalSession) -> Bool {
+    let (leftCreated, rightCreated) = (left.createdAt ?? 0, right.createdAt ?? 0)
+    return leftCreated != rightCreated
+      ? leftCreated < rightCreated : left.id.rawValue < right.id.rawValue
   }
 }

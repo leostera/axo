@@ -8,6 +8,7 @@ import {
   hostRefSchema,
   hostSessionsListResultSchema,
   sessionIdSchema,
+  protocolVersion,
   hostSubscribeResultSchema,
   hostUnsubscribeResultSchema,
   remoteSessionCreateResultSchema,
@@ -142,7 +143,7 @@ export class RemoteAxoApi {
 
   async listPiEvents(
     reference: HostRef,
-    sessionId: number,
+    sessionId: string,
     before = 0,
     limit = 20,
     signal?: AbortSignal,
@@ -245,7 +246,7 @@ export class HostRelayConnection {
     const connection = new HostRelayConnection(socket, parsedReference, onEvent, onClose);
     try {
       await connection.waitUntilOpen();
-      await connection.request("axo.protocol.negotiate", { protocolVersion: 1 });
+      await connection.request("axo.protocol.negotiate", { protocolVersion });
       const response = await connection.request(
         "axo.host.subscribe",
         parsedReference,
