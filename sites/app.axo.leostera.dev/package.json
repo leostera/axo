@@ -4,26 +4,18 @@
   "type": "module",
   "scripts": {
     "dev": "cf dev",
-    "build": "npm --prefix ../../packages/axo-api run build && npm --prefix ../../packages/axo-app run build && cf build",
+    "build": "npm --prefix ../../packages/axo-api run build && npm --prefix ../../packages/axo-app run build && npm --prefix ../../packages/axo-web-app run build && cf build",
     "preview": "cf preview",
-    "test:browser": "node --test test/browser.test.mjs",
-    "typecheck": "npm --prefix ../../packages/axo-api run build && npm --prefix ../../packages/axo-app run build && cf workers types && tsc --noEmit",
-    "test": "npm --prefix ../../packages/axo-api run build && npm --prefix ../../packages/axo-app test && npm run test:browser"
+    "test:browser": "npm --prefix ../../packages/axo-web-app run test:browser",
+    "typecheck": "npm --prefix ../../packages/axo-api run build && npm --prefix ../../packages/axo-app run build && npm --prefix ../../packages/axo-web-app run typecheck && cf workers types && tsc --noEmit",
+    "test": "npm --prefix ../../packages/axo-api run build && npm --prefix ../../packages/axo-app test && npm --prefix ../../packages/axo-web-app test"
   },
   "dependencies": {
-    "@axo/app": "file:../../packages/axo-app",
-    "@axo/protocol": "file:../../packages/axo-api",
-    "@xterm/addon-fit": "^0.11.0",
-    "@xterm/xterm": "^6.0.0",
-    "react": "^19.3.1",
-    "react-dom": "^19.3.1"
+    "@axo/web-app": "file:../../packages/axo-web-app"
   },
   "devDependencies": {
     "@cloudflare/vite-plugin": "2.0.0-beta.sha-52b0dc0e9",
-    "@types/react": "^19.3.0",
-    "@types/react-dom": "^19.3.0",
     "@vitejs/plugin-react": "^6.1.2",
-    "playwright-core": "^1.64.1",
     "cf": "1.0.0-beta.13",
     "typescript": "^7.0.2",
     "vite": "^8.3.0"

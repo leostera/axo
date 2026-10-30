@@ -14,7 +14,7 @@ const hostId = "1e1e7f91-3d8f-4f97-8f71-4fc7d53313c6";
 const hostGeneration = "f9c5761c-3b2d-42a8-bb19-9a8c0b8cf230";
 const subscriptionId = "53c8b056-a7ba-4354-9659-dda29f57850a";
 const now = "2026-10-16T12:00:00.000Z";
-const siteRoot = resolve(import.meta.dirname, "..");
+const siteRoot = resolve(import.meta.dirname, "../../../sites/app.axo.leostera.dev");
 const chromePath = process.env.CHROME_PATH ?? "/Applications/Google Chrome.app/Contents/MacOS/Google Chrome";
 
 function session(sessionId, shellId) {
@@ -194,12 +194,15 @@ test("browser discovers hosts, renders live PTY output, sends input, and uses Cm
     const appPort = await freePort();
     const appUrl = `http://127.0.0.1:${appPort}`;
     const apiBaseUrl = appUrl;
+    let apiBaseUrlWasInjected = false;
     const apiUrlForBrowser = {
       name: "axo-browser-test-api-url",
       enforce: "pre",
       transform(code, id) {
         if (id.includes("remote-terminal-app.tsx")) {
-          return code.replaceAll("import.meta.env.VITE_AXO_API_BASE_URL", JSON.stringify(apiBaseUrl));
+          const transformed = code.replaceAll("import.meta.env.VITE_AXO_API_BASE_URL", JSON.stringify(apiBaseUrl));
+          apiBaseUrlWasInjected = transformed.includes(JSON.stringify(apiBaseUrl));
+          return transformed;
         }
         return null;
       },
@@ -219,8 +222,8 @@ test("browser discovers hosts, renders live PTY output, sends input, and uses Cm
       logLevel: "error",
     });
     await vite.listen();
-    const transformed = await fetch(`${appUrl}/src/remote-terminal-app.tsx`).then((response) => response.text());
-    assert.ok(transformed.includes(JSON.stringify(apiBaseUrl)), transformed.slice(transformed.indexOf("apiBaseUrl"), transformed.indexOf("apiBaseUrl") + 120));
+    await fetch(`${appUrl}/`);
+    assert.ok(apiBaseUrlWasInjected, "Vite did not inject the isolated API URL into the packaged web application");
     const proxyCheck = await fetch(`${appUrl}/v1/hosts`);
     assert.equal(proxyCheck.status, 200, `Vite API proxy failed: ${await proxyCheck.text()}`);
     browser = await chromium.launch({

@@ -1,34 +1,23 @@
 {
-  "name": "@axo/private-api",
+  "name": "@axo/private-api-site",
   "private": true,
   "type": "module",
   "scripts": {
     "dev": "cf dev",
     "build": "npm --prefix ../../packages/axo-api run build && cf build",
-    "typecheck": "npm --prefix ../../packages/axo-api run build && cf workers types && tsc --noEmit",
-    "test": "npm --prefix ../../packages/axo-api run build && npm --prefix ../../packages/axo-api run schema:check && tsx --test --test-concurrency=1 tests/*.test.ts",
-    "test:properties": "npm --prefix ../../packages/axo-api run build && tsx --test --test-concurrency=1 tests/replies.property.test.ts",
-    "test:axod": "npm --prefix ../../packages/axo-api run build && npm --prefix ../../packages/axo-api run schema:check && tsx --test --test-concurrency=1 tests/axod.test.ts tests/local.test.ts",
-    "test:relay": "npm --prefix ../../packages/axo-api run build && npm --prefix ../../packages/axo-app run build && npm --prefix ../../packages/axo-api run schema:check && (cd ../.. && bazel build //crates/axod:axod) && AXOD_BINARY=../../bazel-bin/crates/axod/axod npm exec -- tsx --test --test-concurrency=1 tests/axod-relay.test.ts",
-    "smoke": "tsx scripts/dummy-client.ts"
+    "typecheck": "npm --prefix ../../packages/axo-api run build && cf workers types && npm --prefix ../../packages/axo-api-worker run typecheck && tsc --noEmit",
+    "test": "npm --prefix ../../packages/axo-api run schema:check && cf workers types && npm --prefix ../../packages/axo-api-worker test",
+    "test:properties": "npm --prefix ../../packages/axo-api-worker run test:properties",
+    "test:axod": "npm --prefix ../../packages/axo-api-worker run test:axod",
+    "test:relay": "npm --prefix ../../packages/axo-api-worker run test:relay",
+    "smoke": "npm --prefix ../../packages/axo-api-worker run smoke --"
   },
   "dependencies": {
-    "@axo/protocol": "file:../../packages/axo-api",
-    "hono": "4.13.13",
-    "jose": "^6.2.12",
-    "ws": "^8.18.0",
-    "zod": "^4.5.0"
+    "@axo/api-worker": "file:../../packages/axo-api-worker"
   },
   "devDependencies": {
-    "@axo/app": "file:../../packages/axo-app",
     "@cloudflare/vite-plugin": "2.0.0-beta.sha-52b0dc0e9",
-    "@types/node": "^24.0.0",
-    "@types/ws": "^8.18.0",
     "cf": "1.0.0-beta.13",
-    "esbuild": "^0.28.0",
-    "fast-check": "4.3.0",
-    "miniflare": "5.20261006.1-alpha",
-    "tsx": "^4.20.0",
     "typescript": "^7.0.2",
     "vite": "^8.3.0"
   },

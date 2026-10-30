@@ -1,4 +1,3 @@
-// Vite bundles the module graph; these named exports are the stable DO deployment identities.
-export { default } from "./http/router";
-export { AxoHostDirectory } from "./axo-host-directory";
-export { AxoHostRelay } from "./axo-host-relay";
+// Keep Worker entrypoint wiring in the site; implementation lives in @axo/api-worker.
+export { default } from "@axo/api-worker";
+export { AxoHostDirectory, AxoHostRelay } from "@axo/api-worker";
