@@ -17,3 +17,5 @@ export {
   type TypedJSONRPCServer,
   type TypedJSONRPCServerAndClient,
 } from "json-rpc-2.0";
+export * from "./pi3.ts";
+export * from "./session-sync.ts";

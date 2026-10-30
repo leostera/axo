@@ -1,0 +1,12 @@
+{"type":"session","version":3,"id":"01a18b03-1da8-73a4-ba9e-1e4b591c3c0a","timestamp":"2026-10-30T04:13:19.660Z","cwd":"/Users/me"}
+{"type":"model_change","id":"fc3c7f16","parentId":null,"timestamp":"2026-10-30T04:13:20.696Z","provider":"anthropic","modelId":"claude"}
+{"type":"message","id":"a1","parentId":"fc3c7f16","timestamp":"2026-10-30T04:13:21.000Z","message":{"role":"user","content":[{"type":"text","text":"héllo, ünïcode ✓ and \"quotes\""}]}}
+{"type":"message","id":"a2","parentId":"a1","timestamp":"2026-10-30T04:13:22.000Z","message":{"role":"assistant","content":[{"type":"toolCall","id":"call_1","name":"bash","arguments":{"command":"ls"}}]}}
+{"type":"message","id":"a3","parentId":"a2","timestamp":"2026-10-30T04:13:23.000Z","message":{"role":"toolResult","toolCallId":"call_1","toolName":"bash","content":[{"type":"text","text":"a\nb"}]}}
+{"type":"compaction","id":"c1","parentId":"a3","timestamp":"2026-10-30T04:14:00.000Z","summary":"Listed files.","firstKeptEntryId":"a2","tokensBefore":100}
+{"type":"message","id":"b1","parentId":"a1","timestamp":"2026-10-30T04:15:00.000Z","message":{"role":"assistant","content":[{"type":"text","text":"a branch"}]}}
+{"type":"branch_summary","id":"s1","parentId":"b1","timestamp":"2026-10-30T04:15:01.000Z","fromId":"c1","summary":"Left the listing."}
+{"type":"context_edit","id":"e1","parentId":"s1","timestamp":"2026-10-30T04:15:02.000Z","targetId":"a3","replacement":"…"}
+{"type":"label","id":"l1","parentId":"e1","timestamp":"2026-10-30T04:15:03.000Z","targetId":"a2","label":"kept"}
+{"type":"message","id":"d1","parentId":"gone","timestamp":"2026-10-30T04:16:00.000Z","message":{"role":"assistant","content":[]}}
+{"type":"custom","customType":"axo","data":{"x":1},"id":"x1","parentId":"d1","timestamp":"2026-10-30T04:16:01.000Z"}
