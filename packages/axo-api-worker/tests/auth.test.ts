@@ -2,7 +2,7 @@ import assert from "node:assert/strict";
 import { createHash, randomBytes } from "node:crypto";
 import { after, before, test } from "node:test";
 import WebSocket from "ws";
-import { parseAuthConfiguration } from "../src/auth/config";
+import { parseAuthConfiguration, type AuthEnvironment } from "../src/auth/config";
 import { seal, unseal } from "../src/auth/crypto";
 import { formatSessionToken, newSessionToken, parseSessionToken } from "../src/auth/session";
 import {
@@ -68,12 +68,12 @@ test("sealed values open only with the same key and purpose, and never after a c
 });
 
 test("sign-in is configured only with an OAuth client and a long enough secret", () => {
-  const ok = { OAUTH_CLIENT_ID: "id", OAUTH_CLIENT_SECRET: "s", SESSION_SECRET: testSessionSecret } as Env;
+  const ok: AuthEnvironment = { OAUTH_CLIENT_ID: "id", OAUTH_CLIENT_SECRET: "s", SESSION_SECRET: testSessionSecret };
   assert.equal(parseAuthConfiguration(ok)?.clientId, "id");
-  assert.equal(parseAuthConfiguration({ ...ok, OAUTH_CLIENT_SECRET: undefined } as Env)?.clientSecret, null);
-  assert.equal(parseAuthConfiguration({ ...ok, OAUTH_CLIENT_ID: "" } as Env), null);
-  assert.equal(parseAuthConfiguration({ ...ok, SESSION_SECRET: "short" } as Env), null);
-  assert.equal(parseAuthConfiguration({ ...ok, SESSION_SECRET: undefined } as Env), null);
+  assert.equal(parseAuthConfiguration({ ...ok, OAUTH_CLIENT_SECRET: undefined })?.clientSecret, null);
+  assert.equal(parseAuthConfiguration({ ...ok, OAUTH_CLIENT_ID: "" }), null);
+  assert.equal(parseAuthConfiguration({ ...ok, SESSION_SECRET: "short" }), null);
+  assert.equal(parseAuthConfiguration({ ...ok, SESSION_SECRET: undefined }), null);
 });
 
 // ---- signing in on the web ----

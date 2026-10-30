@@ -3,6 +3,7 @@ import { isAbsolute, resolve } from "node:path";
 import { AxoPiBridgeServer } from "./bridge-server.js";
 import { parsePiSessionIdentity, type PiControlCommand, type PiSessionIdentity } from "./protocol.js";
 import { installAxoSessionNaming } from "./title.js";
+import { registerShareCommand } from "./share-command.js";
 import { messageEvent, ProgressThrottle, toolEvent, turnEndEvent } from "./events.js";
 
 export interface AxoPiExtensionConfig {
@@ -118,6 +119,8 @@ export async function installAxoPiExtension(pi: ExtensionAPI, config: AxoPiExten
       commandContext.ui.notify("Axo is importing the transcript as a new Session.", "info");
     },
   });
+
+  registerShareCommand(pi);
 
   pi.on("session_start", async (event, sessionContext) => {
     traceBridge("session_start received");

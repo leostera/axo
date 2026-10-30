@@ -54,6 +54,20 @@ button:disabled { cursor: default; }
 .spacer { flex: 1; }
 .app-loading { display: grid; width: 100%; height: 100%; place-items: center; color: var(--secondary); font-size: 14px; }
 
+/* Public, read-only shared-session page. */
+.shared-session { width: min(100%, 820px); height: 100%; margin: 0 auto; overflow-y: auto; padding: 32px 24px 48px; }
+.shared-session-header { padding: 18px 0 28px; border-bottom: 1px solid var(--separator); }
+.shared-session-brand { color: var(--secondary); font-size: 14px; font-weight: 700; letter-spacing: .04em; text-decoration: none; }
+.shared-session-header h1 { margin: 24px 0 6px; font-size: clamp(28px, 5vw, 40px); line-height: 1.1; letter-spacing: -.035em; }
+.shared-session-header p, .shared-session-footer { color: var(--secondary); font-size: 14px; }
+.shared-session-transcript { display: grid; gap: 20px; padding: 28px 0; }
+.shared-session-transcript .message { max-width: 100%; }
+.shared-session-state { display: grid; height: 100%; align-content: center; justify-items: center; gap: 8px; padding: 24px; text-align: center; color: var(--secondary); }
+.shared-session-state h1 { margin: 0; color: var(--text); font-size: 22px; }
+.shared-session-state p { margin: 0; }
+.shared-session-footer { padding-top: 18px; border-top: 1px solid var(--separator); }
+@media (max-width: 600px) { .shared-session { padding: 16px 18px 36px; } }
+
 /* Controls */
 .circle-button {
   display: grid; width: 44px; height: 44px; flex: none; place-items: center; padding: 0;

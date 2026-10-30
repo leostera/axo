@@ -42,6 +42,18 @@ Axod-to-Pi records use `type: "command"`, a request ID, and the matching Axo Ses
 
 The extension forwards structured Pi events to Axod only. Its `/resume` request includes a selected transcript path but is consumed locally by Axod and is never relayed. `/axo-import <path.jsonl>` asks Axod to copy that Pi transcript into a new Session in the current Workspace, then focus the new Session; the source and current Session remain unchanged. Axod validates the Pi session header and copies it into its private history directory with the Workspace's working directory. If Axod is disconnected, live events are not buffered in memory; Axod must reconcile from Pi's durable local session history. Terminal bytes never enter this channel. Pi remains the sole writer of its session file.
 
+## Sharing a conversation
+
+`/axo-share` publishes a read-only copy of the current branch at `https://axo.leostera.dev/s/<share-id>/<slug>`; `/axo-share --dry-run` stops before uploading. Everything happens on this Mac (`src/share.ts`, `src/share-command.ts`):
+
+1. **Snapshot.** User and assistant words and the tools that ran (name, command or path, status, output cut to 4,000 characters). Reasoning and images are never included.
+2. **Scrub.** Known secret shapes (private keys, cloud and Git tokens, JWTs, bearer headers, URL credentials, `*_TOKEN=…`-style assignments, email addresses) and home-directory user names are replaced by `[redacted:<category>]` before any model sees the text.
+3. **Triage with Clef.** Each field goes to the cheapest available Clef classifier (Clef Flash, then Clef); fields with at least a 15% chance of holding sensitive information go on. Without a Clef with working credentials (Workers AI or OpenRouter), every field goes on.
+4. **Redact with Haiku.** A Haiku model (the current provider's first, newest first) names the exact sensitive substrings; they are replaced in every field, so a secret seen once is removed everywhere. The model never rewrites text.
+5. **Review and publish.** The redacted snapshot is written to `~/.axo/shares/<share-id>.json` (mode `0600`) and uploaded only after confirmation, with `wrangler r2 object put` to the `axo-public-sessions` bucket. The share is recorded as an `axo_session_share` custom entry.
+
+Triage and redaction send the scrubbed text to those model providers. Any model error or malformed answer stops the share; nothing half-checked is uploaded. Model redaction is best effort: review the file before confirming. `AXO_SHARE_CLASSIFIER` and `AXO_SHARE_REDACTOR` (`provider/model-id`), `AXO_SHARE_BUCKET`, and `CLOUDFLARE_ACCOUNT_ID` override the defaults. Publishing never touches Axo's API or its stored session history.
+
 ## Session title, emoji, and activity
 
 On the first user turn of an unnamed conversation, the extension adds a structured prompt section asking Pi to call `axo_set_title` in that same turn with a concise title and one representative emoji. The tool remains available to update both when the conversation's focus materially changes; the prompt discourages renaming on routine turns. Titles are persisted through Pi's public `setSessionName()` API, and the current emoji is saved as a Pi custom entry that does not enter model context. Axod receives only validated title/emoji metadata through the exact bound bridge and stores the sidebar projection locally.

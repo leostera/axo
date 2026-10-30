@@ -23,6 +23,7 @@ export default defineConfig(({ isPreview }) => ({
     },
     // Sign-in with Cloudflare OAuth. The values are set on the Worker, never in this file.
     env: {
+      PUBLIC_SESSIONS: bindings.r2({ name: "axo-public-sessions" }),
       OAUTH_CLIENT_ID: bindings.secret(),
       OAUTH_CLIENT_SECRET: bindings.secret(),
       SESSION_SECRET: bindings.secret(),

@@ -85,4 +85,13 @@ test("single site serves landing/app assets and keeps account APIs fail-closed",
   const legacyProductApi = await fetch(`${url}/api/v1/hosts`);
   assert.equal(legacyProductApi.status, 503);
   assert.match(await legacyProductApi.text(), /not enabled yet/);
+
+  const sharePage = await fetch(`${url}/s/AAAAAAAAAAAAAAAAAAAAAA/shared-chat`);
+  assert.equal(sharePage.status, 200);
+  assert.match(await sharePage.text(), /axo — your agentic experience olotl/);
+
+  const missingShare = await fetch(`${url}/api/public-sessions/AAAAAAAAAAAAAAAAAAAAAA`);
+  assert.equal(missingShare.status, 404);
+  const invalidShare = await fetch(`${url}/api/public-sessions/not-a-share-id`);
+  assert.equal(invalidShare.status, 404);
 });

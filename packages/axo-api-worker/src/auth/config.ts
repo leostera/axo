@@ -4,7 +4,7 @@ import { requireSecret } from "./crypto";
 export const APP_ORIGIN = "https://axo.leostera.dev";
 
 /** What the Worker needs to run sign-in. */
-export type AuthEnvironment = Env & {
+export type AuthEnvironment = {
   /** The Cloudflare OAuth client (https://dash.cloudflare.com/profile/api-tokens → OAuth). */
   OAUTH_CLIENT_ID?: string;
   OAUTH_CLIENT_SECRET?: string;
