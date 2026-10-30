@@ -1,5 +1,6 @@
-import { useEffect, useLayoutEffect, useRef, useState, type KeyboardEvent } from "react";
+import { useEffect, useLayoutEffect, useRef, useState, type ClipboardEvent, type KeyboardEvent } from "react";
 import { AxoMascot } from "../axo-mascot.tsx";
+import { useDictation } from "./dictation.ts";
 import { Icon } from "./icons.tsx";
 import { MessageView, PendingView, QuestionCard } from "./message-views.tsx";
 import { chatTitle, type ChatWorkbench } from "./workbench.ts";
@@ -166,7 +167,14 @@ export function Conversation({ workbench, wide, onShowChats, onToggleInfo }: {
   );
 }
 
-/** The message box: Enter sends, Shift-Enter starts a new line; while Axo works, it can stop. */
+/** The most a message can be: the Mac takes up to 16,000 bytes of text. */
+export const maxMessageBytes = 16_000;
+const encoder = new TextEncoder();
+
+/**
+ * The message box: Enter sends, Shift-Enter starts a new line; while Axo works, it can stop. The
+ * microphone dictates into it where the browser can listen.
+ */
 function Composer({ workbench, placeholder, canSend, working, stopping, onSend, onStop }: {
   workbench: ChatWorkbench;
   placeholder: string;
@@ -179,14 +187,26 @@ function Composer({ workbench, placeholder, canSend, working, stopping, onSend, 
   const draft = workbench.draft();
   const field = useRef<HTMLTextAreaElement>(null);
   const hasDraft = draft.trim().length > 0;
+  const bytes = encoder.encode(draft).length;
+  const tooLong = bytes > maxMessageBytes;
   const showStop = working && !hasDraft;
+  const dictation = useDictation(text => workbench.setDraft(text));
+  /** Where the caret goes once a paste is in, after React has put the new words in the box. */
+  const caret = useRef<number | null>(null);
 
   useLayoutEffect(() => {
     const element = field.current;
     if (!element) return;
     element.style.height = "auto";
     element.style.height = `${Math.min(element.scrollHeight, 220)}px`;
+    if (caret.current !== null) {
+      element.setSelectionRange(caret.current, caret.current);
+      caret.current = null;
+    }
   }, [draft]);
+
+  // Dictation is for this chat's box: another chat, or sending, ends it.
+  useEffect(() => dictation.stop, [workbench.selection]);
 
   useEffect(() => {
     if (window.matchMedia("(pointer: fine)").matches) field.current?.focus();
@@ -195,18 +215,40 @@ function Composer({ workbench, placeholder, canSend, working, stopping, onSend, 
   const onKeyDown = (event: KeyboardEvent<HTMLTextAreaElement>) => {
     if (event.key === "Enter" && !event.shiftKey && !event.nativeEvent.isComposing) {
       event.preventDefault();
-      if (canSend && hasDraft && !workbench.isSending) onSend();
+      if (canSend && hasDraft && !tooLong && !workbench.isSending) submit();
     } else if (event.key === "Escape" && working) {
       event.preventDefault();
       onStop();
     }
   };
 
+  const submit = () => {
+    dictation.stop();
+    onSend();
+  };
+
+  // Pasted words go in as plain text where the caret is, whatever the clipboard also carries.
+  const onPaste = (event: ClipboardEvent<HTMLTextAreaElement>) => {
+    const text = event.clipboardData.getData("text/plain").replace(/\r\n?/g, "\n");
+    if (!text) return;
+    event.preventDefault();
+    const element = event.currentTarget;
+    const start = element.selectionStart ?? draft.length;
+    const end = element.selectionEnd ?? draft.length;
+    caret.current = start + text.length;
+    workbench.setDraft(draft.slice(0, start) + text + draft.slice(end));
+  };
+
+  const note = dictation.failure
+    ?? (tooLong ? `Too long to send: ${bytes.toLocaleString()} of ${maxMessageBytes.toLocaleString()} bytes.` : null);
+
   return (
-    <form className="composer" onSubmit={event => {
+    <>
+    {note ? <p className="composer-note" role="status">{note}</p> : null}
+    <form className={dictation.listening ? "composer listening" : "composer"} onSubmit={event => {
       event.preventDefault();
       if (showStop) onStop();
-      else if (canSend && hasDraft) onSend();
+      else if (canSend && hasDraft && !tooLong) submit();
     }}>
       <textarea
         ref={field}
@@ -217,16 +259,28 @@ function Composer({ workbench, placeholder, canSend, working, stopping, onSend, 
         disabled={!canSend}
         onChange={event => workbench.setDraft(event.target.value)}
         onKeyDown={onKeyDown}
+        onPaste={onPaste}
       />
+      {dictation.supported && canSend ? (
+        <button type="button" className={dictation.listening ? "mic-button listening" : "mic-button"}
+          onClick={() => {
+            dictation.toggle(draft);
+            field.current?.focus();
+          }}
+          aria-label={dictation.listening ? "Stop dictating" : "Dictate"} aria-pressed={dictation.listening}>
+          <Icon name="mic" size={18} />
+        </button>
+      ) : null}
       {showStop ? (
         <button className="send-button stop" disabled={stopping || !canSend} aria-label={stopping ? "Stopping" : "Stop"}>
           <Icon name="stop" size={18} />
         </button>
       ) : (
-        <button className={hasDraft && canSend ? "send-button ready" : "send-button"} disabled={!hasDraft || !canSend || workbench.isSending} aria-label="Send">
+        <button className={hasDraft && canSend && !tooLong ? "send-button ready" : "send-button"} disabled={!hasDraft || !canSend || tooLong || workbench.isSending} aria-label="Send">
           <Icon name="arrowUp" size={20} />
         </button>
       )}
     </form>
+    </>
   );
 }

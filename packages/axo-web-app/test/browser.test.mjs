@@ -309,47 +309,31 @@ test("browser chats with Axo on a Mac: history, live replies, new chats, info, a
     assert.ok((await page.getByRole("link", { name: "Continue with Cloudflare" }).getAttribute("href"))
       .endsWith("/api/auth/cloudflare/start"), "the landing page starts the Worker's Cloudflare sign-in");
 
+    // Dictation, with a stand-in for the browser's speech recognition.
+    await page.addInitScript(() => {
+      window.SpeechRecognition = window.webkitSpeechRecognition = class {
+        start() {
+          setTimeout(() => this.onresult?.({ resultIndex: 0, results: [Object.assign([{ transcript: "and check the logs" }], { isFinal: true })] }), 20);
+        }
+        stop() { setTimeout(() => this.onend?.(), 0); }
+        abort() { this.onend?.(); }
+      };
+    });
     await page.goto(`${appUrl}/__tests__/chat`, { waitUntil: "networkidle" });
     const chats = page.getByRole("navigation", { name: "Chats" });
+    // Every chat in one list by its last message (or creation), as on the Mac, with how long ago.
     // Chats only: a bare terminal Session is not a chat.
-    await expect(chats.getByRole("button", { name: "Browser Agent" }));
-    await expect(chats.getByRole("button", { name: "Browser Workspace", exact: true }));
-    assert.equal(await page.getByText("Standalone Shell").count(), 0);
-    // Projects first; Home's chats under them, with no title to fold them away.
-    const homeChat = chats.getByRole("region", { name: "Home", exact: true }).getByRole("button", { name: "Plan the week" });
-    await expect(homeChat);
-    assert.equal(await chats.getByRole("button", { name: "Home", exact: true }).count(), 0);
-    const projectBox = await chats.getByRole("button", { name: "Browser Workspace", exact: true }).boundingBox();
-    const homeBox = await homeChat.boundingBox();
-    assert.ok(projectBox && homeBox && homeBox.y > projectBox.y, "Home's chats are under the projects");
-    // Chats quiet for more than 8 hours wait behind a button; a Workspace folds away.
-    assert.equal(await chats.getByRole("button", { name: "Old idea" }).count(), 0);
-    await chats.getByRole("button", { name: "Show 1 older chat" }).click();
-    await expect(chats.getByRole("button", { name: "Old idea" }));
-    await chats.getByRole("button", { name: "Show fewer" }).click();
-    assert.equal(await chats.getByRole("button", { name: "Old idea" }).count(), 0);
-    // The recent list, as on the Mac: every chat in one list by its last message (or creation),
-    // with how long ago; remembered across visits.
-    await chats.getByRole("button", { name: "Show recent chats" }).click();
     const recent = chats.getByRole("region", { name: "Recent chats" });
     await expect(recent.getByRole("button", { name: "Old idea" }));
     assert.deepEqual(await recent.locator(".chat-row-name").allTextContents(), ["Browser Agent", "Plan the week", "Old idea"]);
     assert.deepEqual(await recent.locator(".chat-row-age").allTextContents(), ["1m", "2h", "3w"]);
-    assert.equal(await chats.getByRole("button", { name: "Browser Workspace", exact: true }).count(), 0);
+    assert.equal(await page.getByText("Standalone Shell").count(), 0);
+    assert.equal(await chats.getByRole("button", { name: "Browser Workspace", exact: true }).count(), 0, "no Workspace tree");
     await shot("recent-chats");
-    await page.reload({ waitUntil: "networkidle" });
-    await expect(chats.getByRole("region", { name: "Recent chats" }).getByRole("button", { name: "Old idea" }));
-    await chats.getByRole("button", { name: "Show Workspaces" }).click();
-    const workspaceToggle = chats.getByRole("button", { name: "Browser Workspace", exact: true });
-    await workspaceToggle.click();
-    assert.equal(await workspaceToggle.getAttribute("aria-expanded"), "false");
-    assert.equal(await chats.getByRole("button", { name: "Browser Agent" }).count(), 0);
-    await page.reload({ waitUntil: "networkidle" });
-    await expect(chats.getByRole("button", { name: "Browser Workspace", exact: true, expanded: false }));
-    await chats.getByRole("button", { name: "Browser Workspace", exact: true }).click();
     // Nothing is opened on its own: a new chat waits for its first message.
     await expect(page.getByRole("heading", { name: "New chat", exact: true }));
     await expect(page.getByText("What are we working on?"));
+    assert.equal(new URL(page.url()).pathname, "/__tests__/chat");
     await shot("new-chat");
 
     // A chat's history: words, Markdown and the tools Pi used.
@@ -363,9 +347,47 @@ test("browser chats with Axo on a Mac: history, live replies, new chats, info, a
     await expect(tool.getByText("On branch main"));
     await shot("history");
 
+    // The open chat is in the URL: a reload opens it again, and Back goes to where it was before.
+    assert.equal(new URL(page.url()).pathname, `/__tests__/chat/${hostId}/1`);
+    await page.reload({ waitUntil: "networkidle" });
+    await expect(page.getByRole("heading", { name: "Browser Agent", exact: true }));
+    await expect(page.getByText("Review the latest changes.", { exact: true }));
+    await chats.getByRole("button", { name: "Plan the week" }).click();
+    await expect(page.getByRole("heading", { name: "Plan the week", exact: true }));
+    assert.equal(new URL(page.url()).pathname, `/__tests__/chat/${hostId}/4`);
+    await page.goBack();
+    await expect(page.getByRole("heading", { name: "Browser Agent", exact: true }));
+    assert.equal(new URL(page.url()).pathname, `/__tests__/chat/${hostId}/1`);
+    // A chat that is gone opens a new one.
+    await page.goto(`${appUrl}/__tests__/chat/${hostId}/99`, { waitUntil: "networkidle" });
+    await expect(page.getByRole("heading", { name: "New chat", exact: true }));
+    await page.waitForFunction(() => location.pathname === "/__tests__/chat", null, { timeout: 5_000 });
+    await chats.getByRole("button", { name: "Browser Agent" }).click();
+    await expect(page.getByRole("heading", { name: "Browser Agent", exact: true }));
+
     // Sending: the message shows at once, then Pi's reply as it is written and once it is whole.
     const box = page.getByRole("textbox", { name: "Message" });
     await page.waitForFunction(() => !document.querySelector("textarea[aria-label='Message']")?.disabled, null, { timeout: 10_000 });
+    // Pasting puts plain words where the caret is.
+    await box.fill("Ship ");
+    await box.evaluate((field) => {
+      const data = new DataTransfer();
+      data.setData("text/plain", "it\r\nnow");
+      data.setData("text/html", "<b>it</b>");
+      field.setSelectionRange(5, 5);
+      field.dispatchEvent(new ClipboardEvent("paste", { clipboardData: data, bubbles: true, cancelable: true }));
+    });
+    assert.equal(await box.inputValue(), "Ship it\nnow");
+    // Too long for the Mac: said so, and not sent.
+    await box.fill("x".repeat(16_001));
+    await expect(page.getByText("Too long to send", { exact: false }));
+    assert.equal(await page.getByRole("button", { name: "Send" }).isDisabled(), true);
+    // Dictation adds what is said to what is typed.
+    await box.fill("Look around");
+    await page.getByRole("button", { name: "Dictate" }).click();
+    await page.waitForFunction(() => document.querySelector("textarea[aria-label='Message']")?.value === "Look around and check the logs", null, { timeout: 5_000 });
+    await page.getByRole("button", { name: "Stop dictating" }).click();
+    await expect(page.getByRole("button", { name: "Dictate" }));
     await box.fill("Ship it");
     await box.press("Enter");
     await expect(page.getByText("Done with: Ship it", { exact: true }));
@@ -382,7 +404,9 @@ test("browser chats with Axo on a Mac: history, live replies, new chats, info, a
     await expect(page.getByText("Done with: Start fresh", { exact: true }));
     assert.equal(sessionCreateCount, 1);
     assert.deepEqual(prompts[1], { sessionId: 2, text: "Start fresh" });
-    await expect(chats.getByRole("region", { name: "Home", exact: true }).getByRole("button", { name: "Session 2" }));
+    // The new chat goes to the top of the list, and into the URL.
+    assert.equal(await recent.locator(".chat-row-name").first().textContent(), "Session 2");
+    assert.equal(new URL(page.url()).pathname, `/__tests__/chat/${hostId}/2`);
 
     // The chat's info.
     await page.getByRole("button", { name: "Chat info" }).click();

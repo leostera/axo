@@ -94,19 +94,6 @@ export interface ChatMenuEntry {
   readonly session: Session;
 }
 
-export interface ChatMenuSection {
-  readonly id: string;
-  readonly title: string;
-  /**
-   * A project, listed by name and folded away by its title; or the Mac's Home Workspace, where
-   * chats go by default, whose chats are listed after the projects without a title of their own.
-   */
-  readonly kind: "project" | "home";
-  readonly host: Host;
-  readonly workspaceId: string | null;
-  readonly chats: ChatMenuEntry[];
-}
-
 export const historyPageSize = 50;
 const defaultReconnectDelays = [500, 1_000, 2_000, 5_000, 15_000];
 
@@ -139,43 +126,6 @@ function moreRecent(a: ChatMenuEntry, b: ChatMenuEntry): number {
     || a.host.hostId.localeCompare(b.host.hostId);
 }
 
-/**
- * The menu's chats, grouped by Workspace: the projects in alphabetical order, so they stay where
- * they are as chats come and go, then the open Mac's Home Workspace last, its chats under the
- * projects; within each, the most recently active chat first. The open Mac's Workspaces with no
- * chat yet are listed in their place. With several Macs a Workspace's title names its Mac. Only
- * the open Mac's Workspaces are known, so another Mac's Home is listed as a project.
- */
-export function chatMenu(hosts: readonly Host[], openHostId: string | null, workspaces: readonly Workspace[]): ChatMenuSection[] {
-  const title = (workspace: string, host: Host) => hosts.length > 1 ? `${workspace} · ${host.label}` : workspace;
-  const grouped = new Map<string, { title: string; host: Host; workspaceId: string | null; chats: ChatMenuEntry[] }>();
-  for (const host of hosts) {
-    for (const session of host.sessions) {
-      if (!isChat(session)) continue;
-      const workspace = session.workspaceName ?? "Chats";
-      const key = `${host.hostId}/${workspace}`;
-      const group = grouped.get(key) ?? { title: title(workspace, host), host, workspaceId: session.workspaceId ?? null, chats: [] };
-      group.chats.push({ host, session });
-      grouped.set(key, group);
-    }
-  }
-  const open = hosts.find(host => host.hostId === openHostId);
-  const homeIds = new Set(open ? workspaces.filter(workspace => workspace.home).map(home => `${open.hostId}/${home.name}`) : []);
-  const kind = (id: string): ChatMenuSection["kind"] => homeIds.has(id) ? "home" : "project";
-  const sections: ChatMenuSection[] = [...grouped].map(([id, group]) => ({ id, kind: kind(id), ...group, chats: group.chats.sort(moreRecent) }));
-  if (open) {
-    for (const workspace of workspaces) {
-      const id = `${open.hostId}/${workspace.name}`;
-      if (!grouped.has(id)) sections.push({ id, kind: kind(id), title: title(workspace.name, open), host: open, workspaceId: workspace.workspaceId, chats: [] });
-    }
-  }
-  const order = (section: ChatMenuSection) => section.kind === "project" ? 0 : 1;
-  return sections.sort((a, b) => order(a) - order(b) || alphabetical.compare(a.title, b.title) || a.id.localeCompare(b.id));
-}
-
-/** How the menu lists chats: grouped under their Workspaces, or one list by recent activity. */
-export type ChatListMode = "workspaces" | "recent";
-
 /** Every chat on every Mac, the most recently active first: the menu's recent list. */
 export function recentChatList(hosts: readonly Host[]): ChatMenuEntry[] {
   return hosts.flatMap(host => host.sessions.filter(isChat).map(session => ({ host, session }))).sort(moreRecent);
@@ -206,25 +156,6 @@ export function shortAge(time: number, now: number): string {
   if (elapsed < 604_800) return `${Math.floor(elapsed / 86_400)}d`;
   return `${Math.floor(elapsed / 604_800)}w`;
 }
-
-/** Chats active within this long are listed; older ones wait behind "Show older chats". */
-export const recentChatWindowMs = 8 * 60 * 60 * 1000;
-
-/**
- * The chats of a section worth listing before older ones are asked for: those active in the last
- * eight hours, any the agent is working in or needs the person for, and any `keep` names (the open
- * chat), most recently active first.
- */
-export function recentChats(section: ChatMenuSection, now: number, keep: (entry: ChatMenuEntry) => boolean = () => false): ChatMenuEntry[] {
-  return section.chats.filter(entry =>
-    now - activity(entry.session) <= recentChatWindowMs
-    || entry.session.status === "working"
-    || entry.session.status === "needsAttention"
-    || keep(entry));
-}
-
-/** As people read them: case and accents aside, numbers by value. */
-const alphabetical = new Intl.Collator(undefined, { sensitivity: "base", numeric: true });
 
 /** The request may have reached the Mac although no answer came back. */
 function deliveryUncertain(error: unknown): boolean {
@@ -304,10 +235,6 @@ export class ChatWorkbench {
       this.chats.set(sessionId, chat);
     }
     return chat;
-  }
-
-  sections(): ChatMenuSection[] {
-    return chatMenu(this.hosts, this.openHostId, this.workspaces);
   }
 
   // MARK: - Macs

@@ -5,9 +5,10 @@ import { AxoMascot } from "../axo-mascot.tsx";
 import { Conversation } from "./conversation.tsx";
 import { Icon } from "./icons.tsx";
 import { relativeTime } from "./message-views.tsx";
+import { parseRoute, routePath, type ChatRoute } from "./route.ts";
 import {
-  chatKey, chatTitle, ChatWorkbench, holdingOrder, isChat, lastActivity, recentChatList, recentChats, shortAge,
-  type ChatBackend, type ChatListMode, type ChatMenuEntry, type ChatMenuSection,
+  chatKey, chatTitle, ChatWorkbench, holdingOrder, isChat, lastActivity, recentChatList, shortAge,
+  type ChatBackend, type ChatMenuEntry,
 } from "./workbench.ts";
 
 const DEFAULT_API_URL = "https://axo.leostera.dev";
@@ -55,14 +56,56 @@ function useAppearance(): [Appearance, (value: Appearance) => void] {
   return [appearance, setAppearance];
 }
 
+/**
+ * Keeps the open chat in the URL: a reload or a link opens it again once the Macs are listed, and
+ * Back and Forward move between the chats opened.
+ */
+function useChatRoute(workbench: ChatWorkbench, basePath: string, onRoute: () => void): void {
+  const initial = useRef<ChatRoute | null>(parseRoute(basePath, window.location.pathname));
+
+  const follow = (route: ChatRoute) => {
+    const host = route.kind === "chat" ? workbench.hosts.find(candidate => candidate.hostId === route.hostId) : undefined;
+    if (route.kind === "chat" && host) workbench.selectChat(host.hostId, route.sessionId);
+    else workbench.newChat();
+  };
+
+  // What is on screen, in the URL. The first listing of the Macs opens the chat the URL names, if
+  // it is still there; until then the URL waits to be read.
+  const path = routePath(basePath, workbench.openHostId, workbench.selection);
+  useEffect(() => {
+    if (workbench.hostsPhase !== "loaded") return;
+    const route = initial.current;
+    initial.current = null;
+    if (route?.kind === "chat" && workbench.hosts.some(host =>
+      host.hostId === route.hostId && host.sessions.some(session => session.sessionId === route.sessionId))) {
+      follow(route);
+      return;
+    }
+    if (window.location.pathname === path) return;
+    if (route) window.history.replaceState(null, "", path);
+    else window.history.pushState(null, "", path);
+  }, [path, workbench.hostsPhase]);
+
+  useEffect(() => {
+    const onPopState = () => {
+      follow(parseRoute(basePath, window.location.pathname));
+      onRoute();
+    };
+    window.addEventListener("popstate", onPopState);
+    return () => window.removeEventListener("popstate", onPopState);
+  }, [workbench, basePath]);
+}
+
 /** The signed-in app: chats with Axo on your Macs, as on the phone. */
-export function ChatApp({ profile, backend, onSignOut, pairingUrl }: {
+export function ChatApp({ profile, backend, onSignOut, pairingUrl, basePath = "/app" }: {
   profile?: AccountProfile;
   /** Tests give their own; otherwise the account's API. */
   backend?: ChatBackend;
   onSignOut?: () => void;
   /** Where pairing codes are made; no pairing without it. */
   pairingUrl?: string;
+  /** The app's own path: chats are at `<basePath>/<hostId>/<sessionId>`. */
+  basePath?: string;
 }) {
   const workbench = useMemo(() => new ChatWorkbench(backend ?? new RemoteAxoApi(apiBaseUrl)), [backend]);
   useSyncExternalStore(workbench.subscribe, workbench.getVersion);
@@ -70,6 +113,7 @@ export function ChatApp({ profile, backend, onSignOut, pairingUrl }: {
   const [layer, setLayer] = useState<Layer>("conversation");
   const [infoOpen, setInfoOpen] = useState(false);
   const [sheet, setSheet] = useState<"settings" | "pair" | null>(null);
+  useChatRoute(workbench, basePath, () => setLayer("conversation"));
 
   useEffect(() => {
     const controller = new AbortController();
@@ -147,8 +191,8 @@ export function ChatApp({ profile, backend, onSignOut, pairingUrl }: {
               workbench.selectChat(hostId, sessionId);
               show("conversation");
             }}
-            onNewChat={(hostId, workspaceId) => {
-              workbench.newChat(hostId, workspaceId);
+            onNewChat={() => {
+              workbench.newChat();
               show("conversation");
             }}
             onAccount={() => show("account")}
@@ -190,52 +234,28 @@ function StatusDot({ status }: { status: Host["sessions"][number]["status"] }) {
 function ChatsPanel({ workbench, onSelect, onNewChat, onAccount, onSettings }: {
   workbench: ChatWorkbench;
   onSelect: (hostId: string, sessionId: number) => void;
-  onNewChat: (hostId: string | null, workspaceId: string | null) => void;
+  onNewChat: () => void;
   onAccount: () => void;
   onSettings: () => void;
 }) {
-  const sections = workbench.sections();
+  const entries = recentChatList(workbench.hosts);
   const selection = workbench.selection;
-  const [mode, setMode] = useChatListMode();
-  const [collapsed, toggleCollapsed] = useCollapsedWorkspaces();
-  // Not kept: older chats are a look back, not a way the menu stays.
-  const [showingOlder, setShowingOlder] = useState<ReadonlySet<string>>(new Set());
   return (
     <nav className="panel chats-panel" aria-label="Chats">
       <header className="layer-bar top panel-header">
         <AxoMascot className="header-mascot" loading={workbench.hostsPhase === "loading"} />
         <span className="spacer" />
-        <button className="circle-button" onClick={() => setMode(mode === "workspaces" ? "recent" : "workspaces")}
-          aria-label={mode === "workspaces" ? "Show recent chats" : "Show Workspaces"}
-          title={mode === "workspaces" ? "List chats by recent activity" : "Group chats by Workspace"}>
-          <Icon name={mode === "workspaces" ? "clock" : "listIndent"} />
-        </button>
         <button className="circle-button" onClick={onAccount} aria-label="Account and Macs"><Icon name="person" /></button>
       </header>
       <div className="panel-scroll">
         {workbench.hostsPhase === "failed" && workbench.failure ? <p className="panel-warning">{workbench.failure}</p> : null}
-        {mode === "recent" && sections.length > 0 ? (
+        {entries.length > 0 ? (
           <RecentChats
-            entries={recentChatList(workbench.hosts)}
+            entries={entries}
             isSelected={(hostId, sessionId) => hostId === workbench.openHostId && selection?.kind === "chat" && selection.sessionId === sessionId}
             onSelect={onSelect}
           />
-        ) : null}
-        {mode === "workspaces" && sections.map((section, index) => (
-          <ChatSection
-            key={section.id}
-            section={section}
-            first={index === 0}
-            collapsed={collapsed.has(section.id)}
-            showingOlder={showingOlder.has(section.id)}
-            isSelected={(hostId, sessionId) => hostId === workbench.openHostId && selection?.kind === "chat" && selection.sessionId === sessionId}
-            onToggle={() => toggleCollapsed(section.id)}
-            onToggleOlder={() => setShowingOlder(toggled(showingOlder, section.id))}
-            onSelect={onSelect}
-            onNewChat={onNewChat}
-          />
-        ))}
-        {sections.length === 0 ? (
+        ) : (
           workbench.hostsPhase === "loaded" && workbench.hosts.length === 0 ? (
             <div className="panel-empty">
               <Icon name="laptop" size={28} />
@@ -243,33 +263,15 @@ function ChatsPanel({ workbench, onSelect, onNewChat, onAccount, onSettings }: {
               <p>On a Mac, open Axo → Settings → Remote Access and link it with a pairing code.</p>
             </div>
           ) : <p className="panel-note">{workbench.hostsPhase === "loading" ? "Loading chats…" : "Your chats will appear here."}</p>
-        ) : null}
+        )}
       </div>
       <footer className="layer-bar bottom panel-footer">
-        <button className="pill-button primary" onClick={() => onNewChat(null, null)}><Icon name="compose" size={18} /> Chat</button>
+        <button className="pill-button primary" onClick={onNewChat}><Icon name="compose" size={18} /> Chat</button>
         <span className="spacer" />
         <button className="circle-button" onClick={onSettings} aria-label="Settings"><Icon name="gear" /></button>
       </footer>
     </nav>
   );
-}
-
-function toggled(set: ReadonlySet<string>, id: string): ReadonlySet<string> {
-  const next = new Set(set);
-  if (!next.delete(id)) next.add(id);
-  return next;
-}
-
-const LIST_MODE_KEY = "axo.chatListMode";
-
-/** Whether the menu groups chats by Workspace or lists them by recent activity; kept in this browser. */
-function useChatListMode(): [ChatListMode, (mode: ChatListMode) => void] {
-  const [mode, setMode] = useState<ChatListMode>(() => localStorage.getItem(LIST_MODE_KEY) === "recent" ? "recent" : "workspaces");
-  const choose = (next: ChatListMode) => {
-    setMode(next);
-    localStorage.setItem(LIST_MODE_KEY, next);
-  };
-  return [mode, choose];
 }
 
 /**
@@ -305,94 +307,6 @@ function RecentChats({ entries, isSelected, onSelect }: {
           </button>
         );
       })}
-    </section>
-  );
-}
-
-const COLLAPSED_KEY = "axo.collapsedWorkspaces";
-
-/** Which Workspaces are folded away, kept in this browser across visits. */
-function useCollapsedWorkspaces(): [ReadonlySet<string>, (id: string) => void] {
-  const [collapsed, setCollapsed] = useState<ReadonlySet<string>>(() => {
-    try {
-      const stored: unknown = JSON.parse(localStorage.getItem(COLLAPSED_KEY) ?? "[]");
-      return new Set(Array.isArray(stored) ? stored.filter((id): id is string => typeof id === "string") : []);
-    } catch {
-      return new Set();
-    }
-  });
-  const toggle = (id: string) => {
-    const next = toggled(collapsed, id);
-    setCollapsed(next);
-    localStorage.setItem(COLLAPSED_KEY, JSON.stringify([...next]));
-  };
-  return [collapsed, toggle];
-}
-
-/**
- * One Workspace in the menu: its title folds it away. Open, it lists the chats active in the last
- * 8 hours (and busy ones, and the open one); the rest are behind "Show older chats".
- */
-function ChatSection({ section, first, collapsed, showingOlder, isSelected, onToggle, onToggleOlder, onSelect, onNewChat }: {
-  section: ChatMenuSection;
-  first: boolean;
-  collapsed: boolean;
-  showingOlder: boolean;
-  isSelected: (hostId: string, sessionId: number) => boolean;
-  onToggle: () => void;
-  onToggleOlder: () => void;
-  onSelect: (hostId: string, sessionId: number) => void;
-  onNewChat: (hostId: string | null, workspaceId: string | null) => void;
-}) {
-  const recent = recentChats(section, Date.now(), entry => isSelected(entry.host.hostId, entry.session.sessionId));
-  const older = section.chats.length - recent.length;
-  const shown = showingOlder ? section.chats : recent;
-  const busy = section.chats.some(entry => entry.session.status === "working" || entry.session.status === "needsAttention");
-  const listId = `chats-${section.id}`;
-  const rows = (
-    <>
-      {shown.map(({ host, session }) => {
-        const selected = isSelected(host.hostId, session.sessionId);
-        return (
-          <button key={`${host.hostId}/${session.sessionId}`} className={selected ? "chat-row selected" : "chat-row"}
-            aria-current={selected ? "page" : undefined} onClick={() => onSelect(host.hostId, session.sessionId)}>
-            <span className="chat-row-name">{chatTitle(session)}</span>
-            <StatusDot status={session.status} />
-          </button>
-        );
-      })}
-      {older > 0 ? (
-        <button className="older-row" onClick={onToggleOlder}>
-          {showingOlder ? "Show fewer" : `Show ${older} older ${older === 1 ? "chat" : "chats"}`}
-        </button>
-      ) : null}
-    </>
-  );
-  if (section.kind === "home") {
-    // Home's chats are the everyday ones: under the projects, newest first, with no title to fold
-    // them away (screen readers still hear which Workspace they are in).
-    return <section className={first ? "chat-section home first" : "chat-section home"} aria-label={section.title}>{rows}</section>;
-  }
-  return (
-    <section className={first ? "chat-section first" : "chat-section"}>
-      <h2 className="section-title">
-        <button className="section-toggle" onClick={onToggle} aria-expanded={!collapsed} aria-controls={listId}>
-          <span className={collapsed ? "chevron collapsed" : "chevron"} aria-hidden="true"><Icon name="chevron" size={12} /></span>
-          <span className="section-name">{section.title}</span>
-          {collapsed && busy ? <span className="status-dot working" aria-label="Working" /> : null}
-        </button>
-        {section.workspaceId ? (
-          <button className="plain-icon-button" onClick={() => onNewChat(section.host.hostId, section.workspaceId)} aria-label={`New chat in ${section.title}`}>
-            <Icon name="compose" size={15} />
-          </button>
-        ) : null}
-      </h2>
-      {collapsed ? null : (
-        <div id={listId}>
-          {rows}
-          {section.chats.length === 0 ? <p className="no-chats">No chats yet</p> : null}
-        </div>
-      )}
     </section>
   );
 }

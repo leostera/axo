@@ -9,16 +9,18 @@ const ChatApp = React.lazy(() =>
 );
 
 const path = window.location.pathname;
-const isAppPath = path === "/app" || path === "/app/";
+// The app's chats are under /app: /app/<hostId>/<sessionId> is one of them.
+const isAppPath = path === "/app" || path.startsWith("/app/");
 // The signed-in app without signing in, for the browser tests against a fake API.
-const isChatTestPath = import.meta.env.DEV && path === "/__tests__/chat";
+const chatTestPath = "/__tests__/chat";
+const isChatTestPath = import.meta.env.DEV && (path === chatTestPath || path.startsWith(`${chatTestPath}/`));
 
 createRoot(document.getElementById("root")!).render(
   <React.StrictMode>
     {isAppPath
       ? <CloudflareSignInApp />
       : isChatTestPath
-        ? <React.Suspense fallback={null}><ChatApp profile={{ name: "Fixture", email: "fixture@example.test" }} pairingUrl="/api/v1/account/host-pairings" /></React.Suspense>
+        ? <React.Suspense fallback={null}><ChatApp profile={{ name: "Fixture", email: "fixture@example.test" }} pairingUrl="/api/v1/account/host-pairings" basePath={chatTestPath} /></React.Suspense>
         : <LandingPage />}
   </React.StrictMode>,
 );

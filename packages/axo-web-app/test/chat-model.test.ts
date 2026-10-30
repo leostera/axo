@@ -2,7 +2,9 @@ import assert from "node:assert/strict";
 import { test } from "node:test";
 import { inlineSpans, parseMarkdown } from "../src/chat/markdown.ts";
 import { ChatTranscript, type PiEventRecord } from "../src/chat/transcript.ts";
-import { chatKey, chatMenu, ChatWorkbench, holdingOrder, lastActivity, recentChatList, recentChats, shortAge, type ChatBackend, type MacConnection } from "../src/chat/workbench.ts";
+import { withDictated } from "../src/chat/dictation.ts";
+import { parseRoute, routePath } from "../src/chat/route.ts";
+import { chatKey, ChatWorkbench, holdingOrder, lastActivity, recentChatList, shortAge, type ChatBackend, type MacConnection } from "../src/chat/workbench.ts";
 
 const stream = "41c77dd7-f2dc-4e91-b481-1507b62ec118";
 const hostId = "1e1e7f91-3d8f-4f97-8f71-4fc7d53313c6";
@@ -129,53 +131,6 @@ function host(sessions: ReturnType<typeof session>[], status: "online" | "offlin
   return { hostId, hostGeneration, label: "Studio", hostKind: "macos", status, stale: false, lastSeenAt: "2026-10-16T12:00:00.000Z", sessions } as never;
 }
 
-test("the menu keeps Workspaces in alphabetical order, chats newest first within each, and no bare terminals", () => {
-  const sections = chatMenu([host([
-    session(1, "2026-10-16T10:00:00Z"),
-    session(2, "2026-10-16T12:00:00Z"),
-    session(3, "2026-10-16T13:00:00Z", null, { hasAgent: false }),
-    session(4, "2026-10-16T14:00:00Z", "Website"),
-  ])], hostId, [{ workspaceId: "8f8f8f8f-0000-4000-8000-000000000000", name: "home" }]);
-  // Website has the newest chat and home has none: neither moves.
-  assert.deepEqual(sections.map(section => section.title), ["Axo", "home", "Website"]);
-  assert.deepEqual(sections[0]!.chats.map(chat => chat.session.sessionId), [2, 1]);
-  assert.equal(sections[1]!.chats.length, 0);
-});
-
-test("projects come first and the Home Workspace's chats go under them, newest first", () => {
-  const sessions = [
-    session(1, "2026-10-16T08:00:00Z"),
-    session(2, "2026-10-16T09:00:00Z", "Home"),
-    session(3, "2026-10-16T11:00:00Z", "Home"),
-  ];
-  const sections = chatMenu([host(sessions)], hostId, [
-    { workspaceId: "8f8f8f8f-0000-4000-8000-000000000001", name: "Home", home: true },
-    { workspaceId: "8f8f8f8f-0000-4000-8000-000000000002", name: "A first" },
-  ]);
-  assert.deepEqual(sections.map(section => section.title), ["A first", "Axo", "Home"], "projects alphabetically, however recent; Home last");
-  assert.deepEqual(sections.map(section => section.kind), ["project", "project", "home"]);
-  assert.deepEqual(sections[2]!.chats.map(chat => chat.session.sessionId), [3, 2]);
-
-  const unflagged = chatMenu([host(sessions)], hostId, [{ workspaceId: "8f8f8f8f-0000-4000-8000-000000000001", name: "Home" }]);
-  assert.deepEqual(unflagged.map(section => section.kind), ["project", "project"], "a Workspace merely named Home is a project");
-});
-
-test("a section lists chats active in the last 8 hours, busy ones, and the open one; the rest wait", () => {
-  const now = Date.parse("2026-10-27T12:00:00Z");
-  const [section] = chatMenu([host([
-    session(1, "2026-10-27T11:00:00Z"),
-    session(2, "2026-10-27T04:00:01Z"),
-    session(3, "2026-10-27T03:59:59Z"),
-    session(4, "2026-10-20T00:00:00Z", "Axo", { status: "working" }),
-    session(5, "2026-10-19T00:00:00Z", "Axo", { status: "needsAttention" }),
-    session(6, "2026-10-18T00:00:00Z"),
-    session(7, "2026-10-17T00:00:00Z"),
-  ])], hostId, []);
-  const ids = (entries: { session: { sessionId: number } }[]) => entries.map(entry => entry.session.sessionId);
-  assert.deepEqual(ids(recentChats(section!, now)), [1, 2, 4, 5]);
-  assert.deepEqual(ids(recentChats(section!, now, entry => entry.session.sessionId === 7)), [1, 2, 4, 5, 7]);
-});
-
 // The time every snapshot from one Mac shares: when it was sent, not when a chat was active.
 const sent = "2026-10-27T12:00:00Z";
 const at = (iso: string) => Date.parse(iso) / 1000;
@@ -199,15 +154,6 @@ test("the recent list puts every chat on every Mac in one list, the most recentl
   assert.deepEqual(list.map(entry => entry.session.sessionId), [2, 9, 4, 1], "no bare terminals; across Workspaces and Macs");
 });
 
-test("Workspaces list their chats by real activity too", () => {
-  const [section] = chatMenu([host([
-    session(1, sent, "Axo", { lastMessageAt: at("2026-10-27T11:00:00Z") }),
-    session(2, sent, "Axo", { lastMessageAt: at("2026-10-27T01:00:00Z") }),
-  ])], hostId, []);
-  assert.deepEqual(section!.chats.map(chat => chat.session.sessionId), [1, 2]);
-  assert.deepEqual(recentChats(section!, Date.parse(sent)).map(chat => chat.session.sessionId), [1], "quiet for 11 hours: behind the button");
-});
-
 test("held rows keep their order; chats new since go first and closed ones drop out", () => {
   const live = recentChatList([host([
     session(1, sent, "Axo", { lastMessageAt: at("2026-10-27T11:00:00Z") }),
@@ -222,6 +168,26 @@ test("held rows keep their order; chats new since go first and closed ones drop 
 test("ages are short, as on the Mac", () => {
   const now = Date.parse(sent);
   assert.deepEqual([30, 300, 3 * 3_600, 2 * 86_400, 4 * 604_800].map(seconds => shortAge(now - seconds * 1000, now)), ["now", "5m", "3h", "2d", "4w"]);
+});
+
+// MARK: - Routes and dictation
+
+test("the URL names the open chat on its Mac, and anything else is a new chat", () => {
+  assert.deepEqual(parseRoute("/app", `/app/${hostId}/12`), { kind: "chat", hostId, sessionId: 12 });
+  assert.deepEqual(parseRoute("/app", `/app/${hostId}/12/`), { kind: "chat", hostId, sessionId: 12 });
+  for (const path of ["/app", "/app/", `/app/${hostId}`, `/app/${hostId}/0`, `/app/${hostId}/x`, `/app/${hostId}/1/more`, `/elsewhere/${hostId}/1`]) {
+    assert.deepEqual(parseRoute("/app", path), { kind: "new" }, path);
+  }
+  assert.equal(routePath("/app", hostId, { kind: "chat", sessionId: 12 }), `/app/${hostId}/12`);
+  assert.equal(routePath("/app", hostId, { kind: "new", workspaceId: null }), "/app");
+  assert.equal(routePath("/app", null, null), "/app");
+});
+
+test("dictated words join what was typed with one space", () => {
+  assert.equal(withDictated("", " hello there "), "hello there");
+  assert.equal(withDictated("Look at", "the logs"), "Look at the logs");
+  assert.equal(withDictated("Look at\n", "the logs"), "Look at\nthe logs");
+  assert.equal(withDictated("Typed", "  "), "Typed");
 });
 
 // MARK: - Workbench
