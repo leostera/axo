@@ -40,7 +40,13 @@ public struct UnixSocketTransport: AxoTransport {
 /// the serial `queue`; `readiness` only under `stateLock`; `NWConnection` and the stream
 /// continuation are themselves thread-safe.
 final class UnixSocketChannel: AxoMessageChannel, @unchecked Sendable {
-  private static let maximumMessageBytes = 64 * 1024
+  /// The largest single message accepted; a longer line ends the connection. Whole-catalog
+  /// replies (`axo.session.list`, the first `axo.session.events.next` batch) grow with every
+  /// Session, so this must stay far above any realistic catalog. At 64 KiB, sixty Sessions with
+  /// UUID IDs no longer fit and Axo could never get past its launch splash.
+  static let maximumMessageBytes = 16 * 1024 * 1024
+  /// How much one socket read asks for; messages larger than this span several reads.
+  private static let readChunkBytes = 64 * 1024
   private static let connectionTimeout: DispatchTimeInterval = .seconds(1)
 
   private let connection: NWConnection
@@ -129,7 +135,7 @@ final class UnixSocketChannel: AxoMessageChannel, @unchecked Sendable {
   }
 
   private func receiveNext() {
-    connection.receive(minimumIncompleteLength: 1, maximumLength: Self.maximumMessageBytes) {
+    connection.receive(minimumIncompleteLength: 1, maximumLength: Self.readChunkBytes) {
       [weak self] data, _, isComplete, error in
       guard let self else { return }
       if error != nil {

@@ -155,6 +155,26 @@ final class AxodConnectionTests: XCTestCase {
     XCTAssertTrue(request["params"] is NSNull)
   }
 
+  /// Whole-catalog replies grow with every Session: sixty Sessions with UUID IDs already exceed
+  /// 64 KiB. A reply that spans many socket reads must still arrive as one message, or Axo
+  /// retries the catalog forever and never leaves its launch splash.
+  func testRepliesLargerThanOneSocketReadArriveWhole() async throws {
+    let padding = String(repeating: "x", count: 1024 * 1024)
+    let fixture = try OneResponseUnixSocket(
+      response:
+        #"{"jsonrpc":"2.0","id":1,"result":{"version":"0.1.0","buildNumber":42,"status":"running","padding":""#
+        + padding + #""}}"#
+    )
+    let responder = Task.detached {
+      try fixture.receiveOneRequestAndReply()
+    }
+
+    let health = try await AxodConnection(socketPath: UnixSocketPath(fixture.path)).health()
+    _ = try await responder.value
+
+    XCTAssertEqual(health.buildNumber, 42)
+  }
+
   func testHealthUsesJsonRPCOverNewlineFramedUnixSocket() async throws {
     let fixture = try OneResponseUnixSocket(
       response:
@@ -262,6 +282,12 @@ private final class OneResponseUnixSocket: @unchecked Sendable {
         offset += count
       }
     }
+    // Like axod, leave the connection open until the client hangs up. Closing straight after a
+    // large reply can fail the client's connection before it has read the tail.
+    var waitLimit = timeval(tv_sec: 2, tv_usec: 0)
+    setsockopt(client, SOL_SOCKET, SO_RCVTIMEO, &waitLimit, socklen_t(MemoryLayout<timeval>.size))
+    var drain = [UInt8](repeating: 0, count: 4096)
+    while Darwin.read(client, &drain, drain.count) > 0 {}
     return request
   }
 }
