@@ -3,6 +3,7 @@ use crate::endpoint::RelayEndpoint;
 use crate::fragments::{self, Reassembler};
 use crate::host::RelayHost;
 use crate::link::{AccountLink, HostLinkStore, host_label};
+use crate::outbound::{FRAMES_PER_TURN, Outbox, RelayChannel, ReplySender};
 use axo_protocol::{
     Event, HostKind, LayoutNode, RelayState, RelayStatus, RemoteSessionSnapshot, SessionId,
     ShellActivity, ShellId,
@@ -121,6 +122,7 @@ impl RelayControl {
 pub struct RelayWorker {
     stop: Arc<AtomicBool>,
     control: Arc<RelayControl>,
+    channel: Arc<RelayChannel>,
     thread: Option<JoinHandle<()>>,
 }
 
@@ -149,12 +151,17 @@ impl RelayWorker {
         );
         let worker_stop = Arc::clone(&stop);
         let worker_control = Arc::clone(&control);
+        let channel = RelayChannel::new();
+        let worker_channel = Arc::clone(&channel);
         let worker = thread::Builder::new()
             .name("axo-cloud-relay".to_owned())
-            .spawn(move || run_reconnect_loop(dependencies, worker_stop, worker_control))?;
+            .spawn(move || {
+                run_reconnect_loop(dependencies, worker_stop, worker_control, worker_channel)
+            })?;
         Ok(Self {
             stop,
             control,
+            channel,
             thread: Some(worker),
         })
     }
@@ -165,6 +172,11 @@ impl RelayWorker {
 
     pub fn control_handle(&self) -> Arc<RelayControl> {
         Arc::clone(&self.control)
+    }
+
+    /// What other threads use to send requests and notifications to the cloud.
+    pub fn channel_handle(&self) -> Arc<RelayChannel> {
+        Arc::clone(&self.channel)
     }
 
     pub fn shutdown(&mut self) {
@@ -195,6 +207,7 @@ fn run_reconnect_loop(
     dependencies: RelayDependencies,
     stop: Arc<AtomicBool>,
     control: Arc<RelayControl>,
+    channel: Arc<RelayChannel>,
 ) {
     let mut retry_delay = Duration::from_secs(1);
     while !stop.load(Ordering::Relaxed) {
@@ -217,7 +230,7 @@ fn run_reconnect_loop(
         };
 
         control.mark_connecting();
-        match run_connection(&dependencies, account, &stop, &control) {
+        match run_connection(&dependencies, account, &stop, &control, &channel) {
             Ok(()) if stop.load(Ordering::Relaxed) => break,
             Ok(()) => {
                 control.mark_disconnected("relay connection ended");
@@ -256,6 +269,7 @@ fn run_connection(
     account: &AccountLink,
     stop: &AtomicBool,
     control: &RelayControl,
+    channel: &RelayChannel,
 ) -> io::Result<()> {
     let sessions = &dependencies.host;
     let host_id = sessions.host_id().to_owned();
@@ -324,6 +338,8 @@ fn run_connection(
     }
     control.mark_connected();
 
+    // Threads queue onto this socket only while it lives (RFD0016, Transport).
+    let (epoch, outgoing, replies) = channel.attach();
     let result = relay_session(
         &mut socket,
         &mut reassembler,
@@ -335,8 +351,14 @@ fn run_connection(
             subscription_id: &subscription_id,
             stop,
             control,
+            channel,
+            outgoing,
+            replies,
+            socket_id: format!("axod-{}-{epoch}", std::process::id()),
+            account_id: account.account_id().to_owned(),
         },
     );
+    channel.detach(epoch);
     let _ = sessions.unsubscribe_remote_events(&subscription_id);
     result
 }
@@ -439,6 +461,8 @@ fn connect_websocket(
     }
 }
 
+// The handshake answers the relay's own requests while it waits, so it needs the host too.
+#[allow(clippy::too_many_arguments)]
 fn rpc_call(
     socket: &mut RelaySocket,
     reassembler: &mut Reassembler,
@@ -485,6 +509,51 @@ struct RelaySessionContext<'a> {
     subscription_id: &'a str,
     stop: &'a AtomicBool,
     control: &'a RelayControl,
+    channel: &'a RelayChannel,
+    /// What other threads queued for this socket.
+    outgoing: std::sync::mpsc::Receiver<crate::outbound::Outgoing>,
+    /// Replies to the cloud's requests on this socket, from threads that answer them later.
+    replies: ReplySender,
+    socket_id: String,
+    /// The account this Mac is linked to; a command for any other is refused.
+    account_id: String,
+}
+
+/// Commands running at once on one Mac; more are refused until one ends.
+const MAX_BASH_JOBS: usize = 16;
+static BASH_JOBS: std::sync::atomic::AtomicUsize = std::sync::atomic::AtomicUsize::new(0);
+
+/// Starts a `bash` request on a thread of its own; its reply goes back on this socket only.
+fn start_bash(id: Value, params: &Value, context: &RelaySessionContext<'_>) {
+    let params = match crate::bash::parse(params, &context.account_id) {
+        Ok(params) => params,
+        Err(error) => return context.replies.reply(&id, Err(error)),
+    };
+    if BASH_JOBS.fetch_add(1, Ordering::SeqCst) >= MAX_BASH_JOBS {
+        BASH_JOBS.fetch_sub(1, Ordering::SeqCst);
+        return context.replies.reply(
+            &id,
+            Err((-32006, "too many commands running on this Mac".into())),
+        );
+    }
+    let replies = context.replies.clone();
+    let spawned = thread::Builder::new()
+        .name("axo-connections-bash".to_owned())
+        .spawn(move || {
+            log::info!("event=connections.bash_started call={}", params.call_id);
+            let outcome = crate::bash::run(&params)
+                .map(|result| serde_json::to_value(result).expect("a bash result serializes"));
+            BASH_JOBS.fetch_sub(1, Ordering::SeqCst);
+            log::info!(
+                "event=connections.bash_finished call={} outcome={}",
+                params.call_id,
+                if outcome.is_ok() { "ok" } else { "error" }
+            );
+            replies.reply(&id, outcome);
+        });
+    if spawned.is_err() {
+        BASH_JOBS.fetch_sub(1, Ordering::SeqCst);
+    }
 }
 
 fn relay_session(
@@ -494,9 +563,26 @@ fn relay_session(
     context: RelaySessionContext<'_>,
 ) -> io::Result<()> {
     let mut next_heartbeat = Instant::now() + HEARTBEAT_INTERVAL;
+    let mut outbox = Outbox::default();
     while !context.stop.load(Ordering::Relaxed)
         && !context.control.reconnect_requested.load(Ordering::Relaxed)
     {
+        // What other threads queued goes out by priority, a few frames a turn.
+        while let Ok(queued) = context.outgoing.try_recv() {
+            if !outbox.push(queued, &context.socket_id) {
+                log::warn!("event=relay.outbound_refused reason=too_large_or_full");
+            }
+        }
+        for _ in 0..FRAMES_PER_TURN {
+            let Some(frame) = outbox.next_frame() else {
+                break;
+            };
+            socket
+                .send(Message::Text(frame.into()))
+                .map_err(io::Error::other)?;
+        }
+        reassembler.expire(Instant::now());
+
         if Instant::now() >= next_heartbeat {
             *request_number = request_number.saturating_add(1);
             send_json(
@@ -537,7 +623,19 @@ fn relay_session(
         let Some(raw) = read_message(socket, reassembler)? else {
             continue;
         };
-        let message: IncomingMessage = serde_json::from_str(&raw)
+        let value: Value = serde_json::from_str(&raw)
+            .map_err(|_| io::Error::new(io::ErrorKind::InvalidData, "invalid relay JSON"))?;
+        // A reply to a request another thread sent.
+        if value.get("method").is_none() && context.channel.resolve(&value) {
+            continue;
+        }
+        if value.get("method").and_then(Value::as_str) == Some(crate::bash::METHOD) {
+            if let Some(id) = value.get("id").filter(|id| !id.is_null()) {
+                start_bash(id.clone(), &value["params"], &context);
+            }
+            continue;
+        }
+        let message: IncomingMessage = serde_json::from_value(value)
             .map_err(|_| io::Error::new(io::ErrorKind::InvalidData, "invalid relay JSON"))?;
         if let Some(reply) = remote_request_reply(
             &message,
@@ -561,11 +659,22 @@ fn read_message(
     let Some(raw) = read_text(socket)? else {
         return Ok(None);
     };
-    if !raw.contains(fragments::FRAGMENT_METHOD) {
+    if !raw.contains(fragments::FRAGMENT_METHOD) && !raw.contains(fragments::DISCARD_METHOD) {
         return Ok(Some(raw));
     }
     let value: Value = serde_json::from_str(&raw)
         .map_err(|_| io::Error::new(io::ErrorKind::InvalidData, "invalid relay JSON"))?;
+    if value.get("method").and_then(Value::as_str) == Some(fragments::DISCARD_METHOD) {
+        reassembler.receive_discard(&value["params"]).map_err(
+            |fragments::InvalidFragment(reason)| {
+                io::Error::new(
+                    io::ErrorKind::InvalidData,
+                    format!("relay sent an invalid discard: {reason}"),
+                )
+            },
+        )?;
+        return Ok(None);
+    }
     let Some(params) = fragments::fragment_params(&value) else {
         return Ok(Some(raw));
     };

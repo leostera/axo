@@ -6,13 +6,19 @@
 //! of a message, then handles the whole as if it had arrived in one frame. A partial message dies
 //! with its socket: each connection has its own `Reassembler`.
 
-use std::collections::HashMap;
+use std::collections::{HashMap, VecDeque};
+use std::time::{Duration, Instant};
 
 use axo_protocol::base64;
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 
 pub const FRAGMENT_METHOD: &str = "axo.transport.fragment";
+pub const DISCARD_METHOD: &str = "axo.transport.discard";
+/// A partial message that gets no fragment for this long is dropped.
+pub const PARTIAL_TIMEOUT: Duration = Duration::from_secs(60);
+/// Dropped messages remembered per socket, so their late fragments are ignored.
+pub const DISCARDED_PER_SOCKET: usize = 64;
 /// One relay frame.
 pub const FRAME_BYTES: usize = 65_536;
 /// Bytes of the message in one fragment: 61,440 base64 characters, under a frame with its envelope.
@@ -86,15 +92,52 @@ struct Partial {
     count: usize,
     bytes: usize,
     chunks: Vec<Option<Vec<u8>>>,
+    last: Instant,
 }
 
 /// The partial messages of one socket.
 #[derive(Default)]
 pub struct Reassembler {
     partial: HashMap<String, Partial>,
+    discarded: VecDeque<String>,
 }
 
 impl Reassembler {
+    /// Drops a message's partial, and ignores its fragments from now on: its sender gave up on it.
+    pub fn discard(&mut self, message_id: &str) {
+        self.partial.remove(message_id);
+        if !self.discarded.iter().any(|id| id == message_id) {
+            self.discarded.push_back(message_id.to_owned());
+            if self.discarded.len() > DISCARDED_PER_SOCKET {
+                self.discarded.pop_front();
+            }
+        }
+    }
+
+    /// Drops partials that got no fragment for `PARTIAL_TIMEOUT`: their discard notice was lost.
+    pub fn expire(&mut self, now: Instant) {
+        let stale: Vec<String> = self
+            .partial
+            .iter()
+            .filter(|(_, p)| now.duration_since(p.last) >= PARTIAL_TIMEOUT)
+            .map(|(id, _)| id.clone())
+            .collect();
+        for id in stale {
+            self.discard(&id);
+        }
+    }
+
+    /// Takes a discard notice's params.
+    pub fn receive_discard(&mut self, params: &Value) -> Result<(), InvalidFragment> {
+        let id = params
+            .get("messageId")
+            .and_then(Value::as_str)
+            .filter(|id| valid_message_id(id))
+            .ok_or(InvalidFragment("malformed discard"))?;
+        self.discard(id);
+        Ok(())
+    }
+
     /// Takes one fragment's params. `Ok(Some(text))` once every fragment of its message is here.
     pub fn receive(&mut self, params: &Value) -> Result<Option<String>, InvalidFragment> {
         let params: FragmentParams = FragmentParams::deserialize(params)
@@ -105,13 +148,12 @@ impl Reassembler {
             count,
             data,
         } = params;
-        let id_ok = !message_id.is_empty()
-            && message_id.len() <= 64
-            && message_id
-                .bytes()
-                .all(|b| b.is_ascii_alphanumeric() || b == b'-' || b == b'_');
-        if !id_ok || !(2..=MAX_FRAGMENTS).contains(&count) || index >= count {
+        if !valid_message_id(message_id) || !(2..=MAX_FRAGMENTS).contains(&count) || index >= count
+        {
             return Err(InvalidFragment("malformed fragment"));
+        }
+        if self.discarded.iter().any(|id| id == message_id) {
+            return Ok(None);
         }
         let chunk = base64::decode(data).map_err(|_| InvalidFragment("malformed fragment"))?;
         // Every fragment but the last is exactly one chunk, so a message cannot outgrow its count.
@@ -133,6 +175,7 @@ impl Reassembler {
                 count,
                 bytes: 0,
                 chunks: vec![None; count],
+                last: Instant::now(),
             });
         if partial.count != count {
             return Err(InvalidFragment("fragment count changed"));
@@ -142,6 +185,7 @@ impl Reassembler {
         }
         partial.bytes += chunk.len();
         partial.chunks[index] = Some(chunk);
+        partial.last = Instant::now();
         if partial.chunks.iter().any(Option::is_none) {
             return Ok(None);
         }
@@ -154,6 +198,14 @@ impl Reassembler {
             .map(Some)
             .map_err(|_| InvalidFragment("message is not UTF-8"))
     }
+}
+
+fn valid_message_id(id: &str) -> bool {
+    !id.is_empty()
+        && id.len() <= 64
+        && id
+            .bytes()
+            .all(|b| b.is_ascii_alphanumeric() || b == b'-' || b == b'_')
 }
 
 #[cfg(test)]
@@ -248,6 +300,34 @@ mod tests {
                 .0,
             "too many partial messages"
         );
+    }
+
+    #[test]
+    fn a_discarded_message_is_dropped_and_its_late_fragments_ignored() {
+        let frames = split(&message(3 * FRAME_BYTES, "a"), "m").unwrap();
+        let mut reassembler = Reassembler::default();
+        let params =
+            |frame: &String| serde_json::from_str::<Value>(frame).unwrap()["params"].clone();
+        assert_eq!(reassembler.receive(&params(&frames[0])), Ok(None));
+        reassembler
+            .receive_discard(&json!({ "messageId": "m" }))
+            .unwrap();
+        for frame in &frames[1..] {
+            assert_eq!(reassembler.receive(&params(frame)), Ok(None));
+        }
+        assert!(reassembler.partial.is_empty());
+    }
+
+    #[test]
+    fn a_partial_with_no_new_fragment_for_a_minute_is_dropped() {
+        let frames = split(&message(3 * FRAME_BYTES, "a"), "m").unwrap();
+        let mut reassembler = Reassembler::default();
+        let first: Value = serde_json::from_str(&frames[0]).unwrap();
+        reassembler.receive(&first["params"]).unwrap();
+        reassembler.expire(Instant::now());
+        assert_eq!(reassembler.partial.len(), 1);
+        reassembler.expire(Instant::now() + PARTIAL_TIMEOUT);
+        assert!(reassembler.partial.is_empty());
     }
 
     #[test]
