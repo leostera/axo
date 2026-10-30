@@ -41,7 +41,8 @@ enum ProductionLaunch: AxoLaunchMode {
 
 /// The shipped app's entry point, called from the `AxoMacMain` target.
 public enum AxoAppEntryPoint {
-  @MainActor public static func main() {
+  @MainActor public static func main(mascot: (any MascotAnimation)? = nil) {
+    AxoMascot.installedAnimation = mascot
     AxoApp<ProductionLaunch>.main()
   }
 }

@@ -1,0 +1,21 @@
+{
+  "name": "@axo/mascot",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "description": "Generates the animated Axo axolotl (assets/mascot/axo.riv) and previews it in the Rive web runtime",
+  "scripts": {
+    "build": "tsx src/build.ts",
+    "check": "tsx src/build.ts --check",
+    "typecheck": "tsc -p tsconfig.json --noEmit",
+    "preview": "tsx test/preview-server.ts",
+    "test": "npm run typecheck && npm run check && tsx --test test/*.test.ts"
+  },
+  "devDependencies": {
+    "@rive-app/canvas": "2.47.1",
+    "@types/node": "^24.0.0",
+    "playwright-core": "^1.64.1",
+    "tsx": "^4.20.0",
+    "typescript": "^7.0.2"
+  }
+}

@@ -1,4 +1,4 @@
-load("@rules_apple//apple:macos.bzl", "macos_application", "macos_ui_test")
+load("@rules_apple//apple:macos.bzl", "macos_application", "macos_ui_test", "macos_unit_test")
 load("@rules_apple//apple:versioning.bzl", "apple_bundle_version")
 load("@rules_shell//shell:sh_test.bzl", "sh_test")
 load("@rules_swift//swift:swift_library.bzl", "swift_library")
@@ -29,13 +29,23 @@ swift_library(
     deps = AXO_MAC_DEPS,
 )
 
+# The mascot's Rive player. Kept out of AxoMac: RiveRuntime is a dynamic framework, which
+# swift_test cannot load, so only app bundles and macos_unit_test link it.
+swift_library(
+    name = "AxoMascotRive",
+    module_name = "AxoMascotRive",
+    srcs = glob(["Sources/AxoMascotRive/*.swift"]),
+    copts = ["-swift-version", "5"],
+    deps = [":AxoMac", "@swiftpkg_rive_ios//:RiveRuntime"],
+)
+
 # The shipped app's @main entry: production launch only.
 swift_library(
     name = "AxoMacMain",
     module_name = "AxoMacMain",
     srcs = glob(["Sources/AxoMacMain/*.swift"]),
     copts = ["-swift-version", "5"],
-    deps = [":AxoMac"],
+    deps = [":AxoMac", ":AxoMascotRive"],
 )
 
 # The fixture app's @main entry plus self-test and UI-automation launch modes, for
@@ -62,6 +72,24 @@ swift_test(
     data = ["Resources/dev.leostera.axo.axod.plist"],
     env = {"AXO_LAUNCH_AGENT_PLIST": "$(rootpath Resources/dev.leostera.axo.axod.plist)"},
     deps = [":AxoMac"],
+)
+
+swift_library(
+    name = "AxoMascotRiveTestsLib",
+    testonly = True,
+    srcs = glob(["Tests/AxoMascotRiveTests/*.swift"]),
+    copts = ["-swift-version", "5"],
+    # Bundled into the test bundle's resources.
+    data = ["//assets:mascot"],
+    deps = [":AxoMascotRive", "@swiftpkg_rive_ios//:RiveRuntime"],
+)
+
+# Plays the generated assets/mascot/axo.riv in the real Rive runtime (Metal required).
+macos_unit_test(
+    name = "AxoMascotRiveTests",
+    bundle_id = "dev.leostera.axo.mascot-tests",
+    minimum_os_version = "14.0",
+    deps = [":AxoMascotRiveTestsLib"],
 )
 
 swift_test(
@@ -162,6 +190,7 @@ genrule(
 macos_application(
     name = "AxoApp",
     app_icons = ["//assets:macos_app_icon"],
+    resources = ["//assets:mascot"],
     bundle_id = "dev.leostera.axo",
     bundle_name = "Axo",
     executable_name = "Axo",

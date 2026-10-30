@@ -14,3 +14,6 @@ iconutil -c icns ...     # macos/AppIcon.icns is built from the appiconset PNGs
 The original has its rounded shape baked in with black corners, so the script cuts the artwork out of
 it and re-places it on the flat background grey (`#DFDFDF`). A vector or square source would give
 cleaner edges at large sizes. None of these are wired into the apps or sites yet.
+
+`mascot/axo.riv` is the animated axolotl for the menu bar, the Dock and in-app use. It is generated
+by `packages/axo-mascot` (`npm run build`), not by the Rive editor.

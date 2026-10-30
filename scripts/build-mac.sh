@@ -132,6 +132,12 @@ if [[ "$reported_build" != *"(build $daemon_build_number)" ]]; then
 fi
 
 codesign --force --options runtime --timestamp --sign "$identity" "$app/Contents/Helpers/axod"
+# Embedded frameworks (RiveRuntime) arrive signed by their vendor; the hardened runtime's library
+# validation only loads code signed by the app's own team.
+for framework in "$app"/Contents/Frameworks/*.framework; do
+  [[ -e "$framework" ]] || continue
+  codesign --force --options runtime --timestamp --sign "$identity" "$framework"
+done
 codesign --force --options runtime --timestamp --sign "$identity" "$app"
 codesign --verify --strict "$app/Contents/Helpers/axod"
 codesign --verify --deep --strict "$app"

@@ -9,5 +9,6 @@ let package = Package(
   name: "AxoDependencies",
   dependencies: [
     .package(url: "https://github.com/ordo-one/FuzzyMatch.git", from: "1.4.0"),
+    .package(url: "https://github.com/rive-app/rive-ios.git", exact: "6.28.1"),
   ]
 )
