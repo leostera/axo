@@ -4,7 +4,7 @@ import { inlineSpans, parseMarkdown } from "../src/chat/markdown.ts";
 import { ChatTranscript, type PiEventRecord } from "../src/chat/transcript.ts";
 import { withDictated } from "../src/chat/dictation.ts";
 import { parseRoute, routePath } from "../src/chat/route.ts";
-import { chatKey, ChatWorkbench, holdingOrder, lastActivity, recentChatList, shortAge, type ChatBackend, type MacConnection } from "../src/chat/workbench.ts";
+import { ChatWorkbench, lastActivity, recentChatList, shortAge, type ChatBackend, type MacConnection } from "../src/chat/workbench.ts";
 
 const stream = "41c77dd7-f2dc-4e91-b481-1507b62ec118";
 const hostId = "1e1e7f91-3d8f-4f97-8f71-4fc7d53313c6";
@@ -140,7 +140,7 @@ test("a chat's activity is its latest finished message, or its creation, not the
     Date.parse("2026-10-27T09:00:00Z"));
   assert.equal(lastActivity(session(2, sent, "Axo", { lastMessageAt: null, createdAt: at("2026-10-27T11:00:00Z") }) as never),
     Date.parse("2026-10-27T11:00:00Z"), "a chat with no messages yet counts from its creation");
-  assert.equal(lastActivity(session(3, sent) as never), Date.parse(sent), "a Mac that reports neither");
+  assert.equal(lastActivity(session(3, sent) as never), 0, "a Mac that reports neither: never the snapshot's time");
 });
 
 test("the recent list puts every chat on every Mac in one list, the most recently active first", () => {
@@ -154,15 +154,11 @@ test("the recent list puts every chat on every Mac in one list, the most recentl
   assert.deepEqual(list.map(entry => entry.session.sessionId), [2, 9, 4, 1], "no bare terminals; across Workspaces and Macs");
 });
 
-test("held rows keep their order; chats new since go first and closed ones drop out", () => {
-  const live = recentChatList([host([
-    session(1, sent, "Axo", { lastMessageAt: at("2026-10-27T11:00:00Z") }),
-    session(2, sent, "Axo", { lastMessageAt: at("2026-10-27T11:30:00Z") }),
-    session(3, sent, "Axo", { lastMessageAt: at("2026-10-27T11:45:00Z") }),
-  ])]);
-  const held = [`${hostId}/1`, `${hostId}/4`, `${hostId}/2`];
-  assert.deepEqual(holdingOrder(held, live).map(chatKey), [`${hostId}/3`, `${hostId}/1`, `${hostId}/2`]);
-  assert.deepEqual(holdingOrder(null, live).map(entry => entry.session.sessionId), [3, 2, 1]);
+test("the list does not move when snapshots are sent again, only when a chat is active", () => {
+  const before = recentChatList([host([session(1, sent), session(2, sent), session(3, sent, "Axo", { lastMessageAt: at("2026-10-27T11:00:00Z") })])]);
+  const resent = recentChatList([host([session(1, sent), session(2, "2026-10-27T12:05:00Z"), session(3, sent, "Axo", { lastMessageAt: at("2026-10-27T11:00:00Z") })])]);
+  assert.deepEqual(before.map(entry => entry.session.sessionId), [3, 2, 1]);
+  assert.deepEqual(resent.map(entry => entry.session.sessionId), [3, 2, 1]);
 });
 
 test("ages are short, as on the Mac", () => {

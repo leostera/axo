@@ -227,6 +227,7 @@ test("browser chats with Axo on a Mac: history, live replies, new chats, info, a
           workspaceName: "Home",
           name: "Session 2",
           status: "starting",
+          createdAt: Math.floor(Date.now() / 1000),
           hasAgent: true,
           shells: [],
           layout: null,

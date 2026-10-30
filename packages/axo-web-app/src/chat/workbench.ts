@@ -108,14 +108,12 @@ export function chatTitle(session: Session | null | undefined): string {
 /**
  * When a chat was last active, in milliseconds: its latest completed message, or its creation for
  * a chat with none yet, as the Mac's recent list orders them. Activity is a finished message, not
- * streaming, so chats move when a turn produces something rather than on every token. A Mac too
- * old to report either leaves the snapshot's time, which says when it was sent, not used.
+ * streaming, so chats move when a turn produces something rather than on every token. 0 when the
+ * Mac reports neither: a snapshot's `updatedAt` says when it was sent, which changes with every
+ * snapshot and would shuffle the list, so it is never used.
  */
 export function lastActivity(session: Session): number {
-  const seconds = Math.max(session.lastMessageAt ?? 0, session.createdAt ?? 0);
-  if (seconds > 0) return seconds * 1000;
-  const time = Date.parse(session.updatedAt);
-  return Number.isNaN(time) ? 0 : time;
+  return Math.max(session.lastMessageAt ?? 0, session.createdAt ?? 0) * 1000;
 }
 const activity = lastActivity;
 
@@ -134,17 +132,6 @@ export function recentChatList(hosts: readonly Host[]): ChatMenuEntry[] {
 /** A chat's key in the menu: a session id is only unique on its Mac. */
 export function chatKey(entry: ChatMenuEntry): string {
   return `${entry.host.hostId}/${entry.session.sessionId}`;
-}
-
-/**
- * `live` in the order `held` remembers, so rows don't move under the pointer. Chats gone drop
- * out; chats new since go first, in `live` order.
- */
-export function holdingOrder(held: readonly string[] | null, live: readonly ChatMenuEntry[]): ChatMenuEntry[] {
-  if (!held) return [...live];
-  const byKey = new Map(live.map(entry => [chatKey(entry), entry]));
-  const heldKeys = new Set(held);
-  return [...live.filter(entry => !heldKeys.has(chatKey(entry))), ...held.flatMap(key => byKey.get(key) ?? [])];
 }
 
 /** A short age for a row, as the Mac's sidebar shows: "now", "5m", "3h", "2d", "4w". */

@@ -7,7 +7,7 @@ import { Icon } from "./icons.tsx";
 import { relativeTime } from "./message-views.tsx";
 import { parseRoute, routePath, type ChatRoute } from "./route.ts";
 import {
-  chatKey, chatTitle, ChatWorkbench, holdingOrder, isChat, lastActivity, recentChatList, shortAge,
+  chatKey, chatTitle, ChatWorkbench, isChat, lastActivity, recentChatList, shortAge,
   type ChatBackend, type ChatMenuEntry,
 } from "./workbench.ts";
 
@@ -274,36 +274,30 @@ function ChatsPanel({ workbench, onSelect, onNewChat, onAccount, onSettings }: {
   );
 }
 
-/**
- * Every chat, the most recently active first, each with how long ago. Rows hold their order while
- * the pointer is over the list, so a chat that just finished a message does not jump out from
- * under a click; they move into place once it leaves.
- */
+/** Every chat, the most recently active at the top, each with how long ago. */
 function RecentChats({ entries, isSelected, onSelect }: {
   entries: ChatMenuEntry[];
   isSelected: (hostId: string, sessionId: number) => boolean;
   onSelect: (hostId: string, sessionId: number) => void;
 }) {
-  const [held, setHeld] = useState<string[] | null>(null);
   // Ages only need to move once a minute.
   const [now, setNow] = useState(() => Date.now());
   useEffect(() => {
     const timer = setInterval(() => setNow(Date.now()), 60_000);
     return () => clearInterval(timer);
   }, []);
-  const shown = holdingOrder(held, entries);
   return (
-    <section className="chat-section recent first" aria-label="Recent chats"
-      onPointerEnter={() => setHeld(entries.map(chatKey))} onPointerLeave={() => setHeld(null)}>
-      {shown.map(entry => {
+    <section className="chat-section recent first" aria-label="Recent chats">
+      {entries.map(entry => {
         const { host, session } = entry;
         const selected = isSelected(host.hostId, session.sessionId);
+        const active = lastActivity(session);
         return (
           <button key={chatKey(entry)} className={selected ? "chat-row selected" : "chat-row"}
             aria-current={selected ? "page" : undefined} onClick={() => onSelect(host.hostId, session.sessionId)}>
             <span className="chat-row-name">{chatTitle(session)}</span>
             <StatusDot status={session.status} />
-            <span className="chat-row-age">{shortAge(lastActivity(session), now)}</span>
+            <span className="chat-row-age">{active > 0 ? shortAge(active, now) : ""}</span>
           </button>
         );
       })}
