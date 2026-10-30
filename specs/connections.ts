@@ -7,12 +7,13 @@ const MIN = 60 * SEC;
 // cloud Dynamic Worker; third-party tools are called from the cloud with the account's grant, and
 // `bash` travels over the host relay to the Mac it names.
 //
-// Each Mac's relay socket ends in the Durable Object that owns it ("HostIngress DO", a per-host
-// object in the relay data flow redesign; today AxoAccountManager itself). Connections state lives
+// Each Mac's relay socket ends in its own Durable Object, HostDO: axod connects to
+// api.axo.leostera.dev and the Worker routes the socket to HostDO by host ID (relay data flow
+// redesign; until it lands, AxoAccountManager owns the socket itself). Connections state lives
 // only in the account's AxoAccountManager, one RPC hop away: the socket owner forwards a Mac's
 // connections calls to it, and sends it `bash` for its Mac. The model holds whichever object owns
 // the socket. Names match the relay data flow specs: zones "Host Mac" and "Cloudflare"; actors
-// "axod relay", "HostIngress DO", "AxoAccountManager".
+// "axod relay", "HostDO", "AxoAccountManager".
 //
 // Not built yet, so no step has sources. Left out: pairing (RFD0013, see remote-access.ts),
 // third-party sign-in and refresh (connection-sign-in.ts), tool lists (tool-lists.ts), and how a
@@ -117,7 +118,7 @@ export default defineSpec(
     spec.defineLimit({ name: "Call log retention", value: 30, unit: "days" });
 
     const Ingress = spec.defineActor({
-      name: "HostIngress DO",
+      name: "HostDO",
       description: "The Durable Object that owns each Mac's relay socket. It knows which sockets are open, forwards a Mac's connections calls to the account, and sends the account's commands down the right socket. It holds no connections state.",
       zone: cloudflare,
       singleton: true,
@@ -512,7 +513,7 @@ export default defineSpec(
         mood: (s) => (s.connected ? "ok" : "off"),
         owner: (s) => (s.account ? cap(who(s.account)) : null),
       },
-      links: (s) => (s.connected ? [{ to: "HostIngress DO", kind: "websocket", row: s.host }] : []),
+      links: (s) => (s.connected ? [{ to: "HostDO", kind: "websocket", row: s.host }] : []),
       actions: {
         dropRelay: {
           label: "Relay drops",
