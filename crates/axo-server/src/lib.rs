@@ -189,6 +189,7 @@ pub struct RemoteAccess {
 #[derive(Clone)]
 struct RelayContext {
     control: Arc<axo_relay::RelayControl>,
+    channel: Arc<axo_relay::RelayChannel>,
     endpoint: axo_relay::RelayEndpoint,
     host: Arc<session::RelayHostAdapter>,
     credentials: Arc<dyn axo_relay::credential::HostCredentialStore>,
@@ -230,6 +231,7 @@ pub fn serve_ipc(
         .map(axo_relay::RelayWorker::stop_handle);
     let relay = remote_relay.as_ref().map(|worker| RelayContext {
         control: worker.control_handle(),
+        channel: worker.channel_handle(),
         endpoint: remote_access.endpoint,
         host,
         credentials,
@@ -382,6 +384,18 @@ fn add_relay_methods(handler: &mut IoHandler, relay: Option<RelayContext>) {
         },
     );
 
+    let context = relay.clone();
+    handler.add_typed(
+        method::SESSION_SHARE,
+        "expected {snapshot}",
+        move |request: rpc::ShareSession| {
+            let context = context
+                .as_ref()
+                .ok_or_else(|| internal_error("this Mac cannot reach its Axo account"))?;
+            share_session(context, request.snapshot)
+        },
+    );
+
     handler.add_typed(
         method::RELAY_CONNECT,
         "expected no parameters",
@@ -399,6 +413,47 @@ fn add_relay_methods(handler: &mut IoHandler, relay: Option<RelayContext>) {
             Ok(rpc::ConnectRequested { requested })
         },
     );
+}
+
+/// The cloud method that stores a shared conversation (`@axo/protocol`'s `SHARE_PUBLISH_METHOD`).
+const SHARE_PUBLISH_METHOD: &str = "axo.host.share.publish";
+/// Storing a snapshot of up to 1.5 MiB; generous, since nothing else waits on it.
+const SHARE_PUBLISH_TIMEOUT: Duration = Duration::from_secs(60);
+
+/// Forwards a redacted conversation over the relay link, so the cloud publishes it under this
+/// Mac's account. No Cloudflare credentials are needed on the Mac.
+fn share_session(
+    context: &RelayContext,
+    snapshot: serde_json::Value,
+) -> Result<rpc::SessionShared, RpcError> {
+    use axo_relay::{RelayCallError, RelayHost};
+    let params = serde_json::json!({
+        "hostId": context.host.host_id(),
+        "hostGeneration": context.host.host_generation(),
+        "snapshot": snapshot,
+    });
+    let reply = context
+        .channel
+        .request(
+            SHARE_PUBLISH_METHOD,
+            params,
+            axo_relay::Priority::Control,
+            SHARE_PUBLISH_TIMEOUT,
+        )
+        .map_err(|error| {
+            log::warn!("event=share.publish_failed reason={error:?}");
+            internal_error(match error {
+                RelayCallError::NotConnected => {
+                    "this Mac is not connected to its Axo account; link it under Settings > Remote Access, or check that it is online"
+                }
+                RelayCallError::TooLarge => "the conversation is too large to share",
+                RelayCallError::Rejected { .. } => "Axo's cloud refused the conversation",
+                RelayCallError::Disconnected | RelayCallError::TimedOut => {
+                    "the connection to Axo's cloud dropped; the conversation may have been published"
+                }
+            })
+        })?;
+    serde_json::from_value(reply).map_err(|_| internal_error("Axo's cloud answered unexpectedly"))
 }
 
 fn add_protocol_negotiate_method(handler: &mut IoHandler) {

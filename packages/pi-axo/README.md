@@ -44,15 +44,15 @@ The extension forwards structured Pi events to Axod only. Its `/resume` request 
 
 ## Sharing a conversation
 
-`/axo-share` publishes a read-only copy of the current branch at `https://axo.leostera.dev/s/<share-id>/<slug>`; `/axo-share --dry-run` stops before uploading. Everything happens on this Mac (`src/share.ts`, `src/share-command.ts`):
+`/axo-share` publishes a read-only copy of the current branch at `https://axo.leostera.dev/s/<share-id>/<slug>`; `/axo-share --dry-run` stops before publishing. Redaction happens on this Mac (`src/share.ts`, `src/share-command.ts`); publishing goes through Axod and this Mac's Axo account:
 
 1. **Snapshot.** User and assistant words and the tools that ran (name, command or path, status, output cut to 4,000 characters). Reasoning and images are never included.
 2. **Scrub.** Known secret shapes (private keys, cloud and Git tokens, JWTs, bearer headers, URL credentials, `*_TOKEN=…`-style assignments, email addresses) and home-directory user names are replaced by `[redacted:<category>]` before any model sees the text.
 3. **Triage with Clef.** Each field goes to the cheapest available Clef classifier (Clef Flash, then Clef); fields with at least a 15% chance of holding sensitive information go on. Without a Clef with working credentials (Workers AI or OpenRouter), every field goes on.
 4. **Redact with Haiku.** A Haiku model (the current provider's first, newest first) names the exact sensitive substrings; they are replaced in every field, so a secret seen once is removed everywhere. The model never rewrites text.
-5. **Review and publish.** The redacted snapshot is written to `~/.axo/shares/<share-id>.json` (mode `0600`) and uploaded only after confirmation, with `cf r2 objects put` to the `axo-public-sessions` bucket (sign in once with `cf auth login`; Wrangler's login expires and it refuses to run without a terminal). The share is recorded as an `axo_session_share` custom entry.
+5. **Review and publish.** The redacted snapshot is written under `~/.axo/shares/` (mode `0600`) and, only after confirmation, sent to Axod with `axo.session.share` on its local socket (`AXO_SOCKET`). Axod forwards it over its relay link (`axo.host.share.publish`); the cloud validates it against `@axo/protocol`'s shared snapshot schema, stores it in the `axo-public-sessions` bucket with the publishing account and host as metadata, picks the share ID and answers with the URL. The local file is then renamed to `<share-id>.json` and the share is recorded as an `axo_session_share` custom entry. The Mac needs no Cloudflare credentials, but it must be linked to an Axo account and online.
 
-Triage and redaction send the scrubbed text to those model providers. Any model error or malformed answer stops the share; nothing half-checked is uploaded. Model redaction is best effort: review the file before confirming. `AXO_SHARE_CLASSIFIER` and `AXO_SHARE_REDACTOR` (`provider/model-id`), `AXO_SHARE_BUCKET`, and `CLOUDFLARE_ACCOUNT_ID` override the defaults. Publishing never touches Axo's API or its stored session history.
+Triage and redaction send the scrubbed text to those model providers. Any model error or malformed answer stops the share; nothing half-checked is uploaded. Model redaction is best effort: review the file before confirming. `AXO_SHARE_CLASSIFIER` and `AXO_SHARE_REDACTOR` (`provider/model-id`) override the models. Publishing never touches stored session history.
 
 ## Session title, emoji, and activity
 

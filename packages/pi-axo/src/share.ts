@@ -10,11 +10,13 @@
  * - Any model failure fails the whole redaction. A snapshot is never published half-checked.
  */
 
-import { randomBytes } from "node:crypto";
-
 export const SNAPSHOT_VERSION = 1;
 export const MAX_TOOL_OUTPUT_CHARS = 4_000;
 export const MAX_TEXT_CHARS = 20_000;
+/** What the cloud accepts (`@axo/protocol`'s shared snapshot schema), with room for placeholders. */
+export const MAX_TITLE_CHARS = 120;
+export const MAX_SUBTITLE_CHARS = 1_000;
+export const MAX_COMMAND_CHARS = 8_000;
 /** Classifier probability from which a field is sent to the redacting model. Kept low on purpose. */
 export const TRIAGE_THRESHOLD = 0.15;
 
@@ -115,8 +117,8 @@ function toolFromCall(block: Record<string, unknown>): SharedTool | null {
     callId: typeof block.id === "string" ? block.id : null,
     name: block.name,
     kind,
-    subtitle: kind === "shell" ? null : subtitle,
-    command: kind === "shell" ? command : null,
+    subtitle: kind === "shell" || subtitle === null ? null : cut(subtitle, MAX_SUBTITLE_CHARS).text,
+    command: kind === "shell" && command !== null ? cut(command, MAX_COMMAND_CHARS).text : null,
     status: "running",
     output: "",
     outputTruncated: false,
@@ -327,11 +329,26 @@ export async function redactSnapshot(snapshot: SharedSnapshot, models: Redaction
     field.set(text);
     for (const [category, times] of replaced) count(report, category, times);
   }
-  if (!snapshot.title.trim()) snapshot.title = "Shared Axo session";
+  snapshot.title = snapshot.title.trim().slice(0, MAX_TITLE_CHARS).trim() || "Shared Axo session";
+  keepWithinLimits(snapshot);
   return report;
 }
 
-// ---- prompts and identifiers ----
+/** Placeholders are longer than what they replace; cut fields back to what the cloud accepts. */
+function keepWithinLimits(snapshot: SharedSnapshot): void {
+  for (const message of snapshot.messages) {
+    message.text = cut(message.text, MAX_TEXT_CHARS).text;
+    const tool = message.tool;
+    if (!tool) continue;
+    const output = cut(tool.output, MAX_TOOL_OUTPUT_CHARS);
+    tool.output = output.text;
+    tool.outputTruncated ||= output.truncated;
+    if (tool.command !== null) tool.command = cut(tool.command, MAX_COMMAND_CHARS).text;
+    if (tool.subtitle !== null) tool.subtitle = cut(tool.subtitle, MAX_SUBTITLE_CHARS).text;
+  }
+}
+
+// ---- prompts ----
 
 export const TRIAGE_INSTRUCTIONS = [
   "Would publishing this text on the public internet expose sensitive information?",
@@ -354,11 +371,7 @@ Answer with JSON only, in exactly this shape:
 {"redactions":[{"text":"<exact substring copied verbatim from the input>","category":"<short-kebab-case-category>"}]}
 Copy each substring exactly, character for character, so it can be found and replaced. Return {"redactions":[]} when there is nothing to remove.`;
 
-/** 16 random bytes as 22 base64url characters: the share's unguessable identity. */
-export function newShareId(): string {
-  return Buffer.from(randomBytes(16)).toString("base64url");
-}
-
+/** A readable file name for the redacted snapshot kept on this Mac. */
 export function slugify(title: string): string {
   const slug = title.normalize("NFKD").replace(/[\u0300-\u036f]/g, "").toLowerCase()
     .replace(/\[redacted:[^\]]*\]/g, "").replace(/[^a-z0-9]+/g, "-").replace(/^-+|-+$/g, "").slice(0, 60).replace(/-+$/, "");

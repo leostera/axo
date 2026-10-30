@@ -831,6 +831,43 @@ fn long_polls_never_delay_unrelated_requests() {
 }
 
 #[test]
+fn sharing_a_conversation_needs_a_mac_linked_to_its_axo_account() {
+    let directory = unique_test_directory("axo-share-unlinked");
+    let server_directory = directory.join("server");
+    let socket = directory.join("axod.sock");
+    std::fs::create_dir_all(&directory).unwrap();
+
+    let mut daemon = start_axod(&server_directory, &socket);
+    wait_for_socket(&socket, &mut daemon);
+
+    let negotiated = rpc_with_params(
+        &socket,
+        "axo.protocol.negotiate",
+        json!({ "protocolVersion": 2 }),
+    );
+    let methods = negotiated["result"]["methods"].as_array().unwrap();
+    assert!(methods.iter().any(|method| method == "axo.session.share"));
+
+    let malformed = rpc_with_params(&socket, "axo.session.share", json!({}));
+    assert_eq!(malformed["error"]["code"], -32602);
+
+    let unlinked = rpc_with_params(
+        &socket,
+        "axo.session.share",
+        json!({ "snapshot": { "version": 1 } }),
+    );
+    assert_eq!(unlinked["error"]["code"], -32603);
+    let message = unlinked["error"]["message"].as_str().unwrap();
+    assert!(
+        message.contains("not connected to its Axo account"),
+        "{message}"
+    );
+
+    daemon.stop();
+    let _ = std::fs::remove_dir_all(directory);
+}
+
+#[test]
 fn workspace_creation_validates_name_and_existing_directory_without_a_bookmark() {
     let directory = unique_test_directory("axo-workspace-error");
     let server_directory = directory.join("server");

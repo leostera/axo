@@ -43,6 +43,7 @@ pub mod method {
     pub const RELAY_LINK: &str = "axo.relay.link";
     pub const RELAY_STATUS: &str = "axo.relay.status";
     pub const RELAY_CONNECT: &str = "axo.relay.connect";
+    pub const SESSION_SHARE: &str = "axo.session.share";
 
     /// Everything a version-1 client may call (negotiation itself excluded).
     pub const ADVERTISED: &[&str] = &[
@@ -78,6 +79,7 @@ pub mod method {
         RELAY_LINK,
         RELAY_STATUS,
         RELAY_CONNECT,
+        SESSION_SHARE,
     ];
 }
 
@@ -269,6 +271,16 @@ pub struct PromptSession {
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct LinkHost {
     pub code: String,
+}
+
+/// Publishes a redacted conversation through this Mac's Axo account (`/axo-share`).
+///
+/// `snapshot` is passed through untouched: the cloud validates it (the `@axo/protocol` shared
+/// snapshot schema), stores it and picks its ID. Axod only adds which host is publishing.
+#[derive(Debug, Deserialize, Serialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct ShareSession {
+    pub snapshot: serde_json::Value,
 }
 
 // Results.
@@ -467,6 +479,13 @@ pub struct RelayDisabled {
 pub struct HostLinked {
     pub linked: bool,
     pub host_label: String,
+}
+
+#[derive(Debug, Deserialize, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct SessionShared {
+    pub share_id: String,
+    pub url: String,
 }
 
 #[derive(Debug, Deserialize, Serialize)]

@@ -1,10 +1,10 @@
-import { chmod, mkdir, writeFile } from "node:fs/promises";
+import { chmod, mkdir, rename, writeFile } from "node:fs/promises";
 import { homedir } from "node:os";
 import { join } from "node:path";
 import type { ExtensionAPI, ExtensionCommandContext } from "@earendil-works/pi-coding-agent";
+import { AxodCallError, callAxod } from "./axod-client.js";
 import {
   buildSharedMessages,
-  newShareId,
   parseFindings,
   redactSnapshot,
   REDACTOR_SYSTEM_PROMPT,
@@ -17,11 +17,12 @@ import {
 } from "./share.js";
 
 export const SHARE_ENTRY = "axo_session_share";
-const SHARE_ORIGIN = "https://axo.leostera.dev";
-const DEFAULT_BUCKET = "axo-public-sessions";
-/** The account that owns axo.leostera.dev (sites/axo.leostera.dev/cloudflare.config.ts). */
-const DEFAULT_ACCOUNT_ID = "0f436d2aabf1f872be90b8dd9d5715e6";
-const UPLOAD_TIMEOUT_MS = 120_000;
+const SHARE_METHOD = "axo.session.share";
+/** Axod waits up to 60 seconds for the cloud; leave it room to answer. */
+const PUBLISH_TIMEOUT_MS = 75_000;
+const SHARE_ID = /^[A-Za-z0-9_-]{22}$/;
+/** The relay carries messages up to 2 MiB; leave room for the envelope. */
+const MAX_SNAPSHOT_BYTES = 1_900_000;
 
 type Registry = ExtensionCommandContext["modelRegistry"];
 type ChatModel = NonNullable<ExtensionCommandContext["model"]>;
@@ -102,19 +103,37 @@ function describeReport(report: RedactionReport): string {
   return `${removed}; ${review}`;
 }
 
+const SHARES_DIRECTORY = join(homedir(), ".axo", "shares");
+
 async function writePrivately(path: string, contents: string): Promise<void> {
-  const directory = join(homedir(), ".axo", "shares");
-  await mkdir(directory, { recursive: true, mode: 0o700 });
+  await mkdir(SHARES_DIRECTORY, { recursive: true, mode: 0o700 });
   await writeFile(path, contents, { mode: 0o600 });
   await chmod(path, 0o600);
+}
+
+interface Published {
+  shareId: string;
+  url: string;
+}
+
+/**
+ * Publishes through Axod, which forwards the snapshot over this Mac's relay link: the cloud
+ * stores it under the Mac's Axo account and picks its ID. No Cloudflare credentials are needed.
+ */
+export async function publishThroughAxod(socket: string, snapshot: SharedSnapshot): Promise<Published> {
+  const result = await callAxod(socket, SHARE_METHOD, { snapshot }, PUBLISH_TIMEOUT_MS) as Partial<Published> | null;
+  if (typeof result?.shareId !== "string" || !SHARE_ID.test(result.shareId) || typeof result.url !== "string" || !result.url.startsWith("https://")) {
+    throw new AxodCallError("Axo answered with an unexpected share", null);
+  }
+  return { shareId: result.shareId, url: result.url };
 }
 
 /**
  * `/axo-share [--dry-run]`: publish a redacted, read-only snapshot of this conversation.
  *
- * The snapshot is built and redacted on this Mac, saved under ~/.axo/shares for review, and only
- * uploaded to the public-sessions R2 bucket (with the `cf` CLI) after an explicit confirmation. Axo's API and its
- * stored session history are never involved.
+ * The snapshot is built and redacted on this Mac and saved under ~/.axo/shares for review. Only
+ * after an explicit confirmation is it handed to Axod, which publishes it through this Mac's Axo
+ * account. Stored session history is never involved.
  */
 export function registerShareCommand(pi: ExtensionAPI): void {
   pi.registerCommand("axo-share", {
@@ -123,6 +142,11 @@ export function registerShareCommand(pi: ExtensionAPI): void {
       const dryRun = args.trim() === "--dry-run";
       if (args.trim() && !dryRun) {
         context.ui.notify("Usage: /axo-share [--dry-run]", "warning");
+        return;
+      }
+      const socket = process.env.AXO_SOCKET;
+      if (!socket) {
+        context.ui.notify("Sharing works in Pi sessions that Axo runs.", "warning");
         return;
       }
       if (!context.hasUI) {
@@ -160,36 +184,38 @@ export function registerShareCommand(pi: ExtensionAPI): void {
         return;
       }
 
-      const shareId = newShareId();
-      const url = `${SHARE_ORIGIN}/s/${shareId}/${slugify(snapshot.title)}`;
-      const path = join(homedir(), ".axo", "shares", `${shareId}.json`);
+      const path = join(SHARES_DIRECTORY, `${snapshot.publishedAt.replace(/[:.]/g, "-")}-${slugify(snapshot.title)}.json`);
       await writePrivately(path, `${JSON.stringify(snapshot, null, 2)}\n`);
 
+      const bytes = Buffer.byteLength(JSON.stringify(snapshot), "utf8");
+      if (bytes > MAX_SNAPSHOT_BYTES) {
+        context.ui.notify(`This conversation is too large to share (${Math.ceil(bytes / 1_048_576)} MB; the limit is under 2 MB). The redacted snapshot is at ${path}.`, "error");
+        return;
+      }
       if (dryRun) {
         context.ui.notify(`Dry run: ${describeReport(report)}. Review the redacted snapshot at ${path}.`, "info");
         return;
       }
       const confirmed = await context.ui.confirm(
         "Publish this conversation publicly?",
-        `${messages.length} messages, ${describeReport(report)}.\n\nReview the redacted snapshot first: ${path}\n\nAnyone with the link will be able to read it: ${url}`,
+        `${messages.length} messages, ${describeReport(report)}.\n\nReview the redacted snapshot first: ${path}\n\nAnyone with the link will be able to read it.`,
       );
       if (!confirmed) {
         context.ui.notify(`Not published. The redacted snapshot stays at ${path}.`, "info");
         return;
       }
 
-      const bucket = process.env.AXO_SHARE_BUCKET || DEFAULT_BUCKET;
-      const upload = await pi.exec("env", [
-        `CLOUDFLARE_ACCOUNT_ID=${process.env.CLOUDFLARE_ACCOUNT_ID || DEFAULT_ACCOUNT_ID}`,
-        "cf", "r2", "objects", "put", `shares/${shareId}.json`, "--bucket-name", bucket,
-        "--file", path, "--content-type", "application/json; charset=utf-8",
-      ], { timeout: UPLOAD_TIMEOUT_MS });
-      if (upload.code !== 0) {
-        const reason = (upload.stderr.trim() || upload.stdout.trim()).slice(-500);
-        context.ui.notify(`Upload failed; nothing was published. The redacted snapshot stays at ${path}. Run \`cf auth login\` if you are signed out.\n${reason}`, "error");
+      let published: Published;
+      try {
+        published = await publishThroughAxod(socket, snapshot);
+      } catch (error) {
+        const reason = error instanceof Error ? error.message : String(error);
+        context.ui.notify(`Not published: ${reason}. The redacted snapshot stays at ${path}.`, "error");
         return;
       }
-      pi.appendEntry(SHARE_ENTRY, { shareId, url, publishedAt: snapshot.publishedAt, bucket });
+      const { shareId, url } = published;
+      await rename(path, join(SHARES_DIRECTORY, `${shareId}.json`)).catch(() => undefined);
+      pi.appendEntry(SHARE_ENTRY, { shareId, url, publishedAt: snapshot.publishedAt });
       context.ui.notify(`Published: ${url}`, "info");
     },
   });

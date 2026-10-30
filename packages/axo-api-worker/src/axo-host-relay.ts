@@ -34,6 +34,10 @@ import {
   splitMessage,
   type Decoded,
   type PartialStore,
+  SHARE_PUBLISH_METHOD,
+  sharePublishParamsSchema,
+  shareSlug,
+  type SharePublishResult,
 } from "@axo/protocol";
 import {
   hostDataEventSchema,
@@ -49,6 +53,7 @@ import { peerSchema, type Peer, type CallerContext } from "./relay/peer";
 import type { Route, Group, Pending } from "./relay/records";
 import { recordApiEvent } from "./observability";
 import { boundReplyGroup } from "./relay/replies";
+import { APP_ORIGIN } from "./auth/config";
 
 type HostRegistrationMethods = {
   "axo.host.register": (
@@ -152,6 +157,7 @@ export class AxoHostRelay extends DurableObject<Env> {
           ...Object.keys(hostV1Methods).filter((method) =>
             method !== "axo.host.list" && method !== "axo.host.sessions.list",
           ),
+          SHARE_PUBLISH_METHOD,
         ],
         deliveryCredits: { frames: 32, bytes: 131072 },
       };
@@ -170,6 +176,9 @@ export class AxoHostRelay extends DurableObject<Env> {
     );
     typed.addMethod("axo.host.sessions.publish", (params, caller) =>
       this.publishHostSessions(params, caller),
+    );
+    server.addMethod(SHARE_PUBLISH_METHOD, (params, caller) =>
+      this.publishShare(params, caller),
     );
     return server;
   }
@@ -951,6 +960,40 @@ export class AxoHostRelay extends DurableObject<Env> {
     return result;
   }
 
+  /**
+   * Publishes a conversation a host redacted (`/axo-share`): stores the snapshot in the
+   * public-sessions bucket under a new ID and answers with its public URL. The publishing
+   * identity and host are kept as object metadata, so a share can be traced and taken down.
+   */
+  private async publishShare(params: unknown, { peer }: CallerContext): Promise<SharePublishResult> {
+    const route = this.admittedDaemon(peer);
+    const parsed = sharePublishParamsSchema.safeParse(params);
+    if (
+      !parsed.success ||
+      !route.ready ||
+      parsed.data.hostId !== peer.machineId ||
+      parsed.data.hostGeneration !== route.generation
+    )
+      throw new JSONRPCErrorException("Invalid shared conversation", -32602);
+
+    const shareId = newShareId();
+    await this.storeShare(shareId, JSON.stringify(parsed.data.snapshot), {
+      principal: peer.identity,
+      hostId: peer.machineId,
+      publishedAt: new Date().toISOString(),
+    });
+    this.renewRoute(peer);
+    recordApiEvent({ event: "share_published", messages: parsed.data.snapshot.messages.length });
+    return { shareId, url: `${APP_ORIGIN}/s/${shareId}/${shareSlug(parsed.data.snapshot.title)}` };
+  }
+
+  protected async storeShare(shareId: string, snapshot: string, metadata: Record<string, string>): Promise<void> {
+    await this.env.PUBLIC_SESSIONS.put(`shares/${shareId}.json`, snapshot, {
+      httpMetadata: { contentType: "application/json; charset=utf-8" },
+      customMetadata: metadata,
+    });
+  }
+
   private renewRoute(peer: Peer): void {
     this.ctx.storage.sql.exec(
       "UPDATE route SET lease_until = ? WHERE connection_id = ?",
@@ -1312,4 +1355,10 @@ export class AxoHostRelay extends DurableObject<Env> {
       );
     await this.schedule();
   }
+}
+
+/** 128 random bits, URL-safe: what makes a share link unguessable. */
+function newShareId(): string {
+  const bytes = crypto.getRandomValues(new Uint8Array(16));
+  return btoa(String.fromCharCode(...bytes)).replace(/\+/g, "-").replace(/\//g, "_").replace(/=+$/, "");
 }

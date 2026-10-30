@@ -163,6 +163,10 @@ pub const PARITY: &[Parity] = &[
         method::RELAY_CONNECT,
         Remote::LocalOnly("remote-access control of this Mac"),
     ),
+    row(
+        method::SESSION_SHARE,
+        Remote::LocalOnly("this Mac publishes its own redacted conversation to the cloud"),
+    ),
 ];
 
 /// Remote calls with no local counterpart: what only a person away from the Mac needs.

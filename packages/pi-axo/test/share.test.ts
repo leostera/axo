@@ -2,7 +2,6 @@ import assert from "node:assert/strict";
 import test from "node:test";
 import {
   buildSharedMessages,
-  newShareId,
   parseFindings,
   redactSnapshot,
   scrubText,
@@ -114,9 +113,7 @@ test("redactor answers must be the expected JSON", () => {
   assert.throws(() => parseFindings("{\"redactions\":[{\"category\":\"x\"}]}"));
 });
 
-test("share links have an unguessable id and a readable slug", () => {
-  assert.match(newShareId(), /^[A-Za-z0-9_-]{22}$/);
-  assert.notEqual(newShareId(), newShareId());
+test("snapshot file names are readable slugs", () => {
   assert.equal(slugify("axo: share sessions"), "axo-share-sessions");
   assert.equal(slugify("[redacted:secret]"), "session");
 });

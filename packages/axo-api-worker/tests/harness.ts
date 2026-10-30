@@ -221,6 +221,7 @@ export async function harness(configuration: { audience?: string; bindings?: Rec
       TEST_PAIRING_LIMITS: { className: "AxoPairingRateLimit", useSQLite: true },
       TEST_SESSION_HISTORY: { className: "AxoSessionDO", useSQLite: true },
     },
+    r2Buckets: ["PUBLIC_SESSIONS"],
     resourcePersistencePath: join(directory, "storage"),
     unsafeInspectDurableObjects: true,
   });

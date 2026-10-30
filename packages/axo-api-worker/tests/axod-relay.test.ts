@@ -89,7 +89,27 @@ test("an isolated axod pairs with an account, then the account drives it through
     assert.ok(firstSession.shells.length > 0, "registered session has a shell");
     assert.equal(JSON.stringify(firstSession).match(/attachSocketPath|ptyDevice|terminalOutput/gi), null);
 
-    // Another account sees nothing and cannot open the host.
+    // A conversation redacted on this Mac is published through axod's relay link, under the
+    // host's account: the Mac holds no Cloudflare credentials.
+    const snapshot = {
+      version: 1,
+      title: "Relay share",
+      publishedAt: new Date().toISOString(),
+      messages: [{ id: "m1", role: "user", text: "hello", timestamp: 1, tool: null, images: [] }],
+    };
+    const shared = (await localCall(socketPath, "axo.session.share", { snapshot })) as { shareId: string; url: string };
+    assert.equal(shared.url, `https://axo.leostera.dev/s/${shared.shareId}/relay-share`);
+    const bucket = await api.mf.getR2Bucket("PUBLIC_SESSIONS") as unknown as R2Bucket;
+    const stored = await bucket.get(`shares/${shared.shareId}.json`);
+    assert.deepEqual(JSON.parse(await stored!.text()), snapshot);
+    assert.equal(stored!.customMetadata?.hostId, hostId);
+    await assert.rejects(
+      localCall(socketPath, "axo.session.share", { snapshot: { ...snapshot, messages: [] } }),
+      /refused/,
+      "the cloud validates what it publishes",
+    );
+
+        // Another account sees nothing and cannot open the host.
     const stranger = await signIn(api);
     assert.deepEqual(await accountApi(api.url, stranger).listHosts(), []);
     await assert.rejects(
