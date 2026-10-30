@@ -1,7 +1,5 @@
 import { definePlayground, Terminal } from "@leostera/feynman/play";
-import spec from "./remote-access.ts";
-
-const { Person, Manager, Axod } = spec.handles;
+import spec, { Axod, Manager, Person } from "./remote-access.ts";
 
 export default definePlayground(spec, (play) => {
   // While the relay is closed, say how many pairing codes are waiting to be typed into a Mac.
