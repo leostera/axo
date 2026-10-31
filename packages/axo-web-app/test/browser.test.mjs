@@ -619,11 +619,11 @@ test("browser chats with Axo on a Mac: history, live replies, new chats, info, a
     assert.equal(new URL(page.url()).pathname, "/app/settings/apps");
     await expect(apps.getByText("2 accounts"));
     const cards = () => apps.locator(".app-card strong").allTextContents();
-    assert.deepEqual(await cards(), ["Gmail", "Google Calendar", "Google Drive", "Hetzner", "ChatGPT", "1Password", "Octopus Energy", "Wise", "linear", "notion", "docs", "Add MCP server"]);
+    assert.deepEqual(await cards(), ["Gmail", "Google Calendar", "Google Drive", "Hetzner", "ChatGPT", "1Password", "Octopus Energy", "Wise", "linear", "notion", "docs", "Stripe", "PayPal", "GitHub", "Add MCP server"]);
     await expect(apps.getByText("Log intact · 6 entries"));
     await expect(apps.getByLabel("Recent activity").locator(".call-row strong", { hasText: "Gmail · Search messages" }));
     await page.waitForFunction(() => [...document.querySelectorAll(".app-card img")].every((img) => img.complete && img.naturalWidth > 0));
-    assert.equal(await apps.locator(".app-card img").count(), 9, "every app has its maker's logo, and linear its site's icon");
+    assert.equal(await apps.locator(".app-card img").count(), 12, "every app and suggested server has its maker's logo, and linear its site's icon");
     await shot("apps");
     await apps.getByRole("radio", { name: /^Connected/ }).click();
     assert.deepEqual(await cards(), ["Gmail", "1Password", "linear", "docs"], "only what is connected");
@@ -634,6 +634,12 @@ test("browser chats with Axo on a Mac: history, live replies, new chats, info, a
     await apps.getByLabel("Search apps").fill("cal");
     assert.deepEqual(await cards(), ["Google Calendar"]);
     await apps.getByLabel("Search apps").fill("");
+    // A suggested server is added by its URL, and then listed as any other.
+    await apps.getByRole("button", { name: /Stripe/ }).click();
+    await expect(page.getByRole("region", { name: "MCP servers" }).locator(".connection-row strong", { hasText: "stripe" }));
+    await page.goBack();
+    await expect(page.getByRole("region", { name: "Apps" }).getByText("2 accounts"));
+    assert.deepEqual((await cards()).filter((c) => /stripe/i.test(c)), ["stripe"], "the suggestion gives way to the server");
     await apps.getByRole("button", { name: /Gmail/ }).click();
     const gmail = page.getByRole("region", { name: "Gmail" });
     assert.equal(new URL(page.url()).pathname, "/app/settings/apps/gmail");

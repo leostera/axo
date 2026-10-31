@@ -9,13 +9,16 @@ import cloudLogo from "./logos/cloud.svg";
 import contactsLogo from "./logos/contacts.svg";
 import docsLogo from "./logos/docs.svg";
 import driveLogo from "./logos/drive.svg";
+import githubLogo from "./logos/github.svg";
 import gmailLogo from "./logos/gmail.svg";
 import hetznerLogo from "./logos/hetzner.svg";
 import meetLogo from "./logos/meet.svg";
 import octopusLogo from "./logos/octopus.svg";
 import onepasswordLogo from "./logos/onepassword.svg";
+import paypalLogo from "./logos/paypal.svg";
 import sheetsLogo from "./logos/sheets.svg";
 import slidesLogo from "./logos/slides.svg";
+import stripeLogo from "./logos/stripe.svg";
 import tasksLogo from "./logos/tasks.svg";
 import wiseLogo from "./logos/wise.svg";
 
@@ -113,7 +116,13 @@ export function AppsSettings({ connectionsUrl, route, initialNotice, onNavigate,
     title = "Activity";
     body = <div className="settings-narrow"><ActivityPage connectionsUrl={connectionsUrl} /></div>;
   } else {
-    body = <AppsHome apps={apps} servers={servers} loaded={connections !== null} connectionsUrl={connectionsUrl} go={go} />;
+    // A suggested server is added as any other; one that signs in by itself goes straight to its sign-in.
+    const addSuggested = (suggestion: Suggestion) => void act(async () => {
+      const result = connectionsResults["axo.connections.add"].parse(await request(connectionsUrl, "POST", { name: suggestion.name, url: suggestion.url }));
+      if (result.signInUrl?.includes("/oauth/start")) window.location.assign(result.signInUrl);
+      else go({ kind: "servers" });
+    });
+    body = <AppsHome apps={apps} servers={servers} loaded={connections !== null} connectionsUrl={connectionsUrl} go={go} busy={busy} addSuggested={addSuggested} />;
   }
 
   return (
@@ -142,9 +151,18 @@ const CATEGORY_TITLES: Record<string, string> = {
 };
 type Status = "all" | "connected" | "notConnected";
 
+/** Official remote MCP servers worth adding, shown in Apps until added. Each is added by URL like any other. */
+type Suggestion = { name: string; title: string; url: string; category: string; provider: string; logo: string; full?: boolean };
+const SUGGESTED_SERVERS: Suggestion[] = [
+  { name: "stripe", title: "Stripe", url: "https://mcp.stripe.com", category: "finance", provider: "Stripe", logo: stripeLogo, full: true },
+  { name: "paypal", title: "PayPal", url: "https://mcp.paypal.com/mcp", category: "finance", provider: "PayPal", logo: paypalLogo },
+  { name: "github", title: "GitHub", url: "https://api.githubcopilot.com/mcp/", category: "developer", provider: "GitHub", logo: githubLogo },
+];
+
 /** Apps: filters, a grid of every app and MCP server, and what Sessions used lately. */
-function AppsHome({ apps, servers, loaded, connectionsUrl, go }: {
+function AppsHome({ apps, servers, loaded, connectionsUrl, go, busy, addSuggested }: {
   apps: App[]; servers: Server[]; loaded: boolean; connectionsUrl: string; go: (route: SettingsRoute) => void;
+  busy: boolean; addSuggested: (suggestion: Suggestion) => void;
 }) {
   const [query, setQuery] = useState("");
   const [status, setStatus] = useState<Status>("all");
@@ -162,6 +180,12 @@ function AppsHome({ apps, servers, loaded, connectionsUrl, go }: {
       connected: server.state === "ready", look: <ServerTile icon={server.icon} large />,
       detail: server.state === "ready" ? count(server.tools, "tool") : server.state === "needsSignIn" ? "Needs sign-in" : "Unreachable",
       open: () => go({ kind: "servers" }),
+    })),
+    // Suggestions that are not added yet, by their host.
+    ...(loaded ? SUGGESTED_SERVERS : []).filter((s) => !servers.some((server) => host(server.url) === host(s.url))).map((s): Tile => ({
+      key: `suggested:${s.name}`, title: s.title, subtitle: host(s.url), category: s.category, provider: s.provider, connected: false,
+      look: <span className={`app-tile logo large${s.full ? " full" : ""}`} aria-hidden="true"><img src={s.logo} alt="" draggable={false} /></span>,
+      detail: "Add", open: () => { if (!busy) addSuggested(s); },
     })),
   ];
   const categories = [...new Set(tiles.map((t) => t.category))];
