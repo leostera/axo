@@ -709,3 +709,8 @@ button.grouped-row:hover { background: var(--fill); }
   .add-card strong { color: var(--blue); }
   .app-info { flex-direction: column; align-items: flex-start; }
 }
+
+/* A maker's logo sits on white, as on its own app icon, in light and dark. */
+.app-tile.logo { background: #fff; box-shadow: inset 0 0 0 0.5px rgba(0, 0, 0, 0.12); }
+.app-tile.logo img { width: 72%; height: 72%; object-fit: contain; }
+.app-tile.logo.site img { width: 60%; height: 60%; }

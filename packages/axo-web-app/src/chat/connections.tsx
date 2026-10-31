@@ -1,8 +1,18 @@
 import { useCallback, useEffect, useState, type ReactNode } from "react";
 import { connectionsResults, type CallRecord, type Connection } from "@axo/protocol";
-import { Icon, type IconName } from "./icons.tsx";
+import { Icon } from "./icons.tsx";
 import { relativeTime } from "./message-views.tsx";
 import type { SettingsRoute } from "./route.ts";
+import calendarLogo from "./logos/calendar.svg";
+import cloudLogo from "./logos/cloud.svg";
+import contactsLogo from "./logos/contacts.svg";
+import docsLogo from "./logos/docs.svg";
+import driveLogo from "./logos/drive.svg";
+import gmailLogo from "./logos/gmail.svg";
+import meetLogo from "./logos/meet.svg";
+import sheetsLogo from "./logos/sheets.svg";
+import slidesLogo from "./logos/slides.svg";
+import tasksLogo from "./logos/tasks.svg";
 
 /**
  * Settings › Apps (RFD0016): what the account's Sessions can use, as pages over the chats, each
@@ -144,7 +154,7 @@ function AppsHome({ apps, servers, loaded, connectionsUrl, go }: {
     })),
     ...servers.map((server): Tile => ({
       key: server.name, title: server.name, subtitle: host(server.url), category: "mcp", provider: "MCP",
-      connected: server.state === "ready", look: <span className="app-tile large neutral"><Icon name="plug" size={28} /></span>,
+      connected: server.state === "ready", look: <ServerTile icon={server.icon} large />,
       detail: server.state === "ready" ? count(server.tools, "tool") : server.state === "needsSignIn" ? "Needs sign-in" : "Unreachable",
       open: () => go({ kind: "servers" }),
     })),
@@ -346,7 +356,7 @@ function ServersPage({ servers, loaded, connectionsUrl, busy, act, setNotice }: 
         {!loaded ? <p className="grouped-row muted">Loading…</p> : null}
         {servers.map((server) => (
           <div key={server.name} className="grouped-row connection-row">
-            <Icon name="plug" size={18} />
+            <ServerTile icon={server.icon} />
             <span className="connection-copy">
               <strong>{server.name}</strong>
               <small>{host(server.url)}{server.state === "needsSignIn" ? " · needs sign-in" : server.state === "error" ? " · unreachable" : ""}</small>
@@ -433,27 +443,37 @@ function Calls({ connectionsUrl, service, version = 0, limit, compact = false }:
   );
 }
 
-const APP_LOOKS: Record<string, { icon: IconName; color: string }> = {
-  "apps.gmail": { icon: "mail", color: "#ea4335" },
-  "apps.calendar": { icon: "calendar", color: "#4285f4" },
-  "apps.drive": { icon: "folder", color: "#1fa463" },
-  "apps.docs": { icon: "doc", color: "#2684fc" },
-  "apps.sheets": { icon: "table", color: "#0f9d58" },
-  "apps.slides": { icon: "presentation", color: "#f4b400" },
-  "apps.contacts": { icon: "contacts", color: "#1a73e8" },
-  "apps.tasks": { icon: "checklist", color: "#2563eb" },
-  "apps.meet": { icon: "video", color: "#00897b" },
-  "apps.cloud": { icon: "cloud", color: "#4285f4" },
+/** Each app's own logo, as its maker draws it, bundled with the page. */
+const APP_LOGOS: Record<string, string> = {
+  "apps.gmail": gmailLogo,
+  "apps.calendar": calendarLogo,
+  "apps.drive": driveLogo,
+  "apps.docs": docsLogo,
+  "apps.sheets": sheetsLogo,
+  "apps.slides": slidesLogo,
+  "apps.contacts": contactsLogo,
+  "apps.tasks": tasksLogo,
+  "apps.meet": meetLogo,
+  "apps.cloud": cloudLogo,
 };
 
 function AppTile({ app, large = false }: { app: string; large?: boolean }) {
-  const look = APP_LOOKS[app] ?? { icon: "plug" as IconName, color: "var(--gray)" };
+  const logo = APP_LOGOS[app];
+  if (!logo) return <span className={`app-tile neutral${large ? " large" : ""}`} aria-hidden="true"><Icon name="plug" size={large ? 28 : 18} /></span>;
+  return <span className={`app-tile logo${large ? " large" : ""}`} aria-hidden="true"><img src={logo} alt="" draggable={false} /></span>;
+}
+
+/** An MCP server's tile: the icon the Worker found for it, or a plug when it has none or it does not load. */
+function ServerTile({ icon, large = false }: { icon: string | null; large?: boolean }) {
+  const [failed, setFailed] = useState(false);
+  if (!icon || failed) return <span className={`app-tile neutral${large ? " large" : ""}`} aria-hidden="true"><Icon name="plug" size={large ? 28 : 18} /></span>;
   return (
-    <span className={`app-tile${large ? " large" : ""}`} style={{ background: look.color }} aria-hidden="true">
-      <Icon name={look.icon} size={large ? 30 : 18} />
+    <span className={`app-tile logo site${large ? " large" : ""}`} aria-hidden="true">
+      <img src={icon} alt="" draggable={false} referrerPolicy="no-referrer" onError={() => setFailed(true)} />
     </span>
   );
 }
+
 
 function count(n: number, noun: string, nouns = `${noun}s`): string {
   return n === 0 ? `No ${nouns}` : n === 1 ? `1 ${noun}` : `${n} ${nouns}`;

@@ -115,7 +115,7 @@ test("browser chats with Axo on a Mac: history, live replies, new chats, info, a
   // The account's connections (RFD0016), as the Worker lists them.
   const connections = [
     { kind: "host", name: "browser_fixture_mac", hostId, state: "online" },
-    { kind: "thirdParty", name: "linear", url: "https://mcp.linear.app/mcp", state: "ready", tools: 23, syncedAt: now, lastError: null },
+    { kind: "thirdParty", name: "linear", url: "https://mcp.linear.app/mcp", state: "ready", tools: 23, icon: "https://linear.app/static/apple-touch-icon.png", syncedAt: now, lastError: null },
     { kind: "thirdParty", name: "notion", url: "https://mcp.notion.com/mcp", state: "needsSignIn", tools: 0, syncedAt: null, lastError: "the grant expired and cannot be renewed" },
     { kind: "app", name: "apps.gmail", title: "Gmail", provider: "Google", category: "communication", description: "Read, search, send and organize your mail, and manage Gmail's settings.", permissions: ["Read, search and download every message and attachment", "Send mail and replies, and write drafts", "Label, archive, trash and permanently delete mail"], state: "ready", accounts: [{ account: "ada@example.com", state: "ready", lastError: null }, { account: "grace@example.com", state: "needsSignIn", lastError: "Google refused to renew the grant" }], tools: ["get_profile", "search_messages"], lastError: null },
     { kind: "app", name: "apps.calendar", title: "Google Calendar", provider: "Google", category: "productivity", description: "See and manage your calendars and events.", permissions: ["See every calendar you can reach, and its events"], state: "needsSignIn", accounts: [], tools: ["list_events"], lastError: null },
@@ -304,6 +304,11 @@ test("browser chats with Axo on a Mac: history, live replies, new chats, info, a
       args: ["--no-sandbox", "--disable-dev-shm-usage"],
     });
     const page = await browser.newPage({ viewport: { width: 1440, height: 960 } });
+    // A server's icon, from its own site: here, a stand-in.
+    await page.route("https://linear.app/static/apple-touch-icon.png", (route) => route.fulfill({
+      contentType: "image/svg+xml",
+      body: `<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 100 100"><rect width="100" height="100" rx="22" fill="#5e6ad2"/><path d="M22 60l18 18M22 44l34 34M28 30l42 42M40 22l38 38" stroke="#fff" stroke-width="7" stroke-linecap="round"/></svg>`,
+    }));
     const context = { pageErrors: [], browserMessages: [], methods };
     page.on("pageerror", (error) => context.pageErrors.push(error.message));
     page.on("console", (message) => context.browserMessages.push(`${message.type()}: ${message.text()}`));
@@ -566,6 +571,8 @@ test("browser chats with Axo on a Mac: history, live replies, new chats, info, a
     assert.deepEqual(await cards(), ["Gmail", "Google Calendar", "Google Drive", "linear", "notion", "docs", "Add MCP server"]);
     await expect(apps.getByText("Log intact · 6 entries"));
     await expect(apps.getByLabel("Recent activity").locator(".call-row strong", { hasText: "Gmail · Search messages" }));
+    await page.waitForFunction(() => [...document.querySelectorAll(".app-card img")].every((img) => img.complete && img.naturalWidth > 0));
+    assert.equal(await apps.locator(".app-card img").count(), 4, "Gmail, Calendar and Drive have their logos, and linear its site's icon");
     await shot("apps");
     await apps.getByRole("radio", { name: /^Connected/ }).click();
     assert.deepEqual(await cards(), ["Gmail", "linear", "docs"], "only what is connected");
