@@ -400,10 +400,12 @@ type ShownMessage = { message: ChatMessage; live: boolean; enter: boolean; revea
 /**
  * What the transcript shows, in order: its recorded messages, then the reply being written.
  *
- * What the chat opened with, and older pages read in above, are history and just appear. What
- * arrives while the chat is on screen is presented: a reply (and its thinking) is let out a word at
- * a time, from its first live words through its record, and nothing after it shows until all of it
- * is out; anything else rises in. The person's own messages were on screen already, as pending.
+ * What the chat opened with, and older pages read in above, are history and just appear. So does a
+ * batch caught up at once, as after a reconnect: it was written while nobody watched. What is
+ * written while the chat is on screen is presented: a reply (and its thinking) seen live, or arriving
+ * on its own, is let out a word at a time, from its first live words through its record, and
+ * nothing after it shows until all of it is out; anything else rises in. The person's own messages
+ * were on screen already, as pending.
  */
 function useShownMessages(sessionId: string | null, transcript: ChatTranscript | null): ShownMessage[] {
   const state = useRef({ sessionId: null as string | null, known: new Set<string>(), entering: new Set<string>(), revealing: new Set<string>(), done: new Set<string>() }).current;
@@ -428,13 +430,15 @@ function useShownMessages(sessionId: string | null, transcript: ChatTranscript |
   }
   let lastKnown = -1;
   all.forEach(({ message }, index) => { if (state.known.has(message.key)) lastKnown = index; });
-  all.forEach(({ message }, index) => {
-    if (state.known.has(message.key)) return;
-    state.known.add(message.key);
-    if (index < lastKnown || message.role === "user") return;
-    if (message.role === "assistant" || message.role === "thinking") state.revealing.add(message.key);
-    else state.entering.add(message.key);
-  });
+  const arrived = all.filter(({ message }, index) => !state.known.has(message.key) && index > lastKnown && message.role !== "user");
+  // Pieces of one record (thinking, words, tool calls) share its id before the `#`.
+  const caughtUp = new Set(arrived.filter(({ live: isLive }) => !isLive).map(({ message }) => message.id.split("#")[0])).size > 1;
+  for (const { message } of all) state.known.add(message.key);
+  for (const { message, live: isLive } of arrived) {
+    const text = message.role === "assistant" || message.role === "thinking";
+    if (text && (isLive || !caughtUp)) state.revealing.add(message.key);
+    else if (!caughtUp) state.entering.add(message.key);
+  }
 
   const shown: ShownMessage[] = [];
   for (const [index, { message, live: isLive }] of all.entries()) {
