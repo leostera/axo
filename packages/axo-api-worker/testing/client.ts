@@ -16,6 +16,8 @@ import {
 /** Dummy client: actual network WebSockets, no direct DO admission or retry queue. */
 export class Peer {
   readonly socket: WebSocket;
+  /** The close code, once the socket closes. */
+  readonly closed: Promise<number>;
   private queued: unknown[] = [];
   private readonly rpc: JSONRPCClient;
   private readonly pendingIds = new Set<string | number>();
@@ -35,6 +37,7 @@ export class Peer {
     );
     socket.on("message", (raw) => this.receive(raw.toString()));
     socket.on("close", () => this.rejectWaiters());
+    this.closed = new Promise((resolve) => socket.on("close", (code) => resolve(code)));
   }
   private receive(raw: string) {
     let value: unknown;

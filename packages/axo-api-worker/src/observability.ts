@@ -14,6 +14,8 @@ type ApiEvent =
   | { event: "client_open"; records: number }
   | { event: "client_stalled" }
   | { event: "client_follow_failed" }
+  | { event: "host_connections_call"; outcome: "result" | "error" | "unknown" | "refused" }
+  | { event: "host_call"; outcome: "result" | "error" | "offline" | "disconnected" | "timeout" }
   | {
       event: "relay_reply";
       method: RemoteMethod;

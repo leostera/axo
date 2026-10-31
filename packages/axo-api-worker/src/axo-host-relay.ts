@@ -275,6 +275,11 @@ export class AxoHostRelay extends DurableObject<Env> {
   protected addHostMethods(_server: JSONRPCServer<CallerContext>): void {}
   protected hostMethodNames(): string[] { return []; }
   /** A notification from an admitted daemon; true if the subclass took it. */
+  /** A call from a negotiated daemon that a subclass answers itself; true when it took it. */
+  protected async receiveHostCall(_socket: WebSocket, _peer: Peer, _call: Call): Promise<boolean> {
+    return false;
+  }
+
   protected async receiveHostNotification(_socket: WebSocket, _peer: Peer, _call: Call): Promise<boolean> {
     return false;
   }
@@ -416,6 +421,9 @@ export class AxoHostRelay extends DurableObject<Env> {
         await this.schedule();
         return;
       }
+      if (notificationCall.success && notificationCall.data.id !== undefined && peer.negotiated &&
+          await this.receiveHostCall(socket, peer, notificationCall.data))
+        return;
     }
     const entries = decoded.entries.map((entry) => callSchema.safeParse(entry));
     const count = entries.filter(

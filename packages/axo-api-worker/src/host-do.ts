@@ -27,6 +27,7 @@ import { AxoHostRelay, hostRemoteMethods, type HostRemoteMethod } from "./axo-ho
 import type { CallerContext, Peer } from "./relay/peer";
 import { sessionDOName, type SessionBinding } from "./session-store";
 import { recordApiEvent } from "./observability";
+import { z } from "zod";
 
 /**
  * One paired host (RFD0018, HostDO): owns the host's socket and presence, runs the sync
@@ -57,6 +58,19 @@ export type HostSubscription = {
 
 export type HostCommandOutcome = { result: unknown } | { error: { code: number; message: string } };
 
+/** Daemon calls the HostDO hands to the account unchanged (RFD0016, Connections). */
+export const CONNECTIONS_METHOD_PREFIX = "axo.connections.";
+/** The longest a `callHost` waits for its reply: bash runs for at most five minutes. */
+export const CALL_HOST_MAX_MS = 5 * 60_000 + 30_000;
+
+export type ConnectionsCall = { hostId: string; hostGeneration: string; method: string; params: unknown };
+export type CallHostRequest = { method: string; params: unknown; deadlineMs: number };
+
+const outcomeSchema = z.union([
+  z.object({ result: z.unknown() }).refine((value) => "result" in value),
+  z.object({ error: z.object({ code: z.number().int(), message: z.string() }) }),
+]);
+
 type IndexRow = {
   session_id: string;
   metadata_json: string;
@@ -72,6 +86,7 @@ type AccountStub = {
   authorizeHost(hostId: string, credentialId: string, credential: string): Promise<boolean>;
   registerHost(registration: unknown, now: number): Promise<HostSnapshot>;
   touchHost(hostId: string, hostGeneration: string, now: number): Promise<{ acknowledged: true; lastSeenAt: string }>;
+  connectionsCall(call: ConnectionsCall): Promise<HostCommandOutcome>;
 };
 
 export class AxoHostDO extends AxoHostRelay {
@@ -82,6 +97,10 @@ export class AxoHostDO extends AxoHostRelay {
   private noticeTimer: ReturnType<typeof setTimeout> | null = null;
   /** Commands from ClientDOs waiting for the host's reply, by the id they were sent with. */
   private readonly commands = new Map<string, { method: HostRemoteMethod; generation: string; resolve: (outcome: HostCommandOutcome) => void }>();
+  /** `callHost` hops waiting for the daemon's reply, with the socket they were sent on. */
+  private readonly hops = new Map<string, { connectionId: string; resolve: (outcome: HostCommandOutcome) => void }>();
+  /** `axo.connections.*` calls from the daemon waiting for the account. */
+  private connectionsCalls = 0;
 
   constructor(ctx: DurableObjectState, env: Env) {
     super(ctx, env);
@@ -137,6 +156,11 @@ export class AxoHostDO extends AxoHostRelay {
 
   protected override fence(connectionId: string): void {
     super.fence(connectionId);
+    for (const [id, hop] of this.hops) {
+      if (hop.connectionId !== connectionId) continue;
+      this.hops.delete(id);
+      hop.resolve({ error: { code: -32004, message: "Host disconnected; the call may have run" } });
+    }
     for (const [id, command] of this.commands) {
       this.commands.delete(id);
       command.resolve({ error: { code: -32004, message: "Outcome unknown; reconcile commandId" } });
@@ -356,6 +380,13 @@ export class AxoHostDO extends AxoHostRelay {
   }
 
   protected override receiveReply(socket: WebSocket, reply: Reply): void {
+    const hop = typeof reply.id === "string" ? this.hops.get(reply.id) : undefined;
+    if (hop) {
+      // A reply on a later socket answers nothing: that hop already failed as disconnected.
+      if (this.peer(socket).connectionId !== hop.connectionId) return;
+      this.hops.delete(reply.id as string);
+      return hop.resolve("error" in reply ? { error: { code: reply.error.code, message: reply.error.message } } : { result: reply.result });
+    }
     const command = typeof reply.id === "string" ? this.commands.get(reply.id) : undefined;
     if (!command) return super.receiveReply(socket, reply);
     this.commands.delete(reply.id as string);
@@ -368,10 +399,87 @@ export class AxoHostDO extends AxoHostRelay {
     command.resolve({ result: reply.result });
   }
 
-  /** Ends the host's connection: it was revoked, or its credential changed. */
+  /**
+   * Calls `method` on the host and waits for its reply, for the account (RFD0016, Connections).
+   * It is sent once, never retried: a socket that ends or a deadline that passes first leaves the
+   * outcome unknown, and a reply that comes later, on another socket, is ignored.
+   */
+  async callHost({ method, params, deadlineMs }: CallHostRequest): Promise<HostCommandOutcome> {
+    const identity = this.identity();
+    const active = identity ? this.active(identity.host_id) : undefined;
+    if (!active || !active.route.ready || !active.route.generation) {
+      recordApiEvent({ event: "host_call", outcome: "offline" });
+      return { error: { code: -32005, message: "Host offline; nothing sent" } };
+    }
+    const id = crypto.randomUUID();
+    const outcome = await new Promise<HostCommandOutcome>((resolve) => {
+      const timer = setTimeout(() => {
+        if (this.hops.delete(id)) resolve({ error: { code: -32004, message: "No answer in time; the call may have run" } });
+      }, Math.min(Math.max(Math.floor(deadlineMs), 1), CALL_HOST_MAX_MS));
+      this.hops.set(id, {
+        connectionId: active.route.connection_id,
+        resolve: (outcome) => {
+          clearTimeout(timer);
+          resolve(outcome);
+        },
+      });
+      if (!this.send(active.socket, { jsonrpc: "2.0", id, method, params }) && this.hops.delete(id)) {
+        clearTimeout(timer);
+        resolve({ error: { code: -32004, message: "Host disconnected; the call may have run" } });
+      }
+    });
+    recordApiEvent({ event: "host_call", outcome: "result" in outcome ? "result" : outcomeKind(outcome.error) });
+    return outcome;
+  }
+
+  /**
+   * An `axo.connections.*` call from the daemon goes to the account unchanged, and its outcome
+   * back to the daemon. It is awaited without holding the socket: other messages keep flowing
+   * while a slow one (an execute) runs.
+   */
+  protected override async receiveHostCall(socket: WebSocket, peer: Peer, call: Call): Promise<boolean> {
+    if (!call.method.startsWith(CONNECTIONS_METHOD_PREFIX)) return false;
+    const answer = (outcome: HostCommandOutcome) => {
+      if (socket.readyState !== WebSocket.OPEN) return;
+      this.send(socket, "result" in outcome
+        ? { jsonrpc: "2.0", id: call.id, result: outcome.result }
+        : { jsonrpc: "2.0", id: call.id, error: outcome.error });
+    };
+    const route = this.ready(peer) ? this.admittedDaemon(peer) : undefined;
+    if (!route?.generation) {
+      recordApiEvent({ event: "host_connections_call", outcome: "refused" });
+      answer({ error: { code: -32002, message: "Stale lease" } });
+      return true;
+    }
+    if (this.connectionsCalls >= LIMITS.pendingPerMachine) {
+      recordApiEvent({ event: "host_connections_call", outcome: "refused" });
+      answer({ error: { code: -32006, message: "Pending capacity" } });
+      return true;
+    }
+    this.connectionsCalls += 1;
+    let outcome: HostCommandOutcome;
+    try {
+      const reply = outcomeSchema.safeParse(await this.account().connectionsCall({
+        hostId: peer.machineId, hostGeneration: route.generation, method: call.method, params: call.params,
+      }));
+      outcome = reply.success ? reply.data as HostCommandOutcome : { error: { code: -32004, message: "Outcome unknown; the call may have run" } };
+    } catch {
+      outcome = { error: { code: -32004, message: "Outcome unknown; the call may have run" } };
+    } finally {
+      this.connectionsCalls -= 1;
+    }
+    recordApiEvent({ event: "host_connections_call", outcome: "result" in outcome ? "result" : outcome.error.code === -32004 ? "unknown" : "error" });
+    answer(outcome);
+    return true;
+  }
+
+  /** Ends the host's connection (4003) because it was revoked; its credential no longer admits it. */
   async disconnect(): Promise<void> {
     const identity = this.identity();
-    if (identity) this.closeHostRelay(identity.host_id);
+    if (!identity) return;
+    const active = this.active(identity.host_id);
+    if (active) this.drop(active.socket, 4003, "Host revoked");
+    this.closeHostRelay(identity.host_id);
   }
 
   async presenceOf(): Promise<{ online: boolean; hostGeneration: string | null }> {
@@ -492,3 +600,7 @@ export class AxoHostDO extends AxoHostRelay {
   }
 }
 
+function outcomeKind(error: { code: number; message: string }): "error" | "disconnected" | "timeout" {
+  if (error.code !== -32004) return "error";
+  return error.message.startsWith("No answer") ? "timeout" : "disconnected";
+}
