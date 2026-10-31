@@ -1,0 +1,143 @@
+import assert from "node:assert/strict";
+import { test } from "node:test";
+import { connectionsResults } from "@axo/protocol";
+import { cookiePair, harness, signIn, type AccountSession, type Harness } from "./harness";
+import { connectHost, pairHost } from "./account-support";
+import { FakeMcp } from "./fake-mcp";
+
+/**
+ * RFD0016, third-party connections: an agent adds a remote MCP server, the person signs in to it
+ * in a browser signed in to their Axo account, and scripts call its tools from the cloud with a
+ * grant that never leaves the account's Durable Object.
+ */
+
+type Reply = { result: unknown } | { error: { code: number; message: string } };
+
+async function fixture(t: { after(fn: () => unknown): void }) {
+  const server = new FakeMcp();
+  const h = await harness({ outbound: (request) => server.handle(request) });
+  t.after(() => h.close());
+  const session = await signIn(h);
+  const host = await pairHost(h, session, "Studio");
+  const daemon = await connectHost(h, session, host);
+  t.after(() => daemon.close());
+  const sessionId = crypto.randomUUID();
+  const call = (method: string, params: Record<string, unknown> = {}) => daemon.call(method, { sessionId, ...params }) as Promise<Reply>;
+  return { server, h, session, call };
+}
+
+function result(reply: Reply): any {
+  assert.ok("result" in reply, JSON.stringify(reply));
+  return reply.result;
+}
+
+/** What a browser signed in as `session` does with a sign-in link: returns the provider's redirect back. */
+async function signInThroughBrowser(h: Harness, server: FakeMcp, session: AccountSession, signInUrl: string) {
+  const start = await fetch(new URL(signInUrl.replace("https://axo.leostera.dev/", ""), h.url), { headers: { Cookie: session.headers.Cookie! }, redirect: "manual" });
+  assert.equal(start.status, 302, await start.text());
+  const flowCookie = cookiePair(start, "__Host-axo_connection");
+  assert.ok(flowCookie);
+  const back = server.approve(start.headers.get("location")!);
+  const callback = await fetch(new URL(`${back.pathname.slice(1)}${back.search}`, h.url), {
+    headers: { Cookie: `${session.headers.Cookie}; ${flowCookie}` },
+    redirect: "manual",
+  });
+  assert.equal(callback.status, 302);
+  return new URL(callback.headers.get("location")!);
+}
+
+test("an agent adds a server that needs sign-in, the person signs in, and a script calls its tools with the grant", async (t) => {
+  const { server, h, session, call } = await fixture(t);
+  const added = connectionsResults["axo.connections.add"].parse(result(await call("axo.connections.add", { name: "linear", url: server.url })));
+  assert.equal(added.connection.state, "needsSignIn");
+  assert.match(added.signInUrl!, /^https:\/\/axo\.leostera\.dev\/api\/v1\/connections\/oauth\/start\?flow=/);
+  assert.equal(server.clients.size, 1, "Axo registered itself as a client");
+
+  const landed = await signInThroughBrowser(h, server, session, added.signInUrl!);
+  assert.equal(landed.searchParams.get("signedIn"), "linear", landed.toString());
+
+  // Tools are listed after sign-in; names become identifiers, and keep their upstream title.
+  const found = await waitForTools(call);
+  assert.deepEqual(found, [
+    { service: "studio", name: "bash" },
+    { service: "linear", name: "list_issues", title: "list-issues" },
+    { service: "linear", name: "create_issue", title: "create_issue" },
+  ]);
+
+  const executed = result(await call("axo.connections.execute", { code: `async () => codemode.linear.list_issues({ team: "AXO" })` }));
+  assert.deepEqual(executed.result, { tool: "list-issues", args: { team: "AXO" } });
+  assert.equal(server.calls.length, 1);
+  assert.ok(server.calls[0]!.token, "the call carried the account's grant");
+
+  // The grant stays in the cloud: nothing a Mac or the web reads contains it.
+  const listed = await fetch(new URL("api/v1/account/connections", h.url), { headers: session.headers });
+  const listedText = await listed.text();
+  const logText = JSON.stringify(result(await call("axo.connections.log")));
+  for (const text of [listedText, logText, JSON.stringify(executed), JSON.stringify(result(await call("axo.connections.list")))])
+    assert.equal(server.leaks(text), false);
+  assert.deepEqual(JSON.parse(listedText).connections.map((c: { name: string; state: string }) => [c.name, c.state]), [["studio", "online"], ["linear", "ready"]]);
+  assert.match(logText, /"service":"linear","tool":"list_issues"/);
+});
+
+test("a sign-in link works once, only in a browser signed in to the same account, and only with its flow cookie", async (t) => {
+  const { server, h, session, call } = await fixture(t);
+  const added = result(await call("axo.connections.add", { name: "linear", url: server.url }));
+  const path = added.signInUrl.replace("https://axo.leostera.dev/", "");
+
+  // Not signed in to Axo: nothing happens.
+  const anonymous = await fetch(new URL(path, h.url), { redirect: "manual" });
+  assert.equal(anonymous.status, 401);
+  // Signed in to another account: the link is not theirs.
+  const stranger = await signIn(h, "a-stranger");
+  const theirs = await fetch(new URL(path, h.url), { headers: { Cookie: stranger.headers.Cookie! }, redirect: "manual" });
+  assert.equal(theirs.status, 410);
+
+  // The right browser starts; a callback without its flow cookie is refused.
+  const start = await fetch(new URL(path, h.url), { headers: { Cookie: session.headers.Cookie! }, redirect: "manual" });
+  assert.equal(start.status, 302);
+  const back = server.approve(start.headers.get("location")!);
+  const noCookie = await fetch(new URL(`${back.pathname.slice(1)}${back.search}`, h.url), { headers: { Cookie: session.headers.Cookie! }, redirect: "manual" });
+  assert.ok(new URL(noCookie.headers.get("location")!).searchParams.get("error"));
+  // The code was not spent by the refused callback, but the link itself is used up.
+  const again = await fetch(new URL(path, h.url), { headers: { Cookie: session.headers.Cookie! }, redirect: "manual" });
+  assert.equal(again.status, 410);
+  assert.equal(server.tokenRequests.length, 0);
+});
+
+test("a grant about to expire is renewed before the call, and the rotated refresh token is used once", async (t) => {
+  const { server, h, session, call } = await fixture(t);
+  server.tokenLifetime = 30; // inside the renewal margin
+  const added = result(await call("axo.connections.add", { name: "linear", url: server.url }));
+  await signInThroughBrowser(h, server, session, added.signInUrl);
+  await waitForTools(call);
+  const before = server.tokenRequests.filter((f) => f.get("grant_type") === "refresh_token").length;
+  result(await call("axo.connections.execute", { code: `async () => codemode.linear.create_issue({ title: "a" })` }));
+  const refreshes = server.tokenRequests.filter((f) => f.get("grant_type") === "refresh_token").length;
+  assert.ok(refreshes > before, "the grant was renewed");
+  assert.equal(server.calls.length, 1);
+});
+
+test("a server that needs no sign-in is ready at once, and names are unique across Macs and servers", async (t) => {
+  const { server, call } = await fixture(t);
+  server.requireAuth = false;
+  const added = result(await call("axo.connections.add", { name: "docs", url: server.url }));
+  assert.deepEqual([added.connection.state, added.signInUrl, added.connection.tools], ["ready", null, 2]);
+  const taken = await call("axo.connections.add", { name: "studio", url: server.url });
+  assert.ok("error" in taken && taken.error.code === -32022, JSON.stringify(taken));
+  const mac = await call("axo.connections.remove", { name: "studio" });
+  assert.ok("error" in mac && /unpair/.test(mac.error.message));
+  assert.deepEqual(result(await call("axo.connections.remove", { name: "docs" })), { removed: true });
+  const gone = await call("axo.connections.execute", { code: `async () => codemode.docs.list_issues({})` });
+  assert.ok("error" in gone && /no connection named docs/.test(gone.error.message), JSON.stringify(gone));
+});
+
+async function waitForTools(call: (method: string, params?: Record<string, unknown>) => Promise<Reply>) {
+  for (let i = 0; i < 50; i++) {
+    const found = result(await call("axo.connections.search", {
+      code: `async () => codemode.tools().map((t) => t.service === "studio" ? { service: t.service, name: t.name } : { service: t.service, name: t.name, title: t.title })`,
+    })).result as Array<{ service: string }>;
+    if (found.some((t) => t.service !== "studio")) return found;
+    await new Promise((r) => setTimeout(r, 50));
+  }
+  throw new Error("the tool list never arrived");
+}

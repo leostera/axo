@@ -173,7 +173,10 @@ export class Provider {
 
 export type Harness = Awaited<ReturnType<typeof harness>>;
 
-export async function harness(configuration: { audience?: string; bindings?: Record<string, string> } = {}) {
+/** Answers the Worker's outbound requests to hosts other than the identity provider; undefined passes them on. */
+export type Outbound = (request: Request) => Promise<Response | undefined> | Response | undefined;
+
+export async function harness(configuration: { audience?: string; bindings?: Record<string, string>; outbound?: Outbound } = {}) {
   const audience = configuration.audience ?? "private-test";
   const directory = await mkdtemp(join(tmpdir(), "axo-api-"));
   const bundle = join(directory, "worker.mjs");
@@ -197,8 +200,8 @@ export async function harness(configuration: { audience?: string; bindings?: Rec
       SESSION_SECRET: testSessionSecret,
       ...configuration.bindings,
     },
-    // The Worker's only outbound requests are to the identity provider.
-    outboundService: (request: Request) => provider.handle(request),
+    // The Worker's outbound requests go to the identity provider, or to what a test adds.
+    outboundService: async (request: Request) => (await configuration.outbound?.(request)) ?? provider.handle(request),
     modules: true,
     script: await readFile(bundle, "utf8"),
     compatibilityDate: "2026-10-09",

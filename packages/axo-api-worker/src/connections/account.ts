@@ -17,13 +17,17 @@ import {
 import { recordApiEvent } from "../observability";
 import { CallLog } from "./call-log";
 import { LimitError, runScript, type Loader, type ScriptOutcome, type ToolCaller } from "./runner";
+import { ThirdPartyConnections } from "./third-party";
+import { McpOutcomeUnknown } from "./mcp-client";
+import type { Client } from "./oauth";
 
 /**
  * An account's connections (RFD0016): what `axo.connections.*` calls from its Macs reach. It
  * lives inside the account's AxoAccountManager and keeps all connections state there; a Mac's
  * socket owner (its HostDO) only forwards calls here and carries `bash` to a Mac for it.
  *
- * In this version the connections are the account's paired Macs, each with one tool, `bash`.
+ * Connections are the account's paired Macs, each with one tool, `bash`, and the remote MCP
+ * servers it added (third-party connections), called from here with grants kept here.
  */
 
 /** What a HostDO forwards: the calling Mac, the boot it called from, and its request. */
@@ -41,6 +45,8 @@ export type ConnectionsDeps = {
   hosts(): HostLink[];
   presence(hostId: string): Promise<{ online: boolean; hostGeneration: string | null }>;
   callHost(hostId: string, request: { method: string; params: unknown; deadlineMs: number }): Promise<CallOutcome>;
+  fetcher: typeof fetch;
+  waitUntil(promise: Promise<unknown>): void;
 };
 
 /** Extra time a `bash` call waits beyond the command's own timeout, for the round trip. */
@@ -56,9 +62,13 @@ type Caller = { hostId: string; sessionId: string };
 
 export class AccountConnections {
   private readonly log: CallLog;
+  readonly thirdParty: ThirdPartyConnections;
 
   constructor(private readonly deps: ConnectionsDeps) {
     this.log = new CallLog(deps.sql, deps.secret, deps.accountId);
+    this.thirdParty = new ThirdPartyConnections({
+      sql: deps.sql, secret: deps.secret, accountId: deps.accountId, fetcher: deps.fetcher, waitUntil: deps.waitUntil,
+    });
   }
 
   async call(call: ConnectionsCall): Promise<CallOutcome> {
@@ -103,10 +113,41 @@ export class AccountConnections {
         const result: ConnectionsResult<typeof CONNECTIONS_METHODS.log> = { records: await this.log.read(limit, before) };
         return { result };
       }
-      case CONNECTIONS_METHODS.add:
-      case CONNECTIONS_METHODS.remove:
-        return failure(-32601, "Third-party connections are not available yet; only host connections are");
+      case CONNECTIONS_METHODS.add: {
+        const { name, url } = params as ConnectionsParams<typeof CONNECTIONS_METHODS.add>;
+        return this.add(name, url);
+      }
+      case CONNECTIONS_METHODS.remove: {
+        const { name } = params as ConnectionsParams<typeof CONNECTIONS_METHODS.remove>;
+        return this.remove(name);
+      }
     }
+  }
+
+  /** Adds a third-party connection; its name may not be taken by any connection, Mac or not. */
+  async add(name: string, url: string): Promise<CallOutcome> {
+    if (this.named().some((entry) => entry.name === name) || this.thirdParty.has(name))
+      return failure(CONNECTIONS_ERRORS.nameTaken, `a connection named ${name} already exists`);
+    const { signInUrl } = await this.thirdParty.add(name, url);
+    const connection = this.thirdParty.list().find((c) => c.name === name)!;
+    const result: ConnectionsResult<typeof CONNECTIONS_METHODS.add> = { connection, signInUrl };
+    return { result };
+  }
+
+  remove(name: string): CallOutcome {
+    if (this.named().some((entry) => entry.name === name))
+      return failure(CONNECTIONS_ERRORS.notFound, `${name} is a Mac; unpair it to remove it`);
+    if (!this.thirdParty.remove(name)) return failure(CONNECTIONS_ERRORS.notFound, `no connection named ${name}`);
+    const result: ConnectionsResult<typeof CONNECTIONS_METHODS.remove> = { removed: true };
+    return { result };
+  }
+
+  async setClient(name: string, client: Client): Promise<{ signInUrl: string }> {
+    return this.thirdParty.setClient(name, client);
+  }
+
+  readLog(limit?: number, before?: string) {
+    return this.log.read(limit, before);
   }
 
   async list(): Promise<ConnectionsResult<typeof CONNECTIONS_METHODS.list>> {
@@ -116,11 +157,15 @@ export class AccountConnections {
       const online = Boolean(presence?.online && presence.hostGeneration === host.hostGeneration);
       return { kind: "host", name, hostId: host.hostId, state: online ? "online" : "offline" };
     }));
-    return { connections };
+    return { connections: [...connections, ...this.thirdParty.list()] };
   }
 
   /** Every tool a script can reach, as `codemode.tools()` shows them. */
   tools(): ToolDefinition[] {
+    return [...this.hostTools(), ...this.thirdParty.tools()];
+  }
+
+  private hostTools(): ToolDefinition[] {
     return this.named().map(({ name, host }) => ({
       service: name,
       name: "bash",
@@ -134,9 +179,13 @@ export class AccountConnections {
     }));
   }
 
-  /** The Macs as services: each takes its label as a JavaScript-safe name, unique in the account. */
+  /**
+   * The Macs as services: each takes its label as a JavaScript-safe name, unique in the account.
+   * A third-party connection keeps the name it was added with; a Mac whose label collides with
+   * one gets a suffix.
+   */
   private named(): Array<{ name: string; host: HostLink }> {
-    const taken = new Set<string>();
+    const taken = new Set<string>(this.thirdParty.names());
     return this.deps.hosts().map((host) => {
       const base = serviceName(host.label);
       let name = base;
@@ -154,6 +203,7 @@ export class AccountConnections {
   private caller(from: Caller, deadline: number): ToolCaller {
     return async (service, tool, input) => {
       const target = this.named().find((entry) => entry.name === service);
+      if (!target && this.thirdParty.has(service)) return this.callThirdParty(from, service, tool, input);
       if (!target) throw new Error(`no connection named ${service}`);
       if (tool !== "bash") throw new Error(`${service} has no tool named ${tool}; a Mac has only bash`);
       const parsed = bashInputSchema.safeParse(input);
@@ -194,6 +244,21 @@ export class AccountConnections {
       this.log.finish(callId, "ok", null);
       return result.data satisfies BashResult;
     };
+  }
+
+  /** Calls a third-party tool from here, with the account's grant; logged before it is sent. */
+  private async callThirdParty(from: Caller, service: string, tool: string, input: unknown): Promise<unknown> {
+    const callId = crypto.randomUUID();
+    await this.log.start({ callId, sessionId: from.sessionId, hostId: from.hostId, service, tool, targetHostId: null, input });
+    try {
+      const output = await this.thirdParty.call(service, tool, input);
+      this.log.finish(callId, "ok", null);
+      return output;
+    } catch (error) {
+      const message = error instanceof Error ? error.message : String(error);
+      this.log.finish(callId, error instanceof McpOutcomeUnknown ? "unknown" : "error", message);
+      throw new Error(`${service}.${tool}: ${message}`);
+    }
   }
 }
 

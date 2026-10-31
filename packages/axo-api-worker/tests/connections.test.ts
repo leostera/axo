@@ -133,8 +133,9 @@ test("another account's Mac is not a connection, and its daemon never hears the 
   assert.equal(heard, false);
 });
 
-test("bad params and methods a Mac may not call are refused", async (t) => {
+test("bad params, unknown methods and unknown connections are refused", async (t) => {
   const { call } = await fixture(t);
   assert.equal(error(await call("axo.connections.execute", { code: "" })).code, -32602);
-  assert.equal(error(await call("axo.connections.add", { name: "linear", url: "https://mcp.linear.app/mcp" })).code, -32601);
+  assert.equal(error(await call("axo.connections.add", { name: "linear", url: "http://mcp.linear.app/mcp" })).code, -32602);
+  assert.equal(error(await call("axo.connections.remove", { name: "linear" })).code, CONNECTIONS_ERRORS.notFound);
 });

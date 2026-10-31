@@ -8,6 +8,7 @@ import { serveMachines } from "./machines";
 import { authorizeHttpHostClient, serveHostSessions, serveHosts } from "./hosts";
 import { createHostPairing, redeemHostPairing } from "../auth/pairing";
 import { revokeAccountHost, serveAccountHosts, upgradeAccountClient, upgradeHostDaemon } from "./account-hosts";
+import { completeConnectionSignIn, serveConnections, startConnectionSignIn, type ConnectionsRoute } from "./connections";
 
 type Api = { Bindings: Env };
 const app = new Hono<Api>();
@@ -133,6 +134,29 @@ app.all("/api/v1/account/hosts/:host/revoke", context =>
     authExports((context.executionCtx as ExecutionContext).exports),
     context.req.param("host"),
   ),
+);
+
+// Connections (RFD0016): the Connections page, and the browser side of a third-party sign-in.
+const connectionsRoute = (route: ConnectionsRoute) => (context: Context<Api>) =>
+  serveConnections(
+    context.req.raw,
+    context.env,
+    authExports((context.executionCtx as ExecutionContext).exports),
+    context.executionCtx as ExecutionContext,
+    route,
+    context.req.param("name"),
+  );
+app.get("/api/v1/account/connections", connectionsRoute("list"));
+app.post("/api/v1/account/connections", connectionsRoute("add"));
+app.get("/api/v1/account/connections/log", connectionsRoute("log"));
+app.post("/api/v1/account/connections/:name/remove", connectionsRoute("remove"));
+app.post("/api/v1/account/connections/:name/client", connectionsRoute("client"));
+app.post("/api/v1/account/connections/:name/sign-in", connectionsRoute("signIn"));
+app.all("/api/v1/connections/oauth/start", context =>
+  startConnectionSignIn(context.req.raw, context.env, authExports((context.executionCtx as ExecutionContext).exports), context.executionCtx as ExecutionContext),
+);
+app.all("/api/v1/connections/oauth/callback", context =>
+  completeConnectionSignIn(context.req.raw, context.env, authExports((context.executionCtx as ExecutionContext).exports), context.executionCtx as ExecutionContext),
 );
 
 app.all("/api/v1/account/client", context =>

@@ -4,6 +4,7 @@ import { hostRegisterSchema, hostSnapshotSchema, type HostSnapshot } from "@axo/
 import { constantTimeEqual, hmac } from "./crypto";
 import { hostDOName } from "../host-do";
 import { AccountConnections, type CallOutcome, type ConnectionsCall } from "../connections/account";
+import type { CallRecord, Connection } from "@axo/protocol";
 
 import type { AccountProfile } from "./account-access";
 type PairingRow = {
@@ -323,11 +324,55 @@ export class AxoAccountManager extends DurableObject<Env> {
     return connections.call(call);
   }
 
+  // ─── Connections on the web (RFD0016, Connections page) ──────────────────────
+
+  async listConnections(): Promise<{ connections: Connection[] }> {
+    return this.requireConnections().list();
+  }
+
+  async addConnection(name: string, url: string): Promise<CallOutcome> {
+    return this.requireConnections().add(name, url);
+  }
+
+  async removeConnection(name: string): Promise<CallOutcome> {
+    return this.requireConnections().remove(name);
+  }
+
+  /** A client the person registered with the provider, typed on the Connections page only. */
+  async setConnectionClient(name: string, clientId: string, clientSecret: string | null): Promise<{ signInUrl: string }> {
+    return this.requireConnections().setClient(name, { clientId, clientSecret });
+  }
+
+  async connectionSignInLink(name: string): Promise<string> {
+    return this.requireConnections().thirdParty.signInLink(name);
+  }
+
+  async openConnectionFlow(nonce: string): Promise<{ authorizeUrl: string; name: string } | null> {
+    return this.requireConnections().thirdParty.openFlow(nonce);
+  }
+
+  async completeConnectionFlow(nonce: string, code: string): Promise<{ name: string } | { error: string }> {
+    return this.requireConnections().thirdParty.completeFlow(nonce, code);
+  }
+
+  async connectionsLog(limit?: number, before?: string): Promise<{ records: CallRecord[] }> {
+    return { records: await this.requireConnections().readLog(limit, before) };
+  }
+
+  private requireConnections(): AccountConnections {
+    const connections = this.connections();
+    if (!connections) throw new Error("This account has no connections yet");
+    return connections;
+  }
+
+  private connectionsState: AccountConnections | null = null;
+
   private connections(): AccountConnections | null {
+    if (this.connectionsState) return this.connectionsState;
     const accountId = this.accountId();
     const secret = (this.env as Env & { SESSION_SECRET?: string }).SESSION_SECRET;
     if (!accountId || !secret) return null;
-    return new AccountConnections({
+    return this.connectionsState = new AccountConnections({
       sql: this.ctx.storage.sql,
       secret,
       accountId,
@@ -337,6 +382,8 @@ export class AxoAccountManager extends DurableObject<Env> {
       ).toArray().map((row) => ({ hostId: row.host_id, hostGeneration: row.host_generation, label: row.label, linkedAt: row.linked_at })),
       presence: async (hostId) => plain(await this.hostDO(hostId)!.presenceOf()),
       callHost: async (hostId, request) => plain(await this.hostDO(hostId)!.callHost(request)),
+      fetcher: (input, init) => fetch(input, init),
+      waitUntil: (promise) => this.ctx.waitUntil(promise),
     });
   }
 
