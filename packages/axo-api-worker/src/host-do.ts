@@ -470,7 +470,8 @@ export class AxoHostDO extends AxoHostRelay {
       if (socket.readyState !== WebSocket.OPEN) return;
       this.send(socket, "result" in outcome
         ? { jsonrpc: "2.0", id: call.id, result: outcome.result }
-        : { jsonrpc: "2.0", id: call.id, error: outcome.error });
+        // A reply's error message is at most 256 characters on the wire; a longer one would be refused by the Mac.
+        : { jsonrpc: "2.0", id: call.id, error: { code: outcome.error.code, message: outcome.error.message.slice(0, 256) } });
     };
     const route = this.ready(peer) ? this.admittedDaemon(peer) : undefined;
     if (!route?.generation) {

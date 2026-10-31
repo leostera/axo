@@ -139,3 +139,11 @@ test("bad params, unknown methods and unknown connections are refused", async (t
   assert.equal(error(await call("axo.connections.add", { name: "linear", url: "http://mcp.linear.app/mcp" })).code, -32602);
   assert.equal(error(await call("axo.connections.remove", { name: "linear" })).code, CONNECTIONS_ERRORS.notFound);
 });
+
+test("a script error longer than a reply may carry reaches the Session cut short, not as a lost reply", async (t) => {
+  const { call } = await fixture(t);
+  const failed = error(await call("axo.connections.execute", { code: `async () => { throw new Error("x".repeat(2000)); }` }));
+  assert.equal(failed.code, CONNECTIONS_ERRORS.scriptFailed);
+  assert.equal(failed.message.length, 256);
+  assert.match(failed.message, /^Error: x+$/);
+});
