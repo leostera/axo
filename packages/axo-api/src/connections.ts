@@ -56,6 +56,18 @@ export const CONNECTIONS_ERRORS = {
 /** A service name: a JavaScript-safe identifier, the `x` in `codemode.x.tool()`. */
 export const connectionNameSchema = z.string().regex(/^[A-Za-z_][A-Za-z0-9_]{0,63}$/);
 
+/**
+ * Apps are services Axo itself provides, each with its own sign-in and tools, reached as
+ * `codemode.apps.<app>.<tool>()`. `apps` is reserved: no connection or Mac takes that name.
+ */
+export const APPS_NAMESPACE = "apps";
+export const APPS = ["gmail"] as const;
+export type AppName = (typeof APPS)[number];
+/** An app's service name, `apps.<app>`. */
+export const appServiceSchema = z.string().regex(/^apps\.[a-z][a-z0-9_]{0,31}$/);
+/** Any service a tool or call belongs to: a connection, a Mac or an app. */
+export const serviceSchema = z.union([connectionNameSchema, appServiceSchema]);
+
 const sessionId = uuid;
 const script = z.string().min(1).max(CONNECTIONS_LIMITS.scriptBytes);
 
@@ -75,11 +87,22 @@ export const connectionSchema = z.discriminatedUnion("kind", [
     syncedAt: z.iso.datetime().nullable(),
     lastError: z.string().max(512).nullable(),
   }).strict(),
+  z.object({
+    kind: z.literal("app"),
+    name: appServiceSchema,
+    title: z.string().max(64),
+    /** Listed only when this Axo deployment has a client for the app's provider. */
+    state: z.enum(["ready", "needsSignIn"]),
+    /** The provider account the grant is for, such as an email address. */
+    account: z.string().max(320).nullable(),
+    tools: z.number().int().nonnegative(),
+    lastError: z.string().max(512).nullable(),
+  }).strict(),
 ]);
 export type Connection = z.infer<typeof connectionSchema>;
 
 export const toolDefinitionSchema = z.object({
-  service: connectionNameSchema,
+  service: serviceSchema,
   name: connectionNameSchema,
   /** The upstream server's own name for the tool, kept for display. */
   title: z.string().max(256),
@@ -93,7 +116,7 @@ export const callRecordSchema = z.object({
   at: z.iso.datetime(),
   sessionId: sessionId.nullable(),
   hostId: uuid.nullable(),
-  service: connectionNameSchema,
+  service: serviceSchema,
   tool: z.string().min(1).max(128),
   /** The target Mac, for `bash`. */
   targetHostId: uuid.nullable(),
@@ -109,7 +132,8 @@ export const connectionsParams = {
   [CONNECTIONS_METHODS.search]: z.object({ sessionId, code: script }).strict(),
   [CONNECTIONS_METHODS.execute]: z.object({ sessionId, code: script }).strict(),
   [CONNECTIONS_METHODS.add]: z.object({ sessionId, name: connectionNameSchema, url: z.url({ protocol: /^https$/ }) }).strict(),
-  [CONNECTIONS_METHODS.remove]: z.object({ sessionId, name: connectionNameSchema }).strict(),
+  /** Removes a third-party connection, or signs out of an app (`apps.<app>`). */
+  [CONNECTIONS_METHODS.remove]: z.object({ sessionId, name: serviceSchema }).strict(),
   [CONNECTIONS_METHODS.log]: z.object({
     sessionId,
     limit: z.number().int().min(1).max(CONNECTIONS_LIMITS.logPage).optional(),

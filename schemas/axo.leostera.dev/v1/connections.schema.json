@@ -226,6 +226,67 @@
                   "lastError"
                 ],
                 "additionalProperties": false
+              },
+              {
+                "type": "object",
+                "properties": {
+                  "kind": {
+                    "type": "string",
+                    "const": "app"
+                  },
+                  "name": {
+                    "type": "string",
+                    "pattern": "^apps\\.[a-z][a-z0-9_]{0,31}$"
+                  },
+                  "title": {
+                    "type": "string",
+                    "maxLength": 64
+                  },
+                  "state": {
+                    "type": "string",
+                    "enum": [
+                      "ready",
+                      "needsSignIn"
+                    ]
+                  },
+                  "account": {
+                    "anyOf": [
+                      {
+                        "type": "string",
+                        "maxLength": 320
+                      },
+                      {
+                        "type": "null"
+                      }
+                    ]
+                  },
+                  "tools": {
+                    "type": "integer",
+                    "minimum": 0,
+                    "maximum": 9007199254740991
+                  },
+                  "lastError": {
+                    "anyOf": [
+                      {
+                        "type": "string",
+                        "maxLength": 512
+                      },
+                      {
+                        "type": "null"
+                      }
+                    ]
+                  }
+                },
+                "required": [
+                  "kind",
+                  "name",
+                  "title",
+                  "state",
+                  "account",
+                  "tools",
+                  "lastError"
+                ],
+                "additionalProperties": false
               }
             ]
           }
@@ -510,6 +571,67 @@
                 "lastError"
               ],
               "additionalProperties": false
+            },
+            {
+              "type": "object",
+              "properties": {
+                "kind": {
+                  "type": "string",
+                  "const": "app"
+                },
+                "name": {
+                  "type": "string",
+                  "pattern": "^apps\\.[a-z][a-z0-9_]{0,31}$"
+                },
+                "title": {
+                  "type": "string",
+                  "maxLength": 64
+                },
+                "state": {
+                  "type": "string",
+                  "enum": [
+                    "ready",
+                    "needsSignIn"
+                  ]
+                },
+                "account": {
+                  "anyOf": [
+                    {
+                      "type": "string",
+                      "maxLength": 320
+                    },
+                    {
+                      "type": "null"
+                    }
+                  ]
+                },
+                "tools": {
+                  "type": "integer",
+                  "minimum": 0,
+                  "maximum": 9007199254740991
+                },
+                "lastError": {
+                  "anyOf": [
+                    {
+                      "type": "string",
+                      "maxLength": 512
+                    },
+                    {
+                      "type": "null"
+                    }
+                  ]
+                }
+              },
+              "required": [
+                "kind",
+                "name",
+                "title",
+                "state",
+                "account",
+                "tools",
+                "lastError"
+              ],
+              "additionalProperties": false
             }
           ]
         },
@@ -532,7 +654,7 @@
       "additionalProperties": false
     },
     "RemoveCall": {
-      "description": "Removes a third-party connection and its grant. Host connections are removed by unpairing. Sent by axod on behalf of a Session; the account answers through the host's HostDO.",
+      "description": "Removes a third-party connection and its grant, or signs the account out of an app (`apps.<app>`). Host connections are removed by unpairing. Sent by axod on behalf of a Session; the account answers through the host's HostDO.",
       "type": "object",
       "properties": {
         "jsonrpc": {
@@ -558,8 +680,16 @@
               "pattern": "^([0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[1-8][0-9a-fA-F]{3}-[89abAB][0-9a-fA-F]{3}-[0-9a-fA-F]{12}|00000000-0000-0000-0000-000000000000|ffffffff-ffff-ffff-ffff-ffffffffffff)$"
             },
             "name": {
-              "type": "string",
-              "pattern": "^[A-Za-z_][A-Za-z0-9_]{0,63}$"
+              "anyOf": [
+                {
+                  "type": "string",
+                  "pattern": "^[A-Za-z_][A-Za-z0-9_]{0,63}$"
+                },
+                {
+                  "type": "string",
+                  "pattern": "^apps\\.[a-z][a-z0-9_]{0,31}$"
+                }
+              ]
             }
           },
           "required": [
@@ -686,8 +816,16 @@
                 ]
               },
               "service": {
-                "type": "string",
-                "pattern": "^[A-Za-z_][A-Za-z0-9_]{0,63}$"
+                "anyOf": [
+                  {
+                    "type": "string",
+                    "pattern": "^[A-Za-z_][A-Za-z0-9_]{0,63}$"
+                  },
+                  {
+                    "type": "string",
+                    "pattern": "^apps\\.[a-z][a-z0-9_]{0,31}$"
+                  }
+                ]
               },
               "tool": {
                 "type": "string",
