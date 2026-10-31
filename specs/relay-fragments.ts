@@ -2,25 +2,24 @@ import { atMost, budget, defineActor, defineLimit, defineMessage, defineProperty
 
 const SEC = 1_000;
 
-// RFD0016, Transport: a relay message larger than one 64 KiB frame travels as fragments under the
-// relay's delivery credits, and is reassembled before anything parses it.
+// RFD0016 and RFD0018: a relay message larger than one 64 KiB frame travels as fragments, and is
+// reassembled before anything parses it.
 //
-// One direction is modelled: a sender (axod returning a large bash result, or the Durable Object
-// returning a script result; both run the same rules) and a receiver. Sizes are scaled down: a
-// message is 1 or 3 fragments, the credit window is 2 frames, and at most 2 fragmented messages
-// are in flight. A socket has an epoch; every frame carries it, so a partial message from a closed
-// socket is never completed with frames from the next one, even when the close itself goes
-// unnoticed. On the real WebSocket a lost frame means the socket died; here a lost frame or ack is
-// a fault.
+// One direction is modelled: a sender (axod uploading a transcript line or returning a bash
+// result) and a receiver (the host's HostDO). There are no delivery credits (RFD0018, Flow
+// control): the sender sends one frame at a time, and messages carry a priority class (replies and
+// control first, then durable upload, then ephemeral progress). Fragments interleave across
+// classes, so a large upload never holds back a reply, and messages go in order within a class,
+// so at most one message per class is partly sent and the receiver's partial slots are never
+// exceeded by an honest sender.
 //
-// Running out of credit never closes the host socket: everything on it (durable upload, commands,
-// connections calls) would go down with one slow message. Messages carry a priority class
-// (replies and control first, then durable upload, then ephemeral progress), and the sender
-// interleaves fragments by class, so a large reply never waits behind an upload. A message that
-// waits too long for credit is discarded on its own and the receiver is told to drop its partial.
+// Sizes are scaled down: a message is 1 or 3 fragments, two classes stand for three, and the
+// receiver keeps at most 2 partial messages (4 in the code). A socket has an epoch; every frame
+// carries it, so a partial message from a closed socket is never completed with frames from the
+// next one. On the real WebSocket a lost frame means the socket died; here a lost frame is a
+// fault, and the receiver's partial expiry is what frees its slot.
 
-const WINDOW = 2;
-const MAX_IN_FLIGHT = 2;
+const MAX_PARTIAL = 2;
 const MAX_FRAGMENTS = 3;
 
 type Priority = "reply" | "upload";
@@ -30,170 +29,120 @@ type Frame = { epoch: number; message: string; index: number; count: number; pri
 const faults = budget("faults", 1);
 
 const Fragment = defineMessage("Fragment", { epoch: Number, message: String, index: Number, count: Number, priority: oneOf("reply", "upload") }, { name: "axo.transport.fragment", over: "websocket" });
-const Ack = defineMessage("Ack", { epoch: Number }, { name: "axo.transport.ack", over: "websocket", tone: "reply" });
 const Close = defineMessage("Close", { epoch: Number, reason: String }, { name: "close the socket", over: "websocket", tone: "refused" });
 const Discard = defineMessage("Discard", { epoch: Number, message: String }, { name: "axo.transport.discard", over: "websocket" });
 
-
-const mac = defineZone({ name: "Sender", description: "axod, or the Durable Object answering it" });
-const cloud = defineZone({ name: "Receiver", description: "the other end of the relay socket", place: { column: 1 } });
+const mac = defineZone({ name: "Host Mac", description: "axod's relay sender" });
+const cloud = defineZone({ name: "Cloudflare", description: "the HostDO that owns the socket", place: { column: 1 } });
 
 const limit1 = defineLimit({ name: "Relay frame", value: 65_536, unit: "bytes" });
-const limit2 = defineLimit({ name: "Reassembled message", value: 2 * 1_048_576, unit: "bytes" });
-const limit3 = defineLimit({ name: "Fragmented messages in flight per socket", value: 4, unit: "messages" });
-const limit4 = defineLimit({ name: "Delivery credit", value: 32, unit: "frames" });
-const limit5 = defineLimit({ name: "A message waiting this long for credit is discarded", value: 30 * SEC });
-const limit6 = defineLimit({ name: "A partial message with no new fragment for this long is dropped", value: 60 * SEC });
+const limit2 = defineLimit({ name: "Reassembled message", value: 16 * 1_048_576, unit: "bytes" });
+const limit3 = defineLimit({ name: "Partial messages per socket", value: 4, unit: "messages" });
+const limit4 = defineLimit({ name: "A partial message with no new fragment for this long is dropped", value: 60 * SEC });
+
+const order = (p: Priority) => (p === "reply" ? 0 : 1);
 
 export const Sender = defineActor({
   name: "Sender",
-  description: "One end of a relay socket, sending messages that may need several frames.",
+  description: "axod's side of the relay socket: it queues messages by priority and sends one frame at a time.",
   zone: mac,
   singleton: true,
   initialState: () => ({
     epoch: 1,
-    credit: WINDOW,
-    discardsInFlight: 0,
-    /** Frames waiting for credit, in order within each message. */
+    /** Frames waiting to go out, in order within each message. */
     queue: [] as Frame[],
-    /** Discard notices waiting for credit; they go before any fragment. */
-    discards: [] as string[],
-    /** Messages not yet fully acknowledged, with how many of their frames are unacked or queued. */
-    outstanding: {} as Record<string, number>,
-    failed: [] as string[],
+    /** Messages whose first fragment went out and whose last has not. */
+    started: [] as string[],
+    abandoned: [] as string[],
+    oversized: false,
     sent: 0,
   }),
   display: {
     icon: "terminal",
-    status: (s) => `socket ${s.epoch}, ${s.credit} credit, ${s.queue.length} queued`,
-    mood: (s) => (s.queue.length && !s.credit ? "warn" : "ok"),
+    status: (s) => `socket ${s.epoch}, ${s.queue.length} frame(s) queued`,
   },
   actions: {
     send: {
       with: [atMost(2)],
       label: "Send a message",
-      description: "Sends a reply or an upload, of one frame or split into three.",
+      description: "Queues a reply or an upload, of one frame or split into three.",
       inputs: {
         size: input(String, { examples: ["small", "large"] }),
         priority: input(String, { examples: ["reply", "upload"] }),
       },
-      when: (s) => Object.keys(s.outstanding).length < MAX_IN_FLIGHT && s.sent < 3,
-      sends: [Fragment],
-      starts: ["creditTimeout"],
-      run(state, { size, priority }, ctx) {
+      when: (s) => s.sent < 3,
+      run(state, { size, priority }) {
         state.sent += 1;
         const message = `m${state.sent}`;
         const count = size === "large" ? 3 : 1;
-        state.outstanding[message] = count;
         for (let index = 0; index < count; index++) state.queue.push({ epoch: state.epoch, message, index, count, priority: priority as Priority });
-        pump(state, ctx);
       },
     },
     sendOversized: {
-      with: [atMost(2)],
+      with: [atMost(1)],
       label: "Send a message that is too large",
       description: "A broken or hostile peer announces more fragments than a message may have.",
-      when: (s) => s.sent < 3 && Object.keys(s.outstanding).length < MAX_IN_FLIGHT,
-      sends: [Fragment],
-      starts: ["creditTimeout"],
-      run(state, _i, ctx) {
+      when: (s) => s.sent < 3,
+      run(state) {
         state.sent += 1;
-        const message = `m${state.sent}`;
-        state.outstanding[message] = 1;
-        state.queue.push({ epoch: state.epoch, message, index: 0, count: MAX_FRAGMENTS + 1, priority: "reply" });
-        pump(state, ctx);
+        state.oversized = true;
+        state.queue.push({ epoch: state.epoch, message: `m${state.sent}`, index: 0, count: MAX_FRAGMENTS + 1, priority: "reply" });
+      },
+    },
+    abandon: {
+      with: [atMost(1)],
+      label: "Give up on a message part-way",
+      description: "The sender drops a message it has started sending, and tells the receiver to drop its partial.",
+      when: (s) => s.started.length > 0,
+      sends: [Discard],
+      run(state, _i, ctx) {
+        const message = state.started.shift()!;
+        state.queue = state.queue.filter((f) => f.message !== message);
+        state.abandoned.push(message);
+        ctx.send(ctx.the(Receiver), Discard, { epoch: state.epoch, message });
       },
     },
   },
   transitions: {
-    ack: {
-      on: Ack,
-      description: "Each acknowledged frame returns one credit; queued frames go out.",
-      sends: [Fragment, Discard],
-      starts: ["creditTimeout"],
-      run(state, m, ctx) {
-        if (m.epoch !== state.epoch || state.credit >= WINDOW) return;
-        state.credit += 1;
-        settleOne(state);
-        pump(state, ctx);
+    transmit: {
+      description: "Sends the next frame: from the highest class with anything queued, continuing the message that class started.",
+      when: (s) => s.queue.length > 0,
+      sends: [Fragment],
+      run(state, _, ctx) {
+        const best = Math.min(...state.queue.map((f) => order(f.priority)));
+        const at = state.queue.findIndex((f) => order(f.priority) === best);
+        const [frame] = state.queue.splice(at, 1);
+        if (frame!.index === 0 && frame!.count > 1) state.started.push(frame!.message);
+        if (frame!.index === frame!.count - 1) state.started = state.started.filter((m) => m !== frame!.message);
+        ctx.send(ctx.the(Receiver), Fragment, frame!);
       },
     },
     close: {
       on: Close,
-      description: "The receiver closed the socket; every message not fully acknowledged fails, and a new socket starts empty.",
+      description: "The receiver closed the socket; what was queued for it is dropped, and a new socket starts empty.",
       run(state, m) {
-        if (m.epoch === state.epoch) reset(state);
-      },
-    },
-    creditTimeout: {
-      description: "No credit came back in time: the messages still waiting fail and are discarded, and the receiver is told to drop their partials. The socket stays open.",
-      after: "30 seconds",
-      sends: [Fragment, Discard],
-      run(state, _, ctx) {
-        const waiting = Object.keys(state.outstanding);
-        if (!waiting.length) return;
-        for (const message of waiting) {
-          delete state.outstanding[message];
-          state.failed.push(message);
-          // A message none of whose fragments went out leaves nothing to discard.
-          const queued = state.queue.filter((f) => f.message === message);
-          if (!queued.length || queued.length < queued[0]!.count) state.discards.push(message);
-        }
-        state.queue = state.queue.filter((f) => !waiting.includes(f.message));
-        pump(state, ctx);
+        if (m.epoch !== state.epoch) return;
+        state.queue = [];
+        state.started = [];
+        state.epoch += 1;
       },
     },
     // Faults: what the network and restarts may do here.
-    ackLost: lose(Ack, { spend: faults }),
     closeLost: lose(Close, { spend: faults }),
   },
 });
 
-/** Sends discard notices, then queued frames by priority, while there is credit. */
-function pump(state: any, ctx: any): void {
-  while (state.credit > 0 && state.discards.length) {
-    state.credit -= 1;
-    state.discardsInFlight = (state.discardsInFlight ?? 0) + 1;
-    ctx.send(ctx.the(Receiver), Discard, { epoch: state.epoch, message: state.discards.shift()! });
-  }
-  while (state.credit > 0 && state.queue.length) {
-    const next = state.queue.findIndex((f: Frame) => f.priority === "reply");
-    const [frame] = state.queue.splice(next === -1 ? 0 : next, 1);
-    state.credit -= 1;
-    ctx.send(ctx.the(Receiver), Fragment, frame);
-  }
-  if (state.queue.length || Object.keys(state.outstanding).length) ctx.start("creditTimeout");
-}
-/** An ack settles the oldest unacked frame; acks arrive in order on one socket. */
-function settleOne(state: any): void {
-  if (state.discardsInFlight) return void (state.discardsInFlight -= 1);
-  const oldest = Object.keys(state.outstanding)[0];
-  if (!oldest) return;
-  const queued = state.queue.filter((f: Frame) => f.message === oldest).length;
-  if (state.outstanding[oldest] > queued) state.outstanding[oldest] -= 1;
-  if (state.outstanding[oldest] === 0) delete state.outstanding[oldest];
-}
-function reset(state: any): void {
-  state.failed.push(...Object.keys(state.outstanding));
-  state.outstanding = {};
-  state.queue = [];
-  state.discards = [];
-  state.discardsInFlight = 0;
-  state.credit = WINDOW;
-  state.epoch += 1;
-}
-
 export const Receiver = defineActor({
   name: "Receiver",
-  description: "The other end: it acknowledges every frame and hands complete messages to the relay's parser.",
+  description: "The HostDO: it keeps fragments and hands complete messages to the relay's parser.",
   zone: cloud,
   singleton: true,
   initialState: () => ({
     epoch: 1,
-    /** Partial messages, kept in SQLite on the Durable Object so hibernation loses nothing. */
+    /** Partial messages, kept in SQLite so hibernation loses nothing. */
     partial: {} as Record<string, { count: number; got: number[] }>,
     delivered: [] as { message: string; epoch: number; got: number[]; count: number }[],
-    /** Messages discarded on this socket; a late fragment of one is ignored. */
+    /** Messages dropped on this socket; a late fragment of one is ignored. */
     discarded: [] as string[],
     refused: 0,
   }),
@@ -205,8 +154,8 @@ export const Receiver = defineActor({
   transitions: {
     fragment: {
       on: Fragment,
-      description: "Acknowledges the frame and keeps it; a message whose fragments are all here goes to the parser. A newer socket discards older partials; a message announcing too many fragments, or too many partials at once, closes the socket.",
-      sends: [Ack, Close],
+      description: "Keeps the frame; a message whose fragments are all here goes to the parser. A newer socket discards older partials; a message announcing too many fragments, or too many partials at once, closes the socket.",
+      sends: [Close],
       starts: ["partialExpiry"],
       run(state, f, ctx) {
         if (f.epoch < state.epoch) return;
@@ -215,9 +164,9 @@ export const Receiver = defineActor({
           state.partial = {};
           state.discarded = [];
         }
-        if (state.discarded.includes(f.message)) return void ctx.reply(Ack, { epoch: f.epoch });
+        if (state.discarded.includes(f.message)) return;
         const known = state.partial[f.message];
-        if (f.count > MAX_FRAGMENTS || f.index >= f.count || (known && known.count !== f.count) || (!known && Object.keys(state.partial).length >= MAX_IN_FLIGHT)) {
+        if (f.count > MAX_FRAGMENTS || f.index >= f.count || (known && known.count !== f.count) || (!known && f.count > 1 && Object.keys(state.partial).length >= MAX_PARTIAL)) {
           state.refused += 1;
           state.partial = {};
           // Nothing more from the closed socket is accepted.
@@ -225,7 +174,6 @@ export const Receiver = defineActor({
           ctx.reply(Close, { epoch: f.epoch, reason: "invalid fragment" });
           return;
         }
-        ctx.reply(Ack, { epoch: f.epoch });
         const entry = (state.partial[f.message] ??= { count: f.count, got: [] });
         if (entry.got.includes(f.index)) return;
         entry.got.push(f.index);
@@ -235,7 +183,7 @@ export const Receiver = defineActor({
       },
     },
     partialExpiry: {
-      description: "A partial message got no new fragment for a minute: its sender gave up, or its discard notice was lost. It is dropped, and late fragments of it are ignored.",
+      description: "A partial message got no new fragment for a minute: its sender gave up, or a frame or discard notice was lost. It is dropped, and late fragments of it are ignored.",
       after: "60 seconds",
       run(state) {
         for (const message of Object.keys(state.partial)) {
@@ -247,10 +195,8 @@ export const Receiver = defineActor({
     discard: {
       on: Discard,
       description: "The sender gave up on a message; its partial is dropped, freeing its slot.",
-      sends: [Ack],
-      run(state, m, ctx) {
+      run(state, m) {
         if (m.epoch < state.epoch) return;
-        ctx.reply(Ack, { epoch: m.epoch });
         delete state.partial[m.message];
         if (!state.discarded.includes(m.message)) state.discarded.push(m.message);
       },
@@ -272,53 +218,66 @@ const deliveredOnce = defineProperty("deliveredOnce", {
     return new Set(ids).size === ids.length;
   },
 });
-const creditWithinWindow = defineProperty("creditWithinWindow", {
-  description: "The sender never has more frames unacknowledged than the credit window, so the receiver never drops it for capacity.",
-  always: (w) => w.the(Sender).state.credit >= 0 && w.the(Sender).state.credit <= WINDOW,
+const abandonedNeverDelivered = defineProperty("abandonedNeverDelivered", {
+  description: "A message the sender gave up on part-way never reaches the parser.",
+  always: (w) => w.the(Sender).state.abandoned.every((m) => !w.the(Receiver).state.delivered.some((d) => d.message === m)),
+});
+const oneStartedPerClass = defineProperty("oneStartedPerClass", {
+  description: "At most one message per priority class is partly sent, so an honest sender never needs more partial slots than there are classes.",
+  always: (w) => {
+    const s = w.the(Sender).state;
+    const classOf = (m: string) => s.queue.find((f) => f.message === m)?.priority;
+    return (["reply", "upload"] as const).every((p) => s.started.filter((m) => classOf(m) === p).length <= 1);
+  },
+});
+const honestSendersAreNeverRefused = defineProperty("honestSendersAreNeverRefused", {
+  description: "The receiver only closes the socket of a sender that broke the rules.",
+  always: (w) => w.the(Receiver).state.refused === 0 || w.the(Sender).state.oversized,
 });
 const partialsBounded = defineProperty("partialsBounded", {
   description: "The receiver never holds more partial messages, or more fragments of one, than the limits allow.",
   always: (w) => {
     const p = w.the(Receiver).state.partial;
-    return Object.keys(p).length <= MAX_IN_FLIGHT && Object.values(p).every((e) => e.count <= MAX_FRAGMENTS);
+    return Object.keys(p).length <= MAX_PARTIAL && Object.values(p).every((e) => e.count <= MAX_FRAGMENTS);
   },
 });
 const partialsDrain = defineProperty("partialsDrain", {
-  description: "A partial message on the receiver is in the end completed or discarded: it never holds a slot forever.",
+  description: "A partial message on the receiver is in the end completed or dropped: it never holds a slot forever.",
   leadsTo: {
     whenever: (w) => Object.keys(w.the(Receiver).state.partial).length > 0,
     then: (w) => Object.keys(w.the(Receiver).state.partial).length === 0,
   },
 });
-const everyMessageEnds = defineProperty("everyMessageEnds", {
-  description: "Every message sent is in the end fully acknowledged or failed: nothing waits on credit forever.",
+const everythingQueuedGoesOut = defineProperty("everythingQueuedGoesOut", {
+  description: "Everything queued is in the end sent, given up on, or dropped with its socket: nothing waits forever.",
   leadsTo: {
-    whenever: (w) => Object.keys(w.the(Sender).state.outstanding).length > 0,
-    then: (w) => Object.keys(w.the(Sender).state.outstanding).length === 0,
+    whenever: (w) => w.the(Sender).state.queue.length > 0,
+    then: (w) => w.the(Sender).state.queue.length === 0,
   },
 });
 
-const aLargeResultCrossesInFragments = defineScenario("A large result crosses in fragments", {
-  description: "A three-fragment message goes out two frames at a time, the third once an ack returns, and is delivered whole.",
+const aLargeUploadCrossesInFragments = defineScenario("A large upload crosses in fragments", {
+  description: "A three-fragment transcript line goes out one frame at a time and is delivered whole.",
   run(s) {
     s.act(s.the(Sender), "send", { size: "large", priority: "upload" });
     s.settle();
   },
 });
 const aReplyOvertakesAnUpload = defineScenario("A reply overtakes an upload", {
-  description: "A large upload is going out when a reply is queued; the reply's frame goes next, and each message is reassembled on its own.",
+  description: "A large upload has started when a large reply is queued; the reply's frames go next, and each message is reassembled on its own.",
   run(s) {
     s.act(s.the(Sender), "send", { size: "large", priority: "upload" });
-    s.act(s.the(Sender), "send", { size: "small", priority: "reply" });
+    s.step(s.the(Sender), "transmit");
+    s.act(s.the(Sender), "send", { size: "large", priority: "reply" });
     s.settle();
   },
 });
-const aMessageWaitsTooLongForCredit = defineScenario("A message waits too long for credit", {
-  description: "The receiver goes quiet after two fragments; the message fails on its own, the receiver drops its partial when the discard notice arrives, and the socket stays open.",
+const theSenderGivesUpPartWay = defineScenario("The sender gives up part-way", {
+  description: "The sender drops a message after its first fragment; the discard notice frees the receiver's slot, and the socket stays open.",
   run(s) {
     s.act(s.the(Sender), "send", { size: "large", priority: "upload" });
-    s.settle({ until: (w) => Object.keys(w.the(Receiver).state.partial).length > 0 });
-    s.fire(s.the(Sender), "creditTimeout");
+    s.step(s.the(Sender), "transmit");
+    s.act(s.the(Sender), "abandon");
     s.settle();
   },
 });
@@ -330,18 +289,16 @@ const aPeerAnnouncesTooManyFragments = defineScenario("A peer announces too many
   },
 });
 
-// finalState: see defineSpec below;
-
 export default defineSpec({
   name: "Relay fragments",
   description:
-    "How a relay message larger than one frame crosses the host relay: split into fragments that travel under the delivery credits, reassembled by the receiver before parsing, and discarded with the socket that carried them.",
+    "How a relay message larger than one frame crosses the host relay: split into fragments sent by priority, reassembled by the receiver before parsing, and dropped with the socket that carried them or when its sender gives up.",
   actors: [Sender, Receiver],
-  limits: [limit1, limit2, limit3, limit4, limit5, limit6],
-  properties: [deliveredWhole, deliveredOnce, creditWithinWindow, partialsBounded, partialsDrain, everyMessageEnds],
+  limits: [limit1, limit2, limit3, limit4],
+  properties: [deliveredWhole, deliveredOnce, abandonedNeverDelivered, oneStartedPerClass, honestSendersAreNeverRefused, partialsBounded, partialsDrain, everythingQueuedGoesOut],
   finalState: {
-  description: "Nothing is in flight and the sender waits on nothing.",
-  when: (w) => w.quiet && Object.keys(w.the(Sender).state.outstanding).length === 0,
-},
-  scenarios: [aLargeResultCrossesInFragments, aReplyOvertakesAnUpload, aMessageWaitsTooLongForCredit, aPeerAnnouncesTooManyFragments],
+    description: "Nothing is in flight and nothing is queued.",
+    when: (w) => w.quiet && w.the(Sender).state.queue.length === 0,
+  },
+  scenarios: [aLargeUploadCrossesInFragments, aReplyOvertakesAnUpload, theSenderGivesUpPartWay, aPeerAnnouncesTooManyFragments],
 });
