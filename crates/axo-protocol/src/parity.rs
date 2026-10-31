@@ -167,6 +167,30 @@ pub const PARITY: &[Parity] = &[
         method::SESSION_SHARE,
         Remote::LocalOnly("this Mac publishes its own redacted conversation to the cloud"),
     ),
+    row(
+        method::CONNECTIONS_LIST,
+        Remote::LocalOnly(
+            "a Session on this Mac reaches its account's connections; the cloud already holds them",
+        ),
+    ),
+    row(
+        method::CONNECTIONS_SEARCH,
+        Remote::LocalOnly(
+            "a Session on this Mac reaches its account's connections; the cloud already holds them",
+        ),
+    ),
+    row(
+        method::CONNECTIONS_EXECUTE,
+        Remote::LocalOnly(
+            "a Session on this Mac reaches its account's connections; the cloud already holds them",
+        ),
+    ),
+    row(
+        method::CONNECTIONS_LOG,
+        Remote::LocalOnly(
+            "a Session on this Mac reaches its account's connections; the cloud already holds them",
+        ),
+    ),
 ];
 
 /// Remote calls with no local counterpart: what only a person away from the Mac needs.

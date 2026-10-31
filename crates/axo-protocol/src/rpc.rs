@@ -44,6 +44,12 @@ pub mod method {
     pub const RELAY_STATUS: &str = "axo.relay.status";
     pub const RELAY_CONNECT: &str = "axo.relay.connect";
     pub const SESSION_SHARE: &str = "axo.session.share";
+    /// Connections (RFD0016): forwarded unchanged to the account over the relay, so their names
+    /// and parameters are those of `connections.schema.json`.
+    pub const CONNECTIONS_LIST: &str = "axo.connections.list";
+    pub const CONNECTIONS_SEARCH: &str = "axo.connections.search";
+    pub const CONNECTIONS_EXECUTE: &str = "axo.connections.execute";
+    pub const CONNECTIONS_LOG: &str = "axo.connections.log";
 
     /// Everything a version-1 client may call (negotiation itself excluded).
     pub const ADVERTISED: &[&str] = &[
@@ -80,6 +86,10 @@ pub mod method {
         RELAY_STATUS,
         RELAY_CONNECT,
         SESSION_SHARE,
+        CONNECTIONS_LIST,
+        CONNECTIONS_SEARCH,
+        CONNECTIONS_EXECUTE,
+        CONNECTIONS_LOG,
     ];
 }
 

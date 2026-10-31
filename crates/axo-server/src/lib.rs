@@ -14,6 +14,7 @@ use axo_ipc::{ErrorCode, RpcError, TypedMethods};
 use axo_protocol::rpc::{self, method};
 use jsonrpc_core::IoHandler;
 
+mod connections;
 pub mod mcp;
 mod session;
 mod workspace_access;
@@ -335,6 +336,10 @@ fn rpc_handler(
     let mut handler = IoHandler::new();
     add_protocol_negotiate_method(&mut handler);
     add_health_method(&mut handler, daemon_version);
+    connections::add_methods(
+        &mut handler,
+        relay.as_ref().map(|relay| Arc::clone(&relay.channel)),
+    );
     add_relay_methods(&mut handler, relay);
     sessions.register_rpc_methods(&mut handler);
     handler
