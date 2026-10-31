@@ -23,7 +23,7 @@ function fixture() {
   }) as typeof fetch;
   const background: Promise<unknown>[] = [];
   const apps = new AppConnections({
-    sql: sqlStorage(), secret: "test-secret-of-at-least-thirty-two-bytes", accountId: crypto.randomUUID(), google: null, fetcher, waitUntil: (p) => background.push(p), now: () => clock,
+    sql: sqlStorage(), secret: "test-secret-of-at-least-thirty-two-bytes", accountId: crypto.randomUUID(), clients: {}, fetcher, waitUntil: (p) => background.push(p), now: () => clock,
   });
   const settled = () => Promise.all(background);
   const tick = (ms: number) => { clock += ms; };

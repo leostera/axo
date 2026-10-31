@@ -1,13 +1,52 @@
 import { z } from "zod";
 import { tool, type AppDefinition, type AppTool, type ProviderApi } from "./app";
-import { bearer } from "./token";
+import { standardToken, type OAuthProvider } from "./oauth-provider";
 
 /**
- * GitHub as an app: `codemode.apps.github.<tool>({ account, ... })`, with a personal access
- * token, named by its login. What it reaches is what the token was given (fine-grained tokens
- * name their repositories). GitHub's own MCP server is the other way in, once Axo has an OAuth
- * app registered with GitHub.
+ * GitHub as an app: `codemode.apps.github.<tool>({ account, ... })`, signed in with Axo's own
+ * OAuth app (`GITHUB_CLIENT_ID`, `GITHUB_CLIENT_SECRET`) and named by the user's login. The OAuth
+ * app has expiring user tokens on: an access token lives eight hours, and each renewal spends the
+ * refresh token for a new one.
  */
+
+const TIMEOUT_MS = 15_000;
+
+export const githubProvider: OAuthProvider = {
+  name: "github",
+  title: "GitHub",
+  authorizeUrl: "https://github.com/login/oauth/authorize",
+  tokenUrl: "https://github.com/login/oauth/access_token",
+  env: { clientId: "GITHUB_CLIENT_ID", clientSecret: "GITHUB_CLIENT_SECRET" },
+  scopeSeparator: " ",
+  // A choice of account, so a second one can be added.
+  authorizeParams: { prompt: "select_account" },
+  pkce: true,
+  tokenAuth: "body",
+  tokenParams: {},
+  // GitHub answers a refused code or refresh token with HTTP 200 and `{ error }`; standardToken refuses it.
+  parseToken: (json) => standardToken(json, "GitHub"),
+  rotatesRefreshTokens: true,
+  async identify(_grant, api) {
+    const me = (await get(api, "/user")) as { login?: unknown };
+    return typeof me.login === "string" ? me.login : null;
+  },
+  /** Deletes the person's authorization of Axo's OAuth app, and every token of it. */
+  async revoke(grant, client, fetcher) {
+    const response = await fetcher(`https://api.github.com/applications/${encodeURIComponent(client.clientId)}/grant`, {
+      method: "DELETE",
+      headers: {
+        Authorization: `Basic ${btoa(`${client.clientId}:${client.clientSecret}`)}`,
+        Accept: "application/vnd.github+json",
+        "Content-Type": "application/json",
+        ...API_HEADERS,
+      },
+      body: JSON.stringify({ access_token: grant.accessToken }),
+      redirect: "manual",
+      signal: AbortSignal.timeout(TIMEOUT_MS),
+    });
+    await response.body?.cancel();
+  },
+};
 
 const owner = z.string().regex(/^[A-Za-z0-9-]{1,39}$/).describe("A user or organisation, such as \"leostera\".");
 const repo = z.string().regex(/^[A-Za-z0-9._-]{1,100}$/).describe("A repository's name, without its owner.");
@@ -33,7 +72,7 @@ const issue = (i: Issue) => ({
 const tools: AppTool[] = [
   tool({
     name: "get_me",
-    description: "The token's user: { login, name, email, ... }.",
+    description: "The signed-in user: { login, name, email, ... }.",
     input: z.object({}).strict(),
     idempotent: true,
     run: (api) => get(api, "/user"),
@@ -149,26 +188,21 @@ export const github: AppDefinition = {
   title: "GitHub",
   description: "Your GitHub: repositories, issues, pull requests, code search and notifications.",
   permissions: [
-    "See the repositories, issues and pull requests your token reaches",
-    "Open issues and comment on them",
-    "Anything else your token allows",
+    "See and change every repository you can reach, public and private: code, issues, pull requests and settings",
+    "Open, edit and comment on issues and pull requests",
+    "See the organisations and teams you belong to",
+    "See your notifications and mark them read",
   ],
-  signIn: "token",
+  signIn: "oauth",
   provider: "github",
   providerTitle: "GitHub",
   category: "developer",
   apiOrigin: "https://api.github.com",
   hosts: ["api.github.com"],
   reference: "https://docs.github.com/rest",
-  token: {
-    helpUrl: "https://github.com/settings/personal-access-tokens/new",
-    named: false,
-    fields: [{ name: "token", label: "Personal access token", help: "In GitHub, open Settings, Developer settings, Personal access tokens, and make one for the repositories Axo may use.", secret: true }],
-    authorize: bearer("token"),
-    async identify(api) {
-      const me = (await get(api, "/user")) as { login?: string };
-      return me.login?.toLowerCase() ?? null;
-    },
-  },
+  // `repo` reaches private repositories (GitHub has no read-only scope for them), `read:org` the
+  // person's organisations, `notifications` their inbox. GitHub's scopes cannot be unticked.
+  scopes: ["repo", "read:org", "notifications"],
+  requiredScopes: ["repo"],
   tools,
 };

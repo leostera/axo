@@ -39,7 +39,7 @@ function fixture(macs = ["studio", "leo_s_laptop"]) {
         { id: "password", label: "password", type: "CONCEALED", purpose: "PASSWORD", value: "hunter2", reference: "op://Private/GitHub/password" }] },
   };
   const apps = new AppConnections({
-    sql: sqlStorage(), secret: "test-secret-of-at-least-thirty-two-bytes", accountId: crypto.randomUUID(), google: null,
+    sql: sqlStorage(), secret: "test-secret-of-at-least-thirty-two-bytes", accountId: crypto.randomUUID(), clients: {},
     fetcher: (async () => { throw new Error("no network"); }) as typeof fetch, waitUntil: () => undefined,
     macs: () => macs,
     runOnMac: async (mac, command) => {
@@ -91,7 +91,7 @@ test("1Password's accounts are the account's Macs; it is listed only where Macs 
   assert.equal(listed.signIn.kind, "mac");
   assert.ok(!listed.tools.includes("request"), "a Mac app has no HTTP API");
   assert.ok(listed.tools.includes("op"));
-  const bare = new AppConnections({ sql: sqlStorage(), secret: "test-secret-of-at-least-thirty-two-bytes", accountId: crypto.randomUUID(), google: null, fetcher: fetch, waitUntil: () => undefined });
+  const bare = new AppConnections({ sql: sqlStorage(), secret: "test-secret-of-at-least-thirty-two-bytes", accountId: crypto.randomUUID(), clients: {}, fetcher: fetch, waitUntil: () => undefined });
   assert.equal(bare.list().some((c) => c.name === "apps.onepassword"), false);
 });
 

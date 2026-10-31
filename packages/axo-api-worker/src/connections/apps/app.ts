@@ -1,5 +1,6 @@
 import type { z } from "zod";
 import type { AppName, AppTokenField } from "@axo/protocol";
+import type { OAuthProviderName } from "./oauth-provider";
 
 /**
  * An app: a service Axo provides itself (RFD0016, Apps), reached as `codemode.apps.<app>.<tool>()`.
@@ -96,7 +97,8 @@ export type HttpApp = AppBase & {
 /** An app the person signs in to with Axo's own OAuth client for its provider. */
 export type OAuthApp = HttpApp & {
   signIn: "oauth";
-  provider: "google";
+  /** Whose OAuth client it signs in with (oauth-provider.ts); several apps may share one (Google's). */
+  provider: OAuthProviderName;
   /** Asked for at sign-in. */
   scopes: readonly string[];
   /** Without these the grant is useless, and the sign-in fails instead of landing. */
@@ -160,6 +162,13 @@ export class ProviderError extends Error {
     super(message);
   }
 }
+
+/**
+ * The provider said the access token is no good: nothing ran, so the call may be sent again once
+ * the grant is renewed. Thrown for a 401, and by an app whose service says so otherwise (Withings
+ * answers HTTP 200 with status 401).
+ */
+export class Unauthorized extends Error {}
 
 /** The call went out and no answer came back: it may have run. */
 export class ProviderOutcomeUnknown extends Error {}

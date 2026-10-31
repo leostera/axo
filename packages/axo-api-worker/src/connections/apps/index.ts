@@ -3,7 +3,7 @@ import { APP_ACCOUNTS_MAX, APPS, type AppAccount, type AppName, type AppSignIn, 
 import { seal, unseal } from "../../auth/crypto";
 import { GrantRefused } from "../oauth";
 import { FLOW_LIFETIME_MS, startUrl } from "../third-party";
-import { allowedUrl, ProviderError, ProviderOutcomeUnknown, type AppDefinition, type AppTool, type Authorized, type DeviceApp, type MacApp, type OutgoingRequest, type MacShell, type OAuthApp, type ProviderApi, type ProviderRequest, type TokenApp } from "./app";
+import { allowedUrl, ProviderError, ProviderOutcomeUnknown, Unauthorized, type AppDefinition, type AppTool, type Authorized, type DeviceApp, type MacApp, type OutgoingRequest, type MacShell, type OAuthApp, type ProviderApi, type ProviderRequest, type TokenApp } from "./app";
 import { calendar } from "./calendar";
 import { chatgpt } from "./chatgpt";
 import { cloud } from "./cloud";
@@ -34,14 +34,8 @@ import { tasks } from "./tasks";
 import { telegram } from "./telegram";
 import { unifi } from "./unifi";
 import { wise } from "./wise";
-import {
-  googleAuthorizationUrl,
-  redeemGoogleCode,
-  refreshGoogleGrant,
-  revokeGoogleGrant,
-  type GoogleClient,
-  type GoogleGrant,
-} from "./google";
+import { authorizationUrl, redeemCode, refreshGrant, type OAuthClient, type OAuthClients, type OAuthGrant, type OAuthProviderName } from "./oauth-provider";
+import { OAUTH_PROVIDER_CONFIGS } from "./providers";
 
 /**
  * The account's apps (RFD0016, Apps): services Axo provides itself, such as Gmail, reached as
@@ -65,8 +59,8 @@ export function appPage(app: AppName): string {
 
 /** A token the person pasted, as stored (sealed) for one account of a token app. */
 type TokenCredential = { kind: "token"; fields: Record<string, string> };
-/** A signed-in account's grant: Google's (stored before grants had a kind) or OpenAI's. */
-type Grant = GoogleGrant | OpenAIGrant;
+/** A signed-in account's grant: an OAuth provider's (Google's stored before grants had a provider) or OpenAI's. */
+type Grant = OAuthGrant | OpenAIGrant;
 
 /** A device sign-in in progress, as the web app polls it. */
 export type DeviceSignIn =
@@ -119,8 +113,8 @@ export type AppsDeps = {
   sql: SqlStorage;
   secret: string;
   accountId: string;
-  /** Axo's Google client, or null when this deployment has none: Google apps are then not listed. */
-  google: GoogleClient | null;
+  /** Axo's OAuth clients on this deployment, by provider: the apps of a provider without one are not listed. */
+  clients: OAuthClients;
   fetcher: typeof fetch;
   waitUntil(promise: Promise<unknown>): void;
   now?: () => number;
@@ -133,9 +127,6 @@ export type AppsDeps = {
    */
   runOnMac?: (mac: string, command: string, timeoutMs: number) => Promise<{ exitCode: number | null; stdout: string; stderr: string; timedOut: boolean }>;
 };
-
-/** The provider said the access token is no good: nothing ran, so the call may be sent again. */
-class Unauthorized extends Error {}
 
 const accountInput = z.string().min(3).max(320)
   .describe("The account to act as: the email of one of this app's signed-in accounts (see connections_list).");
@@ -252,7 +243,8 @@ export class AppConnections {
     const client = definition?.signIn === "oauth" ? this.client(definition) : null;
     if (!client || definition?.signIn !== "oauth") return null;
     const state = await seal(this.deps.secret, "connections-oauth-state", { accountId: this.deps.accountId, nonce });
-    return { authorizeUrl: googleAuthorizationUrl(client, definition.scopes, await challengeOf(flow.verifier), state), name: `apps.${flow.app}` };
+    const provider = OAUTH_PROVIDER_CONFIGS[definition.provider];
+    return { authorizeUrl: authorizationUrl(provider, client, definition.scopes, await challengeOf(flow.verifier), state), name: `apps.${flow.app}` };
   }
 
   /**
@@ -270,20 +262,27 @@ export class AppConnections {
     const definition = APP_DEFINITIONS[app];
     const client = definition?.signIn === "oauth" ? this.client(definition) : null;
     if (!client || definition?.signIn !== "oauth") return { error: "this app is not set up on this Axo deployment" };
-    let grant: GoogleGrant;
+    const provider = OAUTH_PROVIDER_CONFIGS[definition.provider];
+    let grant: OAuthGrant;
     try {
-      grant = await redeemGoogleCode(client, code, live.verifier, this.deps.fetcher, this.now());
+      grant = await redeemCode(provider, client, code, live.verifier, this.deps.fetcher, this.now());
     } catch {
       return { error: `${definition.title} did not accept the sign-in` };
     }
     const refuse = (error: string) => {
-      this.deps.waitUntil(revokeGoogleGrant(grant, this.deps.fetcher).catch(() => undefined));
+      this.revoke(grant);
       return { error };
     };
     if (definition.requiredScopes.some((scope) => !grant.scopes.includes(scope)))
       return refuse(`The sign-in did not grant ${definition.title} access. Sign in again and allow every permission asked for.`);
-    const account = grant.email?.toLowerCase();
-    if (!account) return refuse("Google did not say which account signed in; try again.");
+    let identified: string | null;
+    try {
+      identified = await provider.identify(grant, this.api(definition, CHECK_TOOL, () => ({ headers: authorization(grant) }), ""));
+    } catch {
+      identified = null;
+    }
+    const account = identified?.toLowerCase();
+    if (!account || account.length < 3) return refuse(`${provider.title} did not say which account signed in; try again.`);
     const known = this.rows(app).some((r) => r.account === account);
     if (!known && this.rows(app).length >= APP_ACCOUNTS_MAX) return refuse(`${definition.title} holds at most ${APP_ACCOUNTS_MAX} accounts; sign one out first.`);
     this.deps.sql.exec(`INSERT INTO app_accounts (app, account, grant_sealed, grant_generation, last_error, created_at) VALUES (?, ?, ?, 1, NULL, ?)
@@ -301,8 +300,19 @@ export class AppConnections {
     this.deps.sql.exec("DELETE FROM app_accounts WHERE app = ? AND account = ?", app, row.account);
     // A token stays valid at the service: Axo can only forget it. The person deletes it there.
     const grant = row.grant_sealed && APP_DEFINITIONS[app].signIn !== "token" ? await this.unsealGrant(row.grant_sealed) : null;
-    if (grant) this.deps.waitUntil((isOpenAI(grant) ? revokeOpenAIGrant(grant, this.deps.fetcher) : revokeGoogleGrant(grant, this.deps.fetcher)).catch(() => undefined));
+    if (grant) this.revoke(grant);
     return true;
+  }
+
+  /** Tells the grant's provider to forget it, in the background, when the provider has a way to. */
+  private revoke(grant: Grant): void {
+    if (isOpenAI(grant)) {
+      this.deps.waitUntil(revokeOpenAIGrant(grant, this.deps.fetcher).catch(() => undefined));
+      return;
+    }
+    const provider = OAUTH_PROVIDER_CONFIGS[providerOf(grant)];
+    const client = this.deps.clients[provider.name];
+    if (provider.revoke && client) this.deps.waitUntil(provider.revoke(grant, client, this.deps.fetcher).catch(() => undefined));
   }
 
   /**
@@ -556,8 +566,7 @@ export class AppConnections {
     if (!grant) return null;
     const due = force || (grant.expiresAt !== null && grant.expiresAt - this.now() < EXPIRY_MARGIN_MS);
     if (!due) return grant;
-    const definition = APP_DEFINITIONS[app];
-    const client = definition.signIn === "oauth" ? this.client(definition) : null;
+    const client = isOpenAI(grant) ? null : this.deps.clients[providerOf(grant)] ?? null;
     if (!grant.refreshToken || (!client && !isOpenAI(grant))) {
       this.dropGrant(app, account, row.grant_generation, "the grant expired and cannot be renewed");
       return null;
@@ -566,39 +575,24 @@ export class AppConnections {
     const key = `${app}\0${account}#${generation}`;
     const running = this.refreshing.get(key);
     if (running) return running;
-    if (isOpenAI(grant)) return this.renewOpenAI(app, account, generation, grant, key);
+    const provider = isOpenAI(grant) ? null : OAUTH_PROVIDER_CONFIGS[providerOf(grant)];
+    const title = provider?.title ?? "OpenAI";
+    // OpenAI rotates refresh tokens, as do some providers: a renewal that got no answer may have
+    // spent the only one, so the grant is dropped and the person signs in again. One that does
+    // not rotate them keeps the grant.
+    const rotates = provider?.rotatesRefreshTokens ?? true;
     const attempt = (async () => {
       try {
-        const renewed = await refreshGoogleGrant(client!, grant, this.deps.fetcher, this.now());
+        const renewed = isOpenAI(grant)
+          ? await refreshOpenAIGrant(grant, this.deps.fetcher, this.now())
+          : await refreshGrant(provider!, client!, grant, this.deps.fetcher, this.now());
         const landed = this.deps.sql.exec("UPDATE app_accounts SET grant_sealed = ? WHERE app = ? AND account = ? AND grant_generation = ?",
           await this.seal(renewed), app, account, generation).rowsWritten > 0;
         return landed ? renewed : null;
       } catch (error) {
-        // Google does not rotate refresh tokens, so a renewal that got no answer keeps the grant.
-        if (error instanceof GrantRefused) this.dropGrant(app, account, generation, "Google refused to renew the grant");
+        if (error instanceof GrantRefused) this.dropGrant(app, account, generation, provider ? `${title} refused to renew the grant` : "OpenAI refused to renew the sign-in");
+        else if (rotates) this.dropGrant(app, account, generation, "renewing the sign-in got no answer");
         else throw new Error("renewing the grant got no answer; try again");
-        return null;
-      } finally {
-        this.refreshing.delete(key);
-      }
-    })();
-    this.refreshing.set(key, attempt);
-    return attempt;
-  }
-
-  /**
-   * Renews a ChatGPT grant. OpenAI rotates refresh tokens, so a renewal that got no answer may
-   * have spent the only one: the grant is dropped and the person signs in again.
-   */
-  private renewOpenAI(app: AppName, account: string, generation: number, grant: OpenAIGrant, key: string): Promise<Grant | null> {
-    const attempt = (async () => {
-      try {
-        const renewed = await refreshOpenAIGrant(grant, this.deps.fetcher, this.now());
-        const landed = this.deps.sql.exec("UPDATE app_accounts SET grant_sealed = ? WHERE app = ? AND account = ? AND grant_generation = ?",
-          await this.seal(renewed), app, account, generation).rowsWritten > 0;
-        return landed ? renewed : null;
-      } catch (error) {
-        this.dropGrant(app, account, generation, error instanceof GrantRefused ? "OpenAI refused to renew the sign-in" : "renewing the sign-in got no answer");
         return null;
       } finally {
         this.refreshing.delete(key);
@@ -627,8 +621,8 @@ export class AppConnections {
     return this.deps.macs?.() ?? [];
   }
 
-  private client(definition: OAuthApp): GoogleClient | null {
-    return definition.provider === "google" ? this.deps.google : null;
+  private client(definition: OAuthApp): OAuthClient | null {
+    return this.deps.clients[definition.provider] ?? null;
   }
 
   private rows(app: string): Row[] {
@@ -651,7 +645,7 @@ export class AppConnections {
 
   /** An OAuth grant; a token is never one. */
   private async unsealGrant(sealed: string): Promise<Grant | null> {
-    const value = (await unseal(this.deps.secret, `apps-grant\0${this.deps.accountId}`, sealed, 65_536)) as (GoogleGrant & { kind?: undefined }) | OpenAIGrant | TokenCredential | null;
+    const value = (await unseal(this.deps.secret, `apps-grant\0${this.deps.accountId}`, sealed, 65_536)) as (OAuthGrant & { kind?: undefined }) | OpenAIGrant | TokenCredential | null;
     return value && value.kind !== "token" ? value : null;
   }
 
@@ -668,10 +662,15 @@ function isOpenAI(grant: Grant): grant is OpenAIGrant {
   return (grant as { kind?: string }).kind === "openai";
 }
 
-/** Whether a grant is one this app can use: Google's must hold every scope the app needs. */
+/** An OAuth grant's provider; one sealed before there were others is Google's. */
+function providerOf(grant: OAuthGrant): OAuthProviderName {
+  return grant.provider ?? "google";
+}
+
+/** Whether a grant is one this app can use: its provider's, holding every scope the app needs. */
 function grantFits(definition: OAuthApp | DeviceApp, grant: Grant): boolean {
   if (definition.signIn === "device") return isOpenAI(grant);
-  return !isOpenAI(grant) && definition.requiredScopes.every((scope) => grant.scopes.includes(scope));
+  return !isOpenAI(grant) && providerOf(grant) === definition.provider && definition.requiredScopes.every((scope) => grant.scopes.includes(scope));
 }
 
 /** The headers that carry a grant. ChatGPT also needs the ChatGPT account (workspace) it acts in. */
