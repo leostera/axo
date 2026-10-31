@@ -7,7 +7,7 @@ import XCTest
 
 /// The real URLSession WebSocket against a loopback server: what actually goes on the wire.
 final class RelayWebSocketLoopbackTests: XCTestCase {
-  func testTheUpgradeCarriesTheSessionTokenAndNoCookiesAndFramesAreAcknowledged() async throws {
+  func testTheUpgradeCarriesTheSessionTokenAndNoCookiesAndNoFrameIsAcknowledged() async throws {
     let server = try LoopbackRelay()
     defer { server.stop() }
     let port = try await server.start()
@@ -20,10 +20,9 @@ final class RelayWebSocketLoopbackTests: XCTestCase {
       ])!)
     defer { HTTPCookieStorage.shared.removeCookies(since: .distantPast) }
 
-    let host = RemoteHostRef(hostId: UUID(), hostGeneration: UUID())
     let transport = RelayWebSocketTransport(
       endpoint: try XCTUnwrap(RelayEndpoint(origin: origin, allowInsecureLoopback: true)),
-      host: host, tokens: StaticSessionToken(try XCTUnwrap(SessionToken.fixture(3))))
+      clientID: ClientID.random(), tokens: StaticSessionToken(try XCTUnwrap(SessionToken.fixture(3))))
     let rpc = JSONRPCConnection(transport: transport)
     let reply: Echo = try await rpc.call("echo", params: Echo(value: "ping"), timeout: .seconds(15))
     XCTAssertEqual(reply.value, "pong")
@@ -31,7 +30,8 @@ final class RelayWebSocketLoopbackTests: XCTestCase {
     let seen = try await server.upgradeHeaders()
     XCTAssertEqual(seen["authorization"], "Bearer \(SessionToken.fixture(3).value)")
     XCTAssertNil(seen["cookie"], "no cookie may accompany the session token")
-    try await server.waitForAcknowledgement()
+    try await Task.sleep(for: .milliseconds(50))
+    XCTAssertFalse(server.sawAcknowledgement, "there are no delivery credits to return (RFD0018)")
     await rpc.disconnect()
   }
 
@@ -42,7 +42,7 @@ final class RelayWebSocketLoopbackTests: XCTestCase {
     let transport = RelayWebSocketTransport(
       endpoint: try XCTUnwrap(
         RelayEndpoint(origin: URL(string: "http://127.0.0.1:\(port)")!, allowInsecureLoopback: true)),
-      host: RemoteHostRef(hostId: UUID(), hostGeneration: UUID()),
+      clientID: ClientID.random(),
       tokens: StaticSessionToken(try XCTUnwrap(SessionToken.fixture(4))))
     do {
       _ = try await transport.connect()
@@ -60,7 +60,7 @@ private final class HeaderRecord: @unchecked Sendable {
   func get() -> [String: String]? { lock.withLock { headers } }
 }
 
-/// A one-connection WebSocket relay: records the upgrade, answers `echo` calls, notes acks.
+/// A one-connection WebSocket relay: records the upgrade, answers `echo` calls, notes any ack.
 private final class LoopbackRelay: @unchecked Sendable {
   private let listener: NWListener
   private let queue = DispatchQueue(label: "loopback-relay")
@@ -147,9 +147,7 @@ private final class LoopbackRelay: @unchecked Sendable {
     try await wait { self.headerRecord.get() }
   }
 
-  func waitForAcknowledgement() async throws {
-    _ = try await wait { self.acknowledged ? true : nil }
-  }
+  var sawAcknowledgement: Bool { lock.withLock { acknowledged } }
 
   private func wait<Value>(_ read: @escaping () -> Value?) async throws -> Value {
     let deadline = ContinuousClock.now + .seconds(15)

@@ -306,10 +306,14 @@ final class FakeTransport: AxoTransport, @unchecked Sendable {
   /// Whether channels agree to a protocol version themselves, as a relay does on every connection.
   private let negotiates: Bool
 
-  init(connectDelay: Duration = .zero, failingConnects: Int = 0, negotiates: Bool = false) {
+  /// What channels answer `axo.client.hello` with themselves, as the account's socket does.
+  private let hello: String?
+
+  init(connectDelay: Duration = .zero, failingConnects: Int = 0, negotiates: Bool = false, hello: String? = nil) {
     self.connectDelay = connectDelay
     failuresLeft = failingConnects
     self.negotiates = negotiates
+    self.hello = hello
   }
 
   var connectCount: Int { lock.withLock { connects } }
@@ -324,6 +328,7 @@ final class FakeTransport: AxoTransport, @unchecked Sendable {
       }
       let channel = FakeChannel()
       channel.answersNegotiation = negotiates
+      channel.answersHello = hello
       channels.append(channel)
       return channel
     }
@@ -357,23 +362,30 @@ final class FakeChannel: AxoMessageChannel, @unchecked Sendable {
 
   /// Answers `axo.protocol.negotiate` itself and does not count it among the requests sent.
   var answersNegotiation = false
+  /// Answers `axo.client.hello` with this itself and does not count it among the requests sent.
+  var answersHello: String?
+  private var hello: [String: Any]?
+  /// The params of the hello it answered.
+  var helloParams: [String: Any]? { lock.withLock { hello } }
 
   var isClosed: Bool { lock.withLock { closed } }
   var sentCount: Int { lock.withLock { sent.count } }
 
   func send(_ message: Data) async throws {
-    let handshake = try lock.withLock { () -> Int? in
+    let handshake = try lock.withLock { () -> (Int, String)? in
       guard !closed, !sendsFail else { throw AxoClientError.connectionClosed }
-      if answersNegotiation,
-        let object = try? JSONSerialization.jsonObject(with: message) as? [String: Any],
-        object["method"] as? String == "axo.protocol.negotiate"
-      {
-        return object["id"] as? Int
+      let object = try? JSONSerialization.jsonObject(with: message) as? [String: Any]
+      if answersNegotiation, object?["method"] as? String == "axo.protocol.negotiate", let id = object?["id"] as? Int {
+        return (id, #"{"protocolVersion":2,"methods":[]}"#)
+      }
+      if let answersHello, object?["method"] as? String == "axo.client.hello", let id = object?["id"] as? Int {
+        hello = object?["params"] as? [String: Any]
+        return (id, answersHello)
       }
       sent.append(message)
       return nil
     }
-    if let handshake { reply(to: handshake, result: #"{"protocolVersion":2,"methods":[]}"#) }
+    if let (id, result) = handshake { reply(to: id, result: result) }
   }
 
   func close() {

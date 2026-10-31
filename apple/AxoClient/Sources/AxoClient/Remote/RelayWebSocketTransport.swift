@@ -8,31 +8,31 @@ protocol WebSocketTasking: Sendable {
   func closeConnection()
 }
 
-/// Connections to one host through the account's relay: JSON-RPC text frames over a WebSocket,
-/// authenticated with the session token and no cookies. It plugs into `JSONRPCConnection`
-/// exactly where the Unix socket does.
+/// The account's socket (RFD0018): JSON-RPC text frames over one WebSocket to this client's
+/// ClientDO, authenticated with the session token and no cookies. It plugs into
+/// `JSONRPCConnection` exactly where the Unix socket does.
 public struct RelayWebSocketTransport: AxoTransport {
-  /// Larger than the relay's biggest frame (a terminal output batch is up to 128 KiB).
-  static let maximumMessageBytes = 512 * 1024
+  /// One frame; larger messages come in fragments.
+  static let maximumMessageBytes = 128 * 1024
   static let connectTimeout: Duration = .seconds(10)
 
   private let endpoint: RelayEndpoint
-  private let host: RemoteHostRef
+  private let clientID: ClientID
   private let tokens: any SessionTokenProvider
   private let session: URLSession
 
   public init(
-    endpoint: RelayEndpoint = .production, host: RemoteHostRef,
+    endpoint: RelayEndpoint = .production, clientID: ClientID,
     tokens: any SessionTokenProvider, session: URLSession = RelayCredentials.makeURLSession()
   ) {
     self.endpoint = endpoint
-    self.host = host
+    self.clientID = clientID
     self.tokens = tokens
     self.session = session
   }
 
   public func connect() async throws -> any AxoMessageChannel {
-    var request = URLRequest(url: endpoint.clientSocketURL(hostID: host.hostId))
+    var request = URLRequest(url: endpoint.accountClientSocketURL(clientID: clientID))
     request.timeoutInterval = Double(Self.connectTimeout.components.seconds)
     request = try await RelayCredentials.authorize(request, with: tokens)
     let task = session.webSocketTask(with: request)
@@ -70,12 +70,10 @@ extension URLSessionWebSocketTask: WebSocketTasking {
 
 /// One open relay connection.
 ///
-/// The relay gives each client a bounded number of unacknowledged frames, so every received
-/// text frame is acknowledged. A binary frame is a protocol violation: the connection closes
-/// rather than guessing.
+/// Messages larger than a frame arrive in fragments and leave in them; a binary frame, or a
+/// fragment that breaks the rules, is a protocol violation: the connection closes rather than
+/// guessing.
 final class RelayWebSocketChannel: AxoMessageChannel, @unchecked Sendable {
-  private static let acknowledgement = #"{"jsonrpc":"2.0","method":"axo.transport.ack","params":{"frames":1}}"#
-
   let messages: AsyncStream<Data>
   private let continuation: AsyncStream<Data>.Continuation
   private let task: any WebSocketTasking
@@ -90,11 +88,14 @@ final class RelayWebSocketChannel: AxoMessageChannel, @unchecked Sendable {
   }
 
   func send(_ message: Data) async throws {
-    guard !isClosed, let text = String(data: message, encoding: .utf8) else {
+    guard !isClosed, let frames = Fragments.split(message) else {
       throw AxoClientError.connectionClosed
     }
     do {
-      try await task.send(text: text)
+      for frame in frames {
+        guard let text = String(data: frame, encoding: .utf8) else { throw AxoClientError.connectionClosed }
+        try await task.send(text: text)
+      }
     } catch {
       close()
       throw AxoClientError.connectionClosed
@@ -115,7 +116,8 @@ final class RelayWebSocketChannel: AxoMessageChannel, @unchecked Sendable {
   private var isClosed: Bool { lock.withLock { closed } }
 
   private func readUntilEnd() async {
-    while !isClosed, !Task.isCancelled {
+    var assembler = FragmentAssembler()
+    reading: while !isClosed, !Task.isCancelled {
       let frame: URLSessionWebSocketTask.Message
       do {
         frame = try await task.receive()
@@ -123,8 +125,11 @@ final class RelayWebSocketChannel: AxoMessageChannel, @unchecked Sendable {
         break
       }
       guard case .string(let text) = frame else { break }
-      continuation.yield(Data(text.utf8))
-      Task { [task] in try? await task.send(text: Self.acknowledgement) }
+      switch assembler.receive(Data(text.utf8)) {
+      case .message(let message): continuation.yield(message)
+      case .pending: continue
+      case .invalid: break reading
+      }
     }
     close()
   }

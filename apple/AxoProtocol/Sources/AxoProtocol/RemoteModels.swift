@@ -59,9 +59,40 @@ public struct RemoteSession: Decodable, Equatable, Sendable {
   public let createdAt: Int64?
 
   public var displayName: String { name ?? "Session" }
+
+  public init(
+    hostId: UUID, sessionId: SessionID, workspaceId: UUID? = nil, workspaceName: String? = nil,
+    name: String? = nil, emoji: String? = nil, status: RemoteSessionStatus? = nil, hasAgent: Bool? = nil,
+    shells: [RemoteShell] = [], layout: SessionLayout? = nil, updatedAt: String = "",
+    lastMessageAt: Int64? = nil, createdAt: Int64? = nil
+  ) {
+    self.hostId = hostId
+    self.sessionId = sessionId
+    self.workspaceId = workspaceId
+    self.workspaceName = workspaceName
+    self.name = name
+    self.emoji = emoji
+    self.status = status
+    self.hasAgent = hasAgent
+    self.shells = shells
+    self.layout = layout
+    self.updatedAt = updatedAt
+    self.lastMessageAt = lastMessageAt
+    self.createdAt = createdAt
+  }
+
+  /// A Session as the account's client lists it (RFD0018): what the host says of it, without
+  /// terminals, which stay on the Mac.
+  public init(_ listed: ClientSession) {
+    self.init(
+      hostId: listed.hostId, sessionId: listed.sessionId, workspaceId: listed.metadata.workspaceId,
+      workspaceName: listed.metadata.workspaceName, name: listed.metadata.name, emoji: listed.metadata.emoji,
+      status: listed.status, hasAgent: listed.metadata.hasAgent,
+      lastMessageAt: listed.metadata.lastMessageAt, createdAt: listed.metadata.createdAt)
+  }
 }
 
-public struct RemoteHost: Decodable, Equatable, Sendable {
+public struct RemoteHost: Equatable, Sendable {
   public let hostId: UUID
   public let hostGeneration: UUID
   public let label: String
@@ -72,10 +103,28 @@ public struct RemoteHost: Decodable, Equatable, Sendable {
   public let sessions: [RemoteSession]
 
   public var reference: RemoteHostRef { RemoteHostRef(hostId: hostId, hostGeneration: hostGeneration) }
-}
 
-public struct RemoteHostList: Decodable, Equatable, Sendable {
-  public let hosts: [RemoteHost]
+  public init(
+    hostId: UUID, hostGeneration: UUID, label: String, hostKind: String = "macos", status: RemoteHostStatus,
+    stale: Bool = false, lastSeenAt: String = "", sessions: [RemoteSession]
+  ) {
+    self.hostId = hostId
+    self.hostGeneration = hostGeneration
+    self.label = label
+    self.hostKind = hostKind
+    self.status = status
+    self.stale = stale
+    self.lastSeenAt = lastSeenAt
+    self.sessions = sessions
+  }
+
+  /// A host as the account's client lists it, with the Sessions listed for it.
+  public init(_ listed: ClientHost, sessions: [RemoteSession]) {
+    self.init(
+      hostId: listed.hostId, hostGeneration: listed.hostGeneration, label: listed.label, hostKind: listed.hostKind,
+      status: listed.online ? .online : .offline, stale: !listed.online, lastSeenAt: listed.lastSeenAt,
+      sessions: sessions)
+  }
 }
 
 public struct RemoteWorkspace: Decodable, Equatable, Sendable {
@@ -107,142 +156,174 @@ public struct RemoteWorkspaceList: Decodable, Equatable, Sendable {
   public let workspaces: [RemoteWorkspace]
 }
 
-/// What the relay pushes about a host the client subscribed to.
-public enum RemoteHostEvent: Equatable, Sendable {
-  /// The host came online or went offline.
-  case presence(host: RemoteHostRef, status: RemoteHostStatus)
-  case sessionSnapshot(host: RemoteHostRef, session: RemoteSession)
-  case sessionRemoved(host: RemoteHostRef, sessionID: SessionID)
-  case shellActivity(
-    host: RemoteHostRef, sessionID: SessionID, shellID: ShellID, activity: TerminalShellActivity)
-  case terminalOutput(
-    host: RemoteHostRef, sessionID: SessionID, shellID: ShellID, sequence: UInt64, data: Data)
-  /// A Pi event: what the agent said, did or finished. The relay also stores them as history.
-  case piEvent(host: RemoteHostRef, sessionID: SessionID, event: PiEventRecord)
+// MARK: - The account's client (RFD0018)
 
-  public var host: RemoteHostRef {
-    switch self {
-    case .presence(let host, _), .sessionSnapshot(let host, _), .sessionRemoved(let host, _),
-      .shellActivity(let host, _, _, _), .terminalOutput(let host, _, _, _, _),
-      .piEvent(let host, _, _):
-      host
-    }
+/// What a client lists a Session by. The host owns it and raises its version on every change.
+public struct SessionMetadata: Decodable, Equatable, Sendable {
+  public let name: String?
+  public let emoji: String?
+  public let workspaceId: UUID?
+  public let workspaceName: String?
+  public let hasAgent: Bool
+  /// Unix seconds.
+  public let createdAt: Int64?
+  /// Unix seconds of the latest completed user or assistant message.
+  public let lastMessageAt: Int64?
+  /// Archived on the Mac, deleted there, or missing from its listing: the cloud never deletes.
+  public let archived: Bool
+
+  public init(
+    name: String? = nil, emoji: String? = nil, workspaceId: UUID? = nil, workspaceName: String? = nil,
+    hasAgent: Bool = true, createdAt: Int64? = nil, lastMessageAt: Int64? = nil, archived: Bool = false
+  ) {
+    self.name = name
+    self.emoji = emoji
+    self.workspaceId = workspaceId
+    self.workspaceName = workspaceName
+    self.hasAgent = hasAgent
+    self.createdAt = createdAt
+    self.lastMessageAt = lastMessageAt
+    self.archived = archived
   }
 }
 
-/// The `params` of an `axo.host.event` notification.
-public struct RemoteHostNotification: Decodable, Equatable, Sendable {
-  public let subscriptionId: UUID
-  public let event: RemoteHostEvent
+/// One of the account's hosts, as its client follows it.
+public struct ClientHost: Decodable, Equatable, Sendable {
+  public let hostId: UUID
+  public let hostGeneration: UUID
+  public let label: String
+  public let hostKind: String
+  public let online: Bool
+  public let lastSeenAt: String
 
-  private enum CodingKeys: String, CodingKey { case subscriptionId, event }
+  public init(hostId: UUID, hostGeneration: UUID, label: String, hostKind: String = "macos", online: Bool, lastSeenAt: String = "") {
+    self.hostId = hostId
+    self.hostGeneration = hostGeneration
+    self.label = label
+    self.hostKind = hostKind
+    self.online = online
+    self.lastSeenAt = lastSeenAt
+  }
+
+  public var reference: RemoteHostRef { RemoteHostRef(hostId: hostId, hostGeneration: hostGeneration) }
+}
+
+/// One Session of one host, as its client lists it: `head` records are in the cloud, in `epoch`.
+public struct ClientSession: Decodable, Equatable, Sendable {
+  public let hostId: UUID
+  public let sessionId: SessionID
+  public let metadata: SessionMetadata
+  /// Nil until the first record lands.
+  public let epoch: Int64?
+  public let head: Int64
+  public let status: RemoteSessionStatus?
+
+  public init(hostId: UUID, sessionId: SessionID, metadata: SessionMetadata, epoch: Int64? = nil, head: Int64 = 0, status: RemoteSessionStatus? = nil) {
+    self.hostId = hostId
+    self.sessionId = sessionId
+    self.metadata = metadata
+    self.epoch = epoch
+    self.head = head
+    self.status = status
+  }
+}
+
+/// A durable record as clients see it: one line of the agent's transcript. Only the format
+/// adapter knows what is in `line`.
+public struct ClientRecord: Decodable, Equatable, Sendable {
+  /// The record's place in the cloud copy: the client's resume point within one epoch.
+  public let cursor: Int64
+  public let id: String?
+  public let format: String
+  public let line: String
+  public let hash: String
+
+  public init(cursor: Int64, id: String?, format: String = "pi/3", line: String, hash: String = "sha256:" + String(repeating: "0", count: 64)) {
+    self.cursor = cursor
+    self.id = id
+    self.format = format
+    self.line = line
+    self.hash = hash
+  }
+}
+
+/// The newest snapshot of one progress slot: `"message"` for the reply being written,
+/// `"question"` for what the agent asks, or a running tool's call id.
+public struct ProgressSnapshot: Decodable, Equatable, Sendable {
+  public let slot: String
+  /// Null when the slot is cleared.
+  public let snapshot: JSONValue
+
+  public init(slot: String, snapshot: JSONValue) {
+    self.slot = slot
+    self.snapshot = snapshot
+  }
+
+  private enum CodingKeys: String, CodingKey { case slot, snapshot }
 
   public init(from decoder: Decoder) throws {
     let container = try decoder.container(keyedBy: CodingKeys.self)
-    subscriptionId = try container.decode(UUID.self, forKey: .subscriptionId)
-    event = try container.decode(RemoteHostEvent.self, forKey: .event)
+    slot = try container.decode(String.self, forKey: .slot)
+    snapshot = try container.decodeIfPresent(JSONValue.self, forKey: .snapshot) ?? .null
   }
 }
 
-extension RemoteHostEvent: Decodable {
-  private enum CodingKeys: String, CodingKey {
-    case type, hostId, hostGeneration, status, event, snapshot, sessionId, shellId, activity
-    case sequence, data, name, streamId
-  }
+/// The answer to `axo.client.hello` and `axo.client.refresh`: every host and Session.
+public struct ClientHello: Decodable, Equatable, Sendable {
+  public let hosts: [ClientHost]
+  public let sessions: [ClientSession]
 
-  public init(from decoder: Decoder) throws {
-    let outer = try decoder.container(keyedBy: CodingKeys.self)
-    let host = RemoteHostRef(
-      hostId: try outer.decode(UUID.self, forKey: .hostId),
-      hostGeneration: try outer.decode(UUID.self, forKey: .hostGeneration))
-    switch try outer.decode(String.self, forKey: .type) {
-    case "host.presence":
-      self = .presence(host: host, status: try outer.decode(RemoteHostStatus.self, forKey: .status))
-    case "host.data":
-      let inner = try outer.nestedContainer(keyedBy: CodingKeys.self, forKey: .event)
-      switch try inner.decode(String.self, forKey: .type) {
-      case "session.snapshot":
-        let session = try inner.decode(RemoteSession.self, forKey: .snapshot)
-        guard session.hostId == host.hostId else {
-          throw DecodingError.dataCorruptedError(
-            forKey: .snapshot, in: inner, debugDescription: "snapshot is for another host")
-        }
-        self = .sessionSnapshot(host: host, session: session)
-      case "session.removed":
-        self = .sessionRemoved(host: host, sessionID: try inner.decode(SessionID.self, forKey: .sessionId))
-      case "shell.activity":
-        self = .shellActivity(
-          host: host,
-          sessionID: try inner.decode(SessionID.self, forKey: .sessionId),
-          shellID: try inner.decode(ShellID.self, forKey: .shellId),
-          activity: try inner.decode(TerminalShellActivity.self, forKey: .activity))
-      case "terminal.output":
-        guard let data = Data(base64Encoded: try inner.decode(String.self, forKey: .data)) else {
-          throw DecodingError.dataCorruptedError(
-            forKey: .data, in: inner, debugDescription: "terminal output was not base64")
-        }
-        self = .terminalOutput(
-          host: host,
-          sessionID: try inner.decode(SessionID.self, forKey: .sessionId),
-          shellID: try inner.decode(ShellID.self, forKey: .shellId),
-          sequence: try inner.decode(UInt64.self, forKey: .sequence),
-          data: data)
-      case "pi.event":
-        self = .piEvent(
-          host: host,
-          sessionID: try inner.decode(SessionID.self, forKey: .sessionId),
-          event: PiEventRecord(
-            streamId: try inner.decode(UUID.self, forKey: .streamId),
-            sequence: try inner.decode(UInt64.self, forKey: .sequence),
-            name: try inner.decode(String.self, forKey: .name),
-            data: try inner.decodeIfPresent(JSONValue.self, forKey: .data) ?? .null))
-      case let type:
-        throw DecodingError.dataCorruptedError(
-          forKey: .type, in: inner, debugDescription: "unknown host data event \(type)")
-      }
-    case let type:
-      throw DecodingError.dataCorruptedError(
-        forKey: .type, in: outer, debugDescription: "unknown host event \(type)")
-    }
+  public init(hosts: [ClientHost], sessions: [ClientSession]) {
+    self.hosts = hosts
+    self.sessions = sessions
   }
 }
 
-/// One thing Pi did, in the order Pi did it: `sequence` rises within its `streamId`.
-public struct PiEventRecord: Equatable, Sendable {
-  public let streamId: UUID
-  public let sequence: UInt64
-  public let name: String
-  public let data: JSONValue
+/// The answer to `axo.client.session.open`.
+public struct ClientOpenResult: Decodable, Equatable, Sendable {
+  /// Nil while the cloud holds no records for the Session.
+  public let epoch: Int64?
+  public let records: [ClientRecord]
+  /// The last cursor the client holds after taking `records`.
+  public let cursor: Int64
+  /// Records below this cursor exist; nil when the client holds the start.
+  public let older: Int64?
+  public let progress: [ProgressSnapshot]
 
-  public init(streamId: UUID, sequence: UInt64, name: String, data: JSONValue) {
-    self.streamId = streamId
-    self.sequence = sequence
-    self.name = name
-    self.data = data
+  public init(epoch: Int64?, records: [ClientRecord], cursor: Int64, older: Int64?, progress: [ProgressSnapshot] = []) {
+    self.epoch = epoch
+    self.records = records
+    self.cursor = cursor
+    self.older = older
+    self.progress = progress
   }
 }
 
-/// A Pi event as the relay stored it, for reading a conversation from the start.
-public struct StoredPiEvent: Decodable, Equatable, Sendable {
-  public let id: Int64
-  public let streamId: UUID
-  public let sequence: UInt64
-  public let name: String
-  public let data: JSONValue
-  public let receivedAt: Int64
+/// Records just below a `before`, oldest first, and the `before` of the next older page.
+public struct ClientOlderPage: Decodable, Equatable, Sendable {
+  public let epoch: Int64?
+  public let records: [ClientRecord]
+  public let older: Int64?
 
-  public var record: PiEventRecord {
-    PiEventRecord(streamId: streamId, sequence: sequence, name: name, data: data)
+  public init(epoch: Int64?, records: [ClientRecord], older: Int64?) {
+    self.epoch = epoch
+    self.records = records
+    self.older = older
   }
 }
 
-/// A page of stored events; `next` is where the following page starts, or nil at the end.
-public struct PiEventPage: Decodable, Equatable, Sendable {
-  public let events: [StoredPiEvent]
-  public let next: Int64?
-
-  public init(events: [StoredPiEvent], next: Int64?) {
-    self.events = events
-    self.next = next
-  }
+/// What the account's socket tells its client as it happens.
+public enum AccountEvent: Equatable, Sendable {
+  /// A new connection said hello: every host and Session, as they are now.
+  case hello(ClientHello)
+  /// The whole host list, whenever a host's presence changes.
+  case hosts([ClientHost])
+  /// Sessions of one host that changed.
+  case sessions(hostID: UUID, [ClientSession])
+  /// The next records of an open Session; acknowledge `cursor` once they are taken.
+  case records(sessionID: SessionID, epoch: Int64, [ClientRecord], cursor: Int64)
+  /// A progress slot's newest snapshot, or null when it is cleared.
+  case progress(sessionID: SessionID, slot: String, snapshot: JSONValue)
+  /// The cloud copy was cut back: drop every record after `keep`; `epoch` follows.
+  case reset(sessionID: SessionID, epoch: Int64, keep: Int64)
 }

@@ -1,97 +1,17 @@
 import AxoProtocol
 import Foundation
 
-/// One host, reached through the relay: the same shape as `AxodConnection`, so a client treats
-/// "this Mac" and a remote host alike. Calls name the host and the run of it they mean; the
-/// relay refuses a call for an older run ("Stale host") instead of acting on the wrong one.
-public final class HostConnection: Sendable {
+/// One host's commands, through the account's socket (RFD0018): the same shape as
+/// `AxodConnection`, so a client treats "this Mac" and a remote host alike. Calls name the host and
+/// the run of it they mean; the relay refuses a call for an older run ("Stale host") instead of
+/// acting on the wrong one, and refuses one for a host that is offline instead of queueing it.
+public struct HostConnection: Sendable {
   public let host: RemoteHostRef
+  private let account: AccountConnection
 
-  /// What the relay pushes about this host once `subscribe()` has been called. Finishes never;
-  /// the relay sends nothing else on this connection that a caller needs.
-  public let events: AsyncStream<RemoteHostEvent>
-
-  /// Yields when the connection to the relay ends; events stop until a call (such as
-  /// `subscribe()`) connects again.
-  public var connectionLost: AsyncStream<Void> { rpc.connectionLost }
-
-  private let rpc: JSONRPCConnection
-  private let relayTask: Task<Void, Never>
-  private let wantsEvents = EventsWanted()
-
-  /// Whether `subscribe()` has been asked for, so a replacement connection asks again.
-  private final class EventsWanted: @unchecked Sendable {
-    private let lock = NSLock()
-    private var wanted = false
-    var value: Bool {
-      get { lock.withLock { wanted } }
-      set { lock.withLock { wanted = newValue } }
-    }
-  }
-
-  public init(transport: any AxoTransport, host: RemoteHostRef) {
+  public init(account: AccountConnection, host: RemoteHostRef) {
+    self.account = account
     self.host = host
-    let wantsEvents = wantsEvents
-    // The relay keeps what was agreed per connection. A connection opened after the first (the
-    // last one dropped or wedged) must agree again and, if events were wanted, ask for them
-    // again; otherwise its first call is refused with "Negotiate first".
-    let rpc = JSONRPCConnection(transport: transport) { connection in
-      let _: ProtocolNegotiation = try await connection.call(
-        "axo.protocol.negotiate",
-        params: ProtocolNegotiationRequest(protocolVersion: ProtocolNegotiation.supportedVersion),
-        timeout: .seconds(10))
-      if wantsEvents.value {
-        let _: Subscription = try await connection.call("axo.host.subscribe", params: host, timeout: .seconds(10))
-      }
-    }
-    self.rpc = rpc
-    let (events, sink) = AsyncStream<RemoteHostEvent>.makeStream(bufferingPolicy: .bufferingNewest(4096))
-    self.events = events
-    relayTask = Task {
-      for await notification in rpc.notifications where notification.method == "axo.host.event" {
-        // One connection serves one host, so the host in the event is the filter; an event that
-        // does not decode or is for another host is dropped, never delivered.
-        guard let params = try? notification.params(as: RemoteHostNotification.self),
-          params.event.host == host
-        else { continue }
-        sink.yield(params.event)
-      }
-    }
-  }
-
-  public convenience init(
-    endpoint: RelayEndpoint = .production, host: RemoteHostRef, tokens: any SessionTokenProvider
-  ) {
-    self.init(
-      transport: RelayWebSocketTransport(endpoint: endpoint, host: host, tokens: tokens), host: host)
-  }
-
-  deinit { relayTask.cancel() }
-
-  public func disconnect() async {
-    await rpc.disconnect()
-  }
-
-  // MARK: - Session
-
-  /// Agrees on a protocol version, which the connection already did on opening. Reports what the
-  /// host answered.
-  public func negotiate() async throws -> ProtocolNegotiation {
-    try await call(
-      "axo.protocol.negotiate",
-      ProtocolNegotiationRequest(protocolVersion: ProtocolNegotiation.supportedVersion))
-  }
-
-  /// Starts the host's events: Session snapshots and removals, terminal output, presence.
-  public func subscribe() async throws {
-    let _: Subscription = try await call("axo.host.subscribe", host)
-    wantsEvents.value = true
-  }
-
-  /// Connects again after the connection was lost, subscribing again (as every new connection
-  /// does once `subscribe()` has been called). Does nothing if a connection is open.
-  public func reconnect() async throws {
-    try await rpc.connect()
   }
 
   // MARK: - Workspaces and Sessions
@@ -207,7 +127,7 @@ public final class HostConnection: Sendable {
   private func call<Params: Encodable & Sendable, Result: Decodable & Sendable>(
     _ method: String, _ params: Params, as: Result.Type = Result.self
   ) async throws -> Result {
-    try await rpc.call(method, params: params, timeout: .seconds(10))
+    try await account.command(method, on: host.hostId, params: params)
   }
 
   private func session(from created: CreatedSession) throws -> RemoteSession {
@@ -283,7 +203,6 @@ private struct ResizeTarget: Encodable, Sendable {
   let columns: Int
 }
 
-private struct Subscription: Decodable, Sendable { let subscriptionId: UUID }
 private struct CreatedSession: Decodable, Sendable { let session: RemoteSession }
 private struct ClosedSession: Decodable, Sendable {
   let closed: Bool

@@ -93,6 +93,14 @@ public actor JSONRPCConnection {
     return try decodeResult(reply)
   }
 
+  /// Sends a notification on the connection in use, if there is one: nothing is answered, and a
+  /// notification for a connection that ended is dropped (the new connection starts afresh).
+  public func notify<Params: Encodable & Sendable>(_ method: String, params: Params) async {
+    guard let link = current, let message = try? encoder.encode(JSONRPCNotificationOut(method: method, params: params))
+    else { return }
+    try? await link.channel.send(message)
+  }
+
   /// Opens a connection (running its handshake) if there is none, without calling anything.
   public func connect() async throws {
     try Task.checkCancellation()
@@ -240,6 +248,12 @@ public actor JSONRPCConnection {
 private struct JSONRPCRequest<Params: Encodable>: Encodable {
   let jsonrpc = "2.0"
   let id: Int
+  let method: String
+  let params: Params
+}
+
+private struct JSONRPCNotificationOut<Params: Encodable>: Encodable {
+  let jsonrpc = "2.0"
   let method: String
   let params: Params
 }

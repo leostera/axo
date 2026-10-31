@@ -58,10 +58,8 @@ public protocol HostPairingIssuing: Sendable {
   func createHostPairing() async throws -> HostPairing
 }
 
-/// An account's view of its hosts, over HTTPS.
-///
-/// The relay owns this data and decides who may see it; the client only asks, and checks that
-/// what came back is what it asked about.
+/// The account over HTTPS: who is signed in, signing out, and pairing codes. Hosts and Sessions
+/// come over the account's socket (`AccountConnection`).
 public struct AccountClient: HostPairingIssuing, Sendable {
   private let endpoint: RelayEndpoint
   private let tokens: any SessionTokenProvider
@@ -112,32 +110,6 @@ public struct AccountClient: HostPairingIssuing, Sendable {
       throw AxoClientError.invalidResponse("the relay's pairing code is not one")
     }
     return HostPairing(code: code, expiresAt: expiresAt)
-  }
-
-  public func hosts() async throws -> [RemoteHost] {
-    try await get(endpoint.hostsURL, as: RemoteHostList.self).hosts
-  }
-
-  /// The Sessions of one run of one host. A host that restarted since `host` was read is a
-  /// conflict, not a quiet answer about a different run.
-  public func sessions(of host: RemoteHostRef) async throws -> [RemoteSession] {
-    struct Answer: Decodable {
-      let host: RemoteHost
-      let sessions: [RemoteSession]
-    }
-    let answer: Answer = try await get(endpoint.sessionsURL(of: host))
-    guard answer.host.reference == host, answer.sessions.allSatisfy({ $0.hostId == host.hostId })
-    else {
-      throw AxoClientError.invalidResponse("the relay answered for a different host")
-    }
-    return answer.sessions
-  }
-
-  /// One page of a Session's Pi events, newest first. `before` is the id of the oldest event already read (0 starts at the newest).
-  public func piEvents(of host: RemoteHostRef, session: SessionID, before cursor: Int64 = 0, limit: Int = 50)
-    async throws -> PiEventPage
-  {
-    try await get(endpoint.piEventsURL(of: host, session: session, before: cursor, limit: min(max(limit, 1), 50)))
   }
 
   private func get<Value: Decodable>(_ url: URL, as: Value.Type = Value.self) async throws -> Value {

@@ -47,38 +47,15 @@ public struct RelayEndpoint: Equatable, Sendable {
     ]
     return components.url!
   }
-  public var hostsURL: URL { url("/api/v1/account/hosts") }
   /// Where a signed-in account asks for a code that links a new Mac to it.
   public var hostPairingsURL: URL { url("/api/v1/account/host-pairings") }
 
-  public func sessionsURL(of host: RemoteHostRef) -> URL {
-    var components = URLComponents(
-      url: url("/api/v1/account/hosts/\(host.hostId.uuidString.lowercased())/sessions"),
-      resolvingAgainstBaseURL: false)!
-    components.queryItems = [
-      URLQueryItem(name: "hostGeneration", value: host.hostGeneration.uuidString.lowercased())
-    ]
-    return components.url!
-  }
-
-  /// A page of one Session's stored Pi events, from the event after `cursor`.
-  public func piEventsURL(of host: RemoteHostRef, session: SessionID, before cursor: Int64, limit: Int) -> URL {
-    var components = URLComponents(
-      url: url("/api/v1/account/hosts/\(host.hostId.uuidString.lowercased())/sessions/\(session)/events"),
-      resolvingAgainstBaseURL: false)!
-    components.queryItems = [
-      URLQueryItem(name: "before", value: String(cursor)),
-      URLQueryItem(name: "limit", value: String(limit)),
-    ]
-    return components.url!
-  }
-
-  /// The WebSocket a person's client opens to reach one host.
-  public func clientSocketURL(hostID: UUID) -> URL {
-    var components = URLComponents(
-      url: url("/api/v1/account/hosts/\(hostID.uuidString.lowercased())/client"),
-      resolvingAgainstBaseURL: false)!
+  /// The account's one socket for this client (RFD0018): every host and Session, through the
+  /// client's own Durable Object.
+  public func accountClientSocketURL(clientID: ClientID) -> URL {
+    var components = URLComponents(url: url("/api/v1/account/client"), resolvingAgainstBaseURL: false)!
     components.scheme = components.scheme == "https" ? "wss" : "ws"
+    components.queryItems = [URLQueryItem(name: "clientId", value: clientID.rawValue)]
     return components.url!
   }
 
@@ -86,5 +63,24 @@ public struct RelayEndpoint: Equatable, Sendable {
     var components = URLComponents(url: origin, resolvingAgainstBaseURL: false)!
     components.path = path
     return components.url!
+  }
+}
+
+/// Which client of the account a socket is: one per app install, so a reconnect replaces the
+/// last socket instead of adding one. Unguessable, and as the ClientDO names it.
+public struct ClientID: Hashable, Sendable {
+  public let rawValue: String
+
+  /// Fails unless `rawValue` is 8 to 64 letters, digits, `-` or `_`.
+  public init?(rawValue: String) {
+    guard (8...64).contains(rawValue.count),
+      rawValue.unicodeScalars.allSatisfy({ CharacterSet.alphanumerics.contains($0) && $0.isASCII || $0 == "-" || $0 == "_" })
+    else { return nil }
+    self.rawValue = rawValue
+  }
+
+  /// A new random client id.
+  public static func random() -> ClientID {
+    ClientID(rawValue: "ios-" + UUID().uuidString.replacingOccurrences(of: "-", with: "").lowercased())!
   }
 }
