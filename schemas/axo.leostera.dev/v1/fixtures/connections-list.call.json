@@ -1,0 +1,1 @@
+{ "jsonrpc": "2.0", "id": "c-1", "method": "axo.connections.list", "params": { "sessionId": "6a0f6c2e-6f0c-4b8e-9a77-3f1d2b8c4e10" } }

@@ -1,0 +1,5 @@
+{
+  "records": [
+    { "callId": "call-7", "at": "2026-05-01T09:31:00.000Z", "sessionId": "6a0f6c2e-6f0c-4b8e-9a77-3f1d2b8c4e10", "hostId": "0b7d5a1e-2c3f-4e5a-8b6c-7d8e9f0a1b2c", "service": "studio", "tool": "bash", "targetHostId": "0b7d5a1e-2c3f-4e5a-8b6c-7d8e9f0a1b2c", "durationMs": 63, "outcome": "ok", "error": null, "input": { "command": "uptime", "cwd": "/Users/leo", "timeoutMs": 60000 } }
+  ]
+}

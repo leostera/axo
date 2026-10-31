@@ -19,3 +19,4 @@ export {
 } from "json-rpc-2.0";
 export * from "./pi3.ts";
 export * from "./session-sync.ts";
+export * from "./connections.ts";

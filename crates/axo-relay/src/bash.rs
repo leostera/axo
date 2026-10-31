@@ -39,7 +39,7 @@ pub struct BashParams {
     pub timeout_ms: Option<u64>,
 }
 
-#[derive(Debug, Serialize, PartialEq)]
+#[derive(Debug, Serialize, Deserialize, PartialEq)]
 #[serde(rename_all = "camelCase")]
 pub struct BashResult {
     pub exit_code: Option<i32>,
@@ -260,6 +260,24 @@ mod tests {
         assert!(result.stdout_truncated);
         assert!(result.stdout.ends_with(TRUNCATED));
         assert!(serde_json::to_string(&result).unwrap().len() <= fragments::MESSAGE_BYTES);
+    }
+
+    #[test]
+    fn the_schema_fixtures_match_these_types() {
+        let call: Value = serde_json::from_str(include_str!(
+            "../../../schemas/axo.leostera.dev/v1/fixtures/connections-bash.call.json"
+        ))
+        .unwrap();
+        assert_eq!(call["method"], METHOD);
+        let account = call["params"]["accountId"].as_str().unwrap();
+        let parsed = parse(&call["params"], account).unwrap();
+        assert_eq!(parsed.timeout_ms, Some(60_000));
+        let result: Value = serde_json::from_str(include_str!(
+            "../../../schemas/axo.leostera.dev/v1/fixtures/connections-bash.result.json"
+        ))
+        .unwrap();
+        let typed: BashResult = serde_json::from_value(result.clone()).unwrap();
+        assert_eq!(serde_json::to_value(&typed).unwrap(), result);
     }
 
     #[test]

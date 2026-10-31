@@ -1,0 +1,6 @@
+{
+  "connections": [
+    { "kind": "host", "name": "studio", "hostId": "0b7d5a1e-2c3f-4e5a-8b6c-7d8e9f0a1b2c", "state": "online" },
+    { "kind": "thirdParty", "name": "linear", "url": "https://mcp.linear.app/mcp", "state": "ready", "tools": 23, "syncedAt": "2026-05-01T09:30:00.000Z", "lastError": null }
+  ]
+}
