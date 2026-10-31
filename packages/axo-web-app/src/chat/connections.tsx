@@ -83,11 +83,11 @@ export function ConnectionsView({ connectionsUrl, initialNotice }: { connections
     if (signInUrl.includes("/oauth/start")) window.location.assign(signInUrl);
   });
 
-  const disconnect = (name: string) => {
-    if (!window.confirm(`Sign out of ${name}? Its grant is deleted and revoked, and scripts can no longer call it.`)) return;
+  const disconnect = (name: string, title: string, account: string) => {
+    if (!window.confirm(`Sign ${account} out of ${title}? Its grant is deleted and revoked, and scripts can no longer act as it.`)) return;
     void act(async () => {
-      await request(`${connectionsUrl}/${encodeURIComponent(name)}/remove`, "POST");
-      setNotice({ kind: "ok", text: `Signed out of ${name}.` });
+      await request(`${connectionsUrl}/${encodeURIComponent(name)}/remove`, "POST", { account });
+      setNotice({ kind: "ok", text: `Signed ${account} out of ${title}.` });
     });
   };
 
@@ -133,23 +133,36 @@ export function ConnectionsView({ connectionsUrl, initialNotice }: { connections
           <h3 className="sheet-section">Apps</h3>
           <div className="grouped">
             {apps.map((app) => app.kind === "app" ? (
-              <div key={app.name} className="grouped-row connection-row">
-                <Icon name="mail" size={18} />
-                <span className="connection-copy">
-                  <strong>{app.title}</strong>
-                  <small>{describe(app)}</small>
-                </span>
-                <span className={`mac-dot ${app.state === "ready" ? "online" : ""}`} aria-label={stateName(app)} title={stateName(app)} />
-                {app.state === "needsSignIn"
-                  ? <button className="bordered-button" disabled={busy} onClick={() => void signIn(app.name)}>Sign in</button>
-                  : null}
-                {app.state === "ready"
-                  ? <button className="plain-icon-button" disabled={busy} onClick={() => disconnect(app.name)} aria-label={`Sign out of ${app.title}`}><Icon name="signOut" size={16} /></button>
-                  : null}
+              <div key={app.name} className="app-group">
+                <div className="grouped-row connection-row">
+                  <Icon name="mail" size={18} />
+                  <span className="connection-copy">
+                    <strong>{app.title}</strong>
+                    <small>{describe(app)}</small>
+                  </span>
+                  <button className="bordered-button" disabled={busy} onClick={() => void signIn(app.name)}
+                    aria-label={app.accounts.length ? `Add a ${app.title} account` : `Sign in to ${app.title}`}>
+                    {app.accounts.length ? "Add account" : "Sign in"}
+                  </button>
+                </div>
+                {app.accounts.map((account) => (
+                  <div key={account.account} className="grouped-row connection-row app-account">
+                    <span className="connection-copy">
+                      <strong className="mono">{account.account}</strong>
+                      <small>{account.state === "ready" ? "signed in" : account.lastError ?? "needs sign-in"}</small>
+                    </span>
+                    <span className={`mac-dot ${account.state === "ready" ? "online" : ""}`} aria-label={account.state === "ready" ? "Ready" : "Needs sign-in"} />
+                    {account.state === "needsSignIn"
+                      ? <button className="bordered-button" disabled={busy} onClick={() => void signIn(app.name)}>Sign in</button>
+                      : null}
+                    <button className="plain-icon-button" disabled={busy} onClick={() => disconnect(app.name, app.title, account.account)}
+                      aria-label={`Sign ${account.account} out of ${app.title}`}><Icon name="signOut" size={16} /></button>
+                  </div>
+                ))}
               </div>
             ) : null)}
           </div>
-          <p className="sheet-note">Scripts call an app's tools as codemode.apps.&lt;app&gt;.&lt;tool&gt;(), for example codemode.apps.gmail.search_messages(&#123; query: "is:unread" &#125;).</p>
+          <p className="sheet-note">Scripts call an app's tools as codemode.apps.&lt;app&gt;.&lt;tool&gt;(&#123; account, … &#125;), naming the account to act as, for example codemode.apps.gmail.search_messages(&#123; account: "you@example.com", query: "is:unread" &#125;).</p>
         </>
       ) : null}
 
@@ -199,8 +212,8 @@ export function ConnectionsView({ connectionsUrl, initialNotice }: { connections
 function describe(connection: Connection): string {
   if (connection.kind === "host") return connection.state === "online" ? "Mac · bash" : "Mac · offline";
   if (connection.kind === "app") {
-    if (connection.state === "needsSignIn") return `${connection.name} · ${connection.lastError ?? "not signed in"}`;
-    return `${connection.name} · ${connection.account ?? "signed in"} · ${connection.tools} tools`;
+    const accounts = connection.accounts.length === 1 ? "1 account" : `${connection.accounts.length || "no"} accounts`;
+    return `${connection.name} · ${accounts} · ${connection.tools.length} tools`;
   }
   const tools = connection.tools === 1 ? "1 tool" : `${connection.tools} tools`;
   if (connection.state === "needsSignIn") return `${new URL(connection.url).host} · needs sign-in`;
