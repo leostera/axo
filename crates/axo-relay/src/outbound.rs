@@ -23,7 +23,7 @@ use crate::fragments;
 pub enum Priority {
     /// Replies, commands and connections calls.
     Control = 0,
-    /// Transcript upload, flow-controlled by the cloud's commit acks.
+    /// Transcript upload, paced by the cloud's commit acknowledgements (RFD0018).
     Durable = 1,
     /// Progress that may be dropped when the socket is busy.
     Ephemeral = 2,
@@ -108,7 +108,15 @@ impl RelayChannel {
 
     /// Whether a relay socket is open now.
     pub fn connected(&self) -> bool {
-        self.live.lock().map(|live| live.is_some()).unwrap_or(false)
+        self.epoch().is_some()
+    }
+
+    /// Which socket is open now, if any: each socket the relay opens has its own epoch.
+    pub fn epoch(&self) -> Option<u64> {
+        self.live
+            .lock()
+            .ok()
+            .and_then(|live| live.as_ref().map(|live| live.epoch))
     }
 
     /// Sends a request and waits up to `timeout` for its reply.

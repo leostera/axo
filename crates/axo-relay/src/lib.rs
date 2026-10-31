@@ -9,10 +9,13 @@ mod host;
 mod link;
 mod outbound;
 mod pairing;
+pub mod pi3;
 mod relay;
+mod sync;
 
 pub use endpoint::{DEFAULT_RELAY_URL, RelayEndpoint};
 pub use host::{PiKey, RelayHost};
 pub use link::{AccountLink, HostLink, HostLinkStore, PendingRedemption, host_label, link_host};
 pub use outbound::{Priority, RelayCallError, RelayChannel, ReplySender};
 pub use relay::{RelayControl, RelayDependencies, RelayWorker, unavailable_status};
+pub use sync::{SessionMetadata, StoredSyncState, SyncSession};

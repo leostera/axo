@@ -51,18 +51,88 @@ impl axo_relay::RelayHost for RelayHostAdapter {
         });
     }
 
-    fn remote_session_snapshots(&self, updated_at: &str) -> io::Result<Vec<RemoteSessionSnapshot>> {
-        let sessions = self.0.list_sessions()?;
-        if sessions.len() > 256 || sessions.iter().any(|session| session.shells.len() > 256) {
-            return Err(io::Error::new(
-                io::ErrorKind::InvalidData,
-                "host session snapshot exceeds the protocol limit",
-            ));
-        }
-        Ok(sessions
-            .iter()
-            .map(|session| self.remote(session, updated_at))
+    fn sync_catalog(&self) -> io::Result<Vec<axo_relay::SyncSession>> {
+        let catalog = self.0.session_catalog()?;
+        let open = catalog
+            .sessions
+            .into_iter()
+            .map(|session| axo_relay::SyncSession {
+                session_id: session.id,
+                metadata: axo_relay::SessionMetadata {
+                    name: Some(
+                        session
+                            .manual_name
+                            .clone()
+                            .unwrap_or_else(|| session.name.clone()),
+                    ),
+                    emoji: session.emoji.clone(),
+                    workspace_id: session.workspace_id.clone(),
+                    workspace_name: session.workspace_name.clone(),
+                    has_agent: session.has_agent(),
+                    created_at: (session.created_at > 0).then_some(session.created_at),
+                    last_message_at: session.last_message_at,
+                    archived: false,
+                },
+                status: Some(session.status),
+                pi_session_file: session.pi_session_file,
+            });
+        let archived = catalog
+            .archived
+            .into_iter()
+            .map(|session| axo_relay::SyncSession {
+                session_id: session.id,
+                metadata: axo_relay::SessionMetadata {
+                    name: Some(session.name),
+                    emoji: session.emoji,
+                    workspace_id: session.workspace_id,
+                    workspace_name: session.workspace_name,
+                    has_agent: session.pi_session_file.is_some(),
+                    created_at: None,
+                    last_message_at: session.last_message_at,
+                    archived: true,
+                },
+                status: None,
+                pi_session_file: session.pi_session_file,
+            });
+        Ok(open.chain(archived).collect())
+    }
+
+    fn sync_states(&self) -> io::Result<Vec<axo_relay::StoredSyncState>> {
+        Ok(self
+            .0
+            .sync_states()?
+            .into_iter()
+            .map(|state| axo_relay::StoredSyncState {
+                session_id: state.session_id,
+                position: state.position,
+                chain: state.chain,
+                metadata_json: state.metadata_json,
+                metadata_version: state.metadata_version,
+            })
             .collect())
+    }
+
+    fn store_sync_cursor(
+        &self,
+        session_id: SessionId,
+        position: u64,
+        chain: &str,
+    ) -> io::Result<()> {
+        self.0.store_sync_cursor(session_id, position, chain)
+    }
+
+    fn store_sync_metadata(
+        &self,
+        session_id: SessionId,
+        metadata_json: &str,
+        version: u64,
+    ) -> io::Result<()> {
+        self.0
+            .store_sync_metadata(session_id, metadata_json, version)
+    }
+
+    fn next_sync_round(&self) -> io::Result<u64> {
+        self.0.next_sync_round()
     }
 
     fn subscribe_remote_events(&self) -> io::Result<String> {
@@ -78,15 +148,6 @@ impl axo_relay::RelayHost for RelayHostAdapter {
             .0
             .next_event(subscription_id, timeout)?
             .map(Arc::unwrap_or_clone))
-    }
-
-    fn remote_resync_events(&self) -> io::Result<Vec<Event>> {
-        Ok(self
-            .0
-            .list_sessions()?
-            .into_iter()
-            .map(Event::snapshot)
-            .collect())
     }
 
     fn unsubscribe_remote_events(&self, subscription_id: &str) -> io::Result<()> {

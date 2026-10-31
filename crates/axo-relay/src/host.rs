@@ -7,6 +7,8 @@ use axo_protocol::{
     Event, LayoutNode, RelayStatus, RemoteSessionSnapshot, RemoteWorkspace, SessionId, ShellId,
 };
 
+use crate::sync::{StoredSyncState, SyncSession};
+
 /// A key a remote person presses in a Session's Pi: what answering it on the Mac would take.
 #[derive(Clone, Copy, Debug, Eq, PartialEq, serde::Deserialize)]
 #[serde(rename_all = "camelCase")]
@@ -28,8 +30,26 @@ pub trait RelayHost: Send + Sync {
     fn host_generation(&self) -> &str;
     fn publish_relay_status(&self, status: &RelayStatus);
 
-    /// Every open session, terminal panes only.
-    fn remote_session_snapshots(&self, updated_at: &str) -> io::Result<Vec<RemoteSessionSnapshot>>;
+    /// Every Session, open and archived, with its Pi transcript (RFD0018, Upload).
+    fn sync_catalog(&self) -> io::Result<Vec<SyncSession>>;
+    /// What `axo.db` keeps of each Session's upload.
+    fn sync_states(&self) -> io::Result<Vec<StoredSyncState>>;
+    /// The last position and chain the cloud acknowledged for a Session.
+    fn store_sync_cursor(
+        &self,
+        session_id: SessionId,
+        position: u64,
+        chain: &str,
+    ) -> io::Result<()>;
+    /// The metadata last sent for a Session, and its version.
+    fn store_sync_metadata(
+        &self,
+        session_id: SessionId,
+        metadata_json: &str,
+        version: u64,
+    ) -> io::Result<()>;
+    /// Raises and returns the handshake round, which outlives sockets and restarts.
+    fn next_sync_round(&self) -> io::Result<u64>;
     /// Subscribes to local events (including terminal output); returns the subscription ID.
     fn subscribe_remote_events(&self) -> io::Result<String>;
     fn next_remote_event(
@@ -37,8 +57,6 @@ pub trait RelayHost: Send + Sync {
         subscription_id: &str,
         timeout: Duration,
     ) -> io::Result<Option<Event>>;
-    /// Current snapshots as events, for resynchronizing after the stream lagged.
-    fn remote_resync_events(&self) -> io::Result<Vec<Event>>;
     fn unsubscribe_remote_events(&self, subscription_id: &str) -> io::Result<()>;
 
     /// The Workspaces a Session can be created in.

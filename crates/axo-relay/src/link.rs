@@ -216,10 +216,29 @@ pub(crate) mod testing {
             HOST_GENERATION
         }
         fn publish_relay_status(&self, _: &axo_protocol::RelayStatus) {}
-        fn remote_session_snapshots(
+        fn sync_catalog(&self) -> std::io::Result<Vec<crate::sync::SyncSession>> {
+            unreachable!()
+        }
+        fn sync_states(&self) -> std::io::Result<Vec<crate::sync::StoredSyncState>> {
+            unreachable!()
+        }
+        fn store_sync_cursor(
             &self,
+            _: axo_protocol::SessionId,
+            _: u64,
             _: &str,
-        ) -> std::io::Result<Vec<axo_protocol::RemoteSessionSnapshot>> {
+        ) -> std::io::Result<()> {
+            unreachable!()
+        }
+        fn store_sync_metadata(
+            &self,
+            _: axo_protocol::SessionId,
+            _: &str,
+            _: u64,
+        ) -> std::io::Result<()> {
+            unreachable!()
+        }
+        fn next_sync_round(&self) -> std::io::Result<u64> {
             unreachable!()
         }
         fn subscribe_remote_events(&self) -> std::io::Result<String> {
@@ -230,9 +249,6 @@ pub(crate) mod testing {
             _: &str,
             _: std::time::Duration,
         ) -> std::io::Result<Option<axo_protocol::Event>> {
-            unreachable!()
-        }
-        fn remote_resync_events(&self) -> std::io::Result<Vec<axo_protocol::Event>> {
             unreachable!()
         }
         fn unsubscribe_remote_events(&self, _: &str) -> std::io::Result<()> {

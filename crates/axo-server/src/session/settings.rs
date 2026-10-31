@@ -61,6 +61,43 @@ impl SessionManager {
         };
         axo_store::store_host_link(&self.lock_state()?.database, &stored)
     }
+
+    /// What the cloud acknowledged of each Session's upload (RFD0018).
+    pub(crate) fn sync_states(&self) -> io::Result<Vec<axo_store::StoredSyncState>> {
+        axo_store::load_sync_states(&self.lock_state()?.database)
+    }
+
+    pub(crate) fn store_sync_cursor(
+        &self,
+        session_id: axo_protocol::SessionId,
+        position: u64,
+        chain: &str,
+    ) -> io::Result<()> {
+        axo_store::store_sync_cursor(
+            &self.lock_state()?.database,
+            &session_id.to_string(),
+            position,
+            chain,
+        )
+    }
+
+    pub(crate) fn store_sync_metadata(
+        &self,
+        session_id: axo_protocol::SessionId,
+        metadata_json: &str,
+        version: u64,
+    ) -> io::Result<()> {
+        axo_store::store_sync_metadata(
+            &self.lock_state()?.database,
+            &session_id.to_string(),
+            metadata_json,
+            version,
+        )
+    }
+
+    pub(crate) fn next_sync_round(&self) -> io::Result<u64> {
+        axo_store::next_sync_round(&self.lock_state()?.database)
+    }
 }
 
 pub(super) fn load_or_create_agent_command(database: &Connection) -> io::Result<AgentCommand> {

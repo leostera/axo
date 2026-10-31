@@ -188,6 +188,86 @@ pub fn store_host_link(database: &Connection, link: &StoredHostLink) -> io::Resu
         .map_err(io::Error::other)
 }
 
+/// What the cloud acknowledged of one Session's transcript, and the metadata last sent to it with
+/// its version (RFD0018, Upload). The cloud's answer to a handshake always wins over these.
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub struct StoredSyncState {
+    pub session_id: String,
+    pub position: u64,
+    pub chain: Option<String>,
+    pub metadata_json: Option<String>,
+    pub metadata_version: u64,
+}
+
+pub fn load_sync_states(database: &Connection) -> io::Result<Vec<StoredSyncState>> {
+    let mut statement = database
+        .prepare(
+            "SELECT session_id, position, chain, metadata_json, metadata_version FROM relay_sync",
+        )
+        .map_err(io::Error::other)?;
+    statement
+        .query_map([], |row| {
+            Ok(StoredSyncState {
+                session_id: row.get(0)?,
+                position: row.get::<_, i64>(1)?.max(0) as u64,
+                chain: row.get(2)?,
+                metadata_json: row.get(3)?,
+                metadata_version: row.get::<_, i64>(4)?.max(0) as u64,
+            })
+        })
+        .map_err(io::Error::other)?
+        .collect::<rusqlite::Result<Vec<_>>>()
+        .map_err(io::Error::other)
+}
+
+pub fn store_sync_cursor(
+    database: &Connection,
+    session_id: &str,
+    position: u64,
+    chain: &str,
+) -> io::Result<()> {
+    database
+        .execute(
+            "INSERT INTO relay_sync (session_id, position, chain) VALUES (?1, ?2, ?3) \
+             ON CONFLICT(session_id) DO UPDATE SET position = excluded.position, chain = excluded.chain",
+            params![session_id, position as i64, chain],
+        )
+        .map(drop)
+        .map_err(io::Error::other)
+}
+
+pub fn store_sync_metadata(
+    database: &Connection,
+    session_id: &str,
+    metadata_json: &str,
+    version: u64,
+) -> io::Result<()> {
+    database
+        .execute(
+            "INSERT INTO relay_sync (session_id, metadata_json, metadata_version) VALUES (?1, ?2, ?3) \
+             ON CONFLICT(session_id) DO UPDATE SET metadata_json = excluded.metadata_json, \
+             metadata_version = excluded.metadata_version",
+            params![session_id, metadata_json, version as i64],
+        )
+        .map(drop)
+        .map_err(io::Error::other)
+}
+
+/// Raises the handshake round and returns it: every handshake has a higher one than the last,
+/// across sockets and restarts.
+pub fn next_sync_round(database: &Connection) -> io::Result<u64> {
+    database
+        .query_row(
+            "INSERT INTO daemon_metadata (key, value) VALUES ('relay_sync_round', '1') \
+             ON CONFLICT(key) DO UPDATE SET value = CAST(CAST(value AS INTEGER) + 1 AS TEXT) \
+             RETURNING CAST(value AS INTEGER)",
+            [],
+            |row| row.get::<_, i64>(0),
+        )
+        .map(|round| round.max(1) as u64)
+        .map_err(io::Error::other)
+}
+
 /// Opens (creating if needed) the catalog at `path`, migrated to the current schema and readable
 /// only by its owner. Writes are durable once they return: WAL with `synchronous=FULL`.
 pub fn open(path: &Path) -> io::Result<Connection> {
@@ -491,6 +571,13 @@ pub fn create_tables(transaction: &rusqlite::Transaction<'_>) -> rusqlite::Resul
         CREATE TABLE IF NOT EXISTS daemon_metadata (
             key TEXT PRIMARY KEY,
             value TEXT NOT NULL
+        );
+        CREATE TABLE IF NOT EXISTS relay_sync (
+            session_id TEXT PRIMARY KEY NOT NULL,
+            position INTEGER NOT NULL DEFAULT 0,
+            chain TEXT,
+            metadata_json TEXT,
+            metadata_version INTEGER NOT NULL DEFAULT 0
         );
         CREATE TABLE IF NOT EXISTS host_link (
             singleton INTEGER PRIMARY KEY CHECK (singleton = 1),

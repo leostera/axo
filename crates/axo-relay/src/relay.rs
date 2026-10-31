@@ -3,10 +3,10 @@ use crate::endpoint::RelayEndpoint;
 use crate::fragments::{self, Reassembler};
 use crate::host::RelayHost;
 use crate::link::{AccountLink, HostLinkStore, host_label};
-use crate::outbound::{FRAMES_PER_TURN, Outbox, RelayChannel, ReplySender};
+use crate::outbound::{FRAMES_PER_TURN, Outbox, Priority, RelayChannel, ReplySender};
+use crate::sync::{SyncWaker, SyncWorker};
 use axo_protocol::{
-    Event, HostKind, LayoutNode, RelayState, RelayStatus, RemoteSessionSnapshot, SessionId,
-    ShellActivity, ShellId,
+    Event, HostKind, LayoutNode, RelayState, RelayStatus, RemoteSessionSnapshot, SessionId, ShellId,
 };
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
@@ -124,6 +124,8 @@ pub struct RelayWorker {
     control: Arc<RelayControl>,
     channel: Arc<RelayChannel>,
     thread: Option<JoinHandle<()>>,
+    /// Uploads every Session's transcript while the socket is open (RFD0018).
+    sync: SyncWorker,
 }
 
 /// What the relay worker needs from axod.
@@ -153,16 +155,30 @@ impl RelayWorker {
         let worker_control = Arc::clone(&control);
         let channel = RelayChannel::new();
         let worker_channel = Arc::clone(&channel);
+        let waker = SyncWaker::default();
+        let sync = SyncWorker::start(
+            Arc::clone(&dependencies.host),
+            Arc::clone(&channel),
+            waker.clone(),
+            Arc::clone(&stop),
+        )?;
         let worker = thread::Builder::new()
             .name("axo-cloud-relay".to_owned())
             .spawn(move || {
-                run_reconnect_loop(dependencies, worker_stop, worker_control, worker_channel)
+                run_reconnect_loop(
+                    dependencies,
+                    worker_stop,
+                    worker_control,
+                    worker_channel,
+                    waker,
+                )
             })?;
         Ok(Self {
             stop,
             control,
             channel,
             thread: Some(worker),
+            sync,
         })
     }
 
@@ -184,6 +200,7 @@ impl RelayWorker {
         if let Some(worker) = self.thread.take() {
             let _ = worker.join();
         }
+        self.sync.join();
     }
 }
 
@@ -208,6 +225,7 @@ fn run_reconnect_loop(
     stop: Arc<AtomicBool>,
     control: Arc<RelayControl>,
     channel: Arc<RelayChannel>,
+    waker: SyncWaker,
 ) {
     let mut retry_delay = Duration::from_secs(1);
     while !stop.load(Ordering::Relaxed) {
@@ -230,7 +248,7 @@ fn run_reconnect_loop(
         };
 
         control.mark_connecting();
-        match run_connection(&dependencies, account, &stop, &control, &channel) {
+        match run_connection(&dependencies, account, &stop, &control, &channel, &waker) {
             Ok(()) if stop.load(Ordering::Relaxed) => break,
             Ok(()) => {
                 control.mark_disconnected("relay connection ended");
@@ -270,6 +288,7 @@ fn run_connection(
     stop: &AtomicBool,
     control: &RelayControl,
     channel: &RelayChannel,
+    waker: &SyncWaker,
 ) -> io::Result<()> {
     let sessions = &dependencies.host;
     let host_id = sessions.host_id().to_owned();
@@ -306,13 +325,6 @@ fn run_connection(
         &host_generation,
     )?;
     let subscription_id = sessions.subscribe_remote_events()?;
-    let snapshots = match sessions.remote_session_snapshots(&current_timestamp()) {
-        Ok(snapshots) => snapshots,
-        Err(error) => {
-            let _ = sessions.unsubscribe_remote_events(&subscription_id);
-            return Err(error);
-        }
-    };
     let label = host_label();
     let registration = HostRegistration {
         protocol_version: axo_protocol::rpc::PROTOCOL_VERSION,
@@ -321,7 +333,7 @@ fn run_connection(
         label: &label,
         host_kind: HostKind::MacOS,
         capabilities: HOST_CAPABILITIES,
-        sessions: snapshots,
+        sessions: [],
     };
     if let Err(error) = rpc_call(
         &mut socket,
@@ -340,6 +352,8 @@ fn run_connection(
 
     // Threads queue onto this socket only while it lives (RFD0016, Transport).
     let (epoch, outgoing, replies) = channel.attach();
+    // A new socket needs a new handshake: the uploader starts it now.
+    waker.wake();
     let result = relay_session(
         &mut socket,
         &mut reassembler,
@@ -354,6 +368,7 @@ fn run_connection(
             channel,
             outgoing,
             replies,
+            waker,
             socket_id: format!("axod-{}-{epoch}", std::process::id()),
             account_id: account.account_id().to_owned(),
         },
@@ -514,6 +529,8 @@ struct RelaySessionContext<'a> {
     outgoing: std::sync::mpsc::Receiver<crate::outbound::Outgoing>,
     /// Replies to the cloud's requests on this socket, from threads that answer them later.
     replies: ReplySender,
+    /// Tells the uploader a Session changed, so its new lines go up at once.
+    waker: &'a SyncWaker,
     socket_id: String,
     /// The account this Mac is linked to; a command for any other is refused.
     account_id: String,
@@ -600,24 +617,11 @@ fn relay_session(
             next_heartbeat = Instant::now() + HEARTBEAT_INTERVAL;
         }
 
-        let events = match context
+        if let Some(event) = context
             .sessions
             .next_remote_event(context.subscription_id, Duration::ZERO)?
         {
-            // The local queue overflowed; replace the gap with current snapshots.
-            Some(Event::SubscriptionLagged) => {
-                log::warn!("event=relay.events_lagged action=resync");
-                context.sessions.remote_resync_events()?
-            }
-            Some(event) => vec![event],
-            None => Vec::new(),
-        };
-        for event in events {
-            if let Some(notification) =
-                host_notification(event, context.host_id, context.host_generation)
-            {
-                send_json(socket, &notification)?;
-            }
+            forward_event(event, &context);
         }
 
         let Some(raw) = read_message(socket, reassembler)? else {
@@ -690,17 +694,7 @@ fn read_message(
 
 fn read_text(socket: &mut RelaySocket) -> io::Result<Option<String>> {
     match socket.read() {
-        Ok(Message::Text(text)) => {
-            send_json(
-                socket,
-                &OutgoingNotification {
-                    jsonrpc: JSONRPC,
-                    method: "axo.transport.ack",
-                    params: TransportAck { frames: 1 },
-                },
-            )?;
-            Ok(Some(text.to_string()))
-        }
+        Ok(Message::Text(text)) => Ok(Some(text.to_string())),
         Ok(Message::Ping(_)) | Ok(Message::Pong(_)) => {
             socket.flush().map_err(io::Error::other)?;
             Ok(None)
@@ -763,82 +757,61 @@ fn set_read_timeout(
     }
 }
 
-/// The largest integer JavaScript clients can represent exactly.
-const MAX_SAFE_INTEGER: u64 = 9_007_199_254_740_991;
-
-/// Projects a local event for the cloud: remote snapshots carry terminal panes only and no local
-/// paths. Events the relay does not forward (focus, workspace and relay status, lag markers)
-/// and sequences beyond `MAX_SAFE_INTEGER` yield `None`.
-fn host_notification<'a>(
-    local_event: Event,
-    host_id: &'a str,
-    host_generation: &'a str,
-) -> Option<OutgoingNotification<'static, HostEventParams<'a>>> {
-    let event = match local_event {
-        Event::SessionSnapshot { session } => HostEvent::SessionSnapshot {
-            snapshot: RemoteSessionSnapshot::from_record(&session, host_id, &current_timestamp()),
-        },
-        Event::SessionRemoved { session_id } => HostEvent::SessionRemoved { session_id },
-        Event::ShellActivity {
-            session_id,
-            shell_id,
-            activity,
-        } => HostEvent::ShellActivity {
-            session_id,
-            shell_id,
-            activity,
-        },
-        Event::TerminalOutput {
-            session_id,
-            shell_id,
-            sequence,
-            data,
-        } => {
-            if sequence > MAX_SAFE_INTEGER {
-                return None;
-            }
-            HostEvent::TerminalOutput {
-                session_id,
-                shell_id,
-                sequence,
-                data,
-            }
-        }
+/// What a local event means for the cloud (RFD0018). Durable records come from the Pi file, so
+/// an event only wakes the uploader; Pi's progress (`message.update`, `tool.update`, already
+/// throttled by pi-axo) goes up as an ephemeral snapshot, the newest replacing the last. Terminal
+/// output and everything else stays on the Mac.
+fn forward_event(event: Event, context: &RelaySessionContext<'_>) {
+    match event {
         Event::PiEvent {
             session_id,
-            pi_session_id,
-            stream_id,
-            sequence,
             name,
             data,
+            ..
         } => {
-            if sequence == 0 || sequence > MAX_SAFE_INTEGER {
-                return None;
-            }
-            HostEvent::PiEvent {
-                session_id,
-                pi_session_id,
-                stream_id,
-                sequence,
-                name,
-                data,
+            if let Some((slot, snapshot)) = progress_snapshot(&name, data) {
+                let _ = context.channel.notify(
+                    "axo.host.session.progress",
+                    serde_json::json!({
+                        "sessionId": session_id,
+                        "slot": slot,
+                        "snapshot": snapshot,
+                        "at": unix_timestamp_millis() / 1000,
+                    }),
+                    Priority::Ephemeral,
+                );
+            } else {
+                context.waker.wake();
             }
         }
-        Event::SessionFocus { .. }
+        Event::SessionSnapshot { .. }
+        | Event::SessionRemoved { .. }
+        | Event::SubscriptionLagged => {
+            context.waker.wake();
+        }
+        Event::ShellActivity { .. }
+        | Event::TerminalOutput { .. }
+        | Event::SessionFocus { .. }
         | Event::WorkspaceChanged { .. }
-        | Event::RelayStatus { .. }
-        | Event::SubscriptionLagged => return None,
-    };
-    Some(OutgoingNotification {
-        jsonrpc: JSONRPC,
-        method: "axo.host.event",
-        params: HostEventParams {
-            kind: "host.data",
-            host_id,
-            host_generation,
-            event,
-        },
-    })
+        | Event::RelayStatus { .. } => {}
+    }
+}
+
+/// The progress slot and snapshot of a Pi event, if it is progress: `"message"` for the reply
+/// being written, or the tool call's id for a running tool.
+fn progress_snapshot(name: &str, data: Value) -> Option<(String, Value)> {
+    match name {
+        "message.update" => Some(("message".to_owned(), data)),
+        "tool.update" => {
+            let slot = data
+                .get("toolCallId")
+                .and_then(Value::as_str)
+                .filter(|id| !id.is_empty() && id.len() <= 128)?
+                .to_owned();
+            Some((slot, data))
+        }
+        _ => None,
+    }
 }
 
 const JSONRPC: &str = "2.0";
@@ -847,13 +820,6 @@ const JSONRPC: &str = "2.0";
 struct OutgoingRequest<'a, P> {
     jsonrpc: &'static str,
     id: &'a str,
-    method: &'a str,
-    params: P,
-}
-
-#[derive(Serialize)]
-struct OutgoingNotification<'a, P> {
-    jsonrpc: &'static str,
     method: &'a str,
     params: P,
 }
@@ -918,11 +884,6 @@ struct HostIdentity<'a> {
 }
 
 #[derive(Serialize)]
-struct TransportAck {
-    frames: u32,
-}
-
-#[derive(Serialize)]
 struct Capability {
     id: &'static str,
     version: u32,
@@ -952,50 +913,8 @@ struct HostRegistration<'a> {
     label: &'a str,
     host_kind: HostKind,
     capabilities: &'static [Capability],
-    sessions: Vec<RemoteSessionSnapshot>,
-}
-
-#[derive(Serialize)]
-#[serde(rename_all = "camelCase")]
-struct HostEventParams<'a> {
-    #[serde(rename = "type")]
-    kind: &'static str,
-    host_id: &'a str,
-    host_generation: &'a str,
-    event: HostEvent,
-}
-
-/// Events as the cloud relay sees them.
-#[derive(Serialize)]
-#[serde(tag = "type", rename_all_fields = "camelCase")]
-enum HostEvent {
-    #[serde(rename = "session.snapshot")]
-    SessionSnapshot { snapshot: RemoteSessionSnapshot },
-    #[serde(rename = "session.removed")]
-    SessionRemoved { session_id: SessionId },
-    #[serde(rename = "shell.activity")]
-    ShellActivity {
-        session_id: SessionId,
-        shell_id: ShellId,
-        activity: ShellActivity,
-    },
-    #[serde(rename = "terminal.output")]
-    TerminalOutput {
-        session_id: SessionId,
-        shell_id: ShellId,
-        sequence: u64,
-        data: String,
-    },
-    #[serde(rename = "pi.event")]
-    PiEvent {
-        session_id: SessionId,
-        pi_session_id: String,
-        stream_id: String,
-        sequence: u64,
-        name: String,
-        /// Pi's own payload, forwarded unchanged.
-        data: Value,
-    },
+    /// Sessions are synced with `axo.host.sync` after registering (RFD0018).
+    sessions: [(); 0],
 }
 
 /// Results of `axo.remote.*` calls.
@@ -1561,85 +1480,19 @@ mod tests {
         );
     }
 
-    /// Projects a wire event the way the relay forwards it, as wire JSON.
-    fn project(local_event: Value, host_id: &str, host_generation: &str) -> Option<Value> {
-        let event: Event = serde_json::from_value(local_event).unwrap();
-        host_notification(event, host_id, host_generation)
-            .map(|notification| serde_json::to_value(notification).unwrap())
-    }
-
     #[test]
-    fn host_notifications_project_agent_metadata_and_relay_structured_pi_events() {
-        let snapshot = project(
-            json!({
-                "type": "session.snapshot",
-                "session": {
-                    "id": "70fa4f38-71d9-42f8-9013-43b4fd688693",
-                    "piSessionFile": "/Users/me/.axo/server/pi-sessions/session.jsonl",
-                    "piSessionId": "pi-session-1",
-                    "workspaceId": "7f1918d3-8b6d-4af4-a57e-7e6ae28e89e2",
-                    "workspaceName": "Axo",
-                    "name": "Session 1",
-                    "manualName": null,
-                    "emoji": "🦀",
-                    "lastMessageAt": 1_800_000_100_i64,
-                    "createdAt": 1_800_000_000_i64,
-                    "status": "working",
-                    "initialPwd": "/Users/me/axo",
-                    "shells": [
-                        {
-                            "id": 20, "paneId": "2896bac4-a44b-44b2-9869-f4facf3adf33", "role": "pi",
-                            "processId": 100, "initialPwd": "/Users/me/axo", "ptyDevice": "/dev/ttys001",
-                            "attachSocketPath": "/Users/me/.axo/server/attach.sock",
-                            "available": true, "availabilityReason": null
-                        },
-                        {
-                            "id": 21, "paneId": null, "role": "terminal",
-                            "processId": 101, "initialPwd": "/Users/me/axo", "ptyDevice": "/dev/ttys002",
-                            "attachSocketPath": "/Users/me/.axo/server/attach.sock",
-                            "available": true, "availabilityReason": null
-                        }
-                    ],
-                    "layout": {
-                        "kind": "split",
-                        "id": "0f00f22d-a24c-4cbc-9196-74dbed95ca80",
-                        "direction": "right",
-                        "ratio": 0.5,
-                        "first": { "kind": "pane", "shellId": 20 },
-                        "second": { "kind": "pane", "shellId": 21 }
-                    }
-                }
-            }),
-            "70fa4f38-71d9-42f8-9013-43b4fd688693",
-            "7f1918d3-8b6d-4af4-a57e-7e6ae28e89e2",
-        )
-        .unwrap();
-        let snapshot = &snapshot["params"]["event"]["snapshot"];
-        assert_eq!(snapshot["hasAgent"], true);
-        assert_eq!(snapshot["workspaceName"], "Axo");
-        assert_eq!(snapshot["emoji"], "🦀");
-        assert_eq!(snapshot["status"], "working");
-        assert_eq!(snapshot["shells"], json!([{ "shellId": 21 }]));
-        assert_eq!(snapshot["layout"], json!({ "kind": "pane", "shellId": 21 }));
-        // The phone and web list chats by these, as the Mac's recent list does.
-        assert_eq!(snapshot["lastMessageAt"], 1_800_000_100_i64);
-        assert_eq!(snapshot["createdAt"], 1_800_000_000_i64);
-
-        let pi_event = project(
-            json!({
-                "type": "pi.event",
-                "sessionId": "70fa4f38-71d9-42f8-9013-43b4fd688693",
-                "piSessionId": "pi-session-1",
-                "streamId": "0f00f22d-a24c-4cbc-9196-74dbed95ca80",
-                "sequence": 1,
-                "name": "message.end",
-                "data": { "role": "assistant", "text": "Persist me" }
-            }),
-            "70fa4f38-71d9-42f8-9013-43b4fd688693",
-            "7f1918d3-8b6d-4af4-a57e-7e6ae28e89e2",
-        )
-        .unwrap();
-        assert_eq!(pi_event["params"]["event"]["type"], "pi.event");
-        assert_eq!(pi_event["params"]["event"]["data"]["text"], "Persist me");
+    fn pi_progress_goes_up_as_a_snapshot_per_slot_and_other_events_do_not() {
+        let message = json!({ "type": "message_update", "message": { "role": "assistant" } });
+        assert_eq!(
+            progress_snapshot("message.update", message.clone()),
+            Some(("message".to_owned(), message))
+        );
+        let tool = json!({ "toolCallId": "call_1", "partialResult": "a" });
+        assert_eq!(
+            progress_snapshot("tool.update", tool.clone()),
+            Some(("call_1".to_owned(), tool))
+        );
+        assert_eq!(progress_snapshot("tool.update", json!({})), None);
+        assert_eq!(progress_snapshot("message.end", json!({})), None);
     }
 }

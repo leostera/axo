@@ -1,7 +1,7 @@
 /**
  * Record identity and hashing for Pi session files (`pi/3`; RFD0018, Record identity and
  * hashing). The same rules are implemented in Rust (`crates/axo-relay/src/pi3.rs`); both are
- * checked against `fixtures/pi3/`.
+ * checked against `schemas/axo.leostera.dev/v1/fixtures/pi3-*`.
  *
  * A Session's transcript is its Pi session file: line 0 is the header, every later line is one
  * immutable record whose payload is the raw line, without its newline. Hashes copy the shape of

@@ -3,7 +3,7 @@ import assert from "node:assert/strict";
 import { readFileSync } from "node:fs";
 import { Pi3Transcript, pi3Entry } from "../src/pi3.ts";
 
-const fixture = (name: string) => readFileSync(new URL(`../fixtures/pi3/${name}`, import.meta.url), "utf8");
+const fixture = (name: string) => readFileSync(new URL(`../../../schemas/axo.leostera.dev/v1/fixtures/pi3-${name}`, import.meta.url), "utf8");
 
 test("the fixture transcript hashes to the shared vectors", async () => {
   const vectors = JSON.parse(fixture("vectors.json"));
