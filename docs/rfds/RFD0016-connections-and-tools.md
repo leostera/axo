@@ -4,7 +4,7 @@
 - Status: Draft
 - Author: leostera
 - Start Date: 2026-10-29
-- Updated: 2026-10-29
+- Updated: 2026-10-31
 - Document Type: Proposal
 
 > Drafting in progress. Sections marked _(open)_ are not yet decided.
@@ -22,11 +22,12 @@ _(open)_
 - An account adds a third-party connection (a remote MCP server) by URL once and its agents use that server's tools afterwards, with Axo running the upstream OAuth flow and keeping the grant.
 - Each paired Mac is a host connection with one tool, `bash`, that any Session of the same account can call while that Mac is online, including Sessions on other Macs. Local apps are reached through their command-line interfaces; Axo does not need to know about them.
 - Agents in Axo Sessions reach every connection through the existing `axod mcp` server (RFD0015).
+- Axo provides a few apps itself, starting with Gmail, that an account signs in to once and its agents reach as `codemode.apps.<app>.*`.
 
 ## Non-goals
 
 - Sharing connections, credentials or tools between Axo accounts.
-- Direct API providers (REST APIs reached with API keys or OAuth without an MCP server) and tools authored in Axo. Both are future possibilities.
+- Direct API providers that an account adds itself (REST APIs reached with API keys or OAuth without an MCP server), and tools authored by users. Both are future possibilities. The apps Axo provides (below) are the one exception: their tools are written in Axo.
 - An MCP endpoint for clients outside Axo (other agents, chat apps, the phone). Future possibility.
 - Host MCP servers, detection of local apps, and stateful host tools (for example a browser session kept open across calls). Future possibility, once `bash` shows what is missing.
 - Approvals. In v1 every call to a connection runs without pausing; the limits are the upstream server's own authorization and the scopes granted at sign-in. Per-connection approval policies are a future possibility.
@@ -38,6 +39,7 @@ _(open)_
 - **Connection:** a named source of tools attached to an Axo account. There are two kinds:
   - a **third-party connection** is a remote MCP server the account adds by URL; the account's cloud Durable Object reaches it;
   - a **host connection** is one of the account's paired Macs; its `axod` runs the host's tools, which in v1 is only `bash`.
+- **App:** a service Axo provides itself, such as Gmail, with tools written in Axo that call the provider's API. An account signs in to an app; it does not add one.
 - **Grant:** the stored OAuth tokens that let Axo call a third-party connection for the account.
 - **Tool:** one operation a connection exposes.
 
@@ -59,6 +61,14 @@ Every paired Mac is a host connection from the moment it is paired; there is no 
 `bash` runs one non-interactive command as the user `axod` runs as, with a working directory, a timeout and an output limit, and returns its exit status, standard output and standard error. Whatever that user can reach (installed CLIs, Keychain, a signed-in password-manager CLI, local servers on `127.0.0.1`) is reachable, and nothing else is set up for it.
 
 Scripts run in the cloud, not on the calling Mac. `axod mcp` forwards `connections_search` and `connections_execute` over the host relay to the account's Durable Object, which runs the script in a Dynamic Worker. Third-party calls are made from the cloud with the account's grants; host-connection calls travel over the relay to the Mac that owns the connection and back. A script that only uses host tools still makes that round trip; that is the price of keeping grants in one place.
+
+### Apps
+
+An app is listed on the Connections page and by `connections_list` as `apps.<app>` (kind `app`) whenever the deployment has a client for the app's provider, signed in or not. Its tools are in `codemode.tools()` with service `apps.<app>`, and a script calls them as `codemode.apps.<app>.<tool>(input)`, for example `codemode.apps.gmail.search_messages({ query: "is:unread" })`. `apps` is reserved: no connection is added under that name, and a Mac labelled "apps" gets a suffix.
+
+The person signs in on the Connections page. An agent that calls an app before that gets an error carrying a sign-in link, which it gives to the person, as with `connections_add`. `connections_remove({ name: "apps.gmail" })` or the page's sign-out button deletes the grant and revokes it at the provider.
+
+Gmail is the first app. It signs in to Google with `openid email https://www.googleapis.com/auth/gmail.modify`, so it can read, search, send, draft, label and trash mail but not delete it for good, and shows the Google account's email once signed in. Its tools are `get_profile`, `search_messages`, `get_message`, `get_thread`, `list_labels`, `send_message`, `create_draft`, `modify_message` and `trash_message`.
 
 ### Adding a third-party connection
 
@@ -85,6 +95,12 @@ When a third-party MCP server requires OAuth, the account's Durable Object is th
 Every third-party sign-in returns to one fixed callback, `https://axo.leostera.dev/api/v1/connections/oauth/callback`, the only redirect URI a provider ever needs. A sign-in link (what `connections_add` returns, or the Connections page's Sign in button) points at Axo's own start page, `/api/v1/connections/oauth/start?flow=<nonce>`, never at the provider: it works once, within ten minutes, and only in a browser signed in to the account that owns the connection, so a link passed to someone else does nothing. The start page sets a flow cookie and sends the browser to the provider; the PKCE verifier stays in the account's Durable Object, and the account and nonce are sealed into `state`. The callback accepts the provider's answer only from a browser signed in to that account that presents the flow cookie, and redeems the code once. A sign-in completed this way lands on the Connections page (`/app/connections`). A completed sign-in stores the grant on the connection; the Durable Object refreshes it before expiry and marks the connection as needing sign-in when refresh fails.
 
 Each stored grant carries a generation that goes up with every completed sign-in, and every refresh names the generation it renews. A refresh answer or failure for an older generation is ignored: two quick sign-ins and a refresh can otherwise interleave so that the rejection of the first grant's refresh drops the second, newer grant (the model found this). A refresh that gets no answer drops the grant, because a rotated refresh token may already be spent.
+
+### App sign-in
+
+An app's provider client is Axo's own: one OAuth client per provider, registered by the operator, whose ID and secret are Worker secrets (`GOOGLE_CLIENT_ID`, `GOOGLE_CLIENT_SECRET` for Google). Without them the provider's apps are not listed. The client's only redirect URI is the same fixed callback, and an app's sign-in uses the same start page, flow cookie, sealed state and one-time, ten-minute nonce as a third-party sign-in; app flows and third-party flows are kept apart but never share a nonce. Google is asked for offline access with forced consent, so every sign-in returns a refresh token. A sign-in that did not grant the app's required scopes (a person can untick them on Google's consent page) does not land: its grant is revoked and the app stays signed out.
+
+App grants are sealed with the account's key, carry a generation like third-party grants, and are renewed before expiry; a renewal lands only on the generation it renewed. Google does not rotate refresh tokens, so a renewal that gets no answer keeps the grant and fails the call; a refused renewal drops it. A provider 401 renews once and sends the call again, since it did not run. A call to a tool that is not safe to repeat (`send_message`, `create_draft`) that gets no answer or a server error fails as may-have-run and is logged as `unknown`.
 
 ### Tool lists
 
@@ -125,8 +141,8 @@ The specs point at their code (sources, locked in `feynman.lock`): the host-conn
 
 - **Account isolation.** A connection belongs to exactly one Axo account. Only that account's clients, Sessions and hosts can list, use, change or remove it. No route, relay message or tool call resolves a connection across accounts.
 - **Per-account credential keys.** Credential material is encrypted with a key specific to the owning account, so a defect that reads another account's rows cannot decrypt them.
-- **Credentials stay where they were issued.** Third-party connection grants are held by the account's cloud Durable Object and never sent to a Mac or a Session. A host connection's commands use credentials already on its Mac (a password-manager CLI, Keychain, browser profile, local files); Axo neither stores nor transports them, though a command's output can contain whatever the command prints. Calls travel to the credential, never the reverse.
-- **Unique service names.** A connection name is a JavaScript-safe identifier unique within its account across third-party and host connections. A host connection's name is its Mac's host name. Adding a duplicate name fails; nothing is renamed automatically.
+- **Credentials stay where they were issued.** Third-party connection and app grants are held by the account's cloud Durable Object and never sent to a Mac or a Session. A host connection's commands use credentials already on its Mac (a password-manager CLI, Keychain, browser profile, local files); Axo neither stores nor transports them, though a command's output can contain whatever the command prints. Calls travel to the credential, never the reverse.
+- **Unique service names.** A connection name is a JavaScript-safe identifier unique within its account across third-party and host connections, and never `apps`. A host connection's name is its Mac's host name. Adding a duplicate name fails; nothing is renamed automatically. Apps are `apps.<app>`, outside that namespace.
 - **One execution place.** `connections_execute` scripts run only in the account's cloud Dynamic Worker. The script sandbox has no network access of its own; its only way out is a tool call through the `codemode` proxy, which the Durable Object dispatches.
 
 ## Drawbacks

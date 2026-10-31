@@ -76,8 +76,8 @@
     "packages/axo-api-worker/src/host-do.ts#AxoHostDO.callHost": "ba2dd2af8edf",
     "packages/axo-api-worker/src/host-do.ts#AxoHostDO.command": "1119be74770e",
     "packages/axo-api-worker/src/host-do.ts#AxoHostDO.disconnect": "f7ff956c55a0",
-    "packages/axo-api-worker/src/host-do.ts#AxoHostDO.fence": "9144c71b059e",
-    "packages/axo-api-worker/src/host-do.ts#AxoHostDO.receiveHostCall": "2f5e5290790d",
+    "packages/axo-api-worker/src/host-do.ts#AxoHostDO.fence": "6640b1a6608c",
+    "packages/axo-api-worker/src/host-do.ts#AxoHostDO.receiveHostCall": "43bcc5b00e99",
     "packages/axo-api-worker/src/host-do.ts#AxoHostDO.receiveReply": "3f7f80e42c61",
     "packages/axo-api-worker/src/http/account-hosts.ts#revokeAccountHost": "85bf93b1dd39",
     "packages/axo-api-worker/src/http/account-hosts.ts#serveAccountHosts": "9803bcef866f",
@@ -96,7 +96,7 @@
     "packages/axo-app/src/index.ts#AxoApiError": "34c5c251d6fd",
     "packages/axo-app/src/index.ts#DEFAULT_TIMEOUT_MS": "6113669b95cc",
     "packages/axo-app/src/index.ts#RemoteAxoApi": "0ac85d191f04",
-    "packages/axo-web-app/src/chat/connections.tsx#ConnectionsView": "cb632ea4a8a5",
+    "packages/axo-web-app/src/chat/connections.tsx#ConnectionsView": "ee0cc28289b8",
     "packages/axo-web-app/src/cloudflare-sign-in-app.tsx#CloudflareSignInApp": "fabd3c33b407"
   }
 }
