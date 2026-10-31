@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState, useSyncExternalStore, type ClipboardEvent, type KeyboardEvent } from "react";
+import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState, useSyncExternalStore, type ClipboardEvent, type KeyboardEvent, type TouchEvent, type WheelEvent } from "react";
 import { AxoMascot } from "../axo-mascot.tsx";
 import { Icon } from "./icons.tsx";
 import { MessageView, PendingView, QuestionCard, type Reveal } from "./message-views.tsx";
@@ -36,6 +36,7 @@ export function Conversation({ workbench, wide, onShowChats, onToggleInfo, voice
   const shown = useShownMessages(session?.sessionId ?? null, transcript);
   const scroller = useRef<HTMLDivElement>(null);
   const following = useRef(true);
+  const lastScrollTop = useRef(0);
   const [showJump, setShowJump] = useState(false);
   const [hasNew, setHasNew] = useState(false);
   const [confirmingStop, setConfirmingStop] = useState(false);
@@ -63,7 +64,7 @@ export function Conversation({ workbench, wide, onShowChats, onToggleInfo, voice
     const grew = lastId !== seenLastId.current;
     seenLastId.current = lastId;
     if (following.current) {
-      element.scrollTop = element.scrollHeight;
+      scrollToEnd(element);
     } else {
       restoreAnchor(element, anchor.current);
       if (grew) setHasNew(true);
@@ -81,7 +82,7 @@ export function Conversation({ workbench, wide, onShowChats, onToggleInfo, voice
     const fit = () => {
       section.current?.style.setProperty("--footer-height", `${bar.offsetHeight}px`);
       const element = scroller.current;
-      if (element && following.current) element.scrollTop = element.scrollHeight;
+      if (element && following.current) scrollToEnd(element);
     };
     fit();
     const observer = new ResizeObserver(fit);
@@ -96,7 +97,7 @@ export function Conversation({ workbench, wide, onShowChats, onToggleInfo, voice
     const column = element?.firstElementChild;
     if (!element || !column) return;
     const observer = new ResizeObserver(() => {
-      if (following.current) element.scrollTop = element.scrollHeight;
+      if (following.current) scrollToEnd(element);
       else restoreAnchor(element, anchor.current);
       anchor.current = findAnchor(element);
     });
@@ -107,13 +108,34 @@ export function Conversation({ workbench, wide, onShowChats, onToggleInfo, voice
   const onScroll = () => {
     const element = scroller.current;
     if (!element || !session) return;
-    following.current = element.scrollHeight - element.scrollTop - element.clientHeight < FOLLOW_SLACK_PX;
+    // Near the end follows again, unless the view is on its way up from there.
+    const fromEnd = element.scrollHeight - element.scrollTop - element.clientHeight;
+    const goingUp = element.scrollTop < lastScrollTop.current - 0.5;
+    lastScrollTop.current = element.scrollTop;
+    following.current = fromEnd < 1 || (fromEnd < FOLLOW_SLACK_PX && !goingUp);
     setShowJump(!following.current);
     if (following.current) setHasNew(false);
     anchor.current = findAnchor(element);
     if (element.scrollTop < OLDER_SLACK_PX && chat?.history.kind === "loaded" && chat.history.hasOlder) {
       void workbench.loadOlderHistory(session.sessionId);
     }
+  };
+
+  // Scrolling up leaves the end at once, before the first scroll event: a reply growing meanwhile
+  // must not pull the view back down mid-fling.
+  const leaveEnd = () => {
+    if (!following.current) return;
+    following.current = false;
+    setShowJump(true);
+  };
+  const onWheel = (event: WheelEvent<HTMLDivElement>) => { if (event.deltaY < 0) leaveEnd(); };
+  const touchY = useRef<number | null>(null);
+  const onTouchStart = (event: TouchEvent<HTMLDivElement>) => { touchY.current = event.touches[0]?.clientY ?? null; };
+  const onTouchMove = (event: TouchEvent<HTMLDivElement>) => {
+    const y = event.touches[0]?.clientY;
+    // A finger moving down the screen scrolls the transcript up.
+    if (y !== undefined && touchY.current !== null && y > touchY.current + 2) leaveEnd();
+    touchY.current = y ?? null;
   };
 
   const jumpToEnd = () => {
@@ -154,7 +176,8 @@ export function Conversation({ workbench, wide, onShowChats, onToggleInfo, voice
         <button className="circle-button" onClick={onToggleInfo} aria-label="Chat info"><Icon name="info" /></button>
       </header>
 
-      <div className="transcript" ref={scroller} onScroll={onScroll} data-testid="transcript">
+      <div className="transcript" ref={scroller} onScroll={onScroll} onWheel={onWheel}
+        onTouchStart={onTouchStart} onTouchMove={onTouchMove} data-testid="transcript">
         <div className="transcript-column">
           {history.kind === "loadingOlder" ? <p className="history-note">Loading earlier messages…</p> : null}
           {history.kind === "loaded" && history.hasOlder ? (
@@ -424,6 +447,19 @@ function useShownMessages(sessionId: string | null, transcript: ChatTranscript |
   return shown;
 }
 
+/**
+ * Scrolls only when the view is not there already. Setting the scroll position at all, even to
+ * where it is, ends the momentum of a fling on macOS and iOS, so the view would stop dead.
+ */
+function setScrollTop(scroller: HTMLElement, top: number): void {
+  const target = Math.max(0, Math.min(top, scroller.scrollHeight - scroller.clientHeight));
+  if (Math.abs(scroller.scrollTop - target) >= 1) scroller.scrollTop = target;
+}
+
+function scrollToEnd(scroller: HTMLElement): void {
+  setScrollTop(scroller, scroller.scrollHeight);
+}
+
 type ScrollAnchor = { element: Element; offset: number };
 
 /** The first message still showing at the top of the transcript; notes come and go, so never one. */
@@ -443,7 +479,7 @@ function findAnchor(scroller: HTMLElement): ScrollAnchor | null {
 function restoreAnchor(scroller: HTMLElement, anchor: ScrollAnchor | null): void {
   if (!anchor || !anchor.element.isConnected) return;
   const offset = anchor.element.getBoundingClientRect().top - scroller.getBoundingClientRect().top;
-  scroller.scrollTop += offset - anchor.offset;
+  setScrollTop(scroller, scroller.scrollTop + offset - anchor.offset);
 }
 
 /** Typing on a touch screen, where Return has to be how a new line goes in. */
