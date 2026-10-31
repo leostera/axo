@@ -30,6 +30,9 @@ pub const FORWARDED: &[(&str, Duration)] = &[
     (method::CONNECTIONS_SEARCH, SCRIPT_TIMEOUT),
     (method::CONNECTIONS_EXECUTE, SCRIPT_TIMEOUT),
     (method::CONNECTIONS_LOG, QUICK_TIMEOUT),
+    // Adding tries the server and may register a client with it.
+    (method::CONNECTIONS_ADD, Duration::from_secs(60)),
+    (method::CONNECTIONS_REMOVE, QUICK_TIMEOUT),
 ];
 
 /// How long a caller of `method` should wait for axod's answer, beyond axod's own wait.

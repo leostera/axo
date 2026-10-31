@@ -50,6 +50,8 @@ pub mod method {
     pub const CONNECTIONS_SEARCH: &str = "axo.connections.search";
     pub const CONNECTIONS_EXECUTE: &str = "axo.connections.execute";
     pub const CONNECTIONS_LOG: &str = "axo.connections.log";
+    pub const CONNECTIONS_ADD: &str = "axo.connections.add";
+    pub const CONNECTIONS_REMOVE: &str = "axo.connections.remove";
 
     /// Everything a version-1 client may call (negotiation itself excluded).
     pub const ADVERTISED: &[&str] = &[
@@ -90,6 +92,8 @@ pub mod method {
         CONNECTIONS_SEARCH,
         CONNECTIONS_EXECUTE,
         CONNECTIONS_LOG,
+        CONNECTIONS_ADD,
+        CONNECTIONS_REMOVE,
     ];
 }
 

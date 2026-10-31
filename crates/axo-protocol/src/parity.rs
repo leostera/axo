@@ -191,6 +191,18 @@ pub const PARITY: &[Parity] = &[
             "a Session on this Mac reaches its account's connections; the cloud already holds them",
         ),
     ),
+    row(
+        method::CONNECTIONS_ADD,
+        Remote::LocalOnly(
+            "a Session on this Mac reaches its account's connections; the cloud already holds them",
+        ),
+    ),
+    row(
+        method::CONNECTIONS_REMOVE,
+        Remote::LocalOnly(
+            "a Session on this Mac reaches its account's connections; the cloud already holds them",
+        ),
+    ),
 ];
 
 /// Remote calls with no local counterpart: what only a person away from the Mac needs.
