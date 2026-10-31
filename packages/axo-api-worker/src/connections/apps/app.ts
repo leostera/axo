@@ -7,15 +7,29 @@ import type { AppName } from "@axo/protocol";
  * grant, which never leaves it.
  */
 
-/** Calls the provider's API as the signed-in account. */
+export type ProviderRequest = {
+  query?: Record<string, string | string[] | undefined>;
+  /** Sent as JSON. */
+  body?: unknown;
+  /** Sent as is, instead of `body`. */
+  raw?: { contentType: string; data: string | Uint8Array<ArrayBuffer> };
+  accept?: string;
+};
+
+type Method = "GET" | "POST" | "PUT" | "PATCH" | "DELETE";
+
+/** Calls the provider's API as the signed-in account. A path may also be an absolute URL on another host of the provider. */
 export type ProviderApi = {
-  request(method: "GET" | "POST" | "PUT" | "DELETE", path: string, options?: { query?: Record<string, string | string[] | undefined>; body?: unknown }): Promise<unknown>;
+  /** The answer as JSON, or null if empty. */
+  request(method: Method, path: string, options?: ProviderRequest): Promise<unknown>;
+  requestBytes(method: Method, path: string, options?: ProviderRequest): Promise<ArrayBuffer>;
 };
 
 export type AppTool<Input = any> = {
   name: string;
   description: string;
-  input: z.ZodType<Input>;
+  /** The tool's own fields; every app tool also takes the `account` it acts as. */
+  input: z.ZodObject;
   /** Whether running it twice is harmless. A call that got no answer is reported as may-have-run only when it is not. */
   idempotent: boolean;
   run(api: ProviderApi, input: Input): Promise<unknown>;

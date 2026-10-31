@@ -111,7 +111,7 @@ export class ThirdPartyConnections {
     for (const row of this.rows()) {
       if (!row.needs_sign_in && (row.synced_at === null || this.now() - row.synced_at > TOOLS_MAX_AGE_MS)) this.requestSync(row.name);
       for (const tool of this.storedTools(row))
-        tools.push({ service: row.name, name: tool.name, title: tool.title, description: tool.description, inputSchema: tool.inputSchema });
+        tools.push({ service: row.name, name: tool.name, title: tool.title, description: tool.description, inputSchema: tool.inputSchema, call: `codemode.${row.name}.${tool.name}` });
     }
     return tools;
   }

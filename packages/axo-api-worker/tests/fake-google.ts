@@ -9,7 +9,8 @@ import { Response as MiniflareResponse } from "miniflare";
 export class FakeGoogle {
   readonly clientId = "google-client.apps.googleusercontent.com";
   readonly clientSecret = "GOCSPX-test-secret";
-  readonly email = "ada@example.com";
+  /** Who signs in on the consent page next. */
+  email = "ada@example.com";
   /** What the person allows on the consent page; by default everything asked for. */
   grantScopes: string[] | null = null;
   /** Seconds an access token lives. */
@@ -25,9 +26,10 @@ export class FakeGoogle {
     ["m1", { threadId: "t1", labelIds: ["INBOX", "UNREAD"], headers: { From: "Grace <grace@example.com>", To: "ada@example.com", Subject: "Compilers", Date: "Fri, 30 Oct 2026 10:00:00 +0000", "Message-ID": "<m1@example.com>" }, text: "Shall we meet?", snippet: "Shall we meet?" }],
     ["m2", { threadId: "t2", labelIds: ["INBOX"], headers: { From: "news@example.com", To: "ada@example.com", Subject: "Weekly", Date: "Thu, 29 Oct 2026 10:00:00 +0000", "Message-ID": "<m2@example.com>" }, text: "", snippet: "Hello" }],
   ]);
-  private readonly codes = new Map<string, { challenge: string; scopes: string[]; used: boolean }>();
-  private readonly access = new Set<string>();
-  private readonly refresh = new Map<string, string[]>();
+  private readonly codes = new Map<string, { challenge: string; scopes: string[]; email: string; used: boolean }>();
+  /** Access token → the account it acts as. */
+  private readonly access = new Map<string, string>();
+  private readonly refresh = new Map<string, { scopes: string[]; email: string }>();
 
   /** The person approves on Google's consent page: where Google sends the browser back. */
   approve(authorizeUrl: string): URL {
@@ -38,7 +40,8 @@ export class FakeGoogle {
     assert(url.searchParams.get("access_type") === "offline", "a refresh token is asked for");
     const asked = (url.searchParams.get("scope") ?? "").split(" ");
     const code = randomBytes(12).toString("hex");
-    this.codes.set(code, { challenge: url.searchParams.get("code_challenge")!, scopes: this.grantScopes ?? asked, used: false });
+    assert(url.searchParams.get("prompt")?.includes("select_account"), "the person may pick another account");
+    this.codes.set(code, { challenge: url.searchParams.get("code_challenge")!, scopes: this.grantScopes ?? asked, email: this.email, used: false });
     const back = new URL(url.searchParams.get("redirect_uri")!);
     back.searchParams.set("code", code);
     back.searchParams.set("state", url.searchParams.get("state")!);
@@ -52,7 +55,7 @@ export class FakeGoogle {
 
   /** Whether `text` contains any token or the client secret. */
   leaks(text: string): boolean {
-    return [...this.access, ...this.refresh.keys(), this.clientSecret].some((secret) => text.includes(secret));
+    return [...this.access.keys(), ...this.refresh.keys(), this.clientSecret].some((secret) => text.includes(secret));
   }
 
   async handle(request: Request): Promise<Response | undefined> {
@@ -71,6 +74,7 @@ export class FakeGoogle {
     this.tokenRequests.push(form);
     if (form.get("client_id") !== this.clientId || form.get("client_secret") !== this.clientSecret) return json({ error: "invalid_client" }, 401);
     let scopes: string[];
+    let email: string;
     let refreshToken: string | undefined;
     if (form.get("grant_type") === "authorization_code") {
       const code = this.codes.get(form.get("code") ?? "");
@@ -78,16 +82,17 @@ export class FakeGoogle {
         || createHash("sha256").update(form.get("code_verifier") ?? "").digest("base64url") !== code.challenge) return json({ error: "invalid_grant" }, 400);
       code.used = true;
       scopes = code.scopes;
+      email = code.email;
       refreshToken = randomBytes(16).toString("hex");
-      this.refresh.set(refreshToken, scopes);
+      this.refresh.set(refreshToken, { scopes, email });
     } else if (form.get("grant_type") === "refresh_token") {
       const known = this.refresh.get(form.get("refresh_token") ?? "");
       if (!known || this.refuseRefresh) return json({ error: "invalid_grant" }, 400);
-      scopes = known;
+      ({ scopes, email } = known);
     } else return json({ error: "unsupported_grant_type" }, 400);
     const accessToken = `ya29.${randomBytes(16).toString("hex")}`;
-    this.access.add(accessToken);
-    const claims = { iss: "https://accounts.google.com", aud: this.clientId, sub: "1234", email: this.email, email_verified: true };
+    this.access.set(accessToken, email);
+    const claims = { iss: "https://accounts.google.com", aud: this.clientId, sub: email, email, email_verified: true };
     const idToken = `e30.${Buffer.from(JSON.stringify(claims)).toString("base64url")}.sig`;
     return json({
       access_token: accessToken,
@@ -100,11 +105,11 @@ export class FakeGoogle {
   }
 
   private async gmail(request: Request, url: URL): Promise<Response> {
-    if (!this.access.has(request.headers.get("authorization")?.replace("Bearer ", "") ?? ""))
-      return json({ error: { code: 401, message: "Request had invalid authentication credentials." } }, 401);
+    const as = this.access.get(request.headers.get("authorization")?.replace("Bearer ", "") ?? "");
+    if (!as) return json({ error: { code: 401, message: "Request had invalid authentication credentials." } }, 401);
     const path = url.pathname.replace("/gmail/v1/users/me", "");
-    this.apiCalls.push(`${request.method} ${path}`);
-    if (request.method === "GET" && path === "/profile") return json({ emailAddress: this.email, messagesTotal: this.messages.size, threadsTotal: 2, historyId: "1" });
+    this.apiCalls.push(`${as} ${request.method} ${path}`);
+    if (request.method === "GET" && path === "/profile") return json({ emailAddress: as, messagesTotal: this.messages.size, threadsTotal: 2, historyId: "1" });
     if (request.method === "GET" && path === "/labels") return json({ labels: [{ id: "INBOX", name: "INBOX", type: "system" }, { id: "Label_1", name: "Work", type: "user" }] });
     if (request.method === "GET" && path === "/messages") {
       const q = url.searchParams.get("q") ?? "";
@@ -125,6 +130,10 @@ export class FakeGoogle {
     if (message) {
       const found = this.messages.get(message[1]!);
       if (!found) return json({ error: { code: 404, message: "Requested entity was not found." } }, 404);
+      if (request.method === "DELETE") {
+        this.messages.delete(message[1]!);
+        return new MiniflareResponse(null, { status: 204 }) as unknown as Response;
+      }
       if (request.method === "POST" && message[2] === "/modify") {
         const body = (await request.json()) as { addLabelIds: string[]; removeLabelIds: string[] };
         found.labelIds = [...new Set([...found.labelIds.filter((l) => !body.removeLabelIds.includes(l)), ...body.addLabelIds])];

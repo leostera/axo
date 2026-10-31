@@ -21,7 +21,7 @@ const APP = "https://axo.leostera.dev";
 type ConnectionsStub = {
   listConnections(): Promise<{ connections: Connection[] }>;
   addConnection(name: string, url: string): Promise<CallOutcome>;
-  removeConnection(name: string): Promise<CallOutcome>;
+  removeConnection(name: string, account?: string): Promise<CallOutcome>;
   setConnectionClient(name: string, clientId: string, clientSecret: string | null): Promise<{ signInUrl: string }>;
   connectionSignInLink(name: string): Promise<string>;
   openConnectionFlow(nonce: string): Promise<{ authorizeUrl: string; name: string } | null>;
@@ -32,6 +32,7 @@ type ConnectionsStub = {
 export type ConnectionsRoute = "list" | "add" | "remove" | "client" | "signIn" | "log";
 
 const addBody = z.object({ name: connectionNameSchema, url: z.url({ protocol: /^https$/ }) }).strict();
+const removeBody = z.object({ account: z.string().min(3).max(320).optional() }).strict();
 const clientBody = z.object({ clientId: z.string().min(1).max(512), clientSecret: z.string().min(1).max(2048).nullable().optional() }).strict();
 
 function account(ctx: ExecutionContext, accountId: string): ConnectionsStub {
@@ -70,8 +71,12 @@ export async function serveConnections(
         if (!body.success) return json({ error: "Expected { name, url } with an https URL" }, 400);
         return outcome(plain(await stub.addConnection(body.data.name, body.data.url)));
       }
-      case "remove":
-        return outcome(plain(await stub.removeConnection(name!.data!)));
+      case "remove": {
+        // Signing out of an app names the account: { account }.
+        const body = removeBody.safeParse(await request.json().catch(() => ({})));
+        if (!body.success) return json({ error: "Expected { account? }" }, 400);
+        return outcome(plain(await stub.removeConnection(name!.data!, body.data.account)));
+      }
       case "client": {
         const body = clientBody.safeParse(await request.json().catch(() => null));
         if (!body.success) return json({ error: "Expected { clientId, clientSecret? }" }, 400);

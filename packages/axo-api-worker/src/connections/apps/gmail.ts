@@ -2,12 +2,12 @@ import { z } from "zod";
 import type { AppDefinition, AppTool, ProviderApi } from "./app";
 
 /**
- * Gmail as an app: `codemode.apps.gmail.<tool>()` over the Gmail REST API, as the Google account
- * the person signed in with. The grant has `gmail.modify`: it reads, sends, drafts, labels and
- * trashes mail, but cannot delete it for good.
+ * Gmail as an app: `codemode.apps.gmail.<tool>({ account, ... })` over the Gmail REST API, as
+ * one of the Google accounts the person signed in with. The grant is full access
+ * (`https://mail.google.com/`): it reads, sends, drafts, labels, trashes and deletes mail.
  */
 
-export const GMAIL_SCOPE = "https://www.googleapis.com/auth/gmail.modify";
+export const GMAIL_SCOPE = "https://mail.google.com/";
 const BASE = "/gmail/v1/users/me";
 const DEFAULT_BODY_CHARS = 20_000;
 const MAX_BODY_CHARS = 200_000;
@@ -152,6 +152,16 @@ const tools: AppTool[] = [
     async run(api, input) {
       const answer = (await api.request("POST", `${BASE}/messages/${input.id}/trash`)) as Message;
       return { id: answer.id, threadId: answer.threadId, labelIds: answer.labelIds ?? [] };
+    },
+  },
+  {
+    name: "delete_message",
+    description: "Deletes a message for good, skipping the trash; it cannot be recovered. Prefer trash_message unless asked to delete permanently. Returns { deleted: true }.",
+    input: z.object({ id }).strict(),
+    idempotent: true,
+    async run(api, input) {
+      await api.request("DELETE", `${BASE}/messages/${input.id}`);
+      return { deleted: true };
     },
   },
 ];

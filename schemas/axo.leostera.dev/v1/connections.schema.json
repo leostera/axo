@@ -249,21 +249,51 @@
                       "needsSignIn"
                     ]
                   },
-                  "account": {
-                    "anyOf": [
-                      {
-                        "type": "string",
-                        "maxLength": 320
+                  "accounts": {
+                    "maxItems": 20,
+                    "type": "array",
+                    "items": {
+                      "type": "object",
+                      "properties": {
+                        "account": {
+                          "type": "string",
+                          "minLength": 3,
+                          "maxLength": 320
+                        },
+                        "state": {
+                          "type": "string",
+                          "enum": [
+                            "ready",
+                            "needsSignIn"
+                          ]
+                        },
+                        "lastError": {
+                          "anyOf": [
+                            {
+                              "type": "string",
+                              "maxLength": 512
+                            },
+                            {
+                              "type": "null"
+                            }
+                          ]
+                        }
                       },
-                      {
-                        "type": "null"
-                      }
-                    ]
+                      "required": [
+                        "account",
+                        "state",
+                        "lastError"
+                      ],
+                      "additionalProperties": false
+                    }
                   },
                   "tools": {
-                    "type": "integer",
-                    "minimum": 0,
-                    "maximum": 9007199254740991
+                    "maxItems": 256,
+                    "type": "array",
+                    "items": {
+                      "type": "string",
+                      "pattern": "^[A-Za-z_][A-Za-z0-9_]{0,63}$"
+                    }
                   },
                   "lastError": {
                     "anyOf": [
@@ -282,7 +312,7 @@
                   "name",
                   "title",
                   "state",
-                  "account",
+                  "accounts",
                   "tools",
                   "lastError"
                 ],
@@ -594,21 +624,51 @@
                     "needsSignIn"
                   ]
                 },
-                "account": {
-                  "anyOf": [
-                    {
-                      "type": "string",
-                      "maxLength": 320
+                "accounts": {
+                  "maxItems": 20,
+                  "type": "array",
+                  "items": {
+                    "type": "object",
+                    "properties": {
+                      "account": {
+                        "type": "string",
+                        "minLength": 3,
+                        "maxLength": 320
+                      },
+                      "state": {
+                        "type": "string",
+                        "enum": [
+                          "ready",
+                          "needsSignIn"
+                        ]
+                      },
+                      "lastError": {
+                        "anyOf": [
+                          {
+                            "type": "string",
+                            "maxLength": 512
+                          },
+                          {
+                            "type": "null"
+                          }
+                        ]
+                      }
                     },
-                    {
-                      "type": "null"
-                    }
-                  ]
+                    "required": [
+                      "account",
+                      "state",
+                      "lastError"
+                    ],
+                    "additionalProperties": false
+                  }
                 },
                 "tools": {
-                  "type": "integer",
-                  "minimum": 0,
-                  "maximum": 9007199254740991
+                  "maxItems": 256,
+                  "type": "array",
+                  "items": {
+                    "type": "string",
+                    "pattern": "^[A-Za-z_][A-Za-z0-9_]{0,63}$"
+                  }
                 },
                 "lastError": {
                   "anyOf": [
@@ -627,7 +687,7 @@
                 "name",
                 "title",
                 "state",
-                "account",
+                "accounts",
                 "tools",
                 "lastError"
               ],
@@ -690,6 +750,11 @@
                   "pattern": "^apps\\.[a-z][a-z0-9_]{0,31}$"
                 }
               ]
+            },
+            "account": {
+              "type": "string",
+              "minLength": 3,
+              "maxLength": 320
             }
           },
           "required": [

@@ -68,13 +68,15 @@ async function signedIn(t: { after(fn: () => unknown): void }) {
 test("Gmail is listed needing sign-in; a call before it hands the agent a sign-in link, and after it the tools work", async (t) => {
   const { google, h, session, call, execute } = await fixture(t);
   const listed = connectionsResults["axo.connections.list"].parse(result(await call("axo.connections.list")));
+  const gmailTools = ["get_profile", "search_messages", "get_message", "get_thread", "list_labels", "send_message", "create_draft", "modify_message", "trash_message", "delete_message"];
   assert.deepEqual(listed.connections.find((c) => c.kind === "app"), {
-    kind: "app", name: "apps.gmail", title: "Gmail", state: "needsSignIn", account: null, tools: 9, lastError: null,
+    kind: "app", name: "apps.gmail", title: "Gmail", state: "needsSignIn", accounts: [], tools: gmailTools, lastError: null,
   });
-  const tools = result(await call("axo.connections.search", { code: `async () => codemode.tools().filter((t) => t.service === "apps.gmail").map((t) => t.name)` })).result;
-  assert.deepEqual(tools, ["get_profile", "search_messages", "get_message", "get_thread", "list_labels", "send_message", "create_draft", "modify_message", "trash_message"]);
+  const tools = result(await call("axo.connections.search", { code: `async () => codemode.tools().filter((t) => t.service === "apps.gmail").map((t) => [t.call, t.inputSchema.required])` })).result;
+  assert.deepEqual(tools.map(([c]: [string]) => c), gmailTools.map((t) => `codemode.apps.gmail.${t}`));
+  assert.ok(tools.every(([, required]: [string, string[]]) => required[0] === "account"), "every tool needs an account");
 
-  const early = failure(await execute(`async () => codemode.apps.gmail.get_profile()`));
+  const early = failure(await execute(`async () => codemode.apps.gmail.get_profile({ account: "ada@example.com", account: "ada@example.com" })`));
   const link = /https:\/\/axo\.leostera\.dev\/api\/v1\/connections\/oauth\/start\?flow=[0-9a-f-]+/.exec(early)?.[0];
   assert.ok(link, early);
 
@@ -82,12 +84,14 @@ test("Gmail is listed needing sign-in; a call before it hands the agent a sign-i
   assert.equal(landed.pathname, "/app/connections");
   assert.equal(landed.searchParams.get("signedIn"), "apps.gmail");
   const ready = connectionsResults["axo.connections.list"].parse(result(await call("axo.connections.list"))).connections.find((c) => c.kind === "app");
-  assert.deepEqual([ready?.state, ready?.kind === "app" && ready.account], ["ready", "ada@example.com"]);
+  assert.deepEqual([ready?.state, ready?.kind === "app" && ready.accounts], ["ready", [{ account: "ada@example.com", state: "ready", lastError: null }]]);
+  const described = result(await call("axo.connections.search", { code: `async () => codemode.tools().find((t) => t.name === "search_messages").description` })).result;
+  assert.match(described, /Signed-in accounts: ada@example\.com\./);
 
   const found = result(await execute(`async () => {
-    const unread = await codemode.apps.gmail.search_messages({ query: "is:unread" });
-    const message = await codemode.apps.gmail.get_message({ id: unread.messages[0].id });
-    const html = await codemode.apps.gmail.get_message({ id: "m2" });
+    const unread = await codemode.apps.gmail.search_messages({ account: "ada@example.com", query: "is:unread" });
+    const message = await codemode.apps.gmail.get_message({ account: "ada@example.com", id: unread.messages[0].id });
+    const html = await codemode.apps.gmail.get_message({ account: "ada@example.com", id: "m2" });
     return { unread, message, html: html.text };
   }`)).result;
   assert.deepEqual(found.unread, {
@@ -108,8 +112,8 @@ test("Gmail is listed needing sign-in; a call before it hands the agent a sign-i
 test("send_message builds the MIME message, threads a reply, and is logged under apps.gmail", async (t) => {
   const { google, call, execute } = await signedIn(t);
   const sent = result(await execute(`async () => [
-    await codemode.apps.gmail.send_message({ to: "Grace Hopper <grace@example.com>, alan@example.com", subject: "Größe", text: "Hi ✓" }),
-    await codemode.apps.gmail.send_message({ replyToMessageId: "m1", to: "grace@example.com", text: "Yes", html: "<b>Yes</b>" }),
+    await codemode.apps.gmail.send_message({ account: "ada@example.com", to: "Grace Hopper <grace@example.com>, alan@example.com", subject: "Größe", text: "Hi ✓" }),
+    await codemode.apps.gmail.send_message({ account: "ada@example.com", replyToMessageId: "m1", to: "grace@example.com", text: "Yes", html: "<b>Yes</b>" }),
   ]`)).result;
   assert.deepEqual(sent.map((s: { labelIds: string[] }) => s.labelIds), [["SENT"], ["SENT"]]);
 
@@ -123,7 +127,7 @@ test("send_message builds the MIME message, threads a reply, and is logged under
   assert.match(reply!.raw, /\r\nSubject: Re: Compilers\r\n/);
   assert.match(reply!.raw, /Content-Type: multipart\/alternative; boundary="axo-/);
 
-  const smuggled = failure(await execute(`async () => codemode.apps.gmail.send_message({ to: "a@example.com", subject: "x\\r\\nBcc: eve@example.com", text: "" })`));
+  const smuggled = failure(await execute(`async () => codemode.apps.gmail.send_message({ account: "ada@example.com", to: "a@example.com", subject: "x\\r\\nBcc: eve@example.com", text: "" })`));
   assert.match(smuggled, /line breaks/);
   assert.equal(google.sent.length, 2);
 
@@ -138,11 +142,11 @@ test("send_message builds the MIME message, threads a reply, and is logged under
 test("a send that fails on Google's side is logged as may-have-run; labels change idempotently", async (t) => {
   const { google, call, execute } = await signedIn(t);
   google.failNextSend = 503;
-  const lost = failure(await execute(`async () => codemode.apps.gmail.send_message({ to: "a@example.com", subject: "s", text: "t" })`));
+  const lost = failure(await execute(`async () => codemode.apps.gmail.send_message({ account: "ada@example.com", to: "a@example.com", subject: "s", text: "t" })`));
   assert.match(lost, /may have run/);
-  const archived = result(await execute(`async () => codemode.apps.gmail.modify_message({ id: "m1", removeLabelIds: ["INBOX", "UNREAD"], addLabelIds: ["STARRED"] })`)).result;
+  const archived = result(await execute(`async () => codemode.apps.gmail.modify_message({ account: "ada@example.com", id: "m1", removeLabelIds: ["INBOX", "UNREAD"], addLabelIds: ["STARRED"] })`)).result;
   assert.deepEqual(archived, { id: "m1", threadId: "t1", labelIds: ["STARRED"] });
-  const missing = failure(await execute(`async () => codemode.apps.gmail.get_message({ id: "nope" })`));
+  const missing = failure(await execute(`async () => codemode.apps.gmail.get_message({ account: "ada@example.com", id: "nope" })`));
   assert.match(missing, /Gmail: Requested entity was not found/);
   const records = result(await call("axo.connections.log")).records as Array<{ tool: string; outcome: string }>;
   assert.deepEqual(records.slice(0, 3).map((r) => [r.tool, r.outcome]), [["get_message", "error"], ["modify_message", "ok"], ["send_message", "unknown"]]);
@@ -151,14 +155,15 @@ test("a send that fails on Google's side is logged as may-have-run; labels chang
 test("a rejected access token is renewed once and the call sent again; a refused renewal asks for sign-in", async (t) => {
   const { google, call, execute } = await signedIn(t);
   google.expireAccessTokens();
-  assert.equal(result(await execute(`async () => (await codemode.apps.gmail.get_profile()).emailAddress`)).result, "ada@example.com");
+  assert.equal(result(await execute(`async () => (await codemode.apps.gmail.get_profile({ account: "ada@example.com", account: "ada@example.com" })).emailAddress`)).result, "ada@example.com");
   assert.equal(google.tokenRequests.filter((f) => f.get("grant_type") === "refresh_token").length, 1);
 
   google.expireAccessTokens();
   google.refuseRefresh = true;
-  assert.match(failure(await execute(`async () => codemode.apps.gmail.get_profile()`)), /needs sign-in/);
+  assert.match(failure(await execute(`async () => codemode.apps.gmail.get_profile({ account: "ada@example.com", account: "ada@example.com" })`)), /needs sign-in/);
   const app = result(await call("axo.connections.list")).connections.find((c: { kind: string }) => c.kind === "app");
   assert.equal(app.state, "needsSignIn");
+  assert.deepEqual(app.accounts, [{ account: "ada@example.com", state: "needsSignIn", lastError: "Google refused to renew the grant" }], "the account stays listed, to sign in to again");
 });
 
 test("a sign-in without Gmail access does not land, and signing out revokes the grant", async (t) => {
@@ -172,12 +177,13 @@ test("a sign-in without Gmail access does not land, and signing out revokes the 
 
   google.grantScopes = null;
   await signInThroughBrowser(h, google, session, await signInLink(h, session));
-  assert.deepEqual(result(await call("axo.connections.remove", { name: "apps.gmail" })), { removed: true });
+  assert.match(failure(await call("axo.connections.remove", { name: "apps.gmail" })), /name the account/);
+  assert.deepEqual(result(await call("axo.connections.remove", { name: "apps.gmail", account: "ada@example.com" })), { removed: true });
   app = result(await call("axo.connections.list")).connections.find((c: { kind: string }) => c.kind === "app");
-  assert.equal(app.state, "needsSignIn");
+  assert.deepEqual([app.state, app.accounts], ["needsSignIn", []]);
   for (let i = 0; i < 20 && google.revoked.length < 2; i++) await new Promise((r) => setTimeout(r, 25));
   assert.equal(google.revoked.length, 2);
-  assert.match(failure(await call("axo.connections.remove", { name: "apps.gmail" })), /not signed in/);
+  assert.match(failure(await call("axo.connections.remove", { name: "apps.gmail", account: "ada@example.com" })), /not signed in/);
 });
 
 test("apps is a reserved name, and a deployment without a Google client lists no apps", async (t) => {
@@ -191,4 +197,63 @@ test("apps is a reserved name, and a deployment without a Google client lists no
   t.after(() => daemon.close());
   const listed = (await daemon.call("axo.connections.list", { sessionId: crypto.randomUUID() })) as Reply;
   assert.deepEqual(result(listed).connections.map((c: { kind: string }) => c.kind), ["host"]);
+});
+
+test("several Google accounts sign in to Gmail; each call acts as the account it names, and no call guesses one", async (t) => {
+  const { google, h, session, call, execute } = await signedIn(t);
+  google.email = "Grace@Example.com";
+  await signInThroughBrowser(h, google, session, await signInLink(h, session));
+  const app = result(await call("axo.connections.list")).connections.find((c: { kind: string }) => c.kind === "app");
+  assert.deepEqual(app.accounts.map((a: { account: string }) => a.account), ["ada@example.com", "grace@example.com"]);
+
+  const profiles = result(await execute(`async () => Promise.all(["ada@example.com", "GRACE@example.com"].map(async (account) =>
+    (await codemode.apps.gmail.get_profile({ account })).emailAddress))`)).result;
+  assert.deepEqual(profiles, ["ada@example.com", "Grace@Example.com"], "each call used its own account's grant");
+
+  assert.match(failure(await execute(`async () => codemode.apps.gmail.get_profile({})`)), /account/);
+  assert.match(failure(await execute(`async () => codemode.apps.gmail.get_profile({ account: "eve@example.com" })`)), /no Gmail account eve@example\.com; signed in: ada@example\.com, grace@example\.com/);
+
+  // Signing in again to an account replaces its grant rather than adding a second one.
+  google.email = "ada@example.com";
+  await signInThroughBrowser(h, google, session, await signInLink(h, session));
+  const again = result(await call("axo.connections.list")).connections.find((c: { kind: string }) => c.kind === "app");
+  assert.equal(again.accounts.length, 2);
+
+  // Signing one out leaves the other.
+  result(await call("axo.connections.remove", { name: "apps.gmail", account: "grace@example.com" }));
+  assert.match(failure(await execute(`async () => codemode.apps.gmail.get_profile({ account: "grace@example.com" })`)), /signed in: ada@example\.com\n/);
+  assert.equal(result(await execute(`async () => (await codemode.apps.gmail.get_profile({ account: "ada@example.com" })).emailAddress`)).result, "ada@example.com");
+});
+
+test("delete_message deletes a message for good", async (t) => {
+  const { google, execute } = await signedIn(t);
+  assert.deepEqual(result(await execute(`async () => codemode.apps.gmail.delete_message({ account: "ada@example.com", id: "m2" })`)).result, { deleted: true });
+  assert.equal(google.messages.has("m2"), false);
+});
+
+test("a grant stored when Gmail held one account carries over as that account", async (t) => {
+  const { h, session } = await signedIn(t);
+  const { DatabaseSync } = await import("node:sqlite");
+  const { readdir } = await import("node:fs/promises");
+  const { join } = await import("node:path");
+  await h.restart(async () => {
+    // The account's Durable Object is the one whose SQLite holds the app's row.
+    const files = (await readdir(h.storagePath, { recursive: true })).filter((f) => f.endsWith(".sqlite")).map((f) => join(h.storagePath, f));
+    let migrated = 0;
+    for (const file of files) {
+      const db = new DatabaseSync(file);
+      const has = db.prepare("SELECT COUNT(*) AS n FROM sqlite_master WHERE name = 'app_accounts'").get() as { n: number };
+      if (has.n) {
+        const row = db.prepare("SELECT grant_sealed, grant_generation FROM app_accounts WHERE app = 'gmail'").get() as { grant_sealed: string; grant_generation: number };
+        db.exec("DELETE FROM app_accounts; DELETE FROM app_grants");
+        db.prepare("INSERT INTO app_grants (app, grant_sealed, grant_generation, account, last_error) VALUES ('gmail', ?, ?, 'Ada@Example.com', NULL)").run(row.grant_sealed, row.grant_generation);
+        migrated += 1;
+      }
+      db.close();
+    }
+    assert.equal(migrated, 1);
+  });
+  const after = await fetch(new URL("api/v1/account/connections", h.url), { headers: session.headers });
+  const app = ((await after.json()) as { connections: Array<{ kind: string; accounts: Array<{ account: string; state: string }> }> }).connections.find((c) => c.kind === "app");
+  assert.deepEqual(app?.accounts.map((a) => [a.account, a.state]), [["ada@example.com", "ready"]]);
 });

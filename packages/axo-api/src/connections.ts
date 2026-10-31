@@ -65,6 +65,15 @@ export const APPS = ["gmail"] as const;
 export type AppName = (typeof APPS)[number];
 /** An app's service name, `apps.<app>`. */
 export const appServiceSchema = z.string().regex(/^apps\.[a-z][a-z0-9_]{0,31}$/);
+/** At most this many provider accounts per app and account. */
+export const APP_ACCOUNTS_MAX = 20;
+export const appAccountSchema = z.object({
+  account: z.string().min(3).max(320),
+  /** `needsSignIn`: the grant was refused or expired; sign in to that account again. */
+  state: z.enum(["ready", "needsSignIn"]),
+  lastError: z.string().max(512).nullable(),
+}).strict();
+export type AppAccount = z.infer<typeof appAccountSchema>;
 /** Any service a tool or call belongs to: a connection, a Mac or an app. */
 export const serviceSchema = z.union([connectionNameSchema, appServiceSchema]);
 
@@ -91,11 +100,11 @@ export const connectionSchema = z.discriminatedUnion("kind", [
     kind: z.literal("app"),
     name: appServiceSchema,
     title: z.string().max(64),
-    /** Listed only when this Axo deployment has a client for the app's provider. */
+    /** Listed only when this Axo deployment has a client for the app's provider. `ready` once any account is. */
     state: z.enum(["ready", "needsSignIn"]),
-    /** The provider account the grant is for, such as an email address. */
-    account: z.string().max(320).nullable(),
-    tools: z.number().int().nonnegative(),
+    /** The provider accounts signed in, each named by its email; every call names one. */
+    accounts: z.array(appAccountSchema).max(APP_ACCOUNTS_MAX),
+    tools: z.array(connectionNameSchema).max(256),
     lastError: z.string().max(512).nullable(),
   }).strict(),
 ]);
@@ -108,6 +117,8 @@ export const toolDefinitionSchema = z.object({
   title: z.string().max(256),
   description: z.string().max(16_384),
   inputSchema: z.record(z.string(), z.unknown()),
+  /** How a script calls it, such as `codemode.apps.gmail.search_messages`. */
+  call: z.string().max(256),
 }).strict();
 export type ToolDefinition = z.infer<typeof toolDefinitionSchema>;
 
@@ -133,7 +144,12 @@ export const connectionsParams = {
   [CONNECTIONS_METHODS.execute]: z.object({ sessionId, code: script }).strict(),
   [CONNECTIONS_METHODS.add]: z.object({ sessionId, name: connectionNameSchema, url: z.url({ protocol: /^https$/ }) }).strict(),
   /** Removes a third-party connection, or signs out of an app (`apps.<app>`). */
-  [CONNECTIONS_METHODS.remove]: z.object({ sessionId, name: serviceSchema }).strict(),
+  [CONNECTIONS_METHODS.remove]: z.object({
+    sessionId,
+    name: serviceSchema,
+    /** For an app: the account to sign out of. */
+    account: z.string().min(3).max(320).optional(),
+  }).strict(),
   [CONNECTIONS_METHODS.log]: z.object({
     sessionId,
     limit: z.number().int().min(1).max(CONNECTIONS_LIMITS.logPage).optional(),

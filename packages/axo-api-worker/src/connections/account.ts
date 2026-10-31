@@ -129,8 +129,8 @@ export class AccountConnections {
         return this.add(name, url);
       }
       case CONNECTIONS_METHODS.remove: {
-        const { name } = params as ConnectionsParams<typeof CONNECTIONS_METHODS.remove>;
-        return await this.remove(name);
+        const { name, account } = params as ConnectionsParams<typeof CONNECTIONS_METHODS.remove>;
+        return await this.remove(name, account);
       }
     }
   }
@@ -146,11 +146,12 @@ export class AccountConnections {
     return { result };
   }
 
-  /** Removes a third-party connection, or signs the account out of an app. */
-  async remove(name: string): Promise<CallOutcome> {
+  /** Removes a third-party connection, or signs one account out of an app. */
+  async remove(name: string, account?: string): Promise<CallOutcome> {
     const app = AppConnections.appOf(name);
     if (app) {
-      if (!(await this.apps.disconnect(app))) return failure(CONNECTIONS_ERRORS.notFound, `${name} is not signed in`);
+      if (!account) return failure(-32602, `name the account to sign out of ${name}`);
+      if (!(await this.apps.disconnect(app, account))) return failure(CONNECTIONS_ERRORS.notFound, `${account} is not signed in to ${name}`);
       const result: ConnectionsResult<typeof CONNECTIONS_METHODS.remove> = { removed: true };
       return { result };
     }
@@ -210,6 +211,7 @@ export class AccountConnections {
         `Each output stream keeps ${CONNECTIONS_LIMITS.bashOutputBytes} bytes, then is marked truncated. ` +
         `timeoutMs defaults to ${CONNECTIONS_LIMITS.bashDefaultTimeoutMs} and may be at most ${CONNECTIONS_LIMITS.bashMaxTimeoutMs}.`,
       inputSchema: z.toJSONSchema(bashInputSchema) as Record<string, unknown>,
+      call: `codemode.${name}.bash`,
     }));
   }
 

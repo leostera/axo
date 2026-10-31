@@ -59,7 +59,8 @@ export function googleAuthorizationUrl(client: GoogleClient, scopes: readonly st
   url.searchParams.set("redirect_uri", CALLBACK_URL);
   url.searchParams.set("scope", scopes.join(" "));
   url.searchParams.set("access_type", "offline");
-  url.searchParams.set("prompt", "consent");
+  // Consent every time (so Google returns a refresh token), and a choice of account (so a second one can be added).
+  url.searchParams.set("prompt", "consent select_account");
   url.searchParams.set("code_challenge", challenge);
   url.searchParams.set("code_challenge_method", "S256");
   url.searchParams.set("state", state);

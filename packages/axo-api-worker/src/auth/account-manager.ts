@@ -335,8 +335,9 @@ export class AxoAccountManager extends DurableObject<Env> {
     return this.requireConnections().add(name, url);
   }
 
-  async removeConnection(name: string): Promise<CallOutcome> {
-    return this.requireConnections().remove(name);
+  /** Removes a third-party connection, or signs `account` out of an app. */
+  async removeConnection(name: string, account?: string): Promise<CallOutcome> {
+    return this.requireConnections().remove(name, account);
   }
 
   /** A client the person registered with the provider, typed on the Connections page only. */

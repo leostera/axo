@@ -294,8 +294,12 @@ export async function harness(configuration: { audience?: string; bindings?: Rec
     },
     token,
     list,
-    async restart() {
+    /** Where Durable Objects keep their SQLite files, for tests that edit storage while stopped. */
+    storagePath: join(directory, "storage"),
+    /** Stops the runtime, runs `whileStopped`, and starts it again. */
+    async restart(whileStopped?: () => Promise<void> | void) {
       await mf.dispose();
+      await whileStopped?.();
       mf = new Miniflare(options);
       url = String(await mf.ready);
     },
