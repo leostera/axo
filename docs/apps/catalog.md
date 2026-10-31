@@ -123,8 +123,8 @@ In priority order. "Tools" lists the first named tools; every app also has `requ
 | 1Password | Token, SDK | see above | service account | see above |
 | Banking (Revolut, Raiffeisen) | OAuth through Enable Banking | see above | bank and consent | see above |
 | ChatGPT | Device OAuth (Codex) | see above | ChatGPT email | see above |
-| Octopus Energy | Token, basic (key as user) | `api.octopus.energy/v1` + GraphQL | account number | consumption, tariffs, account |
-| Wise | Token, bearer (personal token) | `api.wise.com` (some EU/UK statement calls need SCA signing) | profile email | profiles, balances, transfers, rates |
+| Octopus Energy (built: `apps.octopus`) | Token, basic (key as user) | `api.octopus.energy/v1` + GraphQL | account number | consumption, tariffs, account |
+| Wise (built: `apps.wise`) | Token, bearer (personal token) | `api.wise.com` (some EU/UK statement calls need SCA signing) | profile email | profiles, balances, transfers, rates |
 | GitHub | MCP (`api.githubcopilot.com/mcp/`, needs a registered OAuth app) or OAuth → REST | REST v3 / GraphQL | login | repos, issues, PRs, search |
 | Slack | OAuth (user token) → Web API; the official MCP server is for approved apps only | `slack.com/api` | workspace and user | search, history, post, users |
 | Stripe | MCP (`mcp.stripe.com`, OAuth) | n/a | n/a | n/a |
