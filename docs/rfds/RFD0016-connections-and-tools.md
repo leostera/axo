@@ -22,7 +22,7 @@ _(open)_
 - An account adds a third-party connection (a remote MCP server) by URL once and its agents use that server's tools afterwards, with Axo running the upstream OAuth flow and keeping the grant.
 - Each paired Mac is a host connection with one tool, `bash`, that any Session of the same account can call while that Mac is online, including Sessions on other Macs. Local apps are reached through their command-line interfaces; Axo does not need to know about them.
 - Agents in Axo Sessions reach every connection through the existing `axod mcp` server (RFD0015).
-- Axo provides apps itself that an account signs in to, with one or more provider accounts each, and its agents reach as `codemode.apps.<app>.*`: Google's (Gmail, Calendar, Drive, Docs, Sheets, Slides, Contacts, Tasks, Meet, Google Cloud) with OAuth, Hetzner, Octopus Energy and Wise with a token the person pastes, ChatGPT with a code the person enters at OpenAI, and 1Password through its command line on the person's Macs. Each asks for everything its own service allows, and can call any endpoint of its API. [docs/apps/catalog.md](../apps/catalog.md) is the plan for the rest.
+- Axo provides apps itself that an account signs in to, with one or more provider accounts each, and its agents reach as `codemode.apps.<app>.*`: Google's (Gmail, Calendar, Drive, Docs, Sheets, Slides, Contacts, Tasks, Meet, Google Cloud) with OAuth, Hetzner, Octopus Energy, Wise, Telegram bots and Kraken with a token the person pastes, ChatGPT with a code the person enters at OpenAI, and 1Password through its command line on the person's Macs. Each asks for everything its own service allows, and can call any endpoint of its API. [docs/apps/catalog.md](../apps/catalog.md) is the plan for the rest.
 - An agent finds what the account reaches without searching: the account's connections, and how a script calls each, are in the descriptions of the tools that reach them.
 
 ## Non-goals
@@ -88,6 +88,8 @@ Every app signs in with everything its own service allows, and only it. Besides 
 | `apps.hetzner` | a project's API token | `list_servers`, `get_server`, `server_action`, `server_metrics`, `get_action`, `list_zones`, `list_records`, `set_records`, `delete_records`, `list_firewalls`, `list_volumes`, `list_storage_boxes` |
 | `apps.octopus` | an API key and the account number | `get_account`, `get_consumption`, `get_unit_rates`, `list_products` |
 | `apps.wise` | a personal API token | `list_profiles`, `list_balances`, `get_rate`, `list_transfers`, `get_transfer`, `list_recipients`, `create_quote` |
+| `apps.telegram` | a bot token from @BotFather, put in the path | `get_me`, `get_updates`, `send_message`, `get_chat`, `call` |
+| `apps.kraken` | an API key and private key; each private call signed (HMAC-SHA512) | `get_balance`, `get_trade_balance`, `list_open_orders`, `list_closed_orders`, `list_trades`, `list_ledger`, `get_ticker`, `add_order`, `cancel_order`, `call` |
 | `apps.chatgpt` | Codex's sign-in (`openid profile email offline_access`) | `respond`, `list_models`, `usage` |
 | `apps.onepassword` | the 1Password app on each Mac | `list_accounts`, `list_vaults`, `list_items`, `get_item`, `read`, `get_otp`, `create_item`, `update_item`, `delete_item`, `op` |
 
