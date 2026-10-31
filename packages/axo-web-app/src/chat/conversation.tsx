@@ -37,14 +37,20 @@ export function Conversation({ workbench, wide, onShowChats, onToggleInfo, voice
   const [showJump, setShowJump] = useState(false);
   const [hasNew, setHasNew] = useState(false);
   const [confirmingStop, setConfirmingStop] = useState(false);
-  /** The height before an older page went in above, to keep the view still. */
-  const heightBeforeOlder = useRef<number | null>(null);
+  /**
+   * The message at the top of the view and how far down the view it sat. Whatever goes in above it
+   * (an older page, a loading note) moves the scroll by as much, so what is read stays put.
+   */
+  const anchor = useRef<ScrollAnchor | null>(null);
   const messageCount = transcript?.messages.length ?? 0;
   const firstId = transcript?.messages[0]?.id;
+  const lastId = transcript?.live.at(-1)?.id ?? transcript?.messages.at(-1)?.id;
+  const seenLastId = useRef(lastId);
 
   // A new chat on screen starts at its newest message.
   useEffect(() => {
     following.current = true;
+    anchor.current = null;
     setShowJump(false);
     setHasNew(false);
   }, [session?.sessionId, selection?.kind]);
@@ -52,13 +58,15 @@ export function Conversation({ workbench, wide, onShowChats, onToggleInfo, voice
   useLayoutEffect(() => {
     const element = scroller.current;
     if (!element) return;
-    if (heightBeforeOlder.current !== null) {
-      element.scrollTop += element.scrollHeight - heightBeforeOlder.current;
-      heightBeforeOlder.current = null;
-      return;
+    const grew = lastId !== seenLastId.current;
+    seenLastId.current = lastId;
+    if (following.current) {
+      element.scrollTop = element.scrollHeight;
+    } else {
+      restoreAnchor(element, anchor.current);
+      if (grew) setHasNew(true);
     }
-    if (following.current) element.scrollTop = element.scrollHeight;
-    else setHasNew(true);
+    anchor.current = findAnchor(element);
   }, [workbench.version, firstId]);
 
   const onScroll = () => {
@@ -67,8 +75,8 @@ export function Conversation({ workbench, wide, onShowChats, onToggleInfo, voice
     following.current = element.scrollHeight - element.scrollTop - element.clientHeight < FOLLOW_SLACK_PX;
     setShowJump(!following.current);
     if (following.current) setHasNew(false);
+    anchor.current = findAnchor(element);
     if (element.scrollTop < OLDER_SLACK_PX && chat?.history.kind === "loaded" && chat.history.hasOlder) {
-      heightBeforeOlder.current = element.scrollHeight;
       void workbench.loadOlderHistory(session.sessionId);
     }
   };
@@ -117,7 +125,6 @@ export function Conversation({ workbench, wide, onShowChats, onToggleInfo, voice
           {history.kind === "loaded" && history.hasOlder ? (
             <button className="history-note link" onClick={() => {
               if (!session) return;
-              heightBeforeOlder.current = scroller.current?.scrollHeight ?? null;
               void workbench.loadOlderHistory(session.sessionId);
             }}>Load earlier messages</button>
           ) : null}
@@ -215,8 +222,8 @@ const encoder = new TextEncoder();
 
 /**
  * The message box, as on the phone. An empty box offers voice where Send goes; once something is
- * typed, Send. While listening the box becomes the listening bar. Enter sends and Shift-Enter
- * starts a new line.
+ * typed, Send. While listening the box becomes the listening bar. With a keyboard, Enter sends and
+ * Shift-Enter starts a new line; on a touch screen Return starts a new line and Send sends.
  */
 function Composer({ workbench, voice, placeholder, canSend, onSend, onEscape }: {
   workbench: ChatWorkbench;
@@ -268,7 +275,7 @@ function Composer({ workbench, voice, placeholder, canSend, onSend, onEscape }: 
   }, [voice?.version]);
 
   const onKeyDown = (event: KeyboardEvent<HTMLTextAreaElement>) => {
-    if (event.key === "Enter" && !event.shiftKey && !event.nativeEvent.isComposing) {
+    if (event.key === "Enter" && !event.shiftKey && !event.nativeEvent.isComposing && !touchTyping()) {
       event.preventDefault();
       if (ready) onSend();
     } else if (event.key === "Escape" && !hasDraft) {
@@ -304,6 +311,7 @@ function Composer({ workbench, voice, placeholder, canSend, onSend, onEscape }: 
             value={draft}
             placeholder={placeholder}
             aria-label="Message"
+            enterKeyHint={touchTyping() ? "enter" : "send"}
             disabled={!canSend}
             onChange={event => workbench.setDraft(event.target.value)}
             onKeyDown={onKeyDown}
@@ -327,6 +335,31 @@ function Composer({ workbench, voice, placeholder, canSend, onSend, onEscape }: 
 }
 
 const noSubscribe = () => () => {};
+
+type ScrollAnchor = { element: Element; offset: number };
+
+/** The first message still showing at the top of the transcript; notes come and go, so never one. */
+function findAnchor(scroller: HTMLElement): ScrollAnchor | null {
+  const top = scroller.getBoundingClientRect().top;
+  const column = scroller.firstElementChild;
+  if (!column) return null;
+  for (const element of Array.from(column.children)) {
+    if (element.classList.contains("history-note")) continue;
+    const box = element.getBoundingClientRect();
+    if (box.bottom > top) return { element, offset: box.top - top };
+  }
+  return null;
+}
+
+/** Scrolls so the anchor sits where it was, whatever went in or came out above it. */
+function restoreAnchor(scroller: HTMLElement, anchor: ScrollAnchor | null): void {
+  if (!anchor || !anchor.element.isConnected) return;
+  const offset = anchor.element.getBoundingClientRect().top - scroller.getBoundingClientRect().top;
+  scroller.scrollTop += offset - anchor.offset;
+}
+
+/** Typing on a touch screen, where Return has to be how a new line goes in. */
+const touchTyping = () => window.matchMedia("(pointer: coarse)").matches;
 const zero = () => 0;
 
 /** While listening, the message box becomes this: the words as heard, how loud, and what to do with them. */

@@ -344,6 +344,9 @@ test("browser chats with Axo on a Mac: history, live replies, new chats, info, a
     const tool = page.getByTestId("tool-card");
     await expect(tool.getByText("$ git status"));
     await expect(tool.getByLabel("Completed"));
+    // Output stays folded until asked for.
+    assert.equal(await tool.getByText("On branch main").count(), 0);
+    await tool.getByRole("button", { name: "Show output (1 line)" }).click();
     await expect(tool.getByText("On branch main"));
     await shot("history");
 
@@ -400,6 +403,26 @@ test("browser chats with Axo on a Mac: history, live replies, new chats, info, a
     await page.getByRole("button", { name: "Talk" }).click();
     await listening.getByRole("button", { name: "Cancel" }).click();
     assert.equal(await box.inputValue(), "");
+    // Shift-Enter starts a new line rather than sending.
+    await box.fill("first line");
+    await box.press("Shift+Enter");
+    await box.pressSequentially("second line");
+    assert.equal(await box.inputValue(), "first line\nsecond line");
+    assert.equal(prompts.length, 0, "Shift-Enter sends nothing");
+    // On a touch screen Return is how a new line goes in; Send sends.
+    await page.evaluate(() => {
+      const matchMedia = window.matchMedia.bind(window);
+      window.realMatchMedia = window.matchMedia;
+      window.matchMedia = query => {
+        const list = matchMedia(query);
+        return query === "(pointer: coarse)" ? Object.create(list, { matches: { value: true } }) : list;
+      };
+    });
+    await box.fill("on the phone");
+    await box.press("Enter");
+    assert.equal(await box.inputValue(), "on the phone\n");
+    assert.equal(prompts.length, 0, "Return on a touch screen sends nothing");
+    await page.evaluate(() => { window.matchMedia = window.realMatchMedia; });
     await box.fill("Ship it");
     await box.press("Enter");
     // While Axo works it says so under the last message, with a way to stop it that asks first.

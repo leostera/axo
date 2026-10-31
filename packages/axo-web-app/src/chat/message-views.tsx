@@ -145,12 +145,12 @@ const toolIcons: Record<ToolActivity["kind"], IconName> = {
   shell: "terminal", edit: "pencil", file: "doc", search: "search", generic: "wrench",
 };
 
-/** A tool Pi used: a tinted card with what it ran and a short look at what came back. */
+/** A tool Pi used: a tinted card with what it ran; what came back stays folded until asked for. */
 function ToolCard({ tool, working }: { tool: ToolActivity; working: boolean }) {
   const [expanded, setExpanded] = useState(false);
   const running = tool.status === "running" && working;
   const lines = tool.output.split("\n");
-  const shown = !expanded && lines.length > 6 ? (running ? lines.slice(-6) : lines.slice(0, 6)) : lines;
+  const lineCount = `${lines.length} ${lines.length === 1 ? "line" : "lines"}`;
   return (
     <div className={`tool-card tool-${tool.status} tool-kind-${tool.kind}`} data-testid="tool-card">
       <div className="tool-heading">
@@ -164,17 +164,19 @@ function ToolCard({ tool, working }: { tool: ToolActivity; working: boolean }) {
       </div>
       {tool.subtitle ? <div className="tool-subtitle">{tool.subtitle}</div> : null}
       {tool.command ? <div className={expanded ? "tool-command" : "tool-command clamped"}>$ {tool.command}</div> : null}
-      {tool.output ? (
+      {tool.output && expanded ? (
         <pre className="tool-output">
           {tool.kind === "edit" && tool.status !== "failed"
-            ? shown.map((line, index) => <span key={index} className={line.startsWith("+") ? "diff-add" : line.startsWith("-") ? "diff-remove" : undefined}>{line}{"\n"}</span>)
-            : shown.join("\n")}
+            ? lines.map((line, index) => <span key={index} className={line.startsWith("+") ? "diff-add" : line.startsWith("-") ? "diff-remove" : undefined}>{line}{"\n"}</span>)
+            : tool.output}
         </pre>
       ) : null}
-      {tool.output && lines.length > 6 && !running ? (
-        <button className="tool-expand" onClick={() => setExpanded(!expanded)}>{expanded ? "Collapse tool output" : "Expand tool output"}</button>
+      {tool.output ? (
+        <button className="tool-expand" aria-expanded={expanded} onClick={() => setExpanded(!expanded)}>
+          {expanded ? "Hide output" : `Show output (${lineCount}${running ? ", still running" : ""})`}
+        </button>
       ) : null}
-      {tool.outputTruncated ? <p className="tool-truncated">Output cut short here; the rest is on your Mac.</p> : null}
+      {tool.outputTruncated && expanded ? <p className="tool-truncated">Output cut short here; the rest is on your Mac.</p> : null}
     </div>
   );
 }
