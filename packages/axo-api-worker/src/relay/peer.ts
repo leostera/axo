@@ -1,5 +1,5 @@
 import { z } from "zod";
-import { LIMITS, uuid } from "@axo/protocol";
+import { uuid } from "@axo/protocol";
 import type { Principal } from "../access";
 
 export interface HostSubscription {
@@ -12,7 +12,6 @@ export interface Peer extends Principal {
   negotiated: boolean;
   window: number;
   calls: number;
-  outgoing: number[];
   hostSubscriptions: HostSubscription[];
 }
 export type CallerContext = { socket: WebSocket; peer: Peer };
@@ -26,7 +25,6 @@ export const peerSchema = z
     negotiated: z.boolean(),
     window: z.number(),
     calls: z.number().int().nonnegative(),
-    outgoing: z.array(z.number().int().min(0).max(LIMITS.frameBytes)).max(32),
     hostSubscriptions: z.array(z.object({
       subscriptionId: z.uuid(),
       hostGeneration: uuid,

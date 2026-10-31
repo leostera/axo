@@ -27,7 +27,7 @@ async function machine(
   return { daemon, target };
 }
 
-test("hibernation restores pending correlation, partial batches and delivery credits", async (t) => {
+test("hibernation restores pending correlation and partial batches", async (t) => {
   const h = await harness();
   t.after(() => h.close());
   const a = await machine(h);

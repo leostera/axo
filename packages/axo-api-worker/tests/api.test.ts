@@ -37,14 +37,12 @@ async function registered(
 async function client(
   h: Awaited<ReturnType<typeof harness>>,
   machine: string,
-  credits = true,
 ) {
   const peer = await Peer.connect(
     h.url,
     await h.token("client"),
     machine,
     "client",
-    credits,
   );
   await peer.negotiate();
   return peer;
@@ -302,27 +300,4 @@ test("forged replies and raw byte responses do not confirm execution", async (t)
   );
   a.daemon.send(success(forwarded.id!, { data: [1, 2, 3] }));
   assert.equal(code(await pending), -32004);
-});
-
-test("slow clients exhaust delivery credits without stopping daemon connectivity", async (t) => {
-  const h = await harness();
-  t.after(() => h.close());
-  const a = await registered(h);
-  const peer = await client(h, a.target.machineId, false);
-  t.after(() => {
-    a.daemon.close();
-    peer.close();
-  });
-  const closed = once(peer.socket, "close");
-  for (let i = 0; i < 33; i++) {
-    if (i === 20) await new Promise((resolve) => setTimeout(resolve, 1050));
-    if (peer.socket.readyState !== 1) break;
-    peer.send({ jsonrpc: "2.0", id: i, method: "unknown" });
-    await new Promise((resolve) => setTimeout(resolve, 5));
-  }
-  await closed;
-  assert.equal(
-    (await h.list(await h.token("client"))).result.machines[0].online,
-    true,
-  );
 });

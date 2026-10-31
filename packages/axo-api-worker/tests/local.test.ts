@@ -511,7 +511,7 @@ test(
     const sizeClosed = once(oversized.socket, "close");
     oversized.send("x".repeat(65537));
     await sizeClosed;
-    const slow = await Peer.connectLocal(f.discovery, false);
+    const slow = await Peer.connectLocal(f.discovery);
     f.peers.push(slow);
     await slow.negotiate();
     for (let i = 0; i < 31; i++) {

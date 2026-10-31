@@ -7,12 +7,11 @@
  * had arrived in one frame. Fragments of a socket that closed are discarded with it, and a
  * message that breaks these bounds closes the socket.
  *
- * Running out of credit never closes a host socket: everything shares it. Messages have a
- * priority class, and senders interleave fragments by class, so a large reply never waits behind
- * an upload. A message that waits too long for credit is dropped on its own; if some of its
- * fragments went out, an `axo.transport.discard` notice tells the receiver to drop its partial.
- * A receiver also drops a partial that gets no fragment for a minute, and ignores late fragments
- * of a message it dropped.
+ * There are no delivery credits (RFD0018, Flow control). Axod queues messages by priority class
+ * and interleaves fragments by class, so a large upload never holds back a reply. A sender that
+ * gives up on a message part-way sends an `axo.transport.discard` notice so the receiver drops
+ * its partial. A receiver also drops a partial that gets no fragment for a minute, and ignores
+ * late fragments of a message it dropped.
  */
 import { z } from "zod";
 import { LIMITS } from "./contracts.ts";
@@ -21,7 +20,7 @@ export const FRAGMENT_METHOD = "axo.transport.fragment";
 export const DISCARD_METHOD = "axo.transport.discard";
 
 /**
- * The order in which a sender spends credit: replies and control first, then durable upload
+ * The order in which a sender sends: replies and control first, then durable upload
  * (transcripts), then ephemeral progress. Within a class, messages go in order.
  */
 export const PRIORITY = { control: 0, durable: 1, ephemeral: 2 } as const;
@@ -30,12 +29,10 @@ export type Priority = (typeof PRIORITY)[keyof typeof PRIORITY];
 export const FRAGMENTS = {
   /** Bytes of the message in one fragment: base64 makes it 61,440 characters, under one frame with its envelope. */
   chunkBytes: 46_080,
-  /** The largest message that may be reassembled. */
-  messageBytes: 2 * 1_048_576,
+  /** The largest message that may be reassembled: room for one 12 MiB Pi line (RFD0018). */
+  messageBytes: 16 * 1_048_576,
   /** At most this many fragmented messages may be partly received on one socket. */
   partialPerSocket: 4,
-  /** A message that waits this long for credit is dropped, and the socket stays open. */
-  creditTimeoutMs: 30_000,
   /** A partial message that gets no fragment for this long is dropped by its receiver. */
   partialTimeoutMs: 60_000,
   /** Dropped messages a receiver remembers per socket, to ignore their late fragments. */

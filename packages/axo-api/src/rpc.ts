@@ -26,7 +26,6 @@ import {
 export type Negotiated = {
   protocolVersion: 2;
   methods: string[];
-  deliveryCredits: { frames: number; bytes: number };
 };
 export type Registered = { leaseId: string; hostGeneration: string; leaseExpiresAt?: number };
 export type Heartbeat = { leaseId: string; leaseExpiresAt?: number };

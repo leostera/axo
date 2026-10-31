@@ -1,22 +1,8 @@
-import { AxoHostRelay } from "../axo-host-relay";
-import { z } from "zod";
-import { uuid } from "@axo/protocol";
-import { LIMITS } from "@axo/protocol";
-import {
-  hostDataEventSchema,
-  hostRegisterSchema,
-  hostRefSchema,
-  hostSessionsPublishSchema,
-  sessionIdSchema,
-  hostSnapshotSchema,
-  sessionSnapshotSchema,
-  type HostSnapshot,
-  type SessionSnapshot,
-} from "@axo/protocol/v1";
+import { DurableObject } from "cloudflare:workers";
+import { LIMITS, type ClientHost } from "@axo/protocol";
+import { hostRegisterSchema, hostSnapshotSchema, type HostSnapshot } from "@axo/protocol/v1";
 import { constantTimeEqual, hmac } from "./crypto";
-import type { Peer } from "../relay/peer";
-import { fitForHistory, sessionDOName, sessionEventBindingSchema, sessionEventPageRequestSchema, sessionEventPageResultSchema, TRANSIENT_PI_EVENTS } from "../session-history";
-import { recordApiEvent } from "../observability";
+import { hostDOName } from "../host-do";
 
 import type { AccountProfile } from "./account-access";
 type PairingRow = {
@@ -42,7 +28,7 @@ type AccountHostRow = {
 };
 const MAX_SESSIONS = 20;
 const MAX_PENDING_LOGIN_CODES = 10;
-type StoredHostSessionRow = { host_id: string; session_id: string; snapshot_json: string };
+type HostStub = { disconnect(): Promise<void>; presenceOf(): Promise<{ online: boolean; hostGeneration: string | null }> };
 
 export type PairingCreationStatus = "created" | "collision" | "limited";
 export type PairingRedemption =
@@ -60,8 +46,11 @@ export type PairingRedemptionInput = {
   now: number;
 };
 
-/** All account-owned state and live host relays share this per-account Durable Object. */
-export class AxoAccountManager extends AxoHostRelay {
+/**
+ * One account's state: sign-ins, pairing and its hosts. Each host's socket, presence and
+ * Sessions live in that host's HostDO (RFD0018), which reaches this object by RPC.
+ */
+export class AxoAccountManager extends DurableObject<Env> {
   constructor(ctx: DurableObjectState, env: Env) {
     super(ctx, env);
     ctx.storage.sql.exec(`CREATE TABLE IF NOT EXISTS account (
@@ -92,15 +81,9 @@ export class AxoAccountManager extends AxoHostRelay {
     if (!hostColumns.some(column => column.name === "capabilities_json")) {
       ctx.storage.sql.exec("ALTER TABLE account_hosts ADD COLUMN capabilities_json TEXT");
     }
-    // Session IDs became UUIDs (RFD0017); v1 rows are keyed by integers and are dropped. A host
-    // replaces all of its snapshots when it registers, so nothing is lost.
-    ctx.storage.sql.exec("DROP TABLE IF EXISTS host_sessions_v1");
-    ctx.storage.sql.exec(`CREATE TABLE IF NOT EXISTS host_sessions_v2 (
-      host_id TEXT NOT NULL REFERENCES account_hosts(host_id) ON DELETE CASCADE,
-      session_id TEXT NOT NULL, snapshot_json TEXT NOT NULL CHECK (json_valid(snapshot_json)),
-      PRIMARY KEY (host_id, session_id)
-    )`);
-    ctx.storage.sql.exec("CREATE INDEX IF NOT EXISTS host_sessions_v2_by_host ON host_sessions_v2(host_id, session_id)");
+    // Each host's Session index moved to its HostDO (RFD0018), and the relay tables with it.
+    for (const table of ["host_sessions_v1", "host_sessions_v2", "groups", "pending", "route", "fragments_in", "fragments_discarded", "outbox"])
+      ctx.storage.sql.exec(`DROP TABLE IF EXISTS ${table}`);
   }
 
   /** Starts a sign-in: binds this object's account ID, keeps the profile current, and keeps at most 20. */
@@ -271,7 +254,7 @@ export class AxoAccountManager extends AxoHostRelay {
       } as const;
     });
 
-    if (result.status === "linked" && credentialRotated) this.closeHostRelay(input.hostId);
+    if (result.status === "linked" && credentialRotated) this.disconnectHost(input.hostId);
     return result;
   }
 
@@ -280,202 +263,73 @@ export class AxoAccountManager extends AxoHostRelay {
     return { hosts: await Promise.all(rows.map((row) => this.hostSnapshot(row))) };
   }
 
-  async listHostSessions(reference: unknown): Promise<{ host: HostSnapshot; sessions: SessionSnapshot[] } | null> {
-    const hostRef = hostRefSchema.parse(reference);
-    const row = this.ctx.storage.sql.exec<AccountHostRow>("SELECT * FROM account_hosts WHERE host_id = ? AND revoked_at IS NULL", hostRef.hostId).toArray()[0];
-    if (!row) return null;
-    if (row.host_generation !== hostRef.hostGeneration) throw new Error("Host generation conflict");
-    const host = await this.hostSnapshot(row);
-    return { host, sessions: host.sessions };
-  }
-
-  async listPiEvents(request: unknown): Promise<{ events: unknown[]; next: number | null }> {
-    const accountId = this.accountId();
-    if (!accountId) throw new Error("Account identity is unavailable");
-    const query = z.object({
-      hostId: uuid,
-      sessionId: sessionIdSchema,
-      before: z.number().int().min(0).max(Number.MAX_SAFE_INTEGER).default(0),
-      limit: z.number().int().min(1).max(50).default(20),
-    }).strict().parse(request);
-    const input = sessionEventPageRequestSchema.parse({ ...query, accountId });
-    const host = this.ctx.storage.sql.exec<AccountHostRow>(
-      "SELECT * FROM account_hosts WHERE host_id = ?",
-      input.hostId,
-    ).toArray()[0];
-    if (!host) throw new Error("Host not found");
-    const page = await this.ctx.exports.AxoSessionDO.getByName(
-      sessionDOName(accountId, input.hostId, input.sessionId),
-    ).list(input) as unknown as { ok: boolean; events?: unknown; next?: unknown };
-    if (!page.ok) throw new Error("Session history ownership conflict");
-    return sessionEventPageResultSchema.parse({ events: page.events, next: page.next });
+  /** The hosts a client follows: every host the account still owns. Presence comes from each HostDO. */
+  async clientHosts(): Promise<Array<Omit<ClientHost, "online">>> {
+    return this.ctx.storage.sql.exec<AccountHostRow>(
+      "SELECT * FROM account_hosts WHERE revoked_at IS NULL ORDER BY host_id LIMIT ?", LIMITS.machines,
+    ).toArray().map((row) => ({
+      hostId: row.host_id, hostGeneration: row.host_generation, label: row.label, hostKind: row.host_kind,
+      lastSeenAt: new Date(row.last_seen_at).toISOString(),
+    }));
   }
 
   revokeHost(hostId: string, now = Date.now()): void {
     this.ctx.storage.sql.exec("UPDATE account_hosts SET revoked_at = ? WHERE host_id = ? AND revoked_at IS NULL", now, hostId);
-    this.closeHostRelay(hostId);
+    this.disconnectHost(hostId);
   }
 
-  protected override supportsLegacyMachineMethods(): boolean { return false; }
-
-  protected override async authorizeRelayPeer(request: Request, peer: Peer): Promise<boolean> {
-    const accountId = this.accountId();
-    if (!accountId || peer.identity !== accountId) return false;
-    const host = this.ctx.storage.sql.exec<AccountHostRow>("SELECT * FROM account_hosts WHERE host_id = ? AND revoked_at IS NULL", peer.machineId).toArray()[0];
-    if (!host) return false;
-    // A client was verified by Access for this account in the Worker; it may reach any host the account still owns.
-    if (peer.role === "client") return true;
-
-    const credentialId = request.headers.get("X-Axo-Credential-Id") ?? "";
-    const credential = request.headers.get("X-Axo-Credential") ?? "";
+  /** Whether `credential` is the current credential of a host this account still owns. */
+  async authorizeHost(hostId: string, credentialId: string, credential: string): Promise<boolean> {
+    const host = this.activeHost(hostId);
     const sessionSecret = (this.env as Env & { SESSION_SECRET?: string }).SESSION_SECRET;
-    if (!/^[A-Za-z0-9_-]{43}$/.test(credential) || credentialId !== host.credential_id || !sessionSecret)
+    if (!host || !/^[A-Za-z0-9_-]{43}$/.test(credential) || credentialId !== host.credential_id || !sessionSecret)
       return false;
     const verifier = await hmac(sessionSecret, `host-credential\0${credential}`);
     return constantTimeEqual(verifier, host.credential_verifier);
   }
 
-  protected override async storeHostRegistration(registration: unknown, principal: string): Promise<HostSnapshot> {
+  /** A host registered on its socket: keeps its boot generation, label and capabilities. */
+  async registerHost(registration: unknown, now: number): Promise<HostSnapshot> {
     const input = hostRegisterSchema.parse(registration);
-    this.requireAccount(principal);
-    const old = this.ctx.storage.sql.exec<AccountHostRow>("SELECT * FROM account_hosts WHERE host_id = ? AND revoked_at IS NULL", input.hostId).toArray()[0];
-    if (!old) throw new Error("Host is not linked to this account");
-    const storedAt = Date.now();
-    const sessions = input.sessions.map((session) => sessionSnapshotSchema.parse({ ...session, updatedAt: new Date(storedAt).toISOString() }));
-    this.ctx.storage.transactionSync(() => {
-      this.ctx.storage.sql.exec(`UPDATE account_hosts SET host_generation = ?, label = ?, host_kind = ?, capabilities_json = ?, last_seen_at = ?
-        WHERE host_id = ? AND revoked_at IS NULL`, input.hostGeneration, input.label, input.hostKind,
-        input.capabilities === undefined ? null : JSON.stringify(input.capabilities), storedAt, input.hostId);
-      this.replaceHostSessions(input.hostId, sessions);
-    });
+    if (!this.activeHost(input.hostId)) throw new Error("Host is not linked to this account");
+    this.ctx.storage.sql.exec(`UPDATE account_hosts SET host_generation = ?, label = ?, host_kind = ?, capabilities_json = ?, last_seen_at = ?
+      WHERE host_id = ? AND revoked_at IS NULL`, input.hostGeneration, input.label, input.hostKind,
+      input.capabilities === undefined ? null : JSON.stringify(input.capabilities), now, input.hostId);
     return hostSnapshotSchema.parse({ hostId: input.hostId, hostGeneration: input.hostGeneration, label: input.label,
       hostKind: input.hostKind, ...(input.capabilities === undefined ? {} : { capabilities: input.capabilities }),
-      status: "online", stale: false, lastSeenAt: new Date(storedAt).toISOString(), sessions });
+      status: "online", stale: false, lastSeenAt: new Date(now).toISOString(), sessions: [] });
   }
 
-  protected override async storeHostHeartbeat(reference: unknown, principal: string): Promise<{ acknowledged: true; lastSeenAt: string }> {
-    const input = hostRefSchema.parse(reference);
-    this.requireAccount(principal);
-    const row = this.ctx.storage.sql.exec<AccountHostRow>("SELECT * FROM account_hosts WHERE host_id = ? AND revoked_at IS NULL", input.hostId).toArray()[0];
+  async touchHost(hostId: string, hostGeneration: string, now: number): Promise<{ acknowledged: true; lastSeenAt: string }> {
+    const row = this.activeHost(hostId);
     if (!row) throw new Error("Host is not linked to this account");
-    if (row.host_generation !== input.hostGeneration) throw new Error("Host generation conflict");
-    const now = Date.now();
-    this.ctx.storage.sql.exec("UPDATE account_hosts SET last_seen_at = ? WHERE host_id = ?", now, input.hostId);
+    if (row.host_generation !== hostGeneration) throw new Error("Host generation conflict");
+    this.ctx.storage.sql.exec("UPDATE account_hosts SET last_seen_at = ? WHERE host_id = ?", now, hostId);
     return { acknowledged: true, lastSeenAt: new Date(now).toISOString() };
   }
 
-  protected override async storeHostSessions(publication: unknown, principal: string): Promise<{ storedAt: string }> {
-    const input = hostSessionsPublishSchema.parse(publication);
-    this.requireAccount(principal);
-    const row = this.ctx.storage.sql.exec<AccountHostRow>("SELECT * FROM account_hosts WHERE host_id = ? AND revoked_at IS NULL", input.hostId).toArray()[0];
-    if (!row) throw new Error("Host is not linked to this account");
-    if (row.host_generation !== input.hostGeneration) throw new Error("Host generation conflict");
-    const now = Date.now();
-    const sessions = input.sessions.map((session) => sessionSnapshotSchema.parse({ ...session, updatedAt: new Date(now).toISOString() }));
-    this.ctx.storage.transactionSync(() => {
-      this.ctx.storage.sql.exec("UPDATE account_hosts SET last_seen_at = ? WHERE host_id = ?", now, input.hostId);
-      this.replaceHostSessions(input.hostId, sessions);
-    });
-    return { storedAt: new Date(now).toISOString() };
+  private activeHost(hostId: string): AccountHostRow | undefined {
+    return this.ctx.storage.sql.exec<AccountHostRow>("SELECT * FROM account_hosts WHERE host_id = ? AND revoked_at IS NULL", hostId).toArray()[0];
   }
 
-  protected override async storeHostEvent(event: unknown, principal: string): Promise<void> {
-    const input = hostDataEventSchema.parse(event);
-    this.requireAccount(principal);
-    const host = this.ctx.storage.sql.exec<AccountHostRow>("SELECT * FROM account_hosts WHERE host_id = ? AND revoked_at IS NULL", input.hostId).toArray()[0];
-    if (!host || host.host_generation !== input.hostGeneration) throw new Error("Host generation conflict");
-    const sql = this.ctx.storage.sql;
-    const now = Date.now();
-    const hostEvent = input.event;
-    switch (hostEvent.type) {
-      case "session.snapshot": {
-        const snapshot = sessionSnapshotSchema.parse({ ...hostEvent.snapshot, updatedAt: new Date(now).toISOString() });
-        this.ctx.storage.transactionSync(() => {
-          sql.exec("UPDATE account_hosts SET last_seen_at = ? WHERE host_id = ?", now, input.hostId);
-          sql.exec(`INSERT INTO host_sessions_v2 (host_id, session_id, snapshot_json) VALUES (?, ?, ?)
-            ON CONFLICT(host_id, session_id) DO UPDATE SET snapshot_json = excluded.snapshot_json`, input.hostId, snapshot.sessionId, JSON.stringify(snapshot));
-        });
-        return;
-      }
-      case "session.removed": {
-        this.ctx.storage.transactionSync(() => {
-          sql.exec("UPDATE account_hosts SET last_seen_at = ? WHERE host_id = ?", now, input.hostId);
-          sql.exec("DELETE FROM host_sessions_v2 WHERE host_id = ? AND session_id = ?", input.hostId, hostEvent.sessionId);
-        });
-        return;
-      }
-      case "shell.activity":
-      case "terminal.output":
-        return;
-      case "pi.event": {
-        // Progress is for whoever is watching now; the relay forwards it without keeping it.
-        if (TRANSIENT_PI_EVENTS.has(hostEvent.name)) return;
-        // An event history cannot keep is skipped, never a reason to drop the Mac's connection:
-        // that would cut every client off over one long reply.
-        const session = sql.exec<StoredHostSessionRow>(
-          "SELECT * FROM host_sessions_v2 WHERE host_id = ? AND session_id = ?",
-          input.hostId,
-          hostEvent.sessionId,
-        ).toArray()[0];
-        if (!session) {
-          recordApiEvent({ event: "pi_event_not_stored", reason: "unknown_session" });
-          return;
-        }
-        const accountId = this.accountId();
-        if (!accountId) throw new Error("Account identity is unavailable");
-        const fitted = fitForHistory(hostEvent.data);
-        if (!fitted) {
-          recordApiEvent({ event: "pi_event_not_stored", reason: "invalid" });
-          return;
-        }
-        if (fitted.trimmedFrom !== undefined) recordApiEvent({ event: "pi_event_trimmed", bytes: fitted.trimmedFrom });
-        const binding = sessionEventBindingSchema.safeParse({
-          accountId,
-          hostId: input.hostId,
-          hostGeneration: input.hostGeneration,
-          sessionId: hostEvent.sessionId,
-          piSessionId: hostEvent.piSessionId,
-          streamId: hostEvent.streamId,
-          sequence: hostEvent.sequence,
-          name: hostEvent.name,
-          data: fitted.data,
-        });
-        if (!binding.success) {
-          recordApiEvent({ event: "pi_event_not_stored", reason: "invalid" });
-          return;
-        }
-        const appended = await this.ctx.exports.AxoSessionDO.getByName(
-          sessionDOName(accountId, input.hostId, hostEvent.sessionId),
-        ).append(binding.data) as unknown as { ok: boolean };
-        if (!appended.ok) {
-          recordApiEvent({ event: "pi_event_not_stored", reason: "conflict" });
-          return;
-        }
-        sql.exec("UPDATE account_hosts SET last_seen_at = ? WHERE host_id = ?", now, input.hostId);
-        return;
-      }
-    }
+  private hostDO(hostId: string): HostStub | null {
+    const accountId = this.accountId();
+    return accountId ? this.ctx.exports.AxoHostDO.getByName(hostDOName(accountId, hostId)) as unknown as HostStub : null;
   }
 
-  private replaceHostSessions(hostId: string, sessions: SessionSnapshot[]): void {
-    const sql = this.ctx.storage.sql;
-    sql.exec("DELETE FROM host_sessions_v2 WHERE host_id = ?", hostId);
-    for (const session of sessions) {
-      sql.exec("INSERT INTO host_sessions_v2 (host_id, session_id, snapshot_json) VALUES (?, ?, ?)", hostId, session.sessionId, JSON.stringify(session));
-    }
+  private disconnectHost(hostId: string): void {
+    const host = this.hostDO(hostId);
+    if (host) this.ctx.waitUntil(host.disconnect().catch(() => undefined));
   }
 
   private async hostSnapshot(row: AccountHostRow): Promise<HostSnapshot> {
-    const presence = this.presence(row.host_id);
-    const online = row.revoked_at === null && presence.online && presence.hostGeneration === row.host_generation;
-    const sessions = this.ctx.storage.sql.exec<StoredHostSessionRow>(
-      "SELECT * FROM host_sessions_v2 WHERE host_id = ? ORDER BY json_extract(snapshot_json, '$.createdAt'), session_id LIMIT 256", row.host_id,
-    ).toArray().map((session) => sessionSnapshotSchema.parse(JSON.parse(session.snapshot_json)));
+    const presence = row.revoked_at === null ? await this.hostDO(row.host_id)?.presenceOf().catch(() => null) : null;
+    const online = Boolean(presence?.online && presence.hostGeneration === row.host_generation);
     return hostSnapshotSchema.parse({
       hostId: row.host_id, hostGeneration: row.host_generation, label: row.label, hostKind: row.host_kind,
       ...(row.capabilities_json === null ? {} : { capabilities: JSON.parse(row.capabilities_json) as unknown }),
       status: online ? "online" : "offline", stale: !online,
-      lastSeenAt: new Date(row.last_seen_at).toISOString(), sessions,
+      lastSeenAt: new Date(row.last_seen_at).toISOString(), sessions: [],
     });
   }
 
@@ -487,8 +341,5 @@ export class AxoAccountManager extends AxoHostRelay {
   }
   private accountId(): string | null {
     return this.ctx.storage.sql.exec<{ account_id: string }>("SELECT account_id FROM account WHERE singleton = 1").toArray()[0]?.account_id ?? null;
-  }
-  private requireAccount(accountId: string): void {
-    if (!this.accountId() || this.accountId() !== accountId) throw new Error("Account identity conflict");
   }
 }

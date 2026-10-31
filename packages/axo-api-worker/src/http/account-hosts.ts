@@ -1,12 +1,7 @@
-import { uuid } from "@axo/protocol";
-import {
-  hostIdSchema,
-  sessionIdSchema,
-  hostRefSchema,
-  hostListResultSchema,
-  hostSessionsListResultSchema,
-} from "@axo/protocol/v1";
-import { sessionEventPageResultSchema } from "../session-history";
+import { clientIdSchema, uuid } from "@axo/protocol";
+import { hostIdSchema, hostListResultSchema } from "@axo/protocol/v1";
+import { clientDOName } from "../client-do";
+import { hostDOName } from "../host-do";
 import { requireAccount, type AuthExports } from "../auth/account-access";
 import type { AuthEnvironment } from "../auth/config";
 
@@ -23,79 +18,6 @@ export async function serveAccountHosts(request: Request, env: PairingEnvironmen
     if (!manager?.listHosts) return unavailable();
     return Response.json(hostListResultSchema.parse(await manager.listHosts()), { headers: privateHeaders });
   } catch {
-    return unavailable();
-  }
-}
-
-export async function serveAccountHostSessions(
-  request: Request,
-  env: PairingEnvironment,
-  exports: AuthExports,
-  rawHostId: string,
-): Promise<Response> {
-  if (request.method !== "GET") return methodNotAllowed("GET");
-  const caller = await requireAccount(request, env, exports, "read");
-  if (caller instanceof Response) return caller;
-  const { accountId } = caller;
-  const hostId = hostIdSchema.safeParse(rawHostId);
-  const hostGeneration = new URL(request.url).searchParams.get("hostGeneration");
-  const reference = hostRefSchema.safeParse({ hostId: rawHostId, hostGeneration });
-  if (!hostId.success || !reference.success)
-    return json({ error: "Valid hostId and hostGeneration required" }, 400);
-  try {
-    const manager = exports.AxoAccountManager?.getByName(accountId);
-    if (!manager?.listHostSessions) return unavailable();
-    const result = await manager.listHostSessions(reference.data);
-    if (!result) return json({ error: "Host not found" }, 404);
-    return Response.json(hostSessionsListResultSchema.parse(result), { headers: privateHeaders });
-  } catch (error) {
-    if (error instanceof Error && error.message === "Host generation conflict")
-      return json({ error: "Host generation is stale" }, 409);
-    return unavailable();
-  }
-}
-
-export async function serveAccountHostEvents(
-  request: Request,
-  env: PairingEnvironment,
-  exports: AuthExports,
-  rawHostId: string,
-  rawSessionId: string,
-): Promise<Response> {
-  if (request.method !== "GET") return methodNotAllowed("GET");
-  const caller = await requireAccount(request, env, exports, "read");
-  if (caller instanceof Response) return caller;
-  const { accountId } = caller;
-  const hostId = uuid.safeParse(rawHostId);
-  const sessionId = sessionIdSchema.safeParse(rawSessionId);
-  if (!hostId.success || !sessionId.success)
-    return json({ error: "Valid host and Session IDs required" }, 400);
-
-  const url = new URL(request.url);
-  const allowed = new Set(["before", "limit"]);
-  if ([...url.searchParams.keys()].some(key => !allowed.has(key)))
-    return json({ error: "Unsupported query parameter" }, 400);
-  const beforeText = url.searchParams.get("before");
-  const limitText = url.searchParams.get("limit");
-  const before = beforeText === null ? 0 : Number(beforeText);
-  const limit = limitText === null ? 20 : Number(limitText);
-  if (!Number.isSafeInteger(before) || before < 0 || String(before) !== (beforeText ?? "0") ||
-      !Number.isSafeInteger(limit) || limit < 1 || limit > 50 || String(limit) !== (limitText ?? "20"))
-    return json({ error: "Invalid event page cursor or limit" }, 400);
-
-  try {
-    const manager = exports.AxoAccountManager?.getByName(accountId);
-    if (!manager?.listPiEvents) return unavailable();
-    const page = sessionEventPageResultSchema.parse(await manager.listPiEvents({
-      hostId: hostId.data,
-      sessionId: sessionId.data,
-      before,
-      limit,
-    }));
-    return Response.json(page, { headers: privateHeaders });
-  } catch (error) {
-    if (error instanceof Error && error.message === "Host not found")
-      return json({ error: "Host not found" }, 404);
     return unavailable();
   }
 }
@@ -122,55 +44,64 @@ export async function revokeAccountHost(
   }
 }
 
-export async function upgradeAccountHostRelay(
+/**
+ * The host's socket (RFD0018): authenticated with the host credential, and served by that host's
+ * HostDO, which checks the credential with the account before it upgrades.
+ */
+export async function upgradeHostDaemon(
   request: Request,
-  env: PairingEnvironment,
-  exports: AuthExports,
-  role: "client" | "daemon",
+  ctx: ExecutionContext,
+  rawAccountId: string,
   rawHostId: string,
-  rawAccountId?: string,
 ): Promise<Response> {
   if (request.method !== "GET" || request.headers.get("Upgrade")?.toLowerCase() !== "websocket")
     return new Response("WebSocket required", { status: 426, headers: privateHeaders });
+  if (request.headers.has("Origin")) return json({ error: "Origin not allowed" }, 403);
   const hostId = hostIdSchema.safeParse(rawHostId);
+  const accountId = uuid.safeParse(rawAccountId);
   if (!hostId.success) return json({ error: "Invalid host" }, 400);
+  if (!accountId.success) return json({ error: "Invalid account" }, 400);
+  const credential = /^Bearer ([A-Za-z0-9_-]{43})$/.exec(request.headers.get("Authorization") ?? "")?.[1];
+  const credentialId = request.headers.get("X-Axo-Credential-Id") ?? "";
+  if (!credential || !uuid.safeParse(credentialId).success) return json({ error: "Host authentication required" }, 401);
+  return ctx.exports.AxoHostDO.getByName(hostDOName(accountId.data, hostId.data)).fetch(new Request("https://host.internal/daemon", {
+    headers: {
+      Upgrade: "websocket",
+      "X-Axo-Role": "daemon",
+      "X-Axo-Identity": accountId.data,
+      "X-Axo-Expiry": String(Date.now() + 24 * 60 * 60 * 1000),
+      "X-Axo-Machine": hostId.data,
+      "X-Axo-Credential": credential,
+      "X-Axo-Credential-Id": credentialId,
+    },
+  }));
+}
 
-  let accountId: string;
-  let expiresAt: number;
-  let credential: string | undefined;
-  let credentialId: string | undefined;
-  if (role === "client") {
-    // Opening a relay acts on the account's hosts, so it is held to the same rule as a change.
-    const caller = await requireAccount(request, env, exports, "change");
-    if (caller instanceof Response) return caller;
-    accountId = caller.accountId;
-    expiresAt = caller.expiresAt;
-  } else {
-    if (request.headers.has("Origin")) return json({ error: "Origin not allowed" }, 403);
-    const parsedAccountId = uuid.safeParse(rawAccountId);
-    if (!parsedAccountId.success) return json({ error: "Invalid account" }, 400);
-    accountId = parsedAccountId.data;
-    const authorization = request.headers.get("Authorization") ?? "";
-    const match = /^Bearer ([A-Za-z0-9_-]{43})$/.exec(authorization);
-    credential = match?.[1];
-    credentialId = request.headers.get("X-Axo-Credential-Id") ?? "";
-    if (!credential || !uuid.safeParse(credentialId).success) return json({ error: "Host authentication required" }, 401);
-    // The account manager checks revocation and the keyed credential verifier before upgrading.
-    expiresAt = Date.now() + 24 * 60 * 60 * 1000;
-  }
-
-  const manager = exports.AxoAccountManager?.getByName(accountId);
-  if (!manager?.fetch) return unavailable();
-  const headers = new Headers({
-    Upgrade: "websocket",
-    "X-Axo-Role": role,
-    "X-Axo-Identity": accountId,
-    "X-Axo-Expiry": String(expiresAt),
-    "X-Axo-Machine": hostId.data,
-  });
-  if (credential) headers.set("X-Axo-Credential", credential);
-  if (credentialId) headers.set("X-Axo-Credential-Id", credentialId);
-  return manager.fetch(new Request("https://account.internal/relay", { headers }));
+/**
+ * A client's one socket (RFD0018): signed in to the account, and served by the ClientDO named by
+ * the account and the client's own id (one per browser tab or app instance).
+ */
+export async function upgradeAccountClient(
+  request: Request,
+  env: PairingEnvironment,
+  exports: AuthExports,
+  ctx: ExecutionContext,
+): Promise<Response> {
+  if (request.method !== "GET" || request.headers.get("Upgrade")?.toLowerCase() !== "websocket")
+    return new Response("WebSocket required", { status: 426, headers: privateHeaders });
+  const clientId = clientIdSchema.safeParse(new URL(request.url).searchParams.get("clientId"));
+  if (!clientId.success) return json({ error: "Valid clientId required" }, 400);
+  // The socket acts on the account's hosts, so it is held to the same rule as a change.
+  const caller = await requireAccount(request, env, exports, "change");
+  if (caller instanceof Response) return caller;
+  return ctx.exports.AxoClientDO.getByName(clientDOName(caller.accountId, clientId.data)).fetch(new Request("https://client.internal/", {
+    headers: {
+      Upgrade: "websocket",
+      "X-Axo-Account": caller.accountId,
+      "X-Axo-Client": clientId.data,
+      "X-Axo-Expiry": String(caller.expiresAt),
+    },
+  }));
 }
 
 function json(body: unknown, status = 200): Response {

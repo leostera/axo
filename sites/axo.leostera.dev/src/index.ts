@@ -2,7 +2,9 @@ import api from "@axo/api-worker";
 
 export {
   AxoAccountDirectory,
+  AxoClientDO,
   AxoHostDirectory,
+  AxoHostDO,
   AxoHostRelay,
   AxoIdentityIndex,
   AxoPairingIndex,

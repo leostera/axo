@@ -207,7 +207,6 @@ test("host subscriptions stream metadata and output; remote controls are routed 
     await h.token("client"),
     hostId,
     "client",
-    true,
     "https://axo.leostera.dev",
   );
   await client.negotiate();

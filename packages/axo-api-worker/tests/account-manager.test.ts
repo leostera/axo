@@ -2,12 +2,12 @@ import assert from "node:assert/strict";
 import { test } from "node:test";
 import { randomToken, hmac } from "../src/auth/crypto";
 import { Peer } from "../testing/client";
-import { hostDataEventSchema, hostListResultSchema, hostNotificationSchema, hostPairingCreateResultSchema, hostPairingRedeemResultSchema, remoteTerminalInputResultSchema } from "@axo/protocol/v1";
+import { hostListResultSchema, hostPairingCreateResultSchema, hostPairingRedeemResultSchema, remoteTerminalInputResultSchema } from "@axo/protocol/v1";
 import { harness, signIn, testSessionSecret } from "./harness";
 
 const secret = testSessionSecret;
 
-test("one AccountManager owns pairing, host metadata, and live relays for multiple hosts", async (t) => {
+test("the account owns pairing and hosts; each host's socket lives in its own HostDO, and a client reaches every host through one socket", async (t) => {
   const h = await harness();
   t.after(() => h.close());
   const session = await signIn(h);
@@ -49,11 +49,10 @@ test("one AccountManager owns pairing, host metadata, and live relays for multip
   const storedHosts = await managerStorage.exec<{ host_id: string }>("SELECT host_id FROM account_hosts ORDER BY host_id");
   assert.deepEqual(new Set(storedHosts.map((row) => row.host_id)), new Set([first.hostId, second.hostId]));
 
-  const daemons = await Promise.all([first, second].map((host) => Peer.connectAccountHost(
+  const daemons = await Promise.all([first, second].map((host) => Peer.connectHostDaemon(
     h.url,
     accountId,
     host.hostId,
-    "daemon",
     {
       Authorization: `Bearer ${host.credential}`,
       "X-Axo-Credential-Id": host.credentialId,
@@ -92,54 +91,31 @@ test("one AccountManager owns pairing, host metadata, and live relays for multip
   ], "the account manager persists host capability advertisements");
   assert.equal(hosts.find((host) => host.hostId === second.hostId)?.capabilities, undefined,
     "hosts that do not advertise capabilities remain distinguishable from hosts with an empty manifest");
-  const routes = await managerStorage.exec<{ count: number }>("SELECT COUNT(*) AS count FROM route");
-  assert.equal(routes[0].count, 2, "both daemon sockets terminate on the account manager DO");
-
-  const clients = await Promise.all([first, second].map((host) => Peer.connectAccountHost(
-    h.url,
-    accountId,
-    host.hostId,
-    "client",
-    session.headers,
-  )));
-  t.after(() => clients.forEach((client) => client.close()));
-  for (const [index, client] of clients.entries()) {
-    const host = index === 0 ? first : second;
-    await client.negotiate();
-    const subscribed = await client.call("axo.host.subscribe", {
-      hostId: host.hostId,
-      hostGeneration: host.hostGeneration,
-    });
-    assert.ok("result" in subscribed);
-    const presence = hostNotificationSchema.parse(await client.next());
-    assert.equal(presence.params.event.hostId, host.hostId);
+  for (const host of [first, second]) {
+    const hostStorage = await h.mf.unsafeGetDurableObjectStorage("api-test", "AxoHostDO", { name: `${accountId}:${host.hostId}` });
+    const routes = await hostStorage.exec<{ count: number }>("SELECT COUNT(*) AS count FROM route");
+    assert.equal(routes[0].count, 1, "each host's socket terminates on its own HostDO");
   }
 
-  const terminalSecret = "ACCOUNT_TERMINAL_BYTES_MUST_NOT_PERSIST";
-  const terminalEvent = hostDataEventSchema.parse({
-    type: "host.data",
+  const clientId = `tab-${crypto.randomUUID()}`;
+  const client = await Peer.connectClient(h.url, clientId, session.headers);
+  t.after(() => client.close());
+  const hello = await client.call("axo.client.hello", { protocolVersion: 2, clientId });
+  assert.ok("result" in hello);
+  const followed = (hello.result as { hosts: Array<{ hostId: string; online: boolean }> }).hosts;
+  assert.deepEqual(new Set(followed.map((host) => host.hostId)), new Set([first.hostId, second.hostId]));
+  assert.equal(followed.every((host) => host.online), true);
+
+  const inputCall = client.call("axo.client.command", {
     hostId: first.hostId,
-    hostGeneration: first.hostGeneration,
-    event: {
-      type: "terminal.output",
+    method: "axo.remote.terminal.input",
+    params: {
+      target: { hostId: first.hostId, hostGeneration: first.hostGeneration },
       sessionId: "00000001-0000-4000-8000-000000000001",
       shellId: 1,
       sequence: 0,
-      data: Buffer.from(terminalSecret).toString("base64"),
+      data: Buffer.from("isolated").toString("base64"),
     },
-  });
-  daemons[0]!.send({ jsonrpc: "2.0", method: "axo.host.event", params: terminalEvent });
-  const output = hostNotificationSchema.parse(await clients[0]!.next());
-  assert.deepEqual(output.params.event, terminalEvent);
-  const snapshots = await managerStorage.exec<{ snapshot_json: string }>("SELECT snapshot_json FROM host_sessions_v2");
-  assert.equal(JSON.stringify(snapshots).includes(terminalSecret), false);
-
-  const inputCall = clients[0]!.call("axo.remote.terminal.input", {
-    target: { hostId: first.hostId, hostGeneration: first.hostGeneration },
-    sessionId: "00000001-0000-4000-8000-000000000001",
-    shellId: 1,
-    sequence: 0,
-    data: Buffer.from("isolated").toString("base64"),
   });
   const forwarded = await daemons[0]!.next() as { id: string; method: string };
   assert.equal(forwarded.method, "axo.remote.terminal.input");
@@ -147,11 +123,18 @@ test("one AccountManager owns pairing, host metadata, and live relays for multip
     daemons[1]!.next().then(() => true, () => true),
     new Promise<boolean>((resolve) => setTimeout(() => resolve(false), 100)),
   ]);
-  assert.equal(await leakedToOtherHost, false, "host traffic remains isolated inside the shared account object");
+  assert.equal(await leakedToOtherHost, false, "a command reaches only the host it names");
   daemons[0]!.send({ jsonrpc: "2.0", id: forwarded.id, result: { accepted: true, sequence: 0 } });
   const inputReply = await inputCall;
   assert.ok("result" in inputReply);
   assert.equal(remoteTerminalInputResultSchema.parse(inputReply.result).accepted, true);
+
+  const strangerClientId = `tab-${crypto.randomUUID()}`;
+  const stranger = await Peer.connectClient(h.url, strangerClientId, (await signIn(h)).headers);
+  t.after(() => stranger.close());
+  await stranger.call("axo.client.hello", { protocolVersion: 2, clientId: strangerClientId });
+  const refused = await stranger.call("axo.client.command", { hostId: first.hostId, method: "axo.remote.session.prompt", params: {} });
+  assert.ok("error" in refused, "another account's client cannot reach this host");
 
   const firstCode = await createPairing();
   const firstReplayPayload = {
@@ -224,11 +207,10 @@ test("one AccountManager owns pairing, host metadata, and live relays for multip
   )).json()).hosts.find((host) => host.hostId === first.hostId);
   assert.equal(afterRevocation?.status, "offline");
   assert.equal(afterRevocation?.stale, true);
-  await assert.rejects(Peer.connectAccountHost(
+  await assert.rejects(Peer.connectHostDaemon(
     h.url,
     accountId,
     first.hostId,
-    "daemon",
     { Authorization: `Bearer ${first.credential}`, "X-Axo-Credential-Id": first.credentialId },
   ));
 });

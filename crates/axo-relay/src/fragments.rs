@@ -23,8 +23,8 @@ pub const DISCARDED_PER_SOCKET: usize = 64;
 pub const FRAME_BYTES: usize = 65_536;
 /// Bytes of the message in one fragment: 61,440 base64 characters, under a frame with its envelope.
 pub const CHUNK_BYTES: usize = 46_080;
-/// The largest message that may be reassembled.
-pub const MESSAGE_BYTES: usize = 2 * 1_048_576;
+/// The largest message that may be reassembled: room for one 12 MiB Pi line (RFD0018).
+pub const MESSAGE_BYTES: usize = 16 * 1_048_576;
 /// Fragments one message may have.
 pub const MAX_FRAGMENTS: usize = MESSAGE_BYTES.div_ceil(CHUNK_BYTES);
 /// Messages that may be partly received on one socket.

@@ -36,6 +36,8 @@ export default defineConfig(({ isPreview }) => ({
       AxoPairingIndex: exports.durableObject({ storage: "sqlite" }),
       AxoPairingRateLimit: exports.durableObject({ storage: "sqlite" }),
       AxoSessionDO: exports.durableObject({ storage: "sqlite" }),
+      AxoHostDO: exports.durableObject({ storage: "sqlite" }),
+      AxoClientDO: exports.durableObject({ storage: "sqlite" }),
     },
   },
 }));

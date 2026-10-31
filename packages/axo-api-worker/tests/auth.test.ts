@@ -348,7 +348,7 @@ test("a cookie cannot open a relay from another site", async () => {
   const web = await signIn(h);
   const refusal = (headers: Record<string, string>) => new Promise<number>((resolve, reject) => {
     const socket = new WebSocket(
-      new URL(`api/v1/account/hosts/${crypto.randomUUID()}/client`, h.url.replace("http", "ws")),
+      new URL(`api/v1/account/client?clientId=tab-${crypto.randomUUID()}`, h.url.replace("http", "ws")),
       { headers: { ...newSource(), ...headers } },
     );
     socket.once("unexpected-response", (_request, response) => resolve(response.statusCode ?? 0));

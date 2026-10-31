@@ -6,4 +6,6 @@ export { AxoIdentityIndex } from "./auth/account";
 // Keep the Durable Object export name stable so existing account SQLite storage is reused.
 export { AxoAccountManager as AxoAccountDirectory } from "./auth/account-manager";
 export { AxoPairingIndex, AxoPairingRateLimit } from "./auth/pairing-directory";
-export { AxoSessionDO } from "./session-history";
+export { AxoSessionDO } from "./session-store";
+export { AxoHostDO } from "./host-do";
+export { AxoClientDO } from "./client-do";

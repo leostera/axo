@@ -7,7 +7,7 @@ import { completeLogin, currentAccount, exchangeLoginCode, logout, startLogin } 
 import { serveMachines } from "./machines";
 import { authorizeHttpHostClient, serveHostSessions, serveHosts } from "./hosts";
 import { createHostPairing, redeemHostPairing } from "../auth/pairing";
-import { revokeAccountHost, serveAccountHostEvents, serveAccountHostSessions, serveAccountHosts, upgradeAccountHostRelay } from "./account-hosts";
+import { revokeAccountHost, serveAccountHosts, upgradeAccountClient, upgradeHostDaemon } from "./account-hosts";
 
 type Api = { Bindings: Env };
 const app = new Hono<Api>();
@@ -126,25 +126,6 @@ app.all("/api/v1/account/hosts", context =>
   ),
 );
 
-app.all("/api/v1/account/hosts/:host/sessions", context =>
-  serveAccountHostSessions(
-    context.req.raw,
-    context.env,
-    authExports((context.executionCtx as ExecutionContext).exports),
-    context.req.param("host"),
-  ),
-);
-
-app.all("/api/v1/account/hosts/:host/sessions/:session/events", context =>
-  serveAccountHostEvents(
-    context.req.raw,
-    context.env,
-    authExports((context.executionCtx as ExecutionContext).exports),
-    context.req.param("host"),
-    context.req.param("session"),
-  ),
-);
-
 app.all("/api/v1/account/hosts/:host/revoke", context =>
   revokeAccountHost(
     context.req.raw,
@@ -154,24 +135,21 @@ app.all("/api/v1/account/hosts/:host/revoke", context =>
   ),
 );
 
-app.all("/api/v1/account/hosts/:host/client", context =>
-  upgradeAccountHostRelay(
+app.all("/api/v1/account/client", context =>
+  upgradeAccountClient(
     context.req.raw,
     context.env,
     authExports((context.executionCtx as ExecutionContext).exports),
-    "client",
-    context.req.param("host"),
+    context.executionCtx as ExecutionContext,
   ),
 );
 
 app.all("/api/v1/accounts/:account/hosts/:host/daemon", context =>
-  upgradeAccountHostRelay(
+  upgradeHostDaemon(
     context.req.raw,
-    context.env,
-    authExports((context.executionCtx as ExecutionContext).exports),
-    "daemon",
-    context.req.param("host"),
+    context.executionCtx as ExecutionContext,
     context.req.param("account"),
+    context.req.param("host"),
   ),
 );
 

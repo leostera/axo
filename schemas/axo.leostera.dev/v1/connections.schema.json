@@ -4,7 +4,7 @@
   "title": "Axo connections and the relay transport they need (RFD0016)",
   "$defs": {
     "TransportFragment": {
-      "description": "One piece of a relay message larger than one 64 KiB frame. The receiver joins the base64-decoded `data` of fragments 0 to count - 1 and parses the result as one message. Every fragment but the last carries exactly 46080 bytes; a reassembled message is at most 2 MiB; at most 4 may be partly received per socket. Senders interleave fragments by priority (control and replies, then durable upload, then ephemeral), in order within a class.",
+      "description": "One piece of a relay message larger than one 64 KiB frame. The receiver joins the base64-decoded `data` of fragments 0 to count - 1 and parses the result as one message. Every fragment but the last carries exactly 46080 bytes; a reassembled message is at most 16 MiB; at most 4 may be partly received per socket. Senders interleave fragments by priority (control and replies, then durable upload, then ephemeral), in order within a class; there are no delivery credits.",
       "type": "object",
       "properties": {
         "jsonrpc": {
@@ -23,12 +23,12 @@
             "index": {
               "type": "integer",
               "minimum": 0,
-              "maximum": 45
+              "maximum": 364
             },
             "count": {
               "type": "integer",
               "minimum": 2,
-              "maximum": 46
+              "maximum": 365
             },
             "data": {
               "type": "string",

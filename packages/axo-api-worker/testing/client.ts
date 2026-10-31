@@ -1,7 +1,11 @@
 import WebSocket from "ws";
 import { accessHeaders } from "./access-headers";
 import {
+  FRAGMENT_METHOD,
+  MemoryPartialStore,
+  receiveFragment,
   replySchema,
+  splitMessage,
   JSONRPCClient,
   createJSONRPCRequest,
   failure,
@@ -21,10 +25,9 @@ export class Peer {
     timer: ReturnType<typeof setTimeout>;
   }> = [];
 
-  private constructor(
-    socket: WebSocket,
-    private credits: boolean,
-  ) {
+  /** The server sends messages larger than a frame as fragments (RFD0016, Transport). */
+  private readonly partials = new MemoryPartialStore();
+  private constructor(socket: WebSocket) {
     this.socket = socket;
     this.rpc = new JSONRPCClient(
       (request: unknown) => this.send(request),
@@ -41,12 +44,16 @@ export class Peer {
       this.socket.close(1002);
       return;
     }
-    if (this.credits)
-      this.send({
-        jsonrpc: "2.0",
-        method: "axo.transport.ack",
-        params: { frames: 1 },
-      });
+    const fragment = value as { method?: unknown; params?: unknown } | null;
+    if (fragment?.method === FRAGMENT_METHOD) {
+      const outcome = receiveFragment(this.partials, fragment.params);
+      if (outcome.status === "invalid") {
+        this.socket.close(1002);
+        return;
+      }
+      if (outcome.status !== "complete") return;
+      value = JSON.parse(outcome.raw);
+    }
     const responses = Array.isArray(value) ? value : [value];
     const unmatched: unknown[] = [];
     for (const response of responses) {
@@ -87,7 +94,6 @@ export class Peer {
     assertion: string,
     machine: string,
     role: "client" | "daemon",
-    credits = true,
   ) {
     const socket = new WebSocket(
       `${url.replace(/^http/, "ws")}v1/machines/${machine}/${role}`,
@@ -97,32 +103,36 @@ export class Peer {
         followRedirects: false,
       },
     );
-    return Peer.open(socket, credits);
+    return Peer.open(socket);
   }
-  static async connectAccountHost(
+  /** A host's socket on the account path, served by its HostDO (RFD0018). */
+  static async connectHostDaemon(
     url: string,
     accountId: string,
     hostId: string,
-    role: "client" | "daemon",
     headers: Record<string, string>,
-    credits = true,
   ) {
-    const path = role === "client"
-      ? `api/v1/account/hosts/${hostId}/client`
-      : `api/v1/accounts/${accountId}/hosts/${hostId}/daemon`;
-    const socket = new WebSocket(`${url.replace(/^http/, "ws")}${path}`, {
+    const socket = new WebSocket(`${url.replace(/^http/, "ws")}api/v1/accounts/${accountId}/hosts/${hostId}/daemon`, {
       headers,
       maxPayload: 65_536,
       followRedirects: false,
     });
-    return Peer.open(socket, credits);
+    return Peer.open(socket);
+  }
+  /** A client's one socket, served by its ClientDO (RFD0018). */
+  static async connectClient(url: string, clientId: string, headers: Record<string, string>) {
+    const socket = new WebSocket(`${url.replace(/^http/, "ws")}api/v1/account/client?clientId=${clientId}`, {
+      headers,
+      maxPayload: 65_536,
+      followRedirects: false,
+    });
+    return Peer.open(socket);
   }
   static async connectHost(
     url: string,
     assertion: string,
     host: string,
     role: "client" | "daemon",
-    credits = true,
     origin?: string,
   ) {
     const socket = new WebSocket(
@@ -136,20 +146,19 @@ export class Peer {
         followRedirects: false,
       },
     );
-    return Peer.open(socket, credits);
+    return Peer.open(socket);
   }
-  static async connectLocal(discovery: LocalEndpoint, credits = true) {
+  static async connectLocal(discovery: LocalEndpoint) {
     const endpoint = localEndpointSchema.parse(discovery);
     return Peer.open(
       new WebSocket(endpoint.endpoint, {
         maxPayload: 65_536,
         followRedirects: false,
       }),
-      credits,
     );
   }
-  private static async open(socket: WebSocket, credits: boolean) {
-    const peer = new Peer(socket, credits);
+  private static async open(socket: WebSocket) {
+    const peer = new Peer(socket);
     await new Promise<void>((resolve, reject) => {
       const timer = setTimeout(() => {
         socket.terminate();
@@ -166,8 +175,11 @@ export class Peer {
     });
     return peer;
   }
+  /** Sends one message, as fragments when it is larger than a frame. Raw strings go as they are. */
   send(value: unknown) {
-    this.socket.send(typeof value === "string" ? value : JSON.stringify(value));
+    if (typeof value === "string") return this.socket.send(value);
+    for (const frame of splitMessage(JSON.stringify(value), crypto.randomUUID().replaceAll("-", "")) ?? [])
+      this.socket.send(frame);
   }
   next(): Promise<unknown> {
     if (this.queued.length) return Promise.resolve(this.queued.shift());

@@ -26,10 +26,7 @@ import {
   FRAGMENT_METHOD,
   DISCARD_METHOD,
   FRAGMENTS,
-  PRIORITY,
-  discardNotice,
   discardParamsSchema,
-  type Priority,
   receiveFragment,
   splitMessage,
   type Decoded,
@@ -67,7 +64,7 @@ type HostRegistrationMethods = {
   ) => z.output<typeof hostV1Results["axo.host.sessions.publish"]>;
 };
 
-const hostRemoteMethods = {
+export const hostRemoteMethods = {
   "axo.remote.workspace.list": hostV1Methods["axo.remote.workspace.list"],
   "axo.remote.session.create": hostV1Methods["axo.remote.session.create"],
   "axo.remote.workspace.session.create": hostV1Methods["axo.remote.workspace.session.create"],
@@ -81,7 +78,7 @@ const hostRemoteMethods = {
   "axo.remote.session.key": hostV1Methods["axo.remote.session.key"],
   "axo.remote.terminal.resize": hostV1Methods["axo.remote.terminal.resize"],
 } as const;
-type HostRemoteMethod = keyof typeof hostRemoteMethods;
+export type HostRemoteMethod = keyof typeof hostRemoteMethods;
 
 /**
  * Inbound frame budget per socket per second. A host streams terminal output as one frame
@@ -92,10 +89,6 @@ export const INBOUND_FRAMES_PER_SECOND = { client: 30, daemon: 600 } as const;
 function framesPerSecond(role: "client" | "daemon"): number {
   return INBOUND_FRAMES_PER_SECOND[role];
 }
-/** Messages a daemon socket may have queued for credit at once; beyond that a send fails. */
-const OUTBOX_MESSAGES = 64;
-/** Delivery credit a peer grants: unacknowledged frames and bytes. */
-const CREDIT = { frames: 32, bytes: 131_072 } as const;
 const byteLength = (raw: string) => new TextEncoder().encode(raw).byteLength;
 
 export class AxoHostRelay extends DurableObject<Env> {
@@ -110,22 +103,18 @@ export class AxoHostRelay extends DurableObject<Env> {
       "CREATE TABLE IF NOT EXISTS pending (hop_id TEXT PRIMARY KEY, group_id TEXT NOT NULL, original_id TEXT NOT NULL, connection_id TEXT NOT NULL, machine_id TEXT NOT NULL, method TEXT NOT NULL, generation TEXT NOT NULL, deadline REAL NOT NULL)",
     );
     this.preparePending();
-    // Messages larger than a frame (RFD0016, Transport): fragments received so far, one row each,
-    // and frames waiting for the peer's delivery credit, in order.
-    // Both only ever hold traffic of open sockets, so an older shape is dropped, not migrated.
-    for (const [table, column] of [["fragments_in", "received_at"], ["outbox", "priority"]] as const)
-      if (!ctx.storage.sql.exec<{ name: string }>(`PRAGMA table_info(${table})`).toArray().some((c) => c.name === column))
-        ctx.storage.sql.exec(`DROP TABLE IF EXISTS ${table}`);
+    // Messages larger than a frame (RFD0016, Transport): fragments received so far, one row each.
+    // It only ever holds traffic of open sockets, so an older shape is dropped, not migrated.
+    // RFD0018 removed delivery credits, and with them the outbox of frames waiting for credit.
+    ctx.storage.sql.exec("DROP TABLE IF EXISTS outbox");
+    if (!ctx.storage.sql.exec<{ name: string }>("PRAGMA table_info(fragments_in)").toArray().some((c) => c.name === "received_at"))
+      ctx.storage.sql.exec("DROP TABLE IF EXISTS fragments_in");
     ctx.storage.sql.exec(
       "CREATE TABLE IF NOT EXISTS fragments_in (connection_id TEXT NOT NULL, message_id TEXT NOT NULL, idx INTEGER NOT NULL, count INTEGER NOT NULL, bytes INTEGER NOT NULL, data TEXT NOT NULL, received_at REAL NOT NULL, PRIMARY KEY (connection_id, message_id, idx))",
     );
     ctx.storage.sql.exec(
       "CREATE TABLE IF NOT EXISTS fragments_discarded (connection_id TEXT NOT NULL, message_id TEXT NOT NULL, discarded_at REAL NOT NULL, PRIMARY KEY (connection_id, message_id))",
     );
-    ctx.storage.sql.exec(
-      "CREATE TABLE IF NOT EXISTS outbox (seq INTEGER PRIMARY KEY AUTOINCREMENT, connection_id TEXT NOT NULL, message_id TEXT NOT NULL, priority INTEGER NOT NULL, idx INTEGER NOT NULL, count INTEGER NOT NULL, raw TEXT NOT NULL, bytes INTEGER NOT NULL, queued_at REAL NOT NULL)",
-    );
-    ctx.storage.sql.exec("CREATE INDEX IF NOT EXISTS outbox_by_connection ON outbox(connection_id, priority, seq)");
     this.discardDisconnectedCorrelations();
     this.rpc = this.createRpcServer();
   }
@@ -158,8 +147,8 @@ export class AxoHostRelay extends DurableObject<Env> {
             method !== "axo.host.list" && method !== "axo.host.sessions.list",
           ),
           SHARE_PUBLISH_METHOD,
+          ...this.hostMethodNames(),
         ],
-        deliveryCredits: { frames: 32, bytes: 131072 },
       };
     });
     typed.addMethod("axo.machine.register", (params, caller) =>
@@ -180,6 +169,7 @@ export class AxoHostRelay extends DurableObject<Env> {
     server.addMethod(SHARE_PUBLISH_METHOD, (params, caller) =>
       this.publishShare(params, caller),
     );
+    this.addHostMethods(server);
     return server;
   }
   private prepareRoutes(): void {
@@ -230,11 +220,11 @@ export class AxoHostRelay extends DurableObject<Env> {
     }
     for (const route of this.routes())
       if (!connected.has(route.connection_id)) this.fence(route.connection_id);
-    for (const table of ["fragments_in", "fragments_discarded", "outbox"])
+    for (const table of ["fragments_in", "fragments_discarded"])
       for (const row of sql.exec<{ connection_id: string }>(`SELECT DISTINCT connection_id FROM ${table}`).toArray())
         if (!connected.has(row.connection_id)) sql.exec(`DELETE FROM ${table} WHERE connection_id = ?`, row.connection_id);
   }
-  private peer(socket: WebSocket): Peer {
+  protected peer(socket: WebSocket): Peer {
     return peerSchema.parse(socket.deserializeAttachment());
   }
   private sockets(role?: Peer["role"]) {
@@ -263,7 +253,7 @@ export class AxoHostRelay extends DurableObject<Env> {
   private routes(): Route[] {
     return this.ctx.storage.sql.exec<Route>("SELECT * FROM route").toArray();
   }
-  private active(machineId?: string): { route: Route; socket: WebSocket } | undefined {
+  protected active(machineId?: string): { route: Route; socket: WebSocket } | undefined {
     const route = this.route(machineId);
     if (!route?.ready || route.lease_until <= Date.now()) return;
     const socket = this.socket(route.connection_id);
@@ -281,6 +271,15 @@ export class AxoHostRelay extends DurableObject<Env> {
     return true;
   }
   protected supportsLegacyMachineMethods(): boolean { return true; }
+  /** Methods a subclass adds for daemons, and their names for negotiation. */
+  protected addHostMethods(_server: JSONRPCServer<CallerContext>): void {}
+  protected hostMethodNames(): string[] { return []; }
+  /** A notification from an admitted daemon; true if the subclass took it. */
+  protected async receiveHostNotification(_socket: WebSocket, _peer: Peer, _call: Call): Promise<boolean> {
+    return false;
+  }
+  /** The host's presence changed: it registered, or its route ended. */
+  protected presenceChanged(_hostId: string, _hostGeneration: string, _status: "online" | "offline"): void {}
 
   async fetch(request: Request): Promise<Response> {
     const now = Date.now();
@@ -293,7 +292,6 @@ export class AxoHostRelay extends DurableObject<Env> {
       negotiated: false,
       window: now,
       calls: 0,
-      outgoing: [],
     });
     if (!parsed.success || parsed.data.expiresAt <= now)
       return new Response("Invalid internal identity", { status: 403 });
@@ -342,28 +340,6 @@ export class AxoHostRelay extends DurableObject<Env> {
       this.send(socket, decoded.error);
       return;
     }
-    // Acknowledged FIFO delivery credits bound server-side slow-consumer queues.
-    const ack = callSchema.safeParse(decoded.entries[0]);
-    if (
-      !decoded.batch &&
-      ack.success &&
-      ack.data.method === "axo.transport.ack" &&
-      ack.data.id === undefined
-    ) {
-      const count = z
-        .object({ frames: z.number().int().min(1).max(32) })
-        .strict()
-        .safeParse(ack.data.params);
-      if (!count.success || count.data.frames > peer.outgoing.length) {
-        this.drop(socket, 1008, "Invalid credit");
-        return;
-      }
-      peer.outgoing.splice(0, count.data.frames);
-      socket.serializeAttachment(peer);
-      this.flush(socket);
-      await this.schedule();
-      return;
-    }
     if (Date.now() - peer.window >= 1000) {
       peer.window = Date.now();
       peer.calls = 0;
@@ -405,7 +381,7 @@ export class AxoHostRelay extends DurableObject<Env> {
         return;
       }
       const inner = whole.batch ? undefined : callSchema.safeParse(whole.entries[0]);
-      if (inner?.success && [FRAGMENT_METHOD, DISCARD_METHOD, "axo.transport.ack"].includes(inner.data.method)) {
+      if (inner?.success && [FRAGMENT_METHOD, DISCARD_METHOD].includes(inner.data.method)) {
         this.drop(socket, 1008, "Invalid fragment");
         return;
       }
@@ -432,6 +408,11 @@ export class AxoHostRelay extends DurableObject<Env> {
       const reply = replySchema.safeParse(decoded.entries[0]);
       if (reply.success) {
         this.receiveReply(socket, reply.data);
+        await this.schedule();
+        return;
+      }
+      if (notificationCall.success && notificationCall.data.id === undefined && peer.negotiated &&
+          await this.receiveHostNotification(socket, peer, notificationCall.data)) {
         await this.schedule();
         return;
       }
@@ -674,6 +655,7 @@ export class AxoHostRelay extends DurableObject<Env> {
     hostGeneration: string,
     status: "online" | "offline",
   ): void {
+    this.presenceChanged(hostId, hostGeneration, status);
     const event = hostPresenceEventSchema.parse({
       type: "host.presence",
       hostId,
@@ -816,7 +798,7 @@ export class AxoHostRelay extends DurableObject<Env> {
       .getByName("private-fleet")
       .applyHostEvent(event, principal);
   }
-  private admittedDaemon(peer: Peer): Route {
+  protected admittedDaemon(peer: Peer): Route {
     const route = this.route(peer.machineId);
     if (peer.role !== "daemon")
       throw new JSONRPCErrorException("Method not found", -32601);
@@ -994,7 +976,7 @@ export class AxoHostRelay extends DurableObject<Env> {
     });
   }
 
-  private renewRoute(peer: Peer): void {
+  protected renewRoute(peer: Peer): void {
     this.ctx.storage.sql.exec(
       "UPDATE route SET lease_until = ? WHERE connection_id = ?",
       Math.min(peer.expiresAt, Date.now() + LIMITS.leaseMs),
@@ -1002,7 +984,7 @@ export class AxoHostRelay extends DurableObject<Env> {
     );
   }
 
-  private receiveReply(socket: WebSocket, reply: Reply): void {
+  protected receiveReply(socket: WebSocket, reply: Reply): void {
     if (typeof reply.id !== "string") return;
     const pending = this.ctx.storage.sql
       .exec<Pending>("SELECT * FROM pending WHERE hop_id = ?", reply.id)
@@ -1100,102 +1082,29 @@ export class AxoHostRelay extends DurableObject<Env> {
     if (socket) this.send(socket, group.batch ? bounded.replies : bounded.replies[0]);
   }
   /**
-   * Sends one message. To a client, a frame goes straight out when the client has credit for it,
-   * and a client that has none is dropped, as before. A daemon's socket carries everything for its
-   * Mac, so it is never closed for want of credit (RFD0016, Transport): a message that does not go
-   * out at once is queued, as fragments when it is larger than a frame, and sent by priority as
-   * credit returns. A send fails, leaving the socket open, when the message is too large or the
-   * queue is full.
+   * Sends one message: in one frame, or as fragments when it is larger (RFD0016, Transport). There
+   * are no delivery credits (RFD0018, Flow control): each flow is paced by its own
+   * acknowledgements, and nothing closes a socket because its reader is slow. A send fails,
+   * leaving the socket open, only when the message is too large.
    */
-  private send(socket: WebSocket, value: unknown, priority: Priority = PRIORITY.control): boolean {
+  protected send(socket: WebSocket, value: unknown): boolean {
     const raw = JSON.stringify(value);
-    const bytes = byteLength(raw);
-    const peer = this.peer(socket);
-    if (peer.expiresAt <= Date.now()) {
-      this.drop(socket, 1008, "Delivery capacity");
+    if (this.peer(socket).expiresAt <= Date.now()) {
+      this.drop(socket, 4001, "Access expired");
       return false;
     }
-    if (peer.role === "client") {
-      if (bytes > LIMITS.frameBytes || !this.hasCredit(peer, bytes)) {
-        this.drop(socket, 1008, "Delivery capacity");
-        return false;
-      }
-      return this.transmit(socket, peer, raw, bytes);
-    }
-    const sql = this.ctx.storage.sql;
-    const queued = sql.exec<{ messages: number; bytes: number | null }>(
-      "SELECT COUNT(DISTINCT message_id) AS messages, SUM(bytes) AS bytes FROM outbox WHERE connection_id = ?",
-      peer.connectionId,
-    ).one();
-    if (bytes <= LIMITS.frameBytes && queued.messages === 0 && this.hasCredit(peer, bytes))
-      return this.transmit(socket, peer, raw, bytes);
-    const messageId = crypto.randomUUID();
-    const frames = splitMessage(raw, messageId);
-    if (!frames || queued.messages >= OUTBOX_MESSAGES || (queued.bytes ?? 0) + bytes > 4 * FRAGMENTS.messageBytes) {
-      recordApiEvent({ event: "relay_send_failed", reason: frames ? "outbox_full" : "too_large" });
+    const frames = byteLength(raw) <= LIMITS.frameBytes ? [raw] : splitMessage(raw, crypto.randomUUID());
+    if (!frames) {
+      recordApiEvent({ event: "relay_send_failed", reason: "too_large" });
       return false;
     }
-    this.enqueue(peer.connectionId, messageId, priority, frames);
-    this.flush(socket);
-    return true;
-  }
-  private enqueue(connectionId: string, messageId: string, priority: Priority, frames: string[]): void {
-    const now = Date.now();
-    frames.forEach((frame, idx) =>
-      this.ctx.storage.sql.exec(
-        "INSERT INTO outbox (connection_id, message_id, priority, idx, count, raw, bytes, queued_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
-        connectionId, messageId, priority, idx, frames.length, frame, byteLength(frame), now,
-      ));
-  }
-  private hasCredit(peer: Peer, bytes: number): boolean {
-    return peer.outgoing.length < CREDIT.frames && peer.outgoing.reduce((a, b) => a + b, 0) + bytes <= CREDIT.bytes;
-  }
-  private transmit(socket: WebSocket, peer: Peer, raw: string, bytes: number): boolean {
-    peer.outgoing.push(bytes);
-    socket.serializeAttachment(peer);
     try {
-      socket.send(raw);
+      for (const frame of frames) socket.send(frame);
       return true;
     } catch {
       this.drop(socket, 1011, "Transport failed");
       return false;
     }
-  }
-  /**
-   * Sends queued frames while the peer has credit: the highest priority first, and within a class
-   * in order, so at most one message per class is partly sent and the receiver's partial slots
-   * are never exceeded.
-   */
-  private flush(socket: WebSocket): void {
-    const sql = this.ctx.storage.sql;
-    for (;;) {
-      const peer = this.peer(socket);
-      const next = sql.exec<{ seq: number; raw: string; bytes: number }>(
-        "SELECT seq, raw, bytes FROM outbox WHERE connection_id = ? ORDER BY priority, seq LIMIT 1", peer.connectionId,
-      ).toArray()[0];
-      if (!next || !this.hasCredit(peer, next.bytes)) return;
-      sql.exec("DELETE FROM outbox WHERE seq = ?", next.seq);
-      if (!this.transmit(socket, peer, next.raw, next.bytes)) return;
-    }
-  }
-  /**
-   * The one rule for a message that waited too long for credit: it is dropped on its own, and the
-   * socket stays open. If some of its fragments already went out, the receiver is told to drop
-   * its partial. Whoever waits on the message (a daemon awaiting a reply) hears nothing and fails
-   * by its own deadline, as for any lost reply.
-   */
-  private creditTimedOut(socket: WebSocket, connectionId: string, messageIds: string[]): void {
-    const sql = this.ctx.storage.sql;
-    for (const messageId of messageIds) {
-      const left = sql.exec<{ queued: number; count: number }>(
-        "SELECT COUNT(*) AS queued, MAX(count) AS count FROM outbox WHERE connection_id = ? AND message_id = ?", connectionId, messageId,
-      ).one();
-      sql.exec("DELETE FROM outbox WHERE connection_id = ? AND message_id = ?", connectionId, messageId);
-      recordApiEvent({ event: "relay_message_discarded", reason: "credit_timeout" });
-      if (left.queued > 0 && left.queued < left.count)
-        this.enqueue(connectionId, crypto.randomUUID(), PRIORITY.control, [discardNotice(messageId)]);
-    }
-    this.flush(socket);
   }
   /** Partial messages from one socket, one SQLite row per fragment. */
   private partials(connectionId: string): PartialStore {
@@ -1273,7 +1182,7 @@ export class AxoHostRelay extends DurableObject<Env> {
     const socket = this.socket(connectionId);
     if (socket) socket.close(4002, "Lease ended");
   }
-  private drop(socket: WebSocket, code: number, reason: string) {
+  protected drop(socket: WebSocket, code: number, reason: string) {
     const peer = this.peer(socket);
     recordApiEvent({ event: "connection_closed", role: peer.role, code });
     socket.close(code, reason);
@@ -1288,7 +1197,6 @@ export class AxoHostRelay extends DurableObject<Env> {
     );
     this.ctx.storage.sql.exec("DELETE FROM fragments_in WHERE connection_id = ?", peer.connectionId);
     this.ctx.storage.sql.exec("DELETE FROM fragments_discarded WHERE connection_id = ?", peer.connectionId);
-    this.ctx.storage.sql.exec("DELETE FROM outbox WHERE connection_id = ?", peer.connectionId);
   }
   webSocketClose(socket: WebSocket) {
     this.drop(socket, 1000, "Disconnected");
@@ -1296,7 +1204,7 @@ export class AxoHostRelay extends DurableObject<Env> {
   webSocketError(socket: WebSocket) {
     this.drop(socket, 1011, "Transport failed");
   }
-  private async schedule() {
+  protected async schedule() {
     const deadlines = this.sockets().map(
       (socket) => this.peer(socket).expiresAt,
     );
@@ -1307,10 +1215,6 @@ export class AxoHostRelay extends DurableObject<Env> {
       )
       .one().deadline;
     if (pending) deadlines.push(pending);
-    const waiting = this.ctx.storage.sql
-      .exec<{ queued: number | null }>("SELECT MIN(queued_at) AS queued FROM outbox")
-      .one().queued;
-    if (waiting) deadlines.push(waiting + FRAGMENTS.creditTimeoutMs);
     const stale = this.ctx.storage.sql
       .exec<{ last: number | null }>("SELECT MIN(last) AS last FROM (SELECT MAX(received_at) AS last FROM fragments_in GROUP BY connection_id, message_id)")
       .one().last;
@@ -1327,15 +1231,6 @@ export class AxoHostRelay extends DurableObject<Env> {
     for (const socket of this.ctx.getWebSockets())
       if (this.peer(socket).expiresAt <= Date.now())
         this.drop(socket, 4001, "Access expired");
-    const late = this.ctx.storage.sql
-      .exec<{ connection_id: string; message_id: string }>(
-        "SELECT DISTINCT connection_id, message_id FROM outbox WHERE queued_at <= ?", Date.now() - FRAGMENTS.creditTimeoutMs,
-      ).toArray();
-    for (const connectionId of new Set(late.map((row) => row.connection_id))) {
-      const socket = this.socket(connectionId);
-      if (socket) this.creditTimedOut(socket, connectionId, late.filter((row) => row.connection_id === connectionId).map((row) => row.message_id));
-      else this.ctx.storage.sql.exec("DELETE FROM outbox WHERE connection_id = ?", connectionId);
-    }
     for (const row of this.ctx.storage.sql
       .exec<{ connection_id: string; message_id: string }>(
         "SELECT connection_id, message_id FROM fragments_in GROUP BY connection_id, message_id HAVING MAX(received_at) <= ?",

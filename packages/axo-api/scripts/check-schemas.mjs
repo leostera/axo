@@ -281,7 +281,7 @@ assert.equal(hostSnapshotSchema.safeParse(falselyFresh).success, false, "offline
 const fragment = await fixture("transport-fragment.relay.json");
 validateWith("https://schemas.axo.leostera.dev/v1/connections.schema.json#/$defs/TransportFragment", fragment);
 assert.equal(fragmentSchema.safeParse(fragment).success, true, "Zod must accept the fragment fixture");
-assert.equal(MAX_FRAGMENTS, 46, "the schema's fragment bounds must match the runtime's");
+assert.equal(MAX_FRAGMENTS, 365, "the schema's fragment bounds must match the runtime's");
 const oversizedFragment = structuredClone(fragment);
 oversizedFragment.params.count = MAX_FRAGMENTS + 1;
 assert.equal(fragmentSchema.safeParse(oversizedFragment).success, false, "too many fragments are refused at runtime");
