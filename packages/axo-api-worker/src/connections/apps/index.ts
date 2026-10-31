@@ -1,15 +1,16 @@
 import { z } from "zod";
-import { APP_ACCOUNTS_MAX, APPS, type AppAccount, type AppName, type Connection, type ToolDefinition } from "@axo/protocol";
+import { APP_ACCOUNTS_MAX, APPS, type AppAccount, type AppName, type AppSignIn, type Connection, type ToolDefinition } from "@axo/protocol";
 import { seal, unseal } from "../../auth/crypto";
 import { GrantRefused } from "../oauth";
 import { FLOW_LIFETIME_MS, startUrl } from "../third-party";
-import { allowedUrl, ProviderError, ProviderOutcomeUnknown, type AppDefinition, type AppTool, type ProviderApi, type ProviderRequest } from "./app";
+import { allowedUrl, ProviderError, ProviderOutcomeUnknown, type AppDefinition, type AppTool, type OAuthApp, type ProviderApi, type ProviderRequest, type TokenApp } from "./app";
 import { calendar } from "./calendar";
 import { cloud } from "./cloud";
 import { contacts } from "./contacts";
 import { docs } from "./docs";
 import { drive } from "./drive";
 import { gmail } from "./gmail";
+import { hetzner } from "./hetzner";
 import { meet } from "./meet";
 import { requestTool } from "./request";
 import { sheets } from "./sheets";
@@ -26,19 +27,29 @@ import {
 
 /**
  * The account's apps (RFD0016, Apps): services Axo provides itself, such as Gmail, reached as
- * `codemode.apps.<app>.<tool>({ account, ... })`. Each app signs in with Axo's own client for its
- * provider, set on the Worker, and holds any number of provider accounts, each named by its
- * email. Every call names the account it acts as: nothing is read or sent from a guessed one.
+ * `codemode.apps.<app>.<tool>({ account, ... })`. An OAuth app signs in with Axo's own client for
+ * its provider, set on the Worker; a token app takes a token the person pasted (Hetzner). Each
+ * holds any number of provider accounts, each named by its email or by the person. Every call
+ * names the account it acts as: nothing is read or sent from a guessed one.
  *
- * Grants are sealed with the account's key and never leave this Durable Object. Sign-in reuses
+ * Grants and tokens are sealed with the account's key and never leave this Durable Object. Sign-in reuses
  * the connections callback and its checks: a flow is a one-time nonce that works for ten
  * minutes, only in a browser signed in to this account. Each provider account's grant carries a
  * generation, and a renewal lands only on the generation it renewed.
  */
 
-export const APP_DEFINITIONS: Record<AppName, AppDefinition> = { gmail, calendar, drive, docs, sheets, slides, contacts, tasks, meet, cloud };
+export const APP_DEFINITIONS: Record<AppName, AppDefinition> = { gmail, calendar, drive, docs, sheets, slides, contacts, tasks, meet, cloud, hetzner };
 
-const PROVIDER_TITLES: Record<AppDefinition["provider"], string> = { google: "Google" };
+/** Where a person adds an account to an app, or signs in to one again. */
+export function appPage(app: AppName): string {
+  return `https://axo.leostera.dev/app/settings/apps/${app}`;
+}
+
+/** A token the person pasted, as stored (sealed) for one account of a token app. */
+type TokenCredential = { kind: "token"; fields: Record<string, string> };
+
+/** Adding an account was refused: the token was not accepted, or the input was wrong. Nothing was stored. */
+export class AppAccountRefused extends Error {}
 
 /** An app's tools: its named ones, then `request`, for any endpoint of its API. */
 const TOOLS = new Map<AppName, readonly AppTool[]>();
@@ -128,9 +139,10 @@ export class AppConnections {
         name: `apps.${app}`,
         title: definition.title,
         description: definition.description,
-        provider: PROVIDER_TITLES[definition.provider],
+        provider: definition.providerTitle,
         category: definition.category,
         permissions: [...definition.permissions],
+        signIn: signInOf(definition),
         state: accounts.some((a) => a.state === "ready") ? "ready" : "needsSignIn",
         accounts,
         tools: toolsOf(app).map((t) => t.name),
@@ -149,7 +161,11 @@ export class AppConnections {
     return this.available().flatMap((app) => {
       const definition = APP_DEFINITIONS[app];
       const accounts = this.rows(app).filter((r) => r.grant_sealed).map((r) => r.account);
-      const signedIn = accounts.length ? ` Signed-in accounts: ${accounts.join(", ")}.` : " No account is signed in yet: a call returns a sign-in link to give the person.";
+      const signedIn = accounts.length
+        ? ` Signed-in accounts: ${accounts.join(", ")}.`
+        : definition.signIn === "oauth"
+          ? " No account is signed in yet: a call returns a sign-in link to give the person."
+          : ` No account is added yet: the person adds one at ${appPage(app)}.`;
       return toolsOf(app).map((tool) => ({
         service: `apps.${app}`,
         name: tool.name,
@@ -163,7 +179,10 @@ export class AppConnections {
 
   /** A sign-in link that adds an account to an app, or signs in to one again: Axo's own start page, once, in this account's browser. */
   async signInLink(app: AppName): Promise<string> {
-    if (!this.client(APP_DEFINITIONS[app])) throw new Error(`${APP_DEFINITIONS[app].title} is not set up on this Axo deployment`);
+    const definition = APP_DEFINITIONS[app];
+    // A token app has no provider page to send the browser to: the person pastes a token on the app's page.
+    if (definition.signIn === "token") return appPage(app);
+    if (!this.client(definition)) throw new Error(`${definition.title} is not set up on this Axo deployment`);
     const nonce = crypto.randomUUID();
     const verifier = randomVerifier();
     this.deps.sql.exec("DELETE FROM app_flows WHERE created_at < ?", this.now() - FLOW_LIFETIME_MS);
@@ -177,8 +196,8 @@ export class AppConnections {
     if (!flow || flow.opened) return null;
     this.deps.sql.exec("UPDATE app_flows SET opened = 1 WHERE nonce = ?", nonce);
     const definition = APP_DEFINITIONS[flow.app as AppName];
-    const client = definition ? this.client(definition) : null;
-    if (!client) return null;
+    const client = definition?.signIn === "oauth" ? this.client(definition) : null;
+    if (!client || definition?.signIn !== "oauth") return null;
     const state = await seal(this.deps.secret, "connections-oauth-state", { accountId: this.deps.accountId, nonce });
     return { authorizeUrl: googleAuthorizationUrl(client, definition.scopes, await challengeOf(flow.verifier), state), name: `apps.${flow.app}` };
   }
@@ -196,8 +215,8 @@ export class AppConnections {
     this.deps.sql.exec("UPDATE app_flows SET redeemed = 1 WHERE nonce = ?", nonce);
     const app = flow.app as AppName;
     const definition = APP_DEFINITIONS[app];
-    const client = definition ? this.client(definition) : null;
-    if (!client) return { error: "this app is not set up on this Axo deployment" };
+    const client = definition?.signIn === "oauth" ? this.client(definition) : null;
+    if (!client || definition?.signIn !== "oauth") return { error: "this app is not set up on this Axo deployment" };
     let grant: GoogleGrant;
     try {
       grant = await redeemGoogleCode(client, code, live.verifier, this.deps.fetcher, this.now());
@@ -225,9 +244,47 @@ export class AppConnections {
     const row = this.row(app, account.toLowerCase());
     if (!row) return false;
     this.deps.sql.exec("DELETE FROM app_accounts WHERE app = ? AND account = ?", app, row.account);
-    const grant = row.grant_sealed ? await this.unseal(row.grant_sealed) : null;
+    // A token stays valid at the service: Axo can only forget it. The person deletes it there.
+    const grant = row.grant_sealed && APP_DEFINITIONS[app].signIn === "oauth" ? await this.unsealGrant(row.grant_sealed) : null;
     if (grant) this.deps.waitUntil(revokeGoogleGrant(grant, this.deps.fetcher).catch(() => undefined));
     return true;
+  }
+
+  /**
+   * Adds an account to a token app from what the person pasted on the app's page, or replaces
+   * the token of one already added. The token is checked with one read call first; one the
+   * service refuses is not stored. Returns the account's name: the service's own (an email) or,
+   * for an app whose service has none, the one the person gave.
+   */
+  async addToken(app: AppName, named: string | null, fields: Record<string, string>): Promise<{ name: string; account: string }> {
+    const definition = APP_DEFINITIONS[app];
+    if (definition.signIn !== "token") throw new AppAccountRefused(`${definition.title} signs in with ${definition.providerTitle}, not a token`);
+    const credential: TokenCredential = { kind: "token", fields: {} };
+    for (const field of definition.token.fields) {
+      const value = fields[field.name]?.trim();
+      if (!value) throw new AppAccountRefused(`${field.label} is missing`);
+      if (/[\r\n]/.test(value)) throw new AppAccountRefused(`${field.label} may not contain line breaks`);
+      credential.fields[field.name] = value;
+    }
+    const unknown = Object.keys(fields).find((name) => !definition.token.fields.some((f) => f.name === name));
+    if (unknown) throw new AppAccountRefused(`${definition.title} does not take ${unknown.slice(0, 64)}`);
+    if (definition.token.named && !named) throw new AppAccountRefused("Name this account, such as \"personal\"");
+    let identified: string | null;
+    try {
+      identified = await definition.token.identify(this.api(definition, CHECK_TOOL, definition.token.authorize(credential.fields)));
+    } catch (error) {
+      if (error instanceof Unauthorized) throw new AppAccountRefused(`${definition.title} did not accept this token`);
+      if (error instanceof ProviderError) throw new AppAccountRefused(`${definition.title} did not accept this token: ${error.message}`.slice(0, 300));
+      throw error;
+    }
+    const account = (definition.token.named ? named : identified ?? named)?.toLowerCase();
+    if (!account || account.length < 3) throw new AppAccountRefused("Name this account, such as \"personal\"");
+    const known = this.rows(app).some((r) => r.account === account);
+    if (!known && this.rows(app).length >= APP_ACCOUNTS_MAX) throw new AppAccountRefused(`${definition.title} holds at most ${APP_ACCOUNTS_MAX} accounts; remove one first.`);
+    this.deps.sql.exec(`INSERT INTO app_accounts (app, account, grant_sealed, grant_generation, last_error, created_at) VALUES (?, ?, ?, 1, NULL, ?)
+      ON CONFLICT (app, account) DO UPDATE SET grant_sealed = excluded.grant_sealed, grant_generation = app_accounts.grant_generation + 1, last_error = NULL`,
+    app, account, await this.seal(credential), this.now());
+    return { name: `apps.${app}`, account };
   }
 
   /**
@@ -239,7 +296,7 @@ export class AppConnections {
     const definition = APP_DEFINITIONS[app];
     const tool = toolsOf(app).find((t) => t.name === toolName);
     if (!tool) throw new Error(`apps.${app} has no tool named ${toolName}; it has ${toolsOf(app).map((t) => t.name).join(", ")}`);
-    if (!this.client(definition)) throw new Error(`${definition.title} is not set up on this Axo deployment`);
+    if (!this.isAvailable(definition)) throw new Error(`${definition.title} is not set up on this Axo deployment`);
     const parsed = inputOf(tool).safeParse(input ?? {});
     if (!parsed.success) throw new Error(`invalid input: ${z.prettifyError(parsed.error)}`.slice(0, 1024));
     const { account: named, ...rest } = parsed.data as { account: string } & Record<string, unknown>;
@@ -247,15 +304,17 @@ export class AppConnections {
     // Errors reach the Session in at most 256 characters, so a sign-in link comes first.
     if (!this.row(app, account)) {
       const accounts = this.rows(app).map((r) => r.account);
+      if (!accounts.length && definition.signIn === "token") throw new Error(`no ${definition.title} account yet; the person adds one at ${appPage(app)}`);
       if (!accounts.length) throw new Error(`needs sign-in: ${await this.signInLink(app)} (open in a browser signed in to Axo)`);
       throw new Error(`no ${definition.title} account ${account.slice(0, 64)}; signed in: ${accounts.join(", ")}`);
     }
+    if (definition.signIn === "token") return this.callWithToken(definition, tool, account, rest);
     for (let attempt = 0; ; attempt++) {
       const grant = await this.grant(app, account, attempt > 0);
       if (!grant || definition.requiredScopes.some((scope) => !grant.scopes.includes(scope)))
         throw new Error(`${account} needs sign-in: ${await this.signInLink(app)}`);
       try {
-        return await tool.run(this.api(definition, tool, grant.accessToken), rest);
+        return await tool.run(this.api(definition, tool, { Authorization: `Bearer ${grant.accessToken}` }), rest);
       } catch (error) {
         if (!(error instanceof Unauthorized)) throw error;
         if (attempt > 0) {
@@ -266,8 +325,24 @@ export class AppConnections {
     }
   }
 
-  private api(definition: AppDefinition, tool: AppTool, accessToken: string): ProviderApi {
+  /** A token app's call: a refused token is dropped, since only the person can issue a new one. */
+  private async callWithToken(definition: TokenApp, tool: AppTool, account: string, input: Record<string, unknown>): Promise<unknown> {
+    const row = this.row(definition.name, account);
+    const credential = row?.grant_sealed ? await this.unsealToken(row.grant_sealed) : null;
+    if (!row || !credential) throw new Error(`${account}'s token needs adding again at ${appPage(definition.name)}`);
+    try {
+      return await tool.run(this.api(definition, tool, definition.token.authorize(credential.fields)), input);
+    } catch (error) {
+      if (!(error instanceof Unauthorized)) throw error;
+      this.dropGrant(definition.name, account, row.grant_generation, `${definition.title} refused the token`);
+      throw new Error(`${account}: ${definition.title} refused the token; add a new one at ${appPage(definition.name)}`);
+    }
+  }
+
+  /** The provider's API with `auth`, the headers that carry the credential, on every request. */
+  private api(definition: AppDefinition, tool: AppTool, auth: Record<string, string>): ProviderApi {
     const fetcher = this.deps.fetcher;
+    const authNames = new Set(Object.keys(auth).map((name) => name.toLowerCase()));
     const send = async (method: string, path: string, options: ProviderRequest = {}): Promise<Response> => {
       let url: URL;
       try {
@@ -286,13 +361,15 @@ export class AppConnections {
       const body = options.raw ?? (options.body === undefined ? undefined : { contentType: "application/json", data: JSON.stringify(options.body) });
       let response: Response;
       try {
+        // No header of a call's own may stand in for the credential's.
+        const own = Object.entries(options.headers ?? {}).filter(([name]) => !authNames.has(name.toLowerCase()) && name.toLowerCase() !== "authorization");
         response = await fetcher(url, {
           method,
           headers: {
-            ...options.headers,
+            ...Object.fromEntries(own),
             Accept: options.accept ?? "application/json",
             ...(body ? { "Content-Type": body.contentType } : {}),
-            Authorization: `Bearer ${accessToken}`,
+            ...auth,
           },
           body: body?.data,
           redirect: "manual",
@@ -339,11 +416,12 @@ export class AppConnections {
   private async grant(app: AppName, account: string, force: boolean): Promise<GoogleGrant | null> {
     const row = this.row(app, account);
     if (!row?.grant_sealed) return null;
-    const grant = await this.unseal(row.grant_sealed);
+    const grant = await this.unsealGrant(row.grant_sealed);
     if (!grant) return null;
     const due = force || (grant.expiresAt !== null && grant.expiresAt - this.now() < EXPIRY_MARGIN_MS);
     if (!due) return grant;
-    const client = this.client(APP_DEFINITIONS[app]);
+    const definition = APP_DEFINITIONS[app];
+    const client = definition.signIn === "oauth" ? this.client(definition) : null;
     if (!grant.refreshToken || !client) {
       this.dropGrant(app, account, row.grant_generation, "the grant expired and cannot be renewed");
       return null;
@@ -377,10 +455,15 @@ export class AppConnections {
   }
 
   private available(): AppName[] {
-    return APPS.filter((app) => this.client(APP_DEFINITIONS[app]) !== null);
+    return APPS.filter((app) => this.isAvailable(APP_DEFINITIONS[app]));
   }
 
-  private client(definition: AppDefinition): GoogleClient | null {
+  /** An OAuth app needs Axo's client for its provider on this deployment; a token app needs nothing. */
+  private isAvailable(definition: AppDefinition): boolean {
+    return definition.signIn === "token" || this.client(definition) !== null;
+  }
+
+  private client(definition: OAuthApp): GoogleClient | null {
     return definition.provider === "google" ? this.deps.google : null;
   }
 
@@ -398,13 +481,30 @@ export class AppConnections {
     ).toArray()[0];
   }
 
-  private seal(grant: GoogleGrant): Promise<string> {
-    return seal(this.deps.secret, `apps-grant\0${this.deps.accountId}`, grant);
+  private seal(credential: GoogleGrant | TokenCredential): Promise<string> {
+    return seal(this.deps.secret, `apps-grant\0${this.deps.accountId}`, credential);
   }
 
-  private async unseal(sealed: string): Promise<GoogleGrant | null> {
-    return (await unseal(this.deps.secret, `apps-grant\0${this.deps.accountId}`, sealed, 65_536)) as GoogleGrant | null;
+  /** An OAuth grant; a token is never one. */
+  private async unsealGrant(sealed: string): Promise<GoogleGrant | null> {
+    const value = (await unseal(this.deps.secret, `apps-grant\0${this.deps.accountId}`, sealed, 65_536)) as (GoogleGrant & { kind?: undefined }) | TokenCredential | null;
+    return value && value.kind !== "token" ? value : null;
   }
+
+  private async unsealToken(sealed: string): Promise<TokenCredential | null> {
+    const value = (await unseal(this.deps.secret, `apps-grant\0${this.deps.accountId}`, sealed, 65_536)) as TokenCredential | { kind?: undefined } | null;
+    return value?.kind === "token" ? value : null;
+  }
+}
+
+/** The call that checks a token before it is stored: a read, so a lost answer ran nothing. */
+const CHECK_TOOL: AppTool = { name: "add_account", description: "", input: z.object({}), idempotent: true, run: async () => null };
+
+/** How the web app's Add account works for an app. */
+function signInOf(definition: AppDefinition): AppSignIn {
+  if (definition.signIn === "oauth") return { kind: "oauth" };
+  const { helpUrl, named, fields } = definition.token;
+  return { kind: "token", helpUrl, named, fields: fields.map((f) => ({ ...f })) };
 }
 
 /** A tool's input as scripts see it: `account` first, then the tool's own fields. */

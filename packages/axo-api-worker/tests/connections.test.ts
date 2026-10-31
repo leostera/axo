@@ -39,7 +39,7 @@ function error(reply: Reply): { code: number; message: string } {
 test("every paired Mac is a host connection, named after its label, online while connected", async (t) => {
   const { laptop, studio, call } = await fixture(t);
   const listed = connectionsResults["axo.connections.list"].parse(result(await call("axo.connections.list")));
-  assert.deepEqual(listed.connections, [
+  assert.deepEqual(listed.connections.filter((c) => c.kind === "host"), [
     { kind: "host", name: "leo_s_laptop", hostId: laptop.hostId, state: "online" },
     { kind: "host", name: "studio", hostId: studio.hostId, state: "offline" },
   ]);
@@ -104,7 +104,7 @@ test("a command whose Mac drops mid-run fails as may-have-run and is not sent ag
 test("a search reads every tool's definition and calls none", async (t) => {
   const { call } = await fixture(t);
   assert.deepEqual(
-    result(await call("axo.connections.search", { code: `async () => codemode.tools().map((t) => t.service + "." + t.name)` })),
+    result(await call("axo.connections.search", { code: `async () => codemode.tools().filter((t) => !t.service.startsWith("apps.")).map((t) => t.service + "." + t.name)` })),
     { result: ["leo_s_laptop.bash", "studio.bash"] },
   );
   const refused = error(await call("axo.connections.search", { code: `async () => codemode.studio.bash({ command: "true" })` }));

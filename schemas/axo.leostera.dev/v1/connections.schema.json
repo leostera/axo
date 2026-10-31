@@ -288,6 +288,84 @@
                     },
                     "default": []
                   },
+                  "signIn": {
+                    "default": {
+                      "kind": "oauth"
+                    },
+                    "oneOf": [
+                      {
+                        "type": "object",
+                        "properties": {
+                          "kind": {
+                            "type": "string",
+                            "const": "oauth"
+                          }
+                        },
+                        "required": [
+                          "kind"
+                        ],
+                        "additionalProperties": false
+                      },
+                      {
+                        "type": "object",
+                        "properties": {
+                          "kind": {
+                            "type": "string",
+                            "const": "token"
+                          },
+                          "helpUrl": {
+                            "type": "string",
+                            "maxLength": 2048,
+                            "format": "uri",
+                            "pattern": "^https://"
+                          },
+                          "named": {
+                            "type": "boolean"
+                          },
+                          "fields": {
+                            "minItems": 1,
+                            "maxItems": 4,
+                            "type": "array",
+                            "items": {
+                              "type": "object",
+                              "properties": {
+                                "name": {
+                                  "type": "string",
+                                  "pattern": "^[A-Za-z_][A-Za-z0-9_]{0,63}$"
+                                },
+                                "label": {
+                                  "type": "string",
+                                  "maxLength": 64
+                                },
+                                "help": {
+                                  "type": "string",
+                                  "maxLength": 256
+                                },
+                                "secret": {
+                                  "type": "boolean"
+                                }
+                              },
+                              "required": [
+                                "name",
+                                "label",
+                                "help",
+                                "secret"
+                              ],
+                              "additionalProperties": false
+                            }
+                          }
+                        },
+                        "required": [
+                          "kind",
+                          "helpUrl",
+                          "named",
+                          "fields"
+                        ],
+                        "additionalProperties": false
+                      }
+                    ],
+                    "description": "How Add account works: `oauth` opens the provider's sign-in; `token` asks for what the service issued (sealed, never shown again), and `named` says the person names the account."
+                  },
                   "state": {
                     "type": "string",
                     "enum": [
@@ -708,6 +786,84 @@
                     "maxLength": 256
                   },
                   "default": []
+                },
+                "signIn": {
+                  "default": {
+                    "kind": "oauth"
+                  },
+                  "oneOf": [
+                    {
+                      "type": "object",
+                      "properties": {
+                        "kind": {
+                          "type": "string",
+                          "const": "oauth"
+                        }
+                      },
+                      "required": [
+                        "kind"
+                      ],
+                      "additionalProperties": false
+                    },
+                    {
+                      "type": "object",
+                      "properties": {
+                        "kind": {
+                          "type": "string",
+                          "const": "token"
+                        },
+                        "helpUrl": {
+                          "type": "string",
+                          "maxLength": 2048,
+                          "format": "uri",
+                          "pattern": "^https://"
+                        },
+                        "named": {
+                          "type": "boolean"
+                        },
+                        "fields": {
+                          "minItems": 1,
+                          "maxItems": 4,
+                          "type": "array",
+                          "items": {
+                            "type": "object",
+                            "properties": {
+                              "name": {
+                                "type": "string",
+                                "pattern": "^[A-Za-z_][A-Za-z0-9_]{0,63}$"
+                              },
+                              "label": {
+                                "type": "string",
+                                "maxLength": 64
+                              },
+                              "help": {
+                                "type": "string",
+                                "maxLength": 256
+                              },
+                              "secret": {
+                                "type": "boolean"
+                              }
+                            },
+                            "required": [
+                              "name",
+                              "label",
+                              "help",
+                              "secret"
+                            ],
+                            "additionalProperties": false
+                          }
+                        }
+                      },
+                      "required": [
+                        "kind",
+                        "helpUrl",
+                        "named",
+                        "fields"
+                      ],
+                      "additionalProperties": false
+                    }
+                  ],
+                  "description": "How Add account works: `oauth` opens the provider's sign-in; `token` asks for what the service issued (sealed, never shown again), and `named` says the person names the account."
                 },
                 "state": {
                   "type": "string",

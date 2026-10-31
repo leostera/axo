@@ -77,7 +77,7 @@ test("an agent adds a server that needs sign-in, the person signs in, and a scri
   const logText = JSON.stringify(result(await call("axo.connections.log")));
   for (const text of [listedText, logText, JSON.stringify(executed), JSON.stringify(result(await call("axo.connections.list")))])
     assert.equal(server.leaks(text), false);
-  assert.deepEqual(JSON.parse(listedText).connections.map((c: { name: string; state: string }) => [c.name, c.state]), [["studio", "online"], ["linear", "ready"]]);
+  assert.deepEqual(JSON.parse(listedText).connections.filter((c: { kind: string }) => c.kind !== "app").map((c: { name: string; state: string }) => [c.name, c.state]), [["studio", "online"], ["linear", "ready"]]);
   assert.match(logText, /"service":"linear","tool":"list_issues"/);
 });
 
@@ -136,7 +136,8 @@ test("a server that needs no sign-in is ready at once, and names are unique acro
 async function waitForTools(call: (method: string, params?: Record<string, unknown>) => Promise<Reply>) {
   for (let i = 0; i < 50; i++) {
     const found = result(await call("axo.connections.search", {
-      code: `async () => codemode.tools().map((t) => t.service === "studio" ? { service: t.service, name: t.name } : { service: t.service, name: t.name, title: t.title })`,
+      // Apps that need no client of Axo's (Hetzner) are always listed; these tests are about servers.
+      code: `async () => codemode.tools().filter((t) => !t.service.startsWith("apps.")).map((t) => t.service === "studio" ? { service: t.service, name: t.name } : { service: t.service, name: t.name, title: t.title })`,
     })).result as Array<{ service: string }>;
     if (found.some((t) => t.service !== "studio")) return found;
     await new Promise((r) => setTimeout(r, 50));

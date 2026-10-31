@@ -86,7 +86,8 @@ test("a daemon's axo.connections call goes to the account and its answer comes b
   t.after(() => daemon.close());
   const reply = await daemon.call("axo.connections.list", { sessionId: crypto.randomUUID() });
   assert.ok("result" in reply, JSON.stringify(reply));
-  assert.deepEqual(reply.result, { connections: [{ kind: "host", name: "test_mac", hostId: host.hostId, state: "online" }] });
+  const { connections } = reply.result as { connections: Array<{ kind: string }> };
+  assert.deepEqual(connections.filter((c) => c.kind === "host"), [{ kind: "host", name: "test_mac", hostId: host.hostId, state: "online" }]);
   // A call the account refuses comes back as its error, not dropped.
   const refused = await daemon.call("axo.connections.execute", { connectionId: "c1", code: "1" });
   assert.ok("error" in refused);

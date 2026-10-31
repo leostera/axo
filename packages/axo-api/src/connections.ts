@@ -61,7 +61,7 @@ export const connectionNameSchema = z.string().regex(/^[A-Za-z_][A-Za-z0-9_]{0,6
  * `codemode.apps.<app>.<tool>()`. `apps` is reserved: no connection or Mac takes that name.
  */
 export const APPS_NAMESPACE = "apps";
-export const APPS = ["gmail", "calendar", "drive", "docs", "sheets", "slides", "contacts", "tasks", "meet", "cloud"] as const;
+export const APPS = ["gmail", "calendar", "drive", "docs", "sheets", "slides", "contacts", "tasks", "meet", "cloud", "hetzner"] as const;
 export type AppName = (typeof APPS)[number];
 /** An app's service name, `apps.<app>`. */
 export const appServiceSchema = z.string().regex(/^apps\.[a-z][a-z0-9_]{0,31}$/);
@@ -74,6 +74,39 @@ export const appAccountSchema = z.object({
   lastError: z.string().max(512).nullable(),
 }).strict();
 export type AppAccount = z.infer<typeof appAccountSchema>;
+/** A field a person fills in to add an account to a token app, such as Hetzner's API token. */
+export const appTokenFieldSchema = z.object({
+  name: connectionNameSchema,
+  /** As shown: "API token". */
+  label: z.string().max(64),
+  /** Where to find it, in plain words. */
+  help: z.string().max(256),
+  /** A secret is never shown again once added. */
+  secret: z.boolean(),
+}).strict();
+export type AppTokenField = z.infer<typeof appTokenFieldSchema>;
+/**
+ * How a person adds an account to an app. `oauth`: Add account opens the provider's sign-in.
+ * `token`: the person pastes what the service issued them (an API token, a key), which Axo seals
+ * and never shows again; `named` says the person names the account, since the service does not.
+ */
+export const appSignInSchema = z.discriminatedUnion("kind", [
+  z.object({ kind: z.literal("oauth") }).strict(),
+  z.object({
+    kind: z.literal("token"),
+    /** The service's page where the person creates the token. */
+    helpUrl: z.url({ protocol: /^https$/ }).max(2048),
+    named: z.boolean(),
+    fields: z.array(appTokenFieldSchema).min(1).max(4),
+  }).strict(),
+]);
+export type AppSignIn = z.infer<typeof appSignInSchema>;
+/** What adding a token app account sends: the account's name when the person names it, and the fields. */
+export const appTokenRequestSchema = z.object({
+  account: z.string().min(3).max(64).regex(/^[a-z0-9][a-z0-9._@-]*$/, "use lowercase letters, digits, dots, dashes and @").optional(),
+  fields: z.record(connectionNameSchema, z.string().min(1).max(8192)),
+}).strict();
+export type AppTokenRequest = z.infer<typeof appTokenRequestSchema>;
 /** Any service a tool or call belongs to: a connection, a Mac or an app. */
 export const serviceSchema = z.union([connectionNameSchema, appServiceSchema]);
 
@@ -112,6 +145,8 @@ export const connectionSchema = z.discriminatedUnion("kind", [
     category: z.string().regex(/^[a-z][a-z-]{0,31}$/).or(z.literal("")).default(""),
     /** What a signed-in account lets Axo do, in plain words, one per line. */
     permissions: z.array(z.string().max(256)).max(32).default([]),
+    /** How Add account works. A listing from an older Worker has only OAuth apps. */
+    signIn: appSignInSchema.default({ kind: "oauth" }),
     /** Listed only when this Axo deployment has a client for the app's provider. `ready` once any account is. */
     state: z.enum(["ready", "needsSignIn"]),
     /** The provider accounts signed in, each named by its email; every call names one. */
