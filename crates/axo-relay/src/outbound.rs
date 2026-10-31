@@ -31,7 +31,8 @@ pub enum Priority {
 
 /// Ephemeral messages kept waiting at most; older ones are dropped first.
 const MAX_EPHEMERAL_QUEUED: usize = 32;
-/// Bytes queued across classes before a send is refused: room for a largest message (a 12 MiB
+/// Bytes queued across classes before an upload or progress is refused (control is never refused
+/// for room: replies are bounded by the cloud's pending limits). Room for a largest message (a 12 MiB
 /// Pi line, as a 16 MiB append) with others still queued behind it.
 const MAX_QUEUED_BYTES: usize = 3 * fragments::MESSAGE_BYTES;
 /// Frames the relay loop sends per turn; it turns about every 20 ms, so this stays well under the
@@ -287,7 +288,7 @@ impl Outbox {
             return false;
         };
         let size: usize = frames.iter().map(String::len).sum();
-        if self.bytes + size > MAX_QUEUED_BYTES {
+        if outgoing.priority != Priority::Control && self.bytes + size > MAX_QUEUED_BYTES {
             return false;
         }
         let class = &mut self.classes[outgoing.priority as usize];
@@ -369,6 +370,31 @@ mod tests {
         }
         assert!(rest >= 2);
         assert!(outbox.is_empty());
+    }
+
+    #[test]
+    fn a_full_queue_refuses_uploads_but_never_a_reply() {
+        let mut outbox = Outbox::default();
+        let line = |priority| {
+            Outgoing {
+            text: json!({ "jsonrpc": "2.0", "method": "x", "params": { "v": "u".repeat(fragments::MESSAGE_BYTES / 2) } })
+                .to_string(),
+            priority,
+        }
+        };
+        while outbox.push(line(Priority::Durable), "s") {}
+        assert!(!outbox.push(line(Priority::Ephemeral), "s"));
+        assert!(outbox.push(
+            Outgoing {
+                text: "{\"jsonrpc\":\"2.0\",\"id\":1,\"result\":{}}".into(),
+                priority: Priority::Control
+            },
+            "s"
+        ));
+        assert_eq!(
+            outbox.next_frame().unwrap(),
+            "{\"jsonrpc\":\"2.0\",\"id\":1,\"result\":{}}"
+        );
     }
 
     #[test]
