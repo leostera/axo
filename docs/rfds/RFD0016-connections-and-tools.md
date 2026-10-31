@@ -22,7 +22,8 @@ _(open)_
 - An account adds a third-party connection (a remote MCP server) by URL once and its agents use that server's tools afterwards, with Axo running the upstream OAuth flow and keeping the grant.
 - Each paired Mac is a host connection with one tool, `bash`, that any Session of the same account can call while that Mac is online, including Sessions on other Macs. Local apps are reached through their command-line interfaces; Axo does not need to know about them.
 - Agents in Axo Sessions reach every connection through the existing `axod mcp` server (RFD0015).
-- Axo provides a few apps itself, starting with Gmail, that an account signs in to once and its agents reach as `codemode.apps.<app>.*`.
+- Axo provides a few apps itself (Gmail and Google Calendar, Drive, Docs, Sheets and Contacts) that an account signs in to, with one or more provider accounts each, and its agents reach as `codemode.apps.<app>.*`.
+- An agent finds what the account reaches without searching: the account's connections, and how a script calls each, are in the descriptions of the tools that reach them.
 
 ## Non-goals
 
@@ -64,11 +65,28 @@ Scripts run in the cloud, not on the calling Mac. `axod mcp` forwards `connectio
 
 ### Apps
 
-An app is listed on the Connections page and by `connections_list` as `apps.<app>` (kind `app`) whenever the deployment has a client for the app's provider, signed in or not. Its tools are in `codemode.tools()` with service `apps.<app>`, and a script calls them as `codemode.apps.<app>.<tool>(input)`, for example `codemode.apps.gmail.search_messages({ query: "is:unread" })`. `apps` is reserved: no connection is added under that name, and a Mac labelled "apps" gets a suffix.
+An app is listed in the web app's Apps and by `connections_list` as `apps.<app>` (kind `app`, with its accounts and tool names) whenever the deployment has a client for the app's provider, signed in or not. Its tools are in `codemode.tools()` with service `apps.<app>` and `call` saying how a script calls them: `codemode.apps.<app>.<tool>({ account, ... })`. `apps` is reserved: no connection is added under that name, and a Mac labelled "apps" gets a suffix.
 
-The person signs in on the Connections page. An agent that calls an app before that gets an error carrying a sign-in link, which it gives to the person, as with `connections_add`. `connections_remove({ name: "apps.gmail" })` or the page's sign-out button deletes the grant and revokes it at the provider.
+An app holds any number of provider accounts (at most 20), each named by its email; signing in again to one replaces its grant. **Every call names its account**, even when only one is signed in, so nothing is ever read or sent from a guessed account: `codemode.apps.gmail.search_messages({ account: "me@example.com", query: "is:unread" })`. A call naming an account that is not signed in fails, listing the accounts that are. A call to an app with no account yet fails with a sign-in link, which the agent gives to the person, as with `connections_add`. An account whose grant was refused stays listed as needing sign-in until the person signs in to it again or removes it. `connections_remove({ name: "apps.gmail", account })` or Apps removes one account, deleting its grant and revoking it at the provider.
 
-Gmail is the first app. It signs in to Google with `openid email https://www.googleapis.com/auth/gmail.modify`, so it can read, search, send, draft, label and trash mail but not delete it for good, and shows the Google account's email once signed in. Its tools are `get_profile`, `search_messages`, `get_message`, `get_thread`, `list_labels`, `send_message`, `create_draft`, `modify_message` and `trash_message`.
+In the web app, Apps lists each app with how many accounts it has, then MCP servers, then recent activity. An app's page lists its accounts with Add account; MCP servers' page lists the servers with Add server.
+
+Every app signs in with full access to its own service, and only to it:
+
+| App | Scope | Tools |
+| --- | --- | --- |
+| `apps.gmail` | `https://mail.google.com/` | `get_profile`, `search_messages`, `get_message`, `get_thread`, `list_labels`, `send_message`, `create_draft`, `modify_message`, `trash_message`, `delete_message` |
+| `apps.calendar` | `.../auth/calendar` | `list_calendars`, `list_events`, `get_event`, `create_event`, `update_event`, `delete_event`, `free_busy` |
+| `apps.drive` | `.../auth/drive` | `search_files`, `get_file`, `read_file`, `download_file`, `upload_file`, `create_folder`, `update_file`, `share_file`, `trash_file`, `delete_file` |
+| `apps.docs` | `.../auth/documents` | `get_document`, `create_document`, `append_text`, `replace_text` |
+| `apps.sheets` | `.../auth/spreadsheets` | `get_spreadsheet`, `read_range`, `write_range`, `append_rows`, `clear_range`, `create_spreadsheet` |
+| `apps.contacts` | `.../auth/contacts` | `search_contacts`, `list_contacts`, `get_contact`, `create_contact`, `update_contact`, `delete_contact` |
+
+Each also asks for `openid email`, to learn the account's email. A tool that deletes for good (`delete_message`, `delete_file`) says to prefer its trash counterpart unless asked.
+
+### Finding tools
+
+`axod mcp` lists the account's connections when a Session's agent initializes it and when it lists its tools, waiting at most three seconds, and adds one line per connection, saying how a script calls it, to its instructions and to the descriptions of `connections_execute`, `connections_search` and `connections_list`: for example "`codemode.apps.gmail.<tool>({ account, ... })`: Gmail; pass `account` as one of me@example.com. Tools: search_messages, …". An agent searching its tools for "email" then finds `connections_execute` and knows the call to make. When the Mac is not linked or the account does not answer in time, the tools are listed as declared.
 
 ### Adding a third-party connection
 
@@ -100,7 +118,7 @@ Each stored grant carries a generation that goes up with every completed sign-in
 
 An app's provider client is Axo's own: one OAuth client per provider, registered by the operator, whose ID and secret are Worker secrets (`GOOGLE_CLIENT_ID`, `GOOGLE_CLIENT_SECRET` for Google). Without them the provider's apps are not listed. The client's only redirect URI is the same fixed callback, and an app's sign-in uses the same start page, flow cookie, sealed state and one-time, ten-minute nonce as a third-party sign-in; app flows and third-party flows are kept apart but never share a nonce. Google is asked for offline access with forced consent, so every sign-in returns a refresh token. A sign-in that did not grant the app's required scopes (a person can untick them on Google's consent page) does not land: its grant is revoked and the app stays signed out.
 
-App grants are sealed with the account's key, carry a generation like third-party grants, and are renewed before expiry; a renewal lands only on the generation it renewed. Google does not rotate refresh tokens, so a renewal that gets no answer keeps the grant and fails the call; a refused renewal drops it. A provider 401 renews once and sends the call again, since it did not run. A call to a tool that is not safe to repeat (`send_message`, `create_draft`) that gets no answer or a server error fails as may-have-run and is logged as `unknown`.
+App grants are sealed with the account's key, carry a generation like third-party grants, and are renewed before expiry; a renewal lands only on the generation it renewed. Google does not rotate refresh tokens, so a renewal that gets no answer keeps the grant and fails the call; a refused renewal drops it. A provider 401 renews once and sends the call again, since it did not run. A call to a tool that is not safe to repeat (sending, creating, appending, sharing) that gets no answer or a server error fails as may-have-run and is logged as `unknown`. Grants are kept per provider account: renewing or dropping one never touches another. A grant stored before apps held several accounts became that account's, under its email. A grant that lacks a scope the app now requires (Gmail's moved from `gmail.modify` to full access) is not used: a call asks for sign-in again, with a link.
 
 ### Tool lists
 

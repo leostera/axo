@@ -36,6 +36,6 @@ export function registerAxoMcpServer(pi: ExtensionAPI, config: AxoMcpConfig): vo
     env: { AXO_SOCKET: config.socket, AXO_SESSION_ID: config.sessionId },
     exposure: "codemode",
     description:
-      "Axo, the app this agent runs in: list Sessions and their transcript files, start and prompt Sessions (including this one), type into and read terminal panes, and reach the account's connections (bash on any paired Mac, remote MCP servers such as Linear, and apps Axo provides such as Gmail) with connections_*.",
+      "Axo, the app this agent runs in: list Sessions and their transcript files, start and prompt Sessions (including this one), type into and read terminal panes, and reach the account's connections (bash on any paired Mac, remote MCP servers such as Linear, and apps Axo provides: Gmail, Google Calendar, Drive, Docs, Sheets and Contacts) with connections_*.",
   });
 }

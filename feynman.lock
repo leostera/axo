@@ -72,7 +72,7 @@
     "packages/axo-api-worker/src/connections/third-party.ts#ThirdPartyConnections.requestSync": "5195b01e158a",
     "packages/axo-api-worker/src/connections/third-party.ts#ThirdPartyConnections.setClient": "41977fb2c239",
     "packages/axo-api-worker/src/connections/third-party.ts#ThirdPartyConnections.sync": "535d3219fa1c",
-    "packages/axo-api-worker/src/connections/third-party.ts#ThirdPartyConnections.tools": "66cd36c4c2a2",
+    "packages/axo-api-worker/src/connections/third-party.ts#ThirdPartyConnections.tools": "172654d02cf0",
     "packages/axo-api-worker/src/host-do.ts#AxoHostDO.callHost": "ba2dd2af8edf",
     "packages/axo-api-worker/src/host-do.ts#AxoHostDO.command": "1119be74770e",
     "packages/axo-api-worker/src/host-do.ts#AxoHostDO.disconnect": "f7ff956c55a0",
@@ -96,7 +96,6 @@
     "packages/axo-app/src/index.ts#AxoApiError": "34c5c251d6fd",
     "packages/axo-app/src/index.ts#DEFAULT_TIMEOUT_MS": "6113669b95cc",
     "packages/axo-app/src/index.ts#RemoteAxoApi": "0ac85d191f04",
-    "packages/axo-web-app/src/chat/connections.tsx#ConnectionsView": "ee0cc28289b8",
     "packages/axo-web-app/src/cloudflare-sign-in-app.tsx#CloudflareSignInApp": "fabd3c33b407"
   }
 }
