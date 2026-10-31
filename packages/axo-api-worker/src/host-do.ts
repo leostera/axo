@@ -1,6 +1,8 @@
 import {
+  CONNECTIONS_LIMITS,
   HOST_SYNC_METHODS,
   LIMITS,
+  isConnectionsMethod,
   SYNC,
   JSONRPCErrorException,
   appendParamsSchema,
@@ -58,10 +60,8 @@ export type HostSubscription = {
 
 export type HostCommandOutcome = { result: unknown } | { error: { code: number; message: string } };
 
-/** Daemon calls the HostDO hands to the account unchanged (RFD0016, Connections). */
-export const CONNECTIONS_METHOD_PREFIX = "axo.connections.";
-/** The longest a `callHost` waits for its reply: bash runs for at most five minutes. */
-export const CALL_HOST_MAX_MS = 5 * 60_000 + 30_000;
+/** The longest a `callHost` waits for its reply: the longest a bash may run, and a margin. */
+export const CALL_HOST_MAX_MS = CONNECTIONS_LIMITS.bashMaxTimeoutMs + 30_000;
 
 export type ConnectionsCall = { hostId: string; hostGeneration: string; method: string; params: unknown };
 export type CallHostRequest = { method: string; params: unknown; deadlineMs: number };
@@ -438,7 +438,7 @@ export class AxoHostDO extends AxoHostRelay {
    * while a slow one (an execute) runs.
    */
   protected override async receiveHostCall(socket: WebSocket, peer: Peer, call: Call): Promise<boolean> {
-    if (!call.method.startsWith(CONNECTIONS_METHOD_PREFIX)) return false;
+    if (!isConnectionsMethod(call.method)) return false;
     const answer = (outcome: HostCommandOutcome) => {
       if (socket.readyState !== WebSocket.OPEN) return;
       this.send(socket, "result" in outcome
