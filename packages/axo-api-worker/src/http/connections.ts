@@ -1,5 +1,5 @@
 import { z } from "zod";
-import { connectionNameSchema, type CallRecord, type Connection } from "@axo/protocol";
+import { connectionNameSchema, serviceSchema, type CallRecord, type Connection } from "@axo/protocol";
 import { json, requireAccount, type AuthExports } from "../auth/account-access";
 import { parseAuthConfiguration, type AuthEnvironment } from "../auth/config";
 import { unseal } from "../auth/crypto";
@@ -52,7 +52,9 @@ export async function serveConnections(
   const caller = await requireAccount(request, env, exports, reads ? "read" : "change");
   if (caller instanceof Response) return caller;
   const stub = account(ctx, caller.accountId);
-  const name = rawName === undefined ? null : connectionNameSchema.safeParse(rawName);
+  // Signing in and removing also take an app, `apps.<app>`; a client is only ever a third party's.
+  const names = route === "signIn" || route === "remove" ? serviceSchema : connectionNameSchema;
+  const name = rawName === undefined ? null : names.safeParse(rawName);
   if (name && !name.success) return json({ error: "Invalid connection name" }, 400);
   try {
     switch (route) {

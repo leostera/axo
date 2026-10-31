@@ -4,6 +4,7 @@ import { hostRegisterSchema, hostSnapshotSchema, type HostSnapshot } from "@axo/
 import { constantTimeEqual, hmac } from "./crypto";
 import { hostDOName } from "../host-do";
 import { AccountConnections, type CallOutcome, type ConnectionsCall } from "../connections/account";
+import { googleClient } from "../connections/apps/google";
 import type { CallRecord, Connection } from "@axo/protocol";
 
 import type { AccountProfile } from "./account-access";
@@ -344,15 +345,15 @@ export class AxoAccountManager extends DurableObject<Env> {
   }
 
   async connectionSignInLink(name: string): Promise<string> {
-    return this.requireConnections().thirdParty.signInLink(name);
+    return this.requireConnections().signInLink(name);
   }
 
   async openConnectionFlow(nonce: string): Promise<{ authorizeUrl: string; name: string } | null> {
-    return this.requireConnections().thirdParty.openFlow(nonce);
+    return this.requireConnections().openFlow(nonce);
   }
 
   async completeConnectionFlow(nonce: string, code: string): Promise<{ name: string } | { error: string }> {
-    return this.requireConnections().thirdParty.completeFlow(nonce, code);
+    return this.requireConnections().completeFlow(nonce, code);
   }
 
   async connectionsLog(limit?: number, before?: string): Promise<{ records: CallRecord[] }> {
@@ -382,6 +383,7 @@ export class AxoAccountManager extends DurableObject<Env> {
       ).toArray().map((row) => ({ hostId: row.host_id, hostGeneration: row.host_generation, label: row.label, linkedAt: row.linked_at })),
       presence: async (hostId) => plain(await this.hostDO(hostId)!.presenceOf()),
       callHost: async (hostId, request) => plain(await this.hostDO(hostId)!.callHost(request)),
+      google: googleClient(this.env as Env & { GOOGLE_CLIENT_ID?: string; GOOGLE_CLIENT_SECRET?: string }),
       fetcher: (input, init) => fetch(input, init),
       waitUntil: (promise) => this.ctx.waitUntil(promise),
     });

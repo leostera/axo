@@ -16,6 +16,10 @@ Anyone with a Cloudflare account can sign in; there is no allowlist. The Worker 
 
 Bindings (declared in `sites/axo.leostera.dev/cloudflare.config.ts`; values are set on the Worker, never in the repo): `OAUTH_CLIENT_ID` and `OAUTH_CLIENT_SECRET` for the Cloudflare OAuth client (callback `https://axo.leostera.dev/api/auth/cloudflare/callback`, scope `user-details.read`), and `SESSION_SECRET` (at least 32 bytes) which keys session hashes, login codes, the sealed state, pairing codes and host credentials. Without them, sign-in answers 503.
 
+## Apps: Gmail
+
+Apps are services the Worker provides itself (RFD0016, Apps), reached from connections scripts as `codemode.apps.<app>.<tool>()` (`src/connections/apps/`). Gmail is the first: tools over the Gmail REST API, run in the account's `AxoAccountManager` with a Google grant sealed there. Signing in reuses the connections start page and callback; the Google client is Axo's own, set as `GOOGLE_CLIENT_ID` and `GOOGLE_CLIENT_SECRET` on the Worker (a Web application client in the `axo-leostera-dev` Google Cloud project, Internal audience, redirect URI `https://axo.leostera.dev/api/v1/connections/oauth/callback`, scopes `openid`, `userinfo.email`, `gmail.modify`). Without both, Gmail is not listed.
+
 Hosts never sign in: they pair. `/api/v1/host-pairings/redeem` and `/api/v1/accounts/:account/hosts/:host/daemon` authenticate with the pairing code and the per-host credential.
 
 The public site at `axo.leostera.dev` serves the landing page and app from the same origin as `/api/auth/me` and the new `/api/v1/account/*` APIs. Other `/api/*` paths remain unavailable. The legacy `app.axo.leostera.dev` and `api.axo.leostera.dev` Workers and Access applications have been removed, and their site-shim code is deleted. No legacy host records have been migrated; this change did not issue Durable Object namespace tombstones.

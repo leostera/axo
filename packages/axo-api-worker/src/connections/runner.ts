@@ -83,16 +83,25 @@ export default class extends WorkerEntrypoint {
     const log = (...values) => { if (logs.length < 200) logs.push(values.map(show).join(" ").slice(0, 4096)); };
     const console = { log, info: log, warn: log, error: log, debug: log };
     const tools = JSON.parse(toolsJson);
+    const toolsOf = (service) => new Proxy({}, {
+      get(_, tool) {
+        if (typeof tool !== "string" || tool === "then") return undefined;
+        return async (input = {}) => JSON.parse(await dispatcher.call(service, tool, JSON.stringify(input)));
+      },
+    });
+    // codemode.apps.<app>.<tool>() reaches the apps Axo provides, as service "apps.<app>".
+    const apps = new Proxy({}, {
+      get(_, app) {
+        if (typeof app !== "string" || app === "then") return undefined;
+        return toolsOf("apps." + app);
+      },
+    });
     const codemode = new Proxy({}, {
       get(_, service) {
         if (service === "tools") return () => structuredClone(tools);
+        if (service === "apps") return apps;
         if (typeof service !== "string" || service === "then") return undefined;
-        return new Proxy({}, {
-          get(_, tool) {
-            if (typeof tool !== "string" || tool === "then") return undefined;
-            return async (input = {}) => JSON.parse(await dispatcher.call(service, tool, JSON.stringify(input)));
-          },
-        });
+        return toolsOf(service);
       },
     });
     try {
@@ -111,7 +120,7 @@ export type Loader = Pick<WorkerLoader, "get">;
 
 /**
  * Runs `script` with `tools` visible through `codemode.tools()` and `caller` behind every other
- * `codemode.<service>.<tool>()`. A null caller runs a search: the script may read the tools but
+ * `codemode.<service>.<tool>()` and `codemode.apps.<app>.<tool>()`. A null caller runs a search: the script may read the tools but
  * call none. The run ends at its wall time, after which every call it makes is refused.
  */
 export async function runScript(
