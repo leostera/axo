@@ -1,10 +1,10 @@
 import { parseMarkdown, type MarkdownBlock } from "./markdown.ts";
 
 /**
- * A conversation as Pi's events tell it: a port of the phone's `ChatTranscript`. Whole messages
- * (`message.end`) make the conversation; the reply being written (`message.update`) and a running
- * tool's output (`tool.update`) show as they grow; the rest says whether Pi is working or asking.
- * Replaying an event, or reading history that overlaps what arrived live, never repeats a message.
+ * A conversation as the host's records tell it: a port of the phone's `ChatTranscript`. The
+ * records are the lines of the agent's transcript (RFD0018), read by `entryOf`, the only part
+ * that knows the format. Whole messages make the conversation; progress slots show the reply
+ * being written, a running tool's output and a question, until a record says what came of them.
  * A tool's result is not a message of its own: it fills in the tool that asked.
  */
 export type ToolKind = "shell" | "edit" | "file" | "search" | "generic";
@@ -48,14 +48,6 @@ export interface ChatQuestion {
   readonly title: string | null;
 }
 
-/** One of Pi's events, from the live stream or stored history. */
-export interface PiEventRecord {
-  readonly streamId: string;
-  readonly sequence: number;
-  readonly name: string;
-  readonly data: unknown;
-}
-
 interface ToolResult {
   status: ToolStatus;
   output: string;
@@ -74,116 +66,116 @@ export function toolKind(name: string): ToolKind {
 
 const questionKinds = new Set<QuestionKind>(["confirm", "input", "select", "editor", "custom"]);
 
+/** One durable record: its place in the Session and its raw line. */
+export interface TranscriptRecord {
+  readonly cursor: number;
+  readonly id: string | null;
+  readonly format: string;
+  readonly line: string;
+}
+
+/** A record as the conversation sees it: a message, or nothing to show. */
+type Entry = { kind: "message"; id: string; message: Record<string, unknown> } | { kind: "other" };
+
+/** The format adapter for `pi/3`: Pi's session file entries. */
+export function entryOf(record: TranscriptRecord): Entry {
+  if (record.format !== "pi/3") return { kind: "other" };
+  let value: unknown;
+  try {
+    value = JSON.parse(record.line);
+  } catch {
+    return { kind: "other" };
+  }
+  const entry = asObject(value);
+  const message = asObject(entry?.message);
+  if (entry?.type !== "message" || !message) return { kind: "other" };
+  return { kind: "message", id: typeof entry.id === "string" ? entry.id : `#${record.cursor}`, message };
+}
+
 export class ChatTranscript {
   messages: ChatMessage[] = [];
+  /** Pi is working on a reply, as the host last said. */
   working = false;
   /** The reply Pi is writing, as far as it has got; gone once it is whole. */
   live: ChatMessage[] = [];
   question: ChatQuestion | null = null;
-  private known = new Set<string>();
+  /** The records held, oldest first, without gaps. */
+  records: TranscriptRecord[] = [];
   private results = new Map<string, ToolResult>();
-  /** The first this many messages came from stored history; the rest arrived live. */
-  private historical = 0;
+  /** Running tools' output so far, by call id. */
+  private toolOutput = new Map<string, string>();
 
-  /** A conversation read from stored events, oldest first. */
-  static fromHistory(records: readonly PiEventRecord[]): ChatTranscript {
-    const transcript = new ChatTranscript();
-    for (const record of records) transcript.apply(record);
-    transcript.historical = transcript.messages.length;
-    return transcript;
+  /** The first cursor held, or null when none is. */
+  get firstCursor(): number | null {
+    return this.records[0]?.cursor ?? null;
   }
 
-  apply(record: PiEventRecord): void {
-    const data = asObject(record.data);
-    switch (record.name) {
-      case "agent.start":
-        this.working = true;
-        return;
-      case "agent.end":
-      case "agent.settled":
-        this.working = false;
-        this.live = [];
-        return;
-      case "activity.snapshot":
-        if (typeof data?.working === "boolean") this.working = data.working;
-        return;
-      case "ui.prompt.start": {
-        const kind = typeof data?.kind === "string" && questionKinds.has(data.kind as QuestionKind)
-          ? data.kind as QuestionKind : "custom";
-        this.question = { kind, title: typeof data?.title === "string" ? data.title : null };
-        return;
-      }
-      case "ui.prompt.end":
-        this.question = null;
-        return;
-      case "message.update": {
-        const message = asObject(data?.message);
-        if (message?.role !== "assistant") return;
-        this.live = pieces(message, "assistant").map((piece, index) => ({
-          id: `live#${index}`, role: piece.role, text: piece.text, blocks: blocksFor(piece),
-          timestamp: null, tool: piece.tool, images: piece.images,
-        }));
-        return;
-      }
-      case "tool.update": {
-        const callId = data?.toolCallId;
-        if (typeof callId !== "string") return;
-        const index = this.messages.findIndex(message => message.tool?.callId === callId);
-        if (index < 0 || this.messages[index]!.tool?.status !== "running") return;
-        const output = visibleText(asObject(data?.partialResult)?.content);
-        this.changeTool(index, tool => ({ ...tool, output }));
-        return;
-      }
-      case "message.end": {
-        const id = `${record.streamId.toLowerCase()}:${record.sequence}`;
-        if (this.known.has(id)) return;
-        const message = asObject(data?.message);
-        const role = message?.role;
-        if (!message || typeof role !== "string") return;
-        if (role === "toolResult") {
-          this.recordResult(message);
-          return;
-        }
-        if (role === "assistant") this.live = [];
-        const timestamp = typeof message.timestamp === "number" ? message.timestamp : null;
-        pieces(message, role).forEach((piece, index) => {
-          this.known.add(id);
-          const result = piece.tool?.callId ? this.results.get(piece.tool.callId) : undefined;
-          const tool = piece.tool && result ? filled(piece.tool, result) : piece.tool;
-          this.messages.push({
-            id: index === 0 ? id : `${id}#${index}`, role: piece.role, text: piece.text,
-            blocks: blocksFor(piece), timestamp, tool, images: piece.images,
-          });
-        });
-        return;
-      }
+  /** The last cursor held: what the next record follows. */
+  get lastCursor(): number {
+    return this.records.at(-1)?.cursor ?? 0;
+  }
+
+  /** Records after the last held; any already held are skipped. */
+  append(records: readonly TranscriptRecord[]): void {
+    for (const record of records) {
+      if (record.cursor <= this.lastCursor) continue;
+      this.records.push(record);
+      this.applyRecord(record);
     }
   }
 
+  /** Records before the first held, oldest first. */
+  prepend(records: readonly TranscriptRecord[]): void {
+    const first = this.firstCursor ?? Number.MAX_SAFE_INTEGER;
+    const older = records.filter(record => record.cursor < first);
+    if (!older.length) return;
+    this.records = [...older, ...this.records];
+    this.rebuild();
+  }
+
+  /** The host's copy was cut back: everything after `keep` goes. */
+  cut(keep: number): void {
+    if (this.lastCursor <= keep) return;
+    this.records = this.records.filter(record => record.cursor <= keep);
+    this.rebuild();
+  }
+
   /**
-   * Joins the newest page of stored history: after the older history already shown (when
-   * `keepingOlder`: the page reaches back into it) and before what arrived live and is not in it.
-   * History says nothing about whether Pi is working now.
+   * A progress slot's newest snapshot, or null to clear it: `"message"` is the reply being
+   * written, `"question"` what Pi asks, any other slot a running tool's call id.
    */
-  mergeNewest(page: ChatTranscript, keepingOlder: boolean): void {
-    const inPage = new Set(page.messages.map(message => message.id));
-    const older = keepingOlder ? this.messages.slice(0, this.historical).filter(message => !inPage.has(message.id)) : [];
-    const live = this.messages.slice(this.historical).filter(message => !inPage.has(message.id));
-    this.messages = [...older, ...page.messages, ...live];
-    this.historical = older.length + page.messages.length;
-    if (!keepingOlder) this.known = new Set(this.messages.map(message => baseId(message.id)));
-    this.join(page);
+  progress(slot: string, snapshot: unknown): void {
+    const data = asObject(snapshot);
+    if (slot === "message") {
+      const message = asObject(data?.message);
+      this.live = message?.role === "assistant"
+        ? pieces(message, "assistant").map((piece, index) => ({
+          id: `live#${index}`, role: piece.role, text: piece.text, blocks: blocksFor(piece),
+          timestamp: null, tool: piece.tool, images: piece.images,
+        }))
+        : [];
+      return;
+    }
+    if (slot === "question") {
+      if (!data) {
+        this.question = null;
+        return;
+      }
+      const kind = typeof data.kind === "string" && questionKinds.has(data.kind as QuestionKind) ? data.kind as QuestionKind : "custom";
+      this.question = { kind, title: typeof data.title === "string" ? data.title : null };
+      return;
+    }
+    if (!data) {
+      this.toolOutput.delete(slot);
+      return;
+    }
+    const output = visibleText(asObject(data.partialResult)?.content);
+    this.toolOutput.set(slot, output);
+    const index = this.messages.findIndex(message => message.tool?.callId === slot);
+    if (index >= 0 && this.messages[index]!.tool?.status === "running") this.changeTool(index, tool => ({ ...tool, output }));
   }
 
-  /** Puts an older page of stored history before everything shown. */
-  prependOlder(page: ChatTranscript): void {
-    const fresh = page.messages.filter(message => !this.known.has(baseId(message.id)));
-    this.messages = [...fresh, ...this.messages];
-    this.historical += fresh.length;
-    this.join(page, fresh.length);
-  }
-
-  /** What the Mac last said about whether Pi is working, for when live events were missed. */
+  /** Whether Pi is working, as the host says; a settled Session has no reply or question showing. */
   settle(working: boolean): void {
     this.working = working;
     if (!working) {
@@ -192,15 +184,34 @@ export class ChatTranscript {
     }
   }
 
-  private join(page: ChatTranscript, filling = this.messages.length): void {
-    // A result that arrived live wins over the history's.
-    for (const [callId, result] of page.results) if (!this.results.has(callId)) this.results.set(callId, result);
-    for (let index = 0; index < Math.min(filling, this.messages.length); index += 1) {
-      const callId = this.messages[index]!.tool?.callId;
-      const result = callId ? this.results.get(callId) : undefined;
-      if (result) this.changeTool(index, tool => filled(tool, result));
+  private rebuild(): void {
+    this.messages = [];
+    this.results = new Map();
+    for (const record of this.records) this.applyRecord(record);
+  }
+
+  private applyRecord(record: TranscriptRecord): void {
+    const entry = entryOf(record);
+    if (entry.kind !== "message") return;
+    const { id, message } = entry;
+    const role = message.role;
+    if (typeof role !== "string") return;
+    if (role === "toolResult") {
+      this.recordResult(message);
+      return;
     }
-    for (const id of page.known) this.known.add(id);
+    if (role === "assistant") this.live = [];
+    const timestamp = typeof message.timestamp === "number" ? message.timestamp : null;
+    pieces(message, role).forEach((piece, index) => {
+      const callId = piece.tool?.callId;
+      const result = callId ? this.results.get(callId) : undefined;
+      const output = callId ? this.toolOutput.get(callId) : undefined;
+      const tool = piece.tool && result ? filled(piece.tool, result) : piece.tool && output ? { ...piece.tool, output } : piece.tool;
+      this.messages.push({
+        id: index === 0 ? id : `${id}#${index}`, role: piece.role, text: piece.text,
+        blocks: blocksFor(piece), timestamp, tool, images: piece.images,
+      });
+    });
   }
 
   private recordResult(message: Record<string, unknown>): void {
@@ -212,6 +223,7 @@ export class ChatTranscript {
       truncated: message.truncated === true,
     };
     this.results.set(callId, result);
+    this.toolOutput.delete(callId);
     const index = this.messages.findIndex(candidate => candidate.tool?.callId === callId);
     if (index >= 0) this.changeTool(index, tool => filled(tool, result));
   }
@@ -226,10 +238,6 @@ export class ChatTranscript {
 
 function filled(tool: ToolActivity, result: ToolResult): ToolActivity {
   return { ...tool, status: result.status, output: result.output, outputTruncated: result.truncated };
-}
-
-function baseId(id: string): string {
-  return id.split("#")[0]!;
 }
 
 interface Piece {

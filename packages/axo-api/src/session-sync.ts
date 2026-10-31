@@ -172,6 +172,8 @@ export const statusParamsSchema = z.object({ sessionId: uuid, status: sessionSta
 
 export const CLIENT_METHODS = {
   hello: "axo.client.hello",
+  /** Lists the account's hosts again now, as hello does: for a host paired a moment ago. */
+  refresh: "axo.client.refresh",
   hosts: "axo.client.hosts",
   sessions: "axo.client.sessions",
   open: "axo.client.session.open",

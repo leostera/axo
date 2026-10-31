@@ -275,29 +275,29 @@ export const Worker = defineActor({
     },
     openHost: {
       on: OpenHost,
-      description: "Hands a person's WebSocket to their account's Durable Object.",
-      sources: ["packages/axo-api-worker/src/http/account-hosts.ts#upgradeAccountHostRelay"],
+      description: "Hands a person's WebSocket to their client's Durable Object, which follows the account's hosts (RFD0018).",
+      sources: ["packages/axo-api-worker/src/http/account-hosts.ts#upgradeAccountClient"],
       sends: [OpenHost],
       run: (_s, m, ctx) => ctx.send(ctx.the(Manager), OpenHost, m),
     },
     leaveHost: {
       on: LeaveHost,
       description: "Tells the account's Durable Object the person's socket closed.",
-      sources: ["packages/axo-api-worker/src/axo-host-relay.ts#AxoHostRelay.webSocketClose"],
+      sources: ["packages/axo-api-worker/src/client-do.ts#AxoClientDO.webSocketClose"],
       sends: [LeaveHost],
       run: (_s, m, ctx) => ctx.send(ctx.the(Manager), LeaveHost, m),
     },
     connect: {
       on: Connect,
       description: "Hands a host's WebSocket upgrade to its account's Durable Object.",
-      sources: ["packages/axo-api-worker/src/http/account-hosts.ts#upgradeAccountHostRelay"],
+      sources: ["packages/axo-api-worker/src/http/account-hosts.ts#upgradeHostDaemon"],
       sends: [UpgradeDaemon],
       run: (_s, m, ctx) => ctx.send(ctx.the(Manager), UpgradeDaemon, m),
     },
     runCommand: {
       on: RunCommand,
-      description: "Hands a signed-in person's command to the account's Durable Object.",
-      sources: ["packages/axo-api-worker/src/http/account-hosts.ts#upgradeAccountHostRelay"],
+      description: "Hands a signed-in person's command, from their client's Durable Object, to the host's.",
+      sources: ["packages/axo-api-worker/src/client-do.ts#AxoClientDO.webSocketMessage", "packages/axo-api-worker/src/host-do.ts#AxoHostDO.command"],
       sends: [ForwardCall],
       run: (_s, m, ctx) => ctx.send(ctx.the(Manager), ForwardCall, m),
     },
@@ -473,7 +473,7 @@ export const Manager = defineActor({
     upgradeDaemon: {
       on: UpgradeDaemon,
       description: "Accepts a host's socket only with the credential it was linked with, replacing the prior route in this model's no-lease abstraction.",
-      sources: ["packages/axo-api-worker/src/auth/account-manager.ts#AxoAccountManager.authorizeRelayPeer", "packages/axo-api-worker/src/axo-host-relay.ts#AxoHostRelay.fetch"],
+      sources: ["packages/axo-api-worker/src/auth/account-manager.ts#AxoAccountManager.authorizeHost", "packages/axo-api-worker/src/axo-host-relay.ts#AxoHostRelay.fetch"],
       sends: [Admitted, ConnectRefused],
       run(state, m, ctx) {
         const key = keyOf(m.account, m.host);
@@ -534,7 +534,7 @@ export const Manager = defineActor({
     openHost: {
       on: OpenHost,
       description: "Attaches the person's socket to a host of their account; anything else is a 404 that reveals nothing.",
-      sources: ["packages/axo-api-worker/src/axo-host-relay.ts#AxoHostRelay.fetch", "packages/axo-api-worker/src/auth/account-manager.ts#AxoAccountManager.authorizeRelayPeer"],
+      sources: ["packages/axo-api-worker/src/axo-host-relay.ts#AxoHostRelay.fetch", "packages/axo-api-worker/src/auth/account-manager.ts#AxoAccountManager.authorizeHost"],
       sends: [Opened, NoSuchHost, HostRevokedMsg],
       say: (s, m) => `${who(m.account)} opens ${s.hosts[keyOf(m.account, m.host)]?.label ?? "a Mac"}`,
       run(state, m, ctx) {
@@ -668,7 +668,7 @@ export const Person = defineActor({
       description: "Attaches to a Mac's terminal.",
       inputs: { host: input(String, { examples: (w): string[] => w.all(Axod).map((a) => a.id) }) },
       when: (s) => s.signedIn,
-      sources: ["packages/axo-app/src/index.ts#HostRelayConnection.open"],
+      sources: ["packages/axo-app/src/index.ts#AccountConnection.open"],
       sends: [OpenHost],
       run: (s, { host }, ctx) => ctx.send(ctx.the(Access), OpenHost, { account: s.account, host, person: ctx.id }),
     },
@@ -678,7 +678,7 @@ export const Person = defineActor({
       description: "Stops watching a Mac.",
       inputs: { host: input(String, { examples: (w): string[] => w.all(Axod).map((a) => a.id) }) },
       when: (s) => Object.keys(s.watching).length > 0,
-      sources: ["packages/axo-app/src/index.ts#HostRelayConnection.close"],
+      sources: ["packages/axo-app/src/index.ts#AccountConnection.close"],
       sends: [LeaveHost],
       run: (s, { host }, ctx) => ctx.send(ctx.the(Access), LeaveHost, { account: s.account, host, person: ctx.id }),
     },
@@ -691,7 +691,7 @@ export const Person = defineActor({
         command: input(String, { examples: ["whoami"] }),
       },
       when: (s) => s.codes.length > 0, // the app lists hosts only for accounts that paired one
-      sources: ["packages/axo-app/src/index.ts#HostRelayConnection.call"],
+      sources: ["packages/axo-app/src/index.ts#AccountConnection.command"],
       sends: [RunCommand],
       run(s, { host, command }, ctx) {
         const request = ctx.fresh("req");
@@ -749,7 +749,7 @@ export const Person = defineActor({
     outcomeUnknown: { on: OutcomeUnknown, description: "The terminal says the command may or may not have run.", run: (s, m) => void s.answered.push(m.request) },
     requestTimeout: {
       description: "No answer after ten seconds; the app gives up on the command.",
-      sources: ["packages/axo-app/src/index.ts#HostRelayConnection.request"],
+      sources: ["packages/axo-app/src/index.ts#AccountConnection.request"],
       run(s) { for (const r of s.asked) if (!s.answered.includes(r)) { s.answered.push(r); s.timedOut.push(r); } },
     },
     // Faults: what the network and restarts may do here.

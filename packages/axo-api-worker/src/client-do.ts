@@ -219,6 +219,10 @@ export class AxoClientDO extends DurableObject<Env> {
           await this.ctx.storage.setAlarm(Date.now() + SYNC.renewMs);
           return success(id, { hosts: this.hosts(), sessions });
         }
+        case CLIENT_METHODS.refresh: {
+          const sessions = await this.followHosts(socket, true);
+          return success(id, { hosts: this.hosts(), sessions });
+        }
         case CLIENT_METHODS.open: {
           const params = clientOpenParamsSchema.safeParse(call.params);
           if (!params.success || !this.host(params.data.hostId)) return failure(id, -32602, "Invalid params");

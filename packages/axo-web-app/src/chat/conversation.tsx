@@ -122,7 +122,7 @@ export function Conversation({ workbench, wide, onShowChats, onToggleInfo, voice
             }}>Load earlier messages</button>
           ) : null}
           {history.kind === "failed" ? (
-            <p className="history-note warning">Could not read this chat: {history.message} <button className="link" onClick={() => session && void workbench.loadHistory(session.sessionId)}>Try again</button></p>
+            <p className="history-note warning">Could not read this chat: {history.message} <button className="link" onClick={() => session && void workbench.openChat(session.sessionId)}>Try again</button></p>
           ) : null}
           {history.kind === "loading" && empty ? <p className="history-note">Loading the chat…</p> : null}
 

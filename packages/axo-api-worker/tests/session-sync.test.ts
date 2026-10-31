@@ -220,3 +220,15 @@ test("a line too large for one SQLite value is stored in parts and read back who
   const opened = await call<{ records: ClientRecord[] }>(client, "axo.client.session.open", { hostId: host.hostId, sessionId: transcript.sessionId });
   assert.equal(opened.records.at(-1)!.line, transcript.transcript.records[1]!.line);
 });
+
+test("a host paired after hello is listed when the client asks again", async (t) => {
+  const h = await harness();
+  t.after(() => h.close());
+  const session = await signIn(h);
+  const { client, hello } = await connectClient(h, session);
+  t.after(() => client.close());
+  assert.deepEqual(hello.hosts, []);
+  const host = await pairHost(h, session);
+  const refreshed = await call<{ hosts: Array<{ hostId: string }> }>(client, "axo.client.refresh", {});
+  assert.deepEqual(refreshed.hosts.map((listed) => listed.hostId), [host.hostId]);
+});

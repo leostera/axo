@@ -1,11 +1,21 @@
-import type { Host, HostEvent, HostRef, Session } from "@axo/app";
-import type { PiEventPageResult } from "@axo/protocol";
-import { ChatTranscript, type PiEventRecord } from "./transcript.ts";
+import type {
+  AccountEvents,
+  ClientHello,
+  ClientHost,
+  ClientOpenResult,
+  ClientSession,
+  HostRef,
+  OlderPage,
+  OpenRequest,
+  SessionStatus,
+} from "@axo/app";
+import { ChatTranscript, type TranscriptRecord } from "./transcript.ts";
 
 /**
- * The browser's chats: a port of the phone's `PhoneWorkbench` and `HostWorkbenchModel`. One Mac
- * is open at a time and followed live; the others are shown as last listed. A chat is a Session
- * with Pi in it; a new chat exists only once its first message is sent. History is read newest
+ * The browser's chats: a port of the phone's `PhoneWorkbench` and `HostWorkbenchModel`, on the
+ * account's one socket (RFD0018). Every Mac and every chat is listed and kept current; the chat
+ * on screen is open, so its new records arrive as they are written. A chat is a Session with an
+ * agent in it; a new chat exists only once its first message is sent. History is read newest
  * first, a page at a time, and only as far back as the person scrolls.
  */
 
@@ -16,25 +26,70 @@ export interface Workspace {
   readonly home?: true;
 }
 
-/** What the workbench needs of a live connection to a Mac (`HostRelayConnection`). */
-export interface MacConnection {
+/** A chat as the menu and the conversation show it. */
+export interface Session {
+  readonly hostId: string;
+  readonly sessionId: string;
+  readonly name: string | null;
+  readonly emoji: string | null;
+  readonly workspaceId: string | null;
+  readonly workspaceName: string | null;
+  readonly hasAgent: boolean;
+  /** Unix seconds. */
+  readonly createdAt: number | null;
+  /** Unix seconds of the latest completed message. */
+  readonly lastMessageAt: number | null;
+  readonly archived: boolean;
+  readonly status: SessionStatus | null;
+}
+
+/** A Mac of the account, with its chats. */
+export interface Host {
+  readonly hostId: string;
+  readonly hostGeneration: string;
+  readonly label: string;
+  readonly status: "online" | "offline";
+  readonly lastSeenAt: string;
+  readonly sessions: Session[];
+}
+
+type CreatedSession = {
+  sessionId: string;
+  name?: string;
+  emoji?: string | null;
+  workspaceId?: string | null;
+  workspaceName?: string | null;
+  createdAt?: number;
+};
+
+/** What the workbench needs of the account's socket (`AccountConnection`). */
+export interface AccountLink {
+  readonly hello: ClientHello;
   readonly active: boolean;
-  call(method: "axo.remote.workspace.list", params: { target: HostRef }): Promise<{ workspaces: Workspace[] }>;
-  call(method: "axo.remote.session.create", params: { target: HostRef }): Promise<{ session: Session }>;
-  call(method: "axo.remote.workspace.session.create", params: { target: HostRef; workspaceId: string }): Promise<{ session: Session }>;
-  call(method: "axo.remote.session.prompt", params: { target: HostRef; sessionId: string; text: string }): Promise<unknown>;
-  call(method: "axo.remote.session.key", params: { target: HostRef; sessionId: string; key: "escape" | "enter" }): Promise<unknown>;
+  refresh(): Promise<ClientHello>;
+  open(request: OpenRequest): Promise<ClientOpenResult>;
+  older(sessionId: string, before: number, limit: number): Promise<OlderPage>;
+  closeSession(sessionId: string): void;
+  command(method: "axo.remote.workspace.list", params: { target: HostRef }): Promise<{ workspaces: Workspace[] }>;
+  command(method: "axo.remote.session.create", params: { target: HostRef }): Promise<{ session: CreatedSession }>;
+  command(method: "axo.remote.workspace.session.create", params: { target: HostRef; workspaceId: string }): Promise<{ session: CreatedSession }>;
+  command(method: "axo.remote.session.prompt", params: { target: HostRef; sessionId: string; text: string }): Promise<unknown>;
+  command(method: "axo.remote.session.key", params: { target: HostRef; sessionId: string; key: "escape" | "enter" }): Promise<unknown>;
   close(): void;
 }
 
 /** What the workbench needs of the account's API (`RemoteAxoApi`). */
 export interface ChatBackend {
-  listHosts(signal?: AbortSignal): Promise<Host[]>;
-  listPiEvents(reference: HostRef, sessionId: string, before: number, limit: number, signal?: AbortSignal): Promise<PiEventPageResult>;
-  connectHost(reference: HostRef, onEvent: (event: HostEvent) => void, onClose: (error: Error) => void): Promise<MacConnection>;
+  connect(clientId: string, events: AccountEvents): Promise<AccountLink>;
 }
 
-export type Link = "idle" | "connecting" | "connected" | "reconnecting" | "offline";
+/** This tab's client id: kept while the tab lives, and renewed when another tab took it. */
+export interface ClientIdentity {
+  current(): string;
+  renew(): string;
+}
+
+export type Link = "connecting" | "connected" | "reconnecting" | "idle";
 
 export type PendingState =
   /** On its way to the Mac. */
@@ -55,23 +110,19 @@ export interface PendingPrompt {
 export type HistoryState =
   | { kind: "none" }
   | { kind: "loading" }
-  | { kind: "loaded"; events: number; hasOlder: boolean }
-  | { kind: "loadingOlder"; events: number }
+  | { kind: "loaded"; records: number; hasOlder: boolean }
+  | { kind: "loadingOlder"; records: number }
   | { kind: "failed"; message: string };
-
-/** How far back a chat's stored history has been read. */
-interface StoredHistory {
-  events: number;
-  newestId: number;
-  olderCursor: number | null;
-}
 
 export class Chat {
   transcript: ChatTranscript | null = null;
   pending: PendingPrompt[] = [];
   history: HistoryState = { kind: "none" };
   stopping = false;
-  stored: StoredHistory | null = null;
+  /** The epoch the records held belong to. */
+  epoch: number | null = null;
+  /** The `before` of the next older page, or null when the start is held. */
+  older: number | null = null;
 }
 
 /**
@@ -98,7 +149,7 @@ export const historyPageSize = 50;
 const defaultReconnectDelays = [500, 1_000, 2_000, 5_000, 15_000];
 
 export function isChat(session: Session): boolean {
-  return session.hasAgent !== false;
+  return session.hasAgent && !session.archived;
 }
 
 export function chatTitle(session: Session | null | undefined): string {
@@ -108,9 +159,7 @@ export function chatTitle(session: Session | null | undefined): string {
 /**
  * When a chat was last active, in milliseconds: its latest completed message, or its creation for
  * a chat with none yet, as the Mac's recent list orders them. Activity is a finished message, not
- * streaming, so chats move when a turn produces something rather than on every token. 0 when the
- * Mac reports neither: a snapshot's `updatedAt` says when it was sent, which changes with every
- * snapshot and would shuffle the list, so it is never used.
+ * streaming, so chats move when a turn produces something rather than on every token.
  */
 export function lastActivity(session: Session): number {
   return Math.max(session.lastMessageAt ?? 0, session.createdAt ?? 0) * 1000;
@@ -149,13 +198,41 @@ export function shortAge(time: number, now: number): string {
 function deliveryUncertain(error: unknown): boolean {
   if (!(error instanceof Error)) return false;
   const code = (error as { code?: unknown }).code;
-  if (typeof code === "number") return code === -32004 && error.message.includes("reconcile");
+  if (typeof code === "number") return code === -32004;
   return /timed out|closed|WebSocket/i.test(error.message);
 }
 
 function describe(error: unknown): string {
   if (error instanceof Error && "status" in error && error.status === 401) return "Your sign-in expired. Sign in again.";
   return error instanceof Error ? error.message : String(error);
+}
+
+function sessionOf(session: ClientSession): Session {
+  return { hostId: session.hostId, sessionId: session.sessionId, status: session.status, ...session.metadata };
+}
+
+function bySessionOrder(a: Session, b: Session): number {
+  return (a.createdAt ?? 0) - (b.createdAt ?? 0) || a.sessionId.localeCompare(b.sessionId);
+}
+
+/** A client id for a tab: unguessable, and as the ClientDO names it. */
+export function randomClientId(): string {
+  const bytes = crypto.getRandomValues(new Uint8Array(16));
+  return btoa(String.fromCharCode(...bytes)).replaceAll("+", "-").replaceAll("/", "_").replace(/=+$/, "");
+}
+
+/** A client id that lives as long as the tab. */
+export function tabClientIdentity(storage: Storage | null = globalThis.sessionStorage ?? null): ClientIdentity {
+  const key = "axo.clientId";
+  const renew = () => {
+    const id = randomClientId();
+    try { storage?.setItem(key, id); } catch { /* private mode: the id lives in memory */ }
+    memory = id;
+    return id;
+  };
+  let memory: string | null = null;
+  try { memory = storage?.getItem(key) ?? null; } catch { /* no storage */ }
+  return { current: () => memory ?? renew(), renew };
 }
 
 export class ChatWorkbench {
@@ -173,21 +250,30 @@ export class ChatWorkbench {
   private readonly chats = new Map<string, Chat>();
   private readonly drafts = new Map<string, string>();
   private readonly listeners = new Set<() => void>();
-  private connection: MacConnection | null = null;
+  private connection: AccountLink | null = null;
   /** Each connection attempt's own number: what an older attempt finishes is ignored. */
   private generation = 0;
   private reconnectTimer: ReturnType<typeof setTimeout> | null = null;
+  private reconnectAttempt = 0;
+  /** The Sessions of each host, as last told. */
+  private sessions = new Map<string, Map<string, Session>>();
+  private listedHosts: ClientHost[] = [];
+  /** The chat open on the socket: its new records arrive as they are written. */
+  private opened: { hostId: string; sessionId: string } | null = null;
 
   private readonly backend: ChatBackend;
+  private readonly identity: ClientIdentity;
   private readonly reconnectDelays: readonly number[];
   private readonly newId: () => string;
 
   constructor(
     backend: ChatBackend,
+    identity: ClientIdentity = tabClientIdentity(),
     reconnectDelays: readonly number[] = defaultReconnectDelays,
     newId: () => string = () => crypto.randomUUID(),
   ) {
     this.backend = backend;
+    this.identity = identity;
     this.reconnectDelays = reconnectDelays;
     this.newId = newId;
   }
@@ -225,92 +311,68 @@ export class ChatWorkbench {
     return chat;
   }
 
-  // MARK: - Macs
+  // MARK: - The account's socket
 
-  /** Reads the account's Macs. The first time, opens one: the first online, or else the first. */
-  async refreshHosts(signal?: AbortSignal): Promise<void> {
-    try {
-      const listed = await this.backend.listHosts(signal);
-      if (signal?.aborted) return;
-      this.hosts = listed.map(host => {
-        // The open Mac's chats come from its live events, which may be newer than the listing.
-        const open = host.hostId === this.openHostId && this.link === "connected" ? this.openHost : null;
-        return open && open.hostGeneration === host.hostGeneration ? { ...host, sessions: open.sessions } : host;
-      });
-      this.hostsPhase = "loaded";
-      const open = this.openHost;
-      if (!open) {
-        const next = listed.find(host => host.status === "online") ?? listed[0];
-        if (next) this.openMac(next.hostId);
-      } else if (open.status === "online" && (this.link === "offline" || this.link === "idle")) {
-        this.connect();
-      }
-    } catch (error) {
-      if (signal?.aborted) return;
-      if (this.hostsPhase !== "loaded") this.hostsPhase = "failed";
-      this.failure = describe(error);
-    }
-    this.changed();
-  }
-
-  /** Opens a Mac: follows it live and starts a new chat on it. */
-  openMac(hostId: string): void {
-    if (hostId === this.openHostId && this.link !== "offline" && this.link !== "idle") return;
-    this.disconnect();
-    this.openHostId = hostId;
-    this.chats.clear();
-    this.workspaces = [];
-    this.selection = { kind: "new", workspaceId: null };
-    this.failure = null;
+  /** Connects, and stays connected until `dispose`. */
+  start(): void {
+    if (this.link !== "idle") return;
     this.connect();
     this.changed();
   }
 
   private connect(): void {
-    const host = this.openHost;
     this.clearReconnect();
-    if (!host || host.status !== "online") {
-      this.link = "offline";
-      return;
-    }
     const generation = ++this.generation;
-    const reference: HostRef = { hostId: host.hostId, hostGeneration: host.hostGeneration };
+    const mine = <T extends unknown[]>(handle: (...args: T) => void) =>
+      (...args: T) => { if (generation === this.generation) handle(...args); };
     this.link = this.link === "reconnecting" ? "reconnecting" : "connecting";
-    void this.backend.connectHost(
-      reference,
-      event => { if (generation === this.generation) this.apply(event); },
-      () => { if (generation === this.generation) this.connectionLost(); },
-    ).then(connection => {
+    void this.backend.connect(this.identity.current(), {
+      hosts: mine(hosts => this.listHosts(hosts)),
+      sessions: mine((hostId, sessions) => this.updateSessions(hostId, sessions)),
+      records: mine((sessionId, epoch, records) => this.receiveRecords(sessionId, epoch, records)),
+      progress: mine((sessionId, slot, snapshot) => this.receiveProgress(sessionId, slot, snapshot)),
+      reset: mine((sessionId, epoch, keep) => this.receiveReset(sessionId, epoch, keep)),
+      closed: mine(error => this.connectionLost(error)),
+    }).then(connection => {
       if (generation !== this.generation) {
         connection.close();
         return;
       }
       this.connection = connection;
-      const recovering = this.link === "reconnecting";
       this.link = "connected";
       this.failure = null;
       this.reconnectAttempt = 0;
+      this.applyListing(connection.hello);
+      if (!this.openHost) {
+        const next = this.hosts.find(host => host.status === "online") ?? this.hosts[0];
+        if (next) this.openMac(next.hostId);
+      }
       void this.refreshWorkspaces();
-      if (recovering) void this.catchUp();
-      else if (this.selection?.kind === "chat") void this.loadHistory(this.selection.sessionId);
+      // What was open before the gap opens again from what is held.
+      const opened = this.opened;
+      this.opened = null;
+      const selection = this.selection;
+      if (selection?.kind === "chat") void this.openChat(selection.sessionId);
+      else if (opened) this.chat(opened.sessionId).history = { kind: "none" };
       this.changed();
     }, error => {
       if (generation !== this.generation) return;
+      if (this.hostsPhase === "loading") this.hostsPhase = "failed";
       this.failure = describe(error);
       this.scheduleReconnect();
       this.changed();
     });
   }
 
-  private reconnectAttempt = 0;
-
-  private connectionLost(): void {
+  private connectionLost(error: Error): void {
     this.connection = null;
+    // Another tab with this tab's id took the socket: this tab takes a new one.
+    if (error.message === "Replaced") this.identity.renew();
     this.scheduleReconnect();
     this.changed();
   }
 
-  /** Tries again with growing pauses. Events missed meanwhile are in the stored history. */
+  /** Tries again with growing pauses. Records written meanwhile come when the chat opens again. */
   private scheduleReconnect(): void {
     this.link = "reconnecting";
     this.clearReconnect();
@@ -328,26 +390,105 @@ export class ChatWorkbench {
     this.reconnectTimer = null;
   }
 
-  /** After a gap: the open chat reads its newest history again, the others will when opened. */
-  private async catchUp(): Promise<void> {
-    const selected = this.selection?.kind === "chat" ? this.selection.sessionId : null;
-    for (const [id, chat] of this.chats) if (id !== selected) chat.history = { kind: "none" };
-    for (const session of this.openHost?.sessions ?? []) {
-      const chat = this.chats.get(session.sessionId);
-      if (!chat?.transcript || !session.status) continue;
-      const working = session.status === "working";
-      chat.transcript.settle(working);
-      if (!working) chat.stopping = false;
+  dispose(): void {
+    this.generation += 1;
+    this.clearReconnect();
+    this.connection?.close();
+    this.connection = null;
+    this.link = "idle";
+    this.listeners.clear();
+  }
+
+  private reference(host: Host): HostRef {
+    return { hostId: host.hostId, hostGeneration: host.hostGeneration };
+  }
+
+  // MARK: - Macs and their chats
+
+  /** Lists the account's hosts again now: for a Mac paired a moment ago. */
+  async refreshHosts(): Promise<void> {
+    const connection = this.connection;
+    if (!connection?.active) return;
+    try {
+      const listing = await connection.refresh();
+      if (connection !== this.connection) return;
+      this.applyListing(listing);
+      this.changed();
+    } catch {
+      // The next refresh, or the socket's own updates, will do.
     }
-    await this.refreshHosts();
-    if (selected !== null) await this.loadHistory(selected);
+  }
+
+  private applyListing(listing: ClientHello): void {
+    this.sessions = new Map();
+    this.listHosts(listing.hosts, false);
+    for (const session of listing.sessions) this.storeSession(session);
+    this.rebuildHosts();
+    this.hostsPhase = "loaded";
+  }
+
+  private listHosts(hosts: ClientHost[], notify = true): void {
+    this.listedHosts = hosts;
+    for (const hostId of this.sessions.keys()) if (!hosts.some(host => host.hostId === hostId)) this.sessions.delete(hostId);
+    if (!notify) return;
+    this.rebuildHosts();
+    this.changed();
+  }
+
+  private updateSessions(hostId: string, sessions: ClientSession[]): void {
+    for (const session of sessions) {
+      if (session.hostId !== hostId) continue;
+      this.storeSession(session);
+      const chat = this.chats.get(session.sessionId);
+      if (chat?.transcript && session.status) {
+        const working = session.status === "working";
+        chat.transcript.settle(working);
+        if (!working) chat.stopping = false;
+      }
+    }
+    this.rebuildHosts();
+    this.changed();
+  }
+
+  private storeSession(session: ClientSession): void {
+    const sessions = this.sessions.get(session.hostId) ?? new Map<string, Session>();
+    sessions.set(session.sessionId, sessionOf(session));
+    this.sessions.set(session.hostId, sessions);
+  }
+
+  private rebuildHosts(): void {
+    this.hosts = this.listedHosts.map(host => ({
+      hostId: host.hostId,
+      hostGeneration: host.hostGeneration,
+      label: host.label,
+      status: host.online ? "online" : "offline",
+      lastSeenAt: host.lastSeenAt,
+      sessions: [...(this.sessions.get(host.hostId)?.values() ?? [])].sort(bySessionOrder),
+    }));
+    const selection = this.selection;
+    if (selection?.kind === "chat" && this.openHost && !this.selectedSession && !this.chats.get(selection.sessionId)?.pending.length) {
+      // The chat on screen is gone from its Mac.
+      this.selection = { kind: "new", workspaceId: null };
+    }
+  }
+
+  /** Opens a Mac: new chats start on it. */
+  openMac(hostId: string): void {
+    if (hostId === this.openHostId) return;
+    this.openHostId = hostId;
+    this.workspaces = [];
+    this.selection = { kind: "new", workspaceId: null };
+    this.closeOpened();
+    this.failure = null;
+    void this.refreshWorkspaces();
+    this.changed();
   }
 
   async refreshWorkspaces(): Promise<Workspace[] | null> {
     const host = this.openHost;
-    if (!host || !this.connection?.active) return null;
+    if (!host || host.status !== "online" || !this.connection?.active) return null;
     try {
-      const { workspaces } = await this.connection.call("axo.remote.workspace.list", { target: this.reference(host) });
+      const { workspaces } = await this.connection.command("axo.remote.workspace.list", { target: this.reference(host) });
       if (host.hostId !== this.openHostId) return null;
       this.workspaces = workspaces;
       this.changed();
@@ -357,61 +498,44 @@ export class ChatWorkbench {
     }
   }
 
-  private disconnect(): void {
-    this.generation += 1;
-    this.clearReconnect();
-    this.connection?.close();
-    this.connection = null;
-    this.link = "idle";
-    this.reconnectAttempt = 0;
-  }
+  // MARK: - Records
 
-  dispose(): void {
-    this.disconnect();
-    this.listeners.clear();
-  }
-
-  private reference(host: Host): HostRef {
-    return { hostId: host.hostId, hostGeneration: host.hostGeneration };
-  }
-
-  // MARK: - Events
-
-  apply(event: HostEvent): void {
-    if (event.hostId !== this.openHostId) return;
-    if (event.type === "host.presence") {
-      this.updateOpenHost(host => ({ ...host, status: event.status, stale: event.status === "offline", lastSeenAt: event.observedAt }));
-      this.changed();
+  private receiveRecords(sessionId: string, epoch: number, records: TranscriptRecord[]): void {
+    const chat = this.chats.get(sessionId);
+    if (!chat?.transcript || this.opened?.sessionId !== sessionId) return;
+    if (chat.epoch !== null && chat.epoch !== epoch) return;
+    chat.epoch = epoch;
+    if (records[0] && records[0].cursor > chat.transcript.lastCursor + 1) {
+      // A batch that does not follow what is held: open again from what is held.
+      void this.openChat(sessionId);
       return;
     }
-    const data = event.event;
-    switch (data.type) {
-      case "session.snapshot":
-        this.updateOpenHost(host => {
-          const index = host.sessions.findIndex(session => session.sessionId === data.snapshot.sessionId);
-          const sessions = index < 0
-            ? [...host.sessions, data.snapshot].sort((a, b) => (a.createdAt ?? 0) - (b.createdAt ?? 0) || a.sessionId.localeCompare(b.sessionId))
-            : host.sessions.map((session, at) => at === index ? data.snapshot : session);
-          return { ...host, sessions };
-        });
-        break;
-      case "session.removed":
-        this.updateOpenHost(host => ({ ...host, sessions: host.sessions.filter(session => session.sessionId !== data.sessionId) }));
-        this.chats.delete(data.sessionId);
-        if (this.selection?.kind === "chat" && this.selection.sessionId === data.sessionId) this.selection = { kind: "new", workspaceId: null };
-        break;
-      case "pi.event":
-        this.changeChat(data.sessionId, transcript => transcript.apply(data));
-        break;
-      default:
-        // The browser follows chats, not terminals.
-        return;
-    }
+    this.changeChat(sessionId, transcript => transcript.append(records));
+    this.settleHistory(chat);
     this.changed();
   }
 
-  private updateOpenHost(change: (host: Host) => Host): void {
-    this.hosts = this.hosts.map(host => host.hostId === this.openHostId ? change(host) : host);
+  private receiveProgress(sessionId: string, slot: string, snapshot: unknown): void {
+    const chat = this.chats.get(sessionId);
+    if (!chat?.transcript) return;
+    chat.transcript.progress(slot, snapshot);
+    this.changed();
+  }
+
+  private receiveReset(sessionId: string, epoch: number, keep: number): void {
+    const chat = this.chats.get(sessionId);
+    if (!chat?.transcript) return;
+    chat.epoch = epoch;
+    const first = chat.transcript.firstCursor;
+    chat.transcript.cut(keep);
+    // A cut below everything held leaves the records before it to be read as older history.
+    if (chat.transcript.firstCursor === null && first !== null) chat.older = keep > 0 ? keep + 1 : null;
+    this.settleHistory(chat);
+    this.changed();
+  }
+
+  private settleHistory(chat: Chat): void {
+    if (chat.history.kind === "loaded") chat.history = { kind: "loaded", records: chat.transcript?.records.length ?? 0, hasOlder: chat.older !== null };
   }
 
   /**
@@ -425,17 +549,9 @@ export class ChatWorkbench {
     change(chat.transcript);
     if (!chat.transcript.working) chat.stopping = false;
     if (!chat.pending.length) return;
-    const messages = chat.transcript.messages;
-    let start = 0;
-    for (let index = messages.length - 1; index >= 0; index -= 1) {
-      if (before.has(messages[index]!.id)) {
-        start = index + 1;
-        break;
-      }
-    }
     const pending = [...chat.pending];
-    for (const message of messages.slice(start)) {
-      if (message.role !== "user") continue;
+    for (const message of chat.transcript.messages) {
+      if (message.role !== "user" || before.has(message.id)) continue;
       const words = message.text.trim();
       const match = pending.findIndex(prompt => prompt.text === words);
       const oldest = pending.findIndex(prompt => prompt.state !== "sending");
@@ -447,63 +563,78 @@ export class ChatWorkbench {
 
   // MARK: - History
 
-  /** Reads the newest page of a chat's stored conversation, in front of what arrived live. */
-  async loadHistory(sessionId: string): Promise<void> {
-    const host = this.openHost;
+  /**
+   * Opens a chat on the socket: from what is held when something is, or else its newest page.
+   * Its new records then arrive as they are written.
+   */
+  async openChat(sessionId: string): Promise<void> {
+    const session = this.openHost?.sessions.find(candidate => candidate.sessionId === sessionId);
+    const hostId = session?.hostId ?? this.openHostId;
+    const connection = this.connection;
     const chat = this.chat(sessionId);
-    if (!host || chat.history.kind === "loading" || chat.history.kind === "loadingOlder") return;
-    chat.history = { kind: "loading" };
+    if (!hostId || !connection?.active) return;
+    if (this.opened && this.opened.sessionId !== sessionId) connection.closeSession(this.opened.sessionId);
+    this.opened = { hostId, sessionId };
+    const held = chat.transcript && chat.epoch !== null ? { epoch: chat.epoch, cursor: chat.transcript.lastCursor } : null;
+    if (!held) chat.history = { kind: "loading" };
     this.changed();
     try {
-      const page = await this.backend.listPiEvents(this.reference(host), sessionId, 0, historyPageSize);
-      if (this.chats.get(sessionId) !== chat) return;
-      const parsed = ChatTranscript.fromHistory(records(page));
-      const newest = page.events[0]?.id ?? 0;
-      const stored = chat.stored;
-      // A page reaching back to what was read before goes on from it; one that does not starts again.
-      const reachesBack = stored !== null && (page.events.at(-1)?.id ?? Number.MAX_SAFE_INTEGER) <= stored.newestId;
-      chat.stored = stored && reachesBack
-        ? { events: stored.events + page.events.filter(event => event.id > stored.newestId).length, newestId: Math.max(newest, stored.newestId), olderCursor: stored.olderCursor }
-        : { events: page.events.length, newestId: newest, olderCursor: page.next };
-      this.changeChat(sessionId, transcript => transcript.mergeNewest(parsed, reachesBack));
-      chat.history = { kind: "loaded", events: chat.stored.events, hasOlder: chat.stored.olderCursor !== null };
+      const result = await connection.open(held ? { hostId, sessionId, have: held } : { hostId, sessionId, window: { last: historyPageSize } });
+      if (this.opened?.sessionId !== sessionId || this.chats.get(sessionId) !== chat) return;
+      if (!held) {
+        chat.transcript = null;
+        chat.older = result.older;
+      }
+      chat.epoch = result.epoch;
+      this.changeChat(sessionId, transcript => {
+        transcript.append(result.records);
+        for (const { slot, snapshot } of result.progress) transcript.progress(slot, snapshot);
+        const status = session?.status;
+        if (status) transcript.settle(status === "working");
+      });
+      chat.history = { kind: "loaded", records: chat.transcript!.records.length, hasOlder: chat.older !== null };
     } catch (error) {
-      chat.history = { kind: "failed", message: describe(error) };
+      if (this.opened?.sessionId === sessionId) chat.history = { kind: "failed", message: describe(error) };
     }
     this.changed();
   }
 
   /** Reads the page before the oldest one shown; nothing when this is the beginning. */
   async loadOlderHistory(sessionId: string): Promise<void> {
-    const host = this.openHost;
     const chat = this.chat(sessionId);
-    const stored = chat.stored;
-    if (!host || chat.history.kind !== "loaded" || !chat.history.hasOlder || stored?.olderCursor == null) return;
-    const events = chat.history.events;
-    chat.history = { kind: "loadingOlder", events };
+    const connection = this.connection;
+    if (!connection?.active || chat.history.kind !== "loaded" || chat.older === null || this.opened?.sessionId !== sessionId) return;
+    const records = chat.history.records;
+    chat.history = { kind: "loadingOlder", records };
     this.changed();
     try {
-      const page = await this.backend.listPiEvents(this.reference(host), sessionId, stored.olderCursor, historyPageSize);
+      const page = await connection.older(sessionId, chat.older, historyPageSize);
       if (this.chats.get(sessionId) !== chat) return;
-      chat.stored = { events: stored.events + page.events.length, newestId: stored.newestId, olderCursor: page.next };
-      this.changeChat(sessionId, transcript => transcript.prependOlder(ChatTranscript.fromHistory(records(page))));
-      chat.history = { kind: "loaded", events: chat.stored.events, hasOlder: page.next !== null };
+      if (page.epoch === chat.epoch) {
+        chat.older = page.older;
+        this.changeChat(sessionId, transcript => transcript.prepend(page.records));
+      }
+      chat.history = { kind: "loaded", records: chat.transcript?.records.length ?? 0, hasOlder: chat.older !== null };
     } catch (error) {
-      chat.history = { kind: "loaded", events, hasOlder: true };
+      chat.history = { kind: "loaded", records, hasOlder: true };
       this.failure = describe(error);
     }
     this.changed();
   }
 
+  private closeOpened(): void {
+    if (this.opened) this.connection?.closeSession(this.opened.sessionId);
+    this.opened = null;
+  }
+
   // MARK: - Selecting
 
-  /** Opens a chat, on whichever Mac it is. */
+  /** Shows a chat, on whichever Mac it is. */
   selectChat(hostId: string, sessionId: string): void {
     if (hostId !== this.openHostId) this.openMac(hostId);
     this.selection = { kind: "chat", sessionId };
     this.failure = null;
-    const chat = this.chat(sessionId);
-    if (chat.history.kind === "none" || chat.history.kind === "failed") void this.loadHistory(sessionId);
+    if (this.opened?.sessionId !== sessionId) void this.openChat(sessionId);
     this.changed();
   }
 
@@ -511,6 +642,7 @@ export class ChatWorkbench {
   newChat(hostId: string | null = null, workspaceId: string | null = null): void {
     if (hostId && hostId !== this.openHostId) this.openMac(hostId);
     this.selection = { kind: "new", workspaceId };
+    this.closeOpened();
     this.failure = null;
     this.changed();
   }
@@ -554,21 +686,39 @@ export class ChatWorkbench {
       const host = this.openHost;
       if (!host || !this.ready()) return { kind: "failed" };
       const target = this.reference(host);
-      let session: Session;
+      let created: CreatedSession;
       try {
-        ({ session } = draft.workspaceId
-          ? await this.connection!.call("axo.remote.workspace.session.create", { target, workspaceId: draft.workspaceId })
-          : await this.connection!.call("axo.remote.session.create", { target }));
+        ({ session: created } = draft.workspaceId
+          ? await this.connection!.command("axo.remote.workspace.session.create", { target, workspaceId: draft.workspaceId })
+          : await this.connection!.command("axo.remote.session.create", { target }));
       } catch (error) {
         return this.report(`Could not start the chat: ${describe(error)}`);
       }
-      this.apply({ type: "host.data", hostId: host.hostId, hostGeneration: host.hostGeneration, event: { type: "session.snapshot", snapshot: session } } as HostEvent);
+      // Listed at once; the host's own listing replaces this when it arrives.
+      this.storeSession({
+        hostId: host.hostId,
+        sessionId: created.sessionId,
+        epoch: null,
+        head: 0,
+        status: "starting",
+        metadata: {
+          name: created.name ?? null,
+          emoji: created.emoji ?? null,
+          workspaceId: created.workspaceId ?? null,
+          workspaceName: created.workspaceName ?? null,
+          hasAgent: true,
+          createdAt: created.createdAt ?? Math.floor(Date.now() / 1000),
+          lastMessageAt: null,
+          archived: false,
+        },
+      });
+      this.rebuildHosts();
       // The words move to the chat they started; a refusal leaves them in its box.
-      const chat: Selection = { kind: "chat", sessionId: session.sessionId };
+      const chat: Selection = { kind: "chat", sessionId: created.sessionId };
       this.setDraft(this.draft(draft), chat);
       this.setDraft("", draft);
       this.selection = chat;
-      this.chat(session.sessionId).history = { kind: "loaded", events: 0, hasOlder: false };
+      void this.openChat(created.sessionId);
       return this.prompt(chat);
     });
   }
@@ -592,7 +742,7 @@ export class ChatWorkbench {
       return false;
     }
     if (!this.connection?.active) {
-      this.report(`Not connected to ${host.label} yet. Try again in a moment.`);
+      this.report("Not connected yet. Try again in a moment.");
       return false;
     }
     return true;
@@ -615,7 +765,7 @@ export class ChatWorkbench {
     this.setDraft("", selection);
     let outcome: SendOutcome;
     try {
-      await this.connection!.call("axo.remote.session.prompt", { target: this.reference(host), sessionId: selection.sessionId, text });
+      await this.connection!.command("axo.remote.session.prompt", { target: this.reference(host), sessionId: selection.sessionId, text });
       this.failure = null;
       outcome = { kind: "sent" };
     } catch (error) {
@@ -653,7 +803,7 @@ export class ChatWorkbench {
     chat.stopping = true;
     this.changed();
     try {
-      await this.connection!.call("axo.remote.session.key", { target: this.reference(host), sessionId, key: "escape" });
+      await this.connection!.command("axo.remote.session.key", { target: this.reference(host), sessionId, key: "escape" });
     } catch (error) {
       chat.stopping = false;
       this.failure = describe(error);
@@ -661,23 +811,18 @@ export class ChatWorkbench {
     this.changed();
   }
 
-  /** Answers Pi's question: yes is Enter, no is Escape, words are sent as a prompt is. */
+  /** Answers the agent's question: yes is Enter, no is Escape, words are sent as a prompt is. */
   async answer(sessionId: string, answer: Answer): Promise<void> {
     const host = this.openHost;
     if (!host || !this.chats.get(sessionId)?.transcript?.question || !this.ready()) return;
     const target = this.reference(host);
     try {
-      if (answer.kind === "text") await this.connection!.call("axo.remote.session.prompt", { target, sessionId, text: answer.text });
-      else await this.connection!.call("axo.remote.session.key", { target, sessionId, key: answer.kind === "yes" ? "enter" : "escape" });
+      if (answer.kind === "text") await this.connection!.command("axo.remote.session.prompt", { target, sessionId, text: answer.text });
+      else await this.connection!.command("axo.remote.session.key", { target, sessionId, key: answer.kind === "yes" ? "enter" : "escape" });
       this.failure = null;
     } catch (error) {
       this.failure = describe(error);
     }
     this.changed();
   }
-}
-
-/** A page comes newest first; a transcript is built oldest first. */
-function records(page: PiEventPageResult): PiEventRecord[] {
-  return [...page.events].reverse();
 }

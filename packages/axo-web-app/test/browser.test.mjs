@@ -12,23 +12,19 @@ import { createServer as createViteServer } from "vite";
 
 const hostId = "1e1e7f91-3d8f-4f97-8f71-4fc7d53313c6";
 const hostGeneration = "f9c5761c-3b2d-42a8-bb19-9a8c0b8cf230";
-const subscriptionId = "53c8b056-a7ba-4354-9659-dda29f57850a";
 const workspaceId = "04d389d1-9896-420e-9b42-fc7835522937";
 const homeWorkspaceId = "8f8f8f8f-0000-4000-8000-000000000001";
 const now = "2026-10-16T12:00:00.000Z";
 const siteRoot = resolve(import.meta.dirname, "../../../sites/axo.leostera.dev");
 const chromePath = process.env.CHROME_PATH ?? "/Applications/Google Chrome.app/Contents/MacOS/Google Chrome";
 
-function host(sessions) {
+const clientHost = { hostId, hostGeneration, label: "Browser fixture Mac", hostKind: "macos", online: true, lastSeenAt: now };
+
+/** A chat as the ClientDO lists it. */
+function listed({ sessionId, status = "ready", head = 0, ...metadata }) {
   return {
-    hostId,
-    hostGeneration,
-    label: "Browser fixture Mac",
-    hostKind: "macos",
-    status: "online",
-    stale: false,
-    lastSeenAt: now,
-    sessions,
+    hostId, sessionId, epoch: head ? 1 : null, head, status,
+    metadata: { name: null, emoji: null, workspaceId: null, workspaceName: null, hasAgent: true, createdAt: null, lastMessageAt: null, archived: false, ...metadata },
   };
 }
 
@@ -51,31 +47,20 @@ async function freePort() {
   return port;
 }
 
-function sendEvent(socket, event) {
-  socket.send(JSON.stringify({
-    jsonrpc: "2.0",
-    method: "axo.host.event",
-    params: { subscriptionId, event },
-  }));
+function notify(socket, method, params) {
+  socket.send(JSON.stringify({ jsonrpc: "2.0", method, params }));
 }
 
 /** A Session ID for fixture `n`. */
 const sid = (n) => `${n.toString(16).padStart(8, "0")}-0000-4000-8000-${n.toString(16).padStart(12, "0")}`;
 
-const liveStream = "9b1e6f0c-6c1d-4a51-9d0e-1f1b2c3d4e5f";
-const historyStream = "41c77dd7-f2dc-4e91-b481-1507b62ec118";
-
-function piEvent(socket, sessionId, sequence, name, data) {
-  sendEvent(socket, {
-    type: "host.data",
-    hostId,
-    hostGeneration,
-    event: { type: "pi.event", sessionId, piSessionId: "pi-session-1", streamId: liveStream, sequence, name, data },
-  });
-}
-
-function stored(id, name, data) {
-  return { id, hostGeneration, piSessionId: "pi-session-1", streamId: historyStream, sequence: id, name, data, receivedAt: 1_797_600_000_000 + id };
+/** A line of Pi's session file, as the cloud holds it at `cursor`. */
+function record(cursor, message) {
+  const id = `entry-${cursor}`;
+  return {
+    cursor, id, format: "pi/3", hash: `sha256:${cursor.toString(16).padStart(64, "0")}`,
+    line: JSON.stringify({ type: "message", id, parentId: cursor > 1 ? `entry-${cursor - 1}` : null, timestamp: now, message }),
+  };
 }
 
 async function failWithContext(page, error, context) {
@@ -86,57 +71,40 @@ test("browser chats with Axo on a Mac: history, live replies, new chats, info, a
   skip: !existsSync(chromePath) && "Set CHROME_PATH to a Chrome/Chromium executable to run this browser acceptance test",
   timeout: 60_000,
 }, async () => {
-  const sessions = [{
-    hostId,
+  const sessions = [listed({
     sessionId: sid(1),
     workspaceId,
     workspaceName: "Browser Workspace",
     name: "Browser Agent",
     emoji: "🦀",
-    status: "ready",
-    hasAgent: true,
-    shells: [{ shellId: 17 }],
-    layout: { kind: "pane", shellId: 17 },
-    // Active a minute ago: listed. The next chat has been quiet for weeks: behind "Show older chats".
-    updatedAt: new Date().toISOString(),
+    head: 4,
+    // Active a minute ago: listed. The next chat has been quiet for weeks.
     lastMessageAt: Math.floor(Date.now() / 1000) - 60,
-  }, {
-    hostId,
+  }), listed({
     sessionId: sid(5),
     workspaceId,
     workspaceName: "Browser Workspace",
     name: "Old idea",
-    status: "ready",
-    hasAgent: true,
-    shells: [],
-    layout: null,
-    // Every snapshot says when it was sent; the chat's own activity is its last message.
-    updatedAt: new Date().toISOString(),
     lastMessageAt: Math.floor(Date.now() / 1000) - 3 * 7 * 86_400,
-  }, {
-    hostId,
+  }), listed({
     sessionId: sid(4),
     workspaceId: homeWorkspaceId,
     workspaceName: "Home",
     name: "Plan the week",
-    status: "ready",
-    hasAgent: true,
-    shells: [],
-    layout: null,
-    updatedAt: new Date().toISOString(),
-    lastMessageAt: null,
     createdAt: Math.floor(Date.now() / 1000) - 2 * 3_600,
-  }, {
-    hostId,
+  }), listed({
     sessionId: sid(3),
-    workspaceId: null,
-    workspaceName: null,
     name: "Standalone Shell",
     hasAgent: false,
-    shells: [{ shellId: 19 }],
-    layout: { kind: "pane", shellId: 19 },
-    updatedAt: now,
-  }];
+    status: null,
+  })];
+  // Each chat's records in the cloud.
+  const transcripts = new Map([[sid(1), [
+    record(1, { role: "user", content: [{ type: "text", text: "Review the latest changes." }] }),
+    record(2, { role: "assistant", content: [{ type: "toolCall", id: "call-1", name: "bash", arguments: { command: "git status" } }] }),
+    record(3, { role: "toolResult", toolCallId: "call-1", content: [{ type: "text", text: "On branch main" }] }),
+    record(4, { role: "assistant", content: [{ type: "text", text: "I’ll take a **look**.\n\n## What changed\n\n- The relay now retries with `backoff`\n- History loads newest first\n  - a page at a time\n\n```swift\nlet delay = delays[min(attempt, delays.count - 1)]\n```\n\n| File | Lines |\n|---|---|\n| relay.rs | +42 |\n| peer.ts | -7 |" }] }),
+  ]]]);
   const sockets = new Set();
   const methods = [];
   const prompts = [];
@@ -172,33 +140,13 @@ test("browser chats with Axo on a Mac: history, live replies, new chats, info, a
       response.end();
       return;
     }
-    if (request.method === "GET" && url.pathname === "/api/v1/account/hosts") {
-      json(response, { hosts: [host(sessions)] }, origin);
-      return;
-    }
-    if (request.method === "GET" && url.pathname === `/api/v1/account/hosts/${hostId}/sessions/${sid(1)}/events`) {
-      // Newest first, as the relay sends them.
-      json(response, {
-        events: [
-          stored(4, "message.end", { message: { role: "assistant", content: [{ type: "text", text: "I’ll take a **look**.\n\n## What changed\n\n- The relay now retries with `backoff`\n- History loads newest first\n  - a page at a time\n\n```swift\nlet delay = delays[min(attempt, delays.count - 1)]\n```\n\n| File | Lines |\n|---|---|\n| relay.rs | +42 |\n| peer.ts | -7 |" }] } }),
-          stored(3, "message.end", { message: { role: "toolResult", toolCallId: "call-1", content: [{ type: "text", text: "On branch main" }] } }),
-          stored(2, "message.end", { message: { role: "assistant", content: [{ type: "toolCall", id: "call-1", name: "bash", arguments: { command: "git status" } }] } }),
-          stored(1, "message.end", { message: { role: "user", content: [{ type: "text", text: "Review the latest changes." }] } }),
-        ],
-        next: null,
-      }, origin);
-      return;
-    }
-    if (request.method === "GET" && /\/sessions\/\d+\/events$/.test(url.pathname)) {
-      json(response, { events: [], next: null }, origin);
-      return;
-    }
     response.statusCode = 404;
     response.end("not found");
   });
   const websocketServer = new WebSocketServer({ noServer: true, maxPayload: 65_536 });
   apiHttp.on("upgrade", (request, socket, head) => {
-    if (request.url !== `/api/v1/account/hosts/${hostId}/client`) {
+    const url = new URL(request.url, "http://127.0.0.1");
+    if (url.pathname !== "/api/v1/account/client" || !/^[A-Za-z0-9_-]{8,64}$/.test(url.searchParams.get("clientId") ?? "")) {
       socket.destroy();
       return;
     }
@@ -209,52 +157,67 @@ test("browser chats with Axo on a Mac: history, live replies, new chats, info, a
   websocketServer.on("connection", (socket) => {
     sockets.add(socket);
     socket.on("close", () => sockets.delete(socket));
+    /** Writes a line of a chat, as Pi would, and sends it to the client. */
+    const write = (sessionId, message) => {
+      const lines = transcripts.get(sessionId) ?? [];
+      const next = record(lines.length + 1, message);
+      transcripts.set(sessionId, [...lines, next]);
+      notify(socket, "axo.client.session.records", { sessionId, epoch: 1, records: [next], cursor: next.cursor });
+    };
+    const status = (sessionId, value) => {
+      const index = sessions.findIndex((session) => session.sessionId === sessionId);
+      sessions[index] = { ...sessions[index], status: value };
+      notify(socket, "axo.client.sessions", { hostId, sessions: [sessions[index]] });
+    };
     socket.on("message", (raw) => {
       const call = JSON.parse(raw.toString());
-      if (!call.method || call.method === "axo.transport.ack") return;
-      methods.push(call.method);
+      if (!call.method || call.method === "axo.client.session.ack" || call.method === "axo.client.session.close") return;
       const reply = (result) => socket.send(JSON.stringify({ jsonrpc: "2.0", id: call.id, result }));
-      if (call.method === "axo.protocol.negotiate") {
-        reply({ protocolVersion: 1, methods: [], deliveryCredits: { frames: 32, bytes: 131072 } });
-      } else if (call.method === "axo.host.subscribe") {
-        reply({ subscriptionId });
-      } else if (call.method === "axo.remote.workspace.list") {
+      if (call.method === "axo.client.hello" || call.method === "axo.client.refresh") {
+        methods.push(call.method);
+        reply({ hosts: [clientHost], sessions });
+        return;
+      }
+      if (call.method === "axo.client.session.open") {
+        methods.push(call.method);
+        const lines = transcripts.get(call.params.sessionId) ?? [];
+        const records = call.params.have ? lines.filter((line) => line.cursor > call.params.have.cursor) : lines.slice(-call.params.window.last);
+        reply({ epoch: lines.length ? 1 : null, records, cursor: lines.length, older: null, progress: [] });
+        return;
+      }
+      if (call.method !== "axo.client.command") {
+        socket.send(JSON.stringify({ jsonrpc: "2.0", id: call.id, error: { code: -32601, message: "unknown method" } }));
+        return;
+      }
+      const { method, params } = call.params;
+      methods.push(method);
+      if (method === "axo.remote.workspace.list") {
         reply({ workspaces: [{ workspaceId: homeWorkspaceId, name: "Home", home: true }, { workspaceId, name: "Browser Workspace" }] });
-      } else if (call.method === "axo.remote.session.create") {
+      } else if (method === "axo.remote.session.create") {
         sessionCreateCount++;
-        assert.equal(call.params.workspaceId, undefined, "a new chat goes to the Mac's Home Workspace");
-        const created = {
-          hostId,
-          sessionId: sid(2),
-          workspaceId: homeWorkspaceId,
-          workspaceName: "Home",
-          name: "Session 2",
-          status: "starting",
-          createdAt: Math.floor(Date.now() / 1000),
-          hasAgent: true,
-          shells: [],
-          layout: null,
-          updatedAt: new Date().toISOString(),
-        };
+        assert.equal(params.workspaceId, undefined, "a new chat goes to the Mac's Home Workspace");
+        const createdAt = Math.floor(Date.now() / 1000);
+        const created = listed({ sessionId: sid(2), workspaceId: homeWorkspaceId, workspaceName: "Home", name: "Session 2", status: "starting", createdAt });
         sessions.push(created);
-        reply({ session: created });
-      } else if (call.method === "axo.remote.session.prompt") {
-        prompts.push({ sessionId: call.params.sessionId, text: call.params.text });
+        reply({ session: { hostId, sessionId: sid(2), workspaceId: homeWorkspaceId, workspaceName: "Home", name: "Session 2", status: "starting", createdAt, hasAgent: true, shells: [], layout: null, updatedAt: new Date().toISOString() } });
+        setTimeout(() => notify(socket, "axo.client.sessions", { hostId, sessions: [created] }), 10);
+      } else if (method === "axo.remote.session.prompt") {
+        prompts.push({ sessionId: params.sessionId, text: params.text });
         reply({ accepted: true });
         // Pi records the message, works, and answers: word by word, then whole.
-        const base = prompts.length * 10;
-        const sessionId = call.params.sessionId;
+        const sessionId = params.sessionId;
         setTimeout(() => {
-          piEvent(socket, sessionId, base + 1, "message.end", { message: { role: "user", content: [{ type: "text", text: call.params.text }] } });
-          piEvent(socket, sessionId, base + 2, "agent.start", {});
-          piEvent(socket, sessionId, base + 3, "message.update", { message: { role: "assistant", content: [{ type: "text", text: "Wor" }] } });
+          write(sessionId, { role: "user", content: [{ type: "text", text: params.text }] });
+          status(sessionId, "working");
+          notify(socket, "axo.client.session.progress", { sessionId, slot: "message", snapshot: { message: { role: "assistant", content: [{ type: "text", text: "Wor" }] } } });
         }, 30);
         setTimeout(() => {
-          piEvent(socket, sessionId, base + 4, "message.end", { message: { role: "assistant", content: [{ type: "text", text: `Done with: ${call.params.text}` }] } });
-          piEvent(socket, sessionId, base + 5, "agent.end", {});
-        }, call.params.text === "Ship it" ? 3_000 : 400);
-      } else if (call.method === "axo.remote.session.key") {
-        keys.push(call.params.key);
+          write(sessionId, { role: "assistant", content: [{ type: "text", text: `Done with: ${params.text}` }] });
+          notify(socket, "axo.client.session.progress", { sessionId, slot: "message", snapshot: null });
+          status(sessionId, "ready");
+        }, params.text === "Ship it" ? 3_000 : 400);
+      } else if (method === "axo.remote.session.key") {
+        keys.push(params.key);
         reply({ accepted: true });
       } else {
         socket.send(JSON.stringify({ jsonrpc: "2.0", id: call.id, error: { code: -32601, message: "unknown method" } }));

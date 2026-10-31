@@ -1,16 +1,28 @@
 import {
-  piEventPageResultSchema,
-  type PiEventPageResult,
+  CLIENT_METHODS,
+  FRAGMENT_METHOD,
+  MemoryPartialStore,
+  clientHelloResultSchema,
+  clientHostsParamsSchema,
+  clientOlderResultSchema,
+  clientOpenResultSchema,
+  clientProgressParamsSchema,
+  clientRecordsParamsSchema,
+  clientResetParamsSchema,
+  clientSessionsParamsSchema,
+  receiveFragment,
+  splitMessage,
+  type ClientHello,
+  type ClientHost,
+  type ClientOpenResult,
+  type ClientRecord,
+  type ClientSession,
+  type ProgressSnapshot,
+  type SessionMetadata,
+  type SessionStatus,
 } from "@axo/protocol";
 import {
-  hostListResultSchema,
-  hostNotificationSchema,
   hostRefSchema,
-  hostSessionsListResultSchema,
-  sessionIdSchema,
-  protocolVersion,
-  hostSubscribeResultSchema,
-  hostUnsubscribeResultSchema,
   remoteSessionCreateResultSchema,
   remoteSessionCloseResultSchema,
   remoteWorkspaceListResultSchema,
@@ -20,15 +32,19 @@ import {
   remoteTerminalInputResultSchema,
   remotePromptResultSchema,
   remoteTerminalResizeResultSchema,
-  type HostEvent,
   type HostMethodParams,
 } from "@axo/protocol/v1";
 import { z } from "zod";
 
-export type Host = z.infer<typeof hostListResultSchema>["hosts"][number];
-export type Session = z.infer<typeof hostSessionsListResultSchema>["sessions"][number];
+/**
+ * The account's client (RFD0018): one WebSocket to the ClientDO at `/api/v1/account/client`. It
+ * lists every host and Session of the account, keeps them current, serves the records of the
+ * Sessions the app opens (acknowledging each batch once it is handled, which is what lets the
+ * next one come), and carries commands to hosts.
+ */
+
 export type HostRef = z.infer<typeof hostRefSchema>;
-export type { HostEvent };
+export type { ClientHello, ClientHost, ClientOpenResult, ClientRecord, ClientSession, ProgressSnapshot, SessionMetadata, SessionStatus };
 
 export class AxoApiError extends Error {
   readonly status: number;
@@ -63,7 +79,38 @@ export interface WebSocketLike {
 }
 
 export type WebSocketFactory = (url: string) => WebSocketLike;
-export type HostEventHandler = (event: HostEvent) => void;
+
+/** What the account's socket tells the app as it happens. */
+export interface AccountEvents {
+  /** The whole host list, whenever any host's presence changes. */
+  hosts?(hosts: ClientHost[]): void;
+  /** Sessions of one host that changed: listed, renamed, moved on, archived. */
+  sessions?(hostId: string, sessions: ClientSession[]): void;
+  /** The next records of an open Session, after `cursor - records.length`. */
+  records?(sessionId: string, epoch: number, records: ClientRecord[]): void;
+  /** A progress slot's newest snapshot, or null when it is cleared. */
+  progress?(sessionId: string, slot: string, snapshot: unknown): void;
+  /** The cloud copy was cut back: drop every record after `keep`; `epoch` follows. */
+  reset?(sessionId: string, epoch: number, keep: number): void;
+  /** The socket ended; open again to go on. */
+  closed?(error: Error): void;
+}
+
+export interface OpenRequest {
+  hostId: string;
+  sessionId: string;
+  /** What the app already holds: only the records after it come. */
+  have?: { epoch: number; cursor: number };
+  /** Without `have`: the last this many records. */
+  window?: { last: number };
+}
+
+export interface OlderPage {
+  epoch: number | null;
+  records: ClientRecord[];
+  /** The `before` of the next older page, or null at the start. */
+  older: number | null;
+}
 
 const OPEN = 1;
 const DEFAULT_TIMEOUT_MS = 10_000;
@@ -86,7 +133,8 @@ const appRemoteResults = {
   "axo.remote.session.key": remotePromptResultSchema,
   "axo.remote.terminal.resize": remoteTerminalResizeResultSchema,
 } as const;
-type AppRemoteMethod = keyof typeof appRemoteResults;
+export type AppRemoteMethod = keyof typeof appRemoteResults;
+export type AppRemoteResult<Method extends AppRemoteMethod> = z.infer<(typeof appRemoteResults)[Method]>;
 
 const replySchema = z.union([
   z.object({ jsonrpc: z.literal("2.0"), id: rpcIdSchema, result: z.unknown() })
@@ -102,20 +150,15 @@ const replySchema = z.union([
     }).strict(),
   }).strict(),
 ]);
+const notificationSchema = z.object({ jsonrpc: z.literal("2.0"), method: z.string(), params: z.unknown() }).strict();
 
 export class RemoteAxoApi {
   readonly baseUrl: URL;
 
-  private readonly fetcher: typeof fetch;
   private readonly makeWebSocket: WebSocketFactory;
 
-  constructor(
-    baseUrl: string | URL,
-    fetcher?: typeof fetch,
-    makeWebSocket: WebSocketFactory = (url) => new WebSocket(url),
-  ) {
+  constructor(baseUrl: string | URL, makeWebSocket: WebSocketFactory = (url) => new WebSocket(url)) {
     this.makeWebSocket = makeWebSocket;
-    this.fetcher = fetcher ?? globalThis.fetch.bind(globalThis);
     this.baseUrl = new URL(baseUrl);
     if (this.baseUrl.protocol !== "https:" && this.baseUrl.protocol !== "http:") {
       throw new TypeError("Axo API URL must use HTTP or HTTPS");
@@ -125,145 +168,46 @@ export class RemoteAxoApi {
     this.baseUrl.hash = "";
   }
 
-  async listHosts(signal?: AbortSignal): Promise<Host[]> {
-    const response = await this.get("/api/v1/account/hosts", signal);
-    return hostListResultSchema.parse(await response.json()).hosts;
-  }
-
-  async listHostSessions(reference: HostRef, signal?: AbortSignal): Promise<Session[]> {
-    const host = hostRefSchema.parse(reference);
-    const query = new URLSearchParams({ hostGeneration: host.hostGeneration });
-    const response = await this.get(
-      `/api/v1/account/hosts/${encodeURIComponent(host.hostId)}/sessions?${query}`,
-      signal,
-    );
-    const result = hostSessionsListResultSchema.parse(await response.json());
-    if (result.host.hostId !== host.hostId || result.host.hostGeneration !== host.hostGeneration) {
-      throw new Error("Axo API returned metadata for a different host generation");
-    }
-    return result.sessions;
-  }
-
-  async listPiEvents(
-    reference: HostRef,
-    sessionId: string,
-    before = 0,
-    limit = 20,
-    signal?: AbortSignal,
-  ): Promise<PiEventPageResult> {
-    const host = hostRefSchema.parse(reference);
-    const session = sessionIdSchema.parse(sessionId);
-    const query = new URLSearchParams({ before: String(before), limit: String(limit) });
-    const response = await this.get(
-      `/api/v1/account/hosts/${encodeURIComponent(host.hostId)}/sessions/${session}/events?${query}`,
-      signal,
-    );
-    return piEventPageResultSchema.parse(await response.json());
-  }
-
-  connectHost(
-    reference: HostRef,
-    onEvent: HostEventHandler,
-    onClose?: (error: Error) => void,
-  ): Promise<HostRelayConnection> {
-    return HostRelayConnection.open(
-      this.makeWebSocket(this.webSocketUrl(reference)),
-      reference,
-      onEvent,
-      onClose,
-    );
-  }
-
-  private async get(path: string, signal?: AbortSignal): Promise<Response> {
-    const url = new URL(path, `${this.baseUrl.href}/`);
-    let response: Response;
-    try {
-      response = await this.fetcher(url, {
-        method: "GET",
-        credentials: "include",
-        cache: "no-store",
-        headers: { Accept: "application/json" },
-        signal,
-      });
-    } catch (error) {
-      if (signal?.aborted) throw error;
-      throw new AxoApiError("Could not reach the Axo API", 0, url.href);
-    }
-    if (!response.ok) {
-      throw new AxoApiError(
-        response.status === 401 || response.status === 403
-          ? "Axo API Access is required or has expired"
-          : `Axo API request failed (${response.status})`,
-        response.status,
-        url.href,
-      );
-    }
-    return response;
-  }
-
-  private webSocketUrl(reference: HostRef): string {
-    const host = hostRefSchema.parse(reference);
-    const url = new URL(
-      `/api/v1/account/hosts/${encodeURIComponent(host.hostId)}/client`,
-      this.baseUrl,
-    );
+  /** Opens the account's socket as `clientId` (one per tab or app instance) and says hello. */
+  connect(clientId: string, events: AccountEvents): Promise<AccountConnection> {
+    const url = new URL(`${this.baseUrl.pathname.replace(/\/$/, "")}/api/v1/account/client`, this.baseUrl);
+    url.searchParams.set("clientId", clientId);
     url.protocol = url.protocol === "https:" ? "wss:" : "ws:";
-    return url.href;
+    return AccountConnection.open(this.makeWebSocket(url.href), clientId, events);
   }
 }
 
-export class HostRelayConnection {
+type Pending = {
+  resolve: (value: unknown) => void;
+  reject: (error: Error) => void;
+  timeout: ReturnType<typeof setTimeout>;
+};
+
+export class AccountConnection {
+  hello!: ClientHello;
+
   private nextId = 1;
-  private readonly pending = new Map<
-    number,
-    {
-      resolve: (value: unknown) => void;
-      reject: (error: Error) => void;
-      timeout: ReturnType<typeof setTimeout>;
-    }
-  >();
+  private readonly pending = new Map<number, Pending>();
+  private readonly partials = new MemoryPartialStore();
   private closedError: Error | null = null;
-  private subscriptionId: string | null = null;
 
   private readonly socket: WebSocketLike;
-  readonly reference: HostRef;
-  private readonly onEvent: HostEventHandler;
-  private readonly onClose?: (error: Error) => void;
+  private readonly events: AccountEvents;
 
-  private constructor(
-    socket: WebSocketLike,
-    reference: HostRef,
-    onEvent: HostEventHandler,
-    onClose?: (error: Error) => void,
-  ) {
+  private constructor(socket: WebSocketLike, events: AccountEvents) {
     this.socket = socket;
-    this.reference = reference;
-    this.onEvent = onEvent;
-    this.onClose = onClose;
+    this.events = events;
     socket.onmessage = (event) => this.receive(event.data);
     socket.onerror = () => this.fail(new Error("Axo API WebSocket failed"));
-    socket.onclose = (event) => {
-      const reason = event.reason || `WebSocket closed (${event.code})`;
-      this.fail(new Error(reason));
-    };
+    socket.onclose = (event) => this.fail(new Error(event.reason || `WebSocket closed (${event.code})`));
   }
 
-  static async open(
-    socket: WebSocketLike,
-    reference: HostRef,
-    onEvent: HostEventHandler,
-    onClose?: (error: Error) => void,
-  ): Promise<HostRelayConnection> {
-    const parsedReference = hostRefSchema.parse(reference);
-    const connection = new HostRelayConnection(socket, parsedReference, onEvent, onClose);
+  static async open(socket: WebSocketLike, clientId: string, events: AccountEvents): Promise<AccountConnection> {
+    const connection = new AccountConnection(socket, events);
     try {
       await connection.waitUntilOpen();
-      await connection.request("axo.protocol.negotiate", { protocolVersion });
-      const response = await connection.request(
-        "axo.host.subscribe",
-        parsedReference,
-      );
-      connection.subscriptionId = hostSubscribeResultSchema.parse(response).subscriptionId;
+      const hello = await connection.request(CLIENT_METHODS.hello, { protocolVersion: 2, clientId });
+      connection.hello = clientHelloResultSchema.parse(hello);
       return connection;
     } catch (error) {
       connection.close();
@@ -271,34 +215,41 @@ export class HostRelayConnection {
     }
   }
 
-  async call<Method extends AppRemoteMethod>(
-    method: Method,
-    params: HostMethodParams<Method>,
-  ): Promise<z.infer<(typeof appRemoteResults)[Method]>> {
-    // The Access-protected Worker validates each v1 request before routing it to Axod.
-    const result = await this.request(method, params);
-    return appRemoteResults[method].parse(result) as z.infer<(typeof appRemoteResults)[Method]>;
-  }
-
   get active(): boolean {
     return !this.closedError && this.socket.readyState === OPEN;
   }
 
-  async unsubscribe(): Promise<void> {
-    if (!this.subscriptionId || !this.active) return;
-    const id = this.subscriptionId;
-    this.subscriptionId = null;
-    try {
-      const result = await this.request("axo.host.unsubscribe", { subscriptionId: id });
-      hostUnsubscribeResultSchema.parse(result);
-    } catch {
-      // Closing the socket also releases the subscription; no command is replayed.
-    }
+  /** Lists the account's hosts and Sessions again now: for a host paired a moment ago. */
+  async refresh(): Promise<ClientHello> {
+    return clientHelloResultSchema.parse(await this.request(CLIENT_METHODS.refresh, {}));
+  }
+
+  /** Opens a Session: the records after `have`, or its last `window`. Newer records follow as `records` events. */
+  async open(request: OpenRequest): Promise<ClientOpenResult> {
+    return clientOpenResultSchema.parse(await this.request(CLIENT_METHODS.open, request));
+  }
+
+  /** Records just before `before`, oldest first. */
+  async older(sessionId: string, before: number, limit: number): Promise<OlderPage> {
+    return clientOlderResultSchema.parse(await this.request(CLIENT_METHODS.older, { sessionId, before, limit }));
+  }
+
+  /** Stops following a Session's records. */
+  closeSession(sessionId: string): void {
+    this.notify(CLIENT_METHODS.close, { sessionId });
+  }
+
+  /** Runs a command on a host; it fails at once when the host is offline, and nothing is queued. */
+  async command<Method extends AppRemoteMethod>(method: Method, params: HostMethodParams<Method>): Promise<AppRemoteResult<Method>> {
+    const target = hostRefSchema.parse((params as { target: unknown }).target);
+    const result = await this.request(CLIENT_METHODS.command, { hostId: target.hostId, method, params });
+    return appRemoteResults[method].parse(result) as AppRemoteResult<Method>;
   }
 
   close(): void {
     if (!this.closedError) this.closedError = new Error("Axo API WebSocket is closed");
     this.rejectPending(this.closedError);
+    this.partials.clear();
     if (this.socket.readyState === OPEN) this.socket.close(1000, "Client closed");
   }
 
@@ -319,7 +270,7 @@ export class HostRelayConnection {
       this.socket.onerror = (event) => {
         clearTimeout(timeout);
         previousError?.(event);
-        reject(new Error("Could not connect to the Axo API; check API Access"));
+        reject(new Error("Could not connect to the Axo API; check your sign-in"));
       };
       const previousClose = this.socket.onclose;
       this.socket.onclose = (event) => {
@@ -341,13 +292,28 @@ export class HostRelayConnection {
       }, DEFAULT_TIMEOUT_MS);
       this.pending.set(id, { resolve, reject, timeout });
       try {
-        this.socket.send(JSON.stringify({ jsonrpc: "2.0", id, method, params }));
+        this.write({ jsonrpc: "2.0", id, method, params });
       } catch (error) {
         clearTimeout(timeout);
         this.pending.delete(id);
         reject(error instanceof Error ? error : new Error("Could not send Axo API request"));
       }
     });
+  }
+
+  private notify(method: string, params: unknown): void {
+    if (!this.active) return;
+    try {
+      this.write({ jsonrpc: "2.0", method, params });
+    } catch {
+      // The socket is ending; its close says so.
+    }
+  }
+
+  private write(message: unknown): void {
+    const frames = splitMessage(JSON.stringify(message), crypto.randomUUID().replaceAll("-", ""));
+    if (!frames) throw new Error("The message is too large to send");
+    for (const frame of frames) this.socket.send(frame);
   }
 
   private receive(raw: unknown): void {
@@ -364,41 +330,61 @@ export class HostRelayConnection {
       this.socket.close(1002, "Invalid JSON");
       return;
     }
-
-    try {
-      const notification = hostNotificationSchema.safeParse(value);
-      if (notification.success) {
-        const { subscriptionId, event } = notification.data.params;
-        if (
-          event.hostId === this.reference.hostId &&
-          event.hostGeneration === this.reference.hostGeneration &&
-          (!this.subscriptionId || subscriptionId === this.subscriptionId)
-        ) {
-          this.onEvent(event);
-        }
-      } else {
-        const response = replySchema.safeParse(value);
-        if (response.success && response.data.id !== null) {
-          const pending = this.pending.get(response.data.id as number);
-          if (pending) {
-            clearTimeout(pending.timeout);
-            this.pending.delete(response.data.id as number);
-            if ("error" in response.data) {
-              pending.reject(new AxoRpcError(response.data.error.message, response.data.error.code));
-            } else {
-              pending.resolve(response.data.result);
-            }
-          }
-        }
+    const notification = notificationSchema.safeParse(value);
+    if (notification.success && notification.data.method === FRAGMENT_METHOD) {
+      const outcome = receiveFragment(this.partials, notification.data.params);
+      if (outcome.status === "invalid") {
+        this.fail(new Error(`Axo API sent an invalid fragment: ${outcome.reason}`));
+        this.socket.close(1008, "Invalid fragment");
+      } else if (outcome.status === "complete") {
+        this.receive(outcome.raw);
       }
-    } finally {
-      // The relay applies bounded delivery credits to replies and event notifications alike.
-      if (this.socket.readyState === OPEN) {
-        this.socket.send(JSON.stringify({
-          jsonrpc: "2.0",
-          method: "axo.transport.ack",
-          params: { frames: 1 },
-        }));
+      return;
+    }
+    if (notification.success) return this.handle(notification.data.method, notification.data.params);
+    const response = replySchema.safeParse(value);
+    if (!response.success || typeof response.data.id !== "number") return;
+    const pending = this.pending.get(response.data.id);
+    if (!pending) return;
+    clearTimeout(pending.timeout);
+    this.pending.delete(response.data.id);
+    if ("error" in response.data) pending.reject(new AxoRpcError(response.data.error.message, response.data.error.code));
+    else pending.resolve(response.data.result);
+  }
+
+  private handle(method: string, params: unknown): void {
+    switch (method) {
+      case CLIENT_METHODS.hosts: {
+        const parsed = clientHostsParamsSchema.safeParse(params);
+        if (parsed.success) this.events.hosts?.(parsed.data.hosts);
+        return;
+      }
+      case CLIENT_METHODS.sessions: {
+        const parsed = clientSessionsParamsSchema.safeParse(params);
+        if (parsed.success) this.events.sessions?.(parsed.data.hostId, parsed.data.sessions);
+        return;
+      }
+      case CLIENT_METHODS.records: {
+        const parsed = clientRecordsParamsSchema.safeParse(params);
+        if (!parsed.success) return;
+        const { sessionId, epoch, records, cursor } = parsed.data;
+        try {
+          this.events.records?.(sessionId, epoch, records);
+        } finally {
+          // The acknowledgement is what lets the next batch come.
+          this.notify(CLIENT_METHODS.ack, { sessionId, cursor });
+        }
+        return;
+      }
+      case CLIENT_METHODS.progress: {
+        const parsed = clientProgressParamsSchema.safeParse(params);
+        if (parsed.success) this.events.progress?.(parsed.data.sessionId, parsed.data.slot, parsed.data.snapshot ?? null);
+        return;
+      }
+      case CLIENT_METHODS.reset: {
+        const parsed = clientResetParamsSchema.safeParse(params);
+        if (parsed.success) this.events.reset?.(parsed.data.sessionId, parsed.data.epoch, parsed.data.keep);
+        return;
       }
     }
   }
@@ -407,7 +393,8 @@ export class HostRelayConnection {
     if (this.closedError) return;
     this.closedError = error;
     this.rejectPending(error);
-    this.onClose?.(error);
+    this.partials.clear();
+    this.events.closed?.(error);
   }
 
   private rejectPending(error: Error): void {

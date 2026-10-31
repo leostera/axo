@@ -1,5 +1,5 @@
 import { useEffect, useMemo, useRef, useState, useSyncExternalStore, type PointerEvent as ReactPointerEvent, type ReactNode } from "react";
-import { RemoteAxoApi, type Host } from "@axo/app";
+import { RemoteAxoApi } from "@axo/app";
 import { hostPairingCreateResultSchema } from "@axo/protocol/v1";
 import { AxoMascot } from "../axo-mascot.tsx";
 import { Conversation } from "./conversation.tsx";
@@ -8,12 +8,11 @@ import { relativeTime } from "./message-views.tsx";
 import { parseRoute, routePath, type ChatRoute } from "./route.ts";
 import {
   chatKey, chatTitle, ChatWorkbench, isChat, lastActivity, recentChatList, shortAge,
-  type ChatBackend, type ChatMenuEntry,
+  type ChatBackend, type ChatMenuEntry, type Host,
 } from "./workbench.ts";
 
 const DEFAULT_API_URL = "https://axo.leostera.dev";
 const apiBaseUrl = import.meta.env.VITE_AXO_API_BASE_URL || DEFAULT_API_URL;
-const HOSTS_REFRESH_MS = 30_000;
 /** While a pairing code is up, how often to look for the Mac that redeems it. */
 const PAIRING_POLL_MS = 3_000;
 /** From here up the layers sit side by side; below, they stack as on the phone. */
@@ -116,14 +115,8 @@ export function ChatApp({ profile, backend, onSignOut, pairingUrl, basePath = "/
   useChatRoute(workbench, basePath, () => setLayer("conversation"));
 
   useEffect(() => {
-    const controller = new AbortController();
-    void workbench.refreshHosts(controller.signal);
-    const timer = window.setInterval(() => void workbench.refreshHosts(), HOSTS_REFRESH_MS);
-    return () => {
-      controller.abort();
-      window.clearInterval(timer);
-      workbench.dispose();
-    };
+    workbench.start();
+    return () => workbench.dispose();
   }, [workbench]);
 
   // ⌘K or ⌘N: a new chat, as on the phone's Chat button.
@@ -388,7 +381,7 @@ function InfoPanel({ workbench, onClose }: { workbench: ChatWorkbench; onClose: 
   const messages = chat?.transcript
     ? `${chat.transcript.messages.length}${chat.history.kind === "loadingOlder" || (chat.history.kind === "loaded" && chat.history.hasOlder) ? "+" : ""}`
     : "Not loaded";
-  const updated = session ? Date.parse(session.updatedAt) : Number.NaN;
+  const updated = session ? lastActivity(session) || Number.NaN : Number.NaN;
   return (
     <aside className="panel info-panel" aria-label="Chat info">
       <header className="layer-bar top panel-header">
@@ -405,7 +398,6 @@ function InfoPanel({ workbench, onClose }: { workbench: ChatWorkbench; onClose: 
             <div><dt>Mac</dt><dd>{host.label}, {host.status === "online" ? "online" : "offline"}</dd></div>
             {session.workspaceName ? <div><dt>Workspace</dt><dd>{session.workspaceName}</dd></div> : null}
             <div><dt>Messages</dt><dd>{messages}</dd></div>
-            <div><dt>Terminals</dt><dd>{session.shells.length}</dd></div>
             {Number.isNaN(updated) ? null : <div><dt>Last active</dt><dd>{relativeTime(updated)}</dd></div>}
             <div><dt>Chat</dt><dd className="mono">{session.sessionId}</dd></div>
           </dl>

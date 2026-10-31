@@ -1,21 +1,29 @@
 import assert from "node:assert/strict";
 import { test } from "node:test";
+import type { AccountEvents, ClientRecord, ClientSession, OpenRequest } from "@axo/app";
 import { inlineSpans, parseMarkdown } from "../src/chat/markdown.ts";
-import { ChatTranscript, type PiEventRecord } from "../src/chat/transcript.ts";
+import { ChatTranscript } from "../src/chat/transcript.ts";
 import { appendTranscript, VoicePrompt, voiceMessages, waveformHeight, type DictationEngine, type HeardText } from "../src/chat/voice.ts";
 import { parseRoute, routePath } from "../src/chat/route.ts";
-import { ChatWorkbench, lastActivity, recentChatList, shortAge, type ChatBackend, type MacConnection } from "../src/chat/workbench.ts";
+import { ChatWorkbench, lastActivity, recentChatList, shortAge, type AccountLink, type ChatBackend, type Session } from "../src/chat/workbench.ts";
 
-const stream = "41c77dd7-f2dc-4e91-b481-1507b62ec118";
 const hostId = "1e1e7f91-3d8f-4f97-8f71-4fc7d53313c6";
 const hostGeneration = "f9c5761c-3b2d-42a8-bb19-9a8c0b8cf230";
 const workspaceId = "04d389d1-9896-420e-9b42-fc7835522937";
+const hash = `sha256:${"0".repeat(64)}`;
 
-function event(sequence: number, name: string, data: unknown): PiEventRecord {
-  return { streamId: stream, sequence, name, data };
+/** A Pi session file line at `cursor`: a message entry. */
+function said(cursor: number, role: string, content: unknown, extra: Record<string, unknown> = {}): ClientRecord {
+  const id = `e${cursor}`;
+  return { cursor, id, format: "pi/3", hash, line: JSON.stringify({ type: "message", id, parentId: cursor > 1 ? `e${cursor - 1}` : null, timestamp: "2026-10-16T12:00:00.000Z", message: { role, content, ...extra } }) };
 }
-function said(sequence: number, role: string, content: unknown, extra: Record<string, unknown> = {}): PiEventRecord {
-  return event(sequence, "message.end", { message: { role, content, ...extra } });
+function other(cursor: number): ClientRecord {
+  return { cursor, id: `e${cursor}`, format: "pi/3", hash, line: JSON.stringify({ type: "model_change", id: `e${cursor}`, parentId: null, provider: "x", modelId: "y" }) };
+}
+function transcriptOf(records: ClientRecord[]): ChatTranscript {
+  const transcript = new ChatTranscript();
+  transcript.append(records);
+  return transcript;
 }
 
 // MARK: - Markdown
@@ -59,14 +67,17 @@ test("bold and italics hold code and links, as replies write them", () => {
 // MARK: - Transcript
 
 test("a tool's result fills in the tool that asked, and is not a message of its own", () => {
-  const transcript = new ChatTranscript();
-  transcript.apply(said(1, "user", "list files"));
-  transcript.apply(said(2, "assistant", [
-    { type: "text", text: "Looking." },
-    { type: "toolCall", id: "call-1", name: "bash", arguments: { command: "ls" } },
-  ]));
-  transcript.apply(said(3, "toolResult", [{ type: "text", text: "README.md" }], { toolCallId: "call-1" }));
+  const transcript = transcriptOf([
+    said(1, "user", "list files"),
+    said(2, "assistant", [
+      { type: "text", text: "Looking." },
+      { type: "toolCall", id: "call-1", name: "bash", arguments: { command: "ls" } },
+    ]),
+    other(3),
+    said(4, "toolResult", [{ type: "text", text: "README.md" }], { toolCallId: "call-1" }),
+  ]);
   assert.deepEqual(transcript.messages.map(message => message.role), ["user", "assistant", "tool"]);
+  assert.deepEqual(transcript.messages.map(message => message.id), ["e1", "e2", "e2#1"]);
   const tool = transcript.messages[2]!.tool!;
   assert.equal(tool.command, "ls");
   assert.equal(tool.status, "completed");
@@ -74,97 +85,107 @@ test("a tool's result fills in the tool that asked, and is not a message of its 
 });
 
 test("a failed tool says so, and a result that came first is used when the call arrives", () => {
-  const transcript = new ChatTranscript();
-  transcript.apply(said(1, "toolResult", "boom", { toolCallId: "call-9", isError: true }));
-  transcript.apply(said(2, "assistant", [{ type: "toolCall", id: "call-9", name: "read", arguments: { path: "a.txt" } }]));
+  const transcript = transcriptOf([
+    said(1, "toolResult", "boom", { toolCallId: "call-9", isError: true }),
+    said(2, "assistant", [{ type: "toolCall", id: "call-9", name: "read", arguments: { path: "a.txt" } }]),
+  ]);
   assert.equal(transcript.messages[0]!.tool!.status, "failed");
   assert.equal(transcript.messages[0]!.tool!.subtitle, "a.txt");
 });
 
-test("replaying an event never repeats a message, and the reply being written goes once it is whole", () => {
+test("records held are never repeated, and the reply being written goes once it is whole", () => {
   const transcript = new ChatTranscript();
-  transcript.apply(event(1, "agent.start", {}));
-  transcript.apply(event(2, "message.update", { message: { role: "assistant", content: [{ type: "text", text: "Hel" }] } }));
+  transcript.settle(true);
+  transcript.progress("message", { message: { role: "assistant", content: [{ type: "text", text: "Hel" }] } });
   assert.equal(transcript.live[0]!.text, "Hel");
-  assert.equal(transcript.working, true);
-  transcript.apply(said(3, "assistant", "Hello"));
-  transcript.apply(said(3, "assistant", "Hello"));
+  transcript.append([said(1, "assistant", "Hello")]);
+  transcript.append([said(1, "assistant", "Hello")]);
   assert.equal(transcript.live.length, 0);
   assert.equal(transcript.messages.length, 1);
-  transcript.apply(event(4, "agent.end", {}));
+  transcript.settle(false);
   assert.equal(transcript.working, false);
 });
 
-test("a question shows until Pi says it is answered", () => {
+test("a running tool shows its output so far, until its result is recorded", () => {
+  const transcript = transcriptOf([said(1, "assistant", [{ type: "toolCall", id: "call-1", name: "bash", arguments: { command: "make" } }])]);
+  transcript.progress("call-1", { toolCallId: "call-1", partialResult: { content: [{ type: "text", text: "building" }] } });
+  assert.equal(transcript.messages[0]!.tool!.output, "building");
+  transcript.append([said(2, "toolResult", "built", { toolCallId: "call-1" })]);
+  assert.deepEqual([transcript.messages[0]!.tool!.status, transcript.messages[0]!.tool!.output], ["completed", "built"]);
+});
+
+test("a question shows until its slot is cleared", () => {
   const transcript = new ChatTranscript();
-  transcript.apply(event(1, "ui.prompt.start", { kind: "confirm", title: "Delete it?" }));
+  transcript.progress("question", { kind: "confirm", title: "Delete it?" });
   assert.deepEqual(transcript.question, { kind: "confirm", title: "Delete it?" });
-  transcript.apply(event(2, "ui.prompt.end", {}));
+  transcript.progress("question", null);
   assert.equal(transcript.question, null);
 });
 
-test("history overlapping what arrived live is merged without repeats, and older pages go first", () => {
-  const live = new ChatTranscript();
-  live.apply(said(3, "user", "third"));
-  live.apply(said(4, "assistant", "fourth"));
-  live.mergeNewest(ChatTranscript.fromHistory([said(2, "assistant", "second"), said(3, "user", "third")]), false);
-  assert.deepEqual(live.messages.map(message => message.text), ["second", "third", "fourth"]);
-  live.prependOlder(ChatTranscript.fromHistory([said(1, "user", "first"), said(2, "assistant", "second")]));
-  assert.deepEqual(live.messages.map(message => message.text), ["first", "second", "third", "fourth"]);
+test("older pages go first, and a cut drops what came after it", () => {
+  const transcript = transcriptOf([said(3, "user", "third"), said(4, "assistant", "fourth")]);
+  transcript.prepend([said(1, "user", "first"), said(2, "assistant", "second"), said(3, "user", "third")]);
+  assert.deepEqual(transcript.messages.map(message => message.text), ["first", "second", "third", "fourth"]);
+  transcript.cut(2);
+  assert.deepEqual(transcript.messages.map(message => message.text), ["first", "second"]);
+  assert.equal(transcript.lastCursor, 2);
 });
 
 test("a picture without its data is named, and one with it is shown", () => {
-  const transcript = new ChatTranscript();
-  transcript.apply(said(1, "user", [{ type: "text", text: "look" }, { type: "image", mimeType: "image/png", data: "iVBORw0KGgo=" }, { type: "image" }]));
+  const transcript = transcriptOf([said(1, "user", [{ type: "text", text: "look" }, { type: "image", mimeType: "image/png", data: "iVBORw0KGgo=" }, { type: "image" }])]);
   const message = transcript.messages[0]!;
   assert.equal(message.text, "look\n[Image attachment]");
   assert.equal(message.images.length, 1);
   assert.match(message.images[0]!.src, /^data:image\/png;base64,/);
 });
 
+test("a line the format does not know, or a format it does not know, shows nothing", () => {
+  const transcript = transcriptOf([
+    { cursor: 1, id: null, format: "pi/3", hash, line: "not json" },
+    { ...said(2, "user", "elsewhere"), format: "other/1" as never },
+    said(3, "user", "here"),
+  ]);
+  assert.deepEqual(transcript.messages.map(message => message.text), ["here"]);
+});
+
 // MARK: - Menu
 
 /** A Session ID for fixture `n`; they sort like the numbers they come from. */
 const sid = (n: number) => `${n.toString(16).padStart(8, "0")}-0000-4000-8000-${n.toString(16).padStart(12, "0")}`;
-function session(n: number, updatedAt: string, workspaceName: string | null = "Axo", extra: Record<string, unknown> = {}) {
-  return { hostId, sessionId: sid(n), workspaceId: workspaceName ? workspaceId : null, workspaceName, name: `Chat ${n}`, hasAgent: true, shells: [], layout: null, updatedAt, ...extra };
+function session(n: number, workspaceName: string | null = "Axo", extra: Partial<Session> = {}): Session {
+  return {
+    hostId, sessionId: sid(n), workspaceId: workspaceName ? workspaceId : null, workspaceName, name: `Chat ${n}`, emoji: null,
+    hasAgent: true, createdAt: null, lastMessageAt: null, archived: false, status: "ready", ...extra,
+  };
 }
-function host(sessions: ReturnType<typeof session>[], status: "online" | "offline" = "online") {
-  return { hostId, hostGeneration, label: "Studio", hostKind: "macos", status, stale: false, lastSeenAt: "2026-10-16T12:00:00.000Z", sessions } as never;
+function host(sessions: Session[], status: "online" | "offline" = "online") {
+  return { hostId, hostGeneration, label: "Studio", status, lastSeenAt: "2026-10-16T12:00:00.000Z", sessions };
 }
 
-// The time every snapshot from one Mac shares: when it was sent, not when a chat was active.
-const sent = "2026-10-27T12:00:00Z";
 const at = (iso: string) => Date.parse(iso) / 1000;
 
-test("a chat's activity is its latest finished message, or its creation, not the snapshot's time", () => {
-  assert.equal(lastActivity(session(1, sent, "Axo", { lastMessageAt: at("2026-10-27T09:00:00Z"), createdAt: at("2026-10-26T00:00:00Z") }) as never),
+test("a chat's activity is its latest finished message, or its creation", () => {
+  assert.equal(lastActivity(session(1, "Axo", { lastMessageAt: at("2026-10-27T09:00:00Z"), createdAt: at("2026-10-26T00:00:00Z") })),
     Date.parse("2026-10-27T09:00:00Z"));
-  assert.equal(lastActivity(session(2, sent, "Axo", { lastMessageAt: null, createdAt: at("2026-10-27T11:00:00Z") }) as never),
+  assert.equal(lastActivity(session(2, "Axo", { createdAt: at("2026-10-27T11:00:00Z") })),
     Date.parse("2026-10-27T11:00:00Z"), "a chat with no messages yet counts from its creation");
-  assert.equal(lastActivity(session(3, sent) as never), 0, "a Mac that reports neither: never the snapshot's time");
+  assert.equal(lastActivity(session(3)), 0);
 });
 
 test("the recent list puts every chat on every Mac in one list, the most recently active first", () => {
-  const other = { ...(host([session(9, sent, "Axo", { lastMessageAt: at("2026-10-27T10:30:00Z") })]) as object), hostId: "11111111-2222-4333-8444-555555555555", label: "Laptop" } as never;
+  const laptop = { ...host([session(9, "Axo", { lastMessageAt: at("2026-10-27T10:30:00Z") })]), hostId: "11111111-2222-4333-8444-555555555555", label: "Laptop" };
   const list = recentChatList([host([
-    session(1, sent, "Axo", { lastMessageAt: at("2026-10-27T08:00:00Z") }),
-    session(2, sent, "Website", { lastMessageAt: at("2026-10-27T11:00:00Z") }),
-    session(3, sent, null, { hasAgent: false, lastMessageAt: at("2026-10-27T11:59:00Z") }),
-    session(4, sent, null, { createdAt: at("2026-10-27T10:00:00Z") }),
-  ]), other]);
-  assert.deepEqual(list.map(entry => entry.session.sessionId), [2, 9, 4, 1].map(sid), "no bare terminals; across Workspaces and Macs");
-});
-
-test("the list does not move when snapshots are sent again, only when a chat is active", () => {
-  const before = recentChatList([host([session(1, sent), session(2, sent), session(3, sent, "Axo", { lastMessageAt: at("2026-10-27T11:00:00Z") })])]);
-  const resent = recentChatList([host([session(1, sent), session(2, "2026-10-27T12:05:00Z"), session(3, sent, "Axo", { lastMessageAt: at("2026-10-27T11:00:00Z") })])]);
-  assert.deepEqual(before.map(entry => entry.session.sessionId), [3, 2, 1].map(sid));
-  assert.deepEqual(resent.map(entry => entry.session.sessionId), [3, 2, 1].map(sid));
+    session(1, "Axo", { lastMessageAt: at("2026-10-27T08:00:00Z") }),
+    session(2, "Website", { lastMessageAt: at("2026-10-27T11:00:00Z") }),
+    session(3, null, { hasAgent: false, lastMessageAt: at("2026-10-27T11:59:00Z") }),
+    session(4, null, { createdAt: at("2026-10-27T10:00:00Z") }),
+    session(5, null, { archived: true, lastMessageAt: at("2026-10-27T11:58:00Z") }),
+  ]), laptop]);
+  assert.deepEqual(list.map(entry => entry.session.sessionId), [2, 9, 4, 1].map(sid), "no bare terminals or archived chats; across Workspaces and Macs");
 });
 
 test("ages are short, as on the Mac", () => {
-  const now = Date.parse(sent);
+  const now = Date.parse("2026-10-27T12:00:00Z");
   assert.deepEqual([30, 300, 3 * 3_600, 2 * 86_400, 4 * 604_800].map(seconds => shortAge(now - seconds * 1000, now)), ["now", "5m", "3h", "2d", "4w"]);
 });
 
@@ -259,82 +280,186 @@ test("voice: the waveform shows quiet speech, stays flat in silence and tops out
 
 // MARK: - Workbench
 
-class FakeMac implements MacConnection {
+function clientSession(n: number, extra: Partial<ClientSession> = {}): ClientSession {
+  const { hostId: _host, sessionId, status, ...metadata } = session(n);
+  return { hostId, sessionId, epoch: 1, head: 0, status, metadata, ...extra };
+}
+
+/** The account's socket, as the ClientDO would answer it. */
+class FakeAccount implements AccountLink {
   active = true;
-  calls: Array<{ method: string; params: Record<string, unknown> }> = [];
+  commands: Array<{ method: string; params: Record<string, unknown> }> = [];
+  opens: OpenRequest[] = [];
+  closed: string[] = [];
   failNext: Error | null = null;
   workspaces = [{ workspaceId, name: "Axo" }];
-  onEvent: ((event: never) => void) | null = null;
+  /** Each Session's records in the cloud. */
+  records = new Map<string, ClientRecord[]>();
+  events: AccountEvents = {};
+  hello = { hosts: [{ hostId, hostGeneration, label: "Studio", hostKind: "macos", online: true, lastSeenAt: "2026-10-16T12:00:00.000Z" }], sessions: [clientSession(1)] };
 
-  async call(method: string, params: Record<string, unknown>): Promise<never> {
-    this.calls.push({ method, params });
+  async refresh() { return this.hello; }
+
+  async open(request: OpenRequest) {
+    this.opens.push(request);
+    const all = this.records.get(request.sessionId) ?? [];
+    const records = request.have ? all.filter(record => record.cursor > request.have!.cursor) : all.slice(-(request.window?.last ?? 20));
+    return { epoch: all.length ? 1 : null, records, cursor: records.at(-1)?.cursor ?? request.have?.cursor ?? 0, older: !request.have && records[0] && records[0].cursor > 1 ? records[0].cursor : null, progress: [] };
+  }
+
+  async older(sessionId: string, before: number, limit: number) {
+    const records = (this.records.get(sessionId) ?? []).filter(record => record.cursor < before).slice(-limit);
+    return { epoch: 1, records, older: records[0] && records[0].cursor > 1 ? records[0].cursor : null };
+  }
+
+  closeSession(sessionId: string) { this.closed.push(sessionId); }
+
+  async command(method: string, params: Record<string, unknown>): Promise<never> {
+    this.commands.push({ method, params });
     if (this.failNext) {
       const error = this.failNext;
       this.failNext = null;
       throw error;
     }
     if (method === "axo.remote.workspace.list") return { workspaces: this.workspaces } as never;
-    if (method === "axo.remote.session.create" || method === "axo.remote.workspace.session.create") return { session: session(7, "2026-10-16T14:00:00Z") } as never;
+    if (method.endsWith("session.create")) return { session: { sessionId: sid(7), name: "Chat 7" } } as never;
     return { accepted: true } as never;
   }
 
-  close(): void { this.active = false; }
+  close() { this.active = false; }
+
+  /** The ClientDO sends the next batch of an open Session. */
+  push(sessionId: string, records: ClientRecord[]) {
+    this.records.set(sessionId, [...(this.records.get(sessionId) ?? []), ...records]);
+    this.events.records?.(sessionId, 1, records);
+  }
 }
 
-async function workbenchWith(sessions = [session(1, "2026-10-16T10:00:00Z")]) {
-  const mac = new FakeMac();
+const tick = () => new Promise(resolve => setTimeout(resolve, 0));
+
+async function workbenchWith(account = new FakeAccount()) {
+  let connects = 0;
   const backend: ChatBackend = {
-    listHosts: async () => [host(sessions)],
-    listPiEvents: async () => ({ events: [], next: null }),
-    connectHost: async (_reference, onEvent) => {
-      mac.onEvent = onEvent as never;
-      return mac;
+    connect: async (_clientId, events) => {
+      connects += 1;
+      account.events = events;
+      account.active = true;
+      return account;
     },
   };
   let id = 0;
-  const workbench = new ChatWorkbench(backend, [1], () => `pending-${++id}`);
-  await workbench.refreshHosts();
-  await new Promise(resolve => setTimeout(resolve, 0));
-  return { workbench, mac };
+  const workbench = new ChatWorkbench(backend, { current: () => "client-test-1", renew: () => "client-test-2" }, [1], () => `pending-${++id}`);
+  workbench.start();
+  await tick();
+  return { workbench, account, connects: () => connects };
 }
 
-test("a new chat's first message starts it in the Mac's Home Workspace and moves the words there", async () => {
-  const { workbench, mac } = await workbenchWith();
-  mac.workspaces = [{ workspaceId, name: "Axo" }, { workspaceId: "8f8f8f8f-0000-4000-8000-000000000000", name: "Home" }];
+test("hello lists every Mac and chat, and opens a Mac", async () => {
+  const { workbench } = await workbenchWith();
   assert.equal(workbench.link, "connected");
+  assert.equal(workbench.hostsPhase, "loaded");
+  assert.equal(workbench.openHostId, hostId);
+  assert.deepEqual(workbench.hosts[0]!.sessions.map(session => session.sessionId), [sid(1)]);
+  workbench.dispose();
+});
+
+test("a chat opens with its newest page, older pages come on request, and new records follow", async () => {
+  const account = new FakeAccount();
+  account.records.set(sid(1), Array.from({ length: 60 }, (_, index) => said(index + 1, index % 2 ? "assistant" : "user", `m${index + 1}`)));
+  const { workbench } = await workbenchWith(account);
+  workbench.selectChat(hostId, sid(1));
+  await tick();
+  const chat = workbench.chat(sid(1));
+  assert.deepEqual(account.opens.at(-1), { hostId, sessionId: sid(1), window: { last: 50 } });
+  assert.deepEqual(chat.history, { kind: "loaded", records: 50, hasOlder: true });
+  await workbench.loadOlderHistory(sid(1));
+  assert.deepEqual(chat.history, { kind: "loaded", records: 60, hasOlder: false });
+  assert.equal(chat.transcript!.messages[0]!.text, "m1");
+  account.push(sid(1), [said(61, "user", "m61")]);
+  assert.equal(chat.transcript!.messages.at(-1)!.text, "m61");
+  workbench.dispose();
+});
+
+test("switching chats closes the one left, and coming back reads only what is new", async () => {
+  const account = new FakeAccount();
+  account.hello.sessions.push(clientSession(2));
+  account.records.set(sid(1), [said(1, "user", "hi")]);
+  const { workbench } = await workbenchWith(account);
+  workbench.selectChat(hostId, sid(1));
+  await tick();
+  workbench.selectChat(hostId, sid(2));
+  await tick();
+  assert.deepEqual(account.closed, [sid(1)]);
+  account.records.set(sid(1), [said(1, "user", "hi"), said(2, "assistant", "hello")]);
+  workbench.selectChat(hostId, sid(1));
+  await tick();
+  assert.deepEqual(account.opens.at(-1)!.have, { epoch: 1, cursor: 1 });
+  assert.deepEqual(workbench.chat(sid(1)).transcript!.messages.map(message => message.text), ["hi", "hello"]);
+  workbench.dispose();
+});
+
+test("a reset drops the records after the cut", async () => {
+  const account = new FakeAccount();
+  account.records.set(sid(1), [said(1, "user", "a"), said(2, "assistant", "b"), said(3, "user", "c")]);
+  const { workbench } = await workbenchWith(account);
+  workbench.selectChat(hostId, sid(1));
+  await tick();
+  account.events.reset?.(sid(1), 2, 1);
+  const chat = workbench.chat(sid(1));
+  assert.deepEqual([chat.epoch, chat.transcript!.messages.map(message => message.text)], [2, ["a"]]);
+  workbench.dispose();
+});
+
+test("status and progress from the socket show whether the agent works and what it writes", async () => {
+  const { workbench, account } = await workbenchWith();
+  workbench.selectChat(hostId, sid(1));
+  await tick();
+  account.events.sessions?.(hostId, [clientSession(1, { status: "working" })]);
+  account.events.progress?.(sid(1), "message", { message: { role: "assistant", content: "Wor" } });
+  const transcript = workbench.chat(sid(1)).transcript!;
+  assert.equal(transcript.working, true);
+  assert.equal(transcript.live[0]!.text, "Wor");
+  account.events.sessions?.(hostId, [clientSession(1, { status: "ready" })]);
+  assert.deepEqual([transcript.working, transcript.live.length], [false, 0]);
+  workbench.dispose();
+});
+
+test("a new chat's first message starts it in the Mac's Home Workspace and moves the words there", async () => {
+  const { workbench, account } = await workbenchWith();
+  account.workspaces = [{ workspaceId, name: "Axo" }, { workspaceId: "8f8f8f8f-0000-4000-8000-000000000000", name: "Home" }];
   workbench.setDraft("Fix the bug");
   assert.deepEqual(await workbench.send(), { kind: "sent" });
   assert.deepEqual(workbench.selection, { kind: "chat", sessionId: sid(7) });
-  const created = mac.calls.filter(call => call.method.endsWith("session.create"));
+  assert.equal(workbench.selectedSession?.name, "Chat 7", "listed at once, before the Mac's own listing");
+  const created = account.commands.filter(call => call.method.endsWith("session.create"));
   assert.deepEqual(created.map(call => call.method), ["axo.remote.session.create"], "however many Workspaces, a new chat goes Home");
-  const prompt = mac.calls.find(call => call.method === "axo.remote.session.prompt");
-  assert.equal(prompt?.params.text, "Fix the bug");
-  assert.equal(prompt?.params.sessionId, sid(7));
+  const prompt = account.commands.find(call => call.method === "axo.remote.session.prompt");
+  assert.deepEqual([prompt?.params.text, prompt?.params.sessionId, prompt?.params.target], ["Fix the bug", sid(7), { hostId, hostGeneration }]);
   assert.equal(workbench.draft(), "");
   assert.equal(workbench.chat(sid(7)).pending[0]?.state, "sent");
   workbench.dispose();
 });
 
 test("a new chat started from a Workspace in the menu starts in that Workspace", async () => {
-  const { workbench, mac } = await workbenchWith();
+  const { workbench, account } = await workbenchWith();
   workbench.newChat(hostId, workspaceId);
   workbench.setDraft("Hello");
   assert.deepEqual(await workbench.send(), { kind: "sent" });
-  const created = mac.calls.filter(call => call.method.endsWith("session.create"));
+  const created = account.commands.filter(call => call.method.endsWith("session.create"));
   assert.deepEqual(created.map(call => [call.method, call.params.workspaceId]), [["axo.remote.workspace.session.create", workspaceId]]);
   workbench.dispose();
 });
 
 test("a refused message comes back to the box; one whose delivery is uncertain stays, marked", async () => {
-  const { workbench, mac } = await workbenchWith();
+  const { workbench, account } = await workbenchWith();
   workbench.selectChat(hostId, sid(1));
   workbench.setDraft("first");
-  mac.failNext = Object.assign(new Error("busy"), { code: -32000 });
+  account.failNext = Object.assign(new Error("Host offline; nothing queued"), { code: -32005 });
   assert.deepEqual(await workbench.send(), { kind: "failed" });
   assert.equal(workbench.draft(), "first");
   assert.equal(workbench.chat(sid(1)).pending.length, 0);
 
-  mac.failNext = new Error("Axo API request timed out: axo.remote.session.prompt");
+  account.failNext = Object.assign(new Error("Outcome unknown; reconcile commandId"), { code: -32004 });
   assert.deepEqual(await workbench.send(), { kind: "uncertain" });
   assert.equal(workbench.draft(), "");
   assert.equal(workbench.chat(sid(1)).pending[0]?.state, "uncertain");
@@ -342,42 +467,43 @@ test("a refused message comes back to the box; one whose delivery is uncertain s
 });
 
 test("a pending message is retired when the agent records it", async () => {
-  const { workbench, mac } = await workbenchWith();
+  const { workbench, account } = await workbenchWith();
   workbench.selectChat(hostId, sid(1));
+  await tick();
   workbench.setDraft("hello there");
   await workbench.send();
   assert.equal(workbench.chat(sid(1)).pending.length, 1);
-  mac.onEvent!({ type: "host.data", hostId, hostGeneration, event: { type: "pi.event", sessionId: sid(1), piSessionId: "p", ...said(1, "user", "hello there") } } as never);
+  account.push(sid(1), [said(1, "user", "hello there")]);
   assert.equal(workbench.chat(sid(1)).pending.length, 0);
   assert.equal(workbench.chat(sid(1)).transcript?.messages[0]?.text, "hello there");
   workbench.dispose();
 });
 
 test("stop presses Escape once, only while the agent works", async () => {
-  const { workbench, mac } = await workbenchWith();
+  const { workbench, account } = await workbenchWith();
   workbench.selectChat(hostId, sid(1));
+  await tick();
   await workbench.stop(sid(1));
-  assert.equal(mac.calls.filter(call => call.method === "axo.remote.session.key").length, 0);
-  mac.onEvent!({ type: "host.data", hostId, hostGeneration, event: { type: "pi.event", sessionId: sid(1), piSessionId: "p", ...event(1, "agent.start", {}) } } as never);
+  assert.equal(account.commands.filter(call => call.method === "axo.remote.session.key").length, 0);
+  account.events.sessions?.(hostId, [clientSession(1, { status: "working" })]);
   await Promise.all([workbench.stop(sid(1)), workbench.stop(sid(1))]);
-  const keys = mac.calls.filter(call => call.method === "axo.remote.session.key");
+  const keys = account.commands.filter(call => call.method === "axo.remote.session.key");
   assert.deepEqual(keys.map(call => call.params.key), ["escape"]);
   workbench.dispose();
 });
 
-test("a lost connection is tried again, and comes back connected", async () => {
-  const { workbench, mac } = await workbenchWith();
-  let connects = 0;
-  (workbench as unknown as { backend: ChatBackend }).backend.connectHost = async () => {
-    connects += 1;
-    mac.active = true;
-    return mac;
-  };
-  mac.active = false;
-  (workbench as unknown as { connectionLost(): void }).connectionLost();
+test("a lost connection is tried again, comes back connected, and reopens the chat from what is held", async () => {
+  const account = new FakeAccount();
+  account.records.set(sid(1), [said(1, "user", "hi")]);
+  const { workbench, connects } = await workbenchWith(account);
+  workbench.selectChat(hostId, sid(1));
+  await tick();
+  account.active = false;
+  account.events.closed?.(new Error("WebSocket closed (1006)"));
   assert.equal(workbench.link, "reconnecting");
   await new Promise(resolve => setTimeout(resolve, 20));
-  assert.equal(connects, 1);
+  assert.equal(connects(), 2);
   assert.equal(workbench.link, "connected");
+  assert.deepEqual(account.opens.at(-1)!.have, { epoch: 1, cursor: 1 });
   workbench.dispose();
 });
