@@ -61,7 +61,7 @@ export const connectionNameSchema = z.string().regex(/^[A-Za-z_][A-Za-z0-9_]{0,6
  * `codemode.apps.<app>.<tool>()`. `apps` is reserved: no connection or Mac takes that name.
  */
 export const APPS_NAMESPACE = "apps";
-export const APPS = ["gmail", "calendar", "drive", "docs", "sheets", "slides", "contacts", "tasks", "meet", "cloud", "hetzner", "chatgpt", "onepassword", "octopus", "wise"] as const;
+export const APPS = ["gmail", "calendar", "drive", "docs", "sheets", "slides", "contacts", "tasks", "meet", "cloud", "hetzner", "chatgpt", "onepassword", "octopus", "wise", "telegram", "kraken"] as const;
 export type AppName = (typeof APPS)[number];
 /** An app's service name, `apps.<app>`. */
 export const appServiceSchema = z.string().regex(/^apps\.[a-z][a-z0-9_]{0,31}$/);

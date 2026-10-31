@@ -1,3 +1,4 @@
+import { createHash, createHmac } from "node:crypto";
 import assert from "node:assert/strict";
 import { test } from "node:test";
 import { connectionSchema } from "@axo/protocol";
@@ -36,7 +37,7 @@ async function refused(promise: Promise<unknown>): Promise<string> {
 test("Hetzner is listed without any client of Axo's, asking for a token the person names, and its tools all need an account", () => {
   const { apps } = fixture();
   const all = apps.list();
-  assert.deepEqual(all.map((c) => c.name), ["apps.hetzner", "apps.chatgpt", "apps.octopus", "apps.wise"], "without a Google client, only apps that need no client of Axo's are listed");
+  assert.deepEqual(all.map((c) => c.name), ["apps.hetzner", "apps.chatgpt", "apps.octopus", "apps.wise", "apps.telegram", "apps.kraken"], "without a Google client, only apps that need no client of Axo's are listed");
   const listed = all[0];
   const parsed = connectionSchema.parse(listed);
   assert.ok(parsed.kind === "app");
@@ -191,4 +192,63 @@ test("Wise is named by the token's email, and reads profiles and balances and pr
   assert.deepEqual(await apps.call("wise", "create_quote", { account: "ada@example.com", profile: 10, sourceCurrency: "EUR", targetCurrency: "GBP", sourceAmount: 100 }),
     { id: "q1", rate: 0.85, sourceCurrency: "EUR", targetCurrency: "GBP", sourceAmount: 100 });
   assert.match(await refused(apps.call("wise", "create_quote", { account: "ada@example.com", profile: 10, sourceCurrency: "EUR", targetCurrency: "GBP" })), /sourceAmount or targetAmount/);
+});
+
+/** A Telegram bot API and Kraken's, which check the token in the path and each request's signature as the services do. */
+function signedServices() {
+  const krakenSecret = Buffer.from("kraken-private-key-of-some-length").toString("base64");
+  const seen: Array<{ url: URL; headers: Headers; body: string }> = [];
+  const nonces: bigint[] = [];
+  const json = (value: unknown, status = 200) => new Response(JSON.stringify(value), { status, headers: { "Content-Type": "application/json" } });
+  const fetcher = (async (input: RequestInfo | URL, init?: RequestInit) => {
+    const request = new Request(input, init);
+    const url = new URL(request.url);
+    const body = request.body ? await request.text() : "";
+    seen.push({ url, headers: request.headers, body });
+    if (url.origin === "https://api.telegram.org") {
+      const [, bot, method] = url.pathname.split("/");
+      if (bot !== "bot123:telegram-token") return json({ ok: false, error_code: 401, description: "Unauthorized" }, 401);
+      if (method === "getMe") return json({ ok: true, result: { id: 123, is_bot: true, username: "AdaBot" } });
+      if (method === "sendMessage") return json({ ok: true, result: { message_id: 7, chat: { id: JSON.parse(body).chat_id }, text: JSON.parse(body).text } });
+      return json({ ok: false, error_code: 400, description: "Bad Request: chat not found" }, 400);
+    }
+    if (url.origin === "https://api.kraken.com") {
+      if (url.pathname.startsWith("/0/public/")) return json({ error: [], result: { XXBTZEUR: { c: ["60000.0", "0.1"] } } });
+      const form = new URLSearchParams(body);
+      const nonce = form.get("nonce") ?? "";
+      const expected = createHmac("sha512", Buffer.from(krakenSecret, "base64"))
+        .update(Buffer.concat([Buffer.from(url.pathname), createHash("sha256").update(nonce + body).digest()])).digest("base64");
+      if (request.headers.get("API-Key") !== "kraken-key" || request.headers.get("API-Sign") !== expected) return json({ error: ["EAPI:Invalid key"], result: {} });
+      if (nonces.length && BigInt(nonce) <= nonces.at(-1)!) return json({ error: ["EAPI:Invalid nonce"], result: {} });
+      nonces.push(BigInt(nonce));
+      if (url.pathname === "/0/private/BalanceEx") return json({ error: [], result: { ZEUR: { balance: "120.50" } } });
+      if (url.pathname === "/0/private/AddOrder") return json({ error: [], result: { descr: { order: `${form.get("type")} ${form.get("volume")} ${form.get("pair")} @ ${form.get("ordertype")}` }, validate: form.get("validate") } });
+    }
+    return json({ error: ["not found"] }, 404);
+  }) as typeof fetch;
+  const apps = new AppConnections({ sql: sqlStorage(), secret: "test-secret-of-at-least-thirty-two-bytes", accountId: crypto.randomUUID(), google: null, fetcher, waitUntil: () => undefined });
+  return { apps, seen, krakenSecret };
+}
+
+test("a Telegram bot's token goes in the path, only to Telegram, and the bot is named by its username", async () => {
+  const { apps, seen } = signedServices();
+  assert.match(await refused(apps.addToken("telegram", null, { token: "123:wrong" })), /Telegram did not accept this token/);
+  assert.deepEqual(await apps.addToken("telegram", null, { token: "123:telegram-token" }), { name: "apps.telegram", account: "@adabot" });
+  assert.deepEqual(await apps.call("telegram", "send_message", { account: "@adabot", chat: 42, text: "hello" }), { message_id: 7, chat: { id: 42 }, text: "hello" });
+  assert.match(await refused(apps.call("telegram", "get_chat", { account: "@adabot", chat: 43 })), /chat not found/);
+  // Every call, the generic `request` too, has the token put in front of its path.
+  assert.equal(seen.at(-1)!.url.pathname, "/bot123:telegram-token/getChat");
+  assert.ok(seen.every((s) => s.url.origin === "https://api.telegram.org" && s.headers.get("Authorization") === null));
+});
+
+test("Kraken signs every private call with an increasing nonce, and checks the key before keeping it", async () => {
+  const { apps, krakenSecret } = signedServices();
+  assert.match(await refused(apps.addToken("kraken", "main", { key: "kraken-key", secret: Buffer.from("wrong").toString("base64") })), /Kraken did not accept this token: Kraken: EAPI:Invalid key/);
+  assert.match(await refused(apps.addToken("kraken", null, { key: "kraken-key", secret: krakenSecret })), /Name this account/);
+  assert.deepEqual(await apps.addToken("kraken", "Main", { key: "kraken-key", secret: krakenSecret }), { name: "apps.kraken", account: "main" });
+  assert.deepEqual(await apps.call("kraken", "get_balance", { account: "main" }), { ZEUR: { balance: "120.50" } });
+  assert.deepEqual(await apps.call("kraken", "get_balance", { account: "main" }), { ZEUR: { balance: "120.50" } }, "a second call's nonce is larger");
+  assert.deepEqual(await apps.call("kraken", "add_order", { account: "main", pair: "XBTEUR", side: "buy", type: "market", volume: "0.001", validate: true }),
+    { descr: { order: "buy 0.001 XBTEUR @ market" }, validate: "true" });
+  assert.deepEqual(await apps.call("kraken", "get_ticker", { account: "main", pairs: ["XBTEUR"] }), { XXBTZEUR: { c: ["60000.0", "0.1"] } });
 });

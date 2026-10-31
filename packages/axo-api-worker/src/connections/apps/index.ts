@@ -3,7 +3,7 @@ import { APP_ACCOUNTS_MAX, APPS, type AppAccount, type AppName, type AppSignIn, 
 import { seal, unseal } from "../../auth/crypto";
 import { GrantRefused } from "../oauth";
 import { FLOW_LIFETIME_MS, startUrl } from "../third-party";
-import { allowedUrl, ProviderError, ProviderOutcomeUnknown, type AppDefinition, type AppTool, type DeviceApp, type MacApp, type MacShell, type OAuthApp, type ProviderApi, type ProviderRequest, type TokenApp } from "./app";
+import { allowedUrl, ProviderError, ProviderOutcomeUnknown, type AppDefinition, type AppTool, type Authorized, type DeviceApp, type MacApp, type OutgoingRequest, type MacShell, type OAuthApp, type ProviderApi, type ProviderRequest, type TokenApp } from "./app";
 import { calendar } from "./calendar";
 import { chatgpt } from "./chatgpt";
 import { cloud } from "./cloud";
@@ -12,6 +12,7 @@ import { docs } from "./docs";
 import { drive } from "./drive";
 import { gmail } from "./gmail";
 import { hetzner } from "./hetzner";
+import { kraken } from "./kraken";
 import { meet } from "./meet";
 import { octopus } from "./octopus";
 import { onepassword } from "./onepassword";
@@ -28,6 +29,7 @@ import { requestTool } from "./request";
 import { sheets } from "./sheets";
 import { slides } from "./slides";
 import { tasks } from "./tasks";
+import { telegram } from "./telegram";
 import { wise } from "./wise";
 import {
   googleAuthorizationUrl,
@@ -51,7 +53,7 @@ import {
  * generation, and a renewal lands only on the generation it renewed.
  */
 
-export const APP_DEFINITIONS: Record<AppName, AppDefinition> = { gmail, calendar, drive, docs, sheets, slides, contacts, tasks, meet, cloud, hetzner, chatgpt, onepassword, octopus, wise };
+export const APP_DEFINITIONS: Record<AppName, AppDefinition> = { gmail, calendar, drive, docs, sheets, slides, contacts, tasks, meet, cloud, hetzner, chatgpt, onepassword, octopus, wise, telegram, kraken };
 
 /** Where a person adds an account to an app, or signs in to one again. */
 export function appPage(app: AppName): string {
@@ -381,7 +383,7 @@ export class AppConnections {
     if (definition.token.named && !named) throw new AppAccountRefused("Name this account, such as \"personal\"");
     let identified: string | null;
     try {
-      identified = await definition.token.identify(this.api(definition, CHECK_TOOL, definition.token.authorize(credential.fields), named ?? ""), credential.fields);
+      identified = await definition.token.identify(this.api(definition, CHECK_TOOL, (request) => definition.token.authorize(credential.fields, request), named ?? ""), credential.fields);
     } catch (error) {
       if (error instanceof Unauthorized) throw new AppAccountRefused(`${definition.title} did not accept this token`);
       if (error instanceof ProviderError) throw new AppAccountRefused(`${definition.title} did not accept this token: ${error.message}`.slice(0, 300));
@@ -425,7 +427,7 @@ export class AppConnections {
       if (!grant || !grantFits(definition, grant))
         throw new Error(`${account} needs sign-in: ${await this.signInLink(app)}`);
       try {
-        return await tool.run(this.api(definition, tool, authorization(grant), account), rest);
+        return await tool.run(this.api(definition, tool, () => ({ headers: authorization(grant) }), account), rest);
       } catch (error) {
         if (!(error instanceof Unauthorized)) throw error;
         if (attempt > 0) {
@@ -458,7 +460,7 @@ export class AppConnections {
     const credential = row?.grant_sealed ? await this.unsealToken(row.grant_sealed) : null;
     if (!row || !credential) throw new Error(`${account}'s token needs adding again at ${appPage(definition.name)}`);
     try {
-      return await tool.run(this.api(definition, tool, definition.token.authorize(credential.fields), account), input);
+      return await tool.run(this.api(definition, tool, (request) => definition.token.authorize(credential.fields, request), account), input);
     } catch (error) {
       if (!(error instanceof Unauthorized)) throw error;
       this.dropGrant(definition.name, account, row.grant_generation, `${definition.title} refused the token`);
@@ -466,10 +468,9 @@ export class AppConnections {
     }
   }
 
-  /** The provider's API with `auth`, the headers that carry the credential, on every request. */
-  private api(definition: OAuthApp | TokenApp | DeviceApp, tool: AppTool, auth: Record<string, string>, account: string): ProviderApi {
+  /** The provider's API, with `authorize` putting the credential on every request. */
+  private api(definition: OAuthApp | TokenApp | DeviceApp, tool: AppTool, authorize: (request: OutgoingRequest) => Authorized | Promise<Authorized>, account: string): ProviderApi {
     const fetcher = this.deps.fetcher;
-    const authNames = new Set(Object.keys(auth).map((name) => name.toLowerCase()));
     const send = async (method: string, path: string, options: ProviderRequest = {}): Promise<Response> => {
       let url: URL;
       try {
@@ -486,19 +487,23 @@ export class AppConnections {
       // Only a write that is not safe to repeat can leave its outcome unknown; a failed read ran nothing that matters.
       const risky = method !== "GET" && !tool.idempotent;
       const body = options.raw ?? (options.body === undefined ? undefined : { contentType: "application/json", data: JSON.stringify(options.body) });
+      const auth = await authorize({ method, url, body: body?.data, contentType: body?.contentType ?? null });
+      // The credential's URL must still be the app's own; no header of a call's own may stand in for the credential's.
+      const target = auth.url ?? url;
+      if (!allowedUrl(definition, target)) throw new ProviderError(0, `${definition.title} calls only reach ${definition.hosts.join(", ")}`);
+      const authNames = new Set(Object.keys(auth.headers).map((name) => name.toLowerCase()));
       let response: Response;
       try {
-        // No header of a call's own may stand in for the credential's.
         const own = Object.entries(options.headers ?? {}).filter(([name]) => !authNames.has(name.toLowerCase()) && name.toLowerCase() !== "authorization");
-        response = await fetcher(url, {
+        response = await fetcher(target, {
           method,
           headers: {
             ...Object.fromEntries(own),
             Accept: options.accept ?? "application/json",
             ...(body ? { "Content-Type": body.contentType } : {}),
-            ...auth,
+            ...auth.headers,
           },
-          body: body?.data,
+          body: auth.body ?? body?.data,
           redirect: "manual",
           signal: AbortSignal.timeout(Math.min(options.timeoutMs ?? REQUEST_TIMEOUT_MS, MAX_REQUEST_TIMEOUT_MS)),
         });
@@ -686,11 +691,18 @@ function inputOf(tool: AppTool): z.ZodObject {
   return z.object({ account: accountInput }).extend(tool.input.shape).strict();
 }
 
-/** Google's error answer, `{ error: { message } }`, as one short line. */
+/**
+ * A service's error answer as one short line: Google's `{ error: { message } }`, and the common
+ * others (`{ message }`, `{ description }` as Telegram's, `{ error: "..." }`, `{ detail }`).
+ */
 function providerMessage(text: string): string | null {
   try {
-    const message = (JSON.parse(text) as { error?: { message?: unknown } }).error?.message;
-    return typeof message === "string" ? message.replace(/\s+/g, " ").slice(0, 300) : null;
+    const answer = JSON.parse(text) as { error?: unknown; message?: unknown; description?: unknown; detail?: unknown; errors?: unknown };
+    const nested = typeof answer.error === "object" && answer.error ? (answer.error as { message?: unknown }).message : undefined;
+    const first = Array.isArray(answer.errors) ? (answer.errors[0] as { message?: unknown } | string | undefined) : undefined;
+    const message = [nested, answer.message, answer.description, typeof answer.error === "string" ? answer.error : undefined, answer.detail, typeof first === "string" ? first : first?.message]
+      .find((m): m is string => typeof m === "string" && m.length > 0);
+    return message ? message.replace(/\s+/g, " ").slice(0, 300) : null;
   } catch {
     return null;
   }

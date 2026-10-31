@@ -200,7 +200,7 @@ test("apps is a reserved name, and a deployment without a Google client lists no
   t.after(() => daemon.close());
   const listed = (await daemon.call("axo.connections.list", { sessionId: crypto.randomUUID() })) as Reply;
   // Token apps need no client of Axo's: the person brings the token.
-  assert.deepEqual(result(listed).connections.map((c: { name: string }) => c.name), ["studio", "apps.hetzner", "apps.chatgpt", "apps.onepassword", "apps.octopus", "apps.wise"]);
+  assert.deepEqual(result(listed).connections.map((c: { name: string }) => c.name), ["studio", "apps.hetzner", "apps.chatgpt", "apps.onepassword", "apps.octopus", "apps.wise", "apps.telegram", "apps.kraken"]);
 });
 
 test("several Google accounts sign in to Gmail; each call acts as the account it names, and no call guesses one", async (t) => {
@@ -278,7 +278,7 @@ test("every Workspace app is listed, signs in with full access to its own servic
   const listed = result(await call("axo.connections.list")).connections.filter((c: { kind: string }) => c.kind === "app");
   assert.deepEqual(listed.map((c: { name: string; accounts: unknown[] }) => [c.name, c.accounts.length]), [
     ["apps.gmail", 1], ["apps.calendar", 0], ["apps.drive", 0], ["apps.docs", 0], ["apps.sheets", 0], ["apps.slides", 0],
-    ["apps.contacts", 0], ["apps.tasks", 0], ["apps.meet", 0], ["apps.cloud", 0], ["apps.hetzner", 0], ["apps.chatgpt", 0], ["apps.onepassword", 1], ["apps.octopus", 0], ["apps.wise", 0],
+    ["apps.contacts", 0], ["apps.tasks", 0], ["apps.meet", 0], ["apps.cloud", 0], ["apps.hetzner", 0], ["apps.chatgpt", 0], ["apps.onepassword", 1], ["apps.octopus", 0], ["apps.wise", 0], ["apps.telegram", 0], ["apps.kraken", 0],
   ]);
   const scopes: Record<string, string> = {};
   for (const app of ["apps.gmail", "apps.calendar", "apps.drive", "apps.docs", "apps.sheets", "apps.slides", "apps.contacts", "apps.tasks", "apps.meet", "apps.cloud"]) {

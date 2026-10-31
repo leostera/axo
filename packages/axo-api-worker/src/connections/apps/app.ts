@@ -103,6 +103,11 @@ export type OAuthApp = HttpApp & {
   requiredScopes: readonly string[];
 };
 
+/** A request as it is about to go out, for a credential to be put on it. */
+export type OutgoingRequest = { method: string; url: URL; body: string | Uint8Array<ArrayBuffer> | undefined; contentType: string | null };
+/** The credential's part of a request: headers no call may set itself, and a replaced URL or body. */
+export type Authorized = { headers: Record<string, string>; url?: URL; body?: string };
+
 /** What the person pastes to add an account to a token app, and how it goes on each request. */
 export type TokenSignIn = {
   /** The service's page where the person creates the token. */
@@ -110,8 +115,11 @@ export type TokenSignIn = {
   fields: readonly AppTokenField[];
   /** Whether the person names each account, because the service has no name for it (a Hetzner project token). */
   named: boolean;
-  /** The headers that carry the credential on one request. */
-  authorize(credential: Readonly<Record<string, string>>): Record<string, string>;
+  /**
+   * Puts the credential on one request: its headers, or for a service that wants it elsewhere
+   * (Telegram's in the path) or signs each request (Kraken), a changed URL or body too.
+   */
+  authorize(credential: Readonly<Record<string, string>>, request: OutgoingRequest): Authorized | Promise<Authorized>;
   /**
    * Checks the credential with one read call before it is stored, and returns the service's
    * name for the account (an email, a login), or null when the person names it. Throws a
