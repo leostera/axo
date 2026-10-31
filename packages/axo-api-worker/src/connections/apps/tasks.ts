@@ -128,6 +128,7 @@ export const tasks: AppDefinition = {
     "Add, change, complete and delete tasks and lists",
   ],
   provider: "google",
+  category: "productivity",
   scopes: ["openid", "email", TASKS_SCOPE],
   requiredScopes: [TASKS_SCOPE],
   apiOrigin: "https://tasks.googleapis.com",

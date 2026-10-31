@@ -185,6 +185,11 @@ export class AccountConnections {
     return this.log.read(limit, before, service);
   }
 
+  /** Replays the call log's hash chain, and checks the log against it. */
+  verifyLog() {
+    return this.log.verify();
+  }
+
   async list(): Promise<ConnectionsResult<typeof CONNECTIONS_METHODS.list>> {
     const named = this.named();
     const connections = await Promise.all(named.map(async ({ name, host }): Promise<Connection> => {
@@ -271,15 +276,15 @@ export class AccountConnections {
       }
       if ("error" in outcome) {
         const unknown = outcome.error.code === CONNECTIONS_ERRORS.outcomeUnknown;
-        this.log.finish(callId, unknown ? "unknown" : "error", outcome.error.message);
+        await this.log.finish(callId, unknown ? "unknown" : "error", outcome.error.message);
         throw new Error(`${service}: ${outcome.error.message}`);
       }
       const result = bashResultSchema.safeParse(outcome.result);
       if (!result.success) {
-        this.log.finish(callId, "unknown", "the Mac's reply was not a bash result");
+        await this.log.finish(callId, "unknown", "the Mac's reply was not a bash result");
         throw new Error(`${service}: the Mac's reply was not a bash result; the command may have run`);
       }
-      this.log.finish(callId, "ok", null);
+      await this.log.finish(callId, "ok", null);
       return result.data satisfies BashResult;
     };
   }
@@ -291,11 +296,11 @@ export class AccountConnections {
     await this.log.start({ callId, sessionId: from.sessionId, hostId: from.hostId, service, tool, targetHostId: null, input });
     try {
       const output = await this.apps.call(app, tool, input);
-      this.log.finish(callId, "ok", null);
+      await this.log.finish(callId, "ok", null);
       return output;
     } catch (error) {
       const message = error instanceof Error ? error.message : String(error);
-      this.log.finish(callId, error instanceof ProviderOutcomeUnknown ? "unknown" : "error", message);
+      await this.log.finish(callId, error instanceof ProviderOutcomeUnknown ? "unknown" : "error", message);
       throw new Error(`${service}.${tool}: ${message}`);
     }
   }
@@ -306,11 +311,11 @@ export class AccountConnections {
     await this.log.start({ callId, sessionId: from.sessionId, hostId: from.hostId, service, tool, targetHostId: null, input });
     try {
       const output = await this.thirdParty.call(service, tool, input);
-      this.log.finish(callId, "ok", null);
+      await this.log.finish(callId, "ok", null);
       return output;
     } catch (error) {
       const message = error instanceof Error ? error.message : String(error);
-      this.log.finish(callId, error instanceof McpOutcomeUnknown ? "unknown" : "error", message);
+      await this.log.finish(callId, error instanceof McpOutcomeUnknown ? "unknown" : "error", message);
       throw new Error(`${service}.${tool}: ${message}`);
     }
   }

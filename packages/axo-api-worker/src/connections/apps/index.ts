@@ -38,6 +38,8 @@ import {
 
 export const APP_DEFINITIONS: Record<AppName, AppDefinition> = { gmail, calendar, drive, docs, sheets, slides, contacts, tasks, meet, cloud };
 
+const PROVIDER_TITLES: Record<AppDefinition["provider"], string> = { google: "Google" };
+
 /** An app's tools: its named ones, then `request`, for any endpoint of its API. */
 const TOOLS = new Map<AppName, readonly AppTool[]>();
 export function toolsOf(app: AppName): readonly AppTool[] {
@@ -126,6 +128,8 @@ export class AppConnections {
         name: `apps.${app}`,
         title: definition.title,
         description: definition.description,
+        provider: PROVIDER_TITLES[definition.provider],
+        category: definition.category,
         permissions: [...definition.permissions],
         state: accounts.some((a) => a.state === "ready") ? "ready" : "needsSignIn",
         accounts,

@@ -138,6 +138,7 @@ export const contacts: AppDefinition = {
     "Look people up in your company's directory",
   ],
   provider: "google",
+  category: "communication",
   scopes: ["openid", "email", ...CONTACTS_SCOPES],
   requiredScopes: CONTACTS_SCOPES,
   apiOrigin: "https://people.googleapis.com",

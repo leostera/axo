@@ -167,6 +167,7 @@ export const calendar: AppDefinition = {
     "Share calendars and change their settings",
   ],
   provider: "google",
+  category: "productivity",
   scopes: ["openid", "email", CALENDAR_SCOPE],
   requiredScopes: [CALENDAR_SCOPE],
   apiOrigin: "https://www.googleapis.com",

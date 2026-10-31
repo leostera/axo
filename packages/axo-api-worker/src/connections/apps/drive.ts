@@ -234,6 +234,7 @@ export const drive: AppDefinition = {
     "Read and write comments and versions",
   ],
   provider: "google",
+  category: "files",
   scopes: ["openid", "email", DRIVE_SCOPE],
   requiredScopes: [DRIVE_SCOPE],
   apiOrigin: "https://www.googleapis.com",

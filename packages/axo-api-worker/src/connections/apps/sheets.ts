@@ -114,6 +114,7 @@ export const sheets: AppDefinition = {
     "Create spreadsheets, add sheets, format and chart them",
   ],
   provider: "google",
+  category: "files",
   scopes: ["openid", "email", SHEETS_SCOPE],
   requiredScopes: [SHEETS_SCOPE],
   apiOrigin: "https://sheets.googleapis.com",

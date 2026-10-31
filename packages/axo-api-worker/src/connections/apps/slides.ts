@@ -153,6 +153,7 @@ export const slides: AppDefinition = {
     "Insert text, images, shapes and tables",
   ],
   provider: "google",
+  category: "files",
   scopes: ["openid", "email", SLIDES_SCOPE],
   requiredScopes: [SLIDES_SCOPE],
   apiOrigin: "https://slides.googleapis.com",

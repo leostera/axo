@@ -142,6 +142,7 @@ export const meet: AppDefinition = {
     "Read their recordings and transcripts",
   ],
   provider: "google",
+  category: "communication",
   scopes: ["openid", "email", ...MEET_SCOPES],
   requiredScopes: MEET_SCOPES,
   apiOrigin: "https://meet.googleapis.com",

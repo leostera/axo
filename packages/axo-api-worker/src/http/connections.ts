@@ -1,5 +1,6 @@
 import { z } from "zod";
 import { connectionNameSchema, serviceSchema, type CallRecord, type Connection } from "@axo/protocol";
+import type { ChainCheck } from "../connections/call-log";
 import { json, requireAccount, type AuthExports } from "../auth/account-access";
 import { parseAuthConfiguration, type AuthEnvironment } from "../auth/config";
 import { unseal } from "../auth/crypto";
@@ -27,9 +28,10 @@ type ConnectionsStub = {
   openConnectionFlow(nonce: string): Promise<{ authorizeUrl: string; name: string } | null>;
   completeConnectionFlow(nonce: string, code: string): Promise<{ name: string } | { error: string }>;
   connectionsLog(limit?: number, before?: string, service?: string): Promise<{ records: CallRecord[] }>;
+  connectionsLogIntegrity(): Promise<ChainCheck>;
 };
 
-export type ConnectionsRoute = "list" | "add" | "remove" | "client" | "signIn" | "log";
+export type ConnectionsRoute = "list" | "add" | "remove" | "client" | "signIn" | "log" | "integrity";
 
 const addBody = z.object({ name: connectionNameSchema, url: z.url({ protocol: /^https$/ }) }).strict();
 const removeBody = z.object({ account: z.string().min(3).max(320).optional() }).strict();
@@ -48,7 +50,7 @@ export async function serveConnections(
   route: ConnectionsRoute,
   rawName?: string,
 ): Promise<Response> {
-  const reads = route === "list" || route === "log";
+  const reads = route === "list" || route === "log" || route === "integrity";
   if (request.method !== (reads ? "GET" : "POST")) return json({ error: "Method not allowed" }, 405, { Allow: reads ? "GET" : "POST" });
   const caller = await requireAccount(request, env, exports, reads ? "read" : "change");
   if (caller instanceof Response) return caller;
@@ -69,6 +71,9 @@ export async function serveConnections(
         if (service !== null && !serviceSchema.safeParse(service).success) return json({ error: "Invalid service" }, 400);
         return json(plain(await stub.connectionsLog(limit, url.searchParams.get("before") ?? undefined, service ?? undefined)));
       }
+      case "integrity":
+        // The call log's hash chain, replayed: whether anything stored was changed.
+        return json(plain(await stub.connectionsLogIntegrity()));
       case "add": {
         const body = addBody.safeParse(await request.json().catch(() => null));
         if (!body.success) return json({ error: "Expected { name, url } with an https URL" }, 400);

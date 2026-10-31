@@ -102,6 +102,10 @@ export const connectionSchema = z.discriminatedUnion("kind", [
     title: z.string().max(64),
     /** One sentence on what the app is for. */
     description: z.string().max(512),
+    /** Who makes the service, as shown: "Google". */
+    provider: z.string().max(64),
+    /** What kind of app it is, for filtering: "communication", "productivity", "files", "developer", ... */
+    category: z.string().regex(/^[a-z][a-z-]{0,31}$/),
     /** What a signed-in account lets Axo do, in plain words, one per line. */
     permissions: z.array(z.string().max(256)).max(32),
     /** Listed only when this Axo deployment has a client for the app's provider. `ready` once any account is. */

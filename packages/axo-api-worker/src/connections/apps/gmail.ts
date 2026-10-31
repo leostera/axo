@@ -240,6 +240,7 @@ export const gmail: AppDefinition = {
     "Manage labels, filters, forwarding, aliases, signatures and vacation replies",
   ],
   provider: "google",
+  category: "communication",
   scopes: ["openid", "email", ...GMAIL_SCOPES],
   requiredScopes: GMAIL_SCOPES,
   apiOrigin: "https://gmail.googleapis.com",

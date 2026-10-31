@@ -72,7 +72,7 @@ test("Gmail is listed needing sign-in; a call before it hands the agent a sign-i
     "list_filters", "create_filter", "delete_filter", "get_vacation", "set_vacation", "list_send_as", "request"];
   const gmail = listed.connections.find((c) => c.kind === "app");
   assert.deepEqual({ ...gmail, description: undefined, permissions: undefined }, {
-    kind: "app", name: "apps.gmail", title: "Gmail", description: undefined, permissions: undefined, state: "needsSignIn", accounts: [], tools: gmailTools, lastError: null,
+    kind: "app", name: "apps.gmail", title: "Gmail", description: undefined, provider: "Google", category: "communication", permissions: undefined, state: "needsSignIn", accounts: [], tools: gmailTools, lastError: null,
   });
   assert.ok(gmail?.kind === "app" && gmail.description && gmail.permissions.length >= 3, "an app says what it is for and what it may do");
   const tools = result(await call("axo.connections.search", { code: `async () => codemode.tools().filter((t) => t.service === "apps.gmail").map((t) => [t.call, t.inputSchema.required])` })).result;
@@ -509,4 +509,66 @@ test("every app's request tool reaches any endpoint of its own API, and only its
   const tasks = (await log("apps.tasks")).records as Array<{ service: string }>;
   assert.ok(tasks.length >= 1 && tasks.every((r) => r.service === "apps.tasks"));
   assert.deepEqual((await log("apps.gmail")).records, []);
+});
+
+test("the call log is a hash chain: it verifies as written, and an edited, removed or added call breaks it", async (t) => {
+  const { h, session, execute } = await signedIn(t);
+  for (const id of ["m1", "m2"]) await execute(`async () => codemode.apps.gmail.get_message({ account: "ada@example.com", id: "${id}" })`);
+  await execute(`async () => codemode.apps.gmail.get_message({ account: "nobody@example.com", id: "m1" })`).catch(() => undefined);
+  const integrity = async () => (await (await fetch(new URL("api/v1/account/connections/log/integrity", h.url), { headers: session.headers })).json()) as
+    { verified: boolean; events: number; head: string | null; reason: string | null };
+  const clean = await integrity();
+  assert.equal(clean.verified, true, clean.reason ?? "");
+  assert.equal(clean.events, 6, "a start and a finish for each of three calls");
+  assert.match(clean.head!, /^[0-9a-f]{64}$/);
+
+  const { DatabaseSync } = await import("node:sqlite");
+  const { readdir } = await import("node:fs/promises");
+  const { join } = await import("node:path");
+  const tamper = (sql: string) => h.restart(async () => {
+    const files = (await readdir(h.storagePath, { recursive: true })).filter((f) => f.endsWith(".sqlite")).map((f) => join(h.storagePath, f));
+    let touched = 0;
+    for (const file of files) {
+      const db = new DatabaseSync(file);
+      const has = db.prepare("SELECT COUNT(*) AS n FROM sqlite_master WHERE name = 'call_chain'").get() as { n: number };
+      if (has.n) {
+        db.exec(sql);
+        touched++;
+      }
+      db.close();
+    }
+    assert.equal(touched, 1);
+  });
+
+  // Changing what a call did, in the log, no longer matches its finish.
+  await tamper("UPDATE connection_calls SET outcome = 'ok', error = NULL WHERE outcome = 'error'");
+  assert.deepEqual([(await integrity()).verified, (await integrity()).reason?.includes("outcome was changed")], [false, true]);
+  await tamper("UPDATE connection_calls SET outcome = 'error', error = (SELECT json_extract(body, '$.error') FROM call_chain WHERE json_extract(body, '$.outcome') = 'error') WHERE call_id = (SELECT call_id FROM call_chain WHERE json_extract(body, '$.outcome') = 'error')");
+  assert.equal((await integrity()).verified, true, "put back, it verifies again");
+
+  // Rewriting an event's contents breaks its hash; dropping one breaks the sequence.
+  await tamper("UPDATE call_chain SET body = replace(body, '\"tool\":\"get_message\"', '\"tool\":\"get_profile\"') WHERE seq = 3");
+  assert.deepEqual([(await integrity()).verified, (await integrity()).reason], [false, "its contents were changed"]);
+  await tamper("DELETE FROM call_chain WHERE seq = 3");
+  assert.deepEqual([(await integrity()).verified, (await integrity()).reason], [false, "event 3 is missing"]);
+});
+
+test("a call logged while the chain is cut past 30 days still verifies from the anchor", async (t) => {
+  const { h, session, execute } = await signedIn(t);
+  await execute(`async () => codemode.apps.gmail.get_profile({ account: "ada@example.com" })`);
+  const { DatabaseSync } = await import("node:sqlite");
+  const { readdir } = await import("node:fs/promises");
+  const { join } = await import("node:path");
+  await h.restart(async () => {
+    for (const file of (await readdir(h.storagePath, { recursive: true })).filter((f) => f.endsWith(".sqlite")).map((f) => join(h.storagePath, f))) {
+      const db = new DatabaseSync(file);
+      const has = db.prepare("SELECT COUNT(*) AS n FROM sqlite_master WHERE name = 'call_chain'").get() as { n: number };
+      // As if the first call was made 31 days ago: its events' times are part of their hashes, so the chain is rebuilt as it would have been.
+      if (has.n) db.exec("UPDATE connection_calls SET at = at - 31 * 86400000; DELETE FROM call_chain;");
+      db.close();
+    }
+  });
+  await execute(`async () => codemode.apps.gmail.get_profile({ account: "ada@example.com" })`);
+  const check = (await (await fetch(new URL("api/v1/account/connections/log/integrity", h.url), { headers: session.headers })).json()) as { verified: boolean; events: number; reason: string | null };
+  assert.deepEqual([check.verified, check.events], [true, 2], check.reason ?? "");
 });

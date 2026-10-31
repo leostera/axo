@@ -246,6 +246,14 @@
                     "type": "string",
                     "maxLength": 512
                   },
+                  "provider": {
+                    "type": "string",
+                    "maxLength": 64
+                  },
+                  "category": {
+                    "type": "string",
+                    "pattern": "^[a-z][a-z-]{0,31}$"
+                  },
                   "permissions": {
                     "maxItems": 32,
                     "type": "array",
@@ -324,6 +332,8 @@
                   "name",
                   "title",
                   "description",
+                  "provider",
+                  "category",
                   "permissions",
                   "state",
                   "accounts",
@@ -635,6 +645,14 @@
                   "type": "string",
                   "maxLength": 512
                 },
+                "provider": {
+                  "type": "string",
+                  "maxLength": 64
+                },
+                "category": {
+                  "type": "string",
+                  "pattern": "^[a-z][a-z-]{0,31}$"
+                },
                 "permissions": {
                   "maxItems": 32,
                   "type": "array",
@@ -713,6 +731,8 @@
                 "name",
                 "title",
                 "description",
+                "provider",
+                "category",
                 "permissions",
                 "state",
                 "accounts",

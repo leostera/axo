@@ -209,6 +209,7 @@ export const cloud: AppDefinition = {
     "See and change Cloud Run, Compute Engine and every other Cloud service",
   ],
   provider: "google",
+  category: "developer",
   scopes: ["openid", "email", CLOUD_SCOPE],
   requiredScopes: [CLOUD_SCOPE],
   apiOrigin: "https://cloudresourcemanager.googleapis.com",

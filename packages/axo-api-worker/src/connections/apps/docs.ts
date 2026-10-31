@@ -77,6 +77,7 @@ export const docs: AppDefinition = {
     "Create documents and change their text and formatting",
   ],
   provider: "google",
+  category: "files",
   scopes: ["openid", "email", DOCS_SCOPE],
   requiredScopes: [DOCS_SCOPE],
   apiOrigin: "https://docs.googleapis.com",

@@ -54,6 +54,8 @@ export type AppDefinition = {
   /** What a signed-in account lets Axo do, in plain words, shown on its page. */
   permissions: readonly string[];
   provider: "google";
+  /** What kind of app it is, for filtering. */
+  category: "communication" | "productivity" | "files" | "developer";
   /** Asked for at sign-in. */
   scopes: readonly string[];
   /** Without these the grant is useless, and the sign-in fails instead of landing. */

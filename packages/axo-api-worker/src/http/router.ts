@@ -149,6 +149,7 @@ const connectionsRoute = (route: ConnectionsRoute) => (context: Context<Api>) =>
 app.get("/api/v1/account/connections", connectionsRoute("list"));
 app.post("/api/v1/account/connections", connectionsRoute("add"));
 app.get("/api/v1/account/connections/log", connectionsRoute("log"));
+app.get("/api/v1/account/connections/log/integrity", connectionsRoute("integrity"));
 app.post("/api/v1/account/connections/:name/remove", connectionsRoute("remove"));
 app.post("/api/v1/account/connections/:name/client", connectionsRoute("client"));
 app.post("/api/v1/account/connections/:name/sign-in", connectionsRoute("signIn"));

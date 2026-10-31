@@ -6,6 +6,7 @@ import { hostDOName } from "../host-do";
 import { AccountConnections, type CallOutcome, type ConnectionsCall } from "../connections/account";
 import { googleClient } from "../connections/apps/google";
 import type { CallRecord, Connection } from "@axo/protocol";
+import type { ChainCheck } from "../connections/call-log";
 
 import type { AccountProfile } from "./account-access";
 type PairingRow = {
@@ -359,6 +360,10 @@ export class AxoAccountManager extends DurableObject<Env> {
 
   async connectionsLog(limit?: number, before?: string, service?: string): Promise<{ records: CallRecord[] }> {
     return { records: await this.requireConnections().readLog(limit, before, service) };
+  }
+
+  async connectionsLogIntegrity(): Promise<ChainCheck> {
+    return this.requireConnections().verifyLog();
   }
 
   private requireConnections(): AccountConnections {
