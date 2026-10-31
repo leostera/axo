@@ -12,10 +12,12 @@ import driveLogo from "./logos/drive.svg";
 import gmailLogo from "./logos/gmail.svg";
 import hetznerLogo from "./logos/hetzner.svg";
 import meetLogo from "./logos/meet.svg";
+import octopusLogo from "./logos/octopus.svg";
 import onepasswordLogo from "./logos/onepassword.svg";
 import sheetsLogo from "./logos/sheets.svg";
 import slidesLogo from "./logos/slides.svg";
 import tasksLogo from "./logos/tasks.svg";
+import wiseLogo from "./logos/wise.svg";
 
 /**
  * Settings › Apps (RFD0016): what the account's Sessions can use, as pages over the chats, each
@@ -594,9 +596,11 @@ const APP_LOGOS: Record<string, string> = {
   "apps.hetzner": hetznerLogo,
   "apps.chatgpt": chatgptLogo,
   "apps.onepassword": onepasswordLogo,
+  "apps.octopus": octopusLogo,
+  "apps.wise": wiseLogo,
 };
 /** Logos drawn as a full tile of their own, not a mark on white. */
-const FULL_LOGOS = new Set(["apps.hetzner"]);
+const FULL_LOGOS = new Set(["apps.hetzner", "apps.wise"]);
 
 function AppTile({ app, large = false }: { app: string; large?: boolean }) {
   const logo = APP_LOGOS[app];
@@ -630,7 +634,7 @@ function host(url: string): string {
 
 const SERVICE_TITLES: Record<string, string> = {
   "apps.gmail": "Gmail", "apps.calendar": "Calendar", "apps.drive": "Drive", "apps.docs": "Docs", "apps.sheets": "Sheets",
-  "apps.slides": "Slides", "apps.contacts": "Contacts", "apps.tasks": "Tasks", "apps.meet": "Meet", "apps.cloud": "Google Cloud", "apps.hetzner": "Hetzner", "apps.chatgpt": "ChatGPT", "apps.onepassword": "1Password",
+  "apps.slides": "Slides", "apps.contacts": "Contacts", "apps.tasks": "Tasks", "apps.meet": "Meet", "apps.cloud": "Google Cloud", "apps.hetzner": "Hetzner", "apps.chatgpt": "ChatGPT", "apps.onepassword": "1Password", "apps.octopus": "Octopus Energy", "apps.wise": "Wise",
 };
 
 /** "Search messages", or with its app or server first: "Gmail · Search messages". */
