@@ -82,7 +82,7 @@ Connections require a paired Mac. On an unpaired Mac, or while the relay is down
 
 When a third-party MCP server requires OAuth, the account's Durable Object is the OAuth client. It discovers the server's authorization server from its protected resource metadata and registers a client automatically when the server supports dynamic client registration. When it does not, the person adding the connection enters a client ID and, if the provider requires one, a client secret for an OAuth application they registered with the provider. The client secret is encrypted with the account's credential key and never returned by any API.
 
-Every third-party sign-in returns to one fixed callback, `https://axo.leostera.dev/api/v1/connections/oauth/callback`, the only redirect URI a provider ever needs. The flow reuses RFD0013's construction: the PKCE verifier, a nonce, the account and the connection are sealed into `state`, and the callback must also present the flow cookie. A completed sign-in stores the grant on the connection; the Durable Object refreshes it before expiry and marks the connection as needing sign-in when refresh fails.
+Every third-party sign-in returns to one fixed callback, `https://axo.leostera.dev/api/v1/connections/oauth/callback`, the only redirect URI a provider ever needs. A sign-in link (what `connections_add` returns, or the Connections page's Sign in button) points at Axo's own start page, `/api/v1/connections/oauth/start?flow=<nonce>`, never at the provider: it works once, within ten minutes, and only in a browser signed in to the account that owns the connection, so a link passed to someone else does nothing. The start page sets a flow cookie and sends the browser to the provider; the PKCE verifier stays in the account's Durable Object, and the account and nonce are sealed into `state`. The callback accepts the provider's answer only from a browser signed in to that account that presents the flow cookie, and redeems the code once. A sign-in completed this way lands on the Connections page (`/app/connections`). A completed sign-in stores the grant on the connection; the Durable Object refreshes it before expiry and marks the connection as needing sign-in when refresh fails.
 
 Each stored grant carries a generation that goes up with every completed sign-in, and every refresh names the generation it renews. A refresh answer or failure for an older generation is ignored: two quick sign-ins and a refresh can otherwise interleave so that the rejection of the first grant's refresh drops the second, newer grant (the model found this). A refresh that gets no answer drops the grant, because a rotated refresh token may already be spent.
 
@@ -119,7 +119,7 @@ Exceeding a limit fails the call with an error that names the limit. Values are 
 
 [`specs/tool-lists.ts`](../../specs/tool-lists.ts) models tool-list sync: searches never wait on a server, a list not marked stale matches the server unless a change went unannounced, and a refresh in flight always ends.
 
-The host-connection path of `specs/connections.ts` points at its code (sources, locked in `feynman.lock`); third-party connections, sign-in and tool lists are still designs. Run them with `npx feynman check`.
+The specs point at their code (sources, locked in `feynman.lock`): the host-connection path of `specs/connections.ts`, and the sign-in and tool-list specs. Third-party calls in `specs/connections.ts` and the Linear stand-ins are model only. Run them with `npx feynman check`.
 
 ### Invariants
 

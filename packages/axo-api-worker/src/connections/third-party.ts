@@ -45,6 +45,9 @@ type Row = {
   needs_sign_in: number;
 };
 
+/** Where to send a browser that opened a sign-in link, and for which connection. */
+export type OpenedFlow = { authorizeUrl: string; name: string };
+
 type StoredTool = { name: string; upstream: string; title: string; description: string; inputSchema: Record<string, unknown> };
 
 export type ThirdPartyDeps = {
@@ -178,7 +181,7 @@ export class ThirdPartyConnections {
    * The browser opened a sign-in link: returns where to send it, once. The PKCE verifier stays
    * here; only its challenge leaves.
    */
-  async openFlow(nonce: string): Promise<{ authorizeUrl: string; name: string } | null> {
+  async openFlow(nonce: string): Promise<OpenedFlow | null> {
     const flow = this.flow(nonce);
     if (!flow || flow.opened) return null;
     this.deps.sql.exec("UPDATE connection_flows SET opened = 1 WHERE nonce = ?", nonce);
