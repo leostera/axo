@@ -31,8 +31,9 @@ pub enum Priority {
 
 /// Ephemeral messages kept waiting at most; older ones are dropped first.
 const MAX_EPHEMERAL_QUEUED: usize = 32;
-/// Bytes queued across classes before a send is refused.
-const MAX_QUEUED_BYTES: usize = 16 * 1_048_576;
+/// Bytes queued across classes before a send is refused: room for a largest message (a 12 MiB
+/// Pi line, as a 16 MiB append) with others still queued behind it.
+const MAX_QUEUED_BYTES: usize = 3 * fragments::MESSAGE_BYTES;
 /// Frames the relay loop sends per turn; it turns about every 20 ms, so this stays well under the
 /// cloud's 600 inbound frames a second.
 pub(crate) const FRAMES_PER_TURN: usize = 8;
