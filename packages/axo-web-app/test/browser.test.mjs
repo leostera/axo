@@ -117,6 +117,7 @@ test("browser chats with Axo on a Mac: history, live replies, new chats, info, a
     { kind: "host", name: "browser_fixture_mac", hostId, state: "online" },
     { kind: "thirdParty", name: "linear", url: "https://mcp.linear.app/mcp", state: "ready", tools: 23, syncedAt: now, lastError: null },
     { kind: "thirdParty", name: "notion", url: "https://mcp.notion.com/mcp", state: "needsSignIn", tools: 0, syncedAt: null, lastError: "the grant expired and cannot be renewed" },
+    { kind: "app", name: "apps.gmail", title: "Gmail", state: "ready", account: "ada@example.com", tools: 9, lastError: null },
   ];
   const callLog = [
     { callId: "c-2", at: now, sessionId: sid(1), hostId, service: "linear", tool: "list_issues", targetHostId: null, durationMs: 320, outcome: "ok", error: null, input: { team: "AXO" } },
@@ -538,7 +539,10 @@ test("browser chats with Axo on a Mac: history, live replies, new chats, info, a
     await expect(connectionsSheet.getByText("Signed in to linear. Its tools are available to your Sessions."));
     assert.equal(new URL(page.url()).pathname, "/app");
     await expect(connectionsSheet.locator(".connection-row strong", { hasText: "notion" }));
-    assert.deepEqual(await connectionsSheet.locator(".connection-row strong").allTextContents(), ["browser_fixture_mac", "linear", "notion"]);
+    assert.deepEqual(await connectionsSheet.locator(".connection-row strong").allTextContents(), ["browser_fixture_mac", "linear", "notion", "Gmail"]);
+    // Apps Axo provides are listed on their own, with the account they are signed in as.
+    await expect(connectionsSheet.getByText("apps.gmail · ada@example.com · 9 tools"));
+    assert.equal(await connectionsSheet.getByRole("button", { name: "Sign out of Gmail" }).count(), 1);
     assert.equal(await connectionsSheet.getByRole("button", { name: "Sign in" }).count(), 1, "only the server that needs it offers sign-in");
     assert.deepEqual(await connectionsSheet.locator(".call-row strong").allTextContents(), ["linear.list_issues", "browser_fixture_mac.bash"]);
     await connectionsSheet.getByLabel("Name").fill("docs");

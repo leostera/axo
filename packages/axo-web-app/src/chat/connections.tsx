@@ -6,7 +6,7 @@ import { relativeTime } from "./message-views.tsx";
 /**
  * The Connections page (RFD0016): what the account's Sessions reach through `connections_*`.
  * Every paired Mac is a connection; remote MCP servers are added here or by an agent, and signed
- * in to here. A client secret is typed only here, never in a chat, and no grant ever reaches the
+ * in to here, as are the apps Axo provides (`codemode.apps.<app>`). A client secret is typed only here, never in a chat, and no grant ever reaches the
  * browser. The recent call log shows what ran, with which input, from which Session.
  */
 
@@ -83,6 +83,17 @@ export function ConnectionsView({ connectionsUrl, initialNotice }: { connections
     if (signInUrl.includes("/oauth/start")) window.location.assign(signInUrl);
   });
 
+  const disconnect = (name: string) => {
+    if (!window.confirm(`Sign out of ${name}? Its grant is deleted and revoked, and scripts can no longer call it.`)) return;
+    void act(async () => {
+      await request(`${connectionsUrl}/${encodeURIComponent(name)}/remove`, "POST");
+      setNotice({ kind: "ok", text: `Signed out of ${name}.` });
+    });
+  };
+
+  const connections = loaded?.connections.filter((connection) => connection.kind !== "app");
+  const apps = loaded?.connections.filter((connection) => connection.kind === "app");
+
   const remove = (name: string) => {
     if (!window.confirm(`Remove ${name}? Its grant is deleted, and scripts can no longer call it.`)) return;
     void act(async () => {
@@ -97,7 +108,7 @@ export function ConnectionsView({ connectionsUrl, initialNotice }: { connections
       <h3 className="sheet-section">Connections</h3>
       <div className="grouped">
         {loaded === null ? <p className="grouped-row muted">Loading…</p> : null}
-        {loaded?.connections.map((connection) => (
+        {connections?.map((connection) => (
           <div key={connection.name} className="grouped-row connection-row">
             <Icon name={connection.kind === "host" ? "laptop" : "plug"} size={18} />
             <span className="connection-copy">
@@ -114,8 +125,33 @@ export function ConnectionsView({ connectionsUrl, initialNotice }: { connections
               : null}
           </div>
         ))}
-        {loaded && loaded.connections.length === 0 ? <p className="grouped-row muted">No connections yet. Pair a Mac, or add a server below.</p> : null}
+        {connections && connections.length === 0 ? <p className="grouped-row muted">No connections yet. Pair a Mac, or add a server below.</p> : null}
       </div>
+
+      {apps && apps.length > 0 ? (
+        <>
+          <h3 className="sheet-section">Apps</h3>
+          <div className="grouped">
+            {apps.map((app) => app.kind === "app" ? (
+              <div key={app.name} className="grouped-row connection-row">
+                <Icon name="mail" size={18} />
+                <span className="connection-copy">
+                  <strong>{app.title}</strong>
+                  <small>{describe(app)}</small>
+                </span>
+                <span className={`mac-dot ${app.state === "ready" ? "online" : ""}`} aria-label={stateName(app)} title={stateName(app)} />
+                {app.state === "needsSignIn"
+                  ? <button className="bordered-button" disabled={busy} onClick={() => void signIn(app.name)}>Sign in</button>
+                  : null}
+                {app.state === "ready"
+                  ? <button className="plain-icon-button" disabled={busy} onClick={() => disconnect(app.name)} aria-label={`Sign out of ${app.title}`}><Icon name="signOut" size={16} /></button>
+                  : null}
+              </div>
+            ) : null)}
+          </div>
+          <p className="sheet-note">Scripts call an app's tools as codemode.apps.&lt;app&gt;.&lt;tool&gt;(), for example codemode.apps.gmail.search_messages(&#123; query: "is:unread" &#125;).</p>
+        </>
+      ) : null}
 
       {clientFor ? (
         <>
@@ -162,6 +198,10 @@ export function ConnectionsView({ connectionsUrl, initialNotice }: { connections
 
 function describe(connection: Connection): string {
   if (connection.kind === "host") return connection.state === "online" ? "Mac · bash" : "Mac · offline";
+  if (connection.kind === "app") {
+    if (connection.state === "needsSignIn") return `${connection.name} · ${connection.lastError ?? "not signed in"}`;
+    return `${connection.name} · ${connection.account ?? "signed in"} · ${connection.tools} tools`;
+  }
   const tools = connection.tools === 1 ? "1 tool" : `${connection.tools} tools`;
   if (connection.state === "needsSignIn") return `${new URL(connection.url).host} · needs sign-in`;
   if (connection.state === "error") return `${new URL(connection.url).host} · ${connection.lastError ?? "unreachable"}`;
