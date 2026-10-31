@@ -3,13 +3,18 @@ import { APP_ACCOUNTS_MAX, APPS, type AppAccount, type AppName, type Connection,
 import { seal, unseal } from "../../auth/crypto";
 import { GrantRefused } from "../oauth";
 import { FLOW_LIFETIME_MS, startUrl } from "../third-party";
-import { ProviderError, ProviderOutcomeUnknown, type AppDefinition, type AppTool, type ProviderApi, type ProviderRequest } from "./app";
+import { allowedUrl, ProviderError, ProviderOutcomeUnknown, type AppDefinition, type AppTool, type ProviderApi, type ProviderRequest } from "./app";
 import { calendar } from "./calendar";
+import { cloud } from "./cloud";
 import { contacts } from "./contacts";
 import { docs } from "./docs";
 import { drive } from "./drive";
 import { gmail } from "./gmail";
+import { meet } from "./meet";
+import { requestTool } from "./request";
 import { sheets } from "./sheets";
+import { slides } from "./slides";
+import { tasks } from "./tasks";
 import {
   googleAuthorizationUrl,
   redeemGoogleCode,
@@ -31,7 +36,19 @@ import {
  * generation, and a renewal lands only on the generation it renewed.
  */
 
-export const APP_DEFINITIONS: Record<AppName, AppDefinition> = { gmail, calendar, drive, docs, sheets, contacts };
+export const APP_DEFINITIONS: Record<AppName, AppDefinition> = { gmail, calendar, drive, docs, sheets, slides, contacts, tasks, meet, cloud };
+
+/** An app's tools: its named ones, then `request`, for any endpoint of its API. */
+const TOOLS = new Map<AppName, readonly AppTool[]>();
+export function toolsOf(app: AppName): readonly AppTool[] {
+  let tools = TOOLS.get(app);
+  if (!tools) {
+    const definition = APP_DEFINITIONS[app];
+    tools = [...definition.tools, requestTool(definition)];
+    TOOLS.set(app, tools);
+  }
+  return tools;
+}
 
 /** An access token this close to expiring is renewed before use. */
 const EXPIRY_MARGIN_MS = 60_000;
@@ -108,9 +125,11 @@ export class AppConnections {
         kind: "app",
         name: `apps.${app}`,
         title: definition.title,
+        description: definition.description,
+        permissions: [...definition.permissions],
         state: accounts.some((a) => a.state === "ready") ? "ready" : "needsSignIn",
         accounts,
-        tools: definition.tools.map((t) => t.name),
+        tools: toolsOf(app).map((t) => t.name),
         lastError: null,
       };
     });
@@ -127,7 +146,7 @@ export class AppConnections {
       const definition = APP_DEFINITIONS[app];
       const accounts = this.rows(app).filter((r) => r.grant_sealed).map((r) => r.account);
       const signedIn = accounts.length ? ` Signed-in accounts: ${accounts.join(", ")}.` : " No account is signed in yet: a call returns a sign-in link to give the person.";
-      return definition.tools.map((tool) => ({
+      return toolsOf(app).map((tool) => ({
         service: `apps.${app}`,
         name: tool.name,
         title: tool.name,
@@ -214,8 +233,8 @@ export class AppConnections {
    */
   async call(app: AppName, toolName: string, input: unknown): Promise<unknown> {
     const definition = APP_DEFINITIONS[app];
-    const tool = definition.tools.find((t) => t.name === toolName);
-    if (!tool) throw new Error(`apps.${app} has no tool named ${toolName}; it has ${definition.tools.map((t) => t.name).join(", ")}`);
+    const tool = toolsOf(app).find((t) => t.name === toolName);
+    if (!tool) throw new Error(`apps.${app} has no tool named ${toolName}; it has ${toolsOf(app).map((t) => t.name).join(", ")}`);
     if (!this.client(definition)) throw new Error(`${definition.title} is not set up on this Axo deployment`);
     const parsed = inputOf(tool).safeParse(input ?? {});
     if (!parsed.success) throw new Error(`invalid input: ${z.prettifyError(parsed.error)}`.slice(0, 1024));
@@ -246,7 +265,14 @@ export class AppConnections {
   private api(definition: AppDefinition, tool: AppTool, accessToken: string): ProviderApi {
     const fetcher = this.deps.fetcher;
     const send = async (method: string, path: string, options: ProviderRequest = {}): Promise<Response> => {
-      const url = new URL(path, definition.apiOrigin);
+      let url: URL;
+      try {
+        url = new URL(path, definition.apiOrigin);
+      } catch {
+        throw new ProviderError(0, `not a URL: ${path.slice(0, 100)}`);
+      }
+      // The grant goes only to the app's own API.
+      if (!allowedUrl(definition, url)) throw new ProviderError(0, `${definition.title} calls only reach ${definition.hosts.join(", ")}`);
       for (const [key, value] of Object.entries(options.query ?? {})) {
         if (value === undefined) continue;
         for (const item of Array.isArray(value) ? value : [value]) url.searchParams.append(key, item);
@@ -258,7 +284,12 @@ export class AppConnections {
       try {
         response = await fetcher(url, {
           method,
-          headers: { Authorization: `Bearer ${accessToken}`, Accept: options.accept ?? "application/json", ...(body ? { "Content-Type": body.contentType } : {}) },
+          headers: {
+            ...options.headers,
+            Accept: options.accept ?? "application/json",
+            ...(body ? { "Content-Type": body.contentType } : {}),
+            Authorization: `Bearer ${accessToken}`,
+          },
           body: body?.data,
           redirect: "manual",
           signal: AbortSignal.timeout(REQUEST_TIMEOUT_MS),
@@ -288,6 +319,10 @@ export class AppConnections {
       },
       async requestBytes(method, path, options) {
         return (await send(method, path, options)).arrayBuffer();
+      },
+      async requestRaw(method, path, options) {
+        const response = await send(method, path, options);
+        return { status: response.status, contentType: response.headers.get("Content-Type") ?? "", body: await response.arrayBuffer() };
       },
     };
   }

@@ -44,6 +44,7 @@ export class CallLog {
       tool TEXT NOT NULL, target_host_id TEXT, duration_ms INTEGER, outcome TEXT, error TEXT,
       input_sealed TEXT NOT NULL)`);
     sql.exec("CREATE INDEX IF NOT EXISTS connection_calls_at ON connection_calls (at)");
+    sql.exec("CREATE INDEX IF NOT EXISTS connection_calls_service_at ON connection_calls (service, at)");
   }
 
   private get purpose(): string {
@@ -67,12 +68,14 @@ export class CallLog {
       WHERE call_id = ? AND outcome IS NULL`, outcome, error?.slice(0, 512) ?? null, now, callId);
   }
 
-  /** Newest first. A call still running reads as `unknown`. */
-  async read(limit: number = CONNECTIONS_LIMITS.logPage, before?: string, now = Date.now()): Promise<CallRecord[]> {
+  /** Newest first, of every service or only `service`. A call still running reads as `unknown`. */
+  async read(limit: number = CONNECTIONS_LIMITS.logPage, before?: string, service?: string, now = Date.now()): Promise<CallRecord[]> {
     const until = before ? Date.parse(before) : Number.MAX_SAFE_INTEGER;
-    const rows = this.sql.exec<Row>(
-      "SELECT * FROM connection_calls WHERE at < ? AND at >= ? ORDER BY at DESC, call_id LIMIT ?",
-      until, now - CONNECTIONS_LIMITS.logDays * DAY_MS, Math.min(Math.max(limit, 1), CONNECTIONS_LIMITS.logPage),
+    const page = Math.min(Math.max(limit, 1), CONNECTIONS_LIMITS.logPage);
+    const since = now - CONNECTIONS_LIMITS.logDays * DAY_MS;
+    const rows = (service
+      ? this.sql.exec<Row>("SELECT * FROM connection_calls WHERE service = ? AND at < ? AND at >= ? ORDER BY at DESC, call_id LIMIT ?", service, until, since, page)
+      : this.sql.exec<Row>("SELECT * FROM connection_calls WHERE at < ? AND at >= ? ORDER BY at DESC, call_id LIMIT ?", until, since, page)
     ).toArray();
     return Promise.all(rows.map(async (row) => ({
       callId: row.call_id,

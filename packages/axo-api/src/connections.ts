@@ -61,7 +61,7 @@ export const connectionNameSchema = z.string().regex(/^[A-Za-z_][A-Za-z0-9_]{0,6
  * `codemode.apps.<app>.<tool>()`. `apps` is reserved: no connection or Mac takes that name.
  */
 export const APPS_NAMESPACE = "apps";
-export const APPS = ["gmail", "calendar", "drive", "docs", "sheets", "contacts"] as const;
+export const APPS = ["gmail", "calendar", "drive", "docs", "sheets", "slides", "contacts", "tasks", "meet", "cloud"] as const;
 export type AppName = (typeof APPS)[number];
 /** An app's service name, `apps.<app>`. */
 export const appServiceSchema = z.string().regex(/^apps\.[a-z][a-z0-9_]{0,31}$/);
@@ -100,6 +100,10 @@ export const connectionSchema = z.discriminatedUnion("kind", [
     kind: z.literal("app"),
     name: appServiceSchema,
     title: z.string().max(64),
+    /** One sentence on what the app is for. */
+    description: z.string().max(512),
+    /** What a signed-in account lets Axo do, in plain words, one per line. */
+    permissions: z.array(z.string().max(256)).max(32),
     /** Listed only when this Axo deployment has a client for the app's provider. `ready` once any account is. */
     state: z.enum(["ready", "needsSignIn"]),
     /** The provider accounts signed in, each named by its email; every call names one. */
@@ -154,6 +158,8 @@ export const connectionsParams = {
     sessionId,
     limit: z.number().int().min(1).max(CONNECTIONS_LIMITS.logPage).optional(),
     before: z.iso.datetime().optional(),
+    /** Only calls to this service, such as `apps.gmail` or `linear`. */
+    service: serviceSchema.optional(),
   }).strict(),
 } as const;
 

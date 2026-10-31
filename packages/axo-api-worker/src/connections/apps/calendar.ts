@@ -159,10 +159,19 @@ const tools: AppTool[] = [
 export const calendar: AppDefinition = {
   name: "calendar",
   title: "Google Calendar",
+  description: "See and manage your calendars and events.",
+  permissions: [
+    "See every calendar you can reach, and its events",
+    "Create, change and delete events, with guests and Meet links",
+    "Check when people are free",
+    "Share calendars and change their settings",
+  ],
   provider: "google",
   scopes: ["openid", "email", CALENDAR_SCOPE],
   requiredScopes: [CALENDAR_SCOPE],
   apiOrigin: "https://www.googleapis.com",
+  hosts: ["www.googleapis.com"],
+  reference: "https://developers.google.com/workspace/calendar/api/v3/reference",
   tools,
 };
 

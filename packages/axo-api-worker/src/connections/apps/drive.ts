@@ -225,10 +225,20 @@ const tools: AppTool[] = [
 export const drive: AppDefinition = {
   name: "drive",
   title: "Google Drive",
+  description: "Find, read, upload, organize and share your files.",
+  permissions: [
+    "See and download every file in My Drive and shared drives",
+    "Upload, create, rename and move files and folders",
+    "Share files and change who can see them",
+    "Trash and permanently delete files",
+    "Read and write comments and versions",
+  ],
   provider: "google",
   scopes: ["openid", "email", DRIVE_SCOPE],
   requiredScopes: [DRIVE_SCOPE],
   apiOrigin: "https://www.googleapis.com",
+  hosts: ["www.googleapis.com"],
+  reference: "https://developers.google.com/workspace/drive/api/reference/rest/v3",
   tools,
 };
 

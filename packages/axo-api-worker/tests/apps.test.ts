@@ -68,10 +68,13 @@ async function signedIn(t: { after(fn: () => unknown): void }) {
 test("Gmail is listed needing sign-in; a call before it hands the agent a sign-in link, and after it the tools work", async (t) => {
   const { google, h, session, call, execute } = await fixture(t);
   const listed = connectionsResults["axo.connections.list"].parse(result(await call("axo.connections.list")));
-  const gmailTools = ["get_profile", "search_messages", "get_message", "get_thread", "list_labels", "send_message", "create_draft", "modify_message", "trash_message", "delete_message"];
-  assert.deepEqual(listed.connections.find((c) => c.kind === "app"), {
-    kind: "app", name: "apps.gmail", title: "Gmail", state: "needsSignIn", accounts: [], tools: gmailTools, lastError: null,
+  const gmailTools = ["get_profile", "search_messages", "get_message", "get_thread", "list_labels", "send_message", "create_draft", "modify_message", "trash_message", "delete_message",
+    "list_filters", "create_filter", "delete_filter", "get_vacation", "set_vacation", "list_send_as", "request"];
+  const gmail = listed.connections.find((c) => c.kind === "app");
+  assert.deepEqual({ ...gmail, description: undefined, permissions: undefined }, {
+    kind: "app", name: "apps.gmail", title: "Gmail", description: undefined, permissions: undefined, state: "needsSignIn", accounts: [], tools: gmailTools, lastError: null,
   });
+  assert.ok(gmail?.kind === "app" && gmail.description && gmail.permissions.length >= 3, "an app says what it is for and what it may do");
   const tools = result(await call("axo.connections.search", { code: `async () => codemode.tools().filter((t) => t.service === "apps.gmail").map((t) => [t.call, t.inputSchema.required])` })).result;
   assert.deepEqual(tools.map(([c]: [string]) => c), gmailTools.map((t) => `codemode.apps.gmail.${t}`));
   assert.ok(tools.every(([, required]: [string, string[]]) => required[0] === "account"), "every tool needs an account");
@@ -273,19 +276,26 @@ test("every Workspace app is listed, signs in with full access to its own servic
   const { google, h, session, call } = await signedIn(t);
   const listed = result(await call("axo.connections.list")).connections.filter((c: { kind: string }) => c.kind === "app");
   assert.deepEqual(listed.map((c: { name: string; accounts: unknown[] }) => [c.name, c.accounts.length]), [
-    ["apps.gmail", 1], ["apps.calendar", 0], ["apps.drive", 0], ["apps.docs", 0], ["apps.sheets", 0], ["apps.contacts", 0],
+    ["apps.gmail", 1], ["apps.calendar", 0], ["apps.drive", 0], ["apps.docs", 0], ["apps.sheets", 0], ["apps.slides", 0],
+    ["apps.contacts", 0], ["apps.tasks", 0], ["apps.meet", 0], ["apps.cloud", 0],
   ]);
   const scopes: Record<string, string> = {};
-  for (const app of ["apps.calendar", "apps.drive", "apps.docs", "apps.sheets", "apps.contacts"]) {
+  for (const app of ["apps.gmail", "apps.calendar", "apps.drive", "apps.docs", "apps.sheets", "apps.slides", "apps.contacts", "apps.tasks", "apps.meet", "apps.cloud"]) {
     const start = await fetch(new URL((await signInLink(h, session, app)).replace("https://axo.leostera.dev/", ""), h.url), { headers: { Cookie: session.headers.Cookie! }, redirect: "manual" });
     scopes[app] = new URL(start.headers.get("location")!).searchParams.get("scope")!;
   }
+  const g = (...s: string[]) => ["openid", "email", ...s.map((x) => x.startsWith("https:") ? x : `https://www.googleapis.com/auth/${x}`)].join(" ");
   assert.deepEqual(scopes, {
-    "apps.calendar": "openid email https://www.googleapis.com/auth/calendar",
-    "apps.drive": "openid email https://www.googleapis.com/auth/drive",
-    "apps.docs": "openid email https://www.googleapis.com/auth/documents",
-    "apps.sheets": "openid email https://www.googleapis.com/auth/spreadsheets",
-    "apps.contacts": "openid email https://www.googleapis.com/auth/contacts",
+    "apps.gmail": g("https://mail.google.com/", "gmail.settings.basic", "gmail.settings.sharing"),
+    "apps.calendar": g("calendar"),
+    "apps.drive": g("drive"),
+    "apps.docs": g("documents"),
+    "apps.sheets": g("spreadsheets"),
+    "apps.slides": g("presentations"),
+    "apps.contacts": g("contacts", "contacts.other.readonly", "directory.readonly"),
+    "apps.tasks": g("tasks"),
+    "apps.meet": g("meetings.space.created", "meetings.space.readonly"),
+    "apps.cloud": g("cloud-platform"),
   });
   void google;
 });
@@ -410,4 +420,93 @@ test("Contacts searches after warming Google's cache, creates contacts, and upda
   const patch = google.workspaceCalls.find((c) => c.call.startsWith("PATCH"))!;
   assert.equal(patch.query.get("updatePersonFields"), "phoneNumbers");
   assert.deepEqual(JSON.parse(patch.body), { phoneNumbers: [{ value: "+44 20 0000 0000" }], etag: "etag-1" });
+});
+
+test("Slides reads a deck as text with notes, creates one, adds a slide and replaces text", async (t) => {
+  const { run, calls } = await workspace(t, "apps.slides");
+  const out = await run(`async () => {
+    const a = { account: "ada@example.com" };
+    return {
+      deck: await codemode.apps.slides.get_presentation({ ...a, id: "p1" }),
+      created: await codemode.apps.slides.create_presentation({ ...a, title: "Q4" }),
+      slide: await codemode.apps.slides.add_slide({ ...a, id: "p2", title: "Why", body: "Because" }),
+      replaced: await codemode.apps.slides.replace_text({ ...a, id: "p1", find: "Hello", replace: "Hi" }),
+    };
+  }`);
+  assert.deepEqual(out.deck.slides, [{ id: "s1", index: 0, text: "Hello", notes: "Say hi" }]);
+  assert.deepEqual(out.created, { id: "p2", title: "Q4", url: "https://docs.google.com/presentation/d/p2/edit" });
+  assert.match(out.slide.id, /^axo_[0-9a-f]{32}$/);
+  assert.equal(out.replaced.replaced, 2);
+  assert.deepEqual(calls(), ["GET slides/v1/presentations/p1", "POST slides/v1/presentations", "POST slides/v1/presentations/p2:batchUpdate", "POST slides/v1/presentations/p1:batchUpdate"]);
+});
+
+test("Tasks lists lists and tasks, adds a dated task and completes it", async (t) => {
+  const { run, google } = await workspace(t, "apps.tasks");
+  const out = await run(`async () => {
+    const a = { account: "ada@example.com" };
+    return {
+      lists: await codemode.apps.tasks.list_tasklists(a),
+      tasks: await codemode.apps.tasks.list_tasks(a),
+      created: await codemode.apps.tasks.create_task({ ...a, title: "Ship", due: "2026-11-04" }),
+      done: await codemode.apps.tasks.update_task({ ...a, id: "k1", done: true }),
+    };
+  }`);
+  assert.deepEqual(out.lists.tasklists, [{ id: "MDEy", title: "My Tasks", updated: "2026-10-30T10:00:00Z" }]);
+  assert.equal(out.tasks.tasks[0].due, "2026-11-03");
+  assert.deepEqual([out.created.title, out.created.due], ["Ship", "2026-11-04"]);
+  assert.equal(out.done.status, "completed");
+  const create = google.workspaceCalls.find((c) => c.call.startsWith("POST"))!;
+  assert.equal(create.call, "POST tasks/tasks/v1/lists/@default/tasks");
+  assert.equal(JSON.parse(create.body).due, "2026-11-04T00:00:00.000Z");
+});
+
+test("Meet creates a meeting, lists past ones, and reads a transcript with names", async (t) => {
+  const { run } = await workspace(t, "apps.meet");
+  const out = await run(`async () => {
+    const a = { account: "ada@example.com" };
+    return {
+      created: await codemode.apps.meet.create_meeting({ ...a, accessType: "OPEN" }),
+      meetings: await codemode.apps.meet.list_meetings({ ...a, meetingCode: "abc-mnop-xyz" }),
+      transcript: await codemode.apps.meet.get_transcript({ ...a, meeting: "conferenceRecords/r1" }),
+    };
+  }`);
+  assert.deepEqual([out.created.meetingUri, out.created.config], ["https://meet.google.com/abc-mnop-xyz", { accessType: "OPEN" }]);
+  assert.equal(out.meetings.meetings[0].name, "conferenceRecords/r1");
+  assert.deepEqual(out.transcript.transcripts, [{ name: "conferenceRecords/r1/transcripts/x1", state: "FILE_GENERATED", driveDocId: "doc9", text: "Grace: Shall we ship?\n", truncated: false }]);
+});
+
+test("Google Cloud lists projects and queries BigQuery billed to the project named", async (t) => {
+  const { run, google } = await workspace(t, "apps.cloud");
+  const out = await run(`async () => {
+    const a = { account: "ada@example.com" };
+    return {
+      projects: await codemode.apps.cloud.list_projects(a),
+      query: await codemode.apps.cloud.query_bigquery({ ...a, project: "axo-dev", sql: "select 7" }),
+    };
+  }`);
+  assert.deepEqual(out.projects.projects, [{ projectId: "axo-dev", displayName: "Axo", number: "42", state: "ACTIVE", parent: null }]);
+  assert.deepEqual(out.query.rows, [{ n: 7, who: { name: "ada" }, tags: ["a", "b"] }]);
+  const query = google.workspaceCalls.find((c) => c.call.startsWith("POST bigquery"))!;
+  assert.equal(query.headers.get("x-goog-user-project"), "axo-dev");
+  assert.equal(JSON.parse(query.body).useLegacySql, false);
+});
+
+test("every app's request tool reaches any endpoint of its own API, and only its own", async (t) => {
+  const { run, execute, google, call } = await workspace(t, "apps.tasks");
+  const listed = await run(`async () => codemode.apps.tasks.request({ account: "ada@example.com", method: "GET", path: "/tasks/v1/users/@me/lists", query: { maxResults: "5" } })`);
+  assert.deepEqual(listed, { status: 200, contentType: "application/json", json: { items: [{ id: "MDEy", title: "My Tasks", updated: "2026-10-30T10:00:00Z" }] }, truncated: false });
+  assert.equal(google.workspaceCalls.at(-1)!.query.get("maxResults"), "5");
+  for (const path of ["https://example.com/steal", "https://gmail.googleapis.com/gmail/v1/users/me/profile", "http://tasks.googleapis.com/tasks/v1/users/@me/lists", "https://tasks.googleapis.com.example.com/x"]) {
+    const refused = failure(await execute(`async () => codemode.apps.tasks.request({ account: "ada@example.com", method: "GET", path: ${JSON.stringify(path)} })`));
+    assert.match(refused, /calls only reach tasks\.googleapis\.com/, path);
+  }
+  const header = failure(await execute(`async () => codemode.apps.tasks.request({ account: "ada@example.com", method: "GET", path: "/x", headers: { Authorization: "Bearer mine" } })`));
+  assert.match(header, /set by Axo/);
+  assert.equal(google.workspaceCalls.length, 1, "nothing refused went out");
+
+  // Each app's activity is its own.
+  const log = async (service?: string) => result(await call("axo.connections.log", service ? { service } : {}));
+  const tasks = (await log("apps.tasks")).records as Array<{ service: string }>;
+  assert.ok(tasks.length >= 1 && tasks.every((r) => r.service === "apps.tasks"));
+  assert.deepEqual((await log("apps.gmail")).records, []);
 });

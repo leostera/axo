@@ -357,8 +357,8 @@ export class AxoAccountManager extends DurableObject<Env> {
     return this.requireConnections().completeFlow(nonce, code);
   }
 
-  async connectionsLog(limit?: number, before?: string): Promise<{ records: CallRecord[] }> {
-    return { records: await this.requireConnections().readLog(limit, before) };
+  async connectionsLog(limit?: number, before?: string, service?: string): Promise<{ records: CallRecord[] }> {
+    return { records: await this.requireConnections().readLog(limit, before, service) };
   }
 
   private requireConnections(): AccountConnections {

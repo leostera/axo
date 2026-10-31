@@ -4,10 +4,14 @@ import { tool, type AppDefinition, type AppTool, type ProviderApi } from "./app"
 /**
  * Gmail as an app: `codemode.apps.gmail.<tool>({ account, ... })` over the Gmail REST API, as
  * one of the Google accounts the person signed in with. The grant is full access
- * (`https://mail.google.com/`): it reads, sends, drafts, labels, trashes and deletes mail.
+ * (`https://mail.google.com/`): it reads, sends, drafts, labels, trashes and deletes mail; and
+ * Gmail's settings (`gmail.settings.basic`, `gmail.settings.sharing`): filters, vacation
+ * replies, send-as addresses and forwarding.
  */
 
 export const GMAIL_SCOPE = "https://mail.google.com/";
+/** Full mail access, and the settings it does not cover: filters, forwarding, send-as and delegates. */
+export const GMAIL_SCOPES = [GMAIL_SCOPE, "https://www.googleapis.com/auth/gmail.settings.basic", "https://www.googleapis.com/auth/gmail.settings.sharing"];
 const BASE = "/gmail/v1/users/me";
 const DEFAULT_BODY_CHARS = 20_000;
 const MAX_BODY_CHARS = 200_000;
@@ -164,15 +168,83 @@ const tools: AppTool[] = [
       return { deleted: true };
     },
   }),
+  tool({
+    name: "list_filters",
+    description: "Lists the account's filters: { filters: [{ id, criteria, action }] }, in Gmail's settings API shape.",
+    input: z.object({}).strict(),
+    idempotent: true,
+    async run(api) {
+      const answer = (await api.request("GET", `${BASE}/settings/filters`)) as { filter?: unknown[] } | null;
+      return { filters: answer?.filter ?? [] };
+    },
+  }),
+  tool({
+    name: "create_filter",
+    description:
+      "Creates a filter for incoming mail and returns it. criteria: { from, to, subject, query, negatedQuery, hasAttachment, size, sizeComparison }; " +
+      "action: { addLabelIds, removeLabelIds, forward } (remove \"INBOX\" to archive, add \"TRASH\" to delete, remove \"UNREAD\" to mark read).",
+    input: z.object({ criteria: z.record(z.string(), z.unknown()), action: z.record(z.string(), z.unknown()) }).strict(),
+    idempotent: false,
+    run: (api, input) => api.request("POST", `${BASE}/settings/filters`, { body: input }),
+  }),
+  tool({
+    name: "delete_filter",
+    description: "Deletes a filter by its id. Returns { deleted: true }.",
+    input: z.object({ id }).strict(),
+    idempotent: true,
+    async run(api, input) {
+      await api.request("DELETE", `${BASE}/settings/filters/${input.id}`);
+      return { deleted: true };
+    },
+  }),
+  tool({
+    name: "get_vacation",
+    description: "Reads the vacation auto-reply: { enableAutoReply, responseSubject, responseBodyPlainText, startTime, endTime, ... }.",
+    input: z.object({}).strict(),
+    idempotent: true,
+    run: (api) => api.request("GET", `${BASE}/settings/vacation`),
+  }),
+  tool({
+    name: "set_vacation",
+    description: "Turns the vacation auto-reply on or off and returns it. Times are milliseconds since the epoch; restrictToContacts and restrictToDomain limit who gets it.",
+    input: z.object({
+      enableAutoReply: z.boolean(),
+      responseSubject: z.string().max(998).optional(),
+      responseBodyPlainText: z.string().max(100_000).optional(),
+      responseBodyHtml: z.string().max(100_000).optional(),
+      startTime: z.number().int().optional(),
+      endTime: z.number().int().optional(),
+      restrictToContacts: z.boolean().optional(),
+      restrictToDomain: z.boolean().optional(),
+    }).strict(),
+    idempotent: true,
+    run: (api, input) => api.request("PUT", `${BASE}/settings/vacation`, { body: { ...input, startTime: input.startTime?.toString(), endTime: input.endTime?.toString() } }),
+  }),
+  tool({
+    name: "list_send_as",
+    description: "Lists the addresses the account can send as, with their signatures: { sendAs: [{ sendAsEmail, displayName, signature, isDefault, isPrimary }] }.",
+    input: z.object({}).strict(),
+    idempotent: true,
+    run: (api) => api.request("GET", `${BASE}/settings/sendAs`),
+  }),
 ];
 
 export const gmail: AppDefinition = {
   name: "gmail",
   title: "Gmail",
+  description: "Read, search, send and organize your mail, and manage Gmail's settings.",
+  permissions: [
+    "Read, search and download every message and attachment",
+    "Send mail and replies, and write drafts",
+    "Label, archive, trash and permanently delete mail",
+    "Manage labels, filters, forwarding, aliases, signatures and vacation replies",
+  ],
   provider: "google",
-  scopes: ["openid", "email", GMAIL_SCOPE],
-  requiredScopes: [GMAIL_SCOPE],
+  scopes: ["openid", "email", ...GMAIL_SCOPES],
+  requiredScopes: GMAIL_SCOPES,
   apiOrigin: "https://gmail.googleapis.com",
+  hosts: ["gmail.googleapis.com", "www.googleapis.com"],
+  reference: "https://developers.google.com/workspace/gmail/api/reference/rest",
   tools,
 };
 

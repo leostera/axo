@@ -120,8 +120,8 @@ export class AccountConnections {
         return scriptOutcome(outcome, (o) => ({ result: o.result, logs: o.logs }));
       }
       case CONNECTIONS_METHODS.log: {
-        const { limit, before } = params as ConnectionsParams<typeof CONNECTIONS_METHODS.log>;
-        const result: ConnectionsResult<typeof CONNECTIONS_METHODS.log> = { records: await this.log.read(limit, before) };
+        const { limit, before, service } = params as ConnectionsParams<typeof CONNECTIONS_METHODS.log>;
+        const result: ConnectionsResult<typeof CONNECTIONS_METHODS.log> = { records: await this.log.read(limit, before, service) };
         return { result };
       }
       case CONNECTIONS_METHODS.add: {
@@ -181,8 +181,8 @@ export class AccountConnections {
     return (await this.apps.completeFlow(nonce, code)) ?? this.thirdParty.completeFlow(nonce, code);
   }
 
-  readLog(limit?: number, before?: string) {
-    return this.log.read(limit, before);
+  readLog(limit?: number, before?: string, service?: string) {
+    return this.log.read(limit, before, service);
   }
 
   async list(): Promise<ConnectionsResult<typeof CONNECTIONS_METHODS.list>> {

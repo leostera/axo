@@ -107,9 +107,17 @@ const tools: AppTool[] = [
 export const sheets: AppDefinition = {
   name: "sheets",
   title: "Google Sheets",
+  description: "Read and edit your spreadsheets.",
+  permissions: [
+    "Read every spreadsheet you can open",
+    "Write cells, add rows and clear ranges",
+    "Create spreadsheets, add sheets, format and chart them",
+  ],
   provider: "google",
   scopes: ["openid", "email", SHEETS_SCOPE],
   requiredScopes: [SHEETS_SCOPE],
   apiOrigin: "https://sheets.googleapis.com",
+  hosts: ["sheets.googleapis.com"],
+  reference: "https://developers.google.com/workspace/sheets/api/reference/rest",
   tools,
 };

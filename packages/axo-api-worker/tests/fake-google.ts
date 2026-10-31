@@ -66,12 +66,12 @@ export class FakeGoogle {
       return json({});
     }
     if (url.origin === "https://gmail.googleapis.com") return this.gmail(request, url);
-    if (WORKSPACE.has(url.origin)) return this.workspace(request, url);
+    if (isWorkspace(url)) return this.workspace(request, url);
     return undefined;
   }
 
   /** Requests to Calendar, Drive, Docs, Sheets and People, as `METHOD path?query` with their bodies. */
-  readonly workspaceCalls: Array<{ as: string; call: string; query: URLSearchParams; body: string }> = [];
+  readonly workspaceCalls: Array<{ as: string; call: string; query: URLSearchParams; body: string; headers: Headers }> = [];
   readonly files = new Map<string, { name: string; mimeType: string; content: string; parents: string[]; trashed: boolean }>([
     ["doc1", { name: "Plan", mimeType: "application/vnd.google-apps.document", content: "The plan.", parents: ["root"], trashed: false }],
     ["pdf1", { name: "scan.pdf", mimeType: "application/pdf", content: "%PDF-1.4", parents: ["root"], trashed: false }],
@@ -82,7 +82,7 @@ export class FakeGoogle {
     if (!as) return json({ error: { code: 401, message: "Request had invalid authentication credentials." } }, 401);
     const body = await request.text();
     const call = `${request.method} ${url.host.split(".")[0]}${url.pathname}`;
-    this.workspaceCalls.push({ as, call, query: url.searchParams, body });
+    this.workspaceCalls.push({ as, call, query: url.searchParams, body, headers: request.headers });
     const read = () => JSON.parse(body || "{}");
     const at = (pattern: RegExp) => pattern.exec(`${request.method} ${url.pathname}`);
     let m: RegExpExecArray | null;
@@ -142,6 +142,31 @@ export class FakeGoogle {
     if (at(/^GET \/v1\/people\/c1$/)) return json({ resourceName: "people/c1", etag: "etag-1", names: [{ displayName: "Grace Hopper" }], emailAddresses: [{ value: "grace@example.com" }] });
     if (at(/^PATCH \/v1\/people\/c1:updateContact$/)) return json({ resourceName: "people/c1", names: [{ displayName: "Grace Hopper" }], ...read() });
     if (at(/^POST \/v1\/people:createContact$/)) return json({ resourceName: "people/c2", names: [{ displayName: read().names[0].unstructuredName }], emailAddresses: read().emailAddresses });
+    // Slides
+    if (at(/^GET \/v1\/presentations\/p1$/)) return json({ presentationId: "p1", title: "Deck", slides: [
+      { objectId: "s1", pageElements: [{ objectId: "t", shape: { placeholder: { type: "TITLE" }, text: { textElements: [{ textRun: { content: "Hello" } }] } } }],
+        slideProperties: { notesPage: { objectId: "n1", pageElements: [{ objectId: "nb", shape: { placeholder: { type: "BODY" }, text: { textElements: [{ textRun: { content: "Say hi" } }] } } }] } } },
+    ] });
+    if (url.host === "slides.googleapis.com" && at(/^POST \/v1\/presentations$/)) return json({ presentationId: "p2", title: read().title });
+    if (at(/^POST \/v1\/presentations\/[^/]+:batchUpdate$/)) return json({ replies: read().requests.map((r: Record<string, unknown>) => (r.replaceAllText ? { replaceAllText: { occurrencesChanged: 2 } } : {})) });
+    // Tasks
+    if (at(/^GET \/tasks\/v1\/users\/@me\/lists$/)) return json({ items: [{ id: "MDEy", title: "My Tasks", updated: "2026-10-30T10:00:00Z" }] });
+    if (at(/^GET \/tasks\/v1\/lists\/[^/]+\/tasks$/)) return json({ items: [{ id: "k1", title: "Write RFD", status: "needsAction", due: "2026-11-03T00:00:00.000Z" }] });
+    if (at(/^POST \/tasks\/v1\/lists\/[^/]+\/tasks$/)) return json({ id: "k2", status: "needsAction", ...read() });
+    if ((m = at(/^PATCH \/tasks\/v1\/lists\/[^/]+\/tasks\/([^/]+)$/))) return json({ id: m[1], title: "Write RFD", ...read() });
+    // Meet
+    if (at(/^POST \/v2\/spaces$/)) return json({ name: "spaces/abc", meetingUri: "https://meet.google.com/abc-mnop-xyz", meetingCode: "abc-mnop-xyz", config: read().config ?? { accessType: "TRUSTED" } });
+    if (at(/^GET \/v2\/conferenceRecords$/)) return json({ conferenceRecords: [{ name: "conferenceRecords/r1", startTime: "2026-11-02T09:00:00Z", endTime: "2026-11-02T09:30:00Z", space: "spaces/abc" }] });
+    if (at(/^GET \/v2\/conferenceRecords\/r1\/participants$/)) return json({ participants: [{ name: "conferenceRecords/r1/participants/p1", signedinUser: { user: "users/1", displayName: "Grace" } }] });
+    if (at(/^GET \/v2\/conferenceRecords\/r1\/transcripts$/)) return json({ transcripts: [{ name: "conferenceRecords/r1/transcripts/x1", state: "FILE_GENERATED", docsDestination: { document: "doc9" } }] });
+    if (at(/^GET \/v2\/conferenceRecords\/r1\/transcripts\/x1\/entries$/)) return json({ transcriptEntries: [{ participant: "conferenceRecords/r1/participants/p1", text: "Shall we ship?" }] });
+    // Google Cloud
+    if (url.host === "cloudresourcemanager.googleapis.com" && at(/^GET \/v3\/projects:search$/)) return json({ projects: [{ projectId: "axo-dev", displayName: "Axo", name: "projects/42", state: "ACTIVE" }] });
+    if (url.host === "bigquery.googleapis.com" && at(/^POST \/bigquery\/v2\/projects\/[^/]+\/queries$/)) return json({
+      jobComplete: true, totalRows: "1", jobReference: { jobId: "j1" },
+      schema: { fields: [{ name: "n", type: "INTEGER" }, { name: "who", type: "RECORD", fields: [{ name: "name", type: "STRING" }] }, { name: "tags", type: "STRING", mode: "REPEATED" }] },
+      rows: [{ f: [{ v: "7" }, { v: { f: [{ v: "ada" }] } }, { v: [{ v: "a" }, { v: "b" }] }] }],
+    });
     return json({ error: { code: 404, message: `no fake for ${call}` } }, 404);
   }
 
@@ -234,6 +259,8 @@ export class FakeGoogle {
 }
 
 const WORKSPACE = new Set(["https://www.googleapis.com", "https://docs.googleapis.com", "https://sheets.googleapis.com", "https://people.googleapis.com"]);
+/** Any other Google API host, for Google Cloud: `*.googleapis.com`, except sign-in and Gmail. */
+const isWorkspace = (url: URL) => WORKSPACE.has(url.origin) || (url.protocol === "https:" && url.hostname.endsWith(".googleapis.com") && !["oauth2.googleapis.com", "gmail.googleapis.com"].includes(url.hostname));
 
 function json(value: unknown, status = 200): Response {
   return new MiniflareResponse(JSON.stringify(value), { status, headers: { "Content-Type": "application/json" } }) as unknown as Response;

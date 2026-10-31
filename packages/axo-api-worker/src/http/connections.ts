@@ -26,7 +26,7 @@ type ConnectionsStub = {
   connectionSignInLink(name: string): Promise<string>;
   openConnectionFlow(nonce: string): Promise<{ authorizeUrl: string; name: string } | null>;
   completeConnectionFlow(nonce: string, code: string): Promise<{ name: string } | { error: string }>;
-  connectionsLog(limit?: number, before?: string): Promise<{ records: CallRecord[] }>;
+  connectionsLog(limit?: number, before?: string, service?: string): Promise<{ records: CallRecord[] }>;
 };
 
 export type ConnectionsRoute = "list" | "add" | "remove" | "client" | "signIn" | "log";
@@ -64,7 +64,10 @@ export async function serveConnections(
       case "log": {
         const url = new URL(request.url);
         const limit = Number(url.searchParams.get("limit") ?? "") || undefined;
-        return json(plain(await stub.connectionsLog(limit, url.searchParams.get("before") ?? undefined)));
+        // `?service=apps.gmail` keeps one app's or server's calls.
+        const service = url.searchParams.get("service");
+        if (service !== null && !serviceSchema.safeParse(service).success) return json({ error: "Invalid service" }, 400);
+        return json(plain(await stub.connectionsLog(limit, url.searchParams.get("before") ?? undefined, service ?? undefined)));
       }
       case "add": {
         const body = addBody.safeParse(await request.json().catch(() => null));

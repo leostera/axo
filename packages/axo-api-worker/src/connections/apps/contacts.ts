@@ -3,10 +3,14 @@ import { tool, type AppDefinition, type AppTool, type ProviderApi } from "./app"
 
 /**
  * Google Contacts as an app: `codemode.apps.contacts.<tool>({ account, ... })` over the People
- * API, with full access (`contacts`): search, read, create, change and delete contacts.
+ * API, with full access (`contacts`): search, read, create, change and delete contacts; and
+ * read-only, the people you have emailed (`contacts.other.readonly`) and your company's directory
+ * (`directory.readonly`).
  */
 
 export const CONTACTS_SCOPE = "https://www.googleapis.com/auth/contacts";
+/** Your contacts, the people you have emailed ("other contacts"), and your company's directory. */
+export const CONTACTS_SCOPES = [CONTACTS_SCOPE, "https://www.googleapis.com/auth/contacts.other.readonly", "https://www.googleapis.com/auth/directory.readonly"];
 const FIELDS = "names,emailAddresses,phoneNumbers,organizations,biographies,addresses";
 
 const resourceName = z.string().regex(/^people\/[A-Za-z0-9_-]{1,256}$/, "expected a contact's resourceName, such as people/c123");
@@ -42,6 +46,30 @@ const tools: AppTool[] = [
       await search("");
       const answer = (await search(input.query)) as { results?: Array<{ person: Person }> };
       return { contacts: (answer.results ?? []).map((r) => contact(r.person)) };
+    },
+  }),
+  tool({
+    name: "search_other_contacts",
+    description: "Finds people you have emailed but not saved as contacts, by name or email: { contacts: [{ resourceName, name, emails, phones }] }.",
+    input: z.object({ query: z.string().min(1).max(512), maxResults: z.number().int().min(1).max(30).optional().describe("Default 10.") }).strict(),
+    idempotent: true,
+    async run(api, input) {
+      const search = (query: string) => api.request("GET", "/v1/otherContacts:search", { query: { query, readMask: "names,emailAddresses,phoneNumbers", pageSize: String(input.maxResults ?? 10) } });
+      await search("");
+      const answer = (await search(input.query)) as { results?: Array<{ person: Person }> };
+      return { contacts: (answer.results ?? []).map((r) => contact(r.person)) };
+    },
+  }),
+  tool({
+    name: "search_directory",
+    description: "Finds people in the account's company directory (Google Workspace), by name or email: { people: [{ resourceName, name, emails, phones, organization, title }], nextPageToken }.",
+    input: z.object({ query: z.string().min(1).max(512), maxResults: z.number().int().min(1).max(500).optional().describe("Default 20."), pageToken: z.string().max(1024).optional() }).strict(),
+    idempotent: true,
+    async run(api, input) {
+      const answer = (await api.request("GET", "/v1/people:searchDirectoryPeople", {
+        query: { query: input.query, readMask: FIELDS, sources: ["DIRECTORY_SOURCE_TYPE_DOMAIN_PROFILE", "DIRECTORY_SOURCE_TYPE_DOMAIN_CONTACT"], pageSize: String(input.maxResults ?? 20), pageToken: input.pageToken },
+      })) as { people?: Person[]; nextPageToken?: string };
+      return { people: (answer.people ?? []).map((p) => contact(p)), nextPageToken: answer.nextPageToken ?? null };
     },
   }),
   tool({
@@ -103,10 +131,18 @@ const tools: AppTool[] = [
 export const contacts: AppDefinition = {
   name: "contacts",
   title: "Google Contacts",
+  description: "Look up and manage your contacts, and find people at your company.",
+  permissions: [
+    "See, create, change and delete your contacts and contact groups",
+    "See people you have emailed but not saved",
+    "Look people up in your company's directory",
+  ],
   provider: "google",
-  scopes: ["openid", "email", CONTACTS_SCOPE],
-  requiredScopes: [CONTACTS_SCOPE],
+  scopes: ["openid", "email", ...CONTACTS_SCOPES],
+  requiredScopes: CONTACTS_SCOPES,
   apiOrigin: "https://people.googleapis.com",
+  hosts: ["people.googleapis.com"],
+  reference: "https://developers.google.com/people/api/rest",
   tools,
 };
 

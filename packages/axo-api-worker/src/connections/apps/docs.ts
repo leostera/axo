@@ -71,10 +71,17 @@ const tools: AppTool[] = [
 export const docs: AppDefinition = {
   name: "docs",
   title: "Google Docs",
+  description: "Read and write your documents.",
+  permissions: [
+    "Read every document you can open",
+    "Create documents and change their text and formatting",
+  ],
   provider: "google",
   scopes: ["openid", "email", DOCS_SCOPE],
   requiredScopes: [DOCS_SCOPE],
   apiOrigin: "https://docs.googleapis.com",
+  hosts: ["docs.googleapis.com"],
+  reference: "https://developers.google.com/workspace/docs/api/reference/rest",
   tools,
 };
 
