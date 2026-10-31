@@ -1,4 +1,4 @@
-import { atMost, budget, crash, defineActor, defineCall, defineGroup, defineLimit, defineMessage, defineProperty, defineScenario, defineSpec, defineZone, failed, input, listOf, lose, nullable, oneOf } from "@leostera/feynman";
+import { atMost, budget, crash, defineActor, defineCall, defineGroup, defineLimit, defineMessage, defineProperty, defineScenario, defineSpec, defineZone, failed, input, listOf, lose, oneOf } from "@leostera/feynman";
 
 const SEC = 1_000;
 const MIN = 60 * SEC;
@@ -79,10 +79,9 @@ const Revoked = defineMessage("Revoked", { epoch: Number }, { name: "close 4003:
 const ExecuteFor = defineCall("ExecuteFor", { request: String, account: String, host: String, script: oneOf("linear", "bash:studio", "bash:laptop", "bash:workbench", "linear+bash:studio", "bash:studio x3") }, { name: "executeConnections", over: "rpc" });
 const Finished = defineMessage("Finished", { request: String, results: listOf(String) }, { name: "script finished", over: "rpc", tone: "reply" });
 const NotFinished = defineMessage("NotFinished", { request: String, error: String }, { name: "script failed", over: "rpc", tone: "refused" });
-const SendBash = defineCall("SendBash", { call: String, account: String, host: String, command: String }, { name: "sendBash", over: "rpc" });
-const BashSent = defineMessage("BashSent", { call: String }, { name: "sent to the Mac", over: "rpc", tone: "reply" });
-const BashResult = defineMessage("BashResult", { call: String, host: String, output: String }, { name: "bashResult", over: "rpc" });
-const HostOffline = defineMessage("HostOffline", { host: String, call: nullable(String) }, { name: "hostOffline", over: "rpc", tone: "refused" });
+const CallHost = defineCall("CallHost", { call: String, account: String, host: String, command: String }, { name: "callHost", over: "rpc" });
+const BashResult = defineMessage("BashResult", { call: String, host: String, output: String }, { name: "callHost result", over: "rpc", tone: "reply" });
+const HostOffline = defineMessage("HostOffline", { host: String, call: String, error: String }, { name: "callHost error", over: "rpc", tone: "refused" });
 const Unpair = defineCall("Unpair", { host: String }, { name: "closeHost", over: "rpc" });
 // AxoAccountManager <-> script Worker (Dynamic Worker binding)
 const RunScript = defineMessage("RunScript", { request: String, account: String, calls: listOf({ service: String, tool: String, input: String }) }, { name: "run script", over: "rpc" });
@@ -101,10 +100,10 @@ const macs = defineZone({ name: "Host Mac", description: "each runs axod and Axo
 const cloudflare = defineZone({ name: "Cloudflare", description: "the host's socket owner, the account's Durable Object and its script Worker", place: { column: 1, region: true } });
 const services = defineZone({ name: "Third-party services", description: "remote MCP servers", place: { column: 2 } });
 
-const limit1 = defineLimit({ name: "Script wall time", value: 5 * MIN });
-const limit2 = defineLimit({ name: "Tool calls per script", value: 100, unit: "calls" });
-const limit3 = defineLimit({ name: "Concurrent tool calls per script", value: 4, unit: "calls" });
-const limit4 = defineLimit({ name: "bash default timeout", value: 60 * SEC });
+const limit1 = defineLimit({ name: "Script wall time", value: 5 * MIN, sources: ["packages/axo-api/src/connections.ts#CONNECTIONS_LIMITS"] });
+const limit2 = defineLimit({ name: "Tool calls per script", value: 100, unit: "calls", sources: ["packages/axo-api/src/connections.ts#CONNECTIONS_LIMITS"] });
+const limit3 = defineLimit({ name: "Concurrent tool calls per script", value: 4, unit: "calls", sources: ["packages/axo-api/src/connections.ts#CONNECTIONS_LIMITS"] });
+const limit4 = defineLimit({ name: "bash default timeout", value: 60 * SEC, sources: ["packages/axo-api/src/connections.ts#CONNECTIONS_LIMITS"] });
 const limit5 = defineLimit({ name: "Call log retention", value: 30, unit: "days" });
 
 export const Ingress = defineActor({
@@ -119,6 +118,8 @@ export const Ingress = defineActor({
     revoked: [] as string[],
     /** Scripts forwarded for a Mac, so the answer goes back down its socket. */
     forwarded: {} as Record<string, { host: string; epoch: number }>,
+    /** callHost RPCs waiting for the Mac's reply, with the socket the request went down. */
+    calling: {} as Record<string, { host: string; epoch: number }>,
   }),
   display: {
     icon: "plug",
@@ -129,6 +130,7 @@ export const Ingress = defineActor({
     forward: {
       on: Forward,
       description: "A Mac's script goes to its account, if it came on the Mac's current socket.",
+      sources: ["packages/axo-api-worker/src/host-do.ts#AxoHostDO.receiveHostCall"],
       sends: [ExecuteFor],
       run(state, m, ctx) {
         const host = hostOf(ctx.from.label);
@@ -141,6 +143,7 @@ export const Ingress = defineActor({
     finished: {
       on: Finished,
       description: "Returns the script's result down the socket it came on; if that socket closed, the Mac already failed the call.",
+      sources: ["packages/axo-api-worker/src/host-do.ts#AxoHostDO.receiveHostCall"],
       sends: [Answer],
       run(state, m, ctx) {
         const f = state.forwarded[m.request];
@@ -153,6 +156,7 @@ export const Ingress = defineActor({
     notFinished: {
       on: NotFinished,
       description: "Returns the script's error down the socket it came on.",
+      sources: ["packages/axo-api-worker/src/host-do.ts#AxoHostDO.receiveHostCall"],
       sends: [Refused],
       run(state, m, ctx) {
         const f = state.forwarded[m.request];
@@ -165,6 +169,7 @@ export const Ingress = defineActor({
     executeForFailed: {
       on: failed(ExecuteFor),
       description: "The account did not answer; the Mac hears that the script failed and may have run.",
+      sources: ["packages/axo-api-worker/src/host-do.ts#AxoHostDO.receiveHostCall"],
       sends: [Refused],
       run(state, failure, ctx) {
         const f = state.forwarded[failure.payload.request];
@@ -174,38 +179,57 @@ export const Ingress = defineActor({
         if (daemon) ctx.send(daemon, Refused, { request: failure.payload.request, error: "the account did not answer; the script may have run", epoch: f.epoch });
       },
     },
-    sendBash: {
-      on: SendBash,
-      description: "Sends a command down the Mac's current socket, or says the Mac is offline.",
-      sends: [Bash, BashSent, HostOffline],
+    callHost: {
+      on: CallHost,
+      description: "Sends a command down the Mac's current socket and waits for its reply, or answers at once that the Mac is offline and nothing was sent.",
+      sources: ["packages/axo-api-worker/src/host-do.ts#AxoHostDO.callHost"],
+      sends: [Bash, HostOffline],
+      starts: ["callDeadline"],
       run(state, m, ctx) {
         const socket = state.sockets[m.host];
         const daemon = ctx.all(Axod).find((a) => hostOf(a.label) === m.host);
-        if (!socket?.open || !daemon) return ctx.reply(HostOffline, { host: m.host, call: m.call });
+        if (!socket?.open || !daemon) return ctx.reply(HostOffline, { host: m.host, call: m.call, error: "host offline; nothing sent" });
+        state.calling[m.call] = { host: m.host, epoch: socket.epoch };
         ctx.send(daemon, Bash, { call: m.call, account: m.account, command: m.command, epoch: socket.epoch });
-        ctx.reply(BashSent, { call: m.call });
+        ctx.start("callDeadline");
       },
     },
     bashDone: {
       on: BashDone,
-      description: "Hands a command's output to the account, if it came on the socket the command went down.",
+      description: "Answers the waiting callHost with the command's output, if it came on the socket the command went down; a reply on a later socket is ignored.",
+      sources: ["packages/axo-api-worker/src/host-do.ts#AxoHostDO.receiveReply"],
       sends: [BashResult],
       run(state, m, ctx) {
         const host = hostOf(ctx.from.label);
-        if (state.sockets[host]?.epoch !== m.epoch || !state.sockets[host]?.open) return;
+        const c = state.calling[m.call];
+        if (!c || c.host !== host || c.epoch !== m.epoch) return;
+        delete state.calling[m.call];
         ctx.send(ctx.the(Manager), BashResult, { call: m.call, host, output: m.output });
+      },
+    },
+    callDeadline: {
+      description: "A command's reply did not come in time; every callHost still waiting fails with an unknown outcome.",
+      sources: ["packages/axo-api-worker/src/host-do.ts#AxoHostDO.callHost"],
+      after: "10 minutes",
+      sends: [HostOffline],
+      run(state, _, ctx) {
+        for (const [call, c] of Object.entries(state.calling)) {
+          delete state.calling[call];
+          ctx.send(ctx.the(Manager), HostOffline, { host: c.host, call, error: "no answer in time; the command may have run" });
+        }
       },
     },
     disconnected: {
       on: Disconnected,
-      description: "A Mac's socket closed; the account hears the Mac is offline, so it fails every command sent there.",
+      description: "A Mac's socket closed; every callHost waiting on it fails, since its command may have run.",
+      sources: ["packages/axo-api-worker/src/host-do.ts#AxoHostDO.fence"],
       sends: [HostOffline],
       run(state, m, ctx) {
         const socket = state.sockets[m.host];
         if (!socket || socket.epoch !== m.epoch || !socket.open) return;
         socket.open = false;
         for (const [request, f] of Object.entries(state.forwarded)) if (f.host === m.host) delete state.forwarded[request];
-        ctx.send(ctx.the(Manager), HostOffline, { host: m.host, call: null });
+        failCallsTo(state, m.host, "host disconnected; the command may have run", ctx);
       },
     },
     reconnected: {
@@ -219,10 +243,12 @@ export const Ingress = defineActor({
     },
     unpair: {
       on: Unpair,
-      description: "The account revoked a Mac: its socket closes with 4003 and is refused from now on.",
-      sends: [Revoked],
+      description: "The account revoked a Mac: its socket closes with 4003 and is refused from now on, and every callHost waiting on it fails.",
+      sources: ["packages/axo-api-worker/src/host-do.ts#AxoHostDO.disconnect"],
+      sends: [Revoked, HostOffline],
       run(state, m, ctx) {
         if (!state.revoked.includes(m.host)) state.revoked.push(m.host);
+        failCallsTo(state, m.host, "host revoked; the command may have run", ctx);
         const socket = state.sockets[m.host];
         if (!socket?.open) return;
         socket.open = false;
@@ -234,7 +260,7 @@ export const Ingress = defineActor({
     forwardLost: lose(Forward, { spend: faults }),
     finishedLost: lose(Finished, { spend: faults }),
     notFinishedLost: lose(NotFinished, { spend: faults }),
-    sendBashLost: lose(SendBash, { spend: faults }),
+    callHostLost: lose(CallHost, { spend: faults }),
     bashDoneLost: lose(BashDone, { spend: faults }),
     disconnectedLost: lose(Disconnected, { spend: faults }),
     reconnectedLost: lose(Reconnected, { spend: faults }),
@@ -283,6 +309,7 @@ export const Manager = defineActor({
       with: [atMost(2)],
       label: "Unpair a Mac",
       description: "The person revokes a Mac (RFD0013): its host connection is removed, commands sent to it fail, and its socket is closed.",
+      sources: ["packages/axo-api-worker/src/auth/account-manager.ts#AxoAccountManager.revokeHost"],
       inputs: { host: input(String, { examples: ["studio"] }) },
       when: (s) => Object.values(s.connections).some((cs) => "studio" in cs),
       sends: [ToolError, Unpair],
@@ -298,6 +325,7 @@ export const Manager = defineActor({
     executeFor: {
       on: ExecuteFor,
       description: "Starts the script in the account's Worker, under the script's wall time.",
+      sources: ["packages/axo-api-worker/src/connections/account.ts#AccountConnections.call", "packages/axo-api-worker/src/connections/runner.ts#runScript"],
       sends: [RunScript],
       starts: ["wallTime"],
       say: (_s, m) => `Running ${m.script} for ${cap(who(m.account))} in a Dynamic Worker`,
@@ -309,6 +337,7 @@ export const Manager = defineActor({
     },
     wallTime: {
       description: "A script ran past its wall time: it is aborted, its calls in flight are abandoned, and the Mac that asked hears so.",
+      sources: ["packages/axo-api-worker/src/connections/runner.ts#runScript"],
       after: "5 minutes",
       sends: [Abort, NotFinished],
       run(state, _, ctx) {
@@ -328,7 +357,8 @@ export const Manager = defineActor({
     toolCall: {
       on: ToolCall,
       description: "Counts the call against the script's limit, looks the service up among the account's own connections, logs the call, and sends it to the service or, through the Mac's socket owner, to the Mac.",
-      sends: [McpCall, SendBash, ToolError],
+      sources: ["packages/axo-api-worker/src/connections/account.ts#AccountConnections.caller", "packages/axo-api-worker/src/connections/runner.ts#ToolDispatcher.call"],
+      sends: [McpCall, CallHost, ToolError],
       run(state, m, ctx) {
         const run = state.runs[m.request];
         if (!run) return;
@@ -340,7 +370,7 @@ export const Manager = defineActor({
         state.log.push({ account: run.account, request: m.request, service: m.call.service, tool: m.call.tool, input: m.call.input, call });
         state.dispatched[call] = { request: m.request, account: run.account, target: m.call.service };
         if (connection.kind === "third-party") return ctx.send(ctx.the(Linear), McpCall, { call, tool: m.call.tool, token: connection.grant });
-        ctx.send(ctx.the(Ingress), SendBash, { call, account: run.account, host: m.call.service, command: m.call.input });
+        ctx.send(ctx.the(Ingress), CallHost, { call, account: run.account, host: m.call.service, command: m.call.input });
       },
     },
     mcpResult: {
@@ -365,10 +395,10 @@ export const Manager = defineActor({
         ctx.send(ctx.the(Worker), ToolError, { request: d.request, error: `${d.target} did not answer; the call may have run` });
       },
     },
-    bashSent: { on: BashSent, description: "The command is on its way to the Mac.", run: () => {} },
-    sendBashFailed: {
-      on: failed(SendBash),
+    callHostFailed: {
+      on: failed(CallHost),
       description: "The socket owner did not answer; the command may have been sent, so it fails and is not sent again.",
+      sources: ["packages/axo-api-worker/src/connections/account.ts#AccountConnections.caller"],
       sends: [ToolError],
       run(state, failure, ctx) {
         const d = state.dispatched[failure.payload.call];
@@ -380,6 +410,7 @@ export const Manager = defineActor({
     bashResult: {
       on: BashResult,
       description: "Hands the command's output back to the script.",
+      sources: ["packages/axo-api-worker/src/connections/account.ts#AccountConnections.caller"],
       sends: [ToolResult],
       run(state, m, ctx) {
         const d = state.dispatched[m.call];
@@ -390,21 +421,20 @@ export const Manager = defineActor({
     },
     hostOffline: {
       on: HostOffline,
-      description: "A Mac is offline, or went offline: the command to it, or every command sent there, fails at once and is not sent again, since it may already have run.",
+      description: "The command failed before or after reaching the Mac; the tool call fails with the reason and is not sent again.",
+      sources: ["packages/axo-api-worker/src/connections/account.ts#AccountConnections.caller"],
       sends: [ToolError],
       run(state, m, ctx) {
-        if (m.call) {
-          const d = state.dispatched[m.call];
-          if (!d) return;
-          delete state.dispatched[m.call];
-          return ctx.send(ctx.the(Worker), ToolError, { request: d.request, error: `${m.host} is offline` });
-        }
-        failCommandsTo(state, m.host, `${m.host} went offline; the command may have run`, ctx);
+        const d = state.dispatched[m.call];
+        if (!d) return;
+        delete state.dispatched[m.call];
+        ctx.send(ctx.the(Worker), ToolError, { request: d.request, error: `${m.host}: ${m.error}` });
       },
     },
     scriptDone: {
       on: ScriptDone,
       description: "Returns the script's result to the socket owner of the Mac that asked.",
+      sources: ["packages/axo-api-worker/src/connections/account.ts#scriptOutcome"],
       sends: [Finished],
       run(state, m, ctx) {
         if (!state.runs[m.request]) return;
@@ -416,6 +446,7 @@ export const Manager = defineActor({
     scriptFailed: {
       on: ScriptFailed,
       description: "Returns the script's error to the socket owner of the Mac that asked.",
+      sources: ["packages/axo-api-worker/src/connections/account.ts#scriptOutcome"],
       sends: [NotFinished],
       run(state, m, ctx) {
         if (!state.runs[m.request]) return;
@@ -428,13 +459,21 @@ export const Manager = defineActor({
     executeForLost: lose(ExecuteFor, { spend: faults }),
     toolCallLost: lose(ToolCall, { spend: faults }),
     mcpResultLost: lose(McpResult, { fails: McpCall, spend: faults }),
-    bashSentLost: lose(BashSent, { fails: SendBash, spend: faults }),
-    bashResultLost: lose(BashResult, { spend: faults }),
-    hostOfflineLost: lose(HostOffline, { fails: SendBash, spend: faults }),
+    bashResultLost: lose(BashResult, { fails: CallHost, spend: faults }),
+    hostOfflineLost: lose(HostOffline, { fails: CallHost, spend: faults }),
     scriptDoneLost: lose(ScriptDone, { spend: faults }),
     scriptFailedLost: lose(ScriptFailed, { spend: faults }),
   },
 });
+
+/** Fails every callHost waiting on `host`'s socket: it is not sent again, since it may already have run. */
+function failCallsTo(state: any, host: string, error: string, ctx: any): void {
+  for (const [call, c] of Object.entries(state.calling) as [string, { host: string }][]) {
+    if (c.host !== host) continue;
+    delete state.calling[call];
+    ctx.send(ctx.the(Manager), HostOffline, { host, call, error });
+  }
+}
 
 /** Fails every command in flight to `host`: it is not sent again, since it may already have run. */
 function failCommandsTo(state: any, host: string, error: string, ctx: any): void {
@@ -460,6 +499,7 @@ export const Worker = defineActor({
     runScript: {
       on: RunScript,
       description: "Runs the script up to its first tool call.",
+      sources: ["packages/axo-api-worker/src/connections/runner.ts#WORKER_SOURCE"],
       sends: [ToolCall],
       run(state, m, ctx) {
         state.runs[m.request] = { calls: m.calls, next: 1, results: [] };
@@ -469,6 +509,7 @@ export const Worker = defineActor({
     toolResult: {
       on: ToolResult,
       description: "Continues the script with the result: makes the next call, or returns.",
+      sources: ["packages/axo-api-worker/src/connections/runner.ts#WORKER_SOURCE"],
       sends: [ToolCall, ScriptDone],
       run(state, m, ctx) {
         const run = state.runs[m.request];
@@ -486,11 +527,13 @@ export const Worker = defineActor({
     abort: {
       on: Abort,
       description: "The Durable Object aborted the script; it stops where it is.",
+      sources: ["packages/axo-api-worker/src/connections/runner.ts#ToolDispatcher.close"],
       run: (state, m) => void delete state.runs[m.request],
     },
     toolError: {
       on: ToolError,
       description: "The tool call threw; the script does not catch it, so it fails.",
+      sources: ["packages/axo-api-worker/src/connections/runner.ts#WORKER_SOURCE"],
       sends: [ScriptFailed],
       run(state, m, ctx) {
         if (!state.runs[m.request]) return;
@@ -582,6 +625,7 @@ export const Axod = defineActor({
     execute: {
       on: Execute,
       description: "Forwards a Session's script over the relay, or refuses at once when the relay is down.",
+      sources: ["crates/axo-server/src/connections.rs#forward"],
       sends: [Forward, RelayDown],
       run(state, m, ctx) {
         if (!state.connected || !state.account) return ctx.reply(RelayDown, { request: m.request });
@@ -592,6 +636,7 @@ export const Axod = defineActor({
     answer: {
       on: Answer,
       description: "Hands the script's result to the Session that asked.",
+      sources: ["crates/axo-server/src/connections.rs#forward"],
       sends: [Done],
       run(state, m, ctx) {
         if (m.epoch !== state.epoch) return;
@@ -603,6 +648,7 @@ export const Axod = defineActor({
     refused: {
       on: Refused,
       description: "Hands the script's error to the Session that asked.",
+      sources: ["crates/axo-server/src/connections.rs#forward"],
       sends: [Failed],
       run(state, m, ctx) {
         if (m.epoch !== state.epoch) return;
@@ -625,6 +671,7 @@ export const Axod = defineActor({
     bash: {
       on: Bash,
       description: "Starts the command on a thread of its own as axod's user, so the relay keeps serving; one for another socket or account is dropped.",
+      sources: ["crates/axo-relay/src/relay.rs#start_bash"],
       say: (s, m) => `Started \`${m.command}\` on ${cap(s.host)}`,
       run(state, m) {
         if (!state.connected || !state.account || m.epoch !== state.epoch || m.account !== state.account) return;
@@ -634,6 +681,7 @@ export const Axod = defineActor({
     },
     finish: {
       description: "A command exits; its output goes back on the socket it came on, or nowhere if that socket closed.",
+      sources: ["crates/axo-relay/src/relay.rs#start_bash"],
       when: (s) => Object.keys(s.jobs).length > 0,
       sends: [BashDone],
       run(state, _, ctx) {
@@ -683,6 +731,7 @@ export const Session = defineActor({
       with: [atMost(2)],
       label: "Run a script",
       description: "The agent runs a connections script.",
+      sources: ["crates/axo-server/src/mcp.rs#McpServer.call_tool"],
       inputs: { script: input(String, { examples: Object.keys(CALLS) }) },
       when: (s) => s.pending === null,
       sends: [Execute],
@@ -789,8 +838,8 @@ const everyCallIsLogged = defineProperty("everyCallIsLogged", {
   },
 });
 const connectionsStateStaysInTheAccount = defineProperty("connectionsStateStaysInTheAccount", {
-  description: "The socket owner never holds connections, runs or the call log: it only knows sockets and what it forwarded.",
-  always: (w) => Object.keys(w.the(Ingress).state).every((k) => ["sockets", "revoked", "forwarded"].includes(k)),
+  description: "The socket owner never holds connections, runs or the call log: it only knows sockets, what it forwarded, and the callHost RPCs waiting on a socket.",
+  always: (w) => Object.keys(w.the(Ingress).state).every((k) => ["sockets", "revoked", "forwarded", "calling"].includes(k)),
 });
 const sessionsGetAnAnswer = defineProperty("sessionsGetAnAnswer", {
   description: "A Session waiting on a script always gets an answer: a result, an error, or its deadline.",
