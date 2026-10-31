@@ -125,7 +125,7 @@ In priority order. "Tools" lists the first named tools; every app also has `requ
 | ChatGPT | Device OAuth (Codex) | see above | ChatGPT email | see above |
 | Octopus Energy (built: `apps.octopus`) | Token, basic (key as user) | `api.octopus.energy/v1` + GraphQL | account number | consumption, tariffs, account |
 | Wise (built: `apps.wise`) | Token, bearer (personal token) | `api.wise.com` (some EU/UK statement calls need SCA signing) | profile email | profiles, balances, transfers, rates |
-| GitHub (suggested MCP server) | MCP (`api.githubcopilot.com/mcp/`, needs a registered OAuth app) or OAuth → REST | REST v3 / GraphQL | login | repos, issues, PRs, search |
+| GitHub (built: `apps.github`, personal token) | MCP (`api.githubcopilot.com/mcp/`, needs a registered OAuth app) or OAuth → REST | REST v3 / GraphQL | login | repos, issues, PRs, search |
 | Slack | OAuth (user token) → Web API; the official MCP server is for approved apps only | `slack.com/api` | workspace and user | search, history, post, users |
 | Stripe (suggested MCP server) | MCP (`mcp.stripe.com`, OAuth) | n/a | n/a | n/a |
 | Telegram (built: `apps.telegram`, bots) | Token (bot token) → Bot API. A personal account needs MTProto: Mac (a CLI such as `tdl`) | `api.telegram.org` | bot username | send, updates, chats |
@@ -135,13 +135,13 @@ In priority order. "Tools" lists the first named tools; every app also has `requ
 | Strava | OAuth | `www.strava.com/api/v3` | athlete name | activities, stats |
 | Withings | OAuth (signed nonce on some calls) | `wbsapi.withings.net` | user ID | measures, sleep, activity |
 | PayPal (suggested MCP server) | MCP (`mcp.paypal.com`) for business accounts; personal → Browser | n/a | n/a | n/a |
-| Discord | Token (bot) → REST; a user's own DMs are not allowed by Discord | `discord.com/api/v10` | bot | messages, channels |
+| Discord (built: `apps.discord`, bots) | Token (bot) → REST; a user's own DMs are not allowed by Discord | `discord.com/api/v10` | bot | messages, channels |
 | Bluesky | Token (app password → AT Protocol session) | `bsky.social/xrpc` | handle | timeline, post, search |
 | Plex | Token (X-Plex-Token, or the plex.tv PIN sign-in) | `plex.tv`, `*.plex.direct` | Plex username | libraries, search, sessions |
 | LinkedIn | OAuth (only profile and posting are allowed) | `api.linkedin.com` | email | profile, post |
 | Twitch | OAuth | `api.twitch.tv/helix` | login | streams, follows, chat |
 | Starlink | Mac (the dish's local gRPC API at 192.168.100.1) | n/a | n/a | n/a |
-| UniFi | Token (Site Manager API key); local controller → Mac | `api.ui.com` | person | hosts, sites, devices |
+| UniFi (built: `apps.unifi`, Site Manager) | Token (Site Manager API key); local controller → Mac | `api.ui.com` | person | hosts, sites, devices |
 
 ### The rest
 
@@ -201,5 +201,5 @@ In priority order. "Tools" lists the first named tools; every app also has `requ
 2. 1Password (helper Worker and SDK), Octopus Energy, Wise.
 3. The OAuth provider config and ChatGPT device sign-in.
 4. Banking (Enable Banking): Revolut, Raiffeisen.
-5. The rest of the first table, in order. Suggested MCP entries (Stripe, PayPal, GitHub) are
+5. The rest of the first table, in order. Suggested MCP entries (Stripe, PayPal; built) are
    cheap, so they come early.

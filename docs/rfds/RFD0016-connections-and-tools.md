@@ -22,7 +22,7 @@ _(open)_
 - An account adds a third-party connection (a remote MCP server) by URL once and its agents use that server's tools afterwards, with Axo running the upstream OAuth flow and keeping the grant.
 - Each paired Mac is a host connection with one tool, `bash`, that any Session of the same account can call while that Mac is online, including Sessions on other Macs. Local apps are reached through their command-line interfaces; Axo does not need to know about them.
 - Agents in Axo Sessions reach every connection through the existing `axod mcp` server (RFD0015).
-- Axo provides apps itself that an account signs in to, with one or more provider accounts each, and its agents reach as `codemode.apps.<app>.*`: Google's (Gmail, Calendar, Drive, Docs, Sheets, Slides, Contacts, Tasks, Meet, Google Cloud) with OAuth, Hetzner, Octopus Energy, Wise, Telegram bots and Kraken with a token the person pastes, ChatGPT with a code the person enters at OpenAI, and 1Password through its command line on the person's Macs. Each asks for everything its own service allows, and can call any endpoint of its API. [docs/apps/catalog.md](../apps/catalog.md) is the plan for the rest.
+- Axo provides apps itself that an account signs in to, with one or more provider accounts each, and its agents reach as `codemode.apps.<app>.*`: Google's (Gmail, Calendar, Drive, Docs, Sheets, Slides, Contacts, Tasks, Meet, Google Cloud) with OAuth, Hetzner, Octopus Energy, Wise, Telegram and Discord bots, Kraken, GitHub and UniFi with a token the person pastes, ChatGPT with a code the person enters at OpenAI, and 1Password through its command line on the person's Macs. Each asks for everything its own service allows, and can call any endpoint of its API. [docs/apps/catalog.md](../apps/catalog.md) is the plan for the rest.
 - An agent finds what the account reaches without searching: the account's connections, and how a script calls each, are in the descriptions of the tools that reach them.
 
 ## Non-goals
@@ -90,6 +90,9 @@ Every app signs in with everything its own service allows, and only it. Besides 
 | `apps.wise` | a personal API token | `list_profiles`, `list_balances`, `get_rate`, `list_transfers`, `get_transfer`, `list_recipients`, `create_quote` |
 | `apps.telegram` | a bot token from @BotFather, put in the path | `get_me`, `get_updates`, `send_message`, `get_chat`, `call` |
 | `apps.kraken` | an API key and private key; each private call signed (HMAC-SHA512) | `get_balance`, `get_trade_balance`, `list_open_orders`, `list_closed_orders`, `list_trades`, `list_ledger`, `get_ticker`, `add_order`, `cancel_order`, `call` |
+| `apps.github` | a personal access token | `get_me`, `list_repos`, `search`, `list_issues`, `get_issue`, `create_issue`, `comment`, `get_pull`, `get_file`, `list_notifications` |
+| `apps.discord` | a bot token (`Bot <token>`) | `list_guilds`, `list_channels`, `read_messages`, `send_message` |
+| `apps.unifi` | a Site Manager API key (`X-API-KEY`) | `list_hosts`, `list_sites`, `list_devices`, `get_isp_metrics` |
 | `apps.chatgpt` | Codex's sign-in (`openid profile email offline_access`) | `respond`, `list_models`, `usage` |
 | `apps.onepassword` | the 1Password app on each Mac | `list_accounts`, `list_vaults`, `list_items`, `get_item`, `read`, `get_otp`, `create_item`, `update_item`, `delete_item`, `op` |
 
