@@ -3,7 +3,7 @@ import { RemoteAxoApi } from "@axo/app";
 import { hostPairingCreateResultSchema } from "@axo/protocol/v1";
 import { AxoMascot } from "../axo-mascot.tsx";
 import { Conversation } from "./conversation.tsx";
-import { ConnectionsView, signInNotice } from "./connections.tsx";
+import { AppsSheet, signInNotice } from "./connections.tsx";
 import { Icon } from "./icons.tsx";
 import { relativeTime } from "./message-views.tsx";
 import { parseRoute, routePath, type ChatRoute } from "./route.ts";
@@ -115,7 +115,7 @@ export function ChatApp({ profile, backend, onSignOut, pairingUrl, connectionsUr
   const [layer, setLayer] = useState<Layer>("conversation");
   const [infoOpen, setInfoOpen] = useState(false);
   const [sheet, setSheet] = useState<"settings" | "pair" | "search" | "connections" | null>(null);
-  // A connection's sign-in comes back to `<base>/connections`: open the page, with how it went.
+  // A sign-in comes back to `<base>/connections`: open Apps on the page it was for, with how it went.
   const [connectionsNotice] = useState(() =>
     window.location.pathname === `${basePath}/connections` ? signInNotice(window.location.search) : null);
   useEffect(() => {
@@ -230,9 +230,7 @@ export function ChatApp({ profile, backend, onSignOut, pairingUrl, connectionsUr
       {sheet === "settings" ? <SettingsSheet onClose={() => setSheet(null)} onSignOut={onSignOut} /> : null}
       {sheet === "pair" && pairingUrl ? <PairMacSheet workbench={workbench} pairingUrl={pairingUrl} onClose={() => setSheet(null)} /> : null}
       {sheet === "connections" && connectionsUrl ? (
-        <Sheet title="Connections" onClose={() => setSheet(null)}>
-          <ConnectionsView connectionsUrl={connectionsUrl} initialNotice={connectionsNotice} />
-        </Sheet>
+        <AppsSheet connectionsUrl={connectionsUrl} initial={connectionsNotice} onClose={() => setSheet(null)} Sheet={Sheet} />
       ) : null}
     </main>
   );
@@ -379,12 +377,12 @@ function AccountPanel({ workbench, profile, onOpenMac, onShowChats, onPair, onCo
         {workbench.hostsPhase === "loaded" && workbench.hosts.length === 0 ? <p className="panel-note">No Macs yet. Pair one to chat with it from here.</p> : null}
         {onConnections ? (
           <>
-            <h2 className="section-title"><span>Tools</span></h2>
+            <h2 className="section-title"><span>Apps</span></h2>
             <button className="mac-row" onClick={onConnections}>
               <Icon name="plug" size={22} />
               <span className="mac-copy">
-                <strong>Connections</strong>
-                <small>Your Macs and servers, as tools for your Sessions</small>
+                <strong>Apps</strong>
+                <small>Gmail and MCP servers</small>
               </span>
             </button>
           </>
@@ -441,7 +439,7 @@ function InfoPanel({ workbench, onClose }: { workbench: ChatWorkbench; onClose: 
 
 // MARK: - Sheets
 
-function Sheet({ title, onClose, children }: { title: string; onClose: () => void; children: ReactNode }) {
+function Sheet({ title, onClose, onBack, children }: { title: string; onClose: () => void; onBack?: () => void; children: ReactNode }) {
   useEffect(() => {
     const onKeyDown = (event: KeyboardEvent) => { if (event.key === "Escape") onClose(); };
     window.addEventListener("keydown", onKeyDown);
@@ -451,7 +449,9 @@ function Sheet({ title, onClose, children }: { title: string; onClose: () => voi
     <div className="sheet-backdrop" onClick={onClose}>
       <section className="sheet" role="dialog" aria-modal="true" aria-label={title} onClick={event => event.stopPropagation()}>
         <header className="sheet-header">
-          <span className="circle-placeholder" />
+          {onBack
+            ? <button className="circle-button" onClick={onBack} aria-label="Back"><Icon name="chevronLeft" size={16} /></button>
+            : <span className="circle-placeholder" />}
           <h2>{title}</h2>
           <button className="circle-button" onClick={onClose} aria-label={`Close ${title}`}><Icon name="close" size={16} /></button>
         </header>

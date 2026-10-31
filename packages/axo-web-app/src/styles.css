@@ -607,6 +607,11 @@ button.grouped-row:hover { background: var(--fill); }
 .call-outcome.error { color: var(--red); }
 .call-outcome.unknown { color: var(--orange); }
 .call-age { flex: none; color: var(--tertiary); font-size: 12px; }
+.connections .grouped + .grouped { margin-top: 16px; }
+.nav-row { cursor: pointer; }
+.nav-row > svg:last-child { flex: none; color: var(--tertiary); }
+.nav-detail { flex: none; color: var(--secondary); font-size: 13px; }
+.add-row { justify-content: flex-start; color: var(--blue); font-weight: 500; cursor: pointer; }
 
 .connection-copy .mono { font-family: ui-monospace, SFMono-Regular, Menlo, monospace; }
 .connection-row .bordered-button { min-height: 32px; flex: none; padding: 0 12px; border-radius: 9px; font-size: 14px; }

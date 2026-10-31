@@ -532,27 +532,41 @@ test("browser chats with Axo on a Mac: history, live replies, new chats, info, a
     await page.reload({ waitUntil: "networkidle" });
     await expect(page.getByRole("navigation", { name: "Chats" }).getByRole("button", { name: "Browser Agent" }));
 
-    // A connection's sign-in comes back to /app/connections: the Connections page opens and says
-    // how it went, and the URL goes back to the app's.
+    // A server's sign-in comes back to /app/connections: Apps opens on MCP servers and says how
+    // it went, and the URL goes back to the app's.
     await page.goto(`${appUrl}/app/connections?signedIn=linear`, { waitUntil: "networkidle" });
-    const connectionsSheet = page.getByRole("dialog", { name: "Connections" });
-    await expect(connectionsSheet.getByText("Signed in to linear. Its tools are available to your Sessions."));
+    const servers = page.getByRole("dialog", { name: "MCP servers" });
+    await expect(servers.getByText("Signed in to linear."));
     assert.equal(new URL(page.url()).pathname, "/app");
-    await expect(connectionsSheet.locator(".connection-row strong", { hasText: "notion" }));
-    assert.deepEqual(await connectionsSheet.locator(".connection-row strong").allTextContents(), ["browser_fixture_mac", "linear", "notion", "Gmail", "ada@example.com", "grace@example.com"]);
-    // Apps Axo provides are listed on their own, one row per signed-in account.
-    await expect(connectionsSheet.getByText("apps.gmail · 2 accounts · 2 tools"));
-    assert.equal(await connectionsSheet.getByRole("button", { name: "Add a Gmail account" }).count(), 1);
-    assert.equal(await connectionsSheet.getByRole("button", { name: "Sign ada@example.com out of Gmail" }).count(), 1);
-    assert.equal(await connectionsSheet.getByRole("button", { name: "Sign in" }).count(), 2, "the server and the account that need it offer sign-in");
-    assert.deepEqual(await connectionsSheet.locator(".call-row strong").allTextContents(), ["linear.list_issues", "browser_fixture_mac.bash"]);
-    await connectionsSheet.getByLabel("Name").fill("docs");
-    await connectionsSheet.getByLabel("Server URL").fill("https://docs.example.com/mcp");
-    await connectionsSheet.getByRole("button", { name: "Add", exact: true }).click();
-    await expect(connectionsSheet.getByText("Added docs."));
-    await expect(connectionsSheet.locator(".connection-row strong", { hasText: "docs" }));
-    await shot("connections");
-    await connectionsSheet.getByRole("button", { name: "Close Connections" }).click();
+    await expect(servers.locator(".connection-row strong", { hasText: "notion" }));
+    assert.deepEqual(await servers.locator(".connection-row strong").allTextContents(), ["linear", "notion"]);
+    assert.equal(await servers.getByRole("button", { name: "Sign in" }).count(), 1, "only the server that needs it offers sign-in");
+    await servers.getByRole("button", { name: "Add server" }).click();
+    await servers.getByLabel("Name").fill("docs");
+    await servers.getByLabel("Server URL").fill("https://docs.example.com/mcp");
+    await servers.getByRole("button", { name: "Add", exact: true }).click();
+    await expect(servers.getByText("Added docs."));
+    await expect(servers.locator(".connection-row strong", { hasText: "docs" }));
+    await shot("apps-servers");
+
+    // Back on Apps: Gmail, MCP servers and Activity, each a page of its own.
+    await servers.getByRole("button", { name: "Back" }).click();
+    const apps = page.getByRole("dialog", { name: "Apps" });
+    assert.deepEqual(await apps.locator(".nav-row strong").allTextContents(), ["Gmail", "MCP servers", "Activity"]);
+    await expect(apps.getByText("2 accounts"));
+    await shot("apps");
+    await apps.getByRole("button", { name: /Gmail/ }).click();
+    const gmail = page.getByRole("dialog", { name: "Gmail" });
+    assert.deepEqual(await gmail.locator(".connection-row strong").allTextContents(), ["ada@example.com", "grace@example.com"]);
+    assert.equal(await gmail.getByRole("button", { name: "Sign in" }).count(), 1, "the account whose grant was refused offers sign-in");
+    assert.equal(await gmail.getByRole("button", { name: "Add account" }).count(), 1);
+    assert.equal(await gmail.getByRole("button", { name: "Remove ada@example.com" }).count(), 1);
+    await shot("apps-gmail");
+    await gmail.getByRole("button", { name: "Back" }).click();
+    await apps.getByRole("button", { name: /Activity/ }).click();
+    const activitySheet = page.getByRole("dialog", { name: "Activity" });
+    assert.deepEqual(await activitySheet.locator(".call-row strong").allTextContents(), ["linear.list_issues", "browser_fixture_mac.bash"]);
+    await activitySheet.getByRole("button", { name: "Close Activity" }).click();
 
     await page.getByRole("navigation", { name: "Chats" }).getByRole("button", { name: "Settings" }).click();
     await page.getByRole("dialog", { name: "Settings" }).getByRole("button", { name: "Sign out" }).click();
