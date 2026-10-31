@@ -535,8 +535,8 @@ export const Browser = defineActor({
     enterClient: {
       with: [atMost(2)],
       label: "Enter a client",
-      description: "On the Connections page, the person types a client they registered with the service.",
-      sources: ["packages/axo-web-app/src/chat/connections.tsx#ConnectionsView"],
+      description: "On Apps, MCP servers, the person types a client they registered with the service.",
+      sources: ["packages/axo-web-app/src/chat/connections.tsx#ServersPage"],
       sends: [EnterClient],
       run: (state, _i, ctx) => ctx.send(ctx.the(Worker), EnterClient, { account: state.account, name: "linear", client: "client-by-hand", secret: "secret-by-hand" }),
     },
