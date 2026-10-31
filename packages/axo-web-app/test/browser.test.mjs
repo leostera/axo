@@ -235,16 +235,18 @@ test("browser chats with Axo on a Mac: history, live replies, new chats, info, a
         reply({ accepted: true });
         // Pi records the message, works, and answers: word by word, then whole.
         const sessionId = params.sessionId;
+        // Pi stamps the reply when it starts; its progress and its record carry the stamp.
+        const replyAt = Date.now();
         setTimeout(() => {
           write(sessionId, { role: "user", content: [{ type: "text", text: params.text }] });
           status(sessionId, "working");
           notify(socket, "axo.client.session.progress", { sessionId, slot: "message", snapshot: { message: { role: "assistant", content: [{ type: "text", text: "Wor" }] } } });
         }, 30);
         setTimeout(() => {
-          notify(socket, "axo.client.session.progress", { sessionId, slot: "message", snapshot: { message: { role: "assistant", content: [{ type: "text", text: "Working on it now" }] } } });
+          notify(socket, "axo.client.session.progress", { sessionId, slot: "message", snapshot: { message: { role: "assistant", timestamp: replyAt, content: [{ type: "text", text: "Working on it now" }] } } });
         }, 200);
         setTimeout(() => {
-          write(sessionId, { role: "assistant", content: [{ type: "text", text: `Done with: ${params.text}` }] });
+          write(sessionId, { role: "assistant", timestamp: replyAt, content: [{ type: "text", text: `Done with: ${params.text}` }] });
           notify(socket, "axo.client.session.progress", { sessionId, slot: "message", snapshot: null });
           status(sessionId, "ready");
         }, params.text === "Ship it" ? 3_000 : 400);
@@ -434,6 +436,8 @@ test("browser chats with Axo on a Mac: history, live replies, new chats, info, a
     // The reply being written comes in a word at a time, its words fading in; history just appears.
     await expect(page.locator(".word-in", { hasText: "now" }));
     assert.equal(await page.locator(".message:not(.message-enter) .markdown .word-in").count(), 4, "only the live reply's words fade in");
+    // Once recorded, the reply carries on as the same message on screen: it is not shown again.
+    const writing = await page.locator(".assistant-message", { hasText: "Working on it now" }).elementHandle();
     await shot("working");
     await activity.getByRole("button", { name: "Stop the reply" }).click();
     const confirmStop = page.getByRole("alertdialog", { name: "Stop the reply?" });
@@ -444,6 +448,7 @@ test("browser chats with Axo on a Mac: history, live replies, new chats, info, a
     await expect(activity.getByText("Stopping…"));
     assert.deepEqual(keys, ["escape"]);
     await expect(page.getByText("Done with: Ship it", { exact: true }));
+    assert.ok(await writing.evaluate(element => element.isConnected && element.textContent.includes("Done with: Ship it")), "the recorded reply is the one that was being written");
     assert.deepEqual(prompts[0], { sessionId: sid(1), text: "Ship it" });
     assert.equal(await page.getByTestId("pending-prompt").count(), 0, "the agent's record of the message retires the pending one");
     assert.equal(await box.inputValue(), "");

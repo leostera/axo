@@ -43,11 +43,11 @@ function parseMessage(value: unknown): ChatMessage | null {
   if (tool === undefined) return null;
   switch (value.role) {
     case "user":
-      return { id: value.id, role: "user", text: value.text, blocks: [], timestamp: value.timestamp, tool: null, images: [] };
+      return { id: value.id, key: value.id, role: "user", text: value.text, blocks: [], timestamp: value.timestamp, tool: null, images: [] };
     case "assistant":
-      return { id: value.id, role: "assistant", text: value.text, blocks: parseMarkdown(value.text), timestamp: value.timestamp, tool: null, images: [] };
+      return { id: value.id, key: value.id, role: "assistant", text: value.text, blocks: parseMarkdown(value.text), timestamp: value.timestamp, tool: null, images: [] };
     case "tool":
-      return tool ? { id: value.id, role: "tool", text: "", blocks: [], timestamp: value.timestamp, tool, images: [] } : null;
+      return tool ? { id: value.id, key: value.id, role: "tool", text: "", blocks: [], timestamp: value.timestamp, tool, images: [] } : null;
     default:
       return null;
   }

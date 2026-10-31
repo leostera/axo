@@ -116,6 +116,16 @@ test("progress for a reply already recorded is not shown again, as when it arriv
   assert.equal(transcript.live[0]!.text, "Next", "the next reply still shows as it is written");
 });
 
+test("a reply keeps its key from its first live words to its record, so the screen keeps it", () => {
+  const transcript = new ChatTranscript();
+  transcript.settle(true);
+  transcript.progress("message", { message: { role: "assistant", timestamp: 3000, content: [{ type: "thinking", thinking: "Hmm" }, { type: "text", text: "Hel" }] } });
+  const live = transcript.live.map(message => message.key);
+  transcript.append([said(1, "assistant", [{ type: "thinking", thinking: "Hmm" }, { type: "text", text: "Hello" }], { timestamp: 3000 })]);
+  assert.deepEqual(transcript.messages.map(message => message.key), live);
+  assert.notEqual(transcript.messages[0]!.key, transcript.messages[1]!.key);
+});
+
 test("a running tool shows its output so far, until its result is recorded", () => {
   const transcript = transcriptOf([said(1, "assistant", [{ type: "toolCall", id: "call-1", name: "bash", arguments: { command: "make" } }])]);
   transcript.progress("call-1", { toolCallId: "call-1", partialResult: { content: [{ type: "text", text: "building" }] } });

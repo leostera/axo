@@ -1,10 +1,10 @@
-import { useEffect, useLayoutEffect, useMemo, useRef, useState, useSyncExternalStore, type ClipboardEvent, type KeyboardEvent } from "react";
+import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState, useSyncExternalStore, type ClipboardEvent, type KeyboardEvent } from "react";
 import { AxoMascot } from "../axo-mascot.tsx";
 import { Icon } from "./icons.tsx";
-import { MessageView, PendingView, QuestionCard } from "./message-views.tsx";
+import { MessageView, PendingView, QuestionCard, type Reveal } from "./message-views.tsx";
 import { Alert } from "./alert.tsx";
 import { appendTranscript, BrowserDictation, VoicePrompt, waveformHeight } from "./voice.ts";
-import type { ChatTranscript } from "./transcript.ts";
+import type { ChatMessage, ChatTranscript } from "./transcript.ts";
 import { chatTitle, type ChatWorkbench } from "./workbench.ts";
 
 /** How close to the bottom still counts as following the conversation. */
@@ -33,7 +33,7 @@ export function Conversation({ workbench, wide, onShowChats, onToggleInfo, voice
   const online = host?.status === "online" && workbench.link === "connected";
   const voice = useMemo(() => givenVoice !== undefined ? givenVoice : BrowserDictation.supported ? new VoicePrompt(new BrowserDictation()) : null, [givenVoice]);
 
-  const entering = useEntering(session?.sessionId ?? null, transcript);
+  const shown = useShownMessages(session?.sessionId ?? null, transcript);
   const scroller = useRef<HTMLDivElement>(null);
   const following = useRef(true);
   const [showJump, setShowJump] = useState(false);
@@ -86,6 +86,21 @@ export function Conversation({ workbench, wide, onShowChats, onToggleInfo, voice
     fit();
     const observer = new ResizeObserver(fit);
     observer.observe(bar);
+    return () => observer.disconnect();
+  }, []);
+
+  // A reply let out a word at a time, or held messages showing once it is out, grow the transcript
+  // with nothing new from the Mac: the view follows the end, or keeps what is read where it is.
+  useLayoutEffect(() => {
+    const element = scroller.current;
+    const column = element?.firstElementChild;
+    if (!element || !column) return;
+    const observer = new ResizeObserver(() => {
+      if (following.current) element.scrollTop = element.scrollHeight;
+      else restoreAnchor(element, anchor.current);
+      anchor.current = findAnchor(element);
+    });
+    observer.observe(column);
     return () => observer.disconnect();
   }, []);
 
@@ -161,8 +176,9 @@ export function Conversation({ workbench, wide, onShowChats, onToggleInfo, voice
             </div>
           ) : null}
 
-          {transcript?.messages.map(message => <MessageView key={message.id} message={message} working={transcript.working} enter={entering.has(message.id)} />)}
-          {transcript?.live.map(message => <MessageView key={message.id} message={message} working live />)}
+          {shown.map(({ message, live, enter, reveal }) => (
+            <MessageView key={message.key} message={message} working={Boolean(transcript?.working)} live={live} enter={enter} reveal={reveal} />
+          ))}
           {session && chat?.pending.map(prompt => (
             <PendingView
               key={prompt.id}
@@ -356,37 +372,56 @@ function Composer({ workbench, voice, placeholder, canSend, onSend, onEscape }: 
 
 const noSubscribe = () => () => {};
 
+type ShownMessage = { message: ChatMessage; live: boolean; enter: boolean; reveal: Reveal | null };
+
 /**
- * The messages that arrived while the chat was on screen, which come in with a short rise. What the
- * chat opened with, and older pages read in above, are there already and just appear. A finished
- * reply that takes the place of the one being written, or a message that takes the place of the
- * pending one sent, also just appears: it was on screen already.
+ * What the transcript shows, in order: its recorded messages, then the reply being written.
+ *
+ * What the chat opened with, and older pages read in above, are history and just appear. What
+ * arrives while the chat is on screen is presented: a reply (and its thinking) is let out a word at
+ * a time, from its first live words through its record, and nothing after it shows until all of it
+ * is out; anything else rises in. The person's own messages were on screen already, as pending.
  */
-function useEntering(sessionId: string | null, transcript: ChatTranscript | null): ReadonlySet<string> {
-  const known = useRef<{ sessionId: string | null; ids: Set<string>; last: number; entering: Set<string>; wasLive: boolean }>(
-    { sessionId: null, ids: new Set(), last: -1, entering: new Set(), wasLive: false });
-  const state = known.current;
+function useShownMessages(sessionId: string | null, transcript: ChatTranscript | null): ShownMessage[] {
+  const state = useRef({ sessionId: null as string | null, known: new Set<string>(), entering: new Set<string>(), revealing: new Set<string>(), done: new Set<string>() }).current;
+  const [, setRevealed] = useState(0);
+  const onDone = useCallback((key: string) => {
+    if (state.done.has(key)) return;
+    state.done.add(key);
+    setRevealed(count => count + 1);
+  }, [state]);
+  const reveals = useMemo(() => ({ final: { final: true, onDone }, writing: { final: false, onDone } }), [onDone]);
+
   const messages = transcript?.messages ?? [];
-  if (state.sessionId !== sessionId || (state.ids.size === 0 && messages.length > 0)) {
-    // A chat just opened (or just loaded): all of it is history.
+  const live = transcript?.live ?? [];
+  const all = [...messages.map(message => ({ message, live: false })), ...live.map(message => ({ message, live: true }))];
+  if (state.sessionId !== sessionId || (state.known.size === 0 && messages.length > 0)) {
+    // A chat just opened, or its history just came in: what is recorded is history.
     state.sessionId = sessionId;
-    state.ids = new Set(messages.map(message => message.id));
-    state.last = messages.length - 1;
+    state.known = new Set(messages.map(message => message.key));
     state.entering = new Set();
-  } else {
-    let last = -1;
-    messages.forEach((message, index) => { if (state.ids.has(message.id)) last = index; });
-    messages.forEach((message, index) => {
-      if (state.ids.has(message.id)) return;
-      state.ids.add(message.id);
-      const appended = index > last;
-      const replacesLive = state.wasLive && (message.role === "assistant" || message.role === "thinking");
-      // A sent message was on screen already, as the pending one.
-      if (appended && !replacesLive && message.role !== "user") state.entering.add(message.id);
-    });
+    state.revealing = new Set();
+    state.done = new Set();
   }
-  state.wasLive = Boolean(transcript?.live.length);
-  return state.entering;
+  let lastKnown = -1;
+  all.forEach(({ message }, index) => { if (state.known.has(message.key)) lastKnown = index; });
+  all.forEach(({ message }, index) => {
+    if (state.known.has(message.key)) return;
+    state.known.add(message.key);
+    if (index < lastKnown || message.role === "user") return;
+    if (message.role === "assistant" || message.role === "thinking") state.revealing.add(message.key);
+    else state.entering.add(message.key);
+  });
+
+  const shown: ShownMessage[] = [];
+  for (const [index, { message, live: isLive }] of all.entries()) {
+    const revealing = state.revealing.has(message.key);
+    const final = !isLive || index < all.length - 1;
+    shown.push({ message, live: isLive, enter: state.entering.has(message.key), reveal: revealing ? (final ? reveals.final : reveals.writing) : null });
+    // What comes after a reply waits until all of it is out.
+    if (revealing && !state.done.has(message.key)) break;
+  }
+  return shown;
 }
 
 type ScrollAnchor = { element: Element; offset: number };

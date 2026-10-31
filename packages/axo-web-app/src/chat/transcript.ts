@@ -33,6 +33,12 @@ export type ChatRole = "user" | "assistant" | "thinking" | "tool";
 export interface ChatMessage {
   /** Stable across reloads: the event that made it. */
   readonly id: string;
+  /**
+   * Stable from the first word of a reply to its record: what the screen keys it by, so a reply
+   * written out live carries on as the same message once it is recorded. Pi stamps a reply when it
+   * starts, and its progress and its record carry the same stamp.
+   */
+  readonly key: string;
   readonly role: ChatRole;
   readonly text: string;
   readonly blocks: MarkdownBlock[];
@@ -156,7 +162,8 @@ export class ChatTranscript {
       const recorded = typeof message?.timestamp === "number" && this.recordedReplies.has(message.timestamp);
       this.live = message?.role === "assistant" && !recorded
         ? pieces(message, "assistant").map((piece, index) => ({
-          id: `live#${index}`, role: piece.role, text: piece.text, blocks: blocksFor(piece),
+          id: `live#${index}`, key: replyKey(message.timestamp, index) ?? `live#${index}`,
+          role: piece.role, text: piece.text, blocks: blocksFor(piece),
           timestamp: null, tool: piece.tool, images: piece.images,
         }))
         : [];
@@ -217,8 +224,10 @@ export class ChatTranscript {
       const result = callId ? this.results.get(callId) : undefined;
       const output = callId ? this.toolOutput.get(callId) : undefined;
       const tool = piece.tool && result ? filled(piece.tool, result) : piece.tool && output ? { ...piece.tool, output } : piece.tool;
+      const pieceId = index === 0 ? id : `${id}#${index}`;
       this.messages.push({
-        id: index === 0 ? id : `${id}#${index}`, role: piece.role, text: piece.text,
+        id: pieceId, key: (role === "assistant" ? replyKey(timestamp, index) : null) ?? pieceId,
+        role: piece.role, text: piece.text,
         blocks: blocksFor(piece), timestamp, tool, images: piece.images,
       });
     });
@@ -255,6 +264,11 @@ interface Piece {
   text: string;
   tool: ToolActivity | null;
   images: ChatImage[];
+}
+
+/** A reply's piece, by the stamp Pi gave the reply and the piece's place in it. */
+function replyKey(timestamp: unknown, index: number): string | null {
+  return typeof timestamp === "number" ? `reply:${timestamp}#${index}` : null;
 }
 
 function blocksFor(piece: Piece): MarkdownBlock[] {
