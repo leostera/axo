@@ -106,6 +106,16 @@ test("records held are never repeated, and the reply being written goes once it 
   assert.equal(transcript.working, false);
 });
 
+test("progress for a reply already recorded is not shown again, as when it arrives late or a chat reopens", () => {
+  const transcript = new ChatTranscript();
+  transcript.settle(true);
+  transcript.append([said(1, "assistant", "Hello", { timestamp: 1000 })]);
+  transcript.progress("message", { message: { role: "assistant", timestamp: 1000, content: [{ type: "text", text: "Hello" }] } });
+  assert.equal(transcript.live.length, 0, "the recorded reply is not written out again");
+  transcript.progress("message", { message: { role: "assistant", timestamp: 2000, content: [{ type: "text", text: "Next" }] } });
+  assert.equal(transcript.live[0]!.text, "Next", "the next reply still shows as it is written");
+});
+
 test("a running tool shows its output so far, until its result is recorded", () => {
   const transcript = transcriptOf([said(1, "assistant", [{ type: "toolCall", id: "call-1", name: "bash", arguments: { command: "make" } }])]);
   transcript.progress("call-1", { toolCallId: "call-1", partialResult: { content: [{ type: "text", text: "building" }] } });

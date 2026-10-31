@@ -102,6 +102,11 @@ export class ChatTranscript {
   /** The records held, oldest first, without gaps. */
   records: TranscriptRecord[] = [];
   private results = new Map<string, ToolResult>();
+  /**
+   * When each recorded reply was started, as Pi stamps it. A reply's progress carries the same
+   * stamp, so a snapshot that arrives after its record (or is replayed on reopening) is known.
+   */
+  private recordedReplies = new Set<number>();
   /** Running tools' output so far, by call id. */
   private toolOutput = new Map<string, string>();
 
@@ -148,7 +153,8 @@ export class ChatTranscript {
     const data = asObject(snapshot);
     if (slot === "message") {
       const message = asObject(data?.message);
-      this.live = message?.role === "assistant"
+      const recorded = typeof message?.timestamp === "number" && this.recordedReplies.has(message.timestamp);
+      this.live = message?.role === "assistant" && !recorded
         ? pieces(message, "assistant").map((piece, index) => ({
           id: `live#${index}`, role: piece.role, text: piece.text, blocks: blocksFor(piece),
           timestamp: null, tool: piece.tool, images: piece.images,
@@ -187,6 +193,7 @@ export class ChatTranscript {
   private rebuild(): void {
     this.messages = [];
     this.results = new Map();
+    this.recordedReplies = new Set();
     for (const record of this.records) this.applyRecord(record);
   }
 
@@ -200,8 +207,11 @@ export class ChatTranscript {
       this.recordResult(message);
       return;
     }
-    if (role === "assistant") this.live = [];
     const timestamp = typeof message.timestamp === "number" ? message.timestamp : null;
+    if (role === "assistant") {
+      this.live = [];
+      if (timestamp !== null) this.recordedReplies.add(timestamp);
+    }
     pieces(message, role).forEach((piece, index) => {
       const callId = piece.tool?.callId;
       const result = callId ? this.results.get(callId) : undefined;
