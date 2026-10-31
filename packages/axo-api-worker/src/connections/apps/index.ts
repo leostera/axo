@@ -9,7 +9,9 @@ import { chatgpt } from "./chatgpt";
 import { cloud } from "./cloud";
 import { contacts } from "./contacts";
 import { docs } from "./docs";
+import { discord } from "./discord";
 import { drive } from "./drive";
+import { github } from "./github";
 import { gmail } from "./gmail";
 import { hetzner } from "./hetzner";
 import { kraken } from "./kraken";
@@ -30,6 +32,7 @@ import { sheets } from "./sheets";
 import { slides } from "./slides";
 import { tasks } from "./tasks";
 import { telegram } from "./telegram";
+import { unifi } from "./unifi";
 import { wise } from "./wise";
 import {
   googleAuthorizationUrl,
@@ -53,7 +56,7 @@ import {
  * generation, and a renewal lands only on the generation it renewed.
  */
 
-export const APP_DEFINITIONS: Record<AppName, AppDefinition> = { gmail, calendar, drive, docs, sheets, slides, contacts, tasks, meet, cloud, hetzner, chatgpt, onepassword, octopus, wise, telegram, kraken };
+export const APP_DEFINITIONS: Record<AppName, AppDefinition> = { gmail, calendar, drive, docs, sheets, slides, contacts, tasks, meet, cloud, hetzner, chatgpt, onepassword, octopus, wise, telegram, kraken, github, discord, unifi };
 
 /** Where a person adds an account to an app, or signs in to one again. */
 export function appPage(app: AppName): string {

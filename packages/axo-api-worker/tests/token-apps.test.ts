@@ -37,7 +37,7 @@ async function refused(promise: Promise<unknown>): Promise<string> {
 test("Hetzner is listed without any client of Axo's, asking for a token the person names, and its tools all need an account", () => {
   const { apps } = fixture();
   const all = apps.list();
-  assert.deepEqual(all.map((c) => c.name), ["apps.hetzner", "apps.chatgpt", "apps.octopus", "apps.wise", "apps.telegram", "apps.kraken"], "without a Google client, only apps that need no client of Axo's are listed");
+  assert.deepEqual(all.map((c) => c.name), ["apps.hetzner", "apps.chatgpt", "apps.octopus", "apps.wise", "apps.telegram", "apps.kraken", "apps.github", "apps.discord", "apps.unifi"], "without a Google client, only apps that need no client of Axo's are listed");
   const listed = all[0];
   const parsed = connectionSchema.parse(listed);
   assert.ok(parsed.kind === "app");
@@ -251,4 +251,67 @@ test("Kraken signs every private call with an increasing nonce, and checks the k
   assert.deepEqual(await apps.call("kraken", "add_order", { account: "main", pair: "XBTEUR", side: "buy", type: "market", volume: "0.001", validate: true }),
     { descr: { order: "buy 0.001 XBTEUR @ market" }, validate: "true" });
   assert.deepEqual(await apps.call("kraken", "get_ticker", { account: "main", pairs: ["XBTEUR"] }), { XXBTZEUR: { c: ["60000.0", "0.1"] } });
+});
+
+/** GitHub, Discord and UniFi as they check their credentials: a bearer token, a Bot token, and an X-API-KEY. */
+function moreServices() {
+  const seen: Array<{ url: URL; headers: Headers; body: string }> = [];
+  const json = (value: unknown, status = 200) => new Response(JSON.stringify(value), { status, headers: { "Content-Type": "application/json" } });
+  const fetcher = (async (input: RequestInfo | URL, init?: RequestInit) => {
+    const request = new Request(input, init);
+    const url = new URL(request.url);
+    const body = request.body ? await request.text() : "";
+    seen.push({ url, headers: request.headers, body });
+    if (url.origin === "https://api.github.com") {
+      if (!request.headers.get("User-Agent")) return json({ message: "Request forbidden by administrative rules. Please make sure your request has a User-Agent header" }, 403);
+      if (request.headers.get("Authorization") !== "Bearer ghp_token") return json({ message: "Bad credentials" }, 401);
+      if (url.pathname === "/user") return json({ login: "Ada" });
+      if (url.pathname === "/repos/ada/engine/issues/3") return json({ number: 3, title: "Bug", state: "open", user: { login: "bob" }, labels: [{ name: "bug" }], comments: 1, created_at: "c", updated_at: "u", html_url: "https://github.com/ada/engine/issues/3", body: "It breaks" });
+      if (url.pathname === "/repos/ada/engine/issues/3/comments") return json([{ user: { login: "ada" }, body: "On it", created_at: "d" }]);
+      if (url.pathname === "/repos/ada/engine/contents/src/main.rs") return json({ type: "file", path: "src/main.rs", sha: "s", size: 12, encoding: "base64", content: btoa("fn main() {}") });
+      return json({ message: "Not Found" }, 404);
+    }
+    if (url.origin === "https://discord.com") {
+      if (request.headers.get("Authorization") !== "Bot discord-token") return json({ message: "401: Unauthorized", code: 0 }, 401);
+      if (url.pathname === "/api/v10/users/@me") return json({ id: "1", username: "AdaBot" });
+      if (url.pathname === "/api/v10/channels/123456789012345678/messages" && request.method === "POST") return json({ id: "999999999999999999", content: JSON.parse(body).content });
+      return json({ message: "Unknown Channel", code: 10003 }, 404);
+    }
+    if (url.origin === "https://api.ui.com") {
+      if (request.headers.get("X-API-KEY") !== "ui-key") return json({ code: "unauthorized", message: "unauthorized" }, 401);
+      if (url.pathname === "/v1/hosts") return url.searchParams.get("nextToken") ? json({ data: [{ id: "h2" }] }) : json({ data: [{ id: "h1" }], nextToken: "t" });
+      if (url.pathname === "/v1/devices") return json({ data: [{ hostId: url.searchParams.getAll("hostIds[]").join("+"), devices: [] }] });
+    }
+    return json({ message: "not found" }, 404);
+  }) as typeof fetch;
+  const apps = new AppConnections({ sql: sqlStorage(), secret: "test-secret-of-at-least-thirty-two-bytes", accountId: crypto.randomUUID(), google: null, fetcher, waitUntil: () => undefined });
+  return { apps, seen };
+}
+
+test("GitHub is named by the token's login, sends a User-Agent, and reads issues with their comments and files as text", async () => {
+  const { apps } = moreServices();
+  assert.match(await refused(apps.addToken("github", null, { token: "ghp_wrong" })), /GitHub did not accept this token/);
+  assert.deepEqual(await apps.addToken("github", null, { token: "ghp_token" }), { name: "apps.github", account: "ada" });
+  assert.deepEqual(await apps.call("github", "get_issue", { account: "ada", owner: "ada", repo: "engine", number: 3 }), {
+    number: 3, title: "Bug", state: "open", author: "bob", pullRequest: false, labels: ["bug"], comments: [{ author: "ada", body: "On it", created: "d" }],
+    created: "c", updated: "u", url: "https://github.com/ada/engine/issues/3", body: "It breaks",
+  });
+  assert.deepEqual(await apps.call("github", "get_file", { account: "ada", owner: "ada", repo: "engine", path: "src/main.rs" }), { path: "src/main.rs", sha: "s", size: 12, text: "fn main() {}" });
+  assert.match(await refused(apps.call("github", "get_issue", { account: "ada", owner: "ada", repo: "secret", number: 1 })), /GitHub: Not Found/);
+});
+
+test("a Discord bot goes as `Bot <token>`, is named by its username, and posts without pinging anyone", async () => {
+  const { apps, seen } = moreServices();
+  assert.deepEqual(await apps.addToken("discord", null, { token: "discord-token" }), { name: "apps.discord", account: "adabot" });
+  assert.deepEqual(await apps.call("discord", "send_message", { account: "adabot", channel: "123456789012345678", content: "hi @everyone" }), { id: "999999999999999999" });
+  assert.deepEqual(JSON.parse(seen.at(-1)!.body).allowed_mentions, { parse: [] });
+  assert.match(await refused(apps.call("discord", "read_messages", { account: "adabot", channel: "123456789012345679" })), /Discord: Unknown Channel/);
+});
+
+test("UniFi takes its key as X-API-KEY, needs a name, and reads every page", async () => {
+  const { apps } = moreServices();
+  assert.match(await refused(apps.addToken("unifi", "home", { key: "nope" })), /UniFi did not accept this token/);
+  assert.deepEqual(await apps.addToken("unifi", "Home", { key: "ui-key" }), { name: "apps.unifi", account: "home" });
+  assert.deepEqual(await apps.call("unifi", "list_hosts", { account: "home" }), { hosts: [{ id: "h1" }, { id: "h2" }] });
+  assert.deepEqual(await apps.call("unifi", "list_devices", { account: "home", hostIds: ["a", "b"] }), { hosts: [{ hostId: "a+b", devices: [] }] });
 });
