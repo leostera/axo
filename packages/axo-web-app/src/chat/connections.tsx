@@ -12,6 +12,7 @@ import driveLogo from "./logos/drive.svg";
 import githubLogo from "./logos/github.svg";
 import gmailLogo from "./logos/gmail.svg";
 import hetznerLogo from "./logos/hetzner.svg";
+import krakenLogo from "./logos/kraken.svg";
 import meetLogo from "./logos/meet.svg";
 import octopusLogo from "./logos/octopus.svg";
 import onepasswordLogo from "./logos/onepassword.svg";
@@ -20,6 +21,7 @@ import sheetsLogo from "./logos/sheets.svg";
 import slidesLogo from "./logos/slides.svg";
 import stripeLogo from "./logos/stripe.svg";
 import tasksLogo from "./logos/tasks.svg";
+import telegramLogo from "./logos/telegram.svg";
 import wiseLogo from "./logos/wise.svg";
 
 /**
@@ -622,9 +624,11 @@ const APP_LOGOS: Record<string, string> = {
   "apps.onepassword": onepasswordLogo,
   "apps.octopus": octopusLogo,
   "apps.wise": wiseLogo,
+  "apps.telegram": telegramLogo,
+  "apps.kraken": krakenLogo,
 };
 /** Logos drawn as a full tile of their own, not a mark on white. */
-const FULL_LOGOS = new Set(["apps.hetzner", "apps.wise"]);
+const FULL_LOGOS = new Set(["apps.hetzner", "apps.wise", "apps.kraken"]);
 
 function AppTile({ app, large = false }: { app: string; large?: boolean }) {
   const logo = APP_LOGOS[app];
@@ -658,7 +662,7 @@ function host(url: string): string {
 
 const SERVICE_TITLES: Record<string, string> = {
   "apps.gmail": "Gmail", "apps.calendar": "Calendar", "apps.drive": "Drive", "apps.docs": "Docs", "apps.sheets": "Sheets",
-  "apps.slides": "Slides", "apps.contacts": "Contacts", "apps.tasks": "Tasks", "apps.meet": "Meet", "apps.cloud": "Google Cloud", "apps.hetzner": "Hetzner", "apps.chatgpt": "ChatGPT", "apps.onepassword": "1Password", "apps.octopus": "Octopus Energy", "apps.wise": "Wise",
+  "apps.slides": "Slides", "apps.contacts": "Contacts", "apps.tasks": "Tasks", "apps.meet": "Meet", "apps.cloud": "Google Cloud", "apps.hetzner": "Hetzner", "apps.chatgpt": "ChatGPT", "apps.onepassword": "1Password", "apps.octopus": "Octopus Energy", "apps.wise": "Wise", "apps.telegram": "Telegram", "apps.kraken": "Kraken",
 };
 
 /** "Search messages", or with its app or server first: "Gmail · Search messages". */
