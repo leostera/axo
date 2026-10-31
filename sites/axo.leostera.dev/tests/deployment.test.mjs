@@ -82,6 +82,10 @@ test("single site serves landing/app assets and keeps account APIs fail-closed",
   const accountHosts = await fetch(`${url}/api/v1/account/hosts`);
   assert.equal(accountHosts.status, 503);
   assert.deepEqual(await accountHosts.json(), { error: "Sign-in is unavailable" });
+  // A connection's sign-in reaches the Worker, which refuses a browser that is not signed in.
+  const connectionSignIn = await fetch(`${url}/api/v1/connections/oauth/start?flow=00000000-0000-4000-8000-000000000000`);
+  assert.equal(connectionSignIn.status, 401);
+  assert.doesNotMatch(await connectionSignIn.text(), /not enabled yet/);
   const legacyProductApi = await fetch(`${url}/api/v1/hosts`);
   assert.equal(legacyProductApi.status, 503);
   assert.match(await legacyProductApi.text(), /not enabled yet/);

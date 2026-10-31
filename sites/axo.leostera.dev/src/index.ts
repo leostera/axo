@@ -57,6 +57,8 @@ export default {
     if (pathname === AUTH_PATH || pathname.startsWith(`${AUTH_PATH}/`) ||
         pathname.startsWith("/api/v1/account/") ||
         pathname.startsWith("/api/v1/accounts/") ||
+        // A connection's OAuth sign-in: Axo's start page and the provider's callback (RFD0016).
+        pathname.startsWith("/api/v1/connections/oauth/") ||
         pathname === "/api/v1/host-pairings/redeem")
       return await api.fetch(request, env, executionContext);
     if (pathname === "/api" || pathname.startsWith("/api/"))
